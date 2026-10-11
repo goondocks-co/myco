@@ -346,7 +346,7 @@ export async function runAutoJoin(args: readonly string[], deps: MemberCliDeps =
 export async function optOut(root: string, membership: { serverUrl: string; token: string } | null, opts: { mycoHome: string; now: number; fetch?: FetchLike }): Promise<unknown> {
   if (membership !== null) assertDeploymentTokenPair(membership, opts.mycoHome);
   const rootKey = rootKeyFor(root, opts.mycoHome);
-  markLeft(rootKey, opts.mycoHome, opts.now);
+  markLeft(rootKey, opts.mycoHome, opts.now, { repository: { root, serverUrl: membership?.serverUrl } });
   // Nothing asked for it before is made: no join, and no past sessions brought.
   dropJoinRequest(rootKey, opts.mycoHome);
   clearPendingImport(rootKey, opts.mycoHome);

@@ -2,12 +2,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { homeReport, refusedHookChecks, useHomeDoctor, type MemberDoctorDeps } from '@myco/cli/member-doctor.js';
+import { homeReport, projectReport, refusedHookChecks, useHomeDoctor, type MemberDoctorDeps } from '@myco/cli/member-doctor.js';
 import { runMemberVerb } from '@myco/cli/member-dispatch.js';
+import { formatCheck } from '@myco/cli/doctor-member.js';
+import { optOut } from '@myco/cli/member-auto-join.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { REJOIN_HINT } from '@myco/member/delivery-notice.js';
 import { logoutDeployment } from '@myco/member/logout.js';
 import { clearLeft, markLeft, rootKeyFor } from '@myco/member/auto-join.js';
+import { recordProvision } from '@myco/symbionts/member-provision-record.js';
+import { getPluginVersion } from '@myco/version.js';
 import { writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { recordRefusedHook, REFUSED_HOOK_RETENTION_MS } from '@myco/member/refused-hooks.js';
 import { newRunnerBearer, runnerRecordPath } from '@myco/runner/runner-registry.js';
@@ -31,7 +35,7 @@ beforeEach(() => {
   fs.mkdirSync(process.env.HOME, { recursive: true });
   platform = recordingPlatform();
   deps = {
-    cwd: scratch, mycoHome: home, now: () => now,
+    cwd: scratch, mycoHome: home, now: () => now, fetch: async () => new Response('{}', { status: 200 }),
     worker: { home: process.env.HOME, mycoHome: home, platform: 'linux', runner: platform.runner, lockDir: path.join(scratch, 'locks'), ownDeploymentUrls: async () => [] },
   };
 });
@@ -56,11 +60,12 @@ describe('home doctor', () => {
     expect(await runMemberVerb('doctor', [], { ...deps, stdout: line => lines.push(line) })).toBe(true);
     expect(lines.join('\n')).toContain('joined no Myco');
     expect(lines.join('\n')).toContain('myco login <address>');
+    expect(lines.join('\n')).not.toContain('myco member provision');
     expect(fs.readdirSync(home)).toEqual([]);
     expect(fs.existsSync(path.join(scratch, '.myco'))).toBe(false);
   });
 
-  it('reports membership and local credential state without a project or network call', async () => {
+  it('reports membership and local credential state without a project, checking only public server health', async () => {
     join(personal);
     recordDefaultDeployment(personal, { mycoHome: home });
     const text = await report();
@@ -68,6 +73,10 @@ describe('home doctor', () => {
     expect(text).toContain('locally unexpired');
     expect(text).toContain('authentication not checked');
     expect(text).not.toContain('A'.repeat(43));
+    const credential = (await homeReport(home, deps)).find(check => check.name === 'Credential')!;
+    expect(credential.status).toBe('not-checked');
+    expect(formatCheck(credential)).toContain('not checked');
+    expect(formatCheck(credential)).not.toContain('\x1b[32m');
     expect(text).not.toContain('no member credential resolves for this project');
   });
 
@@ -77,11 +86,16 @@ describe('home doctor', () => {
     join(personal, homelabRoot);
     join(work, workRoot);
     recordDefaultDeployment(work, { mycoHome: home });
+    recordProvision(home, { serverUrl: personal, agents: [], version: getPluginVersion(), at: now });
     const text = await report();
     expect(text).toContain(homelabRoot + ' → ' + personal + ' / proj_home');
     expect(text).toContain(workRoot + ' → ' + work + ' / proj_work');
     expect(text).toContain('0 event(s) waiting to deliver');
     expect(text).toContain(work + ' (default for new repositories)');
+    const rows = await homeReport(home, deps);
+    expect(rows.filter(check => check.name === 'Setup')).toHaveLength(1);
+    expect(rows.some(check => check.name === 'Agents')).toBe(false);
+    expect(text).not.toContain('no provisioning recorded for this Deployment');
   });
 
   it('uses the canonical remedy when a credential cannot renew', async () => {
@@ -102,8 +116,9 @@ describe('home doctor', () => {
       runtime: { aliases: async url => [url], snapshot: () => ({ agents: [], workerUrls: [], runner: false }), removeWorkers: () => {}, reconcile: () => {} },
     });
     const text = await report();
-    expect(text).toContain(homelabRoot + ': left alone after logout from ' + personal);
+    expect(text).toContain(homelabRoot + ': left alone after leaving ' + personal);
     expect(text).toContain('will not automatically join it to another Myco');
+    expect((await homeReport(home, deps)).find(check => check.detail.includes(homelabRoot + ': left alone'))?.status).toBe('warn');
     expect(text).toContain('myco member join');
     expect(text).toContain(workRoot + ' → ' + work);
     expect(text).not.toContain(homelabRoot + ' → ');
@@ -137,6 +152,8 @@ describe('home doctor', () => {
     const text = await report();
     expect(text).toContain('is missing');
     expect(text).toContain('capture nothing');
+    expect((await homeReport(home, deps)).find(check => check.detail.includes('is missing'))?.status).toBe('warn');
+    expect((await homeReport(home, deps)).find(check => check.detail.includes('no harness'))?.status).toBe('fail');
     expect(text).toContain('declared no credential source');
     expect(text).toContain('myco member provision');
     const before = fs.readdirSync(path.join(home, 'member', 'refused-hooks'));
@@ -154,7 +171,9 @@ describe('home doctor', () => {
     expect(text).toContain('registered homelab-mini');
     expect(text).toContain('installed, stopped');
     expect(text).toContain('unknown (no acknowledged service offer)');
-    expect(text).toContain('myco runner status --server ' + personal);
+    expect(text).toContain('myco runner install --server ' + personal);
+    expect((await homeReport(home, deps)).find(check => check.name === 'Runner service')?.status).toBe('warn');
+    expect((await homeReport(home, deps)).find(check => check.name === 'Runner offer')?.status).toBe('not-checked');
     const lines: string[] = [];
     expect(await runMemberVerb('doctor', [], { ...deps, stdout: line => lines.push(line) })).toBe(true);
     expect(lines.join('\n')).not.toContain('no harness on this machine captures');
@@ -174,6 +193,78 @@ describe('home doctor', () => {
     expect(useHomeDoctor(home)).toBe(true);
     expect(await report()).toContain('runner records could not be read');
     expect(await runMemberVerb('doctor', [], { ...deps, stdout: () => {} })).toBe(false);
+  });
+
+  it('warns on an expired credential and names the recovery command', async () => {
+    writeDeploymentMembership({ serverUrl: personal, token: 'A'.repeat(43), machineId: 'machine-one', joinedAt: 1, updatedAt: 1, expiresAt: now - 1 }, { mycoHome: home });
+    const credential = (await homeReport(home, deps)).find(check => check.name === 'Credential')!;
+    expect(credential.status).toBe('warn');
+    expect(credential.detail).toContain('expired');
+    expect(credential.detail).toContain('myco login');
+    writeRegistryEntry({ version: 2, root: scratch, projectId: 'proj_home', serverUrl: personal, token: 'A'.repeat(43), machineId: 'machine-one', joinedAt: 1, updatedAt: 1, expiresAt: now - 1 }, { mycoHome: home });
+    const rows = await projectReport('registry', { ...deps, fetch: async () => { throw new Error('offline'); } });
+    expect(rows.find(check => check.name === 'Credential')?.status).toBe('warn');
+
+  });
+
+  it('checks each membership health read-only with a bounded deadline from an unbound folder', async () => {
+    join(personal);
+    join(work);
+    const seen: string[] = [];
+    const before = fs.readFileSync(path.join(home, 'member', 'deployments', fs.readdirSync(path.join(home, 'member', 'deployments'))[0]), 'utf8');
+    deps.fetch = async (input, init) => {
+      seen.push(String(input));
+      expect(init?.method).toBe('GET');
+      expect(init?.redirect).toBe('error');
+      expect(init?.headers).toBeUndefined();
+      expect(init?.signal).toBeDefined();
+      if (String(input).startsWith(work)) throw new Error('offline');
+      return new Response('{}', { status: 200 });
+    };
+    const rows = await homeReport(home, deps);
+    expect(seen.sort()).toEqual([personal + '/health', work + '/health'].sort());
+    expect(rows.find(check => check.name === 'Deployment' && check.detail.includes(work))?.status).toBe('fail');
+    expect(rows.find(check => check.name === 'Deployment' && check.detail.includes(personal))?.status).toBe('ok');
+    expect(fs.readFileSync(path.join(home, 'member', 'deployments', fs.readdirSync(path.join(home, 'member', 'deployments'))[0]), 'utf8')).toBe(before);
+    deps.requestTimeoutMs = 10;
+    deps.fetch = async (_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('deadline')), { once: true });
+    });
+    expect((await homeReport(home, deps)).filter(check => check.name === 'Deployment').map(check => check.status)).toEqual(['fail', 'fail']);
+  });
+
+  it('records paths on ordinary leave and keeps good markers visible beside malformed markers', async () => {
+    const root = path.join(scratch, 'left-repository');
+    fs.mkdirSync(root);
+    join(personal);
+    await optOut(root, { serverUrl: personal, token: 'A'.repeat(43) }, { mycoHome: home, now, fetch: deps.fetch });
+    const rows = await homeReport(home, deps);
+    expect(rows.find(check => check.detail.includes(root + ': left alone after leaving ' + personal))?.status).toBe('warn');
+    const left = path.join(home, 'member', 'auto-join', 'left');
+    fs.writeFileSync(path.join(left, 'broken.json'), '{}', { mode: 0o600 });
+    const text = await report();
+    expect(text).toContain(root + ': left alone');
+    expect(text).toContain('broken.json');
+    expect(text).toContain('could not be read');
+  });
+
+  it('reports malformed default state', async () => {
+    join(personal);
+    fs.writeFileSync(path.join(home, 'member', 'default.json'), '{}', { mode: 0o600 });
+    const selected = (await homeReport(home, deps)).find(check => check.name === 'Default Myco')!;
+    expect(selected.status).toBe('warn');
+    expect(selected.detail).toContain('malformed');
+    expect(selected.detail).toContain('myco login');
+  });
+
+  it('prints machine facts once alongside repository access checks', async () => {
+    join(personal, scratch);
+    const lines: string[] = [];
+    await runMemberVerb('doctor', [], { ...deps, stdout: line => lines.push(line), requestTimeoutMs: 20 });
+    expect(lines.filter(line => line.includes('Membership ') && line.includes(personal))).toHaveLength(1);
+    expect(lines.filter(line => line.includes('Credential '))).toHaveLength(1);
+    expect(lines.filter(line => line.includes('Capture backlog'))).toHaveLength(1);
+    expect(lines.some(line => line.includes('Spool '))).toBe(false);
   });
 
   it('surfaces unreadable membership state instead of reporting an empty home', async () => {

@@ -22,6 +22,7 @@ import { listLeftRepositories } from '../member/auto-join.js';
 import { pathIsAbsent } from '../member/store.js';
 import { listRunnerRecords, isLiveRunner } from '../runner/runner-registry.js';
 import { workerServiceStatus } from '../runner/service.js';
+import { ServerClient } from '../member/transport.js';
 import { hasLegacyInstall } from './member-dispatch.js';
 
 export interface MemberDoctorDeps extends MemberVerbDeps {
@@ -69,7 +70,7 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string, requ
     const seen = [at('member-global').inspectMemberHooks(), at('member-project').inspectMemberHooks()];
     for (const hooks of seen) {
       if (!hooks.readable) {
-        checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) could not be read, so whether it captures is unknown.`));
+        checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) could not be read, so whether it captures is unknown. Run \`myco member provision ${manifest.name}\`.`));
       } else if (hooks.member) {
         const broken = [...new Set(hooks.memberCommands.map(hookExecutable).filter((p): p is string => p !== null))]
           .map((program) => ({ program, problem: programProblem(program) }))
@@ -79,7 +80,7 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string, requ
           checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) run ${program}, which ${problem}, so they capture nothing. Run \`myco member provision ${manifest.name}\` from this project.`));
         } else {
           capturing += 1;
-          checks.push(row('Capture', 'ok', `${manifest.displayName} captures for the member from its ${hooks.scope} hooks (${hooks.target}).`));
+          checks.push(row('Capture', 'not-checked', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are installed; capture execution not checked. Start a new agent session, then run \`myco doctor\`.`));
         }
       } else if (hooks.present) {
         checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are Myco's 1.4 capture, not the member's. Run \`myco member provision ${manifest.name}\`.`));
@@ -100,7 +101,7 @@ export function refusedHookChecks(mycoHome: string, now: number): DoctorCheck[] 
   return REFUSED_HOOK_KINDS.flatMap((kind) => {
     let record;
     try { record = readRefusedHook(kind, mycoHome, now, { prune: false, strict: true }); }
-    catch (error) { return [row('Capture', 'warn', `refused hooks unavailable: ${error instanceof Error ? error.message : String(error)}`)]; }
+    catch (error) { return [row('Capture', 'warn', `refused hooks unavailable: ${error instanceof Error ? error.message : String(error)}. ${DOCTOR_REFUSED_HOOK_REPAIR}`)]; }
     return record === null ? [] : [row('Capture', 'warn', `${refusedHookWords(record)}, last ${iso(record.lastAt)}${record.lastHook ? ` (hook ${record.lastHook})` : ''}. ${DOCTOR_REFUSED_HOOK_REPAIR}`)];
   });
 }
@@ -134,56 +135,31 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
 export async function projectReport(source: CredentialSource, deps: MemberDoctorDeps = {}): Promise<DoctorCheck[]> {
   const root = rootOf(deps);
   const mycoHome = homeOf(deps);
-  const now = (deps.now ?? Date.now)();
   const checks: DoctorCheck[] = [];
 
-  const read = source === 'registry' ? readRegistryEntryResult(root, mycoHome) : null;
   const problem = source === 'registry' ? membershipProblem(deps) : null;
   if (problem !== null) checks.push(row('Membership', 'fail', problem));
 
+  let authenticated = false;
   const deployment = problem === null ? await openDeployment(source, deps) : null;
   if (deployment === null && problem === null) {
-    checks.push(row('Deployment', 'fail', `no member credential resolves for this project (--credential ${source}).`));
+    checks.push(row('Deployment', 'fail', `no member credential resolves for this project (--credential ${source}). Run \`myco login <address>\`, then \`myco doctor --credential registry\`.`));
   } else if (deployment !== null) {
-    if (read?.status === 'present') {
-      checks.push(row('Membership', 'ok', `project ${deployment.projectId} on ${deployment.serverUrl} (machine ${read.entry.machineId}, joined ${iso(read.entry.joinedAt)}).`));
-    }
-    if (!(await deployment.healthy())) {
-      checks.push(row('Deployment', 'fail', `${deployment.serverUrl} did not answer its health route from this machine.`));
-    } else {
-      const tools = await deployment.listTools();
-      checks.push(tools.ok
-        ? row('Deployment', 'ok', `${deployment.serverUrl} answers, and serves this machine's credential ${tools.value.length} tools.`)
-        : row('Deployment', 'fail', `${deployment.serverUrl} answers its health route and refused this machine's tool list (${tools.error.code}): ${tools.error.message}`));
-    }
+    const tools = await deployment.listTools();
+    authenticated = tools.ok;
+    checks.push(tools.ok
+      ? row('Project access', 'ok', `${deployment.serverUrl} answers, and serves this machine's credential ${tools.value.length} tools.`)
+      : row('Project access', 'fail', `${deployment.serverUrl} ${tools.error.code === 'unauthorized' ? 'refused' : 'could not serve'} this machine's tool list (${tools.error.code}): ${tools.error.message}. Run \`myco doctor\` from this repository after restoring access.`));
   }
 
   // Read after the Deployment was asked: its read renews a credential whose window is open.
   const after = source === 'registry' ? readRegistryEntryResult(root, mycoHome) : null;
   if (after?.status === 'present') {
-    const facts = projectDiagnostics(after.entry, mycoHome, now);
-    const { membership, spool, latch, refusals } = facts;
-    if (membership.refreshTerminal === true) {
-      checks.push(row('Credential', 'fail', `the Deployment will not renew this credential — ${REJOIN_HINT}.`));
-    } else if (membership.expired === true) {
-      checks.push(row('Credential', 'warn', `expired at ${iso(membership.expiresAt)}; the next hook or member read renews it unless this machine has been inactive too long.`));
-    } else {
-      checks.push(row('Credential', 'ok', `expires ${iso(membership.expiresAt)}; ${membership.refreshAfter === null ? 'the renewal window is not announced yet' : `renews after ${iso(membership.refreshAfter)}`}.`));
-    }
-
-    if (!spool.readable || spool.unacknowledgedTotal === null) {
-      checks.push(row('Spool', 'warn', 'the spool could not be read, so what is waiting to deliver is unknown.'));
-    } else if (spool.unacknowledgedTotal > 0) {
-      checks.push(row('Spool', 'warn', `${spool.unacknowledgedTotal} event(s) in ${spool.sessionFiles} session file(s) are waiting to deliver; the next hook drains them, or run \`myco member drain\`.`));
-    } else {
-      checks.push(row('Spool', 'ok', `nothing waiting to deliver (last delivery ${spool.lastDeliveryAt === null ? 'never' : iso(spool.lastDeliveryAt)}).`));
-    }
-    if (!facts.latchReadable) checks.push(row('Spool', 'warn', 'the offline latch could not be read, so whether capture is holding off is unknown.'));
-    else if (latch !== null) checks.push(row('Spool', 'warn', `capture has held off the Deployment since ${iso(latch.since)}; next probe ${iso(latch.nextProbeAt)}.`));
-    if (!refusals.logReadable) checks.push(row('Refusals', 'warn', 'the refusal log could not be read.'));
-    else if (refusals.loggedSinceLastReset > 0) {
-      checks.push(row('Refusals', 'warn', `the Deployment refused ${refusals.loggedSinceLastReset} event(s); \`myco logs\` lists them.`));
-    }
+    const membership = after.entry;
+    const expired = membership.expiresAt !== undefined && membership.expiresAt <= (deps.now ?? Date.now)();
+    checks.push(membership.refreshTerminal === true
+      ? row('Credential', 'fail', `the Deployment will not renew this credential — ${REJOIN_HINT}.`)
+      : row('Credential', authenticated ? 'ok' : expired ? 'warn' : 'not-checked', `${membership.serverUrl}: ${authenticated ? 'authenticated' : 'authentication not checked'}; expires ${iso(membership.expiresAt)}${expired ? ' (expired)' : ''}. Run \`myco doctor\` from this repository to check again.`));
   }
 
   const packageRoot = deps.packageRoot ?? resolvePackageRoot();
@@ -193,6 +169,7 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
   return checks;
 }
 
+const HOME_HEALTH_TIMEOUT_MS = 1500;
 const CUTOVER_RECORD = path.join('member', 'cutover.json');
 const LOGOUT_DIRECTORY = path.join('member', 'logout');
 
@@ -207,10 +184,13 @@ export function useHomeDoctor(home: string): boolean {
 /** Repository opt-outs and the reconnection each marker permits. */
 function leftRepositoryChecks(home: string): DoctorCheck[] {
   try {
-    return listLeftRepositories(home).map(repository => row('Repository', 'ok',
-      `${repository.root ?? `repository key ${repository.key} (path not recorded)`}: left alone${repository.serverUrl ? ` after logout from ${repository.serverUrl}` : ''}; ${repository.explicitJoinOnly ? 'capture will not automatically join it to another Myco' : 'capture is opted out until reconnected here or through Deployment settings'}. To reconnect, run \`myco member join\` from that repository.`));
+    return listLeftRepositories(home).map(repository => {
+      if ('error' in repository) return row('Repositories', 'warn', `${repository.error}. Inspect the marker under ${home}; run \`myco member join\` from the affected repository to reconnect.`);
+      return row('Repository', 'warn',
+        `${repository.root ?? `repository key ${repository.key} (path not recorded; older marker, identify the repository before reconnecting)`}: left alone${repository.serverUrl ? ` after leaving ${repository.serverUrl}` : ''}; ${repository.explicitJoinOnly ? 'capture will not automatically join it to another Myco' : 'capture is opted out until reconnected here or through Deployment settings'}. To reconnect, run \`myco member join\` from that repository.`);
+    });
   } catch (error) {
-    return [row('Repositories', 'warn', `left-alone repositories could not be read: ${error instanceof Error ? error.message : String(error)}`)];
+    return [row('Repositories', 'warn', `left-alone repositories could not be read: ${error instanceof Error ? error.message : String(error)}. Inspect the markers, then run \`myco member join\` from any repository to reconnect`)];
   }
 }
 
@@ -220,46 +200,53 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
   const now = (deps.now ?? Date.now)();
   let runners: ReturnType<typeof listRunnerRecords> = [];
   try { runners = listRunnerRecords(home); }
-  catch (error) { checks.push(row('Runner', 'fail', `runner records could not be read: ${error instanceof Error ? error.message : String(error)}`)); }
+  catch (error) { checks.push(row('Runner', 'fail', `runner records could not be read: ${error instanceof Error ? error.message : String(error)}. Inspect the runner records, then run \`myco runner doctor\``)); }
   const listing = listDeploymentMembershipsResult(home);
-  if (!listing.readable || listing.unavailableEntries > 0) checks.push(row('Memberships', 'fail', 'Deployment memberships could not all be read; which Mycos this machine joined is unknown.'));
+  if (!listing.readable || listing.unavailableEntries > 0) checks.push(row('Memberships', 'fail', 'Deployment memberships could not all be read; which Mycos this machine joined is unknown. Inspect the membership files, then run `myco login <address>`.'));
   if (listing.readable && listing.unavailableEntries === 0 && listing.memberships.length === 0 && runners.length === 0) {
     checks.push(row('Memberships', 'warn', DOCTOR_SIGN_IN));
   }
-  const selected = readDefaultDeployment(home);
+  let selected;
+  try { selected = readDefaultDeployment(home, { strict: true }); }
+  catch (error) { checks.push(row('Default Myco', 'warn', `${error instanceof Error ? error.message : String(error)}. Inspect ${path.join(home, 'member', 'default.json')}, then run \`myco login <address> --default\`.`)); }
   for (const membership of listing.memberships) {
     checks.push(row('Membership', 'ok', `${membership.serverUrl}${selected?.serverUrl === deploymentUrl(membership.serverUrl) ? ' (default for new repositories)' : ''}; machine ${membership.machineId}, joined ${iso(membership.joinedAt)}.`));
     const state = membership.refreshTerminal === true ? 'refused renewal' : membership.expiresAt !== undefined && membership.expiresAt <= now ? 'expired' : membership.expiresAt === undefined ? 'expiry unknown' : 'locally unexpired';
-    checks.push(row('Credential', state === 'locally unexpired' ? 'ok' : 'warn', `${membership.serverUrl}: ${state}; expires ${iso(membership.expiresAt)} (local record; authentication not checked)${membership.refreshTerminal === true ? ` — ${REJOIN_HINT}` : ''}.`));
-    const provision = readProvisionRecord(home);
-    checks.push(row('Agents', provision?.serverUrl === membership.serverUrl ? 'ok' : 'warn', `${membership.serverUrl}: ${provision?.serverUrl === membership.serverUrl ? provision.agents.join(', ') || 'none recorded' : 'no provisioning recorded for this Deployment'}.`));
+    checks.push(row('Credential', state === 'locally unexpired' ? 'not-checked' : membership.refreshTerminal === true ? 'fail' : 'warn', `${membership.serverUrl}: ${state}; expires ${iso(membership.expiresAt)} (local record; authentication not checked)${membership.refreshTerminal === true ? ` — ${REJOIN_HINT}` : ` — run \`myco login ${membership.serverUrl}\``}.`));
+    const healthy = await new ServerClient(membership, deps.fetch ?? globalThis.fetch).health({
+      connectTimeoutMs: HOME_HEALTH_TIMEOUT_MS,
+      requestTimeoutMs: Math.min(deps.requestTimeoutMs ?? HOME_HEALTH_TIMEOUT_MS, HOME_HEALTH_TIMEOUT_MS),
+    });
+    checks.push(row('Deployment', healthy ? 'ok' : 'fail', healthy
+      ? `${membership.serverUrl} answers its health route.`
+      : `${membership.serverUrl} is unreachable or did not answer its health route. Check the address and connection, then run \`myco doctor\` again.`));
   }
   const projects = listRegistryEntriesResult(home);
-  if (!projects.readable || projects.unavailableEntries > 0) checks.push(row('Repositories', 'fail', 'repository routes could not all be read; routing is unknown for those entries.'));
+  if (!projects.readable || projects.unavailableEntries > 0) checks.push(row('Repositories', 'fail', 'repository routes could not all be read; routing is unknown for those entries. Run `myco member join` from each affected repository.'));
   for (const entry of projects.entries) {
     checks.push(row('Repository', 'ok', `${entry.root} → ${entry.serverUrl} / ${entry.projectId}.`));
     const facts = projectDiagnostics(entry, home, now);
     checks.push(row('Capture backlog', facts.spool.readable && facts.spool.unacknowledgedTotal === 0 ? 'ok' : 'warn',
-      `${entry.root}: ${facts.spool.readable ? `${facts.spool.unacknowledgedTotal ?? 'unknown'} event(s) waiting to deliver` : 'spool unreadable'}; last delivery ${iso(facts.spool.lastDeliveryAt)}.`));
-    if (!facts.latchReadable || facts.latch !== null) checks.push(row('Capture', 'warn', `${entry.root}: ${facts.latchReadable ? `delivery held off since ${iso(facts.latch?.since)}; next probe ${iso(facts.latch?.nextProbeAt)}` : 'offline latch unreadable'}.`));
+      `${entry.root}: ${facts.spool.readable ? `${facts.spool.unacknowledgedTotal ?? 'unknown'} event(s) waiting to deliver` : 'spool unreadable'}; last delivery ${iso(facts.spool.lastDeliveryAt)}.${facts.spool.readable && facts.spool.unacknowledgedTotal === 0 ? '' : ' Run `myco member drain` from that repository.'}`));
+    if (!facts.latchReadable || facts.latch !== null) checks.push(row('Capture', 'warn', `${entry.root}: ${facts.latchReadable ? `delivery held off since ${iso(facts.latch?.since)}; next probe ${iso(facts.latch?.nextProbeAt)}` : 'offline latch unreadable'}. Run \`myco member drain\` from that repository.`));
     if (!facts.refusals.logReadable || facts.refusals.loggedSinceLastReset > 0 || facts.refusals.unreadableLines > 0) checks.push(row('Refusals', 'warn', `${entry.root}: ${facts.refusals.logReadable ? `${facts.refusals.loggedSinceLastReset} refused events; ${facts.refusals.unreadableLines} unreadable log lines` : 'refusal log unreadable'}. Run \`myco logs\` from that repository.`));
   }
   checks.push(...leftRepositoryChecks(home), ...refusedHookChecks(home, now));
-  if (listing.memberships.length > 0 || runners.length === 0) checks.push(...setupChecks(home));
+  if (listing.memberships.length > 0) checks.push(...setupChecks(home));
   if (readRegistryEntryResult(rootOf(deps), home).status === 'missing') checks.push(...captureChecks(rootOf(deps), home, deps.packageRoot ?? resolvePackageRoot(), listing.memberships.length > 0));
   const worker = { ...deps.worker, mycoHome: home };
   try { checks.push(...await checkWorkerServices(path.join(rootOf(deps), '.myco'), worker)); }
-  catch (error) { checks.push(row('Worker service', 'warn', `service state unavailable: ${error instanceof Error ? error.message : String(error)}`)); }
+  catch (error) { checks.push(row('Worker service', 'warn', `service state unavailable: ${error instanceof Error ? error.message : String(error)}. Run \`myco runner doctor\``)); }
   for (const record of runners) {
-    checks.push(row('Runner', isLiveRunner(record) ? 'ok' : 'warn', `${record.serverUrl}: ${isLiveRunner(record) ? `registered ${record.name} (${record.runnerId})` : 'registration pending'}; last contact ${iso(record.lastContactAt)}.`));
+    checks.push(row('Runner', isLiveRunner(record) ? 'ok' : 'warn', `${record.serverUrl}: ${isLiveRunner(record) ? `registered ${record.name} (${record.runnerId})` : `registration pending; run \`myco runner register ${record.serverUrl}\``}; last contact ${iso(record.lastContactAt)}.`));
     try {
       const state = workerServiceStatus(executorServiceTarget(record.serverUrl, worker, 'runner'), { runner: worker.runner, lockDir: worker.lockDir });
       const words = !state.installed ? 'not installed' : !state.loaded ? 'installed, not loaded' : !state.running ? 'installed, stopped' : 'running';
-      checks.push(row('Runner service', state.running ? 'ok' : 'warn', `${record.serverUrl}: ${words}${state.detail ? ` (${state.detail})` : ''}. Check \`myco runner status --server ${record.serverUrl}\`.`));
+      checks.push(row('Runner service', state.running ? 'ok' : 'warn', `${record.serverUrl}: ${words}${state.detail ? ` (${state.detail})` : ''}. Run \`myco runner install --server ${record.serverUrl}\`.`));
     } catch (error) {
-      checks.push(row('Runner service', 'warn', `${record.serverUrl}: unavailable: ${error instanceof Error ? error.message : String(error)}`));
+      checks.push(row('Runner service', 'warn', `${record.serverUrl}: unavailable: ${error instanceof Error ? error.message : String(error)}. Run \`myco runner doctor --server ${record.serverUrl}\``));
     }
-    checks.push(row('Runner offer', record.lastOffer ? 'ok' : 'warn', `${record.serverUrl}: ${record.lastOffer ? `offered ${record.lastOffer.offered.join(', ') || 'none'}; withheld ${record.lastOffer.withheld.join(', ') || 'none'}; observed ${iso(record.lastOffer.observedAt)}` : 'unknown (no acknowledged service offer)'}.`));
+    checks.push(row('Runner offer', record.lastOffer ? 'ok' : 'not-checked', `${record.serverUrl}: ${record.lastOffer ? `offered ${record.lastOffer.offered.join(', ') || 'none'}; withheld ${record.lastOffer.withheld.join(', ') || 'none'}; observed ${iso(record.lastOffer.observedAt)}` : 'unknown (no acknowledged service offer); run `myco runner status` after starting the runner'}.`));
   }
   if (hasLegacyInstall(home)) checks.push(row('Myco 1.4', 'warn', `1.4 data may remain at ${path.join(home, 'groves')}; migration completion is not verified. Next: \`myco cutover --dry-run\`.`));
   return checks;
@@ -274,15 +261,22 @@ export async function run(args: readonly string[], source: CredentialSource, dep
   if (unknown.length > 0) { err(`${USAGE}\nmyco doctor: unknown option ${unknown[0]}`); return false; }
   const notice = readUpdateNotice(homeOf(deps), getPluginVersion());
   if (notice !== null) out(notice);
-  const checks = await homeReport(homeOf(deps), deps);
-  if (source === 'env' || readRegistryEntryResult(rootOf(deps), homeOf(deps)).status !== 'missing') checks.push(...await projectReport(source, deps));
+  const binding = readRegistryEntryResult(rootOf(deps), homeOf(deps));
+  const projectChecks = source === 'env' || binding.status !== 'missing' ? await projectReport(source, deps) : [];
+  const homeChecks = await homeReport(homeOf(deps), deps);
+  const checkedCredential = projectChecks.some(check => check.name === 'Credential');
+  const checks = [
+    ...homeChecks.filter(check => !(checkedCredential && binding.status === 'present' && check.name === 'Credential' && check.detail.startsWith(binding.entry.serverUrl + ':'))),
+    ...projectChecks,
+  ];
 
   out('\nmyco doctor (member)\n');
   for (const check of checks) out(formatCheck(check));
   const failed = checks.filter((check) => check.status === 'fail');
   const warned = checks.filter((check) => check.status === 'warn');
   out('');
-  out(failed.length + warned.length === 0 ? '  All checks passed.' : `  ${failed.length} failed, ${warned.length} warning(s).`);
+  const unchecked = checks.filter(check => check.status === 'not-checked');
+  out(failed.length + warned.length + unchecked.length === 0 ? '  All checks passed.' : `  ${failed.length} failed, ${warned.length} warning(s), ${unchecked.length} not checked.`);
   if (flags.includes('--fix') && failed.length + warned.length > 0) out('  Nothing here repairs automatically; each row names the command that does.');
   out('');
   return failed.length === 0;

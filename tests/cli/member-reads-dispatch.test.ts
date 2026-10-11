@@ -150,7 +150,7 @@ describe('the dispatched read verbs in a fresh joined checkout', () => {
     const m = machine(true);
     const doctor = await cli(m, 'doctor');
     expect(doctor.stdout).toContain('myco doctor (member)');
-    expect(doctor.stdout).toMatch(/Deployment\s+.*ok.*answers, and serves this machine's credential \d+ tools/);
+    expect(doctor.stdout).toMatch(/Project access\s+.*ok.*answers, and serves this machine's credential \d+ tools/);
     expect(doctor.stdout).not.toMatch(/Vault|Database|Daemon|Grove/);
     const config = await cli(m, 'config', 'get', 'instructions.template');
     expect({ status: config.status, stdout: config.stdout.trim(), stderr: config.stderr }).toEqual({ status: 0, stdout: 'Answer from the Deployment.', stderr: '' });

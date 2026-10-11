@@ -24,7 +24,7 @@ export type DoctorReason = 'home_pin_missing' | 'mcp_entry_absent' | 'mcp_target
 
 export interface DoctorCheck {
   name: string;
-  status: 'ok' | 'fail' | 'warn';
+  status: import('../member/diagnostics.js').CheckFacts['status'];
   detail: string;
   /** Absent where a check has only one way to fail, which its name already says. */
   reason?: DoctorReason;
@@ -248,6 +248,7 @@ export async function checkMemberMcpResolution(
 const STATUS_COL_WIDTH = 6;
 
 const STATUS_LABELS: Record<DoctorCheck['status'], { text: string; color: string }> = {
+  'not-checked': { text: 'not checked', color: '\x1b[90m' },
   ok: { text: 'ok', color: '\x1b[32m' },
   fail: { text: 'FAIL', color: '\x1b[31m' },
   warn: { text: '!!', color: '\x1b[33m' },
@@ -256,6 +257,6 @@ const STATUS_LABELS: Record<DoctorCheck['status'], { text: string; color: string
 export function formatCheck(check: DoctorCheck): string {
   const name = check.name ? check.name.padEnd(NAME_COL_WIDTH) : CONTINUATION_INDENT;
   const { text, color } = STATUS_LABELS[check.status];
-  const paddedText = text.padEnd(STATUS_COL_WIDTH);
+  const paddedText = text.padEnd(Math.max(STATUS_COL_WIDTH, text.length + 1));
   return `  ${name}${color}${paddedText}\x1b[0m${check.detail}`;
 }
