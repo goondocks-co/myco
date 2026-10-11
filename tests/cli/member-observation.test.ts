@@ -26,7 +26,7 @@ for (const scope of ['project', 'deployment'] as const) for (const response of [
     };
     const before = snapshot();
     const requests: string[] = [];
-    const deps = { cwd: root, mycoHome, renew: false, now: () => 1000, env: { MYCO_TEMPORARY_FOLDERS: process.env.MYCO_TEMPORARY_FOLDERS }, fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+    const deps = { cwd: root, mycoHome, renew: false, now: () => 1000, env: {}, fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       requests.push(new URL(request.url).pathname);
       expect(request.headers.get('authorization')).toBe(`Bearer ${token}`);

@@ -178,7 +178,7 @@ function gitRepositoryRoot(cwd: string, env: NodeJS.ProcessEnv): string | null {
     if (files !== null && files !== UNUSUAL && (['top', 'gitDir', 'commonDir'] as const).every(
       (key) => canonicalPath(files.layout[key]) === canonicalPath(layout[key]),
     )) return repositoryRootOf(files.layout);
-    return repositoryRootOf(layout);
+    return repositoryRootOf(layout, { discoveredByGit: true });
   } catch {
     return null;
   }

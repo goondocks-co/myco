@@ -42,7 +42,7 @@ const join = (token: string, serverUrl: string = SERVER_A): void => writeRegistr
 async function headers(args: string[], cwd: string): Promise<{ out: string[]; err: string[] }> {
   const out: string[] = [];
   const err: string[] = [];
-  await runMemberCli(['mcp-headers', ...args], { mycoHome, cwd, env: { MYCO_TEMPORARY_FOLDERS: process.env.MYCO_TEMPORARY_FOLDERS }, stdout: (l) => out.push(l), stderr: (l) => err.push(l) });
+  await runMemberCli(['mcp-headers', ...args], { mycoHome, cwd, env: {}, stdout: (l) => out.push(l), stderr: (l) => err.push(l) });
   return { out, err };
 }
 

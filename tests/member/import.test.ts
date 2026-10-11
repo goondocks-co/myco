@@ -38,6 +38,8 @@ import { memberRig, tempMycoHome, TEST_MACHINE_ID } from './helpers/server.js';
 import { registerTestMember, runHook } from './helpers/hooks.js';
 import { resolveCredential } from '@myco/member/credential.js';
 import { repositoryAt, rootKeyFor } from '@myco/member/auto-join.js';
+import { Client } from '@modelcontextprotocol/client';
+import { deploymentTransport, resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 
 const line = (o: Record<string, unknown>): string => `${JSON.stringify(o)}\n`;
@@ -1035,6 +1037,31 @@ describe('worktree capture and import attribution (#1722)', () => {
     }
   });
 
+  it('keeps GIT_DIR-only steering on personal from nested and linked working directories', async () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-worktree-')));
+    const { root, tree } = repository(base, 'homelab-steered');
+    const nested = path.join(root, 'sub', 'deep'); fs.mkdirSync(nested, { recursive: true });
+    const r = await rig([root], 1, store(base, [nested], 1));
+    const held = { MYCO_HOME: process.env.MYCO_HOME, GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE };
+    process.env.MYCO_HOME = r.mycoHome; process.env.GIT_DIR = path.join(root, '.git'); delete process.env.GIT_WORK_TREE;
+    try {
+      recordDefaultDeployment('http://127.0.0.1:9102', { mycoHome: r.mycoHome });
+      registerTestMember({ mycoHome: r.mycoHome, root, serverUrl: 'http://127.0.0.1:9101', projectId: 'proj_homelab', token: r.env.token, tokenId: r.env.tokenId });
+      for (const [i, cwd] of [nested, tree].entries()) {
+        let holds = 0;
+        expect(resolveCredential('registry', { cwd, mycoHome: r.mycoHome, claimsUnconnected: () => { holds += 1; return true; } })).toMatchObject({ root, projectId: 'proj_homelab', serverUrl: 'http://127.0.0.1:9101' });
+        expect(holds).toBe(0);
+        const session = `steered-personal-${i}`;
+        const live = await runHook('session-start', { cwd, session_id: session, transcript_path: r.files[0], source: 'startup' }, { fetch: async () => { throw new Error('ECONNREFUSED'); } });
+        expect(live.stderr).toBe('');
+        expect(new MemberSpool(readRegistryEntry(root, r.mycoHome)!, { mycoHome: r.mycoHome }).readRecords(session).some((record) => record?.kind === 'session.start')).toBe(true);
+      }
+    } finally {
+      for (const [name, value] of Object.entries(held)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+      r.restore();
+    }
+  });
+
   it('excludes a connected scratch worktree from live capture and import alike', async () => {
     const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-worktree-')));
     const { root } = repository(base, 'scratch-main');
@@ -1043,8 +1070,18 @@ describe('worktree capture and import attribution (#1722)', () => {
     const r = await rig([root], 1, store(base, [tree], 1));
     const held = process.env.MYCO_HOME; process.env.MYCO_HOME = r.mycoHome;
     try {
-      expect(resolveCredential('registry', { cwd: tree, mycoHome: r.mycoHome })).toBeNull();
-      await runHook('session-start', { cwd: tree, session_id: 'scratch-live', transcript_path: r.files[0], source: 'startup' }, { fetch: async () => { throw new Error('ECONNREFUSED'); } });
+      expect(resolveCredential('registry', { cwd: tree, mycoHome: r.mycoHome })?.projectId).toBe('proj_1');
+      const upstream = resolveDeploymentUpstream('registry', { cwd: tree, mycoHome: r.mycoHome });
+      expect(upstream?.projectId).toBe('proj_1');
+      const client = new Client({ name: 'scratch-read', version: '1' });
+      try {
+        await client.connect(deploymentTransport(upstream!, {}, r.env.fetch));
+        const tools = await client.listTools();
+        expect(tools.tools.some((tool) => tool.name === 'myco_search')).toBe(true);
+      } finally { await client.close(); }
+      const live = await runHook('session-start', { cwd: tree, session_id: 'scratch-live', transcript_path: r.files[0], source: 'startup' }, { fetch: async () => { throw new Error('ECONNREFUSED'); } });
+      expect(live.stderr).toBe('[myco] member: agent scratch directory — no capture\n');
+      expect(live.starts).toEqual([]);
       const spool = new MemberSpool(readRegistryEntry(root, r.mycoHome)!, { mycoHome: r.mycoHome });
       expect(spool.readRecords('scratch-live')).toEqual([]);
       const report = await r.run();

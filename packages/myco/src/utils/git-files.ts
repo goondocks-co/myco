@@ -81,10 +81,23 @@ export function readRepoLayout(cwd: string, env: NodeJS.ProcessEnv = process.env
 }
 
 /** The registry root: a checkout keeps its spelling; linked worktrees share a non-bare main checkout. */
-export function repositoryRootOf(layout: RepoLayout): string {
+export function repositoryRootOf(layout: RepoLayout, opts: { discoveredByGit?: boolean } = {}): string {
   const bare = repositoryIsBare(layout.commonDir);
-  return layout.gitDir !== layout.commonDir && path.basename(layout.commonDir) === '.git' && !bare
+  // GIT_DIR alone makes Git report cwd as top; a non-bare .git still names the main checkout.
+  return (opts.discoveredByGit || layout.gitDir !== layout.commonDir) && isMainGitDirectory(layout.commonDir) && !bare
     ? path.dirname(layout.commonDir) : layout.top;
+}
+
+/** The `.git` marker also accepts alternate case when both spellings name the same directory. */
+function isMainGitDirectory(directory: string): boolean {
+  const name = path.basename(directory);
+  if (name === '.git') return true;
+  if (name.toLowerCase() !== '.git') return false;
+  try {
+    const actual = fs.statSync(directory);
+    const marker = fs.statSync(path.join(path.dirname(directory), '.git'));
+    return actual.dev === marker.dev && actual.ino === marker.ino;
+  } catch { return false; }
 }
 
 /** Git's core.bare boolean; repeated values use the last assignment in the core section. */

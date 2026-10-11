@@ -23,6 +23,7 @@ function declaration(file: string, name: string): ts.FunctionDeclaration {
 /** Compiler-resolved call edges include aliases, nested callbacks and workspace imports. */
 function blockingPaths(entry: ts.FunctionDeclaration, forbidProcesses = false): string[] {
   const paths = new Set<string>();
+  const verdictSites = new Map<ts.SignatureDeclaration, Set<ts.Node>>();
   const walk = (fn: ts.SignatureDeclaration, chain: string[], ancestors: ReadonlySet<ts.Node>): void => {
     if (ancestors.has(fn)) return;
     const nextAncestors = new Set([...ancestors, fn]);
@@ -41,7 +42,13 @@ function blockingPaths(entry: ts.FunctionDeclaration, forbidProcesses = false): 
               || (chain.at(-1) === 'isSafeProjectRoot' && query.elements.map((e) => e.getText()).join(',') === "'rev-parse','--git-common-dir'"));
           const cachedVerdict = name === 'runGitAnswer' && chain.at(-1) === 'repoVerdict'
             && node.getSourceFile().fileName === path.join(SRC, 'member/git-verdict.ts') && query?.getText() === 'VERDICT_QUERY';
-          if (forbidProcesses && (verdictCall || cachedVerdict)) return;
+          if (forbidProcesses && (verdictCall || cachedVerdict)) {
+            const sites = verdictSites.get(fn) ?? new Set<ts.Node>();
+            sites.add(node);
+            verdictSites.set(fn, sites);
+            if (sites.size > 1) paths.add([...chain, 'more than one repository verdict call'].join(' → '));
+            return;
+          }
           if (name === 'withRegistryLock') {
             paths.add(next.join(' → '));
           } else if (name === 'withFileLockSync') {
