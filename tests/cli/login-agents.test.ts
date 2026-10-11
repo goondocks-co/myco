@@ -21,7 +21,8 @@ import { readProvisionRecord } from '@myco/symbionts/member-provision-record.js'
 import { readDeploymentMembership } from '@myco/member/registry.js';
 import { LEGACY_AGENT_DEFERRAL } from '@goondocks/myco-shared/setup-guidance';
 import { Database } from 'bun:sqlite';
-import { legacyMigrationPending } from '@myco/member/legacy-migration.js';
+import { legacyMigrationState } from '@myco/member/legacy-migration.js';
+import { legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { readVaultContent } from '@myco/member/legacy-backup.js';
 import { withLegacyBinaryTraps } from '../helpers/legacy-migration-fixture.js';
 
@@ -157,6 +158,64 @@ describe('myco login sets up the agents on this machine', () => {
     expect(readProvisionRecord(home)?.agents).toEqual([]);
   });
 
+  for (const choice of ['now', 'defer', 'no-agents'] as const) for (const metadata of [false, true]) it(`confirms a backup-only alpha machine and provisions when requested (${metadata ? 'metadata' : 'digest'}, ${choice})`, async () => {
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const vault = path.join(home, 'groves', 'legacy', 'myco.db');
+    fs.mkdirSync(path.dirname(vault), { recursive: true });
+    const db = new Database(vault);
+    try { db.run('CREATE TABLE sessions (body TEXT)'); db.run("INSERT INTO sessions VALUES ('retained')"); } finally { db.close(); }
+    const evidence = metadata ? legacyVaultStamp(vault) : { digest: readVaultContent(vault).digest };
+    fs.mkdirSync(path.join(home, 'member'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: { [vault]: evidence } }), { mode: 0o600 });
+    expect(legacyMigrationState(home).state).toBe('needs-destination');
+    const rig = unjoinedRig();
+    expect(await run([await invite(rig), ...(choice === 'no-agents' ? ['--no-agents'] : [])], deps(rig, { agents: () => ['claude-code'], provision: choice === 'defer' ? 'defer' : 'now' }))).toBe(true);
+    expect(out).not.toContain(LEGACY_AGENT_DEFERRAL);
+    expect(out.filter(line => line.includes('confirm where each project went'))).toEqual([
+      'Moved by an earlier version; run `myco cutover --dry-run` to confirm where each project went.',
+    ]);
+    if (choice === 'now') expect(read(path.join(claudeDir, 'settings.json'))).toContain('--credential registry');
+    else expect(read(path.join(claudeDir, 'settings.json'))).toBeNull();
+  });
+
+  it('defers a backup-only machine whose legacy hooks still own capture', async () => {
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const settings = path.join(claudeDir, 'settings.json');
+    const legacy = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${home}/bin/myco hook session-start --symbiont claude-code --myco-managed` }] }] } });
+    fs.writeFileSync(settings, legacy);
+    const vault = path.join(home, 'groves', 'legacy', 'myco.db');
+    fs.mkdirSync(path.dirname(vault), { recursive: true }); fs.writeFileSync(vault, 'retained');
+    fs.mkdirSync(path.join(home, 'member'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: { [vault]: {} } }), { mode: 0o600 });
+    const rig = unjoinedRig();
+    expect(await run([await invite(rig)], deps(rig, { agents: () => { throw new Error('must defer legacy hooks'); } }))).toBe(true);
+    expect(out).toContain(LEGACY_AGENT_DEFERRAL);
+    expect(read(settings)).toBe(legacy);
+  });
+
+  for (const owned of [false, true]) it(`handover-pending defers only while legacy hooks still own capture (${owned})`, async () => {
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const vault = path.join(home, 'groves', 'legacy', 'myco.db');
+    fs.mkdirSync(path.dirname(vault), { recursive: true });
+    const db = new Database(vault);
+    try { db.run('CREATE TABLE sessions (body TEXT)'); } finally { db.close(); }
+    fs.mkdirSync(path.join(home, 'member'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ version: 2, backups: {}, migrations: {
+      [vault]: { ...legacyVaultStamp(vault), digest: readVaultContent(vault).digest, projects: {} },
+    } }), { mode: 0o600 });
+    const settings = path.join(claudeDir, 'settings.json');
+    if (owned) fs.writeFileSync(settings, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${home}/bin/myco hook session-start --myco-managed` }] }] } }));
+    expect(legacyMigrationState(home).state).toBe('handover-pending');
+    expect(legacyMigrationState(home).legacyOwnsCapture === true).toBe(owned);
+    const rig = unjoinedRig();
+    expect(await run([await invite(rig)], deps(rig, { agents: () => {
+      if (owned) throw new Error('must defer legacy hooks');
+      return ['claude-code'];
+    } }))).toBe(true);
+    expect(out.includes(LEGACY_AGENT_DEFERRAL)).toBe(owned);
+    expect(read(settings)?.includes('--credential registry')).toBe(!owned);
+  });
+
   it('defers legacy agents on every sign-in despite an existing membership and empty cutover record', async () => {
     fs.mkdirSync(claudeDir, { recursive: true });
     const settings = path.join(claudeDir, 'settings.json');
@@ -179,7 +238,7 @@ describe('myco login sets up the agents on this machine', () => {
     expect(err).toEqual([]);
   });
 
-  for (const changed of [false, true]) it(`${changed ? 'defers again after capture changes' : 'provisions after matching backup evidence'} on a migrated machine`, async () => {
+  for (const changed of [false, true]) it(`${changed ? 'defers again after capture changes' : 'provisions after complete receipt evidence'} on a migrated machine`, async () => {
     fs.mkdirSync(claudeDir, { recursive: true });
     const vault = path.join(home, 'groves', 'legacy', 'myco.db');
     fs.mkdirSync(path.dirname(vault), { recursive: true });
@@ -188,12 +247,13 @@ describe('myco login sets up the agents on this machine', () => {
     db.run("INSERT INTO sessions VALUES ('retained')");
     db.close();
     const digest = readVaultContent(vault).digest;
+    const stamp = legacyVaultStamp(vault);
     if (changed) {
       const write = new Database(vault);
       try { write.run("INSERT INTO sessions VALUES ('new capture')"); } finally { write.close(); }
     }
     fs.mkdirSync(path.join(home, 'member'), { recursive: true });
-    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: { [vault]: { digest } } }), { mode: 0o600 });
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ version: 2, backups: { [vault]: { digest } }, handover: { at: 1, legacyHomes: [home], agents: [] }, migrations: { [vault]: { ...stamp, digest, projects: {} } } }), { mode: 0o600 });
     const rig = unjoinedRig();
     expect(await run([await invite(rig)], deps(rig, { agents: () => ['claude-code'] }))).toBe(true);
     expect(out.includes(LEGACY_AGENT_DEFERRAL)).toBe(changed);
@@ -238,7 +298,7 @@ describe('myco login sets up the agents on this machine', () => {
     fs.mkdirSync(path.dirname(vault), { recursive: true });
     fs.writeFileSync(vault, 'retained vault');
     await withLegacyBinaryTraps(home, userHome, async (marker) => {
-      expect(legacyMigrationPending(home)).toBe(true);
+      expect(legacyMigrationState(home).state).toBe('unmoved');
       expect(fs.existsSync(marker)).toBe(false);
       const rig = unjoinedRig();
       expect(await run([await invite(rig)], deps(rig, { agents: () => { throw new Error('must defer legacy agents'); } }))).toBe(true);

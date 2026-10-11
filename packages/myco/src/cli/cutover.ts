@@ -1,9 +1,8 @@
 /**
- * `myco cutover` — move this machine from Myco 1.4 to its 2.0 Deployment.
+ * `myco cutover` — move retained 1.4 projects to their routed Deployments.
  *
- * Step 0 reads everything and changes nothing; it is the only place the run
- * refuses before a change, and a dry run stops after printing the plan it
- * builds. It refuses when another installation holds anything the run would
+ * A dry run reads everything and prints the plan without changing state.
+ * Step 0 checks handover ownership before any settings or data changes. It refuses when another installation holds anything the run would
  * take: the `symbiont-config` claim in any home's claims folder, the machine
  * pin, a Myco hook, plugin or MCP entry at any place 1.4.8 registered one
  * (`LEGACY_REGISTRATIONS`), or the MCP entry a 2.0 agent would get, judged
@@ -43,17 +42,16 @@ import { parse as parseYaml } from 'yaml';
 import { seedMachineSettings } from '../member/machine-settings.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
-import { defaultMycoHome, readHomePin, resolveHomeDir, resolveMycoHomeWithSource, RUNTIME_HOME_FILENAME, type ResolvedMycoHome } from '../paths/home.js';
+import { defaultMycoHome, readHomePin, resolveHomeDir, resolveMycoHomeWithSource, RUNTIME_HOME_FILENAME, resolveMachineIdPath, type ResolvedMycoHome } from '../paths/home.js';
 import { claimSubsystem, readClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
 import { IMPORT_PACE_PER_MINUTE, importUntilSettled, type ImportReport } from '../member/import.js';
-import { legacyProjectRoots, legacySessionSplit, runLegacyImport, LEGACY_MAX_PER_AGENT, LEGACY_WINDOW_DAYS, type LegacyImportReport } from '../member/legacy-import.js';
+import { legacyProjectImportComplete, legacyProjectRoots, legacySessionSplit, runLegacyImport, LEGACY_MAX_PER_AGENT, LEGACY_WINDOW_DAYS, type LegacyImportReport } from '../member/legacy-import.js';
 import { legacyVaultFiles } from '../member/home-role.js';
 import { backupVault, copyProblem, readVaultContent, type TableCounts } from '../member/legacy-backup.js';
 import { CutoverBackup, cutoverBackupDir, earlierCopyHolds, MANIFEST_FILE, RESTORE_FILE } from '../member/cutover-backup.js';
-import { deploymentUrl, listDeploymentMemberships, readRegistryEntry, registryEntryPath, writeRegistryEntry, REGISTRY_VERSION, type DeploymentMembership } from '../member/registry.js';
-import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from '../member/store.js';
+import { deploymentKeyFor, deploymentUrl, listDeploymentMemberships, listRegistryEntries, readRegistryEntryResult, readRegistryEntry, registryEntryPath, writeRegistryEntry, REGISTRY_VERSION, type DeploymentMembership } from '../member/registry.js';
+import { ensureMemberDir, ensurePrivateFile, memberRoot, writePrivateFileAtomic } from '../member/store.js';
 import type { FetchLike } from '../member/transport.js';
 
 import { parseDirectoryMapping, canonicalPath, type DirectoryMapping } from '../symbionts/transcript-attribution.js';
@@ -63,12 +61,17 @@ import type { LaunchctlRunner } from '../service/launchd.js';
 import { detectMachineInstalledSymbionts, loadManifests } from '../symbionts/detect.js';
 import { removeLegacyRegistrations, rewriteKeepingMode, scanLegacyRegistrations, type LegacyFinding } from '../symbionts/legacy-registrations.js';
 import { pinMachineHome, previewGlobalProvision, provisionGlobally, type ProvisionOutcome } from './member.js';
-import { legacyImportComplete, legacyReportLines, reportLines, STOPPED_WORDS, transcriptImportComplete } from './import.js';
+import { legacyReportLines, reportLines, STOPPED_WORDS, transcriptImportComplete } from './import.js';
 import { resolveManagedBinaryPath } from '../symbionts/installer.js';
+import { defaultMembership } from '@myco/member/default-deployment.js';
+import { readCutoverState, type CutoverState } from '@myco/member/legacy-migration.js';
+import { legacyRealpath, legacyVaultStamp } from '@myco/member/legacy-sources.js';
+import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
+import { cutoverAbsentFolder, cutoverForeignBinding } from '@goondocks/myco-shared/setup-guidance';
 
 export const CUTOVER_HELP = `Usage: myco cutover [options]
 
-Move this machine from Myco 1.4 to the Deployment it is signed in to
+Move this machine from Myco 1.4 to its projects' routed Deployments
 (\`myco login\` first). It first reads everything and stops, changing nothing,
 if another installation holds anything it would take. Then it backs up each
 agent settings file it changes, connects every folder a 1.4 project names,
@@ -84,7 +87,9 @@ Options:
   --map <dir>=<root>   Import transcripts recorded in <dir> (or, with a
                        trailing *, in every sibling directory named like it)
                        into the project connected at <root>; repeat for several
-  --server <url>       Which Deployment, when this machine belongs to several
+  --route <id>=<url>   Route one 1.4 project to a signed-in Deployment; repeat
+  --skip <id>          Skip one 1.4 project's history; keep its spool; repeat
+  --server <url>       Fallback for projects with no repository binding
   --dry-run            Report what each step would do, and do nothing
   --help               Show this message
 `;
@@ -96,10 +101,12 @@ interface Parsed {
   mappings: DirectoryMapping[];
   serverUrl?: string;
   dryRun: boolean;
+  routes: Map<string, string>;
+  skips: Set<string>;
 }
 
 export function parseArgs(args: readonly string[]): Parsed {
-  const parsed: Parsed = { legacyHomes: [], mappings: [], dryRun: false };
+  const parsed: Parsed = { legacyHomes: [], mappings: [], dryRun: false, routes: new Map(), skips: new Set() };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     const value = args[i + 1];
@@ -114,6 +121,17 @@ export function parseArgs(args: readonly string[]): Parsed {
         if (arg === '--legacy-home') parsed.legacyHomes.push(path.resolve(value)); else parsed.serverUrl = value;
         i += 1;
         break;
+      case '--skip':
+        if (!value || value.startsWith('--')) return { ...parsed, error: '--skip needs a project id' };
+        parsed.skips.add(value); i += 1; break;
+      case '--route': {
+        const split = value?.indexOf('=') ?? -1;
+        if (split < 1 || !value?.slice(split + 1)) return { ...parsed, error: '--route needs <projectId>=<url>' };
+        const id = value.slice(0, split);
+        const url = deploymentUrl(value.slice(split + 1));
+        if (parsed.routes.has(id) && parsed.routes.get(id) !== url) return { ...parsed, error: `${id} has conflicting --route values` };
+        parsed.routes.set(id, url); i += 1; break;
+      }
       case '--map': {
         const mapping = value === undefined ? null : parseDirectoryMapping(value);
         if (mapping === null) return { ...parsed, error: `${arg} needs <dir>=<root>, both absolute` };
@@ -158,19 +176,15 @@ export interface CutoverDeps {
   pace?: number;
 }
 
-/** What a cutover recorded between runs: the verified copy of each vault. */
-interface CutoverState {
-  backups: Record<string, { copy: string; counts: TableCounts; digest: string; at: number }>;
-}
-
 const statePath = (mycoHome: string): string => path.join(memberRoot(mycoHome), 'cutover.json');
 
-function readState(mycoHome: string): CutoverState {
-  const read = readPrivateJson<CutoverState>(statePath(mycoHome));
-  return read.ok && typeof read.value?.backups === 'object' ? read.value : { backups: {} };
-}
-
 function writeState(mycoHome: string, state: CutoverState): void {
+  for (const receipt of Object.values(state.migrations ?? {})) for (const project of Object.values(receipt.projects)) {
+    if (project.destination !== undefined && 'key' in project.destination) {
+      project.destinations ??= {};
+      project.destinations[project.destination.key] = { serverUrl: project.destination.serverUrl, digest: receipt.digest, size: receipt.size, mtimeMs: receipt.mtimeMs, vault: project.vault, transcripts: project.transcripts };
+    }
+  }
   ensureMemberDir(memberRoot(mycoHome), mycoHome);
   writePrivateFileAtomic(statePath(mycoHome), `${JSON.stringify(state, null, 2)}\n`);
 }
@@ -191,6 +205,8 @@ function membershipFor(mycoHome: string, serverUrl: string | undefined): Deploym
   if (serverUrl !== undefined) {
     return memberships.find((m) => deploymentUrl(m.serverUrl) === deploymentUrl(serverUrl)) ?? `this machine is not signed in to ${serverUrl}; run \`myco login\` first`;
   }
+  const fallback = defaultMembership(mycoHome);
+  if (fallback !== null) return fallback;
   if (memberships.length === 1) return memberships[0];
   return memberships.length === 0 ? 'this machine is not signed in to a Deployment; run `myco login` first' : `this machine belongs to ${memberships.length} Deployments; name one with --server`;
 }
@@ -212,10 +228,15 @@ type Binding =
   | { kind: 'elsewhere'; projectId: string; root: string; boundTo: string }
   | { kind: 'connected' | 'connect'; projectId: string; root: string };
 
+const repositoryPresent = (root: string | null): root is string =>
+  root !== null && fs.existsSync(root) && isSafeProjectRoot(root);
+
 function bindingFor(project: { projectId: string; root: string | null }, mycoHome: string, serverUrl: string): Binding {
   const { projectId, root } = project;
-  if (root === null || !fs.existsSync(root) || !isSafeProjectRoot(root)) return { kind: 'absent', projectId, root };
-  const existing = readRegistryEntry(root, mycoHome);
+  if (!repositoryPresent(root)) return { kind: 'absent', projectId, root };
+  const result = readRegistryEntryResult(root, mycoHome);
+  if (result.status === 'unavailable') throw new Error(`the binding at ${root} is unreadable; restore it before cutover`);
+  const existing = result.status === 'present' ? result.entry : null;
   if (existing !== null && existing.projectId !== projectId) return { kind: 'elsewhere', projectId, root, boundTo: existing.projectId };
   return existing !== null && deploymentUrl(existing.serverUrl) === deploymentUrl(serverUrl) ? { kind: 'connected', projectId, root } : { kind: 'connect', projectId, root };
 }
@@ -254,40 +275,165 @@ function backupAction(file: string, backup: CutoverBackup, mycoHome: string): Ac
 /** The outcome a 1.4 registration's removal is known by. */
 const removalOutcome = (f: LegacyFinding): string => `remove ${f.file} :: ${f.location.kind} :: ${(f.serversPath ?? []).join('/')} :: ${f.subject}`;
 
-/**
- * Run the cutover and report it. The outcome is RETURNED, never written to
- * `process.exitCode` here; `cli.ts` sets the exit status.
- */
-export async function run(args: readonly string[], deps: CutoverDeps = {}): Promise<boolean> {
-  const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
-  const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
-  const parsed = parseArgs(args);
-  if (parsed.error !== undefined) { err(`myco cutover: ${parsed.error}`); return false; }
-  if (parsed.help === true) { out(CUTOVER_HELP.trimEnd()); return true; }
+export interface CutoverOptions {
+  routes?: ReadonlyMap<string, string>;
+  skips?: ReadonlySet<string>;
+  legacyHomes?: readonly string[];
+  serverUrl?: string;
+  mappings?: DirectoryMapping[];
+  dryRun?: boolean;
+  homeDir?: string;
+}
+type CutoverDestination = { kind: 'destination'; serverUrl: string } | { kind: 'skip' | 'undecided' };
+export interface CutoverPlan {
+  home: string;
+  selection?: ResolvedMycoHome;
+  options: CutoverOptions;
+  vaults: { home: string; vault: string; digest: string; counts: TableCounts; stamp: ReturnType<typeof legacyVaultStamp> }[];
+  projects: { projectId: string; root: string | null; vault: string; counts: ReturnType<typeof legacyProjectRoots>[number]['counts']; destination: CutoverDestination; fallback?: 'server' | 'default' }[];
+  memberships: DeploymentMembership[];
+  blockers: string[];
+  plannedAt: number;
+  machineId: string | null;
+  handover: { step: number; title: string; actions: { would: string; outcomes: string[] }[] }[];
+  copies: { vault: string; copy: string; reused: boolean }[];
+}
+export interface CutoverResult { ok: boolean }
 
+const preparedCutovers = new WeakMap<CutoverPlan, ReturnType<typeof prepareCutover>>();
+
+/** Resolve every project's destination before any handover or upload. */
+export function planCutover(home: string, options: CutoverOptions = {}, deps: CutoverDeps = {}, plannedAt = (deps.now ?? Date.now)()): CutoverPlan {
+  home = path.resolve(home);
+  const blockers: string[] = [];
+  const state = readCutoverState(home);
+  const legacyHomes = legacyHomesFor(options.legacyHomes ?? [], home, options.homeDir);
+  const vaults = legacyHomes.flatMap((h) => legacyVaultFiles(h).map((file) => {
+    const vault = legacyRealpath(file);
+    return { home: h, vault, ...readVaultContent(vault), stamp: legacyVaultStamp(vault) };
+  }));
+  const memberships = listDeploymentMemberships(home);
+  const fallback = membershipFor(home, options.serverUrl);
+  const projects = legacyProjectRoots(vaults.map((v) => v.vault)).map((project) => {
+    const { projectId, root, vault } = project;
+    const held = Object.entries(state.migrations ?? {}).find(([file]) => legacyRealpath(file) === vault)?.[1].projects[projectId]?.destination;
+    const route = options.routes?.get(projectId);
+    const skip = options.skips?.has(projectId) || (route === undefined && held !== undefined && 'skip' in held);
+    if (skip && route !== undefined) blockers.push(`${projectId}: choose exactly one of --route or --skip`);
+    if (skip) return { ...project, destination: { kind: 'skip' } as CutoverDestination };
+    const binding = root === null ? null : readRegistryEntryResult(root, home);
+    if (binding?.status === 'unavailable') blockers.push(`${projectId}: the binding at ${root} is unreadable; restore it before cutover`);
+    const foreignProject = binding?.status === 'present' && binding.entry.projectId !== projectId;
+    const boundUrl = binding?.status === 'present' && !foreignProject ? deploymentUrl(binding.entry.serverUrl) : undefined;
+    if (route !== undefined && boundUrl !== undefined && deploymentUrl(route) !== boundUrl) blockers.push(`${projectId}: ${root} routes to ${boundUrl}, so cutover cannot send it to ${route}; review the repository binding first`);
+    const heldUrl = held !== undefined && 'serverUrl' in held ? held.serverUrl : undefined;
+    if (heldUrl !== undefined && boundUrl !== undefined && heldUrl !== boundUrl && route === undefined) blockers.push(`${projectId}: its receipt names ${heldUrl} but its repository now routes to ${boundUrl}; confirm with --route ${projectId}=${boundUrl} or --skip ${projectId}`);
+    const routedUrl = boundUrl ?? (route === undefined ? heldUrl : deploymentUrl(route));
+    const canFallback = !foreignProject && (options.serverUrl !== undefined || repositoryPresent(root));
+    const serverUrl = routedUrl ?? (!canFallback || typeof fallback === 'string' ? undefined : deploymentUrl(fallback.serverUrl));
+    if (serverUrl === undefined) {
+      const reason = root !== null && fs.existsSync(root) && !repositoryPresent(root) ? `${root} is not a repository; no destination` : 'no destination';
+      blockers.push(`${projectId}: ${reason}; use --route ${projectId}=<url> or --skip ${projectId}`);
+      return { ...project, destination: { kind: 'undecided' } as CutoverDestination };
+    }
+    if (!memberships.some((m) => deploymentUrl(m.serverUrl) === serverUrl)) blockers.push(`${projectId}: not signed in to ${serverUrl}; run myco login ${serverUrl}`);
+    return { ...project, destination: { kind: 'destination', serverUrl } as CutoverDestination,
+      ...(routedUrl === undefined ? { fallback: options.serverUrl === undefined ? 'default' as const : 'server' as const } : {}) };
+  });
+  const ids = new Set(projects.map((p) => p.projectId));
+  for (const id of [...(options.routes?.keys() ?? []), ...(options.skips ?? [])]) if (!ids.has(id)) blockers.push(`${id}: no such project in the 1.4 vaults`);
+  for (const id of ids) {
+    const urls = new Set(projects.filter((p) => p.projectId === id && p.destination.kind === 'destination').map((p) => p.destination.kind === 'destination' ? p.destination.serverUrl : ''));
+    if (urls.size > 1) blockers.push(`${id}: its repositories route to different Deployments; resolve their bindings before cutover`);
+  }
+  const destinations = new Set(projects.flatMap((p) => p.destination.kind === 'destination' ? [p.destination.serverUrl] : []));
+  if (projects.length === 0 && typeof fallback === 'string') blockers.push(fallback);
+  let machineId = deps.machineId ?? null;
+  if (machineId === null && destinations.size > 0) {
+    try { machineId = fs.readFileSync(resolveMachineIdPath(home), 'utf8').trim() || null; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    if (machineId === null) blockers.push('this home has no machine identity; run myco login before cutover');
+  }
+  const plan: CutoverPlan = { home, options, vaults, projects, memberships: [...destinations].flatMap((url) => memberships.find((m) => deploymentUrl(m.serverUrl) === url) ?? []), blockers, plannedAt, machineId, handover: [], copies: [] };
+  if (blockers.length === 0) {
+    const prepared = prepareCutover(plan, deps);
+    plan.blockers.push(...prepared.blockers);
+    plan.handover = prepared.handover;
+    plan.copies = prepared.copies;
+    preparedCutovers.set(plan, prepared);
+  }
+  return plan;
+}
+
+/** Hold one lease across the confirmed plan, handover and every destination. */
+export async function runCutover(plan: CutoverPlan, deps: CutoverDeps = {}): Promise<CutoverResult> {
+  const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
+  if (plan.blockers.length > 0) {
+    for (const blocker of plan.blockers) err(`myco cutover: ${blocker}`);
+    err('   Nothing was changed.');
+    return { ok: false };
+  }
+  let release: (() => void) | undefined;
+  try {
+    if (!plan.options.dryRun) {
+      ensureMemberDir(memberRoot(plan.home), plan.home);
+      const lockFile = path.join(memberRoot(plan.home), 'cutover.lock');
+      ensurePrivateFile(lockFile);
+      const lease = LifecycleLock.acquire(lockFile);
+      if (!lease.acquired) { err('myco cutover: another cutover is running; wait for it to finish, then run again'); return { ok: false }; }
+      release = () => lease.lock.release();
+    }
+    const fresh = planCutover(plan.home, plan.options, deps, plan.plannedAt);
+    const identity = (p: CutoverPlan) => JSON.stringify({
+      projects: p.projects.map(({ projectId, root, vault, destination }) => ({ projectId, root, vault, destination })),
+      machineId: p.machineId,
+      handover: p.handover.map(({ step, actions }) => ({ step, outcomes: actions.flatMap(action => action.outcomes) })),
+    });
+    if (fresh.blockers.length > 0 || identity(fresh) !== identity(plan)) { err('myco cutover: the vaults, routes or handover actions changed after the preview; run myco cutover --dry-run again'); return { ok: false }; }
+    fresh.selection = plan.selection;
+    return { ok: await preparedCutovers.get(fresh)!.execute() };
+  } catch (error) { err(`myco cutover: ${error instanceof Error ? error.message : String(error)}`); return { ok: false }; }
+  finally { release?.(); }
+}
+
+export async function run(args: readonly string[], deps: CutoverDeps = {}): Promise<boolean> {
+  const parsed = parseArgs(args);
+  const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
+  if (parsed.error !== undefined) { err(`myco cutover: ${parsed.error}`); return false; }
+  if (parsed.help) { (deps.stdout ?? ((line) => process.stdout.write(`${line}\n`)))(CUTOVER_HELP.trimEnd()); return true; }
+  try {
+    const env = deps.env ?? process.env;
+    const homeDir = env.HOME || resolveHomeDir();
+    const home = deps.mycoHome ?? resolveMycoHomeWithSource({ env, homeDir }).home;
+    const plan = planCutover(home, { ...parsed, homeDir }, deps);
+    if (deps.mycoHome === undefined) plan.selection = resolveMycoHomeWithSource({ env, homeDir });
+    return (await runCutover(plan, deps)).ok;
+  } catch (error) { err(`myco cutover: ${error instanceof Error ? error.message : String(error)}`); return false; }
+}
+
+/** Build the handover once for preview and execution. */
+function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
+  const preview: string[] = [];
+  const out = (line: string) => { preview.push(line); };
+  const parsed = { legacyHomes: [...(cutover.options.legacyHomes ?? [])], mappings: cutover.options.mappings ?? [], dryRun: cutover.options.dryRun ?? false };
   const env = deps.env ?? process.env;
-  const homeDir = env.HOME && env.HOME.length > 0 ? env.HOME : resolveHomeDir();
+  const homeDir = cutover.options.homeDir ?? (env.HOME && env.HOME.length > 0 ? env.HOME : resolveHomeDir());
   const platform = deps.platform ?? process.platform;
-  const resolved = deps.mycoHome === undefined ? resolveMycoHomeWithSource({ env, homeDir }) : null;
-  const mycoHome = path.resolve(deps.mycoHome ?? resolved!.home);
+  const mycoHome = cutover.home;
   const now = deps.now ?? Date.now;
-  const machineId = deps.machineId ?? getMachineId();
+  const machineId = cutover.machineId ?? '';
   const dry = parsed.dryRun;
   const step = (n: number, title: string) => out(`${n}. ${title}${dry ? ' (dry run)' : ''}`);
-  let ok = true;
-  const problem = (line: string) => { ok = false; err(`   ✗ ${line}`); };
 
-  const membership = membershipFor(mycoHome, parsed.serverUrl);
-  if (typeof membership === 'string') { err(`myco cutover: ${membership}`); return false; }
-  const serverUrl = membership.serverUrl;
+  const membership = cutover.memberships[0];
+  const serverUrl = membership?.serverUrl ?? '(all projects skipped)';
   const legacyHomes = legacyHomesFor(parsed.legacyHomes, mycoHome, homeDir);
-  if (legacyHomes.length === 0) { err('myco cutover: no Myco 1.4 vault found; name a 1.4 home with --legacy-home'); return false; }
-  const vaults = legacyHomes.flatMap((home) => legacyVaultFiles(home).map((vault) => ({ home, vault })));
-  out(`Cutting over ${legacyHomes.join(', ')} to ${serverUrl}, into ${mycoHome}${chosenBy(resolved)}`);
+  const vaults = cutover.vaults;
 
-  // 0. Everything the run would take over, checked before anything changes: the only place it refuses before a change.
+  // Ownership is checked before any handover or import.
   step(0, 'Check that nothing it would take over belongs to another installation');
   const blockers: string[] = [];
+  if (legacyHomes.length === 0) blockers.push('no Myco 1.4 vault found; name a 1.4 home with --legacy-home');
   const isLegacyOrThis = (home: string) => canonicalPath(home) === canonicalPath(mycoHome) || legacyHomes.some((h) => canonicalPath(h) === canonicalPath(home));
 
   // The symbiont-config claim, in every place a 1.4 or 2.0 daemon of these homes reads it.
@@ -303,12 +449,23 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
   if (pinned !== null && canonicalPath(pinned) !== canonicalPath(mycoHome)) {
     blockers.push(`this machine is pinned to ${pinned} (${pinPath}), so hooks installed for ${mycoHome} would capture there instead. Run the cutover under that home (MYCO_HOME=${pinned}), or remove the pin if nothing uses it.`);
   }
-  const bindings = legacyProjectRoots(vaults.map((v) => v.vault)).map((p) => bindingFor(p, mycoHome, serverUrl));
+  const bindings = cutover.projects.flatMap((p) => p.destination.kind !== 'destination' ? [] : [{ ...bindingFor(p, mycoHome, p.destination.serverUrl), serverUrl: p.destination.serverUrl }]);
+  for (const p of cutover.projects) {
+    const dest = p.destination;
+    const fallback = p.fallback === 'server' ? ' (no repository route; sent to --server)'
+      : p.fallback === 'default' ? ' (default Deployment; no repository route)' : '';
+    out(`   ${p.projectId} from ${p.vault}: ${dest.kind === 'destination' ? `to ${dest.serverUrl}${fallback}` : dest.kind} (${JSON.stringify(p.counts)})`);
+  }
+  for (const b of bindings) {
+    if (b.kind === 'absent') out(`   ${cutoverAbsentFolder(b.projectId, b.root)}`);
+    if (b.kind === 'elsewhere') out(`   ${cutoverForeignBinding(b.projectId, b.root, b.boundTo, b.serverUrl)}`);
+  }
   const roots = bindings.flatMap((b) => (b.kind === 'connect' || b.kind === 'connected' ? [b.root] : []));
-  if (roots.length === 0) {
+  if (roots.length === 0 && cutover.projects.some((p) => p.destination.kind === 'undecided')) {
     blockers.push('no folder a 1.4 project names is here to connect, so there is no membership to point your agents at. Bring the history alone with `myco import --legacy <1.4 home>`.');
   }
-  const split = legacySessionSplit(vaults.map((v) => v.vault), machineId);
+  const importingProjects = new Set(cutover.projects.filter((p) => p.destination.kind === 'destination').map((p) => p.projectId));
+  const split = importingProjects.size > 0 ? legacySessionSplit(vaults.map((v) => v.vault), machineId, importingProjects) : { thisMachine: 0, otherMachines: {} };
   const elsewhere = Object.entries(split.otherMachines).sort(([a], [b]) => a.localeCompare(b));
   if (split.thisMachine === 0 && elsewhere.length > 0) {
     blockers.push(`every session in the 1.4 vaults was captured under another machine id (${elsewhere.map(([m, n]) => `${m}: ${n}`).join(', ')}), not this machine's (${machineId}), so none would be imported. Run the cutover on the machine that captured them.`);
@@ -324,7 +481,13 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
     else if (preview.kind === 'refused') blockers.push(`${agent}: ${preview.detail}${suggestion(preview.detail)}`);
   }
   const provisioned = previews.flatMap(({ agent, preview }) => (preview.kind === 'ready' ? [{ agent, ...preview }] : []));
-  const scanOptions = { homeDir, legacyHomes, ownHome: mycoHome, folders: roots };
+  const handoverRoots = [...new Set(cutover.projects.flatMap((p) => {
+    if (p.root === null || !fs.existsSync(p.root)) return [];
+    if (isSafeProjectRoot(p.root)) return [p.root];
+    if (p.destination.kind === 'skip') blockers.push(`${p.projectId}: skipped folder ${p.root} is unsafe to inspect for 1.4 registrations; restore its git checkout before handover`);
+    return [];
+  }))];
+  const scanOptions = { homeDir, legacyHomes, ownHome: mycoHome, folders: handoverRoots };
   const scan = scanLegacyRegistrations(scanOptions);
   for (const { file, reason } of scan.unreadable) blockers.push(`${file} holds a Myco entry but could not be read (${reason}); fix or move it, then run again.`);
   // A connected folder's runtime.command pin naming a 1.4 home's binary is pointed at the 2.0 binary.
@@ -338,16 +501,13 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
     const legacy = legacyHomes.some((home) => underHome(first, home)) && !underHome(first, mycoHome);
     return legacy ? [{ pin, command }] : [];
   });
-  const foreign = scan.findings.filter((f) => f.verdict === 'foreign');
+  const foreign = scan.findings.filter((f) => f.verdict === 'foreign' && (f.location.scope === 'project'
+    ? roots.some((root) => path.resolve(f.file) === path.resolve(root, f.location.path))
+    : f.serversPath?.[0] === 'projects' ? roots.includes(f.serversPath[1]) : true));
   for (const file of [...new Set(foreign.map((f) => f.file))]) {
     const here = foreign.filter((f) => f.file === file);
     const what = here.length === 1 ? `a Myco ${here[0].location.kind === 'mcp' ? 'MCP entry' : here[0].location.kind === 'hooks' ? 'hook' : 'plugin'}` : `${here.length} Myco hooks and entries`;
     blockers.push(`${file} holds ${what} of another installation (\`${here[0].subject}\`${here.length > 1 ? ' and more' : ''}).${suggestion(here[0].subject)}`);
-  }
-  if (blockers.length > 0) {
-    for (const blocker of blockers) problem(blocker);
-    err('   Nothing was changed.');
-    return false;
   }
   out('   nothing another installation holds is in the way');
   if (elsewhere.length > 0) {
@@ -355,7 +515,7 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
   }
 
   // The plan: every change, decided now, in the order it is made.
-  const stamp = new Date(now()).toISOString().replace(/[:.]/g, '-');
+  const stamp = new Date(cutover.plannedAt).toISOString().replace(/[:.]/g, '-');
   const handledByProvisioning = (finding: LegacyFinding) => provisioned.some((p) => p.agent === finding.location.agent
     && (finding.location.kind === 'mcp' ? p.targets.mcp.includes(finding.file) && (finding.serversPath ?? []).length === 1 : p.targets.hooks === finding.file));
   const removals = scan.findings.filter((f) => f.verdict === 'legacy' && !handledByProvisioning(f));
@@ -376,7 +536,7 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
       run: async () => {
         const entryFile = registryEntryPath(b.root, mycoHome);
         if (fs.existsSync(entryFile)) backup.take(entryFile); else backup.created(entryFile);
-        writeRegistryEntry({ ...membership, version: REGISTRY_VERSION, projectId: b.projectId, root: b.root, joinedAt: now(), updatedAt: now() }, { mycoHome });
+        writeRegistryEntry({ ...cutover.memberships.find((m) => deploymentUrl(m.serverUrl) === deploymentUrl(b.serverUrl))!, version: REGISTRY_VERSION, projectId: b.projectId, root: b.root, joinedAt: now(), updatedAt: now() }, { mycoHome });
         return { lines: [`${b.projectId}: connected ${b.root}`], made: readRegistryEntry(b.root, mycoHome)?.projectId === b.projectId ? [`connect ${b.root}`] : [] };
       },
     }])) },
@@ -475,108 +635,182 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
       })),
     ] },
   ];
-  deps.onPlan?.(plan.flatMap((s) => s.actions.flatMap((a) => a.outcomes)));
-
-  for (const { step: n, title, actions } of plan) {
-    step(n, title);
-    if (actions.length === 0) out('   nothing to do');
-    for (const action of actions) {
-      if (dry) { out(`   ${action.would}`); continue; }
-      try {
-        const { lines, made } = await action.run();
-        for (const line of lines) out(`   ${line}`);
-        for (const outcome of made) deps.onAction?.(outcome);
-        const missed = action.outcomes.filter((o) => !made.includes(o));
-        if (missed.length > 0) throw new Error(`the cutover planned changes it did not make: ${missed.join('; ')}`);
-      } catch (error) {
-        problem(error instanceof Error ? error.message : String(error));
-        err(n < 6 ? '   The 1.4 service is left running, and nothing was imported; run the cutover again once this is settled.' : '   Nothing was imported; run the cutover again once this is settled.');
-        return false;
-      }
-    }
-    if (!dry && n === 4) {
-      const kept = backup.pruneUnchanged().filter((e) => 'backup' in e);
-      if (kept.length > 0) {
-        out(`   backed up ${kept.length} settings file${kept.length === 1 ? '' : 's'} the cutover changed to ${backup.dir} (${MANIFEST_FILE} lists each original and its copy):`);
-        for (const entry of kept) out(`     ${entry.original}`);
-      }
-      const left = scanLegacyRegistrations(scanOptions).findings.filter((f) => f.verdict === 'legacy');
-      if (left.length > 0) {
-        for (const f of left) problem(`${f.file} still holds a 1.4 registration (\`${f.subject}\`)`);
-        err('   The 1.4 service is left running, and nothing was imported; run the cutover again once this is settled.');
-        return false;
-      }
-    }
-  }
-  if (!dry && backup.all.length > 0) {
-    out(`   To undo these changes by hand, run the commands in ${path.join(backup.dir, RESTORE_FILE)}; ${MANIFEST_FILE} beside it lists every file, entry and link.`);
-  }
-
-  // 7. The copies, reused only while they hold what the vault holds now.
-  step(7, 'Copy every 1.4 vault and check the copy');
-  const state = readState(mycoHome);
-  const copies: string[] = [];
-  for (const { home, vault } of vaults) {
-    const content = readVaultContent(vault);
-    const held = state.backups[vault];
-    if (held !== undefined && held.digest === content.digest && copyProblem(held.copy, content) === null) {
-      copies.push(held.copy);
-      out(`   ${vault}: copied earlier to ${held.copy}, and the copy still holds what the vault holds`);
-      continue;
-    }
-    const copy = copyPathFor(home, vault, stamp);
-    const changed = held === undefined ? '' : ' (the vault changed since the earlier copy)';
-    if (dry) { out(`   would copy ${vault} (${JSON.stringify(content.counts)}) to ${copy}${changed}`); copies.push(vault); continue; }
-    try {
-      const verified = backupVault(vault, copy);
-      state.backups[vault] = { copy, counts: verified.counts, digest: verified.digest, at: now() };
-      writeState(mycoHome, state);
-      copies.push(copy);
-      out(`   ${vault}: copied to ${copy}${changed}, and the copy matches (${JSON.stringify(verified.counts)})`);
-    } catch (error) {
-      problem((error as Error).message);
-    }
-  }
-  if (copies.length !== vaults.length) { problem('not every vault has a verified copy; nothing was imported'); return false; }
-
-  // 8. The imports.
-  step(8, 'Bring the 1.4 history and your agents\' transcripts to the Deployment');
-  const imported = await withImportInterrupt(deps.signal, async (signal) => {
-    const importDeps = { fetch: deps.fetch, now: deps.now, mycoHome, machineId, sleep: deps.sleep, signal, pace: deps.pace ?? IMPORT_PACE_PER_MINUTE };
-    const legacy: LegacyImportReport = await runLegacyImport({ sources: copies, serverUrl, dryRun: dry }, { ...importDeps, progress: (l) => out(`   ${l}`) });
-    for (const line of legacyReportLines(legacy, dry)) out(`   ${line}`);
-    if (legacy.refused !== undefined) { problem(legacy.refused); out(`   ${stoppedByLine(legacy.refused)}`); return false; }
-    if (signal.aborted) return false;
-    if (!legacyImportComplete(legacy)) problem('the Deployment refused or failed part of the 1.4 history (above); run the cutover again to retry it');
-    if (dry) {
-      out('   would then import every agent transcript under the connected folders');
-      return true;
-    }
-    const transcripts: ImportReport = await importUntilSettled(
-      { serverUrl, mappings: parsed.mappings, windowDays: LEGACY_WINDOW_DAYS, maxPerAgent: LEGACY_MAX_PER_AGENT, exclude: new Set(legacy.deleted) },
-      { ...importDeps, progress: (l) => out(`   ${l}`) },
-    );
-    if (transcripts.refused !== undefined) problem(transcripts.refused);
-    for (const line of reportLines(transcripts, false)) out(`   ${line}`);
-    if (!transcriptImportComplete(transcripts)) {
-      const why = transcripts.projects.filter((p) => p.endedBy !== undefined).map((p) => `${p.projectId}: ${p.stoppedBy ?? transcripts.stoppedBy ?? STOPPED_WORDS[p.endedBy!] ?? p.endedBy}`);
-      problem(`the transcript import stopped before it finished (${why.join('; ') || transcripts.stoppedBy || transcripts.refused || 'no reason given'}); run the cutover again to finish it`);
-    }
-    return !signal.aborted;
+  const previousState = readCutoverState(mycoHome);
+  const handoverDone = previousState.handover !== undefined && scan.findings.every((f) => f.verdict !== 'legacy') && units.stop.length === 0;
+  if (handoverDone) for (const step of plan) if (step.step !== 2) step.actions = [];
+  const copies = vaults.map(({ home, vault, digest, counts }) => {
+    const held = Object.entries(previousState.backups).find(([file]) => legacyRealpath(file) === vault)?.[1];
+    const reused = held !== undefined && held.digest === digest && copyProblem(held.copy, { digest, counts }) === null;
+    return { vault, copy: reused ? held.copy : copyPathFor(home, vault, stamp), reused };
   });
-  if (!imported || dry) return ok && imported;
-  // 9. This machine's settings: the Deployment's are cached for the hooks, and 1.4's plan folders are named, never
-  // carried: they are set on the dashboard, where each machine's settings are kept.
-  step(9, 'Name the plan folders 1.4 watched, which this machine sets on the dashboard');
-  await seedMachineSettings({ serverUrl, token: membership.token }, { mycoHome, fetch: deps.fetch });
-  const legacyPlanDirs = [...new Set(legacyHomes.flatMap(legacyPlanDirsOf))];
-  if (legacyPlanDirs.length === 0) out('   1.4 watched no extra plan folders on this machine');
-  else {
-    out(`   1.4 also watched these plan folders: ${legacyPlanDirs.join(', ')}`);
-    out(`   to keep any, add it under Access › Runtimes › Settings for this machine: ${deploymentUrl(serverUrl)}/access`);
-  }
-  out(ok ? 'Cutover complete.' : 'Cutover finished with the problems above; run it again once they are settled.');
-  return ok;
+  return {
+    blockers,
+    handover: plan.map(({ step, title, actions }) => ({ step, title, actions: actions.map(({ would, outcomes }) => ({ would, outcomes })) })),
+    copies,
+    execute: async (): Promise<boolean> => {
+      const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
+      const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
+      let ok = true;
+      const step = (n: number, title: string) => out(`${n}. ${title}${dry ? ' (dry run)' : ''}`);
+      const problem = (line: string) => { ok = false; err(`   ✗ ${line}`); };
+      out(`Cutting over ${legacyHomes.join(', ')} to ${serverUrl}, into ${mycoHome}${chosenBy(cutover.selection ?? null)}`);
+      for (const line of preview) out(line);
+      if (blockers.length > 0) {
+        for (const blocker of blockers) problem(blocker);
+        err('   Nothing was changed.');
+        return false;
+      }
+      deps.onPlan?.(plan.flatMap((s) => s.actions.flatMap((a) => a.outcomes)));
+      const state = readCutoverState(mycoHome);
+      if (!dry) {
+        state.version = 2;
+        state.migrations ??= {};
+        for (const { vault, digest, stamp } of vaults) {
+          const held = state.migrations[vault];
+          const projects = held?.projects ?? {};
+          state.migrations[vault] = { ...stamp, digest, projects };
+          for (const p of cutover.projects.filter((p) => p.vault === vault)) {
+            const dest = p.destination;
+            const previous = projects[p.projectId];
+            const destinations = { ...previous?.destinations };
+            if (previous?.destination !== undefined && 'key' in previous.destination && held !== undefined) destinations[previous.destination.key] = { serverUrl: previous.destination.serverUrl, digest: held.digest, size: held.size, mtimeMs: held.mtimeMs, vault: previous.vault, transcripts: previous.transcripts };
+            if (dest.kind === 'skip') projects[p.projectId] = { ...previous, destinations, root: p.root, destination: { skip: true, at: now() } };
+            else if (dest.kind === 'destination') {
+              const same = held?.digest === digest && previous?.destination !== undefined && 'serverUrl' in previous.destination && previous.destination.serverUrl === dest.serverUrl;
+              projects[p.projectId] = { ...(same ? previous : {}), root: p.root, destinations, destination: { serverUrl: dest.serverUrl, key: deploymentKeyFor(dest.serverUrl) } };
+            }
+          }
+        }
+        writeState(mycoHome, state);
+      }
+      for (const { step: n, title, actions } of plan) {
+        step(n, title);
+        if (actions.length === 0) out('   nothing to do');
+        for (const action of actions) {
+          if (dry) { out(`   ${action.would}`); continue; }
+          try {
+            const { lines, made } = await action.run();
+            for (const line of lines) out(`   ${line}`);
+            for (const outcome of made) deps.onAction?.(outcome);
+            const missed = action.outcomes.filter((o) => !made.includes(o));
+            if (missed.length > 0) throw new Error(`the cutover planned changes it did not make: ${missed.join('; ')}`);
+          } catch (error) {
+            problem(error instanceof Error ? error.message : String(error));
+            err(n < 6 ? '   The 1.4 service is left running, and nothing was imported; run the cutover again once this is settled.' : '   Nothing was imported; run the cutover again once this is settled.');
+            return false;
+          }
+        }
+        if (!dry && n === 4) {
+          const kept = backup.pruneUnchanged().filter((e) => 'backup' in e);
+          if (kept.length > 0) {
+            out(`   backed up ${kept.length} settings file${kept.length === 1 ? '' : 's'} the cutover changed to ${backup.dir} (${MANIFEST_FILE} lists each original and its copy):`);
+            for (const entry of kept) out(`     ${entry.original}`);
+          }
+          const left = scanLegacyRegistrations(scanOptions).findings.filter((f) => f.verdict === 'legacy');
+          if (left.length > 0) {
+            for (const f of left) problem(`${f.file} still holds a 1.4 registration (\`${f.subject}\`)`);
+            err('   The 1.4 service is left running, and nothing was imported; run the cutover again once this is settled.');
+            return false;
+          }
+        }
+      }
+      if (!dry) { state.handover = { at: now(), legacyHomes, agents }; writeState(mycoHome, state); }
+      if (!dry && backup.all.length > 0) {
+        out(`   To undo these changes by hand, run the commands in ${path.join(backup.dir, RESTORE_FILE)}; ${MANIFEST_FILE} beside it lists every file, entry and link.`);
+      }
+
+      // 7. The copies, reused only while they hold what the vault holds now.
+      step(7, 'Copy every 1.4 vault and check the copy');
+      const copies = new Map<string, string>();
+      for (const { home, vault } of vaults) {
+        try {
+          const before = legacyVaultStamp(vault);
+          const content = readVaultContent(vault);
+          const held = Object.entries(state.backups).find(([file]) => legacyRealpath(file) === vault)?.[1];
+          const reused = held !== undefined && held.digest === content.digest && copyProblem(held.copy, content) === null;
+          const copy = reused ? held.copy : copyPathFor(home, vault, stamp);
+          const changed = held === undefined ? '' : ' (the vault changed since the earlier copy)';
+          if (dry) { out(`   ${reused ? 'would reuse' : 'would copy'} ${vault} (${JSON.stringify(content.counts)}) to ${copy}${changed}`); copies.set(vault, vault); continue; }
+          const verified = reused ? content : backupVault(vault, copy);
+          const after = legacyVaultStamp(vault);
+          if (JSON.stringify(before) !== JSON.stringify(after) || verified.digest !== content.digest) throw new Error(`${vault} changed while it was copied; stop Myco 1.4 and run myco cutover --dry-run again`);
+          const plannedProjects = cutover.projects.filter((p) => p.vault === vault).map(({ projectId, root }) => ({ projectId, root }));
+          const copiedProjects = legacyProjectRoots([copy]).map(({ projectId, root }) => ({ projectId, root }));
+          if (JSON.stringify(plannedProjects) !== JSON.stringify(copiedProjects)) throw new Error(`${vault}: its projects or folders changed during handover; run myco cutover --dry-run again to confirm their destinations`);
+          const receipt = state.migrations![vault];
+          if (receipt.digest !== verified.digest) for (const project of Object.values(receipt.projects)) { delete project.vault; delete project.transcripts; }
+          state.migrations![vault] = { ...after, digest: verified.digest, projects: receipt.projects };
+          state.backups[vault] = { copy, counts: verified.counts, digest: verified.digest, at: reused ? held.at : now() };
+          writeState(mycoHome, state);
+          copies.set(vault, copy);
+          out(reused ? `   ${vault}: copied earlier to ${copy}, and the copy still holds what the vault holds`
+            : `   ${vault}: copied to ${copy}${changed}, and the copy matches (${JSON.stringify(verified.counts)})`);
+        } catch (error) {
+          problem((error as Error).message);
+        }
+      }
+      if (copies.size !== vaults.length) { problem('not every vault has a verified copy; nothing was imported'); return false; }
+
+      // 8. The imports.
+      step(8, 'Bring each project\'s 1.4 history and transcripts to its Deployment');
+      const imported = await withImportInterrupt(deps.signal, async (signal) => {
+        const importDeps = { fetch: deps.fetch, now: deps.now, mycoHome, machineId, sleep: deps.sleep, signal, pace: deps.pace ?? IMPORT_PACE_PER_MINUTE };
+        for (const project of cutover.projects) {
+          const dest = project.destination;
+          if (dest.kind !== 'destination') continue;
+          if (signal.aborted) return false;
+          const receipt = state.migrations?.[project.vault]?.projects[project.projectId];
+          const legacy: LegacyImportReport = await runLegacyImport({ sources: [copies.get(project.vault)!], project: project.projectId, serverUrl: dest.serverUrl, dryRun: dry }, { ...importDeps, progress: (l) => out(`   ${l}`) });
+          for (const line of legacyReportLines(legacy, dry)) out(`   ${line}`);
+          const complete = legacy.refused === undefined && legacy.projects.length > 0 && legacy.projects.every(legacyProjectImportComplete);
+          if (!dry && receipt !== undefined) {
+            const failures = legacy.projects.flatMap((p) => [...p.failures, ...p.refusals].map((what) => ({ what, cause: p.stoppedBy ?? Object.keys(p.causes ?? {})[0] ?? p.endedBy ?? 'fault' })));
+            if (legacy.refused !== undefined) failures.push({ what: legacy.refused, cause: 'refused' });
+            receipt.vault = { state: complete ? 'complete' : legacy.refused === undefined ? 'partial' : 'refused', at: now(), failures, endedBy: legacy.projects.find((p) => p.endedBy !== undefined)?.endedBy };
+            writeState(mycoHome, state);
+          }
+          if (legacy.refused !== undefined) { problem(legacy.refused); out(`   ${stoppedByLine(legacy.refused)}`); }
+          if (signal.aborted) return false;
+          if (!complete && !dry) problem(`${project.projectId}: the Deployment refused or failed part of the 1.4 history (above); run the cutover again to retry it`);
+          if (dry) { out(`   would then import agent transcripts for ${project.projectId} on ${dest.serverUrl}`); continue; }
+          const hasTranscriptBinding = listRegistryEntries(mycoHome).some((b) => b.projectId === project.projectId && deploymentUrl(b.serverUrl) === dest.serverUrl);
+          if (!hasTranscriptBinding) {
+            if (receipt !== undefined) { receipt.transcripts = { state: 'none', at: now() }; writeState(mycoHome, state); }
+            continue;
+          }
+          const transcripts: ImportReport = await importUntilSettled(
+            { serverUrl: dest.serverUrl, project: project.projectId, mappings: parsed.mappings, windowDays: LEGACY_WINDOW_DAYS, maxPerAgent: LEGACY_MAX_PER_AGENT, exclude: new Set(legacy.deleted) },
+            { ...importDeps, progress: (l) => out(`   ${l}`) },
+          );
+          const transcriptsComplete = transcriptImportComplete(transcripts) && transcripts.projects.every((p) => !p.notAttempted);
+          if (receipt !== undefined) {
+            receipt.transcripts = { state: transcriptsComplete ? 'complete' : 'partial', at: now(), endedBy: transcripts.stoppedBy ?? transcripts.refused ?? transcripts.projects.find((p) => p.endedBy !== undefined)?.endedBy };
+            writeState(mycoHome, state);
+          }
+          if (transcripts.refused !== undefined) problem(transcripts.refused);
+          for (const line of reportLines(transcripts, false)) out(`   ${line}`);
+          if (!transcriptsComplete) {
+            const why = transcripts.projects.filter((p) => p.endedBy !== undefined).map((p) => `${p.projectId}: ${p.stoppedBy ?? transcripts.stoppedBy ?? STOPPED_WORDS[p.endedBy!] ?? p.endedBy}`);
+            problem(`the transcript import stopped before it finished (${why.join('; ') || transcripts.stoppedBy || transcripts.refused || 'no reason given'}); run the cutover again to finish it`);
+          }
+        }
+        return !signal.aborted;
+      });
+      if (!imported || dry) return ok && imported;
+      // 9. This machine's settings: the Deployment's are cached for the hooks, and 1.4's plan folders are named, never
+      // carried: they are set on the dashboard, where each machine's settings are kept.
+      step(9, 'Name the plan folders 1.4 watched, which this machine sets on the dashboard');
+      for (const destination of cutover.memberships) await seedMachineSettings({ serverUrl: destination.serverUrl, token: destination.token }, { mycoHome, fetch: deps.fetch });
+      const legacyPlanDirs = [...new Set(legacyHomes.flatMap(legacyPlanDirsOf))];
+      if (legacyPlanDirs.length === 0) out('   1.4 watched no extra plan folders on this machine');
+      else {
+        out(`   1.4 also watched these plan folders: ${legacyPlanDirs.join(', ')}`);
+        out(`   to keep any, add it under Access › Runtimes › Settings for this machine: ${deploymentUrl(serverUrl)}/access`);
+      }
+      out(ok ? 'Cutover complete.' : 'Cutover finished with the problems above; run it again once they are settled.');
+      return ok;
+    },
+  };
 }
 
 /** The extra plan folders a 1.4 home's machine configuration names, or none where it names none or cannot be read. */

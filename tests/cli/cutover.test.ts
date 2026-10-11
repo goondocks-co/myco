@@ -18,18 +18,22 @@ import { refuseImportAfter } from '../setup/fixtures/interruption.js';
  *   - it stops before its first change, dry run or not, where another
  *     installation holds anything it would need to take.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { run as runCutover, type CutoverDeps } from '@myco/cli/cutover.js';
+import { run as runCutover, planCutover, runCutover as executeCutoverPlan, type CutoverDeps } from '@myco/cli/cutover.js';
 import { openDatabase } from '@myco/db/client.js';
 import { createSchema } from '@myco/db/schema.js';
 import { resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
 import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
-import { listRegistryEntries, registryEntryPath, writeDeploymentMembership } from '@myco/member/registry.js';
+import { listRegistryEntries, registryEntryPath, writeRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
+import { routedSpoolDir } from '@myco/member/routing.js';
+import { deploymentKeyFor } from '@myco/member/registry.js';
+import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
+import { legacyMigrationState, readCutoverState } from '@myco/member/legacy-migration.js';
 import { provisionGlobally } from '@myco/cli/member.js';
 import { stopHomeDaemon } from '@myco/service/home-daemon.js';
 import type { LaunchctlRunner } from '@myco/service/launchd.js';
@@ -46,7 +50,7 @@ const DAEMON_LABEL = 'co.goondocks.myco';
 const OTHER_DAEMON_LABEL = 'co.goondocks.myco.0ther000';
 const WORKER_LABEL = 'co.goondocks.myco-worker.0ther000';
 
-type RunOpts = { signal?: AbortSignal; fetch?: MemberRig['fetch']; mycoHome?: string | null; env?: NodeJS.ProcessEnv; provision?: CutoverDeps['provision']; agents?: string[]; unitDirs?: CutoverDeps['unitDirs'] };
+type RunOpts = { stopDaemon?: CutoverDeps['stopDaemon']; signal?: AbortSignal; fetch?: MemberRig['fetch']; mycoHome?: string | null; env?: NodeJS.ProcessEnv; provision?: CutoverDeps['provision']; agents?: string[]; unitDirs?: CutoverDeps['unitDirs'] };
 interface Machine {
   rig: MemberRig;
   home: string;
@@ -145,7 +149,7 @@ async function machine(opts: { legacyHome?: string } = {}): Promise<Machine> {
       sleep: async () => {}, stdout: (l) => out.push(l), stderr: (l) => err.push(l), packageRoot: resolvePackageRoot(),
       agents: () => o.agents ?? ['claude-code'], platform: 'darwin',
       launchctl: fakeLaunchctl(launchctl.loaded, launchctl.calls),
-      stopDaemon: async () => 'none',
+      stopDaemon: o.stopDaemon ?? (async () => 'none'),
       provision: o.provision,
       unitDirs: o.unitDirs,
       onPlan: (keys) => planned.push(keys),
@@ -766,7 +770,7 @@ describe('myco cutover on two 1.4 homes, one pinned as the 2.0 home (the owner\'
 
       const env: NodeJS.ProcessEnv = { ...process.env, HOME: m.home, MYCO_LAUNCH_AGENTS_DIR: m.agentsDir };
       delete env.MYCO_HOME;
-      const args = ['--legacy-home', prod, '--legacy-home', m.legacyHome];
+      const args = ['--legacy-home', prod, '--legacy-home', m.legacyHome, '--route', `${PROJECT}=${SERVER}`];
       const dry = await m.run([...args, '--dry-run'], { mycoHome: null, env });
       expect(dry.err).toEqual([]);
       expect(dry.ok).toBe(true);
@@ -825,5 +829,390 @@ describe('the `myco cutover` command', () => {
     expect(refused.stderr).toContain('myco cutover: this machine is not signed in to a Deployment');
     expect(refused.status).toBe(2);
     expect(spawnSync(process.execPath, [cli, 'cutover', '--help'], { env, cwd: home, encoding: 'utf8', timeout: 60_000 }).status).toBe(0);
+  });
+});
+
+
+describe('cutover project destinations and receipts', () => {
+  let m: Machine;
+  let personal: MemberRig;
+  let homelab: string;
+  let heldHome: string | undefined;
+  const PERSONAL = 'https://personal.invalid';
+  const HOMELAB = 'proj_homelab';
+  beforeEach(async () => {
+    m = await machine();
+    heldHome = process.env.HOME; process.env.HOME = m.home;
+    personal = await memberRig({ projectId: HOMELAB });
+    homelab = path.join(m.home, 'Repos', 'homelab');
+    fs.mkdirSync(homelab, { recursive: true }); execFileSync('git', ['init', '-q', homelab]);
+    writeDeploymentMembership({ serverUrl: PERSONAL, token: personal.token, tokenId: personal.tokenId, machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now() }, { mycoHome: m.mycoHome });
+    writeRegistryEntry({ version: 2, root: homelab, projectId: HOMELAB, serverUrl: PERSONAL, token: personal.token, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome: m.mycoHome });
+    recordDefaultDeployment(SERVER, { mycoHome: m.mycoHome });
+    const db = openDatabase(m.vault);
+    try {
+      db.run('PRAGMA foreign_keys=OFF');
+      db.run("INSERT INTO sessions (id,agent,project_root,project_id,started_at,ended_at,status,title,created_at) VALUES ('00000000-0000-4000-8000-000000000002','claude-code',?,?,?,?,'completed','personal session',?)", [homelab, HOMELAB, NOW_S - 86400, NOW_S - 86000, NOW_S - 86400]);
+      db.run("INSERT INTO spores (id,project_id,agent_id,observation_type,status,content,created_at) VALUES ('personal-spore',?,'user','gotcha','active','personal only',?)", [HOMELAB, NOW_S]);
+      db.run('PRAGMA wal_checkpoint(TRUNCATE)');
+    } finally { db.close(); }
+  });
+  afterEach(() => { if (heldHome === undefined) delete process.env.HOME; else process.env.HOME = heldHome; });
+  const fetchBoth: MemberRig['fetch'] = (input, init) => {
+    const req = new Request(input, init);
+    return new URL(req.url).origin === PERSONAL ? personal.fetch(req) : m.rig.fetch(req);
+  };
+  const projectsOn = (rig: MemberRig, table: string) => rig.env.sqlite.query(`SELECT DISTINCT project_id FROM ${table} ORDER BY project_id`).all();
+
+  it('previews first, then places homelab only on personal and every other project only on work', async () => {
+    let requests = 0;
+    const fetch: MemberRig['fetch'] = (input, init) => { requests += 1; return fetchBoth(input, init); };
+    const before = sha(m.vault);
+    const dry = await m.run(['--dry-run'], { fetch, agents: [] });
+    expect(dry.ok).toBe(true); expect(requests).toBe(0); expect(sha(m.vault)).toBe(before);
+    expect(dry.out.join('\n')).toContain(`${HOMELAB} from ${m.vault}: to ${PERSONAL}`);
+    expect(dry.out.join('\n')).toContain(`${PROJECT} from ${m.vault}: to ${SERVER}`);
+    expect(fs.existsSync(path.join(m.mycoHome, 'member', 'cutover.json'))).toBe(false);
+    const result = await m.run([], { fetch, agents: [] });
+    expect(result.err).toEqual([]); expect(result.ok).toBe(true);
+    for (const table of ['sessions', 'spores', 'events']) {
+      expect(projectsOn(personal, table)).toEqual([{ project_id: HOMELAB }]);
+      expect(projectsOn(m.rig, table)).toEqual([{ project_id: PROJECT }]);
+    }
+    expect(legacyMigrationState(m.mycoHome).state).toBe('moved');
+    const state = readCutoverState(m.mycoHome);
+    expect(state.version).toBe(2);
+    expect(state.migrations![m.vault].projects[HOMELAB].destination).toMatchObject({ serverUrl: PERSONAL });
+    expect(state.migrations![m.vault].projects[PROJECT].destination).toMatchObject({ serverUrl: SERVER });
+    expect(sha(m.vault)).toBe(before);
+  });
+
+  it('refuses to route a bound personal repository to the work default', async () => {
+    const result = await m.run(['--route', `${HOMELAB}=${SERVER}`], { fetch: fetchBoth, agents: [] });
+    expect(result.ok).toBe(false); expect(result.err.join('\n')).toContain(`routes to ${PERSONAL}`);
+    expect(personal.rows('events')).toBe(0); expect(m.rig.rows('events')).toBe(0);
+  });
+
+  it('preserves skipped project spools byte for byte, and preserves the skip on retry', async () => {
+    const spool = routedSpoolDir({ serverUrl: PERSONAL, projectId: HOMELAB }, m.mycoHome);
+    fs.mkdirSync(spool, { recursive: true });
+    fs.writeFileSync(path.join(spool, 'destination.json'), JSON.stringify({ serverUrl: PERSONAL, projectId: HOMELAB }), { mode: 0o600 });
+    const file = path.join(spool, 'outbox.ndjson'); fs.writeFileSync(file, 'retained spool bytes');
+    const before = sha(file);
+    const first = await m.run(['--route', `${PROJECT}=${SERVER}`, '--skip', HOMELAB], { fetch: fetchBoth, agents: [] });
+    expect(first.err).toEqual([]); expect(first.ok).toBe(true); expect(sha(file)).toBe(before);
+    expect(personal.rows('events')).toBe(0);
+    expect((await m.run([], { fetch: fetchBoth, agents: [] })).ok).toBe(true);
+    expect(personal.rows('events')).toBe(0); expect(sha(file)).toBe(before);
+    expect(readCutoverState(m.mycoHome).migrations![m.vault].projects[HOMELAB].destination).toMatchObject({ skip: true });
+  });
+
+  it('resumes after interruption between destinations without uploading the completed destination again', async () => {
+    const stop = new AbortController();
+    const interrupted: MemberRig['fetch'] = async (input, init) => {
+      const req = new Request(input, init);
+      if (new URL(req.url).origin === PERSONAL) stop.abort();
+      return fetchBoth(req);
+    };
+    expect((await m.run([], { fetch: interrupted, signal: stop.signal, agents: [] })).ok).toBe(false);
+    const state = readCutoverState(m.mycoHome);
+    expect(state.migrations![m.vault].projects[PROJECT].vault?.state).toBe('complete');
+    expect(state.migrations![m.vault].projects[HOMELAB].vault?.state).not.toBe('complete');
+    let workUploads = 0;
+    const resumed: MemberRig['fetch'] = (input, init) => {
+      const req = new Request(input, init);
+      if (new URL(req.url).origin === SERVER && req.method === 'POST' && (new URL(req.url).pathname === '/events' || new URL(req.url).pathname.startsWith('/blobs/'))) workUploads += 1;
+      return fetchBoth(req);
+    };
+    const result = await m.run([], { fetch: resumed, agents: [] });
+    expect(result.err).toEqual([]); expect(result.ok).toBe(true); expect(workUploads).toBe(0);
+    expect(projectsOn(personal, 'sessions')).toEqual([{ project_id: HOMELAB }]);
+  });
+
+  it('upgrades a completed alpha backup-only record without a second upload', async () => {
+    expect((await m.run([], { fetch: fetchBoth, agents: [] })).ok).toBe(true);
+    const record = path.join(m.mycoHome, 'member', 'cutover.json');
+    const state = readCutoverState(m.mycoHome);
+    fs.writeFileSync(record, JSON.stringify({ backups: state.backups }));
+    expect(legacyMigrationState(m.mycoHome).state).toBe('needs-destination');
+    let uploads = 0;
+    const confirming: MemberRig['fetch'] = (input, init) => {
+      const req = new Request(input, init); const route = new URL(req.url).pathname;
+      if (req.method === 'POST' && (route === '/events' || route.startsWith('/blobs/'))) uploads += 1;
+      return fetchBoth(req);
+    };
+    const result = await m.run([], { fetch: confirming, agents: [] });
+    expect(result.err).toEqual([]); expect(result.ok).toBe(true); expect(uploads).toBe(0);
+    expect(readCutoverState(m.mycoHome).version).toBe(2); expect(legacyMigrationState(m.mycoHome).state).toBe('moved');
+  });
+
+  it('refuses an undecided project and names route and skip commands', () => {
+    fs.unlinkSync(path.join(m.mycoHome, 'member', 'default.json'));
+    fs.unlinkSync(registryEntryPath(homelab, m.mycoHome));
+    const plan = planCutover(m.mycoHome, { homeDir: m.home });
+    expect(plan.blockers.join('\n')).toContain(`--route ${PROJECT}=<url> or --skip ${PROJECT}`);
+  });
+
+  it('reads local machine identity instead of a stored destination identity without writing during preview', () => {
+    writeDeploymentMembership({ serverUrl: SERVER, token: m.rig.token, machineId: 'older-membership-machine', joinedAt: 1, updatedAt: 2 }, { mycoHome: m.mycoHome });
+    const deps = { agents: () => [], unitDirs: [] };
+    const before = sha(path.join(m.mycoHome, 'machine_id'));
+    const plan = planCutover(m.mycoHome, { homeDir: m.home, dryRun: true }, deps);
+    expect(plan.blockers).toEqual([]);
+    expect(plan.machineId).toBe(TEST_MACHINE_ID);
+    expect(sha(path.join(m.mycoHome, 'machine_id'))).toBe(before);
+  });
+
+  it('allows every project to be skipped without a membership or import identity', async () => {
+    fs.rmSync(path.join(m.mycoHome, 'member', 'deployments'), { recursive: true, force: true });
+    fs.unlinkSync(path.join(m.mycoHome, 'machine_id'));
+    const db = openDatabase(m.vault);
+    try { db.run("UPDATE sessions SET machine_id='retained-legacy-machine'"); db.run('PRAGMA wal_checkpoint(TRUNCATE)'); } finally { db.close(); }
+    const deps = { agents: () => [], unitDirs: [], stopDaemon: async () => 'none' as const, stdout: () => {}, stderr: () => {} };
+    const plan = planCutover(m.mycoHome, { homeDir: m.home, skips: new Set([PROJECT, HOMELAB]) }, deps);
+    expect(plan.blockers).toEqual([]);
+    expect((await executeCutoverPlan(plan, deps)).ok).toBe(true);
+    expect(legacyMigrationState(m.mycoHome).state).toBe('moved');
+    expect(fs.existsSync(path.join(m.mycoHome, 'machine_id'))).toBe(false);
+  });
+
+  it('hands over project-local legacy registrations at skipped roots while keeping foreign entries and history', async () => {
+    const legacyMcp = path.join(homelab, '.cursor', 'mcp.json');
+    const foreignMcp = path.join(homelab, '.codex', 'config.toml');
+    writeJson(legacyMcp, { mcpServers: { myco: { command: `${m.legacyHome}/bin/myco`, args: ['mcp'] }, mine: { command: 'mine' } } });
+    fs.mkdirSync(path.dirname(foreignMcp), { recursive: true });
+    fs.writeFileSync(foreignMcp, '[mcp_servers.myco]\ncommand = "/foreign/bin/myco"\nargs = ["mcp"]\n');
+    const foreignBefore = sha(foreignMcp), vaultBefore = sha(m.vault), legacyBefore = sha(legacyMcp);
+    const preview = await m.run(['--skip', PROJECT, '--skip', HOMELAB, '--dry-run'], { agents: [] });
+    expect(preview.err).toEqual([]); expect(preview.ok).toBe(true);
+    expect(preview.out.join('\n')).toContain(legacyMcp);
+    expect(sha(legacyMcp)).toBe(legacyBefore);
+    const result = await m.run(['--skip', PROJECT, '--skip', HOMELAB], { agents: [] });
+    expect(result.err).toEqual([]); expect(result.ok).toBe(true);
+    expect(readJson(legacyMcp)).toEqual({ mcpServers: { mine: { command: 'mine' } } });
+    expect(sha(foreignMcp)).toBe(foreignBefore); expect(sha(m.vault)).toBe(vaultBefore);
+    expect(legacyMigrationState(m.mycoHome).state).toBe('moved');
+    expect(projectsOn(m.rig, 'sessions')).toEqual([]); expect(projectsOn(personal, 'sessions')).toEqual([]);
+  });
+
+  it('reports a skipped checkout that cannot safely hand over project registrations', () => {
+    fs.rmSync(path.join(homelab, '.git'), { recursive: true });
+    const plan = planCutover(m.mycoHome, { homeDir: m.home, skips: new Set([HOMELAB]) }, { agents: () => [], unitDirs: [] });
+    expect(plan.blockers.join('\n')).toContain(`skipped folder ${homelab} is unsafe to inspect`);
+  });
+
+  it('does not let skipped foreign-machine sessions block routed spore history', async () => {
+    const db = openDatabase(m.vault);
+    try {
+      db.run('PRAGMA foreign_keys=OFF');
+      db.run('DELETE FROM prompt_batches WHERE project_id=?', [PROJECT]);
+      db.run('DELETE FROM sessions WHERE project_id=?', [PROJECT]);
+      db.run("UPDATE sessions SET machine_id='retained-legacy-machine' WHERE project_id=?", [HOMELAB]);
+      db.run('PRAGMA wal_checkpoint(TRUNCATE)');
+    } finally { db.close(); }
+    const result = await m.run(['--skip', HOMELAB, '--route', `${PROJECT}=${SERVER}`], { fetch: fetchBoth, agents: [] });
+    expect(result.err).toEqual([]); expect(result.ok).toBe(true);
+    expect(projectsOn(m.rig, 'spores')).toEqual([{ project_id: PROJECT }]);
+    expect(projectsOn(personal, 'spores')).toEqual([]);
+    expect(legacyMigrationState(m.mycoHome).state).toBe('moved');
+  });
+
+  it('executes the exact revalidated preparation without a third agent discovery', async () => {
+    let discoveries = 0;
+    const deps = { agents: () => { discoveries += 1; return discoveries > 2 ? ['codex'] : []; }, unitDirs: [], stdout: () => {} };
+    const plan = planCutover(m.mycoHome, { homeDir: m.home, dryRun: true }, deps);
+    expect((await executeCutoverPlan(plan, deps)).ok).toBe(true);
+    expect(discoveries).toBe(2);
+    expect(fs.existsSync(path.join(m.home, '.codex', 'config.toml'))).toBe(false);
+  });
+
+  it('includes handover and copies in the preview and refuses newly added registrations', async () => {
+    const deps = { agents: () => [], unitDirs: [], machineId: TEST_MACHINE_ID, stopDaemon: async () => 'none' as const };
+    const plan = planCutover(m.mycoHome, { homeDir: m.home, dryRun: true }, deps);
+    expect(plan.blockers).toEqual([]);
+    expect(plan.handover.map((s) => s.step)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(plan.projects.find((p) => p.projectId === HOMELAB)?.counts).toMatchObject({ sessions: 1, spores: 1 });
+    expect(plan.handover.flatMap((s) => s.actions).some((a) => a.outcomes.includes(`connect ${m.root}`))).toBe(true);
+    expect(plan.copies).toEqual([expect.objectContaining({ vault: m.vault, reused: false })]);
+    const settings = path.join(m.home, '.claude', 'settings.json');
+    const config = readJson(settings) as { hooks: Record<string, unknown> };
+    config.hooks.SessionEnd = [{ hooks: [{ type: 'command', command: `${m.legacyHome}/bin/myco hook session-end --myco-managed` }] }];
+    writeJson(settings, config);
+    const before = sha(settings);
+    const errors: string[] = [];
+    expect((await executeCutoverPlan(plan, { ...deps, stderr: (l) => errors.push(l) })).ok).toBe(false);
+    expect(errors.join('\n')).toContain('handover actions changed after the preview');
+    expect(sha(settings)).toBe(before);
+    expect(fs.existsSync(path.join(m.mycoHome, 'member', 'cutover.json'))).toBe(false);
+  });
+
+  it('allows a vault write between planning and lease revalidation, then copies the latest history', async () => {
+    const stopped: string[] = [];
+    const deps = { fetch: fetchBoth, agents: () => [], unitDirs: [], machineId: TEST_MACHINE_ID, stdout: () => {},
+      stopDaemon: async (home: string) => { stopped.push(home); return 'stopped' as const; } };
+    const plan = planCutover(m.mycoHome, { homeDir: m.home }, deps);
+    const db = openDatabase(m.vault);
+    try { db.run("UPDATE spores SET content='changed' WHERE id='gotcha-1'"); } finally { db.close(); }
+    const errors: string[] = [];
+    expect((await executeCutoverPlan(plan, { ...deps, stderr: (l) => errors.push(l) })).ok).toBe(true);
+    expect(errors).toEqual([]);
+    expect(stopped).toContain(m.legacyHome);
+    expect(m.rig.env.sqlite.query("SELECT content FROM spores WHERE id='gotcha-1'").get()).toEqual({ content: 'changed' });
+    expect(legacyMigrationState(m.mycoHome).state).toBe('moved');
+  });
+
+  for (const override of [null, 'MYCO_PROJECT_ROOT', 'MYCO_VAULT_DIR'] as const) for (const rootless of [false, true]) it(`requires a disposition for an unrouted ${rootless ? 'rootless' : 'absent'} project with ${override ?? 'no project override'}`, async () => {
+    fs.rmSync(m.root, { recursive: true });
+    if (rootless) {
+      const db = openDatabase(m.vault);
+      try { db.run('UPDATE sessions SET project_root=NULL WHERE project_id=?', [PROJECT]); } finally { db.close(); }
+    }
+    const held = override === null ? undefined : process.env[override];
+    if (override !== null) process.env[override] = m.root;
+    try {
+      const plan = planCutover(m.mycoHome, { homeDir: m.home });
+      expect(plan.projects.find(p => p.projectId === PROJECT)?.destination).toEqual({ kind: 'undecided' });
+      expect(plan.blockers.join('\n')).toContain(`--route ${PROJECT}=<url> or --skip ${PROJECT}`);
+      const explicit = await m.run(['--server', SERVER, '--dry-run'], { fetch: fetchBoth, agents: [] });
+      expect(explicit.err).toEqual([]); expect(explicit.ok).toBe(true);
+      expect(explicit.out.join('\n')).toContain(`${PROJECT} from ${m.vault}: to ${SERVER} (no repository route; sent to --server)`);
+    } finally {
+      if (override !== null) { if (held === undefined) delete process.env[override]; else process.env[override] = held; }
+    }
+  });
+
+  it('refuses a repository rebound after the preview before any request or cutover record', async () => {
+    const binding = { version: 2 as const, root: m.root, projectId: PROJECT, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 };
+    writeRegistryEntry({ ...binding, serverUrl: SERVER, token: m.rig.token }, { mycoHome: m.mycoHome });
+    let requests = 0;
+    const errors: string[] = [];
+    const deps = { fetch: ((input, init) => { requests += 1; return fetchBoth(input, init); }) as MemberRig['fetch'],
+      agents: () => [], unitDirs: [], machineId: TEST_MACHINE_ID, stopDaemon: async () => 'none' as const,
+      stdout: () => {}, stderr: (line: string) => errors.push(line) };
+    const plan = planCutover(m.mycoHome, { homeDir: m.home }, deps);
+    expect(plan.blockers).toEqual([]);
+    expect(plan.projects.find(p => p.projectId === PROJECT)?.destination).toEqual({ kind: 'destination', serverUrl: SERVER });
+    writeRegistryEntry({ ...binding, serverUrl: PERSONAL, token: personal.token }, { mycoHome: m.mycoHome });
+    expect((await executeCutoverPlan(plan, deps)).ok).toBe(false);
+    expect(errors.join('\n')).toContain('changed after the preview');
+    expect(requests).toBe(0);
+    expect(fs.existsSync(path.join(m.mycoHome, 'member', 'cutover.json'))).toBe(false);
+  });
+
+  it('names a present non-git folder in its destination blocker', () => {
+    fs.rmSync(path.join(m.root, '.git'), { recursive: true });
+    const plan = planCutover(m.mycoHome, { homeDir: m.home });
+    expect(plan.projects.find(p => p.projectId === PROJECT)?.destination).toEqual({ kind: 'undecided' });
+    expect(plan.blockers.join('\n')).toContain(`${m.root} is not a repository`);
+    expect(plan.blockers.join('\n')).toContain(`--route ${PROJECT}=<url> or --skip ${PROJECT}`);
+  });
+
+  it('labels a present unbound repository destination as default-derived', async () => {
+    const result = await m.run(['--dry-run'], { agents: [] });
+    expect(result.ok).toBe(true);
+    expect(result.out.join('\n')).toContain(`${PROJECT} from ${m.vault}: to ${SERVER} (default Deployment; no repository route)`);
+  });
+
+  it('does not carry completion to a re-routed destination when aborted before import', async () => {
+    expect((await m.run([], { fetch: fetchBoth, agents: [] })).ok).toBe(true);
+    fs.rmSync(m.root, { recursive: true });
+    fs.unlinkSync(registryEntryPath(m.root, m.mycoHome));
+    const stopped = new AbortController();
+    stopped.abort();
+    const result = await m.run(['--route', `${PROJECT}=${PERSONAL}`], { fetch: fetchBoth, agents: [], signal: stopped.signal });
+    expect(result.ok).toBe(false);
+    const receipt = readCutoverState(m.mycoHome).migrations![m.vault].projects[PROJECT];
+    expect(receipt.destination).toMatchObject({ serverUrl: PERSONAL });
+    expect(receipt.vault?.state).not.toBe('complete');
+    expect(legacyMigrationState(m.mycoHome).state).not.toBe('moved');
+    expect(projectsOn(personal, 'sessions')).toEqual([{ project_id: HOMELAB }]);
+  });
+
+  it('refuses a real vault write across the copy before uploading anything', async () => {
+    let copying = false;
+    let reads = 0;
+    const original = fs.statSync;
+    const stat = spyOn(fs, 'statSync').mockImplementation((...args) => {
+      if (copying && String(args[0]) === m.vault && ++reads === 2) {
+        const db = openDatabase(m.vault);
+        try { db.run("UPDATE spores SET content='write during copy' WHERE id='gotcha-1'"); } finally { db.close(); }
+      }
+      return Reflect.apply(original, fs, args);
+    });
+    const errors: string[] = [];
+    try {
+      const deps = { fetch: fetchBoth, agents: () => [], unitDirs: [], machineId: TEST_MACHINE_ID,
+        stopDaemon: async () => 'none' as const, stderr: (line: string) => errors.push(line),
+        stdout: (line: string) => { if (line.startsWith('7. ')) copying = true; } };
+      const plan = planCutover(m.mycoHome, { homeDir: m.home }, deps);
+      expect((await executeCutoverPlan(plan, deps)).ok).toBe(false);
+      expect(errors.join('\n')).toContain('changed while it was copied');
+      expect(m.rig.rows('events')).toBe(0); expect(personal.rows('events')).toBe(0);
+    } finally { stat.mockRestore(); }
+  });
+
+  it('keeps an absent-root project on its confirmed destination after the default changes', async () => {
+    expect((await m.run([], { fetch: fetchBoth, agents: [] })).ok).toBe(true);
+    fs.rmSync(m.root, { recursive: true }); fs.unlinkSync(registryEntryPath(m.root, m.mycoHome));
+    recordDefaultDeployment(PERSONAL, { mycoHome: m.mycoHome, replace: true });
+    const result = await m.run([], { fetch: fetchBoth, agents: [] });
+    expect(result.err).toEqual([]); expect(result.ok).toBe(true);
+    expect(readCutoverState(m.mycoHome).migrations![m.vault].projects[PROJECT].destination).toMatchObject({ serverUrl: SERVER });
+    expect(projectsOn(personal, 'sessions')).toEqual([{ project_id: HOMELAB }]);
+  });
+
+  it('imports mapped transcripts from an absent checkout into its connected replacement', async () => {
+    const replacement = path.join(m.home, 'Repos', 'replacement');
+    fs.mkdirSync(replacement, { recursive: true }); execFileSync('git', ['init', '-q', replacement]);
+    writeRegistryEntry({ version: 2, root: replacement, projectId: PROJECT, serverUrl: SERVER, token: m.rig.token, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome: m.mycoHome });
+    fs.rmSync(m.root, { recursive: true });
+    const id = '00000000-0000-4000-8000-000000000003';
+    const transcript = path.join(m.home, '.claude', 'projects', `-${rootSlug(m.root)}`, `${id}.jsonl`);
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, `${JSON.stringify({ type: 'user', cwd: m.root, sessionId: id, message: { content: 'retained mapped transcript' }, timestamp: '2026-08-01T10:00:00Z' })}\n`);
+    const old = new Date(Date.now() - 3 * 60 * 60_000); fs.utimesSync(transcript, old, old);
+    const result = await m.run(['--map', `${m.root}=${replacement}`, '--route', `${PROJECT}=${SERVER}`], { fetch: fetchBoth, agents: [] });
+    expect(result.err).toEqual([]); expect(result.ok).toBe(true);
+    expect(m.rig.env.sqlite.query('SELECT session_id FROM sessions WHERE session_id=?').all(id)).toEqual([{ session_id: id }]);
+    expect(readCutoverState(m.mycoHome).migrations![m.vault].projects[PROJECT].transcripts?.state).toBe('complete');
+  });
+
+  it('receipts describe the verified copy after the last 1.4 write during handover', async () => {
+    const result = await m.run([], { fetch: fetchBoth, agents: [], stopDaemon: async () => {
+      const db = openDatabase(m.vault);
+      try { db.run("UPDATE spores SET content='last 1.4 write' WHERE id='gotcha-1'"); db.run('PRAGMA wal_checkpoint(TRUNCATE)'); } finally { db.close(); }
+      return 'stopped';
+    } });
+    expect(result.err).toEqual([]); expect(result.ok).toBe(true);
+    expect(legacyMigrationState(m.mycoHome).state).toBe('moved');
+  });
+
+  it('refuses new project destinations that appear during handover before uploading anything', async () => {
+    const result = await m.run([], { fetch: fetchBoth, agents: [], stopDaemon: async () => {
+      const db = openDatabase(m.vault);
+      try { db.run("UPDATE spores SET project_id='proj_new' WHERE id='gotcha-1'"); db.run('PRAGMA wal_checkpoint(TRUNCATE)'); } finally { db.close(); }
+      return 'stopped';
+    } });
+    expect(result.ok).toBe(false); expect(result.err.join('\n')).toContain('projects or folders changed during handover');
+    expect(m.rig.rows('events')).toBe(0); expect(personal.rows('events')).toBe(0);
+  });
+
+  it('keeps per-destination receipts when the source changes and a project is skipped', async () => {
+    expect((await m.run([], { fetch: fetchBoth, agents: [] })).ok).toBe(true);
+    const old = readCutoverState(m.mycoHome).migrations![m.vault];
+    const db = openDatabase(m.vault);
+    try { db.run("UPDATE spores SET content='later 1.4 write' WHERE id='gotcha-1'"); } finally { db.close(); }
+    expect((await m.run(['--skip', PROJECT], { fetch: fetchBoth, agents: [] })).ok).toBe(true);
+    const receipt = readCutoverState(m.mycoHome).migrations![m.vault].projects[PROJECT];
+    expect(receipt.destination).toMatchObject({ skip: true });
+    expect(receipt.destinations![deploymentKeyFor(SERVER)]).toMatchObject({ digest: old.digest, vault: { state: 'complete' } });
+  });
+
+  it('requires an explicit disposition when the old folder now belongs to another Project', () => {
+    writeRegistryEntry({ version: 2, root: m.root, projectId: 'proj_unrelated', serverUrl: PERSONAL, token: personal.token, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome: m.mycoHome });
+    expect(planCutover(m.mycoHome, { homeDir: m.home }).blockers.join('\n')).toContain(`--route ${PROJECT}=<url> or --skip ${PROJECT}`);
+    const explicit = planCutover(m.mycoHome, { homeDir: m.home, routes: new Map([[PROJECT, SERVER]]) });
+    expect(explicit.blockers).toEqual([]);
+    expect(explicit.projects.find((p) => p.projectId === PROJECT)?.destination).toEqual({ kind: 'destination', serverUrl: SERVER });
   });
 });

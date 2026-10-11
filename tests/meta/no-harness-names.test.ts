@@ -33,6 +33,7 @@ const WHOLE_PACKAGES = [path.join(REPO_ROOT, 'packages', 'myco-shared', 'src'), 
 
 /** The registries that exist to be per-harness: transcript adapters and parsers, plugin host templates, worker drivers, and the manifest data, its loader and what it generates. */
 const REGISTRIES: readonly RegExp[] = [
+  /^packages\/myco\/src\/member\/legacy-registration-data\.ts$/,
   /^packages\/myco\/src\/symbionts\/(claude-code|codex|cursor|copilot|windsurf|antigravity)\.ts$/,
   /^packages\/myco\/src\/symbionts\/parsers\//,
   /^packages\/myco\/src\/symbionts\/templates\//,

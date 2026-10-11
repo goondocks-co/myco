@@ -11,8 +11,8 @@
  * and the dispatcher are a member's.
  *
  * `doctor`, `config get`, `logs` and `--help` run as the member there too. A
- * checkout with no membership still takes the verb's 1.4 handler, which
- * refuses without a vault and creates none, and prints the 1.4 command list.
+ * checkout with no membership refuses without creating a vault. Only unmoved
+ * 1.4 capture retains its handlers and command list.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -201,11 +201,12 @@ describe('the dispatched read verbs in a fresh joined checkout', () => {
     expect(legacyArtifacts(m)).toEqual([]);
   }, 40_000);
 
-  it('a checkout with no membership takes the local handler, which refuses without a vault and creates none', async () => {
+  it('an unjoined checkout refuses without creating a vault, using legacy handlers only while unmoved', async () => {
     const m = machine(false);
     const ran = await cli(m, 'search', 'quokka');
     expect(ran.status).toBe(1);
-    expect(ran.stderr).toContain('No myco.yaml found');
+    expect(ran.stderr).toContain(`${m.checkout} holds no membership under ${m.home}`);
+    expect(ran.stderr).not.toContain('No myco.yaml found');
     const fresh = await cli(m, '--help');
     expect(fresh.stdout).toContain('Project intelligence (answered by the Deployment for this project)');
     fs.mkdirSync(path.join(m.home, 'groves'));
@@ -215,6 +216,8 @@ describe('the dispatched read verbs in a fresh joined checkout', () => {
     expect(legacy.stdout).toContain('grove <subcommand>');
     expect(legacy.stdout).not.toContain('2.0 member (a project joined');
     expect(legacyArtifacts(m)).toEqual(before);
+    const legacyRead = await cli(m, 'search', 'quokka');
+    expect(legacyRead.stderr).toContain('No myco.yaml found');
     const vault = path.join(m.home, 'myco.db');
     const stat = fs.statSync(vault);
     fs.mkdirSync(path.join(m.home, 'member'), { recursive: true });
@@ -222,10 +225,31 @@ describe('the dispatched read verbs in a fresh joined checkout', () => {
     const migratedHelp = await cli(m, '--help');
     expect(migratedHelp.stdout).toContain('Project intelligence (answered by the Deployment for this project)');
     expect(migratedHelp.stdout).not.toContain('grove <subcommand>');
+    const migratedRead = await cli(m, 'search', 'quokka');
+    expect(migratedRead.status).toBe(1);
+    expect(migratedRead.stderr).toContain(`${m.checkout} holds no membership under ${m.home}`);
+    expect(migratedRead.stderr).not.toContain('No myco.yaml found');
     const migratedDoctor = await cli(m, 'doctor');
     expect(migratedDoctor.stdout).toContain('myco doctor (member)');
     expect(migratedDoctor.stdout).not.toContain('Myco 1.4');
     expect(migratedDoctor.stdout).not.toContain('migration pending');
+    expect(migratedDoctor.stdout).toContain('moved by an earlier version');
+    expect(migratedDoctor.stdout).toContain('confirm where each project went');
     expect(legacyArtifacts(m)).toEqual(before);
+  }, 40_000);
+
+  it('--help succeeds with an unreadable legacy registration and prints only member help', async () => {
+    const m = machine(false);
+    const config = path.join(m.userHome, '.codex', 'config.toml');
+    fs.mkdirSync(path.dirname(config), { recursive: true });
+    fs.writeFileSync(config, '[mcp_servers.myco\ncommand = "myco"\n');
+    const before = fs.readFileSync(config, 'utf8');
+    const help = await cli(m, '--help');
+    expect(help.status).toBe(0);
+    expect(help.stderr).toBe('');
+    expect(help.stdout).toContain('Project intelligence (answered by the Deployment for this project)');
+    expect(help.stdout).not.toMatch(/cannot read|unavailable|config.toml|grove <subcommand>/);
+    expect(fs.readFileSync(config, 'utf8')).toBe(before);
+    expect(legacyArtifacts(m)).toEqual([]);
   }, 40_000);
 });

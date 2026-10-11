@@ -1,3 +1,5 @@
+import { parseSystemdCommand } from '@myco/member/unit-parsers.js';
+export { parseSystemdCommand } from '@myco/member/unit-parsers.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -231,54 +233,6 @@ export class SystemdUserServiceManager implements ServiceManager {
     }
     throw new Error(`Timed out waiting for systemd service ${unit} to stop`);
   }
-}
-
-export function parseSystemdCommand(unit: string): InstalledServiceCommand | null {
-  const serviceSections = [...unit.matchAll(/^\[Service\]\s*$/gm)];
-  if (serviceSections.length !== 1) return null;
-  const sectionStart = serviceSections[0].index! + serviceSections[0][0].length;
-  const sectionRemainder = unit.slice(sectionStart);
-  const nextSection = sectionRemainder.search(/^\[[^\]]+\]\s*$/m);
-  const serviceSection = nextSection === -1
-    ? sectionRemainder
-    : sectionRemainder.slice(0, nextSection);
-  const execStartLines = serviceSection
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith('ExecStart='));
-  if (execStartLines.length !== 1) return null;
-  const words = parseSystemdQuotedWords(execStartLines[0].slice('ExecStart='.length));
-  if (!words || words.length === 0) return null;
-  return { executable: words[0], args: words.slice(1) };
-}
-
-function parseSystemdQuotedWords(value: string): string[] | null {
-  const words: string[] = [];
-  let index = 0;
-  while (index < value.length) {
-    while (value[index] === ' ') index++;
-    if (index === value.length) break;
-    if (value[index] !== '"') return null;
-    index++;
-    let word = '';
-    let closed = false;
-    while (index < value.length) {
-      const char = value[index++];
-      if (char === '"') {
-        closed = true;
-        break;
-      }
-      if (char === '\\') {
-        const escaped = value[index++];
-        if (escaped !== '\\' && escaped !== '"') return null;
-        word += escaped;
-      } else {
-        word += char;
-      }
-    }
-    if (!closed || (index < value.length && value[index] !== ' ')) return null;
-    words.push(word);
-  }
-  return words;
 }
 
 function isSystemdUnitAbsent(stdout: string): boolean {
