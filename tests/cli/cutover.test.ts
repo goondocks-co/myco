@@ -1161,6 +1161,26 @@ describe('cutover project destinations and receipts', () => {
     expect(projectsOn(personal, 'sessions')).toEqual([{ project_id: HOMELAB }]);
   });
 
+  it('refuses a deleted transcript directory claimed by work and personal records', async () => {
+    writeRegistryEntry({ version: 2, root: m.root, projectId: PROJECT, serverUrl: SERVER, token: m.rig.token, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome: m.mycoHome });
+    const gone = path.join(m.home, 'deleted-ambiguous');
+    for (const root of [m.root, homelab]) {
+      const record = path.join(root, '.git', 'worktrees', 'claim');
+      fs.mkdirSync(record, { recursive: true });
+      fs.writeFileSync(path.join(record, 'gitdir'), `${gone}/.git\n`);
+      fs.writeFileSync(path.join(record, 'commondir'), '../..\n');
+    }
+    const id = '00000000-0000-4000-8000-000000000004';
+    const transcript = path.join(m.home, '.claude', 'projects', `-${rootSlug(gone)}`, `${id}.jsonl`);
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, `${JSON.stringify({ type: 'user', cwd: gone, sessionId: id, message: { content: 'ambiguous transcript' }, timestamp: '2026-08-01T10:00:00Z' })}\n`);
+    const old = new Date(Date.now() - 3 * 60 * 60_000); fs.utimesSync(transcript, old, old);
+    const result = await m.run([], { fetch: fetchBoth, agents: [] });
+    expect(result.err).toEqual([]); expect(result.ok).toBe(true);
+    expect(result.out.join('\n')).toContain(gone);
+    for (const server of [m.rig, personal]) expect(server.env.sqlite.query('SELECT session_id FROM sessions WHERE session_id=?').all(id)).toEqual([]);
+  });
+
   it('imports mapped transcripts from an absent checkout into its connected replacement', async () => {
     const replacement = path.join(m.home, 'Repos', 'replacement');
     fs.mkdirSync(replacement, { recursive: true }); execFileSync('git', ['init', '-q', replacement]);

@@ -3,6 +3,9 @@ import './temp-subprocesses.js';
 import os from 'node:os';
 import { sandboxTestHome } from '../../scripts/test-environment.mjs';
 
+// Fixture roots define the temporary boundary, independently of the harness's enclosing scratchpad.
+process.env.MYCO_TEMPORARY_FOLDERS = TEST_TEMP_ROOT;
+
 export const SANDBOX_HOME = sandboxTestHome(TEST_TEMP_ROOT);
 const userInfo = os.userInfo.bind(os);
 

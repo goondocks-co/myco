@@ -178,13 +178,14 @@ export function reportLines(report: ImportReport, dryRun: boolean): string[] {
   if (report.stoppedBy !== undefined && !report.projects.some((p) => p.endedBy !== undefined && !p.continued)) lines.push(stoppedByLine(report.stoppedBy));
   if (report.active > 0) lines.push(`${report.active} transcripts are still being written and were left to the agent writing them.`);
   if (report.unattributable > 0) lines.push(`${report.unattributable} transcripts name no project and were left alone.`);
-  if (report.dropped > 0) lines.push(`${report.dropped} transcripts are sub-agent or automation runs that capture leaves out, and were left out here too.`);
+  if (report.dropped > 0) lines.push(`${report.dropped} transcripts are scratchpad, sub-agent or automation runs that capture leaves out, and were left out here too.`);
   if (report.excluded > 0) lines.push(`${report.excluded} transcripts belong to sessions deleted in Myco 1.4 and were left out.`);
   if (report.unbound > 0) {
     lines.push(`${report.unbound} transcripts belong to projects this Deployment does not hold:`);
     const dirs = Object.entries(report.unboundDirectories).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     for (const [dir, n] of dirs.slice(0, UNBOUND_DIRECTORIES_SHOWN)) lines.push(`  ${n} in ${dir}`);
     if (dirs.length > UNBOUND_DIRECTORIES_SHOWN) lines.push(`  and ${dirs.length - UNBOUND_DIRECTORIES_SHOWN} more directories`);
+    if (report.mappable !== 0) lines.push('For a removed checkout, use --map <recorded-directory>=<connected-repository-root>.');
   }
   if (report.narrowed !== undefined) lines.push(`Skipped by --project: ${report.narrowed.join(', ')}.`);
   if (lines.length === 0) lines.push('Nothing to import.');

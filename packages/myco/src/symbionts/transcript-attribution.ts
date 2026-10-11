@@ -28,7 +28,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAtPath } from '../utils/dot-path.js';
-import { runGitAnswer } from '../utils/git.js';
+import { canonicalPath, resolveRepositoryRoot, repositoryRootResolver } from '../utils/git-files.js';
+import { isAgentScratchDirectory } from '../utils/temporary-folders.js';
+export { canonicalPath } from '../utils/git-files.js';
 import { manifestTranscriptDiscovery } from './transcript-discovery.js';
 
 /** Bytes of a transcript read while looking for the working directory. */
@@ -126,22 +128,22 @@ export function attributeByPathSlug(filePath: string, roots: Iterable<string>): 
 }
 
 /**
- * Where a transcript belongs, as one of three answers.
+ * Where a transcript belongs, including scratchpads excluded from project history.
  *
- * The three are kept apart because they mean different things to whoever reads
- * the report. `bound` is a checkout this machine works in. `elsewhere` is a
+ * `bound` is a checkout this machine works in. `elsewhere` is a
  * real directory the transcript names that no binding covers — "your other
  * project is not connected here", which a person can act on. `unknown` is a
  * transcript that names no place at all, which is a property of the harness's
- * format rather than of this machine's setup.
+ * format rather than of this machine's setup. `excluded` is an agent scratchpad.
  *
  * Collapsing the last two would report a disconnected project as an unreadable
  * one, and hide the only case a person can fix.
  */
 export type Attribution =
   | { kind: 'bound'; root: string }
-  | { kind: 'elsewhere'; directory: string }
-  | { kind: 'unknown' };
+  | { kind: 'elsewhere'; directory: string; mappable?: boolean }
+  | { kind: 'unknown' }
+  | { kind: 'excluded' };
 
 /**
  * A recorded working directory mapped onto a root by the person importing: a
@@ -173,135 +175,70 @@ export function mappingCovers(mapping: DirectoryMapping, dir: string): boolean {
   return relative.split(path.sep)[0].startsWith(path.basename(prefix));
 }
 
-/**
- * A path as the filesystem spells it: the nearest existing ancestor resolved
- * through `realpath`, which answers the case a case-insensitive volume stores,
- * with whatever lies below it kept as written.
- */
-export function canonicalPath(p: string): string {
-  const absolute = path.resolve(p);
-  let existing = absolute;
-  const rest: string[] = [];
-  for (;;) {
-    try {
-      const real = fs.realpathSync.native(existing);
-      return rest.length === 0 ? real : path.join(real, ...rest.reverse());
-    } catch {
-      const parent = path.dirname(existing);
-      if (parent === existing) return absolute;
-      rest.push(path.basename(existing));
-      existing = parent;
-    }
-  }
-}
-
-/** A repository remote reduced to host and path, so an https and an ssh spelling of one repository compare equal. */
-export function remoteIdentity(url: string): string {
-  const trimmed = url.trim().replace(/\/+$/, '').replace(/\.git$/, '');
-  const scp = /^[^@/]+@([^:/]+):(.+)$/.exec(trimmed);
-  if (scp) return `${scp[1].toLowerCase()}/${scp[2]}`;
-  try {
-    const parsed = new URL(trimmed);
-    return `${parsed.hostname.toLowerCase()}${parsed.pathname.replace(/\/+$/, '')}`;
-  } catch {
-    return trimmed;
-  }
-}
-
-/** What placement asks git, replaceable so a test answers without a repository. */
+/** Repository resolution, replaceable so a test answers without a checkout. */
 export interface PlacementGit {
   /** The main checkout of the repository a directory sits in, or null when it sits in none. */
   mainCheckout(dir: string): string | null;
-  /** The `origin` remote of a checkout, or null when it names none. */
-  remoteOf(root: string): string | null;
 }
 
 const git: PlacementGit = {
-  mainCheckout(dir) {
-    try {
-      return path.resolve(dir, runGitAnswer(['rev-parse', '--git-common-dir'], dir), '..');
-    } catch {
-      return null;
-    }
-  },
-  remoteOf(root) {
-    try {
-      return runGitAnswer(['remote', 'get-url', 'origin'], root);
-    } catch {
-      return null;
-    }
-  },
+  mainCheckout: resolveRepositoryRoot,
 };
 
 export interface PlacementOptions {
   mappings?: readonly DirectoryMapping[];
   git?: PlacementGit;
+  /** All connected repositories, including those routed to another Deployment. */
+  repositoryRoots?: Iterable<string>;
 }
 
 /**
  * Attribute transcripts to a fixed set of roots.
  *
- * A recorded directory is placed, in order: under a root by its canonical
- * path; under the root that is its repository's main checkout, when the
- * directory still exists; under a root an explicit mapping names, when the
- * directory is gone or in no repository; under the root whose remote the
- * transcript records. Anything else is `elsewhere`. The
- * answers git gives are asked once per directory and once per root.
+ * A recorded directory is placed by its repository's main checkout, read from
+ * Git's files or retained worktree records; by an exact connected root; or by
+ * an explicit mapping when no repository owns the directory.
+ * Repository reads are cached once per directory.
  */
 export function transcriptPlacer(roots: Iterable<string>, opts: PlacementOptions = {}): (agent: string, filePath: string) => Attribution {
   const known = [...roots];
   const canonicalRoots = new Map(known.map((root) => [canonicalPath(root), root]));
+  const repositoryRoots = [...(opts.repositoryRoots ?? known)];
+  const resolve = repositoryRootResolver(repositoryRoots);
   const ask = opts.git ?? git;
   const mappings = opts.mappings ?? [];
-  const placed = new Map<string, string | null>();
-  let remotes: Map<string, string> | null = null;
+  const placed = new Map<string, { root: string | null; inRepository: boolean }>();
 
-  const rootFor = (dir: string): string | null => {
-    const hit = rootContaining(canonicalPath(dir), canonicalRoots.keys());
-    return hit === null ? null : canonicalRoots.get(hit) ?? null;
-  };
-
-  const placeDirectory = (recorded: string): string | null => {
-    if (placed.has(recorded)) return placed.get(recorded) ?? null;
-    let root = rootFor(recorded);
-    // A directory still on disk inside a repository belongs to that repository
-    // alone: a mapping never moves another checkout's history into a root.
-    let inRepository = false;
-    if (root === null && fs.existsSync(recorded)) {
-      const main = ask.mainCheckout(recorded);
-      inRepository = main !== null;
-      if (main !== null) root = rootFor(main);
-    }
+  const placeDirectory = (recorded: string): { root: string | null; inRepository: boolean } => {
+    const cached = placed.get(recorded);
+    if (cached !== undefined) return cached;
+    const main = opts.git === undefined
+      ? resolve(recorded)
+      : ask.mainCheckout(recorded);
+    const inRepository = main !== null;
+    let root = main === null
+      ? canonicalRoots.get(canonicalPath(recorded)) ?? null
+      : canonicalRoots.get(canonicalPath(main)) ?? null;
     if (root === null && !inRepository) {
       const mapping = mappings.find((m) => mappingCovers(m, recorded) || mappingCovers(m, canonicalPath(recorded)));
-      if (mapping !== undefined) root = rootFor(mapping.to);
-    }
-    placed.set(recorded, root);
-    return root;
-  };
-
-  const rootWithRemote = (recorded: string): string | null => {
-    if (remotes === null) {
-      remotes = new Map();
-      for (const root of known) {
-        const remote = ask.remoteOf(root);
-        if (remote !== null && !remotes.has(remoteIdentity(remote))) remotes.set(remoteIdentity(remote), root);
+      if (mapping !== undefined) {
+        const target = ask.mainCheckout(mapping.to) ?? mapping.to;
+        root = canonicalRoots.get(canonicalPath(target)) ?? null;
       }
     }
-    return remotes.get(remoteIdentity(recorded)) ?? null;
+    const result = { root, inRepository };
+    placed.set(recorded, result);
+    return result;
   };
 
   return (agent, filePath) => {
     const discovery = manifestTranscriptDiscovery(agent);
     const recorded = discovery?.transcriptCwdPath === undefined ? null : transcriptHeadField(filePath, discovery.transcriptCwdPath);
     if (recorded !== null) {
-      // A recorded directory is not a root: an agent started in a subdirectory
-      // records that subdirectory, so the answer is the known root containing it.
-      const root = placeDirectory(recorded);
+      if (isAgentScratchDirectory(recorded)) return { kind: 'excluded' };
+      const { root, inRepository } = placeDirectory(recorded);
       if (root !== null) return { kind: 'bound', root };
-      const repository = discovery?.transcriptRepositoryPath === undefined ? null : transcriptHeadField(filePath, discovery.transcriptRepositoryPath);
-      const byRemote = repository === null ? null : rootWithRemote(repository);
-      return byRemote === null ? { kind: 'elsewhere', directory: recorded } : { kind: 'bound', root: byRemote };
+      return { kind: 'elsewhere', directory: recorded, ...(!inRepository ? { mappable: true } : {}) };
     }
     const bySlug = attributeByPathSlug(filePath, known);
     return bySlug === null ? { kind: 'unknown' } : { kind: 'bound', root: bySlug };

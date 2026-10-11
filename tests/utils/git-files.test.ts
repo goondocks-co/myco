@@ -7,14 +7,16 @@
  * a repository at all, each against git's own answer. The plain layouts are decided from the files alone; the rest
  * fall back to git, and answer the same.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { resolveMemberProjectRoot } from '@myco/member/credential.js';
+import { silentRepository } from '@myco/member/auto-join.js';
 import { gitHead } from '@myco/member/git-facts.js';
 import { isSafeProjectRoot, resolveMainRepoRoot, resolveWorktreeRoot } from '@myco/project-root.js';
-import { readRepoHead, readRepoLayout, UNUSUAL } from '@myco/utils/git-files.js';
+import { canonicalPath, repositoryRootOf, resolveRepositoryRoot, readRepoHead, readRepoLayout, UNUSUAL } from '@myco/utils/git-files.js';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.ts';
 import { supportsGitReftable } from '../helpers/git-capabilities.ts';
 
@@ -233,12 +235,165 @@ describe('a repository read from its own files', () => {
     const r = repo(path.join(base(), 'r'));
     commit(r);
     expect(readRepoLayout(r, { GIT_DIR: path.join(r, '.git') })).toBe(UNUSUAL);
-    expect(readRepoLayout(r, { GIT_CEILING_DIRECTORIES: r })).toBe(UNUSUAL);
+    // Windows requires Git to verify ownership even when the ceiling permits discovery.
+    expect(readRepoLayout(r, { GIT_CEILING_DIRECTORIES: r }) === UNUSUAL).toBe(process.platform === 'win32');
+    const sub = path.join(r, 'sub'); fs.mkdirSync(sub);
+    expect(readRepoLayout(sub, { GIT_CEILING_DIRECTORIES: r })).toBeNull();
+    // Git ignores relative ceiling entries.
+    expect(resolveRepositoryRoot(sub, [], { GIT_CEILING_DIRECTORIES: '..' })).toBe(r);
   });
 
   it.skipIf(supportsReftable)('asks git for a repository whose config names another ref storage, even where this git cannot read it', () => {
     const r = repo(path.join(base(), 'r'));
     fs.appendFileSync(path.join(r, '.git', 'config'), '[extensions]\n\trefStorage = reftable\n');
     expect(readRepoLayout(r, {})).toBe(UNUSUAL);
+  });
+});
+
+describe('file-only repository attribution on Windows', () => {
+  it('recognizes the case-insensitive common directory marker', () => {
+    const main = path.join(base(), 'Main');
+    const commonDir = path.join(main, '.GIT');
+    const marker = path.join(main, '.git');
+    fs.mkdirSync(marker, { recursive: true });
+    if (!fs.existsSync(commonDir)) fs.symlinkSync(marker, commonDir, process.platform === 'win32' ? 'junction' : 'dir');
+    expect(repositoryRootOf({ top: path.join(base(), 'wt'), gitDir: path.join(commonDir, 'worktrees', 'wt'), commonDir })).toBe(main);
+  });
+  it.skipIf(process.platform !== 'win32')('reads drive letters, backslashes, relative commondir and case variants', () => {
+    const parent = base();
+    const main = repo(path.join(parent, 'MainCheckout'));
+    commit(main);
+    const wt = path.join(parent, 'LinkedCheckout');
+    git(main, 'worktree', 'add', '-q', wt, '-b', 'linked');
+    const gitDir = path.join(main, '.git', 'worktrees', 'LinkedCheckout');
+    // Windows resolves file pointers case-insensitively; commondir is relative to the named git directory.
+    fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${gitDir.toUpperCase()}\n`);
+    fs.writeFileSync(path.join(gitDir, 'commondir'), '..\\..\n');
+    const sub = path.join(wt, 'src');
+    fs.mkdirSync(sub);
+    expect(main).toMatch(/^[A-Za-z]:\\/);
+    for (const cwd of [wt, sub, sub.toLowerCase()]) {
+      const root = resolveRepositoryRoot(cwd, [], {});
+      expect(root).not.toBeNull();
+      expect(canonicalPath(root!)).toBe(canonicalPath(main));
+    }
+    // A regular checkout retains the spelling used by its existing registry key, including 8.3 parents.
+    expect(resolveRepositoryRoot(main, [], {})).toBe(main);
+  });
+});
+
+
+describe('member repository identity', () => {
+  it('keeps sibling submodules and a separate git directory as distinct work trees', () => {
+    const d = base();
+    const lib = repo(path.join(d, 'lib')); commit(lib);
+    const superproject = repo(path.join(d, 'super')); commit(superproject);
+    for (const name of ['sub', 'sub2']) {
+      git(superproject, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, name);
+      const top = path.join(superproject, name);
+      fs.mkdirSync(path.join(top, 'src'));
+      expect(resolveRepositoryRoot(path.join(top, 'src'), [], {})).toBe(top);
+      expect(resolveMemberProjectRoot(path.join(top, 'src'))).toBe(top);
+    }
+    const separate = repo(path.join(d, 'separate'), ['--separate-git-dir', path.join(d, 'store.git')]);
+    commit(separate);
+    expect(resolveRepositoryRoot(separate, [], {})).toBe(separate);
+    expect(resolveMemberProjectRoot(separate)).toBe(separate);
+  });
+
+  it('keeps linked identity when another config section has a bare key', () => {
+    const d = base(); const main = repo(path.join(d, 'main')); commit(main);
+    const wt = path.join(d, 'wt'); git(main, 'worktree', 'add', '-q', wt, '-b', 'wt');
+    git(main, 'config', 'alias.bare', 'true');
+    expect(git(main, 'config', '--get', 'core.bare')).toBe('false');
+    // Linked pointers carry Git's long-name spelling even when the fixture parent uses an 8.3 alias.
+    const expected = gitSays(wt).root;
+    expect(resolveRepositoryRoot(wt, [], {})).toBe(expected);
+    expect(resolveMemberProjectRoot(wt)).toBe(expected);
+  });
+
+  it('keeps a separate uppercase Git directory distinct on case-sensitive filesystems', () => {
+    const d = base();
+    const store = path.join(d, 'store', '.GIT');
+    fs.mkdirSync(path.dirname(store));
+    const main = repo(path.join(d, 'main'), ['--separate-git-dir', store]); commit(main);
+    if (fs.existsSync(path.join(path.dirname(store), '.git'))) return;
+    const wt = path.join(d, 'wt'); git(main, 'worktree', 'add', '-q', wt, '-b', 'wt');
+    expect(resolveRepositoryRoot(wt, [], {})).toBe(wt);
+    expect(resolveMemberProjectRoot(wt)).toBe(wt);
+  });
+
+  it('uses a bare repository worktree top instead of the common directory parent', () => {
+    const d = base();
+    const source = repo(path.join(d, 'source')); commit(source);
+    git(d, 'clone', '-q', '--bare', source, path.join(d, 'bare.git'));
+    const wt = path.join(d, 'bare-wt');
+    git(d, '--git-dir', path.join(d, 'bare.git'), 'worktree', 'add', '-q', wt);
+    expect(resolveRepositoryRoot(wt, [], {})).toBe(wt);
+    expect(resolveMemberProjectRoot(wt)).toBe(wt);
+  });
+
+  it('applies ceilings to discovery, below the ceiling and at the starting directory', () => {
+    const d = base(); const main = repo(path.join(d, 'main')); commit(main);
+    const wt = path.join(d, 'wt'); git(main, 'worktree', 'add', '-q', wt, '-b', 'wt');
+    const sub = path.join(main, 'sub', 'deep'); fs.mkdirSync(sub, { recursive: true });
+    const held = process.env.GIT_CEILING_DIRECTORIES;
+    process.env.GIT_CEILING_DIRECTORIES = '/Users';
+    try {
+      for (const cwd of [wt, sub, main]) {
+        const expected = cwd === wt ? gitSays(wt).root : main;
+        expect(resolveMemberProjectRoot(cwd)).toBe(expected);
+        expect(resolveRepositoryRoot(cwd)).toBe(expected);
+        expect(silentRepository(cwd, { mycoHome: path.join(d, 'myco'), env: { ...process.env, MYCO_TEMPORARY_FOLDERS: path.join(d, 'elsewhere') } })).toBe(false);
+      }
+    } finally {
+      if (held === undefined) delete process.env.GIT_CEILING_DIRECTORIES; else process.env.GIT_CEILING_DIRECTORIES = held;
+    }
+  });
+
+  it('uses the live Git verdict when environment steering leaves discovery undecided', () => {
+    const d = base(); const main = repo(path.join(d, 'main')); commit(main);
+    const wt = path.join(d, 'wt'); git(main, 'worktree', 'add', '-q', wt, '-b', 'wt');
+    const sub = path.join(wt, 'src'); fs.mkdirSync(sub);
+    for (const [name, value] of [['GIT_INDEX_FILE', path.join(d, 'custom-index')], ['GIT_DIR', path.join(main, '.git')]]) {
+      const held = process.env[name];
+      process.env[name] = value;
+      try {
+        expect(readRepoLayout(sub)).toBe(UNUSUAL);
+        expect(resolveMemberProjectRoot(sub)).toBe(gitSays(sub).root);
+        expect(silentRepository(sub, { mycoHome: path.join(d, 'myco'), env: { ...process.env, MYCO_TEMPORARY_FOLDERS: path.join(d, 'elsewhere') } })).toBe(false);
+      } finally {
+        if (held === undefined) delete process.env[name]; else process.env[name] = held;
+      }
+    }
+  });
+
+  it('keeps a literal main-checkout alias when Git decides steered live discovery', () => {
+    const d = base(); const main = repo(path.join(d, 'main')); commit(main);
+    const alias = path.join(d, 'alias'); fs.symlinkSync(main, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    fs.mkdirSync(path.join(main, 'src'));
+    const held = process.env.GIT_INDEX_FILE;
+    process.env.GIT_INDEX_FILE = path.join(d, 'custom-index');
+    try {
+      for (const cwd of [alias, path.join(alias, 'src')]) expect(resolveMemberProjectRoot(cwd)).toBe(alias);
+    } finally {
+      if (held === undefined) delete process.env.GIT_INDEX_FILE; else process.env.GIT_INDEX_FILE = held;
+    }
+  });
+
+  it('never scans retained worktree records during live root or eligibility reads', () => {
+    const d = base(); const main = repo(path.join(d, 'main')); commit(main);
+    const sub = path.join(main, 'sub'); fs.mkdirSync(sub);
+    const readdir = fs.readdirSync;
+    let scans = 0;
+    const spy = spyOn(fs, 'readdirSync').mockImplementation((...args) => {
+      if (path.basename(String(args[0])) === 'worktrees') scans += 1;
+      return Reflect.apply(readdir, fs, args);
+    });
+    try {
+      expect(resolveMemberProjectRoot(sub)).toBe(main);
+      expect(silentRepository(sub, { mycoHome: path.join(d, 'myco'), env: { MYCO_TEMPORARY_FOLDERS: path.join(d, 'elsewhere') } })).toBe(false);
+      expect(scans).toBe(0);
+    } finally { spy.mockRestore(); }
   });
 });

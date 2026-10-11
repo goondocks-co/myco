@@ -11,6 +11,7 @@ import { rootKeyFor } from './auto-join.js';
  */
 import { machinePlanDirs } from './machine-settings.js';
 import fs from 'node:fs';
+import { isAgentScratchDirectory } from '../utils/temporary-folders.js';
 import { readHookInput } from '../hooks/input.js';
 import { NO_AGENT } from '../hooks/normalize.js';
 import { recordRefusedHook } from './refused-hooks.js';
@@ -196,6 +197,11 @@ export async function runMemberHook(
     // One directory decides the project root and the home its membership is
     // held under, so a pinned project's hooks read the registry that holds it.
     const cwd = hookCwd(input);
+    const env = opts.env ?? process.env;
+    if (isAgentScratchDirectory(cwd, env)) {
+      process.stderr.write('[myco] member: agent scratch directory — no capture\n');
+      return;
+    }
     const mycoHome = resolveMycoHome({ cwd });
     // A command that declares no credential source is refused by the resolve below; it is counted here, where its home is known.
     if (source === null) recordRefusedHook('no-credential', { mycoHome, now: now(), hook: hookName });
@@ -208,7 +214,6 @@ export async function runMemberHook(
     // presented, which spends it, only when the declared source reads that entry
     // (`redeemsJoinCode`): a single-use code spent on a hook that then resolves
     // elsewhere is a code gone and a machine that never captures.
-    const env = opts.env ?? process.env;
     if (redeemsJoinCode(source, env)) {
       await ensureJoinedFromCode({
         env, fetch: opts.fetch as typeof fetch | undefined, root: resolveMemberProjectRoot(cwd), mycoHome, budget,

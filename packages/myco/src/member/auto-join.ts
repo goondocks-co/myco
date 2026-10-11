@@ -24,7 +24,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { HELD_CAPTURE_TTL_DAYS, type HeldState, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
-import { isSafeProjectRoot } from '../project-root.js';
+import { resolveRepositoryProjectRoot, isSafeProjectRoot } from '../project-root.js';
+import { temporaryFolders, isAgentScratchDirectory } from '../utils/temporary-folders.js';
+export { temporaryFolders } from '../utils/temporary-folders.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { repositoryName, repositoryRemote } from '@myco/utils/git.js';
 import { LifecycleLock, type LockHandle } from '../utils/lifecycle-lock.js';
@@ -232,7 +234,7 @@ export function machineSalt(mycoHome: string): string {
   return placed;
 }
 
-/** A repository's key on this machine: its root, salted with this machine's salt, as hex. */
+/** Machine capture settings deduplicate aliases by physical root; registry bindings retain their literal root spelling. */
 export function rootKeyFor(root: string, mycoHome: string): string {
   return crypto.createHash('sha256').update(`${machineSalt(mycoHome)}\0${real(root)}`).digest('hex').slice(0, 32);
 }
@@ -251,7 +253,7 @@ const lockPath = (rootKey: string, mycoHome: string): string => path.join(autoJo
  * name with no credentials, port or scheme in it (`normalizeRemote`). A remote that is not one is none.
  */
 export function repositoryAt(root: string, mycoHome: string): Repository {
-  const resolved = path.resolve(root);
+  const resolved = resolveRepositoryProjectRoot(root) ?? path.resolve(root);
   const remote = repositoryRemote(resolved);
   return { root: resolved, rootKey: rootKeyFor(resolved, mycoHome), label: repositoryName(resolved, { remote }), remote };
 }
@@ -273,7 +275,7 @@ function within(child: string, parent: string): boolean {
  */
 export function silentRepository(root: string, opts: { mycoHome: string; env?: NodeJS.ProcessEnv; home?: string }): boolean {
   const env = opts.env ?? process.env;
-  if (!isSafeProjectRoot(root, env)) return true;
+  if (isAgentScratchDirectory(root, env) || !isSafeProjectRoot(root, env)) return true;
   const home = real(opts.home ?? os.homedir());
   const at = real(root);
   if (temporaryFolders(env).some((dir) => within(at, real(dir)))) return true;
@@ -282,17 +284,6 @@ export function silentRepository(root: string, opts: { mycoHome: string; env?: N
   // Every Myco home directly under the home folder: `~/.myco`, `~/.myco-dev`, and the like.
   const rel = path.relative(home, at);
   return !rel.startsWith('..') && !path.isAbsolute(rel) && rel.split(path.sep)[0]!.startsWith('.myco');
-}
-
-/**
- * The folders this machine treats as temporary: `MYCO_TEMPORARY_FOLDERS` (separated as `PATH` is) where it is set, and
- * the system's otherwise.
- */
-export function temporaryFolders(env: NodeJS.ProcessEnv = process.env): string[] {
-  const named = env.MYCO_TEMPORARY_FOLDERS;
-  if (named !== undefined && named.length > 0) return named.split(path.delimiter).filter((dir) => dir.length > 0);
-  return [os.tmpdir(), env.TMPDIR, '/tmp', '/private/tmp', '/var/folders', '/private/var/folders']
-    .filter((dir): dir is string => typeof dir === 'string' && dir.length > 0);
 }
 
 /**
