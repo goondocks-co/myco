@@ -6,7 +6,7 @@ import path from 'node:path';
 import { resolveHomeDir, resolveMycoHome } from '../paths/home.js';
 import { isDefaultMycoHome } from '../grove/paths.js';
 import { deploymentUrl, listDeploymentMemberships, readDeploymentMembership, readDeploymentMembershipResult } from '../member/registry.js';
-import { type DetectedHarness } from '../runner/detect.js';
+import { type DetectedHarness, type locate } from '../runner/detect.js';
 import { type WorkerAdmission } from '../runner/loop.js';
 import { type TerminalRefusal } from '../runner/refusal.js';
 import {
@@ -36,7 +36,8 @@ export interface WorkerServiceDeps {
   binaryPath?: string;
   platform?: NodeJS.Platform;
   runner?: ServiceRunner;
-  detect?: () => readonly DetectedHarness[];
+  detect?: (env?: NodeJS.ProcessEnv) => readonly DetectedHarness[];
+  locate?: typeof locate;
   harnessDirs?: () => readonly string[];
   /** The addresses this machine's own native Deployment answers at. */
   ownDeploymentUrls?: (mycoHome: string) => Promise<readonly string[]>;

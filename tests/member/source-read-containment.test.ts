@@ -156,7 +156,7 @@ describe('source file permission boundary (#1636)', () => {
     const spec = fixture();
     const installed = join(spec.home, 'codex');
     writeFileSync(installed, 'synthetic executable');
-    expect(() => runFilesystem(spec, spec.home, installed, null)).toThrow('Unsafe Codex installation directory');
+    expect(() => runFilesystem(spec, spec.home, installed, null)).toThrow('Install Codex somewhere narrower');
   });
   it('Codex denies undeclared run files and resolves symlink targets under its filesystem profile', () => {
     const spec = fixture();

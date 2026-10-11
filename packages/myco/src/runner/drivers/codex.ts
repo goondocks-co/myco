@@ -27,6 +27,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, delimiter, dirname, join, sep } from 'node:path';
 import { parse, stringify, type TomlTableWithoutBigInt } from 'smol-toml';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
+import { codexInstallationRefusal, type CodexInstallationRule } from '@goondocks/myco-shared/setup-guidance';
 import { locate } from '../detect.js';
 import { credentialFile, harnessById, type Harness } from '../harnesses.js';
 import type { Driver, Launch, LaunchSpec, RunEvent, RunSpec } from '../events.js';
@@ -190,21 +191,68 @@ function intendedPhysicalPath(path: string): string {
   }
 }
 
-/** The executable and its physical runtime files, including npm's package beside a bin shim. */
-function installationReads(installed: string | null, run: string, home: string): Record<string, string> {
-  if (installed === null) return {};
+export interface CodexInstallationContext {
+  runDir: string;
+  codexHome: string;
+  home?: string;
+  mycoHome?: string;
+  codexLogin?: string | null;
+  tempDirs?: readonly string[];
+}
+
+export type CodexInstallationVerdict = { ok: true } | { ok: false; directory: string; rule: CodexInstallationRule };
+
+/** The physical runtime directories, including npm's package beside a bin shim. */
+function installationPaths(installed: string): { executable: string; directories: string[] } {
   const executable = realpathSync(installed);
   const directory = dirname(executable);
   const packageRoot = dirname(directory);
   const manifest = join(packageRoot, 'package.json');
   const packageInstall = existsSync(manifest) && recordOf(JSON.parse(readFileSync(manifest, 'utf8')))?.name === '@openai/codex';
   const directories = [directory, ...(packageInstall ? [realpathSync(packageRoot)] : [])];
-  const protectedHomes = [...SYSTEM_DEVELOPER_DIR_PROBE.closed, home].map(intendedPhysicalPath);
+  return { executable, directories };
+}
+
+/** Whether granting an installation's runtime files exposes a protected directory. */
+export function codexInstallationVerdict(installed: string | null, ctx: CodexInstallationContext): CodexInstallationVerdict {
+  if (installed === null) return { ok: true };
+  const { directories } = installationPaths(installed);
+  return installationDirectoryVerdict(directories, ctx);
+}
+
+function installationDirectoryVerdict(directories: readonly string[], ctx: CodexInstallationContext): CodexInstallationVerdict {
   const systemTemps = process.platform === 'win32' ? [] : ['/tmp', '/var/tmp'].filter(existsSync);
-  const ancestors = [resolveHomeDir(), run, home, tmpdir(), ...systemTemps].map((path) => realpathSync(path));
-  if (directories.some((dir) => dir === sep || ancestors.some((path) => within(path, dir))
-    || protectedHomes.some((path) => within(path, dir) || within(dir, path)))) throw new Error('Unsafe Codex installation directory');
-  return { [installed]: 'read', [executable]: 'read', [directory]: 'read', ...(packageInstall ? { [realpathSync(packageRoot)]: 'read' } : {}) };
+  const login = ctx.codexLogin === undefined ? credentialFile(harnessById('codex')!) : ctx.codexLogin;
+  const ancestors: Array<[CodexInstallationRule, string]> = [
+    ['contains-home', ctx.home ?? resolveHomeDir()],
+    ['contains-run', ctx.runDir],
+    ['contains-run', ctx.codexHome],
+    ...(ctx.tempDirs ?? [tmpdir(), ...systemTemps]).map((dir): [CodexInstallationRule, string] => ['contains-temp', dir]),
+  ];
+  const protectedHomes: Array<[CodexInstallationRule, string]> = [
+    ...(login === null ? [] : [['overlaps-codex-login', dirname(login)] as [CodexInstallationRule, string]]),
+    ['overlaps-myco-home', ctx.mycoHome ?? resolveMycoHome()],
+    ['overlaps-codex-home', ctx.codexHome],
+  ];
+  const physicalAncestors = ancestors.map(([rule, dir]) => [rule, intendedPhysicalPath(dir)] as const);
+  const physicalHomes = protectedHomes.map(([rule, dir]) => [rule, intendedPhysicalPath(dir)] as const);
+  for (const directory of directories) {
+    if (dirname(directory) === directory) return { ok: false, directory, rule: 'root' };
+    const ancestor = physicalAncestors.find(([, dir]) => within(dir, directory));
+    if (ancestor !== undefined) return { ok: false, directory, rule: ancestor[0] };
+    const protectedHome = physicalHomes.find(([, dir]) => within(dir, directory) || within(directory, dir));
+    if (protectedHome !== undefined) return { ok: false, directory, rule: protectedHome[0] };
+  }
+  return { ok: true };
+}
+
+/** The executable and runtime files admitted by the shared installation verdict. */
+function installationReads(installed: string | null, run: string, home: string): Record<string, string> {
+  if (installed === null) return {};
+  const { executable, directories } = installationPaths(installed);
+  const verdict = installationDirectoryVerdict(directories, { runDir: run, codexHome: home });
+  if (!verdict.ok) throw new Error(codexInstallationRefusal(verdict.directory, verdict.rule));
+  return { [installed]: 'read', [executable]: 'read', ...Object.fromEntries(directories.map((dir) => [dir, 'read'])) };
 }
 
 /**

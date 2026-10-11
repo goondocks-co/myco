@@ -26,6 +26,8 @@ import { routeMissing, ServerClient, type FetchLike } from '../member/transport.
 import { resolveMycoHome } from '../paths/home.js';
 
 export interface MemberVerbDeps {
+  /** False observes the current credential without rotation, including after a refusal. */
+  renew?: boolean;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   mycoHome?: string;
@@ -106,14 +108,14 @@ const budgetOf = (deps: MemberVerbDeps): RequestBudget => ({
 });
 
 /** One renewal policy for project and Deployment requests, with the credential's own single writer. */
-function renewedCredential<T extends { token: string }>(initial: T, source: CredentialSource, load: () => T | null, rotate: () => Promise<RefreshStatus>, ended: () => boolean) {
+function renewedCredential<T extends { token: string }>(initial: T, source: CredentialSource, load: () => T | null, rotate: () => Promise<RefreshStatus>, ended: () => boolean, allowRenewal = true) {
   let record = initial;
   let renewedAfterRefusal = false;
   return {
     current: () => record,
     run: async <R>(attempt: (at: T) => Promise<DeploymentOutcome<R>>): Promise<DeploymentOutcome<R>> => {
       const first = await attempt(record);
-      if (first.ok || first.error.code !== 'unauthorized' || source !== 'registry' || renewedAfterRefusal) return first;
+      if (first.ok || first.error.code !== 'unauthorized' || source !== 'registry' || renewedAfterRefusal || !allowRenewal) return first;
       renewedAfterRefusal = true;
       const presented = record.token;
       const status = await rotate();
@@ -150,12 +152,12 @@ export async function openDeploymentRequests(source: CredentialSource, deps: Mem
   let record = load();
   if (record === null) return failure(source === 'env' ? `set a valid ${ENV_MEMBER_TOKEN}` : 'the selected Deployment membership is missing or unreadable; sign in with myco login');
   const rotate = async (force: boolean) => (await refreshMembership(serverUrl, { mycoHome: home, budget, force, fetch: deps.fetch, now: deps.now })).status;
-  if (source === 'registry') { await rotate(false); record = load(); }
+  if (source === 'registry' && deps.renew !== false) { await rotate(false); record = load(); }
   if (record === null) return failure('the selected Deployment membership could not be read after renewal');
   const credential = renewedCredential(record, source, load, () => rotate(true), () => {
     const read = readDeploymentMembershipResult(serverUrl, home);
     return read.status === 'present' && read.membership.refreshTerminal === true;
-  });
+  }, deps.renew !== false);
   const client = (at: { serverUrl: string; token: string }) => new ServerClient(at, deps.fetch ?? globalThis.fetch);
   return { ok: true, value: {
     serverUrl: serverUrl.replace(/\/+$/, ''),
@@ -204,12 +206,12 @@ export function membershipProblem(deps: MemberVerbDeps = {}): string | null {
 /** The Deployment for `source`, or null when no credential resolves: a registry membership `membershipProblem` refuses, or the credential's own stderr line. */
 export async function openDeployment(source: CredentialSource, deps: MemberVerbDeps = {}): Promise<DeploymentHandle | null> {
   if (source === 'registry' && membershipProblem(deps) !== null) return null;
-  if (source === 'registry') await renew(deps, false);
+  if (source === 'registry' && deps.renew !== false) await renew(deps, false);
   const record = credentialFor(source, deps);
   if (record === null) return null;
   const fetchImpl: FetchLike = deps.fetch ?? globalThis.fetch;
   const budget = budgetOf(deps);
-  const credential = renewedCredential(record, source, () => credentialFor(source, deps), () => renew(deps, true), () => renewalEnded(deps));
+  const credential = renewedCredential(record, source, () => credentialFor(source, deps), () => renew(deps, true), () => renewalEnded(deps), deps.renew !== false);
 
   const transport = (at: CredentialRecord) => deploymentTransport(upstreamOf(at, source), {}, deps.fetch);
   const client = (at: CredentialRecord) => new ServerClient({ serverUrl: at.serverUrl, token: at.token, projectId: at.projectId }, fetchImpl);

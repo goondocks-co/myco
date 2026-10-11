@@ -109,7 +109,7 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
   const record = readRunnerRecord(serverUrl, mycoHome);
   if (!isLiveRunner(record)) return fail(`this machine is not registered with ${serverUrl}; run \`myco runner register ${serverUrl}\``);
 
-  const legacyRefusal = runnerExecutionRefusal(deps);
+  const legacyRefusal = await runnerExecutionRefusal(deps);
   if (legacyRefusal !== null) return fail(legacyRefusal);
 
   const log = (line: string): void => { (deps.stdout ?? console.log)(workerLogLine(line)); };
