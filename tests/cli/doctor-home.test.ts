@@ -226,6 +226,18 @@ describe('home doctor', () => {
     expect(helpText('legacy commands', deps)).toBe(MEMBER_USAGE);
   });
 
+  it('names the offending agent registration file when migration cannot be read', async () => {
+    const file = path.join(process.env.HOME!, '.codex', 'config.toml');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '[mcp_servers.myco\ncommand="myco"\n');
+    expect(legacyMigrationState(home)).toMatchObject({ state: 'unavailable', file });
+    const check = (await homeReport(home, deps)).find(check => check.name === 'Myco 1.4')!;
+    expect(check.status).toBe('fail');
+    expect(check.detail).toContain(`Inspect ${file}`);
+    expect(check.detail).not.toContain(`Inspect ${home},`);
+    expect(helpText('legacy commands', deps)).toBe(MEMBER_USAGE);
+  });
+
   it('reports broken hooks and refused capture with the repair command', async () => {
     join(personal);
     const target = path.join(process.env.HOME!, '.claude', 'settings.json');

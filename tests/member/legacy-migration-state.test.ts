@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { legacyMigrationPending, legacyMigrationState, LegacyMigrationUnreadable, type CutoverState } from '@myco/member/legacy-migration.js';
+import { legacyMigrationState, type CutoverState } from '@myco/member/legacy-migration.js';
 import { isMemberHome } from '@myco/member/home-role.js';
 import { legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { deploymentKeyFor } from '@myco/member/registry.js';
@@ -44,32 +44,32 @@ function backup(file: string, metadata = false, recordHome = home): void {
   fs.writeFileSync(record, JSON.stringify({ backups: { [file]: evidence } }), { mode: 0o600 });
 }
 
-it('defers a backup-only record even when its content digest matches', () => {
+it('requires destination receipts for a backup-only record even when its content digest matches', () => {
   const file = vault();
-  expect(legacyMigrationPending(home)).toBe(true);
+  expect(legacyMigrationState(home).state).toBe('unmoved');
   backup(file);
-  expect(legacyMigrationPending(home)).toBe(true);
+  expect(legacyMigrationState(home).state).toBe('needs-destination');
   const db = new Database(file);
   try { db.run("INSERT INTO sessions (body) VALUES ('new capture')"); } finally { db.close(); }
-  expect(legacyMigrationPending(home)).toBe(true);
+  expect(legacyMigrationState(home).state).toBe('needs-destination');
 });
 
 it('requires receipts rather than matching backup size and mtime evidence', () => {
   backup(vault(), true);
-  expect(legacyMigrationPending(home)).toBe(true);
+  expect(legacyMigrationState(home).state).toBe('needs-destination');
   vault(home, 'new');
-  expect(legacyMigrationPending(home)).toBe(true);
+  expect(legacyMigrationState(home).state).toBe('unmoved');
 });
 
 it('checks backup-only evidence across the default and target homes', () => {
   const defaultHome = path.join(userHome, '.myco');
   const file = vault(defaultHome);
-  expect(legacyMigrationPending(home)).toBe(true);
+  expect(legacyMigrationState(home).state).toBe('unmoved');
   backup(file);
-  expect(legacyMigrationPending(home)).toBe(true);
+  expect(legacyMigrationState(home).state).toBe('needs-destination');
   fs.unlinkSync(path.join(home, 'member', 'cutover.json'));
   backup(file, false, defaultHome);
-  expect(legacyMigrationPending(home)).toBe(true);
+  expect(legacyMigrationState(home).state).toBe('needs-destination');
 });
 
 it('names an unreadable cutover record instead of treating it as completion', () => {
@@ -77,17 +77,16 @@ it('names an unreadable cutover record instead of treating it as completion', ()
   backup(file);
   const record = path.join(home, 'member', 'cutover.json');
   fs.writeFileSync(record, '{');
-  expect(() => legacyMigrationPending(home)).toThrow(LegacyMigrationUnreadable);
-  expect(() => legacyMigrationPending(home)).toThrow(`cannot read ${record}`);
-  try { legacyMigrationPending(home); } catch (error) {
-    expect(String(error).split(`cannot read ${record}:`)).toHaveLength(2);
-  }
+  const state = legacyMigrationState(home);
+  expect(state).toMatchObject({ state: 'unavailable', file: record });
+  if (state.state !== 'unavailable') throw new Error('expected unavailable migration evidence');
+  expect(state.detail.split(`cannot read ${record}:`)).toHaveLength(2);
 });
 
 it.skipIf(process.platform === 'win32')('never executes a managed or PATH binary while observing legacy migration', async () => {
   vault();
   await withLegacyBinaryTraps(home, userHome, async (marker) => {
-    expect(legacyMigrationPending(home)).toBe(true);
+    expect(legacyMigrationState(home).state).toBe('unmoved');
     expect(fs.existsSync(marker)).toBe(false);
   });
 });

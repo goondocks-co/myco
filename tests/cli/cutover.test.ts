@@ -1061,19 +1061,50 @@ describe('cutover project destinations and receipts', () => {
     expect(legacyMigrationState(m.mycoHome).state).toBe('moved');
   });
 
-  for (const rootless of [false, true]) it(`requires a disposition for an unrouted ${rootless ? 'rootless' : 'absent'} project`, async () => {
+  for (const override of [null, 'MYCO_PROJECT_ROOT', 'MYCO_VAULT_DIR'] as const) for (const rootless of [false, true]) it(`requires a disposition for an unrouted ${rootless ? 'rootless' : 'absent'} project with ${override ?? 'no project override'}`, async () => {
     fs.rmSync(m.root, { recursive: true });
     if (rootless) {
       const db = openDatabase(m.vault);
       try { db.run('UPDATE sessions SET project_root=NULL WHERE project_id=?', [PROJECT]); } finally { db.close(); }
     }
-    const options = { homeDir: m.home };
-    const plan = planCutover(m.mycoHome, options);
+    const held = override === null ? undefined : process.env[override];
+    if (override !== null) process.env[override] = m.root;
+    try {
+      const plan = planCutover(m.mycoHome, { homeDir: m.home });
+      expect(plan.projects.find(p => p.projectId === PROJECT)?.destination).toEqual({ kind: 'undecided' });
+      expect(plan.blockers.join('\n')).toContain(`--route ${PROJECT}=<url> or --skip ${PROJECT}`);
+      const explicit = await m.run(['--server', SERVER, '--dry-run'], { fetch: fetchBoth, agents: [] });
+      expect(explicit.err).toEqual([]); expect(explicit.ok).toBe(true);
+      expect(explicit.out.join('\n')).toContain(`${PROJECT} from ${m.vault}: to ${SERVER} (no repository route; sent to --server)`);
+    } finally {
+      if (override !== null) { if (held === undefined) delete process.env[override]; else process.env[override] = held; }
+    }
+  });
+
+  it('refuses a repository rebound after the preview before any request or cutover record', async () => {
+    const binding = { version: 2 as const, root: m.root, projectId: PROJECT, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 };
+    writeRegistryEntry({ ...binding, serverUrl: SERVER, token: m.rig.token }, { mycoHome: m.mycoHome });
+    let requests = 0;
+    const errors: string[] = [];
+    const deps = { fetch: ((input, init) => { requests += 1; return fetchBoth(input, init); }) as MemberRig['fetch'],
+      agents: () => [], unitDirs: [], machineId: TEST_MACHINE_ID, stopDaemon: async () => 'none' as const,
+      stdout: () => {}, stderr: (line: string) => errors.push(line) };
+    const plan = planCutover(m.mycoHome, { homeDir: m.home }, deps);
+    expect(plan.blockers).toEqual([]);
+    expect(plan.projects.find(p => p.projectId === PROJECT)?.destination).toEqual({ kind: 'destination', serverUrl: SERVER });
+    writeRegistryEntry({ ...binding, serverUrl: PERSONAL, token: personal.token }, { mycoHome: m.mycoHome });
+    expect((await executeCutoverPlan(plan, deps)).ok).toBe(false);
+    expect(errors.join('\n')).toContain('changed after the preview');
+    expect(requests).toBe(0);
+    expect(fs.existsSync(path.join(m.mycoHome, 'member', 'cutover.json'))).toBe(false);
+  });
+
+  it('names a present non-git folder in its destination blocker', () => {
+    fs.rmSync(path.join(m.root, '.git'), { recursive: true });
+    const plan = planCutover(m.mycoHome, { homeDir: m.home });
     expect(plan.projects.find(p => p.projectId === PROJECT)?.destination).toEqual({ kind: 'undecided' });
+    expect(plan.blockers.join('\n')).toContain(`${m.root} is not a repository`);
     expect(plan.blockers.join('\n')).toContain(`--route ${PROJECT}=<url> or --skip ${PROJECT}`);
-    const explicit = await m.run(['--server', SERVER, '--dry-run'], { fetch: fetchBoth, agents: [] });
-    expect(explicit.err).toEqual([]); expect(explicit.ok).toBe(true);
-    expect(explicit.out.join('\n')).toContain(`${PROJECT} from ${m.vault}: to ${SERVER} (no repository route; sent to --server)`);
   });
 
   it('labels a present unbound repository destination as default-derived', async () => {

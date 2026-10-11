@@ -1,7 +1,8 @@
 /** Read-only migration receipts; the cutover capability is their only writer. */
 import path from 'node:path';
 import { readVaultContent, type TableCounts } from '@myco/member/legacy-backup.js';
-import { legacyRealpath, legacySources, legacyVaultProjectIds, type LegacySources } from '@myco/member/legacy-sources.js';
+import { LegacyMigrationUnreadable, legacyRealpath, legacySources, legacyVaultProjectIds, type LegacySources } from '@myco/member/legacy-sources.js';
+export { LegacyMigrationUnreadable } from '@myco/member/legacy-sources.js';
 import { readPrivateJson } from '@myco/member/store.js';
 import { deploymentKeyFor, deploymentUrl } from '@myco/member/registry.js';
 import { defaultMycoHome } from '@myco/paths/home.js';
@@ -37,13 +38,6 @@ export type LegacyMigrationState = (
   | { state: 'changed'; warning: string }
   | { state: 'none' | 'unmoved' | 'needs-destination' | 'handover-pending' | 'partial' | 'moved' }
 ) & { legacyOwnsCapture?: true };
-
-export class LegacyMigrationUnreadable extends Error {
-  constructor(readonly file: string, cause: unknown) {
-    const detail = cause instanceof Error ? cause.message : String(cause);
-    super(detail.startsWith(`cannot read ${file}:`) ? detail : `cannot read ${file}: ${detail}`, { cause });
-  }
-}
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -137,11 +131,4 @@ export function legacyMigrationState(home: string): LegacyMigrationState {
     const file = error instanceof LegacyMigrationUnreadable ? error.file : error instanceof Error && 'path' in error ? String(error.path) : home;
     return { state: 'unavailable', file, detail: new LegacyMigrationUnreadable(file, error).message };
   }
-}
-
-/** Compatibility adapter for callers requiring receipt completion. */
-export function legacyMigrationPending(home: string): boolean {
-  const result = legacyMigrationState(home);
-  if (result.state === 'unavailable') throw new LegacyMigrationUnreadable(result.file, result.detail);
-  return result.state !== 'none' && result.state !== 'moved';
 }

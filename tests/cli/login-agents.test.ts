@@ -21,7 +21,7 @@ import { readProvisionRecord } from '@myco/symbionts/member-provision-record.js'
 import { readDeploymentMembership } from '@myco/member/registry.js';
 import { LEGACY_AGENT_DEFERRAL } from '@goondocks/myco-shared/setup-guidance';
 import { Database } from 'bun:sqlite';
-import { legacyMigrationPending, legacyMigrationState } from '@myco/member/legacy-migration.js';
+import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 import { legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { readVaultContent } from '@myco/member/legacy-backup.js';
 import { withLegacyBinaryTraps } from '../helpers/legacy-migration-fixture.js';
@@ -298,7 +298,7 @@ describe('myco login sets up the agents on this machine', () => {
     fs.mkdirSync(path.dirname(vault), { recursive: true });
     fs.writeFileSync(vault, 'retained vault');
     await withLegacyBinaryTraps(home, userHome, async (marker) => {
-      expect(legacyMigrationPending(home)).toBe(true);
+      expect(legacyMigrationState(home).state).toBe('unmoved');
       expect(fs.existsSync(marker)).toBe(false);
       const rig = unjoinedRig();
       expect(await run([await invite(rig)], deps(rig, { agents: () => { throw new Error('must defer legacy agents'); } }))).toBe(true);

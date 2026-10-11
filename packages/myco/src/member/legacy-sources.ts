@@ -16,6 +16,13 @@ export interface LegacySources {
   binary: { path: string; version: 'unknown' } | null;
 }
 
+export class LegacyMigrationUnreadable extends Error {
+  constructor(readonly file: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(detail.startsWith(`cannot read ${file}:`) ? detail : `cannot read ${file}: ${detail}`, { cause });
+  }
+}
+
 /** Resolve aliases of existing paths without hiding read failures. */
 export function legacyRealpath(file: string): string {
   try { return fs.realpathSync.native(file); } catch (error) {
@@ -60,20 +67,23 @@ export function legacySources(home: string, opts: { homeDir?: string; homes?: re
     let names: string[];
     try { names = fs.readdirSync(dir); } catch (error) {
       if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return [];
-      throw error;
+      throw new LegacyMigrationUnreadable(dir, error);
     }
-    for (const name of names.filter((n) => /^co\.goondocks\.myco.*\.(plist|service)$/.test(n))) fs.readFileSync(path.join(dir, name), 'utf8');
+    for (const name of names.filter((n) => /^co\.goondocks\.myco.*\.(plist|service)$/.test(n))) {
+      const file = path.join(dir, name);
+      try { fs.readFileSync(file, 'utf8'); } catch (error) { throw new LegacyMigrationUnreadable(file, error); }
+    }
     return readMycoUnits(dir, scope).filter((u) => isDaemonUnit(u) && (u.home === null || homes.includes(legacyRealpath(u.home))));
   });
   for (const { file, location } of legacyTargets(homeDir, opts.folders ?? [])) {
     try {
       if (location.kind === 'skills') fs.readdirSync(file); else fs.readFileSync(file);
     } catch (error) {
-      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw new LegacyMigrationUnreadable(file, error);
     }
   }
   const scan = scanLegacyRegistrations({ homeDir, legacyHomes: homes, ownHome: home, folders: opts.folders });
-  if (scan.unreadable.length > 0) throw new Error(`${scan.unreadable[0].file}: ${scan.unreadable[0].reason}`);
+  if (scan.unreadable.length > 0) throw new LegacyMigrationUnreadable(scan.unreadable[0].file, scan.unreadable[0].reason);
   const binaries = homes.map((h) => path.join(h, 'bin', process.platform === 'win32' ? 'myco.exe' : 'myco'));
   const binary = binaries.find((file) => {
     try { return fs.statSync(file).isFile(); } catch (error) {

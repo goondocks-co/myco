@@ -228,9 +228,12 @@ type Binding =
   | { kind: 'elsewhere'; projectId: string; root: string; boundTo: string }
   | { kind: 'connected' | 'connect'; projectId: string; root: string };
 
+const repositoryPresent = (root: string | null): root is string =>
+  root !== null && fs.existsSync(root) && isSafeProjectRoot(root);
+
 function bindingFor(project: { projectId: string; root: string | null }, mycoHome: string, serverUrl: string): Binding {
   const { projectId, root } = project;
-  if (root === null || !fs.existsSync(root) || !isSafeProjectRoot(root)) return { kind: 'absent', projectId, root };
+  if (!repositoryPresent(root)) return { kind: 'absent', projectId, root };
   const result = readRegistryEntryResult(root, mycoHome);
   if (result.status === 'unavailable') throw new Error(`the binding at ${root} is unreadable; restore it before cutover`);
   const existing = result.status === 'present' ? result.entry : null;
@@ -326,10 +329,11 @@ export function planCutover(home: string, options: CutoverOptions = {}, deps: Cu
     const heldUrl = held !== undefined && 'serverUrl' in held ? held.serverUrl : undefined;
     if (heldUrl !== undefined && boundUrl !== undefined && heldUrl !== boundUrl && route === undefined) blockers.push(`${projectId}: its receipt names ${heldUrl} but its repository now routes to ${boundUrl}; confirm with --route ${projectId}=${boundUrl} or --skip ${projectId}`);
     const routedUrl = boundUrl ?? (route === undefined ? heldUrl : deploymentUrl(route));
-    const canFallback = !foreignProject && (options.serverUrl !== undefined || (root !== null && isSafeProjectRoot(root)));
+    const canFallback = !foreignProject && (options.serverUrl !== undefined || repositoryPresent(root));
     const serverUrl = routedUrl ?? (!canFallback || typeof fallback === 'string' ? undefined : deploymentUrl(fallback.serverUrl));
     if (serverUrl === undefined) {
-      blockers.push(`${projectId}: no destination; use --route ${projectId}=<url> or --skip ${projectId}`);
+      const reason = root !== null && fs.existsSync(root) && !repositoryPresent(root) ? `${root} is not a repository; no destination` : 'no destination';
+      blockers.push(`${projectId}: ${reason}; use --route ${projectId}=<url> or --skip ${projectId}`);
       return { ...project, destination: { kind: 'undecided' } as CutoverDestination };
     }
     if (!memberships.some((m) => deploymentUrl(m.serverUrl) === serverUrl)) blockers.push(`${projectId}: not signed in to ${serverUrl}; run myco login ${serverUrl}`);
