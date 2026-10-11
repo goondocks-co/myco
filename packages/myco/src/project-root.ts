@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { runGitAnswer } from './utils/git.js';
-import { UNUSUAL } from './utils/git-files.js';
+import { canonicalPath, locateRepo, resolveRepositoryRoot, repositoryRootOf, UNUSUAL } from './utils/git-files.js';
 import { repoVerdict, type GitVerdictDeps } from './member/git-verdict.js';
 
 /**
@@ -152,14 +152,35 @@ export function assertSafeProjectRoot(projectRoot: string): void {
 function resolveRepoRoot(cwd: string): string {
   const verdict = repoVerdict(cwd);
   if (verdict === null) return cwd;
-  // Git answers its common directory relative to `cwd` from inside the main checkout, and absolute (resolved through
-  // symlinks) from a linked worktree: the root is that directory's parent either way.
   if (verdict !== UNUSUAL) return verdict.from === 'files' ? path.dirname(verdict.layout.commonDir) : verdict.root;
   try {
-    const gitCommon = runGitAnswer(['rev-parse', '--git-common-dir'], cwd);
-    return path.resolve(cwd, gitCommon, '..');
+    return path.resolve(cwd, runGitAnswer(['rev-parse', '--git-common-dir'], cwd), '..');
   } catch {
     return cwd;
+  }
+}
+
+/** Member identity shares import's file resolution, with Git deciding unusual live discovery. */
+export function resolveRepositoryProjectRoot(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  return resolveRepositoryRoot(cwd, [], env, { unusual: (at) => gitRepositoryRoot(at, env) });
+}
+
+/** Git decides unusual live discovery with one repository verdict. */
+function gitRepositoryRoot(cwd: string, env: NodeJS.ProcessEnv): string | null {
+  const verdict = repoVerdict(cwd, env);
+  if (verdict === null) return null;
+  if (verdict !== UNUSUAL) return verdict.from === 'files' ? repositoryRootOf(verdict.layout) : verdict.root;
+  try {
+    const lines = runGitAnswer(['rev-parse', '--show-toplevel', '--git-dir', '--git-common-dir'], cwd).split(/\r?\n/);
+    if (lines.length !== 3 || lines.some((line) => line === '')) return null;
+    const layout = { top: path.resolve(lines[0]), gitDir: path.resolve(cwd, lines[1]), commonDir: path.resolve(cwd, lines[2]) };
+    const files = locateRepo(cwd, {}, { layoutOnly: true });
+    if (files !== null && files !== UNUSUAL && (['top', 'gitDir', 'commonDir'] as const).every(
+      (key) => canonicalPath(files.layout[key]) === canonicalPath(layout[key]),
+    )) return repositoryRootOf(files.layout);
+    return repositoryRootOf(layout);
+  } catch {
+    return null;
   }
 }
 

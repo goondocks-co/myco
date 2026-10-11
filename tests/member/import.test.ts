@@ -1,9 +1,9 @@
 import { refuseImportAfter } from '../setup/fixtures/interruption.js';
-import { run as runImportCli } from '@myco/cli/import.js';
+import { run as runImportCli, reportLines } from '@myco/cli/import.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
-import { spoolDirFor } from '@myco/member/spool.js';
+import { spoolDirFor, MemberSpool } from '@myco/member/spool.js';
 import { routingKey } from '@myco/member/routing.js';
-import { writeRegistryEntry } from '@myco/member/registry.js';
+import { writeRegistryEntry, readRegistryEntry } from '@myco/member/registry.js';
 /**
  * Importing a machine's existing history, against the real worker.
  *
@@ -37,7 +37,7 @@ import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { memberRig, tempMycoHome, TEST_MACHINE_ID } from './helpers/server.js';
 import { registerTestMember, runHook } from './helpers/hooks.js';
 import { resolveCredential } from '@myco/member/credential.js';
-import { repositoryAt } from '@myco/member/auto-join.js';
+import { repositoryAt, rootKeyFor } from '@myco/member/auto-join.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 
 const line = (o: Record<string, unknown>): string => `${JSON.stringify(o)}\n`;
@@ -964,6 +964,7 @@ describe('worktree capture and import attribution (#1722)', () => {
       const report = await r.run({ mappings: [{ from: base, to: connected.root }] });
       // An explicit mapping can admit the unknown path, but never the other repository.
       expect(report.unboundDirectories).toEqual({ [unconnected.tree]: 1 });
+      expect(reportLines(report, false).join('\n')).not.toContain('--map');
       const unmapped = await r.run();
       expect(unmapped.unboundDirectories).toEqual({ [unconnected.tree]: 1, [lookalike]: 1 });
       expect(unmapped.projects).toEqual([]);
@@ -973,6 +974,86 @@ describe('worktree capture and import attribution (#1722)', () => {
       });
       expect(out.join('\n')).toContain('--map');
     } finally { r.restore(); }
+  });
+
+  it('refuses a deleted cwd claimed by two connected repositories', async () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-worktree-')));
+    const first = repository(base, 'first'); const second = repository(base, 'second');
+    const gone = path.join(base, 'ambiguous', 'src');
+    for (const root of [first.root, second.root]) {
+      const record = path.join(root, '.git', 'worktrees', 'claim');
+      fs.mkdirSync(record, { recursive: true });
+      fs.writeFileSync(path.join(record, 'gitdir'), `${path.dirname(gone)}/.git\n`);
+      fs.writeFileSync(path.join(record, 'commondir'), '../..\n');
+    }
+    const r = await rig([first.root, second.root], 1, store(base, [gone], 1));
+    try {
+      const report = await r.run();
+      expect(report.projects).toEqual([]);
+      expect(report.unboundDirectories).toEqual({ [gone]: 1 });
+      expect(r.planRequests).toEqual([]);
+    } finally { r.restore(); }
+  });
+
+  it('keeps literal personal registry bindings out of the work-default hold', async () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-worktree-')));
+    const personal = repository(base, 'Homelab');
+    const alias = path.join(base, 'homelab-alias');
+    fs.symlinkSync(personal.root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const spellings = [alias];
+    if (process.platform === 'darwin') {
+      spellings.push(personal.root.replace('/Homelab', '/HOMELAB'));
+      const temporaryAlias = path.join(path.parse(personal.root).root, 'tmp');
+      const physicalTemporary = fs.realpathSync(temporaryAlias);
+      const relative = path.relative(physicalTemporary, personal.root);
+      if (!relative.startsWith('..') && !path.isAbsolute(relative)) spellings.push(path.join(temporaryAlias, relative));
+    }
+    for (const root of spellings) {
+      const r = await rig([root], 1, store(base, [path.join(root, 'src')], 1));
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      const held = process.env.MYCO_HOME;
+      process.env.MYCO_HOME = r.mycoHome;
+      try {
+        recordDefaultDeployment('http://127.0.0.1:9102', { mycoHome: r.mycoHome });
+        registerTestMember({ mycoHome: r.mycoHome, root, serverUrl: 'http://127.0.0.1:9101', projectId: 'proj_homelab', token: r.env.token, tokenId: r.env.tokenId });
+        let holds = 0;
+        const credential = resolveCredential('registry', { cwd: path.join(root, 'src'), mycoHome: r.mycoHome, claimsUnconnected: () => { holds += 1; return true; } });
+        expect(credential).toMatchObject({ root, projectId: 'proj_homelab', serverUrl: 'http://127.0.0.1:9101' });
+        expect(holds).toBe(0);
+        const live = await runHook('session-start', { cwd: path.join(root, 'src'), session_id: 'alias-personal', transcript_path: r.files[0], source: 'startup' }, { fetch: async () => { throw new Error('ECONNREFUSED'); } });
+        expect(live.stderr).toBe('');
+        const spool = new MemberSpool(readRegistryEntry(root, r.mycoHome)!, { mycoHome: r.mycoHome });
+        expect(spool.readRecords('alias-personal').some((record) => record?.kind === 'session.start')).toBe(true);
+        expect(repositoryAt(root, r.mycoHome).rootKey).toBe(rootKeyFor(root, r.mycoHome));
+        const report = await r.run();
+        expect(report.projects).toEqual([]);
+        expect(r.planRequests).toEqual([]);
+      } finally {
+        r.restore();
+        if (held === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = held;
+      }
+    }
+  });
+
+  it('excludes a connected scratch worktree from live capture and import alike', async () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-worktree-')));
+    const { root } = repository(base, 'scratch-main');
+    const tree = path.join(os.tmpdir(), 'claude-test', crypto.randomUUID(), 'scratchpad', 'lane');
+    expect(Bun.spawnSync(['git', 'worktree', 'add', '-q', '-b', 'scratch', tree], { cwd: root, stdout: 'ignore', stderr: 'ignore' }).exitCode).toBe(0);
+    const r = await rig([root], 1, store(base, [tree], 1));
+    const held = process.env.MYCO_HOME; process.env.MYCO_HOME = r.mycoHome;
+    try {
+      expect(resolveCredential('registry', { cwd: tree, mycoHome: r.mycoHome })).toBeNull();
+      await runHook('session-start', { cwd: tree, session_id: 'scratch-live', transcript_path: r.files[0], source: 'startup' }, { fetch: async () => { throw new Error('ECONNREFUSED'); } });
+      const spool = new MemberSpool(readRegistryEntry(root, r.mycoHome)!, { mycoHome: r.mycoHome });
+      expect(spool.readRecords('scratch-live')).toEqual([]);
+      const report = await r.run();
+      expect(report.projects).toEqual([]); expect(report.dropped).toBe(1);
+      expect(r.planRequests).toEqual([]);
+    } finally {
+      r.restore();
+      if (held === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = held;
+    }
   });
 
   it('recovers a deleted worktree only while its retained Git record proves the repository', async () => {

@@ -59,7 +59,7 @@ import {
 } from './import.js';
 import { LEGACY_RECONCILIATION_VERSION, LegacyLedger, type ContentSource } from './legacy-ledger.js';
 import { normalizePlanPath } from './plan-files.js';
-import { deploymentUrl, listDeploymentMemberships, type DeploymentMembership } from './registry.js';
+import { deploymentUrl, listRegistryEntries, listDeploymentMemberships, type DeploymentMembership } from './registry.js';
 import { MemberSpool, spoolDirFor, type RefusedEntry } from './spool.js';
 import { watchingFeatures } from './prefetch.js';
 import { ServerClient, type FetchLike, type Outcome } from './transport.js';
@@ -434,7 +434,7 @@ export function aliasByTranscriptTime(project: LegacyProject, root: string | nul
   const matched: string[] = [];
   const unmatched: string[] = [];
   if (root === null) return { aliases, matched, unmatched };
-  const place = transcriptPlacer([root]);
+  const place = transcriptPlacer([root], { repositoryRoots: listRegistryEntries(mycoHome).map((entry) => entry.root) });
   const claimed = new Set(project.sessions.map((s) => legacyIdentity(s.agent, s.id, s.transcriptPath).sessionId));
   const indexes = new Map<string, Array<{ sessionId: string; first: number; last: number }>>();
   const indexFor = (agent: string) => {

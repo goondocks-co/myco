@@ -185,7 +185,7 @@ export function reportLines(report: ImportReport, dryRun: boolean): string[] {
     const dirs = Object.entries(report.unboundDirectories).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     for (const [dir, n] of dirs.slice(0, UNBOUND_DIRECTORIES_SHOWN)) lines.push(`  ${n} in ${dir}`);
     if (dirs.length > UNBOUND_DIRECTORIES_SHOWN) lines.push(`  and ${dirs.length - UNBOUND_DIRECTORIES_SHOWN} more directories`);
-    lines.push('For a removed checkout, use --map <recorded-directory>=<connected-repository-root>.');
+    if (report.mappable !== 0) lines.push('For a removed checkout, use --map <recorded-directory>=<connected-repository-root>.');
   }
   if (report.narrowed !== undefined) lines.push(`Skipped by --project: ${report.narrowed.join(', ')}.`);
   if (lines.length === 0) lines.push('Nothing to import.');

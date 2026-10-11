@@ -11,9 +11,9 @@ export function temporaryFolders(env: NodeJS.ProcessEnv = process.env): string[]
 }
 
 /** Agent scratchpads under temporary storage are excluded from project history. */
-export function isAgentScratchDirectory(directory: string): boolean {
+export function isAgentScratchDirectory(directory: string, env: NodeJS.ProcessEnv = process.env): boolean {
   const recordedPaths = [path.resolve(directory), canonicalPath(directory)];
-  return temporaryFolders().some((folder) => [path.resolve(folder), canonicalPath(folder)].some((root) => recordedPaths.some((recorded) => {
+  return temporaryFolders(env).some((folder) => [path.resolve(folder), canonicalPath(folder)].some((root) => recordedPaths.some((recorded) => {
     const relative = path.relative(root, recorded);
     return !relative.startsWith('..') && !path.isAbsolute(relative)
       && /(?:^|[\\/])claude-[^\\/]+[\\/](?:.*[\\/])?scratchpad(?:[\\/]|$)/.test(path.join(path.basename(root), relative));

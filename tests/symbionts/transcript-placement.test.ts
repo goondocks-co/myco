@@ -4,7 +4,7 @@
  * (live capture resolves those to the main checkout, so an import must too), a
  * worktree since removed, a root spelled in another case.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -52,7 +52,7 @@ describe('placing a transcript', () => {
     expect(exact('claude-code', claudeTranscript(store, gone))).toEqual({ kind: 'bound', root });
     const family = transcriptPlacer([root], { git: noGit, mappings: [{ from: `${path.join(base, 'Repos', 'myco-')}*`, to: root }] });
     expect(family('claude-code', claudeTranscript(store, path.join(gone, 'sub')))).toEqual({ kind: 'bound', root });
-    expect(family('claude-code', claudeTranscript(store, path.join(base, 'Repos', 'other')))).toEqual({ kind: 'elsewhere', directory: path.join(base, 'Repos', 'other') });
+    expect(family('claude-code', claudeTranscript(store, path.join(base, 'Repos', 'other')))).toMatchObject({ kind: 'elsewhere', directory: path.join(base, 'Repos', 'other') });
   });
 
   it('never maps a nested repository or an unresolved target onto an ancestor Project', () => {
@@ -60,7 +60,7 @@ describe('placing a transcript', () => {
     const gone = path.join(base, 'removed');
     for (const git of [noGit, { mainCheckout: (dir: string) => dir === personal ? personal : null }]) {
       const place = transcriptPlacer([root], { git, repositoryRoots: [root, personal], mappings: [{ from: gone, to: personal }] });
-      expect(place('claude-code', claudeTranscript(store, gone))).toEqual({ kind: 'elsewhere', directory: gone });
+      expect(place('claude-code', claudeTranscript(store, gone))).toMatchObject({ kind: 'elsewhere', directory: gone });
     }
   });
 
@@ -69,7 +69,7 @@ describe('placing a transcript', () => {
     fs.mkdirSync(other, { recursive: true });
     expect(Bun.spawnSync(['git', 'init', '-q', other], { stdout: 'ignore', stderr: 'ignore' }).exitCode).toBe(0);
     const family = transcriptPlacer([root], { mappings: [{ from: `${path.join(base, 'Repos', 'myco-')}*`, to: root }] });
-    expect(family('claude-code', claudeTranscript(store, other))).toEqual({ kind: 'elsewhere', directory: other });
+    expect(family('claude-code', claudeTranscript(store, other))).toMatchObject({ kind: 'elsewhere', directory: other });
     expect(family('claude-code', claudeTranscript(store, path.join(base, 'Repos', 'myco-gone')))).toEqual({ kind: 'bound', root });
   });
 
@@ -77,8 +77,8 @@ describe('placing a transcript', () => {
     const git: PlacementGit = noGit;
     const place = transcriptPlacer([root], { git });
     const gone = path.join(base, 'herdr', 'worktrees', 'myco', 'review-1');
-    expect(place('codex', codexTranscript(store, gone, { git: { repository_url: 'https://github.com/goondocks-co/myco.git' } }))).toEqual({ kind: 'elsewhere', directory: gone });
-    expect(place('codex', codexTranscript(store, gone, { git: { repository_url: 'https://github.com/someone/else.git' } }))).toEqual({ kind: 'elsewhere', directory: gone });
+    expect(place('codex', codexTranscript(store, gone, { git: { repository_url: 'https://github.com/goondocks-co/myco.git' } }))).toMatchObject({ kind: 'elsewhere', directory: gone });
+    expect(place('codex', codexTranscript(store, gone, { git: { repository_url: 'https://github.com/someone/else.git' } }))).toMatchObject({ kind: 'elsewhere', directory: gone });
   });
 
   it('live capture and import resolve a real worktree to the same main checkout', () => {
@@ -102,10 +102,10 @@ describe('placing a transcript', () => {
     expect(transcriptPlacer([repo])('claude-code', claudeTranscript(store, path.join(tree, 'packages')))).toEqual({ kind: 'bound', root: repo });
     fs.mkdirSync(tree);
     expect(git('init -q', tree)).toBe(0);
-    expect(transcriptPlacer([repo])('claude-code', claudeTranscript(store, path.join(tree, 'gone')))).toEqual({ kind: 'elsewhere', directory: path.join(tree, 'gone') });
+    expect(transcriptPlacer([repo])('claude-code', claudeTranscript(store, path.join(tree, 'gone')))).toMatchObject({ kind: 'elsewhere', directory: path.join(tree, 'gone') });
     fs.rmSync(tree, { recursive: true });
     expect(git('worktree prune', repo)).toBe(0);
-    expect(transcriptPlacer([repo])('claude-code', claudeTranscript(store, tree))).toEqual({ kind: 'elsewhere', directory: tree });
+    expect(transcriptPlacer([repo])('claude-code', claudeTranscript(store, tree))).toMatchObject({ kind: 'elsewhere', directory: tree });
   });
 
   it('excludes agent scratch directories even when a mapping or recorded remote would bind them', () => {
@@ -123,7 +123,7 @@ describe('placing a transcript', () => {
 
   it('does not attribute a pruned nested worktree by its containing checkout', () => {
     const gone = path.join(root, '.worktrees', 'personal', 'src');
-    expect(transcriptPlacer([root])('claude-code', claudeTranscript(store, gone))).toEqual({ kind: 'elsewhere', directory: gone });
+    expect(transcriptPlacer([root])('claude-code', claudeTranscript(store, gone))).toMatchObject({ kind: 'elsewhere', directory: gone });
   });
 
   it('excludes a missing scratchpad under a temporary-folder alias', () => {
@@ -147,7 +147,7 @@ describe('placing a transcript', () => {
     const unresolved = path.join(root, '.worktrees', 'unresolved');
     fs.mkdirSync(unresolved, { recursive: true });
     fs.writeFileSync(path.join(unresolved, '.git'), 'gitdir: missing-record');
-    expect(transcriptPlacer([root])('claude-code', claudeTranscript(store, unresolved))).toEqual({ kind: 'elsewhere', directory: unresolved });
+    expect(transcriptPlacer([root])('claude-code', claudeTranscript(store, unresolved))).toMatchObject({ kind: 'elsewhere', directory: unresolved });
   });
 
   it('follows a symlinked cwd to its physical repository for live capture and import', () => {
@@ -159,7 +159,29 @@ describe('placing a transcript', () => {
     const cwd = path.join(root, 'linked-src', 'nested');
     expect(resolveMemberProjectRoot(cwd)).toBe(other);
     expect(transcriptPlacer([root, other])('claude-code', claudeTranscript(store, cwd))).toEqual({ kind: 'bound', root: other });
-    expect(transcriptPlacer([root])('claude-code', claudeTranscript(store, cwd))).toEqual({ kind: 'elsewhere', directory: cwd });
+    expect(transcriptPlacer([root])('claude-code', claudeTranscript(store, cwd))).toMatchObject({ kind: 'elsewhere', directory: cwd });
+  });
+
+  it('indexes retained records once across distinct missing directories', () => {
+    const repo = path.join(base, 'indexed');
+    fs.mkdirSync(repo);
+    expect(Bun.spawnSync(['git', 'init', '-q', repo], { stdout: 'ignore', stderr: 'ignore' }).exitCode).toBe(0);
+    const gone = path.join(base, 'indexed-gone');
+    const record = path.join(repo, '.git', 'worktrees', 'gone');
+    fs.mkdirSync(record, { recursive: true });
+    fs.writeFileSync(path.join(record, 'gitdir'), `${gone}/.git\n`);
+    fs.writeFileSync(path.join(record, 'commondir'), '../..\n');
+    const original = fs.readdirSync;
+    let scans = 0;
+    const spy = spyOn(fs, 'readdirSync').mockImplementation((...args) => {
+      if (String(args[0]) === path.join(repo, '.git', 'worktrees')) scans += 1;
+      return Reflect.apply(original, fs, args);
+    });
+    try {
+      const place = transcriptPlacer([repo]);
+      for (const sub of ['one', 'two', 'three']) expect(place('claude-code', claudeTranscript(store, path.join(gone, sub)))).toEqual({ kind: 'bound', root: repo });
+      expect(scans).toBe(1);
+    } finally { spy.mockRestore(); }
   });
 
   it('spells paths the way the filesystem stores them', () => {
@@ -179,7 +201,7 @@ describe('placing a transcript', () => {
     `], { stdout: 'pipe', stderr: 'pipe', timeout: 5_000 });
     expect(probe.exitCode).toBe(0);
     expect(JSON.parse(probe.stdout.toString())).toEqual([missing, null]);
-    expect(transcriptPlacer([root])('claude-code', claudeTranscript(store, missing))).toEqual({ kind: 'elsewhere', directory: missing });
+    expect(transcriptPlacer([root])('claude-code', claudeTranscript(store, missing))).toMatchObject({ kind: 'elsewhere', directory: missing });
   });
 
   it('reads mappings', () => {

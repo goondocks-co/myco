@@ -35,6 +35,13 @@ function blockingPaths(entry: ts.FunctionDeclaration, forbidProcesses = false): 
         if (target !== undefined && !ts.isJSDocSignature(target) && target.getSourceFile().fileName.startsWith(`${SRC}${path.sep}`)) {
           const name = target.name?.getText() ?? '<anonymous>';
           const next = [...chain, name];
+          const query = node.arguments?.[0];
+          const verdictCall = name === 'runGitAnswer' && query !== undefined && ts.isArrayLiteralExpression(query)
+            && ((chain.at(-1) === 'gitRepositoryRoot' && query.elements.map((e) => e.getText()).join(',') === "'rev-parse','--show-toplevel','--git-dir','--git-common-dir'")
+              || (chain.at(-1) === 'isSafeProjectRoot' && query.elements.map((e) => e.getText()).join(',') === "'rev-parse','--git-common-dir'"));
+          const cachedVerdict = name === 'runGitAnswer' && chain.at(-1) === 'repoVerdict'
+            && node.getSourceFile().fileName === path.join(SRC, 'member/git-verdict.ts') && query?.getText() === 'VERDICT_QUERY';
+          if (forbidProcesses && (verdictCall || cachedVerdict)) return;
           if (name === 'withRegistryLock') {
             paths.add(next.join(' → '));
           } else if (name === 'withFileLockSync') {
@@ -71,9 +78,14 @@ it('the hook opt-out decision cannot wait on a lock held across I/O', () => {
   expect(blockingPaths(declaration('member/auto-join.ts', 'joinStanding'))).toEqual([]);
 });
 
-it('hook repository resolution and eligibility cannot start Git or wait for a registry lock', () => {
+it('hook repository resolution and eligibility can only ask the established Git verdict and cannot wait for a registry lock', () => {
   for (const [file, name] of [
     ['member/credential.ts', 'resolveMemberProjectRoot'],
     ['member/auto-join.ts', 'silentRepository'],
   ]) expect(blockingPaths(declaration(file, name), true)).toEqual([]);
+});
+
+it('the cached Git boundary asks only the repository verdict', () => {
+  const source = program.getSourceFile(path.join(SRC, 'member/git-verdict.ts'))!;
+  expect(source.text).toContain("const VERDICT_QUERY = ['rev-parse', '--show-toplevel', '--git-dir', '--git-common-dir'];");
 });

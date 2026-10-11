@@ -9,7 +9,7 @@
  * - where git would look elsewhere: the start reached through a symlink leading out of the work tree, a filesystem
  *   boundary crossed on the way up (git stops there), a `.git` that is not a git directory (no `HEAD`, `objects` or
  *   `refs`; git walks on past it), a directory inside a git directory, or the environment steering git's discovery
- *   (`GIT_DIR`, `GIT_CEILING_DIRECTORIES`, …);
+ *   (`GIT_DIR`, `GIT_WORK_TREE`, …);
  * - where the files say more than this reader reads: a config that includes another, a symbolic ref, or a `HEAD`
  *   naming anything but a branch or a commit.
  *
@@ -38,7 +38,7 @@ export interface RepoLayout {
 }
 
 /** Environment variables that change where git looks or what it finds. Any of them set, git is asked. */
-const STEERING_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_CEILING_DIRECTORIES', 'GIT_DISCOVERY_ACROSS_FILESYSTEM', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY'];
+const STEERING_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_DISCOVERY_ACROSS_FILESYSTEM', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY'];
 
 /**
  * Repository config that changes the layout or the ref storage: present, git is asked. `bare` is true as git reads a
@@ -80,17 +80,60 @@ export function readRepoLayout(cwd: string, env: NodeJS.ProcessEnv = process.env
   return found.unverified === null ? found.layout : UNUSUAL;
 }
 
-/** The main checkout named by Git's files; retained worktree records resolve missing working directories. No Git process runs. */
-export function resolveRepositoryRoot(cwd: string, retainedRoots: Iterable<string> = [], env: NodeJS.ProcessEnv = process.env): string | null {
-  const found = locateRepo(canonicalPath(cwd), env, { layoutOnly: true });
-  if (found !== null && found !== UNUSUAL) {
-    return canonicalPath(path.dirname(found.layout.commonDir));
+/** The registry root: a checkout keeps its spelling; linked worktrees share a non-bare main checkout. */
+export function repositoryRootOf(layout: RepoLayout): string {
+  const bare = repositoryIsBare(layout.commonDir);
+  return layout.gitDir !== layout.commonDir && path.basename(layout.commonDir) === '.git' && !bare
+    ? path.dirname(layout.commonDir) : layout.top;
+}
+
+/** Git's core.bare boolean; repeated values use the last assignment in the core section. */
+function repositoryIsBare(commonDir: string): boolean {
+  let core = false;
+  let bare = false;
+  for (const line of (readText(path.join(commonDir, 'config')) ?? '').split(/\r?\n/)) {
+    const section = /^\s*\[\s*([^\]]+?)\s*\]/.exec(line);
+    if (section !== null) { core = section[1].toLowerCase() === 'core'; continue; }
+    if (!core) continue;
+    const entry = /^\s*bare\s*(?:=\s*(.*?))?\s*(?:[#;].*)?$/i.exec(line);
+    if (entry !== null) bare = entry[1] === undefined || /^(?:true|yes|on|1)$/i.test(entry[1].replace(/^"(.*)"$/, '$1').trim());
   }
+  return bare;
+}
+
+type RetainedRecord = { worktree: string; root: string };
+
+/** Retained records are read once per import placer, only when a missing directory needs them. */
+export function repositoryRootResolver(roots: Iterable<string>, env: NodeJS.ProcessEnv = process.env): (cwd: string) => string | null {
+  const retainedRoots = [...roots];
+  let records: RetainedRecord[] | undefined;
+  return (cwd) => resolveRepositoryRoot(cwd, [], env, {
+    retained: () => records ??= retainedWorktreeRecords(retainedRoots, env),
+  });
+}
+
+/** The main checkout named by Git's files; retained worktree records resolve missing working directories. */
+export function resolveRepositoryRoot(
+  cwd: string, retainedRoots: Iterable<string> = [], env: NodeJS.ProcessEnv = process.env,
+  opts: { unusual?: (cwd: string) => string | null; retained?: () => readonly RetainedRecord[] } = {},
+): string | null {
+  let found = locateRepo(cwd, env, { layoutOnly: true });
+  if ((found === null || found === UNUSUAL) && canonicalPath(cwd) !== path.resolve(cwd)) found = locateRepo(canonicalPath(cwd), env, { layoutOnly: true });
+  if (found !== null && found !== UNUSUAL) return repositoryRootOf(found.layout);
   // Existing directories require their own repository identity, even when an old record names the same path.
-  if (fs.existsSync(cwd)) return null;
+  if (fs.existsSync(cwd)) return found === UNUSUAL ? opts.unusual?.(cwd) ?? null : null;
   const recorded = canonicalPath(cwd);
   const matches = new Set<string>();
-  for (const root of retainedRoots) {
+  for (const { worktree, root } of opts.retained?.() ?? retainedWorktreeRecords(retainedRoots, env)) {
+    const relative = path.relative(worktree, recorded);
+    if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) matches.add(root);
+  }
+  return matches.size === 1 ? [...matches][0] : null;
+}
+
+function retainedWorktreeRecords(roots: Iterable<string>, env: NodeJS.ProcessEnv): RetainedRecord[] {
+  const out: RetainedRecord[] = [];
+  for (const root of roots) {
     const repo = locateRepo(root, env, { layoutOnly: true });
     if (repo === null || repo === UNUSUAL) continue;
     const { commonDir } = repo.layout;
@@ -112,11 +155,10 @@ export function resolveRepositoryRoot(cwd: string, retainedRoots: Iterable<strin
         if (current === null || current === UNUSUAL || canonicalPath(current.layout.top) !== worktree
           || canonicalPath(current.layout.gitDir) !== canonicalPath(dir)) continue;
       }
-      const relative = path.relative(worktree, recorded);
-      if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) matches.add(canonicalPath(root));
+      out.push({ worktree, root: canonicalPath(root) });
     }
   }
-  return matches.size === 1 ? [...matches][0] : null;
+  return out;
 }
 
 /** Resolve existing paths through realpath; missing paths retain their absolute spelling. */
@@ -160,6 +202,8 @@ export function locateRepo(cwd: string, env: NodeJS.ProcessEnv = process.env, de
       stat = fs.lstatSync(dotGit);
     } catch {
       if (path.dirname(dir) === dir) return null;
+      const ceilings = (env.GIT_CEILING_DIRECTORIES ?? '').split(path.delimiter).filter(path.isAbsolute);
+      if (ceilings.some((ceiling) => canonicalPath(ceiling) === canonicalPath(path.dirname(dir)))) return null;
       continue;
     }
     let gitDir: string;

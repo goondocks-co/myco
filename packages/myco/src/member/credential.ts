@@ -8,7 +8,9 @@
  * whose redemption is this machine's own registry membership. Every record's
  * server URL passes the one member rule (`server-url.ts`).
  */
-import { resolveRepositoryRoot } from '../utils/git-files.js';
+import path from 'node:path';
+import { resolveRepositoryProjectRoot } from '../project-root.js';
+import { isAgentScratchDirectory } from '../utils/temporary-folders.js';
 import { memberHomeFor } from './home-for-folder.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, ENV_JOIN_CODE, MEMBER_TOKEN_PATTERN, type CredentialSource, type RefreshTerminalReason } from './constants.js';
 import { recordMissingMembership } from './no-membership.js';
@@ -58,7 +60,7 @@ export function isMemberTokenShape(value: string): boolean {
 
 /** The worktree-aware project root a hook invocation belongs to. */
 export function resolveMemberProjectRoot(cwd: string = process.cwd()): string {
-  return resolveRepositoryRoot(cwd) ?? cwd;
+  return isAgentScratchDirectory(cwd) ? path.resolve(cwd) : resolveRepositoryProjectRoot(cwd) ?? path.resolve(cwd);
 }
 
 const stderr = (line: string): void => { process.stderr.write(`[myco] member: ${line}\n`); };
@@ -101,8 +103,9 @@ export function resolveCredential(
     return null;
   }
   const env = opts.env ?? process.env;
-  if (source === 'env' && !envCarriesJoinCode(env)) return envCredential(env);
   const cwd = opts.cwd ?? process.cwd();
+  if (isAgentScratchDirectory(cwd, env)) return null;
+  if (source === 'env' && !envCarriesJoinCode(env)) return envCredential(env);
   const root = resolveMemberProjectRoot(cwd);
   const mycoHome = opts.mycoHome ?? memberHomeFor(cwd, opts.env).home;
   const lookup = readRegistryEntryResult(root, mycoHome, { upgrade: true });

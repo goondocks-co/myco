@@ -19,7 +19,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { REPO_ROOT } from '../helpers/import-closure.ts';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.ts';
-import { registerTestMember } from './helpers/hooks.js';
+import { resolveCredential } from '@myco/member/credential.js';
+import { readRegistryEntry } from '@myco/member/registry.js';
+import { transcriptPlacer } from '@myco/symbionts/transcript-attribution.js';
+import { MemberSpool } from '@myco/member/spool.js';
+import { registerTestMember, runHook } from './helpers/hooks.js';
 import { tempMycoHome } from './helpers/server.js';
 
 const HOOK_PROCESS = path.join(REPO_ROOT, 'tests', 'member', 'helpers', 'hook-process.ts');
@@ -151,8 +155,8 @@ describe.skipIf(realGit === '')('the git a second hook in a repository starts', 
     const mycoHome = tempMycoHome();
     registerTestMember({ mycoHome, token: 'mt_tok', projectId: 'proj_1', root: repo });
     const tx = path.join(dir, `${name}.jsonl`);
-    fs.writeFileSync(tx, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } })}\n`);
-    return (hook: string, event: string): string[] => {
+    fs.writeFileSync(tx, `${JSON.stringify({ type: 'user', cwd: repo, message: { role: 'user', content: 'hi' } })}\n`);
+    const invoke = (hook: string, event: string): string[] => {
       fs.writeFileSync(log, '');
       const result = spawnSync(process.execPath, [HOOK_PROCESS, hook, '--symbiont', 'claude-code', '--credential', 'registry'], {
         cwd: repo,
@@ -161,15 +165,27 @@ describe.skipIf(realGit === '')('the git a second hook in a repository starts', 
         encoding: 'utf-8', timeout: 20_000,
       });
       expect({ hook, status: result.status }).toEqual({ hook, status: 0 });
+      // Git-call accounting requires a bound hook whose session start actually reached the spool.
+      const entry = readRegistryEntry(repo, mycoHome);
+      expect(entry?.projectId).toBe('proj_1');
+      expect(transcriptPlacer([repo])('claude-code', tx)).toEqual({ kind: 'bound', root: repo });
+      const credential = resolveCredential('registry', { cwd: repo, mycoHome });
+      const spool = new MemberSpool(entry!, { mycoHome });
+      expect({
+        project: credential?.projectId,
+        captured: spool.readRecords(`sess-${name}`).some((record) => record?.kind === 'session.start'),
+        stderr: result.stderr,
+      }).toEqual({ project: 'proj_1', captured: true, stderr: '' });
       return fs.readFileSync(log, 'utf-8').trim().split(/\r?\n/).filter(Boolean);
     };
+    return Object.assign(invoke, { repo, mycoHome, tx });
   }
 
   it('is none: what the first asked of git is kept', () => {
     loggingGit(bin, log);
     const calls = joinedRepo('plain');
     const first = calls('session-start', 'SessionStart');
-    // Windows: git's verdict on the repository, and nothing else; elsewhere the files decide.
+    // Windows requires Git's ownership verdict once; confirmed HEAD facts come from the files.
     if (process.platform === 'win32') {
       expect(first).toContain(VERDICT_QUERY);
       expect(first.filter((call) => !VERDICT_QUERIES.includes(call))).toEqual([]);
@@ -181,10 +197,45 @@ describe.skipIf(realGit === '')('the git a second hook in a repository starts', 
     expect(calls('stop', 'Stop')).toEqual([]);
   }, 120_000);
 
+  it('captures under the existing key when native realpath changes a checkout spelling', async () => {
+    const fixture = joinedRepo('native-expanded', [['extensions.worktreeConfig', 'true']]);
+    const alias = path.join(dir, 'expanded-name');
+    fs.symlinkSync(fixture.repo, alias, 'junction');
+    const native = fs.realpathSync.native;
+    const savedHome = process.env.MYCO_HOME;
+    // Native Windows realpath expands 8.3 names; ordinary realpath retains that registry spelling.
+    Object.defineProperty(fs.realpathSync, 'native', { value: (file: fs.PathLike, ...options: unknown[]) => {
+      if (typeof file === 'string' && (file === fixture.repo || file.startsWith(`${fixture.repo}${path.sep}`))) {
+        return alias + file.slice(fixture.repo.length);
+      }
+      if (typeof file === 'string' && (file === alias || file.startsWith(`${alias}${path.sep}`))) return file;
+      return Reflect.apply(native, fs.realpathSync, [file, ...options]);
+    } });
+    process.env.MYCO_HOME = fixture.mycoHome;
+    try {
+      const result = await runHook('session-start', {
+        session_id: 'sess-native-expanded', cwd: fixture.repo, transcript_path: fixture.tx, hook_event_name: 'SessionStart',
+      }, { fetch: async () => { throw new Error('ECONNREFUSED'); } });
+      const entry = readRegistryEntry(fixture.repo, fixture.mycoHome);
+      expect(entry?.projectId).toBe('proj_1');
+      const spool = new MemberSpool(entry!, { mycoHome: fixture.mycoHome });
+      expect({
+        credential: resolveCredential('registry', { cwd: fixture.repo, mycoHome: fixture.mycoHome })?.projectId,
+        captured: spool.readRecords('sess-native-expanded').some((record) => record?.kind === 'session.start'),
+        stderr: result.stderr,
+      }).toEqual({ credential: 'proj_1', captured: true, stderr: '' });
+      expect(transcriptPlacer([fixture.repo])('claude-code', fixture.tx)).toEqual({ kind: 'bound', root: fixture.repo });
+    } finally {
+      Object.defineProperty(fs.realpathSync, 'native', { value: native });
+      if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome;
+    }
+  });
+
   it('is only where HEAD stands, for a repository whose config only git reads', () => {
     if (!fs.existsSync(bin)) loggingGit(bin, log);
     const calls = joinedRepo('worktree-config', [['extensions.worktreeConfig', 'true']]);
     const first = calls('session-start', 'SessionStart');
+    // Per-worktree config leaves HEAD interpretation to Git on every platform.
     expect(first).toContain(VERDICT_QUERY);
     expect(first.filter((call) => !VERDICT_QUERIES.includes(call)).sort()).toEqual(HEAD_QUERIES);
     expect(calls('session-start', 'SessionStart').sort()).toEqual(HEAD_QUERIES);

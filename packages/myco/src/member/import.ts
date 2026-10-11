@@ -175,6 +175,7 @@ export interface ImportReport {
   excluded: number;
   /** The recorded directories of the unbound transcripts, with how many each holds. */
   unboundDirectories: Record<string, number>;
+  mappable?: number;
   refused?: string;
   /** Why a pass that ended on a retryable answer was not tried again. */
   stoppedBy?: string;
@@ -225,6 +226,7 @@ export interface CollectedCandidates {
   unattributable: number;
   unbound: number;
   unboundDirectories: Record<string, number>;
+  mappable?: number;
   active: number;
   dropped: number;
   excluded: number;
@@ -275,7 +277,7 @@ export function collectCandidates(
   } = {},
 ): CollectedCandidates {
   const place = transcriptPlacer(roots, { mappings: opts.mappings, repositoryRoots: opts.repositoryRoots });
-  const out: CollectedCandidates = { candidates: [], found: {}, unattributable: 0, unbound: 0, unboundDirectories: {}, active: 0, dropped: 0, excluded: 0 };
+  const out: CollectedCandidates = { candidates: [], found: {}, unattributable: 0, unbound: 0, unboundDirectories: {}, mappable: 0, active: 0, dropped: 0, excluded: 0 };
 
   for (const agent of agents) {
     const discovery = manifestTranscriptDiscovery(agent);
@@ -291,6 +293,7 @@ export function collectCandidates(
       // Deployment holds no Project for is a different thing from one naming
       // nowhere, and only the first is something a person can connect.
       if (placed.kind === 'elsewhere') {
+        if (placed.mappable) out.mappable = (out.mappable ?? 0) + 1;
         out.unbound += 1;
         out.unboundDirectories[placed.directory] = (out.unboundDirectories[placed.directory] ?? 0) + 1;
         continue;
@@ -380,7 +383,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
 
   const report: ImportReport = {
     projects: [], unbound, unattributable, active, dropped: collected.dropped, excluded: collected.excluded,
-    unboundDirectories: collected.unboundDirectories, ...(narrowed.size > 0 ? { narrowed: [...narrowed].sort() } : {}),
+    unboundDirectories: collected.unboundDirectories, mappable: collected.mappable, ...(narrowed.size > 0 ? { narrowed: [...narrowed].sort() } : {}),
   };
   for (const [projectId, forProject] of byProject) {
     if (deps.signal?.aborted) {

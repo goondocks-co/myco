@@ -253,7 +253,7 @@ describe('the MCP bridge with no MYCO_HOME', () => {
       serverUrl: 'https://pinned.example', root: resolveMemberProjectRoot(project),
     });
 
-    const upstream = resolveDeploymentUpstream('registry', { cwd: project, env: {}, invokedBy: 'mcp' });
+    const upstream = resolveDeploymentUpstream('registry', { cwd: project, env: { MYCO_TEMPORARY_FOLDERS: process.env.MYCO_TEMPORARY_FOLDERS }, invokedBy: 'mcp' });
     expect(upstream?.mcpUrl.toString()).toBe('https://pinned.example/mcp');
     expect(upstream?.projectId).toBe('proj_1');
   });

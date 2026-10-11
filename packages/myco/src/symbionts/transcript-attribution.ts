@@ -28,7 +28,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAtPath } from '../utils/dot-path.js';
-import { canonicalPath, resolveRepositoryRoot } from '../utils/git-files.js';
+import { canonicalPath, resolveRepositoryRoot, repositoryRootResolver } from '../utils/git-files.js';
 import { isAgentScratchDirectory } from '../utils/temporary-folders.js';
 export { canonicalPath } from '../utils/git-files.js';
 import { manifestTranscriptDiscovery } from './transcript-discovery.js';
@@ -141,7 +141,7 @@ export function attributeByPathSlug(filePath: string, roots: Iterable<string>): 
  */
 export type Attribution =
   | { kind: 'bound'; root: string }
-  | { kind: 'elsewhere'; directory: string }
+  | { kind: 'elsewhere'; directory: string; mappable?: boolean }
   | { kind: 'unknown' }
   | { kind: 'excluded' };
 
@@ -204,6 +204,7 @@ export function transcriptPlacer(roots: Iterable<string>, opts: PlacementOptions
   const known = [...roots];
   const canonicalRoots = new Map(known.map((root) => [canonicalPath(root), root]));
   const repositoryRoots = [...(opts.repositoryRoots ?? known)];
+  const resolve = repositoryRootResolver(repositoryRoots);
   const ask = opts.git ?? git;
   const mappings = opts.mappings ?? [];
   const placed = new Map<string, { root: string | null; inRepository: boolean }>();
@@ -212,7 +213,7 @@ export function transcriptPlacer(roots: Iterable<string>, opts: PlacementOptions
     const cached = placed.get(recorded);
     if (cached !== undefined) return cached;
     const main = opts.git === undefined
-      ? resolveRepositoryRoot(recorded, repositoryRoots)
+      ? resolve(recorded)
       : ask.mainCheckout(recorded);
     const inRepository = main !== null;
     let root = main === null
@@ -235,9 +236,9 @@ export function transcriptPlacer(roots: Iterable<string>, opts: PlacementOptions
     const recorded = discovery?.transcriptCwdPath === undefined ? null : transcriptHeadField(filePath, discovery.transcriptCwdPath);
     if (recorded !== null) {
       if (isAgentScratchDirectory(recorded)) return { kind: 'excluded' };
-      const { root } = placeDirectory(recorded);
+      const { root, inRepository } = placeDirectory(recorded);
       if (root !== null) return { kind: 'bound', root };
-      return { kind: 'elsewhere', directory: recorded };
+      return { kind: 'elsewhere', directory: recorded, ...(!inRepository ? { mappable: true } : {}) };
     }
     const bySlug = attributeByPathSlug(filePath, known);
     return bySlug === null ? { kind: 'unknown' } : { kind: 'bound', root: bySlug };
