@@ -2033,7 +2033,7 @@ export class SymbiontInstaller {
       throw this.memberMcpConflict(`could not read ${filePath} (${firstLine(error)})`, 'Fix the file', error);
     }
     try {
-      const parsed: unknown = toml ? parseToml(raw) : JSON.parse(raw);
+      const parsed: unknown = toml ? structuredClone(parseToml(raw)) : JSON.parse(raw);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('expected a configuration object');
       return parsed as Record<string, unknown>;
     } catch (error) {

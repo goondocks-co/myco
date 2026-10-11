@@ -1136,16 +1136,18 @@ describe('the join pass keeps to what was asked of it (#1595 review)', () => {
     try {
       await ask(history, 'sess-history');
       await ask(next, 'sess-next');
-      const slowPlans: typeof rig.fetch = async (input, init) => {
+      let clock = Date.now();
+      const deadline = clock + 60_000;
+      const expiringPlan: typeof rig.fetch = async (input, init) => {
         const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-        if (url.includes('/import/plan')) await Bun.sleep(400);
+        if (url.includes('/import/plan')) clock = deadline;
         return rig.fetch(input, init);
       };
-      const first = await pass(Date.now() + 300, slowPlans);
+      const first = await joinPass(mycoHome, { fetch: expiringPlan, now: () => clock++ })(deadline, { force: false });
       // Both joined; the first one's history stopped at the deadline, and the second's is still to come.
       expect({ history: connected(history), next: connected(next), more: first?.more, imports: listPendingImports(mycoHome).map((p) => p.root) })
         .toEqual({ history: true, next: true, more: true, imports: [history, next] });
-      await pass(Date.now() + 60_000, slowPlans);
+      await pass();
       expect({ imports: listPendingImports(mycoHome), imported: (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id = ?`).get(sessionId) as { n: number }).n > 0 })
         .toEqual({ imports: [], imported: true });
     } finally {
