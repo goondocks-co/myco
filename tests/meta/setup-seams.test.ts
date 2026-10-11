@@ -21,12 +21,12 @@ const seams: Record<string, readonly string[]> = {
   'cli/deployment-reader': ['postRoute'],
   'cli/home-observations': ['observationInstant', 'observeProjectCapture', 'observeRunnerService'],
   'cli/legacy-capture': ['legacyCaptureGuidance'],
-  'member/registry': ['deploymentUrl', 'listRegistryEntriesResult', 'readDeploymentMembershipResult', 'readRegistryEntryResult'],
+  'member/registry': ['deploymentUrl', 'listDeploymentMembershipsResult', 'listRegistryEntriesResult', 'readDeploymentMembershipResult', 'readRegistryEntryResult'],
   'member/default-deployment': ['readDefaultDeployment', 'recordDefaultDeployment'],
   'member/transport': ['ServerClient'],
   'member/legacy-migration': ['legacyMigrationState'],
   'member/store': ['readPrivateJson', 'writePrivateFileAtomic'],
-  'runner/runner-registry': ['isLiveRunner', 'readRunnerRecord'],
+  'runner/runner-registry': ['isLiveRunner', 'listRunnerRecordsResult', 'readRunnerRecord'],
   'runner/service': ['harnessDirectories', 'workerServiceStatus', 'workerServiceUnit', 'workerServiceSpec'],
 };
 

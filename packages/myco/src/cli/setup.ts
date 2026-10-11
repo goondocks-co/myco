@@ -2,10 +2,14 @@ import path from 'node:path';
 import { resolveMycoHome } from '@myco/paths/home.js';
 import { normalizeMemberServerAddress } from '@myco/member/server-url.js';
 import { parseJoinCode } from '@myco/member/join-code.js';
+import { repoVerdict } from '@myco/member/git-verdict.js';
+import { UNUSUAL } from '@myco/utils/git-files.js';
+import { runGitAnswer } from '@myco/utils/git.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { runnerServerUrl, RUNNER_NAME_PATTERN } from '@myco/cli/runner-deps.js';
 import { readSetupFile, saveSetupFile, type SetupAnswers } from '@myco/setup/answers.js';
-import { observeSetup, setupExitCode } from '@myco/setup/observe.js';
+import { observeSetupStatus, setupExitCode } from '@myco/setup/observe.js';
+import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { conductSetup, type SetupDeps } from '@myco/setup/steps.js';
 import { askOnTerminal, askRequired } from '@myco/setup/prompt.js';
 
@@ -119,9 +123,10 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     if (options.answers.project !== undefined) delete file.answers.newProject;
     if (options.answers.newProject !== undefined) delete file.answers.project;
     if (options.status) {
-      const observations = await observeSetup(home, file.answers, { ...deps, checkRemote: options.checkRemote });
+      file.answers.root = options.answers.root ?? statusRepository(deps.cwd ?? process.cwd());
+      const observations = await observeSetupStatus(home, file.answers, { ...deps, checkRemote: options.checkRemote }, options.answers.role !== undefined);
       if (options.json) out(JSON.stringify({ observations }, null, 2));
-      else for (const fact of observations) out(`${fact.id} [${fact.scope}]: ${fact.state} — ${fact.detail}`);
+      else for (const line of renderSetupStatus(observations)) out(line);
       return setupExitCode(observations);
     }
     const ask = deps.ask ?? askOnTerminal;
@@ -145,4 +150,13 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     err(`myco setup: ${error instanceof Error ? error.message : String(error)}`);
     return args.includes('--status') ? 4 : 2;
   }
+}
+
+/** Repository identity follows capture's common-directory rule without keeping a git verdict. */
+function statusRepository(cwd: string): string | undefined {
+  const verdict = repoVerdict(cwd, process.env, { mycoHome: null });
+  if (verdict === null) return undefined;
+  if (runGitAnswer(['rev-parse', '--is-inside-work-tree'], cwd) !== 'true') return undefined;
+  if (verdict === UNUSUAL) return path.resolve(cwd, runGitAnswer(['rev-parse', '--git-common-dir'], cwd), '..');
+  return verdict.from === 'files' ? path.dirname(verdict.layout.commonDir) : verdict.root;
 }
