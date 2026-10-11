@@ -47,6 +47,7 @@ Commands:
   detach <project>         Clear a project's Team Host mapping (resolves local again)
   host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key|members|revoke)
   login <server-url>       Approve this machine in the dashboard and sign in
+  setup [options]         Guide joining a Myco or registering a runner; --status reads only
   logout <server-url>      Sign this machine out of one Deployment
   import                   Bring this machine's existing agent history to its Deployment
   cutover                  Move this machine from Myco 1.4 to its Deployment (--dry-run first)
@@ -116,6 +117,7 @@ Idempotent — detaching a project that is not attached is a clean no-op.
  * parse it in one file. Any command that owns a help constant belongs here.
  */
 const DELEGATED_HELP: Record<string, () => Promise<string>> = {
+  setup: async () => (await import('./cli/setup.js')).SETUP_HELP,
   agent: async () => (await import('./cli/agent-run.js')).AGENT_USAGE,
   task: async () => (await import('./cli/agent-tasks.js')).TASK_USAGE,
   'task run': async () => (await import('./cli/agent-tasks.js')).TASK_RUN_USAGE,
@@ -278,6 +280,11 @@ async function main(): Promise<void> {
   // Self-hosted Deployment lifecycle — a Compose bundle under MYCO_HOME, no
   // project vault, so it sits above the myco.yaml gate and works from any cwd.
   if (cmd === 'server') return (await import('./cli/server.js')).run(args);
+
+  if (cmd === 'setup') {
+    process.exitCode = await (await import('./cli/setup.js')).run(args);
+    return;
+  }
 
   // #1151: a worker attaches this machine's harnesses to a Deployment. It reads
   // the membership under MYCO_HOME and no project vault, so it sits above the

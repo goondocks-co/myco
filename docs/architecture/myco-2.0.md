@@ -313,7 +313,7 @@ The settled glossary names surfaces the tree does **not yet carry**. These are a
 
 | Named in glossary | State in `main` @ `258d2fbe` | Owner |
 |---|---|---|
-| `myco setup` (rerunnable post-install workflow) | **Absent.** Setup today is `myco member join --provision` | #916 |
+| `myco setup` (rerunnable post-install workflow) | Guides joining an existing Deployment and enrolling an always-on runner through existing operations. Observes progress; persists only answers and consent fingerprints. `--status` is read-only; service runtime and backlog requiring lock-taking readers are explicitly unchecked. Guided creation and legacy migration remain pending. | #1719 |
 | `myco server ...` (Operator lifecycle) | **Absent.** Provisioning today is `wrangler` plus `scripts/mint-local.ts` | #913, #914 |
 | Deployment / Default Deployment / Project Binding | **Absent.** The member registry binds a project to a server URL, with no Deployment concept | #916 |
 | Enrollment Authority → Member Credential exchange | **Absent.** Tokens are minted per project by the owner | #907 (mechanism), #912 (implementation) |
@@ -348,6 +348,7 @@ Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — t
 | `login` | KEEP | M | Blk | Redeems a single-use expiring invite link for this machine's membership; a sandbox exchanges the same string from `MYCO_JOIN_CODE` instead (plan §2.7) | #1158 |
 | `logout` | NEW | M, Core | Blk | Removes one selected Deployment's local membership after its own member credential lineage is revoked through `POST /members/credential/revoke`; a local-only recovery is explicit when that Deployment cannot be reached, and retained capture spools remain available for a later sign-in. Removed repository connections stay opted out of capture until an explicit `myco member join`; cached or refreshed Deployment directives cannot release this hold | #1719 |
 | `server` | KEEP | C, W | Blk | The operator surface for both front doors: the self-hosted binary under `--target local` — `create`, `run`, `install`, `uninstall`, `status`, `update`, `destroy`, no container runtime and no Node on the machine that serves — and Cloudflare provisioning reduced to one verb over a worker bundle the binary carries, with `--url` putting the Deployment on a domain the operator owns (plan §2.6). Node and wrangler are an operator-machine prerequisite for the Cloudflare verbs alone | D1, D2 |
+| `setup` | NEW | M | Blk | Rerunnable guided join and runner enrollment (`cli/setup.ts`, `setup/`), calling standalone operations. Four-state observations and plan-scoped consent; read-only `--status`, optional remote checks without credential renewal. Legacy migration pending defers to `myco cutover --dry-run`. | #1719 |
 | `settings` | KEEP | M | Blk | Sandbox entry point; #927's proof runs through it | #917 |
 | `hook` | KEEP | M | Blk | The capture entry point | #917 |
 | `mcp` | KEEP | M, MCP | Blk | Retargeted at the Deployment as remote HTTP MCP; tenancy travels as the tools' `project` parameter (plan §3 D1). Codex and Claude Code members reach `/mcp` directly through a headers helper; the stdio bridge remains for Cursor, whose remote entries cannot refresh a rotating member token (§3.4, #1337) | A6, #1237 |

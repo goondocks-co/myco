@@ -45,8 +45,16 @@ The Deployment selected during setup for safe Git projects that do not yet have 
 _Avoid_: Default Grove, inferred server
 
 **Myco Setup**:
-The rerunnable post-install workflow invoked with `myco setup`. It creates or connects to Deployments, joins the member, manages saved server connections, selects the Default Deployment, can assign the current Git Project to a different connection, and verifies capture. The public install script has already installed the CLI, resident service, and symbiont integrations.
+The rerunnable post-install conductor invoked with `myco setup`. It observes the selected Deployment's machine state and calls the same operations as the standalone commands. Joining a Deployment and registering an always-on runner are guided today; creation and legacy migration retain their standalone operator commands. Setup stores answers and fingerprints of consented plans, never credentials or completion flags. The installer supplies the CLI; member capture needs no resident service.
 _Avoid_: Treating package installation alone as server provisioning or multiplying setup behavior across separate project-server commands
+
+**Setup Observation**:
+A non-mutating, identity-scoped account of an applicable setup step: absent, incomplete, complete or unavailable. An unavailable observation stops setup; saved answers do not prove progress.
+_Avoid_: Completion flags, treating an unreadable resource as absent
+
+**Setup Consent**:
+Approval of the exact displayed plan, recorded as its canonical SHA-256 fingerprint. A changed plan requires fresh consent. Choosing a role or saving an answer does not authorize a service installation.
+_Avoid_: Persisting owner links or credentials, treating saved answers as blanket approval
 
 **Server Provisioning**:
 The independent `myco server ...` operator workflow that creates, updates, inspects, rotates, backs up, adopts, restores, or removes a Deployment. Myco Setup may invoke the same underlying provisioning implementation, but server operation does not depend on running member setup.

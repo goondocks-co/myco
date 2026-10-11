@@ -277,6 +277,12 @@ const UNPRODUCED_ROWS: Readonly<Record<string, string>> = {
 };
 
 describe('feature-preservation ledger completeness', () => {
+  it('owns the guided setup command on the member surface', () => {
+    expect(cliCommands()).toContain('setup');
+    const row = rowIn('7.1', 'setup');
+    expect(row?.disposition).toBe('NEW');
+    expect(row?.surfaces).toContain('M');
+  });
   it('parses a non-trivial ledger (guards against a silently empty parse)', () => {
     expect(LEDGER.length).toBeGreaterThan(100);
   });
