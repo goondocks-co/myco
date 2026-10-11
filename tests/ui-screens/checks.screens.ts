@@ -29,6 +29,17 @@ test.beforeAll(async () => {
       `);
       return;
     }
+    if (request.url === '/document-navigation') {
+      response.writeHead(200, { 'Content-Type': 'text/html' }).end(`
+        <a href="/destination">Navigate</a>
+        <script>
+          const controller = new AbortController();
+          void fetch('/pending', { signal: controller.signal }).catch(() => {});
+          window.addEventListener('pagehide', () => controller.abort());
+        </script>
+      `);
+      return;
+    }
     response.writeHead(200, { 'Content-Type': 'text/html' }).end('<a href="/destination">Navigate</a>');
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -71,4 +82,60 @@ test('watchPage reports a 500 response', async ({ page }) => {
   await page.evaluate(() => fetch('/error'));
   expect(watch.failedRequests).toEqual([`GET ${origin}/error: 500`]);
   expect(() => expectQuiet(watch)).toThrow();
+});
+
+test('watchPage retains a genuine abort across later unrelated navigations', async ({ page }) => {
+  const watch = watchPage(page);
+  await page.goto(origin);
+  await page.route('**/aborted', (route) => route.abort('aborted'));
+  const failed = page.waitForEvent('requestfailed');
+  await page.evaluate(() => fetch('/aborted').catch(() => undefined));
+  expect((await failed).failure()?.errorText).toBe('net::ERR_ABORTED');
+  await page.goto(`${origin}/destination`);
+  await page.goto(origin);
+  expect(watch.failedRequests).toEqual([`GET ${origin}/aborted: net::ERR_ABORTED`]);
+  expect(() => expectQuiet(watch)).toThrow();
+});
+
+test('watchPage stays quiet on a full-document link navigation with a pending fetch', async ({ page }) => {
+  const watch = watchPage(page);
+  const started = page.waitForRequest(`${origin}/pending`);
+  await page.goto(`${origin}/document-navigation`);
+  await started;
+  await page.getByRole('link', { name: 'Navigate' }).click();
+  await expect(page).toHaveURL(`${origin}/destination`);
+  expectQuiet(watch);
+});
+
+test('watchPage retains a genuine abort when navigation cancels the same URL again', async ({ page }) => {
+  const watch = watchPage(page);
+  await page.goto(origin);
+  await page.route('**/pending', (route) => route.abort('aborted'));
+  const genuineAbort = page.waitForEvent('requestfailed');
+  await page.evaluate(() => fetch('/pending').catch(() => undefined));
+  await genuineAbort;
+  await page.unroute('**/pending');
+  const started = page.waitForRequest(`${origin}/pending`);
+  await page.goto(`${origin}/navigation`);
+  await started;
+  const cancelled = page.waitForEvent('requestfailed', (request) => request.url() === `${origin}/pending`);
+  await page.getByRole('link', { name: 'Navigate' }).click();
+  await expect(page).toHaveURL(`${origin}/destination`);
+  expect((await cancelled).failure()?.errorText).toBe('net::ERR_ABORTED');
+  expect(watch.failedRequests).toEqual([`GET ${origin}/pending: net::ERR_ABORTED`]);
+});
+
+test('watchPage reports an old request aborted after two navigation commits', async ({ page }) => {
+  const watch = watchPage(page);
+  const started = page.waitForRequest(`${origin}/pending`);
+  await page.goto(`${origin}/document-navigation`);
+  await started;
+  const failed = page.waitForEvent('requestfailed');
+  await page.evaluate(`
+    history.pushState({}, '', '/first');
+    history.pushState({}, '', '/second');
+    controller.abort();
+  `);
+  expect((await failed).failure()?.errorText).toBe('net::ERR_ABORTED');
+  expect(watch.failedRequests).toEqual([`GET ${origin}/pending: net::ERR_ABORTED`]);
 });

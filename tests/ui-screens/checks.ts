@@ -80,29 +80,44 @@ export function watchPage(page: Page): PageWatch {
   const watch: PageWatch = { consoleErrors: [], failedRequests: [] };
   let navigationEpoch = 0;
   const requestEpochs = new WeakMap<Request, number>();
-  const pendingAborts: string[] = [];
-  page.on('request', (request) => { requestEpochs.set(request, navigationEpoch); });
+  let navigation: { request: Request; epoch: number } | undefined;
+  const pendingAborts: Array<{ epoch: number; index: number; failures: string[] }> = [];
+  page.on('request', (request) => {
+    // Early new-document subresources can precede the frame's commit and receive its observed epoch.
+    requestEpochs.set(request, navigationEpoch);
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      navigation = { request, epoch: navigationEpoch };
+    }
+  });
   page.on('framenavigated', (frame) => {
     if (frame !== page.mainFrame()) return;
-    navigationEpoch += 1;
     // Cancellation can arrive before the main frame's navigation commit.
-    for (const message of pendingAborts) {
-      const index = watch.failedRequests.indexOf(message);
-      if (index !== -1) watch.failedRequests.splice(index, 1);
+    for (const abort of pendingAborts.reverse()) {
+      if (abort.epoch === navigationEpoch && abort.epoch === navigation?.epoch && abort.failures === watch.failedRequests) {
+        watch.failedRequests.splice(abort.index, 1);
+      }
     }
     pendingAborts.length = 0;
+    navigation = undefined;
+    navigationEpoch += 1;
   });
   page.on('console', (message) => {
     if (message.type() === 'error') watch.consoleErrors.push(message.text());
   });
   page.on('pageerror', (error) => { watch.consoleErrors.push(`uncaught: ${error.message}`); });
   page.on('requestfailed', (request) => {
+    if (navigation?.request === request) {
+      navigation = undefined;
+      pendingAborts.length = 0;
+    }
     const error = request.failure()?.errorText ?? 'failed';
     const message = `${request.method()} ${request.url()}: ${error}`;
     const startedAt = requestEpochs.get(request);
     if (error === 'net::ERR_ABORTED' && startedAt !== undefined) {
-      if (startedAt < navigationEpoch) return;
-      pendingAborts.push(message);
+      if (startedAt === navigationEpoch - 1) return;
+      if (startedAt === navigation?.epoch) {
+        pendingAborts.push({ epoch: startedAt, index: watch.failedRequests.length, failures: watch.failedRequests });
+      }
     }
     watch.failedRequests.push(message);
   });
