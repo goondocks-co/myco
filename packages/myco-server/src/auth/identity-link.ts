@@ -1,3 +1,4 @@
+import { IDENTITY_LINK_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 /**
  * Identity link authorities — the proof that binds a GitHub account to a member.
  *
@@ -33,7 +34,7 @@ const ADMIN: MemberRole = 'admin';
 /** Bytes of entropy in a link key. 32 = 256 bits. */
 export const IDENTITY_LINK_KEY_BYTES = 32;
 /** Lifetime of a freshly minted authority: the member is at the keyboard, and a first sign-in with a second factor fits inside it. */
-export const IDENTITY_LINK_TTL_MS = 15 * 60 * 1000;
+export { IDENTITY_LINK_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 /** Lifetime of an authority an admin creates for another member: it is handed over, like an invitation, so it lives as long as one does by default. */
 export const ADMIN_IDENTITY_LINK_TTL_MS = 60 * 60 * 1000;
 export const IDENTITY_LINK_ID_PREFIX = 'il_';

@@ -30,7 +30,7 @@ import { resolveMachineIdPath } from '../paths/home.js';
 import { memberHomeFor } from './home-for-folder.js';
 import { MACHINE_IDENTITY_NOTE, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { ENROLLMENT_KEY_PATTERN, ENV_JOIN_CODE, JOIN_PATH } from './constants.js';
-import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
+import { admitMemberServerUrl, memberServerDialUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
 import { warmProjectContext } from './prefetch.js';
 import { acquireRegistryLock, deploymentUrl, readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from './registry.js';
 import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
@@ -138,7 +138,7 @@ export async function exchangeJoinCode(
   const fetchImpl = opts.fetch ?? globalThis.fetch;
   let response: Response;
   try {
-    response = await fetchImpl(`${code.serverUrl}/members/join`, {
+    response = await fetchImpl(memberServerDialUrl(`${code.serverUrl}/members/join`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       // A hook is killed at its harness timeout. An exchange without a deadline of its

@@ -121,3 +121,16 @@ export class ExecutionAccounting {
     });
   }
 }
+
+/** Sum independent harness attempts; unavailable counters remain unavailable. */
+export function sumAttemptUsage(first: WorkerUsage | null, next: WorkerUsage | null): WorkerUsage | null {
+  if (first === null) return next;
+  if (next === null) return first;
+  const totals = Object.fromEntries(Object.keys({ ...first, ...next }).flatMap((key) => {
+    const a = first[key as keyof WorkerUsage];
+    const b = next[key as keyof WorkerUsage];
+    if (typeof a !== 'number' && a !== null && typeof b !== 'number' && b !== null) return [];
+    return [[key, typeof a === 'number' && typeof b === 'number' ? a + b : null]];
+  }));
+  return parseWorkerUsage({ ...totals, ...(first.tokenScope === undefined && next.tokenScope === undefined ? {} : { tokenScope: 'unverified' }) });
+}

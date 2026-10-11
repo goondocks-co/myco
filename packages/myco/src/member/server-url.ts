@@ -55,21 +55,23 @@ export function bypassProxyFor(hosts: readonly string[], env: NodeJS.ProcessEnv)
 }
 
 /**
- * True for a server URL a member accepts: `https:`, or `http:` on a loopback
+ * The dial URL a member accepts: `https:`, or `http:` on a loopback
  * host. A loopback host it admits is added to this process's proxy bypass, so
  * the dial that follows goes straight to it.
  */
-export function admitMemberServerUrl(value: string, env: NodeJS.ProcessEnv = process.env): boolean {
+export function admitMemberServerUrl(value: string, env: NodeJS.ProcessEnv = process.env): string | null {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    return false;
+    return null;
   }
-  if (url.protocol === 'https:') return true;
-  if (url.protocol !== 'http:' || !isLoopbackHost(url.hostname)) return false;
-  bypassProxyFor([url.hostname], env);
-  return true;
+  if (url.protocol === 'https:') return value;
+  if (url.protocol !== 'http:' || !isLoopbackHost(url.hostname)) return null;
+  const hostname = url.hostname;
+  if (hostname === 'localhost') url.hostname = '127.0.0.1';
+  bypassProxyFor([...new Set([hostname, url.hostname])], env);
+  return hostname === 'localhost' ? url.href : value;
 }
 
 /** A bare Deployment address uses HTTP on loopback and HTTPS elsewhere; explicit schemes pass the shared transport rule. */
@@ -81,4 +83,11 @@ export function normalizeMemberServerAddress(value: string): URL | null {
   if (!address.includes('://') && isLoopbackHost(url.hostname)) url.protocol = 'http:';
   if (!url.hostname || url.username || url.password || !admitMemberServerUrl(url.href)) return null;
   return url;
+}
+
+/** Plaintext localhost dials use a loopback literal, independent of DNS or hosts-file answers. */
+export function memberServerDialUrl(value: string): string {
+  const admitted = admitMemberServerUrl(value);
+  if (admitted === null) throw new Error(`Member server URL must use ${MEMBER_SERVER_URL_RULE}`);
+  return admitted;
 }

@@ -1,3 +1,6 @@
+/** How long a member can spend a GitHub identity link. */
+export const IDENTITY_LINK_TTL_MS = 15 * 60 * 1000;
+
 /** The protocol and project header names used by every member request. */
 export const MEMBER_PROTOCOL = 1;
 export const PROTOCOL_HEADER = 'x-myco-protocol';

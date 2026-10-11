@@ -1,3 +1,4 @@
+import { memberServerDialUrl } from '@myco/member/server-url.js';
 /**
  * The harness supervisor: one long-lived process that starts a runtime per run.
  *
@@ -190,7 +191,7 @@ export const BODY_TOTAL_TIMEOUT_MS = 5_000;
 async function closeAbandonedRun(
   control: RunControl, runId: string, close: { error: string; replaced: boolean }, now: number,
 ): Promise<Response> {
-  return await fetch(`${control.serverUrl}/runs/update`, {
+  return await fetch(memberServerDialUrl(`${control.serverUrl}/runs/update`), {
     method: 'POST',
     headers: { ...memberHeaders(control), 'content-type': 'application/json' },
     body: JSON.stringify({

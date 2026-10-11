@@ -46,6 +46,8 @@ describe('the MCP bridge started outside the project', () => {
     const bridge = resolveCredential('registry', { cwd: elsewhere, mycoHome, invokedBy: 'mcp' });
     expect(bridge).toBeNull();
     expect(stderrLines.join('')).toContain('no registry entry');
+    expect(stderrLines.join('')).toContain('`myco member join`');
+    expect(stderrLines.join('')).not.toContain('member join <server-url>');
     // A hook in an unjoined directory finds nothing: its session must not land in another project.
     stderrLines.length = 0;
     expect(resolveCredential('registry', { cwd: elsewhere, mycoHome, invokedBy: 'hook stop' })).toBeNull();

@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { detectHarnessesAsync } from '@myco/runner/detect.js';
-import { credentialFile, HARNESSES } from '@myco/runner/harnesses.js';
+import { detectHarnesses, detectHarnessesAsync } from '@myco/runner/detect.js';
+import { credentialFile, harnessById, HARNESSES } from '@myco/runner/harnesses.js';
 
 describe('runner harness detection', () => {
   let root: string;
@@ -42,6 +42,23 @@ describe('runner harness detection', () => {
   };
 
   const OWNER_NO_ACCESS = 0o000;
+
+  it('uses the custom Codex home for synchronous and asynchronous detection and runtime login', async () => {
+    stageLogin();
+    process.env.CODEX_HOME = path.join(root, 'custom-codex');
+    fs.mkdirSync(process.env.CODEX_HOME);
+    const login = path.join(process.env.CODEX_HOME, 'auth.json');
+    fs.writeFileSync(login, JSON.stringify({ tokens: { access_token: 'fixture' } }));
+    const expected = [{ id: 'codex', installed: true, authenticated: true }];
+    expect(credentialFile(harnessById('codex')!)).toBe(login);
+    expect(detectHarnesses(['codex'])).toEqual(expected);
+    expect(await detectHarnessesAsync(['codex'])).toEqual(expected);
+    expect(await detectHarnessesAsync(['codex'], undefined, { credentialBytes: false })).toEqual(expected);
+    fs.rmSync(login);
+    expect(detectHarnesses(['codex'])[0]?.authenticated).toBe(false);
+    expect(await detectHarnessesAsync(['codex'])).toMatchObject([{ authenticated: false }]);
+    expect(credentialFile(harnessById('codex')!, { HOME: process.env.HOME })).toBe(path.join(process.env.HOME!, '.codex', 'auth.json'));
+  });
 
   it('decides a login from metadata alone: a credential file whose bytes cannot be read still counts', async () => {
     const credential = stageLogin();

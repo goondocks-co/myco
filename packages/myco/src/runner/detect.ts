@@ -15,7 +15,6 @@ import { readFile, stat } from 'node:fs/promises';
 import { credentialFile, harnessById, HARNESSES, offerable, type Harness } from './harnesses.js';
 import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import type { CodexInstallationContext, CodexInstallationVerdict } from '@myco/runner/drivers/codex.js';
-import { expandHome } from '@myco/paths/home.js';
 
 export interface DetectedHarness {
   id: string;
@@ -83,7 +82,7 @@ function commandSucceeds(binary: string, args: readonly string[], env: NodeJS.Pr
 function authenticated(harness: Harness, env: NodeJS.ProcessEnv): boolean {
   const probe = harness.credential;
   if (probe.kind === 'command') return commandSucceeds(harness.binary, probe.args, env);
-  const file = expandHome(probe.path, env.HOME);
+  const file = credentialFile(harness, env);
   return fileHolds(file, probe.requires) || (probe.kind === 'file-or-command' && commandSucceeds(harness.binary, probe.args, env));
 }
 

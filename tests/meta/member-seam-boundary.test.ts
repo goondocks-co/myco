@@ -8,7 +8,7 @@
  * must not reach daemon/, service/, grove/, vault/, db/, host/, mcp/, tools/,
  * agent/, the installer, or the YAML manifest loader — and no module in its
  * closure may carry the local-daemon literals `127.0.0.1`, `daemon.json`,
- * `daemon.lock` in code. That closure is exactly what a thin member binary
+ * `daemon.lock` in code. The member URL policy alone may name the loopback dial address. That closure is exactly what a thin member binary
  * compiles, so the gate walks the IMPORT GRAPH rather than grepping one file:
  * a forbidden import two hops deep is the same violation as a direct one.
  *
@@ -396,6 +396,7 @@ function moduleViolationsOf(closure: Closure): Violation[] {
     const file = closure.modules.get(key)!;
     const code = codeOf(fs.readFileSync(file, 'utf-8'), file);
     for (const literal of FORBIDDEN_LITERALS) {
+      if (literal === '127.0.0.1' && key === 'member/server-url.ts') continue;
       if (code.includes(literal)) {
         out.push({ module: key, reason: `contains literal ${literal}`, chain: chainTo(closure, key) });
       }
@@ -466,6 +467,16 @@ describe('member seam boundary (transitive)', () => {
     }
     expect({ outside: outside.size, literals: literals.length, externals: externals.length, unknowable: unknowable.length })
       .toEqual({ outside: 0, literals: 0, externals: 0, unknowable: 0 });
+  });
+
+  it('keeps server implementation imports out of the member CLI', () => {
+    const file = path.join(SRC_ROOT, 'cli/member.ts');
+    const edges = runtimeEdges(fs.readFileSync(file, 'utf8'), file);
+    const serverImports = edges.specifiers.filter((specifier) => {
+      const resolved = resolveSpecifier(file, specifier);
+      return resolved.kind === 'module' && moduleKey(resolved.file).startsWith('packages/myco-server/');
+    });
+    expect(serverImports).toEqual([]);
   });
 
   it('keeps the import pass out of every hook: a walk of every harness store does not fit a hook budget', () => {

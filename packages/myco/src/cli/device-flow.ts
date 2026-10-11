@@ -1,3 +1,4 @@
+import { memberServerDialUrl } from '@myco/member/server-url.js';
 import { START_SLOW_DOWN } from '@goondocks/myco-shared/setup-guidance';
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -67,7 +68,7 @@ export async function runDeviceFlow<T>(serverUrl: string, spec: DeviceFlowSpec<T
   const post = async (path: string, body: unknown) => {
     let response: Response;
     try {
-      response = await fetchImpl(`${serverUrl}${path}`, { method: 'POST', redirect: 'error',
+      response = await fetchImpl(memberServerDialUrl(`${serverUrl}${path}`), { method: 'POST', redirect: 'error',
         headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
     } catch {
       throw new DeviceFlowFailure('unreachable', `could not complete ${spec.noun} with the Deployment`);

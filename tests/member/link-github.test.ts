@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { LINK_REQUIRES_ADMIN_HINT, linkUrl, runLinkGithub } from '@myco/cli/member.js';
 import { LINK_REQUIRES_ADMIN } from '@myco-server-worker/auth/members.js';
+import { IDENTITY_LINK_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { classifyLinkAnswer, type FetchLike } from '@myco/member/transport.js';
 import { ENV_MEMBER_TOKEN, resolveMemberProjectRoot } from '@myco/member/credential.js';
@@ -45,6 +46,7 @@ describe('myco member link-github', () => {
     const url = await runLinkGithub([], { mycoHome, cwd: root, fetch, stdout: (l) => out.push(l), stderr: () => {}, openBrowser: (u) => opened.push(u) });
 
     expect(url).toBe(`${SERVER_URL}/link#${KEY}`);
+    expect(out[0]).toContain(`within ${IDENTITY_LINK_TTL_MS / 60_000} minutes`);
     expect(out.filter((l) => l.includes(KEY))).toEqual([`${SERVER_URL}/link#${KEY}`]);
     expect(opened).toEqual([]);
     expect(requests).toHaveLength(1);

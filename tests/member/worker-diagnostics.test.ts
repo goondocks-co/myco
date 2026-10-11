@@ -173,6 +173,78 @@ describe('a worker driving a harness that fails', () => {
   }, 20_000);
 });
 
+describe('first Claude Code login recovery', () => {
+  for (const mode of ['recovers', 'logged-out', 'still-missing', 'later-run', 'tool-called'] as const) {
+    it(`rechecks readiness and bounds retries: ${mode}`, async () => {
+      const scratch = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-first-login-')));
+      const count = join(scratch, 'starts');
+      const probes = join(scratch, 'probes');
+      const secret = 'fixture-run-secret';
+      const said = `authentication_failed: please run /login; keychain is not ready ${secret} ${OPENAI_KEY} tok_run tok_worker`;
+      const failure = withSecret(fixture<NativeCase>('claude-code.json').login_missing, said);
+      const tool = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'call_1', name: 'mcp__myco__myco_run_sessions', input: {} }] } });
+      const failureLines = failure.stdout.map((line) => {
+        const row = JSON.parse(line);
+        return JSON.stringify(row.type === 'result' ? { ...row, total_cost_usd: 0.2, usage: { input_tokens: 11, output_tokens: 3, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } : row);
+      });
+      if (mode === 'tool-called') failureLines.unshift(tool);
+      writeFileSync(join(scratch, 'failure'), failureLines.join('\n') + '\n');
+      writeFileSync(join(scratch, 'success'), [JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'call_1', name: 'mcp__myco__myco_run_sessions', input: {} }] } }), JSON.stringify({ type: 'result', subtype: 'success', stop_reason: 'end_turn', is_error: false, total_cost_usd: 0.3, usage: { input_tokens: 17, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })].join('\n') + '\n');
+      writeFileSync(join(scratch, 'claude'), [
+        '#!/bin/sh',
+        `if [ "$1" = auth ]; then echo probe >> "${probes}"; ${mode === 'logged-out' ? `if [ -f "${count}" ]; then exit 1; fi;` : ''} exit 0; fi`,
+        `echo run >> "${count}"`,
+        `echo "$PWD" >> "${join(scratch, 'directories')}"`,
+        `while [ "$#" -gt 0 ]; do if [ "$1" = --mcp-config ]; then shift; echo "$1" >> "${join(scratch, 'configs')}"; test -f "$1" || exit 2; fi; shift; done`,
+        `n=$(wc -l < "${count}")`,
+        mode === 'later-run' ? `if [ "$n" -eq 1 ]; then cat "${join(scratch, 'success')}"; else cat "${join(scratch, 'failure')}"; fi`
+          : mode === 'recovers' ? `if [ "$n" -eq 1 ]; then cat "${join(scratch, 'failure')}"; else cat "${join(scratch, 'success')}"; fi`
+          : `cat "${join(scratch, 'failure')}"`,
+      ].join('\n'), { mode: 0o755 });
+      const stopping = new AbortController();
+      const ends: Array<Record<string, unknown>> = [];
+      let claims = 0;
+      const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/worker/claim')) {
+          claims++;
+          return Response.json({ persisted: true, claimed: true, heartbeatMs: 60_000,
+            run: { id: `run_${claims}`, attemptId: `attempt_${claims}`, projectId: 'proj_1', task: 'title-summary', instruction: 'do it', harness: 'claude-code', runToken: 'tok_run', credentialEnv: { ANTHROPIC_API_KEY: secret }, profile: STUB_PROFILE, timeoutSeconds: 60 },
+          });
+        }
+        if (url.endsWith('/worker/end')) {
+          ends.push(JSON.parse(String(init?.body)));
+          if (mode !== 'later-run' || ends.length === 2) stopping.abort();
+        }
+        return Response.json({ persisted: true, ended: true });
+      }) as typeof fetch;
+      await withPath(scratch, () => runWorker({ serverUrl: 'https://deployment.example', token: 'tok_worker', lockDir: null,
+        runRoot: join(scratch, 'runs'), diagnosticRoot: join(scratch, 'diagnostics'), only: ['claude-code'], pollIdleMs: 1,
+        signal: stopping.signal, log: () => {}, fetchImpl: profileWorkerServer(fetchImpl),
+      }));
+      expect(ends.map((end) => end.status)).toEqual(mode === 'later-run' ? ['completed', 'failed'] : [mode === 'recovers' ? 'completed' : 'failed']);
+      expect(readFileSync(count, 'utf8').trim().split('\n')).toHaveLength(mode === 'logged-out' || mode === 'tool-called' ? 1 : 2);
+      if (mode !== 'later-run' && mode !== 'tool-called') expect(readFileSync(probes, 'utf8').trim().split('\n')).toHaveLength(2);
+      if (mode === 'recovers') {
+        const directories = readFileSync(join(scratch, 'directories'), 'utf8').trim().split('\n');
+        const configs = readFileSync(join(scratch, 'configs'), 'utf8').trim().split('\n');
+        expect(new Set(directories).size).toBe(2);
+        expect(new Set(configs).size).toBe(2);
+        expect(configs).toEqual(directories.map((dir) => join(dir, 'mcp.json')));
+        expect(directories.every((dir) => !existsSync(dir))).toBe(true);
+        expect(ends[0]!.usage).toMatchObject({ inputTokens: 28, outputTokens: 8, estimatedCostUsd: 0.5 });
+      }
+      if (mode === 'tool-called') expect(readFileSync(probes, 'utf8').trim().split('\n')).toHaveLength(1);
+      const kept = readFileSync(diagnosticLogPath(join(scratch, 'diagnostics')), 'utf8');
+      expect(kept).toContain('keychain is not ready');
+      expect(kept).not.toContain(secret);
+      expect(kept).not.toContain(OPENAI_KEY);
+      expect(kept).not.toContain('tok_run');
+      expect(kept).not.toContain('tok_worker');
+    }, 20_000);
+  }
+});
+
 describe('the local diagnostics log', () => {
   it('bounds each entry and rotates the file, keeping a bounded number of earlier files', () => {
     const dir = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-diagnostic-log-')));

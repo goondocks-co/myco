@@ -762,6 +762,8 @@ const StepRuleSchema = z.object({
  * types each mirrors, and reads the generated table typed by them.
  */
 const RunnerWorkerSchema = z.object({
+  /** Recheck readiness and retry a first login failure before any tool call. */
+  retryFirstLoginMissing: z.boolean().optional(),
   /** What to look for on PATH. */
   binary: z.string().min(1),
   launch: z.discriminatedUnion('kind', [

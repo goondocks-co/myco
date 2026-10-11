@@ -11,7 +11,7 @@ import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
  * attempts found no membership at all; `mcp-headers` prints the member
  * headers a remote MCP entry asks for.
  */
-import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
+import { IDENTITY_LINK_TTL_MS, INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { seedMachineSettings } from '../member/machine-settings.js';
 import { listAutoJoinStates } from '../member/auto-join.js';
 import { optOut, settleConnection } from './member-auto-join.js';
@@ -28,7 +28,7 @@ import { memberHomeFor, pinnedElsewhere, pinnedElsewhereRefusal, pinnedHomeLine,
 import { unboundedBudget } from '../member/budget.js';
 import { CONNECT_TIMEOUT_CAP_MS, CREDENTIAL_FLAG, CREDENTIAL_SOURCES, deploymentScopedHeaders, isProjectId, memberHeaders, MEMBER_TOKEN_REFRESH_WINDOW_MS, SERVER_FLAG } from '../member/constants.js';
 import { isMemberTokenShape, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '../member/credential.js';
-import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from '../member/server-url.js';
+import { admitMemberServerUrl, memberServerDialUrl, MEMBER_SERVER_URL_RULE } from '../member/server-url.js';
 import { clearJoinRefusals } from '../member/join-code.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { runImport } from '../member/import.js';
@@ -102,7 +102,7 @@ Ops:
                      machine is a member of several. No token is changed.
   link-github [--root <dir>] [--open]
                      Connect your GitHub account to this membership for the dashboard: prints a one-time
-                     link to open in a browser within ten minutes. --open hands it to the browser as well.
+                     link to open in a browser within ${IDENTITY_LINK_TTL_MS / 60_000} minutes. --open hands it to the browser as well.
   raw-claims [--credential registry|env] [--server <url>] [--apply --revision <reviewed-revision>]
                      Preview raw data with no recorded uploader, by project, kind, count and date.
                      Only the recorded owner may claim it. Review the preview, then explicitly apply
@@ -167,7 +167,7 @@ function entriesFor(args: readonly string[], deps: MemberCliDeps): RegistryEntry
   const root = resolveMemberProjectRoot(deps.cwd);
   const entry = readRegistryEntry(root, mycoHome);
   if (!entry) {
-    (deps.stderr ?? ((l) => process.stderr.write(`${l}\n`)))(`myco member: no registry entry for ${root} — run \`myco member join <server-url> --project <id>\``);
+    (deps.stderr ?? ((l) => process.stderr.write(`${l}\n`)))(`myco member: no registry entry for ${root} — run \`myco member join\``);
     return [];
   }
   return [entry];
@@ -974,7 +974,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
   } else if (selection.root === null) err('myco member: this directory belongs to no project');
   else if (!selection.readable) err(`myco member: the registry entry for ${selection.root} could not be read`);
   else if (selection.entries.length === 0) {
-    err(`myco member: no registry entry for ${selection.root} — run \`myco member join <server-url> --project <id>\``);
+    err(`myco member: no registry entry for ${selection.root} — run \`myco member join\``);
   }
   reportMissedCapture(out, selection, deps);
   reportRefusedHooks(out, deps);
@@ -1259,7 +1259,7 @@ export const LINK_REQUIRES_ADMIN_HINT = `this server already has an admin, so on
 
 /** The URL a member opens to connect a GitHub account: the key rides the fragment, which never reaches the server or a log. */
 export function linkUrl(serverUrl: string, key: string): string {
-  return `${serverUrl.replace(/\/+$/, '')}/link#${key}`;
+  return memberServerDialUrl(`${serverUrl.replace(/\/+$/, '')}/link#${key}`);
 }
 
 /**
@@ -1289,7 +1289,7 @@ export async function runLinkGithub(args: readonly string[], deps: MemberCliDeps
   switch (outcome.class) {
     case 'linked': {
       const url = linkUrl(entry.serverUrl, outcome.key);
-      out(`Open this link within ten minutes to connect your GitHub account to this membership:`);
+      out(`Open this link within ${IDENTITY_LINK_TTL_MS / 60_000} minutes to connect your GitHub account to this membership:`);
       out(url);
       if (open) (deps.openBrowser ?? openBrowser)(url);
       return url;

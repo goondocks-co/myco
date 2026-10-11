@@ -1,3 +1,4 @@
+import { memberServerDialUrl } from '@myco/member/server-url.js';
 /**
  * The member's hook block, derived from a symbiont's own hook template — the
  * one emitter behind both the `member-project` install scope (which writes it)
@@ -99,7 +100,7 @@ export function memberRemoteMcp(
   const server = deploymentUrl(serverUrl);
   if (!SHELL_SAFE_URL.test(server)) throw new Error(`Refusing to emit a member MCP server: ${server} cannot ride unquoted in a headers-helper command`);
   const helper = [binaryPath, ...MCP_HEADERS_ARGS, CREDENTIAL_FLAG, source, SERVER_FLAG, server].join(' ');
-  return { url: `${server}${MCP_PATH}`, [helperKey]: helper };
+  return { url: memberServerDialUrl(`${server}${MCP_PATH}`), [helperKey]: helper };
 }
 
 /**

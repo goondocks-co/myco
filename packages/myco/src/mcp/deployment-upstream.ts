@@ -1,3 +1,4 @@
+import { memberServerDialUrl } from '@myco/member/server-url.js';
 /**
  * The Deployment as an MCP upstream: where the member's tool calls go when
  * the command declares a credential source.
@@ -46,8 +47,8 @@ export function resolveDeploymentUpstream(
 export function upstreamOf(record: CredentialRecord, source: CredentialSource): DeploymentUpstream {
   const base = record.serverUrl.replace(/\/+$/, '');
   return {
-    mcpUrl: new URL(`${base}${MCP_PATH}`),
-    healthUrl: new URL(`${base}${HEALTH_PATH}`),
+    mcpUrl: new URL(memberServerDialUrl(`${base}${MCP_PATH}`)),
+    healthUrl: new URL(memberServerDialUrl(`${base}${HEALTH_PATH}`)),
     headers: deploymentHeaders(record),
     source,
     projectId: record.projectId,

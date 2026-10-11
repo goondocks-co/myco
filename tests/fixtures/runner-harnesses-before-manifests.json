@@ -347,7 +347,8 @@
           "resolvesTo": "resolvedModel",
           "efforts": "supportedEffortLevels"
         }
-      }
+      },
+      "retryFirstLoginMissing": true
     },
     {
       "id": "codex",

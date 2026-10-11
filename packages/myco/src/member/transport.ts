@@ -1,3 +1,4 @@
+import { memberServerDialUrl } from '@myco/member/server-url.js';
 /**
  * `ServerClient(record, fetch)`: one authenticated request primitive under
  * `postEvent`, `postBlob`, `refresh`, and `health`, with every outcome
@@ -187,7 +188,7 @@ export class ServerClient {
     const started = Date.now();
     const requestTimer = setTimeout(() => { timedOut = true; controller.abort(); }, init.budget.requestTimeoutMs);
     try {
-      const res = await this.fetchImpl(`${this.base}${path}`, {
+      const res = await this.fetchImpl(memberServerDialUrl(`${this.base}${path}`), {
         method,
         headers,
         body: init.body,
@@ -258,7 +259,7 @@ export class ServerClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), budget.requestTimeoutMs);
     try {
-      const res = await this.fetchImpl(`${this.base}${HEALTH_PATH}`, { method: 'GET', redirect: 'error', signal: controller.signal });
+      const res = await this.fetchImpl(memberServerDialUrl(`${this.base}${HEALTH_PATH}`), { method: 'GET', redirect: 'error', signal: controller.signal });
       return res.status === 200;
     } catch {
       return false;

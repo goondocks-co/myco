@@ -13,6 +13,7 @@
  * `set` refuses rather than writing a value nothing honours; the 1.4 tiers are
  * never written from here.
  */
+import { machineSettingsLocation } from '@goondocks/myco-shared/setup-guidance';
 import { machineBlockOf } from '../member/machine-settings.js';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
@@ -27,17 +28,13 @@ export const MEMBER_TIER_LEAVES = [
 ] as const;
 
 /**
- * The Member leaves a machine honours today: held by the Deployment per machine, set on the dashboard (Access ›
- * Runtimes › Settings), and cached by the machine at each session start (`member/machine-settings.ts`).
+ * The Member leaves a machine honours today: held by the Deployment per machine, set on the dashboard (My machines ›
+ * Its settings), and cached by the machine at each session start (`member/machine-settings.ts`).
  */
 export const MACHINE_SETTING_LEAVES: readonly string[] = ['capture.plan_dirs', 'capture.auto_join_roots', 'capture.connect_roots'];
 
 /** The machine leaf written by connecting a repository, never set directly. */
 const CONNECT_ROOTS_LEAF = 'capture.connect_roots';
-
-/** Where a machine's settings are set: the dashboard's Access page, on this machine's runtime. */
-const machineSettingsAt = (serverUrl: string | null): string =>
-  `the dashboard${serverUrl === null ? '' : ` (${serverUrl}/access)`}, under Runtimes › Settings for this machine`;
 
 /** The issue that gives Member Settings an owner the member reads. */
 export const MEMBER_SETTINGS_ISSUE = '#1393';
@@ -101,7 +98,7 @@ export async function run(args: readonly string[], source: CredentialSource, dep
     }
     if (MACHINE_SETTING_LEAVES.includes(leaf)) {
       const deployment = await openDeployment(source, deps);
-      err(`myco config: ${leaf} is this machine's setting, set in ${machineSettingsAt(deployment?.serverUrl ?? null)}; this command only reads it. Nothing was changed.`);
+      err(`myco config: ${leaf} is this machine's setting, set in ${machineSettingsLocation(deployment?.serverUrl ?? null)}; this command only reads it. Nothing was changed.`);
       return false;
     }
     if (isMemberLeaf(leaf)) { err(`myco config: ${notHonoured(leaf)}`); return false; }
@@ -142,7 +139,7 @@ export async function run(args: readonly string[], source: CredentialSource, dep
   out(`=== Deployment Settings (${deployment.serverUrl}) ===`);
   for (const l of leaves) out(`${l.leaf} = ${l.configured ? JSON.stringify(l.value) : '(default)'}${standing(l)}`);
   out('');
-  out(`=== Machine Settings (this machine; set in ${machineSettingsAt(deployment.serverUrl)}) ===`);
+  out(`=== Machine Settings (this machine; set in ${machineSettingsLocation(deployment.serverUrl)}) ===`);
   for (const machineLeaf of MACHINE_SETTING_LEAVES) out(`  ${machineLeaf} = ${machine === null ? '(no machine of its own)' : JSON.stringify(machine.leaves[machineLeaf] ?? [])}`);
   out('');
   out(`=== Member Settings (this machine) ===`);
