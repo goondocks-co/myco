@@ -8,7 +8,7 @@
  * whose redemption is this machine's own registry membership. Every record's
  * server URL passes the one member rule (`server-url.ts`).
  */
-import { resolveProjectRoot, resolveVaultDir } from '../project-root.js';
+import { resolveRepositoryRoot } from '../utils/git-files.js';
 import { memberHomeFor } from './home-for-folder.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, ENV_JOIN_CODE, MEMBER_TOKEN_PATTERN, type CredentialSource, type RefreshTerminalReason } from './constants.js';
 import { recordMissingMembership } from './no-membership.js';
@@ -58,7 +58,7 @@ export function isMemberTokenShape(value: string): boolean {
 
 /** The worktree-aware project root a hook invocation belongs to. */
 export function resolveMemberProjectRoot(cwd: string = process.cwd()): string {
-  return resolveProjectRoot(resolveVaultDir(cwd));
+  return resolveRepositoryRoot(cwd) ?? cwd;
 }
 
 const stderr = (line: string): void => { process.stderr.write(`[myco] member: ${line}\n`); };

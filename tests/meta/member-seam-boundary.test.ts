@@ -109,6 +109,7 @@ const ALLOWLIST: readonly string[] = [
   'utils/git.ts',
   // A repository's identity read from git's own files, so no hook starts git for it (#1561). Node built-ins only.
   'utils/git-files.ts',
+  'utils/temporary-folders.ts',
   'version.ts',
   // version.ts resolves the package root through this leaf.
   'utils/find-package-root.ts',
@@ -135,6 +136,7 @@ const ENFORCED_LEAVES: readonly string[] = [
   'paths/pin-trust.ts',
   'project-root.ts',
   'machine-id.ts',
+  'utils/temporary-folders.ts',
   'capture/transcript-id.ts',
   'symbionts/parsers/**',
   'symbionts/adapter.ts',

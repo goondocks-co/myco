@@ -50,6 +50,8 @@ export const INCLUDE_CONFIG = /^\s*\[\s*include/im;
 
 /** How this reader sees the filesystem and the user: the system's, or a test's stand-in. */
 export interface RepoFilesDeps {
+  /** Read directory identity only; config and Git's execution trust policy do not change these pointers. */
+  layoutOnly?: boolean;
   /** The user git compares a repository's owner with; null where no owner can be read (Windows). */
   uid?: () => number | null;
   /** The filesystem device a directory is on. */
@@ -76,6 +78,52 @@ export function readRepoLayout(cwd: string, env: NodeJS.ProcessEnv = process.env
   const found = locateRepo(cwd, env, deps);
   if (found === null || found === UNUSUAL) return found;
   return found.unverified === null ? found.layout : UNUSUAL;
+}
+
+/** The main checkout named by Git's files; retained worktree records resolve missing working directories. No Git process runs. */
+export function resolveRepositoryRoot(cwd: string, retainedRoots: Iterable<string> = [], env: NodeJS.ProcessEnv = process.env): string | null {
+  const found = locateRepo(canonicalPath(cwd), env, { layoutOnly: true });
+  if (found !== null && found !== UNUSUAL) {
+    return canonicalPath(path.dirname(found.layout.commonDir));
+  }
+  // Existing directories require their own repository identity, even when an old record names the same path.
+  if (fs.existsSync(cwd)) return null;
+  const recorded = canonicalPath(cwd);
+  const matches = new Set<string>();
+  for (const root of retainedRoots) {
+    const repo = locateRepo(root, env, { layoutOnly: true });
+    if (repo === null || repo === UNUSUAL) continue;
+    const { commonDir } = repo.layout;
+    let records: fs.Dirent[];
+    try { records = fs.readdirSync(path.join(commonDir, 'worktrees'), { withFileTypes: true }); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    for (const record of records) {
+      if (!record.isDirectory()) continue;
+      const dir = path.join(commonDir, 'worktrees', record.name);
+      const pointer = readText(path.join(dir, 'gitdir'))?.trim();
+      const common = readText(path.join(dir, 'commondir'))?.trim();
+      if (!pointer || !common || path.basename(pointer) !== '.git') continue;
+      if (canonicalPath(path.resolve(dir, common)) !== canonicalPath(commonDir)) continue;
+      const worktree = canonicalPath(path.dirname(path.resolve(dir, pointer)));
+      if (fs.existsSync(worktree)) {
+        const current = locateRepo(worktree, env, { layoutOnly: true });
+        if (current === null || current === UNUSUAL || canonicalPath(current.layout.top) !== worktree
+          || canonicalPath(current.layout.gitDir) !== canonicalPath(dir)) continue;
+      }
+      const relative = path.relative(worktree, recorded);
+      if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) matches.add(canonicalPath(root));
+    }
+  }
+  return matches.size === 1 ? [...matches][0] : null;
+}
+
+/** Resolve existing paths through realpath; missing paths retain their absolute spelling. */
+export function canonicalPath(p: string): string {
+  const absolute = path.resolve(p);
+  if (!fs.existsSync(absolute)) return absolute;
+  try { return fs.realpathSync.native(absolute); } catch { return absolute; }
 }
 
 /**
@@ -136,8 +184,8 @@ export function locateRepo(cwd: string, env: NodeJS.ProcessEnv = process.env, de
     if (!isFile(path.join(gitDir, 'HEAD')) || !isDirectory(path.join(commonDir, 'objects')) || !isDirectory(path.join(commonDir, 'refs'))) return UNUSUAL;
     const config = readText(path.join(commonDir, 'config'));
     // An included config is read from files no caller of this reader watches: git is asked every time.
-    if (config === null || INCLUDE_CONFIG.test(config)) return UNUSUAL;
-    const configUnusual = UNUSUAL_CONFIG.test(config)
+    if (!deps.layoutOnly && (config === null || INCLUDE_CONFIG.test(config))) return UNUSUAL;
+    const configUnusual = UNUSUAL_CONFIG.test(config ?? '')
       || (path.resolve(gitDir) !== path.resolve(commonDir) && readText(path.join(gitDir, 'config.worktree')) !== null);
     // Reached through a symlink leading out of the work tree, the start is somewhere git looks from elsewhere.
     try {
@@ -147,6 +195,7 @@ export function locateRepo(cwd: string, env: NodeJS.ProcessEnv = process.env, de
     } catch {
       return UNUSUAL;
     }
+    if (deps.layoutOnly) return { layout: { top: dir, gitDir, commonDir }, unverified: null };
     // Git refuses a repository another user owns unless it is marked safe: it checks the work tree, the `.git` file
     // that names a git directory, and the git directory. Git for Windows applies that check by an owner this reader
     // cannot read.

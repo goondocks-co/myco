@@ -9,9 +9,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  canonicalPath, mappingCovers, parseDirectoryMapping, remoteIdentity, transcriptPlacer, type PlacementGit,
+  canonicalPath, mappingCovers, parseDirectoryMapping, transcriptPlacer, type PlacementGit,
 } from '@myco/symbionts/transcript-attribution.js';
 import { collectCandidates } from '@myco/member/import.js';
+import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 
 const line = (o: Record<string, unknown>): string => `${JSON.stringify(o)}\n`;
 
@@ -29,7 +30,7 @@ function codexTranscript(dir: string, cwd: string, meta: Record<string, unknown>
   return file;
 }
 
-const noGit: PlacementGit = { mainCheckout: () => null, remoteOf: () => null };
+const noGit: PlacementGit = { mainCheckout: () => null };
 
 describe('placing a transcript', () => {
   const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-place-')));
@@ -40,7 +41,7 @@ describe('placing a transcript', () => {
   const store = path.join(base, 'store');
 
   it('places a worktree that still exists under its main checkout', () => {
-    const git: PlacementGit = { mainCheckout: (dir) => (dir === worktree ? root : null), remoteOf: () => null };
+    const git: PlacementGit = { mainCheckout: (dir) => (dir === worktree ? root : null) };
     const place = transcriptPlacer([root], { git });
     expect(place('claude-code', claudeTranscript(store, worktree))).toEqual({ kind: 'bound', root });
   });
@@ -54,6 +55,15 @@ describe('placing a transcript', () => {
     expect(family('claude-code', claudeTranscript(store, path.join(base, 'Repos', 'other')))).toEqual({ kind: 'elsewhere', directory: path.join(base, 'Repos', 'other') });
   });
 
+  it('never maps a nested repository or an unresolved target onto an ancestor Project', () => {
+    const personal = path.join(root, 'homelab');
+    const gone = path.join(base, 'removed');
+    for (const git of [noGit, { mainCheckout: (dir: string) => dir === personal ? personal : null }]) {
+      const place = transcriptPlacer([root], { git, repositoryRoots: [root, personal], mappings: [{ from: gone, to: personal }] });
+      expect(place('claude-code', claudeTranscript(store, gone))).toEqual({ kind: 'elsewhere', directory: gone });
+    }
+  });
+
   it('never maps a directory that is still a repository of its own', () => {
     const other = path.join(base, 'Repos', 'myco-unrelated');
     fs.mkdirSync(other, { recursive: true });
@@ -63,15 +73,15 @@ describe('placing a transcript', () => {
     expect(family('claude-code', claudeTranscript(store, path.join(base, 'Repos', 'myco-gone')))).toEqual({ kind: 'bound', root });
   });
 
-  it('places a removed worktree by the remote its transcript records', () => {
-    const git: PlacementGit = { mainCheckout: () => null, remoteOf: (r) => (r === root ? 'git@github.com:goondocks-co/myco.git' : null) };
+  it('reports a removed worktree with only a recorded remote, requiring an explicit map', () => {
+    const git: PlacementGit = noGit;
     const place = transcriptPlacer([root], { git });
     const gone = path.join(base, 'herdr', 'worktrees', 'myco', 'review-1');
-    expect(place('codex', codexTranscript(store, gone, { git: { repository_url: 'https://github.com/goondocks-co/myco.git' } }))).toEqual({ kind: 'bound', root });
+    expect(place('codex', codexTranscript(store, gone, { git: { repository_url: 'https://github.com/goondocks-co/myco.git' } }))).toEqual({ kind: 'elsewhere', directory: gone });
     expect(place('codex', codexTranscript(store, gone, { git: { repository_url: 'https://github.com/someone/else.git' } }))).toEqual({ kind: 'elsewhere', directory: gone });
   });
 
-  it('asks git for a real worktree', () => {
+  it('live capture and import resolve a real worktree to the same main checkout', () => {
     const repo = path.join(base, 'real-repo');
     const tree = path.join(base, 'real-repo-wt');
     fs.mkdirSync(repo, { recursive: true });
@@ -83,6 +93,73 @@ describe('placing a transcript', () => {
     const place = transcriptPlacer([repo]);
     expect(place('claude-code', claudeTranscript(store, tree))).toEqual({ kind: 'bound', root: repo });
     expect(place('claude-code', claudeTranscript(store, path.join(tree, 'packages')))).toEqual({ kind: 'bound', root: repo });
+    expect(resolveMemberProjectRoot(path.join(tree, 'packages'))).toBe(repo);
+    fs.appendFileSync(path.join(repo, '.git', 'config'), '\n[include]\n path = extra-config\n[extensions]\n worktreeConfig = true\n');
+    fs.writeFileSync(path.join(repo, '.git', 'worktrees', 'real-repo-wt', 'config.worktree'), '[core]\n autocrlf = false\n');
+    expect(resolveMemberProjectRoot(path.join(tree, 'packages'))).toBe(repo);
+    expect(transcriptPlacer([repo])('claude-code', claudeTranscript(store, tree))).toEqual({ kind: 'bound', root: repo });
+    fs.rmSync(tree, { recursive: true });
+    expect(transcriptPlacer([repo])('claude-code', claudeTranscript(store, path.join(tree, 'packages')))).toEqual({ kind: 'bound', root: repo });
+    fs.mkdirSync(tree);
+    expect(git('init -q', tree)).toBe(0);
+    expect(transcriptPlacer([repo])('claude-code', claudeTranscript(store, path.join(tree, 'gone')))).toEqual({ kind: 'elsewhere', directory: path.join(tree, 'gone') });
+    fs.rmSync(tree, { recursive: true });
+    expect(git('worktree prune', repo)).toBe(0);
+    expect(transcriptPlacer([repo])('claude-code', claudeTranscript(store, tree))).toEqual({ kind: 'elsewhere', directory: tree });
+  });
+
+  it('excludes agent scratch directories even when a mapping or recorded remote would bind them', () => {
+    const cwd = path.join(os.tmpdir(), 'claude-501', 'project', 'scratchpad', 'repo');
+    const place = transcriptPlacer([root], { mappings: [{ from: os.tmpdir(), to: root }] });
+    expect(place('codex', codexTranscript(store, cwd, { git: { repository_url: 'https://github.com/goondocks-co/myco.git' } }))).toEqual({ kind: 'excluded' });
+    const held = process.env.MYCO_TEMPORARY_FOLDERS;
+    process.env.MYCO_TEMPORARY_FOLDERS = path.join(os.tmpdir(), 'claude-501');
+    try {
+      expect(place('claude-code', claudeTranscript(store, cwd))).toEqual({ kind: 'excluded' });
+    } finally {
+      if (held === undefined) delete process.env.MYCO_TEMPORARY_FOLDERS; else process.env.MYCO_TEMPORARY_FOLDERS = held;
+    }
+  });
+
+  it('does not attribute a pruned nested worktree by its containing checkout', () => {
+    const gone = path.join(root, '.worktrees', 'personal', 'src');
+    expect(transcriptPlacer([root])('claude-code', claudeTranscript(store, gone))).toEqual({ kind: 'elsewhere', directory: gone });
+  });
+
+  it('excludes a missing scratchpad under a temporary-folder alias', () => {
+    if (process.platform === 'win32') return;
+    const physical = path.join(base, 'temporary-storage');
+    const alias = path.join(base, 'temporary-alias');
+    fs.mkdirSync(physical);
+    fs.symlinkSync(physical, alias);
+    const cwd = path.join(alias, 'claude-501', 'project', 'scratchpad', 'gone');
+    const held = process.env.MYCO_TEMPORARY_FOLDERS;
+    process.env.MYCO_TEMPORARY_FOLDERS = alias;
+    try {
+      const place = transcriptPlacer([root], { mappings: [{ from: alias, to: root }] });
+      expect(place('claude-code', claudeTranscript(store, cwd))).toEqual({ kind: 'excluded' });
+    } finally {
+      if (held === undefined) delete process.env.MYCO_TEMPORARY_FOLDERS; else process.env.MYCO_TEMPORARY_FOLDERS = held;
+    }
+  });
+
+  it('reports an existing nested directory whose repository identity cannot be read', () => {
+    const unresolved = path.join(root, '.worktrees', 'unresolved');
+    fs.mkdirSync(unresolved, { recursive: true });
+    fs.writeFileSync(path.join(unresolved, '.git'), 'gitdir: missing-record');
+    expect(transcriptPlacer([root])('claude-code', claudeTranscript(store, unresolved))).toEqual({ kind: 'elsewhere', directory: unresolved });
+  });
+
+  it('follows a symlinked cwd to its physical repository for live capture and import', () => {
+    if (process.platform === 'win32') return;
+    const other = path.join(base, 'other-repo');
+    fs.mkdirSync(path.join(other, 'src', 'nested'), { recursive: true });
+    expect(Bun.spawnSync(['git', 'init', '-q', other], { stdout: 'ignore', stderr: 'ignore' }).exitCode).toBe(0);
+    fs.symlinkSync(path.join(other, 'src'), path.join(root, 'linked-src'));
+    const cwd = path.join(root, 'linked-src', 'nested');
+    expect(resolveMemberProjectRoot(cwd)).toBe(other);
+    expect(transcriptPlacer([root, other])('claude-code', claudeTranscript(store, cwd))).toEqual({ kind: 'bound', root: other });
+    expect(transcriptPlacer([root])('claude-code', claudeTranscript(store, cwd))).toEqual({ kind: 'elsewhere', directory: cwd });
   });
 
   it('spells paths the way the filesystem stores them', () => {
@@ -93,13 +170,24 @@ describe('placing a transcript', () => {
     expect(transcriptPlacer([shouted], { git: noGit })('claude-code', claudeTranscript(store, root))).toEqual({ kind: 'bound', root: shouted });
   });
 
-  it('reads mappings and remotes', () => {
+  it('leaves missing paths unresolved without canonicalizing filesystem ancestors', () => {
+    const missing = path.resolve('/home', `myco-unresolved-${crypto.randomUUID()}`, 'src');
+    const module = path.resolve('packages/myco/src/utils/git-files.ts');
+    const probe = Bun.spawnSync([process.execPath, '-e', `
+      import { canonicalPath, resolveRepositoryRoot } from ${JSON.stringify(module)};
+      console.log(JSON.stringify([canonicalPath(${JSON.stringify(missing)}), resolveRepositoryRoot(${JSON.stringify(missing)})]));
+    `], { stdout: 'pipe', stderr: 'pipe', timeout: 5_000 });
+    expect(probe.exitCode).toBe(0);
+    expect(JSON.parse(probe.stdout.toString())).toEqual([missing, null]);
+    expect(transcriptPlacer([root])('claude-code', claudeTranscript(store, missing))).toEqual({ kind: 'elsewhere', directory: missing });
+  });
+
+  it('reads mappings', () => {
     expect(parseDirectoryMapping('/a/b=/c')).toEqual({ from: '/a/b', to: '/c' });
     expect(parseDirectoryMapping('a=/c')).toBeNull();
     expect(parseDirectoryMapping('/a=')).toBeNull();
     expect(mappingCovers({ from: '/r/myco-*', to: '/r/myco' }, '/r/myco-x/y')).toBe(true);
     expect(mappingCovers({ from: '/r/myco-*', to: '/r/myco' }, '/r/other')).toBe(false);
-    expect(remoteIdentity('git@github.com:goondocks-co/myco.git')).toBe(remoteIdentity('https://GitHub.com/goondocks-co/myco/'));
   });
 });
 

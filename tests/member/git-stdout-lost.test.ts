@@ -1,19 +1,8 @@
 /**
- * Bun's `execFileSync` drops a child's stdout under heavy load: the child
- * prints and exits 0, and the call returns an empty string without throwing
- * (oven-sh/bun#34069). The loss is all or nothing. A git query that always
- * prints must not take that empty string as its answer:
- *
- * - an empty `--git-common-dir` resolved a joined checkout's project root to
- *   its parent, and a hook run from a subdirectory or a linked worktree, whose
- *   cwd fallback is not the root, found no membership and captured nothing;
- * - an empty `--show-toplevel` sent a hook's plan paths to the process cwd;
- * - an empty branch, HEAD or remote dropped a session's git facts, and an
- *   empty `status --porcelain` read a dirty tree as clean;
- * - an empty `--git-dir` put the installer's exclude file in the project root.
- *
- * The `git` on PATH here (`helpers/lost-git.ts`) is the real one, whose stdout
- * the test drops for the invocations it arms.
+ * File-only member roots remain stable when Git output is unavailable.
+ * Git-backed session facts, worktree plan paths and installer paths reject
+ * empty answers from commands whose successful output cannot be empty.
+ * The Git fixture drops stdout for armed invocations.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
@@ -80,8 +69,7 @@ beforeEach(() => {
   mycoHome = tempMycoHome();
   checkout = tempDir('myco-lost-git-checkout-');
   realGit(['init', '-q', checkout], checkout);
-  // A repository whose config includes another is one the member reads by asking git, not from git's own files
-  // (`utils/git-files.ts`): what is tested here is that git path. The included file need not exist.
+  // Included config exercises Git-backed facts and installer discovery.
   realGit(['config', 'include.path', 'absent.gitconfig'], checkout);
   stderrLines.length = 0;
   (process.stderr as unknown as { write: (c: unknown) => boolean }).write = ((c: unknown) => { stderrLines.push(String(c)); return true; }) as never;
@@ -106,19 +94,20 @@ describe('a git stdout lost in transit', () => {
   it('does not move the project root to the checkout\'s parent', () => {
     git.loseNext(1);
     expect(resolveMemberProjectRoot(checkout)).toBe(checkout);
-    expect(git.armsLeft()).toBe(0);
+    expect(git.armsLeft()).toBe(1);
   });
 
   it('never reads a joined checkout\'s membership as missing', () => {
     registerTestMember({ mycoHome, token: 'mt_tok', projectId: 'proj_1', root: checkout });
     git.loseNext(1);
     expect(membershipProblem({ cwd: checkout, mycoHome })).toBeNull();
-    expect(git.armsLeft()).toBe(0);
+    expect(git.armsLeft()).toBe(1);
   });
 
   it('resolves a capture hook\'s registry credential from the checkout and records no missed capture', () => {
     git.loseNext(1);
     const credential = hookCredential(checkout);
+    expect(git.armsLeft()).toBe(1);
     expect(credential?.root).toBe(checkout);
     expect(credential?.projectId).toBe('proj_1');
     expectNoMissedCapture();
@@ -129,7 +118,7 @@ describe('a git stdout lost in transit', () => {
     fs.mkdirSync(sub, { recursive: true });
     git.loseNext(1, '--git-common-dir');
     const credential = hookCredential(sub);
-    expect(git.armsLeft()).toBe(0);
+    expect(git.armsLeft()).toBe(1);
     expect(credential?.root).toBe(checkout);
     expectNoMissedCapture();
   });
@@ -138,7 +127,7 @@ describe('a git stdout lost in transit', () => {
     const worktree = linkedWorktree();
     git.loseNext(1, '--git-common-dir');
     const credential = hookCredential(worktree);
-    expect(git.armsLeft()).toBe(0);
+    expect(git.armsLeft()).toBe(1);
     expect(credential?.root).toBe(checkout);
     expectNoMissedCapture();
   });
@@ -148,11 +137,12 @@ describe('a git stdout lost in transit', () => {
     expect(isSafeProjectRoot(checkout)).toBe(true);
   });
 
-  it('falls back as it does for git failing when git never answers, and never to the parent', () => {
+  it('resolves the repository from files even when Git never answers', () => {
     const sub = path.join(checkout, 'pkg');
     fs.mkdirSync(sub);
     git.loseNext(1_000);
-    expect(resolveMemberProjectRoot(sub)).toBe(sub);
+    expect(resolveMemberProjectRoot(sub)).toBe(checkout);
+    expect(git.armsLeft()).toBe(1_000);
     git.loseNext(0);
     expect(resolveMemberProjectRoot(sub)).toBe(checkout);
   });

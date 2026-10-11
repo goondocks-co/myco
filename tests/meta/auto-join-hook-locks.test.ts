@@ -21,7 +21,7 @@ function declaration(file: string, name: string): ts.FunctionDeclaration {
 }
 
 /** Compiler-resolved call edges include aliases, nested callbacks and workspace imports. */
-function blockingPaths(entry: ts.FunctionDeclaration): string[] {
+function blockingPaths(entry: ts.FunctionDeclaration, forbidProcesses = false): string[] {
   const paths = new Set<string>();
   const walk = (fn: ts.SignatureDeclaration, chain: string[], ancestors: ReadonlySet<ts.Node>): void => {
     if (ancestors.has(fn)) return;
@@ -29,6 +29,9 @@ function blockingPaths(entry: ts.FunctionDeclaration): string[] {
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
         const target = checker.getResolvedSignature(node)?.declaration;
+        if (forbidProcesses && target?.getSourceFile().fileName.endsWith('/child_process.d.ts')) {
+          paths.add([...chain, node.expression.getText()].join(' → '));
+        }
         if (target !== undefined && !ts.isJSDocSignature(target) && target.getSourceFile().fileName.startsWith(`${SRC}${path.sep}`)) {
           const name = target.name?.getText() ?? '<anonymous>';
           const next = [...chain, name];
@@ -50,6 +53,14 @@ function blockingPaths(entry: ts.FunctionDeclaration): string[] {
       }
       ts.forEachChild(node, visit);
     };
+    for (const parameter of fn.parameters) {
+      if (parameter.initializer === undefined) continue;
+      const symbol = checker.getSymbolAtLocation(parameter.initializer);
+      const target = symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0 ? checker.getAliasedSymbol(symbol) : symbol;
+      for (const declared of target?.declarations ?? []) {
+        if (ts.isFunctionDeclaration(declared)) walk(declared, [...chain, declared.name?.text ?? '<default>'], nextAncestors);
+      }
+    }
     if ('body' in fn && fn.body !== undefined) visit(fn.body);
   };
   walk(entry, [entry.name?.text ?? '<anonymous>'], new Set());
@@ -58,4 +69,11 @@ function blockingPaths(entry: ts.FunctionDeclaration): string[] {
 
 it('the hook opt-out decision cannot wait on a lock held across I/O', () => {
   expect(blockingPaths(declaration('member/auto-join.ts', 'joinStanding'))).toEqual([]);
+});
+
+it('hook repository resolution and eligibility cannot start Git or wait for a registry lock', () => {
+  for (const [file, name] of [
+    ['member/credential.ts', 'resolveMemberProjectRoot'],
+    ['member/auto-join.ts', 'silentRepository'],
+  ]) expect(blockingPaths(declaration(file, name), true)).toEqual([]);
 });

@@ -271,9 +271,10 @@ export function collectCandidates(
     mappings?: readonly DirectoryMapping[];
     exclude?: ReadonlySet<string>;
     destinationForRoot?: (root: string) => RegistryEntry | undefined;
+    repositoryRoots?: Iterable<string>;
   } = {},
 ): CollectedCandidates {
-  const place = transcriptPlacer(roots, { mappings: opts.mappings });
+  const place = transcriptPlacer(roots, { mappings: opts.mappings, repositoryRoots: opts.repositoryRoots });
   const out: CollectedCandidates = { candidates: [], found: {}, unattributable: 0, unbound: 0, unboundDirectories: {}, active: 0, dropped: 0, excluded: 0 };
 
   for (const agent of agents) {
@@ -294,6 +295,7 @@ export function collectCandidates(
         out.unboundDirectories[placed.directory] = (out.unboundDirectories[placed.directory] ?? 0) + 1;
         continue;
       }
+      if (placed.kind === 'excluded') { out.dropped += 1; continue; }
       if (placed.kind === 'unknown') { out.unattributable += 1; continue; }
       const destination = opts.destinationForRoot?.(placed.root);
       if (destination !== undefined) {
@@ -354,7 +356,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   const agents = agentsWithStores(opts.agent);
   const exclude = new Set([...(opts.exclude ?? []), ...legacySessionsToLeaveOut(mycoHome, named)]);
   const collected = collectCandidates(agents, bound.keys(), deps.machineId, mycoHome, now(), {
-    mappings: opts.mappings, exclude, destinationForRoot: (root) => bound.get(root),
+    mappings: opts.mappings, exclude, repositoryRoots: entries.flatMap((entry) => entry.root === undefined ? [] : [entry.root]), destinationForRoot: (root) => bound.get(root),
   });
   const { candidates, unattributable, active } = collected;
 
