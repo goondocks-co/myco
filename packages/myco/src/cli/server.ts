@@ -23,7 +23,7 @@ import {
 } from '../server/deployment.js';
 import { CommandFailed, type CommandRunner } from '../server/runner.js';
 import { ComposeFilesUnreadable, HarnessLeftStopped, RestoreLeftIncomplete, UpdateRolledBack, UpdateRollbackFailed } from '../server/deployment.js';
-import { registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
+import { discardSignInPending, registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
 import { WranglerNotReady, cloudflareCredentialLines, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
 import { type CreatePlan, cloudflareUpdateLines, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
@@ -166,12 +166,18 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           configuration and this machine's deployment record.
                                           --fleet sets how many runtimes the server may start at
                                           once; the next update deploys it.
-  github-app --url <https://…> [--org <name>] [--name <text>] [--target local|cloudflare|compose]
+  github-app --existing --client-id <id> --client-secret-stdin --url <url> [--target local|cloudflare|compose]
+                                          Install an app you already own after regenerating its secret.
+  github-app --url <https://…> [--org <name>] [--app-name <text>] [--target local|cloudflare|compose]
+                                          --name is an alias for --app-name.
                                           Native setup requires a stopped server. Stop a foreground run
                                           with Ctrl-C, or use server uninstall to stop its service.
                                           Start it again after setup to use the new sign-in credentials.
                                           Register the dashboard's sign-in app on GitHub (one click
                                           there) and install its credentials on the Deployment.
+  github-app --discard-pending [--target local|cloudflare|compose]
+                                          Print the saved app URL, then discard its unfinished registration.
+                                          Delete or reuse that app on GitHub before registering another.
 
 A Deployment run from this binary needs no container runtime and no Node.
 The Cloudflare target needs Node and wrangler on THIS machine, and neither on
@@ -254,7 +260,7 @@ export function hostedNextSteps(url: string | undefined): string[] {
   ];
 }
 
-export async function run(args: string[], deps: { runner?: CommandRunner } = {}): Promise<void> {
+export async function run(args: string[], deps: { runner?: CommandRunner; fetchImpl?: typeof fetch; openUrl?: (url: string) => Promise<void>; readSecret?: () => Promise<string> } = {}): Promise<void> {
   const [command, ...rest] = args;
   if (command === undefined || command === '--help' || command === '-h') {
     console.log(SERVER_HELP);
@@ -724,22 +730,38 @@ export async function run(args: string[], deps: { runner?: CommandRunner } = {})
     }
 
     if (command === 'github-app') {
+      if (flags.has('discard-pending')) {
+        if (['existing', 'client-id', 'client-secret', 'client-secret-stdin', 'org', 'name', 'app-name'].some((key) => flags.has(key))) fail('--discard-pending cannot be combined with app registration or credentials. Run myco server github-app --discard-pending --target <target> on its own.');
+        await discardSignInPending(resolveSignInTarget(flags.get('target')), (line) => console.log(line));
+        return;
+      }
       const url = flags.get('url');
       if (url === undefined || url === 'true' || url === '') fail('github-app needs --url <https://…>, the address members open the dashboard at.');
+      const existing = flags.has('existing');
+      const clientId = flags.get('client-id');
+      if (existing && (!clientId || clientId === 'true' || !flags.has('client-secret-stdin'))) fail('--existing needs --client-id <id> --client-secret-stdin; regenerate the app secret on GitHub, then pipe it to this command.');
+      if (!existing && (clientId !== undefined || flags.has('client-secret-stdin'))) fail('--client-id and --client-secret-stdin require --existing.');
+      if (flags.has('client-secret')) fail('pipe the regenerated secret to --client-secret-stdin; do not pass --client-secret.');
+      if (existing && flags.has('org')) fail('--org applies to registering a new app; omit it with --existing.');
       const target = resolveSignInTarget(flags.get('target'));
+      const clientSecret = existing ? await (deps.readSecret ?? readSignInSecret)() : undefined;
       if (target.kind === 'cloudflare') for (const line of credentialLines) report(line);
       const result = await registerGitHubApp({
         url: url!,
         org: flags.get('org'),
-        name: flags.get('name'),
+        name: flags.get('app-name') ?? flags.get('name'),
+        existing: existing ? { clientId: clientId!, clientSecret: clientSecret! } : undefined,
         target,
-        openUrl: openInBrowser,
+        runner: deps.runner,
+        fetchImpl: deps.fetchImpl,
+        openUrl: deps.openUrl ?? openInBrowser,
         log: (line) => console.log(line),
       });
-      console.log(`\nGitHub App:  ${result.app.name}, owned by ${result.app.ownerLogin ?? 'your account'} (${result.app.htmlUrl})`);
-      console.log(`Callback:    ${result.callbackUrl}`);
+      console.log(`\nGitHub App:  ${result.app.name} (${result.app.htmlUrl})`);
+      console.log(`Owner: ${existing ? 'not checked' : result.app.ownerLogin ?? 'not reported by GitHub'}`);
+      console.log(`Callback:    ${result.callbackUrl}${existing ? ' must be listed in the app' : ''}`);
       console.log(`Installed:   ${target.kind === 'cloudflare' ? `Worker ${target.record.workerName}` : target.paths.root}`);
-      if (result.verified.ok) console.log(`Verified:    ${url} sends sign-in to GitHub and back.`);
+      if (result.verified.ok) console.log(`Sign-in:     ${new URL(url!).origin} sends sign-in to GitHub with client ${result.app.clientId}; sign in once to confirm.`);
       else if (result.verified.pendingStart) console.log(`Next:        ${result.verified.reason}`);
       else fail(`Installed, but sign-in did not verify: ${result.verified.reason}`);
       return;
@@ -761,4 +783,12 @@ export async function run(args: string[], deps: { runner?: CommandRunner } = {})
     if (err instanceof CommandFailed) fail(err.message);
     fail(err instanceof Error ? err.message : String(err));
   }
+}
+
+/** Read one piped secret without terminal echo or command-line exposure. */
+async function readSignInSecret(): Promise<string> {
+  if (process.stdin.isTTY) throw new RegistrationRefused('pipe the regenerated GitHub secret to --client-secret-stdin.');
+  let value = '';
+  for await (const chunk of process.stdin) value += String(chunk);
+  return value.replace(/\r?\n$/, '');
 }

@@ -6,7 +6,7 @@
  * sees — never on a live registration.
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "../support/fenced-fs.mjs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync, existsSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -62,13 +62,15 @@ describe('the manifest', () => {
   });
 
   it('refuses a name past GitHub\'s 34 characters before listening, naming --name', async () => {
-    await expect(registerGitHubApp({ url: 'https://myco-server.example-account.workers.dev', target: { kind: 'cloudflare', record: RECORD }, runner: runner() })).rejects.toThrow(/34 characters.*--name/);
+    await expect(registerGitHubApp({ url: 'https://myco-server.example-account.workers.dev', name: 'x'.repeat(35), target: { kind: 'cloudflare', record: RECORD }, runner: runner() })).rejects.toThrow(/34 characters.*--name/);
     expect(calls).toEqual([]);
   });
 
   it('admits https, and plain http to a loopback literal only', () => {
     expect(isDeploymentUrl('https://myco.example.co')).toBe(true);
     expect(isDeploymentUrl('http://127.0.0.1:18787')).toBe(true);
+    expect(isDeploymentUrl('http://127.12.34.56:18787')).toBe(true);
+    expect(isDeploymentUrl('http://[::1]:18787')).toBe(true);
     expect(isDeploymentUrl('http://myco.example.co')).toBe(false);
     expect(isDeploymentUrl('http://localhost:18787')).toBe(false);
     expect(isDeploymentUrl('not a url')).toBe(false);
@@ -268,6 +270,7 @@ describe('the whole flow on a loopback listener', () => {
     calls = [];
     const foreign = await drive({ org: 'goondocks-co', app: { owner: { login: 'someone-else' } } });
     expect({ status: foreign.back.status, refused: foreign.outcome instanceof RegistrationRefused, installs: calls.length }).toEqual({ status: 200, refused: true, installs: 0 });
+    expect(existsSync(join(home, 'server', 'cloudflare', 'sign-in-pending.json'))).toBe(false);
     const renamed = await drive({ app: { name: 'Myco sign-in (edited)' } });
     expect({ registered: (renamed.outcome as { app?: { name: string } }).app?.name, said: renamed.logs.some((l) => /edited on GitHub/.test(l)) }).toEqual({ registered: 'Myco sign-in (edited)', said: true });
   });

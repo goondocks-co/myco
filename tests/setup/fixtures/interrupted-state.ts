@@ -5,22 +5,15 @@ import { IDENTITY_LINK_TTL_MS } from '@myco-server-worker/auth/identity-link.js'
 import { DEVICE_TTL_MS, handleDeviceStart } from '@myco-server-worker/auth/device.js';
 import { createLocalDeployment, DEFAULT_LOCAL_RECORD, resolveLocalPaths } from '@myco/server/local.js';
 import { RUNNER_RECORD_VERSION, publishRunnerRecord, withRunnerLock } from '@myco/runner/runner-registry.js';
-import { convertManifestCode } from '@myco/server/github-app.js';
-import { writePrivateFileAtomic } from '@myco/member/store.js';
-import { LocalVolume } from '@myco/server/local-volume.js';
-import fs from 'node:fs';
-import path from 'node:path';
+import { convertManifestCode, signInPendingPath, writeSignInPending } from '@myco/server/github-app.js';
 
 /** Seeds a private pending-conversion artifact for sign-in recovery fixtures. */
 export async function convertedBeforeInstall(mycoHome: string, fetchImpl: typeof fetch, url = 'https://setup.invalid') {
   const app = await convertManifestCode('setup-conversion', fetchImpl);
   const paths = resolveLocalPaths(mycoHome);
-  const file = path.join(paths.root, 'sign-in-pending.json');
-  const pending = { ...app, url, at: Date.UTC(2026, 9, 10) };
-  new LocalVolume(paths).exclusive(() => {
-    fs.mkdirSync(paths.root, { recursive: true, mode: 0o700 });
-    writePrivateFileAtomic(file, `${JSON.stringify(pending)}\n`);
-  });
+  const target = { kind: 'local' as const, paths };
+  const pending = await writeSignInPending(target, app, url, Date.UTC(2026, 9, 10));
+  const file = signInPendingPath(target);
   return { file, pending };
 }
 
