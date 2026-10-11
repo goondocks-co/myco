@@ -92,6 +92,12 @@ export const recall: ParityScenario = {
     expect(later.skipped).toContain('plan-nudge:repeat');
     expect(await target.sql(`SELECT kind FROM session_injections WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`))
       .toEqual([{ kind: 'plan-nudge' }]);
+    const answers = await target.sql(`SELECT prompt_id, outcome, parts, skipped, failures FROM prompt_context_answers
+      WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)} ORDER BY created_at, prompt_id`) as Array<{ prompt_id: string; outcome: string; parts: string; skipped: string; failures: string }>;
+    expect(answers).toHaveLength(3);
+    expect(answers.find((answer) => answer.prompt_id === p1)).toMatchObject({ outcome: 'served', parts: '[{"kind":"plan-nudge"}]', skipped: '["spores:provider_unavailable"]', failures: '[]' });
+    expect(answers.filter((answer) => answer.outcome === 'empty')).toHaveLength(2);
+    expect(answers.filter((answer) => answer.outcome === 'empty').every((answer) => JSON.parse(answer.skipped).includes('plan-nudge:repeat'))).toBe(true);
 
     // The record of what the prompt was served reaches the turn body under that prompt.
     interface Turn { injection: { sporeIds: string[]; spores: { id: string }[] } | null }

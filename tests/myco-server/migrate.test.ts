@@ -91,6 +91,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0081_v81.sql': 'ff4cca162f9535c6d986119aa2ea46a5bc72c227d650892c041739d321691678',
   '0082_v82.sql': 'ecd8204b533c31ad7a1d8bf9961541194407e9a3c015f6b6d418f9ea934a4cd4',
   '0083_v83.sql': '50efde38ad19781214aa8b025343660bfc00e39de4aa11994604571ad30d70d0',
+  '0084_v84.sql': '90d7aa62a0b76d683397b678e1ff908f89db9302b8bc09a30073cf902224288e',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -631,6 +632,7 @@ describe('versioned schema steps', () => {
           : t === 'content_scan_checkpoints' && c.name === 'source_kind' ? "'event'"
           : t === 'raw_archive_refs' && c.name === 'source_kind' ? "'transcript'"
           : t === 'raw_archive_refs' && c.name === 'disposition' ? "'hot'"
+          : t === 'prompt_context_answers' && c.name === 'outcome' ? "'empty'"
           : t === 'archive_bundles' && (c.name === 'version' || c.name === 'entry_count') ? '1' : c.type === 'INTEGER' ? '0' : `'x'`));
         sqlite.query(`INSERT INTO ${t} (${names.join(', ')}) VALUES (${values.join(', ')})`).run();
       };
@@ -647,7 +649,7 @@ describe('versioned schema steps', () => {
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'cortex_instructions', 'digest_extract_revisions', 'digest_extracts', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
-      'prompt_batches', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'run_reads', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'session_read_facts', 'session_tombstones', 'skill_candidates', 'skill_lineage', 'skill_records',
+      'prompt_batches', 'prompt_context_answers', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'run_reads', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'session_read_facts', 'session_tombstones', 'skill_candidates', 'skill_lineage', 'skill_records',
       'skill_usage', 'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags', 'tool_calls', 'transcript_parser_state_chunks', 'transcript_segments', 'transcripts',
     ]);
   });

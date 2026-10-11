@@ -112,6 +112,19 @@ export interface InjectionSelection {
   skipped: InjectionSkip | null;
 }
 
+/** The selector operation that failed, with the original error retained for classification. */
+export class InjectionFailure extends Error {
+  constructor(readonly operation: 'candidates' | 'hydrate_spores' | 'hydrate_plans' | 'record', cause: unknown) {
+    super(`prompt injection failed: ${operation}`, { cause });
+    this.name = 'InjectionFailure';
+  }
+}
+
+async function duringInjection<T>(operation: InjectionFailure['operation'], work: () => Promise<T>): Promise<T> {
+  try { return await work(); }
+  catch (error) { throw new InjectionFailure(operation, error); }
+}
+
 export interface InjectionRecord {
   promptId: string;
   promptHash: string;
@@ -306,17 +319,17 @@ export async function selectSporesForPrompt(
   try { values = await semantic.provider.embed(input.prompt); }
   catch (error) { if (error instanceof EmbeddingUnavailable) return nothing('provider_unavailable'); throw error; }
 
-  const [sporeHits, planHits, servedSpores, servedPlans] = await Promise.all([
+  const [sporeHits, planHits, servedSpores, servedPlans] = await duringInjection('candidates', () => Promise.all([
     semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'spore', status: 'active' } }),
     semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'plan' } }),
     injectedSporeIds(db, scope, input.sessionId),
     injectedPlanIds(db, scope, input.sessionId),
-  ]);
+  ]));
 
   const relevant = selectRelevantSpores(sporeHits.map((s) => ({ id: s.record_id, similarity: s.score, alreadyInjected: servedSpores.has(s.record_id),
     ...(s.neighbor_mean === null || s.neighbor_std === null ? {} : { neighborMean: s.neighbor_mean, neighborStd: s.neighbor_std }),
   })), { maxResults: leaves.maxPerPrompt });
-  const hydrated = await listSporesByIds(db, scope, relevant.map((s) => s.id));
+  const hydrated = await duringInjection('hydrate_spores', () => listSporesByIds(db, scope, relevant.map((s) => s.id)));
   const bySpore = new Map(hydrated.filter((s) => s.status === 'active').map((s) => [s.id, s]));
   const sporeItems: InjectionItem[] = relevant.flatMap((s) => {
     const row = bySpore.get(s.id);
@@ -324,7 +337,7 @@ export async function selectSporesForPrompt(
   });
 
   const planCandidates = planHits.filter((h) => !servedPlans.has(h.record_id)).slice(0, leaves.maxPerPrompt);
-  const planRows = await Promise.all(planCandidates.map((h) => getPlan(db, scope, h.record_id)));
+  const planRows = await duringInjection('hydrate_plans', () => Promise.all(planCandidates.map((h) => getPlan(db, scope, h.record_id))));
   const planItems: InjectionItem[] = planRows.flatMap((row) =>
     row === null ? [] : [{ kind: 'plan' as const, id: row.planKey, label: `plan: ${row.status}`, text: row.title ?? row.planKey }]);
 
@@ -333,12 +346,12 @@ export async function selectSporesForPrompt(
   if (served.length === 0) return nothing('empty');
 
   const idsOf = (kind: InjectionItem['kind']): string[] => served.filter((i) => i.kind === kind).map((i) => i.id);
-  const written = await db
+  const written = await duringInjection('record', () => db
     .prepare(`INSERT OR IGNORE INTO spore_injections (project_id, session_id, prompt_id, prompt_hash, spore_ids, plan_ids, created_at)
               VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .bind(scope.projectId, input.sessionId, input.promptId, input.promptHash,
       JSON.stringify(idsOf('spore')), JSON.stringify(idsOf('plan')), input.now)
-    .run();
+    .run());
   if (written.meta.changes !== 1) return nothing('repeat');
 
   return { items: served, context: renderInjectionContext(served, ordered.length > served.length), skipped: null };

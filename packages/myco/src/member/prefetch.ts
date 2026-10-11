@@ -17,7 +17,9 @@
 import { cacheMachineSettings, machineSettingsHeaders, beginMachineSettingsRequest } from './machine-settings.js';
 import { canStartRequest, subRequestBudget, type HookBudget } from './budget.js';
 import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { beginFeatureRequest, featureCacheDiagnostic, cacheDeploymentFeatures, cachedDeploymentFeatures, readProjectContext, removeSessionContext, updateProjectContext, writeSessionContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
+import { beginFeatureRequest, featureCacheDiagnostic, cacheDeploymentFeatures, cachedDeploymentFeatures, readProjectContext, updateProjectContext, writeSessionContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
+import { terminalText } from '@myco/utils/terminal-text.js';
+import { promptContextLogPrefix } from './context-diagnostics.js';
 import { refusalPermanent } from './constants.js';
 import { gitRemote } from './git-facts.js';
 import { readSessionState, updateSessionState } from './session-state.js';
@@ -101,7 +103,8 @@ export async function prefetchContext(opts: {
         budget: subRequestBudget(opts.budget, CONTEXT_CAP_MS, now()),
       }));
       if (answer.class === 'refused' && refusalPermanent(answer.code)) {
-        process.stderr.write(`[myco] helper: context for ${sessionId} (${ask.kind}) refused: ${answer.code}\n`);
+        const who = ask.kind === 'prompt' ? `prompt ${terminalText(ask.promptId)}` : `(${ask.kind})`;
+        process.stderr.write(`${promptContextLogPrefix(opts.serverUrl, spool.projectId)}session ${terminalText(sessionId)} ${who} refused: ${terminalText(answer.code)}\n`);
         settleAsk(spool, sessionId, ask, now());
         continue;
       }
@@ -116,8 +119,9 @@ export async function prefetchContext(opts: {
       const context = typeof body.context === 'string' ? body.context : '';
       const skipped = Array.isArray(body.skipped) ? body.skipped.filter((s): s is string => typeof s === 'string') : [];
       if (ask.kind === 'prompt') {
-        if (context.length > 0) writeSessionContext(spool.dir, opts.mycoHome, sessionId, { version: 1, prompt: { context, promptId: ask.promptId, at: now() } });
-        else removeSessionContext(spool.dir, sessionId);
+        writeSessionContext(spool.dir, opts.mycoHome, sessionId, { version: 1, prompt: { context, promptId: ask.promptId, skipped, at: now() } });
+        const reasons = skipped.map((reason) => terminalText(reason)).join(', ');
+        process.stderr.write(`${promptContextLogPrefix(opts.serverUrl, spool.projectId)}session ${terminalText(sessionId)} prompt ${terminalText(ask.promptId)} answered ${context.length > 0 ? 'with context' : 'empty'}; skipped: ${reasons || 'none'}\n`);
       } else {
         const kind: SessionBlockKind = ask.kind;
         updateProjectContext(spool.dir, opts.mycoHome, (cache) => {

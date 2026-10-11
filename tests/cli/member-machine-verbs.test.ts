@@ -21,6 +21,8 @@ import { REJOIN_HINT } from '@myco/member/delivery-notice.js';
 import { readRegistryEntry, registryEntryPath } from '@myco/member/registry.js';
 import { unmemberedDir } from '@myco/member/no-membership.js';
 import { MemberSpool } from '@myco/member/spool.js';
+import { appendHelperLog } from '@myco/member/helper.js';
+import { promptContextLogPrefix } from '@myco/member/context-diagnostics.js';
 import type { FetchLike } from '@myco/member/transport.js';
 import { memberRig, tempMycoHome, type MemberRig } from '../member/helpers/server.js';
 import { recordingFetch, registerTestMember } from '../member/helpers/hooks.js';
@@ -323,6 +325,14 @@ describe('a joined member with no 1.4 vault', () => {
     const status = describeWorkerService(SERVER_URL, { ...worker(), mycoHome })!;
     fs.mkdirSync(path.dirname(status.outLog), { recursive: true });
     fs.writeFileSync(status.outLog, ['worker attached', 'claimed run r_1', 'run r_1 ended'].join('\n') + '\n');
+    const prefix = promptContextLogPrefix(SERVER_URL, PROJECT);
+    for (const line of [
+      `${prefix}older prompt`,
+      `${prefix}session sess-1 prompt p1 answered empty; skipped: spores:empty`,
+      `${prefix}session sess-1 prompt p2 refused: parse; server\u001b[31mtext`,
+    ]) appendHelperLog(mycoHome, PROJECT, line, SERVER_URL);
+    appendHelperLog(mycoHome, 'proj_2', `${prefix}other project`, SERVER_URL);
+    appendHelperLog(mycoHome, PROJECT, `${prefix}other deployment`, 'https://other-deployment.invalid');
     new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome }).appendRefused({ eventId: '0f0e0d0c-0b0a-4908-8706-050403020100', sessionId: 'sess-1', kind: 'session.start', code: 'parse', reason: 'bad', at: Date.UTC(2026, 8, 24) });
 
     const ran = await verb('logs', ['--tail', '2'], rig.fetch);
@@ -334,6 +344,14 @@ describe('a joined member with no 1.4 vault', () => {
     expect(ran.stdout).not.toContain('worker attached');
     expect(ran.stdout).toContain(`=== worker errors (${SERVER_URL}): ${status.errLog} ===\n  (no log yet)`);
     expect(ran.stdout).toContain('2026-09-24T00:00:00.000Z session.start 0f0e0d0c-0b0a-4908-8706-050403020100 session sess-1: parse');
+    expect(ran.stdout).toContain('=== prompt context (proj_1):');
+    expect(ran.stdout).toContain('prompt p1 answered empty; skipped: spores:empty');
+    expect(ran.stdout).toContain('server [31mtext');
+    expect(ran.stdout).toContain('prompt p2 refused: parse');
+    expect(ran.stdout).not.toContain('\u001b');
+    expect(ran.stdout).not.toContain('older prompt');
+    expect(ran.stdout).not.toContain('other project');
+    expect(ran.stdout).not.toContain('other deployment');
     expect(ran.stdout).not.toContain('daemon.log');
     expect(legacyArtifacts()).toEqual([]);
 

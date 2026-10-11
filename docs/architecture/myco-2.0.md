@@ -668,6 +668,7 @@ Disposition here is about the **data class**, and separately about **migration**
 
 | Table | Disposition | Surface | Blk | Reason | Owner |
 |---|---|---|---|---|---|
+| `prompt_context_answers` | NEW | Core | Blk | One append-only attempt per prompt answer, keyed by Project, session and prompt; records served or empty outcome, context length, contribution parts, skip reasons and classified failures without prompt or context text. Carried by portable backups | #1782 |
 | `backups` | KEEP | Core, W, C | Blk | One row per backup artifact — object key, size, row counts, schema version, producer, pin and the SHA-256 of the stored bytes (null for a row written before schema 41) — written by the backup job and read by restore; the artifact itself lands in R2 on W and on the volume on C | #1079 |
 | `backup_restore_progress` | KEEP | Core, W, C | Blk | Destination-local ownership and atomic row cursor for one artifact restoring insertion-ordered history; excluded from portable backups | #1204 |
 | `blob_reservations` | KEEP | Core | Blk | Transient upload state: the key, size and expiry an upload holds until the bytes land or the reservation lapses; it holds no room against any bound (#1416). The reservation is also the upload's authority: its id is the generation the bytes are stored under, and registration, refusal, error and expiry each consume it exactly once | #898, #1316 |

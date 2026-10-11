@@ -4,7 +4,7 @@
  * A member hook may only reach the modules the spec allowlists: the hook and
  * member code itself, the extracted leaves (paths/home, project-root,
  * machine-id, capture/transcript-id, the transcript parser, the generated hook
- * config), the three utils the hooks use, constants/version, and built-ins. It
+ * config), the small utils the hooks use, constants/version, and built-ins. It
  * must not reach daemon/, service/, grove/, vault/, db/, host/, mcp/, tools/,
  * agent/, the installer, or the YAML manifest loader — and no module in its
  * closure may carry the local-daemon literals `127.0.0.1`, `daemon.json`,
@@ -106,6 +106,7 @@ const ALLOWLIST: readonly string[] = [
   'utils/lifecycle-lock.ts',
   'utils/sync-directory.ts',
   'utils/dot-path.ts',
+  'utils/terminal-text.ts',
   'utils/git.ts',
   // A repository's identity read from git's own files, so no hook starts git for it (#1561). Node built-ins only.
   'utils/git-files.ts',

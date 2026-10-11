@@ -12,6 +12,8 @@ import { terminalText } from '@myco/utils/terminal-text.js';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
 import { MemberSpool } from '../member/spool.js';
+import { helperLogPath } from '../member/helper.js';
+import { isPromptContextLogLine } from '../member/context-diagnostics.js';
 import { deploymentUrl, readRegistryEntryResult } from '../member/registry.js';
 import { homeOf, rootOf, type MemberVerbDeps } from './deployment-reader.js';
 import { describeWorkerService, type WorkerServiceDeps } from './worker-service.js';
@@ -30,7 +32,7 @@ export interface MemberLogsDeps extends MemberVerbDeps {
 const iso = (ms: number | null): string => (ms === null || Number.isNaN(new Date(ms).getTime()) ? 'unknown time' : new Date(ms).toISOString());
 
 /** The last `n` lines of a file, or null when it does not exist. */
-function tail(file: string, n: number): string[] | null {
+function tail(file: string, n: number, include: (line: string) => boolean = () => true): string[] | null {
   let text: string;
   try {
     text = fs.readFileSync(file, 'utf8');
@@ -40,7 +42,7 @@ function tail(file: string, n: number): string[] | null {
   }
   const lines = text.split('\n');
   if (lines[lines.length - 1] === '') lines.pop();
-  return lines.slice(-n);
+  return lines.filter(include).slice(-n);
 }
 
 function parseTail(flags: readonly string[]): number | null | 'invalid' {
@@ -84,6 +86,13 @@ export async function run(args: readonly string[], source: CredentialSource, dep
       else for (const line of shown) out(terminalText(line, LOCAL_LOG_LINE_LIMIT));
     }
   }
+
+  const helperLog = helperLogPath(mycoHome);
+  out(`=== prompt context (${entry.projectId}): ${helperLog} ===`);
+  const helperLines = tail(helperLog, lines, (line) => isPromptContextLogLine(line, entry.serverUrl, entry.projectId));
+  if (helperLines === null) out('  (no log yet)');
+  else if (helperLines.length === 0) out('  (empty)');
+  else for (const line of helperLines) out(terminalText(line, LOCAL_LOG_LINE_LIMIT));
 
   const refusals = new MemberSpool(entry, { mycoHome, initialize: false }).readRefused();
   out(`=== refused events (${entry.projectId}) ===`);

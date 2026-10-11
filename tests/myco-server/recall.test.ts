@@ -3,7 +3,7 @@
  * they stand in, the once-per-session records, the bounds at a part boundary,
  * and the two routes that serve them.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
@@ -24,6 +24,10 @@ import { semanticRecall } from './helpers/semantic-recall.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { resolveSemanticSearch } from '@myco-server-worker/core/search.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
+import { planKeyForPath } from '@myco/member/envelope.js';
+import { normalizePlanPath } from '@myco/member/plan-files.js';
+import { vectorNamespace } from '@myco-server-worker/core/embedding/vectors.js';
+import { classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
 
 const SCOPE: ReadScope = { projectId: 'proj_one' };
 const OTHER: ReadScope = { projectId: 'proj_two' };
@@ -201,6 +205,82 @@ describe('the composed block', () => {
     expect(served.context).toBe(PLAN_INTENT_NUDGE);
     expect(served.parts).toEqual([{ kind: 'plan-nudge' }]);
   });
+
+  it('records a contributor throw under its prompt and emits its coded cause', async () => {
+    const { db, sqlite } = store();
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const answer = await composePromptContext(db, OTHER, ON, true, { sessionId: SESSION, promptId: 'failed', text: PROMPT, now: NOW }, async () => { throw new RangeError('private provider text'); });
+      expect(answer).toEqual({ context: '', parts: [], skipped: ['spores', 'plan-nudge:no_intent'] });
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({ kind: 'recall_contributor_failed', projectId: OTHER.projectId, sessionId: SESSION, promptId: 'failed', contributor: 'spores', error: 'parse' });
+      const rows = sqlite.query('SELECT project_id, session_id, prompt_id, outcome, context_chars, parts, skipped, failures FROM prompt_context_answers').all();
+      expect(rows).toEqual([{ project_id: OTHER.projectId, session_id: SESSION, prompt_id: 'failed', outcome: 'empty', context_chars: 0, parts: '[]', skipped: JSON.stringify(answer.skipped), failures: JSON.stringify([{ contributor: 'spores', error: 'parse' }]) }]);
+      expect(JSON.stringify(rows)).not.toContain('private provider text');
+      expect(JSON.stringify(log.mock.calls)).not.toContain('private provider text');
+    } finally { log.mockRestore(); sqlite.close(); }
+  });
+
+  it('preserves the platform error classification in contributor events and prompt records', async () => {
+    const { db, sqlite } = store();
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await composePromptContext(db, OTHER, ON, true, { sessionId: SESSION, promptId: 'quota', text: PROMPT, now: NOW }, async () => {
+        throw new Error("D1_ERROR: exceeded D1's free tier daily row read limit");
+      }, classifyD1Error);
+      expect(sqlite.query('SELECT failures FROM prompt_context_answers').get()).toEqual({ failures: '[{"contributor":"spores","error":"store_quota"}]' });
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({
+        kind: 'recall_contributor_failed', projectId: OTHER.projectId, sessionId: SESSION, promptId: 'quota', contributor: 'spores', error: 'store_quota',
+      });
+    } finally { log.mockRestore(); sqlite.close(); }
+  });
+
+  it('keeps every answer attempt, including capability refusals and repeat gates, queryable under its prompt', async () => {
+    const { db, sqlite } = store();
+    try {
+      await compose(db, { capabilityOn: false });
+      await compose(db, { text: PLANNING_PROMPT });
+      await compose(db, { text: PLANNING_PROMPT });
+      const rows = sqlite.query('SELECT outcome, skipped FROM prompt_context_answers WHERE project_id = ? AND session_id = ? AND prompt_id = ? ORDER BY rowid').all(SCOPE.projectId, SESSION, 'p1');
+      expect(rows).toEqual([
+        { outcome: 'empty', skipped: '["capability"]' },
+        { outcome: 'served', skipped: '["spores:empty"]' },
+        { outcome: 'empty', skipped: '["spores:empty","plan-nudge:repeat"]' },
+      ]);
+    } finally { sqlite.close(); }
+  });
+
+  it('records an injection INSERT failure with its operation under the affected prompt', async () => {
+    const { db, sqlite } = store();
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await insertSpore(db, OTHER, spore('other'));
+      sqlite.exec(`CREATE TRIGGER injection_unavailable BEFORE INSERT ON spore_injections
+        WHEN NEW.project_id = 'proj_two' BEGIN SELECT RAISE(ABORT, 'fixture constraint failed'); END`);
+      const answer = await compose(db, { scope: OTHER });
+      expect(answer).toEqual({ context: '', parts: [], skipped: ['spores', 'plan-nudge:no_intent'] });
+      expect(sqlite.query('SELECT project_id, failures FROM prompt_context_answers').all()).toEqual([
+        { project_id: OTHER.projectId, failures: '[{"contributor":"spores","error":"constraint","operation":"record"}]' },
+      ]);
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({
+        kind: 'recall_contributor_failed', projectId: OTHER.projectId, sessionId: SESSION, promptId: 'p1',
+        contributor: 'spores', error: 'constraint', operation: 'record',
+      });
+    } finally { log.mockRestore(); sqlite.close(); }
+  });
+
+  it('serves committed context and reports a failed answer journal write', async () => {
+    const { db, sqlite } = store();
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await insertSpore(db, SCOPE, spore('a'));
+      sqlite.exec(`CREATE TRIGGER journal_unavailable BEFORE INSERT ON prompt_context_answers BEGIN SELECT RAISE(ABORT, 'fixture constraint failed'); END`);
+      const served = await compose(db);
+      expect(served.context).toContain('content of a');
+      expect(sqlite.query('SELECT COUNT(*) AS n FROM spore_injections').get()).toEqual({ n: 1 });
+      expect(sqlite.query('SELECT COUNT(*) AS n FROM prompt_context_answers').get()).toEqual({ n: 0 });
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({ kind: 'recall_answer_unrecorded', projectId: SCOPE.projectId, sessionId: SESSION, promptId: 'p1', error: 'constraint' });
+    } finally { log.mockRestore(); sqlite.close(); }
+  });
 });
 
 describe('the bound', () => {
@@ -358,6 +438,60 @@ describe('the session bound', () => {
 });
 
 describe('POST /context/prompt', () => {
+  it.each([false, true])('serves relevant memory for two populated Projects on one Deployment (legacy-only B: %s)', async (legacyOnly) => {
+    const e = sqliteEnv();
+    const issued = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+    e.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [AGENT, NOW]);
+    e.env.AI = { run: async (_model: string, input: { text: string[] }) => ({ data: input.text.map((text) => text.includes('background') ? [0, 1] : text.includes('network') ? (legacyOnly ? [1, 0] : [0.6, 0.8]) : [1, 0]) }) };
+    if (legacyOnly) await settingsWriter(e.db).setLeaf('cortex.spores.max_per_prompt', 3, 'mem_machine_1', NOW);
+    const planKeys = new Map<string, Set<string>>();
+    const index = indexFixture();
+    const namespaces: string[] = [];
+    e.env.VECTORIZE = { ...index, query: async (...args: Parameters<typeof index.query>) => { namespaces.push(args[1].namespace); return index.query(...args); } };
+    try {
+      for (const [projectId, name, count, plans] of [['proj_1', 'myco', 30, 4], ['proj_2', 'unifi-mcp', 453, 112]] as const) {
+        e.sqlite.run(`UPDATE projects SET name = ? WHERE project_id = ?`, [name, projectId]);
+        e.sqlite.run(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, 'cortex', 1, ?, 'test')`, [projectId, NOW]);
+        for (let i = 0; i < 45; i++) e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, origin_path, started_at)
+          VALUES (?, ?, 'machine_1', 'fixture', ?, ?, ?, ?)`, [projectId, `history-${i}`, NOW - i, NOW, `/Users/fixture/Repos/${name}`, NOW - i]);
+        planKeys.set(projectId, new Set());
+        const imported = (i: number) => legacyOnly && (projectId === 'proj_2' || i % 2 === 0);
+        for (let i = 0; i < count; i++) await insertSpore(e.db, { projectId }, spore(imported(i) ? `spore_${i.toString().padStart(8, '0')}` : crypto.randomUUID(), { sessionId: `history-${i % 45}`, content: i < 10 ? `${name} network evidence collection` : `background ${i}` }));
+        for (let i = 0; i < plans; i++) {
+          const origin = `/Users/fixture/Repos/${name}/.claude/plans/evidence-${i}.md`;
+          const normalized = normalizePlanPath(`/Users/fixture/Repos/${name}`, origin);
+          const key = imported(i) ? planKeyForPath(projectId, normalized) : origin;
+          planKeys.get(projectId)!.add(key);
+          e.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at, origin_path)
+            VALUES (?, ?, 'history', ?, 'machine_1', ?, 'network evidence collection', ?, 'active', ?, ?, 'fixture', ?, ?)`,
+          [projectId, key, `event-${i}`, `${name} network evidence collection`, `hash-${i}`, NOW, NOW, NOW, imported(i) ? normalized : origin]);
+        }
+        const semantic = (await resolveSemanticSearch(e.serverEnv))!;
+        for (let i = 0; i < 3000; i++) if ((await reconcileEmbedding({ db: e.db, blobs: e.bucket, ...semantic }, projectId, NOW)).processed === 0) break;
+        expect(e.sqlite.query(`SELECT type, COUNT(*) AS n FROM embedding_receipts WHERE project_id = ? AND ready = 1 GROUP BY type ORDER BY type`).all(projectId)).toEqual([{ type: 'plan', n: plans }, { type: 'spore', n: count }]);
+        expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_receipts WHERE project_id = ? AND type = 'spore' AND neighbor_mean IS NOT NULL AND neighbor_std IS NOT NULL`).get(projectId)).toEqual({ n: count });
+      }
+      const semantic = (await resolveSemanticSearch(e.serverEnv))!;
+      for (const projectId of ['proj_1', 'proj_2']) {
+        namespaces.length = 0;
+        const response = await worker.fetch(new Request('https://s/context/prompt', { method: 'POST', headers: memberHeaders(issued.token, { 'x-myco-project': projectId }), body: JSON.stringify({ sessionId: 'new-session', promptId: 'new-prompt', text: 'collect evidence for the controller' }) }), e.env);
+        const answer = await response.json() as { context: string; skipped: string[]; parts: Array<{ kind: string; sporeIds?: string[]; planIds?: string[] }> };
+        expect(answer.context).toContain(projectId === 'proj_1' ? 'myco' : 'unifi-mcp');
+        if (legacyOnly && projectId === 'proj_2') {
+          const part = answer.parts.find((part) => part.kind === 'spores')!;
+          expect(part.sporeIds).toHaveLength(3);
+          expect(part.sporeIds!.every((id) => id.startsWith('spore_'))).toBe(true);
+          expect(part.planIds).toHaveLength(3);
+          expect(part.planIds!.every((id) => planKeys.get(projectId)!.has(id))).toBe(true);
+        }
+        expect(new Set(namespaces)).toEqual(new Set([await vectorNamespace({ projectId, modelKey: semantic.provider.modelKey })]));
+        expect({ projectId, skipped: answer.skipped, nonempty: answer.context.length > 0 }).toEqual({ projectId, skipped: ['plan-nudge:no_intent'], nonempty: true });
+      }
+      expect(e.sqlite.query('SELECT project_id FROM spore_injections ORDER BY project_id').all()).toEqual([{ project_id: 'proj_1' }, { project_id: 'proj_2' }]);
+      expect(e.sqlite.query('SELECT project_id, outcome FROM prompt_context_answers ORDER BY project_id').all()).toEqual([{ project_id: 'proj_1', outcome: 'served' }, { project_id: 'proj_2', outcome: 'served' }]);
+    } finally { e.sqlite.close(); }
+  });
+
   const member = async () => {
     const e = sqliteEnv();
     const issuedAt = Date.now();
