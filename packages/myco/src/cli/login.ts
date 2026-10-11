@@ -16,7 +16,7 @@ import type { WorkerServiceDeps } from './worker-service.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import { deploymentUrl, listRegistryEntries } from '../member/registry.js';
 import { detectedProvisionLines, provisionDetectedAgents, recordNoAgents } from './member.js';
-import { legacyMigrationPending } from '@myco/member/legacy-migration.js';
+import { legacyMigrationPending, LegacyMigrationUnreadable } from '@myco/member/legacy-migration.js';
 import { LEGACY_AGENT_DEFERRAL } from '@goondocks/myco-shared/setup-guidance';
 
 export const LOGIN_HELP = `Usage: myco login <server-url-or-invite-link>
@@ -190,12 +190,18 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   const held = readDefaultDeployment(mycoHome);
   if (!isDefault && held !== null) out(`  New repositories keep joining ${held.serverUrl}; \`myco login --default <invite link>\` makes ${deploymentUrl(code.serverUrl)} the one they join.`);
   // Provisioning is separate from sign-in and preserves other installations' settings.
-  const deferredLegacy = legacyMigrationPending(mycoHome);
   if (parsed.noAgents) recordNoAgents(mycoHome, code.serverUrl);
-  else if (deferredLegacy) out(LEGACY_AGENT_DEFERRAL);
   else if (deps.provision !== 'defer') {
-    const found = provisionDetectedAgents(mycoHome, code.serverUrl, root ?? null, { packageRoot: deps.packageRoot, agents: deps.agents });
-    for (const line of detectedProvisionLines(found)) out(`  ${line}`);
+    let deferral: string | null;
+    try { deferral = legacyMigrationPending(mycoHome) ? LEGACY_AGENT_DEFERRAL : null; } catch (error) {
+      if (!(error instanceof LegacyMigrationUnreadable)) throw error;
+      deferral = `Agent setup deferred: ${error.message}`;
+    }
+    if (deferral !== null) out(deferral);
+    else {
+      const found = provisionDetectedAgents(mycoHome, code.serverUrl, root ?? null, { packageRoot: deps.packageRoot, agents: deps.agents });
+      for (const line of detectedProvisionLines(found)) out(`  ${line}`);
+    }
   }
 
   // What this machine captured while it could not deliver reaches the

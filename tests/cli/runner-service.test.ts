@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { run } from '@myco/cli/runner.js';
 import { run as worker } from '@myco/cli/worker.js';
-import { legacyExecutors, preflightRunnerService, runnerServiceContact, LEGACY_WORKER_WORDS, RUNNER_IDENTITY_REMAINS } from '@myco/cli/runner-service.js';
+import { legacyExecutors, legacyWorkerInventory, preflightRunnerService, runnerServiceContact, LEGACY_WORKER_WORDS, RUNNER_IDENTITY_REMAINS } from '@myco/cli/runner-service.js';
 import { publishRunnerRecord, readRunnerRecord, recordRunnerContact, withRunnerLock, RUNNER_RECORD_VERSION } from '@myco/runner/runner-registry.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
@@ -83,14 +83,26 @@ describe('explicit runner service opt-in', () => {
         return [{ id: 'codex', installed: true, authenticated: false }];
       },
     });
-    expect(preview.codex).toEqual({ ok: true });
+    expect(preview?.codex).toEqual({ ok: true });
     const refused = await preflightRunnerService(target, [], { detect: () => [{ id: 'codex', installed: true, authenticated: true }], locate: () => {
       const installed = path.join(mycoHome, 'codex');
       fs.mkdirSync(mycoHome, { recursive: true });
       fs.writeFileSync(installed, 'fixture');
       return installed;
     } });
-    expect(refused.codex).toMatchObject({ ok: false, rule: 'contains-run' });
+    expect(refused?.codex).toMatchObject({ ok: false, rule: 'contains-run' });
+  });
+
+  it('reports an unavailable Codex preview and still installs with a malformed package manifest', async () => {
+    await enroll();
+    const installed = path.join(root, 'codex-install', 'bin', 'codex');
+    fs.mkdirSync(path.dirname(installed), { recursive: true });
+    fs.writeFileSync(installed, 'synthetic executable');
+    fs.writeFileSync(path.join(root, 'codex-install', 'package.json'), '{');
+    expect(await run(['install', '--server', SERVER], { ...deps(), locate: () => installed })).toBe(true);
+    expect(output.join('\n')).toContain('codex: preview unavailable (');
+    expect(output.join('\n')).toContain('runner service installed and started');
+    expect(errors).toEqual([]);
   });
 
   it('preflights the inherited PATH that the Windows service command expands', async () => {
@@ -123,7 +135,7 @@ describe('explicit runner service opt-in', () => {
     platform.commands.length = 0;
     const unit = listWorkerUnits(home, 'darwin')[0]!;
     expect(await legacyExecutors(deps())).toEqual([{
-      serverUrl: url, mycoHome: foreign, unitLabel: unit.spec.unit.label, installed: true, servingPid: null,
+      serverUrl: url, mycoHome: foreign, unitLabel: unit.spec.unit.label, unitFile: unit.unitFile, installed: true, servingPid: null,
       retire: { argv: ['myco', 'worker', 'uninstall', '--server', url], env: { MYCO_HOME: foreign } },
     }]);
     expect(platform.commands).toEqual([]);
@@ -137,7 +149,7 @@ describe('explicit runner service opt-in', () => {
     if (!held.acquired) throw new Error('fixture lock unavailable');
     try {
       expect(await legacyExecutors(scoped)).toEqual([{
-        serverUrl: SERVER, mycoHome, unitLabel: null, installed: false, servingPid: process.pid, retire: null,
+        serverUrl: SERVER, mycoHome, unitLabel: null, unitFile: null, installed: false, servingPid: process.pid, retire: null,
       }]);
       installWorkerService({ ...scoped, serverUrl: SERVER }, [], { runner: platform.runner });
       const installed = await legacyExecutors(scoped);
@@ -155,7 +167,8 @@ describe('explicit runner service opt-in', () => {
       const inventory = await legacyExecutors(deps());
       expect(inventory).toHaveLength(2);
       expect(inventory[0]).toMatchObject({ installed: true, mycoHome: null, serverUrl: null, retire: null });
-      expect(inventory[1]).toEqual({ installed: false, mycoHome: null, serverUrl: null, retire: null, unitLabel: null, servingPid: process.pid });
+      expect(inventory[1]).toEqual({ installed: false, mycoHome: null, serverUrl: null, retire: null, unitLabel: null, unitFile: null, servingPid: process.pid });
+      expect((await legacyWorkerInventory(deps())).join('\n')).toContain(`unit ${installed.unitFile} has unreadable ownership`);
     } finally { held.lock.release(); }
   });
 

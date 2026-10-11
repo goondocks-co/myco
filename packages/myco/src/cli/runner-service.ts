@@ -22,6 +22,7 @@ export interface LegacyExecutor {
   serverUrl: string | null;
   mycoHome: string | null;
   unitLabel: string | null;
+  unitFile: string | null;
   installed: boolean;
   servingPid: number | null;
   retire: { argv: string[]; env: { MYCO_HOME: string } } | null;
@@ -37,7 +38,7 @@ export async function legacyExecutors(deps: WorkerServiceDeps = {}): Promise<Leg
       : await executionDeploymentUrls(unit.serverUrl, { ...deps, mycoHome: unit.mycoHome });
     const serving = aliases.map((alias) => workerHolder(lockDir, alias)).find((holder) => holder !== null);
     executors.push({
-      serverUrl: unit.serverUrl, mycoHome: unit.mycoHome, unitLabel: unit.spec.unit.label, installed: true,
+      serverUrl: unit.serverUrl, mycoHome: unit.mycoHome, unitLabel: unit.spec.unit.label, unitFile: unit.unitFile, installed: true,
       servingPid: serving?.pid ?? null,
       retire: unit.mycoHome === null || unit.serverUrl === null ? null
         : { argv: ['myco', 'worker', 'uninstall', '--server', unit.serverUrl], env: { MYCO_HOME: unit.mycoHome } },
@@ -51,12 +52,12 @@ export async function legacyExecutors(deps: WorkerServiceDeps = {}): Promise<Leg
       const state = describeWorkerService(alias, { ...deps, mycoHome });
       if (state?.serving == null || !unknown.some((holder) => holder.pid === state.serving!.pid)
         || executors.some((executor) => executor.servingPid === state.serving!.pid)) continue;
-      executors.push({ serverUrl, mycoHome, unitLabel: null, installed: false, servingPid: state.serving.pid, retire: null });
+      executors.push({ serverUrl, mycoHome, unitLabel: null, unitFile: null, installed: false, servingPid: state.serving.pid, retire: null });
     }
   }
   for (const holder of unknown) {
     if (!executors.some((executor) => executor.servingPid === holder.pid)) {
-      executors.push({ serverUrl: null, mycoHome: null, unitLabel: null, installed: false, servingPid: holder.pid, retire: null });
+      executors.push({ serverUrl: null, mycoHome: null, unitLabel: null, unitFile: null, installed: false, servingPid: holder.pid, retire: null });
     }
   }
   return executors;
@@ -69,20 +70,25 @@ export async function legacyWorkerInventory(deps: RunnerServiceDeps): Promise<st
     !unit.installed
       ? `stop the foreground executor in its owning terminal (process ${(unit.servingPid ?? 0) > 0 ? unit.servingPid : 'unknown'}); its Deployment identity is unverified`
       : unit.retire === null
-      ? `${LEGACY_WORKER_WORDS}: unit ${unit.unitLabel} has unreadable ownership; inspect its owning home before retiring it`
+      ? `${LEGACY_WORKER_WORDS}: unit ${unit.unitFile} has unreadable ownership; inspect its owning home before retiring it`
       : `${unit.serverUrl}: ${LEGACY_WORKER_WORDS}; owning MYCO_HOME=${quote(unit.retire.env.MYCO_HOME)}; retire with \`MYCO_HOME=${quote(unit.retire.env.MYCO_HOME)} ${unit.retire.argv.map((arg, index) => index === unit.retire!.argv.length - 1 ? quote(arg) : arg).join(' ')}\``);
 }
 
 /** A preview uses precisely the PATH written to the service unit. */
-export async function preflightRunnerService(target: WorkerServiceTarget, harnessDirs: readonly string[], deps: WorkerServiceDeps = {}): Promise<RunnerHarnessPreflight> {
+export async function preflightRunnerService(target: WorkerServiceTarget, harnessDirs: readonly string[], deps: RunnerServiceDeps = {}): Promise<RunnerHarnessPreflight | null> {
   const spec = workerServiceSpec(target, harnessDirs);
   const runDir = path.join(runnerDir(target.serverUrl, target.mycoHome), 'runs');
   const pathEnv = (target.platform ?? process.platform) === 'win32'
     ? spec.pathEnv.replace(/%PATH%/gi, () => process.env.PATH ?? '') : spec.pathEnv;
-  return runnerHarnessPreflight({ ...process.env, HOME: target.home, MYCO_HOME: target.mycoHome, PATH: pathEnv }, {
-    home: target.home, mycoHome: target.mycoHome, runDir, codexHome: path.join(runDir, 'codex-home'),
-    codexLogin: path.join(target.home, '.codex', 'auth.json'),
-  }, deps);
+  try {
+    return await runnerHarnessPreflight({ ...process.env, HOME: target.home, MYCO_HOME: target.mycoHome, PATH: pathEnv }, {
+      home: target.home, mycoHome: target.mycoHome, runDir, codexHome: path.join(runDir, 'codex-home'),
+      codexLogin: path.join(target.home, '.codex', 'auth.json'),
+    }, deps);
+  } catch (error) {
+    (deps.stdout ?? console.log)(`  codex: preview unavailable (${error instanceof Error ? error.message : String(error)})`);
+    return null;
+  }
 }
 
 /** The shared contact path can observe authority without creating or rotating a credential. */
@@ -144,9 +150,9 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
           ok = fail(`${LEGACY_WORKER_WORDS} or another executor already serves ${url}; let its active run finish, then stop it explicitly with \`myco worker uninstall --server ${url}\`. No service changed.`); continue;
         }
         const harnessDirs = (deps.harnessDirs ?? harnessDirectories)();
-        const preview = await preflightRunnerService(target, harnessDirs, deps);
         out('  Coding agents (preview in the service PATH; confirmed by its acknowledged offer):');
-        for (const harness of preview.harnesses) {
+        const preview = await preflightRunnerService(target, harnessDirs, deps);
+        if (preview !== null) for (const harness of preview.harnesses) {
           out(`  ${harness.id}: ${harness.id === 'codex' && !preview.codex.ok ? codexInstallationRefusal(preview.codex.directory, preview.codex.rule)
             : !harness.installed ? 'not installed' : harness.authenticated ? 'signed in' : 'not signed in'}`);
         }

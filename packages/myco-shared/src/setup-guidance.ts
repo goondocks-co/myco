@@ -1,5 +1,5 @@
 /** Recovery words shared by the terminal and dashboard. */
-export const LEGACY_AGENT_DEFERRAL = 'Myco 1.4 still captures your agents here. Next: myco cutover --dry-run';
+export const LEGACY_AGENT_DEFERRAL = 'Agent setup is deferred because retained Myco 1.4 vaults have no matching cutover backup. Review myco cutover --dry-run before running myco cutover.';
 export type CodexInstallationRule = 'root' | 'contains-home' | 'contains-run' | 'contains-temp' | 'overlaps-codex-login' | 'overlaps-myco-home' | 'overlaps-codex-home';
 const CODEX_INSTALLATION_REASONS: Readonly<Record<CodexInstallationRule, string>> = {
   root: 'is the filesystem root',
