@@ -1636,7 +1636,7 @@ describe('gates', () => {
     const shared = new Set(sharedFiles());
     expect(Object.keys(runtime).filter((pkg) => pkg !== 'sqlite-vec' && ![...(imported.get(pkg) ?? [])].some((f) => shared.has(f)))).toEqual([]);
     expect([...(imported.get('sqlite-vec') ?? [])]).toEqual([join(SRC, 'platform', 'bun', 'vectors.ts')]);
-    expect(runtime).toEqual({ '@modelcontextprotocol/server': '2.0.0', '@goondocks/myco-shared': '^0.2.0', '@stablelib/sha256': '2.0.1', semver: '^7.8.5', 'sqlite-vec': '^0.1.9' });
+    expect(runtime).toEqual({ '@modelcontextprotocol/server': '2.3.1', '@goondocks/myco-shared': '^0.2.0', '@stablelib/sha256': '2.0.1', semver: '^7.8.5', 'sqlite-vec': '^0.1.9' });
   });
 
   it('leaves owner routes ingest-neutral', async () => {
