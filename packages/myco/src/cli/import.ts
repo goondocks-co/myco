@@ -272,6 +272,7 @@ export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): 
     for (const [machine, n] of Object.entries(p.otherMachines)) lines.push(`  ${n} sessions were captured on ${machine}, not this machine; run \`myco import --legacy <this vault>\` on ${machine} to bring them`);
     lines.push(`  sent ${p.prompts} prompts, ${p.responses} responses, ${p.plans.sent} plans (${p.plans.empty} empty, ${p.plans.unsent} of deleted or unknown sessions)`);
     lines.push(`  spores: ${p.spores.saved} saved, ${p.spores.duplicate} already here, ${p.spores.refused} refused; history: ${p.lineage.recorded} recorded, ${p.lineage.duplicate} already here, ${p.lineage.refused} refused`);
+    if ((p.spores.kept ?? 0) > 0) lines.push(`  spores: ${p.spores.kept} kept with existing source links`);
     for (const alias of p.aliases) lines.push(`  matched by time: ${alias}`);
     for (const stored of p.unaliased) lines.push(`  no transcript matched, imported under its 1.4 id: ${stored}`);
     const groups = Object.entries(p.causes ?? {});

@@ -784,14 +784,14 @@ describe('pacing an import', () => {
 import { IMPORT_FAULTS, faultAt, importSnapshot } from './helpers/import-differential.js';
 import { LegacyLedger } from '@myco/member/legacy-ledger.js';
 
-/** Two vault sessions, including one held by live capture, with linked spores and lineage. */
-function narrowDifferentialVault(f: Fixture): void {
+/** Linked vault and live-capture sessions, optionally including a transcript-only spore source. */
+function narrowDifferentialVault(f: Fixture, sessionOnly = false): void {
   const db = openVault(f.vault);
   db.run('PRAGMA foreign_keys = OFF');
-  db.run('DELETE FROM sessions WHERE id NOT IN (?, ?)', [SESSION_PRUNED, SESSION_LIVE]);
+  db.run('DELETE FROM sessions WHERE id NOT IN (?, ?, ?)', [SESSION_PRUNED, SESSION_LIVE, sessionOnly ? CODEX_ROLLOUT : SESSION_LIVE]);
   db.run('DELETE FROM prompt_batches WHERE session_id NOT IN (?, ?)', [SESSION_PRUNED, SESSION_LIVE]);
   db.run("DELETE FROM plans WHERE id <> 'plan_file'");
-  db.run("DELETE FROM spores WHERE id NOT IN ('gotcha-old', 'gotcha-new')");
+  db.run("DELETE FROM spores WHERE id NOT IN (?, ?, ?)", ['gotcha-old', 'gotcha-new', sessionOnly ? 'gotcha-part' : 'gotcha-new']);
   db.run("DELETE FROM resolution_events WHERE id <> 'res_1'");
   db.run('DELETE FROM session_tombstones');
   db.close();
@@ -833,7 +833,7 @@ describe('vault import fault/resume differential', () => {
   for (const missingTimestamp of [false, true]) it(`repairs an old completed ledger with missing end/links, preserving live capture (missing timestamp: ${missingTimestamp})`, async () => {
     const f = await fixture();
     try {
-      narrowDifferentialVault(f);
+      narrowDifferentialVault(f, true);
       if (missingTimestamp) {
         const vault = openVault(f.vault);
         vault.run("UPDATE spores SET created_at = 'unknown' WHERE id = 'gotcha-new'");
@@ -842,10 +842,11 @@ describe('vault import fault/resume differential', () => {
       await differentialImport(f);
       const baseline = importSnapshot(f.rig.env.sqlite);
       const db = f.rig.env.sqlite;
+      expect(db.query("SELECT session_id, prompt_id FROM spores WHERE id = 'gotcha-part'").get()).toEqual({ session_id: CODEX_ROLLOUT, prompt_id: null });
       db.run("DELETE FROM events WHERE session_id = ? AND kind = 'session.end' AND channel = 'import'", [SESSION_PRUNED]);
       db.run('UPDATE sessions SET ended_at = NULL WHERE session_id = ?', [SESSION_PRUNED]);
       const source = db.query("SELECT * FROM spores WHERE id = 'gotcha-new'").get() as Record<string, unknown>;
-      db.run("UPDATE spores SET prompt_id = NULL, session_id = NULL WHERE id IN ('gotcha-old','gotcha-new')");
+      db.run("UPDATE spores SET prompt_id = NULL, session_id = NULL WHERE id IN ('gotcha-old','gotcha-new','gotcha-part')");
       const repair = { id: source.id, agentId: source.agent_id, observationType: source.observation_type, content: source.content,
         sessionId: source.session_id, promptId: source.prompt_id, createdAt: source.created_at };
       const post = (extra: Record<string, unknown>) => f.rig.fetch(SERVER + '/spores/save', {
@@ -860,7 +861,7 @@ describe('vault import fault/resume differential', () => {
       expect(importSnapshot(db)).not.toEqual(baseline);
       expect(legacyImportComplete(await differentialImport(f))).toBe(true);
       expect(importSnapshot(db)).toEqual(baseline);
-      expect((await differentialImport(f)).projects[0].sessions.resumed).toBe(2);
+      expect((await differentialImport(f)).projects[0].sessions.resumed).toBe(3);
     } finally { f.cleanup(); }
   });
 });
@@ -906,5 +907,91 @@ it('names a terminal sign-in refusal after a nonterminal spore refusal', async (
     expect(lines.some((l) => l.includes('stoppedBy:') && l.includes('invalid_field'))).toBe(false);
     expect(lines.filter((l) => l.includes('stoppedBy:')).join('\n')).toContain('myco login');
     expect(Object.keys(report.projects[0]!.causes!)).toHaveLength(2);
+  } finally { f.cleanup(); }
+});
+
+for (const code of ['invalid_field', 'body_cap']) it(`names and counts a refused transcript segment once (${code})`, async () => {
+  const f = await fixture();
+  try {
+    const fetch: MemberRig['fetch'] = async (input, init) => {
+      const req = new Request(input, init);
+      if (new URL(req.url).pathname === '/events') {
+        const body = await req.clone().json() as { kind?: string; eventId?: string };
+        if (body.kind === 'transcript.segment') return Response.json({ persisted: false, eventId: body.eventId, code, reason: 'invalid segment' });
+      }
+      return f.rig.fetch(req);
+    };
+    const report = await differentialImport(f, fetch);
+    const p = report.projects[0]!;
+    const cause = code === 'body_cap' ? 'a record is too large to send' : 'a record has a value';
+    expect(p.stoppedBy).toContain(cause);
+    expect(Object.values(p.causes!)).toEqual([1]);
+    expect(legacyReportLines(report, false).filter((l) => l.includes('stoppedBy:')).join('\n')).toContain(cause);
+    expect(JSON.stringify(p.causes)).not.toContain('rejected');
+  } finally { f.cleanup(); }
+});
+
+for (const link of ['prompt', 'session']) it(`keeps an existing different ${link} link during repair`, async () => {
+  const f = await fixture();
+  try {
+    await differentialImport(f);
+    const db = f.rig.env.sqlite;
+    if (link === 'prompt') db.run("UPDATE spores SET prompt_id = 'newer-prompt' WHERE id = 'gotcha-new'");
+    else db.run("UPDATE spores SET session_id = ?, prompt_id = NULL WHERE id = 'gotcha-new'", [SESSION_LIVE]);
+    const baseline = importSnapshot(db);
+    const ledger = new LegacyLedger(f.mycoHome, SERVER, PROJECT);
+    fs.writeFileSync(ledger.file, fs.readFileSync(ledger.file, 'utf8').split('\n').filter((l) => !l.includes('"reconciled"')).join('\n'));
+    const report = await differentialImport(f);
+    expect(legacyImportComplete(report)).toBe(true);
+    expect(importSnapshot(db)).toEqual(baseline);
+    expect(report.projects[0]!.spores.kept).toBe(1);
+  } finally { f.cleanup(); }
+});
+
+it('keeps another member’s spore once and completes subsequent imports', async () => {
+  const f = await fixture();
+  try {
+    await differentialImport(f);
+    const db = f.rig.env.sqlite;
+    const other = await f.rig.otherMachine();
+    const source = db.query("SELECT agent_id FROM spores WHERE id = 'gotcha-new'").get() as { agent_id: string };
+    db.run("DELETE FROM spores WHERE id = 'gotcha-new'");
+    const saved = await f.rig.fetch(SERVER + '/spores/save', {
+      method: 'POST', headers: f.rig.headers({ authorization: `Bearer ${other.token}`, 'content-type': 'application/json' }),
+      body: JSON.stringify({ id: 'gotcha-new', agentId: source.agent_id, observationType: 'gotcha', content: 'another member’s observation', sessionId: SESSION_LIVE }),
+    });
+    expect((await saved.json() as { persisted: boolean }).persisted).toBe(true);
+    const ledger = new LegacyLedger(f.mycoHome, SERVER, PROJECT);
+    fs.writeFileSync(ledger.file, fs.readFileSync(ledger.file, 'utf8').split('\n').filter((l) => !l.includes('"reconciled"')).join('\n'));
+    const held = db.query("SELECT * FROM spores WHERE id = 'gotcha-new'").get();
+    const report = await differentialImport(f);
+    expect(legacyImportComplete(report)).toBe(true);
+    expect(report.projects[0]!.spores.kept).toBe(1);
+    expect(legacyReportLines(report, false).join('\n')).toContain('1 kept with existing source links');
+    const again = await differentialImport(f);
+    expect(legacyImportComplete(again)).toBe(true);
+    expect(again.projects[0]!.spores.kept ?? 0).toBe(0);
+    expect(db.query("SELECT * FROM spores WHERE id = 'gotcha-new'").get()).toEqual(held);
+  } finally { f.cleanup(); }
+});
+
+it('imports for the first time when an older Deployment omits opt-in ownership', async () => {
+  const f = await fixture();
+  try {
+    let probes = 0;
+    const fetch: MemberRig['fetch'] = async (input, init) => {
+      const req = new Request(input, init);
+      const response = await f.rig.fetch(req);
+      if (new URL(req.url).pathname !== '/import/plan') return response;
+      const body = await response.json() as { sessions?: Record<string, unknown> };
+      if (body.sessions !== undefined) { delete body.sessions.legacyOwned; probes += 1; }
+      return Response.json(body, { status: response.status, headers: response.headers });
+    };
+    const report = await differentialImport(f, fetch);
+    expect(legacyImportComplete(report)).toBe(true);
+    expect(report.refused).toBeUndefined();
+    expect(probes).toBeGreaterThan(0);
+    expect(report.projects[0]!.sessions.fromVault).toBeGreaterThan(0);
+    expect(f.rig.env.sqlite.query('SELECT ended_at FROM sessions WHERE session_id = ?').get(SESSION_LIVE)).toEqual({ ended_at: f.liveEnd });
   } finally { f.cleanup(); }
 });

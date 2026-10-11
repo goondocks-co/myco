@@ -62,6 +62,14 @@ export const legacyImportParity: ParityScenario = {
     // A resolution on the import channel keeps its time; replayed, it moves nothing a later change set.
     const spore = `parity-legacy-spore-${stamp}`;
     await expectPersisted(await post('/spores/save', { id: spore, agentId: 'user', observationType: 'gotcha', content: 'kept' }), 'spore');
+    const source = { channel: 'import', id: spore, agentId: 'user', observationType: 'gotcha', content: 'kept', sessionId: startOnly };
+    await expectPersisted(await post('/spores/save', source), 'session-only source repair');
+    const sourceLinks = () => target.sql(`SELECT session_id, prompt_id FROM spores WHERE project_id = ${lit(target.projectId)} AND id = ${lit(spore)}`);
+    expect(await sourceLinks()).toEqual([{ session_id: startOnly, prompt_id: null }]);
+    const kept = await (await post('/spores/save', { ...source, sessionId: liveSession })).json() as Record<string, unknown>;
+    expect(kept.persisted).toBe(true);
+    expect(kept.sourceKept).toBe(true);
+    expect(await sourceLinks()).toEqual([{ session_id: startOnly, prompt_id: null }]);
     const resolve = async (eventId: string, extra: Record<string, unknown>): Promise<Record<string, unknown>> =>
       await (await post('/spores/resolve', { eventId, agentId: 'user', sporeId: spore, action: 'obsolete', status: 'obsolete', createdAt: 1_000, ...extra })).json() as Record<string, unknown>;
     const imported = `parity-legacy-res-${stamp}`;

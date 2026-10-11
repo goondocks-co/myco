@@ -504,7 +504,7 @@ export interface LegacyProjectReport {
   responses: number;
   /** Plans sent; plans with no content; plans whose session is deleted or not in the vault. */
   plans: { sent: number; empty: number; unsent: number };
-  spores: { saved: number; duplicate: number; refused: number };
+  spores: { saved: number; duplicate: number; refused: number; kept?: number };
   lineage: { recorded: number; duplicate: number; refused: number; malformed: number };
   /** What the Deployment refused, with its reason; a session with a refusal is not recorded as done. */
   refusals: string[];
@@ -727,8 +727,10 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
     return `${what}: ${end.detail ?? 'could not be sent'}`;
   };
 
+  const lastRefusal = new WeakMap<LegacyProjectReport, string>();
   const refusedRecord = (r: LegacyProjectReport, code: string, reason?: string): void => {
     const cause = importCause(code, reason);
+    lastRefusal.set(r, cause);
     countImportCause(r.causes ??= {}, cause);
   };
 
@@ -745,7 +747,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
         const ended = await importProject(g, r);
         if (ended !== undefined) {
           r.endedBy = ended;
-          r.stoppedBy ??= observed.lastCause() ?? importCause(ended);
+          r.stoppedBy ??= ended === 'rejected' ? lastRefusal.get(r) ?? observed.lastCause() ?? importCause('refused') : observed.lastCause() ?? importCause(ended);
           if (r.causes?.[r.stoppedBy] === undefined) countImportCause(r.causes ??= {}, r.stoppedBy);
         }
         else r.notAttempted = undefined;
@@ -840,7 +842,8 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       if (outcome.endedBy !== undefined) return outcome.endedBy;
       const answer = outcome as Classified;
       if (answer.refusal !== undefined) { refusedRecord(r, answer.refusalCode ?? 'refused', answer.refusalReason); r.spores.refused += 1; r.refusals.push(`spore ${spore.id}: ${answer.refusal}`); continue; }
-      if (answer.duplicate) r.spores.duplicate += 1; else r.spores.saved += 1;
+      if (answer.body?.sourceKept === true) r.spores.kept = (r.spores.kept ?? 0) + 1;
+      else if (answer.duplicate) r.spores.duplicate += 1; else r.spores.saved += 1;
       ledger.append({ k: 'spore', id: spore.id });
     }
 
@@ -1020,7 +1023,6 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       if (run.length === 0) break;
       const sessions = answer.body.sessions as { held?: unknown; withTranscript?: unknown; tombstoned?: unknown; vaultSourced?: unknown; legacyOwned?: unknown } | undefined;
       if (sessions === undefined) throw new ServerTooOld(`${report.serverUrl} does not answer what it holds of a session; update the Deployment before importing a 1.4 vault`);
-      if (!Array.isArray(sessions.legacyOwned)) throw new ServerTooOld('update the Deployment before importing: it cannot identify imported session facts for safe resume and repair');
       for (const [key, into] of [['held', probe.held], ['withTranscript', probe.withTranscript], ['tombstoned', probe.tombstoned], ['vaultSourced', probe.vaultSourced], ['legacyOwned', probe.legacyOwned]] as const) {
         const list = sessions[key];
         if (Array.isArray(list)) for (const id of list) if (typeof id === 'string') into.add(id);

@@ -75,15 +75,15 @@ export async function handleSaveSpore(env: ServerEnv, ctx: RouteContext): Promis
     createdAt: int(body.createdAt) ?? ctx.now,
   });
   if (spore !== null) return Response.json({ persisted: true, spore });
-  // An id already held answers the row as it stands and writes nothing, in the shape a write answers: who its author
-  // is belongs to the reads.
-  if (body.channel === IMPORT_CHANNEL && !await repairImportedSporeSource(env.db, scope, { id, agentId, content, sessionId, promptId, author: ctx.memberId, createdAt: int(body.createdAt) })) {
+  // Duplicate saves return the held row without its author kind.
+  const source = body.channel === IMPORT_CHANNEL ? await repairImportedSporeSource(env.db, scope, { id, agentId, content, sessionId, promptId, author: ctx.memberId, createdAt: int(body.createdAt) }) : undefined;
+  if (source === 'pending') {
     return Response.json(refused(ctx, refusal('the existing spore source could not be restored; keep the original vault and ask its operator to review the source links', 'invalid_field')));
   }
   const held = await getSpore(env.db, scope, id);
   if (held === null) return Response.json({ persisted: true, duplicate: true, spore: null });
   const { authorKind: _authorKind, ...row } = held;
-  return Response.json({ persisted: true, duplicate: true, spore: row });
+  return Response.json({ persisted: true, duplicate: true, spore: row, ...(source === 'kept' ? { sourceKept: true } : {}) });
 }
 
 export async function handleListSpores(env: ServerEnv, ctx: RouteContext): Promise<Response> {
