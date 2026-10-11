@@ -3,8 +3,8 @@ import type { RefusedEntry } from './spool.js';
 /** Minimum time between upload progress lines. */
 export const IMPORT_PROGRESS_MS = 5_000;
 
-export const importCause = (code: string): string =>
-  IMPORT_STOP_WORDS[['body_cap', 'blob_cap', 'content_length'].includes(code) ? 'record_too_large' : code] ?? IMPORT_STOP_WORDS.refused!;
+export const importCause = (code: string, reason?: string): string =>
+  IMPORT_STOP_WORDS[['body_cap', 'blob_cap', 'content_length'].includes(code) ? 'record_too_large' : code] ?? `${code}${reason === undefined ? '' : `: ${reason}`}; ask the operator to resolve this refusal, then run the command again`;
 
 /** Counts records or session steps by their recovery cause. */
 export function countImportCause(causes: Record<string, number>, cause: string): void {
@@ -50,6 +50,7 @@ export const IMPORT_STOP_WORDS: Readonly<Record<string, string>> = {
 
 export function importHttpCause(status: number | undefined, fromMyco = false): string {
   if (status === undefined) return 'a network request failed; check the connection and run the command again';
+  if (status === 401) return fromMyco ? IMPORT_STOP_WORDS.unauthorized! : IMPORT_STOP_WORDS.route_missing!;
   if (status === 403 && !fromMyco) return 'HTTP 403 before Myco answered, likely a security rule; ask the operator to check Cloudflare Security Events and allow this upload, then run the command again';
   if (status === 403) return 'Myco refused access (HTTP 403); ask an owner or admin to check this machine’s access, then run the command again';
   if (status === 413) return IMPORT_STOP_WORDS.record_too_large!;

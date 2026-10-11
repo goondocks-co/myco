@@ -124,7 +124,7 @@ describe('the import verb', () => {
     for (const stop of ['parked', 'unauthorized', 'route_missing', 'protocol', 'retry']) {
       const stopped = reportLines(report({ projects: [{ projectId: 'proj_1', root: '/w/repo', agents: [], endedBy: stop }] }), false).join('\n');
       expect({ stop, leaked: new RegExp(`\\b${stop}\\b`).test(stopped) }).toEqual({ stop, leaked: false });
-      expect(stopped).toContain('stopped — ');
+      expect(stopped).toContain('stoppedBy: ');
     }
   });
 });

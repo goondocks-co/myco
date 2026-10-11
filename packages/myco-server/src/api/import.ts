@@ -34,7 +34,7 @@ import { IMPORT_PLAN_MAX_CANDIDATES } from '../constants.js';
 import { importPolicy, IMPORT_DISABLED } from '../core/import-policy.js';
 import { tombstonedAmong } from '../core/tombstones.js';
 import { heldTranscriptsFor, type HeldTranscript } from '../read/transcript.js';
-import { heldSessionIds, sessionsWithImportedPrompts } from '../read/sessions.js';
+import { heldSessionIds, sessionsOwnedByImporter, sessionsWithImportedPrompts } from '../read/sessions.js';
 import { LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';
 import { refused } from '../ingest/events.js';
 import { emit, refusal } from '../telemetry.js';
@@ -207,17 +207,18 @@ function parseProbe(value: unknown): string[] | null {
  * sending a session's facts or content, so a session already captured keeps
  * what live capture recorded and none is held twice.
  */
-async function sessionsHeld(env: ServerEnv, projectId: string, sessionIds: readonly string[]): Promise<{ held: string[]; withTranscript: string[]; tombstoned: string[]; vaultSourced: string[] }> {
+async function sessionsHeld(env: ServerEnv, projectId: string, sessionIds: readonly string[]): Promise<{ held: string[]; withTranscript: string[]; tombstoned: string[]; vaultSourced: string[]; legacyOwned: string[] }> {
   const scope = { projectId };
-  const [held, transcripts, tombstoned, vaultSourced] = await Promise.all([
+  const [held, transcripts, tombstoned, vaultSourced, legacyOwned] = await Promise.all([
     heldSessionIds(env.db, scope, sessionIds),
     heldTranscriptsFor(env.db, scope, sessionIds, []),
     tombstonedAmong(env.db, projectId, sessionIds),
     sessionsWithImportedPrompts(env.db, scope, sessionIds, LEGACY_IMPORT_ADAPTER),
+    sessionsOwnedByImporter(env.db, scope, sessionIds, LEGACY_IMPORT_ADAPTER),
   ]);
   return {
     held: [...held].sort(), withTranscript: [...new Set(transcripts.map((t) => t.sessionId))].sort(),
-    tombstoned: [...tombstoned].sort(), vaultSourced: [...vaultSourced].sort(),
+    tombstoned: [...tombstoned].sort(), vaultSourced: [...vaultSourced].sort(), legacyOwned: [...legacyOwned].sort(),
   };
 }
 

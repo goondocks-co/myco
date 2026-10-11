@@ -1,8 +1,3 @@
-import { countImportCause, importCause, importProgress, importRefusals } from './import-feedback.js';
-import { memoizedRepositoryName } from '@myco/utils/git.js';
-import { defaultMembership } from './default-deployment.js';
-import { assertMemberTranscriptDestination, isMemberOwnedTranscriptPath, TranscriptDestinationError } from './transcript-routing.js';
-import type { MemberRoutingIdentity } from './routing.js';
 /**
  * Bringing a 1.4 vault's history to a Deployment.
  *
@@ -22,9 +17,9 @@ import type { MemberRoutingIdentity } from './routing.js';
  * file is on disk under any harness's layout or the Deployment already holds
  * one; the vault's prompts and responses only where neither is true. The
  * decision is recorded before anything is sent (`LegacyLedger`), so a rerun
- * and every later transcript import honour it. A session the Deployment
- * already holds keeps the facts and the end live capture recorded: it gets
- * the vault's title alone.
+ * and every later transcript import honour it. A session live capture holds
+ * keeps its lifecycle facts and end; a session whose lifecycle belongs to
+ * this importer replays its deterministic facts and end.
  *
  * **Every write is idempotent.** Event ids derive from the vault row, the
  * producer is fixed, and every instant is the vault's, so a second run sends
@@ -39,6 +34,11 @@ import type { MemberRoutingIdentity } from './routing.js';
  *
  * The vault is opened read-only and is never written.
  */
+import { countImportCause, importCause, importProgress, importRefusals } from './import-feedback.js';
+import { memoizedRepositoryName } from '@myco/utils/git.js';
+import { defaultMembership } from './default-deployment.js';
+import { assertMemberTranscriptDestination, isMemberOwnedTranscriptPath, TranscriptDestinationError } from './transcript-routing.js';
+import type { MemberRoutingIdentity } from './routing.js';
 import { Database } from 'bun:sqlite';
 import { LEGACY_MINTED_ID } from '@goondocks/myco-shared/session-ids';
 import fs from 'node:fs';
@@ -57,7 +57,7 @@ import {
   observedFetch, paced, pause, retryVerdict, retryWaitMs, shipSession, transcriptCandidate, IMPORT_MAX_PASSES, IMPORT_WAIT_CAP_MS, SERVER_FAULT_RETRIES,
   type Candidate,
 } from './import.js';
-import { LegacyLedger, type ContentSource } from './legacy-ledger.js';
+import { LEGACY_RECONCILIATION_VERSION, LegacyLedger, type ContentSource } from './legacy-ledger.js';
 import { normalizePlanPath } from './plan-files.js';
 import { deploymentUrl, listDeploymentMemberships, type DeploymentMembership } from './registry.js';
 import { MemberSpool, spoolDirFor, type RefusedEntry } from './spool.js';
@@ -554,7 +554,7 @@ class ServerTooOld extends Error {}
 /** Stops the whole import: one step waited `IMPORT_WAIT_CAP_MS` for a Deployment that never took it, so nothing after it is tried. */
 class WaitedOut extends Error {}
 
-type Probe = { held: Set<string>; withTranscript: Set<string>; tombstoned: Set<string>; vaultSourced: Set<string> };
+type Probe = { held: Set<string>; withTranscript: Set<string>; tombstoned: Set<string>; vaultSourced: Set<string>; legacyOwned: Set<string> };
 
 /** How a step ended: finished, stopped by a class the caller acts on, or failed (`detail` says why). */
 type StepEnd = { endedBy?: string; detail?: string; cause?: string };
@@ -724,14 +724,12 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
   const failed = (r: LegacyProjectReport, what: string, end: StepEnd): string => {
     const cause = end.cause ?? importCause('failed');
     countImportCause(r.causes ??= {}, cause);
-    r.stoppedBy = cause;
     return `${what}: ${end.detail ?? 'could not be sent'}`;
   };
 
-  const refusedRecord = (r: LegacyProjectReport, code: string): void => {
-    const cause = importCause(code);
+  const refusedRecord = (r: LegacyProjectReport, code: string, reason?: string): void => {
+    const cause = importCause(code, reason);
     countImportCause(r.causes ??= {}, cause);
-    r.stoppedBy = cause;
   };
 
   const untouched = (g: Prepared) => ({ sessions: g.groups.length, spores: g.project.spores.length, lineage: g.project.resolutions.length });
@@ -748,7 +746,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
         if (ended !== undefined) {
           r.endedBy = ended;
           r.stoppedBy ??= observed.lastCause() ?? importCause(ended);
-          if (Object.keys(r.causes ?? {}).length === 0) countImportCause(r.causes ??= {}, r.stoppedBy);
+          if (r.causes?.[r.stoppedBy] === undefined) countImportCause(r.causes ??= {}, r.stoppedBy);
         }
         else r.notAttempted = undefined;
         tick(true);
@@ -779,6 +777,8 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
     const projectId = project.projectId;
     const ledger = new LegacyLedger(mycoHome, serverUrl, projectId);
     const done = ledger.read();
+    const repairing = !done.reconciled && (done.sessions.size > 0 || done.spores.size > 0);
+    if (!done.reconciled && !repairing) ledger.append({ k: 'reconciled', version: LEGACY_RECONCILIATION_VERSION });
     const spool = new MemberSpool({ projectId, serverUrl }, { mycoHome });
 
     // What a person deleted stays out of later transcript imports on this machine as well.
@@ -786,7 +786,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
     ledger.append(...newlyDeleted.map((session) => ({ k: 'source' as const, session, from: 'deleted' as const })));
 
     const deletedIds = [...new Set([...g.deletedSessions.values()].flat())];
-    const probe = await settle(() => probeSessions(projectId, [...g.groups.filter((s) => !done.sessions.has(s.sessionId)).map((s) => s.sessionId), ...deletedIds]));
+    const probe = await settle(() => probeSessions(projectId, [...g.groups.filter((s) => repairing || !done.sessions.has(s.sessionId)).map((s) => s.sessionId), ...deletedIds]));
     if (probe.endedBy === 'failed') { r.failures.push(failed(r, 'what the Deployment holds of these sessions', probe)); return 'failed'; }
     if (probe.endedBy !== undefined) return probe.endedBy;
     const held = (probe as { probe: Probe }).probe;
@@ -807,7 +807,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
     for (const group of g.groups) {
       tick();
       r.notAttempted!.sessions -= 1;
-      if (done.sessions.has(group.sessionId)) { r.sessions.resumed += 1; continue; }
+      if (!repairing && done.sessions.has(group.sessionId)) { r.sessions.resumed += 1; continue; }
       if (held.tombstoned.has(group.sessionId)) { r.sessions.deleted += 1; continue; }
       const ended = await settle(() => importSession(group));
       if (ended.endedBy === 'failed') { r.failures.push(failed(r, `session ${group.sessionId}`, ended)); continue; }
@@ -822,12 +822,16 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
     for (const spore of project.spores) {
       tick();
       r.notAttempted!.spores -= 1;
-      if (done.spores.has(spore.id)) { r.spores.duplicate += 1; continue; }
+      if (!repairing && done.spores.has(spore.id)) { r.spores.duplicate += 1; continue; }
       const sessionId = spore.sessionId === null ? null : g.idOf.get(spore.sessionId) ?? null;
+      if (sessionId !== null && !present.has(sessionId) && !g.deleted.has(sessionId)) {
+        r.failures.push(`spore ${spore.id}: its session has not finished importing; run the import again`);
+        continue;
+      }
       const onDeployment = sessionId !== null && present.has(sessionId) ? sessionId : null;
       const promptId = onDeployment !== null && vaultContent.has(onDeployment) && spore.promptId !== null ? legacyPromptId(projectId, spore.promptId) : null;
       const outcome = await settle(async () => classified(await clientFor(projectId).postPersisted(SPORES_SAVE_PATH, {
-        id: spore.id, agentId: spore.agentId, observationType: spore.observationType, status: spore.status,
+        channel: 'import', id: spore.id, agentId: spore.agentId, observationType: spore.observationType, status: spore.status,
         content: spore.content, context: spore.context, sessionId: onDeployment, promptId,
         importance: spore.importance ?? undefined, filePath: spore.filePath, tags: spore.tags, contentHash: spore.contentHash,
         properties: spore.properties, createdAt: spore.createdAt ?? undefined,
@@ -835,7 +839,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       if (outcome.endedBy === 'failed') { r.failures.push(failed(r, `spore ${spore.id}`, outcome)); continue; }
       if (outcome.endedBy !== undefined) return outcome.endedBy;
       const answer = outcome as Classified;
-      if (answer.refusal !== undefined) { refusedRecord(r, answer.refusalCode ?? 'refused'); r.spores.refused += 1; r.refusals.push(`spore ${spore.id}: ${answer.refusal}`); continue; }
+      if (answer.refusal !== undefined) { refusedRecord(r, answer.refusalCode ?? 'refused', answer.refusalReason); r.spores.refused += 1; r.refusals.push(`spore ${spore.id}: ${answer.refusal}`); continue; }
       if (answer.duplicate) r.spores.duplicate += 1; else r.spores.saved += 1;
       ledger.append({ k: 'spore', id: spore.id });
     }
@@ -857,17 +861,18 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       if (outcome.endedBy === 'failed') { r.failures.push(failed(r, `history ${event.id}`, outcome)); continue; }
       if (outcome.endedBy !== undefined) return outcome.endedBy;
       const answer = outcome as Classified;
-      if (answer.refusal !== undefined) { refusedRecord(r, answer.refusalCode ?? 'refused'); r.lineage.refused += 1; r.refusals.push(`history ${event.id}: ${answer.refusal}`); continue; }
+      if (answer.refusal !== undefined) { refusedRecord(r, answer.refusalCode ?? 'refused', answer.refusalReason); r.lineage.refused += 1; r.refusals.push(`history ${event.id}: ${answer.refusal}`); continue; }
       if (answer.body?.resolved === false) { refusedRecord(r, 'missing_reference'); r.lineage.refused += 1; r.refusals.push(`history ${event.id}: its spore ${event.sporeId} is not on the Deployment`); continue; }
       if (answer.duplicate) r.lineage.duplicate += 1; else r.lineage.recorded += 1;
       ledger.append({ k: 'lineage', id: event.id });
     }
+    if (repairing && r.failures.length === 0 && r.refusals.length === 0) ledger.append({ k: 'reconciled', version: LEGACY_RECONCILIATION_VERSION });
     return undefined;
 
     /** A drain that ended on refusals reports them and ends the session's step as refused; any other end is the step's. */
     function refusedOr(end: DrainEnd, sessionId: string): StepEnd {
       if (end.refused.length === 0) return { endedBy: end.endedBy };
-      for (const refusal of end.refused) refusedRecord(r, refusal.code);
+      for (const refusal of end.refused) refusedRecord(r, refusal.serverCode ?? refusal.code, refusal.reason);
       r.refusals.push(...end.refused.map((e) => `session ${sessionId}: ${e.kind} refused (${e.code}: ${e.reason})`));
       return { endedBy: REFUSED };
     }
@@ -911,9 +916,9 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
         agent, sessionId: group.sessionId, stage: spool.stagerFor(group.sessionId), now: at(instant), channel: 'import', producer: LEGACY_PRODUCER,
       });
       const withId = (out: OutboundEvent, ...key: string[]): OutboundEvent => ({ ...out, envelope: { ...out.envelope, eventId: legacyId(projectId, ...key) } });
-      const alreadyHeld = held.held.has(group.sessionId);
+      const alreadyHeld = held.held.has(group.sessionId) && !held.legacyOwned.has(group.sessionId);
 
-      // A session the Deployment already holds keeps the facts it was captured with.
+      // Live-captured sessions keep the facts they were captured with.
       const facts = alreadyHeld ? [] : [withId(sessionStartEvent(ctx(s.startedAt), {
         startedAt: s.startedAt ?? undefined,
         branch: s.branch ?? undefined,
@@ -928,7 +933,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
 
       let transcript: 'shipped' | 'held' | null = source === 'transcript' ? 'held' : null;
       if (plan !== null && plan.decision === 'take' && candidate !== null && candidate !== 'active') {
-        const shipped = await shipSession(candidate, plan.fromOffset, client, spool, deps.machineId, now, { facts: false, repositoryNames, onRefusal: (code) => refusedRecord(r, code) });
+        const shipped = await shipSession(candidate, plan.fromOffset, client, spool, deps.machineId, now, { facts: false, repositoryNames, onRefusal: (code, reason) => refusedRecord(r, code, reason) });
         if (shipped === 'done') { shippedThisRun.add(group.sessionId); transcript = 'shipped'; }
         else if (shipped !== 'absent') return { endedBy: shipped };
       }
@@ -965,7 +970,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
           promptId: plan.promptId !== null && fromVault ? legacyPromptId(projectId, plan.promptId) : undefined,
         }), 'plan', plan.id));
       }
-      // A held session's end is live capture's; the title travels on its own, the same event whether or not the end was sent.
+      // Live-captured sessions keep their end; the vault's title travels independently.
       if (!alreadyHeld) {
         events.push(withId(sessionEndEvent(ctx(s.endedAt), { endedAt: s.endedAt ?? s.startedAt ?? undefined }), 'session.end', group.sessionId));
       }
@@ -1006,16 +1011,17 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
 
   /** What the Deployment holds of these sessions, asked in runs under the route's ceiling. */
   async function probeSessions(projectId: string, sessionIds: readonly string[]): Promise<{ probe: Probe; endedBy?: string }> {
-    const probe: Probe = { held: new Set(), withTranscript: new Set(), tombstoned: new Set(), vaultSourced: new Set() };
+    const probe: Probe = { held: new Set(), withTranscript: new Set(), tombstoned: new Set(), vaultSourced: new Set(), legacyOwned: new Set() };
     const client = clientFor(projectId);
     for (let i = 0; i < Math.max(sessionIds.length, 1); i += PROBE_CHUNK) {
       const run = sessionIds.slice(i, i + PROBE_CHUNK);
       const answer = await client.importPlan({ candidates: [], sessions: run.length === 0 ? undefined : run }, unboundedBudget());
       if (answer.class !== 'acked') return { probe, endedBy: answer.class };
       if (run.length === 0) break;
-      const sessions = answer.body.sessions as { held?: unknown; withTranscript?: unknown; tombstoned?: unknown; vaultSourced?: unknown } | undefined;
+      const sessions = answer.body.sessions as { held?: unknown; withTranscript?: unknown; tombstoned?: unknown; vaultSourced?: unknown; legacyOwned?: unknown } | undefined;
       if (sessions === undefined) throw new ServerTooOld(`${report.serverUrl} does not answer what it holds of a session; update the Deployment before importing a 1.4 vault`);
-      for (const [key, into] of [['held', probe.held], ['withTranscript', probe.withTranscript], ['tombstoned', probe.tombstoned], ['vaultSourced', probe.vaultSourced]] as const) {
+      if (!Array.isArray(sessions.legacyOwned)) throw new ServerTooOld('update the Deployment before importing: it cannot identify imported session facts for safe resume and repair');
+      for (const [key, into] of [['held', probe.held], ['withTranscript', probe.withTranscript], ['tombstoned', probe.tombstoned], ['vaultSourced', probe.vaultSourced], ['legacyOwned', probe.legacyOwned]] as const) {
         const list = sessions[key];
         if (Array.isArray(list)) for (const id of list) if (typeof id === 'string') into.add(id);
       }
@@ -1064,12 +1070,12 @@ const STILL_WRITING = 'still-writing';
 /** A project the import stopped at, or never reached, once a step waited out its limit. */
 export const UNREACHABLE = 'unreachable';
 
-type Classified = { endedBy?: string; refusalCode?: string; refusal?: string; duplicate?: boolean; body?: Record<string, unknown> };
+type Classified = { endedBy?: string; refusalCode?: string; refusalReason?: string; refusal?: string; duplicate?: boolean; body?: Record<string, unknown> };
 
 /** An answer to a persisted route: stopped (retryable or not), refused with a reason, or recorded. */
 function classified(outcome: Outcome): Classified {
   if (outcome.class === 'acked') return { duplicate: outcome.duplicate === true || outcome.body.duplicate === true, body: outcome.body };
-  if (outcome.class === 'refused') return { refusalCode: outcome.code, refusal: `${outcome.code}: ${outcome.reason}` };
+  if (outcome.class === 'refused') return { refusalCode: outcome.serverCode ?? outcome.code, refusalReason: outcome.reason, refusal: `${outcome.code}: ${outcome.reason}` };
   return { endedBy: outcome.class };
 }
 

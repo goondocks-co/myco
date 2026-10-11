@@ -219,18 +219,18 @@ function buildTranscripts(home: string, root: string): string[] {
   return [...files, active];
 }
 
-async function fixture(): Promise<Fixture> {
+async function fixture(prebuilt?: { base: string }): Promise<Fixture> {
   const rig = await memberRig();
   const mycoHome = tempMycoHome();
-  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-legacy-')));
+  const base = prebuilt?.base ?? fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-legacy-')));
   const home = path.join(base, 'home');
   const root = path.join(base, 'repo');
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(root, { recursive: true });
   const heldHome = process.env.HOME;
   process.env.HOME = home;
-  buildTranscripts(home, root);
-  const vault = buildVault(path.join(base, 'myco-14'), root, home);
+  if (prebuilt === undefined) buildTranscripts(home, root);
+  const vault = prebuilt === undefined ? buildVault(path.join(base, 'myco-14'), root, home) : path.join(base, 'myco-14', 'groves', 'grove_test', 'myco.db');
   writeDeploymentMembership({ serverUrl: SERVER, token: rig.token, tokenId: rig.tokenId, machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now() }, { mycoHome });
 
   // Live capture already holds one vault session, with a transcript, its own facts, an end and an automatic title,
@@ -319,6 +319,7 @@ describe('importing a 1.4 vault', () => {
     expect(project.endedBy).toBeUndefined();
     expect(project.refusals).toEqual([]);
     expect(project.failures).toEqual([]);
+    expect(project.causes?.['spore history has a shape the Deployment cannot read; keep the original vault for recovery']).toBe(1);
     expect(project.malformed).toEqual(['history res_bad: a supersede that names no successor']);
     expect(project.unmatchedDeletes).toEqual([UNMATCHED_DELETE]);
     expect(project.otherMachines).toEqual({ machine_2: 1 });
@@ -778,4 +779,132 @@ describe('pacing an import', () => {
     for (let i = 0; i < 5; i += 1) await fetch('https://s/x');
     expect(started).toEqual([0, 300, 600, 900, 1200]);
   });
+});
+
+import { IMPORT_FAULTS, faultAt, importSnapshot } from './helpers/import-differential.js';
+import { LegacyLedger } from '@myco/member/legacy-ledger.js';
+
+/** Two vault sessions, including one held by live capture, with linked spores and lineage. */
+function narrowDifferentialVault(f: Fixture): void {
+  const db = openVault(f.vault);
+  db.run('PRAGMA foreign_keys = OFF');
+  db.run('DELETE FROM sessions WHERE id NOT IN (?, ?)', [SESSION_PRUNED, SESSION_LIVE]);
+  db.run('DELETE FROM prompt_batches WHERE session_id NOT IN (?, ?)', [SESSION_PRUNED, SESSION_LIVE]);
+  db.run("DELETE FROM plans WHERE id <> 'plan_file'");
+  db.run("DELETE FROM spores WHERE id NOT IN ('gotcha-old', 'gotcha-new')");
+  db.run("DELETE FROM resolution_events WHERE id <> 'res_1'");
+  db.run('DELETE FROM session_tombstones');
+  db.close();
+}
+
+async function differentialImport(f: Fixture, fetch = f.rig.fetch, signal?: AbortSignal) {
+  return runLegacyImport({ sources: [f.vault], serverUrl: SERVER }, {
+    fetch, mycoHome: f.mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {}, signal, maxPasses: 2,
+  });
+}
+
+describe('vault import fault/resume differential', () => {
+  for (const persistent of [false, true]) for (const kind of IMPORT_FAULTS) {
+    it(`${kind}, ${persistent ? 'persistent' : 'single'} at every request: resume equals uninterrupted rows`, async () => {
+      const originalHome = process.env.HOME;
+      const base = await fixture();
+      narrowDifferentialVault(base);
+      const basePath = path.dirname(base.root);
+      const counter = faultAt(base.rig.fetch, Infinity, kind, false, new AbortController());
+      expect(legacyImportComplete(await differentialImport(base, counter.fetch))).toBe(true);
+      const baseline = importSnapshot(base.rig.env.sqlite);
+      const requests = counter.count();
+      base.cleanup();
+      try {
+        for (let index = 1; index <= requests; index += 1) {
+          const f = await fixture({ base: basePath });
+          const controller = new AbortController();
+          const fault = faultAt(f.rig.fetch, index, kind, persistent, controller);
+          try {
+            await differentialImport(f, fault.fetch, controller.signal);
+            expect(legacyImportComplete(await differentialImport(f)), `${kind} ${persistent} request ${index}: complete`).toBe(true);
+            expect(importSnapshot(f.rig.env.sqlite), `${kind} ${persistent} request ${index}`).toEqual(baseline);
+          } finally { f.cleanup(); }
+        }
+      } finally { if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome; }
+    }, 60_000);
+  }
+
+  for (const missingTimestamp of [false, true]) it(`repairs an old completed ledger with missing end/links, preserving live capture (missing timestamp: ${missingTimestamp})`, async () => {
+    const f = await fixture();
+    try {
+      narrowDifferentialVault(f);
+      if (missingTimestamp) {
+        const vault = openVault(f.vault);
+        vault.run("UPDATE spores SET created_at = 'unknown' WHERE id = 'gotcha-new'");
+        vault.close();
+      }
+      await differentialImport(f);
+      const baseline = importSnapshot(f.rig.env.sqlite);
+      const db = f.rig.env.sqlite;
+      db.run("DELETE FROM events WHERE session_id = ? AND kind = 'session.end' AND channel = 'import'", [SESSION_PRUNED]);
+      db.run('UPDATE sessions SET ended_at = NULL WHERE session_id = ?', [SESSION_PRUNED]);
+      const source = db.query("SELECT * FROM spores WHERE id = 'gotcha-new'").get() as Record<string, unknown>;
+      db.run("UPDATE spores SET prompt_id = NULL, session_id = NULL WHERE id IN ('gotcha-old','gotcha-new')");
+      const repair = { id: source.id, agentId: source.agent_id, observationType: source.observation_type, content: source.content,
+        sessionId: source.session_id, promptId: source.prompt_id, createdAt: source.created_at };
+      const post = (extra: Record<string, unknown>) => f.rig.fetch(SERVER + '/spores/save', {
+        method: 'POST', headers: f.rig.headers({ 'content-type': 'application/json' }), body: JSON.stringify({ ...repair, ...extra }),
+      });
+      await post({});
+      await post({ channel: 'import', content: 'different content' });
+      await post({ channel: 'import', promptId: 'missing-prompt' });
+      expect(db.query("SELECT prompt_id FROM spores WHERE id = 'gotcha-new'").get()).toEqual({ prompt_id: null });
+      const ledger = new LegacyLedger(f.mycoHome, SERVER, PROJECT);
+      fs.writeFileSync(ledger.file, fs.readFileSync(ledger.file, 'utf8').split('\n').filter((line) => !line.includes('"reconciled"')).join('\n'));
+      expect(importSnapshot(db)).not.toEqual(baseline);
+      expect(legacyImportComplete(await differentialImport(f))).toBe(true);
+      expect(importSnapshot(db)).toEqual(baseline);
+      expect((await differentialImport(f)).projects[0].sessions.resumed).toBe(2);
+    } finally { f.cleanup(); }
+  });
+});
+
+it('groups distinct unmapped refusals without claiming a completed pass stopped', async () => {
+  const f = await fixture();
+  try {
+    const fetch: MemberRig['fetch'] = async (input, init) => {
+      const req = new Request(input, init);
+      if (new URL(req.url).pathname === '/spores/save') {
+        const body = await req.clone().json() as { id: string };
+        if (body.id === 'gotcha-old') return Response.json({ persisted: false, code: 'project_closed', reason: 'project closed' });
+        if (body.id === 'gotcha-new') return Response.json({ persisted: false, code: 'read_only', reason: 'vault is read only' });
+      }
+      return f.rig.fetch(req);
+    };
+    const report = await differentialImport(f, fetch);
+    expect(report.projects[0]!.endedBy).toBeUndefined();
+    const groups = report.projects[0]!.causes!;
+    expect(Object.entries(groups).filter(([cause]) => cause.startsWith('project_closed: project closed'))).toHaveLength(1);
+    expect(Object.entries(groups).filter(([cause]) => cause.startsWith('read_only: vault is read only'))).toHaveLength(1);
+    const lines = legacyReportLines(report, false).join('\n');
+    expect(lines).not.toContain('stoppedBy:');
+    expect(lines).toContain('1 record or upload: project_closed: project closed');
+    expect(lines).toContain('1 record or upload: read_only: vault is read only');
+  } finally { f.cleanup(); }
+});
+
+it('names a terminal sign-in refusal after a nonterminal spore refusal', async () => {
+  const f = await fixture();
+  try {
+    const fetch: MemberRig['fetch'] = async (input, init) => {
+      const req = new Request(input, init);
+      if (new URL(req.url).pathname === '/spores/save') {
+        const body = await req.clone().json() as { id: string };
+        if (body.id === 'gotcha-old') return Response.json({ persisted: false, code: 'invalid_field', reason: 'bad content' });
+      }
+      if (new URL(req.url).pathname === '/spores/resolve') return new Response('sign in', { status: 401, headers: { 'x-myco-protocol': '1' } });
+      return f.rig.fetch(req);
+    };
+    const report = await differentialImport(f, fetch);
+    const lines = legacyReportLines(report, false);
+    expect(lines.some((l) => l.includes('stoppedBy:') && l.includes('invalid_field'))).toBe(false);
+    expect(lines.filter((l) => l.includes('stoppedBy:')).join('\n')).toContain('myco login');
+    expect(Object.keys(report.projects[0]!.causes!)).toHaveLength(2);
+  } finally { f.cleanup(); }
 });

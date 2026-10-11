@@ -206,8 +206,10 @@ describe('myco cutover', () => {
       const result = await m.run([], { fetch, signal: controller.signal });
       expect(result.ok).toBe(false);
       const output = result.out.join('\n');
-      expect(output).toMatch(/\d+ records or uploads:/);
-      expect(output.split('\n').filter((l) => l.includes('stoppedBy:')).join('\n')).toContain(fix);
+      expect(output).toMatch(/\d+ records? or uploads?:/);
+      expect(output).toContain(fix);
+      if (kind === 'edge-mid' || kind === 'refused' || kind === 'large') expect(output).not.toContain('stoppedBy:');
+      else expect(output.split('\n').filter((l) => l.includes('stoppedBy:')).join('\n')).toContain(fix);
       if (kind === 'edge') expect(output).toContain('likely a security rule');
       if (kind === 'interrupted') {
         const resumed = await m.run();
@@ -652,7 +654,7 @@ describe('myco cutover', () => {
     expect(result.ok).toBe(false);
     if (interrupted) {
       expect(result.out.some((line) => line.startsWith('9.'))).toBe(false);
-      expect(result.out.join('\n')).toContain('stoppedBy: you stopped the import; run the same command again to resume safely');
+      expect(result.out.join('\n')).toMatch(/stoppedBy:.*you stopped the import; run the same command again to resume safely/);
     }
     expect(result.err.join('\n')).toMatch(/the transcript import stopped before it finished \(proj_1: [^)]+\)/);
   });

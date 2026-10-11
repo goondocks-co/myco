@@ -242,7 +242,7 @@ describe('what a Project holds of named sessions', () => {
     r.sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at, producer_adapter, producer_version, payload_bytes, ingest_nonce)
                   VALUES (?, 'e-vault', 's-row', ?, 'prompt', 'import', '{}', 'h', ?, ?, ?, '1', 2, 'n')`, [PROJECT, r.tokenId, NOW, NOW, LEGACY_IMPORT_ADAPTER]);
     const body = await r.plan([], { sessions: ['s-transcript', 's-row', 's-dead', 's-none'] });
-    expect(body.sessions).toEqual({ held: ['s-dead', 's-row', 's-transcript'], withTranscript: ['s-transcript'], tombstoned: ['s-dead'], vaultSourced: ['s-row'] });
+    expect(body.sessions).toEqual({ held: ['s-dead', 's-row', 's-transcript'], withTranscript: ['s-transcript'], tombstoned: ['s-dead'], vaultSourced: ['s-row'], legacyOwned: [] });
     expect((await r.plan([])).sessions).toBeUndefined();
     expect((await r.plan([], { sessions: [''] })).code).toBe('parse');
   });

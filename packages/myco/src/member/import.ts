@@ -154,6 +154,8 @@ export interface ProjectReport {
   agents: AgentTally[];
   /** Set when the pass stopped before it finished this Project; the class the transport answered. */
   endedBy?: string;
+  continued?: boolean;
+  notAttempted?: boolean;
   causes?: Record<string, number>;
   stoppedBy?: string;
 }
@@ -331,7 +333,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: deps.cwd ?? process.cwd() });
   let tick = (_force = false) => {};
   const observed = observedFetch(deps.fetch ?? globalThis.fetch, { signal: deps.signal, onRequest: () => tick() });
-  const fetchImpl = paced(observed.fetch, deps.pace, deps.sleep ?? pause);
+  const fetchImpl = paced(observed.fetch, deps.pace, deps.sleep ?? ((ms) => pause(ms, deps.signal)));
 
   const entries = listRegistryEntries(mycoHome);
   if (entries.length === 0) return refusedReport('no Deployment membership on this machine');
@@ -422,7 +424,8 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
     }, unboundedBudget());
 
     if (answer.class !== 'acked') {
-      report.projects.push({ projectId, root: entry.root ?? '', agents: [...tallies.values()], endedBy: answer.class, causes: { [observed.lastCause() ?? importCause(answer.class)]: 1 }, stoppedBy: observed.lastCause() ?? importCause(answer.class) });
+      report.projects.push({ projectId, root: entry.root ?? '', agents: [...tallies.values()], endedBy: answer.class, continued: answer.class === 'refused', causes: { [observed.lastCause() ?? importCause(answer.class === 'refused' ? answer.serverCode ?? answer.code : answer.class, answer.class === 'refused' ? answer.reason : undefined)]: 1 }, stoppedBy: observed.lastCause() ?? importCause(answer.class === 'refused' ? answer.serverCode ?? answer.code : answer.class, answer.class === 'refused' ? answer.reason : undefined) });
+      if (answer.class === 'refused') continue;
       break;
     }
 
@@ -445,7 +448,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
       if (opts.dryRun === true) { held.imported += 1; continue; }
       if (opts.until !== undefined && now() >= opts.until) { endedBy = IMPORT_DEADLINE; break; }
 
-      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now, { repositoryNames, onRefusal: (code) => countImportCause(causes, importCause(code)) });
+      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now, { repositoryNames, onRefusal: (code, reason) => countImportCause(causes, importCause(code, reason)) });
       if (shipped === 'done') { held.imported += 1; continue; }
       // Gone from the disk between the plan that admitted it and the ship that
       // would have read it. Nothing was sent, so it is not imported — and it is
@@ -459,9 +462,14 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
       if (Object.keys(causes).length === 0) countImportCause(causes, observed.lastCause() ?? importCause(endedBy));
       break;
     }
-    report.projects.push({ projectId, root: entry.root ?? '', agents: [...tallies.values()], causes, stoppedBy: Object.keys(causes)[0], ...(endedBy === undefined ? {} : { endedBy }) });
+    report.projects.push({ projectId, root: entry.root ?? '', agents: [...tallies.values()], causes, stoppedBy: endedBy === undefined ? undefined : Object.keys(causes).join('; '), ...(endedBy === undefined ? {} : { endedBy }) });
     tick(true);
     if (endedBy !== undefined) break;
+  }
+  const reached = new Set(report.projects.map((p) => p.projectId));
+  for (const [projectId] of byProject) if (!reached.has(projectId)) {
+    const entry = [...bound.values()].find((e) => e.projectId === projectId);
+    report.projects.push({ projectId, root: entry?.root ?? '', agents: [], notAttempted: true });
   }
   return report;
 }
@@ -473,7 +481,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
  */
 export async function shipSession(
   candidate: Candidate, fromOffset: number, client: ServerClient, spool: MemberSpool, machineId: string, now: () => number,
-  opts: { facts?: boolean; repositoryNames?: Map<string, string>; onRefusal?: (code: string) => void } = {},
+  opts: { facts?: boolean; repositoryNames?: Map<string, string>; onRefusal?: (code: string, reason?: string) => void } = {},
 ): Promise<string> {
   spool.assertClientDestination(client);
   const { sessionId, filePath } = candidate;
@@ -507,12 +515,12 @@ export async function shipSession(
   const seen = spool.readRefused().entries.length;
   const drained = await spool.drainSession(sessionId, client, unboundedBudget(), { now, force: true });
   const refusals = importRefusals(spool.readRefused().entries, seen, sessionId, drained.endedBy);
-  for (const refusal of refusals) opts.onRefusal?.(refusal.code);
+  for (const refusal of refusals) opts.onRefusal?.(refusal.serverCode ?? refusal.code, refusal.reason);
   if (refusals.length > 0) return 'refused';
   if (drained.endedBy !== 'drained') return drained.endedBy;
 
   const result = await shipTranscriptSegments(ctx, spool, client, unboundedBudget(), { now, headHash: candidate.headHash ?? undefined });
-  for (const refusal of importRefusals(spool.readRefused().entries, seen, sessionId, result.endedBy)) opts.onRefusal?.(refusal.code);
+  for (const refusal of importRefusals(spool.readRefused().entries, seen, sessionId, result.endedBy)) opts.onRefusal?.(refusal.serverCode ?? refusal.code, refusal.reason);
   return result.endedBy;
 }
 

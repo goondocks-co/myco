@@ -1,4 +1,3 @@
-import { withImportInterrupt, stoppedByLine } from './import.js';
 /**
  * `myco cutover` — move this machine from Myco 1.4 to its 2.0 Deployment.
  *
@@ -39,6 +38,7 @@ import { withImportInterrupt, stoppedByLine } from './import.js';
  * Nothing 1.4 wrote as data is deleted or rewritten: the vaults stay where
  * they are, and the import reads the copies.
  */
+import { withImportInterrupt, stoppedByLine } from './import.js';
 import { parse as parseYaml } from 'yaml';
 import { seedMachineSettings } from '../member/machine-settings.js';
 import fs from 'node:fs';

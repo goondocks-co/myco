@@ -792,6 +792,21 @@ export async function heldSessionIds(db: RelationalStore, scope: ReadScope, sess
   return out;
 }
 
+/** Sessions whose original facts were recorded by a named importer. */
+export async function sessionsOwnedByImporter(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[], producer: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const run of inListChunks(sessionIds)) {
+    const { results } = await db.prepare(
+      `SELECT s.session_id FROM sessions s JOIN events e ON e.project_id = s.project_id AND e.event_id = s.facts_event_id
+       WHERE s.project_id = ? AND s.session_id IN (${run.map(() => '?').join(', ')}) AND e.channel = 'import' AND e.producer_adapter = ?
+         AND NOT EXISTS (SELECT 1 FROM events live WHERE live.project_id = s.project_id AND live.session_id = s.session_id
+           AND live.channel <> 'import' AND live.kind IN ('session.start', 'session.end', 'transcript.segment'))`,
+    ).bind(scope.projectId, ...run, producer).all<{ session_id: string }>();
+    for (const row of results) out.add(row.session_id);
+  }
+  return out;
+}
+
 /** Which of these sessions hold a prompt `producer` sent on the import channel. */
 export async function sessionsWithImportedPrompts(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[], producer: string): Promise<Set<string>> {
   const out = new Set<string>();

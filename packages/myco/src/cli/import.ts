@@ -145,6 +145,12 @@ export const STOPPED_WORDS = IMPORT_STOP_WORDS;
 
 export const stoppedByLine = (cause: string): string => `stoppedBy: ${cause}`;
 
+const causeLines = (causes: Record<string, number> | undefined, singular: string, plural: string, stopped: boolean | string): string[] =>
+  Object.entries(causes ?? {}).map(([cause, n]) => {
+    const group = `${n} ${n === 1 ? singular : plural}: ${cause}`;
+    return (stopped === true || stopped === cause) ? stoppedByLine(group) : `  ${group}`;
+  });
+
 const skipWords = (reason: string, n: number): string => `${n} ${SKIP_WORDS[reason] ?? 'skipped'}`;
 
 /** The unbound directories a report names, busiest first. */
@@ -157,17 +163,19 @@ export function reportLines(report: ImportReport, dryRun: boolean): string[] {
   const verb = dryRun ? 'would import' : 'imported';
   for (const project of report.projects) {
     lines.push(`${project.projectId} (${project.root})`);
+    if (project.notAttempted) { lines.push('  not attempted; run the import again to bring this project'); continue; }
     for (const agent of project.agents) {
       const notes = Object.entries(agent.skipped).map(([reason, n]) => skipWords(reason, n));
       if (agent.vanished > 0) notes.push(`${agent.vanished} removed before they could be sent`);
       if (agent.trimmed > 0) notes.push(`${agent.trimmed} past the offer limit`);
       lines.push(`  ${agent.agent}: ${agent.found} found, ${agent.imported} ${verb}${notes.length === 0 ? '' : ` (${notes.join(', ')})`}`);
     }
-    for (const [cause, n] of Object.entries(project.causes ?? {})) lines.push(`  ${n} import problems: ${cause}`);
-    if (project.endedBy !== undefined) lines.push(`  stopped — ${project.stoppedBy ?? STOPPED_WORDS[project.endedBy] ?? STOPPED_WORDS.failed}`);
+    const stopped = project.endedBy !== undefined && !project.continued;
+    const groups = Object.entries(project.causes ?? {});
+    lines.push(...causeLines(project.causes, 'import problem', 'import problems', stopped));
+    if (stopped && groups.length === 0) lines.push(stoppedByLine(project.stoppedBy ?? report.stoppedBy ?? STOPPED_WORDS[project.endedBy!] ?? STOPPED_WORDS.failed!));
   }
-  if (report.stoppedBy !== undefined) lines.push(stoppedByLine(report.stoppedBy));
-  else for (const p of report.projects.filter((p) => p.endedBy !== undefined)) lines.push(stoppedByLine(p.stoppedBy ?? STOPPED_WORDS[p.endedBy!] ?? STOPPED_WORDS.failed!));
+  if (report.stoppedBy !== undefined && !report.projects.some((p) => p.endedBy !== undefined && !p.continued)) lines.push(stoppedByLine(report.stoppedBy));
   if (report.active > 0) lines.push(`${report.active} transcripts are still being written and were left to the agent writing them.`);
   if (report.unattributable > 0) lines.push(`${report.unattributable} transcripts name no project and were left alone.`);
   if (report.dropped > 0) lines.push(`${report.dropped} transcripts are sub-agent or automation runs that capture leaves out, and were left out here too.`);
@@ -266,13 +274,13 @@ export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): 
     lines.push(`  spores: ${p.spores.saved} saved, ${p.spores.duplicate} already here, ${p.spores.refused} refused; history: ${p.lineage.recorded} recorded, ${p.lineage.duplicate} already here, ${p.lineage.refused} refused`);
     for (const alias of p.aliases) lines.push(`  matched by time: ${alias}`);
     for (const stored of p.unaliased) lines.push(`  no transcript matched, imported under its 1.4 id: ${stored}`);
-    for (const [cause, n] of Object.entries(p.causes ?? {})) lines.push(`  ${n} records or uploads: ${cause}`);
-    if (p.stoppedBy !== undefined || p.endedBy !== undefined || p.refusals.length > 0 || p.failures.length > 0) lines.push(`  ${stoppedByLine(p.stoppedBy ?? STOPPED_WORDS[p.endedBy ?? 'failed'] ?? STOPPED_WORDS.failed!)}`);
+    const groups = Object.entries(p.causes ?? {});
+    lines.push(...causeLines(p.causes, 'record or upload', 'records or uploads', p.endedBy === undefined ? false : p.stoppedBy ?? true));
+    if (p.endedBy !== undefined && groups.length === 0) lines.push(`  ${stoppedByLine(p.stoppedBy ?? STOPPED_WORDS[p.endedBy] ?? STOPPED_WORDS.failed!)}`);
     if (p.malformed.length > 0) lines.push(`  ${p.malformed.length} spore history records skipped: their stored shape is not accepted; keep the original vault for recovery`);
     for (const malformed of p.malformed) lines.push(`  skipped ${malformed}`);
     for (const refusal of p.refusals) lines.push(`  refused ${refusal}`);
     for (const failure of p.failures) lines.push(`  failed ${failure}; run the import again to retry it`);
-    if (p.endedBy !== undefined) lines.push(`  stopped — ${p.stoppedBy ?? STOPPED_WORDS[p.endedBy] ?? STOPPED_WORDS.failed}`);
     if (p.notAttempted !== undefined) lines.push(`  not attempted: ${p.notAttempted.sessions} sessions, ${p.notAttempted.spores} spores, ${p.notAttempted.lineage} spore history events; run the import again to bring them`);
   }
   if (report.projects.length === 0) lines.push('The 1.4 vault holds nothing to import.');
