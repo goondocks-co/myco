@@ -3,6 +3,8 @@
  * Helper passes and updates reconcile the harnesses this record names through the installer.
  */
 import fs from 'node:fs';
+import { deploymentUrl } from '../member/registry.js';
+import { normalizeMemberServerAddress } from '../member/server-url.js';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
@@ -94,5 +96,17 @@ export function forgetProvision(mycoHome: string, agent: string): void {
     delete binaries[agent];
     delete pendingTrust[agent];
     writeProvisionRecord(mycoHome, { ...record, agents: record.agents.filter((id) => id !== agent), binaries, pendingTrust }, { replace: true });
+  });
+}
+
+/** Move only the leaving Deployment's provision record to the surviving default. */
+export function reconcileProvisionDeployment(mycoHome: string, leavingUrl: string, nextDefault: string | null): void {
+  withProvisionLock(mycoHome, () => {
+    const record = readProvisionRecord(mycoHome);
+    if (record === null) return;
+    const [held, leaving] = [record.serverUrl, leavingUrl].map((url) => deploymentUrl(normalizeMemberServerAddress(url)?.origin ?? url));
+    if (held !== leaving) return;
+    if (nextDefault === null) fs.rmSync(provisionRecordPath(mycoHome), { force: true });
+    else writeProvisionRecord(mycoHome, { ...record, serverUrl: nextDefault }, { replace: true });
   });
 }

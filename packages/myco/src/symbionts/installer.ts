@@ -2272,6 +2272,7 @@ export class SymbiontInstaller {
 
   /** 1.4 homes whose global registrations member provisioning may replace in place (`replacingLegacy`). */
   private legacyHomes: readonly string[] = [];
+  private leavingDeployment: string | undefined;
   /** The Deployment a preflight judges the MCP entry against, before any folder is connected. */
   private expectedServerUrl: string | undefined;
   /** The Deployment a member with no folder connected provisions for (`forDeployment`). */
@@ -2307,6 +2308,81 @@ export class SymbiontInstaller {
   replacingLegacy(homes: readonly string[]): this {
     this.legacyHomes = homes.map((home) => path.resolve(home));
     return this;
+  }
+
+  /** Admit replacement of this home's entry naming exactly the leaving Deployment. */
+  replacingDeployment(serverUrl: string): this {
+    this.leavingDeployment = deploymentUrl(serverUrl);
+    return this;
+  }
+
+  /** Reconcile shared registrations while preserving entries for surviving Deployments. */
+  reconcileDeploymentLogout(leavingUrl: string, nextDefault: string | null, keepHooks: boolean): void {
+    this.forDeployment(nextDefault ?? leavingUrl).replacingDeployment(leavingUrl);
+    this.reconcileDeploymentMcp(leavingUrl, nextDefault, !keepHooks);
+    if (!keepHooks) {
+      this.assertGlobalMemberOwnership('hooks');
+      this.uninstallMemberHooks();
+    }
+  }
+
+  /** Remove the leaving Deployment's registrations from a project root. */
+  relinquishDeploymentProject(leavingUrl: string): void {
+    this.reconcileDeploymentMcp(leavingUrl, null, true);
+    if (this.isMemberPluginFile()) this.uninstallMemberHooks();
+  }
+
+  private reconcileDeploymentMcp(leavingUrl: string, nextDefault: string | null, removeUnscoped: boolean): void {
+    const toml = this.manifest.registration?.mcpFormat === 'toml';
+    for (const declared of this.resolveAbsoluteMcpTargets()) {
+      const target = { ...declared, path: this.installScope === 'member-global' ? throughLink(declared.path) : declared.path };
+      const file = this.readMcpFile(target.path, toml);
+      if (file === null) continue;
+      const primaryKey = toml ? TOML_MCP_SERVERS_KEY : target.serversKey;
+      const keys = toml ? [primaryKey] : [...new Set([primaryKey, ...KNOWN_MCP_SERVERS_KEYS])];
+      let changed = false;
+      let replacement: Record<string, unknown> | null = null;
+      for (const key of keys) {
+        const bag = file[key];
+        if (!bag || typeof bag !== 'object' || Array.isArray(bag)) continue;
+        const servers = bag as Record<string, unknown>;
+        const entry = servers[MYCO_MCP_SERVER_NAME];
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+        const server = entry as Record<string, unknown>;
+        const dialled = this.entryDeployment(server);
+        const minted = this.helperDeployment(server);
+        const unscoped = dialled === null && minted === null && removeUnscoped && this.isMemberMcpServer(server);
+        if (!unscoped && dialled !== deploymentUrl(leavingUrl) && minted !== deploymentUrl(leavingUrl)) continue;
+        if (dialled !== minted) throw this.memberMcpConflict(`the Myco MCP entry in ${target.path} names conflicting Deployments`, 'Fix the entry');
+        if (this.installScope === 'member-global') this.assertGlobalMemberOwnership({ path: target.path, serversKey: key });
+        const desired = nextDefault === null ? null : this.renderMemberMcp('registry');
+        replacement = desired;
+        if (toml) {
+          if (desired === null) this.uninstallMcpToml(target.path);
+          else this.installMcpToml(target.path, tomlMemberServers(desired, this.projectRoot));
+        } else {
+          if (desired !== null && key === primaryKey) servers[MYCO_MCP_SERVER_NAME] = desired[MYCO_MCP_SERVER_NAME];
+          else delete servers[MYCO_MCP_SERVER_NAME];
+          if (Object.keys(servers).length === 0) delete file[key];
+          changed = true;
+        }
+      }
+      if (changed) {
+        if (replacement !== null) {
+          const primary = file[primaryKey];
+          if (primary !== undefined && (!primary || typeof primary !== 'object' || Array.isArray(primary))) {
+            throw this.memberMcpConflict(`the MCP server list in ${target.path} is malformed`, 'Fix the file');
+          }
+          const servers = (primary ?? {}) as Record<string, unknown>;
+          if (!(MYCO_MCP_SERVER_NAME in servers)) {
+            servers[MYCO_MCP_SERVER_NAME] = replacement[MYCO_MCP_SERVER_NAME];
+            file[primaryKey] = servers;
+          }
+        }
+        if (Object.keys(file).length === 0) fs.rmSync(target.path, { force: true });
+        else writeJsonFile(target.path, file);
+      }
+    }
   }
 
   /** Whether `text` names a path under one of the replaceable 1.4 homes. */
@@ -2423,7 +2499,7 @@ export class SymbiontInstaller {
   }
 
   /** Global member provisioning cannot take another installation's capture or Deployment. */
-  private assertGlobalMemberOwnership(): void {
+  private assertGlobalMemberOwnership(targetOverride?: { path: string; serversKey: string } | 'hooks'): void {
     const memberHome = this.memberHomeDir();
     const record = readProvisionRecord(memberHome);
     const ownBinaries = [this.binaryPath(), managedBinaryPath(memberHome, process.platform), ...(record?.binaries?.[this.manifest.name] ? [record.binaries[this.manifest.name]] : [])];
@@ -2460,10 +2536,11 @@ export class SymbiontInstaller {
         }
       }
     }
+    if (targetOverride === 'hooks') return;
     const reg = this.manifest.registration;
-    const mcpTarget = this.memberMcpTargetPath();
+    const mcpTarget = targetOverride?.path ?? this.memberMcpTargetPath();
     if (!mcpTarget) return;
-    const existing = this.mycoServerIn(mcpTarget, reg?.mcpFormat === 'toml', reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : (reg?.mcpServersKey ?? 'mcpServers'));
+    const existing = this.mycoServerIn(mcpTarget, reg?.mcpFormat === 'toml', targetOverride?.serversKey ?? (reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : (reg?.mcpServersKey ?? 'mcpServers')));
     if (existing === null) return;
     const desired = this.renderMemberMcp('registry')?.[MYCO_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
     const helperKey = reg?.memberMcpHeadersHelperKey;
@@ -2473,7 +2550,9 @@ export class SymbiontInstaller {
       ? ownBinaries.some((binary) => helper.startsWith(`${binary} member mcp-headers `)) && parseCredentialFlag(helper.split(/\s+/)) === 'registry'
       : argv.every((arg): arg is string => typeof arg === 'string') && ownBinaries.includes(argv[0]) && parseCredentialFlag(argv) === 'registry';
     const legacy = this.legacyHomes.length > 0 && mcpVerdict(existing, this.legacyHomes) === 'legacy';
-    if (!legacy && (!this.isMemberMcpServer(existing) || existing.url !== desired?.url || !sameCredentialSource)) {
+    const replacing = this.leavingDeployment !== undefined && this.entryDeployment(existing) === this.leavingDeployment
+      && this.helperDeployment(existing) === this.leavingDeployment;
+    if (!legacy && (!this.isMemberMcpServer(existing) || (existing.url !== desired?.url && !replacing) || !sameCredentialSource)) {
       throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, 'Complete its capture cutover before replacing the global entry');
     }
   }

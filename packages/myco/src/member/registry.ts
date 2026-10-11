@@ -19,6 +19,7 @@
  * Both files are written atomically under the registry lock and read fail-closed;
  * lookup is by the worktree-aware project root, exact match.
  */
+import { markLeft, rootKeyFor } from './auto-join.js';
 import { pinLegacySpoolDestinationForProject } from './spool-migration.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -695,4 +696,47 @@ export function readDeploymentMembershipResult(serverUrl: string, mycoHome: stri
   const read = readPrivateJson<DeploymentMembership>(deploymentPath(serverUrl, mycoHome));
   if (!read.ok) return read.reason === 'missing' ? { status: 'missing' } : { status: 'unavailable', reason: read.detail === undefined ? read.reason : `${read.reason} (${read.detail})` };
   return isMembership(read.value) && deploymentUrl(read.value.serverUrl) === deploymentUrl(serverUrl) ? { status: 'present', membership: read.value } : { status: 'unavailable', reason: 'not a deployment membership' };
+}
+
+/** All raw bindings, including orphaned bindings. Caller holds the registry lock. */
+export function logoutBindings(mycoHome: string): ProjectBinding[] {
+  const dir = projectsDir(mycoHome);
+  assertMemberPathContained(dir, mycoHome);
+  const bindings: ProjectBinding[] = [];
+  for (const name of fs.readdirSync(dir).sort().filter((name) => name.endsWith('.json'))) {
+    const file = path.join(dir, name);
+    assertMemberPathContained(file, mycoHome);
+    const read = readPrivateJson<ProjectBinding>(file);
+    if (!read.ok || !isBinding(read.value) || !isProjectId(read.value.projectId) || name !== `${registryKeyFor(read.value.root)}.json`) {
+      throw new Error(`Could not read binding ${file}; logout refused`);
+    }
+    bindings.push(read.value);
+  }
+  return bindings;
+}
+
+/** Remove only unchanged target records; captured data stays in its Deployment namespace. Caller holds the registry lock. */
+export function removeDeploymentForLogout(serverUrl: string, tokenDigest: string, snapshot: readonly ProjectBinding[], mycoHome: string, beforeRemove?: () => void, afterBindingsRemoved?: () => void, now: number = Date.now()): void {
+  const membership = readDeploymentMembershipResult(serverUrl, mycoHome);
+  if (membership.status === 'unavailable') throw new Error(`Could not read ${deploymentPath(serverUrl, mycoHome)}`);
+  if (membership.status === 'present' && membershipTokenDigest(membership.membership) !== tokenDigest) {
+    throw new Error('The membership changed during logout; retry logout for its current credential');
+  }
+  const bindings = logoutBindings(mycoHome).filter((binding) => deploymentUrl(binding.serverUrl) === serverUrl);
+  if (bindings.some((binding) => !snapshot.some((held) => JSON.stringify(held) === JSON.stringify(binding)))) {
+    throw new Error('Project bindings changed during logout; local state was left in place');
+  }
+  const files = [deploymentPath(serverUrl, mycoHome), deploymentFeaturesPath(serverUrl, mycoHome), machineSettingsPath(serverUrl, mycoHome)];
+  for (const file of files) assertMemberPathContained(file, mycoHome);
+  for (const binding of bindings) pinLegacySpoolDestinationForProject(binding.projectId, mycoHome);
+  beforeRemove?.();
+  for (const binding of bindings) markLeft(rootKeyFor(binding.root, mycoHome), mycoHome, now, { explicitJoinOnly: true, locked: true });
+  for (const binding of bindings) fs.rmSync(registryEntryPath(binding.root, mycoHome), { force: true });
+  afterBindingsRemoved?.();
+  for (const file of files) fs.rmSync(file, { force: true });
+}
+
+/** A journal may identify a credential without retaining its secret. */
+export function membershipTokenDigest(membership: DeploymentMembership): string {
+  return crypto.createHash('sha256').update(membership.token).digest('hex');
 }

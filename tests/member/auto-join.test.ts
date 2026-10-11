@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import {
-  AUTO_JOIN_RETRY_MS, autoJoinDir, isLeft, JOIN_BUCKET, listJoinRequests, listPendingImports, queueImport, requestJoin, takeRepositoryLock, machineSalt, markSweepDone, placeRepository, readAutoJoinState, rootKeyFor, silentRepository, sweepDone,
+  AUTO_JOIN_RETRY_MS, autoJoinDir, isLeft, JOIN_BUCKET, listJoinRequests, listPendingImports, queueImport, requestJoin, takeRepositoryLock, machineSalt, markLeft, markSweepDone, placeRepository, readAutoJoinState, rootKeyFor, silentRepository, sweepDone,
 } from '@myco/member/auto-join.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
@@ -26,7 +26,8 @@ import { readCaptureLoss } from '@myco/member/capture-loss.js';
 import { unboundedBudget } from '@myco/member/budget.js';
 import { ServerClient } from './helpers/env-client.js';
 import { mintId, promptEvent, sessionStartEvent } from '@myco/member/envelope.js';
-import { joinPass, runAutoJoin } from '@myco/cli/member-auto-join.js';
+import { joinPass, runAutoJoin, settleConnection } from '@myco/cli/member-auto-join.js';
+import { logoutDeployment } from '@myco/member/logout.js';
 import { helperPass } from '@myco/cli/member-helper.js';
 import { helperLogPath, kickHelper, runHelper, type HelperPass } from '@myco/member/helper.js';
 import { runHelperVerb } from '@myco/cli/member-helper.js';
@@ -695,10 +696,11 @@ describe('a repository left with myco member leave', () => {
     expect(spawned).toHaveLength(1);
   });
 
-  it('is joined again by myco member join, which ends the opt-out', async () => {
+  it('is joined again by myco member join, which ends even a logout opt-out', async () => {
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
     await join(['--root', root]);
     await runMemberCli(['leave', '--root', root], { mycoHome, cwd: root, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
+    markLeft(rootKeyFor(root, mycoHome), mycoHome, Date.now(), { explicitJoinOnly: true });
     expect(isLeft(rootKeyFor(root, mycoHome), mycoHome)).toBe(true);
     await runMemberCli(['join', '--project', 'proj_1', '--root', root, '--no-agents', '--no-worker'], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
     expect(isLeft(rootKeyFor(root, mycoHome), mycoHome)).toBe(false);
@@ -1029,6 +1031,40 @@ describe('the join pass keeps to what was asked of it (#1595 review)', () => {
     await ask(root, 'sess-by-hand');
     expect((await join(['--root', root]))[0]).toMatchObject({ result: 'missed', reason: 'no_remote' });
     expect(requested()).toEqual([]);
+  });
+
+  it('does not clear a logout opt-out when settling a binding removed in the local phase', async () => {
+    const root = repository(path.join(base, 'Repos'), 'homelab-settle', 'https://github.com/acme/widget.git');
+    await join(['--root', root]);
+    const held = readRegistryEntry(root, mycoHome)!;
+    markLeft(rootKeyFor(root, mycoHome), mycoHome, Date.now(), { explicitJoinOnly: true });
+    fs.rmSync(registryEntryPath(root, mycoHome));
+    await expect(settleConnection(held, { mycoHome, now: Date.now, tell: false })).rejects.toThrow('connection changed');
+    expect(isLeft(rootKeyFor(root, mycoHome), mycoHome)).toBe(true);
+    expect(readRegistryEntry(root, mycoHome)).toBeNull();
+  });
+
+  it('does not commit an in-flight work join after personal logout opts the repository out', async () => {
+    const root = repository(path.join(base, 'Repos'), 'homelab', 'https://github.com/acme/widget.git');
+    const personal = 'https://personal.example';
+    let resolves = 0;
+    const racing: typeof rig.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes(RESOLVE_PROJECT_PATH)) {
+        resolves += 1;
+        writeRegistryEntry({ version: 2, root, projectId: 'proj_personal', serverUrl: personal, token: 'personal-token', machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome });
+        await logoutDeployment(personal, { mode: 'revoke' }, {
+          mycoHome, fetch: async () => Response.json({ persisted: true }),
+          runtime: { aliases: async (url) => [url], snapshot: () => ({ agents: [], workerUrls: [], runner: false }), removeWorkers: () => {}, reconcile: () => {} },
+        });
+      }
+      return rig.fetch(input, init);
+    };
+    expect((await runAutoJoin(['--root', root], { mycoHome, fetch: racing, stdout: () => {}, stderr: () => {} }))[0]).toEqual({ root, result: 'left' });
+    expect(resolves).toBe(1);
+    expect(readRegistryEntry(root, mycoHome)).toBeNull();
+    expect(isLeft(rootKeyFor(root, mycoHome), mycoHome)).toBe(true);
+    expect(listPendingImports(mycoHome)).toEqual([]);
   });
 
   it('carries the sweep on where its deadline stopped it, trying no repository twice', async () => {

@@ -53,8 +53,6 @@ export function autoJoinHold(opts: {
   if (membership === null) return null;
   const serverUrl = deploymentUrl(membership.serverUrl);
   const join = (): void => { kickHelper({ projectId: JOIN_BUCKET, mycoHome: opts.mycoHome, spawn: opts.spawn, now: () => opts.now }); };
-  // Repositories met before auto-join existed are swept once, by the helper's join bucket.
-  if (!sweepDone(opts.mycoHome)) opts.later(join);
   if (silentRepository(opts.root, { mycoHome: opts.mycoHome, env: opts.env })) return null;
   const rootKey = rootKeyFor(opts.root, opts.mycoHome);
   // Left with `myco member leave`: nothing is captured, held or said, until the repository is connected again. The
@@ -62,6 +60,8 @@ export function autoJoinHold(opts: {
   // captured, or connected from "Needs you") is tried again at once. Any other waits out its backoff.
   const { standing, leaves, state } = joinStanding(opts.root, rootKey, serverUrl, opts.mycoHome, opts.now);
   if (standing === 'left') return LEFT_ALONE;
+  // Repositories met before auto-join existed are swept once, by the helper's join bucket.
+  if (!sweepDone(opts.mycoHome)) opts.later(join);
   recordSessionSeen(rootKey, opts.sessionId, opts.mycoHome, serverUrl);
   if (standing === 'due') {
     opts.later(() => requestJoin(opts.root, rootKey, serverUrl, opts.mycoHome, opts.now));

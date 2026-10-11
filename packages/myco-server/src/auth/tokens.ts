@@ -284,7 +284,7 @@ export async function activateSuccessor(db: RelationalStore, auth: Pick<MemberAu
   ]);
 }
 
-/** Whether a credential past its own expiry authenticates: `live` refuses it, `lapsed` admits it — for the one route that decides against the lineage's inactivity instead (`admitsLapsed` in the route table). A revoked credential, or one whose member is revoked, never authenticates under either. */
+/** Whether a credential past its own expiry authenticates: `live` refuses it, `lapsed` admits it — for credential routes declaring `admitsLapsed`: refresh checks lineage inactivity, and self-revocation ends the lineage. A revoked credential, or one whose member is revoked, never authenticates under either. */
 export type ExpiryAdmission = 'live' | 'lapsed';
 
 /** One read: the database schema version, joined to the credential row for the digest and to its member, kept only while that member is live. The version must equal this build's before any token decision is made; a missing version row is a mismatch. A row without its lineage columns, or whose member is revoked, never authenticates; an expired row authenticates only under `lapsed`. */
