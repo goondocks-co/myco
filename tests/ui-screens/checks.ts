@@ -13,7 +13,7 @@
  * launcher's origin is aborted, which the failed-request check then reports.
  */
 import { AxeBuilder } from '@axe-core/playwright';
-import { expect, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
+import { expect, type Browser, type BrowserContext, type Locator, type Page, type Request } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -78,12 +78,33 @@ export interface PageWatch {
 /** Records console errors, uncaught page errors and failed requests (network failures and 4xx/5xx answers). */
 export function watchPage(page: Page): PageWatch {
   const watch: PageWatch = { consoleErrors: [], failedRequests: [] };
+  let navigationEpoch = 0;
+  const requestEpochs = new WeakMap<Request, number>();
+  const pendingAborts: string[] = [];
+  page.on('request', (request) => { requestEpochs.set(request, navigationEpoch); });
+  page.on('framenavigated', (frame) => {
+    if (frame !== page.mainFrame()) return;
+    navigationEpoch += 1;
+    // Cancellation can arrive before the main frame's navigation commit.
+    for (const message of pendingAborts) {
+      const index = watch.failedRequests.indexOf(message);
+      if (index !== -1) watch.failedRequests.splice(index, 1);
+    }
+    pendingAborts.length = 0;
+  });
   page.on('console', (message) => {
     if (message.type() === 'error') watch.consoleErrors.push(message.text());
   });
   page.on('pageerror', (error) => { watch.consoleErrors.push(`uncaught: ${error.message}`); });
   page.on('requestfailed', (request) => {
-    watch.failedRequests.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText ?? 'failed'}`);
+    const error = request.failure()?.errorText ?? 'failed';
+    const message = `${request.method()} ${request.url()}: ${error}`;
+    const startedAt = requestEpochs.get(request);
+    if (error === 'net::ERR_ABORTED' && startedAt !== undefined) {
+      if (startedAt < navigationEpoch) return;
+      pendingAborts.push(message);
+    }
+    watch.failedRequests.push(message);
   });
   page.on('response', (response) => {
     if (response.status() >= 400) watch.failedRequests.push(`${response.request().method()} ${response.url()}: ${response.status()}`);
