@@ -17,12 +17,8 @@ not implement setup or claim the later journeys pass.
 - `interrupted-state.ts` creates persisted native, owner, approval and runner
   states through their current owners. Use a fresh empty Deployment for the
   expired first-owner link. Advance the test clock; no real waiting is needed.
-  Its converted-app fixture writes a private `sign-in-pending.json` artifact;
-  it seeds the design's future recovery state under `LocalVolume` ownership.
-  Current registration does not persist or consume that artifact. The future
-  sign-in recovery operation owns producing, consuming and removing it.
-  E5 must replace this hand-written fixture with its production writer so journey
-  tests use the persisted shape that sign-in recovery actually reads.
+  Its converted-app fixture stages a private `sign-in-pending.json` through
+  `writeSignInPending`, the production writer used by sign-in recovery.
 - `cutover.ts` seeds membership for one or two fake destinations, records the
   first project's accepted history through `LegacyLedger`, and leaves the next
   project unrecorded. It also supplies a third legacy project with an explicit

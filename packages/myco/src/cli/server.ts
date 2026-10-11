@@ -166,6 +166,8 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           configuration and this machine's deployment record.
                                           --fleet sets how many runtimes the server may start at
                                           once; the next update deploys it.
+  github-app --existing --client-id <id> --client-secret-stdin --url <url>
+                                          Install an app you already own after regenerating its secret.
   github-app --url <https://…> [--org <name>] [--name <text>] [--target local|cloudflare|compose]
                                           Native setup requires a stopped server. Stop a foreground run
                                           with Ctrl-C, or use server uninstall to stop its service.
@@ -254,7 +256,7 @@ export function hostedNextSteps(url: string | undefined): string[] {
   ];
 }
 
-export async function run(args: string[], deps: { runner?: CommandRunner } = {}): Promise<void> {
+export async function run(args: string[], deps: { runner?: CommandRunner; fetchImpl?: typeof fetch; openUrl?: (url: string) => Promise<void>; readSecret?: () => Promise<string> } = {}): Promise<void> {
   const [command, ...rest] = args;
   if (command === undefined || command === '--help' || command === '-h') {
     console.log(SERVER_HELP);
@@ -726,14 +728,24 @@ export async function run(args: string[], deps: { runner?: CommandRunner } = {})
     if (command === 'github-app') {
       const url = flags.get('url');
       if (url === undefined || url === 'true' || url === '') fail('github-app needs --url <https://…>, the address members open the dashboard at.');
+      const existing = flags.has('existing');
+      const clientId = flags.get('client-id');
+      if (existing && (!clientId || clientId === 'true' || !flags.has('client-secret-stdin'))) fail('--existing needs --client-id <id> --client-secret-stdin; regenerate the app secret on GitHub, then pipe it to this command.');
+      if (!existing && (clientId !== undefined || flags.has('client-secret-stdin'))) fail('--client-id and --client-secret-stdin require --existing.');
+      if (flags.has('client-secret')) fail('pass the secret on stdin with --existing --client-id <id> --client-secret-stdin.');
+      if (existing && flags.has('org')) fail('--org applies to registering a new app; omit it with --existing.');
       const target = resolveSignInTarget(flags.get('target'));
+      const clientSecret = existing ? await (deps.readSecret ?? readSignInSecret)() : undefined;
       if (target.kind === 'cloudflare') for (const line of credentialLines) report(line);
       const result = await registerGitHubApp({
         url: url!,
         org: flags.get('org'),
-        name: flags.get('name'),
+        name: flags.get('app-name') ?? flags.get('name'),
+        existing: existing ? { clientId: clientId!, clientSecret: clientSecret! } : undefined,
         target,
-        openUrl: openInBrowser,
+        runner: deps.runner,
+        fetchImpl: deps.fetchImpl,
+        openUrl: deps.openUrl ?? openInBrowser,
         log: (line) => console.log(line),
       });
       console.log(`\nGitHub App:  ${result.app.name}, owned by ${result.app.ownerLogin ?? 'your account'} (${result.app.htmlUrl})`);
@@ -761,4 +773,12 @@ export async function run(args: string[], deps: { runner?: CommandRunner } = {})
     if (err instanceof CommandFailed) fail(err.message);
     fail(err instanceof Error ? err.message : String(err));
   }
+}
+
+/** Read one piped secret without terminal echo or command-line exposure. */
+async function readSignInSecret(): Promise<string> {
+  if (process.stdin.isTTY) throw new RegistrationRefused('pipe the regenerated GitHub secret to --client-secret-stdin.');
+  let value = '';
+  for await (const chunk of process.stdin) value += String(chunk);
+  return value.replace(/\r?\n$/, '');
 }
