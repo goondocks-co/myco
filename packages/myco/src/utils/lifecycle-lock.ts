@@ -97,6 +97,7 @@ function loadFlock(): { flock: (fd: number, op: number) => number } {
 const WIN_FILE_ACCESS = 0x0012_019f;
 const WIN_FILE_SHARE_RW = 0x3; // FILE_SHARE_READ | FILE_SHARE_WRITE
 const WIN_OPEN_ALWAYS = 0x4;
+const WIN_OPEN_EXISTING = 0x3;
 const WIN_FILE_ATTRIBUTE_NORMAL = 0x80;
 const WIN_INVALID_HANDLE = 0xffff_ffff_ffff_ffffn;
 const WIN_LOCKFILE_FAIL_IMMEDIATELY = 0x1;
@@ -158,10 +159,10 @@ function winOverlapped(): Uint8Array {
   return buf;
 }
 
-function winOpenLockHandle(k: Kernel32, lockPath: string): bigint {
+function winOpenLockHandle(k: Kernel32, lockPath: string, create = true): bigint {
   const pathBuf = Buffer.from(lockPath + '\0', 'utf16le');
   const handle = BigInt(
-    k.CreateFileW(ptr(pathBuf), WIN_FILE_ACCESS, WIN_FILE_SHARE_RW, 0n, WIN_OPEN_ALWAYS, WIN_FILE_ATTRIBUTE_NORMAL, 0n),
+    k.CreateFileW(ptr(pathBuf), WIN_FILE_ACCESS, WIN_FILE_SHARE_RW, 0n, create ? WIN_OPEN_ALWAYS : WIN_OPEN_EXISTING, WIN_FILE_ATTRIBUTE_NORMAL, 0n),
   );
   if (handle === WIN_INVALID_HANDLE) {
     throw new Error(`LifecycleLock: CreateFileW failed on ${lockPath} (GetLastError ${k.GetLastError()})`);
@@ -175,8 +176,8 @@ function writeHolderFile(lockPath: string, info: LockHolder): void {
 
 function winAcquire(lockPath: string, opts: AcquireOptions): AcquireResult {
   const k = loadKernel32();
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  const handle = winOpenLockHandle(k, lockPath);
+  if (opts.create !== false) fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const handle = winOpenLockHandle(k, lockPath, opts.create !== false);
   const ov = winOverlapped();
   const shared = opts.mode === 'shared';
   const rc = k.LockFileEx(handle, (shared ? 0 : WIN_LOCKFILE_EXCLUSIVE_LOCK) | (opts.wait ? 0 : WIN_LOCKFILE_FAIL_IMMEDIATELY), 0, 1, 0, ptr(ov));
@@ -260,10 +261,10 @@ function sharedLease(flockApi: { flock: (fd: number, op: number) => number }, fd
   return { acquired: true, lock: { release, update: refuseSharedUpdate, path: lockPath, pid: process.pid } };
 }
 
-function winWithFileLockSync<T>(lockPath: string, fn: () => T): T {
+function winWithFileLockSync<T>(lockPath: string, fn: () => T, create: boolean): T {
   const k = loadKernel32();
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  const handle = winOpenLockHandle(k, lockPath);
+  if (create) fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const handle = winOpenLockHandle(k, lockPath, create);
   try {
     const ov = winOverlapped();
     if (k.LockFileEx(handle, WIN_LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, ptr(ov)) === 0) {
@@ -329,15 +330,17 @@ export interface AcquireOptions {
   /** `shared` coexists with other shared leases and excludes every exclusive
    *  one; it writes, truncates and updates nothing. Defaults to `exclusive`. */
   mode?: 'exclusive' | 'shared';
+  /** False opens an existing lock only, without creating its parent or file. */
+  create?: boolean;
 }
 
 export const LifecycleLock = {
   acquire(lockPath: string, opts: AcquireOptions = {}): AcquireResult {
     if (process.platform === 'win32') return winAcquire(lockPath, opts);
     const flockApi = loadFlock();
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    if (opts.create !== false) fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 
-    let fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644);
+    let fd = fs.openSync(lockPath, fs.constants.O_RDWR | (opts.create !== false ? fs.constants.O_CREAT : 0), 0o644);
     if (opts.mode === 'shared') return sharedLease(flockApi, fd, lockPath, opts.wait);
     for (let attempt = 0; ; attempt++) {
       const rc = flockApi.flock(fd, LOCK_EX | (opts.wait ? 0 : LOCK_NB));
@@ -355,7 +358,7 @@ export const LifecycleLock = {
       try { flockApi.flock(fd, LOCK_UN); } catch { /* fd may already be closed */ }
       try { fs.closeSync(fd); } catch { /* idem */ }
       if (attempt >= LOCK_IDENTITY_RETRIES) throw new Error(`LifecycleLock: ${lockPath} kept changing under its lock`);
-      fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644);
+      fd = fs.openSync(lockPath, fs.constants.O_RDWR | (opts.create !== false ? fs.constants.O_CREAT : 0), 0o644);
     }
 
     const command = opts.command ?? process.argv.join(' ');
@@ -421,12 +424,13 @@ export const LifecycleLock = {
  * the daemon's buffer-append usage this is acceptable on the hot
  * path.
  */
-export function withFileLockSync<T>(lockPath: string, fn: () => T): T {
-  if (process.platform === 'win32') return winWithFileLockSync(lockPath, fn);
+export function withFileLockSync<T>(lockPath: string, fn: () => T, options: { create?: boolean } = {}): T {
+  const create = options.create !== false;
+  if (process.platform === 'win32') return winWithFileLockSync(lockPath, fn, create);
   const flockApi = loadFlock();
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  if (create) fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   for (let attempt = 0; ; attempt++) {
-    const fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644);
+    const fd = fs.openSync(lockPath, fs.constants.O_RDWR | (create ? fs.constants.O_CREAT : 0), 0o644);
     let held = false;
     try {
       if (flockApi.flock(fd, LOCK_EX) !== 0) {

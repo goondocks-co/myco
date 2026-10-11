@@ -6,12 +6,20 @@ import { execFileSync } from 'node:child_process';
 import { run } from '@myco/cli/setup.js';
 import { run as login } from '@myco/cli/login.js';
 import { runRunnerService } from '@myco/cli/runner-service.js';
+import { executorServiceTarget } from '@myco/cli/worker-service.js';
+import { homeReport } from '@myco/cli/member-doctor.js';
 import { consentToPlan, type SetupDeps } from '@myco/setup/steps.js';
 import { observeSetup } from '@myco/setup/observe.js';
 import { planFingerprint, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
-import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, deploymentPath } from '@myco/member/registry.js';
+import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, deploymentPath } from '@myco/member/registry.js';
+import { MemberSpool } from '@myco/member/spool.js';
+import { mintId, promptEvent } from '@myco/member/envelope.js';
+import { bufferLockPath, updateSessionState } from '@myco/member/session-state.js';
+import { installWorkerService } from '@myco/runner/service.js';
+import { workerLockPath } from '@myco/runner/instance.js';
 import { recordDefaultDeployment, readDefaultDeployment } from '@myco/member/default-deployment.js';
-import { readRunnerRecord, recordRunnerContact } from '@myco/runner/runner-registry.js';
+import { readRunnerRecord, recordRunnerContact, runnerRecordPath } from '@myco/runner/runner-registry.js';
+import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { recordingPlatform } from '../helpers/fake-service-manager.js';
 import { enrolledBeforeInstall } from './fixtures/interrupted-state.js';
 import { legacyFixtureHome } from './fixtures/legacy-home.js';
@@ -46,7 +54,13 @@ afterEach(async () => {
 });
 const base = (): SetupDeps => ({ mycoHome: home, cwd: project, ask: async () => null, agents: () => [], stdout: line => lines.push(line), stderr: line => errors.push(line) });
 
-/** Contents, names and modes prove a status read did not create locks or reconcile layout. */
+function holdRunnerLock(lockDir: string): void {
+  const held = LifecycleLock.acquire(workerLockPath(lockDir, URL), { command: 'fixture runner' });
+  if (!held.acquired) throw new Error('Fixture runner lock already held');
+  closers.push(() => held.lock.release());
+}
+
+/** Names, contents, modes and mtimes cover status's filesystem contract. */
 function snapshot(directory: string): unknown {
   if (!fs.existsSync(directory)) return null;
   return fs.readdirSync(directory).sort().map((name) => {
@@ -244,6 +258,7 @@ describe('runner journey (d)', () => {
         installs++;
         if (fail) { fail = false; return false; }
         const ok = await runRunnerService(verb, args, serviceDeps);
+        holdRunnerLock(fake.deps.worker!.lockDir!);
         const record = readRunnerRecord(URL, home)!;
         await recordRunnerContact(URL, { runnerId: record.runnerId!, deploymentId: record.deploymentId! }, Date.now() + 1000, home, { offered: ['claude-code'], withheld: [] });
         return ok;
@@ -275,6 +290,61 @@ describe('runner journey (d)', () => {
 });
 
 describe('observation and consent contracts', () => {
+  for (const runtime of ['running', 'stopped', 'unavailable', 'starting', 'restarted'] as const) it(`status reports an installed runner as ${runtime} without changing HOME or MYCO_HOME`, async () => {
+    const record = await enrolledBeforeInstall(home, URL);
+    const platform = recordingPlatform();
+    const userHome = path.join(root, 'user');
+    const lockDir = path.join(root, 'locks');
+    const worker = { home: userHome, mycoHome: home, platform: 'darwin' as const, binaryPath: path.join(root, 'bin', 'myco'), runner: platform.runner, lockDir };
+    const installed = installWorkerService(executorServiceTarget(URL, worker, 'runner'), [], { runner: platform.runner });
+    if (runtime === 'stopped') platform.running.clear();
+    if (runtime !== 'starting') holdRunnerLock(lockDir);
+    if (runtime === 'unavailable') worker.runner = (command, args) => { platform.runner(command, args); return { status: null, error: new Error('Fixture service manager unavailable') }; };
+    if (runtime === 'restarted') fs.utimesSync(installed.unitFile, new Date(Date.now() - 10_000), new Date(Date.now() - 10_000));
+    await recordRunnerContact(URL, { runnerId: record.runnerId, deploymentId: record.deploymentId }, Date.now() + (runtime === 'restarted' ? -5000 : 1000), home, { offered: ['claude-code'], withheld: [] });
+    const unrelated = runnerRecordPath('https://unrelated.invalid', home);
+    fs.mkdirSync(path.dirname(unrelated), { recursive: true });
+    fs.writeFileSync(unrelated, '{}', { mode: 0o600 });
+    platform.commands.length = 0;
+    const before = snapshot(root);
+    expect(await run(['--status', '--json', '--runner', URL, '--runner-service', 'install'], { ...base(), worker, fetch: fakeFetch(async () => { throw new Error('status made a network call'); }) })).toBe(runtime === 'unavailable' ? 4 : runtime === 'running' ? 0 : 3);
+    const observations = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
+    const service = observations.find(fact => fact.id === 'runner.service');
+    expect(service?.state).toBe(runtime === 'unavailable' ? 'unavailable' : runtime === 'stopped' ? 'incomplete' : 'complete');
+    expect(service?.detail).toContain(runtime === 'unavailable' ? 'unavailable' : runtime === 'stopped' ? 'installed, stopped' : 'running');
+    expect(observations.find(fact => fact.id === 'runner.offer')?.state).toBe(runtime === 'starting' || runtime === 'restarted' ? 'incomplete' : 'complete');
+    expect(snapshot(root)).toEqual(before);
+    expect(platform.commands).toHaveLength(1);
+    expect(platform.commands[0]).toMatch(/^launchctl list /);
+  });
+
+  for (const missingLock of [false, true]) it(`status observes capture backlog ${missingLock ? 'with a missing lock' : 'and delivery facts'} without repairing it`, async () => {
+    const entry = { version: 2, serverUrl: URL, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1, root: project, projectId: 'proj_capture' };
+    writeRegistryEntry(entry, { mycoHome: home });
+    const spool = new MemberSpool(entry, { mycoHome: home });
+    const sessionId = 'setup-capture';
+    spool.append(sessionId, promptEvent({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: '2.0.0-test' }, { promptId: mintId(), text: 'fixture prompt' }));
+    updateSessionState(spool.dir, sessionId, state => { state.lastDeliveryAt = 1000; });
+    fs.writeFileSync(path.join(spool.dir, 'offline.json'), JSON.stringify({ since: 1000, nextProbeAt: 3000, backoffMs: 2000 }), { mode: 0o600 });
+    spool.appendRefused({ eventId: mintId(), sessionId, kind: 'prompt', code: 'clock_skew', reason: 'Fixture clock refusal', at: 1000 });
+    if (missingLock) fs.unlinkSync(bufferLockPath(spool.dir, sessionId));
+    const before = snapshot(root);
+    expect(await run(['--status', '--json', '--join', URL, '--root', project, '--no-agents', '--no-runner'], base())).toBe(missingLock ? 4 : 0);
+    const observations = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
+    const backlog = observations.find(fact => fact.id === 'machine.backlog');
+    expect(backlog?.scope).toBe(project);
+    expect(backlog?.state).toBe(missingLock ? 'unavailable' : 'incomplete');
+    if (!missingLock) {
+      expect(backlog?.detail).toContain('1 event(s) waiting');
+      expect(backlog?.detail).toContain(new Date(1000).toISOString());
+      expect(observations.find(fact => fact.id === 'machine.latch')?.state).toBe('incomplete');
+      expect(observations.find(fact => fact.id === 'machine.refusals')?.state).toBe('incomplete');
+    }
+    expect(snapshot(root)).toEqual(before);
+    await homeReport(home, { mycoHome: home, cwd: project, fetch: configuredFetch, worker: { home: path.join(root, 'user'), runner: recordingPlatform().runner, lockDir: path.join(root, 'locks') } });
+    expect(snapshot(root)).toEqual(before);
+  });
+
   it('status on a fresh home is strictly read-only and makes no calls', async () => {
     const before = snapshot(root);
     expect(await run(['--status', '--json'], { ...base(), fetch: fakeFetch(async () => { throw new Error('network'); }), worker: { runner: () => { throw new Error('service'); } } })).toBe(3);
@@ -291,7 +361,7 @@ describe('observation and consent contracts', () => {
     expect(snapshot(home)).toEqual(before);
   });
 
-  it('remote runner status neither rotates credentials nor writes local records', async () => {
+  it('remote runner status neither rotates credentials nor writes local records or Deployment telemetry', async () => {
     await enrolledBeforeInstall(home, URL);
     const before = snapshot(home);
     const calls: string[] = [];
@@ -299,7 +369,8 @@ describe('observation and consent contracts', () => {
       calls.push(new globalThis.URL(new Request(input, init).url).pathname);
       return configuredFetch(input, init);
     }) })).toBe(0);
-    expect(calls).toEqual(['/health', '/runners/contact']);
+    expect(calls).toEqual(['/health']);
+    expect(lines.join('\n')).toContain('runner contact writes Deployment telemetry');
     expect(snapshot(home)).toEqual(before);
   });
 

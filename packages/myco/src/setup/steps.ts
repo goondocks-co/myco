@@ -7,7 +7,7 @@ import { run as login, type LoginDeps } from '@myco/cli/login.js';
 import { runJoin, runDrain, provisionDetectedAgents, detectedProvisionLines, recordNoAgents, type MemberCliDeps } from '@myco/cli/member.js';
 import { registerRunner } from '@myco/cli/runner-register.js';
 import { defaultRunnerName } from '@myco/cli/runner-deps.js';
-import { legacyWorkerInventory, preflightRunnerService, runRunnerService, type RunnerServiceDeps } from '@myco/cli/runner-service.js';
+import { legacyWorkerInventory, preflightRunnerService, runnerServiceContact, runRunnerService, type RunnerServiceDeps } from '@myco/cli/runner-service.js';
 import { executorServiceTarget } from '@myco/cli/worker-service.js';
 import { harnessDirectories, workerServiceStatus, workerServiceUnit, workerServiceSpec } from '@myco/runner/service.js';
 import { servicePaths } from '@myco/server/service.js';
@@ -52,7 +52,6 @@ interface Context {
   ask: Ask;
   out: (line: string) => void;
   facts: Observation[];
-  verified: Set<string>;
 }
 interface SetupStep {
   id: string;
@@ -200,8 +199,10 @@ const STEPS: readonly SetupStep[] = [
   {
     id: 'runner.authority', applies: isRunner,
     act: async (ctx) => {
-      const authority = fact(ctx, 'runner.authority');
-      if (authority && authority.state !== 'complete') throw new Error(`Runner authority is ${authority.detail}; resume it on the dashboard’s Runners page, or use myco runner register ${chosen(ctx).url} --replace to replace removed access with explicit approval.`);
+      const answer = await runnerServiceContact(chosen(ctx).url, { ...runnerDeps(ctx), renew: false });
+      const runner = answer.class === 'acked' ? answer.body.runner : null;
+      const state = runner !== null && typeof runner === 'object' ? Reflect.get(runner, 'state') : undefined;
+      if (state !== 'enabled') throw new Error(`Runner authority is ${typeof state === 'string' ? state : answer.class}; resume it on the dashboard’s Runners page, or use myco runner register ${chosen(ctx).url} --replace to replace removed access with explicit approval.`);
       const legacy = await legacyWorkerInventory(runnerDeps(ctx));
       if (legacy.length > 0) throw new Error(`This machine runs Myco’s work the older way. Let it become idle (see the dashboard’s Runners page), then retire it:\n${legacy.join('\n')}\nRun myco setup again. No service was changed.`);
     },
@@ -233,7 +234,6 @@ const STEPS: readonly SetupStep[] = [
         ctx.deps.signal?.throwIfAborted();
         const offer = readRunnerRecord(url, ctx.home)?.lastOffer;
         if (offer && offer.observedAt >= startedAt && offer.offered.length > 0) {
-          ctx.verified.add('runner.service');
           ctx.out(`Runner offering ${offer.offered.join(', ')} (checked ${new Date(offer.observedAt).toISOString()}).`);
           return;
         }
@@ -247,7 +247,7 @@ const STEPS: readonly SetupStep[] = [
 const workerServiceSpecForConsent = (target: ReturnType<typeof executorServiceTarget>) => workerServiceUnit(target.serverUrl, target.mycoHome, 'runner').label;
 
 export async function conductSetup(home: string, file: SetupFile, deps: SetupDeps, options: { yes: boolean; explicitJoin: boolean; explicitDefault: boolean; explicitProject: boolean; newProjectChanged: boolean }): Promise<void> {
-  const ctx: Context = { home, file, deps, ...options, ask: deps.ask ?? askOnTerminal, out: deps.stdout ?? console.log, facts: [], verified: new Set() };
+  const ctx: Context = { home, file, deps, ...options, ask: deps.ask ?? askOnTerminal, out: deps.stdout ?? console.log, facts: [] };
   const observe = async () => {
     deps.signal?.throwIfAborted();
     const legacy = await observeSetup(home, {}, deps);
@@ -263,7 +263,7 @@ export async function conductSetup(home: string, file: SetupFile, deps: SetupDep
     if (step.applies(ctx)) await step.act(ctx);
   }
   await observe();
-  const remaining = ctx.facts.find((entry) => !entry.informational && entry.state !== 'complete' && !ctx.verified.has(entry.id));
+  const remaining = ctx.facts.find((entry) => !entry.informational && entry.state !== 'complete');
   if (remaining) throw new Error(`${remaining.id} remains ${remaining.state}: ${remaining.detail}. Run myco setup again to resume.`);
   const answers = chosen(ctx);
   ctx.out(answers.role === 'join'

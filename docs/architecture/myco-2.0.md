@@ -313,7 +313,7 @@ The settled glossary names surfaces the tree does **not yet carry**. These are a
 
 | Named in glossary | State in `main` @ `258d2fbe` | Owner |
 |---|---|---|
-| `myco setup` (rerunnable post-install workflow) | Guides joining an existing Deployment and enrolling an always-on runner through existing operations. Observes progress; persists only answers and consent fingerprints. `--status` is read-only; service runtime and backlog requiring lock-taking readers are explicitly unchecked. Guided creation and legacy migration remain pending. | #1719 |
+| `myco setup` (rerunnable post-install workflow) | Guides joining an existing Deployment and enrolling an always-on runner through existing operations. Observes progress; persists only answers and consent fingerprints. Read-only `--status` shares backlog and service runtime observations with the home doctor; remote runner authority remains unchecked because contact writes Deployment telemetry. Guided creation and legacy migration remain pending. | #1719 |
 | `myco server ...` (Operator lifecycle) | **Absent.** Provisioning today is `wrangler` plus `scripts/mint-local.ts` | #913, #914 |
 | Deployment / Default Deployment / Project Binding | **Absent.** The member registry binds a project to a server URL, with no Deployment concept | #916 |
 | Enrollment Authority → Member Credential exchange | **Absent.** Tokens are minted per project by the owner | #907 (mechanism), #912 (implementation) |

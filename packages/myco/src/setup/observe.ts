@@ -2,15 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readDefaultDeployment } from '@myco/member/default-deployment.js';
 import { legacyMigrationPending } from '@myco/member/legacy-migration.js';
-import { deploymentUrl, readDeploymentMembershipResult, readRegistryEntryResult } from '@myco/member/registry.js';
+import { deploymentUrl, listRegistryEntriesResult, readDeploymentMembershipResult, readRegistryEntryResult } from '@myco/member/registry.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { postRoute } from '@myco/cli/deployment-reader.js';
 import { memberHarnessCurrent } from '@myco/cli/member.js';
-import { runnerServiceContact } from '@myco/cli/runner-service.js';
-import { executorServiceTarget, type WorkerServiceDeps } from '@myco/cli/worker-service.js';
+import type { WorkerServiceDeps } from '@myco/cli/worker-service.js';
+import { observeProjectCapture, observeRunnerService } from '@myco/cli/home-observations.js';
 import { isLiveRunner, readRunnerRecord } from '@myco/runner/runner-registry.js';
-import { workerServiceInstalled, workerServiceSpec } from '@myco/runner/service.js';
-import { servicePaths } from '@myco/server/service.js';
 import { signInState } from '@myco/server/github-app.js';
 import { detectMachineInstalledSymbionts } from '@myco/symbionts/detect.js';
 import { provisionRecordPath, readProvisionRecord } from '@myco/symbionts/member-provision-record.js';
@@ -30,11 +28,12 @@ export interface ObserveDeps {
   agents?: () => string[];
   packageRoot?: string;
   worker?: WorkerServiceDeps;
+  now?: () => number;
 }
 export const setupExitCode = (facts: readonly Observation[]): 0 | 3 | 4 => facts.some((fact) => fact.state === 'unavailable') ? 4
   : facts.some((fact) => !fact.informational && fact.state !== 'complete') ? 3 : 0;
 
-/** File-only by default; remote observations neither renew credentials nor contact a service manager. */
+/** Local files and service-manager queries; remote checks never renew credentials. */
 export async function observeSetup(home: string, answers: SetupAnswers, deps: ObserveDeps = {}): Promise<Observation[]> {
   const facts: Observation[] = [];
   const url = answers.url;
@@ -96,32 +95,40 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
         : deploymentUrl(binding.entry.serverUrl) === url ? 'complete' : 'incomplete',
       binding.status !== 'present' ? binding.status : deploymentUrl(binding.entry.serverUrl) === url ? 'bound-here' : `bound-elsewhere: ${binding.entry.serverUrl}`, root);
     });
-    add('machine.backlog', 'incomplete', 'Not checked: the backlog reader takes locks. Use myco member status; myco member drain retries delivery.', url, true);
+    await read('machine.backlog', () => {
+      const listing = listRegistryEntriesResult(home);
+      if (!listing.readable || listing.unavailableEntries > 0) throw new Error('Repository routes could not all be read; capture backlog is unknown.');
+      const entries = listing.entries.filter((entry) => deploymentUrl(entry.serverUrl) === url);
+      if (entries.length === 0) add('machine.backlog', 'complete', 'No repository capture backlog for this Deployment.', url, true);
+      for (const entry of entries) {
+        const facts = observeProjectCapture(entry, home, (deps.now ?? Date.now)());
+        const readable = facts.spool.readable && facts.spool.stateReadable && facts.spool.unacknowledgedTotal !== null;
+        add('machine.backlog', !readable ? 'unavailable' : facts.spool.unacknowledgedTotal === 0 ? 'complete' : 'incomplete',
+          `${readable ? `${facts.spool.unacknowledgedTotal} event(s) waiting to deliver` : 'Spool or acknowledgement unavailable'}; last delivery ${facts.spool.lastDeliveryAt === null ? 'unknown' : new Date(facts.spool.lastDeliveryAt).toISOString()}. Run myco member drain from this repository to retry delivery.`, entry.root, true);
+        add('machine.latch', !facts.latchReadable ? 'unavailable' : facts.latch === null ? 'complete' : 'incomplete',
+          !facts.latchReadable ? 'Offline latch unavailable.' : facts.latch === null ? 'Delivery is not held off.' : `Delivery held off; next probe ${new Date(facts.latch.nextProbeAt).toISOString()}. Run myco member drain from this repository.`, entry.root, true);
+        const refusals = facts.refusalHistory;
+        add('machine.refusals', !refusals.readable || refusals.unreadableLines > 0 ? 'unavailable' : refusals.recent > 0 ? 'incomplete' : 'complete',
+          `${refusals.readable ? `${refusals.total} refused event(s); newest ${refusals.latest === null ? 'unknown' : new Date(refusals.latest).toISOString()}; ${refusals.recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'Refusal log unavailable'}. Run myco logs from this repository.`, entry.root, true);
+      }
+    });
   }
   if (answers.role === 'runner' || answers.runWork) {
     await read('runner.enrollment', async () => {
       const record = readRunnerRecord(url, home);
       add('runner.enrollment', isLiveRunner(record) ? 'complete' : record === null ? 'absent' : 'incomplete', isLiveRunner(record) ? `live: ${record.name}` : record === null ? 'none' : 'pending');
-      if (deps.checkRemote && isLiveRunner(record)) {
-        const answer = await runnerServiceContact(url, { ...deps.worker, mycoHome: home, fetch: deps.fetch, renew: false });
-        if (answer.class === 'acked') {
-          const runner = answer.body.runner;
-          const state = runner !== null && typeof runner === 'object' ? Reflect.get(runner, 'state') : undefined;
-          add('runner.authority', state === 'enabled' ? 'complete' : state === 'paused' ? 'incomplete' : 'unavailable', typeof state === 'string' ? state : 'Unreadable runner authority.');
-        } else add('runner.authority', answer.class === 'unauthorized' || answer.class === 'refused' ? 'incomplete' : 'unavailable',
-          answer.class === 'refused' ? answer.code : answer.class);
-      }
+      if (deps.checkRemote && isLiveRunner(record)) add('runner.authority', 'incomplete',
+        'Not checked: runner contact writes Deployment telemetry. Check authority with myco runner status.', url, true);
       add('runner.service.choice', answers.runnerService ? 'complete' : 'absent', answers.runnerService ?? 'unasked');
       if (answers.runnerService === 'skip') {
         add('runner.service', 'complete', 'declined');
         add('runner.offer', 'complete', 'Service declined; start with myco runner run when ready.', url, true);
         return;
       }
-      const target = executorServiceTarget(url, { ...deps.worker, mycoHome: home }, 'runner');
-      const installed = workerServiceInstalled(target);
-      add('runner.service', installed ? 'incomplete' : 'absent', installed ? 'installed; runtime unchecked (myco runner status)' : 'not-installed');
-      const unitFile = servicePaths(workerServiceSpec(target, []), target.platform).unitFile;
-      const threshold = installed ? fs.statSync(unitFile).mtimeMs : Infinity;
+      const { state, words, unavailable } = observeRunnerService(url, { ...deps.worker, mycoHome: home });
+      add('runner.service', unavailable ? 'unavailable' : state.installed && state.loaded && state.running ? 'complete' : state.installed ? 'incomplete' : 'absent', `${unavailable ? 'Service state unavailable' : words}${state.detail ? ` (${state.detail})` : ''}`);
+      const threshold = state.installed && state.serving !== null && state.serving.startedAt > 0
+        ? Math.max(fs.statSync(state.unitFile).mtimeMs, state.serving.startedAt * 1000) : Infinity;
       const offer = record?.lastOffer;
       add('runner.offer', offer && offer.observedAt >= threshold && offer.offered.length > 0 ? 'complete' : 'incomplete',
         offer === undefined ? 'none' : offer.observedAt < threshold ? 'historical' : `offered ${offer.offered.join(', ') || 'none'}; observed ${new Date(offer.observedAt).toISOString()}`);

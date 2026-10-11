@@ -7,8 +7,7 @@ import { DOCTOR_SIGN_IN, DOCTOR_REFUSED_HOOK_REPAIR } from '@goondocks/myco-shar
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
-import { projectDiagnostics } from '../member/diagnostics.js';
-import { MemberSpool } from '../member/spool.js';
+import { observeProjectCapture, observeRunnerService } from '@myco/cli/home-observations.js';
 import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member/refused-hooks.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
@@ -18,12 +17,11 @@ import { missingMemberSkills } from '../symbionts/member-skill-links.js';
 import { getPluginVersion } from '../version.js';
 import { checkMemberMcpResolution, checkWorkerServices, formatCheck, type DoctorCheck } from './doctor-member.js';
 import { envOf, homeOf, membershipProblem, openDeployment, rootOf, type MemberVerbDeps } from './deployment-reader.js';
-import { executorServiceTarget, type WorkerServiceDeps } from './worker-service.js';
+import type { WorkerServiceDeps } from './worker-service.js';
 import { readDefaultDeployment } from '../member/default-deployment.js';
 import { listLeftRepositories } from '../member/auto-join.js';
 import { pathIsAbsent } from '../member/store.js';
 import { listRunnerRecords, isLiveRunner } from '../runner/runner-registry.js';
-import { workerServiceStatus } from '../runner/service.js';
 import { ServerClient } from '../member/transport.js';
 import { legacyMigrationState } from '../member/legacy-migration.js';
 import { legacyVaultFiles } from '../member/home-role.js';
@@ -174,7 +172,7 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
 }
 
 const HOME_HEALTH_TIMEOUT_MS = 1500;
-export const RECENT_REFUSAL_MS = 7 * 24 * 60 * 60 * 1000;
+export { RECENT_REFUSAL_MS } from '@myco/cli/home-observations.js';
 const STALE_CREDENTIAL_MS = 7 * 24 * 60 * 60 * 1000;
 const CUTOVER_RECORD = path.join('member', 'cutover.json');
 const LOGOUT_DIRECTORY = path.join('member', 'logout');
@@ -232,16 +230,14 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
   if (!projects.readable || projects.unavailableEntries > 0) checks.push(row('Repositories', 'fail', 'repository routes could not all be read; routing is unknown for those entries. Run `myco member join` from each affected repository.'));
   for (const entry of projects.entries) {
     checks.push(row('Repository', 'ok', `${entry.root} → ${entry.serverUrl} / ${entry.projectId}.`));
-    const facts = projectDiagnostics(entry, home, now);
+    const facts = observeProjectCapture(entry, home, now);
     checks.push(row('Capture backlog', facts.spool.readable && facts.spool.unacknowledgedTotal === 0 ? 'ok' : 'warn',
       `${entry.root}: ${facts.spool.readable ? `${facts.spool.unacknowledgedTotal ?? 'unknown'} event(s) waiting to deliver` : 'spool unreadable'}; last delivery ${iso(facts.spool.lastDeliveryAt)}.${facts.spool.readable && facts.spool.unacknowledgedTotal === 0 ? '' : ' Run `myco member drain` from that repository.'}`));
     if (!facts.latchReadable || facts.latch !== null) checks.push(row('Capture', 'warn', `${entry.root}: ${facts.latchReadable ? `delivery held off since ${iso(facts.latch?.since)}; next probe ${iso(facts.latch?.nextProbeAt)}` : 'offline latch unreadable'}. Run \`myco member drain\` from that repository.`));
-    const refusals = new MemberSpool(entry, { mycoHome: home, initialize: false }).readRefused();
-    if (!refusals.readable || refusals.entries.length > 0 || refusals.unreadableLines > 0) {
-      const latest = refusals.entries.reduce<number | null>((last, refusal) => last === null ? refusal.at : Math.max(last, refusal.at), null);
-      const recent = refusals.entries.filter(refusal => refusal.at >= now - RECENT_REFUSAL_MS).length;
-      checks.push(row('Refusals', !refusals.readable || recent > 0 || refusals.unreadableLines > 0 ? 'warn' : 'ok',
-        `${entry.root}: ${refusals.readable ? `${refusals.entries.length} refused events; newest ${iso(latest)}; ${recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'refusal log unreadable'}. Run myco logs from that repository.`));
+    const refusals = facts.refusalHistory;
+    if (!refusals.readable || refusals.total > 0 || refusals.unreadableLines > 0) {
+      checks.push(row('Refusals', !refusals.readable || refusals.recent > 0 || refusals.unreadableLines > 0 ? 'warn' : 'ok',
+        `${entry.root}: ${refusals.readable ? `${refusals.total} refused events; newest ${iso(refusals.latest)}; ${refusals.recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'refusal log unreadable'}. Run myco logs from that repository.`));
     }
   }
   checks.push(...leftRepositoryChecks(home), ...refusedHookChecks(home, now));
@@ -253,8 +249,7 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
   for (const record of runners) {
     checks.push(row('Runner', isLiveRunner(record) ? 'ok' : 'warn', `${record.serverUrl}: ${isLiveRunner(record) ? `registered ${record.name} (${record.runnerId})` : `registration pending; run \`myco runner register ${record.serverUrl}\``}; last contact ${iso(record.lastContactAt)}.`));
     try {
-      const state = workerServiceStatus(executorServiceTarget(record.serverUrl, worker, 'runner'), { runner: worker.runner, lockDir: worker.lockDir });
-      const words = !state.installed ? 'not installed' : !state.loaded ? 'installed, not loaded' : !state.running ? 'installed, stopped' : 'running';
+      const { state, words } = observeRunnerService(record.serverUrl, worker);
       checks.push(row('Runner service', state.running ? 'ok' : 'warn', `${record.serverUrl}: ${words}${state.detail ? ` (${state.detail})` : ''}. Run \`myco runner install --server ${record.serverUrl}\`.`));
     } catch (error) {
       checks.push(row('Runner service', 'warn', `${record.serverUrl}: unavailable: ${error instanceof Error ? error.message : String(error)}. Run \`myco runner doctor --server ${record.serverUrl}\``));

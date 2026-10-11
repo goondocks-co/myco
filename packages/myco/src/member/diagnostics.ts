@@ -283,9 +283,9 @@ export const missedCaptureOf = (record: MissingMembershipRecord): MissedCaptureF
   ({ root: record.root, count: record.count, firstAt: record.firstAt, lastAt: record.lastAt });
 
 /** One project's spool, latch and refusal log. */
-export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: number): ProjectDiagnostics {
+export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: number, options: { createReadLocks?: boolean } = {}): ProjectDiagnostics {
   // A report reads the spool where it is; a layout it could not use is a fact to carry, not a directory to make.
-  const spool = new MemberSpool(entry, { mycoHome, initialize: false });
+  const spool = new MemberSpool(entry, { mycoHome, initialize: false, ...options });
   // Acknowledgement is held in session state, which outlives the spool file a
   // session's records were written to.
   // State is read under the records' own lock, so a layout that blocks it is

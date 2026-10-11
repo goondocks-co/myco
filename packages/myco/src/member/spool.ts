@@ -294,6 +294,7 @@ export class MemberSpool {
   readonly blobsDir: string;
   /** The home this spool lives under; retention ages that home and no other. */
   readonly mycoHome: string;
+  private readonly createReadLocks: boolean;
 
   /**
    * `initialize` false skips creating the spool's directories, so a caller that
@@ -301,7 +302,8 @@ export class MemberSpool {
    * directory belongs — and report it. It is not a read-only spool: the writing
    * methods write and create their required directories.
    */
-  constructor(route: MemberRoutingIdentity | null, opts: { mycoHome?: string; initialize?: boolean; dir?: string } = {}) {
+  constructor(route: MemberRoutingIdentity | null, opts: { mycoHome?: string; initialize?: boolean; dir?: string; createReadLocks?: boolean } = {}) {
+    this.createReadLocks = opts.createReadLocks !== false;
     this.mycoHome = opts.mycoHome ?? resolveMycoHome();
     // `dir` holds capture for a repository that has no project yet (`pending.ts`): a directory inside the member root.
     if (opts.dir !== undefined) assertMemberPathContained(opts.dir, this.mycoHome);
@@ -702,24 +704,24 @@ export class MemberSpool {
    */
   readRecordsOrNull(sessionId: string): { readable: true; records: Array<SpoolRecord | null> } | { readable: false } {
     try {
-      return this.withSessionRecordsLock(sessionId, (read) => read.readable ? read : { readable: false });
+      return this.withSessionRecordsLock(sessionId, (read) => read.readable ? read : { readable: false }, { createLock: this.createReadLocks });
     } catch {
       return { readable: false };
     }
   }
 
   /** Keep journal accounting and staged-byte reclamation under the append and publication lock. */
-  withSessionRecordsLock<T>(sessionId: string, fn: (read: { readable: true; records: Array<SpoolRecord | null> } | { readable: false; absent?: true }) => T): T {
+  withSessionRecordsLock<T>(sessionId: string, fn: (read: { readable: true; records: Array<SpoolRecord | null> } | { readable: false; absent?: true }) => T, options: { createLock?: boolean } = {}): T {
     const file = this.spoolFile(sessionId);
     const lock = bufferLockPath(this.dir, sessionId);
     if (!this.reachable(file) || !this.reachable(lock)) throw new Error(UNAVAILABLE_PATH);
-    ensurePrivateFile(lock);
+    if (options.createLock !== false) ensurePrivateFile(lock);
     return withFileLockSync(lock, () => {
       let raw: string;
       try { raw = fs.readFileSync(file, 'utf8'); }
       catch { return fn({ readable: false, ...(pathIsAbsent(file) ? { absent: true as const } : {}) }); }
       return fn({ readable: true, records: parseSpoolLines(raw) });
-    });
+    }, { create: options.createLock });
   }
 
   /**
@@ -733,7 +735,7 @@ export class MemberSpool {
     if (!this.reachable(sessionStatePath(this.dir, sessionId)) || !this.reachable(bufferLockPath(this.dir, sessionId))) return { readable: false };
     let read: SessionStateRead;
     try {
-      read = readSessionStateResult(this.dir, sessionId);
+      read = readSessionStateResult(this.dir, sessionId, { createLock: this.createReadLocks });
     } catch {
       return { readable: false };
     }
@@ -769,7 +771,7 @@ export class MemberSpool {
         // report cannot use leaves it unknown rather than counting from zero.
         let state: SessionStateRead;
         try {
-          state = readSessionStateResult(this.dir, sessionId);
+          state = readSessionStateResult(this.dir, sessionId, { createLock: this.createReadLocks });
         } catch {
           return { sessionId, unacknowledged: null };
         }

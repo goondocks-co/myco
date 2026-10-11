@@ -82,7 +82,7 @@ export function workerHolder(lockDir: string, serverUrl: string): LockHolder | n
 
 function holderAtPath(lockPath: string): LockHolder | null {
   if (!fs.existsSync(lockPath)) return null;
-  const probe = LifecycleLock.acquire(lockPath, { mode: 'shared' });
+  const probe = LifecycleLock.acquire(lockPath, { mode: 'shared', create: false });
   if (probe.acquired) {
     probe.lock.release();
     return null;
