@@ -2,7 +2,7 @@
  * Meta gate: a dashboard's runtime imports reach only what its build carries.
  *
  * A dashboard is built in an image stage that copies its own tree, the shared
- * package whole, and the server's source only by hand-listed file. So a
+ * package whole. So a
  * **runtime** import reaching into `../../../src/` resolves on a developer's
  * machine, type-checks, passes every unit test, and then fails the container
  * build — the one place nothing else looks. A **type-only** import is erased
@@ -26,13 +26,7 @@ const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 /** Every dashboard tree built in an image stage that does not carry the server's source. */
 const DASHBOARDS = ['packages/myco-server/ui/src'];
 
-/**
- * The server files a dashboard's build stage carries by name, and may therefore
- * reach at runtime. Each entry is admitted only while the Dockerfile actually
- * copies it — the assertion below reads the Dockerfile rather than trusting this
- * list, so removing a COPY line fails here instead of in the image build.
- */
-const CARRIED_BY_NAME: readonly string[] = ['packages/myco-server/src/read/search-types.ts'];
+const CARRIED_BY_NAME: readonly string[] = [];
 const DOCKERFILE = 'packages/myco-server/Dockerfile';
 
 function files(dir: string): string[] {
@@ -80,6 +74,8 @@ describe('a dashboard reaches only what its build carries', () => {
 
   it('carries every server file a dashboard reaches by name, so the exception cannot outlive its COPY', () => {
     const dockerfile = readFileSync(join(ROOT, DOCKERFILE), 'utf8');
+    expect(CARRIED_BY_NAME).toEqual([]);
+    expect(dockerfile).not.toMatch(/^COPY packages\/myco-server\/src\//m);
     for (const carried of CARRIED_BY_NAME) {
       expect({ carried, copied: dockerfile.includes(`COPY ${carried} `) }).toEqual({ carried, copied: true });
     }

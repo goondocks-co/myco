@@ -16,6 +16,7 @@
     "paths": {
       "@myco/*": ["./packages/myco/src/*"],
       "@myco-server-worker/*": ["./packages/myco-server/src/*"],
+      "@goondocks/myco-shared/search-types": ["./packages/myco-shared/src/search-types.ts"],
       "@goondocks/myco-shared": ["./packages/myco-shared/src/index.ts"],
       "@goondocks/myco-shared/runner-fleet": ["./packages/myco-shared/src/runner-fleet.ts"],
       "@goondocks/myco-shared/runner-update": ["./packages/myco-shared/src/runner-update.ts"],

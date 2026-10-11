@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import type { SearchAcrossAnswer, SearchAcrossResult, SearchAnswer, SearchResult } from '../../../src/read/search-types';
-import { SEARCH_API_LIMIT, SEARCH_TYPES } from '../../../src/read/search-types';
+import type { SearchAcrossAnswer, SearchAcrossResult, SearchAnswer, SearchResult } from '@goondocks/myco-shared/search-types';
+import { SEARCH_API_LIMIT, SEARCH_TYPES } from '@goondocks/myco-shared/search-types';
 import { fetchJson } from '../lib/api';
 import { planPagePath } from './use-knowledge';
 
