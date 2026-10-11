@@ -1,3 +1,4 @@
+import { importHttpCause, countImportCause, importCause, importProgress, importRefusals } from './import-feedback.js';
 import { memoizedRepositoryName } from '@myco/utils/git.js';
 import { defaultMembership } from './default-deployment.js';
 import { assertMemberTranscriptDestination, TranscriptDestinationError } from './transcript-routing.js';
@@ -130,6 +131,8 @@ export interface ImportDeps {
   cwd?: string;
   mycoHome?: string;
   machineId: string;
+  progress?: (line: string) => void;
+  signal?: AbortSignal;
 }
 
 /** What one agent's store yielded for one Project. Counts rather than a capability table: what a store holds is measured, not declared. */
@@ -151,6 +154,8 @@ export interface ProjectReport {
   agents: AgentTally[];
   /** Set when the pass stopped before it finished this Project; the class the transport answered. */
   endedBy?: string;
+  causes?: Record<string, number>;
+  stoppedBy?: string;
 }
 
 export interface ImportReport {
@@ -324,7 +329,9 @@ const refusedReport = (refused: string): ImportReport =>
 export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<ImportReport> {
   const now = deps.now ?? Date.now;
   const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: deps.cwd ?? process.cwd() });
-  const fetchImpl = paced(deps.fetch ?? globalThis.fetch, deps.pace, deps.sleep ?? pause);
+  let tick = (_force = false) => {};
+  const observed = observedFetch(deps.fetch ?? globalThis.fetch, { signal: deps.signal, onRequest: () => tick() });
+  const fetchImpl = paced(observed.fetch, deps.pace, deps.sleep ?? pause);
 
   const entries = listRegistryEntries(mycoHome);
   if (entries.length === 0) return refusedReport('no Deployment membership on this machine');
@@ -372,6 +379,10 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
     unboundDirectories: collected.unboundDirectories, ...(narrowed.size > 0 ? { narrowed: [...narrowed].sort() } : {}),
   };
   for (const [projectId, forProject] of byProject) {
+    if (deps.signal?.aborted) {
+      report.projects.push({ projectId, root: '', agents: [], endedBy: 'interrupted', causes: { [importCause('interrupted')]: 1 } });
+      break;
+    }
     if (opts.until !== undefined && now() >= opts.until) {
       report.projects.push({ projectId, root: '', agents: [], endedBy: IMPORT_DEADLINE });
       break;
@@ -395,6 +406,10 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
     const offered = forProject.slice(0, limit);
     for (const candidate of forProject.slice(limit)) tally(candidate.agent).trimmed += 1;
 
+    const causes: Record<string, number> = {};
+    let processed = 0;
+    tick = importProgress(now, deps.progress, () => `${projectId}: ${processed}/${offered.length} sessions started, ${[...tallies.values()].reduce((n, a) => n + a.imported, 0)} imported`);
+    tick();
     const spool = new MemberSpool(entry, { mycoHome });
     const client = new ServerClient(entry, watchingFeatures(fetchImpl, { serverUrl: entry.serverUrl, spoolDir: spool.dir, mycoHome, now }));
     const answer = await client.importPlan({
@@ -407,8 +422,8 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
     }, unboundedBudget());
 
     if (answer.class !== 'acked') {
-      report.projects.push({ projectId, root: entry.root ?? '', agents: [...tallies.values()], endedBy: answer.class });
-      continue;
+      report.projects.push({ projectId, root: entry.root ?? '', agents: [...tallies.values()], endedBy: answer.class, causes: { [observed.lastCause() ?? importCause(answer.class)]: 1 }, stoppedBy: observed.lastCause() ?? importCause(answer.class) });
+      break;
     }
 
     const answers = Array.isArray(answer.body.candidates) ? answer.body.candidates as Array<Record<string, unknown>> : [];
@@ -416,6 +431,9 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
     let endedBy: string | undefined;
 
     for (const candidate of offered) {
+      if (deps.signal?.aborted) { endedBy = 'interrupted'; break; }
+      processed += 1;
+      tick();
       const decision = decisions.get(candidate.transcriptId);
       const held = tally(candidate.agent);
       if (decision === undefined) continue;
@@ -427,7 +445,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
       if (opts.dryRun === true) { held.imported += 1; continue; }
       if (opts.until !== undefined && now() >= opts.until) { endedBy = IMPORT_DEADLINE; break; }
 
-      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now, { repositoryNames });
+      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now, { repositoryNames, onRefusal: (code) => countImportCause(causes, importCause(code)) });
       if (shipped === 'done') { held.imported += 1; continue; }
       // Gone from the disk between the plan that admitted it and the ship that
       // would have read it. Nothing was sent, so it is not imported — and it is
@@ -437,10 +455,12 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
       // A refusal that ends one session ends the pass: the same policy the
       // drain applies, and for the same reason — a Deployment that refuses one
       // write refuses the next for the same cause.
-      endedBy = shipped;
+      endedBy = deps.signal?.aborted ? 'interrupted' : shipped;
+      if (Object.keys(causes).length === 0) countImportCause(causes, observed.lastCause() ?? importCause(endedBy));
       break;
     }
-    report.projects.push({ projectId, root: entry.root ?? '', agents: [...tallies.values()], ...(endedBy === undefined ? {} : { endedBy }) });
+    report.projects.push({ projectId, root: entry.root ?? '', agents: [...tallies.values()], causes, stoppedBy: Object.keys(causes)[0], ...(endedBy === undefined ? {} : { endedBy }) });
+    tick(true);
     if (endedBy !== undefined) break;
   }
   return report;
@@ -453,7 +473,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
  */
 export async function shipSession(
   candidate: Candidate, fromOffset: number, client: ServerClient, spool: MemberSpool, machineId: string, now: () => number,
-  opts: { facts?: boolean; repositoryNames?: Map<string, string> } = {},
+  opts: { facts?: boolean; repositoryNames?: Map<string, string>; onRefusal?: (code: string) => void } = {},
 ): Promise<string> {
   spool.assertClientDestination(client);
   const { sessionId, filePath } = candidate;
@@ -484,10 +504,15 @@ export async function shipSession(
     state.transcript = { ...pointer, nextOffset: fromOffset };
   }, now());
 
+  const seen = spool.readRefused().entries.length;
   const drained = await spool.drainSession(sessionId, client, unboundedBudget(), { now, force: true });
+  const refusals = importRefusals(spool.readRefused().entries, seen, sessionId, drained.endedBy);
+  for (const refusal of refusals) opts.onRefusal?.(refusal.code);
+  if (refusals.length > 0) return 'refused';
   if (drained.endedBy !== 'drained') return drained.endedBy;
 
   const result = await shipTranscriptSegments(ctx, spool, client, unboundedBudget(), { now, headHash: candidate.headHash ?? undefined });
+  for (const refusal of importRefusals(spool.readRefused().entries, seen, sessionId, result.endedBy)) opts.onRefusal?.(refusal.code);
   return result.endedBy;
 }
 
@@ -503,7 +528,12 @@ export const retryWaitMs = (attempt: number): number =>
   Math.min(IMPORT_RETRY_MAX_WAIT_MS, IMPORT_RETRY_BASE_WAIT_MS * 2 ** Math.min(attempt - 1, 16));
 
 /** Wait `ms` between import passes; a caller that must not wait passes its own. */
-export const pause = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms));
+export const pause = (ms: number, signal?: AbortSignal): Promise<void> => new Promise<void>((resolve) => {
+  if (signal?.aborted) { resolve(); return; }
+  const finish = () => { clearTimeout(timer); signal?.removeEventListener('abort', finish); resolve(); };
+  const timer = setTimeout(finish, ms);
+  signal?.addEventListener('abort', finish, { once: true });
+});
 
 /** The requests a minute an import run by hand stays under: two thirds of a credential's rate budget, the rest left to live capture. */
 export const IMPORT_PACE_PER_MINUTE = 200;
@@ -541,16 +571,31 @@ export function retryVerdict(status: number | undefined): 'wait' | 'fault' | 'fa
 }
 
 /** A fetch that records the status of the last response it received, undefined for a request that got none. */
-export function observedFetch(fetchImpl: FetchLike): { fetch: FetchLike; lastStatus: () => number | undefined } {
+export function observedFetch(fetchImpl: FetchLike, opts: { signal?: AbortSignal; onRequest?: () => void } = {}): { fetch: FetchLike; lastStatus: () => number | undefined; lastCause: () => string | undefined } {
   let last: number | undefined;
+  let cause: string | undefined;
   return {
     fetch: async (input, init) => {
       last = undefined;
-      const res = await fetchImpl(input, init);
-      last = res.status;
-      return res;
+      cause = undefined;
+      try {
+        const signal = opts.signal === undefined ? init?.signal : AbortSignal.any([opts.signal, ...(init?.signal ? [init.signal] : [])]);
+        const res = await fetchImpl(input, { ...init, signal });
+        last = res.status;
+        if (res.status !== 200) cause = importHttpCause(res.status, res.headers.has('x-myco-protocol'));
+        return res;
+      } catch (error) {
+        cause = opts.signal?.aborted ? importCause('interrupted')
+          : error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')
+            ? 'the upload request timed out; check the connection and run the command again'
+            : importHttpCause(undefined);
+        throw error;
+      } finally {
+        opts.onRequest?.();
+      }
     },
     lastStatus: () => last,
+    lastCause: () => cause,
   };
 }
 
@@ -569,20 +614,22 @@ export const endedOnRetry = (report: ImportReport): boolean => report.projects.s
 export async function importUntilSettled(
   opts: ImportOptions, deps: ImportDeps & { maxPasses?: number; onRetry?: (attempt: number, waitMs: number) => void },
 ): Promise<ImportReport> {
-  const sleep = deps.sleep ?? pause;
+  const sleep = deps.sleep ?? ((ms) => pause(ms, deps.signal));
   const maxPasses = deps.maxPasses ?? IMPORT_MAX_PASSES;
-  const observed = observedFetch(deps.fetch ?? globalThis.fetch);
+  const observed = observedFetch(deps.fetch ?? globalThis.fetch, { signal: deps.signal });
   const pass = () => runImport(opts, { ...deps, fetch: observed.fetch });
   let report = await pass();
   let waited = 0;
   let faults = 0;
   for (let attempt = 1; report.refused === undefined && endedOnRetry(report); attempt++) {
+    if (deps.signal?.aborted) return { ...report, stoppedBy: importCause('interrupted') };
     const status = observed.lastStatus();
     const verdict = retryVerdict(status);
-    if (verdict === 'fail') return { ...report, stoppedBy: `the Deployment answered ${status}` };
-    if (verdict === 'fault' && ++faults > SERVER_FAULT_RETRIES) return { ...report, stoppedBy: `the Deployment kept failing (${status})` };
+    if (verdict === 'fail') return { ...report, stoppedBy: observed.lastCause() ?? importHttpCause(status) };
+    if (verdict === 'fault' && ++faults > SERVER_FAULT_RETRIES) return { ...report, stoppedBy: observed.lastCause() ?? importHttpCause(status) };
     const wait = retryWaitMs(verdict === 'fault' ? faults : attempt);
-    if (attempt >= maxPasses || waited + wait > IMPORT_WAIT_CAP_MS) return { ...report, stoppedBy: 'the Deployment kept asking to wait' };
+    if (attempt >= maxPasses || waited + wait > IMPORT_WAIT_CAP_MS) return { ...report, stoppedBy: observed.lastCause() ?? importCause('unreachable') };
+    deps.progress?.(`${observed.lastCause() ?? importCause('retry')}; trying again in ${Math.round(wait / 1000)} s; safe to stop and run again`);
     deps.onRetry?.(attempt, wait);
     await sleep(wait);
     waited += wait;

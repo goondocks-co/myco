@@ -1,3 +1,4 @@
+import { withImportInterrupt, stoppedByLine } from './import.js';
 /**
  * `myco cutover` — move this machine from Myco 1.4 to its 2.0 Deployment.
  *
@@ -128,6 +129,7 @@ export function parseArgs(args: readonly string[]): Parsed {
 }
 
 export interface CutoverDeps {
+  signal?: AbortSignal;
   fetch?: FetchLike;
   now?: () => number;
   mycoHome?: string;
@@ -539,25 +541,30 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
 
   // 8. The imports.
   step(8, 'Bring the 1.4 history and your agents\' transcripts to the Deployment');
-  const importDeps = { fetch: deps.fetch, now: deps.now, mycoHome, machineId, sleep: deps.sleep, pace: deps.pace ?? IMPORT_PACE_PER_MINUTE };
-  const legacy: LegacyImportReport = await runLegacyImport({ sources: copies, serverUrl, dryRun: dry }, { ...importDeps, progress: (l) => out(`   ${l}`) });
-  if (legacy.refused !== undefined) { problem(legacy.refused); return false; }
-  for (const line of legacyReportLines(legacy, dry)) out(`   ${line}`);
-  if (!legacyImportComplete(legacy)) problem('the Deployment refused or failed part of the 1.4 history (above); run the cutover again to retry it');
-  if (dry) {
-    out('   would then import every agent transcript under the connected folders');
-    return ok;
-  }
-  const transcripts: ImportReport = await importUntilSettled(
-    { serverUrl, mappings: parsed.mappings, windowDays: LEGACY_WINDOW_DAYS, maxPerAgent: LEGACY_MAX_PER_AGENT, exclude: new Set(legacy.deleted) },
-    { ...importDeps, onRetry: (attempt, waitMs) => out(`   the Deployment asked to wait; pass ${attempt + 1} in ${Math.round(waitMs / 1000)} s`) },
-  );
-  if (transcripts.refused !== undefined) problem(transcripts.refused);
-  for (const line of reportLines(transcripts, false)) out(`   ${line}`);
-  if (!transcriptImportComplete(transcripts)) {
-    const why = transcripts.projects.filter((p) => p.endedBy !== undefined).map((p) => `${p.projectId}: ${STOPPED_WORDS[p.endedBy!] ?? p.endedBy}`);
-    problem(`the transcript import stopped before it finished (${why.join('; ') || transcripts.refused || 'no reason given'}); run the cutover again to finish it`);
-  }
+  const imported = await withImportInterrupt(deps.signal, async (signal) => {
+    const importDeps = { fetch: deps.fetch, now: deps.now, mycoHome, machineId, sleep: deps.sleep, signal, pace: deps.pace ?? IMPORT_PACE_PER_MINUTE };
+    const legacy: LegacyImportReport = await runLegacyImport({ sources: copies, serverUrl, dryRun: dry }, { ...importDeps, progress: (l) => out(`   ${l}`) });
+    for (const line of legacyReportLines(legacy, dry)) out(`   ${line}`);
+    if (legacy.refused !== undefined) { problem(legacy.refused); out(`   ${stoppedByLine(legacy.refused)}`); return false; }
+    if (signal.aborted) return false;
+    if (!legacyImportComplete(legacy)) problem('the Deployment refused or failed part of the 1.4 history (above); run the cutover again to retry it');
+    if (dry) {
+      out('   would then import every agent transcript under the connected folders');
+      return true;
+    }
+    const transcripts: ImportReport = await importUntilSettled(
+      { serverUrl, mappings: parsed.mappings, windowDays: LEGACY_WINDOW_DAYS, maxPerAgent: LEGACY_MAX_PER_AGENT, exclude: new Set(legacy.deleted) },
+      { ...importDeps, progress: (l) => out(`   ${l}`) },
+    );
+    if (transcripts.refused !== undefined) problem(transcripts.refused);
+    for (const line of reportLines(transcripts, false)) out(`   ${line}`);
+    if (!transcriptImportComplete(transcripts)) {
+      const why = transcripts.projects.filter((p) => p.endedBy !== undefined).map((p) => `${p.projectId}: ${p.stoppedBy ?? transcripts.stoppedBy ?? STOPPED_WORDS[p.endedBy!] ?? p.endedBy}`);
+      problem(`the transcript import stopped before it finished (${why.join('; ') || transcripts.stoppedBy || transcripts.refused || 'no reason given'}); run the cutover again to finish it`);
+    }
+    return !signal.aborted;
+  });
+  if (!imported || dry) return ok && imported;
   // 9. This machine's settings: the Deployment's are cached for the hooks, and 1.4's plan folders are named, never
   // carried: they are set on the dashboard, where each machine's settings are kept.
   step(9, 'Name the plan folders 1.4 watched, which this machine sets on the dashboard');
