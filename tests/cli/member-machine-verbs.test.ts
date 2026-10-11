@@ -105,9 +105,9 @@ const leaf = (rig: MemberRig, name: string, value: unknown): void => {
 };
 
 describe('a joined member with no 1.4 vault', () => {
-  it('reports the home doctor outside a joined root and retains the other local handlers', async () => {
+  it('uses member handlers outside a joined root when no 1.4 vault remains unmoved', async () => {
     const rig = await memberRig();
-    for (const name of ['logs', 'config'] as const) expect((await verb(name, ['get'], rig.fetch)).answered).toBeNull();
+    for (const name of ['logs', 'config'] as const) expect((await verb(name, ['get'], rig.fetch)).answered).not.toBeNull();
     const doctor = await verb('doctor', [], rig.fetch);
     expect(doctor.answered).not.toBeNull();
     expect(doctor.stdout).toContain('myco doctor (member)');

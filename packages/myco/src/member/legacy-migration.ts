@@ -32,14 +32,16 @@ export interface CutoverState {
   handover?: { at: number; legacyHomes: string[]; agents: string[] };
   migrations?: Record<string, MigrationReceipt>;
 }
-export type LegacyMigrationState =
+export type LegacyMigrationState = (
   | { state: 'unavailable'; file: string; detail: string }
   | { state: 'changed'; warning: string }
-  | { state: 'none' | 'unmoved' | 'needs-destination' | 'handover-pending' | 'partial' | 'moved' };
+  | { state: 'none' | 'unmoved' | 'needs-destination' | 'handover-pending' | 'partial' | 'moved' }
+) & { legacyOwnsCapture?: true };
 
 export class LegacyMigrationUnreadable extends Error {
   constructor(readonly file: string, cause: unknown) {
-    super(`cannot read ${file}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(detail.startsWith(`cannot read ${file}:`) ? detail : `cannot read ${file}: ${detail}`, { cause });
   }
 }
 
@@ -93,11 +95,13 @@ export function legacyMigrationState(home: string): LegacyMigrationState {
     const homes = [...new Set([...initialHomes, ...initialStates.flatMap((s) => s.handover?.legacyHomes ?? [])].map(legacyRealpath))];
     const folders = initialStates.flatMap((s) => Object.values(s.migrations ?? {}).flatMap((v) => Object.values(v.projects).flatMap((p) => typeof p.root === 'string' ? [p.root] : [])));
     const sources = legacySources(home, { homes, folders });
+    const observed = (state: LegacyMigrationState): LegacyMigrationState => sources.units.length > 0 || sources.registrations.length > 0
+      ? { ...state, legacyOwnsCapture: true } : state;
     const states = sources.homes.map(readCutoverState);
     if (sources.vaults.length === 0 && sources.units.length === 0 && sources.registrations.length === 0) return { state: 'none' };
     const migrations = states.flatMap((s) => Object.entries(s.migrations ?? {}).map(([file, receipt]) => ({ file: legacyRealpath(file), receipt, state: s })));
     const held = sources.vaults.map((vault) => ({ vault, entries: migrations.filter((r) => r.file === vault.path) }));
-    if (held.some(({ vault, entries }) => entries.length === 0 && !states.some((s) => Object.keys(s.backups).some((file) => legacyRealpath(file) === vault.path)))) return { state: 'unmoved' };
+    if (held.some(({ vault, entries }) => entries.length === 0 && !states.some((s) => Object.keys(s.backups).some((file) => legacyRealpath(file) === vault.path)))) return observed({ state: 'unmoved' });
     let changed = false;
     let needsDestination = false;
     let partial = false;
@@ -108,30 +112,34 @@ export function legacyMigrationState(home: string): LegacyMigrationState {
       const receipt = entry.receipt;
       const current = sameLegacyStamp(vault, receipt);
       if (!current) {
+        if (readVaultContent(vault.path).digest !== receipt.digest) changed = true;
         const ids = legacyVaultProjectIds(vault.path);
         if (ids.some((id) => receipt.projects[id]?.destination === undefined)) needsDestination = true;
-        else if (readVaultContent(vault.path).digest !== receipt.digest) changed = true;
       }
       for (const project of Object.values(receipt.projects)) {
         const destination = project.destination;
         if (destination === undefined) { needsDestination = true; continue; }
         if ('skip' in destination && destination.skip === true) continue;
         if (!('serverUrl' in destination) || destination.key !== deploymentKeyFor(deploymentUrl(destination.serverUrl))) { needsDestination = true; continue; }
-        if (project.vault?.state !== 'complete' || !['complete', 'none'].includes(project.transcripts?.state ?? '')
-          || project.vault.endedBy !== undefined || (project.vault.failures?.length ?? 0) > 0
-          || project.transcripts?.endedBy !== undefined || (project.transcripts?.failures?.length ?? 0) > 0) partial = true;
+        const delivered = project.destinations?.[destination.key];
+        const passes = delivered ?? project;
+        if ((delivered !== undefined && (delivered.serverUrl !== destination.serverUrl || delivered.digest !== receipt.digest))
+          || passes.vault?.state !== 'complete' || !['complete', 'none'].includes(passes.transcripts?.state ?? '')
+          || passes.vault.endedBy !== undefined || (passes.vault.failures?.length ?? 0) > 0
+          || passes.transcripts?.endedBy !== undefined || (passes.transcripts?.failures?.length ?? 0) > 0) partial = true;
       }
     }
-    if (changed) return { state: 'changed', warning: 'Myco 1.4 wrote more data after migration. Stop Myco 1.4, then run myco cutover --dry-run before retrying.' };
-    if (needsDestination) return { state: 'needs-destination' };
-    if (!states.some((s) => s.handover !== undefined) || sources.units.length > 0 || sources.registrations.length > 0) return { state: 'handover-pending' };
+    if (changed) return observed({ state: 'changed', warning: 'Myco 1.4 wrote more data after migration. Stop Myco 1.4, then run myco cutover --dry-run before retrying.' });
+    if (needsDestination) return observed({ state: 'needs-destination' });
+    if (!states.some((s) => s.handover !== undefined) || sources.units.length > 0 || sources.registrations.length > 0) return observed({ state: 'handover-pending' });
     return { state: partial ? 'partial' : 'moved' };
   } catch (error) {
-    return { state: 'unavailable', file: error instanceof LegacyMigrationUnreadable ? error.file : error instanceof Error && 'path' in error ? String(error.path) : home, detail: error instanceof Error ? error.message : String(error) };
+    const file = error instanceof LegacyMigrationUnreadable ? error.file : error instanceof Error && 'path' in error ? String(error.path) : home;
+    return { state: 'unavailable', file, detail: new LegacyMigrationUnreadable(file, error).message };
   }
 }
 
-/** Boolean deferral adapter for member login and the home doctor. */
+/** Compatibility adapter for callers requiring receipt completion. */
 export function legacyMigrationPending(home: string): boolean {
   const result = legacyMigrationState(home);
   if (result.state === 'unavailable') throw new LegacyMigrationUnreadable(result.file, result.detail);

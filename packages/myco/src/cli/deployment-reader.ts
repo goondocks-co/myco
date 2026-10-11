@@ -4,7 +4,8 @@
  * `memberSource` decides whether a verb has a Deployment to ask: a declared
  * `--credential registry|env` names the source; otherwise a project root the
  * registry holds a membership for reads over the registry; a root with neither
- * has none, and the dispatcher runs the verb's 1.4 handler instead.
+ * has none, and the dispatcher selects the retained handler only for unmoved
+ * 1.4 capture.
  *
  * `openDeployment` answers every request the verbs make — a served tool call,
  * the tool list, a member json route — over the member credential. The

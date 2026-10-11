@@ -3,15 +3,15 @@
  *
  * `runMemberVerb` answers a member verb (`cli/member-verbs.ts`) for a joined
  * project, or a command line that declares a credential source, and answers
- * null for a root with no membership so the dispatcher runs the verb's 1.4
- * handler. `helpText` decides which command list `myco --help` prints.
+ * null for an unjoined root with unmoved 1.4 capture so the dispatcher runs
+ * the retained handler. `helpText` decides which command list `myco --help` prints.
  *
  * Migration classification reads retained vault evidence without starting a
  * local runtime. `tests/meta/member-read-boundary.test.ts` walks the member
  * handler import closure.
  */
 import { listDeploymentMemberships, readRegistryEntryResult } from '../member/registry.js';
-import { legacyMigrationPending } from '../member/legacy-migration.js';
+import { legacyMigrationState } from '../member/legacy-migration.js';
 import { homeOf, memberSource, rootOf, type MemberVerbDeps } from './deployment-reader.js';
 import { isMemberReadVerb, type MemberVerb } from './member-verbs.js';
 import type { WorkerServiceDeps } from './worker-service.js';
@@ -23,7 +23,7 @@ export interface MemberDispatchDeps extends MemberVerbDeps {
   packageRoot?: string;
 }
 
-/** Answer `verb` as a member: true or false for the verb's outcome, null when this invocation has no Deployment to ask. */
+/** Answer `verb` as a member, or null for an unjoined root with unmoved 1.4 capture. */
 export async function runMemberVerb(verb: MemberVerb, args: readonly string[], deps: MemberDispatchDeps = {}): Promise<boolean | null> {
   const source = memberSource(args, deps);
   if (verb === 'doctor') {
@@ -31,25 +31,26 @@ export async function runMemberVerb(verb: MemberVerb, args: readonly string[], d
     if (source === null && !doctor.useHomeDoctor(homeOf(deps))) return null;
     return doctor.run(args, source ?? 'registry', deps);
   }
-  if (source === null) return null;
-  if (isMemberReadVerb(verb)) return (await import('./member-reads.js')).run(verb, args, source, deps);
+  if (source === null && legacyMigrationState(homeOf(deps)).state === 'unmoved') return null;
+  const memberCredential = source ?? 'registry';
+  if (isMemberReadVerb(verb)) return (await import('./member-reads.js')).run(verb, args, memberCredential, deps);
   switch (verb) {
-    case 'logs': return (await import('./member-logs.js')).run(args, source, deps);
-    case 'config': return (await import('./member-config.js')).run(args, source, deps);
+    case 'logs': return (await import('./member-logs.js')).run(args, memberCredential, deps);
+    case 'config': return (await import('./member-config.js')).run(args, memberCredential, deps);
   }
 }
 
 /**
  * The command list `myco --help` prints. The member's when this root is
- * joined, or when no retained 1.4 vault is pending migration. With migration
- * pending, a root with no membership gets the 1.4 list, followed by the member
- * section when the home holds a Deployment membership; a 1.4-only home gets the
- * 1.4 list alone.
+ * joined, or when the migration state is anything except an unmoved vault.
+ * An unmoved vault at a root with no membership gets the 1.4 list, followed
+ * by the member section when the home holds a Deployment membership.
  */
 export function helpText(legacyUsage: string, deps: MemberVerbDeps = {}): string {
   const home = homeOf(deps);
   if (readRegistryEntryResult(rootOf(deps), home).status !== 'missing') return MEMBER_USAGE;
-  if (!legacyMigrationPending(home)) return MEMBER_USAGE;
+  const migration = legacyMigrationState(home);
+  if (migration.state !== 'unmoved') return MEMBER_USAGE;
   return listDeploymentMemberships(home).length > 0 ? `${legacyUsage}\n${MEMBER_SECTION}` : legacyUsage;
 }
 

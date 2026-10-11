@@ -79,6 +79,9 @@ it('names an unreadable cutover record instead of treating it as completion', ()
   fs.writeFileSync(record, '{');
   expect(() => legacyMigrationPending(home)).toThrow(LegacyMigrationUnreadable);
   expect(() => legacyMigrationPending(home)).toThrow(`cannot read ${record}`);
+  try { legacyMigrationPending(home); } catch (error) {
+    expect(String(error).split(`cannot read ${record}:`)).toHaveLength(2);
+  }
 });
 
 it.skipIf(process.platform === 'win32')('never executes a managed or PATH binary while observing legacy migration', async () => {
@@ -138,11 +141,11 @@ it('reports changed after capture resumes, including WAL-only writes', () => {
   } finally { db.close(); }
 });
 
-it('reports needs-destination for a new project', () => {
+it('reports changed before needs-destination when new capture adds a project', () => {
   const file = vault(); receipts(file);
   const db = new Database(file);
   try { db.run("INSERT INTO sessions VALUES ('new project', 'proj_2')"); } finally { db.close(); }
-  stateIs('needs-destination');
+  stateIs('changed');
 });
 
 it('reports handover-pending and moved after every project is skipped', () => {
@@ -151,6 +154,18 @@ it('reports handover-pending and moved after every project is skipped', () => {
   stateIs('handover-pending');
   receipts(file, (s) => { s.migrations![file].projects.proj_1 = { destination: { skip: true, at: 1 } }; });
   stateIs('moved');
+});
+
+it('uses completion for the current destination instead of a project-wide completion flag', () => {
+  const file = vault();
+  receipts(file, state => {
+    const receipt = state.migrations![file];
+    receipt.projects.proj_1.destinations = { [deploymentKeyFor('https://work.invalid')]: {
+      serverUrl: 'https://work.invalid', digest: receipt.digest, size: receipt.size, mtimeMs: receipt.mtimeMs,
+      vault: { state: 'partial', at: 2 }, transcripts: { state: 'complete', at: 1 },
+    } };
+  });
+  stateIs('partial');
 });
 
 it.skipIf(process.platform === 'win32')('names loose record permissions', () => {

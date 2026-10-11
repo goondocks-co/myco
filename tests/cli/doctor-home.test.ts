@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { homeReport, projectReport, refusedHookChecks, useHomeDoctor, type MemberDoctorDeps } from '@myco/cli/member-doctor.js';
 import { readVaultContent } from '@myco/member/legacy-backup.js';
+import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 import { helpText, MEMBER_USAGE, runMemberVerb } from '@myco/cli/member-dispatch.js';
 import { formatCheck } from '@myco/cli/doctor-member.js';
 import { optOut } from '@myco/cli/member-auto-join.js';
@@ -160,7 +161,18 @@ describe('home doctor', () => {
     }));
     fs.mkdirSync(path.join(home, 'member'), { recursive: true });
     fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups }), { mode: 0o600 });
+    expect(legacyMigrationState(home).state).toBe('needs-destination');
     expect(useHomeDoctor(home)).toBe(true);
+    const confirmation = (await homeReport(home, deps)).find(check => check.name === 'Migration');
+    expect(confirmation?.status).toBe('warn');
+    expect(confirmation?.detail).toContain('moved by an earlier version');
+    expect(confirmation?.detail).toContain('confirm where each project went');
+    expect(confirmation?.detail).toContain('myco cutover --dry-run');
+    const unbound: string[] = [];
+    expect(await runMemberVerb('doctor', [], { ...deps, stdout: line => unbound.push(line) })).not.toBeNull();
+    expect(unbound.join('\n')).toContain('myco doctor (member)');
+    expect(unbound.join('\n')).toContain('confirm where each project went');
+    expect(unbound.join('\n')).not.toContain('migration pending');
     expect(helpText('legacy commands', deps)).toBe(MEMBER_USAGE);
     expect((await homeReport(home, deps)).filter(check => check.name === 'Myco 1.4')).toEqual([]);
     join(personal);
@@ -186,6 +198,21 @@ describe('home doctor', () => {
     expect(check.detail).toContain(vault);
   });
 
+  it('does not call backup-only evidence moved while legacy hooks still own capture', async () => {
+    const vault = path.join(home, 'myco.db');
+    fs.writeFileSync(vault, 'retained vault');
+    fs.mkdirSync(path.join(home, 'member'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: { [vault]: {} } }), { mode: 0o600 });
+    const settings = path.join(process.env.HOME!, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.writeFileSync(settings, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${home}/bin/myco hook session-start --myco-managed` }] }] } }));
+    expect(legacyMigrationState(home)).toMatchObject({ state: 'needs-destination', legacyOwnsCapture: true });
+    const check = (await homeReport(home, deps)).find(check => check.name === 'Migration')!;
+    expect(check.status).toBe('warn');
+    expect(check.detail).toContain('still own capture');
+    expect(check.detail).not.toContain('moved by an earlier version');
+  });
+
   it('surfaces unreadable migration evidence rather than claiming migration completed', async () => {
     fs.mkdirSync(path.join(home, 'groves', 'old'), { recursive: true });
     fs.writeFileSync(path.join(home, 'groves', 'old', 'myco.db'), 'fixture');
@@ -196,6 +223,7 @@ describe('home doctor', () => {
     expect(check.status).toBe('fail');
     expect(check.detail).toContain('unavailable');
     expect(check.detail).toContain(path.join(home, 'member', 'cutover.json'));
+    expect(helpText('legacy commands', deps)).toBe(MEMBER_USAGE);
   });
 
   it('reports broken hooks and refused capture with the repair command', async () => {

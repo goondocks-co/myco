@@ -18,7 +18,7 @@ import { refuseImportAfter } from '../setup/fixtures/interruption.js';
  *   - it stops before its first change, dry run or not, where another
  *     installation holds anything it would need to take.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -770,7 +770,7 @@ describe('myco cutover on two 1.4 homes, one pinned as the 2.0 home (the owner\'
 
       const env: NodeJS.ProcessEnv = { ...process.env, HOME: m.home, MYCO_LAUNCH_AGENTS_DIR: m.agentsDir };
       delete env.MYCO_HOME;
-      const args = ['--legacy-home', prod, '--legacy-home', m.legacyHome];
+      const args = ['--legacy-home', prod, '--legacy-home', m.legacyHome, '--route', `${PROJECT}=${SERVER}`];
       const dry = await m.run([...args, '--dry-run'], { mycoHome: null, env });
       expect(dry.err).toEqual([]);
       expect(dry.ok).toBe(true);
@@ -1010,7 +1010,7 @@ describe('cutover project destinations and receipts', () => {
       db.run("UPDATE sessions SET machine_id='retained-legacy-machine' WHERE project_id=?", [HOMELAB]);
       db.run('PRAGMA wal_checkpoint(TRUNCATE)');
     } finally { db.close(); }
-    const result = await m.run(['--skip', HOMELAB], { fetch: fetchBoth, agents: [] });
+    const result = await m.run(['--skip', HOMELAB, '--route', `${PROJECT}=${SERVER}`], { fetch: fetchBoth, agents: [] });
     expect(result.err).toEqual([]); expect(result.ok).toBe(true);
     expect(projectsOn(m.rig, 'spores')).toEqual([{ project_id: PROJECT }]);
     expect(projectsOn(personal, 'spores')).toEqual([]);
@@ -1046,13 +1046,78 @@ describe('cutover project destinations and receipts', () => {
     expect(fs.existsSync(path.join(m.mycoHome, 'member', 'cutover.json'))).toBe(false);
   });
 
-  it('rejects a preview when a vault changes before execution', async () => {
-    const plan = planCutover(m.mycoHome, { homeDir: m.home, dryRun: true });
+  it('allows a vault write between planning and lease revalidation, then copies the latest history', async () => {
+    const stopped: string[] = [];
+    const deps = { fetch: fetchBoth, agents: () => [], unitDirs: [], machineId: TEST_MACHINE_ID, stdout: () => {},
+      stopDaemon: async (home: string) => { stopped.push(home); return 'stopped' as const; } };
+    const plan = planCutover(m.mycoHome, { homeDir: m.home }, deps);
     const db = openDatabase(m.vault);
     try { db.run("UPDATE spores SET content='changed' WHERE id='gotcha-1'"); } finally { db.close(); }
     const errors: string[] = [];
-    expect((await executeCutoverPlan(plan, { stderr: (l) => errors.push(l) })).ok).toBe(false);
-    expect(errors.join('\n')).toContain('changed after the preview');
+    expect((await executeCutoverPlan(plan, { ...deps, stderr: (l) => errors.push(l) })).ok).toBe(true);
+    expect(errors).toEqual([]);
+    expect(stopped).toContain(m.legacyHome);
+    expect(m.rig.env.sqlite.query("SELECT content FROM spores WHERE id='gotcha-1'").get()).toEqual({ content: 'changed' });
+    expect(legacyMigrationState(m.mycoHome).state).toBe('moved');
+  });
+
+  for (const rootless of [false, true]) it(`requires a disposition for an unrouted ${rootless ? 'rootless' : 'absent'} project`, async () => {
+    fs.rmSync(m.root, { recursive: true });
+    if (rootless) {
+      const db = openDatabase(m.vault);
+      try { db.run('UPDATE sessions SET project_root=NULL WHERE project_id=?', [PROJECT]); } finally { db.close(); }
+    }
+    const options = { homeDir: m.home };
+    const plan = planCutover(m.mycoHome, options);
+    expect(plan.projects.find(p => p.projectId === PROJECT)?.destination).toEqual({ kind: 'undecided' });
+    expect(plan.blockers.join('\n')).toContain(`--route ${PROJECT}=<url> or --skip ${PROJECT}`);
+    const explicit = await m.run(['--server', SERVER, '--dry-run'], { fetch: fetchBoth, agents: [] });
+    expect(explicit.err).toEqual([]); expect(explicit.ok).toBe(true);
+    expect(explicit.out.join('\n')).toContain(`${PROJECT} from ${m.vault}: to ${SERVER} (no repository route; sent to --server)`);
+  });
+
+  it('labels a present unbound repository destination as default-derived', async () => {
+    const result = await m.run(['--dry-run'], { agents: [] });
+    expect(result.ok).toBe(true);
+    expect(result.out.join('\n')).toContain(`${PROJECT} from ${m.vault}: to ${SERVER} (default Deployment; no repository route)`);
+  });
+
+  it('does not carry completion to a re-routed destination when aborted before import', async () => {
+    expect((await m.run([], { fetch: fetchBoth, agents: [] })).ok).toBe(true);
+    fs.rmSync(m.root, { recursive: true });
+    fs.unlinkSync(registryEntryPath(m.root, m.mycoHome));
+    const stopped = new AbortController();
+    stopped.abort();
+    const result = await m.run(['--route', `${PROJECT}=${PERSONAL}`], { fetch: fetchBoth, agents: [], signal: stopped.signal });
+    expect(result.ok).toBe(false);
+    const receipt = readCutoverState(m.mycoHome).migrations![m.vault].projects[PROJECT];
+    expect(receipt.destination).toMatchObject({ serverUrl: PERSONAL });
+    expect(receipt.vault?.state).not.toBe('complete');
+    expect(legacyMigrationState(m.mycoHome).state).not.toBe('moved');
+    expect(projectsOn(personal, 'sessions')).toEqual([{ project_id: HOMELAB }]);
+  });
+
+  it('refuses a real vault write across the copy before uploading anything', async () => {
+    let copying = false;
+    let reads = 0;
+    const original = fs.statSync;
+    const stat = spyOn(fs, 'statSync').mockImplementation((...args) => {
+      if (copying && String(args[0]) === m.vault && ++reads === 2) {
+        const db = openDatabase(m.vault);
+        try { db.run("UPDATE spores SET content='write during copy' WHERE id='gotcha-1'"); } finally { db.close(); }
+      }
+      return Reflect.apply(original, fs, args);
+    });
+    const errors: string[] = [];
+    try {
+      const deps = { fetch: fetchBoth, agents: () => [], unitDirs: [], machineId: TEST_MACHINE_ID,
+        stopDaemon: async () => 'none' as const, stderr: (line: string) => errors.push(line),
+        stdout: (line: string) => { if (line.startsWith('7. ')) copying = true; } };
+      const plan = planCutover(m.mycoHome, { homeDir: m.home }, deps);
+      expect((await executeCutoverPlan(plan, deps)).ok).toBe(false);
+      expect(errors.join('\n')).toContain('changed while it was copied');
+      expect(m.rig.rows('events')).toBe(0); expect(personal.rows('events')).toBe(0);
+    } finally { stat.mockRestore(); }
   });
 
   it('keeps an absent-root project on its confirmed destination after the default changes', async () => {
@@ -1075,7 +1140,7 @@ describe('cutover project destinations and receipts', () => {
     fs.mkdirSync(path.dirname(transcript), { recursive: true });
     fs.writeFileSync(transcript, `${JSON.stringify({ type: 'user', cwd: m.root, sessionId: id, message: { content: 'retained mapped transcript' }, timestamp: '2026-08-01T10:00:00Z' })}\n`);
     const old = new Date(Date.now() - 3 * 60 * 60_000); fs.utimesSync(transcript, old, old);
-    const result = await m.run(['--map', `${m.root}=${replacement}`], { fetch: fetchBoth, agents: [] });
+    const result = await m.run(['--map', `${m.root}=${replacement}`, '--route', `${PROJECT}=${SERVER}`], { fetch: fetchBoth, agents: [] });
     expect(result.err).toEqual([]); expect(result.ok).toBe(true);
     expect(m.rig.env.sqlite.query('SELECT session_id FROM sessions WHERE session_id=?').all(id)).toEqual([{ session_id: id }]);
     expect(readCutoverState(m.mycoHome).migrations![m.vault].projects[PROJECT].transcripts?.state).toBe('complete');

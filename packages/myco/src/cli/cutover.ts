@@ -287,7 +287,7 @@ export interface CutoverPlan {
   selection?: ResolvedMycoHome;
   options: CutoverOptions;
   vaults: { home: string; vault: string; digest: string; counts: TableCounts; stamp: ReturnType<typeof legacyVaultStamp> }[];
-  projects: { projectId: string; root: string | null; vault: string; counts: ReturnType<typeof legacyProjectRoots>[number]['counts']; destination: CutoverDestination }[];
+  projects: { projectId: string; root: string | null; vault: string; counts: ReturnType<typeof legacyProjectRoots>[number]['counts']; destination: CutoverDestination; fallback?: 'server' | 'default' }[];
   memberships: DeploymentMembership[];
   blockers: string[];
   plannedAt: number;
@@ -325,14 +325,16 @@ export function planCutover(home: string, options: CutoverOptions = {}, deps: Cu
     if (route !== undefined && boundUrl !== undefined && deploymentUrl(route) !== boundUrl) blockers.push(`${projectId}: ${root} routes to ${boundUrl}, so cutover cannot send it to ${route}; review the repository binding first`);
     const heldUrl = held !== undefined && 'serverUrl' in held ? held.serverUrl : undefined;
     if (heldUrl !== undefined && boundUrl !== undefined && heldUrl !== boundUrl && route === undefined) blockers.push(`${projectId}: its receipt names ${heldUrl} but its repository now routes to ${boundUrl}; confirm with --route ${projectId}=${boundUrl} or --skip ${projectId}`);
-    const serverUrl = boundUrl ?? (route === undefined ? heldUrl : deploymentUrl(route))
-      ?? (foreignProject || typeof fallback === 'string' ? undefined : deploymentUrl(fallback.serverUrl));
+    const routedUrl = boundUrl ?? (route === undefined ? heldUrl : deploymentUrl(route));
+    const canFallback = !foreignProject && (options.serverUrl !== undefined || (root !== null && isSafeProjectRoot(root)));
+    const serverUrl = routedUrl ?? (!canFallback || typeof fallback === 'string' ? undefined : deploymentUrl(fallback.serverUrl));
     if (serverUrl === undefined) {
       blockers.push(`${projectId}: no destination; use --route ${projectId}=<url> or --skip ${projectId}`);
       return { ...project, destination: { kind: 'undecided' } as CutoverDestination };
     }
     if (!memberships.some((m) => deploymentUrl(m.serverUrl) === serverUrl)) blockers.push(`${projectId}: not signed in to ${serverUrl}; run myco login ${serverUrl}`);
-    return { ...project, destination: { kind: 'destination', serverUrl } as CutoverDestination };
+    return { ...project, destination: { kind: 'destination', serverUrl } as CutoverDestination,
+      ...(routedUrl === undefined ? { fallback: options.serverUrl === undefined ? 'default' as const : 'server' as const } : {}) };
   });
   const ids = new Set(projects.map((p) => p.projectId));
   for (const id of [...(options.routes?.keys() ?? []), ...(options.skips ?? [])]) if (!ids.has(id)) blockers.push(`${id}: no such project in the 1.4 vaults`);
@@ -378,7 +380,11 @@ export async function runCutover(plan: CutoverPlan, deps: CutoverDeps = {}): Pro
       release = () => lease.lock.release();
     }
     const fresh = planCutover(plan.home, plan.options, deps, plan.plannedAt);
-    const identity = (p: CutoverPlan) => JSON.stringify({ vaults: p.vaults, projects: p.projects, machineId: p.machineId, handover: p.handover, copies: p.copies });
+    const identity = (p: CutoverPlan) => JSON.stringify({
+      projects: p.projects.map(({ projectId, root, vault, destination }) => ({ projectId, root, vault, destination })),
+      machineId: p.machineId,
+      handover: p.handover.map(({ step, actions }) => ({ step, outcomes: actions.flatMap(action => action.outcomes) })),
+    });
     if (fresh.blockers.length > 0 || identity(fresh) !== identity(plan)) { err('myco cutover: the vaults, routes or handover actions changed after the preview; run myco cutover --dry-run again'); return { ok: false }; }
     fresh.selection = plan.selection;
     return { ok: await preparedCutovers.get(fresh)!.execute() };
@@ -442,7 +448,9 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
   const bindings = cutover.projects.flatMap((p) => p.destination.kind !== 'destination' ? [] : [{ ...bindingFor(p, mycoHome, p.destination.serverUrl), serverUrl: p.destination.serverUrl }]);
   for (const p of cutover.projects) {
     const dest = p.destination;
-    out(`   ${p.projectId} from ${p.vault}: ${dest.kind === 'destination' ? `to ${dest.serverUrl}` : dest.kind} (${JSON.stringify(p.counts)})`);
+    const fallback = p.fallback === 'server' ? ' (no repository route; sent to --server)'
+      : p.fallback === 'default' ? ' (default Deployment; no repository route)' : '';
+    out(`   ${p.projectId} from ${p.vault}: ${dest.kind === 'destination' ? `to ${dest.serverUrl}${fallback}` : dest.kind} (${JSON.stringify(p.counts)})`);
   }
   for (const b of bindings) {
     if (b.kind === 'absent') out(`   ${cutoverAbsentFolder(b.projectId, b.root)}`);

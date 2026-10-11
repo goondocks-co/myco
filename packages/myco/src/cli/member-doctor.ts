@@ -25,7 +25,7 @@ import { pathIsAbsent } from '../member/store.js';
 import { listRunnerRecords, isLiveRunner } from '../runner/runner-registry.js';
 import { workerServiceStatus } from '../runner/service.js';
 import { ServerClient } from '../member/transport.js';
-import { legacyMigrationPending, LegacyMigrationUnreadable } from '../member/legacy-migration.js';
+import { legacyMigrationState } from '../member/legacy-migration.js';
 import { legacyVaultFiles } from '../member/home-role.js';
 import { defaultMycoHome } from '../paths/home.js';
 
@@ -179,16 +179,11 @@ const STALE_CREDENTIAL_MS = 7 * 24 * 60 * 60 * 1000;
 const CUTOVER_RECORD = path.join('member', 'cutover.json');
 const LOGOUT_DIRECTORY = path.join('member', 'logout');
 
-/** A home with only unmigrated 1.4 vaults retains the local doctor. No binary is run to classify it. */
+/** A home with only unmoved 1.4 vaults retains the local doctor. No binary is run to classify it. */
 export function useHomeDoctor(home: string): boolean {
   const memberships = listDeploymentMembershipsResult(home);
-  let pending: boolean;
-  try { pending = legacyMigrationPending(home); }
-  catch (error) {
-    if (error instanceof LegacyMigrationUnreadable) return true;
-    throw error;
-  }
-  return !pending || !memberships.readable || memberships.unavailableEntries > 0
+  const migration = legacyMigrationState(home);
+  return migration.state !== 'unmoved' || !memberships.readable || memberships.unavailableEntries > 0
     || memberships.memberships.length > 0 || !pathIsAbsent(path.join(home, 'runner'))
     || !pathIsAbsent(path.join(home, CUTOVER_RECORD)) || !pathIsAbsent(path.join(home, LOGOUT_DIRECTORY));
 }
@@ -266,15 +261,25 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
     }
     checks.push(row('Runner offer', record.lastOffer ? 'ok' : 'not-checked', `${record.serverUrl}: ${record.lastOffer ? `offered ${record.lastOffer.offered.join(', ') || 'none'}; withheld ${record.lastOffer.withheld.join(', ') || 'none'}; observed ${iso(record.lastOffer.observedAt)}` : 'unknown (no acknowledged service offer); run `myco runner status` after starting the runner'}.`));
   }
-  try {
-    if (legacyMigrationPending(home)) {
-      const homes = [...new Set([home, defaultMycoHome()].map(directory => path.resolve(directory)))];
-      const vaults = [...new Set(homes.flatMap(directory => legacyVaultFiles(directory)))];
-      checks.push(row('Myco 1.4', 'warn', `migration pending; retained vault files: ${vaults.join(', ')}. Next: \`myco cutover --dry-run\`.`));
-    }
-  } catch (error) {
-    if (!(error instanceof LegacyMigrationUnreadable)) throw error;
-    checks.push(row('Myco 1.4', 'fail', `migration state unavailable: ${error.message}. Inspect ${error.file}, then run \`myco cutover --dry-run\`.`));
+  const migration = legacyMigrationState(home);
+  if (migration.state === 'unavailable') {
+    checks.push(row('Myco 1.4', 'fail', `migration state unavailable: ${migration.detail}. Inspect ${migration.file}, then run \`myco cutover --dry-run\`.`));
+  } else if (migration.state === 'needs-destination') {
+    checks.push(row('Migration', 'warn', migration.legacyOwnsCapture
+      ? 'an earlier cutover recorded backups, but Myco 1.4 services or agent registrations still own capture; run `myco cutover --dry-run` to confirm destinations and handover.'
+      : 'moved by an earlier version; run `myco cutover --dry-run` to confirm where each project went.'));
+  } else if (migration.state === 'handover-pending') {
+    checks.push(row('Migration', 'warn', `${migration.legacyOwnsCapture ? 'Myco 1.4 services or agent registrations still own capture' : 'history destinations are recorded, but handover has not been confirmed'}; run \`myco cutover --dry-run\`, then \`myco cutover\`.`));
+  } else if (migration.state === 'partial') {
+    checks.push(row('Migration', 'warn', 'some project history or transcripts still need to finish; run `myco cutover --dry-run`, then `myco cutover` to resume.'));
+  } else if (migration.state === 'unmoved' || migration.state === 'changed') {
+    const homes = [...new Set([home, defaultMycoHome()].map(directory => path.resolve(directory)))];
+    const vaults = [...new Set(homes.flatMap(directory => legacyVaultFiles(directory)))];
+    checks.push(row('Myco 1.4', 'warn', migration.state === 'changed' ? migration.warning
+      : `migration pending; retained vault files: ${vaults.join(', ')}. Next: \`myco cutover --dry-run\`.`));
+  } else {
+    checks.push(row('Migration', 'ok', migration.state === 'moved'
+      ? 'history and transcripts are complete at their recorded destinations.' : 'no retained Myco 1.4 capture state.'));
   }
   return checks;
 }
