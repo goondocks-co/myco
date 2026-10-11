@@ -69,6 +69,7 @@ describe('myco login', () => {
     expect(readRegistryEntry(root, home)?.projectId).toBe('proj_1');
     expect(out.join('\n')).toContain('(admin)');
     expect(out.join('\n')).toContain('proj_1');
+    expect(out).toContain('Signed in to the wrong Myco? `myco logout https://s` removes this machine from it.');
   });
 
   it('caches the settings the Deployment holds for this machine as it signs in (#1393)', async () => {
@@ -164,6 +165,7 @@ describe('myco login', () => {
     out.length = 0;
     expect(await run([`https://s/join#${issued.key}`], deps(rig))).toBe(false);
     expect(err.join('\n')).toContain('enrollment_used');
+    expect(out.join('\n')).not.toContain('Signed in to the wrong Myco?');
   });
 
   it('tells a machine its member already holds to ask for an invitation for that member, never a new one (#1382)', async () => {

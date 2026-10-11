@@ -47,6 +47,7 @@ Commands:
   detach <project>         Clear a project's Team Host mapping (resolves local again)
   host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key|members|revoke)
   login <server-url>       Approve this machine in the dashboard and sign in
+  logout <server-url>      Sign this machine out of one Deployment
   import                   Bring this machine's existing agent history to its Deployment
   cutover                  Move this machine from Myco 1.4 to its Deployment (--dry-run first)
   member <op>              2.0 member: join | leave | drain | status | export | refresh
@@ -132,6 +133,7 @@ const DELEGATED_HELP: Record<string, () => Promise<string>> = {
   host: async () => (await import('./cli/host.js')).HOST_HELP,
   member: async () => (await import('./cli/member.js')).MEMBER_HELP,
   login: async () => (await import('./cli/login.js')).LOGIN_HELP,
+  logout: async () => (await import('./cli/logout.js')).LOGOUT_HELP,
   import: async () => (await import('./cli/import.js')).IMPORT_HELP,
   settings: async () => (await import('./cli/settings.js')).SETTINGS_HELP,
   server: async () => (await import('./cli/server.js')).SERVER_HELP,
@@ -265,6 +267,11 @@ async function main(): Promise<void> {
   if (cmd === 'login') {
     // The verb reports its outcome; the exit status is the dispatcher's to set.
     if (!await (await import('./cli/login.js')).run(args)) process.exitCode = 2;
+    return;
+  }
+
+  if (cmd === 'logout') {
+    if (!await (await import('./cli/logout.js')).run(args)) process.exitCode = 2;
     return;
   }
 

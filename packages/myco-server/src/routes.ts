@@ -69,6 +69,7 @@ import { handleAttention } from './api/attention.js';
 import { MAX_BLOB_BYTES, MEMBER_ID_SEGMENT } from './constants.js';
 import { handleJoin } from './auth/join.js';
 import { handleRefresh } from './auth/refresh.js';
+import { handleMemberCredentialRevoke } from './api/credential-revoke.js';
 import { handleBlob } from './ingest/blobs.js';
 import { handleHarnessDispatch } from './api/harness.js';
 import { handleEvents } from './ingest/events.js';
@@ -178,6 +179,7 @@ export const ROUTES: readonly Route[] = [
   { authorization: httpPolicy('processed', 'capture', 'project', ['member']), method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { authorization: httpPolicy('raw', 'append', 'project', ['member']), method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
   { authorization: httpPolicy('credential', 'edit', 'credential', ['member']), method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', capture: false, scope: 'credential', admitsLapsed: true, mintsAuthority: true, credential: handleRefresh },
+  { authorization: httpPolicy('credential', 'edit', 'credential', ['member']), method: 'POST', path: '/members/credential/revoke', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberCredentialRevoke },
   // #1148 — bounded import and backfill
   { authorization: httpPolicy('plan', 'capture', 'project', ['member']), method: 'POST', path: '/import/plan', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleImportPlan },
   // The retained runtime channel binds every operation to its dispatch credential,

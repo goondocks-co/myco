@@ -1,4 +1,5 @@
 import { createServer } from '@myco-server-worker/pipeline.js';
+import { ROUTES } from '@myco-server-worker/routes.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { AUTH_SETUP_CODES, type JoinedMemberIdentity } from '@goondocks/myco-shared/member-protocol';
 /**
@@ -117,6 +118,13 @@ function finalShape(): unknown {
 }
 
 describe('member ↔ worker pins', () => {
+  it('serves self-revocation as a member credential route with explicit edit authority', () => {
+    const route = ROUTES.find((candidate) => candidate.method === 'POST' && candidate.path === '/members/credential/revoke');
+    expect(route).toMatchObject({ auth: 'member', bodyMode: 'json', scope: 'credential', capture: false,
+      shape: 'persisted', authorization: { resource: 'credential', action: 'edit', resolver: 'credential', subjects: ['member'], transport: 'http' } });
+    expect(route).not.toHaveProperty('admitsLapsed');
+  });
+
   it('MEMBER_PROTOCOL is inside the server window', () => {
     expect(MEMBER_PROTOCOL).toBeGreaterThanOrEqual(MIN_COMPAT_MEMBER_PROTOCOL);
     expect(MEMBER_PROTOCOL).toBeLessThanOrEqual(SERVER_PROTOCOL);

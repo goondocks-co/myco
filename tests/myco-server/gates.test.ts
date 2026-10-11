@@ -53,7 +53,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 167;
+const EMIT_CALLS = 168;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -589,6 +589,7 @@ describe('gates', () => {
     /** Issued far enough back that the refresh window is open now, and far enough forward that the tokens are live. */
     const issuedAt = Date.now() - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2);
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt);
+    const revokeOnly = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt);
     const anonymous = await issueMemberToken(db, { memberId: 'mem_anon', machineId: null }, issuedAt);
     sqlite.run("INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_1', 'mem_machine_1', ?)", [issuedAt]);
     // A fresh Deployment: no admin has a GitHub account linked, so a member credential is answered a link key.
@@ -623,6 +624,11 @@ describe('gates', () => {
         shape: 'refreshed',
         malformed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
         wellFormed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+      },
+      'POST /members/credential/revoke': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/members/credential/revoke', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ tokenId: t1.tokenId }) }),
+        wellFormed: (token) => new Request('https://s/members/credential/revoke', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
       },
       // #1148 — the import plan. Advice, not an authority: it stores nothing,
       // so a malformed ask is refused in the same shape as any other.
@@ -877,7 +883,8 @@ describe('gates', () => {
       if (route === 'POST /members/roles' || route === 'GET /members/raw-claims') sqlite.run("UPDATE deployment_ownership SET member_id='mem_machine_1' WHERE id=1");
       if (route === 'POST /members/ownership/transfer') sqlite.run("UPDATE members SET role='admin',github_id='gate-transfer' WHERE id='mem_machine_2'");
       if (route === 'POST /members/ownership') sqlite.run("UPDATE members SET github_id = 'gate-owner' WHERE id = 'mem_machine_1'");
-      const stored = await (await worker.fetch(fixture.wellFormed(t1.token), e)).json() as Record<string, unknown>;
+      const token = route === 'POST /members/credential/revoke' ? revokeOnly.token : t1.token;
+      const stored = await (await worker.fetch(fixture.wellFormed(token), e)).json() as Record<string, unknown>;
       if (route.startsWith('POST /runs/') && !retired.has(route)) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'run_scope', persisted: false });
       else if (retired.has(route)) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'route_retired', persisted: false });
       else expect({ route, accepted: SHAPES[fixture.shape].accepted(stored) }).toEqual({ route, accepted: true });
@@ -1356,6 +1363,7 @@ describe('gates', () => {
       'member POST /events',
       'member POST /import/plan',
       'member POST /mcp',
+      'member POST /members/credential/revoke',
       'member POST /members/harnesses/report',
       'member POST /members/link-github',
       'member POST /members/projects',

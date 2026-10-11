@@ -96,3 +96,13 @@ export function forgetProvision(mycoHome: string, agent: string): void {
     writeProvisionRecord(mycoHome, { ...record, agents: record.agents.filter((id) => id !== agent), binaries, pendingTrust }, { replace: true });
   });
 }
+
+/** Move only the leaving Deployment's provision record to the surviving default. */
+export function reconcileProvisionDeployment(mycoHome: string, leavingUrl: string, nextDefault: string | null): void {
+  withProvisionLock(mycoHome, () => {
+    const record = readProvisionRecord(mycoHome);
+    if (record === null || record.serverUrl.replace(/\/+$/, '') !== leavingUrl.replace(/\/+$/, '')) return;
+    if (nextDefault === null) fs.rmSync(provisionRecordPath(mycoHome), { force: true });
+    else writeProvisionRecord(mycoHome, { ...record, serverUrl: nextDefault }, { replace: true });
+  });
+}

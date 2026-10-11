@@ -7,6 +7,7 @@
  * credential is the membership the registry holds for that URL, so a default whose membership is gone joins nothing.
  */
 import path from 'node:path';
+import fs from 'node:fs';
 import { resolveMycoHome } from '../paths/home.js';
 import { deploymentUrl, readDeploymentMembership, type DeploymentMembership } from './registry.js';
 import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from './store.js';
@@ -47,4 +48,12 @@ export function recordDefaultDeployment(serverUrl: string, opts: { mycoHome?: st
 export function defaultMembership(mycoHome: string = resolveMycoHome()): DeploymentMembership | null {
   const held = readDefaultDeployment(mycoHome);
   return held === null ? null : readDeploymentMembership(held.serverUrl, mycoHome);
+}
+
+/** Replace or clear only the default naming the leaving Deployment. Caller holds the registry lock. */
+export function reconcileDefaultDeployment(leavingUrl: string, nextDefault: string | null, mycoHome: string): void {
+  const held = readDefaultDeployment(mycoHome);
+  if (held === null || deploymentUrl(held.serverUrl) !== deploymentUrl(leavingUrl)) return;
+  if (nextDefault === null) fs.rmSync(defaultDeploymentPath(mycoHome), { force: true });
+  else recordDefaultDeployment(nextDefault, { mycoHome, replace: true });
 }
