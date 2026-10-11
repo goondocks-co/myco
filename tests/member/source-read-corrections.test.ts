@@ -177,13 +177,18 @@ describe('source containment corrections', () => {
     writeFileSync(temporary, 'synthetic executable');
     expect(() => runFilesystem(spec, redirected, temporary, null)).toThrow('Install Codex somewhere narrower');
     const previous = process.env.HOME;
+    const previousCodexHome = process.env.CODEX_HOME;
     try {
       process.env.HOME = operator;
+      process.env.CODEX_HOME = join(operator, '.codex');
       for (const executable of [join(operator, 'codex'), join(operator, 'bin', 'codex'), join(operator, '.codex', 'bin', 'codex')]) {
         writeFileSync(executable, 'synthetic executable');
         expect(() => runFilesystem(spec, redirected, executable, null)).toThrow('Install Codex somewhere narrower');
       }
-    } finally { process.env.HOME = previous; }
+    } finally {
+      process.env.HOME = previous;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previousCodexHome;
+    }
   });
   it('preserves prompt text while preventing native file-mention expansion', async () => {
     const spec = fixture();

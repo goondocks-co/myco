@@ -93,6 +93,23 @@ describe('explicit runner service opt-in', () => {
     expect(refused?.codex).toMatchObject({ ok: false, rule: 'contains-run' });
   });
 
+  it('guards the custom Codex login directory during service preflight', async () => {
+    const saved = process.env.CODEX_HOME;
+    const install = path.join(root, 'custom-codex');
+    process.env.CODEX_HOME = install;
+    fs.mkdirSync(install, { recursive: true });
+    const binary = path.join(install, 'codex');
+    fs.writeFileSync(binary, 'fixture');
+    try {
+      const preview = await preflightRunnerService({ ...deps(), serverUrl: SERVER, executor: 'runner' }, [], {
+        detect: () => [{ id: 'codex', installed: true, authenticated: true }], locate: () => binary,
+      });
+      expect(preview?.codex).toMatchObject({ ok: false, rule: 'overlaps-codex-login' });
+    } finally {
+      if (saved === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved;
+    }
+  });
+
   it('reports an unavailable Codex preview and still installs with a malformed package manifest', async () => {
     await enroll();
     const installed = path.join(root, 'codex-install', 'bin', 'codex');

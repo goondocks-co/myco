@@ -31,6 +31,7 @@
  *   (`steps.ts`): the step's kind and the input fields its target is read from.
  */
 
+import path from 'node:path';
 import { expandHome } from '../paths/home.js';
 import { PROFILE_HARNESSES, HARNESS_ASKING, canOfferHarness, type Asking, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import { HARNESS_FACTS } from './harnesses.generated.js';
@@ -171,17 +172,12 @@ export function harnessById(id: string): Harness | null {
   return BY_ID.get(id) ?? null;
 }
 
-/**
- * The absolute path of the file this harness keeps its login in, or null where
- * only its binary can answer.
- *
- * The declaration above is the one place that path is written. Detection reads
- * a login through this, and so does a driver that has to carry one into a run,
- * so a harness that moves its credential file is followed everywhere by the
- * edit that moves it here.
- */
-export function credentialFile(harness: Harness): string | null {
+/** The login file resolved under the environment that launches the harness. */
+export function credentialFile(harness: Harness, env: NodeJS.ProcessEnv = process.env): string | null {
   const probe = harness.credential;
   if (probe.kind === 'command') return null;
-  return expandHome(probe.path);
+  const configuredHome = harness.isolation.kind === 'home' ? env[harness.isolation.env]?.trim() : undefined;
+  return configuredHome
+    ? path.join(path.resolve(expandHome(configuredHome, env.HOME)), path.basename(probe.path))
+    : expandHome(probe.path, env.HOME);
 }

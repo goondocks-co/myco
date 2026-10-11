@@ -7,6 +7,7 @@ import { unclassifiedWorkerHolders, workerHolder, workerLockDir } from '../runne
 import { runnerRenewer } from '../runner/runner-rotation.js';
 import { contactRunner, parseContact, type RunnerMetadata } from '../runner/runner-routes.js';
 import { listWorkerUnits, harnessDirectories, installWorkerService, uninstallWorkerService, workerServiceSpec, workerServiceStatus, type WorkerServiceTarget } from '../runner/service.js';
+import { credentialFile, harnessById } from '@myco/runner/harnesses.js';
 import { runnerHarnessPreflight, type RunnerHarnessPreflight } from '@myco/runner/detect.js';
 import { ServicePathUnsupported, ServicePlatformUnsupported, ServiceStopFailed } from '../server/service.js';
 import { binaryRefusal, executorServiceTarget, describeWorkerService, executionDeploymentUrls, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
@@ -83,7 +84,7 @@ export async function preflightRunnerService(target: WorkerServiceTarget, harnes
   try {
     return await runnerHarnessPreflight({ ...process.env, HOME: target.home, MYCO_HOME: target.mycoHome, PATH: pathEnv }, {
       home: target.home, mycoHome: target.mycoHome, runDir, codexHome: path.join(runDir, 'codex-home'),
-      codexLogin: path.join(target.home, '.codex', 'auth.json'),
+      codexLogin: credentialFile(harnessById('codex')!, { ...process.env, HOME: target.home }),
     }, deps);
   } catch (error) {
     (deps.stdout ?? console.log)(`  codex: preview unavailable (${error instanceof Error ? error.message : String(error)})`);
