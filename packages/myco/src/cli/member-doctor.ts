@@ -23,7 +23,9 @@ import { pathIsAbsent } from '../member/store.js';
 import { listRunnerRecords, isLiveRunner } from '../runner/runner-registry.js';
 import { workerServiceStatus } from '../runner/service.js';
 import { ServerClient } from '../member/transport.js';
-import { hasLegacyInstall } from './member-dispatch.js';
+import { legacyMigrationPending, LegacyMigrationUnreadable } from '../member/legacy-migration.js';
+import { legacyVaultFiles } from '../member/home-role.js';
+import { defaultMycoHome } from '../paths/home.js';
 
 export interface MemberDoctorDeps extends MemberVerbDeps {
   /** The worker service probe's own dependencies (service runner, platform). */
@@ -173,10 +175,16 @@ const HOME_HEALTH_TIMEOUT_MS = 1500;
 const CUTOVER_RECORD = path.join('member', 'cutover.json');
 const LOGOUT_DIRECTORY = path.join('member', 'logout');
 
-/** A home with only 1.4 state retains the local doctor. No binary is run to classify it. */
+/** A home with only unmigrated 1.4 vaults retains the local doctor. No binary is run to classify it. */
 export function useHomeDoctor(home: string): boolean {
   const memberships = listDeploymentMembershipsResult(home);
-  return !hasLegacyInstall(home) || !memberships.readable || memberships.unavailableEntries > 0
+  let pending: boolean;
+  try { pending = legacyMigrationPending(home); }
+  catch (error) {
+    if (error instanceof LegacyMigrationUnreadable) return true;
+    throw error;
+  }
+  return !pending || !memberships.readable || memberships.unavailableEntries > 0
     || memberships.memberships.length > 0 || !pathIsAbsent(path.join(home, 'runner'))
     || !pathIsAbsent(path.join(home, CUTOVER_RECORD)) || !pathIsAbsent(path.join(home, LOGOUT_DIRECTORY));
 }
@@ -248,7 +256,16 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
     }
     checks.push(row('Runner offer', record.lastOffer ? 'ok' : 'not-checked', `${record.serverUrl}: ${record.lastOffer ? `offered ${record.lastOffer.offered.join(', ') || 'none'}; withheld ${record.lastOffer.withheld.join(', ') || 'none'}; observed ${iso(record.lastOffer.observedAt)}` : 'unknown (no acknowledged service offer); run `myco runner status` after starting the runner'}.`));
   }
-  if (hasLegacyInstall(home)) checks.push(row('Myco 1.4', 'warn', `1.4 data may remain at ${path.join(home, 'groves')}; migration completion is not verified. Next: \`myco cutover --dry-run\`.`));
+  try {
+    if (legacyMigrationPending(home)) {
+      const homes = [...new Set([home, defaultMycoHome()].map(directory => path.resolve(directory)))];
+      const vaults = [...new Set(homes.flatMap(directory => legacyVaultFiles(directory)))];
+      checks.push(row('Myco 1.4', 'warn', `migration pending; retained vault files: ${vaults.join(', ')}. Next: \`myco cutover --dry-run\`.`));
+    }
+  } catch (error) {
+    if (!(error instanceof LegacyMigrationUnreadable)) throw error;
+    checks.push(row('Myco 1.4', 'fail', `migration state unavailable: ${error.message}. Inspect ${error.file}, then run \`myco cutover --dry-run\`.`));
+  }
   return checks;
 }
 

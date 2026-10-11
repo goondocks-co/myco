@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { homeReport, projectReport, refusedHookChecks, useHomeDoctor, type MemberDoctorDeps } from '@myco/cli/member-doctor.js';
-import { runMemberVerb } from '@myco/cli/member-dispatch.js';
+import { readVaultContent } from '@myco/member/legacy-backup.js';
+import { helpText, MEMBER_USAGE, runMemberVerb } from '@myco/cli/member-dispatch.js';
 import { formatCheck } from '@myco/cli/doctor-member.js';
 import { optOut } from '@myco/cli/member-auto-join.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
@@ -137,10 +139,63 @@ describe('home doctor', () => {
     join(personal);
     expect(useHomeDoctor(home)).toBe(true);
     const text = await report();
-    expect(text).toContain('1.4 data may remain');
-    expect(text).toContain('migration completion is not verified');
+    expect(text).toContain('migration pending');
+    expect(text).toContain(path.join(home, 'groves', 'old', 'myco.db'));
     expect(text).toContain('myco cutover --dry-run');
     expect(fs.existsSync(sentinel)).toBe(false);
+  });
+
+  it.each(['metadata', 'digest'] as const)('treats cutover-backed vaults as migrated using %s evidence', async evidence => {
+    const vaults = [home, path.join(process.env.HOME!, '.myco')].map(directory => {
+      const file = path.join(directory, 'groves', 'retained', 'myco.db');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const db = new Database(file);
+      try { db.run('CREATE TABLE sessions (body TEXT)'); db.run("INSERT INTO sessions VALUES ('retained')"); } finally { db.close(); }
+      return file;
+    });
+    expect(useHomeDoctor(home)).toBe(false);
+    const backups = Object.fromEntries(vaults.map(file => {
+      const stat = fs.statSync(file);
+      return [file, evidence === 'metadata' ? { size: stat.size, mtimeMs: stat.mtimeMs } : { digest: readVaultContent(file).digest }];
+    }));
+    fs.mkdirSync(path.join(home, 'member'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups }), { mode: 0o600 });
+    expect(useHomeDoctor(home)).toBe(true);
+    expect(helpText('legacy commands', deps)).toBe(MEMBER_USAGE);
+    expect((await homeReport(home, deps)).filter(check => check.name === 'Myco 1.4')).toEqual([]);
+    join(personal);
+    const lines: string[] = [];
+    await runMemberVerb('doctor', [], { ...deps, stdout: line => lines.push(line) });
+    expect(lines.join('\n')).not.toContain('migration pending');
+    expect(lines.join('\n')).not.toContain('Myco 1.4');
+  });
+
+  it('ignores empty groves and names pending vaults in the default home', async () => {
+    fs.mkdirSync(path.join(home, 'groves'));
+    expect(useHomeDoctor(home)).toBe(true);
+    expect(helpText('legacy commands', deps)).toBe(MEMBER_USAGE);
+    const vault = path.join(process.env.HOME!, '.myco', 'myco.db');
+    fs.mkdirSync(path.dirname(vault), { recursive: true });
+    fs.writeFileSync(vault, 'fixture');
+    expect(useHomeDoctor(home)).toBe(false);
+    expect(helpText('legacy commands', deps)).toBe('legacy commands');
+    join(personal);
+    const check = (await homeReport(home, deps)).find(check => check.name === 'Myco 1.4')!;
+    expect(check.status).toBe('warn');
+    expect(check.detail).toContain('pending');
+    expect(check.detail).toContain(vault);
+  });
+
+  it('surfaces unreadable migration evidence rather than claiming migration completed', async () => {
+    fs.mkdirSync(path.join(home, 'groves', 'old'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'groves', 'old', 'myco.db'), 'fixture');
+    fs.mkdirSync(path.join(home, 'member'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), '{', { mode: 0o600 });
+    expect(useHomeDoctor(home)).toBe(true);
+    const check = (await homeReport(home, deps)).find(check => check.name === 'Myco 1.4')!;
+    expect(check.status).toBe('fail');
+    expect(check.detail).toContain('unavailable');
+    expect(check.detail).toContain(path.join(home, 'member', 'cutover.json'));
   });
 
   it('reports broken hooks and refused capture with the repair command', async () => {

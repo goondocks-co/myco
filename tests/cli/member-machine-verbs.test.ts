@@ -348,6 +348,8 @@ describe('a joined member with no 1.4 vault', () => {
     const help = (cwd: string) => helpText(LEGACY, { cwd, mycoHome });
     expect(help(checkout)).toBe(MEMBER_USAGE);
     fs.mkdirSync(path.join(mycoHome, 'groves'));
+    expect(help(checkout)).toBe(MEMBER_USAGE);
+    fs.writeFileSync(path.join(mycoHome, 'myco.db'), 'fixture');
     expect(help(checkout)).toBe(LEGACY);
     join(rig);
     expect(help(checkout)).toBe(MEMBER_USAGE);

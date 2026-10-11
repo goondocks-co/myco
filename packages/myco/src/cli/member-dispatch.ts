@@ -6,13 +6,12 @@
  * null for a root with no membership so the dispatcher runs the verb's 1.4
  * handler. `helpText` decides which command list `myco --help` prints.
  *
- * Nothing this module reaches opens a vault, a Grove database or the daemon;
- * `tests/meta/member-read-boundary.test.ts` walks its import closure.
+ * Migration classification reads retained vault evidence without starting a
+ * local runtime. `tests/meta/member-read-boundary.test.ts` walks the member
+ * handler import closure.
  */
-import fs from 'node:fs';
-import path from 'node:path';
 import { listDeploymentMemberships, readRegistryEntryResult } from '../member/registry.js';
-import { GROVES_DIRNAME } from '../paths/home.js';
+import { legacyMigrationPending } from '../member/legacy-migration.js';
 import { homeOf, memberSource, rootOf, type MemberVerbDeps } from './deployment-reader.js';
 import { isMemberReadVerb, type MemberVerb } from './member-verbs.js';
 import type { WorkerServiceDeps } from './worker-service.js';
@@ -40,20 +39,17 @@ export async function runMemberVerb(verb: MemberVerb, args: readonly string[], d
   }
 }
 
-/** Whether this home carries a 1.4 install: it holds a Groves directory. */
-export const hasLegacyInstall = (home: string): boolean => fs.existsSync(path.join(home, GROVES_DIRNAME));
-
 /**
  * The command list `myco --help` prints. The member's when this root is
- * joined, or when the home carries no 1.4 install. On a home with a 1.4
- * install, a root with no membership gets the 1.4 list, followed by the member
+ * joined, or when no retained 1.4 vault is pending migration. With migration
+ * pending, a root with no membership gets the 1.4 list, followed by the member
  * section when the home holds a Deployment membership; a 1.4-only home gets the
  * 1.4 list alone.
  */
 export function helpText(legacyUsage: string, deps: MemberVerbDeps = {}): string {
   const home = homeOf(deps);
   if (readRegistryEntryResult(rootOf(deps), home).status !== 'missing') return MEMBER_USAGE;
-  if (!hasLegacyInstall(home)) return MEMBER_USAGE;
+  if (!legacyMigrationPending(home)) return MEMBER_USAGE;
   return listDeploymentMemberships(home).length > 0 ? `${legacyUsage}\n${MEMBER_SECTION}` : legacyUsage;
 }
 
