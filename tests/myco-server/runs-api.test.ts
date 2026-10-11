@@ -62,7 +62,7 @@ describe('POST /runs/claim', () => {
 
   it('answers a Project not admitted to the capability distinctly from one whose task is running', async () => {
     const { post, sqlite } = await harness();
-    sqlite.query(`DELETE FROM project_capabilities WHERE project_id = 'proj_1'`).run();
+    sqlite.query(`UPDATE project_capabilities SET enabled = 0 WHERE project_id = 'proj_1'`).run();
     const res = await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'digest', capability: 'cortex' });
     expect(res).toEqual({ persisted: true, claimed: false, notAdmitted: 'cortex' });
     expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE status = 'running'`).get() as { c: number }).c).toBe(0);

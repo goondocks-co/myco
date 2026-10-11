@@ -3,7 +3,7 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { cloudflareVectorStore } from '../../packages/myco-server/src/platform/cloudflare/vectors.js';
 import { cloudflareEmbeddingProvider, EMBEDDING_MODEL } from '../../packages/myco-server/src/platform/cloudflare/embedding.js';
-import { dispatchEmbeddingWork, embeddingKeepsAwake } from '../../packages/myco-server/src/core/embedding/jobs.js';
+import { dispatchEmbeddingWork, embeddingKeepsAwake, embeddingSweepPending, runEmbeddingJob } from '../../packages/myco-server/src/core/embedding/jobs.js';
 import { settingsWriter } from '../../packages/myco-server/src/core/settings.js';
 import type { ServerEnv } from '../../packages/myco-server/src/core/adapters.js';
 
@@ -52,5 +52,25 @@ test('keeps one embedding run in flight across the Deployment: the next Project 
     f.sqlite.query("UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE task = 'embedding-reconcile'").run(now + 130_000);
     expect(await dispatchEmbeddingWork(env, now + 140_000)).toBe(1);
     expect(runs()).toEqual([{ project_id: 'proj_1' }, { project_id: 'proj_2' }]);
+  } finally { f.sqlite.close(); }
+});
+
+
+test('archived Projects neither dispatch embedding work nor keep its wake loop active', async () => {
+  const f = sqliteEnv();
+  try {
+    const now = Date.now(), launched: string[] = [];
+    f.sqlite.run("UPDATE projects SET archived_at=?", [now]);
+    f.sqlite.run("INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at) VALUES('proj_1',?,'retained','spore','gone','v',1,1)", [JSON.stringify(['cloudflare', EMBEDDING_MODEL])]);
+    const env: ServerEnv = { ...f.serverEnv, origin: 'https://myco.example', vectors: cloudflareVectorStore(indexFixture()),
+      embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }, { model: EMBEDDING_MODEL, modelKey: JSON.stringify(['cloudflare', EMBEDDING_MODEL]) }),
+      harnessLaunch: async (spec) => { launched.push(spec.runId); },
+    };
+    expect(await embeddingKeepsAwake(env, now)).toBe(false);
+    expect(await embeddingSweepPending(env, now)).toBe(false);
+    expect(await dispatchEmbeddingWork(env, now)).toBe(0);
+    expect(await runEmbeddingJob(env, now)).toEqual({ changed: 0, more: false });
+    expect(launched).toEqual([]);
+    expect(f.sqlite.query('SELECT count(*) AS n FROM embedding_receipts').get()).toEqual({ n: 1 });
   } finally { f.sqlite.close(); }
 });

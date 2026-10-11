@@ -22,7 +22,7 @@ import type { PowerState } from './power.js';
 import { scheduleFor, scheduleLeaves } from './scheduled-tasks.js';
 import { claimOwnerTitling, claimRefreshTitling, claimTitling, restoreTitlingStamp } from '../read/sessions.js';
 import { storedSettings } from './settings.js';
-import { CeilingReached, dispatchPrepared, prepareDispatch, type ActorCeiling, type DispatchRefusal, RUN_OVERRUN_MARGIN_MS } from './harness.js';
+import { CeilingReached, DispatchAdmissionRefused, dispatchPrepared, prepareDispatch, type ActorCeiling, type DispatchRefusal, RUN_OVERRUN_MARGIN_MS } from './harness.js';
 import { TITLING_TASK } from './task-catalogue.js';
 import { assertSessionMaterialReady, SessionMaterialPendingError } from '../read/material-readiness.js';
 
@@ -178,6 +178,7 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
     } catch (error) {
       // A launch the runtime refused, or a write the ceiling refused: the session keeps its own attempt, and an owner may ask again at once.
       await restoreTitlingStamp(env.db, projectId, sessionId, now, previous);
+      if (error instanceof DispatchAdmissionRefused) return skipped(REFUSAL_OUTCOME[error.refusal]);
       return error instanceof CeilingReached ? skipped('ceiling') : failed('error');
     }
   } catch (error) {

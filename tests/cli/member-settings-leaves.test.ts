@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DEPLOYMENT_LEAVES } from '@myco-server-worker/core/settings.js';
+import { DEPLOYMENT_LEAVES, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { runMemberVerb } from '@myco/cli/member-dispatch.js';
 import { run as login } from '@myco/cli/login.js';
@@ -105,9 +105,10 @@ describe('the Deployment leaves a member is answered', () => {
     expect(leaked(globalsBefore)).toEqual(NOTHING);
   });
 
-  it('are never applied by a sign-in that caches the machine\'s settings and provisions its agents', async () => {
+  it('are never applied by a context-off sign-in that caches the machine\'s settings and provisions its agents', async () => {
     const rig = unjoinedRig();
     sentinelLeaves(rig.env.sqlite);
+    await settingsWriter(rig.env.db).setCapability(PROJECT, 'cortex', false, 'test', Date.now());
     const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: PROJECT });
     const platform = recordingPlatform();
     const globalsBefore = new Set(Object.getOwnPropertyNames(globalThis));

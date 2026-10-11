@@ -12,9 +12,9 @@ import { EMBEDDING_RETRY_MS, EMBEDDING_TASK } from './task.js';
 export const EMBEDDING_SWEEP_ASSERTION = 'embedding:sweep';
 export const PREVENT_DEEP_SLEEP_LEAF = 'embedding.prevent_deep_sleep';
 
-/** Every Project embedding work may serve, the archived ones only retiring. */
+/** Only live Projects participate in embedding dispatch and wake decisions. */
 async function workProjects(db: RelationalStore): Promise<Array<{ projectId: string; retireOnly: boolean }>> {
-  return (await db.prepare('SELECT project_id, archived_at FROM projects ORDER BY project_id')
+  return (await db.prepare('SELECT project_id, archived_at FROM projects WHERE archived_at IS NULL ORDER BY project_id')
     .all<{ project_id: string; archived_at: number | null }>()).results
     .map((project) => ({ projectId: project.project_id, retireOnly: project.archived_at !== null }));
 }

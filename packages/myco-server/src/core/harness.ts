@@ -26,7 +26,7 @@ import { DEPLOYMENT_WIDE_HOLDS, heldBy, readDispatchLimits, type DispatchLimits,
 import type { ServerEnv } from './adapters.js';
 import { ensureMember, ensureMemberStatement } from '../auth/enrollment.js';
 import { mintInsert, NO_RUNTIME_CLAIMS, revokeCredentialOfMemberStatement, revokeCredentialOfMember } from '../auth/tokens.js';
-import { projectExists } from '../read/sessions.js';
+import { type ProjectCapability, projectWorkEnabled } from './settings.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS } from '../constants.js';
 export { HARNESS_MEMBER_ID };
 import { pruneUncaptured } from '../ingest/uncaptured.js';
@@ -280,6 +280,21 @@ export class LaunchRefused extends Error {
   constructor(message: string, options: { cause: unknown }) { super(message, options); this.name = 'LaunchRefused'; }
 }
 
+export class DispatchAdmissionRefused extends Error {
+  constructor(readonly refusal: 'unknown_project' | 'capability_off', readonly capability?: ProjectCapability) {
+    super(DISPATCH_REFUSAL_MESSAGE[refusal]);
+    this.name = 'DispatchAdmissionRefused';
+  }
+}
+
+/** A prepared dispatch's current Project admission, read after its atomic write refuses. */
+async function dispatchAdmissionRefusal(env: ServerEnv, prepared: PreparedDispatch): Promise<DispatchAdmissionRefused | null> {
+  if (!(await projectWorkEnabled(env.db, prepared.projectId))) return new DispatchAdmissionRefused('unknown_project');
+  const capability = capabilityOf(prepared.task);
+  return capability !== null && !(await capabilityOn(env.db, prepared.projectId, capability))
+    ? new DispatchAdmissionRefused('capability_off', capability) : null;
+}
+
 export class RuntimeAlreadyHolding extends Error {
   constructor(message: string) { super(message); this.name = 'RuntimeAlreadyHolding'; }
 }
@@ -345,6 +360,8 @@ export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch
   const stored = storedSpecOf(spec);
   const scope = { projectId: prepared.projectId };
   if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored), runContext: runContextOf(spec, spec.timeoutSeconds ?? runTimeoutForTask(prepared.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS) }, { ...options, setup }))) {
+    const refusal = await dispatchAdmissionRefusal(env, prepared);
+    if (refusal !== null) throw refusal;
     if ((await getRun(env.db, scope, runId)) === null) {
       if (await ceilingHolds(env.db, options.ceiling)) throw new CeilingReached();
       if (options.singleFlight === true) throw new AlreadyRunning();
@@ -459,6 +476,11 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
     } catch (err) {
       // A runtime that is not taking runs takes none of the rows after this one either; this wake ends and the next retries.
       if (err instanceof RuntimeDraining) return launched;
+      if (err instanceof DispatchAdmissionRefused) {
+        await endQueuedRun(env, scope, queued, now, { skipped: err.refusal });
+        emit({ kind: 'task_skipped', task: queued.task, projectId: queued.projectId, skip: err.refusal });
+        continue;
+      }
       // Another drain took this row between the read and the write. It is that
       // drain's now; the rows after it are still this one's to try.
       if (err instanceof NotQueued) {
@@ -502,7 +524,9 @@ export function hasTaskRuntime(env: ServerEnv, task: string): boolean {
 export async function prepareDispatch(env: ServerEnv, task: string, projectId: string): Promise<PrepareOutcome> {
   const gate = admissionForTask(task);
   if (gate === null) return { ok: false, refusal: 'unknown_task' };
-  if (!(await projectExists(env.db, projectId))) return { ok: false, refusal: 'unknown_project' };
+  if (!(await projectWorkEnabled(env.db, projectId))) return { ok: false, refusal: 'unknown_project' };
+  const capability = capabilityOf(task);
+  if (capability !== null && !(await capabilityOn(env.db, projectId, capability))) return { ok: false, refusal: 'capability_off', capability };
 
   // Unavailable tasks are refused before repository and provider requirements.
   if (UNLANDED_TASKS.includes(task)) return { ok: false, refusal: 'not_landed' };
@@ -519,10 +543,6 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
   // ever hand out.
   if (!RUNTIME_SERVED_TASKS.includes(task)) {
     if (inputBuilderFor(task) === null) return { ok: false, refusal: 'no_instruction' };
-    // A task a capability gates is queued only where the Project has turned it on, whoever asks. A runtime-served
-    // task carries its admission into its container (`MYCO_TASK_ADMISSION`), which refuses there.
-    const capability = capabilityOf(task);
-    if (capability !== null && !(await capabilityOn(env.db, projectId, capability))) return { ok: false, refusal: 'capability_off', capability };
     const admission = gate.kind === 'capture' ? CAPTURE_DRIVEN_ADMISSION : gate.kind === 'embedding' ? CAPTURE_DRIVEN_ADMISSION : gate.capability;
     return { ok: true, prepared: { task, projectId, servedBy: 'worker', providerType: null, model: null, provider: {}, credentialEnv: {}, admission } };
   }
@@ -585,7 +605,9 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
   // on whether that child is still running.
   // A queued row moves to pending for this credential; any other id is recorded afresh. Either way the row exists before
   // the launch, and the write itself carries the limit check when limits are given.
+  const capability = capabilityOf(prepared.task);
   const admission = { limits: options.limits ?? NO_LIMITS, now, singleFlight: options.singleFlight === true,
+    ...(capability === null ? {} : { capability }),
     actor: options.actor, setup, ...(options.ceiling === undefined ? {} : { ceiling: options.ceiling }) };
   // Nothing names this credential until the write lands, so a store that throws
   // anywhere between the mint and that write retires it on its way out.
@@ -604,6 +626,8 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     // No row names this credential: the write above changed nothing, and the
     // caller learns whether a limit or the row's own state refused it.
     await retireDispatchCredential(env, minted.tokenId, now);
+    const refusal = await dispatchAdmissionRefusal(env, prepared);
+    if (refusal !== null) throw refusal;
     const existing = await getRun(env.db, scope, runId);
     if (spec.fromQueue === true) {
       if (existing === null || existing.status !== 'queued') throw new NotQueued();
@@ -701,7 +725,12 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
 export async function dispatchTask(env: ServerEnv, task: string, projectId: string, spec: LaunchSpec, now: number, options: { ceiling?: ActorCeiling; actor?: MemberWriteActor } = {}): Promise<DispatchOutcome> {
   const prepared = await prepareDispatch(env, task, projectId);
   if (!prepared.ok) return { dispatched: false, refusal: prepared.refusal, ...(prepared.providerType === undefined ? {} : { providerType: prepared.providerType }), ...(prepared.capability === undefined ? {} : { capability: prepared.capability }) };
-  return { dispatched: true, ...(await dispatchPrepared(env, prepared.prepared, spec, now, options)) };
+  try {
+    return { dispatched: true, ...(await dispatchPrepared(env, prepared.prepared, spec, now, options)) };
+  } catch (error) {
+    if (!(error instanceof DispatchAdmissionRefused)) throw error;
+    return { dispatched: false, refusal: error.refusal, ...(error.capability === undefined ? {} : { capability: error.capability }) };
+  }
 }
 
 /** The run the platform replaced, with everything a fresh dispatch of it needs that the row does not carry. */
@@ -911,6 +940,12 @@ export async function fleetExecution(env: ServerEnv, task: string, reports: read
   return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, credentialEnv: selected.login }, holder };
 }
 
+/** Whether a recent eligible worker can execute this repository task with its required profile and capabilities. */
+export async function repositoryWorkerAvailable(env: ServerEnv, task: string, now: number): Promise<boolean> {
+  const [reports, settings] = await Promise.all([recentWorkerReports(env.db, now), claimSettings(env)]);
+  return (await fleetExecution(env, task, reports, settings)).selected !== null;
+}
+
 /**
  * Take the oldest queued run this worker can run.
  *
@@ -961,12 +996,13 @@ export async function claimNextRun(
   // A run of a task whose capability the Project turned off after it queued is skipped where it waits, naming why:
   // held, it would stand at the head of the queue for good. The claim's own write checks it again.
   const capability = capabilityOf(candidate.task);
-  const skipOff = async (): Promise<ClaimOutcome> => {
-    await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { skipped: CAPABILITY_OFF });
-    emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip: CAPABILITY_OFF });
+  const skipRefused = async (skip: string): Promise<ClaimOutcome> => {
+    await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { skipped: skip });
+    emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip });
     return claimNextRun(env, worker);
   };
-  if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipOff();
+  if (!(await projectWorkEnabled(env.db, candidate.projectId))) return skipRefused('unknown_project');
+  if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipRefused(CAPABILITY_OFF);
   const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { fresh: stored?.options?.fresh === true, params: stored?.params });
   if (built !== null && built.unchanged) {
     await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { skipped: INPUT_UNCHANGED });
@@ -1003,7 +1039,8 @@ export async function claimNextRun(
   }, { ...admission, setup });
   if (row === null) {
     if (worker.principal.kind === 'runner' && !(await runnerAcceptsWork(env.db, worker.principal.runnerId))) return { claimed: false, reason: 'paused' };
-    if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipOff();
+    if (!(await projectWorkEnabled(env.db, candidate.projectId))) return skipRefused('unknown_project');
+    if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipRefused(CAPABILITY_OFF);
     const held = await admitDispatch(env, candidate.task, worker.now, limits, candidate.id);
     if (held === null) return { claimed: false, reason: 'lost_race' };
     await recordQueueHolder(env.db, scope, candidate.id, held);

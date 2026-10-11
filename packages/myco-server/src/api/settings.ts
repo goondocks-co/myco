@@ -281,7 +281,7 @@ export async function handleSetTaskTier(env: ServerEnv, ctx: OwnerContext): Prom
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
 }
 
-/** What this Project is admitted to. Every capability is reported, so an absent row reads as `false` rather than as missing. */
+/** Every capability's effective admission for this Project, including defaults. */
 export async function handleProjectCapabilities(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();

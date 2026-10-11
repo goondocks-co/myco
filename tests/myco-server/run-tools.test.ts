@@ -13,6 +13,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 import { RUN_TOOLS, SERVED_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
@@ -91,6 +92,21 @@ async function setup() {
 }
 
 describe('the run surface and the member surface do not overlap', () => {
+  for (const change of ['archive', 'learning-off'] as const) it(`stops an active extraction run's MCP work after ${change}`, async () => {
+    const f = await setup();
+    try {
+      await f.dispatch('run_1', SWEEP);
+      if (change === 'archive') f.sqlite.run("UPDATE projects SET archived_at=? WHERE project_id='proj_1'", [NOW]);
+      else await settingsWriter(f.db).setCapability('proj_1', 'vault_evolution', false, 'test', NOW);
+      const response = await worker.fetch(post(f.harness.token, rpc('tools/call', { name: 'myco_spores', arguments: { op: 'save', content: 'must not learn', observation_type: 'gotcha' } })), f.env);
+      expect(await response.json()).toMatchObject({ error: { data: { code: 'unknown_tool' } } });
+      expect(f.sqlite.query('SELECT count(*) AS n FROM spores').get()).toEqual({ n: 0 });
+      const report = await f.call(f.harness.token, 'myco_run', { op: 'report', action: RUN_SKIP_ACTION, summary: 'project work switched off' });
+      expect(report.error).toBeUndefined();
+      expect(report.result).toMatchObject({ recorded: true });
+    } finally { f.sqlite.close(); }
+  });
+
   it('shares no tool name, and lists no run-only tool to a member or a grant', async () => {
     const { env, db, harness, member, dispatch, list } = await setup();
     await dispatch('run_1', SWEEP);

@@ -10,6 +10,9 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
+import { sqliteEnv } from '../myco-server/helpers/fixtures';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
+
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { keyWords } from '../../packages/myco-server/ui/src/features/admin/project/access-keys';
@@ -45,7 +48,7 @@ interface Sent { method: string; path: string; body: unknown }
 const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
 
-function server(routes: Record<string, (init?: RequestInit) => Response>): { sent: Sent[]; asked: string[] } {
+function server(routes: Record<string, (init?: RequestInit) => Response | Promise<Response>>): { sent: Sent[]; asked: string[] } {
   const sent: Sent[] = [];
   const asked: string[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -60,7 +63,7 @@ function server(routes: Record<string, (init?: RequestInit) => Response>): { sen
 }
 
 const api = `/api/projects/${P}`;
-const base = (extra: Record<string, (init?: RequestInit) => Response> = {}) => ({
+const base = (extra: Record<string, (init?: RequestInit) => Response | Promise<Response>> = {}) => ({
   '/auth/me': () => Response.json(dashboardMe(ADMIN)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
@@ -107,6 +110,33 @@ describe('a project\'s settings', () => {
     await screen.findByText('review bot');
     await screen.findByText('https://github.com/goondocks-co/myco.git');
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
+  });
+
+  it('shows all capabilities on with no stored rows and persists an explicit off through the switch', async () => {
+    const e = sqliteEnv();
+    e.sqlite.run('INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)', [P, 'Myco', NOW]);
+    const writer = settingsWriter(e.db);
+    const capabilities = await writer.capabilities(P);
+    try {
+      const { sent } = server(base({
+        [`${api}/capabilities`]: () => Response.json({ capabilities }),
+        [`PUT ${api}/capabilities/cortex`]: async (init) => {
+          const body = JSON.parse(String(init?.body)) as { enabled: boolean };
+          await writer.setCapability(P, 'cortex', body.enabled, ADA, NOW);
+          capabilities.cortex = body.enabled;
+          return Response.json({ applied: true });
+        },
+      }));
+      mount(`/p/${P}/settings`);
+      for (const name of ['Context for sessions', 'Code map', 'Learning']) {
+        expect((await screen.findByRole('switch', { name })).getAttribute('aria-checked')).toBe('true');
+      }
+      expect(e.sqlite.query('SELECT COUNT(*) AS n FROM project_capabilities WHERE project_id=?').get(P)).toEqual({ n: 0 });
+      fireEvent.click(screen.getByRole('switch', { name: 'Context for sessions' }));
+      await waitFor(() => expect(screen.getByRole('switch', { name: 'Context for sessions' }).getAttribute('aria-checked')).toBe('false'));
+      expect(sent).toEqual([{ method: 'PUT', path: `${api}/capabilities/cortex`, body: { enabled: false } }]);
+      expect(e.sqlite.query('SELECT enabled FROM project_capabilities WHERE project_id=? AND capability=?').get(P, 'cortex')).toEqual({ enabled: 0 });
+    } finally { cleanup(); e.sqlite.close(); }
   });
 
   it('renames through the shared project mutation, refreshes the name and shows refusals in the dialog', async () => {

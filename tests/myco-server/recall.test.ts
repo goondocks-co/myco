@@ -589,7 +589,7 @@ describe('POST /context/prompt', () => {
     try {
       for (const [projectId, name, count, plans] of [['proj_1', 'myco', 30, 4], ['proj_2', 'unifi-mcp', 453, 112]] as const) {
         e.sqlite.run(`UPDATE projects SET name = ? WHERE project_id = ?`, [name, projectId]);
-        e.sqlite.run(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, 'cortex', 1, ?, 'test')`, [projectId, NOW]);
+
         for (let i = 0; i < 45; i++) e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, origin_path, started_at)
           VALUES (?, ?, 'machine_1', 'fixture', ?, ?, ?, ?)`, [projectId, `history-${i}`, NOW - i, NOW, `/Users/fixture/Repos/${name}`, NOW - i]);
         planKeys.set(projectId, new Set());
@@ -665,8 +665,9 @@ describe('POST /context/prompt', () => {
     }
   });
 
-  it('answers the Project that is not admitted an empty block naming the gate', async () => {
+  it('answers the explicitly cortex-off Project an empty block naming the gate', async () => {
     const { e, token } = await member();
+    await settingsWriter(e.db).setCapability('proj_1', 'cortex', false, 'mem_machine_1', NOW);
     const answer = await (await worker.fetch(post(token, { sessionId: 's1', promptId: 'p1', text: PLANNING_PROMPT }), e.env)).json();
     expect(answer).toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'] });
   });
@@ -777,10 +778,20 @@ describe('POST /context/session', () => {
     expect((await answer(e, token, { sessionId: 's1', kind: 'start' })).context).toContain('Keep the plan current.');
   });
 
-  it('answers the Project that is not admitted its own id and the gate it closed on', async () => {
+  it('serves only identity on start, subagent, compact and preview when cortex is explicitly off', async () => {
     const { e, token } = await member();
-    expect(await answer(e, token, { sessionId: 's1', kind: 'start' }))
-      .toEqual({ persisted: true, context: projectLine('proj_1'), parts: [{ kind: 'project' }], skipped: ['capability'], kind: 'cortex' });
+    await settingsWriter(e.db).setLeaf(INSTRUCTIONS_TEMPLATE_LEAF, 'Keep the plan current.', 'mem_machine_1', NOW);
+    await settingsWriter(e.db).setCapability('proj_1', 'cortex', false, 'mem_machine_1', NOW);
+    for (const [body, kind] of [
+      [{ sessionId: 's1', kind: 'start' }, 'cortex'],
+      [{ sessionId: 's1', kind: 'subagent', agentId: 'a1' }, 'cortex:a1'],
+      [{ sessionId: 's1', kind: 'compact', compaction: 1 }, 'cortex-compact:1'],
+      [{ kind: 'start', preview: true }, 'cortex'],
+      [{ kind: 'subagent', preview: true }, 'cortex:unknown'],
+    ] as const) {
+      expect(await answer(e, token, body))
+        .toEqual({ persisted: true, context: projectLine('proj_1'), parts: [{ kind: 'project' }], skipped: ['capability'], kind });
+    }
   });
 
   it('answers the instructions once, and the subagent block under its own kind', async () => {

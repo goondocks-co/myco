@@ -124,6 +124,14 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run
       expect((await f.post(f.holder.token, offer)).body.refusalId).toBeUndefined();
     } finally { f.sqlite.close(); }
   });
+  for (const path of ['/runs/claim', ...Object.keys(TASKS)]) it(`${path} refuses active work after its Project is archived`, async () => {
+    const f = await fixture(target, path);
+    try {
+      f.sqlite.run("UPDATE projects SET archived_at=? WHERE project_id='proj_1'", [f.now]);
+      expect((await f.post(f.holder.token, OFFERS[path as keyof typeof OFFERS])).body.persisted).toBe(false);
+    } finally { f.sqlite.close(); }
+  });
+
   it('admits an embedding step while its rightful dispatch lease is live', async () => {
     const f = await fixture(target, '/runs/embedding-step');
     try {

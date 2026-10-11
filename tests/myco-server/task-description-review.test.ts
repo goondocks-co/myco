@@ -67,6 +67,7 @@ it('resolves every offerable agent without a preference and preserves run hold r
 it('uses the resolved project set to show a switched off capability', async () => {
   const f = sqliteEnv();
   try {
+    await settingsWriter(f.db).setCapability('proj_1', 'canopy', false, 'test', 1);
     let answer = await tasks(f, '/api/tasks?project=proj_1');
     expect(answer.tasks.find((task) => task.task === 'canopy-map')).toMatchObject({ availabilityNote: 'Switched off for this project' });
     expect(answer.tasks.find((task) => task.task === 'embedding-reconcile')).toMatchObject({ availabilityNote: 'Search for similar knowledge is unavailable on this server.' });

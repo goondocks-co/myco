@@ -34,7 +34,8 @@ import { resolveTenancyArgument } from '../api/scope.js';
 import { TOOL_DEFINITIONS, definitionOf, type ToolDefinition } from './definitions.js';
 import { externalDefinitions, isExternalCall } from './external.js';
 import { entryFor, opOf, TOOL_REGISTRY, type RegistryEntry } from './registry.js';
-import { isRunCall, runDefinitions, RUN_TOOL_REGISTRY } from './run-surface.js';
+import { taskWorkEnabled } from '../core/settings.js';
+import { ALWAYS_ALLOWED, isRunCall, runDefinitions, RUN_TOOL_REGISTRY } from './run-surface.js';
 import { runDefinitionOf } from './run-definitions.js';
 import { normalizeInput, ToolError, unknownTool, validateInput, type ToolInput } from './validate.js';
 import { SessionMaterialPendingError } from '../read/material-readiness.js';
@@ -175,6 +176,7 @@ export interface Surface {
   definitionOf(name: string): ToolDefinition | undefined;
   opOf(name: string, input: ToolInput): string;
   allows(name: string, op: string): boolean;
+  admits?(ctx: ProtocolContext, name: string, op: string): Promise<boolean>;
   entryFor(name: string, op: string): RegistryEntry | undefined;
 }
 
@@ -202,6 +204,8 @@ export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
       definitionOf: (name) => definitionOf(name) ?? runDefinitionOf(name),
       opOf: (name, input) => runOpOf(name, input),
       allows: (name, op) => isRunCall(p.allow, name as AnyTool, op),
+      admits: async (scope, name, op) => (name === ALWAYS_ALLOWED.tool && op === ALWAYS_ALLOWED.op)
+        || (scope.projectId !== null && await taskWorkEnabled(scope.env.db, scope.projectId, p.task)),
       entryFor: runEntryFor,
     };
   }
@@ -263,7 +267,8 @@ export async function authorizedDefinitionsFor(ctx: ProtocolContext): Promise<re
     const ops = definition.inputSchema.properties.op?.enum?.filter((value): value is string => typeof value === 'string') ?? [NO_OP];
     for (const op of ops) {
       const declaration = surface.entryFor(definition.name, op)?.authorization;
-      if (declaration === undefined || !surface.allows(definition.name, op)) continue;
+      if (declaration === undefined || !surface.allows(definition.name, op)
+        || (surface.admits !== undefined && !(await surface.admits(ctx, definition.name, op)))) continue;
       const key = `${declaration.resolver}:${declaration.resource}`;
       let resource = resources.get(key);
       if (resource === undefined) {
@@ -317,6 +322,7 @@ export async function callTool(ctx: ProtocolContext, name: string, args: unknown
     }
     scoped = { ...ctx, projectId: scope.projectId };
   } else scoped = ctx;
+  if (surface.admits !== undefined && !(await surface.admits(scoped, name, op))) throw unknownTool(name);
   if (!(await authorizeTool(scoped, entry.authorization, input))) throw unknownTool(name);
   admitted?.({ tool: name as AnyTool, op });
   try { return { tool: name as AnyTool, op, result: await entry.handler(input, scoped) }; }

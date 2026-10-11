@@ -65,7 +65,9 @@ export const recall: ParityScenario = {
     await post(session, 'session.start', { agent: 'claude-code', branch: 'recall', startedAt: stamp }, stamp);
     await post(session, 'prompt', { promptId: p1, text: planning, origin: 'user' }, stamp + 1);
 
-    await admit(true);
+    await target.sql(`DELETE FROM project_capabilities WHERE project_id = ${lit(target.projectId)}`);
+    const defaults = await owner<{ capabilities: Record<string, boolean> }>(`/api/projects/${target.projectId}/capabilities`);
+    expect(defaults.body.capabilities).toEqual({ cortex: true, canopy: true, vault_evolution: true });
     const spore = await mcp({ op: 'save', type: 'decision', content: `the hook answers before the drain ${stamp}`, session_id: session, project: target.projectId });
     expect(spore.id).toBeDefined();
 
@@ -183,6 +185,29 @@ export const recall: ParityScenario = {
       .toEqual({ parts: ['project'], skipped: ['capability'], kind: 'cortex' });
     expect(atStartOff.context).toContain(target.projectId);
 
+    for (const payload of [
+      { sessionId: withdrawn, kind: 'subagent', agentId: 'off-child' },
+      { sessionId: withdrawn, kind: 'compact', compaction: 1 },
+      { kind: 'start', preview: true },
+      { kind: 'subagent', preview: true },
+    ]) {
+      const block = await sessionBlock(payload);
+      expect(block.parts).toEqual([{ kind: 'project' }]);
+      expect(block.skipped).toEqual(['capability']);
+      expect(block.context).toBe(`Project:: \`${target.projectId}\` — pass this as \`project\` on Myco tool calls; a write without it is refused.`);
+    }
+    expect(await target.sql(`SELECT enabled FROM project_capabilities WHERE project_id = ${lit(target.projectId)} AND capability = 'cortex'`))
+      .toEqual([{ enabled: 0 }]);
+
     await admit(true);
+    await target.sql(`UPDATE projects SET archived_at = ${stamp} WHERE project_id = ${lit(target.projectId)}`);
+    try {
+      const archived = await owner<{ capabilities: Record<string, boolean> }>(`/api/projects/${target.projectId}/capabilities`);
+      expect(archived.body.capabilities).toEqual({ cortex: false, canopy: false, vault_evolution: false });
+      expect(await served(`archived-${stamp}`, crypto.randomUUID(), planning))
+        .toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'] });
+    } finally {
+      await target.sql(`UPDATE projects SET archived_at = NULL WHERE project_id = ${lit(target.projectId)}`);
+    }
   },
 };

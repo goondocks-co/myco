@@ -2,7 +2,7 @@ import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS, isReasoningTier, modelRefusal, effortRefusal, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
-import { OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK } from './task-catalogue.js';
+import { admissionForTask, OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK } from './task-catalogue.js';
 import { TASK_SCHEDULE } from './jobs.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { EMBEDDING_CATALOGUE, isEmbeddingProvider, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
@@ -462,13 +462,7 @@ export interface SettingsWriter {
   setCapability(projectId: string, capability: string, enabled: boolean, actor: string, nowMs: number): Promise<SettingsResult>;
   /** Every stored Deployment leaf. Absent leaves are not defaulted here; a reader layers these over its own defaults. */
   leaves(): Promise<Record<string, LeafRecord>>;
-  /**
-   * Whether `projectId` is admitted to `capability`.
-   *
-   * ABSENT MEANS FALSE. A Project appears from a member's first write with no
-   * provisioning step, so anything else silently admits every new Project to
-   * every cost-bearing capability.
-   */
+  /** Whether a live Project has this capability on; an absent row is on and an explicit zero is off. */
   capabilityEnabled(projectId: string, capability: ProjectCapability): Promise<boolean>;
   /** Every capability this Project is admitted to. */
   capabilities(projectId: string): Promise<Record<ProjectCapability, boolean>>;
@@ -744,21 +738,53 @@ export async function writeSwitchedEmbedding(
   return results[statements.length]!.meta.changes === 1;
 }
 
-/**
- * Every capability of `capabilities` a Project has turned on, for every Project or the one named, in one statement:
- * the read `capabilityEnabled` makes of one Project, made once for the Deployment.
- */
-/** A capability turned on for a Project, as a condition a write carries. Bound as: Project, capability. */
-export const CAPABILITY_ON_SQL = `EXISTS (SELECT 1 FROM project_capabilities pc WHERE pc.project_id = ? AND pc.capability = ? AND pc.enabled = 1)`;
+/** A Project accepting new intelligence work, with any additional admission bound inside the same read. */
+function projectWorkSql(project: string, admission = ''): string {
+  return `EXISTS (SELECT 1 FROM projects capability_project
+    WHERE capability_project.project_id = ${project} AND capability_project.archived_at IS NULL ${admission})`;
+}
 
+/** A live Project's admission to intelligence work, bound as: Project. */
+export const PROJECT_WORK_SQL = projectWorkSql('?');
+
+/** Whether a Project accepts new intelligence work. */
+export async function projectWorkEnabled(db: RelationalStore, projectId: string): Promise<boolean> {
+  return (await db.prepare(`SELECT ${PROJECT_WORK_SQL} AS enabled`).bind(projectId).first<{ enabled: number }>())?.enabled === 1;
+}
+
+/** Current task capabilities and live-project admission for the retained run protocol. */
+export async function taskWorkEnabled(db: RelationalStore, projectId: string, task: string | null): Promise<boolean> {
+  const gate = task === null ? null : admissionForTask(task);
+  return gate?.kind === 'capability'
+    ? settingsWriter(db).capabilityEnabled(projectId, gate.capability)
+    : projectWorkEnabled(db, projectId);
+}
+
+/** A live Project's missing capability row enables it; only an explicit zero opts it out. */
+function capabilityOnSql(project: string, capability: string): string {
+  return projectWorkSql(project, `AND NOT EXISTS (SELECT 1 FROM project_capabilities pc
+        WHERE pc.project_id = capability_project.project_id AND pc.capability = ${capability} AND pc.enabled = 0)`);
+}
+
+/** A capability's admission condition, bound as: Project, capability. */
+export const CAPABILITY_ON_SQL = capabilityOnSql('?', '?');
+
+function requestedCapabilities(capabilities: readonly ProjectCapability[]): string {
+  return capabilities.map(() => 'SELECT ? AS capability').join(' UNION ALL ');
+}
+
+/** Enabled capabilities for every stored Project or the Project named, in one statement. */
 export function enabledCapabilities(db: RelationalStore, capabilities: readonly ProjectCapability[], projectId?: string): {
   statement: PreparedStatement;
   read: (rows: ReadonlyArray<Record<string, unknown>>) => Array<{ projectId: string; capability: string }>;
 } {
   const statement = db.prepare(
-    `SELECT project_id AS projectId, capability FROM project_capabilities
-      WHERE enabled = 1 AND capability IN (${capabilities.map(() => '?').join(', ')})${projectId === undefined ? '' : ' AND project_id = ?'}`,
-  ).bind(...capabilities, ...(projectId === undefined ? [] : [projectId]));
+    capabilities.length === 0
+      ? 'SELECT project_id AS projectId, NULL AS capability FROM projects WHERE 0'
+      : `SELECT p.project_id AS projectId, requested.capability FROM projects p
+         CROSS JOIN (${requestedCapabilities(capabilities)}) requested
+         WHERE ${capabilityOnSql('p.project_id', 'requested.capability')}${projectId === undefined ? '' : ' AND p.project_id = ?'}`,
+  ).bind(...capabilities, ...(capabilities.length === 0 || projectId === undefined ? [] : [projectId]));
   return { statement, read: (rows) => rows.map((row) => ({ projectId: String(row.projectId), capability: String(row.capability) })) };
 }
 
@@ -969,11 +995,9 @@ export function settingsWriter(
     },
 
     async capabilityEnabled(projectId, capability) {
-      const row = await db
-        .prepare(`SELECT enabled FROM project_capabilities WHERE project_id = ? AND capability = ?`)
-        .bind(projectId, capability)
-        .first<{ enabled: number }>();
-      return row !== null && row.enabled === 1;
+      const row = await db.prepare(`SELECT ${CAPABILITY_ON_SQL} AS enabled`)
+        .bind(projectId, capability).first<{ enabled: number }>();
+      return row?.enabled === 1;
     },
 
     async retiredCapabilities(projectId) {
@@ -984,14 +1008,11 @@ export function settingsWriter(
     },
 
     async capabilities(projectId) {
-      const { results } = await db
-        .prepare(`SELECT capability, enabled FROM project_capabilities WHERE project_id = ?`)
-        .bind(projectId)
-        .all<{ capability: string; enabled: number }>();
-      const admitted = new Map(results.map((r) => [r.capability, r.enabled === 1]));
-      return Object.fromEntries(
-        PROJECT_CAPABILITIES.map((c) => [c, admitted.get(c) ?? false]),
-      ) as Record<ProjectCapability, boolean>;
+      const { results } = await db.prepare(
+        `SELECT requested.capability, ${capabilityOnSql('?', 'requested.capability')} AS enabled
+         FROM (${requestedCapabilities(PROJECT_CAPABILITIES)}) requested`,
+      ).bind(projectId, ...PROJECT_CAPABILITIES).all<{ capability: ProjectCapability; enabled: number }>();
+      return Object.fromEntries(results.map((row) => [row.capability, row.enabled === 1])) as Record<ProjectCapability, boolean>;
     },
   };
 }

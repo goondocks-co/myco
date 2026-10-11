@@ -13,8 +13,11 @@
  * A dispatch limit and a per-day ceiling answer differently, and the difference
  * is the point: a limit QUEUES, a ceiling REFUSES (`ceilingSkipId`).
  */
+import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
+import { projectRepositories } from './repositories.js';
+import { deploymentSecretStore } from './secrets.js';
 import type { ServerEnv } from './adapters.js';
-import { AlreadyRunning, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, type LaunchSpec } from './harness.js';
+import { AlreadyRunning, DispatchAdmissionRefused, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, repositoryWorkerAvailable, type LaunchSpec } from './harness.js';
 import { buildTaskInput } from './task-inputs.js';
 import type { PowerState } from './power.js';
 import { ensureAgent, INPUT_UNCHANGED, recordSkipped, taskFactsKey, taskRunFacts, type TaskRunFacts } from './runs.js';
@@ -66,7 +69,7 @@ async function recordClockSkip(env: ServerEnv, projectId: string, task: string, 
 /** Who a scheduled run is attributed to: the Deployment's own clock. */
 export const CLOCK_ACTOR = 'clock';
 /** Why the clock left a task alone this wake; a ceiling met is recorded on a run row, the rest are told. */
-export type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'reserved_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged' | 'uninstructed';
+export type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'reserved_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged' | 'uninstructed' | 'repository_missing' | 'repository_unavailable' | 'worker_unavailable';
 
 export interface ScheduleReport {
   /** Dispatches the clock made, launched or queued. */
@@ -143,6 +146,12 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
       if (check === undefined || !(await check({ db: env.db, projectId, now }))) return 'reserved_runs_per_day';
     }
   }
+  if (REPOSITORY_TASKS.includes(task)) {
+    const repository = await projectRepositories(env.db, deploymentSecretStore(env.db, env.wrappingKey)).describe(projectId);
+    if (repository === null) return 'repository_missing';
+    if (repository.credential !== null && (!repository.credential.configured || !repository.credential.readable)) return 'repository_unavailable';
+    if (!(await repositoryWorkerAvailable(env, task, now))) return 'worker_unavailable';
+  }
   return null;
 }
 
@@ -201,6 +210,10 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
         emit({ kind: 'task_scheduled', task, projectId: project.projectId, runId: outcome.runId, queued: outcome.queued });
         report.dispatched += 1;
       } catch (err) {
+        if (err instanceof DispatchAdmissionRefused) {
+          emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: 'refused', refusal: err.refusal });
+          continue;
+        }
         if (!(err instanceof AlreadyRunning)) throw err;
         emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: 'already_running' });
       }

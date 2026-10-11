@@ -380,19 +380,19 @@ describe('provider credentials through the surface', () => {
 });
 
 describe('project capability admission through the surface', () => {
-  it('reports every capability off for a Project nothing has admitted', async () => {
+  it('reports every capability on for a Project with no rows', async () => {
     const e = env();
     expect(await json(await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/capabilities'), e.all)))
-      .toEqual({ capabilities: { cortex: false, canopy: false, vault_evolution: false }, retiredCapabilities: {} });
+      .toEqual({ capabilities: { cortex: true, canopy: true, vault_evolution: true }, retiredCapabilities: {} });
   });
 
-  it('admits one capability, and leaves other Projects untouched', async () => {
+  it('switches one capability off, and leaves other Projects untouched', async () => {
     const e = env();
-    expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/cortex', { enabled: true }), e.all))).toEqual({ applied: true });
+    expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/cortex', { enabled: false }), e.all))).toEqual({ applied: true });
     expect(await json(await worker.fetch(await asOwner(e.db, '/api/projects/proj_1/capabilities'), e.all)))
-      .toEqual({ capabilities: { cortex: true, canopy: false, vault_evolution: false }, retiredCapabilities: {} });
+      .toEqual({ capabilities: { cortex: false, canopy: true, vault_evolution: true }, retiredCapabilities: {} });
     expect(await json(await worker.fetch(await asOwner(e.db, '/api/projects/proj_2/capabilities'), e.all)))
-      .toMatchObject({ capabilities: { cortex: false } });
+      .toMatchObject({ capabilities: { cortex: true } });
   });
 
   it('answers a Project it does not hold as absent rather than confirming it exists', async () => {
@@ -472,7 +472,7 @@ describe('every Deployment leaf, the way the dashboard writes it', () => {
       await recordDispatch(e.db, { projectId: 'proj_1' }, { id, agentId: 'agent_s', task: `digest_${id}`, provider: null, model: null, runContext: '{}', startedAt: Date.now(), dispatchedBy: holder.tokenId });
       return json(await worker.fetch(memberPost(holder.token, { id, agentId: 'agent_s', task: `digest_${id}`, capability: 'cortex' }, '/runs/claim'), e.all));
     };
-    expect(await claim('run_off')).toMatchObject({ persisted: true, claimed: false, notAdmitted: 'cortex' });
+    expect(await claim('run_default_on')).toMatchObject({ persisted: true, claimed: true });
     expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/cortex', { enabled: true }), e.all))).toEqual({ applied: true });
     expect(await claim('run_on')).toMatchObject({ persisted: true, claimed: true });
     expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/cortex', { enabled: false }), e.all))).toEqual({ applied: true });
