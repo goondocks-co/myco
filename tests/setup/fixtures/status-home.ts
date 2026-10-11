@@ -10,16 +10,16 @@ export const STATUS_URL = 'https://status.example';
 export const STATUS_NOW = Date.UTC(2026, 9, 11);
 
 /** One joined Deployment, twelve repositories, and current and historical capture problems. */
-export function statusHome(scratch: string) {
+export function statusHome(scratch: string, urls: readonly string[] = [STATUS_URL]) {
   const home = path.join(scratch, 'myco');
   const repositories = Array.from({ length: 12 }, (_, index) => path.join(scratch, `repository-${index + 1}`));
   for (const [index, root] of repositories.entries()) {
     fs.mkdirSync(root, { recursive: true });
     execFileSync('git', ['init', '-q', root]);
-    const entry = { version: 2, root, projectId: `proj_status_${index + 1}`, serverUrl: STATUS_URL, token: 'S'.repeat(43), machineId: 'synthetic-machine', joinedAt: 1, updatedAt: 1 };
+    const entry = { version: 2, root, projectId: `proj_status_${index + 1}`, serverUrl: urls[Math.floor(index / 6)] ?? urls[0], token: 'S'.repeat(43), machineId: 'synthetic-machine', joinedAt: 1, updatedAt: 1 };
     writeRegistryEntry(entry, { mycoHome: home });
     const spool = new MemberSpool(entry, { mycoHome: home });
-    if (index === 0) {
+    if (index === 0 || (urls.length > 1 && index === 6)) {
       const sessionId = 'status-backlog';
       spool.append(sessionId, promptEvent({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: '2.0.0-test' }, { promptId: mintId(), text: 'synthetic prompt' }));
       fs.writeFileSync(path.join(spool.dir, 'offline.json'), JSON.stringify({ since: STATUS_NOW, nextProbeAt: STATUS_NOW + 60_000, backoffMs: 60_000 }), { mode: 0o600 });

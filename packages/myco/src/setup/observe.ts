@@ -24,6 +24,10 @@ export interface Observation {
   informational?: boolean;
   hint?: string;
   deployment?: string;
+  hooksDeployment?: string;
+  joinedDeployments?: string[];
+  legacyError?: string;
+  capture?: { waiting?: number | null; nextProbeAt?: number; recentRefusals?: number; unreadableLines?: number };
 }
 export interface ObserveDeps {
   checkRemote?: boolean;
@@ -42,8 +46,8 @@ export const setupExitCode = (facts: readonly Observation[]): 0 | 3 | 4 => facts
 export async function observeSetup(home: string, answers: SetupAnswers, deps: ObserveDeps = {}): Promise<Observation[]> {
   const facts: Observation[] = [];
   const url = answers.url;
-  const add = (id: string, state: Observation['state'], detail: string, scope = url ?? home, informational = false): void => {
-    facts.push({ id, scope, state, detail, ...(informational ? { informational } : {}) });
+  const add = (id: string, state: Observation['state'], detail: string, scope = url ?? home, informational = false, capture?: Observation['capture']): void => {
+    facts.push({ id, scope, state, detail, ...(informational ? { informational } : {}), ...(capture ? { capture } : {}) });
   };
   const read = async (id: string, fn: () => void | Promise<void>, informational = false): Promise<void> => {
     try { await fn(); }
@@ -54,6 +58,7 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
     const guidance = legacyCaptureGuidance(migration);
     facts.push({
       id: 'legacy',
+      ...(migration.state === 'unavailable' ? { legacyError: migration.detail } : {}),
       scope: migration.state === 'unavailable' ? migration.file : home,
       state: guidance.status === 'unavailable' ? 'unavailable' : guidance.status === 'deferred' ? 'incomplete' : 'complete',
       detail: [migration.state, guidance.deferral ?? guidance.hint ?? 'No Myco 1.4 capture blocks setup.', guidance.warning].filter(Boolean).join(' '),
@@ -61,12 +66,12 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
     });
   });
   add('journey', answers.role && url ? 'complete' : 'absent', answers.role ?? 'Choose --join <address> or --runner <address>.', home);
-  if (!url || !answers.role) return facts;
+  if ((!url || !answers.role) && !deps.status) return facts;
   await read('default', () => {
     const held = readDefaultDeployment(home, { strict: true });
     add('default', held === null ? 'absent' : 'complete', held?.serverUrl ?? 'No Default Deployment selected.', home, true);
   });
-  if (deps.checkRemote) {
+  if (deps.checkRemote && url) {
     await read('deployment.health', async () => {
       const healthy = await new ServerClient({ serverUrl: url, token: '' }, deps.fetch).health({ connectTimeoutMs: 2000, requestTimeoutMs: 2000 });
       add('deployment.health', healthy ? 'complete' : 'unavailable', healthy ? 'Deployment answers.' : 'Deployment unreachable or unhealthy.');
@@ -77,6 +82,24 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
         signin.kind === 'configured' ? 'GitHub sign-in configured.' : signin.reason);
     });
   }
+  if (answers.role === 'join' || (deps.status && fs.existsSync(provisionRecordPath(home)))) {
+    await read('machine.agents', () => {
+      if (facts.some((fact) => fact.id === 'legacy' && fact.state === 'incomplete')) { add('machine.agents', 'incomplete', 'deferred-legacy'); return; }
+      const record = readProvisionRecord(home);
+      if (record === null && fs.existsSync(provisionRecordPath(home))) throw new Error(`${provisionRecordPath(home)}: cannot read provision record`);
+      const hooksUrl = deps.status && record !== null ? deploymentUrl(record.serverUrl) : url;
+      if (hooksUrl === undefined) throw new Error('No Deployment address is available for agent hooks.');
+      const same = record !== null && deploymentUrl(record.serverUrl) === hooksUrl;
+      if ((answers.noAgents && (!deps.status || record === null)) || (same && record.agents.length === 0)) { add('machine.agents', 'complete', 'declined'); return; }
+      const agents = (deps.agents ?? (() => detectMachineInstalledSymbionts().map((manifest) => manifest.name)))();
+      if (agents.length === 0) { add('machine.agents', 'complete', 'none-installed'); return; }
+      const current = same && record.version === getPluginVersion()
+        && agents.every((agent) => record.agents.includes(agent) && memberHarnessCurrent(agent, home, hooksUrl, deps));
+      add('machine.agents', current ? 'complete' : record === null ? 'absent' : 'incomplete', current ? 'current' : 'stale');
+      if (deps.status && record !== null) facts[facts.length - 1].hooksDeployment = record.serverUrl;
+    });
+  }
+  if (!url || !answers.role) return facts;
   if (answers.role === 'join') {
     add('runner.choice', answers.runWork === undefined ? 'absent' : 'complete', answers.runWork === undefined ? 'unasked' : answers.runWork ? 'run-work' : 'declined', url, deps.status && answers.runWork === undefined);
     await read('machine.signin', async () => {
@@ -89,25 +112,13 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
           answer.ok ? 'Credential accepted.' : answer.error.code);
       }
     });
-    await read('machine.agents', () => {
-      if (facts.some((fact) => fact.id === 'legacy' && fact.state === 'incomplete')) { add('machine.agents', 'incomplete', 'deferred-legacy'); return; }
-      const record = readProvisionRecord(home);
-      if (record === null && fs.existsSync(provisionRecordPath(home))) throw new Error(`${provisionRecordPath(home)}: cannot read provision record`);
-      const same = record !== null && deploymentUrl(record.serverUrl) === url;
-      if (answers.noAgents || (same && record.agents.length === 0)) { add('machine.agents', 'complete', 'declined'); return; }
-      const agents = (deps.agents ?? (() => detectMachineInstalledSymbionts().map((manifest) => manifest.name)))();
-      if (agents.length === 0) { add('machine.agents', 'complete', 'none-installed'); return; }
-      const current = same && record.version === getPluginVersion()
-        && agents.every((agent) => record.agents.includes(agent) && memberHarnessCurrent(agent, home, url, deps));
-      add('machine.agents', current ? 'complete' : record === null ? 'absent' : 'incomplete', current ? 'current' : 'stale');
-    });
     const root = answers.root;
     await read('project', () => {
       if (!root) {
         const listing = listRegistryEntriesResult(home);
         if (!listing.readable || listing.unavailableEntries > 0) throw new Error('Repository bindings could not all be read.');
         const count = listing.entries.filter(entry => deploymentUrl(entry.serverUrl) === url).length;
-        add('project', count > 0 ? 'complete' : 'absent', count > 0 ? `${count} repositories send to ${url}` : 'Choose a repository with --root, and --project or --new.');
+        add('project', count > 0 ? 'complete' : 'absent', count > 0 ? `${count} ${count === 1 ? 'repository sends' : 'repositories send'} to ${url}` : 'Choose a repository with --root, and --project or --new.');
         return;
       }
       const binding = readRegistryEntryResult(root, home);
@@ -124,12 +135,12 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
         const facts = observeProjectCapture(entry, home, (deps.now ?? Date.now)());
         const readable = facts.spool.readable && facts.spool.stateReadable && facts.spool.unacknowledgedTotal !== null;
         add('machine.backlog', !readable ? 'unavailable' : facts.spool.unacknowledgedTotal === 0 ? 'complete' : 'incomplete',
-          `${readable ? `${facts.spool.unacknowledgedTotal} event(s) waiting to deliver` : 'Spool or acknowledgement unavailable'}; last delivery ${facts.spool.lastDeliveryAt === null ? 'unknown' : new Date(facts.spool.lastDeliveryAt).toISOString()}. Run myco member drain from this repository to retry delivery.`, entry.root, true);
+          `${readable ? `${facts.spool.unacknowledgedTotal} event(s) waiting to deliver` : 'Spool or acknowledgement unavailable'}; last delivery ${facts.spool.lastDeliveryAt === null ? 'unknown' : new Date(facts.spool.lastDeliveryAt).toISOString()}. Run myco member drain from this repository to retry delivery.`, entry.root, true, { waiting: readable ? facts.spool.unacknowledgedTotal : null });
         add('machine.latch', !facts.latchReadable ? 'unavailable' : facts.latch === null ? 'complete' : 'incomplete',
-          !facts.latchReadable ? 'Offline latch unavailable.' : facts.latch === null ? 'Delivery is not held off.' : `Delivery held off; next probe ${new Date(facts.latch.nextProbeAt).toISOString()}. Run myco member drain from this repository.`, entry.root, true);
+          !facts.latchReadable ? 'Offline latch unavailable.' : facts.latch === null ? 'Delivery is not held off.' : `Delivery held off; next probe ${new Date(facts.latch.nextProbeAt).toISOString()}. Run myco member drain from this repository.`, entry.root, true, facts.latch === null ? {} : { nextProbeAt: facts.latch.nextProbeAt });
         const refusals = facts.refusalHistory;
         add('machine.refusals', !refusals.readable ? 'unavailable' : refusals.unreadableLines > 0 || refusals.recent > 0 ? 'incomplete' : 'complete',
-          `${refusals.readable ? `${refusals.total} refused event(s); newest ${observationInstant(refusals.latest)}; ${refusals.recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'Refusal log unavailable'}. Run myco logs from this repository.`, entry.root, true);
+          `${refusals.readable ? `${refusals.total} refused event(s); newest ${observationInstant(refusals.latest)}; ${refusals.recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'Refusal log unavailable'}. Run myco logs from this repository.`, entry.root, true, { recentRefusals: refusals.recent, unreadableLines: refusals.unreadableLines });
       }
     }, true);
   }
@@ -164,10 +175,12 @@ export async function observeSetupStatus(home: string, answers: SetupAnswers, de
   const unavailable = (id: string, detail: string): void => {
     failures.push({ id, scope: home, state: 'unavailable', detail });
   };
+  const memberships = listDeploymentMembershipsResult(home);
+  if (!memberships.readable || memberships.unavailableEntries > 0) unavailable('machine.signin', 'Deployment memberships could not all be read. Inspect the membership files with myco doctor.');
+  const homeFact = (fact: Observation): Observation => fact.id === 'default'
+    ? { ...fact, joinedDeployments: memberships.memberships.map(membership => deploymentUrl(membership.serverUrl)) } : fact;
   if (selected && answers.role && answers.url) journeys.push(answers);
   else {
-    const memberships = listDeploymentMembershipsResult(home);
-    if (!memberships.readable || memberships.unavailableEntries > 0) unavailable('machine.signin', 'Deployment memberships could not all be read. Inspect the membership files with myco doctor.');
     for (const membership of memberships.memberships) journeys.push({ role: 'join', url: deploymentUrl(membership.serverUrl) });
     const runners = listRunnerRecordsResult(home);
     for (const runner of runners.records) journeys.push({ role: 'runner', url: deploymentUrl(runner.serverUrl) });
@@ -175,8 +188,8 @@ export async function observeSetupStatus(home: string, answers: SetupAnswers, de
     if (answers.role && answers.url && !journeys.some(journey => journey.role === answers.role && journey.url === answers.url)) journeys.push(answers);
   }
   if (journeys.length === 0) {
-    const observed = await observeSetup(home, {}, deps);
-    return [...observed.filter(fact => failures.length === 0 || fact.id !== 'journey'), ...failures];
+    const observed = await observeSetup(home, {}, { ...deps, status: true });
+    return [...observed.filter(fact => failures.length === 0 || fact.id !== 'journey').map(homeFact), ...failures];
   }
   const facts: Observation[] = [];
   for (const journey of journeys) {
@@ -184,12 +197,13 @@ export async function observeSetupStatus(home: string, answers: SetupAnswers, de
     const scoped = { ...saved, ...journey, root: answers.root };
     const observed = await observeSetup(home, scoped, { ...deps, status: true });
     for (const fact of observed) {
-      if (['legacy', 'default'].includes(fact.id) && facts.some(existing => existing.id === fact.id)) continue;
+      const homeWide = ['legacy', 'default', 'machine.agents'].includes(fact.id);
+      if (homeWide && facts.some(existing => existing.id === fact.id)) continue;
       if (facts.some(existing => existing.id === fact.id && existing.scope === fact.scope && existing.deployment === journey.url && fact.id.startsWith('runner.') && fact.id !== 'runner.choice')) continue;
-      facts.push({ ...fact, deployment: journey.url,
+      facts.push({ ...fact, ...(homeWide ? {} : { deployment: journey.url }),
         ...(!selected && fact.id === 'project' && fact.detail.startsWith('bound-elsewhere:') ? { informational: true } : {}),
       });
     }
   }
-  return [...facts, ...failures];
+  return [...facts.map(homeFact), ...failures];
 }
