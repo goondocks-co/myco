@@ -15,6 +15,7 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
+import { publishTaskProof, readTaskProof, TASK_START_TIMEOUT_MS, waitForTaskProof, type TaskSnapshot } from './task-proof.js';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
@@ -219,10 +220,11 @@ async function waitForReady(child: ChildProcess): Promise<void> {
   });
 }
 
-async function waitForFile(filePath: string): Promise<void> {
-  const deadline = Date.now() + CHILD_TIMEOUT_MS;
+async function waitForFile(filePath: string, child: ChildProcess): Promise<void> {
+  const deadline = Date.now() + TASK_START_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (fs.existsSync(filePath)) return;
+    if (readTaskProof(filePath) !== undefined) return;
+    if (child.exitCode !== null || child.signalCode !== null) throw new Error(`proof child exited: ${child.exitCode ?? child.signalCode}`);
     await sleep(POLL_INTERVAL_MS);
   }
   throw new Error(`timed out waiting for ${filePath}`);
@@ -460,6 +462,17 @@ async function waitForTaskToStop(
   throw new Error(`Task Scheduler task ${taskLabel} remained running`);
 }
 
+async function scheduledTaskSnapshot(taskHost: string, taskLabel: string, cwd: string): Promise<TaskSnapshot> {
+  const label = `'${taskLabel.replaceAll("'", "''")}'`;
+  const command = `$ErrorActionPreference='Stop'; $task=Get-ScheduledTask -TaskPath '\\' -TaskName ${label}; $info=$task | Get-ScheduledTaskInfo; @{ state=$task.State.ToString(); lastRunTime=$info.LastRunTime.ToUniversalTime().Ticks.ToString(); lastTaskResult=$info.LastTaskResult } | ConvertTo-Json -Compress`;
+  const probe = spawnCapturedProcess(taskHost, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], cwd);
+  try {
+    await waitForExit(probe.child);
+    assertCondition(probe.child.exitCode === 0, `Task Scheduler state query failed: ${JSON.stringify(probe.output())}`);
+    return JSON.parse(probe.output().stdout) as TaskSnapshot;
+  } finally { await forceTerminateProcessTree(probe.child); }
+}
+
 async function proveNativeTaskScheduler(
   scratch: string,
   executable: string,
@@ -521,10 +534,10 @@ async function proveNativeTaskScheduler(
     scratch,
   );
   try {
-    await waitForFile(markerPath);
+    await waitForFile(markerPath, direct.child);
   } catch (error) {
     throw new Error(
-      `direct Windows PowerShell launcher probe failed: ${JSON.stringify(direct.output())}`,
+      `direct Windows PowerShell launcher probe failed: ${JSON.stringify({ ...direct.output(), exitCode: direct.child.exitCode, task: await scheduledTaskSnapshot(taskHost, taskLabel, scratch) })}`,
       { cause: error },
     );
   } finally {
@@ -532,9 +545,11 @@ async function proveNativeTaskScheduler(
   }
   fs.unlinkSync(markerPath);
 
+  const before = await scheduledTaskSnapshot(taskHost, taskLabel, scratch);
   await manager.start(taskLabel);
+  let proof: ChildProof;
   try {
-    await waitForFile(markerPath);
+    proof = await waitForTaskProof(() => scheduledTaskSnapshot(taskHost, taskLabel, scratch), () => readTaskProof<ChildProof>(markerPath), before.lastRunTime);
   } catch (error) {
     const status = await manager.status(taskLabel).catch((statusError: unknown) => ({
       error: statusError instanceof Error ? statusError.message : String(statusError),
@@ -559,7 +574,6 @@ async function proveNativeTaskScheduler(
       `stderr=${JSON.stringify(readLog(spec.stderrPath))}`,
     ].join('\n'), { cause: error });
   }
-  const proof = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as ChildProof;
   assertCondition(
     windowsPathEqual(proof.executable, executable),
     `scheduled process executable mismatch: ${proof.executable}`,
@@ -578,9 +592,9 @@ async function proveNativeTaskScheduler(
   await waitForTaskToStop(runner, taskLabel);
   fs.unlinkSync(markerPath);
 
+  const stopped = await scheduledTaskSnapshot(taskHost, taskLabel, scratch);
   await manager.start(taskLabel);
-  await waitForFile(markerPath);
-  const uninstallProof = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as ChildProof;
+  const uninstallProof = await waitForTaskProof(() => scheduledTaskSnapshot(taskHost, taskLabel, scratch), () => readTaskProof<ChildProof>(markerPath), stopped.lastRunTime);
   assertCondition(
     isProcessAlive(uninstallProof.pid),
     `scheduled process ${uninstallProof.pid} was not alive before uninstall`,
@@ -678,15 +692,11 @@ function runLockHolderChild(lockPath: string | undefined): void {
 
 function runTaskChild(markerName: string | undefined): void {
   assertCondition(markerName === TASK_MARKER_NAME, 'task-child received an unexpected marker name');
-  fs.writeFileSync(
-    path.win32.join(process.cwd(), markerName),
-    JSON.stringify({
-      executable: process.execPath,
-      argv: process.argv.slice(2),
-      pid: process.pid,
-    } satisfies ChildProof),
-    'utf8',
-  );
+  publishTaskProof(path.win32.join(process.cwd(), markerName), {
+    executable: process.execPath,
+    argv: process.argv.slice(2),
+    pid: process.pid,
+  } satisfies ChildProof);
   setInterval(() => {}, 1_000);
 }
 
