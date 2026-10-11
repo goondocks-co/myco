@@ -1015,7 +1015,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
     const client = clientFor(projectId);
     for (let i = 0; i < Math.max(sessionIds.length, 1); i += PROBE_CHUNK) {
       const run = sessionIds.slice(i, i + PROBE_CHUNK);
-      const answer = await client.importPlan({ candidates: [], sessions: run.length === 0 ? undefined : run }, unboundedBudget());
+      const answer = await client.importPlan({ candidates: [], sessions: run.length === 0 ? undefined : run, includeLegacyOwnership: true }, unboundedBudget());
       if (answer.class !== 'acked') return { probe, endedBy: answer.class };
       if (run.length === 0) break;
       const sessions = answer.body.sessions as { held?: unknown; withTranscript?: unknown; tombstoned?: unknown; vaultSourced?: unknown; legacyOwned?: unknown } | undefined;
