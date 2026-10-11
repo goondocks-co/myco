@@ -303,7 +303,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner } = {})
   };
 
   /** Where this machine's own Deployment lives, and what it is running under. */
-  const localSpec = () => defaultSpec(process.execPath);
+  const localSpec = () => defaultSpec(process.execPath, undefined, undefined, resolveMycoHome());
 
 
   try {

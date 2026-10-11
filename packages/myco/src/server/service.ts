@@ -89,13 +89,13 @@ export class ServicePlatformUnsupported extends Error {}
  * split on whitespace and by hosts that take it whole, and no single spelling
  * satisfies both.
  */
-export function assertUnquotablePath(binaryPath: string): void {
+export function assertUnquotablePath(binaryPath: string, label = 'binary'): void {
   if (!path.isAbsolute(binaryPath)) {
     throw new ServicePathUnsupported(`the service runs an absolute path, and ${JSON.stringify(binaryPath)} is not one`);
   }
   if (/\s/.test(binaryPath)) {
     throw new ServicePathUnsupported(
-      `the service cannot run a binary whose path contains whitespace (${binaryPath}). Install Myco somewhere without spaces in the path.`,
+      `the service cannot use a ${label} whose path contains whitespace (${binaryPath}). Choose a location without spaces in the path.`,
     );
   }
 }
@@ -222,6 +222,9 @@ ${environmentOf(spec).map(([key, value]) => `    <key>${xmlEscape(key)}</key><st
 /** systemd --user: run after the network is up, restart on failure, append both streams. */
 export function renderSystemdUnit(spec: ServiceSpec, paths: ServicePaths): string {
   assertUnquotablePath(spec.binaryPath);
+  for (const directory of [spec.home, paths.logDir, spec.env.MYCO_HOME]) {
+    if (directory !== undefined) assertUnquotablePath(directory, 'directory');
+  }
   return `[Unit]
 Description=${spec.unit.description}
 After=network-online.target

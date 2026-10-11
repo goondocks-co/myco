@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isProcessAlive } from '@goondocks/myco-shared';
@@ -8,13 +9,13 @@ import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { readLockHolder } from '@myco/utils/lifecycle-lock.js';
-import { createLocalDeployment, localSecretNames, DEFAULT_LOCAL_RECORD, peekLocalPaths, readLocalRecord, assertRecordServable } from './local.js';
+import { createLocalDeployment, localSecretNames, localStorageKeysReady, LOCAL_STORAGE_KEYS_MISSING, LOCAL_DATABASE_MISSING, DEFAULT_LOCAL_RECORD, peekLocalPaths, readLocalRecord, assertRecordServable } from './local.js';
 import { localOwnerState, localOwnerLinkExpiry, setupLocalOwner, type LocalOwnerLink, type OwnerState } from './local-owner.js';
 import { registerGitHubApp, type RegisterOptions } from './github-app.js';
-import { assertServiceTargetHome, defaultSpec, installService, startService, stopService, statusOfService, servicePaths, UNIT_NOT_HELD, type ServiceOptions, type ServiceSpec } from './service.js';
+import { assertUnquotablePath, assertServiceTargetHome, defaultSpec, installService, startService, stopService, statusOfService, servicePaths, UNIT_NOT_HELD, type ServiceOptions, type ServiceSpec } from './service.js';
 
 export interface LocalInspection {
-  creation: 'absent' | { incomplete: ('record' | 'secrets' | 'schema')[] } | 'complete' | { unavailable: string };
+  creation: 'absent' | { incomplete: ('record' | 'secrets' | 'schema')[] } | 'complete' | 'behind' | { unavailable: string };
   signIn: 'absent' | 'configured' | { unavailable: string };
   owner: OwnerState | { unavailable: string };
   ownerLinkExpiresAt?: number;
@@ -57,15 +58,15 @@ async function healthy(url: string, deps: LocalLifecycleDeps): Promise<boolean> 
     const response = await (deps.fetchImpl ?? fetch)(`${url}/health`, { signal, redirect: 'error' });
     await response.body?.cancel();
     return response.ok;
-  } catch (error) {
+  } catch {
     deps.signal?.throwIfAborted();
-    if (error instanceof Error && /TEST SAFETY/.test(error.message)) throw error;
     return false;
   }
 }
 
 /** Read creation, identity and serving state without taking a lease or reconciling the layout. */
 export async function inspectLocal(home: string, deps: LocalLifecycleDeps = {}): Promise<LocalInspection> {
+  home = path.resolve(home);
   const paths = peekLocalPaths(home);
   const result: LocalInspection = {
     creation: 'absent', signIn: 'absent', owner: 'none',
@@ -73,6 +74,7 @@ export async function inspectLocal(home: string, deps: LocalLifecycleDeps = {}):
   };
   const incomplete: ('record' | 'secrets' | 'schema')[] = [];
   let url: string | undefined;
+  let behind = false;
   try {
     const root = fs.lstatSync(paths.root, { throwIfNoEntry: false });
     if (root !== undefined && !root.isDirectory()) throw new Error('local Deployment volume must be a directory, not a symlink');
@@ -83,7 +85,11 @@ export async function inspectLocal(home: string, deps: LocalLifecycleDeps = {}):
       url = `http://127.0.0.1:${record.port}`;
     }
     const names = localSecretNames(paths);
-    if (!names.has('SECRET_WRAP_KEY') || !names.has('SESSION_SECRET')) incomplete.push('secrets');
+    if (fs.existsSync(paths.recordFile) && !fs.existsSync(paths.databasePath)) throw new Error(LOCAL_DATABASE_MISSING);
+    if (!localStorageKeysReady(paths)) {
+      if (fs.existsSync(paths.databasePath)) throw new Error(LOCAL_STORAGE_KEYS_MISSING);
+      incomplete.push('secrets');
+    }
     result.signIn = names.has('GITHUB_CLIENT_ID') && names.has('GITHUB_CLIENT_SECRET') ? 'configured' : 'absent';
     if (!fs.existsSync(paths.databasePath)) incomplete.push('schema');
     else {
@@ -91,7 +97,10 @@ export async function inspectLocal(home: string, deps: LocalLifecycleDeps = {}):
       const sqlite = new Database(paths.databasePath, { readonly: true });
       try {
         const meta = (key: string) => (sqlite.query('SELECT value FROM schema_meta WHERE key = ?').get(key) as { value: string } | null)?.value;
-        if (Number(meta('version')) !== SERVER_SCHEMA_VERSION || !meta('deployment_id')) incomplete.push('schema');
+        const version = Number(meta('version'));
+        if (version > SERVER_SCHEMA_VERSION) throw new Error("this Myco is older than the server's data; update Myco");
+        if (!meta('deployment_id') || !Number.isSafeInteger(version) || version < 1) incomplete.push('schema');
+        else if (version < SERVER_SCHEMA_VERSION) behind = true;
         else {
           result.owner = localOwnerState(sqlite);
           if (result.owner === 'pending-link') result.ownerLinkExpiresAt = localOwnerLinkExpiry(sqlite);
@@ -101,7 +110,7 @@ export async function inspectLocal(home: string, deps: LocalLifecycleDeps = {}):
         else throw error;
       } finally { sqlite.close(); }
     }
-    result.creation = root === undefined ? 'absent' : incomplete.length === 0 ? 'complete' : { incomplete };
+    result.creation = root === undefined ? 'absent' : incomplete.length > 0 ? { incomplete } : behind ? 'behind' : 'complete';
   } catch (error) {
     const unavailable = { unavailable: cause(error) };
     result.creation = unavailable;
@@ -161,12 +170,15 @@ async function waitForHealth(url: string, spec: ServiceSpec, terminal: boolean, 
 
 /** Complete stopped-volume work before serving; restore the installed service even when that work fails. */
 export async function prepareLocal(home: string, plan: LocalPreparePlan, deps: LocalPrepareDeps): Promise<{ ownerLink: LocalOwnerLink | null; url: string }> {
+  home = path.resolve(home);
   deps.signal?.throwIfAborted();
+  if (plan.serve === 'service' && (deps.service?.platform ?? process.platform) === 'linux') assertUnquotablePath(home, 'home');
   assertRecordServable({ ...DEFAULT_LOCAL_RECORD, port: plan.port });
   const before = await inspectLocal(home, { ...deps, checkRemote: false });
   for (const state of [before.creation, before.signIn, before.owner]) {
     if (typeof state === 'object' && 'unavailable' in state) throw new Error(`native Deployment unavailable: ${state.unavailable}`);
   }
+  if (before.creation === 'behind') throw new Error('native Deployment data needs update; run myco server update --target local before setup');
   const paths = peekLocalPaths(home);
   const record = fs.existsSync(paths.recordFile) ? readLocalRecord(paths) : { ...DEFAULT_LOCAL_RECORD, port: plan.port };
   if (record.port !== plan.port) throw new Error(`native Deployment uses port ${record.port}; keep that port in the setup plan`);
@@ -180,6 +192,7 @@ export async function prepareLocal(home: string, plan: LocalPreparePlan, deps: L
   }
   const spec = specFor(home, deps);
   const service = before.serving.mode === 'service' || plan.serve === 'service';
+  const restoreService = before.serving.mode === 'service';
   if (exclusive && before.serving.mode === 'service' && !await deps.confirmStop?.()) {
     throw new Error('This stops your Myco for a moment; consent is required before continuing.');
   }
@@ -204,12 +217,13 @@ export async function prepareLocal(home: string, plan: LocalPreparePlan, deps: L
   } catch (error) { failed = error; workFailed = true; }
   finally {
     try {
-      if (service) {
+      const shouldServe = workFailed ? restoreService : service;
+      if (shouldServe) {
         const current = statusOfService(spec, deps.service);
-        const started = current.installed ? startService(spec, deps.service) : installService(spec, deps.service);
+        const started = workFailed || current.installed ? startService(spec, deps.service) : installService(spec, deps.service);
         if (!started.running) throw new Error(`Your Myco could not start: ${started.detail ?? 'service not running'}. Check ${servicePaths(spec, deps.service?.platform).errLog}`);
       } else if (!workFailed) deps.log?.(deps.terminalInstruction ?? 'In another terminal, run: myco server run --target local');
-      if (!workFailed || service) await waitForHealth(url, spec, !service, deps);
+      if (!workFailed || shouldServe) await waitForHealth(url, spec, !shouldServe, deps);
     } catch (error) {
       if (workFailed) throw new AggregateError([failed, error], `native preparation failed (${cause(failed)}) and serving could not be restored (${cause(error)})`);
       throw error;
@@ -221,6 +235,7 @@ export async function prepareLocal(home: string, plan: LocalPreparePlan, deps: L
 
 /** A fresh link requires the terminal's owner to stop and restart their own server. */
 export async function recoverLocalOwnerLink(home: string, plan: LocalPreparePlan, deps: LocalPrepareDeps) {
+  home = path.resolve(home);
   const state = await inspectLocal(home, { ...deps, checkRemote: false });
   if (state.serving.mode === 'foreground') {
     deps.log?.('Stop your Myco (Ctrl-C in its terminal); setup makes a fresh link.');

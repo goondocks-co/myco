@@ -81,6 +81,7 @@ export interface OwnerLinkWaitDeps {
 
 /** Wait for proven linking, expiry, cancellation, or the first operator-store failure. */
 export async function waitForOwnerLink(expiresAt: number, deps: OwnerLinkWaitDeps): Promise<'linked' | 'expired'> {
+  if (!Number.isFinite(expiresAt)) throw new Error('owner link expiry must be finite');
   const now = deps.now ?? Date.now;
   while (true) {
     deps.signal?.throwIfAborted();
