@@ -16,6 +16,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { renameBusy } from '../helpers/rename-busy.js';
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-g8-'));
 afterAll(() => fs.rmSync(ROOT, { recursive: true, force: true }));
@@ -58,15 +59,22 @@ describe('a binary replaced while it runs', () => {
     const waitFor = async (text: string) => {
       for (let i = 0; i < 200 && !out.includes(text); i++) await new Promise((r) => setTimeout(r, 25));
     };
-    await waitFor('ready');
-    expect(out).toContain('ready');
+    try {
+      await waitFor('ready');
+      expect(out).toContain('ready');
 
-    if (process.platform === 'win32') fs.renameSync(live, `${live}.prev`);
-    fs.renameSync(replacement, live);
+      if (process.platform === 'win32') {
+        await renameBusy(live, `${live}.prev`);
+        await renameBusy(replacement, live);
+      } else fs.renameSync(replacement, live);
 
-    child.stdin.write('go\n');
-    child.stdin.end();
-    const code = await exited;
-    expect({ code, answered: out.trim().split('\n').at(-1) }).toEqual({ code: 0, answered: 'a' });
+      child.stdin.write('go\n');
+      child.stdin.end();
+      const code = await exited;
+      expect({ code, answered: out.trim().split('\n').at(-1) }).toEqual({ code: 0, answered: 'a' });
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await exited;
+    }
   }, 60_000);
 });

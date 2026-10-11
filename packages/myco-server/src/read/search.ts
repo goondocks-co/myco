@@ -7,9 +7,9 @@ import { semanticSearch, type SemanticSearch } from './embedding.js';
 import { EmbeddingUnavailable } from '../core/embedding/provider.js';
 import { notTombstonedSql } from '../core/tombstones.js';
 
-import { SEARCH_TYPES, SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, SEARCH_PREVIEW_CHARS, type SearchType, type SearchOptions, type SearchResult, type SearchAnswer, type SearchAcrossAnswer, type SearchAcrossResult, type ReleaseAnnotation } from './search-types.js';
+import { SEARCH_TYPES, SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, SEARCH_PREVIEW_CHARS, type SearchType, type SearchOptions, type SearchResult, type SearchAnswer, type SearchAcrossAnswer, type SearchAcrossResult, type ReleaseAnnotation } from '@goondocks/myco-shared/search-types';
 import { getReleaseStatesAcross, getReleaseStatesForRecords, isReleaseNamespace, type ReleaseNamespace } from '../core/provenance.js';
-export * from './search-types.js';
+export * from '@goondocks/myco-shared/search-types';
 const SEARCH_MAX_TERMS = 16;
 /** Control characters a query may not carry: every C0 control but the tab and line breaks a pasted query splits on, and DEL. */
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;

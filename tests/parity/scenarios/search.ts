@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import type { SearchAcrossAnswer, SearchAnswer } from '@myco-server-worker/read/search-types.js';
+import type { SearchAcrossAnswer, SearchAnswer } from '@goondocks/myco-shared/search-types';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 

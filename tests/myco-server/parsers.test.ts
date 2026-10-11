@@ -484,3 +484,13 @@ describe('a reply longer than one response holds', () => {
     ]);
   });
 });
+
+it('truncates an oversized reply with an emoji exactly across the character cut', () => {
+  const prefix = 'x'.repeat(40);
+  const text = prefix + '😀' + 'y'.repeat(100);
+  const chars = prefix.length + 1 + truncationMarker(101).length;
+  const [chunk] = replyChunks([{ text, offset: 10, createdAt: 1 }], { chars, bytes: 1000 });
+  expect(chunk!.text).toBe(prefix + truncationMarker(102));
+  expect(chunk!.text.isWellFormed()).toBe(true);
+  expect(chunk!.text).not.toMatch(/[\uD800-\uDFFF]/);
+});

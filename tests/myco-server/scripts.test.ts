@@ -88,7 +88,7 @@ describe('operator scripts', () => {
     for (const statement of statements) {
       try { sqlite.run(statement); } catch (error) { failed.push(`${statement.split('(')[0]!.trim()} — ${(error as Error).message}`); }
     }
-    expect(failed).toEqual(['INSERT INTO _mint_refused_member_administers_deployment — CHECK constraint failed: ok = 1']);
+    expect(failed).toEqual(['INSERT INTO _mint_refused_member_administers_deployment — CHECK constraint failed: _mint_refused_member_administers_deployment']);
     expect(sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get()).toEqual({ c: 0 });
     expect(sqlite.query(`SELECT role FROM members WHERE id = 'mem_s'`).get()).toEqual({ role: 'admin' });
   });

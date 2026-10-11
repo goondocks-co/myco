@@ -1,3 +1,4 @@
+import { memberWrites } from './helpers/source-calls.js';
 /**
  * Deployment Access: members, invitations, credentials. Membership is flat and
  * every revocation names who; revoking a member is one transaction that ends
@@ -241,6 +242,28 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
     expect(source).toMatch(/UPDATE members SET github_id = \?\s+WHERE id = \? AND revoked_at IS NULL AND \(github_id IS NULL OR github_id = \?\)/);
     expect(source).toMatch(/if \(!IDENTITY_LINK_KEY_PATTERN\.test\(presentedKey\) \|\| !GITHUB_ACCOUNT_ID\.test\(githubId\)\)/);
     expect(readFileSync(join(ROOT, 'scripts', 'link-github.ts'), 'utf8')).toMatch(/!GITHUB_ACCOUNT_ID\.test\(githubId\)/);
+  });
+
+  it('pins every members writer across the Deployment and native server', () => {
+    const writers: string[] = [];
+    for (const dir of [join(ROOT, 'src'), join(ROOT, 'scripts'), join(ROOT, '../myco/src/server')]) {
+      for (const file of files(dir)) {
+        for (const sql of memberWrites(readFileSync(file, 'utf8'))) {
+          const op = /\b(INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM)\s+members\b/i.exec(sql)![1]!.toUpperCase();
+          const conflict = /\bON\s+CONFLICT[\s\S]*\bDO\s+UPDATE\b/i.test(sql) ? ' ON CONFLICT DO UPDATE' : '';
+          writers.push(`${relative(ROOT, file)}: ${op}${conflict}`);
+        }
+      }
+    }
+    expect(writers.sort()).toEqual([
+      'src/auth/enrollment.ts: INSERT OR IGNORE INTO',
+      'src/auth/identity-link.ts: UPDATE',
+      'src/auth/identity-link.ts: UPDATE',
+      'src/auth/members-admin.ts: UPDATE',
+      'src/auth/members-admin.ts: UPDATE',
+      'src/core/ownership.ts: UPDATE',
+      'src/db/schema.ts: INSERT OR IGNORE INTO',
+    ]);
   });
 
   it('changes the last admin\'s account through the break-glass statement and leaves the Deployment with a linked admin', async () => {

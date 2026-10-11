@@ -7,3 +7,6 @@ export function readTestProcessState(pid: number, override?: string): string | n
 export function readTestProcessGroupId(pid: number): number;
 export function readTestProcessTable(): Map<number, { ppid: number; pgid: number; started: string }>;
 export function readTestProcessCommands(pids: number[]): string;
+
+export function rssKiB(value: number, unit: 'bytes' | 'KiB'): number;
+export function readTestPeakRssKiB(): number;
