@@ -24,6 +24,8 @@ import { putWorkerSecrets, readDeploymentRecord, writeDeploymentRecord, type Dep
 import { assertComposeReadable, recreateDeployment, resolveDeploymentPaths, writeSignInSecrets, type DeploymentPaths } from './deployment.js';
 import { systemRunner, type CommandRunner } from './runner.js';
 import { configureLocalSignIn, localDeploymentPresent, resolveLocalPaths, type LocalDeploymentPaths } from './local.js';
+import { localOwnerLinked } from './local-owner.js';
+import { carriedNative } from './local-run.js';
 
 const LOOPBACK = '127.0.0.1';
 const GITHUB_API = 'https://api.github.com';
@@ -257,11 +259,15 @@ export async function registerGitHubApp(options: RegisterOptions): Promise<Regis
   const proposedName = manifestFor({ url: options.url, name: options.name, redirectUrl: 'http://127.0.0.1/callback' }).name;
   if (proposedName.length > APP_NAME_MAX) throw new RegistrationRefused(`GitHub limits an app's name to ${APP_NAME_MAX} characters and ${JSON.stringify(proposedName)} is ${proposedName.length}; pass --name <shorter>`);
   if (options.target.kind === 'local') {
-    return configureLocalSignIn(options.target.paths,
+    const result = await configureLocalSignIn(options.target.paths,
       (install) => registerWithInstaller(options, async (app) => { install(app); }), options.url);
+    const linked = existsSync(options.target.paths.databasePath) && await localOwnerLinked(options.target.paths, carriedNative());
+    return { ...result, verified: { ok: false, pendingStart: true, reason: linked ? LOCAL_START_NEXT : `While it's stopped: myco server setup-owner --target local. Then ${LOCAL_START_NEXT}` } };
   }
   return registerWithInstaller(options, (app) => installSignInSecrets(options.target, app, options.runner));
 }
+
+const LOCAL_START_NEXT = 'start it: myco server install --target local.';
 
 async function registerWithInstaller(options: RegisterOptions, install: (app: RegisteredApp) => Promise<void>): Promise<RegistrationResult> {
   const log = options.log ?? (() => undefined);
@@ -337,7 +343,7 @@ async function registerWithInstaller(options: RegisterOptions, install: (app: Re
     writeDeploymentRecord({ ...options.target.record, url: new URL(options.url).origin }, options.target.mycoHome);
   }
   const verified: VerifyResult = options.target.kind === 'local'
-    ? { ok: false, pendingStart: true, reason: 'Start the native Deployment with `myco server run --target local` or `myco server install --target local`, then open its dashboard and sign in. Sign-in has not been verified.' }
+    ? { ok: false, pendingStart: true, reason: LOCAL_START_NEXT }
     : await verifySignIn(options.url, app.clientId, { fetchImpl });
   return { app: { slug: app.slug, htmlUrl: app.htmlUrl, name: app.name, clientId: app.clientId, ownerLogin: app.ownerLogin }, callbackUrl: `${new URL(options.url).origin}/auth/callback`, verified };
 }

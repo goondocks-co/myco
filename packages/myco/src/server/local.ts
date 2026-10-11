@@ -25,6 +25,9 @@ import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
+import { fromBase64 } from '@myco-server-worker/base64.js';
+import { WRAPPING_KEY_BYTES } from '@myco-server-worker/platform/wrapping-key.js';
+import { MIN_SESSION_SECRET_LENGTH } from '@myco-server-worker/auth/owner/config.js';
 
 /** What a locally-run Deployment is, as its settings file holds it. */
 export interface LocalDeploymentRecord {
@@ -63,6 +66,11 @@ export class LocalRecordUnreadable extends Error {}
 
 export function resolveLocalPaths(mycoHome = resolveMycoHome()): LocalDeploymentPaths {
   ensureServerLayout(mycoHome);
+  return peekLocalPaths(mycoHome);
+}
+
+/** Resolve native paths without migrating the layout or creating files. */
+export function peekLocalPaths(mycoHome = resolveMycoHome()): LocalDeploymentPaths {
   const root = path.join(mycoHome, 'server', 'local');
   return {
     root,
@@ -148,18 +156,41 @@ const GENERATED: readonly LocalSecretName[] = ['SECRET_WRAP_KEY', 'SESSION_SECRE
 
 const base64Random = (bytes: number): string => Buffer.from(crypto.getRandomValues(new Uint8Array(bytes))).toString('base64');
 
+function localSecretEntries(paths: Pick<LocalDeploymentPaths, 'secretsFile'>): [LocalSecretName, string][] {
+  if (!existsSync(paths.secretsFile)) return [];
+  return readFileSync(paths.secretsFile, 'utf8').split('\n').flatMap(line => {
+    const entry = localSecretEntry(line);
+    return entry === undefined ? [] : [entry];
+  });
+}
+
+function localSecretEntry(line: string): [LocalSecretName, string] | undefined {
+  const trimmed = line.trim();
+  if (trimmed === '' || trimmed.startsWith('#')) return undefined;
+  const at = trimmed.indexOf('=');
+  if (at < 1) return undefined;
+  const name = trimmed.slice(0, at) as LocalSecretName;
+  return (LOCAL_SECRET_NAMES as readonly string[]).includes(name) ? [name, trimmed.slice(at + 1)] : undefined;
+}
+
 export function readLocalSecrets(paths: Pick<LocalDeploymentPaths, 'secretsFile'> = resolveLocalPaths()): Partial<Record<LocalSecretName, string>> {
-  if (!existsSync(paths.secretsFile)) return {};
-  const out: Partial<Record<LocalSecretName, string>> = {};
-  for (const line of readFileSync(paths.secretsFile, 'utf8').split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed === '' || trimmed.startsWith('#')) continue;
-    const at = trimmed.indexOf('=');
-    if (at < 1) continue;
-    const name = trimmed.slice(0, at) as LocalSecretName;
-    if ((LOCAL_SECRET_NAMES as readonly string[]).includes(name)) out[name] = trimmed.slice(at + 1);
-  }
-  return out;
+  return Object.fromEntries(localSecretEntries(paths));
+}
+
+/** Nonempty credential names, using the runtime's secrets-file grammar. */
+export function localSecretNames(paths: Pick<LocalDeploymentPaths, 'secretsFile'>): Set<LocalSecretName> {
+  return new Set([...new Map(localSecretEntries(paths))].filter(([, value]) => value !== '').map(([name]) => name));
+}
+
+export const LOCAL_STORAGE_KEYS_MISSING = 'storage keys missing for an existing volume; restore secrets.env';
+export const LOCAL_DATABASE_MISSING = 'database missing for an existing volume; restore myco.sqlite';
+
+/** Storage keys must satisfy the same material requirements as the serving runtime. */
+export function localStorageKeysReady(paths: Pick<LocalDeploymentPaths, 'secretsFile'>): boolean {
+  const secrets = readLocalSecrets(paths);
+  if ((secrets.SESSION_SECRET?.trim().length ?? 0) < MIN_SESSION_SECRET_LENGTH) return false;
+  try { return fromBase64(secrets.SECRET_WRAP_KEY ?? '').byteLength === WRAPPING_KEY_BYTES; }
+  catch { return false; }
 }
 
 export function writeLocalSecrets(values: Partial<Record<LocalSecretName, string>>, paths = resolveLocalPaths()): void {
@@ -201,10 +232,19 @@ export function configureLocalSignIn<T>(
 
 function writeSecrets(values: Partial<Record<LocalSecretName, string>>, paths: LocalDeploymentPaths): void {
   mkdirSync(paths.root, { recursive: true, mode: 0o700 });
-  const lines = LOCAL_SECRET_NAMES
-    .filter((name) => (values[name] ?? '') !== '')
-    .map((name) => `${name}=${values[name]!}`);
-  atomicWriteFileSync(paths.secretsFile, `${lines.join('\n')}\n`, { mode: 0o600, durable: true });
+  const prior = existsSync(paths.secretsFile) ? readFileSync(paths.secretsFile) : null;
+  const remaining = new Map(Object.entries({ ...readLocalSecrets(paths), ...values }));
+  let contents = (prior?.toString('utf8').match(/[^\n]*\n|[^\n]+$/g) ?? []).map(line => {
+    const entry = localSecretEntry(line);
+    if (entry === undefined) return line;
+    const value = remaining.get(entry[0]);
+    remaining.delete(entry[0]);
+    return value ? `${entry[0]}=${value}\n` : '';
+  }).join('');
+  const added = [...remaining].filter(([, value]) => value).map(([name, value]) => `${name}=${value}\n`).join('');
+  if (added !== '' && contents !== '' && !contents.endsWith('\n')) contents += '\n';
+  if (prior !== null) atomicWriteFileSync(`${paths.secretsFile}.bak`, prior, { mode: 0o600, durable: true });
+  atomicWriteFileSync(paths.secretsFile, contents + added, { mode: 0o600, durable: true });
 }
 
 /**
@@ -220,6 +260,7 @@ export function ensureLocalSecrets(paths = resolveLocalPaths()): LocalSecretName
 }
 
 function ensureSecrets(paths: LocalDeploymentPaths): LocalSecretName[] {
+  if (existsSync(paths.databasePath) && !localStorageKeysReady(paths)) throw new Error(LOCAL_STORAGE_KEYS_MISSING);
   const existing = readLocalSecrets(paths);
   const added = GENERATED.filter((name) => (existing[name] ?? '') === '');
   if (added.length === 0) return [];
@@ -235,12 +276,24 @@ export function removeLocalDeployment(paths = resolveLocalPaths()): void {
 }
 
 /** Provision configuration, credentials and schema while the volume is exclusively held. */
-export function createLocalDeployment(record: LocalDeploymentRecord, native: NativeSqlite, paths = resolveLocalPaths()) {
+export type LocalCreateStep = 'directory' | 'secrets' | 'schema' | 'record';
+
+export function createLocalDeployment(
+  record: LocalDeploymentRecord, native: NativeSqlite, paths = resolveLocalPaths(),
+  onProgress?: (step: LocalCreateStep) => void,
+) {
   return new LocalVolume(paths).exclusive(() => {
     assertRecordServable(record);
-    writeRecord(record, paths);
+    if (existsSync(paths.recordFile) && !existsSync(paths.databasePath)) throw new Error(LOCAL_DATABASE_MISSING);
+    mkdirSync(paths.root, { recursive: true, mode: 0o700 });
+    onProgress?.('directory');
     const generated = ensureSecrets(paths);
-    return { generated, applied: migrateOnly(paths.databasePath, native) };
+    onProgress?.('secrets');
+    const applied = migrateOnly(paths.databasePath, native);
+    onProgress?.('schema');
+    writeRecord(record, paths);
+    onProgress?.('record');
+    return { generated, applied };
   });
 }
 

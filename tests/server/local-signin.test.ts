@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, readFileSync, statSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { configureLocalSignIn, ensureLocalSecrets, readLocalSecrets, resolveLocalPaths, writeLocalRecord } from '@myco/server/local.js';
+import { configureLocalSignIn, createLocalDeployment, DEFAULT_LOCAL_RECORD, readLocalSecrets, resolveLocalPaths, writeLocalSecrets } from '@myco/server/local.js';
 import { materializeBundle, resolveDeploymentPaths } from '@myco/server/deployment.js';
 import { LocalVolume, volumeIdentity, type VolumeStartup } from '@myco/server/local-volume.js';
 
@@ -13,13 +13,16 @@ const servingVolume = (paths: { databasePath: string }): VolumeStartup<{ stop():
   identity: () => volumeIdentity(paths.databasePath, () => null),
   start: async () => ({ stop: async () => {} }),
 });
+import { Database } from 'bun:sqlite';
+import { setupLocalOwner } from '@myco/server/local-owner.js';
+import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
+import { spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
 import { registerGitHubApp, resolveSignInTarget } from '@myco/server/github-app.js';
 
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), 'myco-native-signin-'));
   const paths = resolveLocalPaths(home);
-  writeLocalRecord({ port: 18806, sourceFrom: 'socket' }, paths);
-  ensureLocalSecrets(paths);
+  createLocalDeployment({ ...DEFAULT_LOCAL_RECORD, port: 18806 }, { library: null, vec0: null }, paths);
   return { home, paths, url: 'http://127.0.0.1:18806' };
 }
 
@@ -46,8 +49,15 @@ describe('native sign-in registration', () => {
     } finally { await serving.stop(); }
   });
 
-  it('holds the volume through registration, preserves generated keys and reports pending start', async () => {
+  for (const linked of [false, true]) it(`preserves keys and reports the next step with owner linked=${linked}`, async () => {
     const f = fixture();
+    if (linked) {
+      writeLocalSecrets({ GITHUB_CLIENT_ID: 'old', GITHUB_CLIENT_SECRET: 'old' }, f.paths);
+      const link = await setupLocalOwner(f.paths, { library: null, vec0: null });
+      const db = new Database(f.paths.databasePath);
+      try { await spendIdentityLinkAuthority(sqliteRelationalStore(db), new URL(link.url).hash.slice(1), '1234', Date.now()); }
+      finally { db.close(); }
+    }
     const before = readLocalSecrets(f.paths);
     let pageOpened!: (page: string) => void;
     const page = new Promise<string>((resolve) => { pageOpened = resolve; });
@@ -65,7 +75,9 @@ describe('native sign-in registration', () => {
     const state = /state=([A-Za-z0-9_%-]+)/.exec(html)![1];
     await fetch(`${new URL(pageUrl).origin}/callback?code=native&state=${state}`);
     const result = await pending;
-    expect(result.verified).toMatchObject({ ok: false, pendingStart: true });
+    expect(result.verified).toMatchObject({ ok: false, pendingStart: true,
+      reason: linked ? "start it: myco server install --target local." : "While it's stopped: myco server setup-owner --target local. Then start it: myco server install --target local." });
+    expect(result.verified).not.toMatchObject({ reason: expect.stringMatching(/^Next[:,]/) });
     expect(requests).toEqual(['https://api.github.com/app-manifests/native/conversions']);
     expect(readLocalSecrets(f.paths)).toEqual({ ...before, GITHUB_CLIENT_ID: 'Iv1.native', GITHUB_CLIENT_SECRET: 'native-secret' });
     expect(statSync(f.paths.secretsFile).mode & 0o777).toBe(0o600);

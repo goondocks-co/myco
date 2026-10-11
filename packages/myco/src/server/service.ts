@@ -89,13 +89,13 @@ export class ServicePlatformUnsupported extends Error {}
  * split on whitespace and by hosts that take it whole, and no single spelling
  * satisfies both.
  */
-export function assertUnquotablePath(binaryPath: string): void {
+export function assertUnquotablePath(binaryPath: string, label = 'binary'): void {
   if (!path.isAbsolute(binaryPath)) {
     throw new ServicePathUnsupported(`the service runs an absolute path, and ${JSON.stringify(binaryPath)} is not one`);
   }
   if (/\s/.test(binaryPath)) {
     throw new ServicePathUnsupported(
-      `the service cannot run a binary whose path contains whitespace (${binaryPath}). Install Myco somewhere without spaces in the path.`,
+      `the service cannot use a ${label} whose path contains whitespace (${binaryPath}). Choose a location without spaces in the path.`,
     );
   }
 }
@@ -118,6 +118,8 @@ export function assertInstalledBinary(binaryPath: string): void {
     );
   }
 }
+
+const MAX_TASK_PROCESS_DEPTH = 16;
 
 const DEFAULT_PATH_ENV = '/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin';
 
@@ -157,6 +159,24 @@ export function servicePaths(spec: ServiceSpec, platform = process.platform): Se
     return { ...base, unitFile: path.join(spec.home, '.myco', `${spec.unit.unitName}.task.xml`) };
   }
   throw new ServicePlatformUnsupported(`no per-user service is defined for ${platform}`);
+}
+
+/** Refuse a native unit that points at another Deployment's home. */
+export function assertServiceTargetHome(spec: ServiceSpec, options: ServiceOptions = {}): void {
+  const expected = spec.env.MYCO_HOME;
+  if (expected === undefined) return;
+  const platform = options.platform ?? process.platform;
+  const paths = servicePaths(spec, platform);
+  if (!existsSync(paths.unitFile)) return;
+  const source = readFileSync(paths.unitFile, 'utf8');
+  const pattern = platform === 'darwin' ? /<key>MYCO_HOME<\/key>\s*<string>([^<]*)<\/string>/g
+    : platform === 'linux' ? /^Environment=MYCO_HOME=(.*)$/gm
+      : /set &quot;MYCO_HOME=(.*?)&quot;/g;
+  const homes = [...source.matchAll(pattern)].map(match => match[1]);
+  const target = platform === 'linux' ? expected : xmlEscape(expected);
+  if (homes.length === 1 && homes[0] === target) return;
+  if (homes.length === 0 && !source.includes('MYCO_HOME') && expected === path.join(spec.home, '.myco')) return;
+  throw new Error(`the installed native service does not belong to ${expected}; keep its Deployment running and reconcile its service before setup`);
 }
 
 const xmlEscape = (value: string): string =>
@@ -202,6 +222,9 @@ ${environmentOf(spec).map(([key, value]) => `    <key>${xmlEscape(key)}</key><st
 /** systemd --user: run after the network is up, restart on failure, append both streams. */
 export function renderSystemdUnit(spec: ServiceSpec, paths: ServicePaths): string {
   assertUnquotablePath(spec.binaryPath);
+  for (const directory of [spec.home, paths.logDir, spec.env.MYCO_HOME]) {
+    if (directory !== undefined) assertUnquotablePath(directory, 'directory');
+  }
   return `[Unit]
 Description=${spec.unit.description}
 After=network-online.target
@@ -512,6 +535,8 @@ export function uninstallService(spec: ServiceSpec, options: ServiceOptions = {}
 export const UNIT_NOT_HELD = 'the unit is installed and the platform is not holding it';
 
 export interface ServiceStatus {
+  /** The process the platform reports, when its status exposes one. */
+  pid?: number;
   /** Whether the unit file is written. */
   installed: boolean;
   /** Whether the platform holds the unit, to start at login. */
@@ -526,7 +551,7 @@ export interface ServiceStatus {
  * platform rather than from the unit file: launchd lists a running job with its
  * PID, systemd answers `is-active`, Task Scheduler reports the task's state.
  */
-export function statusOfService(spec: ServiceSpec, options: ServiceOptions & { inspectMissing?: boolean } = {}): ServiceStatus {
+export function statusOfService(spec: ServiceSpec, options: ServiceOptions & { inspectMissing?: boolean; includePid?: boolean } = {}): ServiceStatus {
   const platform = options.platform ?? process.platform;
   const runner = options.runner ?? platformRunner;
   const paths = servicePaths(spec, platform);
@@ -535,21 +560,43 @@ export function statusOfService(spec: ServiceSpec, options: ServiceOptions & { i
   const ask = (probe: readonly string[]): CommandResult => runner(probe[0]!, probe.slice(1));
   let loaded: CommandResult;
   let running: boolean;
+  let pid: number | undefined;
   if (platform === 'darwin') {
     loaded = ask(['launchctl', 'list', spec.unit.label]);
-    running = loaded.status === 0 && /"PID"\s*=\s*\d+/.test(loaded.stdout ?? '');
+    const reportedPid = /"PID"\s*=\s*(\d+)/.exec(loaded.stdout ?? '');
+    pid = loaded.status === 0 && reportedPid !== null ? Number(reportedPid[1]) : undefined;
+    running = pid !== undefined && pid > 0;
   } else if (platform === 'linux') {
     loaded = ask(['systemctl', '--user', 'is-enabled', `${spec.unit.unitName}.service`]);
     running = loaded.error === undefined && ask(['systemctl', '--user', 'is-active', `${spec.unit.unitName}.service`]).status === 0;
+    if (running && options.includePid) {
+      const reportedPid = ask(['systemctl', '--user', 'show', `${spec.unit.unitName}.service`, '--property=MainPID', '--value']);
+      const value = Number(reportedPid.stdout?.trim());
+      if (reportedPid.status === 0 && Number.isInteger(value) && value > 0) pid = value;
+    }
   } else {
     // Task Scheduler's own status text is translated; the ScheduledTask state is an enum name that is not.
     loaded = ask(['schtasks', '/Query', '/TN', spec.unit.unitName]);
     running = loaded.status === 0
       && ask(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', `(Get-ScheduledTask -TaskName '${spec.unit.unitName}').State`]).stdout?.trim() === 'Running';
+    if (running && options.includePid) {
+      const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
+      const script = [
+        '$scheduler = New-Object -ComObject Schedule.Service', '$scheduler.Connect()',
+        `$task = $scheduler.GetFolder('\\').GetTask(${literal(spec.unit.unitName)})`,
+        '$ids = @($task.GetInstances(0) | ForEach-Object { $_.EnginePID })',
+        '$processes = @(Get-CimInstance Win32_Process)',
+        `for ($depth = 0; $depth -lt ${MAX_TASK_PROCESS_DEPTH}; $depth++) { $next = @($processes | Where-Object { $ids -contains $_.ParentProcessId -and $ids -notcontains $_.ProcessId } | ForEach-Object { $_.ProcessId }); if ($next.Count -eq 0) { break }; $ids += $next }`,
+        `$processes | Where-Object { $ids -contains $_.ProcessId -and $_.ExecutablePath -eq ${literal(spec.binaryPath)} } | Select-Object -First 1 -ExpandProperty ProcessId`,
+      ].join('; ');
+      const reported = ask(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script]);
+      const value = Number(reported.stdout?.trim());
+      if (reported.status === 0 && Number.isInteger(value) && value > 0) pid = value;
+    }
   }
   if (loaded.error !== undefined) return { installed, loaded: false, running: false, detail: `the platform's service manager could not be run` };
   if (loaded.status !== 0) return { installed, loaded: false, running, detail: UNIT_NOT_HELD };
   return running
-    ? { installed, loaded: true, running: true }
+    ? { installed, loaded: true, running: true, ...(pid === undefined ? {} : { pid }) }
     : { installed, loaded: true, running: false, detail: 'the platform holds the unit and its process is not running' };
 }
