@@ -1,5 +1,9 @@
 /** Recovery words shared by the terminal and dashboard. */
-export const LEGACY_AGENT_DEFERRAL = 'Agent setup is deferred because retained Myco 1.4 vaults have no matching cutover backup. Review myco cutover --dry-run before running myco cutover.';
+export const LEGACY_AGENT_DEFERRAL = 'Agent setup is deferred because retained Myco 1.4 history has no complete migration receipt. Review myco cutover --dry-run before running myco cutover.';
+export const cutoverAbsentFolder = (projectId: string, root: string | null): string =>
+  `${projectId}: folder ${root ?? '(not recorded)'} is absent or unsafe; vault history only. Use --map <dir>=<root> for retained transcripts.`;
+export const cutoverForeignBinding = (projectId: string, root: string, boundTo: string, serverUrl: string): string =>
+  `${projectId}: ${root} is bound to ${boundTo}; repository route and transcripts stay there. Vault history goes to ${serverUrl}.`;
 export type CodexInstallationRule = 'root' | 'contains-home' | 'contains-run' | 'contains-temp' | 'overlaps-codex-login' | 'overlaps-myco-home' | 'overlaps-codex-home';
 const CODEX_INSTALLATION_REASONS: Readonly<Record<CodexInstallationRule, string>> = {
   root: 'is the filesystem root',

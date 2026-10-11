@@ -55,7 +55,7 @@ export function legacyVaultFiles(source) {
     .sort();
 }
 
-/** The Myco 1.4 vaults of a home no cutover or membership has moved to 2.0; none for any other home. */
+/** Daemon-start gate for retained local runtime; not a migration-completion predicate. */
 export function unmovedLegacyVaults(mycoHome) {
   return isMemberHome(mycoHome) ? [] : legacyVaultFiles(mycoHome);
 }

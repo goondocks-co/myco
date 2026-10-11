@@ -22,6 +22,7 @@ import { readDeploymentMembership } from '@myco/member/registry.js';
 import { LEGACY_AGENT_DEFERRAL } from '@goondocks/myco-shared/setup-guidance';
 import { Database } from 'bun:sqlite';
 import { legacyMigrationPending } from '@myco/member/legacy-migration.js';
+import { legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { readVaultContent } from '@myco/member/legacy-backup.js';
 import { withLegacyBinaryTraps } from '../helpers/legacy-migration-fixture.js';
 
@@ -179,7 +180,7 @@ describe('myco login sets up the agents on this machine', () => {
     expect(err).toEqual([]);
   });
 
-  for (const changed of [false, true]) it(`${changed ? 'defers again after capture changes' : 'provisions after matching backup evidence'} on a migrated machine`, async () => {
+  for (const changed of [false, true]) it(`${changed ? 'defers again after capture changes' : 'provisions after complete receipt evidence'} on a migrated machine`, async () => {
     fs.mkdirSync(claudeDir, { recursive: true });
     const vault = path.join(home, 'groves', 'legacy', 'myco.db');
     fs.mkdirSync(path.dirname(vault), { recursive: true });
@@ -188,12 +189,13 @@ describe('myco login sets up the agents on this machine', () => {
     db.run("INSERT INTO sessions VALUES ('retained')");
     db.close();
     const digest = readVaultContent(vault).digest;
+    const stamp = legacyVaultStamp(vault);
     if (changed) {
       const write = new Database(vault);
       try { write.run("INSERT INTO sessions VALUES ('new capture')"); } finally { write.close(); }
     }
     fs.mkdirSync(path.join(home, 'member'), { recursive: true });
-    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: { [vault]: { digest } } }), { mode: 0o600 });
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ version: 2, backups: { [vault]: { digest } }, handover: { at: 1, legacyHomes: [home], agents: [] }, migrations: { [vault]: { ...stamp, digest, projects: {} } } }), { mode: 0o600 });
     const rig = unjoinedRig();
     expect(await run([await invite(rig)], deps(rig, { agents: () => ['claude-code'] }))).toBe(true);
     expect(out.includes(LEGACY_AGENT_DEFERRAL)).toBe(changed);

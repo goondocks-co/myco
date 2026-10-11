@@ -525,6 +525,12 @@ export interface LegacyImportReport {
   refused?: string;
 }
 
+/** Completion requires every offered row to have a durable disposition. */
+export const legacyProjectImportComplete = (project: LegacyProjectReport): boolean =>
+  project.endedBy === undefined && project.refusals.length === 0 && project.failures.length === 0
+  && project.deletedButHeld.length === 0 && project.stillWriting.length === 0
+  && Object.values(project.notAttempted ?? {}).every((count) => count === 0);
+
 export interface LegacyImportOptions {
   /** 1.4 homes, grove directories or vault files. */
   sources: readonly string[];
@@ -559,10 +565,15 @@ type Probe = { held: Set<string>; withTranscript: Set<string>; tombstoned: Set<s
 /** How a step ended: finished, stopped by a class the caller acts on, or failed (`detail` says why). */
 type StepEnd = { endedBy?: string; detail?: string; cause?: string };
 
+const projectCounts = (project: LegacyProject): LegacyProjectReport['vault'] => ({
+  sessions: project.sessions.length, prompts: project.prompts.length, plans: project.plans.length,
+  spores: project.spores.length, lineage: project.resolutions.length,
+});
+
 const emptyProjectReport = (project: LegacyProject, root: string | null): LegacyProjectReport => ({
   projectId: project.projectId,
   root,
-  vault: { sessions: project.sessions.length, prompts: project.prompts.length, plans: project.plans.length, spores: project.spores.length, lineage: project.resolutions.length },
+  vault: projectCounts(project),
   sessions: { distinct: 0, deleted: 0, alreadyHeld: 0, transcriptsShipped: 0, transcriptsHeld: 0, fromVault: 0, resumed: 0 },
   aliases: [], unaliased: [], unmatchedDeletes: [], deletedButHeld: [], stillWriting: [], otherMachines: {},
   prompts: 0, responses: 0, plans: { sent: 0, empty: 0, unsent: 0 }, spores: { saved: 0, duplicate: 0, refused: 0 },
@@ -570,8 +581,8 @@ const emptyProjectReport = (project: LegacyProject, root: string | null): Legacy
 });
 
 /** Every project the sources hold, with the root its newest session names; null where none names one. */
-export function legacyProjectRoots(sources: readonly string[]): Array<{ projectId: string; root: string | null; vault: string }> {
-  return [...new Set(sources.flatMap(legacyVaultFiles))].flatMap(readLegacyVault).map((p) => ({ projectId: p.projectId, root: rootOf(p), vault: p.vault }));
+export function legacyProjectRoots(sources: readonly string[]): Array<{ projectId: string; root: string | null; vault: string; counts: LegacyProjectReport['vault'] }> {
+  return [...new Set(sources.flatMap(legacyVaultFiles))].flatMap(readLegacyVault).map((p) => ({ projectId: p.projectId, root: rootOf(p), vault: p.vault, counts: projectCounts(p) }));
 }
 
 /**
@@ -579,9 +590,10 @@ export function legacyProjectRoots(sources: readonly string[]): Array<{ projectI
  * record: the sessions a vault import on `machineId` would take, and, by
  * machine id, the ones it leaves for another machine.
  */
-export function legacySessionSplit(sources: readonly string[], machineId: string): { thisMachine: number; otherMachines: Record<string, number> } {
+export function legacySessionSplit(sources: readonly string[], machineId: string, projects?: ReadonlySet<string>): { thisMachine: number; otherMachines: Record<string, number> } {
   const split = { thisMachine: 0, otherMachines: {} as Record<string, number> };
   for (const project of [...new Set(sources.flatMap(legacyVaultFiles))].flatMap(readLegacyVault)) {
+    if (projects !== undefined && !projects.has(project.projectId)) continue;
     const grouping = groupLegacySessions(project, new Map(), machineId);
     split.thisMachine += grouping.groups.length;
     for (const [machine, ids] of grouping.otherMachines) split.otherMachines[machine] = (split.otherMachines[machine] ?? 0) + ids.length;

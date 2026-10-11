@@ -1,4 +1,6 @@
 import { toolsStayOnDeployment } from '@goondocks/myco-shared/setup-guidance';
+import { MYCO_MCP_SERVER_NAME, rawHasMycoOwnershipSignal } from '@myco/member/registration-ownership.js';
+export { MYCO_MCP_SERVER_NAME, rawHasMycoOwnershipSignal } from '@myco/member/registration-ownership.js';
 import type { SymbiontManifest } from './manifest-schema.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -92,9 +94,6 @@ const HOOK_GUARD_TEMPLATE_FILENAME = 'myco-run.cjs';
 
 /** Subdirectory within the package where skills live. */
 const SKILLS_SUBDIR = 'skills';
-
-/** MCP server name used by Myco in all symbiont configurations. */
-export const MYCO_MCP_SERVER_NAME = 'myco';
 
 /** The `type` a JSON host takes for a remote HTTP MCP server. */
 const REMOTE_MCP_TYPE = 'http';
@@ -325,18 +324,6 @@ export const WHITESPACE_PATH_REFUSAL =
 function assertSafeBinaryPathForUnquoted(binaryPath: string): void {
   if (!/\s/.test(binaryPath)) return;
   throw new Error(`Refusing to install symbiont hooks: binary path "${binaryPath}" ${WHITESPACE_PATH_REFUSAL}`);
-}
-
-/**
- * Whether a raw config file carries any Myco hook-ownership signal — either
- * the `--myco-managed` marker (direct-binary form, whose binary path varies
- * by build) or a canonical launcher-path reference (legacy/global launcher).
- * Used by `isConfigured()` for the non-strict-JSON detection paths (Codex's
- * TOML-footer hooks.json, antigravity's JSON plugin-file) where a structured
- * group walk isn't possible.
- */
-export function rawHasMycoOwnershipSignal(raw: string): boolean {
-  return hasMycoManagedMarker(raw) || containsMycoLauncherReference(raw);
 }
 
 /** Marker text used to identify unmodified instruction stubs. */

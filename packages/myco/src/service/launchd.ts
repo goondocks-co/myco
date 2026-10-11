@@ -1,3 +1,5 @@
+import { parsePlistDocument } from '@myco/member/unit-parsers.js';
+export { parsePlistDocument, type PlistValue } from '@myco/member/unit-parsers.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -313,15 +315,6 @@ export function parsePlistCommand(plist: string, expectedLabel?: string): Instal
   return { executable, args };
 }
 
-function decodePlistString(value: string): string | null {
-  if (/&(?!(?:amp|lt|gt|quot);)/.test(value)) return null;
-  return value
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&');
-}
-
 function isLaunchdJobAbsent(stdout: string): boolean {
   // A PERMISSION refusal is not absence (spec R-M6): reading "Operation not
   // permitted" as "no job" would report a live service as gone.
@@ -329,78 +322,4 @@ function isLaunchdJobAbsent(stdout: string): boolean {
   return /^\[sandbox\] skipped launchctl print /i.test(stdout)
     || /^Could not print domain: 125: Domain does not support specified action\s*$/i.test(stdout.trim())
     || /(?:could not find|not found|unknown) service/i.test(stdout);
-}
-
-export type PlistValue = string | number | boolean | PlistValue[] | { [key: string]: PlistValue };
-
-export function parsePlistDocument(plist: string): { [key: string]: PlistValue } | null {
-  const xml = plist
-    .replace(/^\s*<\?xml[^>]*\?>/, '')
-    .replace(/^\s*<!DOCTYPE[^>]*>/, '');
-  let index = 0;
-
-  const skipWhitespace = (): void => {
-    while (/\s/.test(xml[index] ?? '')) index++;
-  };
-  const consume = (pattern: RegExp): string | null => {
-    skipWhitespace();
-    const match = xml.slice(index).match(pattern);
-    if (!match || match.index !== 0) return null;
-    index += match[0].length;
-    return match[0];
-  };
-  const textElement = (tag: 'key' | 'string'): string | undefined => {
-    if (consume(new RegExp(`^<${tag}>`)) === null) return undefined;
-    const close = `</${tag}>`;
-    const closeIndex = xml.indexOf(close, index);
-    if (closeIndex === -1) return undefined;
-    const encoded = xml.slice(index, closeIndex);
-    if (encoded.includes('<')) return undefined;
-    index = closeIndex + close.length;
-    return decodePlistString(encoded) ?? undefined;
-  };
-  const value = (): PlistValue | undefined => {
-    skipWhitespace();
-    if (xml.startsWith('<string>', index)) return textElement('string');
-    if (consume(/^<true\s*\/>/) !== null) return true;
-    if (consume(/^<false\s*\/>/) !== null) return false;
-    if (consume(/^<integer>/) !== null) {
-      const closeIndex = xml.indexOf('</integer>', index);
-      if (closeIndex === -1) return undefined;
-      const raw = xml.slice(index, closeIndex);
-      if (!/^-?\d+$/.test(raw)) return undefined;
-      index = closeIndex + '</integer>'.length;
-      return parseInt(raw, 10);
-    }
-    if (consume(/^<array>/) !== null) {
-      const result: PlistValue[] = [];
-      while (true) {
-        skipWhitespace();
-        if (consume(/^<\/array>/) !== null) return result;
-        const item = value();
-        if (item === undefined) return undefined;
-        result.push(item);
-      }
-    }
-    if (consume(/^<dict>/) !== null) {
-      const result: { [key: string]: PlistValue } = Object.create(null) as { [key: string]: PlistValue };
-      while (true) {
-        skipWhitespace();
-        if (consume(/^<\/dict>/) !== null) return result;
-        const key = textElement('key');
-        if (key === undefined || Object.hasOwn(result, key)) return undefined;
-        const item = value();
-        if (item === undefined) return undefined;
-        result[key] = item;
-      }
-    }
-    return undefined;
-  };
-
-  if (consume(/^<plist(?:\s[^>]*)?>/) === null) return null;
-  const root = value();
-  if (!root || Array.isArray(root) || typeof root !== 'object') return null;
-  if (consume(/^<\/plist>/) === null) return null;
-  skipWhitespace();
-  return index === xml.length ? root : null;
 }
