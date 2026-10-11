@@ -167,8 +167,7 @@ export function readRunnerRecord(serverUrl: string, mycoHome: string = resolveMy
   return readRecordFile(runnerRecordPath(serverUrl, mycoHome), serverUrl);
 }
 
-/** Every record this home holds, in directory order. */
-export function listRunnerRecords(mycoHome: string = resolveMycoHome()): RunnerRecord[] {
+function runnerRecordFiles(mycoHome: string): string[] {
   let entries: string[];
   try {
     entries = fs.readdirSync(runnerRoot(mycoHome));
@@ -176,13 +175,31 @@ export function listRunnerRecords(mycoHome: string = resolveMycoHome()): RunnerR
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
-  return entries
-    .filter((entry) => entry.startsWith(DEPLOYMENT_DIR_PREFIX))
-    .sort()
-    .flatMap((entry) => {
-      const record = readRecordFile(path.join(runnerRoot(mycoHome), entry, RECORD_FILENAME));
-      return record === null ? [] : [record];
-    });
+  return entries.filter(entry => entry.startsWith(DEPLOYMENT_DIR_PREFIX)).sort()
+    .map(entry => path.join(runnerRoot(mycoHome), entry, RECORD_FILENAME));
+}
+
+/** Every record this home holds, in directory order. */
+export function listRunnerRecords(mycoHome: string = resolveMycoHome()): RunnerRecord[] {
+  return runnerRecordFiles(mycoHome).flatMap(file => {
+    const record = readRecordFile(file);
+    return record === null ? [] : [record];
+  });
+}
+
+/** Readable runner records and every failed read; damaged records do not hide other runners. */
+export function listRunnerRecordsResult(mycoHome: string = resolveMycoHome()): { records: RunnerRecord[]; errors: string[] } {
+  const records: RunnerRecord[] = [];
+  const errors: string[] = [];
+  try {
+    for (const file of runnerRecordFiles(mycoHome)) {
+      try {
+        const record = readRecordFile(file);
+        if (record !== null) records.push(record);
+      } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+    }
+  } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+  return { records, errors };
 }
 
 /** Whether the record holds a registered runner's bearer, as opposed to a registration still in flight. */

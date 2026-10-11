@@ -2,13 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readDefaultDeployment } from '@myco/member/default-deployment.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
-import { deploymentUrl, listRegistryEntriesResult, readDeploymentMembershipResult, readRegistryEntryResult } from '@myco/member/registry.js';
+import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readDeploymentMembershipResult, readRegistryEntryResult } from '@myco/member/registry.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { postRoute } from '@myco/cli/deployment-reader.js';
 import { memberHarnessCurrent } from '@myco/cli/member.js';
 import type { WorkerServiceDeps } from '@myco/cli/worker-service.js';
 import { observationInstant, observeProjectCapture, observeRunnerService } from '@myco/cli/home-observations.js';
-import { isLiveRunner, readRunnerRecord } from '@myco/runner/runner-registry.js';
+import { isLiveRunner, listRunnerRecordsResult, readRunnerRecord } from '@myco/runner/runner-registry.js';
 import { signInState } from '@myco/server/github-app.js';
 import { detectMachineInstalledSymbionts } from '@myco/symbionts/detect.js';
 import { provisionRecordPath, readProvisionRecord } from '@myco/symbionts/member-provision-record.js';
@@ -23,6 +23,7 @@ export interface Observation {
   detail: string;
   informational?: boolean;
   hint?: string;
+  deployment?: string;
 }
 export interface ObserveDeps {
   checkRemote?: boolean;
@@ -32,6 +33,7 @@ export interface ObserveDeps {
   worker?: WorkerServiceDeps;
   now?: () => number;
   includeCapture?: boolean;
+  status?: boolean;
 }
 export const setupExitCode = (facts: readonly Observation[]): 0 | 3 | 4 => facts.some((fact) => fact.state === 'unavailable') ? 4
   : facts.some((fact) => !fact.informational && fact.state !== 'complete') ? 3 : 0;
@@ -76,7 +78,7 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
     });
   }
   if (answers.role === 'join') {
-    add('runner.choice', answers.runWork === undefined ? 'absent' : 'complete', answers.runWork === undefined ? 'unasked' : answers.runWork ? 'run-work' : 'declined');
+    add('runner.choice', answers.runWork === undefined ? 'absent' : 'complete', answers.runWork === undefined ? 'unasked' : answers.runWork ? 'run-work' : 'declined', url, deps.status && answers.runWork === undefined);
     await read('machine.signin', async () => {
       const membership = readDeploymentMembershipResult(url, home);
       add('machine.signin', membership.status === 'present' ? 'complete' : membership.status === 'missing' ? 'absent' : 'unavailable',
@@ -101,7 +103,13 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
     });
     const root = answers.root;
     await read('project', () => {
-      if (!root) { add('project', 'absent', 'Choose a repository with --root, and --project or --new.'); return; }
+      if (!root) {
+        const listing = listRegistryEntriesResult(home);
+        if (!listing.readable || listing.unavailableEntries > 0) throw new Error('Repository bindings could not all be read.');
+        const count = listing.entries.filter(entry => deploymentUrl(entry.serverUrl) === url).length;
+        add('project', count > 0 ? 'complete' : 'absent', count > 0 ? `${count} repositories send to ${url}` : 'Choose a repository with --root, and --project or --new.');
+        return;
+      }
       const binding = readRegistryEntryResult(root, home);
       add('project', binding.status === 'unavailable' ? 'unavailable' : binding.status === 'missing' ? 'absent'
         : deploymentUrl(binding.entry.serverUrl) === url ? 'complete' : 'incomplete',
@@ -147,4 +155,41 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
     });
   }
   return facts;
+}
+
+/** Status derives journeys from membership and runner records, independent of saved progress. */
+export async function observeSetupStatus(home: string, answers: SetupAnswers, deps: ObserveDeps = {}, selected = false): Promise<Observation[]> {
+  const journeys: SetupAnswers[] = [];
+  const failures: Observation[] = [];
+  const unavailable = (id: string, detail: string): void => {
+    failures.push({ id, scope: home, state: 'unavailable', detail });
+  };
+  if (selected && answers.role && answers.url) journeys.push(answers);
+  else {
+    const memberships = listDeploymentMembershipsResult(home);
+    if (!memberships.readable || memberships.unavailableEntries > 0) unavailable('machine.signin', 'Deployment memberships could not all be read. Inspect the membership files with myco doctor.');
+    for (const membership of memberships.memberships) journeys.push({ role: 'join', url: deploymentUrl(membership.serverUrl) });
+    const runners = listRunnerRecordsResult(home);
+    for (const runner of runners.records) journeys.push({ role: 'runner', url: deploymentUrl(runner.serverUrl) });
+    for (const error of runners.errors) unavailable('runner.enrollment', `Runner record could not be read: ${error}. Run myco runner status.`);
+    if (answers.role && answers.url && !journeys.some(journey => journey.role === answers.role && journey.url === answers.url)) journeys.push(answers);
+  }
+  if (journeys.length === 0) {
+    const observed = await observeSetup(home, {}, deps);
+    return [...observed.filter(fact => failures.length === 0 || fact.id !== 'journey'), ...failures];
+  }
+  const facts: Observation[] = [];
+  for (const journey of journeys) {
+    const saved = answers.url === undefined || answers.url === journey.url ? answers : {};
+    const scoped = { ...saved, ...journey, root: answers.root };
+    const observed = await observeSetup(home, scoped, { ...deps, status: true });
+    for (const fact of observed) {
+      if (['legacy', 'default'].includes(fact.id) && facts.some(existing => existing.id === fact.id)) continue;
+      if (facts.some(existing => existing.id === fact.id && existing.scope === fact.scope && existing.deployment === journey.url && fact.id.startsWith('runner.') && fact.id !== 'runner.choice')) continue;
+      facts.push({ ...fact, deployment: journey.url,
+        ...(!selected && fact.id === 'project' && fact.detail.startsWith('bound-elsewhere:') ? { informational: true } : {}),
+      });
+    }
+  }
+  return [...facts, ...failures];
 }
