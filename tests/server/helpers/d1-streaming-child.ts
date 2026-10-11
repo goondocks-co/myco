@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { readTestPeakRssKiB } from '../../../scripts/test-process-tree.mjs';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { exportD1 } from '@myco/server/cloudflare-d1-export.js';
@@ -12,7 +13,7 @@ interface Fixture {
 }
 const fixtures = JSON.parse(metadata) as Fixture[];
 /** Process-wide RSS high-water mark in KiB, cumulative across exports. */
-const peakKiB = () => process.resourceUsage().maxRSS;
+const peakKiB = readTestPeakRssKiB;
 const CONSUMER_PAUSE_MS = 2;
 const PROGRESS_BYTES = 16 * 1024 ** 2;
 

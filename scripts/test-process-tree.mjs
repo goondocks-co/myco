@@ -93,10 +93,22 @@ function processSample(pid, field, override) {
   return result.stdout.trim();
 }
 
+/** RSS measurements use KiB; Darwin Bun's resourceUsage high-water mark uses bytes. */
+export function rssKiB(value, unit) {
+  return unit === 'bytes' ? value / 1024 : value;
+}
+
+export function readTestPeakRssKiB() {
+  const peak = process.resourceUsage().maxRSS;
+  const bytes = process.platform === 'darwin' && process.versions.bun
+    && peak >= process.memoryUsage().rss / 2;
+  return rssKiB(peak, bytes ? 'bytes' : 'KiB');
+}
+
 export function readTestProcessRssKiB(pid) {
   const rss = Number(processSample(pid, 'rss'));
   if (!Number.isFinite(rss) || rss < 0) throw new Error('Invalid test RSS sample');
-  return rss;
+  return rssKiB(rss, 'KiB');
 }
 
 export function readTestProcessGroupId(pid) {
