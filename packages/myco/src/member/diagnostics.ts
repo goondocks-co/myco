@@ -31,6 +31,7 @@ const rendersAsInstant = (value: unknown): value is number =>
 
 /** How many refusals one report carries, newest last. */
 export const MAX_REFUSALS_REPORTED = 50;
+export const RECENT_REFUSAL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const MEMBER_BUNDLE_VERSION = 1;
 
@@ -134,6 +135,10 @@ export interface ProjectDiagnostics {
     loggedSinceLastReset: number;
     /** Whether the log holds more readable entries than this report lists. */
     truncated: boolean;
+    /** Newest numeric timestamp across the full log; it may be outside the renderable date range. */
+    latestAt: number | null;
+    /** Entries across the full log within RECENT_REFUSAL_MS of this observation. */
+    recentCount: number;
     /** Lines the log holds that could not be read; a count above zero means the log is damaged, not empty. */
     unreadableLines: number;
     /** Listed entries whose logged code is outside the closed vocabulary; each carries a null code. */
@@ -331,6 +336,8 @@ export function projectDiagnostics(entry: RegistryEntry, mycoHome: string, now: 
       logReadable: refused.readable,
       loggedSinceLastReset: refused.entries.length,
       truncated: refused.entries.length > reported.length,
+      latestAt: refused.entries.reduce<number | null>((last, refusal) => last === null ? refusal.at : Math.max(last, refusal.at), null),
+      recentCount: refused.entries.filter(refusal => refusal.at >= now - RECENT_REFUSAL_MS).length,
       unreadableLines: refused.unreadableLines,
       unknownCodes: reported.filter((entry) => entry.code === null).length,
       entries: reported,

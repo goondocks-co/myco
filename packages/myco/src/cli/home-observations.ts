@@ -1,23 +1,24 @@
 import { projectDiagnostics } from '@myco/member/diagnostics.js';
-import { MemberSpool } from '@myco/member/spool.js';
 import type { RegistryEntry } from '@myco/member/registry.js';
 import { workerServiceStatus } from '@myco/runner/service.js';
 import { platformRunner } from '@myco/server/service.js';
 import { executorServiceTarget, type WorkerServiceDeps } from '@myco/cli/worker-service.js';
 
-export const RECENT_REFUSAL_MS = 7 * 24 * 60 * 60 * 1000;
+export const observationInstant = (ms: number | null | undefined): string => (typeof ms === 'number' && Number.isFinite(ms) && !Number.isNaN(new Date(ms).getTime()) ? new Date(ms).toISOString() : 'unknown');
+
+export { RECENT_REFUSAL_MS } from '@myco/member/diagnostics.js';
 
 /** Capture facts under existing locks and refusal dates across the full log. */
 export function observeProjectCapture(entry: RegistryEntry, home: string, now: number) {
   const facts = projectDiagnostics(entry, home, now, { createReadLocks: false });
-  const refusals = new MemberSpool(entry, { mycoHome: home, initialize: false, createReadLocks: false }).readRefused();
+  const refusals = facts.refusals;
   return {
     ...facts,
     refusalHistory: {
-      readable: refusals.readable,
-      total: refusals.entries.length,
-      latest: refusals.entries.reduce<number | null>((last, refusal) => last === null ? refusal.at : Math.max(last, refusal.at), null),
-      recent: refusals.entries.filter(refusal => refusal.at >= now - RECENT_REFUSAL_MS).length,
+      readable: refusals.logReadable,
+      total: refusals.loggedSinceLastReset,
+      latest: refusals.latestAt,
+      recent: refusals.recentCount,
       unreadableLines: refusals.unreadableLines,
     },
   };

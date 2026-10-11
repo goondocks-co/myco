@@ -7,7 +7,7 @@ import { ServerClient } from '@myco/member/transport.js';
 import { postRoute } from '@myco/cli/deployment-reader.js';
 import { memberHarnessCurrent } from '@myco/cli/member.js';
 import type { WorkerServiceDeps } from '@myco/cli/worker-service.js';
-import { observeProjectCapture, observeRunnerService } from '@myco/cli/home-observations.js';
+import { observationInstant, observeProjectCapture, observeRunnerService } from '@myco/cli/home-observations.js';
 import { isLiveRunner, readRunnerRecord } from '@myco/runner/runner-registry.js';
 import { signInState } from '@myco/server/github-app.js';
 import { detectMachineInstalledSymbionts } from '@myco/symbionts/detect.js';
@@ -109,7 +109,7 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
           !facts.latchReadable ? 'Offline latch unavailable.' : facts.latch === null ? 'Delivery is not held off.' : `Delivery held off; next probe ${new Date(facts.latch.nextProbeAt).toISOString()}. Run myco member drain from this repository.`, entry.root, true);
         const refusals = facts.refusalHistory;
         add('machine.refusals', !refusals.readable || refusals.unreadableLines > 0 ? 'unavailable' : refusals.recent > 0 ? 'incomplete' : 'complete',
-          `${refusals.readable ? `${refusals.total} refused event(s); newest ${refusals.latest === null ? 'unknown' : new Date(refusals.latest).toISOString()}; ${refusals.recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'Refusal log unavailable'}. Run myco logs from this repository.`, entry.root, true);
+          `${refusals.readable ? `${refusals.total} refused event(s); newest ${observationInstant(refusals.latest)}; ${refusals.recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'Refusal log unavailable'}. Run myco logs from this repository.`, entry.root, true);
       }
     });
   }

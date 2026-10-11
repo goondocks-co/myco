@@ -7,7 +7,7 @@ import { DOCTOR_SIGN_IN, DOCTOR_REFUSED_HOOK_REPAIR } from '@goondocks/myco-shar
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
-import { observeProjectCapture, observeRunnerService } from '@myco/cli/home-observations.js';
+import { observationInstant as iso, observeProjectCapture, observeRunnerService } from '@myco/cli/home-observations.js';
 import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member/refused-hooks.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
@@ -36,7 +36,6 @@ export interface MemberDoctorDeps extends MemberVerbDeps {
 
 const USAGE = 'Usage: myco doctor [--fix]';
 
-const iso = (ms: number | null | undefined): string => (typeof ms === 'number' && Number.isFinite(ms) && !Number.isNaN(new Date(ms).getTime()) ? new Date(ms).toISOString() : 'unknown');
 
 const row = (name: string, status: DoctorCheck['status'], detail: string): DoctorCheck => ({ name, status, detail, fixable: false });
 

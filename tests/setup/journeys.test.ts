@@ -329,7 +329,7 @@ describe('observation and consent contracts', () => {
     spool.appendRefused({ eventId: mintId(), sessionId, kind: 'prompt', code: 'clock_skew', reason: 'Fixture clock refusal', at: 1000 });
     if (missingLock) fs.unlinkSync(bufferLockPath(spool.dir, sessionId));
     const before = snapshot(root);
-    expect(await run(['--status', '--json', '--join', URL, '--root', project, '--no-agents', '--no-runner'], base())).toBe(missingLock ? 4 : 0);
+    expect(await run(['--status', '--json', '--join', URL, '--root', project, '--no-agents', '--no-runner'], { ...base(), now: () => 2000 })).toBe(missingLock ? 4 : 0);
     const observations = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
     const backlog = observations.find(fact => fact.id === 'machine.backlog');
     expect(backlog?.scope).toBe(project);
@@ -342,6 +342,38 @@ describe('observation and consent contracts', () => {
     }
     expect(snapshot(root)).toEqual(before);
     await homeReport(home, { mycoHome: home, cwd: project, fetch: configuredFetch, worker: { home: path.join(root, 'user'), runner: recordingPlatform().runner, lockDir: path.join(root, 'locks') } });
+    expect(snapshot(root)).toEqual(before);
+  });
+
+  it('status dates the full refusal history and only flags recent refusals', async () => {
+    const now = Date.UTC(2026, 9, 11);
+    const entry = { version: 2, serverUrl: URL, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1, root: project, projectId: 'proj_capture' };
+    writeRegistryEntry(entry, { mycoHome: home });
+    const spool = new MemberSpool(entry, { mycoHome: home });
+    const old = now - 8 * 24 * 60 * 60 * 1000;
+    const append = (at: number) => spool.appendRefused({ eventId: mintId(), sessionId: 'refusal-history', kind: 'prompt', code: 'clock_skew', reason: 'Fixture refusal', at });
+    append(old);
+    for (const recent of [false, true]) {
+      if (recent) {
+        append(now);
+        for (let i = 0; i < 55; i++) append(old);
+      }
+      const before = snapshot(root);
+      await run(['--status', '--json', '--join', URL, '--root', project, '--no-agents', '--no-runner'], { ...base(), now: () => now });
+      const observations = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
+      const refusal = observations.find(fact => fact.id === 'machine.refusals');
+      expect(refusal?.state).toBe(recent ? 'incomplete' : 'complete');
+      expect(refusal?.detail).toContain(new Date(recent ? now : old).toISOString());
+      expect(refusal?.detail).toContain(recent ? '57 refused event(s)' : '1 refused event(s)');
+      expect(refusal?.detail).toContain(recent ? '1 in the last 7 days' : '0 in the last 7 days');
+      expect(snapshot(root)).toEqual(before);
+    }
+    append(1e30);
+    const before = snapshot(root);
+    await run(['--status', '--json', '--join', URL, '--root', project, '--no-agents', '--no-runner'], { ...base(), now: () => now });
+    const observations = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
+    expect(observations.find(fact => fact.id === 'machine.backlog')?.state).toBe('complete');
+    expect(observations.find(fact => fact.id === 'machine.refusals')?.detail).toContain('newest unknown');
     expect(snapshot(root)).toEqual(before);
   });
 

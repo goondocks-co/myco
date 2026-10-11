@@ -8,15 +8,18 @@ const files = (directory: string): string[] => fs.readdirSync(directory, { withF
   return entry.isDirectory() ? files(file) : /\.(ts|tsx|md)$/.test(file) ? [file] : [];
 });
 
-it('shipped guidance names existing commands instead of an unimplemented setup verb', () => {
+it('shipped guided-setup references have an implemented CLI owner', () => {
   const candidates = ['packages/myco/src', 'packages/myco-shared/src', 'packages/myco-server/ui/src', 'packages/myco/skills', 'plugins/myco/skills']
     .flatMap(directory => files(path.join(repo, directory)));
   candidates.push(...fs.readdirSync(path.join(repo, 'docs')).filter(file => file.endsWith('.md')).map(file => path.join(repo, 'docs', file)));
   candidates.push(path.join(repo, 'README.md'));
-  const forbidden = /\bmyco setup\b(?!-)/;
+  const reference = /\bmyco setup\b(?!-)/;
   const matches = candidates.flatMap(file => fs.readFileSync(file, 'utf8').split('\n')
-    .flatMap((line, index) => forbidden.test(line) && !/^\s*(\*|\/\/)/.test(line) ? [`${path.relative(repo, file)}:${index + 1}`] : []));
-  expect(matches).toEqual([]);
+    .flatMap((line, index) => reference.test(line) && !/^\s*(\*|\/\/)/.test(line) ? [`${path.relative(repo, file)}:${index + 1}`] : []));
+  if (matches.length === 0) return;
+  const cli = fs.readFileSync(path.join(repo, 'packages/myco/src/cli.ts'), 'utf8');
+  expect(cli, matches.join('\n')).toMatch(/if \(cmd === 'setup'\)\s*\{\s*process\.exitCode = await \(await import\('\.\/cli\/setup\.js'\)\)\.run\(args\)/);
+  expect(fs.existsSync(path.join(repo, 'packages/myco/src/cli/setup.ts'))).toBe(true);
 });
 
 it('the setup skill uses address sign-in and docs let GitHub choose a unique app name', () => {
