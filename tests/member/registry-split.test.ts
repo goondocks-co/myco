@@ -250,7 +250,7 @@ describe('registry split', () => {
 
   it('drops every field of the replaced token when a new credential lands, through both writers, and keeps them when the token is the same', () => {
     const a = path.join(mycoHome, 'a');
-    const stale = { token: 'old', tokenId: 'mt_old', expiresAt: 5_000, refreshAfter: 4_000, refreshTerminal: true };
+    const stale = { token: 'old', tokenId: 'mt_old', expiresAt: 5_000, refreshAfter: 4_000, refreshTerminal: true, refusedAt: 3_000 };
     writeRegistryEntry(entry(a, stale), { mycoHome });
 
     writeRegistryEntry(entry(a, { token: 'old', tokenId: undefined }), { mycoHome });
@@ -260,13 +260,14 @@ describe('registry split', () => {
     writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: 'https://s.example', token: 'joined', root: a, machineId: 'm1', joinedAt: 2, updatedAt: 2 }, { mycoHome });
     const joined = readDeploymentMembership('https://s.example', mycoHome)!;
     expect(TOKEN_SCOPED_FIELDS.filter((field) => joined[field] !== undefined)).toEqual([]);
+    expect(joined.refusedAt).toBeUndefined();
 
     writeRegistryEntry(entry(a, stale), { mycoHome });
     // `myco login` redeems an invite: a fresh token with its own id and expiry, and no rotation state yet.
     writeDeploymentMembership({ serverUrl: 'https://s.example', token: 'invited', tokenId: 'mt_new', expiresAt: 90_000, machineId: 'm1', joinedAt: 3, updatedAt: 3 }, { mycoHome });
     const invited = readRegistryEntry(a, mycoHome)!;
-    expect({ token: invited.token, tokenId: invited.tokenId, expiresAt: invited.expiresAt, refreshAfter: invited.refreshAfter, refreshTerminal: invited.refreshTerminal })
-      .toEqual({ token: 'invited', tokenId: 'mt_new', expiresAt: 90_000, refreshAfter: undefined, refreshTerminal: undefined });
+    expect({ token: invited.token, tokenId: invited.tokenId, expiresAt: invited.expiresAt, refreshAfter: invited.refreshAfter, refreshTerminal: invited.refreshTerminal, refusedAt: invited.refusedAt })
+      .toEqual({ token: 'invited', tokenId: 'mt_new', expiresAt: 90_000, refreshAfter: undefined, refreshTerminal: undefined, refusedAt: undefined });
   });
 
   for (const condition of ['loose-mode', 'malformed', 'unreadable'] as const) {

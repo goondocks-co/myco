@@ -19,7 +19,7 @@ import {
 import { NON_ROTATING, NON_ROTATING_AUTHORITY } from '@myco-server-worker/pipeline.js';
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import ts from 'typescript-v6';
+import { sourceCalls } from './helpers/source-calls.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
@@ -186,19 +186,9 @@ describe('every route that mints an authority able to outlive the credential (#1
         const file = join(dir, name);
         if (statSync(file).isDirectory()) { walk(file); continue; }
         if (!file.endsWith('.ts')) continue;
-        const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
-        const visit = (node: ts.Node, owner: string | null): void => {
-          let named = owner;
-          if (owner === null && (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) && node.name) named = node.name.getText(source);
-          if (owner === null && ts.isVariableDeclaration(node) && node.initializer !== undefined) named = node.name.getText(source);
-          if (ts.isCallExpression(node)) {
-            const callee = node.expression;
-            const called = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? `${callee.expression.getText(source)}.${callee.name.text}` : '';
-            if (MINTERS.has(called) || OPENERS.has(called)) sites.push(`${relative(SRC, file)} ${named ?? '<module>'} -> ${called}`);
-          }
-          ts.forEachChild(node, (child) => visit(child, named));
-        };
-        visit(source, null);
+        for (const { called, owner } of sourceCalls(readFileSync(file, 'utf8'))) {
+          if (MINTERS.has(called) || OPENERS.has(called)) sites.push(`${relative(SRC, file)} ${owner} -> ${called}`);
+        }
       }
     };
     walk(SRC);

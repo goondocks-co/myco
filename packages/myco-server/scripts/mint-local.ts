@@ -35,7 +35,7 @@ const { db, statements } = sqlCapture();
 
 /** Fails the applied SQL, naming why, unless the credential it minted exists: a non-rotating mint for a member that administers the Deployment writes none. */
 const NON_ADMIN_GUARD = (tokenId: string): string[] => [
-  `CREATE TABLE IF NOT EXISTS _mint_refused_member_administers_deployment (ok INTEGER NOT NULL CHECK (ok = 1))`,
+  `CREATE TABLE IF NOT EXISTS _mint_refused_member_administers_deployment (ok INTEGER NOT NULL CONSTRAINT _mint_refused_member_administers_deployment CHECK (ok = 1))`,
   `INSERT INTO _mint_refused_member_administers_deployment (ok) SELECT CASE WHEN EXISTS (SELECT 1 FROM member_credentials WHERE id = '${tokenId}') THEN 1 ELSE 0 END`,
   `DROP TABLE _mint_refused_member_administers_deployment`,
 ];

@@ -1,3 +1,4 @@
+import { sourceCalls } from './helpers/source-calls.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -976,7 +977,7 @@ describe('gates', () => {
     // catch is worse than none.
     const callers = files(SRC)
       .filter((f) => f !== join(SRC, 'core', 'secrets.ts'))
-      .filter((f) => /deploymentSecretStore\(/.test(stripComments(readFileSync(f, 'utf8'))))
+      .filter((f) => sourceCalls(readFileSync(f, 'utf8')).some((call) => call.called === 'deploymentSecretStore'))
       .map((f) => f.slice(SRC.length + 1));
     // The settings surfaces, which only ever call `describe`/`list`/`put`/`delete`;
     // the one dispatcher, which opens a provider credential to hand it to the
@@ -984,7 +985,7 @@ describe('gates', () => {
     // which opens its own purpose-labelled slot to authenticate GitHub reads.
     // A new file here is the thing to look at.
     expect(callers.sort()).toEqual([join('api', 'release-provenance.ts'), join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'provider-credentials.ts'), join('core', 'release-provenance.ts'), join('core', 'run-repository.ts')]);
-    const credentialCallers = files(SRC).filter((f) => /\bopenProviderCredential\(/.test(stripComments(readFileSync(f, 'utf8'))))
+    const credentialCallers = files(SRC).filter((f) => (/\bopenProviderCredential\(/.test(stripComments(readFileSync(f, 'utf8'))) || sourceCalls(readFileSync(f, 'utf8')).some((call) => call.called === 'openProviderCredential')))
       .map((f) => f.slice(SRC.length + 1)).sort();
     expect(credentialCallers).toEqual([join('core', 'embedding', 'configured-provider.ts'), join('core', 'harness.ts'), join('core', 'provider-credentials.ts')]);
     const surface = stripComments(readFileSync(join(SRC, 'api', 'settings.ts'), 'utf8'));
