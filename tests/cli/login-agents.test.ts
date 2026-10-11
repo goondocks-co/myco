@@ -17,6 +17,9 @@ import { isBinaryOnPath } from '@myco/symbionts/detect.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { unjoinedRig } from '../member/helpers/server.js';
 import { recordingPlatform } from '../member/helpers/service-platform.js';
+import { readProvisionRecord } from '@myco/symbionts/member-provision-record.js';
+import { readDeploymentMembership } from '@myco/member/registry.js';
+import { LEGACY_AGENT_DEFERRAL } from '@goondocks/myco-shared/setup-guidance';
 
 describe('myco login sets up the agents on this machine', () => {
   let home: string;
@@ -129,6 +132,47 @@ describe('myco login sets up the agents on this machine', () => {
     expect(runProvision([], { mycoHome: home, cwd: root, stdout: (l) => out.push(l), stderr: (l) => err.push(l) })).toBe(true);
     expect(read(path.join(claudeDir, 'settings.json'))).toBe(before);
     expect(out).toEqual(['Capture is set up for Claude Code.']);
+  });
+
+  it('defers without recording a decline, then provisions from the saved membership without another login', async () => {
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const rig = unjoinedRig();
+    expect(await run([await invite(rig)], deps(rig, { provision: 'defer', agents: () => ['claude-code'] }))).toBe(true);
+    expect(read(path.join(claudeDir, 'settings.json'))).toBeNull();
+    expect(readProvisionRecord(home)).toBeNull();
+    const membership = readDeploymentMembership('https://s', home);
+    expect(membership).not.toBeNull();
+    expect(runProvision([], { mycoHome: home, cwd: root, agents: () => ['claude-code'], stdout: (l) => out.push(l) })).toBe(true);
+    expect(read(path.join(claudeDir, 'settings.json'))).toContain('--credential registry');
+    expect(readDeploymentMembership('https://s', home)).toEqual(membership);
+  });
+
+  it('preserves an explicit decline even when the caller defers provisioning', async () => {
+    const rig = unjoinedRig();
+    expect(await run([await invite(rig), '--no-agents'], deps(rig, { provision: 'defer' }))).toBe(true);
+    expect(readProvisionRecord(home)?.agents).toEqual([]);
+  });
+
+  it('defers legacy agents on every sign-in despite an existing membership and backup-only cutover record', async () => {
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const settings = path.join(claudeDir, 'settings.json');
+    fs.writeFileSync(settings, '{"legacy":"capture must stay"}');
+    const vault = path.join(home, 'groves', 'legacy', 'myco.db');
+    fs.mkdirSync(path.dirname(vault), { recursive: true });
+    fs.writeFileSync(vault, 'retained vault');
+    const rig = unjoinedRig();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      out.length = 0;
+      const memberId = readDeploymentMembership('https://s', home)?.memberId;
+      const authority = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', memberId });
+      expect(await run([`https://s/join#${authority.key}`], deps(rig, { agents: () => { throw new Error('legacy agents must not be provisioned'); } }))).toBe(true);
+      expect(out).toContain(LEGACY_AGENT_DEFERRAL);
+      expect(readProvisionRecord(home)).toBeNull();
+      expect(read(settings)).toBe('{"legacy":"capture must stay"}');
+      expect(read(vault)).toBe('retained vault');
+      fs.writeFileSync(path.join(home, 'member', 'cutover.json'), '{"version":1,"backups":{}}');
+    }
+    expect(err).toEqual([]);
   });
 
   it('asks which Deployment to provision for when this machine is a member of several and no folder names one', () => {

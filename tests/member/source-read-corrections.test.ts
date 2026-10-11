@@ -12,7 +12,7 @@ import { harnessById } from '@myco/runner/harnesses.js';
 import { selectExecution } from '@myco-server-worker/core/worker-selection.js';
 import { runGrant } from '@myco/runner/drivers/grant.js';
 import { answerPermission } from '@myco/runner/drivers/acp-permission.js';
-import { runFilesystem } from '@myco/runner/drivers/codex.js';
+import { codexInstallationVerdict, runFilesystem } from '@myco/runner/drivers/codex.js';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 
 function fixture() {
@@ -29,6 +29,35 @@ function fixture() {
 }
 
 describe('source containment corrections', () => {
+  it('returns specific Codex containment rules and permits a narrow installation inside the home', () => {
+    const spec = fixture();
+    const context = {
+      home: join(spec.scratchDir, 'operator'), runDir: join(spec.scratchDir, 'run'),
+      codexHome: join(spec.scratchDir, 'run', 'codex-home'), mycoHome: join(spec.scratchDir, 'myco'),
+      codexLogin: join(spec.scratchDir, 'login', 'auth.json'), tempDirs: [join(spec.scratchDir, 'temp')],
+    };
+    const executable = (directory: string) => {
+      mkdirSync(directory, { recursive: true });
+      const installed = join(directory, 'codex');
+      writeFileSync(installed, 'synthetic executable');
+      return installed;
+    };
+    for (const [directory, rule] of [
+      [context.home, 'contains-home'], [context.runDir, 'contains-run'],
+      [context.tempDirs[0]!, 'contains-temp'], [join(spec.scratchDir, 'login', 'bin'), 'overlaps-codex-login'],
+      [join(context.mycoHome, 'bin'), 'overlaps-myco-home'], [join(context.codexHome, 'bin'), 'overlaps-codex-home'],
+    ] as const) {
+      const installed = executable(directory);
+      expect(codexInstallationVerdict(installed, context)).toEqual({ ok: false, directory: fs.realpathSync(directory), rule });
+    }
+    expect(codexInstallationVerdict(executable(join(context.home, 'bin')), context)).toEqual({ ok: true });
+    expect(codexInstallationVerdict(null, context)).toEqual({ ok: true });
+    const link = join(spec.scratchDir, 'linked-codex');
+    symlinkSync(join(context.mycoHome, 'bin', 'codex'), link);
+    expect(codexInstallationVerdict(link, context)).toMatchObject({ ok: false, rule: 'overlaps-myco-home' });
+    symlinkSync(join(spec.scratchDir, 'absent'), join(spec.scratchDir, 'dangling-codex'));
+    expect(() => codexInstallationVerdict(join(spec.scratchDir, 'dangling-codex'), context)).toThrow();
+  });
   it('allows checkout-wide and implicit searches while physically excluding outward and dangling links', () => {
     const spec = fixture();
     const policy = sourceAccess(spec.scratchDir);
@@ -146,13 +175,13 @@ describe('source containment corrections', () => {
     writeFileSync(join(operator, '.codex', 'package.json'), '{"name":"@openai/codex"}');
     const temporary = removeWhenTestsEnd(join(tmpdir(), `codex-install-${basename(spec.scratchDir)}`));
     writeFileSync(temporary, 'synthetic executable');
-    expect(() => runFilesystem(spec, redirected, temporary, null)).toThrow('Unsafe Codex installation directory');
+    expect(() => runFilesystem(spec, redirected, temporary, null)).toThrow('Install Codex somewhere narrower');
     const previous = process.env.HOME;
     try {
       process.env.HOME = operator;
       for (const executable of [join(operator, 'codex'), join(operator, 'bin', 'codex'), join(operator, '.codex', 'bin', 'codex')]) {
         writeFileSync(executable, 'synthetic executable');
-        expect(() => runFilesystem(spec, redirected, executable, null)).toThrow('Unsafe Codex installation directory');
+        expect(() => runFilesystem(spec, redirected, executable, null)).toThrow('Install Codex somewhere narrower');
       }
     } finally { process.env.HOME = previous; }
   });
@@ -181,7 +210,7 @@ describe('source containment corrections', () => {
     const previous = process.env.MYCO_HOME;
     try {
       process.env.MYCO_HOME = join(install, 'future-myco-home');
-      expect(() => runFilesystem(spec, home, executable, null)).toThrow('Unsafe Codex installation directory');
+      expect(() => runFilesystem(spec, home, executable, null)).toThrow("overlaps Myco's folder");
     } finally { process.env.MYCO_HOME = previous; }
   });
   it('OpenCode explicitly asks for each native source-read tool from its manifest', () => {

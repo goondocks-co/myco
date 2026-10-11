@@ -52,7 +52,7 @@ export async function run(args: string[], deps: WorkerServiceDeps & RunnerCliDep
   const matches = named === undefined || named === 'true' ? [] : legacyUrls.filter(url => workerLockPath('', url) === workerLockPath('', named));
   const exact = named === undefined ? undefined : legacyUrls.find(url => deploymentUrl(url) === deploymentUrl(named));
   if (exact === undefined && matches.length > 1) {
-    legacyWorkerInventory(deps).forEach(line => (deps.stdout ?? console.log)(line));
+    (await legacyWorkerInventory(deps)).forEach(line => (deps.stdout ?? console.log)(line));
     (deps.stderr ?? console.error)('myco worker: multiple legacy units share this origin; name the exact --server address printed in the inventory. No service changed.');
     return false;
   }
@@ -60,13 +60,13 @@ export async function run(args: string[], deps: WorkerServiceDeps & RunnerCliDep
   const legacy = legacyUrl !== undefined;
   const verb = args[0];
   if (verb === 'install' && named === undefined && machineLegacyUnits.length > 0) {
-    legacyWorkerInventory(deps).forEach(line => (deps.stdout ?? console.log)(line));
+    (await legacyWorkerInventory(deps)).forEach(line => (deps.stdout ?? console.log)(line));
     (deps.stdout ?? console.log)('No service changed. Restart a legacy unit only with --server <url>; new execution requires `myco runner register <host>`, then `myco runner install`.');
     return true;
   }
   if (verb !== undefined && SERVICE_VERBS.has(verb)) {
     if (legacy || (named === undefined && legacyUrls.length > 0)) {
-      if (verb === 'status' || verb === 'doctor') legacyWorkerInventory(deps).forEach(line => (deps.stdout ?? console.log)(line));
+      if (verb === 'status' || verb === 'doctor') (await legacyWorkerInventory(deps)).forEach(line => (deps.stdout ?? console.log)(line));
       let ok = true;
       for (const url of named === undefined ? legacyUrls : [legacyUrl!]) {
         (deps.stdout ?? console.log)(`${url}: ${LEGACY_WORKER_WORDS}`);

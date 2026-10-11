@@ -14,6 +14,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { credentialFile, harnessById, HARNESSES, offerable, type Harness } from './harnesses.js';
 import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
+import type { CodexInstallationContext, CodexInstallationVerdict } from '@myco/runner/drivers/codex.js';
+import { expandHome } from '@myco/paths/home.js';
 
 export interface DetectedHarness {
   id: string;
@@ -43,9 +45,9 @@ export const HARNESS_DETECTION_MAX_MS = 2 * PROBE_TIMEOUT_MS;
 export const HARNESS_DETECTION_TTL_MS = 30_000;
 
 /** Where this harness's binary is, or null when the machine has none. */
-export function locate(binary: string): string | null {
+export function locate(binary: string, env: NodeJS.ProcessEnv = probeEnv()): string | null {
   try {
-    const found = execFileSync(process.platform === 'win32' ? 'where' : 'which', [binary], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: probeEnv() });
+    const found = execFileSync(process.platform === 'win32' ? 'where' : 'which', [binary], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env });
     const first = found.split('\n')[0]?.trim() ?? '';
     return first.length > 0 ? first : null;
   } catch {
@@ -69,32 +71,50 @@ function holdsCredentials(content: string, requires: readonly string[]): boolean
   return requires.some((key) => held[key] !== undefined && held[key] !== null && held[key] !== '');
 }
 
-function commandSucceeds(binary: string, args: readonly string[]): boolean {
+function commandSucceeds(binary: string, args: readonly string[], env: NodeJS.ProcessEnv): boolean {
   try {
-    execFileSync(binary, [...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT_MS, env: probeEnv() });
+    execFileSync(binary, [...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT_MS, env });
     return true;
   } catch {
     return false;
   }
 }
 
-function authenticated(harness: Harness): boolean {
+function authenticated(harness: Harness, env: NodeJS.ProcessEnv): boolean {
   const probe = harness.credential;
-  if (probe.kind === 'file') return fileHolds(credentialFile(harness), probe.requires);
-  if (probe.kind === 'command') return commandSucceeds(harness.binary, probe.args);
-  return fileHolds(credentialFile(harness), probe.requires) || commandSucceeds(harness.binary, probe.args);
+  if (probe.kind === 'command') return commandSucceeds(harness.binary, probe.args, env);
+  const file = expandHome(probe.path, env.HOME);
+  return fileHolds(file, probe.requires) || (probe.kind === 'file-or-command' && commandSucceeds(harness.binary, probe.args, env));
 }
 
 /** Every harness this machine has, with whether each is logged in, for synchronous diagnostic callers. */
-export function detectHarnesses(only?: readonly string[]): DetectedHarness[] {
+export function detectHarnesses(only?: readonly string[], env: NodeJS.ProcessEnv = probeEnv()): DetectedHarness[] {
   const wanted = only === undefined || only.length === 0 ? null : new Set(only);
   const out: DetectedHarness[] = [];
   for (const harness of HARNESSES) {
     if (wanted !== null && !wanted.has(harness.id)) continue;
-    const installed = locate(harness.binary) !== null;
-    out.push({ id: harness.id, installed, authenticated: installed && authenticated(harness) });
+    const installed = locate(harness.binary, env) !== null;
+    out.push({ id: harness.id, installed, authenticated: installed && authenticated(harness, env) });
   }
   return out;
+}
+
+export interface RunnerHarnessPreflight {
+  harnesses: readonly DetectedHarness[];
+  codex: CodexInstallationVerdict;
+}
+
+/** Advisory detection under the service's PATH and the same containment predicate as a run. */
+export async function runnerHarnessPreflight(env: NodeJS.ProcessEnv, ctx: CodexInstallationContext, deps: {
+  detect?: (env: NodeJS.ProcessEnv) => readonly DetectedHarness[];
+  locate?: typeof locate;
+} = {}): Promise<RunnerHarnessPreflight> {
+  const { codexDriver, codexInstallationVerdict } = await import('@myco/runner/drivers/codex.js');
+  const codex = harnessById(codexDriver.id)!;
+  const harnesses = deps.detect === undefined ? detectHarnesses(undefined, env) : deps.detect(env);
+  const installed = harnesses.some((harness) => harness.id === codex.id && harness.installed)
+    ? (deps.locate ?? locate)(codex.binary, env) : null;
+  return { harnesses, codex: codexInstallationVerdict(installed, ctx) };
 }
 
 /** A bounded local probe; output is read only for binary lookup and is never logged. */

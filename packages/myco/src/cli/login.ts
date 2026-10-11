@@ -16,6 +16,8 @@ import type { WorkerServiceDeps } from './worker-service.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import { deploymentUrl, listRegistryEntries } from '../member/registry.js';
 import { detectedProvisionLines, provisionDetectedAgents, recordNoAgents } from './member.js';
+import { legacyMigrationPending } from '@myco/member/legacy-migration.js';
+import { LEGACY_AGENT_DEFERRAL } from '@goondocks/myco-shared/setup-guidance';
 
 export const LOGIN_HELP = `Usage: myco login <server-url-or-invite-link>
 
@@ -59,6 +61,8 @@ nothing else to configure.
 `;
 
 export interface LoginDeps {
+  /** Deferral leaves the agent choice unrecorded for a later provisioning step. */
+  provision?: 'now' | 'defer';
   fetch?: typeof fetch;
   now?: () => number;
   cwd?: string;
@@ -185,12 +189,14 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   else out('  No project yet. A git repository under your capture folders joins the first time an agent works in it, or connect one with `myco member join`.');
   const held = readDefaultDeployment(mycoHome);
   if (!isDefault && held !== null) out(`  New repositories keep joining ${held.serverUrl}; \`myco login --default <invite link>\` makes ${deploymentUrl(code.serverUrl)} the one they join.`);
-  // Every agent installed here captures from now on: its hooks and MCP entry are written for this Deployment, and an
-  // agent whose entries belong to another installation is left as it is and named.
-  if (!parsed.noAgents) {
+  // Provisioning is separate from sign-in and preserves other installations' settings.
+  const deferredLegacy = legacyMigrationPending(mycoHome);
+  if (parsed.noAgents) recordNoAgents(mycoHome, code.serverUrl);
+  else if (deferredLegacy) out(LEGACY_AGENT_DEFERRAL);
+  else if (deps.provision !== 'defer') {
     const found = provisionDetectedAgents(mycoHome, code.serverUrl, root ?? null, { packageRoot: deps.packageRoot, agents: deps.agents });
     for (const line of detectedProvisionLines(found)) out(`  ${line}`);
-  } else recordNoAgents(mycoHome, code.serverUrl);
+  }
 
   // What this machine captured while it could not deliver reaches the
   // Deployment now, for every project bound to it: the new credential is the

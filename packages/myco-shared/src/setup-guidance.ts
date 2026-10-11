@@ -1,4 +1,17 @@
 /** Recovery words shared by the terminal and dashboard. */
+export const LEGACY_AGENT_DEFERRAL = 'Myco 1.4 still captures your agents here. Next: myco cutover --dry-run';
+export type CodexInstallationRule = 'root' | 'contains-home' | 'contains-run' | 'contains-temp' | 'overlaps-codex-login' | 'overlaps-myco-home' | 'overlaps-codex-home';
+const CODEX_INSTALLATION_REASONS: Readonly<Record<CodexInstallationRule, string>> = {
+  root: 'is the filesystem root',
+  'contains-home': 'contains your home folder',
+  'contains-run': 'contains the run folder',
+  'contains-temp': 'contains a temporary folder',
+  'overlaps-codex-login': "overlaps Codex's login folder",
+  'overlaps-myco-home': "overlaps Myco's folder",
+  'overlaps-codex-home': "overlaps the run's Codex home",
+};
+export const codexInstallationRefusal = (directory: string, rule: CodexInstallationRule): string =>
+  `Myco won't run Codex from ${directory}: that folder ${CODEX_INSTALLATION_REASONS[rule]}, so a run could reach what it must not. Install Codex somewhere narrower (for example npm install -g @openai/codex), then check myco runner status.`;
 export const OWNER_SETUP_COMMAND = 'myco server setup-owner';
 export const SIGN_IN_SETUP_COMMAND = 'myco server github-app';
 export const OWNER_UNCLAIMED = `This Myco has no owner yet, so nobody can approve this machine. Whoever created it must run ${OWNER_SETUP_COMMAND} on the machine that created it, then open and complete the fresh owner link.`;

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { run } from '@myco/cli/runner.js';
 import { run as worker } from '@myco/cli/worker.js';
-import { LEGACY_WORKER_WORDS, RUNNER_IDENTITY_REMAINS } from '@myco/cli/runner-service.js';
+import { legacyExecutors, preflightRunnerService, runnerServiceContact, LEGACY_WORKER_WORDS, RUNNER_IDENTITY_REMAINS } from '@myco/cli/runner-service.js';
 import { publishRunnerRecord, readRunnerRecord, recordRunnerContact, withRunnerLock, RUNNER_RECORD_VERSION } from '@myco/runner/runner-registry.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
@@ -14,6 +14,7 @@ import { installWorkerService, listWorkerUnits, workerServiceSpec } from '@myco/
 import { recordingPlatform } from '../helpers/fake-service-manager.js';
 import { runnerUpdater } from '@myco/cli/runner-update.js';
 import { writeInstallMarker } from '@myco/install/managed-binary.js';
+import { workerLockPath } from '@myco/runner/instance.js';
 
 const SERVER = 'https://runner.example';
 const TOKEN = `mycorun_${'r'.repeat(43)}`;
@@ -47,6 +48,117 @@ const deps = (os_: 'darwin' | 'linux' = 'darwin') => ({
 });
 
 describe('explicit runner service opt-in', () => {
+  it('preflights in exactly the installed service PATH before starting it and preserves enrollment across a failed install', async () => {
+    await enroll();
+    const before = readRunnerRecord(SERVER, mycoHome);
+    const target = { ...deps(), serverUrl: SERVER, executor: 'runner' as const };
+    let previews = 0;
+    const detect = (env?: NodeJS.ProcessEnv) => {
+      previews++;
+      expect(env?.PATH).toBe(workerServiceSpec(target, target.harnessDirs()).pathEnv);
+      expect(env?.HOME).toBe(home);
+      expect(env?.MYCO_HOME).toBe(mycoHome);
+      expect(platform.running.size).toBe(0);
+      return [{ id: 'claude-code', installed: true, authenticated: true }];
+    };
+    const refusing = (command: string, args: readonly string[]) => args[0] === 'load' ? { status: 1 } : platform.runner(command, args);
+    expect(await run(['install', '--server', SERVER], { ...deps(), detect, runner: refusing })).toBe(false);
+    expect(readRunnerRecord(SERVER, mycoHome)).toEqual(before);
+    expect(await run(['install', '--server', SERVER], { ...deps(), detect })).toBe(true);
+    expect(previews).toBe(2);
+    expect(authorizations).toEqual([]);
+    expect(readRunnerRecord(SERVER, mycoHome)?.lastOffer).toBeUndefined();
+    expect(output.join('\n')).toContain('preview in the service PATH');
+    expect(readRunnerRecord(SERVER, mycoHome)).toEqual(before);
+  });
+
+  it('preflight resolves the service PATH rather than the calling shell and reports the shared Codex verdict', async () => {
+    const install = path.join(home, '.local', 'bin');
+    fs.mkdirSync(install, { recursive: true });
+    fs.writeFileSync(path.join(install, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const target = { ...deps(), serverUrl: SERVER, executor: 'runner' as const };
+    const preview = await preflightRunnerService(target, [], {
+      detect: (env) => {
+        expect(env?.PATH).toBe(workerServiceSpec(target, []).pathEnv);
+        return [{ id: 'codex', installed: true, authenticated: false }];
+      },
+    });
+    expect(preview.codex).toEqual({ ok: true });
+    const refused = await preflightRunnerService(target, [], { detect: () => [{ id: 'codex', installed: true, authenticated: true }], locate: () => {
+      const installed = path.join(mycoHome, 'codex');
+      fs.mkdirSync(mycoHome, { recursive: true });
+      fs.writeFileSync(installed, 'fixture');
+      return installed;
+    } });
+    expect(refused.codex).toMatchObject({ ok: false, rule: 'contains-run' });
+  });
+
+  it('preflights the inherited PATH that the Windows service command expands', async () => {
+    const target = { ...deps(), platform: 'win32' as const, serverUrl: SERVER, executor: 'runner' as const };
+    await preflightRunnerService(target, [], { detect: (env) => {
+      expect(env?.PATH).toBe(workerServiceSpec(target, []).pathEnv.replace(/%PATH%/gi, () => process.env.PATH ?? ''));
+      expect(env?.PATH).not.toContain('%PATH%');
+      return [];
+    } });
+  });
+
+  for (const refused of [false, true]) it(`observes runner authority without renewal or record writes when renew is false (${refused ? 'refused' : 'enabled'})`, async () => {
+    await enroll();
+    await withRunnerLock(SERVER, (lock) => publishRunnerRecord(lock, { ...readRunnerRecord(SERVER, mycoHome)!, tokenExpiresAt: 500, refreshAfter: 400 }), mycoHome);
+    const before = readRunnerRecord(SERVER, mycoHome);
+    const fetch_: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      expect(new URL(request.url).pathname).toBe('/runners/contact');
+      return contact(refused)(input, init);
+    }) as typeof fetch;
+    expect((await runnerServiceContact(SERVER, { ...deps(), renew: false, fetch: fetch_ })).class).toBe(refused ? 'unauthorized' : 'acked');
+    expect(authorizations).toEqual([`Bearer ${TOKEN}`]);
+    expect(readRunnerRecord(SERVER, mycoHome)).toEqual(before);
+  });
+
+  it('returns structured legacy ownership and exact retirement arguments without service execution', async () => {
+    const foreign = path.join(root, "other user's home");
+    const url = 'https://legacy.example/?a=1&b=2';
+    installWorkerService({ ...deps(), mycoHome: foreign, serverUrl: url }, [], { runner: platform.runner });
+    platform.commands.length = 0;
+    const unit = listWorkerUnits(home, 'darwin')[0]!;
+    expect(await legacyExecutors(deps())).toEqual([{
+      serverUrl: url, mycoHome: foreign, unitLabel: unit.spec.unit.label, installed: true, servingPid: null,
+      retire: { argv: ['myco', 'worker', 'uninstall', '--server', url], env: { MYCO_HOME: foreign } },
+    }]);
+    expect(platform.commands).toEqual([]);
+  });
+
+  it('includes foreground executors and resolves a native alias before reporting the serving process', async () => {
+    member();
+    const alias = 'https://native-alias.example';
+    const scoped = { ...deps(), ownDeploymentUrls: async () => [SERVER, alias] };
+    const held = LifecycleLock.acquire(workerLockPath(scoped.lockDir, alias), { command: 'myco worker' });
+    if (!held.acquired) throw new Error('fixture lock unavailable');
+    try {
+      expect(await legacyExecutors(scoped)).toEqual([{
+        serverUrl: SERVER, mycoHome, unitLabel: null, installed: false, servingPid: process.pid, retire: null,
+      }]);
+      installWorkerService({ ...scoped, serverUrl: SERVER }, [], { runner: platform.runner });
+      const installed = await legacyExecutors(scoped);
+      expect(installed).toHaveLength(1);
+      expect(installed[0]).toMatchObject({ serverUrl: SERVER, installed: true, servingPid: process.pid });
+    } finally { held.lock.release(); }
+  });
+
+  it('keeps unreadable legacy ownership and unclassified foreground processes in the structured inventory', async () => {
+    const installed = installWorkerService({ ...deps(), serverUrl: SERVER }, [], { runner: platform.runner });
+    fs.writeFileSync(installed.unitFile, 'unreadable ownership');
+    const held = LifecycleLock.acquire(workerLockPath(path.join(root, 'locks'), 'https://unrecorded.example'));
+    if (!held.acquired) throw new Error('fixture lock unavailable');
+    try {
+      const inventory = await legacyExecutors(deps());
+      expect(inventory).toHaveLength(2);
+      expect(inventory[0]).toMatchObject({ installed: true, mycoHome: null, serverUrl: null, retire: null });
+      expect(inventory[1]).toEqual({ installed: false, mycoHome: null, serverUrl: null, retire: null, unitLabel: null, servingPid: process.pid });
+    } finally { held.lock.release(); }
+  });
+
   for (const os_ of ['darwin', 'linux'] as const) it(`updates and reports the installed service program from a sibling CLI on ${os_}`, async () => {
     const serviceBinary = path.join(root, 'service-bin', 'myco');
     fs.mkdirSync(path.dirname(serviceBinary), { recursive: true });
