@@ -17,7 +17,7 @@ import worker from '@myco-server-worker/index.js';
 import { sqliteStoreMaintenance, checkIntegrityOffThread } from '@myco-server-worker/platform/bun/store-maintenance.js';
 import { classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
 import {
-  boundFindings, cadenceOf, CLAIM_STATEMENTS, latestMeasurements, latestOutcome, maintenanceDue, maintenanceStatus, MAX_FINDINGS, RECORD_STATEMENTS, runMaintenance,
+  boundFindings, cadenceOf, CLAIM_STATEMENTS, latestMeasurements, latestOutcome, maintenanceDue, maintenanceStatus, MAX_FINDINGS, runMaintenance,
   type Exclusivity, type MaintenanceCheck, type PortResult, type StoreMaintenancePort, type StoreMeasurement,
 } from '@myco-server-worker/core/store-maintenance.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
@@ -221,7 +221,7 @@ it('on a platform-limited store, a run inside its bound refuses another, and pas
   const t0 = 1_000 * HOUR;
   const stale = runMaintenance(env, 'optimize', 'owner', t0, { clock: () => t0 });
   await Bun.sleep(5);
-  const bound = (1 + RECORD_STATEMENTS.optimize + CLAIM_STATEMENTS) * 30_000;
+  const bound = (1 + 1 + CLAIM_STATEMENTS) * 30_000;
   expect(await runMaintenance(env, 'optimize', 'owner', t0 + bound - 1, { clock: () => t0 + bound - 1 })).toMatchObject({ outcome: 'refused', refusal: 'already_running' });
   const fresh = await runMaintenance({ ...env, storeMaintenance: releasedPort(D1_LIKE) }, 'optimize', 'owner', t0 + bound, { clock: () => t0 + bound });
   expect(fresh).toMatchObject({ outcome: 'ran', recorded: true, record: { state: 'healthy' } });
@@ -461,4 +461,26 @@ it('adds codes beside text in stored and freshly run maintenance outcomes', asyn
     expect(statuses[0]?.support).toMatchObject({ supported: false, reason: 'not supported here', reasonCode: 'check_unsupported' });
     expect(statuses[1]?.latest).toMatchObject({ findings: ['original store finding'], findingCodes: ['store_problem'], measurements: [{ reasonCode: 'measurement_unavailable' }] });
   } finally { fixture.sqlite.close(); }
+});
+
+ it('keeps optimize measurements and outcome when the blob byte SUM is unavailable', async () => {
+  const fixture = sqliteEnv();
+  const prepare = fixture.serverEnv.db.prepare.bind(fixture.serverEnv.db);
+  const failing = spyOn(fixture.serverEnv.db, 'prepare').mockImplementation((sql) => {
+    if (/SUM\(size\)/i.test(sql)) throw new Error('blob sum unavailable');
+    return prepare(sql);
+  });
+  const port: StoreMaintenancePort = {
+    support: { optimize: { supported: true, label: 'test' }, integrity: { supported: true, label: 'test' } },
+    exclusivity: D1_LIKE,
+    run: async () => ({ findings: [], measurements: [{ name: 'size', state: 'measured', value: 4096, unit: 'bytes' }] }),
+  };
+  try {
+    expect(await runMaintenance({ ...fixture.serverEnv, storeMaintenance: port }, 'optimize', 'owner', HOUR)).toMatchObject({
+      outcome: 'ran', record: { state: 'healthy', errorClass: null, measurements: [
+        { name: 'size', state: 'measured', value: 4096, unit: 'bytes' },
+        { name: 'blob_bytes', state: 'unavailable', reason: expect.any(String) },
+      ] },
+    });
+  } finally { failing.mockRestore(); }
 });

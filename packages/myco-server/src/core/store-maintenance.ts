@@ -97,7 +97,11 @@ export const RECORD_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { o
 /** What a check measures on every target beside what the port reports: optimize measures the bytes recorded blobs hold. */
 async function recordMeasurements(env: ServerEnv, check: MaintenanceCheck): Promise<StoreMeasurement[]> {
   if (check !== 'optimize') return [];
-  return [{ name: 'blob_bytes', state: 'measured', value: await recordedBlobBytes(env.db), unit: 'bytes' }];
+  try {
+    return [{ name: 'blob_bytes', state: 'measured', value: await recordedBlobBytes(env.db), unit: 'bytes' }];
+  } catch (error) {
+    return [{ name: 'blob_bytes', state: 'unavailable', reason: classify(error, env.platform?.classifyError) }];
+  }
 }
 
 /** One target's store maintenance: what it supports, how it holds a check exclusive, and the work. */
