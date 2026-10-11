@@ -1,3 +1,4 @@
+import { memberServerDialUrl } from '../member/server-url.js';
 import { openBrowser } from './open-browser.js';
 import { resolveMemberProjectRoot } from '../member/credential.js';
 import { defaultMembership } from '../member/default-deployment.js';
@@ -20,7 +21,7 @@ export function deploymentDashboardUrl(deps: OpenDeps = {}): string | null {
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const entry = readRegistryEntry(resolveMemberProjectRoot(deps.cwd), mycoHome);
   const serverUrl = entry?.serverUrl ?? defaultMembership(mycoHome)?.serverUrl;
-  return serverUrl === undefined ? null : `${serverUrl.replace(/\/+$/, '')}/`;
+  return serverUrl === undefined ? null : memberServerDialUrl(`${serverUrl.replace(/\/+$/, '')}/`);
 }
 
 /** Opens the Deployment's dashboard, and whether it did. With no Deployment to open, prints how to join one and opens nothing. */

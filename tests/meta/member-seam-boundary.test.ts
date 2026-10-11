@@ -467,6 +467,16 @@ describe('member seam boundary (transitive)', () => {
       .toEqual({ outside: 0, literals: 0, externals: 0, unknowable: 0 });
   });
 
+  it('keeps server implementation imports out of the member CLI', () => {
+    const file = path.join(SRC_ROOT, 'cli/member.ts');
+    const edges = runtimeEdges(fs.readFileSync(file, 'utf8'), file);
+    const serverImports = edges.specifiers.filter((specifier) => {
+      const resolved = resolveSpecifier(file, specifier);
+      return resolved.kind === 'module' && moduleKey(resolved.file).startsWith('packages/myco-server/');
+    });
+    expect(serverImports).toEqual([]);
+  });
+
   it('keeps the import pass out of every hook: a walk of every harness store does not fit a hook budget', () => {
     // The seam gate reads the closure OF the hooks; this reads the same graph
     // in the same direction and asks whether one module is inside it. A hook

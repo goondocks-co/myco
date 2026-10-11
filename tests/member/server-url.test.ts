@@ -11,15 +11,16 @@ import { memberServerDialUrl, admitMemberServerUrl } from '@myco/member/server-u
 import { ServerClient } from '@myco/member/transport.js';
 import { unboundedBudget } from '@myco/member/budget.js';
 import { memberRemoteMcp } from '@myco/symbionts/member-hooks.js';
+import { mcpConfigOf } from '@myco/runner/mcp-config.js';
 import { keepLoopbackOffProxy } from '@myco/cli/loopback-proxy.js';
 
 describe('admitting a member server URL', () => {
   it('admits https anywhere and http on this machine\'s loopback only', () => {
     for (const url of ['https://myco.example.com', 'http://127.0.0.1:8787', 'http://127.8.9.10:1', 'http://localhost:8787', 'http://[::1]:8787']) {
-      expect({ url, admitted: admitMemberServerUrl(url, {}) }).toEqual({ url, admitted: true });
+      expect({ url, admitted: Boolean(admitMemberServerUrl(url, {})) }).toEqual({ url, admitted: true });
     }
     for (const url of ['http://myco.example.com', 'http://10.0.0.5:8787', 'http://127.0.0.1.example', 'http://[::2]:1', 'ftp://127.0.0.1', 'not a url']) {
-      expect({ url, admitted: admitMemberServerUrl(url, {}) }).toEqual({ url, admitted: false });
+      expect({ url, admitted: Boolean(admitMemberServerUrl(url, {})) }).toEqual({ url, admitted: false });
     }
   });
 
@@ -28,6 +29,7 @@ describe('admitting a member server URL', () => {
       return Response.json({ host: new URL(request.url).hostname, auth: request.headers.get('authorization') });
     } });
     try {
+      expect(admitMemberServerUrl(`http://localhost:${server.port}`)).toBe(`http://127.0.0.1:${server.port}/`);
       const url = memberServerDialUrl(`http://localhost:${server.port}/health`);
       expect(new URL(url).hostname).toBe('127.0.0.1');
       const client = new ServerClient({ serverUrl: `http://localhost:${server.port}`, token: 'fixture' });
@@ -35,6 +37,7 @@ describe('admitting a member server URL', () => {
       expect(raw).toMatchObject({ kind: 'response', json: { host: '127.0.0.1', auth: 'Bearer fixture' } });
       expect(await client.health(unboundedBudget())).toBe(true);
       expect(client.serverUrl).toBe(`http://localhost:${server.port}`);
+      expect(mcpConfigOf({ serverUrl: `http://localhost:${server.port}`, projectId: 'proj_fixture', runToken: 'fixture' })).toMatchObject({ mcpServers: { myco: { url: `http://127.0.0.1:${server.port}/mcp` } } });
       expect(memberRemoteMcp(`http://localhost:${server.port}`, 'headersHelper', '/fixture/myco', 'registry')).toMatchObject({
         url: `http://127.0.0.1:${server.port}/mcp`,
         headersHelper: `/fixture/myco member mcp-headers --credential registry --server http://localhost:${server.port}`,
@@ -46,19 +49,19 @@ describe('admitting a member server URL', () => {
 
   it('writes one list to NO_PROXY and no_proxy: what either held, then the admitted loopback host', () => {
     const upper: NodeJS.ProcessEnv = { HTTP_PROXY: 'http://proxy.example:3128', NO_PROXY: 'corp.example' };
-    expect(admitMemberServerUrl('http://127.8.9.10:18787', upper)).toBe(true);
+    expect(admitMemberServerUrl('http://127.8.9.10:18787', upper)).toBe('http://127.8.9.10:18787');
     expect({ NO_PROXY: upper.NO_PROXY, no_proxy: upper.no_proxy }).toEqual({ NO_PROXY: 'corp.example,127.8.9.10', no_proxy: 'corp.example,127.8.9.10' });
     admitMemberServerUrl('http://127.8.9.10:18787', upper);
     expect(upper.NO_PROXY).toBe('corp.example,127.8.9.10');
     const both: NodeJS.ProcessEnv = { http_proxy: 'http://proxy.example:3128', NO_PROXY: 'a.example', no_proxy: 'b.example,a.example' };
     admitMemberServerUrl('http://localhost:1', both);
-    expect({ NO_PROXY: both.NO_PROXY, no_proxy: both.no_proxy }).toEqual({ NO_PROXY: 'a.example,b.example,localhost', no_proxy: 'a.example,b.example,localhost' });
+    expect({ NO_PROXY: both.NO_PROXY, no_proxy: both.no_proxy }).toEqual({ NO_PROXY: 'a.example,b.example,localhost,127.0.0.1', no_proxy: 'a.example,b.example,localhost,127.0.0.1' });
   });
 
   it('leaves a bare * where it stands, in either name: it already exempts every host, and a list around it would not', () => {
     for (const env of [{ HTTP_PROXY: 'http://proxy.example:3128', NO_PROXY: '*' }, { HTTP_PROXY: 'http://proxy.example:3128', no_proxy: ' * ' }] as NodeJS.ProcessEnv[]) {
       const before = { ...env };
-      expect(admitMemberServerUrl('http://127.0.0.1:1', env)).toBe(true);
+      expect(admitMemberServerUrl('http://127.0.0.1:1', env)).toBe('http://127.0.0.1:1');
       keepLoopbackOffProxy(env);
       expect(env).toEqual(before);
     }
@@ -116,7 +119,7 @@ describe('admitting a member server URL', () => {
       process.env.HTTP_PROXY = 'http://127.0.0.1:' + proxy.port;
       const url = 'http://127.0.0.1:' + target.port + '/health';
       const before = await (await fetch(url)).text();
-      const admitted = admitMemberServerUrl(url);
+      const admitted = Boolean(admitMemberServerUrl(url));
       const after = await (await fetch(url)).text();
       console.log(JSON.stringify({ before, admitted, after, proxied: proxied.length }));
       proxy.stop(true); target.stop(true);

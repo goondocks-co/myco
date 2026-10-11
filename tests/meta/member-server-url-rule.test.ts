@@ -10,6 +10,9 @@
  *   3. The CLI entry keeps loopback dials off a configured proxy before it
  *      does anything else.
  *
+ *   4. URL constructors and URL-shaped templates consume the admitted dial URL;
+ *      the scan discovers sites across the member trees and retained runtime.
+ *
  * Static source scan.
  */
 import { describe, expect, it } from 'bun:test';
@@ -145,6 +148,62 @@ function callsRule(source: ts.SourceFile, fn: string, exported: string): boolean
   return scope !== null && calls(scope, localNamesOf(source, exported));
 }
 
+/** Member URL constructors and URL-shaped templates must consume the admitted dial address. */
+function unsafeDials(source: ts.SourceFile): string[] {
+  const names = localNamesOf(source, 'memberServerDialUrl');
+  const aliases = new Map<string, ts.Expression>();
+  const collect = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && node.initializer !== undefined) aliases.set(node.name.getText(source), node.initializer);
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) aliases.set(node.left.getText(source), node.right);
+    ts.forEachChild(node, collect);
+  };
+  collect(source);
+  const depends = (node: ts.Node, seen = new Set<string>()): boolean => {
+    const text = node.getText(source);
+    if (ts.isIdentifier(node) && node.text === 'serverUrl' || ts.isPropertyAccessExpression(node) && node.name.text === 'serverUrl') return true;
+    const alias = aliases.get(text);
+    if (alias !== undefined && !seen.has(text)) return depends(alias, new Set([...seen, text]));
+    if (ts.isPropertyAccessExpression(node)) return false;
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'deploymentKeyFor') return false;
+    let found = false;
+    ts.forEachChild(node, (child) => { if (depends(child, seen)) found = true; });
+    return found;
+  };
+  const safe = (node: ts.Node, seen = new Set<string>()): boolean => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && names.has(node.expression.text)) return true;
+    const text = node.getText(source);
+    const alias = aliases.get(text);
+    if (alias !== undefined && !seen.has(text) && safe(alias, new Set([...seen, text]))) return true;
+    if (ts.isPropertyAccessExpression(node)) return false;
+    let found = false;
+    ts.forEachChild(node, (child) => { if (safe(child, seen)) found = true; });
+    return found;
+  };
+  const presented = (node: ts.Node): boolean => {
+    for (let parent = node.parent; parent !== undefined && ts.isExpression(parent); parent = parent.parent) {
+      if (ts.isCallExpression(parent)) return ['row', 'out', 'err', 'console.log', 'console.error'].includes(parent.expression.getText(source));
+    }
+    return false;
+  };
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    const constructor = ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'URL'
+      && node.arguments !== undefined && node.arguments.length > 1 && depends(node.arguments[1]!);
+    const template = ts.isTemplateExpression(node) && node.head.text === '' && depends(node.templateSpans[0]!.expression)
+      && (node.templateSpans[0]!.literal.text.startsWith('/') || node.templateSpans[0]!.literal.text === '');
+    if (constructor || template && !presented(node)) {
+      let covered = safe(node);
+      for (let parent = node.parent; parent !== undefined && ts.isExpression(parent); parent = parent.parent) {
+        if (ts.isCallExpression(parent) && ts.isIdentifier(parent.expression) && names.has(parent.expression.text)) covered = true;
+      }
+      if (!covered) found.push(node.getText(source));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
 const read = (rel: string): ts.SourceFile => parse(rel, readFileSync(join(SRC, rel), 'utf8'));
 
 describe('the member server URL rule', () => {
@@ -200,14 +259,29 @@ describe('the member server URL rule', () => {
     expect(missing).toEqual([]);
   });
 
-  it('pins plaintext localhost at every member network boundary, including installed MCP entries', () => {
-    const boundaries = [
-      ['member/transport.ts', 'request'], ['member/transport.ts', 'health'],
-      ['member/join-code.ts', 'exchangeJoinCode'], ['runner/loop.ts', 'postAs'],
-      ['cli/device-flow.ts', 'runDeviceFlow'], ['mcp/deployment-upstream.ts', 'upstreamOf'],
-      ['symbionts/member-hooks.ts', 'memberRemoteMcp'], ['symbionts/installer.ts', 'deploymentNamed'],
-    ];
-    expect(boundaries.filter(([file, fn]) => !callsRule(read(file!), fn!, 'memberServerDialUrl'))).toEqual([]);
+  it('discovers member dial expressions without a list of call sites', () => {
+    const offenders: string[] = [];
+    for (const tree of [...MEMBER_TREES, 'agent/runtime']) {
+      for (const file of allFiles(join(SRC, tree)).filter((f) => f.endsWith('.ts'))) {
+        const rel = relative(SRC, file);
+        if (rel === RULE) continue;
+        for (const hit of unsafeDials(parse(rel, readFileSync(file, 'utf8')))) offenders.push(`${rel}: ${hit}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('finds unlisted URL constructors and templates, including aliases', () => {
+    for (const expression of ["new URL('/mcp', connection.serverUrl)", '`${member.serverUrl}/events`', '`${member.serverUrl}${suffix}`', '`${member.serverUrl}`', "new URL('/mcp', base)"]) {
+      const source = `const base = member.serverUrl; fetch(${expression});`;
+      expect(unsafeDials(parse('new-site.ts', source)).length).toBeGreaterThan(0);
+      expect(unsafeDials(parse('safe.ts', `import { memberServerDialUrl } from './server-url.js'; const base = member.serverUrl; fetch(memberServerDialUrl(${expression}));`))).toEqual([]);
+    }
+  });
+
+  it('distinguishes display text from a dial inside a display call', () => {
+    expect(unsafeDials(parse('display.ts', 'row("Membership", "ok", `${member.serverUrl}${note}`);'))).toEqual([]);
+    expect(unsafeDials(parse('dial.ts', 'console.log(fetch(`${member.serverUrl}${suffix}`));'))).toHaveLength(1);
   });
 
   it('keeps loopback off a proxy at the CLI entry', () => {

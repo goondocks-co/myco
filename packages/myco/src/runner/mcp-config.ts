@@ -19,6 +19,7 @@
  * ask. The agent protocol carries user prompts alone, which is why the rules
  * travel as a file rather than as a second message.
  */
+import { memberServerDialUrl } from '../member/server-url.js';
 import nodeFs from 'node:fs';
 const { chmodSync, writeFileSync } = nodeFs;
 import { join } from 'node:path';
@@ -44,7 +45,7 @@ export function mcpConfigOf(connection: RunConnection): Record<string, unknown> 
       [MCP_SERVER_NAME]: {
         type: 'http',
         alwaysLoad: true,
-        url: new URL('/mcp', connection.serverUrl).toString(),
+        url: new URL('/mcp', memberServerDialUrl(connection.serverUrl)).toString(),
         headers: memberHeaders({ token: connection.runToken, projectId: connection.projectId }),
       },
     },

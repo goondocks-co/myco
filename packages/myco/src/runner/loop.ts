@@ -3,7 +3,7 @@ import { runnerCheckIn } from '@goondocks/myco-shared/setup-guidance';
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, parseProfileRefusal, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
-import { ExecutionAccounting } from './accounting.js';
+import { sumAttemptUsage, ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
 /**
@@ -492,9 +492,12 @@ async function drive(
   if (lapsed !== null) return lapsed;
 
   mkdirSync(options.runRoot, { recursive: true, mode: 0o700 });
-  const { scratchDir, mcpConfigPath } = writeRunDir(options.runRoot, run.id, {
+  let { scratchDir, mcpConfigPath } = writeRunDir(options.runRoot, run.id, {
     serverUrl: options.serverUrl, projectId: run.projectId, runToken: run.runToken,
   }, run.instructions, run.attemptId);
+
+  const scratchDirs = [scratchDir];
+  let previousUsage: WorkerUsage | null = null;
 
   const stopping = new AbortController();
   const onAbort = (): void => { stopping.abort(); };
@@ -529,7 +532,7 @@ async function drive(
   let checkout: RepositoryCheckout | undefined;
   let failure: { code: WorkerFailureCode; words: string } | null = null;
   let preparing = false;
-  try {
+  const prepare = async (): Promise<void> => {
     if (run.repository !== undefined) {
       preparing = true;
       checkout = await prepareWorkerCheckout(run.repository, scratchDir, stopping.signal, async (input, signal) => {
@@ -542,16 +545,21 @@ async function drive(
       stepLog?.within(checkout.root, resolvedPath(checkout.root));
       preparing = false;
     }
-    stopping.signal.throwIfAborted();
-    if (clock() >= lease.deadline) { lost = true; stopping.abort(); }
+  };
+  try {
+    await prepare();
     stopping.signal.throwIfAborted();
     const toolUse = runToolUse(named.steps, checkout !== undefined);
     const prompt = run.instruction;
-    const start = () => driver.run({
-      prompt, scratchDir, mcpConfigPath, credentialEnv: run.credentialEnv,
-      profile: run.profile,
-      sourceReadOnly: checkout !== undefined,
-    }, stopping.signal)[Symbol.asyncIterator]();
+    const start = () => {
+      if (clock() >= lease.deadline) { lost = true; stopping.abort(); }
+      stopping.signal.throwIfAborted();
+      return driver.run({
+        prompt, scratchDir, mcpConfigPath, credentialEnv: run.credentialEnv,
+        profile: run.profile,
+        sourceReadOnly: checkout !== undefined,
+      }, stopping.signal)[Symbol.asyncIterator]();
+    };
     stream = start();
     let retriedLogin = false;
     for (;;) {
@@ -568,6 +576,15 @@ async function drive(
           await stream.return?.();
           if (await recheckLogin() && !stopping.signal.aborted && clock() < lease.deadline) {
             options.log(`run ${run.id}: login readiness rechecked; retrying the first ${run.harness} run once`);
+            await checkout?.dispose();
+            checkout = undefined;
+            ({ scratchDir, mcpConfigPath } = writeRunDir(options.runRoot, run.id, {
+              serverUrl: options.serverUrl, projectId: run.projectId, runToken: run.runToken,
+            }, run.instructions, run.attemptId));
+            scratchDirs.push(scratchDir);
+            await prepare();
+            previousUsage = sumAttemptUsage(previousUsage, accounting.totals);
+            accounting.totals = null;
             events.length = 0;
             stream = start();
             continue;
@@ -637,7 +654,7 @@ async function drive(
         } catch (error) {
           failure ??= { code: 'worker_error', words: error instanceof Error ? error.message : String(error) };
         } finally {
-          try { discardRunDir(scratchDir); } catch (error) {
+          for (const directory of scratchDirs) try { discardRunDir(directory); } catch (error) {
             const words = error instanceof Error ? error.message : String(error);
             options.log(`could not discard the attempt directory of ${run.id}: ${words}`);
             failure ??= { code: 'worker_error', words };
@@ -664,8 +681,9 @@ async function drive(
   // out: a child stopped for overrunning did not finish its turn, and a stop
   // reason it managed to emit as it died would otherwise read as one.
   const identity = accounting.identity;
-  const usage: WorkerUsage | null = identity.status === 'unknown' ? accounting.totals : {
-    ...(accounting.totals ?? { inputTokens: null, outputTokens: null, costUsd: null }),
+  const totals = sumAttemptUsage(previousUsage, accounting.totals);
+  const usage: WorkerUsage | null = identity.status === 'unknown' ? totals : {
+    ...(totals ?? { inputTokens: null, outputTokens: null, costUsd: null }),
     model: identity.primary.model, ...(identity.primary.provider === undefined ? {} : { provider: identity.primary.provider }),
   };
   if (overran) return { status: 'failed', identity, usage, error: budgetError(run.timeoutSeconds) };

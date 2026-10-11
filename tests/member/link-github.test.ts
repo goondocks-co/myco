@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { LINK_REQUIRES_ADMIN_HINT, linkUrl, runLinkGithub } from '@myco/cli/member.js';
 import { LINK_REQUIRES_ADMIN } from '@myco-server-worker/auth/members.js';
-import { IDENTITY_LINK_TTL_MS } from '@myco-server-worker/auth/identity-link.js';
+import { IDENTITY_LINK_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { classifyLinkAnswer, type FetchLike } from '@myco/member/transport.js';
 import { ENV_MEMBER_TOKEN, resolveMemberProjectRoot } from '@myco/member/credential.js';
