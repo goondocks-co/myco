@@ -37,6 +37,65 @@ describe('live worker offers', () => {
     } finally { stopping.abort(); process.env.PATH = path; }
   });
 
+  it('announces one check-in only after the server acknowledges the offer', async () => {
+    const savedPath = process.env.PATH;
+    const root = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-offer-copy-')));
+    stubProfileHarness();
+    const stop = new AbortController();
+    const lines: string[] = [];
+    let claims = 0;
+    const checkinsAtClaim: number[] = [];
+    try {
+      await runWorker({
+        serverUrl: 'https://fixture.invalid', token: 'fixture', lockDir: null, runRoot: root,
+        only: ['claude-code'], pollIdleMs: 1, signal: stop.signal, log: line => lines.push(line),
+        listModels: async () => [],
+        fetchImpl: (async input => {
+          if (new URL(String(input)).pathname === '/worker/claim') {
+            claims++;
+            checkinsAtClaim.push(lines.filter(line => line.startsWith('Checked in:')).length);
+            if (claims === 2) stop.abort();
+          }
+          return Response.json({ persisted: true, claimed: false, reason: 'no_work' }, { headers: { [FEATURES_HEADER]: [EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE].join(',') } });
+        }) as typeof fetch,
+      });
+      expect(checkinsAtClaim).toEqual([0, 1]);
+      const checkins = lines.filter(line => line.startsWith('Checked in:'));
+      expect(checkins).toHaveLength(1);
+      expect(checkins[0]).toContain('offering claude-code');
+      expect(checkins[0]).toContain('(checked ');
+    } finally { stop.abort(); process.env.PATH = savedPath; }
+  });
+
+  for (const outcome of ['unreachable', 'refused'] as const) {
+    it(`does not announce check-in when the claim is ${outcome}`, async () => {
+      const savedPath = process.env.PATH;
+      const root = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-offer-failed-')));
+      stubProfileHarness();
+      const stop = new AbortController();
+      const lines: string[] = [];
+      let claims = 0;
+      try {
+        await runWorker({
+          serverUrl: 'https://fixture.invalid', token: 'fixture', lockDir: null, runRoot: root,
+          only: ['claude-code'], pollIdleMs: 1, signal: stop.signal, log: line => lines.push(line),
+          listModels: async () => [],
+          fetchImpl: (async input => {
+            if (new URL(String(input)).pathname === '/worker/claim') {
+              claims++;
+              if (outcome === 'unreachable') { stop.abort(); throw new Error('fixture offline'); }
+              return Response.json({ code: 'fixture_refused', reason: 'fixture refusal' }, { status: 401 });
+            }
+            return Response.json({ persisted: true }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
+          }) as typeof fetch,
+        });
+        expect(claims).toBe(1);
+        expect(lines.filter(line => line.startsWith('Checked in:'))).toEqual([]);
+        if (outcome === 'refused') expect(lines.join('\n')).toContain('refused the claim');
+      } finally { stop.abort(); process.env.PATH = savedPath; }
+    });
+  }
+
   for (const harness of HARNESSES.filter(offerable)) {
     it(`${harness.id} follows installation and login changes without restarting`, async () => {
       const root = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-live-offer-')));

@@ -12,7 +12,7 @@ To update an installed machine, run `myco update` (or `myco update --check` to r
 
 ```bash
 myco server create --target local
-myco server github-app --target local --url http://127.0.0.1:8787 --name "Myco sign-in"
+myco server github-app --target local --url http://127.0.0.1:8787
 myco server setup-owner --target local
 myco server install --target local
 ```
@@ -21,7 +21,7 @@ The first command prepares your server and generates its storage keys. The secon
 
 Open the private link printed by `setup-owner`. Sign in with GitHub, check the account shown, and click **Connect this account**, then **Open Projects**. The link expires after 15 minutes. Keep it private: whoever uses it can become this server's administrator.
 
-In **Members**, invite another runtime of your administrator account. Use the resulting invitation with `myco login` to connect this machine. The server can then run its built-in worker on its next start.
+Sign this machine in with `myco login http://127.0.0.1:8787`, then approve its code in the dashboard. Agent work needs a runner: opt in with `myco runner register http://127.0.0.1:8787`, then `myco runner install --server http://127.0.0.1:8787`.
 
 Owner setup requires a stopped server. If its link expires, stop the server, rerun `setup-owner`, and start it again; the replacement link invalidates the previous one. Once an account is connected, setup refuses. Existing or restored memberships use their existing sign-in and invitation flow; setup does not replace them.
 
@@ -84,7 +84,7 @@ Then three commands, the same three as on your laptop:
 
 ```bash
 myco server create --target cloudflare --account-id <your account id>
-myco server github-app --target cloudflare --url <the address create printed> --name "Myco sign-in"
+myco server github-app --target cloudflare --url <the address create printed>
 myco server setup-owner --target cloudflare
 ```
 
@@ -94,11 +94,32 @@ myco server setup-owner --target cloudflare
 
 To see what `create` would do before it does anything, add `--dry-run`. It lists every resource and key it would create or keep, and everything the server will be connected to, and changes nothing in your account or on your computer.
 
+Choose the address before registering sign-in: changing it later means registering sign-in again and signing each machine in again. Let `github-app` choose its host-derived name; GitHub App names are global.
+
 Add `--url https://myco.example.com` to put the server on a domain you own, if the domain is already in the same Cloudflare account. Without it you get a `workers.dev` address, which works just as well for agents.
 
 `github-app` registers the sign-in app, as on your laptop. `setup-owner` then prints a private link for connecting your GitHub account to the first administrator. It works over your Cloudflare login, from your own computer, while the server keeps running: there is nothing to stop and no database command to run. It refuses until sign-in works, and names the command that sets it up.
 
 Open the link, sign in with GitHub and click **Connect this account**. The link expires after 15 minutes, and running `setup-owner` again replaces it. Once an account is connected, setup refuses, and **Members** is where you invite everyone else.
+
+### Custom-domain security rules
+
+Cloudflare zone security rules apply to your custom domain. On the owner's deployment, custom WAF and managed rules blocked history imports with HTTP 403 before requests reached Myco. A Skip rule placed first for the Myco paths resolved it.
+
+If an import gets a 403 without Myco's JSON refusal, check Cloudflare **Security Events** for the request's Ray ID and the blocking rule. A 403 alone does not prove WAF blocked it. In the zone's **Security rules**, add a custom rule with the **Skip** action, limited to your Myco hostname and the affected Myco paths. For capture and history import, for example:
+
+```text
+(http.host eq "myco.example.com" and (
+  starts_with(http.request.uri.path, "/members/") or
+  http.request.uri.path eq "/events" or
+  starts_with(http.request.uri.path, "/blobs/") or
+  starts_with(http.request.uri.path, "/import/")
+))
+```
+
+Place it **first**, before custom rules that block those requests. Select the remaining custom rules and managed rules that Security Events identified; keep logging enabled. Extend the path match only when another Myco route is blocked. Myco still checks credentials and permissions on these requests. See Cloudflare's [Skip action](https://developers.cloudflare.com/waf/custom-rules/skip/) and [skip options](https://developers.cloudflare.com/waf/custom-rules/skip/options/).
+
+After saving the rule, run `myco import` again from the affected repository; an interrupted import resumes. For retained 1.4 history, review `myco cutover --dry-run` and resume with `myco cutover`.
 
 ```bash
 myco server status --target cloudflare      # the account, the address, and the version serving

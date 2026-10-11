@@ -1,4 +1,5 @@
 /** Home diagnostics and the current repository's Deployment checks. No repairs are performed. */
+import { terminalText } from '@myco/utils/terminal-text.js';
 import { readUpdateNotice } from '../upgrade/check-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
 import { projectDiagnostics } from '../member/diagnostics.js';
+import { MemberSpool } from '../member/spool.js';
 import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member/refused-hooks.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
@@ -36,7 +38,7 @@ export interface MemberDoctorDeps extends MemberVerbDeps {
 
 const USAGE = 'Usage: myco doctor [--fix]';
 
-const iso = (ms: number | null | undefined): string => (typeof ms === 'number' && Number.isFinite(ms) ? new Date(ms).toISOString() : 'unknown');
+const iso = (ms: number | null | undefined): string => (typeof ms === 'number' && Number.isFinite(ms) && !Number.isNaN(new Date(ms).getTime()) ? new Date(ms).toISOString() : 'unknown');
 
 const row = (name: string, status: DoctorCheck['status'], detail: string): DoctorCheck => ({ name, status, detail, fixable: false });
 
@@ -151,7 +153,7 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
     authenticated = tools.ok;
     checks.push(tools.ok
       ? row('Project access', 'ok', `${deployment.serverUrl} answers, and serves this machine's credential ${tools.value.length} tools.`)
-      : row('Project access', 'fail', `${deployment.serverUrl} ${tools.error.code === 'unauthorized' ? 'refused' : 'could not serve'} this machine's tool list (${tools.error.code}): ${tools.error.message}. Run \`myco doctor\` from this repository after restoring access.`));
+      : row('Project access', 'fail', `${deployment.serverUrl} ${tools.error.code === 'unauthorized' ? 'refused' : 'could not serve'} this machine's tool list (${terminalText(tools.error.code)}): ${terminalText(tools.error.message)}. Run \`myco doctor\` from this repository after restoring access.`));
   }
 
   // Read after the Deployment was asked: its read renews a credential whose window is open.
@@ -172,6 +174,8 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
 }
 
 const HOME_HEALTH_TIMEOUT_MS = 1500;
+export const RECENT_REFUSAL_MS = 7 * 24 * 60 * 60 * 1000;
+const STALE_CREDENTIAL_MS = 7 * 24 * 60 * 60 * 1000;
 const CUTOVER_RECORD = path.join('member', 'cutover.json');
 const LOGOUT_DIRECTORY = path.join('member', 'logout');
 
@@ -227,7 +231,7 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
     });
     checks.push(row('Deployment', healthy ? 'ok' : 'fail', healthy
       ? `${membership.serverUrl} answers its health route.`
-      : `${membership.serverUrl} is unreachable or did not answer its health route. Check the address and connection, then run \`myco doctor\` again.`));
+      : `${membership.serverUrl} is unreachable or did not answer its health route. Check the address and connection, then run \`myco doctor\` again.${membership.expiresAt !== undefined && membership.expiresAt <= now - STALE_CREDENTIAL_MS ? ` If this address was abandoned, run myco logout ${membership.serverUrl} --local-only to remove its local membership.` : ''}`));
   }
   const projects = listRegistryEntriesResult(home);
   if (!projects.readable || projects.unavailableEntries > 0) checks.push(row('Repositories', 'fail', 'repository routes could not all be read; routing is unknown for those entries. Run `myco member join` from each affected repository.'));
@@ -237,7 +241,13 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
     checks.push(row('Capture backlog', facts.spool.readable && facts.spool.unacknowledgedTotal === 0 ? 'ok' : 'warn',
       `${entry.root}: ${facts.spool.readable ? `${facts.spool.unacknowledgedTotal ?? 'unknown'} event(s) waiting to deliver` : 'spool unreadable'}; last delivery ${iso(facts.spool.lastDeliveryAt)}.${facts.spool.readable && facts.spool.unacknowledgedTotal === 0 ? '' : ' Run `myco member drain` from that repository.'}`));
     if (!facts.latchReadable || facts.latch !== null) checks.push(row('Capture', 'warn', `${entry.root}: ${facts.latchReadable ? `delivery held off since ${iso(facts.latch?.since)}; next probe ${iso(facts.latch?.nextProbeAt)}` : 'offline latch unreadable'}. Run \`myco member drain\` from that repository.`));
-    if (!facts.refusals.logReadable || facts.refusals.loggedSinceLastReset > 0 || facts.refusals.unreadableLines > 0) checks.push(row('Refusals', 'warn', `${entry.root}: ${facts.refusals.logReadable ? `${facts.refusals.loggedSinceLastReset} refused events; ${facts.refusals.unreadableLines} unreadable log lines` : 'refusal log unreadable'}. Run \`myco logs\` from that repository.`));
+    const refusals = new MemberSpool(entry, { mycoHome: home, initialize: false }).readRefused();
+    if (!refusals.readable || refusals.entries.length > 0 || refusals.unreadableLines > 0) {
+      const latest = refusals.entries.reduce<number | null>((last, refusal) => last === null ? refusal.at : Math.max(last, refusal.at), null);
+      const recent = refusals.entries.filter(refusal => refusal.at >= now - RECENT_REFUSAL_MS).length;
+      checks.push(row('Refusals', !refusals.readable || recent > 0 || refusals.unreadableLines > 0 ? 'warn' : 'ok',
+        `${entry.root}: ${refusals.readable ? `${refusals.entries.length} refused events; newest ${iso(latest)}; ${recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'refusal log unreadable'}. Run myco logs from that repository.`));
+    }
   }
   checks.push(...leftRepositoryChecks(home), ...refusedHookChecks(home, now));
   if (listing.memberships.length > 0) checks.push(...setupChecks(home));

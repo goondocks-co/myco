@@ -359,7 +359,7 @@ describe('a joined member with no 1.4 vault', () => {
     for (const retired of [/\bgrove\b/i, /\bdaemon\b/i, /^\s+mcp\b/m, /stdio/i, /^\s+hook\b/m, /^\s+restart\b/m, /^\s+service\b/m]) {
       expect(MEMBER_USAGE).not.toMatch(retired);
     }
-    for (const kept of ['search <query>', 'session [id|latest]', 'stats', 'doctor', 'logs', 'config get', 'login <invite-link>', 'member <op>']) {
+    for (const kept of ['search <query>', 'session [id|latest]', 'stats', 'doctor', 'logs', 'config get', 'login <address>', 'member <op>']) {
       expect(MEMBER_USAGE).toContain(kept);
     }
   });

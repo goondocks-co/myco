@@ -34,7 +34,7 @@ export function pinnedHomeLine(resolved: ResolvedMycoHome, folder: string): stri
 /** Why `folder` has no membership to use when a pin chose its home, and what fixes it; null when no pin chose it. */
 export function pinnedHomeRefusal(resolved: ResolvedMycoHome, folder: string, what: string): string | null {
   if (resolved.source !== 'project-pin') return null;
-  return `${folder} is pinned to ${resolved.home} by ${resolved.pinPath}, which holds no ${what}. Sign in there with \`myco login <invite link>\` from this folder, or remove the pin to use this machine's own home.`;
+  return `${folder} is pinned to ${resolved.home} by ${resolved.pinPath}, which holds no ${what}. Sign in there with \`myco login <address>\` from this folder, or remove the pin to use this machine's own home.`;
 }
 
 /**

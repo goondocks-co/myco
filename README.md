@@ -46,7 +46,7 @@ macOS is the primary supported platform. Linux and Windows are in beta. On Windo
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
-myco login <invite link>
+myco login <address>
 ```
 
 On Windows x64 (PowerShell):
@@ -55,7 +55,7 @@ On Windows x64 (PowerShell):
 irm https://myco.sh/install.ps1 | iex
 ```
 
-Myco is a self-contained native binary — **no Node runtime required**. The installer defaults to stable releases only: it retains the 1.4 install and managed-service behavior until a 2.x stable release exists. Opt in to 2.0 with `curl -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=alpha sh` (alpha, beta or stable builds) or `MYCO_CHANNEL=beta` (beta or stable builds). A 2.0 install places the binary in `~/.myco/bin`, records its channel in `install.json`, and refreshes an existing membership; a first-time 2.0 install starts no service. `myco login` with the invite link your Deployment's administrator sent you signs this machine in and connects your coding agents; to run your own Deployment instead, see [Self-hosting](docs/self-hosting.md). On a machine that has Myco 1.4, the installer installs nothing and says how to move over: `sh -s -- --replace-1.4` installs 2.0 in 1.4's place, then `myco login`, `myco cutover --dry-run` and `myco cutover` move the machine (see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14)).
+Myco is a self-contained native binary — **no Node runtime required**. On a fresh machine, the default installer selects the newest 2.x release, including prereleases while no stable 2.x release exists. Existing 1.4 installations keep their 1.4 updates unless you explicitly choose replacement. Choose a release channel with `curl -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=alpha sh` (alpha, beta or stable builds) or `MYCO_CHANNEL=beta` (beta or stable builds). A 2.0 install places the binary in `~/.myco/bin`, records its channel in `install.json`, and refreshes an existing membership; a first-time 2.0 install starts no service. `myco login` with your Myco address signs this machine in and connects your coding agents; to run your own Deployment instead, see [Self-hosting](docs/self-hosting.md). On a machine that has Myco 1.4, the installer installs nothing and says how to move over: `sh -s -- --replace-1.4` installs 2.0 in 1.4's place, then `myco login`, `myco cutover --dry-run` and `myco cutover` move the machine (see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14)).
 
 Provider configuration is optional at install time. Capture and full-text search work immediately; spores, digests, semantic search, Canopy summaries, and skill lifecycle features become active after you configure intelligence and embedding providers in the dashboard.
 

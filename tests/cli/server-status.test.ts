@@ -136,11 +136,20 @@ describe('Cloudflare status records and live observations', () => {
     expect(text).toContain('Release (recorded at last deploy): 2.0.0-alpha.1');
     expect(text).toContain(`Schema (live): ${schema}`);
     expect(text).toContain('URL (recorded): https://recorded.example.com');
-    expect(text).toContain('URL (live): routing not checked');
+    expect(text).not.toContain('URL (live)');
     expect(text).toContain('The recorded release does not identify the live Worker');
-    expect(text).toContain('Last schema update (recovery point recorded; migration not confirmed)');
+    expect(text).toContain('Last schema update (completed; confirmed by live schema)');
     expect(text).toContain(BOOKMARK);
     expect(exitCode).toBeUndefined();
+  });
+
+  it('keeps an unconfirmed label when the live schema differs or cannot be read', async () => {
+    const record = readDeploymentRecord()!;
+    writeDeploymentRecord({ ...record, schemaUpdates: [{ bookmark: BOOKMARK, schemaBefore: schema,
+      schemaAfter: schema + 1, recordedAt: record.deployedAt, workerVersionBefore: RECORDED }] });
+    expect(await drive('status')).toContain('recovery point recorded; migration not confirmed');
+    failure = 'd1 execute';
+    expect(await drive('status')).toContain('recovery point recorded; migration not confirmed');
   });
 
   it('shows an old release as unknown and a failed live lookup as unavailable', async () => {

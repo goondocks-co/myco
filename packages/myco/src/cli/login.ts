@@ -188,7 +188,7 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   if (root !== undefined) out(`  Connected ${root} to project ${answer.projectId}. Your agents capture there from now on.`);
   else out('  No project yet. A git repository under your capture folders joins the first time an agent works in it, or connect one with `myco member join`.');
   const held = readDefaultDeployment(mycoHome);
-  if (!isDefault && held !== null) out(`  New repositories keep joining ${held.serverUrl}; \`myco login --default <invite link>\` makes ${deploymentUrl(code.serverUrl)} the one they join.`);
+  if (!isDefault && held !== null) out(`  New repositories keep joining ${held.serverUrl}; \`myco login --default ${deploymentUrl(code.serverUrl)}\` makes ${deploymentUrl(code.serverUrl)} the one they join.`);
   // Provisioning is separate from sign-in and preserves other installations' settings.
   if (parsed.noAgents) recordNoAgents(mycoHome, code.serverUrl);
   else if (deps.provision !== 'defer') {

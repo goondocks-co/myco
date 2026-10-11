@@ -114,7 +114,7 @@ describe('the home a pinned repository uses', () => {
       err = [];
       expect(await runJoin(args, { fetch, cwd: repo, ...io })).toBeNull();
       expect(err.join('\n')).toContain(`${repo} is pinned to ${pinnedHome} by ${pinPath}, which holds no membership`);
-      expect(err.join('\n')).toContain('Sign in there with `myco login <invite link>` from this folder, or remove the pin');
+      expect(err.join('\n')).toContain('Sign in there with `myco login <address>` from this folder, or remove the pin');
     }
     expect(readRegistryEntry(repo, path.join(userHome, '.myco'))).toBeNull();
     expect(elsewhere).toEqual([]);

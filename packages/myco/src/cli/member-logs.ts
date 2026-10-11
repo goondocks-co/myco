@@ -8,9 +8,10 @@
  * logs are the dashboard's.
  */
 import fs from 'node:fs';
+import { terminalText } from '@myco/utils/terminal-text.js';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
-import { projectDiagnostics } from '../member/diagnostics.js';
+import { MemberSpool } from '../member/spool.js';
 import { deploymentUrl, readRegistryEntryResult } from '../member/registry.js';
 import { homeOf, rootOf, type MemberVerbDeps } from './deployment-reader.js';
 import { describeWorkerService, type WorkerServiceDeps } from './worker-service.js';
@@ -18,13 +19,15 @@ import { describeWorkerService, type WorkerServiceDeps } from './worker-service.
 /** Lines of each log shown when `--tail` is not given. */
 export const DEFAULT_MEMBER_LOG_TAIL = 50;
 
+const LOCAL_LOG_LINE_LIMIT = 4_000;
+
 const USAGE = 'Usage: myco logs [--tail|-n <lines>]';
 
 export interface MemberLogsDeps extends MemberVerbDeps {
   worker?: WorkerServiceDeps;
 }
 
-const iso = (ms: number | null): string => (ms === null ? 'unknown time' : new Date(ms).toISOString());
+const iso = (ms: number | null): string => (ms === null || Number.isNaN(new Date(ms).getTime()) ? 'unknown time' : new Date(ms).toISOString());
 
 /** The last `n` lines of a file, or null when it does not exist. */
 function tail(file: string, n: number): string[] | null {
@@ -78,17 +81,17 @@ export async function run(args: readonly string[], source: CredentialSource, dep
       const shown = tail(file, lines);
       if (shown === null) out('  (no log yet)');
       else if (shown.length === 0) out('  (empty)');
-      else for (const line of shown) out(line);
+      else for (const line of shown) out(terminalText(line, LOCAL_LOG_LINE_LIMIT));
     }
   }
 
-  const { refusals } = projectDiagnostics(entry, mycoHome, (deps.now ?? Date.now)());
+  const refusals = new MemberSpool(entry, { mycoHome, initialize: false }).readRefused();
   out(`=== refused events (${entry.projectId}) ===`);
-  if (!refusals.logReadable) out('  the refusal log could not be read');
+  if (!refusals.readable) out('  the refusal log could not be read');
   else if (refusals.entries.length === 0) out('  (none)');
   else {
     for (const r of refusals.entries.slice(-lines)) {
-      out(`${iso(r.at)} ${r.kind ?? 'unknown kind'} ${r.eventId ?? 'unknown event'} session ${r.sessionId ?? 'unknown'}: ${r.code ?? 'code not recognised'}`);
+      out(`${iso(r.at)} ${terminalText(r.kind || 'unknown kind')} ${terminalText(r.eventId || 'unknown event')} session ${terminalText(r.sessionId || 'unknown')}: ${terminalText(r.serverCode || r.code)}: ${terminalText(r.reason)}`);
     }
     if (refusals.unreadableLines > 0) out(`  ${refusals.unreadableLines} line(s) of the log could not be read`);
   }

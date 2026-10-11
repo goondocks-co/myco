@@ -1,3 +1,4 @@
+import { runnerCheckIn } from '@goondocks/myco-shared/setup-guidance';
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, parseProfileRefusal, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
@@ -942,13 +943,6 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
       const ready = harnesses.filter((h) => h.installed && h.authenticated).map((h) => h.id);
       catalogs.reconcile(ready);
       const signature = JSON.stringify({ harnesses, withheld });
-      if (signature !== offerSignature) {
-        offerSignature = signature;
-        for (const id of withheld) options.log(`not offering ${id}: ${WITHHELD_REASON}`);
-        options.log(ready.length === 0
-          ? `no harness on this machine is logged in; nothing can be claimed (found: ${harnesses.map((h) => h.id).join(', ') || 'none'})`
-          : `offering ${ready.join(', ')}`);
-      }
       if (advertisesCatalog) catalogs.due();
       const claimSentAt = (options.clock ?? Date.now)();
       const answer = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/claim', { harnesses, capabilities: [...WORKER_CAPABILITIES] }));
@@ -965,7 +959,12 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         await pause(options.pollIdleMs);
         continue;
       }
-      await options.onOfferAcknowledged?.({ offered: ready, withheld }, (options.clock ?? Date.now)());
+      const acknowledgedAt = (options.clock ?? Date.now)();
+      await options.onOfferAcknowledged?.({ offered: ready, withheld }, acknowledgedAt);
+      if (signature !== offerSignature) {
+        offerSignature = signature;
+        options.log(runnerCheckIn(ready, withheld.map(id => `${id} (${WITHHELD_REASON})`), acknowledgedAt));
+      }
       if (unreachable) { unreachable = false; options.log(`reached ${options.serverUrl} again`); }
       if (!attached) { attached = true; options.onAttached?.(); }
 

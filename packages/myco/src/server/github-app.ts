@@ -1,3 +1,4 @@
+import { LOCAL_OWNER_NEXT } from '@goondocks/myco-shared/setup-guidance';
 /**
  * Sign-in that sets itself up: a GitHub App registered from a manifest, by
  * the operator's own machine, and installed as the Deployment's secrets.
@@ -487,7 +488,7 @@ export async function registerGitHubApp(options: RegisterOptions): Promise<Regis
       const result = await configureLocalSignIn(options.target.paths,
         (install) => registerWithInstaller(options, async (app) => { install(app); }, pending), options.url);
       const linked = existsSync(options.target.paths.databasePath) && await localOwnerLinked(options.target.paths, carriedNative());
-      return { ...result, verified: { ok: false, pendingStart: true, reason: linked ? LOCAL_START_NEXT : `While it's stopped: myco server setup-owner --target local. Then ${LOCAL_START_NEXT}` } };
+      return { ...result, verified: { ok: false, pendingStart: true, reason: linked ? LOCAL_START_NEXT : LOCAL_OWNER_NEXT } };
     }
     return registerWithInstaller(options, (app) => installSignInSecrets(options.target, app, options.runner), pending);
   });

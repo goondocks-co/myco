@@ -35,7 +35,7 @@ function fixture(create = true, name = 'myco') {
     confirmStop: async () => true };
   return { root, home, paths, deps, platform, spec };
 }
-const plan: LocalPreparePlan = { port: DEFAULT_LOCAL_RECORD.port, signIn: 'skip', owner: 'mint', serve: 'service' };
+const plan: LocalPreparePlan = { retryCommand: 'myco server install --target local', port: DEFAULT_LOCAL_RECORD.port, signIn: 'skip', owner: 'mint', serve: 'service' };
 function signIn(f: ReturnType<typeof fixture>) {
   writeLocalSecrets({ ...readLocalSecrets(f.paths), GITHUB_CLIENT_ID: 'test-app', GITHUB_CLIENT_SECRET: 'test-secret' }, f.paths);
 }
@@ -240,7 +240,7 @@ describe('prepare native lifecycle', () => {
     const before = tree(f.root);
     try {
       expect((await inspectLocal(f.home, f.deps)).serving).toMatchObject({ mode: 'foreground', pid: process.pid });
-      await expect(prepareLocal(f.home, plan, f.deps)).rejects.toThrow(`process ${process.pid}`);
+      await expect(prepareLocal(f.home, plan, f.deps)).rejects.toThrow(`Your Myco is running in another terminal (process ${process.pid}). Stop it there with Ctrl-C, then rerun myco server install --target local.`);
       expect(tree(f.root)).toEqual(before);
       expect(f.platform.commands).toEqual([]);
     } finally { await held.stop(); }

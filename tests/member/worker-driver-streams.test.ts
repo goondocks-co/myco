@@ -1946,7 +1946,6 @@ describe('a harness no worker offers', () => {
         const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
         if (url.endsWith('/worker/claim')) {
           claims.push((JSON.parse(String(init?.body)) as { harnesses: unknown }).harnesses);
-          stopping.abort();
           return new Response(JSON.stringify({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 10 }), { status: 200 });
         }
         return new Response(JSON.stringify({ persisted: true }), { status: 200 });
@@ -1955,9 +1954,10 @@ describe('a harness no worker offers', () => {
         serverUrl: 'https://deployment.example', token: 'tok', lockDir: null, only: ['antigravity', STUB_HARNESS],
         runRoot: mkdtempSync(join(tmpdir(), 'myco-worker-')),
         pollIdleMs: 3_000, log: (line) => { logged.push(line); }, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal,
+        onOfferAcknowledged: async () => { stopping.abort(); },
       });
       expect(claims).toEqual([[{ id: STUB_HARNESS, installed: true, authenticated: true, profile: harnessById(STUB_HARNESS)!.profile }]]);
-      expect(logged).toContain(`not offering antigravity: ${WITHHELD_REASON}`);
+      expect(logged.some(line => line.startsWith('Checked in:') && line.includes('unavailable: antigravity'))).toBe(true);
     } finally { agy.remove(); }
   }, 15_000);
 

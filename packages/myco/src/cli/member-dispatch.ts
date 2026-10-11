@@ -55,7 +55,7 @@ export function helpText(legacyUsage: string, deps: MemberVerbDeps = {}): string
 
 /** The member verbs, as a 1.4 list shows them beside its own on a home that holds both. */
 export const MEMBER_SECTION = `2.0 member (a project joined with \`myco login\`; run \`myco --help\` from it for the full list):
-  login <invite-link>      Redeem an invite link and sign this machine in
+  login <address>          Sign this machine in through your Myco dashboard
   member <op>              join | leave | provision | drain | status | export | refresh | link-github | raw-claims | ownership | role
   runner <verb>            Register, run or update this machine’s runner (register|run|update|status)
   worker [options]         Run this machine's harnesses for a Deployment (install|uninstall|status)
@@ -65,7 +65,7 @@ export const MEMBER_SECTION = `2.0 member (a project joined with \`myco login\`;
 export const MEMBER_USAGE = `Usage: myco <command> [args]
 
 Membership:
-  login <invite-link>      Redeem an invite link and sign this machine in
+  login <address>          Sign this machine in through your Myco dashboard
   member <op>              join | leave | provision | drain | status | export | refresh | link-github | raw-claims | ownership | role
   import                   Bring this machine's existing agent history to its Deployment
   runner <verb>            Register, run or update this machine’s runner (register|run|update|status)

@@ -34,3 +34,11 @@ export const LINK_REFUSALS: Readonly<Record<string, string>> = {
   link_requires_admin: ACCOUNT_UNLINKED,
 };
 export const noOwnerSignIn = (url: string): string => `${url} has no owner yet, so nobody can approve this machine. Whoever created it finishes with ${OWNER_SETUP_COMMAND} on the machine that created it, then run myco login ${url} again.`;
+
+export const ownerLinkNext = (url: string, target: 'local' | 'cloudflare'): string =>
+  `It expires in 15 minutes; run myco server setup-owner --target ${target} again for a fresh one.${target === 'local' ? ' Stop it first with Ctrl-C in its terminal, or myco server uninstall --target local; then start it with myco server install --target local.' : ''} Then on each machine you use: myco login ${new URL(url).origin}.`;
+export const LOCAL_OWNER_NEXT = "While it's stopped: myco server setup-owner --target local. Then start it: myco server install --target local.";
+export const toolsStayOnDeployment = (agent: string, url: string): string =>
+  `${agent}'s Myco tools stay on ${url}; one machine can't point them at two Mycos yet. Capture goes to the right one. Run myco doctor from this repository to check capture.`;
+export const runnerCheckIn = (offered: readonly string[], withheld: readonly string[], at: number): string =>
+  `Checked in: offering ${offered.join(', ') || 'none'}; unavailable: ${withheld.join(', ') || 'none'} (checked ${new Date(at).toISOString()}).${offered.length === 0 ? ' Run myco runner doctor to check which coding agents can run.' : ''}`;

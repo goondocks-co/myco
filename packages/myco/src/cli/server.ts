@@ -30,6 +30,7 @@ import { type CreatePlan, cloudflareUpdateLines, cloudflareDeploymentStatus, cre
 import { existsSync } from 'node:fs';
 import { parseFlags } from './flags.js';
 import path from 'node:path';
+import { ownerLinkNext } from '@goondocks/myco-shared/setup-guidance';
 import { resolveMycoHome } from '../paths/home.js';
 
 import {
@@ -260,7 +261,7 @@ export function hostedNextSteps(url: string | undefined): string[] {
   ];
 }
 
-export async function run(args: string[], deps: { runner?: CommandRunner; fetchImpl?: typeof fetch; openUrl?: (url: string) => Promise<void>; readSecret?: () => Promise<string> } = {}): Promise<void> {
+export async function run(args: string[], deps: { runner?: CommandRunner; fetchImpl?: typeof fetch; openUrl?: (url: string) => Promise<void>; readSecret?: () => Promise<string>; cloudflareOwner?: typeof setupCloudflareOwner; localOwner?: typeof setupLocalOwner } = {}): Promise<void> {
   const [command, ...rest] = args;
   if (command === undefined || command === '--help' || command === '-h') {
     console.log(SERVER_HELP);
@@ -314,22 +315,22 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
 
   try {
     if (command === 'setup-owner' && target() === 'cloudflare') {
-      const result = await setupCloudflareOwner(cloudflareOptions());
+      const result = await (deps.cloudflareOwner ?? setupCloudflareOwner)(cloudflareOptions());
       console.log(`First administrator: ${result.memberId}`);
       console.log('Open this private link, sign in with GitHub and connect your account; that account becomes the administrator:');
       console.log(result.url);
       console.log(`Expires: ${new Date(result.expiresAt).toISOString()}. Keep this link private.`);
-      console.log('If it expires, run setup-owner again. After linking, use Members to invite this machine.');
+      console.log(ownerLinkNext(result.url, 'cloudflare'));
       return;
     }
     if (command === 'setup-owner') {
       if (target() !== 'local') fail('setup-owner requires --target local or --target cloudflare');
-      const result = await setupLocalOwner(resolveLocalPaths(), carriedNative());
+      const result = await (deps.localOwner ?? setupLocalOwner)(resolveLocalPaths(), carriedNative());
       console.log(`First administrator: ${result.memberId}`);
       console.log('Start the Deployment, then open this private link and connect your GitHub account:');
       console.log(result.url);
       console.log(`Expires: ${new Date(result.expiresAt).toISOString()}. Keep this link private.`);
-      console.log('If it expires, stop the Deployment and run setup-owner again. After linking, use Members to invite this machine.');
+      console.log(ownerLinkNext(result.url, 'local'));
       return;
     }
     if (LOCAL_VERBS.has(command) && target() === 'local') {
@@ -468,13 +469,12 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
       console.log(`  Release (recorded at last deploy): ${status.record.release ?? 'unknown (not recorded)'}`);
       console.log(`  Schema (live): ${status.schema ?? `unavailable — ${status.schemaError}`}`);
       console.log(`  URL (recorded): ${status.record.url ?? 'unknown'}`);
-      console.log('  URL (live): routing not checked.');
       if (status.workerError === null && status.deployed && status.versionId !== null && status.versionId !== status.record.versionId) {
         console.log(`The live Worker is version ${status.versionId}, not the one recorded; run myco server status --target cloudflare after the deploy settles. The recorded release does not identify the live Worker.`);
       }
       const lastSchema = status.record.schemaUpdates?.at(-1);
       if (lastSchema !== undefined) {
-        console.log(`  Last schema update (${lastSchema.appliedAt === undefined ? 'recovery point recorded; migration not confirmed' : 'applied'}): ${lastSchema.schemaBefore} → ${lastSchema.schemaAfter} at ${lastSchema.appliedAt ?? lastSchema.recordedAt}, bookmark ${lastSchema.bookmark}`);
+        console.log(`  Last schema update (${lastSchema.appliedAt !== undefined ? 'applied' : status.schema === lastSchema.schemaAfter ? 'completed; confirmed by live schema' : 'recovery point recorded; migration not confirmed'}): ${lastSchema.schemaBefore} → ${lastSchema.schemaAfter} at ${lastSchema.appliedAt ?? lastSchema.recordedAt}, bookmark ${lastSchema.bookmark}`);
       }
       await reportOperatorHold(cloudflareRecoveryHoldOf(cloudflareOptions()));
       return;

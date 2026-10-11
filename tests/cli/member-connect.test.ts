@@ -119,6 +119,6 @@ describe('myco member join inside a repository', () => {
   it('refuses outside a repository and on a machine not signed in, naming what to do', async () => {
     const rig = unjoinedRig();
     expect(await runJoin(['--new'], deps(rig, repo('lonely')))).toBeNull();
-    expect(err.join('\n')).toContain('run `myco login <invite link>` first');
+    expect(err.join('\n')).toContain('run `myco login <address>` first');
   });
 });

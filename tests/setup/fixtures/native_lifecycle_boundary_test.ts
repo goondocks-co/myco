@@ -18,7 +18,7 @@ it('routes setup lifecycle service operations through the injected runner', asyn
   const deps = { native: { library: null, vec0: null }, binaryPath, userHome: process.env.HOME!,
     service: { platform: 'darwin' as const, ...(process.env.MYCO_NATIVE_SERVICE_STUB === '1' ? { runner: fake.runner } : {}) },
     fetchImpl: Object.assign(async () => new Response('ok'), { preconnect: () => {} }) };
-  const plan = { port: DEFAULT_LOCAL_RECORD.port, signIn: 'skip' as const, owner: 'skip' as const, serve: 'service' as const };
+  const plan = { retryCommand: 'myco server install --target local', port: DEFAULT_LOCAL_RECORD.port, signIn: 'skip' as const, owner: 'skip' as const, serve: 'service' as const };
   try { switch (process.env.MYCO_NATIVE_LIFECYCLE_OPERATION) {
     case 'inspect': await inspectLocal(home, deps); break;
     case 'prepare': await prepareLocal(home, plan, deps); break;

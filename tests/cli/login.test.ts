@@ -94,7 +94,7 @@ describe('myco login', () => {
     expect(readDefaultDeployment(home)?.serverUrl).toBe('https://s');
     expect(await run([await link('t')], deps(rig))).toBe(true);
     expect(readDefaultDeployment(home)?.serverUrl).toBe('https://s');
-    expect(out.join('\n')).toContain('New repositories keep joining https://s; `myco login --default <invite link>` makes https://t the one they join.');
+    expect(out.join('\n')).toContain('New repositories keep joining https://s; `myco login --default https://t` makes https://t the one they join.');
     expect(await run([await link('u'), '--default'], deps(rig))).toBe(true);
     expect(readDefaultDeployment(home)?.serverUrl).toBe('https://u');
   });

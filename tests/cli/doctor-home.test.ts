@@ -340,3 +340,96 @@ describe('home doctor', () => {
     expect(lines.join('\n')).toContain('service state unavailable');
   });
 });
+
+describe('dated refusal and abandoned address guidance', () => {
+  it('shows the newest time across the whole log and warns only for recent refusals', async () => {
+    const { MemberSpool } = await import('@myco/member/spool.js');
+    const { readRegistryEntry } = await import('@myco/member/registry.js');
+    const at = Date.UTC(2026, 9, 11);
+    deps.now = () => at;
+    join(personal, scratch);
+    const spool = new MemberSpool(readRegistryEntry(scratch, home)!, { mycoHome: home });
+    const old = at - 8 * 24 * 60 * 60 * 1000;
+    spool.appendRefused({ eventId: 'evt_old', sessionId: 'session', kind: 'session-end', code: 'refused', reason: 'old', at: old });
+    let check = (await homeReport(home, deps)).find(row => row.name === 'Refusals')!;
+    expect(check.status).toBe('ok');
+    expect(check.detail).toContain(new Date(old).toISOString());
+    expect(check.detail).toContain('0 in the last 7 days');
+    expect(check.detail).toContain('myco logs');
+    spool.appendRefused({ eventId: 'evt_recent', sessionId: 'session', kind: 'session-end', code: 'refused', reason: 'recent', at });
+    for (let i = 0; i < 55; i++) spool.appendRefused({ eventId: 'evt_old', sessionId: 'session', kind: 'session-end', code: 'refused', reason: 'old', at: old });
+    check = (await homeReport(home, deps)).find(row => row.name === 'Refusals')!;
+    expect(check.status).toBe('warn');
+    expect(check.detail).toContain(new Date(at).toISOString());
+    expect(check.detail).toContain('1 in the last 7 days');
+  });
+
+  it('suggests local-only logout only for a long-expired credential at an unavailable address', async () => {
+    const at = Date.UTC(2026, 9, 11);
+    deps.now = () => at;
+    const write = (expiresAt: number) => writeDeploymentMembership({ serverUrl: personal, token: 'A'.repeat(43), machineId: 'machine-one', joinedAt: 1, updatedAt: 1, expiresAt }, { mycoHome: home });
+    write(at - 8 * 24 * 60 * 60 * 1000);
+    deps.fetch = async () => { throw new Error('fixture offline'); };
+    expect(await report()).toContain(`myco logout ${personal} --local-only`);
+    deps.fetch = async () => new Response('{}');
+    expect(await report()).not.toContain('--local-only');
+    deps.fetch = async () => { throw new Error('fixture offline'); };
+    write(at - 1000);
+    expect(await report()).not.toContain('--local-only');
+  });
+
+  it('preserves long local diagnostics while stripping hostile terminal controls', async () => {
+    const { describeWorkerService } = await import('@myco/cli/worker-service.js');
+    join(personal, scratch);
+    const status = describeWorkerService(personal, deps.worker)!;
+    const local = 'x'.repeat(1_000);
+    const hostile = '\x1b]0;title\x07\x1b[2J\x00\r' + local;
+    fs.mkdirSync(path.dirname(status.errLog), { recursive: true });
+    fs.writeFileSync(status.errLog, `${local}\n${hostile}\n`);
+    const lines: string[] = [];
+    await runMemberVerb('logs', [], { ...deps, stdout: line => lines.push(line) });
+    expect(lines).toEqual(expect.arrayContaining([local, ' ]0;title  [2J  ' + local]));
+  });
+
+  it('bounds and escapes every refusal field and restores empty kind and event labels', async () => {
+    const { MemberSpool, REFUSED_LOG_FILE } = await import('@myco/member/spool.js');
+    const { readRegistryEntry } = await import('@myco/member/registry.js');
+    join(personal, scratch);
+    const spool = new MemberSpool(readRegistryEntry(scratch, home)!, { mycoHome: home });
+    const hostile = '\x1b]0;title\x07\x1b[2J\x00\r\nFORGED\x85' + 'x'.repeat(100_000);
+    const entries = [hostile, undefined].map(serverCode => ({
+      eventId: hostile, sessionId: hostile, kind: hostile, code: hostile, serverCode, reason: hostile, at: now,
+    }));
+    fs.writeFileSync(path.join(spool.dir, REFUSED_LOG_FILE), [
+      ...entries,
+      { eventId: '', sessionId: 'unknown', kind: '', code: 'refused', reason: 'unparsable spool line', at: now },
+    ].map(entry => JSON.stringify(entry)).join('\n') + '\n');
+    const lines: string[] = [];
+    expect(await runMemberVerb('logs', [], { ...deps, stdout: line => lines.push(line) })).toBe(true);
+    const printed = lines.filter(line => line.startsWith(new Date(now).toISOString()));
+    expect(printed).toHaveLength(3);
+    for (const line of printed) {
+      expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+      expect(line.length).toBeLessThanOrEqual(1_100);
+    }
+    expect(printed[0].match(/…/g)).toHaveLength(5);
+    expect(printed[1].match(/…/g)).toHaveLength(5);
+    expect(printed[2]).toContain('unknown kind unknown event session unknown: refused: unparsable spool line');
+  });
+
+  it('prints the server code and reason from the persisted log while export omits free text', async () => {
+    const { MemberSpool } = await import('@myco/member/spool.js');
+    const { readRegistryEntry } = await import('@myco/member/registry.js');
+    const { projectDiagnostics } = await import('@myco/member/diagnostics.js');
+    join(personal, scratch);
+    const entry = readRegistryEntry(scratch, home)!;
+    new MemberSpool(entry, { mycoHome: home }).appendRefused({
+      eventId: 'evt_1', sessionId: 'session', kind: 'session-end', code: 'refused',
+      serverCode: 'fixture_server_refusal', reason: 'fixture reason for refusal', at: now,
+    });
+    const lines: string[] = [];
+    expect(await runMemberVerb('logs', [], { ...deps, stdout: line => lines.push(line) })).toBe(true);
+    expect(lines.join('\n')).toContain('fixture_server_refusal: fixture reason for refusal');
+    expect(JSON.stringify(projectDiagnostics(entry, home, now))).not.toContain('fixture reason for refusal');
+  });
+});
