@@ -299,7 +299,8 @@ async function main(): Promise<void> {
   // The sandbox settings emitter reads no vault and writes nothing.
   if (cmd === 'settings') return (await import('./cli/settings.js')).run(args);
 
-  // A retained verb in a joined project — or one that declares a credential
+  // Doctor reports the home even outside a joined repository. Other retained
+  // verbs in a joined project — or ones that declare a credential
   // source — runs as a 2.0 member: its reads are the Deployment's and its
   // doctor, logs and config are the member's own, and none reads a project
   // vault, so it sits above the myco.yaml gate. A root with no membership

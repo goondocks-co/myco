@@ -27,17 +27,21 @@ export interface MemberDispatchDeps extends MemberVerbDeps {
 /** Answer `verb` as a member: true or false for the verb's outcome, null when this invocation has no Deployment to ask. */
 export async function runMemberVerb(verb: MemberVerb, args: readonly string[], deps: MemberDispatchDeps = {}): Promise<boolean | null> {
   const source = memberSource(args, deps);
+  if (verb === 'doctor') {
+    const doctor = await import('./member-doctor.js');
+    if (source === null && !doctor.useHomeDoctor(homeOf(deps))) return null;
+    return doctor.run(args, source ?? 'registry', deps);
+  }
   if (source === null) return null;
   if (isMemberReadVerb(verb)) return (await import('./member-reads.js')).run(verb, args, source, deps);
   switch (verb) {
-    case 'doctor': return (await import('./member-doctor.js')).run(args, source, deps);
     case 'logs': return (await import('./member-logs.js')).run(args, source, deps);
     case 'config': return (await import('./member-config.js')).run(args, source, deps);
   }
 }
 
 /** Whether this home carries a 1.4 install: it holds a Groves directory. */
-const hasLegacyInstall = (home: string): boolean => fs.existsSync(path.join(home, GROVES_DIRNAME));
+export const hasLegacyInstall = (home: string): boolean => fs.existsSync(path.join(home, GROVES_DIRNAME));
 
 /**
  * The command list `myco --help` prints. The member's when this root is

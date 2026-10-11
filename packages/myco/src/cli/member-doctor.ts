@@ -1,27 +1,14 @@
-/**
- * `myco doctor` for a joined project: the member's own wiring and the
- * Deployment it reports to, never a vault, a Grove database or a daemon.
- *
- * Rows, in order: the membership the registry holds; whether the Deployment
- * answers its health route and serves this machine's credential its tools (the
- * authenticated read renews a credential whose window is open, as every member
- * read does); the credential's expiry and renewal state as the registry holds
- * it after that; the spool (undelivered events, the offline latch, refusals);
- * which harnesses capture for the member; each harness's member MCP entry; and
- * the worker login service for each Deployment this home holds.
- *
- * A `fail` row sets a non-zero exit. Nothing here repairs: each row names the
- * command that does.
- */
+/** Home diagnostics and the current repository's Deployment checks. No repairs are performed. */
 import { readUpdateNotice } from '../upgrade/check-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DOCTOR_SIGN_IN, DOCTOR_REFUSED_HOOK_REPAIR } from '@goondocks/myco-shared/setup-guidance';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
 import { projectDiagnostics } from '../member/diagnostics.js';
 import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member/refused-hooks.js';
-import { readRegistryEntryResult } from '../member/registry.js';
+import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
 import { readProvisionRecord } from '../symbionts/member-provision-record.js';
@@ -29,7 +16,13 @@ import { missingMemberSkills } from '../symbionts/member-skill-links.js';
 import { getPluginVersion } from '../version.js';
 import { checkMemberMcpResolution, checkWorkerServices, formatCheck, type DoctorCheck } from './doctor-member.js';
 import { envOf, homeOf, membershipProblem, openDeployment, rootOf, type MemberVerbDeps } from './deployment-reader.js';
-import type { WorkerServiceDeps } from './worker-service.js';
+import { executorServiceTarget, type WorkerServiceDeps } from './worker-service.js';
+import { readDefaultDeployment } from '../member/default-deployment.js';
+import { listLeftRepositories } from '../member/auto-join.js';
+import { pathIsAbsent } from '../member/store.js';
+import { listRunnerRecords, isLiveRunner } from '../runner/runner-registry.js';
+import { workerServiceStatus } from '../runner/service.js';
+import { hasLegacyInstall } from './member-dispatch.js';
 
 export interface MemberDoctorDeps extends MemberVerbDeps {
   /** The worker service probe's own dependencies (service runner, platform). */
@@ -67,7 +60,7 @@ function programProblem(program: string): string | null {
  * capture only is named for provisioning, and a member hook whose program is
  * missing or not executable captures nothing, so it is named too.
  */
-function captureChecks(root: string, mycoHome: string, packageRoot: string): DoctorCheck[] {
+function captureChecks(root: string, mycoHome: string, packageRoot: string, required = true): DoctorCheck[] {
   const checks: DoctorCheck[] = [];
   let capturing = 0;
   for (const manifest of loadManifests()) {
@@ -93,28 +86,26 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string): Doc
       }
     }
   }
-  if (capturing === 0) {
+  if (capturing === 0 && required) {
     checks.push(row('Capture', 'fail', 'no harness on this machine captures for the member. Run `myco member provision <agent>` from this project.'));
   }
   return checks;
 }
 
 /**
- * Whether the agents provisioning set up are this build's: the record it wrote (`member/provision-record.ts`) names the
- * build, and each recorded agent's skills folder still links this home's skills. Drift names the one command that
- * refreshes it.
- */
-/**
  * The hooks on this machine their own command refused (`member/refused-hooks.ts`): one that names no harness, or no
  * credential source. Each exits 0, so this is where the loss shows.
  */
 export function refusedHookChecks(mycoHome: string, now: number): DoctorCheck[] {
   return REFUSED_HOOK_KINDS.flatMap((kind) => {
-    const record = readRefusedHook(kind, mycoHome, now);
-    return record === null ? [] : [row('Capture', 'warn', `${refusedHookWords(record)}, last ${iso(record.lastAt)}${record.lastHook ? ` (hook ${record.lastHook})` : ''}. Run \`myco member provision\` to rewrite the hooks it installed.`)];
+    let record;
+    try { record = readRefusedHook(kind, mycoHome, now, { prune: false, strict: true }); }
+    catch (error) { return [row('Capture', 'warn', `refused hooks unavailable: ${error instanceof Error ? error.message : String(error)}`)]; }
+    return record === null ? [] : [row('Capture', 'warn', `${refusedHookWords(record)}, last ${iso(record.lastAt)}${record.lastHook ? ` (hook ${record.lastHook})` : ''}. ${DOCTOR_REFUSED_HOOK_REPAIR}`)];
   });
 }
 
+/** The build and registration recorded by agent provisioning, with current wiring checked. */
 export function setupChecks(mycoHome: string, version: string = getPluginVersion()): DoctorCheck[] {
   const record = readProvisionRecord(mycoHome);
   if (record === null) return [row('Setup', 'warn', 'nothing records which agents Myco set up on this machine. Run `myco member provision`.')];
@@ -139,18 +130,10 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
   return [row('Setup', 'ok', `${record.agents.length === 0 ? 'no agent' : record.agents.join(', ')} set up by this build for ${record.serverUrl}.`)];
 }
 
-/** Run the member checks for this joined project and print them. True when no row failed. */
-export async function run(args: readonly string[], source: CredentialSource, deps: MemberDoctorDeps = {}): Promise<boolean> {
-  const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
-  const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
-  const flags = withoutCredentialFlag(args);
-  const unknown = flags.filter((flag) => flag !== '--fix');
-  if (unknown.length > 0) { err(`${USAGE}\nmyco doctor: unknown option ${unknown[0]}`); return false; }
-
+/** The Deployment and capture checks scoped to one repository. */
+export async function projectReport(source: CredentialSource, deps: MemberDoctorDeps = {}): Promise<DoctorCheck[]> {
   const root = rootOf(deps);
   const mycoHome = homeOf(deps);
-  const notice = readUpdateNotice(mycoHome, getPluginVersion());
-  if (notice !== null) console.log(notice);
   const now = (deps.now ?? Date.now)();
   const checks: DoctorCheck[] = [];
 
@@ -205,11 +188,94 @@ export async function run(args: readonly string[], source: CredentialSource, dep
 
   const packageRoot = deps.packageRoot ?? resolvePackageRoot();
   checks.push(...captureChecks(root, mycoHome, packageRoot));
-  checks.push(...refusedHookChecks(mycoHome, now));
-  checks.push(...setupChecks(mycoHome));
   const vaultDir = path.join(root, '.myco');
   checks.push(...await checkMemberMcpResolution(vaultDir, { ...envOf(deps), MYCO_HOME: mycoHome }, { registryRead: 'strict' }));
-  checks.push(...await checkWorkerServices(vaultDir, { ...deps.worker, mycoHome }));
+  return checks;
+}
+
+const CUTOVER_RECORD = path.join('member', 'cutover.json');
+const LOGOUT_DIRECTORY = path.join('member', 'logout');
+
+/** A home with only 1.4 state retains the local doctor. No binary is run to classify it. */
+export function useHomeDoctor(home: string): boolean {
+  const memberships = listDeploymentMembershipsResult(home);
+  return !hasLegacyInstall(home) || !memberships.readable || memberships.unavailableEntries > 0
+    || memberships.memberships.length > 0 || !pathIsAbsent(path.join(home, 'runner'))
+    || !pathIsAbsent(path.join(home, CUTOVER_RECORD)) || !pathIsAbsent(path.join(home, LOGOUT_DIRECTORY));
+}
+
+/** Repository opt-outs and the reconnection each marker permits. */
+function leftRepositoryChecks(home: string): DoctorCheck[] {
+  try {
+    return listLeftRepositories(home).map(repository => row('Repository', 'ok',
+      `${repository.root ?? `repository key ${repository.key} (path not recorded)`}: left alone${repository.serverUrl ? ` after logout from ${repository.serverUrl}` : ''}; ${repository.explicitJoinOnly ? 'capture will not automatically join it to another Myco' : 'capture is opted out until reconnected here or through Deployment settings'}. To reconnect, run \`myco member join\` from that repository.`));
+  } catch (error) {
+    return [row('Repositories', 'warn', `left-alone repositories could not be read: ${error instanceof Error ? error.message : String(error)}`)];
+  }
+}
+
+/** Local machine facts, independent of the current repository's binding. */
+export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+  const now = (deps.now ?? Date.now)();
+  let runners: ReturnType<typeof listRunnerRecords> = [];
+  try { runners = listRunnerRecords(home); }
+  catch (error) { checks.push(row('Runner', 'fail', `runner records could not be read: ${error instanceof Error ? error.message : String(error)}`)); }
+  const listing = listDeploymentMembershipsResult(home);
+  if (!listing.readable || listing.unavailableEntries > 0) checks.push(row('Memberships', 'fail', 'Deployment memberships could not all be read; which Mycos this machine joined is unknown.'));
+  if (listing.readable && listing.unavailableEntries === 0 && listing.memberships.length === 0 && runners.length === 0) {
+    checks.push(row('Memberships', 'warn', DOCTOR_SIGN_IN));
+  }
+  const selected = readDefaultDeployment(home);
+  for (const membership of listing.memberships) {
+    checks.push(row('Membership', 'ok', `${membership.serverUrl}${selected?.serverUrl === deploymentUrl(membership.serverUrl) ? ' (default for new repositories)' : ''}; machine ${membership.machineId}, joined ${iso(membership.joinedAt)}.`));
+    const state = membership.refreshTerminal === true ? 'refused renewal' : membership.expiresAt !== undefined && membership.expiresAt <= now ? 'expired' : membership.expiresAt === undefined ? 'expiry unknown' : 'locally unexpired';
+    checks.push(row('Credential', state === 'locally unexpired' ? 'ok' : 'warn', `${membership.serverUrl}: ${state}; expires ${iso(membership.expiresAt)} (local record; authentication not checked)${membership.refreshTerminal === true ? ` — ${REJOIN_HINT}` : ''}.`));
+    const provision = readProvisionRecord(home);
+    checks.push(row('Agents', provision?.serverUrl === membership.serverUrl ? 'ok' : 'warn', `${membership.serverUrl}: ${provision?.serverUrl === membership.serverUrl ? provision.agents.join(', ') || 'none recorded' : 'no provisioning recorded for this Deployment'}.`));
+  }
+  const projects = listRegistryEntriesResult(home);
+  if (!projects.readable || projects.unavailableEntries > 0) checks.push(row('Repositories', 'fail', 'repository routes could not all be read; routing is unknown for those entries.'));
+  for (const entry of projects.entries) {
+    checks.push(row('Repository', 'ok', `${entry.root} → ${entry.serverUrl} / ${entry.projectId}.`));
+    const facts = projectDiagnostics(entry, home, now);
+    checks.push(row('Capture backlog', facts.spool.readable && facts.spool.unacknowledgedTotal === 0 ? 'ok' : 'warn',
+      `${entry.root}: ${facts.spool.readable ? `${facts.spool.unacknowledgedTotal ?? 'unknown'} event(s) waiting to deliver` : 'spool unreadable'}; last delivery ${iso(facts.spool.lastDeliveryAt)}.`));
+    if (!facts.latchReadable || facts.latch !== null) checks.push(row('Capture', 'warn', `${entry.root}: ${facts.latchReadable ? `delivery held off since ${iso(facts.latch?.since)}; next probe ${iso(facts.latch?.nextProbeAt)}` : 'offline latch unreadable'}.`));
+    if (!facts.refusals.logReadable || facts.refusals.loggedSinceLastReset > 0 || facts.refusals.unreadableLines > 0) checks.push(row('Refusals', 'warn', `${entry.root}: ${facts.refusals.logReadable ? `${facts.refusals.loggedSinceLastReset} refused events; ${facts.refusals.unreadableLines} unreadable log lines` : 'refusal log unreadable'}. Run \`myco logs\` from that repository.`));
+  }
+  checks.push(...leftRepositoryChecks(home), ...refusedHookChecks(home, now));
+  if (listing.memberships.length > 0 || runners.length === 0) checks.push(...setupChecks(home));
+  if (readRegistryEntryResult(rootOf(deps), home).status === 'missing') checks.push(...captureChecks(rootOf(deps), home, deps.packageRoot ?? resolvePackageRoot(), listing.memberships.length > 0));
+  const worker = { ...deps.worker, mycoHome: home };
+  try { checks.push(...await checkWorkerServices(path.join(rootOf(deps), '.myco'), worker)); }
+  catch (error) { checks.push(row('Worker service', 'warn', `service state unavailable: ${error instanceof Error ? error.message : String(error)}`)); }
+  for (const record of runners) {
+    checks.push(row('Runner', isLiveRunner(record) ? 'ok' : 'warn', `${record.serverUrl}: ${isLiveRunner(record) ? `registered ${record.name} (${record.runnerId})` : 'registration pending'}; last contact ${iso(record.lastContactAt)}.`));
+    try {
+      const state = workerServiceStatus(executorServiceTarget(record.serverUrl, worker, 'runner'), { runner: worker.runner, lockDir: worker.lockDir });
+      const words = !state.installed ? 'not installed' : !state.loaded ? 'installed, not loaded' : !state.running ? 'installed, stopped' : 'running';
+      checks.push(row('Runner service', state.running ? 'ok' : 'warn', `${record.serverUrl}: ${words}${state.detail ? ` (${state.detail})` : ''}. Check \`myco runner status --server ${record.serverUrl}\`.`));
+    } catch (error) {
+      checks.push(row('Runner service', 'warn', `${record.serverUrl}: unavailable: ${error instanceof Error ? error.message : String(error)}`));
+    }
+    checks.push(row('Runner offer', record.lastOffer ? 'ok' : 'warn', `${record.serverUrl}: ${record.lastOffer ? `offered ${record.lastOffer.offered.join(', ') || 'none'}; withheld ${record.lastOffer.withheld.join(', ') || 'none'}; observed ${iso(record.lastOffer.observedAt)}` : 'unknown (no acknowledged service offer)'}.`));
+  }
+  if (hasLegacyInstall(home)) checks.push(row('Myco 1.4', 'warn', `1.4 data may remain at ${path.join(home, 'groves')}; migration completion is not verified. Next: \`myco cutover --dry-run\`.`));
+  return checks;
+}
+
+/** Print home facts and, when a credential resolves here, the repository checks. */
+export async function run(args: readonly string[], source: CredentialSource, deps: MemberDoctorDeps = {}): Promise<boolean> {
+  const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
+  const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const flags = withoutCredentialFlag(args);
+  const unknown = flags.filter(flag => flag !== '--fix');
+  if (unknown.length > 0) { err(`${USAGE}\nmyco doctor: unknown option ${unknown[0]}`); return false; }
+  const notice = readUpdateNotice(homeOf(deps), getPluginVersion());
+  if (notice !== null) out(notice);
+  const checks = await homeReport(homeOf(deps), deps);
+  if (source === 'env' || readRegistryEntryResult(rootOf(deps), homeOf(deps)).status !== 'missing') checks.push(...await projectReport(source, deps));
 
   out('\nmyco doctor (member)\n');
   for (const check of checks) out(formatCheck(check));

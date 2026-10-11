@@ -55,15 +55,21 @@ export function recordRefusedHook(kind: RefusedHookKind, opts: { mycoHome: strin
 }
 
 /** This kind's record while it is reported: null when there is none, it is past retention (removed), or unreadable. */
-export function readRefusedHook(kind: RefusedHookKind, mycoHome: string, now: number): RefusedHookRecord | null {
+export function readRefusedHook(kind: RefusedHookKind, mycoHome: string, now: number, opts: { prune?: boolean; strict?: boolean } = {}): RefusedHookRecord | null {
   const file = recordPath(kind, mycoHome);
   const read = readPrivateJson<RefusedHookRecord>(file);
-  if (!read.ok) return null;
+  if (!read.ok) {
+    if (opts.strict && read.reason !== 'missing') throw new Error(`refused-hook record ${file} could not be read`);
+    return null;
+  }
   const value = read.value;
   if (value?.version !== REFUSED_HOOK_VERSION || value.kind !== kind || !Number.isSafeInteger(value.count) || value.count <= 0
-    || typeof value.firstAt !== 'number' || typeof value.lastAt !== 'number') return null;
+    || typeof value.firstAt !== 'number' || typeof value.lastAt !== 'number') {
+    if (opts.strict) throw new Error(`refused-hook record ${file} is malformed`);
+    return null;
+  }
   if (now - value.lastAt > REFUSED_HOOK_RETENTION_MS) {
-    try { fs.rmSync(file, { force: true }); } catch { /* reported as none either way */ }
+    try { if (opts.prune !== false) fs.rmSync(file, { force: true }); } catch { /* reported as none either way */ }
     return null;
   }
   return value;
