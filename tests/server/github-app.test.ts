@@ -69,6 +69,8 @@ describe('the manifest', () => {
   it('admits https, and plain http to a loopback literal only', () => {
     expect(isDeploymentUrl('https://myco.example.co')).toBe(true);
     expect(isDeploymentUrl('http://127.0.0.1:18787')).toBe(true);
+    expect(isDeploymentUrl('http://127.12.34.56:18787')).toBe(true);
+    expect(isDeploymentUrl('http://[::1]:18787')).toBe(true);
     expect(isDeploymentUrl('http://myco.example.co')).toBe(false);
     expect(isDeploymentUrl('http://localhost:18787')).toBe(false);
     expect(isDeploymentUrl('not a url')).toBe(false);

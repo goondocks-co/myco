@@ -20,16 +20,19 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
+import { isIP } from 'node:net';
 import path from 'node:path';
 import fs, { existsSync } from 'node:fs';
-import { writePrivateFileAtomic, isPrivateMode } from '@myco/member/store.js';
+import { isPrivateMode } from '@myco/member/store.js';
+import { atomicWriteFileSync, syncDirectoryForDurability } from '@myco/utils/atomic-write.js';
+import { PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { LocalVolume } from '@myco/server/local-volume.js';
 import { withCloudflareOperation } from '@myco/server/cloudflare-operation.js';
 import { deploymentRecordPath, putWorkerSecrets, readDeploymentRecord, writeDeploymentRecord, type DeploymentRecord } from './cloudflare.js';
 import { assertComposeReadable, recreateDeployment, resolveDeploymentPaths, writeSignInSecrets, type DeploymentPaths } from './deployment.js';
 import { systemRunner, type CommandRunner } from './runner.js';
-import { configureLocalSignIn, localDeploymentPresent, resolveLocalPaths, type LocalDeploymentPaths } from './local.js';
+import { configureLocalSignIn, localDeploymentPresent, readLocalSecrets, resolveLocalPaths, type LocalDeploymentPaths } from './local.js';
 import { localOwnerLinked } from './local-owner.js';
 import { carriedNative } from './local-run.js';
 
@@ -108,7 +111,11 @@ export function isDeploymentUrl(value: string): boolean {
     return false;
   }
   if (url.protocol === 'https:') return true;
-  return url.protocol === 'http:' && (url.hostname === LOOPBACK || url.hostname === '[::1]' || url.hostname === '::1');
+  return url.protocol === 'http:' && isLoopbackHost(url.hostname);
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === '[::1]' || host === '::1' || (isIP(host) === 4 && host.startsWith('127.'));
 }
 
 /** The manifest GitHub receives: identity only — no permissions, no webhook, public. */
@@ -127,15 +134,19 @@ export function manifestFor(opts: { url: string; name?: string; redirectUrl: str
 /** Host-derived names fit GitHub's limit and distinguish loopback Deployments by machine and port. */
 export function defaultAppName(url: string, machineHostname = hostname()): string {
   const address = new URL(url);
-  const loopback = ['127.0.0.1', '[::1]', 'localhost'].includes(address.hostname);
+  const loopback = isLoopbackHost(address.hostname) || address.hostname === 'localhost';
   const host = loopback ? `${machineHostname}:${address.port || (address.protocol === 'https:' ? '443' : '80')}` : address.host;
   const full = `Myco (${host})`;
-  if (full.length <= APP_NAME_MAX) return full;
+  if (!loopback && full.length <= APP_NAME_MAX) return full;
   const hash = createHash('sha256').update(host).digest('hex').slice(0, 4);
+  if (loopback) {
+    const port = address.port || (address.protocol === 'https:' ? '443' : '80');
+    const available = APP_NAME_MAX - `Myco (-${hash}:${port})`.length;
+    return `Myco (${machineHostname.slice(0, available)}-${hash}:${port})`;
+  }
   const label = host.split('.')[0];
-  const suffix = loopback ? `:${address.port || (address.protocol === 'https:' ? '443' : '80')}` : '';
-  const available = APP_NAME_MAX - 'Myco ()'.length - '-'.length - hash.length - suffix.length;
-  return `Myco (${label.slice(0, available)}-${hash}${suffix})`;
+  const available = APP_NAME_MAX - 'Myco ()'.length - '-'.length - hash.length;
+  return `Myco (${label.slice(0, available)}-${hash})`;
 }
 
 /** Where the manifest form posts: the operator's account, or the organization named. */
@@ -199,10 +210,9 @@ export async function installSignInSecrets(target: SignInTarget, app: Pick<Regis
 export type VerifyResult = { ok: true } | { ok: false; reason: string; pendingStart?: true };
 
 /**
- * The Deployment now sends a visitor to GitHub for this app and back to its own
- * callback: `GET /auth/login` answers 302 to GitHub's authorize URL carrying
- * the new client id and a `redirect_uri` on the Deployment's origin. Retried,
- * since a Worker's secrets take a moment to reach every edge.
+ * Observe the server's GitHub authorization redirect, including the expected
+ * client id and callback. Retry while a Worker's secrets reach its edges.
+ * A completed OAuth round trip requires a sign-in by the user.
  */
 export async function verifySignIn(url: string, clientId: string, deps: { fetchImpl?: typeof fetch; attempts?: number; pauseMs?: number } = {}): Promise<VerifyResult> {
   const fetchImpl = deps.fetchImpl ?? fetch;
@@ -229,7 +239,7 @@ export type SignInState =
   | { kind: 'configured'; clientId: string }
   | { kind: 'absent' | 'unavailable'; reason: string };
 
-/** Observe the sign-in redirect without following it or starting an OAuth round trip. */
+/** Only sign_in_unconfigured proves absence; a valid GitHub redirect identifies configured sign-in. */
 export async function signInState(url: string, fetchImpl: typeof fetch = fetch, clientId: string | null = null): Promise<SignInState> {
   const origin = new URL(url).origin;
   let res: Response;
@@ -238,18 +248,31 @@ export async function signInState(url: string, fetchImpl: typeof fetch = fetch, 
   } catch (err) {
     return { kind: 'unavailable', reason: `${origin} did not answer: ${err instanceof Error ? err.message : String(err)}` };
   }
+  const wrongAddress: SignInState = { kind: 'unavailable', reason: `${origin}: this address doesn't answer as a Myco server; check the URL` };
+  if (res.status === 401) {
+    let body: unknown;
+    try { body = await res.json(); } catch (error) {
+      if (!(error instanceof SyntaxError)) return { kind: 'unavailable', reason: `${origin} could not report its sign-in settings: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    if (body !== null && typeof body === 'object' && Reflect.get(body, 'error') === 'sign_in_unconfigured') {
+      return { kind: 'absent', reason: `${origin}: GitHub sign-in is not configured` };
+    }
+    return res.headers.has(PROTOCOL_HEADER)
+      ? { kind: 'unavailable', reason: `${origin}: this server is older and can't report its sign-in state; run myco server update first` }
+      : wrongAddress;
+  }
   await res.body?.cancel();
-  if (res.status === 401 || res.status === 404) return { kind: 'absent', reason: `${origin}/auth/login answered ${res.status}; the sign-in secrets are not in place` };
+  if (res.status === 404 || (res.status !== 302 && !res.headers.has(PROTOCOL_HEADER))) return wrongAddress;
   if (res.status !== 302) return { kind: 'unavailable', reason: `${origin}/auth/login answered ${res.status}` };
   let target: URL;
   try {
     target = new URL(res.headers.get('location') ?? '');
   } catch {
-    return { kind: 'unavailable', reason: `${origin}/auth/login redirected to an unreadable location` };
+    return wrongAddress;
   }
-  if (`${target.origin}${target.pathname}` !== GITHUB_AUTHORIZE) return { kind: 'unavailable', reason: `${origin}/auth/login redirected to ${target.origin}${target.pathname}, not GitHub` };
+  if (`${target.origin}${target.pathname}` !== GITHUB_AUTHORIZE) return wrongAddress;
   const presented = target.searchParams.get('client_id');
-  if (!presented) return { kind: 'absent', reason: 'the Deployment names no client id' };
+  if (!presented) return { kind: 'unavailable', reason: 'the server names no client id; run myco server update first' };
   if (clientId !== null && presented !== clientId) return { kind: 'unavailable', reason: 'the Deployment signs in with a different client id' };
   const redirectUri = target.searchParams.get('redirect_uri');
   if (redirectUri !== `${origin}/auth/callback`) return { kind: 'unavailable', reason: `the Deployment's callback is ${redirectUri ?? 'absent'}, not ${origin}/auth/callback` };
@@ -268,7 +291,7 @@ export function signInPendingPath(target: SignInTarget): string {
   return path.join(target.kind === 'cloudflare' ? path.dirname(deploymentRecordPath(target.mycoHome)) : target.paths.root, 'sign-in-pending.json');
 }
 
-function readSignInPending(target: SignInTarget, url: string): PendingSignIn | null {
+function readSignInPending(target: SignInTarget, url?: string): PendingSignIn | null {
   const file = signInPendingPath(target);
   try {
     const stat = fs.lstatSync(file);
@@ -280,18 +303,21 @@ function readSignInPending(target: SignInTarget, url: string): PendingSignIn | n
       || !Number.isFinite(pending.at) || !(pending.ownerLogin === null || typeof pending.ownerLogin === 'string')
       || !(pending.installed === undefined || typeof pending.installed === 'boolean')) throw new Error('invalid pending registration');
     validateCredentials(pending);
-    if (pending.url !== new URL(url).origin) throw new RegistrationRefused(`pending sign-in registration at ${file} belongs to ${pending.url}; use that URL to finish it before registering another app`);
+    if (url !== undefined) assertPendingUrl(target, pending, url);
     return { ...pending, installed: pending.installed === true };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    if (error instanceof RegistrationRefused) throw error;
-    throw new RegistrationRefused(`cannot read pending sign-in registration at ${file}; restore the private file and run server github-app again`);
+    throw explainPendingFailure(target, error, `Cannot read pending sign-in registration at ${file}; restore its private file and run myco server github-app again`);
   }
+}
+
+function assertPendingUrl(target: SignInTarget, pending: PendingSignIn, url: string): void {
+  if (pending.url !== new URL(url).origin) throw pendingRefusal(target, `Pending sign-in registration at ${signInPendingPath(target)} belongs to ${pending.url}; use that URL to finish it`);
 }
 
 function validateCredentials(app: Pick<RegisteredApp, 'clientId' | 'clientSecret'>): void {
   if (![app.clientId, app.clientSecret].every((value) => typeof value === 'string' && value.length > 0 && value.trim() === value && !/[\r\n\0]/.test(value))) {
-    throw new RegistrationRefused('GitHub client id and secret must be non-empty single-line values; use --existing --client-id <id> --client-secret-stdin');
+    throw new RegistrationRefused('GitHub client id and secret must be non-empty single-line values; check --client-id and pipe the regenerated secret to --client-secret-stdin');
   }
 }
 
@@ -300,23 +326,90 @@ function persistSignInPending(target: SignInTarget, app: RegisteredApp, url: str
   const pending = { ...app, url: new URL(url).origin, at, installed };
   const file = signInPendingPath(target);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  writePrivateFileAtomic(file, `${JSON.stringify(pending)}\n`);
+  atomicWriteFileSync(file, `${JSON.stringify(pending)}\n`, { mode: 0o600, durable: true });
   return pending;
 }
 
+class PendingRegistrationRefused extends RegistrationRefused {}
+
+function pendingRefusal(target: SignInTarget, reason: string): PendingRegistrationRefused {
+  return new PendingRegistrationRefused(`${reason}. Run myco server github-app --discard-pending --target ${target.kind} to discard ${signInPendingPath(target)}, then delete or reuse the app on GitHub.`);
+}
+
+function explainPendingFailure(target: SignInTarget, error: unknown, reason?: string): PendingRegistrationRefused {
+  return error instanceof PendingRegistrationRefused ? error : pendingRefusal(target, reason ?? (error instanceof Error ? error.message : String(error)));
+}
+
+function clearSignInPending(target: SignInTarget): void {
+  const file = signInPendingPath(target);
+  fs.unlinkSync(file);
+  syncDirectoryForDurability(path.dirname(file));
+}
+
+function cleanPendingTemps(target: SignInTarget): void {
+  const file = signInPendingPath(target);
+  let entries: string[];
+  try { entries = fs.readdirSync(path.dirname(file)); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  const base = path.basename(file);
+  let removed = false;
+  for (const entry of entries) {
+    if (entry.startsWith(`${base}.`) && (entry.endsWith('.tmp') || entry.startsWith(`${base}.tmp-`))) {
+      fs.unlinkSync(path.join(path.dirname(file), entry));
+      removed = true;
+    }
+  }
+  if (removed) syncDirectoryForDurability(path.dirname(file));
+}
+
 async function withRegistrationLock<T>(target: SignInTarget, operation: () => Promise<T>): Promise<T> {
-  if (target.kind === 'cloudflare') return withCloudflareOperation(target.mycoHome, operation);
+  const run = async () => {
+    try { cleanPendingTemps(target); } catch {
+      throw pendingRefusal(target, 'Cannot remove unfinished sign-in files; restore access to the server directory');
+    }
+    try { return await operation(); } catch (error) {
+      if (fs.existsSync(signInPendingPath(target))) throw explainPendingFailure(target, error);
+      throw error;
+    }
+  };
+  if (target.kind === 'cloudflare') return withCloudflareOperation(target.mycoHome, run);
   const root = target.paths.root;
   fs.mkdirSync(path.dirname(root), { recursive: true, mode: 0o700 });
   const held = LifecycleLock.acquire(`${root}.sign-in.lock`, { command: 'myco server github-app' });
-  if (!held.acquired) throw new RegistrationRefused('sign-in registration is already in progress; wait for it to finish and run the command again');
-  try { return await operation(); } finally { held.lock.release(); }
+  if (!held.acquired) throw new RegistrationRefused('sign-in registration is already in progress; wait for it to finish and run myco server github-app again');
+  try { return await run(); } finally { held.lock.release(); }
+}
+
+/** Discard only the saved registration, after naming the app the operator can delete or reuse. */
+export async function discardSignInPending(target: SignInTarget, log: (line: string) => void): Promise<void> {
+  return withRegistrationLock(target, async () => {
+    const file = signInPendingPath(target);
+    let stat: fs.Stats;
+    try { stat = fs.lstatSync(file); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      log(`No pending sign-in registration at ${file}.`);
+      return;
+    }
+    let htmlUrl: unknown;
+    if (stat.isFile()) {
+      try { htmlUrl = JSON.parse(fs.readFileSync(file, 'utf8')).htmlUrl; } catch {
+        log('The saved app URL could not be read.');
+      }
+    }
+    const appUrl = typeof htmlUrl === 'string' && /^https:\/\/github\.com\/(?:apps\/[\w-]+|settings\/apps(?:\/[\w-]+)?)$/.test(htmlUrl)
+      ? htmlUrl : 'https://github.com/settings/apps';
+    log(`Delete or reuse the app at ${appUrl}. To reuse it, regenerate its secret and run myco server github-app --existing --target ${target.kind} --url <server-url> --client-id <id> --client-secret-stdin.`);
+    clearSignInPending(target);
+    log(`Discarded pending sign-in registration at ${file}.`);
+  });
 }
 
 /** Stage converted credentials under the target's mutation lease, before installation. */
 export async function writeSignInPending(target: SignInTarget, app: RegisteredApp, url: string, at = Date.now()): Promise<PendingSignIn> {
   return withRegistrationLock(target, async () => {
-    if (readSignInPending(target, url) !== null) throw new RegistrationRefused(`pending sign-in registration already exists at ${signInPendingPath(target)}; run server github-app again to resume it`);
+    if (readSignInPending(target, url) !== null) throw pendingRefusal(target, `Pending sign-in registration already exists at ${signInPendingPath(target)}; run myco server github-app again to resume it`);
     const write = () => persistSignInPending(target, app, url, at);
     return target.kind === 'local' ? new LocalVolume(target.paths).exclusive(write) : write();
   });
@@ -356,22 +449,39 @@ export async function registerGitHubApp(options: RegisterOptions): Promise<Regis
   const proposedName = manifestFor({ url: options.url, name: options.name, redirectUrl: 'http://127.0.0.1/callback' }).name;
   if (proposedName.trim() === '' || proposedName.length > APP_NAME_MAX) throw new RegistrationRefused(`GitHub requires an app name of 1 to ${APP_NAME_MAX} characters; pass --name <shorter>`);
   return withRegistrationLock(options.target, async () => {
-    const pending = readSignInPending(options.target, options.url);
+    let pending = readSignInPending(options.target);
+    if (pending?.installed && options.target.kind === 'local') {
+      const target = options.target;
+      const completed = pending;
+      await new LocalVolume(target.paths).reading(async () => {
+        if (readLocalSecrets(target.paths).GITHUB_CLIENT_ID === completed.clientId) {
+          clearSignInPending(target);
+          pending = null;
+        }
+      });
+    }
+    if (pending !== null) assertPendingUrl(options.target, pending, options.url);
     if (pending !== null) assertRegistrationOwner(options, pending, true);
     if (pending !== null && options.existing !== undefined && pending.clientId !== options.existing.clientId) {
-      throw new RegistrationRefused(`pending sign-in registration at ${signInPendingPath(options.target)} has a different client id; resume it before installing another app`);
+      throw pendingRefusal(options.target, `Pending sign-in registration at ${signInPendingPath(options.target)} has a different client id; resume it before installing another app`);
     }
     if (pending !== null || options.target.kind !== 'local') {
       const state = await signInState(options.url, options.fetchImpl);
+      if (pending !== null && state.kind === 'configured' && state.clientId !== pending.clientId && options.existing === undefined) {
+        throw pendingRefusal(options.target, `Pending sign-in registration at ${signInPendingPath(options.target)} names client ${pending.clientId}, but the server uses client ${state.clientId}. Keep the live app by discarding the pending registration, or replace it with myco server github-app --existing --target ${options.target.kind} --url ${new URL(options.url).origin} --client-id ${pending.clientId} --client-secret-stdin`);
+      }
       if (pending?.installed && state.kind === 'configured' && state.clientId === pending.clientId && options.existing === undefined) {
         recordSignInUrl(options);
-        const clear = () => fs.unlinkSync(signInPendingPath(options.target));
+        const clear = () => clearSignInPending(options.target);
         // The registration lock owns the journal; the shared lease preserves the served volume's identity.
         if (options.target.kind === 'local') await new LocalVolume(options.target.paths).reading(async () => { clear(); });
         else clear();
         return registrationResult(pending, options.url, { ok: true });
       }
-      if (state.kind === 'unavailable' && options.target.kind !== 'local') throw new RegistrationRefused(`${state.reason}; sign-in state is unavailable. Check the Deployment and run server github-app again; no new app was registered.`);
+      if (state.kind === 'unavailable' && options.target.kind !== 'local') {
+        const reason = `Could not check GitHub sign-in: ${state.reason}. Check the server and run myco server github-app again`;
+        throw pending === null ? new RegistrationRefused(reason) : pendingRefusal(options.target, reason);
+      }
     }
     if (options.target.kind === 'local') {
       const result = await configureLocalSignIn(options.target.paths,
@@ -458,14 +568,16 @@ async function registerWithInstaller(options: RegisterOptions, install: (app: Re
   if (pending === null && options.existing === undefined && app.name !== (options.name ?? defaultAppName(options.url))) {
     log(`GitHub registered the app as ${JSON.stringify(app.name)} (the name was edited on GitHub's page).`);
   }
-  log(`Installing ${app.name}, owned by ${app.ownerLogin ?? 'the signed-in account'} (${app.htmlUrl}) on the Deployment…`);
+  const owner = options.existing === undefined && app.ownerLogin !== null ? `, owned by ${app.ownerLogin}` : '';
+  log(`Installing ${app.name}${owner} (${app.htmlUrl}) on the server…`);
   await install(app);
-  persistSignInPending(options.target, app, options.url, pending?.at ?? Date.now(), true);
+  if (options.target.kind === 'local') clearSignInPending(options.target);
+  else persistSignInPending(options.target, app, options.url, pending?.at ?? Date.now(), true);
   recordSignInUrl(options);
   const verified: VerifyResult = options.target.kind === 'local'
     ? { ok: false, pendingStart: true, reason: LOCAL_START_NEXT }
     : await verifySignIn(options.url, app.clientId, { fetchImpl });
-  if (verified.ok) fs.unlinkSync(signInPendingPath(options.target));
+  if (verified.ok) clearSignInPending(options.target);
   return registrationResult(app, options.url, verified);
 }
 
@@ -481,8 +593,7 @@ function recordSignInUrl(options: RegisterOptions): void {
 
 function assertRegistrationOwner(options: RegisterOptions, app: RegisteredApp, pending: boolean): void {
   if (options.org === undefined || app.ownerLogin?.toLowerCase() === options.org.toLowerCase()) return;
-  const next = pending
-    ? `The pending app is saved at ${signInPendingPath(options.target)}; run the same command without --org to finish it before registering another app.`
-    : `Delete the unwanted app at ${app.htmlUrl}, then run the command again for ${options.org}.`;
-  throw new RegistrationRefused(`GitHub answered with an app owned by ${app.ownerLogin ?? 'an unknown account'}, not ${options.org}. ${next}`);
+  const reason = `GitHub answered with an app owned by ${app.ownerLogin ?? 'an unknown account'}, not ${options.org}`;
+  if (pending) throw pendingRefusal(options.target, reason);
+  throw new RegistrationRefused(`${reason}. Delete the unwanted app at ${app.htmlUrl}, then run myco server github-app --target ${options.target.kind} --url ${options.url} --org ${options.org} again.`);
 }
