@@ -19,6 +19,8 @@ import { describeWorkerService, type WorkerServiceDeps } from './worker-service.
 /** Lines of each log shown when `--tail` is not given. */
 export const DEFAULT_MEMBER_LOG_TAIL = 50;
 
+const LOCAL_LOG_LINE_LIMIT = 4_000;
+
 const USAGE = 'Usage: myco logs [--tail|-n <lines>]';
 
 export interface MemberLogsDeps extends MemberVerbDeps {
@@ -79,7 +81,7 @@ export async function run(args: readonly string[], source: CredentialSource, dep
       const shown = tail(file, lines);
       if (shown === null) out('  (no log yet)');
       else if (shown.length === 0) out('  (empty)');
-      else for (const line of shown) out(terminalText(line));
+      else for (const line of shown) out(terminalText(line, LOCAL_LOG_LINE_LIMIT));
     }
   }
 

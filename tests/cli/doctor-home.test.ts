@@ -378,6 +378,19 @@ describe('dated refusal and abandoned address guidance', () => {
     expect(await report()).not.toContain('--local-only');
   });
 
+  it('preserves long local diagnostics while stripping hostile terminal controls', async () => {
+    const { describeWorkerService } = await import('@myco/cli/worker-service.js');
+    join(personal, scratch);
+    const status = describeWorkerService(personal, deps.worker)!;
+    const local = 'x'.repeat(1_000);
+    const hostile = '\x1b]0;title\x07\x1b[2J\x00\r' + local;
+    fs.mkdirSync(path.dirname(status.errLog), { recursive: true });
+    fs.writeFileSync(status.errLog, `${local}\n${hostile}\n`);
+    const lines: string[] = [];
+    await runMemberVerb('logs', [], { ...deps, stdout: line => lines.push(line) });
+    expect(lines).toEqual(expect.arrayContaining([local, ' ]0;title  [2J  ' + local]));
+  });
+
   it('bounds and escapes every refusal field and restores empty kind and event labels', async () => {
     const { MemberSpool, REFUSED_LOG_FILE } = await import('@myco/member/spool.js');
     const { readRegistryEntry } = await import('@myco/member/registry.js');
