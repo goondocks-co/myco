@@ -247,13 +247,26 @@ const STEPS: readonly SetupStep[] = [
 const workerServiceSpecForConsent = (target: ReturnType<typeof executorServiceTarget>) => workerServiceUnit(target.serverUrl, target.mycoHome, 'runner').label;
 
 export async function conductSetup(home: string, file: SetupFile, deps: SetupDeps, options: { yes: boolean; explicitJoin: boolean; explicitDefault: boolean; explicitProject: boolean; newProjectChanged: boolean }): Promise<void> {
-  const ctx: Context = { home, file, deps, ...options, ask: deps.ask ?? askOnTerminal, out: deps.stdout ?? console.log, facts: [] };
+  const shownHints = new Set<string>();
+  const ctx: Context = {
+    home, file, deps, ...options, ask: deps.ask ?? askOnTerminal, facts: [],
+    out: (line) => {
+      if (line === fact(ctx, 'legacy')?.hint) {
+        if (shownHints.has(line)) return;
+        shownHints.add(line);
+      }
+      (deps.stdout ?? console.log)(line);
+    },
+  };
   const observe = async () => {
     deps.signal?.throwIfAborted();
     const legacy = await observeSetup(home, {}, deps);
     const failure = legacy.find((entry) => entry.id === 'legacy' && entry.state !== 'complete');
     if (failure?.state === 'unavailable') throw new Error(`Legacy migration state unavailable: ${failure.detail}`);
-    if (failure) throw new Error('Myco 1.4 migration is pending. Guided migration is not available here yet; run myco cutover --dry-run to review the existing migration workflow. No legacy binary was executed.');
+    if (failure) throw new Error(`Myco 1.4 migration is pending. Guided migration is not available here yet; run myco cutover --dry-run. ${failure.detail} No legacy binary was executed.`);
+    ctx.facts = legacy;
+    const hint = fact(ctx, 'legacy')?.hint;
+    if (hint !== undefined) ctx.out(hint);
     ctx.facts = await observeSetup(home, file.answers, { ...deps, checkRemote: true });
     const unavailable = ctx.facts.find((entry) => entry.state === 'unavailable');
     if (unavailable) throw new Error(`${unavailable.id} (${unavailable.scope}) unavailable: ${unavailable.detail}. Restore access, then run myco setup again.`);

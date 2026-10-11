@@ -1,3 +1,4 @@
+import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -11,7 +12,10 @@ import { homeReport } from '@myco/cli/member-doctor.js';
 import { consentToPlan, type SetupDeps } from '@myco/setup/steps.js';
 import { observeSetup } from '@myco/setup/observe.js';
 import { planFingerprint, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
-import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, deploymentPath } from '@myco/member/registry.js';
+import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, deploymentPath, deploymentKeyFor } from '@myco/member/registry.js';
+import { legacyMigrationState, type LegacyMigrationState } from '@myco/member/legacy-migration.js';
+import { legacyVaultStamp } from '@myco/member/legacy-sources.js';
+import { readVaultContent } from '@myco/member/legacy-backup.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { bufferLockPath, updateSessionState } from '@myco/member/session-state.js';
@@ -68,6 +72,57 @@ function snapshot(directory: string): unknown {
     const stat = fs.lstatSync(file);
     return [name, stat.mode, stat.mtimeMs, stat.isDirectory() ? snapshot(file) : stat.isSymbolicLink() ? fs.readlinkSync(file) : fs.readFileSync(file).toString('base64')];
   });
+}
+
+function migrationFixture(state: LegacyMigrationState['state'], owner?: 'unit' | 'registration') {
+  const user = path.join(root, 'user');
+  const env = {
+    HOME: user, CODEX_HOME: path.join(user, '.codex'), CLAUDE_CONFIG_DIR: path.join(user, '.claude'),
+    XDG_CONFIG_HOME: path.join(user, '.config'), MYCO_HOME: home,
+    MYCO_LAUNCH_AGENTS_DIR: path.join(root, 'units'),
+  };
+  const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  closers.push(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  fs.mkdirSync(user, { recursive: true });
+  const record = path.join(home, 'member', 'cutover.json');
+  if (state === 'none') return { record };
+  const vault = path.join(home, 'groves', 'legacy', 'myco.db');
+  fs.mkdirSync(path.dirname(vault), { recursive: true });
+  const db = new Database(vault);
+  try { db.run('CREATE TABLE sessions (body TEXT)'); db.run("INSERT INTO sessions VALUES ('retained')"); } finally { db.close(); }
+  if (state !== 'unmoved') {
+    const receipt = { ...legacyVaultStamp(vault), digest: readVaultContent(vault).digest, projects: {
+      proj_legacy: {
+        destination: { serverUrl: URL, key: deploymentKeyFor(URL) },
+        vault: { state: state === 'partial' ? 'partial' : 'complete', at: 1 },
+        transcripts: { state: 'none', at: 1 },
+      },
+    } };
+    fs.mkdirSync(path.dirname(record), { recursive: true });
+    fs.writeFileSync(record, state === 'unavailable' ? '{' : JSON.stringify({
+      version: 2, backups: { [vault]: {} },
+      ...(state === 'needs-destination' ? {} : { migrations: { [vault]: receipt } }),
+      ...(['partial', 'moved', 'changed'].includes(state) ? { handover: { at: 1, legacyHomes: [home], agents: [] } } : {}),
+    }), { mode: 0o600 });
+    if (state === 'changed') {
+      const write = new Database(vault);
+      try { write.run("INSERT INTO sessions VALUES ('new capture')"); } finally { write.close(); }
+      const stamp = fs.statSync(vault);
+      fs.utimesSync(vault, stamp.atime, new Date(stamp.mtimeMs + 1000));
+    }
+  }
+  if (owner === 'unit') {
+    fs.mkdirSync(env.MYCO_LAUNCH_AGENTS_DIR, { recursive: true });
+    fs.writeFileSync(path.join(env.MYCO_LAUNCH_AGENTS_DIR, 'co.goondocks.myco.fixture.plist'),
+      `<plist version="1.0"><dict><key>ProgramArguments</key><array><string>${home}/bin/myco</string><string>daemon</string></array><key>EnvironmentVariables</key><dict><key>MYCO_HOME</key><string>${home}</string></dict></dict></plist>`);
+  } else if (owner === 'registration') {
+    fs.mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+    fs.writeFileSync(path.join(env.CLAUDE_CONFIG_DIR, 'settings.json'), JSON.stringify({ hooks: {
+      SessionStart: [{ hooks: [{ type: 'command', command: `${home}/bin/myco hook session-start --myco-managed` }] }],
+    } }), { mode: 0o600 });
+  }
+  return { record };
 }
 
 const configuredFetch = fakeFetch(async (input) => {
@@ -425,6 +480,47 @@ describe('observation and consent contracts', () => {
     expect(() => saveSetupFile(home, { ...file, token: 'secret' } as never)).toThrow();
     saveSetupFile(home, { ...file, answers: { role: 'join', url: URL } });
     expect(fs.statSync(setupFilePath(home)).mode & 0o777).toBe(0o600);
+  });
+
+  for (const [state, owner, deferred] of [
+    ['none', undefined, false], ['unmoved', undefined, true], ['changed', undefined, true],
+    ['needs-destination', undefined, false], ['needs-destination', 'unit', true], ['needs-destination', 'registration', true],
+    ['handover-pending', undefined, false], ['handover-pending', 'unit', true], ['handover-pending', 'registration', true],
+    ['partial', undefined, false], ['moved', undefined, false], ['unavailable', undefined, false],
+  ] as const) it(`typed migration ${state} ${owner ?? 'without legacy capture'} is observed read-only and ${deferred ? 'defers' : 'admits'} setup`, async () => {
+    const fixture = migrationFixture(state, owner);
+    const observed = legacyMigrationState(home);
+    expect(observed.state).toBe(state);
+    expect(observed.legacyOwnsCapture === true).toBe(owner !== undefined);
+    const entry = { version: 2, serverUrl: URL, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1, root: project, projectId: 'proj_capture' };
+    writeRegistryEntry(entry, { mycoHome: home });
+    const args = ['--join', URL, '--root', project, '--no-agents', '--no-runner'];
+    const before = snapshot(root);
+    expect(await run(['--status', '--json', ...args], base())).toBe(state === 'unavailable' ? 4 : deferred ? 3 : 0);
+    const facts = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
+    const legacy = facts.find(fact => fact.id === 'legacy');
+    expect(legacy?.state).toBe(state === 'unavailable' ? 'unavailable' : deferred ? 'incomplete' : 'complete');
+    expect(legacy?.detail).toContain(state);
+    if (state === 'changed' && observed.state === 'changed') expect(legacy?.detail).toContain(observed.warning);
+    if (state === 'unavailable') {
+      expect(legacy?.scope).toBe(fixture.record);
+      expect(legacy?.detail).toContain(fixture.record);
+    }
+    expect(snapshot(root)).toEqual(before);
+    lines = [];
+    const calls: string[] = [];
+    expect(await run(args, { ...base(), fetch: fakeFetch(async (input, init) => {
+      calls.push(new globalThis.URL(new Request(input, init).url).pathname);
+      return configuredFetch(input, init);
+    }) })).toBe(deferred || state === 'unavailable' ? 2 : 0);
+    if (deferred || state === 'unavailable') {
+      expect(calls).toEqual([]);
+      expect(errors.join('\n')).toContain(state === 'unavailable' ? fixture.record : 'migration is pending');
+      if (state === 'changed' && observed.state === 'changed') expect(errors.join('\n')).toContain(observed.warning);
+    } else {
+      expect(calls.length).toBeGreaterThan(0);
+      expect(lines.filter(line => line.includes('confirm where each project went'))).toHaveLength(state === 'needs-destination' ? 1 : 0);
+    }
   });
 
   it('legacy deferral never executes a binary or starts a remote flow', async () => {

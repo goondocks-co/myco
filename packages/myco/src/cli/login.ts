@@ -17,7 +17,7 @@ import { drainEntryBacklog } from '../member/backlog.js';
 import { deploymentUrl, listRegistryEntries } from '../member/registry.js';
 import { detectedProvisionLines, provisionDetectedAgents, recordNoAgents } from './member.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
-import { LEGACY_AGENT_DEFERRAL } from '@goondocks/myco-shared/setup-guidance';
+import { legacyCaptureGuidance } from '@myco/cli/legacy-capture.js';
 
 export const LOGIN_HELP = `Usage: myco login <server-url-or-invite-link>
 
@@ -190,13 +190,14 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   const held = readDefaultDeployment(mycoHome);
   if (!isDefault && held !== null) out(`  New repositories keep joining ${held.serverUrl}; \`myco login --default ${deploymentUrl(code.serverUrl)}\` makes ${deploymentUrl(code.serverUrl)} the one they join.`);
   // Provisioning is separate from sign-in and preserves other installations' settings.
-  const migration = legacyMigrationState(mycoHome);
-  if (migration.state === 'needs-destination' && migration.legacyOwnsCapture !== true) out('Moved by an earlier version; run `myco cutover --dry-run` to confirm where each project went.');
+  const migration = legacyCaptureGuidance(legacyMigrationState(mycoHome));
+  if (migration.hint !== null) out(migration.hint);
   if (parsed.noAgents) recordNoAgents(mycoHome, code.serverUrl);
   else if (deps.provision !== 'defer') {
-    const deferral = migration.state === 'unavailable' ? `Agent setup deferred: ${migration.detail}`
-      : migration.state === 'unmoved' || migration.state === 'changed' || migration.legacyOwnsCapture === true ? LEGACY_AGENT_DEFERRAL : null;
-    if (deferral !== null) out(deferral);
+    if (migration.deferral !== null) {
+      out(migration.deferral);
+      if (migration.warning !== null) out(migration.warning);
+    }
     else {
       const found = provisionDetectedAgents(mycoHome, code.serverUrl, root ?? null, { packageRoot: deps.packageRoot, agents: deps.agents });
       for (const line of detectedProvisionLines(found)) out(`  ${line}`);

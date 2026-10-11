@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readDefaultDeployment } from '@myco/member/default-deployment.js';
-import { legacyMigrationPending } from '@myco/member/legacy-migration.js';
+import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 import { deploymentUrl, listRegistryEntriesResult, readDeploymentMembershipResult, readRegistryEntryResult } from '@myco/member/registry.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { postRoute } from '@myco/cli/deployment-reader.js';
@@ -13,6 +13,7 @@ import { signInState } from '@myco/server/github-app.js';
 import { detectMachineInstalledSymbionts } from '@myco/symbionts/detect.js';
 import { provisionRecordPath, readProvisionRecord } from '@myco/symbionts/member-provision-record.js';
 import { getPluginVersion } from '@myco/version.js';
+import { legacyCaptureGuidance } from '@myco/cli/legacy-capture.js';
 import type { SetupAnswers } from '@myco/setup/answers.js';
 
 export interface Observation {
@@ -21,6 +22,7 @@ export interface Observation {
   state: 'absent' | 'incomplete' | 'complete' | 'unavailable';
   detail: string;
   informational?: boolean;
+  hint?: string;
 }
 export interface ObserveDeps {
   checkRemote?: boolean;
@@ -44,8 +46,17 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
     try { await fn(); }
     catch (error) { add(id, 'unavailable', error instanceof Error ? error.message : String(error)); }
   };
-  await read('legacy', () => add('legacy', legacyMigrationPending(home) ? 'incomplete' : 'complete',
-    'Legacy migration checked through legacyMigrationPending; pending migration requires myco cutover --dry-run.', home));
+  await read('legacy', () => {
+    const migration = legacyMigrationState(home);
+    const guidance = legacyCaptureGuidance(migration);
+    facts.push({
+      id: 'legacy',
+      scope: migration.state === 'unavailable' ? migration.file : home,
+      state: guidance.status === 'unavailable' ? 'unavailable' : guidance.status === 'deferred' ? 'incomplete' : 'complete',
+      detail: [migration.state, guidance.deferral ?? guidance.hint ?? 'No Myco 1.4 capture blocks setup.', guidance.warning].filter(Boolean).join(' '),
+      ...(guidance.hint === null ? {} : { hint: guidance.hint }),
+    });
+  });
   add('journey', answers.role && url ? 'complete' : 'absent', answers.role ?? 'Choose --join <address> or --runner <address>.', home);
   if (!url || !answers.role) return facts;
   await read('default', () => {
