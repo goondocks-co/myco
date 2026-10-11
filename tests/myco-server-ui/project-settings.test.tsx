@@ -112,6 +112,18 @@ describe('a project\'s settings', () => {
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
 
+  it('disables an archived capability section with a restoration note and no misleading switches', async () => {
+    const { sent } = server(base({
+      '/api/projects': () => Response.json({ projects: [{ ...PROJECTS.projects[0], archivedAt: NOW, archivedBy: ADA }] }),
+      [`${api}/capabilities`]: () => Response.json({ capabilities: { cortex: false, canopy: false, vault_evolution: false } }),
+    }));
+    mount(`/p/${P}/settings`);
+    expect(await screen.findByText("Archived: Myco does no work here until it's restored")).toBeTruthy();
+    expect(sectionOf('capabilities').querySelector('fieldset')?.disabled).toBe(true);
+    expect(within(sectionOf('capabilities')).queryAllByRole('switch')).toEqual([]);
+    expect(sent).toEqual([]);
+  });
+
   it('shows all capabilities on with no stored rows and persists an explicit off through the switch', async () => {
     const e = sqliteEnv();
     e.sqlite.run('INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)', [P, 'Myco', NOW]);

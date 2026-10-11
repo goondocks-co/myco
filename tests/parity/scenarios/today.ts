@@ -116,7 +116,7 @@ async function dashboardHonesty(target: ParityTarget, member: Record<string, str
     const tasks = async () => {
       const data = await read<{ tasks: Array<{ task: string; availabilityNote: string | null }> }>('/api/tasks');
       const counts = (await target.sql(`SELECT COUNT(*) AS total,
-        SUM(CASE WHEN EXISTS (SELECT 1 FROM project_capabilities pc WHERE pc.project_id=p.project_id AND pc.capability='canopy' AND pc.enabled=1) THEN 0 ELSE 1 END) AS off
+        SUM(CASE WHEN EXISTS (SELECT 1 FROM project_capabilities pc WHERE pc.project_id=p.project_id AND pc.capability='canopy' AND pc.enabled=0) THEN 1 ELSE 0 END) AS off
         FROM projects p WHERE archived_at IS NULL`))[0]!;
       const expected = counts.off === 0 ? null : counts.total === 1 ? 'Switched off for this project'
         : counts.off === counts.total ? 'Switched off for every project' : `Switched off for ${counts.off} of ${counts.total} selected projects`;

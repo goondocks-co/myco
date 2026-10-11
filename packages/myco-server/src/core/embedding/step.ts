@@ -2,26 +2,24 @@ import type { ServerEnv } from '../adapters.js';
 import { missingSporeVectors, type MissingSporeVectors } from './hubness.js';
 import { reconcileEmbedding, type EmbeddingContext, type EmbeddingStep } from './reconcile.js';
 import { EmbeddingSwitchFailure, calibrationModel, completeEmbeddingSwitch, embeddingStepProviders, settleSwitchFailure } from './switch.js';
-import { recordSwitchProgress } from './switch-store.js';
+import { projectArchived, recordSwitchProgress } from './switch-store.js';
 
-import { projectWorkEnabled } from '../settings.js';
-
-export type EmbeddingStepAnswer = { phase: 'settled'; processed: 0 } | { provider_unavailable: true } | (EmbeddingStep & { missing: MissingSporeVectors });
+export type EmbeddingStepAnswer = { provider_unavailable: true } | (EmbeddingStep & { missing: MissingSporeVectors });
 
 /**
  * Advance one Project's embedding by one bounded step: a source written under search's model, then under a switch's
- * model, a source passed over, calibration, or a retired vector. An archived Project does no work.
+ * model, a source passed over, calibration, or a retired vector. An archived Project's step only retires.
  *
  * While a switch stands, a failure of its model holds the model off or pauses the switch, and the step serves search's
  * own model alone. After a step of a standing switch, search moves to the switch's model once it is complete.
  */
-export async function advanceEmbedding(env: ServerEnv, projectId: string, now: number): Promise<EmbeddingStepAnswer> {
-  if (!(await projectWorkEnabled(env.db, projectId))) return { phase: 'settled', processed: 0 };
+export async function advanceEmbedding(env: ServerEnv, projectId: string, now: number, options: { retireOnly?: boolean } = {}): Promise<EmbeddingStepAnswer> {
   const providers = env.vectors === undefined ? null : await embeddingStepProviders(env, now);
   if (providers === null) return { provider_unavailable: true };
   const context: EmbeddingContext = {
     db: env.db, blobs: env.blobs, vectors: env.vectors!, provider: providers.provider, retain: providers.retain,
     calibrate: calibrationModel(providers.provider.modelKey, providers.switching),
+    ...(options.retireOnly === true || await projectArchived(env.db, projectId) ? { retireOnly: true } : {}),
   };
   const switchId = providers.switchId;
   let step: EmbeddingStep;

@@ -190,8 +190,8 @@ const ACTOR_ENTRY_SQL = `task = ? AND status != 'skipped' AND COALESCE(${context
        AND COALESCE(queued_at, started_at) >= ? AND ${DISPATCH_ACTOR_SQL} = ?`;
 
 /**
- * A ceiling on the entries one actor may make of a task across the whole
- * Deployment in a window: the write that records the run refuses once the
+ * A ceiling on the entries one actor may make of a task in a window,
+ * across the Deployment or within one Project: the write that records the run refuses once the
  * window holds that many, in the same statement that counts them.
  */
 export interface ActorCeiling {
@@ -199,14 +199,17 @@ export interface ActorCeiling {
   task: string;
   perDay: number;
   sinceMs: number;
+  /** Restrict this ceiling to one Project; absent spans the Deployment. */
+  projectId?: string;
 }
 
-/** The ceiling check, as part of the write that records a run. Bound as: per-day, task, window start, actor, run, run, per-day. */
+/** The ceiling check, as part of the write that records a run. Bound as: per-day, task, window start, actor, project, project, run, run, per-day. */
+const ACTOR_PROJECT_SQL = '(? IS NULL OR project_id = ?)';
 const ACTOR_CEILING_WHERE = `
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${ACTOR_ENTRY_SQL} AND ${NOT_THE_RUN_ADMITTED}) < ?)`;
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${ACTOR_ENTRY_SQL} AND ${ACTOR_PROJECT_SQL} AND ${NOT_THE_RUN_ADMITTED}) < ?)`;
 
 function actorCeilingParams(runId: string, ceiling: ActorCeiling | undefined): (string | number | null)[] {
-  return ceiling === undefined ? [null, null, null, null, runId, runId, null] : [ceiling.perDay, ceiling.task, ceiling.sinceMs, ceiling.actor, runId, runId, ceiling.perDay];
+  return ceiling === undefined ? [null, null, null, null, null, null, runId, runId, null] : [ceiling.perDay, ceiling.task, ceiling.sinceMs, ceiling.actor, ceiling.projectId ?? null, ceiling.projectId ?? null, runId, runId, ceiling.perDay];
 }
 
 /** Project gates carried by queue, launch and claim writes. */
@@ -238,7 +241,7 @@ ${PROJECT_ADMISSION_WHERE}`;
  * dispatcher already decided elsewhere. `singleFlight` names a task that runs
  * once at a time in a Project: the write refuses while another run of it is
  * live, in the same statement, so two wakes deciding at once write one row.
- * `ceiling` names an actor's Deployment-wide window the write refuses past. `capability` names one the Project must
+ * `ceiling` names an actor's window the write refuses past. `capability` names one the Project must
  * have turned on.
  */
 export interface WriteAdmission {
@@ -1734,9 +1737,9 @@ export function lastTaskEntryQueries(scope: ReadScope, task: string, actor?: str
   }));
 }
 
-/** Entries of `task` by `actor` from `sinceMs` on, across every Project: the count a Deployment-wide daily ceiling reads. Skipped and replaced rows are not entries. */
-export async function deploymentTaskEntriesSince(db: RelationalStore, task: string, sinceMs: number, actor: string): Promise<number> {
-  const row = await db.prepare(`SELECT COUNT(*) AS c FROM agent_runs WHERE ${ACTOR_ENTRY_SQL}`).bind(task, sinceMs, actor).first<{ c: number }>();
+/** Entries of `task` by `actor` from `sinceMs` on, across every Project or the one named. Skipped and replaced rows are not entries. */
+export async function deploymentTaskEntriesSince(db: RelationalStore, task: string, sinceMs: number, actor: string, projectId?: string): Promise<number> {
+  const row = await db.prepare(`SELECT COUNT(*) AS c FROM agent_runs WHERE ${ACTOR_ENTRY_SQL} AND ${ACTOR_PROJECT_SQL}`).bind(task, sinceMs, actor, projectId ?? null, projectId ?? null).first<{ c: number }>();
   return row?.c ?? 0;
 }
 

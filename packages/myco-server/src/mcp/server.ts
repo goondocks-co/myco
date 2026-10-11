@@ -176,7 +176,7 @@ export interface Surface {
   definitionOf(name: string): ToolDefinition | undefined;
   opOf(name: string, input: ToolInput): string;
   allows(name: string, op: string): boolean;
-  admits?(ctx: ProtocolContext, name: string, op: string): Promise<boolean>;
+  admits?(ctx: ProtocolContext): Promise<(name: string, op: string) => boolean>;
   entryFor(name: string, op: string): RegistryEntry | undefined;
 }
 
@@ -204,8 +204,10 @@ export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
       definitionOf: (name) => definitionOf(name) ?? runDefinitionOf(name),
       opOf: (name, input) => runOpOf(name, input),
       allows: (name, op) => isRunCall(p.allow, name as AnyTool, op),
-      admits: async (scope, name, op) => (name === ALWAYS_ALLOWED.tool && op === ALWAYS_ALLOWED.op)
-        || (scope.projectId !== null && await taskWorkEnabled(scope.env.db, scope.projectId, p.task)),
+      admits: async (scope) => {
+        const enabled = scope.projectId !== null && await taskWorkEnabled(scope.env.db, scope.projectId, p.task);
+        return (name, op) => enabled || (name === ALWAYS_ALLOWED.tool && op === ALWAYS_ALLOWED.op);
+      },
       entryFor: runEntryFor,
     };
   }
@@ -261,6 +263,7 @@ export async function authorizedDefinitionsFor(ctx: ProtocolContext): Promise<re
   const surface = surfaceFor(ctx);
   const subject = await toolSubject(ctx);
   if (!subject.live) throw unknownTool('tools/list');
+  const admits = await surface.admits?.(ctx);
   const decisions = new Map<string, boolean>();
   const resources = new Map<string, AuthorizationResource>();
   for (const definition of surface.definitions) {
@@ -268,7 +271,7 @@ export async function authorizedDefinitionsFor(ctx: ProtocolContext): Promise<re
     for (const op of ops) {
       const declaration = surface.entryFor(definition.name, op)?.authorization;
       if (declaration === undefined || !surface.allows(definition.name, op)
-        || (surface.admits !== undefined && !(await surface.admits(ctx, definition.name, op)))) continue;
+        || (admits !== undefined && !admits(definition.name, op))) continue;
       const key = `${declaration.resolver}:${declaration.resource}`;
       let resource = resources.get(key);
       if (resource === undefined) {
@@ -322,7 +325,8 @@ export async function callTool(ctx: ProtocolContext, name: string, args: unknown
     }
     scoped = { ...ctx, projectId: scope.projectId };
   } else scoped = ctx;
-  if (surface.admits !== undefined && !(await surface.admits(scoped, name, op))) throw unknownTool(name);
+  const admits = await surface.admits?.(scoped);
+  if (admits !== undefined && !admits(name, op)) throw unknownTool(name);
   if (!(await authorizeTool(scoped, entry.authorization, input))) throw unknownTool(name);
   admitted?.({ tool: name as AnyTool, op });
   try { return { tool: name as AnyTool, op, result: await entry.handler(input, scoped) }; }

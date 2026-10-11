@@ -568,7 +568,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
 
 /** Whether an actor's ceiling is full, read after a write refused: the count the write compared against. */
 async function ceilingHolds(db: ServerEnv['db'], ceiling: ActorCeiling | undefined): Promise<boolean> {
-  return ceiling !== undefined && (await deploymentTaskEntriesSince(db, ceiling.task, ceiling.sinceMs, ceiling.actor)) >= ceiling.perDay;
+  return ceiling !== undefined && (await deploymentTaskEntriesSince(db, ceiling.task, ceiling.sinceMs, ceiling.actor, ceiling.projectId)) >= ceiling.perDay;
 }
 
 /**

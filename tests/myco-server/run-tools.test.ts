@@ -107,6 +107,37 @@ describe('the run surface and the member surface do not overlap', () => {
     } finally { f.sqlite.close(); }
   });
 
+  it('allows a member to save a spore with automatic Learning switched off', async () => {
+    const f = await setup();
+    try {
+      await settingsWriter(f.db).setCapability('proj_1', 'vault_evolution', false, 'test', NOW);
+      const saved = await f.call(f.member.token, 'myco_spores', { project: 'proj_1', op: 'save', content: 'A member records a deliberate observation.', type: 'decision' });
+      expect(saved.error).toBeUndefined();
+      expect(f.sqlite.query('SELECT content FROM spores').all()).toEqual([{ content: 'A member records a deliberate observation.' }]);
+    } finally { f.sqlite.close(); }
+  });
+
+  it('reads capability admission once per discovery and at most once per call, with fresh opt-outs', async () => {
+    const f = await setup();
+    try {
+      await f.dispatch('query-count', SWEEP);
+      const count = () => f.executed.filter((sql) => sql.includes('SELECT EXISTS') && sql.includes('FROM project_capabilities')).length;
+      let before = count();
+      expect(await f.list(f.harness.token)).toContain('myco_run_prompts');
+      expect(count() - before).toBe(1);
+      before = count();
+      await f.call(f.harness.token, 'myco_run_prompts', { op: 'unprocessed' });
+      expect(count() - before).toBe(1);
+      await settingsWriter(f.db).setCapability('proj_1', 'vault_evolution', false, 'test', NOW);
+      before = count();
+      expect(await f.list(f.harness.token)).toEqual(['myco_run']);
+      expect(count() - before).toBe(1);
+      before = count();
+      expect((await f.call(f.harness.token, 'myco_run_prompts', { op: 'unprocessed' })).error?.data?.code).toBe('unknown_tool');
+      expect(count() - before).toBe(1);
+    } finally { f.sqlite.close(); }
+  });
+
   it('shares no tool name, and lists no run-only tool to a member or a grant', async () => {
     const { env, db, harness, member, dispatch, list } = await setup();
     await dispatch('run_1', SWEEP);

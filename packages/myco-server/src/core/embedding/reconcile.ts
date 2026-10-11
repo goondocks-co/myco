@@ -173,7 +173,10 @@ export async function reconcileEmbedding(context: EmbeddingContext, projectId: s
     const stamp = (ready: number) => db.prepare('UPDATE embedding_receipts SET ready = ?, updated_at = ? WHERE project_id = ? AND model_key = ? AND id = ?')
       .bind(ready, now, ...receipt).run();
     const confirming = orphan.ready < RECEIPT.journaled;
-    await stamp(RECEIPT.deletionSent);
+    const claimed = await db.prepare(`UPDATE embedding_receipts SET ready = ?, updated_at = ?
+      WHERE project_id = ? AND model_key = ? AND id = ? AND ready = ? AND updated_at = ? RETURNING id`)
+      .bind(RECEIPT.deletionSent, now, ...receipt, orphan.ready, orphan.updated_at).first<{ id: string }>();
+    if (claimed === null) return { phase: 'orphans', processed: 0 };
     try {
       await bounded(vectors.delete(partition, [{ id: orphan.id, type: orphan.type, recordId: orphan.record_id, revision: orphan.revision }]), limit, 'vector delete');
     } catch (error) {

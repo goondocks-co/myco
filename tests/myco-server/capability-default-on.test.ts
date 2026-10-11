@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { CAPABILITY_ON_SQL, enabledCapabilities, PROJECT_CAPABILITIES, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
@@ -181,6 +181,44 @@ describe('default-on task enforcement', () => {
     } finally { sqlite.close(); }
   });
 
+  it('reads repository workers once per task per wake and rate-limits persistent skip telemetry per Project', async () => {
+    const f = sqliteEnv();
+    const events: Array<{ kind: string; task?: string; projectId?: string; skip?: string }> = [];
+    const log = spyOn(console, 'log').mockImplementation((message: string) => { events.push(JSON.parse(message)); });
+    try {
+      const writer = settingsWriter(f.db);
+      await writer.setLeaf('agent.scheduled_tasks_enabled', true, 'test', NOW);
+      await writer.setLeaf('cortex.canopy.refresh.background_enabled', true, 'test', NOW);
+      for (const project of ['proj_1', 'proj_2']) {
+        f.sqlite.run("INSERT INTO sessions (project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES (?,'recent','m','t',?,?)", [project, NOW, NOW]);
+      }
+      const repositories = projectRepositories(f.db, deploymentSecretStore(f.db, f.serverEnv.wrappingKey));
+      await repositories.save('proj_2', { url: 'https://example.test/repo.git', branch: 'main', revision: null }, 'test', NOW);
+      const wake = async (at: number) => {
+        f.executed.length = 0;
+        expect((await runScheduledTasks(f.serverEnv, 'sleep', at, 'https://s')).dispatched).toBe(0);
+        for (const table of ['worker_contacts', 'runner_contacts']) {
+          expect(f.executed.filter((sql) => sql.includes(`FROM ${table} w INDEXED BY`))).toHaveLength(1);
+        }
+      };
+      const skips = () => events.filter((event) => event.kind === 'task_skipped' && event.task === MAP_TASK);
+      await wake(NOW);
+      expect(skips().map(({ projectId, skip }) => ({ projectId, skip }))).toEqual([
+        { projectId: 'proj_1', skip: 'repository_missing' }, { projectId: 'proj_2', skip: 'worker_unavailable' },
+      ]);
+      await wake(NOW + 900_000);
+      expect(skips()).toHaveLength(2);
+      await repositories.save('proj_1', { url: 'https://example.test/repo.git', branch: 'main', revision: null }, 'test', NOW);
+      await wake(NOW + 1_800_000);
+      expect(skips()).toHaveLength(3);
+      expect(skips()[2]).toMatchObject({ projectId: 'proj_1', skip: 'worker_unavailable' });
+      await wake(NOW + 2_700_000);
+      expect(skips()).toHaveLength(3);
+      await wake(NOW + 86_400_000 + 1_800_000);
+      expect(skips()).toHaveLength(5);
+    } finally { log.mockRestore(); f.sqlite.close(); }
+  });
+
   it('schedules a default-on code map only with repository access and a recent capable worker, retaining ceilings and overlap', async () => {
     const { db, sqlite, serverEnv } = sqliteEnv({ workerLogin: true });
     const schedule = { intervalSeconds: 60, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 } satisfies TaskSchedule;
@@ -188,6 +226,7 @@ describe('default-on task enforcement', () => {
     const decide = (now = NOW) => decideTask(serverEnv, 'proj_1', NOW, MAP_TASK, schedule, 'sleep', leaves, now);
     try {
       expect(await decide()).toBe('repository_missing');
+      expect(await decideTask(serverEnv, 'proj_1', NOW, MAP_TASK, { ...schedule, preCondition: 'not-registered' }, 'sleep', leaves, NOW)).toBe('repository_missing');
       await projectRepositories(db, deploymentSecretStore(db, serverEnv.wrappingKey))
         .save('proj_1', { url: 'https://example.test/team/repo.git', branch: 'main', revision: null }, 'test', NOW);
       expect(await decide()).toBe('worker_unavailable');

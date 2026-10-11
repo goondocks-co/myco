@@ -348,7 +348,7 @@ describe('a provider that turns the key down', () => {
 });
 
 describe('what never holds a switch back', () => {
-  it('builds and counts only live Projects, retaining archived vectors until restore', async () => {
+  it('builds and counts only Projects that are not archived, and retires an archived Project\'s old vectors once search moves', async () => {
     const t = await built(selfHosted);
     t.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, content, observation_type, created_at) VALUES ('proj_2', 'old-1', 'agent', 'archived architecture', 'decision', 1), ('proj_2', 'old-2', 'agent', 'archived notes', 'decision', 1)`);
     for (let i = 0; i < 10; i++) await advanceEmbedding(t.env(), 'proj_2', 1_500 + i);
@@ -356,6 +356,7 @@ describe('what never holds a switch back', () => {
     t.sqlite.run(`UPDATE projects SET archived_at = 1, archived_by = 'mem_machine_1' WHERE project_id = 'proj_2'`);
     const started = await json(await t.fetch(await asOwnerPost(t.env().db, '/api/embedding/switch', { ...t.otherSize, confirm: true })));
     expect(started).toMatchObject({ switch: { total: 3 } });
+    // An archived Project is stepped only to retire, so it writes nothing under the new model while the switch stands.
     expect(await advanceEmbedding(t.env(), 'proj_2', 1_900)).toMatchObject({ phase: 'settled', processed: 0 });
     for (let i = 0; i < 30 && (await status(t)) !== null; i++) await t.step(2_000 + i);
     expect(await status(t)).toBeNull();
@@ -365,11 +366,7 @@ describe('what never holds a switch back', () => {
     expect(await hasEmbeddingWork(t.env().db, 'proj_2', plan.model, 5_000, { ...plan, retireOnly: true })).toBe(true);
     for (let i = 0; i < 4; i++) await advanceEmbedding(t.env(), 'proj_2', 5_000 + i);
     for (let i = 0; i < 4; i++) await advanceEmbedding(t.env(), 'proj_2', 5_000 + VECTOR_DELETE_CONFIRM_MS + i);
-    expect(t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_receipts WHERE project_id = 'proj_2'`).get()).toEqual({ n: 2 });
-    t.sqlite.run("UPDATE projects SET archived_at=NULL, archived_by=NULL WHERE project_id='proj_2'");
-    for (let i = 0; i < 10; i++) await advanceEmbedding(t.env(), 'proj_2', 6_000 + VECTOR_DELETE_CONFIRM_MS + i);
-    for (let i = 0; i < 10; i++) await advanceEmbedding(t.env(), 'proj_2', 6_000 + 2 * VECTOR_DELETE_CONFIRM_MS + i);
-    expect(t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_receipts WHERE project_id = 'proj_2' AND model_key = ?`).get(t.currentKey)).toEqual({ n: 0 });
+    expect(t.sqlite.query(`SELECT COUNT(*) AS n FROM embedding_receipts WHERE project_id = 'proj_2'`).get()).toEqual({ n: 0 });
     expect(await hasEmbeddingWork(t.env().db, 'proj_2', plan.model, 5_000 + VECTOR_DELETE_CONFIRM_MS + 10, { ...plan, retireOnly: true })).toBe(false);
   });
 

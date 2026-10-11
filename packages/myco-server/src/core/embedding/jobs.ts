@@ -5,6 +5,7 @@ import { settingTexts } from '../settings.js';
 import { WORK_SWEEP_CONTINUE_MS } from './work-state.js';
 import { hasEmbeddingSweep, hasEmbeddingWork } from './work.js';
 export { hasEmbeddingWork, type EmbeddingWorkScope } from './work.js';
+import { advanceEmbedding } from './step.js';
 import { completeEmbeddingSwitch, embeddingWorkPlan } from './switch.js';
 
 export { EMBEDDING_RETRY_MS, EMBEDDING_TASK } from './task.js';
@@ -12,9 +13,9 @@ import { EMBEDDING_RETRY_MS, EMBEDDING_TASK } from './task.js';
 export const EMBEDDING_SWEEP_ASSERTION = 'embedding:sweep';
 export const PREVENT_DEEP_SLEEP_LEAF = 'embedding.prevent_deep_sleep';
 
-/** Only live Projects participate in embedding dispatch and wake decisions. */
+/** Every Project embedding work may serve, the archived ones only retiring. */
 async function workProjects(db: RelationalStore): Promise<Array<{ projectId: string; retireOnly: boolean }>> {
-  return (await db.prepare('SELECT project_id, archived_at FROM projects WHERE archived_at IS NULL ORDER BY project_id')
+  return (await db.prepare('SELECT project_id, archived_at FROM projects ORDER BY project_id')
     .all<{ project_id: string; archived_at: number | null }>()).results
     .map((project) => ({ projectId: project.project_id, retireOnly: project.archived_at !== null }));
 }
@@ -53,8 +54,12 @@ export async function dispatchEmbeddingWork(env: ServerEnv, now: number): Promis
     }
   }
   if (served.length === 0 || await hasLiveTaskRunAnywhere(env.db, EMBEDDING_TASK)) return 0;
-  for (const { projectId, last } of served.sort((a, b) => (a.last ?? 0) - (b.last ?? 0))) {
+  for (const { projectId, last, retireOnly } of served.sort((a, b) => (a.last ?? 0) - (b.last ?? 0))) {
     if (last !== null && now - last < EMBEDDING_RETRY_MS) continue;
+    if (retireOnly) {
+      const step = await advanceEmbedding(env, projectId, now, { retireOnly: true });
+      return 'processed' in step ? step.processed : 0;
+    }
     const prepared = await prepareDispatch(env, EMBEDDING_TASK, projectId);
     if (!prepared.ok) continue;
     try {
