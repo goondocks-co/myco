@@ -134,6 +134,7 @@ export interface OfflineLatch {
 }
 
 export interface RefusedEntry {
+  serverCode?: string;
   eventId: string;
   sessionId: string;
   kind: string;
@@ -160,6 +161,7 @@ function isRefusedEntry(value: unknown): value is RefusedEntry {
   for (const field of ['eventId', 'kind', 'reason'] as const) {
     if (typeof row[field] !== 'string') return false;
   }
+  if (row.serverCode !== undefined && typeof row.serverCode !== 'string') return false;
   if (row.held !== undefined) {
     const held = row.held as Record<string, unknown> | null;
     if (held === null || typeof held !== 'object' || typeof held.retryAt !== 'number' || !Number.isFinite(held.retryAt)) return false;
@@ -1028,12 +1030,12 @@ export class MemberSpool {
       /** Keep the record at the high-water, and every record after it, for a later pass: the session's wait starts or lengthens. */
       const hold = (unclassified: boolean) => deferAfterRefusal(this.dir, sessionId, 'eventRetry', now(), { unclassified });
       /** Log a refusal of `record` and apply it: true when the pass moves past the record, false when the record is held. */
-      const refuse = (record: SpoolRecord, code: MemberCode, reason: string, missing = false): boolean => {
+      const refuse = (record: SpoolRecord, code: MemberCode, reason: string, missing = false, serverCode?: string): boolean => {
         const verdict = verdictOn(record, code, missing);
         if (verdict === 'held') {
           const alreadyHeld = readSessionState(this.dir, sessionId).eventRetry !== undefined;
           const wait = hold(REFUSAL_SUBJECT[code] === 'unclassified');
-          if (!alreadyHeld) this.appendRefused({ eventId: record.eventId, sessionId, kind: record.kind, code, reason, at: now(), held: { retryAt: wait.at } });
+          if (!alreadyHeld) this.appendRefused({ eventId: record.eventId, sessionId, kind: record.kind, code, serverCode, reason, at: now(), held: { retryAt: wait.at } });
           stderr(`${record.kind} ${record.eventId} refused by the server (${code}): ${reason} — kept spooled with the session's later events, sent again later`);
           return false;
         }
@@ -1042,7 +1044,7 @@ export class MemberSpool {
           stderr(`${record.kind} ${record.eventId}: confirmed payload loss — counted in member status`);
         }
         const logged = verdict === 'held-too-long' ? `refused for ${UNCLASSIFIED_REFUSAL_HOLD_HOURS} h: ${reason}` : reason;
-        this.appendRefused({ eventId: record.eventId, sessionId, kind: record.kind, code, reason: logged, at: now() });
+        this.appendRefused({ eventId: record.eventId, sessionId, kind: record.kind, code, serverCode, reason: logged, at: now() });
         stderr(`${record.kind} ${record.eventId} refused by the server (${code}): ${logged} — dropped`);
         result.refused += 1;
         i += 1;
@@ -1081,7 +1083,7 @@ export class MemberSpool {
             sourceMissing = true;
           } else if (blobOutcome.class === 'refused') {
             // The record's bytes were refused: the refusal of the bytes is the record's.
-            if (refuse(record, blobOutcome.code, blobOutcome.reason)) continue;
+            if (refuse(record, blobOutcome.code, blobOutcome.reason, false, blobOutcome.serverCode)) continue;
             result.endedBy = 'refused';
             break;
           } else if (blobOutcome.class !== 'acked') {
@@ -1105,7 +1107,7 @@ export class MemberSpool {
             persist(i, true, record);
             continue;
           case 'refused':
-            if (refuse(record, outcome.code, outcome.reason, sourceMissing)) continue;
+            if (refuse(record, outcome.code, outcome.reason, sourceMissing, outcome.serverCode)) continue;
             result.endedBy = 'refused';
             break pass;
           case 'reslice':

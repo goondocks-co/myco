@@ -124,7 +124,7 @@ describe('the import verb', () => {
     for (const stop of ['parked', 'unauthorized', 'route_missing', 'protocol', 'retry']) {
       const stopped = reportLines(report({ projects: [{ projectId: 'proj_1', root: '/w/repo', agents: [], endedBy: stop }] }), false).join('\n');
       expect({ stop, leaked: new RegExp(`\\b${stop}\\b`).test(stopped) }).toEqual({ stop, leaked: false });
-      expect(stopped).toContain('stopped — ');
+      expect(stopped).toContain('stoppedBy: ');
     }
   });
 });
@@ -150,5 +150,18 @@ describe('the join paths', () => {
     expect(/if \(root !== undefined\) \{\s*\n\s*const report = await runImport/.test(login)).toBe(true);
     // And a failed import is caught, so the machine stays signed in.
     expect(/runImport\([^)]*\)[\s\S]{0,220}?\.catch\(\(\) => null\)/.test(login)).toBe(true);
+  });
+});
+
+describe('import stopping details', () => {
+  it('prints stoppedBy even when no project could be started', () => {
+    const lines = reportLines(report({ projects: [], refused: 'no Deployment membership on this machine' }), false);
+    expect(lines[0]).toContain('1 import refused');
+    expect(lines[1]).toContain('stoppedBy:');
+    expect(lines[1]).toContain('run the same command again');
+  });
+  it('prints the retry stop reason and its remedy rather than just its transport class', () => {
+    const lines = reportLines(report({ projects: [{ projectId: 'proj_1', root: '/w/repo', agents: [], endedBy: 'retry' }], stoppedBy: 'HTTP 500; ask the operator to check its health, then run the command again' }), false);
+    expect(lines).toContain('stoppedBy: HTTP 500; ask the operator to check its health, then run the command again');
   });
 });

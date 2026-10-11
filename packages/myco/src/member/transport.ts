@@ -40,7 +40,7 @@ export type Outcome =
   | { class: 'acked'; duplicate?: boolean; transcript?: { size: number; segmentCount: number }; body: Record<string, unknown> }
   | { class: 'reslice'; code: MemberCode; heldSize: number }
   | { class: 'parked'; code: typeof PARKED_CODE; reason: string }
-  | { class: 'refused'; code: MemberCode; reason: string }
+  | { class: 'refused'; code: MemberCode; serverCode?: string; reason: string }
   | { class: 'retry'; status?: number; detail: string; retryAfterMs?: number; anonymousLimited?: boolean }
   /** A capped share ran out before the answer did: the server is slow, not gone. Nothing latches on it. */
   | { class: 'slow'; phase: TimeoutPhase; elapsedMs: number; detail: string }
@@ -320,7 +320,7 @@ function classifyShape(raw: Extract<RawAnswer, { kind: 'response' }>, shape: 'pe
     };
   }
   const code = memberCode(body.code);
-  if (code === null) return { class: 'refused', code: 'refused', reason: reasonOf(body) || 'unclassified refusal' };
+  if (code === null) return { class: 'refused', code: 'refused', serverCode: typeof body.code === 'string' ? body.code : undefined, reason: reasonOf(body) || 'unclassified refusal' };
   if (RESLICE_CODES.includes(code)) {
     const transcript = body.transcript as { size?: unknown } | undefined;
     return { class: 'reslice', code, heldSize: typeof transcript?.size === 'number' ? transcript.size : 0 };

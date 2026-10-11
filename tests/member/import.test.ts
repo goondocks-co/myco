@@ -1,3 +1,5 @@
+import { refuseImportAfter } from '../setup/fixtures/interruption.js';
+import { run as runImportCli } from '@myco/cli/import.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { spoolDirFor } from '@myco/member/spool.js';
 import { routingKey } from '@myco/member/routing.js';
@@ -78,11 +80,11 @@ const age = (file: string, byMs = 60 * 60_000): void => {
   fs.utimesSync(file, at, at);
 };
 
-async function rig(cwds: readonly string[], perCwd = 2) {
+async function rig(cwds: readonly string[], perCwd = 2, prebuilt?: { home: string; files: string[] }) {
   const env = await memberRig();
   const mycoHome = tempMycoHome();
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-import-'));
-  const { home, files } = store(root, cwds, perCwd);
+  const root = prebuilt === undefined ? fs.mkdtempSync(path.join(os.tmpdir(), 'myco-import-')) : path.dirname(prebuilt.home);
+  const { home, files } = prebuilt ?? store(root, cwds, perCwd);
   const held = process.env.HOME;
   process.env.HOME = home;
 
@@ -702,5 +704,200 @@ describe('an import the Deployment rate-limits', () => {
     } finally {
       r.restore();
     }
+  });
+});
+
+describe('import explains upload failures', () => {
+  for (const [kind, fix] of [
+    ['edge', 'Cloudflare Security Events'], ['edge-mid', 'Cloudflare Security Events'], ['worker', 'check this machine'],
+    ['server', 'check its health'],
+    ['refused', 'correct the source record'], ['held', 'update the Deployment'],
+    ['large', 'reduce that record'],
+    ['interrupted', 'resume safely'],
+  ] as const) {
+    it(`prints grouped causes and stoppedBy for ${kind}`, async () => {
+      const r = await rig([path.join(os.tmpdir(), `import-feedback-${kind}`)], 2);
+      const controller = new AbortController();
+        const edge = refuseImportAfter(2, r.env.fetch);
+      try {
+        const lines: string[] = [];
+        let failures = 0;
+        const fetch: typeof r.env.fetch = async (input, init) => {
+          const route = new URL(new Request(input, init).url).pathname;
+          if (kind === 'edge-mid') return edge.fetchImpl(input, init);
+          if (kind === 'worker' && route === '/import/plan') return new Response('forbidden', { status: 403, headers: { 'x-myco-protocol': '1' } });
+          if ((kind === 'edge' || kind === 'server') && route === '/import/plan') {
+            failures += 1;
+            return new Response('upstream', { status: kind === 'edge' ? 403 : 500 });
+          }
+          if (route === '/events') {
+            if (kind === 'interrupted') { controller.abort(); throw new DOMException('stopped', 'AbortError'); }
+            if (kind === 'refused' || kind === 'large' || kind === 'held') return Response.json({ persisted: false, code: kind === 'large' ? 'body_cap' : kind === 'held' ? 'unknown_field' : 'invalid_field', reason: 'fixture' }, { headers: { 'x-myco-protocol': '1' } });
+          }
+          return r.env.fetch(input, init);
+        };
+        const ok = await runImportCli(['--server', 'https://member-test.invalid', '--days', '3650'], {
+          fetch, signal: controller.signal, mycoHome: r.mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {},
+          stdout: (l) => lines.push(l), stderr: (l) => lines.push(l),
+        });
+        expect(ok).toBe(false);
+        const output = lines.join('\n');
+        expect(output).toMatch(/\d+ import problems?:/);
+        expect(output.split('\n').find((l) => l.startsWith('stoppedBy:'))).toContain(fix);
+        if (kind === 'edge') { expect(output).toContain('likely a security rule'); expect(failures).toBe(1); }
+        if (kind === 'server') expect(failures).toBe(4);
+        if (kind === 'held') {
+          lines.length = 0;
+          await runImportCli(['--server', 'https://member-test.invalid', '--days', '3650'], {
+            fetch, mycoHome: r.mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {},
+            stdout: (l) => lines.push(l), stderr: (l) => lines.push(l),
+          });
+          expect(lines.join('\n')).toContain('1 import problem: the Deployment does not accept a field');
+          expect(lines.find((l) => l.startsWith('stoppedBy:'))).toContain('update the Deployment');
+        }
+
+        if (kind === 'worker') expect(output).not.toContain('likely a security rule');
+        if (kind === 'interrupted' || kind === 'edge' || kind === 'edge-mid' || kind === 'server' || kind === 'worker') {
+          await r.run();
+          expect(r.snapshot().sessions).toBe(2);
+        }
+      } finally { r.restore(); }
+    });
+  }
+
+  it('prints progress while a project is uploading, with acknowledged session counts', async () => {
+    const r = await rig([path.join(os.tmpdir(), 'import-feedback-progress')], 3);
+    const lines: string[] = [];
+    let clock = Date.now();
+    let events = 0;
+    try {
+      await runImport({ serverUrl: 'https://member-test.invalid', windowDays: 3650 }, {
+        mycoHome: r.mycoHome, machineId: TEST_MACHINE_ID, now: () => clock,
+        fetch: async (input, init) => { clock += 6_000; if (String(input).endsWith('/events')) events += 1; return r.env.fetch(input, init); },
+        progress: (l) => lines.push(`${events}: ${l}`),
+      });
+      expect(lines.some((l) => l.includes('1 imported') && !l.includes('3 imported'))).toBe(true);
+      expect(lines.some((l) => l.includes('0 imported') && l.includes('safe to stop and run again'))).toBe(true);
+      expect(lines.at(-1)).toContain('3 imported');
+    } finally { r.restore(); }
+  });
+});
+
+describe('import retry explanations', () => {
+  for (const [failure, words] of [
+    [429, 'HTTP 429'], [503, 'HTTP 503'],
+    ['timeout', 'request timed out'], ['network', 'network request failed'],
+  ] as const) {
+    it(`names ${failure} while waiting and resumes safely`, async () => {
+      const r = await rig([path.join(os.tmpdir(), `retry-cause-${failure}`)], 1);
+      const lines: string[] = [];
+      let failed = false;
+      try {
+        const report = await importUntilSettled({ serverUrl: 'https://member-test.invalid', windowDays: 3650 }, {
+          mycoHome: r.mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {},
+          progress: (line) => lines.push(line),
+          fetch: async (input, init) => {
+            if (!failed && String(input).endsWith('/import/plan')) {
+              failed = true;
+              if (failure === 'timeout') throw new DOMException('fixture', 'TimeoutError');
+              if (failure === 'network') throw new Error('private transport detail');
+              return new Response('fixture', { status: failure });
+            }
+            return r.env.fetch(input, init);
+          },
+        });
+        expect(report.projects[0].endedBy).toBeUndefined();
+        expect(lines.some((line) => line.includes(words) && line.includes('trying again') && line.includes('safe to stop and run again'))).toBe(true);
+        expect(lines.join('\n')).not.toContain('private transport detail');
+        expect(r.snapshot().sessions).toBe(1);
+      } finally { r.restore(); }
+    });
+  }
+});
+
+import { IMPORT_FAULTS, faultAt, importSnapshot } from './helpers/import-differential.js';
+
+describe('transcript fault/resume differential', () => {
+  for (const persistent of [false, true]) for (const kind of IMPORT_FAULTS) {
+    it(`${kind}, ${persistent ? 'persistent' : 'single'} at every request: resume equals uninterrupted rows`, async () => {
+      const cwds = [path.join(os.tmpdir(), 'differential-a'), path.join(os.tmpdir(), 'differential-b')];
+      const base = await rig(cwds, 1);
+      fs.appendFileSync(base.files[0]!, ' '.repeat(600_000));
+      age(base.files[0]!);
+      const counter = faultAt(base.env.fetch, Infinity, kind, false, new AbortController());
+      const options = { serverUrl: 'https://member-test.invalid', windowDays: 3650 };
+      const deps = { machineId: TEST_MACHINE_ID, sleep: async () => {}, maxPasses: 2 };
+      await importUntilSettled(options, { ...deps, fetch: counter.fetch, mycoHome: base.mycoHome });
+      const baseline = importSnapshot(base.env.env.sqlite);
+      base.restore();
+      for (let index = 1; index <= counter.count(); index += 1) {
+        const r = await rig(cwds, 1, base);
+        const controller = new AbortController();
+        const fault = faultAt(r.env.fetch, index, kind, persistent, controller);
+        try {
+          await runImport(options, { ...deps, fetch: fault.fetch, mycoHome: r.mycoHome, signal: controller.signal });
+          const resumed = await importUntilSettled(options, { ...deps, fetch: r.env.fetch, mycoHome: r.mycoHome });
+          expect(resumed.projects.every((p) => p.endedBy === undefined && !p.notAttempted), `${kind} ${persistent} request ${index}`).toBe(true);
+          expect(importSnapshot(r.env.env.sqlite), `${kind} ${persistent} request ${index}`).toEqual(baseline);
+        } finally { r.restore(); }
+      }
+    }, 60_000);
+  }
+
+  it('resumes at the acknowledged offset and sends only the remaining transcript bytes', async () => {
+    const r = await rig([path.join(os.tmpdir(), 'resume-byte-count')], 1);
+    try {
+      fs.appendFileSync(r.files[0]!, ' '.repeat(600_000));
+      age(r.files[0]!);
+      let segments = 0;
+      const controller = new AbortController();
+      const first: typeof r.env.fetch = async (input, init) => {
+        const req = new Request(input, init);
+        const event = new URL(req.url).pathname === '/events' ? await req.clone().json() as { kind: string } : null;
+        const response = await r.env.fetch(req);
+        if (event?.kind === 'transcript.segment' && ++segments === 1) controller.abort();
+        return response;
+      };
+      const options = { serverUrl: 'https://member-test.invalid', windowDays: 3650 };
+      const deps = { mycoHome: r.mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {} };
+      await runImport(options, { ...deps, fetch: first, signal: controller.signal });
+      fs.appendFileSync(r.files[0]!, ' '.repeat(100_000));
+      age(r.files[0]!);
+      const held = r.env.env.sqlite.query('SELECT size FROM transcripts').get() as { size: number };
+      expect(held.size).toBeGreaterThan(0);
+      expect(held.size).toBeLessThan(fs.statSync(r.files[0]!).size);
+      let sent = 0;
+      const resume: typeof r.env.fetch = async (input, init) => {
+        const req = new Request(input, init);
+        if (new URL(req.url).pathname.startsWith('/blobs/')) sent += (await req.clone().arrayBuffer()).byteLength;
+        return r.env.fetch(req);
+      };
+      await importUntilSettled(options, { ...deps, fetch: resume });
+      expect(sent).toBe(fs.statSync(r.files[0]!).size - held.size);
+    } finally { r.restore(); }
+  });
+
+  it('continues after a refused project plan and names unreached projects after a transport stop', async () => {
+    const r = await rig([path.join(os.tmpdir(), 'continue-a'), path.join(os.tmpdir(), 'continue-b')], 1);
+    try {
+      const opts = { serverUrl: 'https://member-test.invalid' };
+      const deps = { mycoHome: r.mycoHome, machineId: TEST_MACHINE_ID };
+      let first = true;
+      const refused: typeof r.env.fetch = async (input, init) => {
+        if (first) { first = false; return Response.json({ persisted: false, code: 'forbidden', reason: 'project closed' }); }
+        return r.env.fetch(input, init);
+      };
+      const report = await runImport(opts, { ...deps, fetch: refused });
+      expect(report.projects).toHaveLength(2);
+      expect(report.projects[1]!.agents[0]!.imported).toBe(1);
+      const { reportLines } = await import('@myco/cli/import.js');
+      const lines = reportLines(report, false).join('\n');
+      expect(lines).toContain('1 import problem: forbidden: project closed');
+      expect(lines).not.toContain('stoppedBy:');
+      const stopped = await runImport(opts, { ...deps, fetch: async () => new Response('blocked', { status: 403 }) });
+      expect(stopped.projects[1]!.notAttempted).toBe(true);
+      expect(reportLines(stopped, false).join('\n')).toContain(stopped.projects[1]!.projectId);
+      expect(reportLines(stopped, false).join('\n')).toContain('not attempted');
+    } finally { r.restore(); }
   });
 });

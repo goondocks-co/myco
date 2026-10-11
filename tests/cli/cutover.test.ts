@@ -1,3 +1,4 @@
+import { refuseImportAfter } from '../setup/fixtures/interruption.js';
 /**
  * `myco cutover`, against the real worker and a machine laid out the way a 1.4
  * install leaves it: a 1.4 home with a vault, its claim on the agents' settings,
@@ -45,7 +46,7 @@ const DAEMON_LABEL = 'co.goondocks.myco';
 const OTHER_DAEMON_LABEL = 'co.goondocks.myco.0ther000';
 const WORKER_LABEL = 'co.goondocks.myco-worker.0ther000';
 
-type RunOpts = { fetch?: MemberRig['fetch']; mycoHome?: string | null; env?: NodeJS.ProcessEnv; provision?: CutoverDeps['provision']; agents?: string[]; unitDirs?: CutoverDeps['unitDirs'] };
+type RunOpts = { signal?: AbortSignal; fetch?: MemberRig['fetch']; mycoHome?: string | null; env?: NodeJS.ProcessEnv; provision?: CutoverDeps['provision']; agents?: string[]; unitDirs?: CutoverDeps['unitDirs'] };
 interface Machine {
   rig: MemberRig;
   home: string;
@@ -139,7 +140,7 @@ async function machine(opts: { legacyHome?: string } = {}): Promise<Machine> {
     const out: string[] = [];
     const err: string[] = [];
     const ok = await runCutover(args, {
-      fetch: o.fetch ?? rig.fetch, mycoHome: o.mycoHome === null ? undefined : (o.mycoHome ?? mycoHome), machineId: TEST_MACHINE_ID,
+      signal: o.signal, fetch: o.fetch ?? rig.fetch, mycoHome: o.mycoHome === null ? undefined : (o.mycoHome ?? mycoHome), machineId: TEST_MACHINE_ID,
       env: o.env ?? { ...process.env, HOME: home, MYCO_LAUNCH_AGENTS_DIR: agentsDir },
       sleep: async () => {}, stdout: (l) => out.push(l), stderr: (l) => err.push(l), packageRoot: resolvePackageRoot(),
       agents: () => o.agents ?? ['claude-code'], platform: 'darwin',
@@ -181,6 +182,41 @@ describe('myco cutover', () => {
   const tree = (dir: string): Record<string, string> => Object.fromEntries((fs.readdirSync(dir, { recursive: true }) as string[]).sort()
     .filter((rel) => fs.statSync(path.join(dir, rel)).isFile())
     .map((rel) => [rel, sha(path.join(dir, rel))]));
+
+
+  for (const [kind, fix] of [
+    ['edge', 'Cloudflare Security Events'], ['edge-mid', 'Cloudflare Security Events'], ['worker', 'check this machine'], ['server', 'check its health'],
+    ['refused', 'correct the source record'], ['large', 'reduce that record'],
+    ['interrupted', 'resume safely'],
+  ] as const) {
+    it(`prints grouped causes and stoppedBy when cutover meets ${kind}`, async () => {
+      const controller = new AbortController();
+      const edge = refuseImportAfter(2, m.rig.fetch);
+      const fetch: MemberRig['fetch'] = async (input, init) => {
+        const route = new URL(new Request(input, init).url).pathname;
+        if (kind === 'edge-mid' && ['/import/plan', '/events', '/blobs'].includes(route)) return edge.fetchImpl(input, init);
+        if (kind === 'worker' && route === '/import/plan') return new Response('forbidden', { status: 403, headers: { 'x-myco-protocol': '1' } });
+        if (route === '/import/plan' && (kind === 'edge' || kind === 'server')) return new Response('upstream', { status: kind === 'edge' ? 403 : 500 });
+        if (route === '/events') {
+          if (kind === 'interrupted') { controller.abort(); throw new DOMException('stopped', 'AbortError'); }
+          if (kind === 'refused' || kind === 'large') return Response.json({ persisted: false, code: kind === 'large' ? 'body_cap' : 'invalid_field', reason: 'fixture' }, { headers: { 'x-myco-protocol': '1' } });
+        }
+        return m.rig.fetch(input, init);
+      };
+      const result = await m.run([], { fetch, signal: controller.signal });
+      expect(result.ok).toBe(false);
+      const output = result.out.join('\n');
+      expect(output).toMatch(/\d+ records? or uploads?:/);
+      expect(output).toContain(fix);
+      if (kind === 'edge-mid' || kind === 'refused' || kind === 'large') expect(output).not.toContain('stoppedBy:');
+      else expect(output.split('\n').filter((l) => l.includes('stoppedBy:')).join('\n')).toContain(fix);
+      if (kind === 'edge') expect(output).toContain('likely a security rule');
+      if (kind === 'interrupted') {
+        const resumed = await m.run();
+        expect(resumed.ok).toBe(true);
+      }
+    });
+  }
 
   it('moves capture to 2.0 in place, takes 1.4 out for good, keeps the vault as it was, and brings its history; again changes nothing', async () => {
     const vaultBytes = sha(m.vault);
@@ -601,7 +637,8 @@ describe('myco cutover', () => {
     expect(m.rig.rows('spores')).toBe(0);
   });
 
-  it('fails the run when the Deployment refuses the transcript import', async () => {
+  for (const interrupted of [false, true]) it(`reports why the transcript import ${interrupted ? 'was interrupted' : 'was refused'}`, async () => {
+    const controller = new AbortController();
     const id = '00000000-0000-4000-8000-000000000002';
     const transcript = path.join(m.home, '.claude', 'projects', `-${rootSlug(m.root)}`, `${id}.jsonl`);
     fs.mkdirSync(path.dirname(transcript), { recursive: true });
@@ -610,10 +647,15 @@ describe('myco cutover', () => {
     fs.utimesSync(transcript, old, old);
     const refusing: MemberRig['fetch'] = async (input, init) => {
       const transcriptPlan = String(input).endsWith('/import/plan') && !String(init?.body ?? '').includes('"sessions"');
+      if (transcriptPlan && interrupted) { controller.abort(); throw new DOMException('stopped', 'AbortError'); }
       return transcriptPlan ? new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }) : m.rig.fetch(input, init);
     };
-    const result = await m.run([], { fetch: refusing });
+    const result = await m.run([], { fetch: refusing, signal: controller.signal });
     expect(result.ok).toBe(false);
+    if (interrupted) {
+      expect(result.out.some((line) => line.startsWith('9.'))).toBe(false);
+      expect(result.out.join('\n')).toMatch(/stoppedBy:.*you stopped the import; run the same command again to resume safely/);
+    }
     expect(result.err.join('\n')).toMatch(/the transcript import stopped before it finished \(proj_1: [^)]+\)/);
   });
 
@@ -778,9 +820,9 @@ describe('the `myco cutover` command', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cutover-cli-'));
     const cli = path.join(resolvePackageRoot(), 'src', 'cli.ts');
     const env = { ...process.env, HOME: home, MYCO_HOME: path.join(home, '.myco') };
-    const refused = spawnSync(process.execPath, [cli, 'cutover', '--dry-run'], { env, encoding: 'utf8', timeout: 60_000 });
+    const refused = spawnSync(process.execPath, [cli, 'cutover', '--dry-run'], { env, cwd: home, encoding: 'utf8', timeout: 60_000 });
     expect(refused.stderr).toContain('myco cutover: this machine is not signed in to a Deployment');
     expect(refused.status).toBe(2);
-    expect(spawnSync(process.execPath, [cli, 'cutover', '--help'], { env, encoding: 'utf8', timeout: 60_000 }).status).toBe(0);
+    expect(spawnSync(process.execPath, [cli, 'cutover', '--help'], { env, cwd: home, encoding: 'utf8', timeout: 60_000 }).status).toBe(0);
   });
 });

@@ -58,7 +58,7 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
     calls: 2, form: 'cleared', bound: 'request deadlines that abort HTTP calls',
   },
   'packages/myco/src/member/import.ts': {
-    calls: 1, form: 'awaited', bound: 'the wait between passes of an import the Deployment rate-limited, capped per wait and in number, injectable by a caller',
+    calls: 1, form: 'cleared', bound: 'the wait between passes of an import the Deployment rate-limited, capped per wait and in number, injectable by a caller',
   },
   'packages/myco/src/member/join-code.ts': {
     calls: 1, form: 'awaited', bound: 'the sleep between polls of one join code, injectable by a caller',

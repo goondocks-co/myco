@@ -234,6 +234,22 @@ describe('the import plan', () => {
 });
 
 describe('what a Project holds of named sessions', () => {
+  it('offers importer ownership only on request and relinquishes it to live lifecycle capture', async () => {
+    const r = await rig();
+    r.hold('s-import', 'tx_import', 100, null);
+    const event = (id: string, kind: string, channel: string) => r.sqlite.run(`INSERT INTO events
+      (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at, producer_adapter, producer_version, payload_bytes, ingest_nonce)
+      VALUES (?, ?, 's-import', ?, ?, ?, '{}', 'h', ?, ?, ?, '1', 2, ?)`,
+    [PROJECT, id, r.tokenId, kind, channel, NOW, NOW, LEGACY_IMPORT_ADAPTER, id]);
+    event('e-import', 'session.start', 'import');
+    r.sqlite.run("UPDATE sessions SET facts_event_id = 'e-import' WHERE project_id = ? AND session_id = 's-import'", [PROJECT]);
+    const probe = () => r.plan([], { sessions: ['s-import'], includeLegacyOwnership: true });
+    expect(objectAt(await probe(), 'sessions').legacyOwned).toEqual(['s-import']);
+    expect(objectAt(await r.plan([], { sessions: ['s-import'] }), 'sessions').legacyOwned).toBeUndefined();
+    event('e-live', 'session.end', 'cli');
+    expect(objectAt(await probe(), 'sessions').legacyOwned).toEqual([]);
+  });
+
   it('answers, per probed session, a row, a transcript and a tombstone', async () => {
     const r = await rig();
     r.hold('s-transcript', 'tx_1', 100, null);
@@ -243,6 +259,7 @@ describe('what a Project holds of named sessions', () => {
                   VALUES (?, 'e-vault', 's-row', ?, 'prompt', 'import', '{}', 'h', ?, ?, ?, '1', 2, 'n')`, [PROJECT, r.tokenId, NOW, NOW, LEGACY_IMPORT_ADAPTER]);
     const body = await r.plan([], { sessions: ['s-transcript', 's-row', 's-dead', 's-none'] });
     expect(body.sessions).toEqual({ held: ['s-dead', 's-row', 's-transcript'], withTranscript: ['s-transcript'], tombstoned: ['s-dead'], vaultSourced: ['s-row'] });
+    expect((await r.plan([], { sessions: ['s-row'], includeLegacyOwnership: true })).sessions).toEqual({ held: ['s-row'], withTranscript: [], tombstoned: [], vaultSourced: ['s-row'], legacyOwned: [] });
     expect((await r.plan([])).sessions).toBeUndefined();
     expect((await r.plan([], { sessions: [''] })).code).toBe('parse');
   });

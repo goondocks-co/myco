@@ -1,3 +1,4 @@
+import { IMPORT_STOP_WORDS } from '@myco/member/import-feedback.js';
 /**
  * `myco import` — bring this machine's existing agent history to its Deployment.
  *
@@ -115,6 +116,7 @@ export interface ImportCliDeps {
   machineId?: string;
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
+  signal?: AbortSignal;
 }
 
 /**
@@ -139,16 +141,15 @@ const SKIP_WORDS: Readonly<Record<string, string>> = {
 };
 
 /** What a person is told about a pass that stopped early, in the same vocabulary. */
-export const STOPPED_WORDS: Readonly<Record<string, string>> = {
-  parked: 'the Deployment refused it for its storage quota; update the Deployment',
-  unauthorized: 'this machine is not signed in to that Deployment',
-  route_missing: 'that Deployment does not offer import',
-  protocol: 'that Deployment expects a different version of Myco',
-  retry: 'the Deployment could not be reached',
-  refused: 'the Deployment refused the write',
-  unreachable: 'the Deployment could not be reached for too long; nothing after that was attempted',
-  failed: 'a step failed (above); nothing after it was attempted',
-};
+export const STOPPED_WORDS = IMPORT_STOP_WORDS;
+
+export const stoppedByLine = (cause: string): string => `stoppedBy: ${cause}`;
+
+const causeLines = (causes: Record<string, number> | undefined, singular: string, plural: string, stopped: boolean | string): string[] =>
+  Object.entries(causes ?? {}).map(([cause, n]) => {
+    const group = `${n} ${n === 1 ? singular : plural}: ${cause}`;
+    return (stopped === true || stopped === cause) ? stoppedByLine(group) : `  ${group}`;
+  });
 
 const skipWords = (reason: string, n: number): string => `${n} ${SKIP_WORDS[reason] ?? 'skipped'}`;
 
@@ -158,17 +159,23 @@ const UNBOUND_DIRECTORIES_SHOWN = 20;
 /** Every line the report is worth printing as, in the order a person reads them. */
 export function reportLines(report: ImportReport, dryRun: boolean): string[] {
   const lines: string[] = [];
+  if (report.refused !== undefined) return [`1 import refused: ${report.refused}`, stoppedByLine(`${report.refused}; resolve this and run the same command again`)];
   const verb = dryRun ? 'would import' : 'imported';
   for (const project of report.projects) {
     lines.push(`${project.projectId} (${project.root})`);
+    if (project.notAttempted) { lines.push('  not attempted; run the import again to bring this project'); continue; }
     for (const agent of project.agents) {
       const notes = Object.entries(agent.skipped).map(([reason, n]) => skipWords(reason, n));
       if (agent.vanished > 0) notes.push(`${agent.vanished} removed before they could be sent`);
       if (agent.trimmed > 0) notes.push(`${agent.trimmed} past the offer limit`);
       lines.push(`  ${agent.agent}: ${agent.found} found, ${agent.imported} ${verb}${notes.length === 0 ? '' : ` (${notes.join(', ')})`}`);
     }
-    if (project.endedBy !== undefined) lines.push(`  stopped — ${STOPPED_WORDS[project.endedBy] ?? 'the Deployment could not be reached'}`);
+    const stopped = project.endedBy !== undefined && !project.continued;
+    const groups = Object.entries(project.causes ?? {});
+    lines.push(...causeLines(project.causes, 'import problem', 'import problems', stopped));
+    if (stopped && groups.length === 0) lines.push(stoppedByLine(project.stoppedBy ?? report.stoppedBy ?? STOPPED_WORDS[project.endedBy!] ?? STOPPED_WORDS.failed!));
   }
+  if (report.stoppedBy !== undefined && !report.projects.some((p) => p.endedBy !== undefined && !p.continued)) lines.push(stoppedByLine(report.stoppedBy));
   if (report.active > 0) lines.push(`${report.active} transcripts are still being written and were left to the agent writing them.`);
   if (report.unattributable > 0) lines.push(`${report.unattributable} transcripts name no project and were left alone.`);
   if (report.dropped > 0) lines.push(`${report.dropped} transcripts are sub-agent or automation runs that capture leaves out, and were left out here too.`);
@@ -191,9 +198,16 @@ export function reportLines(report: ImportReport, dryRun: boolean): string[] {
  * that stamps the process it runs in cannot be called twice in one process, and
  * `cli.ts` is the one place that knows this invocation is the whole purpose.
  */
-export async function run(args: readonly string[], deps: ImportCliDeps = {}): Promise<boolean> {
+async function runImportCommand(args: readonly string[], deps: ImportCliDeps = {}): Promise<boolean> {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
   const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
+
+  const refuse = (reason: string): false => {
+    err(`myco import: ${reason}`);
+    out(`1 import refused: ${reason}`);
+    out(stoppedByLine(`${reason}; resolve this and run the same command again`));
+    return false;
+  };
 
   const parsed = parseArgs(args);
   if (parsed.error !== undefined) { err(`myco import: ${parsed.error}`); return false; }
@@ -206,19 +220,20 @@ export async function run(args: readonly string[], deps: ImportCliDeps = {}): Pr
   if (parsed.legacy !== undefined) {
     const legacy = await runLegacyImport(
       { sources: parsed.legacy, serverUrl: parsed.options.serverUrl, dryRun, project: parsed.options.project },
-      { fetch: deps.fetch, now: deps.now, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep, pace: IMPORT_PACE_PER_MINUTE, progress: (l) => err(`myco import: ${l}`) },
+      { fetch: deps.fetch, now: deps.now, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep, signal: deps.signal, pace: IMPORT_PACE_PER_MINUTE, progress: (l) => err(`myco import: ${l}`) },
     );
-    if (legacy.refused !== undefined) { err(`myco import: ${legacy.refused}`); return false; }
+    if (legacy.refused !== undefined) { for (const line of legacyReportLines(legacy, dryRun)) out(line); return refuse(legacy.refused); }
     for (const line of legacyReportLines(legacy, dryRun)) out(line);
     legacyComplete = legacyImportComplete(legacy);
+    if (deps.signal?.aborted) return false;
     exclude = new Set(legacy.deleted);
   }
 
   const report = await importUntilSettled({ ...parsed.options, ...(exclude === undefined ? {} : { exclude }) }, {
-    fetch: deps.fetch, now: deps.now, cwd: deps.cwd, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep, pace: IMPORT_PACE_PER_MINUTE,
-    onRetry: (attempt, waitMs) => err(`myco import: the Deployment asked to wait; pass ${attempt + 1} in ${Math.round(waitMs / 1000)} s`),
+    fetch: deps.fetch, now: deps.now, cwd: deps.cwd, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep, signal: deps.signal, pace: IMPORT_PACE_PER_MINUTE,
+    progress: (l) => err(`myco import: ${l}`),
   });
-  if (report.refused !== undefined) { err(`myco import: ${report.refused}`); return false; }
+  if (report.refused !== undefined) { return refuse(report.refused); }
   for (const line of reportLines(report, dryRun)) out(line);
   return legacyComplete && transcriptImportComplete(report);
 }
@@ -257,14 +272,32 @@ export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): 
     for (const [machine, n] of Object.entries(p.otherMachines)) lines.push(`  ${n} sessions were captured on ${machine}, not this machine; run \`myco import --legacy <this vault>\` on ${machine} to bring them`);
     lines.push(`  sent ${p.prompts} prompts, ${p.responses} responses, ${p.plans.sent} plans (${p.plans.empty} empty, ${p.plans.unsent} of deleted or unknown sessions)`);
     lines.push(`  spores: ${p.spores.saved} saved, ${p.spores.duplicate} already here, ${p.spores.refused} refused; history: ${p.lineage.recorded} recorded, ${p.lineage.duplicate} already here, ${p.lineage.refused} refused`);
+    if ((p.spores.kept ?? 0) > 0) lines.push(`  spores: ${p.spores.kept} kept with existing source links`);
     for (const alias of p.aliases) lines.push(`  matched by time: ${alias}`);
     for (const stored of p.unaliased) lines.push(`  no transcript matched, imported under its 1.4 id: ${stored}`);
+    const groups = Object.entries(p.causes ?? {});
+    lines.push(...causeLines(p.causes, 'record or upload', 'records or uploads', p.endedBy === undefined ? false : p.stoppedBy ?? true));
+    if (p.endedBy !== undefined && groups.length === 0) lines.push(`  ${stoppedByLine(p.stoppedBy ?? STOPPED_WORDS[p.endedBy] ?? STOPPED_WORDS.failed!)}`);
+    if (p.malformed.length > 0) lines.push(`  ${p.malformed.length} spore history records skipped: their stored shape is not accepted; keep the original vault for recovery`);
     for (const malformed of p.malformed) lines.push(`  skipped ${malformed}`);
     for (const refusal of p.refusals) lines.push(`  refused ${refusal}`);
     for (const failure of p.failures) lines.push(`  failed ${failure}; run the import again to retry it`);
-    if (p.endedBy !== undefined) lines.push(`  stopped — ${STOPPED_WORDS[p.endedBy] ?? 'the Deployment could not be reached'}`);
     if (p.notAttempted !== undefined) lines.push(`  not attempted: ${p.notAttempted.sessions} sessions, ${p.notAttempted.spores} spores, ${p.notAttempted.lineage} spore history events; run the import again to bring them`);
   }
   if (report.projects.length === 0) lines.push('The 1.4 vault holds nothing to import.');
   return lines;
+}
+
+/** Ctrl-C stops requests and leaves acknowledged progress available to the next run. */
+export async function withImportInterrupt<T>(signal: AbortSignal | undefined, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  if (signal !== undefined) return work(signal);
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  process.on('SIGINT', stop);
+  try { return await work(controller.signal); }
+  finally { process.off('SIGINT', stop); }
+}
+
+export async function run(args: readonly string[], deps: ImportCliDeps = {}): Promise<boolean> {
+  return withImportInterrupt(deps.signal, (signal) => runImportCommand(args, { ...deps, signal }));
 }

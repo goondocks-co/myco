@@ -24,17 +24,20 @@ import { ensureMemberDir, ensurePrivateFile, memberRoot } from './store.js';
 
 const LEGACY_DIRNAME = 'legacy';
 const LEDGER_EXTENSION = '.jsonl';
+export const LEGACY_RECONCILIATION_VERSION = 1;
 
 /** Where a session's content comes from: its transcript, the vault's prompts, or nowhere because it is deleted. */
 export type ContentSource = 'transcript' | 'vault' | 'deleted';
 
 export type LedgerLine =
+  | { k: 'reconciled'; version: typeof LEGACY_RECONCILIATION_VERSION }
   | { k: 'source'; session: string; from: ContentSource }
   | { k: 'session'; session: string }
   | { k: 'spore'; id: string }
   | { k: 'lineage'; id: string };
 
 export interface LedgerState {
+  reconciled: boolean;
   sources: Map<string, ContentSource>;
   sessions: Set<string>;
   spores: Set<string>;
@@ -46,6 +49,7 @@ const ledgerDir = (mycoHome: string, serverUrl: string): string => path.join(mem
 const parseLine = (raw: string): LedgerLine | null => {
   try {
     const value = JSON.parse(raw) as Partial<LedgerLine> & Record<string, unknown>;
+    if (value.k === 'reconciled' && value.version === LEGACY_RECONCILIATION_VERSION) return { k: 'reconciled', version: LEGACY_RECONCILIATION_VERSION };
     if (value.k === 'source' && typeof value.session === 'string' && ['transcript', 'vault', 'deleted'].includes(value.from as string)) return value as LedgerLine;
     if (value.k === 'session' && typeof value.session === 'string') return value as LedgerLine;
     if ((value.k === 'spore' || value.k === 'lineage') && typeof value.id === 'string') return value as LedgerLine;
@@ -65,13 +69,14 @@ export class LegacyLedger {
 
   /** What the ledger holds; empty when there is none. */
   read(): LedgerState {
-    const state: LedgerState = { sources: new Map(), sessions: new Set(), spores: new Set(), lineage: new Set() };
+    const state: LedgerState = { reconciled: false, sources: new Map(), sessions: new Set(), spores: new Set(), lineage: new Set() };
     let text: string;
     try { text = fs.readFileSync(this.file, 'utf8'); } catch { return state; }
     for (const raw of text.split('\n')) {
       const line = raw.trim() === '' ? null : parseLine(raw);
       if (line === null) continue;
-      if (line.k === 'source') state.sources.set(line.session, line.from);
+      if (line.k === 'reconciled') state.reconciled = true;
+      else if (line.k === 'source') state.sources.set(line.session, line.from);
       else if (line.k === 'session') state.sessions.add(line.session);
       else if (line.k === 'spore') state.spores.add(line.id);
       else state.lineage.add(line.id);

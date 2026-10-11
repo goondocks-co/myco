@@ -171,6 +171,22 @@ export async function insertSpore(db: RelationalStore, scope: ReadScope, row: Sp
     .first<SporeRow>();
 }
 
+/** Fill absent import provenance only when the original spore and its stored source agree. */
+export async function repairImportedSporeSource(db: RelationalStore, scope: ReadScope, row: Pick<SporeInsert, 'id' | 'author' | 'agentId' | 'content' | 'sessionId' | 'promptId'> & { createdAt?: number }): Promise<'restored' | 'kept' | 'pending'> {
+  if (row.sessionId === null) return 'restored';
+  await db.prepare(`UPDATE spores SET session_id = COALESCE(session_id, ?), prompt_id = COALESCE(prompt_id, ?)
+    WHERE project_id = ? AND id = ? AND author = ? AND agent_id = ? AND content = ? AND (? IS NULL OR created_at = ?)
+      AND (session_id IS NULL OR session_id = ?) AND prompt_id IS NULL
+      AND EXISTS (SELECT 1 FROM sessions s WHERE s.project_id = spores.project_id AND s.session_id = ?)
+      AND (? IS NULL OR EXISTS (SELECT 1 FROM prompt_batches p WHERE p.project_id = spores.project_id AND p.session_id = ? AND p.prompt_id = ?))`)
+    .bind(row.sessionId, row.promptId, scope.projectId, row.id, row.author, row.agentId, row.content, row.createdAt ?? null, row.createdAt ?? null, row.sessionId, row.sessionId, row.promptId, row.sessionId, row.promptId).run();
+  const held = await getSpore(db, scope, row.id);
+  if (held?.sessionId === row.sessionId && held.promptId === row.promptId) return 'restored';
+  if (held !== null && ((held.sessionId !== null && held.sessionId !== row.sessionId) || (held.promptId !== null && held.promptId !== row.promptId)
+    || held.author !== row.author || held.agentId !== row.agentId || held.content !== row.content || (row.createdAt !== undefined && held.createdAt !== row.createdAt))) return 'kept';
+  return 'pending';
+}
+
 export async function getSpore(db: RelationalStore, scope: ReadScope, id: string): Promise<(SporeRow & { sourceCreatedAt: number | null }) | null> {
   return db.prepare(`SELECT ${READ_COLUMNS}, (SELECT p.created_at FROM prompt_batches p
     WHERE p.project_id = spores.project_id AND p.session_id = spores.session_id AND p.prompt_id = spores.prompt_id) AS sourceCreatedAt

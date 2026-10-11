@@ -440,8 +440,8 @@ export async function shipTranscriptSegments(
     // recorded on the pointer, so no later pass uploads this transcript again;
     // a transient one leaves the pointer where it was, and the bytes are sent again.
     const refused = pointer.transcriptId;
-    const logRefusal = (code: MemberCode, reason: string, permanent: boolean): ShipResult['endedBy'] => {
-      spool.appendRefused({ eventId: event.envelope.eventId, sessionId, kind: event.envelope.kind, code, reason, at: now() });
+    const logRefusal = (code: MemberCode, reason: string, permanent: boolean, serverCode?: string): ShipResult['endedBy'] => {
+      spool.appendRefused({ eventId: event.envelope.eventId, sessionId, kind: event.envelope.kind, code, serverCode, reason, at: now() });
       if (!permanent) return 'refused';
       updateSessionState(spool.dir, sessionId, (s) => {
         const stored = slotPointer(s, slot);
@@ -457,7 +457,7 @@ export async function shipTranscriptSegments(
       // as `endPass` documents, the caller logs its own refusal.
       if (blob.class === 'refused') {
         spool.endPass(blob, now());
-        return { shipped, endedBy: logRefusal(blob.code, blob.reason, refusalPermanent(blob.code)) };
+        return { shipped, endedBy: logRefusal(blob.code, blob.reason, refusalPermanent(blob.code), blob.serverCode) };
       }
       if (blob.class !== 'reslice') spool.endPass(blob, now());
       return { shipped, endedBy: blob.class === 'reslice' ? 'refused' : blob.class };
@@ -489,7 +489,7 @@ export async function shipTranscriptSegments(
         // A second disagreement under a fresh identity is final; so is any code final for these bytes.
         const permanent = refusalPermanent(outcome.code) || (outcome.code === REPLACED_CODE && reminted);
         spool.endPass(outcome, now());
-        return { shipped, endedBy: logRefusal(outcome.code, outcome.reason, permanent) };
+        return { shipped, endedBy: logRefusal(outcome.code, outcome.reason, permanent, outcome.serverCode) };
       }
       default:
         spool.endPass(outcome, now());
