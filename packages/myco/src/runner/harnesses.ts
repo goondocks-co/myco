@@ -131,6 +131,8 @@ export interface Harness {
   binary: string;
   launch: LaunchShape;
   credential: CredentialProbe;
+  /** Recheck readiness and retry a first login failure before any tool call. */
+  retryFirstLoginMissing?: boolean;
   isolation: Isolation;
   asking: Asking;
   sourceGit: SourceGit;

@@ -5,6 +5,7 @@ import type { HarnessFacts } from './harnesses.js';
 export const HARNESS_FACTS: readonly HarnessFacts[] = [
   {
     "id": "claude-code",
+    "retryFirstLoginMissing": true,
     "binary": "claude",
     "launch": {
       "kind": "native"

@@ -1,11 +1,13 @@
 /**
- * The worker's owner-only local diagnostic log: coded errors and bounded content-free detail.
+ * The worker's owner-only local diagnostic log: coded errors and bounded, redacted login messages.
  * Files rotate at the size bound and expire at the age bound.
  */
 import nodeFs from 'node:fs';
 const { appendFileSync, chmodSync, existsSync, mkdirSync, renameSync, rmSync, statSync } = nodeFs;
 import { join } from 'node:path';
-import { diagnosticDetail } from '@goondocks/myco-shared/run-text';
+import { stripVTControlCharacters } from 'node:util';
+import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
+import { diagnosticDetail, harnessStoppedError } from '@goondocks/myco-shared/run-text';
 import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 
 export const DIAGNOSTIC_LOG_FILENAME = WORKER_DIAGNOSTIC_LOG.split('/').at(-1)!;
@@ -65,11 +67,18 @@ export function maskedDetail(detail: string, _secrets: readonly string[] = []): 
   return diagnosticDetail(detail, MAX_ENTRY_CHARS);
 }
 
+/** A bounded harness message with credentials and terminal controls removed. */
+function harnessMessage(detail: string, secrets: readonly string[]): string {
+  let text = stripVTControlCharacters(detail);
+  for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) text = text.replaceAll(secret, '[redacted]');
+  return redactSecrets(text).slice(0, MAX_ENTRY_CHARS);
+}
+
 /** Append one entry as a line of JSON, stamped with its instant: pruned by age, rotated before it would cross the size bound. */
 export function keepDiagnostic(dir: string, entry: DiagnosticEntry, now: number = Date.now(), options: DiagnosticLogOptions = {}): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   prune(dir, now, options.maxAgeMs ?? MAX_LOG_AGE_MS);
-  const line = `${JSON.stringify({ at: new Date(now).toISOString(), ...entry, detail: maskedDetail(entry.detail, options.secrets) })}\n`;
+  const line = `${JSON.stringify({ at: new Date(now).toISOString(), ...entry, detail: entry.error === harnessStoppedError('error', { code: 'login_missing' }) ? harnessMessage(entry.detail, options.secrets ?? []) : maskedDetail(entry.detail, options.secrets) })}\n`;
   rotate(dir, Buffer.byteLength(line), options.maxBytes ?? MAX_LOG_BYTES);
   const path = diagnosticLogPath(dir);
   appendFileSync(path, line, { mode: 0o600 });

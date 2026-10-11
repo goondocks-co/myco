@@ -433,6 +433,7 @@ runner:
     - { code: timed_out, pattern: '\btimed[ -]?out\b|\bETIMEDOUT\b|idle timeout|request timeout' }
   # How a worker runs it.
   worker:
+    retryFirstLoginMissing: true
     binary: claude
     launch: { kind: native }
     # The login lives in the OS keyring on macOS and in the file elsewhere, so the file answers where it exists and the

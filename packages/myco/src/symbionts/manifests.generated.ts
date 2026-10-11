@@ -747,6 +747,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ],
       "worker": {
+        "retryFirstLoginMissing": true,
         "binary": "claude",
         "launch": {
           "kind": "native"

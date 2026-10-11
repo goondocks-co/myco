@@ -458,7 +458,7 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
  * success.
  */
 async function drive(
-  options: WorkerOptions, run: ClaimedRun, lease: AttemptLease, wake: WakeWatch, keepsSteps: boolean,
+  options: WorkerOptions, run: ClaimedRun, lease: AttemptLease, wake: WakeWatch, keepsSteps: boolean, recheckLogin?: () => Promise<boolean>,
 ): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity; refusal?: ProfileRefusal } | { status: 'lost'; error: null }> {
   const clock = options.clock ?? Date.now;
   // A claim answered after its own lease ran out — its answer held up by a
@@ -545,14 +545,35 @@ async function drive(
     if (clock() >= lease.deadline) { lost = true; stopping.abort(); }
     stopping.signal.throwIfAborted();
     const toolUse = runToolUse(named.steps, checkout !== undefined);
-    stream = driver.run({
-      prompt: run.instruction, scratchDir, mcpConfigPath, credentialEnv: run.credentialEnv,
+    const prompt = run.instruction;
+    const start = () => driver.run({
+      prompt, scratchDir, mcpConfigPath, credentialEnv: run.credentialEnv,
       profile: run.profile,
       sourceReadOnly: checkout !== undefined,
     }, stopping.signal)[Symbol.asyncIterator]();
+    stream = start();
+    let retriedLogin = false;
     for (;;) {
       const step = await Promise.race([stream.next(), overrunReached]);
-      if (step === 'overran' || step.done === true) break;
+      if (step === 'overran') break;
+      if (step.done === true) {
+        const last = events.at(-1);
+        if (!retriedLogin && recheckLogin !== undefined && named.retryFirstLoginMissing === true
+          && last?.kind === 'ended' && last.stop === 'error'
+          && classifyDiagnostic(run.harness, last).code === 'login_missing'
+          && !events.some((event) => event.kind === 'tool_call') && !stopping.signal.aborted) {
+          retriedLogin = true;
+          if (last.detail !== null) keepRunDiagnostic(options, run, harnessStoppedError('error', classifyDiagnostic(run.harness, last)), last.detail);
+          await stream.return?.();
+          if (await recheckLogin() && !stopping.signal.aborted && clock() < lease.deadline) {
+            options.log(`run ${run.id}: login readiness rechecked; retrying the first ${run.harness} run once`);
+            events.length = 0;
+            stream = start();
+            continue;
+          }
+        }
+        break;
+      }
       stepLog?.observe(step.value);
       if (step.value.kind === 'unrecognized') continue;
       events.push(step.value);
@@ -668,7 +689,7 @@ function keepRunDiagnostic(options: WorkerOptions, run: ClaimedRun, error: strin
   options.log(`run ${run.id} failed: ${error}${root === undefined ? '' : `; what was said is kept in ${root}`}`);
   if (root === undefined) return;
   try {
-    keepDiagnostic(root, { runId: run.id, harness: run.harness, error, detail }, (options.clock ?? Date.now)(), { secrets: Object.values(run.credentialEnv) });
+    keepDiagnostic(root, { runId: run.id, harness: run.harness, error, detail }, (options.clock ?? Date.now)(), { secrets: [run.runToken, ...(typeof options.token === 'string' ? [options.token] : []), ...Object.values(run.credentialEnv)] });
   } catch (error) {
     options.log(`could not keep the diagnostics of ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -861,6 +882,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
   const pause = (ms: number): Promise<void> => noticing(ms, () => sleep(ms, options.signal));
   const clock = options.clock ?? Date.now;
   const detection = harnessDetection({ detect: () => detectHarnessesAsync(options.only, options.signal, options.detection), clock });
+  const startedHarnesses = new Set<string>();
   const catalogs = modelCatalogs({
     harnesses: [],
     list: options.listModels ?? ((ids, signal) => listModels(ids, options.runRoot, signal, clock)),
@@ -993,7 +1015,13 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         let outcome: Awaited<ReturnType<typeof drive>>;
         try {
           options.onClaim?.();
-          outcome = await drive({ ...options, signal: lease.signal }, run, lease, wake, answer.steps);
+          const firstRun = !startedHarnesses.has(run.harness);
+          startedHarnesses.add(run.harness);
+          outcome = await drive({ ...options, signal: lease.signal }, run, lease, wake, answer.steps, firstRun ? async () => {
+            detection.invalidate();
+            const fresh = await detection.read();
+            return fresh.some((harness) => harness.id === run.harness && harness.installed && harness.authenticated);
+          } : undefined);
         } catch (error) {
           const coded = workerFailedError('worker_error');
           keepRunDiagnostic(options, run, coded, error instanceof Error ? error.message : String(error));
