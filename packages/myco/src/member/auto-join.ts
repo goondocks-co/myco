@@ -32,7 +32,7 @@ import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, r
 import { PENDING_MAX_RECORDS, type HeldEnd } from './pending.js';
 import { machineAutoJoinLeaves } from './machine-settings.js';
 import { isProjectId } from './constants.js';
-import { deploymentKeyFor, deploymentUrl, withRegistryLock } from './registry.js';
+import { acquireRegistryLock, deploymentKeyFor, deploymentUrl, withRegistryLock } from './registry.js';
 
 
 export const AUTO_JOIN_DIRNAME = 'auto-join';
@@ -630,13 +630,24 @@ export function markLeft(rootKey: string, mycoHome: string, now: number, opts: {
 
 /** Logout opt-outs require an explicit local join; settings directives carry no proof of a new connection choice. */
 export function leftForConnection(rootKey: string, mycoHome: string, connectTo: string | null): boolean {
-  return withRegistryLock(() => {
-    if (!isLeft(rootKey, mycoHome)) return false;
-    const read = readPrivateJson<{ at: number; explicitJoinOnly?: true }>(leftPath(rootKey, mycoHome));
-    if (!read.ok || read.value.explicitJoinOnly === true || connectTo === null) return true;
+  const file = leftPath(rootKey, mycoHome);
+  const standing = (): 'absent' | 'left' | 'reconnect' => {
+    const read = readPrivateJson<{ at: number; explicitJoinOnly?: true }>(file);
+    if (!read.ok) return read.reason === 'missing' && pathIsAbsent(file) ? 'absent' : 'left';
+    return read.value.explicitJoinOnly === true || connectTo === null ? 'left' : 'reconnect';
+  };
+  const observed = standing();
+  if (observed !== 'reconnect') return observed === 'left';
+  const lease = acquireRegistryLock(mycoHome);
+  if (!lease.acquired) return true;
+  try {
+    const current = standing();
+    if (current !== 'reconnect') return current === 'left';
     clearLeft(rootKey, mycoHome);
     return false;
-  }, mycoHome);
+  } finally {
+    lease.lock.release();
+  }
 }
 
 export const isLeft = (rootKey: string, mycoHome: string): boolean => fs.existsSync(leftPath(rootKey, mycoHome));
