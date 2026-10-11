@@ -17,7 +17,7 @@ import {
 } from '@myco-server-worker/core/recall.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { insertSpore, type SporeInsert } from '@myco-server-worker/core/spores.js';
-import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
+import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { semanticRecall } from './helpers/semantic-recall.js';
@@ -28,6 +28,12 @@ import { planKeyForPath } from '@myco/member/envelope.js';
 import { normalizePlanPath } from '@myco/member/plan-files.js';
 import { vectorNamespace } from '@myco-server-worker/core/embedding/vectors.js';
 import { classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
+import { emptyInjectionCounts, type InjectionCounts } from '@myco-server-worker/core/injection.js';
+import { EmbeddingUnavailable } from '@myco-server-worker/core/embedding/provider.js';
+import * as plans from '@myco-server-worker/read/plans.js';
+import { agentRunRetention, JOB_BATCH, PROMPT_ANSWER_RETENTION_DAYS, PROMPT_ANSWER_RETENTION_SQL } from '@myco-server-worker/core/jobs-run.js';
+import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
+import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
 
 const SCOPE: ReadScope = { projectId: 'proj_one' };
 const OTHER: ReadScope = { projectId: 'proj_two' };
@@ -212,9 +218,9 @@ describe('the composed block', () => {
     try {
       const answer = await composePromptContext(db, OTHER, ON, true, { sessionId: SESSION, promptId: 'failed', text: PROMPT, now: NOW }, async () => { throw new RangeError('private provider text'); });
       expect(answer).toEqual({ context: '', parts: [], skipped: ['spores', 'plan-nudge:no_intent'] });
-      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({ kind: 'recall_contributor_failed', projectId: OTHER.projectId, sessionId: SESSION, promptId: 'failed', contributor: 'spores', error: 'parse' });
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({ kind: 'recall_contributor_failed', projectId: OTHER.projectId, sessionId: SESSION, promptId: 'failed', contributor: 'spores', error: 'parse', operation: 'embed' });
       const rows = sqlite.query('SELECT project_id, session_id, prompt_id, outcome, context_chars, parts, skipped, failures FROM prompt_context_answers').all();
-      expect(rows).toEqual([{ project_id: OTHER.projectId, session_id: SESSION, prompt_id: 'failed', outcome: 'empty', context_chars: 0, parts: '[]', skipped: JSON.stringify(answer.skipped), failures: JSON.stringify([{ contributor: 'spores', error: 'parse' }]) }]);
+      expect(rows).toEqual([{ project_id: OTHER.projectId, session_id: SESSION, prompt_id: 'failed', outcome: 'empty', context_chars: 0, parts: '[]', skipped: JSON.stringify(answer.skipped), failures: JSON.stringify([{ contributor: 'spores', error: 'parse', operation: 'embed' }]) }]);
       expect(JSON.stringify(rows)).not.toContain('private provider text');
       expect(JSON.stringify(log.mock.calls)).not.toContain('private provider text');
     } finally { log.mockRestore(); sqlite.close(); }
@@ -227,9 +233,9 @@ describe('the composed block', () => {
       await composePromptContext(db, OTHER, ON, true, { sessionId: SESSION, promptId: 'quota', text: PROMPT, now: NOW }, async () => {
         throw new Error("D1_ERROR: exceeded D1's free tier daily row read limit");
       }, classifyD1Error);
-      expect(sqlite.query('SELECT failures FROM prompt_context_answers').get()).toEqual({ failures: '[{"contributor":"spores","error":"store_quota"}]' });
+      expect(sqlite.query('SELECT failures FROM prompt_context_answers').get()).toEqual({ failures: '[{"contributor":"spores","error":"store_quota","operation":"embed"}]' });
       expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({
-        kind: 'recall_contributor_failed', projectId: OTHER.projectId, sessionId: SESSION, promptId: 'quota', contributor: 'spores', error: 'store_quota',
+        kind: 'recall_contributor_failed', projectId: OTHER.projectId, sessionId: SESSION, promptId: 'quota', contributor: 'spores', error: 'store_quota', operation: 'embed',
       });
     } finally { log.mockRestore(); sqlite.close(); }
   });
@@ -280,6 +286,137 @@ describe('the composed block', () => {
       expect(sqlite.query('SELECT COUNT(*) AS n FROM prompt_context_answers').get()).toEqual({ n: 0 });
       expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({ kind: 'recall_answer_unrecorded', projectId: SCOPE.projectId, sessionId: SESSION, promptId: 'p1', error: 'constraint' });
     } finally { log.mockRestore(); sqlite.close(); }
+  });
+});
+
+describe('prompt selection diagnostics', () => {
+  const seedPlan = (sqlite: Database) => sqlite.query(`INSERT INTO plans
+    (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at, origin_path)
+    VALUES (?, 'plan-key', 'history', 'event-plan', 'machine', 'controller plan', 'controller evidence', 'hash', 'active', ?, ?, 'fixture', ?, 'plan.md')`)
+    .run(SCOPE.projectId, NOW, NOW, NOW);
+  const selectionOf = (sqlite: Database, promptId: string): InjectionCounts => JSON.parse((sqlite.query('SELECT selection FROM prompt_context_answers WHERE prompt_id = ?').get(promptId) as { selection: string }).selection);
+
+  it('distinguishes no matches, stale receipt revisions and null plan hydration in stored rows', async () => {
+    const { db, sqlite } = store();
+    seedPlan(sqlite);
+    const semantic = await semanticRecall(db, SCOPE)();
+    const ask = (promptId: string, resolve = async () => semantic) => composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, promptId, text: PROMPT, now: NOW }, resolve);
+    try {
+      await ask('no-hits', async () => ({ ...semantic, vectors: { ...semantic.vectors, query: async () => [] } }));
+      expect(selectionOf(sqlite, 'no-hits')).toEqual(emptyInjectionCounts());
+      const nullPlan = spyOn(plans, 'getPlan').mockResolvedValue(null);
+      try { await ask('null-plan'); } finally { nullPlan.mockRestore(); }
+      const missing = selectionOf(sqlite, 'null-plan');
+      expect(missing).toMatchObject({ planRawMatches: 1, planJoined: 1, planHits: 1, planUnserved: 1, planHydrated: 0, budgetKept: 0 });
+      expect(missing).not.toEqual(selectionOf(sqlite, 'no-hits'));
+      sqlite.exec("UPDATE embedding_receipts SET revision = 'stale'");
+      await ask('stale');
+      const stale = selectionOf(sqlite, 'stale');
+      expect(stale).toMatchObject({ planRawMatches: 1, planJoined: 0, planHits: 0, planUnserved: 0, planHydrated: 0, budgetKept: 0 });
+      expect(stale).not.toEqual(missing);
+    } finally { sqlite.close(); }
+  });
+
+  it('counts metadata post-filter rejection independently of the receipt join', async () => {
+    const { db, sqlite } = store();
+    seedPlan(sqlite);
+    const semantic = await semanticRecall(db, SCOPE)();
+    try {
+      await composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, promptId: 'metadata', text: PROMPT, now: NOW }, async () => ({
+        ...semantic, vectors: { ...semantic.vectors, query: (partition, options) => semantic.vectors.query(partition, { ...options, filters: { type: 'plan' } }) },
+      }));
+      expect(selectionOf(sqlite, 'metadata')).toMatchObject({ sporeRawMatches: 1, sporeJoined: 1, sporeHits: 0, sporeRelevant: 0, planHits: 1, planHydrated: 1, budgetKept: 1 });
+      expect(sqlite.query('SELECT parts FROM prompt_context_answers').get()).toEqual({ parts: '[{"kind":"spores","sporeCount":0,"planCount":1}]' });
+    } finally { sqlite.close(); }
+  });
+
+  it('preserves completed receipt chunks when a later join throws', async () => {
+    const { db, sqlite } = store();
+    for (let i = 0; i < 100; i++) await insertSpore(db, SCOPE, spore(`chunk-${i}`));
+    const semantic = await semanticRecall(db, SCOPE)();
+    let joins = 0;
+    const wrap = (statement: PreparedStatement): PreparedStatement => ({
+      ...statement,
+      bind: (...values) => wrap(statement.bind(...values)),
+      all: async <T,>() => {
+        if (++joins === 2) throw new Error('receipt chunk unavailable');
+        return statement.all<T>();
+      },
+    });
+    const failingDb: RelationalStore = { ...db, prepare: sql => {
+      const statement = db.prepare(sql);
+      return sql.includes('JOIN embedding_sources s') ? wrap(statement) : statement;
+    } };
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await composePromptContext(failingDb, SCOPE, ON, true, { sessionId: SESSION, promptId: 'partial-join', text: PROMPT, now: NOW }, async () => semantic);
+      expect(selectionOf(sqlite, 'partial-join')).toMatchObject({ sporeRawMatches: 100, sporeJoined: 90, sporeHits: 90, sporeHydrated: 0, budgetKept: 0 });
+      expect(sqlite.query('SELECT failures FROM prompt_context_answers').get()).toEqual({ failures: '[{"contributor":"spores","error":"unknown","operation":"candidates"}]' });
+    } finally { log.mockRestore(); sqlite.close(); }
+  });
+
+  it('separates missing semantic configuration, provider unavailability and unexpected embed throws', async () => {
+    const { db, sqlite } = store();
+    const semantic = await semanticRecall(db, SCOPE)();
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const input = { sessionId: SESSION, text: PROMPT, now: NOW };
+      expect((await composePromptContext(db, SCOPE, ON, true, { ...input, promptId: 'unconfigured' }, async () => null)).skipped).toContain('spores:no_semantic');
+      expect((await composePromptContext(db, SCOPE, ON, true, { ...input, promptId: 'unavailable' }, async () => ({ ...semantic, provider: { ...semantic.provider, embed: async () => { throw new EmbeddingUnavailable('private provider text'); } } }))).skipped).toContain('spores:provider_unavailable');
+      await composePromptContext(db, SCOPE, ON, true, { ...input, promptId: 'throw' }, async () => ({ ...semantic, provider: { ...semantic.provider, embed: async () => { throw new RangeError('private provider text'); } } }));
+      expect(sqlite.query("SELECT failures FROM prompt_context_answers WHERE prompt_id = 'throw'").get()).toEqual({ failures: '[{"contributor":"spores","error":"parse","operation":"embed"}]' });
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({ kind: 'recall_contributor_failed', projectId: SCOPE.projectId, sessionId: SESSION, promptId: 'throw', contributor: 'spores', error: 'parse', operation: 'embed' });
+    } finally { log.mockRestore(); sqlite.close(); }
+  });
+
+  it('uses the platform classifier for a session contributor too', async () => {
+    const { db, sqlite } = store();
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const leaves = { ...ON, get instructionsTemplate(): string { throw new Error("D1_ERROR: exceeded D1's free tier daily row read limit"); } };
+      await composeSessionContext(db, SCOPE, leaves, true, { sessionId: SESSION, kind: 'start', now: NOW }, { preview: true, classifyError: classifyD1Error });
+      expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({ kind: 'recall_contributor_failed', projectId: SCOPE.projectId, sessionId: SESSION, contributor: 'instructions', error: 'store_quota' });
+    } finally { log.mockRestore(); sqlite.close(); }
+  });
+});
+
+describe('prompt answer retention', () => {
+  it('sweeps 30-day diagnostics through the scheduled retention job in indexed rowid batches of 500', async () => {
+    const e = sqliteEnv();
+    const cutoff = NOW - PROMPT_ANSWER_RETENTION_DAYS * 86_400_000;
+    const insert = e.sqlite.query(`INSERT INTO prompt_context_answers (project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, selection, created_at)
+      VALUES (?, 'uncaptured', 'prompt', ?, 'empty', 0, '[]', '[]', '[]', ?, ?)`);
+    try {
+      for (const project of ['proj_1', 'proj_2']) {
+        for (let i = 0; i < (project === 'proj_1' ? JOB_BATCH + 1 : 2); i++) insert.run(project, `old-${i}`, JSON.stringify(emptyInjectionCounts()), cutoff - 1);
+        for (const at of [cutoff, NOW]) insert.run(project, `kept-${at}`, JSON.stringify(emptyInjectionCounts()), at);
+      }
+      const plan = e.sqlite.query(`EXPLAIN QUERY PLAN ${PROMPT_ANSWER_RETENTION_SQL}`).all(cutoff, JOB_BATCH);
+      expect(JSON.stringify(plan)).toContain('USING COVERING INDEX idx_prompt_context_answers_created (project_id=? AND created_at<?)');
+      expect(JSON.stringify(plan)).not.toContain('SCAN prompt_context_answers');
+      expect(await agentRunRetention(e.serverEnv, NOW)).toBe(JOB_BATCH);
+      expect(await agentRunRetention(e.serverEnv, NOW)).toBe(3);
+      expect(await agentRunRetention(e.serverEnv, NOW)).toBe(0);
+      expect(e.sqlite.query('SELECT project_id, created_at FROM prompt_context_answers ORDER BY project_id, created_at').all()).toEqual([
+        { project_id: 'proj_1', created_at: cutoff }, { project_id: 'proj_1', created_at: NOW },
+        { project_id: 'proj_2', created_at: cutoff }, { project_id: 'proj_2', created_at: NOW },
+      ]);
+    } finally { e.sqlite.close(); }
+  });
+
+  it('reaches expired answers beyond many empty Projects within the wake statement budget', async () => {
+    const e = sqliteEnv();
+    try {
+      const project = e.sqlite.query('INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)');
+      for (let i = 0; i < WAKE_JOB_STATEMENT_LIMIT + 1; i++) project.run(`empty-${i}`, 'empty', NOW);
+      project.run('zz-last', 'last', NOW);
+      e.sqlite.query(`INSERT INTO prompt_context_answers (project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, selection, created_at)
+        VALUES ('zz-last', 's', 'p', 'a', 'empty', 0, '[]', '[]', '[]', ?, 0)`).run(JSON.stringify(emptyInjectionCounts()));
+      const measured = measuredContentEnv(e.serverEnv, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: 0 });
+      expect(await agentRunRetention(measured.env, NOW)).toBe(1);
+      expect(measured.usage.statements).toBeLessThan(10);
+      expect(e.sqlite.query('SELECT COUNT(*) AS n FROM prompt_context_answers').get()).toEqual({ n: 0 });
+    } finally { e.sqlite.close(); }
   });
 });
 
@@ -486,6 +623,16 @@ describe('POST /context/prompt', () => {
         }
         expect(new Set(namespaces)).toEqual(new Set([await vectorNamespace({ projectId, modelKey: semantic.provider.modelKey })]));
         expect({ projectId, skipped: answer.skipped, nonempty: answer.context.length > 0 }).toEqual({ projectId, skipped: ['plan-nudge:no_intent'], nonempty: true });
+        const row = e.sqlite.query('SELECT selection, parts FROM prompt_context_answers WHERE project_id = ?').get(projectId) as { selection: string; parts: string };
+        const spores = legacyOnly ? 3 : 0;
+        const planHits = projectId === 'proj_1' ? 4 : 100;
+        const hydratedPlans = Math.min(planHits, legacyOnly ? 3 : 7);
+        expect(JSON.parse(row.selection)).toEqual({
+          sporeRawMatches: projectId === 'proj_1' ? 30 : 100, sporeJoined: projectId === 'proj_1' ? 30 : 100, sporeHits: projectId === 'proj_1' ? 30 : 100,
+          sporeRelevant: spores, sporeHydrated: spores,
+          planRawMatches: planHits, planJoined: planHits, planHits, planUnserved: planHits, planHydrated: hydratedPlans, budgetKept: spores + hydratedPlans,
+        });
+        expect(JSON.parse(row.parts)).toEqual([{ kind: 'spores', sporeCount: spores, planCount: hydratedPlans }]);
       }
       expect(e.sqlite.query('SELECT project_id FROM spore_injections ORDER BY project_id').all()).toEqual([{ project_id: 'proj_1' }, { project_id: 'proj_2' }]);
       expect(e.sqlite.query('SELECT project_id, outcome FROM prompt_context_answers ORDER BY project_id').all()).toEqual([{ project_id: 'proj_1', outcome: 'served' }, { project_id: 'proj_2', outcome: 'served' }]);

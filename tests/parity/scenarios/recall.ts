@@ -3,7 +3,7 @@ import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '..
 
 /** Both unconfigured targets retain independent recall contributors and explicitly skip semantic spores. */
 export const recall: ParityScenario = {
-  name: 'recall: provider unavailability, independent guidance and capability admission',
+  name: 'recall: semantic configuration, independent guidance and capability admission',
   async run(target: ParityTarget) {
     const post = async (sessionId: string, kind: string, payload: Record<string, unknown>, createdAt = Date.now()) => {
       const res = await fetch(`${target.url}/events`, {
@@ -72,7 +72,7 @@ export const recall: ParityScenario = {
     // The planning nudge remains available when semantic recall has no provider.
     const first = await served(session, p1, planning);
     expect(first.persisted).toBe(true);
-    expect(first.skipped).toEqual(['spores:provider_unavailable']);
+    expect(first.skipped).toEqual(['spores:no_semantic']);
     expect(first.parts?.map((p) => p.kind)).toEqual(['plan-nudge']);
     expect(first.context?.startsWith('Myco is where plans live')).toBe(true);
     expect(first.context).not.toContain(`the hook answers before the drain ${stamp}`);
@@ -92,10 +92,11 @@ export const recall: ParityScenario = {
     expect(later.skipped).toContain('plan-nudge:repeat');
     expect(await target.sql(`SELECT kind FROM session_injections WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`))
       .toEqual([{ kind: 'plan-nudge' }]);
-    const answers = await target.sql(`SELECT prompt_id, outcome, parts, skipped, failures FROM prompt_context_answers
-      WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)} ORDER BY created_at, prompt_id`) as Array<{ prompt_id: string; outcome: string; parts: string; skipped: string; failures: string }>;
+    const answers = await target.sql(`SELECT prompt_id, outcome, parts, skipped, failures, selection FROM prompt_context_answers
+      WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)} ORDER BY created_at, prompt_id`) as Array<{ prompt_id: string; outcome: string; parts: string; skipped: string; failures: string; selection: string }>;
     expect(answers).toHaveLength(3);
-    expect(answers.find((answer) => answer.prompt_id === p1)).toMatchObject({ outcome: 'served', parts: '[{"kind":"plan-nudge"}]', skipped: '["spores:provider_unavailable"]', failures: '[]' });
+    for (const answer of answers) expect(Object.values(JSON.parse(answer.selection))).toEqual(Array(11).fill(0));
+    expect(answers.find((answer) => answer.prompt_id === p1)).toMatchObject({ outcome: 'served', parts: '[{"kind":"plan-nudge"}]', skipped: '["spores:no_semantic"]', failures: '[]' });
     expect(answers.filter((answer) => answer.outcome === 'empty')).toHaveLength(2);
     expect(answers.filter((answer) => answer.outcome === 'empty').every((answer) => JSON.parse(answer.skipped).includes('plan-nudge:repeat'))).toBe(true);
 

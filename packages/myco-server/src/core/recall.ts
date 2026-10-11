@@ -33,7 +33,7 @@
  * failure in the spore half then leaves the nudge unburned for the next prompt.
  */
 import type { ErrorClassifier, RelationalStore } from './adapters.js';
-import { INJECTION_LEAVES, InjectionFailure, injectionLeaves, selectSporesForPrompt, type InjectionLeaves, type InjectionSkip } from './injection.js';
+import { INJECTION_LEAVES, InjectionFailure, emptyInjectionCounts, injectionLeaves, selectSporesForPrompt, type InjectionCounts, type InjectionLeaves, type InjectionSkip } from './injection.js';
 import type { SemanticSearch } from '../read/embedding.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingTexts } from './settings.js';
 import { sha256Hex } from '../hash.js';
@@ -218,16 +218,19 @@ async function recordPromptAnswer(
   identity: { projectId: string; sessionId: string; promptId: string },
   answer: PromptContext,
   failures: readonly RecallFailure[],
+  selection: InjectionCounts,
   now: number,
   classifyError?: ErrorClassifier,
 ): Promise<PromptContext> {
   try {
     await db.prepare(`INSERT INTO prompt_context_answers
-      (project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      (project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, selection, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(identity.projectId, identity.sessionId, identity.promptId, crypto.randomUUID(),
         answer.context.length > 0 ? 'served' : 'empty', answer.context.length,
-        JSON.stringify(answer.parts), JSON.stringify(answer.skipped), JSON.stringify(failures), now).run();
+        JSON.stringify(answer.parts.map((part) => part.kind === 'spores'
+          ? { kind: part.kind, sporeCount: part.sporeIds.length, planCount: part.planIds.length } : part)),
+        JSON.stringify(answer.skipped), JSON.stringify(failures), JSON.stringify(selection), now).run();
   } catch (error) {
     emit({ kind: 'recall_answer_unrecorded', ...identity, error: classify(error, classifyError) });
   }
@@ -296,7 +299,8 @@ export async function composePromptContext(
   classifyError?: ErrorClassifier,
 ): Promise<PromptContext> {
   const identity = { projectId: scope.projectId, sessionId: input.sessionId, promptId: input.promptId };
-  if (!capabilityOn) return recordPromptAnswer(db, identity, { context: '', parts: [], skipped: ['capability'] }, [], input.now, classifyError);
+  let counts = emptyInjectionCounts();
+  if (!capabilityOn) return recordPromptAnswer(db, identity, { context: '', parts: [], skipped: ['capability'] }, [], counts, input.now, classifyError);
 
   const skipped: RecallSkip[] = [];
   const failures: RecallFailure[] = [];
@@ -308,7 +312,11 @@ export async function composePromptContext(
       promptHash: await sha256Hex(input.text),
       prompt: input.text,
       now: input.now,
-    }, resolveSemantic);
+    }, resolveSemantic).catch((error: unknown) => {
+      if (error instanceof InjectionFailure) counts = error.counts;
+      throw error;
+    });
+    counts = selection.counts;
     if (selection.skipped !== null) skipped.push(`spores:${selection.skipped}`);
     else if (selection.context.length > 0) {
       return { part: { kind: 'spores', sporeIds: selection.items.filter((i) => i.kind === 'spore').map((i) => i.id), planIds: selection.items.filter((i) => i.kind === 'plan').map((i) => i.id) }, text: selection.context };
@@ -330,7 +338,7 @@ export async function composePromptContext(
     context: kept.map((c) => c.text).join(JOIN),
     parts: kept.map((c) => c.part),
     skipped,
-  }, failures, input.now, classifyError);
+  }, failures, counts, input.now, classifyError);
 }
 
 /**
@@ -377,7 +385,7 @@ export async function composeSessionContext(
    * `preview`: compose the block and record nothing, so no session is held to have been served it. What a member
    * asks for when it joins a project, to have the block cached before its first session starts.
    */
-  opts: { preview?: boolean } = {},
+  opts: { preview?: boolean; classifyError?: ErrorClassifier } = {},
 ): Promise<RecallSessionBlock> {
   const recordKind = sessionInjectionKind(input);
   const skipped: RecallSkip[] = [];
@@ -404,7 +412,7 @@ export async function composeSessionContext(
         });
       }
     }
-  });
+  }, opts.classifyError);
 
   const kept = partsWithinBound(contributions, SESSION_CONTEXT_MAX_CHARS);
   if (kept.length === 0) return { context: '', parts: [], skipped, kind: recordKind };

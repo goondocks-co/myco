@@ -48,8 +48,8 @@ describe('portable machine identities', () => {
     const target = seeded();
     try {
       source.sqlite.query(`INSERT INTO prompt_context_answers
-        (project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, created_at)
-        VALUES ('proj_bk', 'sess_1', 'prompt_1', 'answer_1', 'empty', 0, '[]', '["spores"]', '[{"contributor":"spores","error":"constraint","operation":"record"}]', ?)`).run(source.now);
+        (project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, selection, created_at)
+        VALUES ('proj_bk', 'sess_1', 'prompt_1', 'answer_1', 'empty', 0, '[]', '["spores"]', '[{"contributor":"spores","error":"constraint","operation":"record"}]', '{"budgetKept":0}', ?)`).run(source.now);
       const saved = await createBackup(source.db, source.bucket, { producer: 'test', now: source.now });
       const artifact = (await backupArtifact(source.db, source.bucket, saved.id))!;
       await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });

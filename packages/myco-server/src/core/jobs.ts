@@ -82,7 +82,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   {
     name: 'agent-run-retention',
     runsThrough: 'sleep',
-    converges: 'no terminal, non-resumable agent run outlives the retention window, and its turns and reports go with it; a live or resumable run is never pruned',
+    converges: 'no terminal, non-resumable agent run outlives the retention window, and its turns and reports go with it; a live or resumable run is never pruned; prompt answer diagnostics are kept for 30 days',
   },
   {
     name: 'run-stale-sweep',

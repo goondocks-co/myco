@@ -110,7 +110,9 @@ export async function prefetchContext(opts: {
       }
       if (answer.class !== 'acked') {
         // Not answered now: the ask stays, and so do the rest, for the next pass.
-        process.stderr.write(`[myco] helper: context for ${sessionId} (${ask.kind}) not served (${answer.class})\n`);
+        const prefix = ask.kind === 'prompt' ? promptContextLogPrefix(opts.serverUrl, spool.projectId) : '[myco] helper: ';
+        const who = ask.kind === 'prompt' ? `prompt ${terminalText(ask.promptId)}` : `(${ask.kind})`;
+        process.stderr.write(`${prefix}context for ${terminalText(sessionId)} ${who} not served (${terminalText(answer.class)})\n`);
         report.stoppedBy = 'unanswered';
         return report;
       }

@@ -20,21 +20,28 @@ export interface SemanticSearch {
 export interface SemanticHit extends EmbeddingSource { vector_id: string; score: number; neighbor_mean: number | null; neighbor_std: number | null }
 const MIN_SEARCH_SIMILARITY = 0.3;
 
+export interface SemanticHitCounts { rawMatches: number; joinedHits: number; filteredHits: number }
+
 /** A vector is readable only while its source revision is still eligible in the same project. */
-export async function semanticHits(db: RelationalStore, scope: ReadScope, semantic: SemanticSearch, values: number[], options: { topK: number; minScore?: number; filters?: VectorFilters }): Promise<SemanticHit[]> {
+export async function semanticHits(db: RelationalStore, scope: ReadScope, semantic: SemanticSearch, values: number[], options: { topK: number; minScore?: number; filters?: VectorFilters; observe?: (counts: SemanticHitCounts) => void }): Promise<SemanticHit[]> {
   const partition = { projectId: scope.projectId, modelKey: semantic.provider.modelKey };
-  const hits = await semantic.vectors.query(partition, { values, ...options });
+  const { observe, ...queryOptions } = options;
+  const hits = await semantic.vectors.query(partition, { values, ...queryOptions });
+  observe?.({ rawMatches: hits.length, joinedHits: 0, filteredHits: 0 });
   const byId = new Map(hits.map((h) => [h.id, h.score]));
   const rows: SemanticHit[] = [];
+  let joinedHits = 0;
   for (const ids of inListChunks(hits.map((h) => h.id))) {
     const found = await db.prepare(`SELECT s.*, r.id AS vector_id, r.neighbor_mean, r.neighbor_std FROM embedding_receipts r
       JOIN embedding_sources s ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
       WHERE r.project_id = ? AND r.model_key = ? AND r.ready = 1 AND r.id IN (${ids.map(() => '?').join(',')})
       AND (s.type <> 'session' OR ${notTombstonedSql('s')})`)
       .bind(scope.projectId, partition.modelKey, ...ids).all<Omit<SemanticHit, 'score'>>();
-    rows.push(...found.results.map((r) => ({ ...r, score: byId.get(r.vector_id)! })));
+    joinedHits += found.results.length;
+    rows.push(...found.results.filter((r) => vectorMatches(r, options.filters)).map((r) => ({ ...r, score: byId.get(r.vector_id)! })));
+    observe?.({ rawMatches: hits.length, joinedHits, filteredHits: rows.length });
   }
-  return rows.filter((r) => vectorMatches(r, options.filters)).sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id));
+  return rows.sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id));
 }
 
 /** Semantic queries use the same metadata filters as full-text queries. */

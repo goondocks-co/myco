@@ -91,6 +91,21 @@ function servingPrompts(serve: (body: { promptId: string; text: string }) => str
 }
 
 describe('a prompt', () => {
+  it('persists a transient non-answer in the scoped helper log and keeps the prompt ask pending', async () => {
+    const serverUrl = 'https://member-test.invalid';
+    const fetch: FetchLike = async (input, init) => new URL(new Request(input, init).url).pathname === '/context/prompt'
+      ? Response.json({}, { status: 503, headers: { [PROTOCOL_HEADER]: '1' } }) : rig.fetch(input, init);
+    await runHook('user-prompt-submit', { session_id: 'sess-transient', prompt: 'look up controller evidence', transcript_path: transcript('sess-transient') }, { fetch, symbiont: 'copilot' });
+    const restore = routeStderrToHelperLog(mycoHome, 'proj_1', serverUrl);
+    try {
+      await prefetchContext({ spool: spool(), client: new ServerClient({ serverUrl, token: rig.token, projectId: 'proj_1' }, fetch), serverUrl, mycoHome, budget: deadlineBudget(Date.now() + 10_000), now: Date.now });
+    } finally { restore(); }
+    const log = fs.readFileSync(helperLogPath(mycoHome), 'utf8');
+    expect(log).toContain(`${serverUrl} proj_1 ${promptContextLogPrefix(serverUrl, 'proj_1')}context for sess-transient prompt `);
+    expect(log).toContain('not served (retry)');
+    expect(readSessionState(spool().dir, 'sess-transient').contextAsks).toHaveLength(1);
+  });
+
   it('keeps skip reasons from empty prompt answers and writes safe helper diagnostics', async () => {
     const skipped = ['spores:empty', 'plan-nudge:no_intent', 'server\u001b[31m\ntext'];
     const fetch: FetchLike = async (input, init) => {

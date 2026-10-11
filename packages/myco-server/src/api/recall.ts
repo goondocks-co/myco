@@ -134,7 +134,7 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
     settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),
   ]);
   const [served, machine] = await Promise.all([
-    composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, { sessionId: sessionId ?? '', ...identity, now: ctx.now }, { preview }),
+    composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, { sessionId: sessionId ?? '', ...identity, now: ctx.now }, { preview, classifyError: env.platform?.classifyError }),
     // The machine's own settings, where the member asking claims it; a machine keeps them from its session start.
     machineBlockFor(env.db, ctx.memberId, ctx.machineId, ctx),
   ]);

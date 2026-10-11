@@ -10,9 +10,10 @@ CREATE TABLE IF NOT EXISTS prompt_context_answers (
     parts TEXT NOT NULL,
     skipped TEXT NOT NULL,
     failures TEXT NOT NULL,
+    selection TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     PRIMARY KEY (project_id, session_id, prompt_id, id));
 
-CREATE INDEX IF NOT EXISTS idx_prompt_context_answers_session ON prompt_context_answers (project_id, session_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_prompt_context_answers_created ON prompt_context_answers (project_id, created_at);
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '84');

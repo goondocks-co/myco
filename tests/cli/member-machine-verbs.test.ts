@@ -353,6 +353,12 @@ describe('a joined member with no 1.4 vault', () => {
     expect(ran.stdout).not.toContain('other project');
     expect(ran.stdout).not.toContain('other deployment');
     expect(ran.stdout).not.toContain('daemon.log');
+    appendHelperLog(mycoHome, PROJECT, `${prefix}context for sess-1 prompt p3 not served (retry)`, SERVER_URL);
+    appendHelperLog(mycoHome, PROJECT, `${prefix}context prefetch failed: server\u001b[31mtext`, SERVER_URL);
+    const failures = await verb('logs', ['--tail', '2'], rig.fetch);
+    expect(failures.stdout).toContain('prompt p3 not served (retry)');
+    expect(failures.stdout).toContain('context prefetch failed: server [31mtext');
+    expect(failures.stdout).not.toContain('\u001b');
     expect(legacyArtifacts()).toEqual([]);
 
     const bad = await verb('logs', ['--tail', 'x'], rig.fetch);

@@ -10,7 +10,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { helperPass, runHelperVerb } from '@myco/cli/member-helper.js';
 import { HELPER_START_GRACE_MS, helperLogPath, helperPaths, kickHelper, runHelper, shipsInline, type KickOutcome } from '@myco/member/helper.js';
-import { updateSessionState } from '@myco/member/session-state.js';
+import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
+import { ServerClient } from '@myco/member/transport.js';
+import { promptContextLogPrefix } from '@myco/member/context-diagnostics.js';
+import { routeStderrToHelperLog } from '@myco/member/helper.js';
 import { machineSettingsPath } from '@myco/member/registry.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { MemberSpool } from '@myco/member/spool.js';
@@ -128,6 +131,30 @@ describe('a kick', () => {
 });
 
 describe('myco member helper', () => {
+  it('logs sanitized prefetch throws under the prompt-context destination and leaves the ask pending', async () => {
+    const rig = await memberRig();
+    const serverUrl = 'https://s';
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl });
+    const spool = new MemberSpool({ projectId: PROJECT, serverUrl }, { mycoHome });
+    const sessionId = 'sess-prompt-prefetch-fails';
+    const promptId = mintId();
+    spool.append(sessionId, promptEvent({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: 't' }, { promptId, text: 'must arrive' }));
+    updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = [{ kind: 'prompt', promptId, text: 'must arrive', at: Date.now() }]; });
+    const original = ServerClient.prototype.request;
+    const request = spyOn(ServerClient.prototype, 'request').mockImplementation(async function (this: ServerClient, method, path, init) {
+      if (path === '/context/prompt') throw new Error('fixture\u001b[31m\nprefetch failure');
+      return original.call(this, method, path, init);
+    });
+    const restore = routeStderrToHelperLog(mycoHome, PROJECT, serverUrl);
+    try { await helperPass({ projectId: PROJECT, serverUrl }, mycoHome, { fetch: rig.fetch })(Date.now() + 15_000, { force: true }); }
+    finally { restore(); request.mockRestore(); }
+    expect(rig.rows('events')).toBe(1);
+    const log = fs.readFileSync(helperLogPath(mycoHome), 'utf8');
+    expect(log).toContain(`${promptContextLogPrefix(serverUrl, PROJECT)}context prefetch failed: fixture [31m prefetch failure`);
+    expect(log).not.toContain('\u001b');
+    expect(readSessionState(spool.dir, sessionId).contextAsks).toHaveLength(1);
+  });
+
   for (const damage of ['loose-mode', 'truncated', 'foreign-owner', 'unreadable', 'directory'] as const) {
     it(`delivers capture with ${damage} machine-settings order file`, async () => {
       const rig = await memberRig();
