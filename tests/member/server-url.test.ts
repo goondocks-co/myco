@@ -7,7 +7,10 @@ import { describe, expect, it } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { admitMemberServerUrl } from '@myco/member/server-url.js';
+import { memberServerDialUrl, admitMemberServerUrl } from '@myco/member/server-url.js';
+import { ServerClient } from '@myco/member/transport.js';
+import { unboundedBudget } from '@myco/member/budget.js';
+import { memberRemoteMcp } from '@myco/symbionts/member-hooks.js';
 import { keepLoopbackOffProxy } from '@myco/cli/loopback-proxy.js';
 
 describe('admitting a member server URL', () => {
@@ -18,6 +21,27 @@ describe('admitting a member server URL', () => {
     for (const url of ['http://myco.example.com', 'http://10.0.0.5:8787', 'http://127.0.0.1.example', 'http://[::2]:1', 'ftp://127.0.0.1', 'not a url']) {
       expect({ url, admitted: admitMemberServerUrl(url, {}) }).toEqual({ url, admitted: false });
     }
+  });
+
+  it('dials plaintext localhost as a numeric loopback without a DNS lookup', async () => {
+    const server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch(request) {
+      return Response.json({ host: new URL(request.url).hostname, auth: request.headers.get('authorization') });
+    } });
+    try {
+      const url = memberServerDialUrl(`http://localhost:${server.port}/health`);
+      expect(new URL(url).hostname).toBe('127.0.0.1');
+      const client = new ServerClient({ serverUrl: `http://localhost:${server.port}`, token: 'fixture' });
+      const raw = await client.request('POST', '/capture', { budget: unboundedBudget(), scope: 'deployment' });
+      expect(raw).toMatchObject({ kind: 'response', json: { host: '127.0.0.1', auth: 'Bearer fixture' } });
+      expect(await client.health(unboundedBudget())).toBe(true);
+      expect(client.serverUrl).toBe(`http://localhost:${server.port}`);
+      expect(memberRemoteMcp(`http://localhost:${server.port}`, 'headersHelper', '/fixture/myco', 'registry')).toMatchObject({
+        url: `http://127.0.0.1:${server.port}/mcp`,
+        headersHelper: `/fixture/myco member mcp-headers --credential registry --server http://localhost:${server.port}`,
+      });
+      expect(memberServerDialUrl('https://localhost:8787')).toBe('https://localhost:8787');
+      expect(memberServerDialUrl('http://[::1]:8787')).toBe('http://[::1]:8787');
+    } finally { server.stop(true); }
   });
 
   it('writes one list to NO_PROXY and no_proxy: what either held, then the admitted loopback host', () => {

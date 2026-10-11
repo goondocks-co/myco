@@ -1,3 +1,4 @@
+import { memberServerDialUrl } from '@myco/member/server-url.js';
 import { runnerCheckIn } from '@goondocks/myco-shared/setup-guidance';
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, parseProfileRefusal, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
@@ -249,7 +250,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   let modelCatalog = false;
   let steps = false;
   try {
-    const res = await send(new URL(path, options.serverUrl).toString(), {
+    const res = await send(memberServerDialUrl(new URL(path, options.serverUrl).toString()), {
       method: 'POST',
       headers: { ...deploymentScopedHeaders({ token }), 'content-type': 'application/json' },
       body: body instanceof SerializedBody ? body.text : JSON.stringify(body),

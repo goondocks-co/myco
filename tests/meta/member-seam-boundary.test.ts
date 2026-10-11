@@ -8,7 +8,7 @@
  * must not reach daemon/, service/, grove/, vault/, db/, host/, mcp/, tools/,
  * agent/, the installer, or the YAML manifest loader — and no module in its
  * closure may carry the local-daemon literals `127.0.0.1`, `daemon.json`,
- * `daemon.lock` in code. That closure is exactly what a thin member binary
+ * `daemon.lock` in code. The member URL policy alone may name the loopback dial address. That closure is exactly what a thin member binary
  * compiles, so the gate walks the IMPORT GRAPH rather than grepping one file:
  * a forbidden import two hops deep is the same violation as a direct one.
  *
@@ -394,6 +394,7 @@ function moduleViolationsOf(closure: Closure): Violation[] {
     const file = closure.modules.get(key)!;
     const code = codeOf(fs.readFileSync(file, 'utf-8'), file);
     for (const literal of FORBIDDEN_LITERALS) {
+      if (literal === '127.0.0.1' && key === 'member/server-url.ts') continue;
       if (code.includes(literal)) {
         out.push({ module: key, reason: `contains literal ${literal}`, chain: chainTo(closure, key) });
       }

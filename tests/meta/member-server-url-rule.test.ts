@@ -200,6 +200,16 @@ describe('the member server URL rule', () => {
     expect(missing).toEqual([]);
   });
 
+  it('pins plaintext localhost at every member network boundary, including installed MCP entries', () => {
+    const boundaries = [
+      ['member/transport.ts', 'request'], ['member/transport.ts', 'health'],
+      ['member/join-code.ts', 'exchangeJoinCode'], ['runner/loop.ts', 'postAs'],
+      ['cli/device-flow.ts', 'runDeviceFlow'], ['mcp/deployment-upstream.ts', 'upstreamOf'],
+      ['symbionts/member-hooks.ts', 'memberRemoteMcp'], ['symbionts/installer.ts', 'deploymentNamed'],
+    ];
+    expect(boundaries.filter(([file, fn]) => !callsRule(read(file!), fn!, 'memberServerDialUrl'))).toEqual([]);
+  });
+
   it('keeps loopback off a proxy at the CLI entry', () => {
     expect(callsRule(read('cli.ts'), 'main', RULE_EXPORTS.bypass)).toBe(true);
   });

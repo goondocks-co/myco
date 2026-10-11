@@ -82,3 +82,12 @@ export function normalizeMemberServerAddress(value: string): URL | null {
   if (!url.hostname || url.username || url.password || !admitMemberServerUrl(url.href)) return null;
   return url;
 }
+
+/** Plaintext localhost dials use a loopback literal, independent of DNS or hosts-file answers. */
+export function memberServerDialUrl(value: string): string {
+  const url = new URL(value);
+  if (url.protocol !== 'http:' || url.hostname !== 'localhost') return value;
+  url.hostname = '127.0.0.1';
+  bypassProxyFor([url.hostname], process.env);
+  return url.href;
+}
