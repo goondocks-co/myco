@@ -975,9 +975,12 @@ describe('gates', () => {
     // builds a store actually calls its local, and is the most natural form for the
     // first real consumer to use. A gate that green-lights the change it exists to
     // catch is worse than none.
+    const constructsStore = (source: string) => /deploymentSecretStore\(/.test(stripComments(source))
+      || sourceCalls(source).some((call) => call.called === 'deploymentSecretStore');
+    expect(constructsStore('deps.deploymentSecretStore()')).toBe(true);
     const callers = files(SRC)
       .filter((f) => f !== join(SRC, 'core', 'secrets.ts'))
-      .filter((f) => sourceCalls(readFileSync(f, 'utf8')).some((call) => call.called === 'deploymentSecretStore'))
+      .filter((f) => constructsStore(readFileSync(f, 'utf8')))
       .map((f) => f.slice(SRC.length + 1));
     // The settings surfaces, which only ever call `describe`/`list`/`put`/`delete`;
     // the one dispatcher, which opens a provider credential to hand it to the

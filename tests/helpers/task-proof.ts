@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { isRenameBusyError, renameBusySync } from './rename-busy.js';
 
 export const TASK_START_TIMEOUT_MS = 60_000;
 const TASK_POLL_MS = 250;
@@ -8,7 +9,7 @@ export interface TaskSnapshot { state: string; lastRunTime: string; lastTaskResu
 export function readTaskProof<T>(file: string): T | undefined {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) as T; }
   catch (error) {
-    if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === 'ENOENT' || isRenameBusyError(error)) return undefined;
     throw error;
   }
 }
@@ -16,7 +17,7 @@ export function readTaskProof<T>(file: string): T | undefined {
 export function publishTaskProof(file: string, proof: unknown): void {
   const temporary = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(proof), 'utf8');
-  fs.renameSync(temporary, file);
+  renameBusySync(temporary, file);
 }
 
 /** Proof belongs to this start only after Task Scheduler reports a new running attempt. */
