@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { run } from '@myco/cli/login.js';
-import { runProvision } from '@myco/cli/member.js';
+import { detectedProvisionLines, runProvision } from '@myco/cli/member.js';
 import { isBinaryOnPath } from '@myco/symbionts/detect.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { unjoinedRig } from '../member/helpers/server.js';
@@ -256,4 +256,10 @@ describe('myco login sets up the agents on this machine', () => {
     expect(err.join('\n')).toContain('name one with --server');
     process.exitCode = 0;
   });
+});
+
+it('prints one final period after an agent conflict reason', () => {
+  const lines = detectedProvisionLines({ provisioned: [], unchanged: [], heldSkills: [],
+    skipped: [{ agent: 'codex', displayName: 'Codex', reason: 'Run myco member provision codex.' }] });
+  expect(lines).toEqual(['Skipped Codex: Run myco member provision codex.']);
 });

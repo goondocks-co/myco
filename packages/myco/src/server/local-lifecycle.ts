@@ -188,7 +188,7 @@ export async function prepareLocal(home: string, plan: LocalPreparePlan, deps: L
   const mint = plan.owner === 'mint' && before.owner !== 'linked' && (!pendingLive || deps.renewOwnerLink === true);
   const exclusive = create || signIn || mint;
   if ((exclusive || plan.serve === 'service') && before.serving.mode === 'foreground') {
-    throw new Error(`Your Myco is running in another terminal (process ${before.serving.pid}). Stop it there with Ctrl-C, then run myco setup again.`);
+    throw new Error(`Your Myco is running in another terminal (process ${before.serving.pid}). Stop it there with Ctrl-C, then run myco server status --target local to check it before retrying the command.`);
   }
   const spec = specFor(home, deps);
   const service = before.serving.mode === 'service' || plan.serve === 'service';

@@ -99,7 +99,7 @@ describe('myco member provision', () => {
       const refused = await provision(['codex']);
       expect(refused.out).toEqual([]);
       expect(refused.err.join('\n')).toContain(globalConfig);
-      expect(refused.err.join('\n')).toContain('capture cutover');
+      expect(refused.err.join('\n')).toContain('myco cutover --dry-run');
       expect(process.exitCode).toBe(2);
       expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
 
@@ -172,4 +172,24 @@ describe('myco member provision', () => {
       fs.rmSync(path.join(defaultHome, 'bin'), { recursive: true, force: true });
     }
   });
+});
+
+it('names the other 2.0 Myco without prescribing legacy cutover or changing its config', async () => {
+  join();
+  const first = await provision(['codex']);
+  expect(first.err).toEqual([]);
+  const config = path.join(agentHome, '.codex', 'config.toml');
+  const before = fs.readFileSync(config, 'utf8');
+  writeRegistryEntry({
+    version: REGISTRY_VERSION, projectId: 'proj_other', serverUrl: 'https://other.example',
+    token: TOKEN, root, machineId: 'm1', joinedAt: 1, updatedAt: 2,
+  }, { mycoHome });
+  const refused = await provision(['codex']);
+  const text = refused.err.join('\n');
+  expect(text).toContain("Codex's Myco tools stay on https://myco.example");
+  expect(text).toContain('Capture goes to the right one.');
+  expect(text).toContain('myco doctor');
+  expect(text).not.toContain('myco logout');
+  expect(text).not.toContain('cutover');
+  expect(fs.readFileSync(config, 'utf8')).toBe(before);
 });

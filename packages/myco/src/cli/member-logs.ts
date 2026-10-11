@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
-import { projectDiagnostics } from '../member/diagnostics.js';
+import { MemberSpool } from '../member/spool.js';
 import { deploymentUrl, readRegistryEntryResult } from '../member/registry.js';
 import { homeOf, rootOf, type MemberVerbDeps } from './deployment-reader.js';
 import { describeWorkerService, type WorkerServiceDeps } from './worker-service.js';
@@ -24,7 +24,7 @@ export interface MemberLogsDeps extends MemberVerbDeps {
   worker?: WorkerServiceDeps;
 }
 
-const iso = (ms: number | null): string => (ms === null ? 'unknown time' : new Date(ms).toISOString());
+const iso = (ms: number | null): string => (ms === null || Number.isNaN(new Date(ms).getTime()) ? 'unknown time' : new Date(ms).toISOString());
 
 /** The last `n` lines of a file, or null when it does not exist. */
 function tail(file: string, n: number): string[] | null {
@@ -82,13 +82,13 @@ export async function run(args: readonly string[], source: CredentialSource, dep
     }
   }
 
-  const { refusals } = projectDiagnostics(entry, mycoHome, (deps.now ?? Date.now)());
+  const refusals = new MemberSpool(entry, { mycoHome, initialize: false }).readRefused();
   out(`=== refused events (${entry.projectId}) ===`);
-  if (!refusals.logReadable) out('  the refusal log could not be read');
+  if (!refusals.readable) out('  the refusal log could not be read');
   else if (refusals.entries.length === 0) out('  (none)');
   else {
     for (const r of refusals.entries.slice(-lines)) {
-      out(`${iso(r.at)} ${r.kind ?? 'unknown kind'} ${r.eventId ?? 'unknown event'} session ${r.sessionId ?? 'unknown'}: ${r.code ?? 'code not recognised'}`);
+      out(`${iso(r.at)} ${r.kind ?? 'unknown kind'} ${r.eventId ?? 'unknown event'} session ${r.sessionId ?? 'unknown'}: ${r.serverCode ?? r.code}: ${r.reason}`);
     }
     if (refusals.unreadableLines > 0) out(`  ${refusals.unreadableLines} line(s) of the log could not be read`);
   }

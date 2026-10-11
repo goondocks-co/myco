@@ -683,7 +683,7 @@ export function detectedProvisionLines(found: DetectedProvision): string[] {
   const ready = [...found.provisioned, ...found.unchanged];
   const lines: string[] = [];
   if (ready.length > 0) lines.push(`Capture is set up for ${ready.join(', ')}.`);
-  for (const skip of found.skipped) lines.push(`Skipped ${skip.displayName}: ${skip.reason}.`);
+  for (const skip of found.skipped) lines.push(`Skipped ${skip.displayName}: ${skip.reason.replace(/[.]+$/, '')}.`);
   for (const held of found.heldSkills) lines.push(`Left ${held.names.join(', ')} in ${held.folder} as they are: another installation or you put them there.`);
   if (ready.length === 0 && found.skipped.length === 0) lines.push('No supported agent is installed on this machine; once one is, run `myco member provision`.');
   return lines;

@@ -856,6 +856,7 @@ export class MemberSpool {
     ensurePrivateFile(file);
     const line = JSON.stringify({
       eventId: entry.eventId, sessionId: entry.sessionId, kind: entry.kind, code: entry.code, reason: entry.reason, at: entry.at,
+      ...(entry.serverCode === undefined ? {} : { serverCode: entry.serverCode }),
       ...(entry.held === undefined ? {} : { held: { retryAt: entry.held.retryAt } }),
     }) + '\n';
     let size = 0;

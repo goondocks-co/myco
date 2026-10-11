@@ -340,3 +340,57 @@ describe('home doctor', () => {
     expect(lines.join('\n')).toContain('service state unavailable');
   });
 });
+
+describe('dated refusal and abandoned address guidance', () => {
+  it('shows the newest time across the whole log and warns only for recent refusals', async () => {
+    const { MemberSpool } = await import('@myco/member/spool.js');
+    const { readRegistryEntry } = await import('@myco/member/registry.js');
+    const at = Date.UTC(2026, 9, 11);
+    deps.now = () => at;
+    join(personal, scratch);
+    const spool = new MemberSpool(readRegistryEntry(scratch, home)!, { mycoHome: home });
+    const old = at - 8 * 24 * 60 * 60 * 1000;
+    spool.appendRefused({ eventId: 'evt_old', sessionId: 'session', kind: 'session-end', code: 'refused', reason: 'old', at: old });
+    let check = (await homeReport(home, deps)).find(row => row.name === 'Refusals')!;
+    expect(check.status).toBe('ok');
+    expect(check.detail).toContain(new Date(old).toISOString());
+    expect(check.detail).toContain('0 in the last 7 days');
+    expect(check.detail).toContain('myco logs');
+    spool.appendRefused({ eventId: 'evt_recent', sessionId: 'session', kind: 'session-end', code: 'refused', reason: 'recent', at });
+    for (let i = 0; i < 55; i++) spool.appendRefused({ eventId: 'evt_old', sessionId: 'session', kind: 'session-end', code: 'refused', reason: 'old', at: old });
+    check = (await homeReport(home, deps)).find(row => row.name === 'Refusals')!;
+    expect(check.status).toBe('warn');
+    expect(check.detail).toContain(new Date(at).toISOString());
+    expect(check.detail).toContain('1 in the last 7 days');
+  });
+
+  it('suggests local-only logout only for a long-expired credential at an unavailable address', async () => {
+    const at = Date.UTC(2026, 9, 11);
+    deps.now = () => at;
+    const write = (expiresAt: number) => writeDeploymentMembership({ serverUrl: personal, token: 'A'.repeat(43), machineId: 'machine-one', joinedAt: 1, updatedAt: 1, expiresAt }, { mycoHome: home });
+    write(at - 8 * 24 * 60 * 60 * 1000);
+    deps.fetch = async () => { throw new Error('fixture offline'); };
+    expect(await report()).toContain(`myco logout ${personal} --local-only`);
+    deps.fetch = async () => new Response('{}');
+    expect(await report()).not.toContain('--local-only');
+    deps.fetch = async () => { throw new Error('fixture offline'); };
+    write(at - 1000);
+    expect(await report()).not.toContain('--local-only');
+  });
+
+  it('prints the server code and reason from the persisted log while export omits free text', async () => {
+    const { MemberSpool } = await import('@myco/member/spool.js');
+    const { readRegistryEntry } = await import('@myco/member/registry.js');
+    const { projectDiagnostics } = await import('@myco/member/diagnostics.js');
+    join(personal, scratch);
+    const entry = readRegistryEntry(scratch, home)!;
+    new MemberSpool(entry, { mycoHome: home }).appendRefused({
+      eventId: 'evt_1', sessionId: 'session', kind: 'session-end', code: 'refused',
+      serverCode: 'fixture_server_refusal', reason: 'fixture reason for refusal', at: now,
+    });
+    const lines: string[] = [];
+    expect(await runMemberVerb('logs', [], { ...deps, stdout: line => lines.push(line) })).toBe(true);
+    expect(lines.join('\n')).toContain('fixture_server_refusal: fixture reason for refusal');
+    expect(JSON.stringify(projectDiagnostics(entry, home, now))).not.toContain('fixture reason for refusal');
+  });
+});

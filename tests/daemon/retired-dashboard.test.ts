@@ -52,7 +52,7 @@ describe('the retired 1.4 dashboard', () => {
       expect({ pathname, status: res.status, type: res.headers.get('content-type'), cache: res.headers.get('cache-control') })
         .toEqual({ pathname, status: 200, type: 'text/html; charset=utf-8', cache: 'no-cache' });
       expect(body).toContain('The 1.4 dashboard is retired');
-      expect(body).toContain('myco login &lt;link&gt;');
+      expect(body).toContain('myco login &lt;address&gt;');
       expect(body).not.toContain('<script');
       expect(body).not.toContain(token);
       expect(body).not.toContain('__MYCO_AUTH__');

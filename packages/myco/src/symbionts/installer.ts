@@ -1,3 +1,4 @@
+import { toolsStayOnDeployment } from '@goondocks/myco-shared/setup-guidance';
 import type { SymbiontManifest } from './manifest-schema.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -2524,7 +2525,7 @@ export class SymbiontInstaller {
         const verdict = pluginFileVerdict(content, this.legacyHomes, memberHome);
         const replaceable = verdict === 'member' || (verdict === 'legacy' && this.legacyHomes.length > 0);
         if (!replaceable) {
-          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation. Complete its capture cutover before provisioning globally.`);
+          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation. Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover.`);
         }
       } else {
         const settings = this.readMcpFile(target, false);
@@ -2532,7 +2533,7 @@ export class SymbiontInstaller {
           .filter((command) => rawHasMycoOwnershipSignal(command) && !(this.legacyHomes.length > 0 && commandVerdict(command, this.legacyHomes) === 'legacy'));
         const foreign = commands.find((command) => parseCredentialFlag(command.split(/\s+/)) !== 'registry' || !ownBinaries.some((binary) => command.startsWith(`${binary} `)));
         if (foreign !== undefined) {
-          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation (\`${foreign}\`). Complete its capture cutover before provisioning globally.`);
+          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation (\`${foreign}\`). Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover.`);
         }
       }
     }
@@ -2553,7 +2554,12 @@ export class SymbiontInstaller {
     const replacing = this.leavingDeployment !== undefined && this.entryDeployment(existing) === this.leavingDeployment
       && this.helperDeployment(existing) === this.leavingDeployment;
     if (!legacy && (!this.isMemberMcpServer(existing) || (existing.url !== desired?.url && !replacing) || !sameCredentialSource)) {
-      throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, 'Complete its capture cutover before replacing the global entry');
+      const other = this.entryDeployment(existing);
+      if (this.isMemberMcpServer(existing) && other !== null && existing.url !== desired?.url) {
+        const message = toolsStayOnDeployment(this.manifest.displayName, other);
+        throw new MemberMcpConflictError(message, message);
+      }
+      throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, 'Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover');
     }
   }
 

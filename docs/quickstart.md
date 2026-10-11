@@ -26,10 +26,10 @@ When you're ready to enable intelligence features, you'll need:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
-myco login <invite link>
+myco login <address>
 ```
 
-The installer places the binary in `~/.myco/bin` and prints the next step: `myco login` with your Deployment's invite link, or [Self-hosting](self-hosting.md) to run your own. The default stable channel selects releases only and keeps the 1.4 managed-service behavior until a 2.x release exists. `MYCO_CHANNEL=alpha` admits alpha, beta and stable builds; `MYCO_CHANNEL=beta` admits beta and stable builds. The channel is recorded for updates, which never downgrade; `--dry-run` shows what it would install. With Myco 1.4 on the machine it installs nothing unless you pass `--replace-1.4`, and never moves 1.4 over by itself; see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14).
+The installer places the binary in `~/.myco/bin` and prints the next step: `myco login` with your Myco address, or [Self-hosting](self-hosting.md) to run your own. On a fresh machine, the default installer selects the newest 2.x release, including prereleases while no stable 2.x release exists. Existing 1.4 installations keep their 1.4 updates unless you explicitly choose replacement. `MYCO_CHANNEL=alpha` admits alpha, beta and stable builds; `MYCO_CHANNEL=beta` admits beta and stable builds. The channel is recorded for updates, which never downgrade; `--dry-run` shows what it would install. With Myco 1.4 on the machine it installs nothing unless you pass `--replace-1.4`, and never moves 1.4 over by itself; see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14).
 
 For an existing Myco 2.0 install, use `myco update --check` to see the newest eligible release, then `myco update` to update the binary and refresh your agents. The recorded channel stays in effect; `--channel beta` chooses a channel for that run only. Runner updates wait for active work to finish. See [Upgrading Myco](upgrade.md).
 
@@ -38,7 +38,7 @@ On Windows x64 (PowerShell, beta):
 irm https://myco.sh/install.ps1 | iex
 ```
 
-No Node runtime is required. On Windows, the PowerShell installer is still the Myco 1.4 one.
+No Node runtime is required. The shell and PowerShell installers use the same release selection.
 
 ### Plugin only
 
@@ -105,7 +105,7 @@ You don't need to drive the loop manually. Myco captures knowledge in the backgr
 
 ## Dashboard
 
-The dashboard is served by your Deployment, not by the local install. Sign this machine in with the invite link an admin gave you (`myco login <link>`), or run your own Deployment with `myco server create`. Then open the dashboard from any project that has joined it:
+The dashboard is served by your Deployment, not by the local install. Sign this machine in with your Myco address (`myco login <address>`) and approve the printed code in the dashboard, or run your own Deployment with `myco server create`. Then open the dashboard from any project that has joined it:
 
 ```bash
 myco open

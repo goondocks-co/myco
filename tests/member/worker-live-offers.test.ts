@@ -37,6 +37,34 @@ describe('live worker offers', () => {
     } finally { stopping.abort(); process.env.PATH = path; }
   });
 
+  it('announces one check-in only after the server acknowledges the offer', async () => {
+    const savedPath = process.env.PATH;
+    const root = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-offer-copy-')));
+    stubProfileHarness();
+    const stop = new AbortController();
+    const lines: string[] = [];
+    let claims = 0;
+    try {
+      await runWorker({
+        serverUrl: 'https://fixture.invalid', token: 'fixture', lockDir: null, runRoot: root,
+        only: ['claude-code'], pollIdleMs: 1, signal: stop.signal, log: line => lines.push(line),
+        listModels: async () => [],
+        fetchImpl: (async input => {
+          if (new URL(String(input)).pathname === '/worker/claim') {
+            claims++;
+            expect(lines.filter(line => line.startsWith('Checked in:'))).toHaveLength(claims === 1 ? 0 : 1);
+            if (claims === 2) stop.abort();
+          }
+          return Response.json({ persisted: true, claimed: false, reason: 'no_work' }, { headers: { [FEATURES_HEADER]: [EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE].join(',') } });
+        }) as typeof fetch,
+      });
+      const checkins = lines.filter(line => line.startsWith('Checked in:'));
+      expect(checkins).toHaveLength(1);
+      expect(checkins[0]).toContain('offering claude-code');
+      expect(checkins[0]).toContain('(checked ');
+    } finally { stop.abort(); process.env.PATH = savedPath; }
+  });
+
   for (const harness of HARNESSES.filter(offerable)) {
     it(`${harness.id} follows installation and login changes without restarting`, async () => {
       const root = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-live-offer-')));

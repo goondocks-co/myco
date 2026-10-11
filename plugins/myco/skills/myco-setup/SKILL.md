@@ -24,17 +24,24 @@ Two things can be installed, and they are independent.
 | The plugin | the skills, and the Myco tools over your deployment's URL |
 | The binary as well | session capture, plan capture, import, and optional runner commands |
 
-If the tools answer but nothing is being captured, the plugin is installed and the binary is not. That is a working configuration. This skill is for when the user wants the second half.
+The plugin can answer tools without the binary. If capture is missing, follow the checks below to identify which step remains.
 
 **Ask before installing anything.** This writes to the user's machine and to their agent's configuration. Say what will be installed and where, then wait.
 
 ## 1. Is the binary already here?
 
+Before invoking any Myco command, read the installation's `install.json` (normally `~/.myco/install.json`, or under `MYCO_HOME`). Require a `bin` matching the executable you intend to run. For a curl install, require a 2.x `version` and a `binary_sha256` matching that file. For an npm install whose marker lacks those fields, read the installed `@goondocks/myco` and platform package metadata without executing either binary: require matching 2.x versions and a hash match between the platform package's binary and the marker's `bin`. This applies to commands on `PATH` and binaries outside it.
+
+If the marker is missing, unreadable, older, or does not match, inspect files without executing the binary. Continue with the installer's preview and ask before replacing 1.4 with `--replace-1.4`.
+
+Once the matching 2.x binary is verified:
+
 ```bash
 myco version
 ```
 
-If that answers, skip to step 3. If the command is not found, the binary may still be installed but off `PATH` — try `~/.myco/bin/myco version` on macOS or Linux, and `%LOCALAPPDATA%\Myco\bin\myco.exe version` on Windows.
+If it answers, skip to step 3. If it is outside `PATH`, run the verified absolute `bin` path from the marker instead.
+
 
 ## 2. Install it
 
@@ -57,13 +64,15 @@ irm https://myco.sh/install.ps1 | iex
 
 ## 3. Connect to a deployment
 
-The user needs an invite link from whoever runs their deployment.
+Ask for the Myco address from whoever runs it. An invite link is optional.
 
 ```bash
-myco login <url>
+myco login <address>
 ```
 
-In a sandbox or a continuous-integration job there is no interactive step: the same string is placed in the environment as a join code and redeemed on the first agent session.
+For an interactive sign-in, open the printed approval page, sign in with GitHub and approve the matching code.
+
+In a sandbox or a continuous-integration job, use an administrator-issued join code: the same string is placed in the environment as a join code and redeemed on the first agent session.
 
 A join code and an invite link are single-use and expire. If one is refused, the answer is a fresh link from an administrator, not a retry.
 
