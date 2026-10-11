@@ -69,7 +69,7 @@ jobs:
       package_dir: ${{ steps.extract.outputs.package_dir }}
       tarball_prefix: ${{ steps.extract.outputs.tarball_prefix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Extract package and version from tag
         id: extract
         env:
