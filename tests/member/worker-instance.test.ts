@@ -10,7 +10,7 @@ import { profileWorkerServer } from '../helpers/profile-worker-server.js';
  * its credential from the membership before each request, so a rotation the
  * hooks perform underneath it does not end its attachment.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,9 +19,12 @@ import { deploymentKeyFor } from '@myco/member/registry.js';
 import { readWorkerRefusal } from '@myco/runner/refusal.js';
 import { attachOptions, endReplacedWorker, executableIdentity, sameProgram } from '@myco/cli/worker.js';
 import { programRuns } from '@myco/install/place-binary.js';
-import { workerServiceUnit } from '@myco/runner/service.js';
+import { installWorkerService, workerServiceUnit } from '@myco/runner/service.js';
 import { executionDeploymentUrls } from '@myco/cli/worker-service.js';
 import { runWorker, type WorkerOptions } from '@myco/runner/loop.js';
+
+import { legacyExecutors } from '@myco/cli/runner-service.js';
+import { recordingPlatform } from '../helpers/fake-service-manager.js';
 
 const URL_ = 'https://myco.example';
 const LOOPBACK = 'http://127.0.0.1:8787';
@@ -124,6 +127,29 @@ describe('the machine-wide worker lock', () => {
     if (held.held) held.release();
     expect(workerHolder(lockDir, URL_)).toBeNull();
     expect(workerHolder(lockDir, 'https://never.example')).toBeNull();
+  });
+
+  for (const caller of ['holder', 'unclassified', 'legacy service'] as const) it(`treats a lock removed before the no-create open as no holder (${caller})`, async () => {
+    const file = workerLockPath(lockDir, URL_);
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(file, '');
+    const platform = recordingPlatform();
+    const deps = { home: path.join(scratch, 'user'), mycoHome: path.join(scratch, 'myco'), lockDir, platform: 'darwin' as const, binaryPath: path.join(scratch, 'bin', 'myco'), runner: platform.runner };
+    if (caller === 'legacy service') installWorkerService({ ...deps, serverUrl: URL_ }, [], { runner: platform.runner });
+    const exists = fs.existsSync;
+    let removed = false;
+    const race = spyOn(fs, 'existsSync').mockImplementation(candidate => {
+      const result = exists(candidate);
+      if (String(candidate) === file && result) { fs.unlinkSync(file); removed = true; }
+      return result;
+    });
+    try {
+      if (caller === 'holder') expect(workerHolder(lockDir, URL_)).toBeNull();
+      else if (caller === 'unclassified') expect(unclassifiedWorkerHolders(lockDir)).toEqual([]);
+      else expect(await legacyExecutors(deps)).toMatchObject([{ installed: true, servingPid: null }]);
+      expect(removed).toBe(true);
+      expect(exists(file)).toBe(false);
+    } finally { race.mockRestore(); }
   });
 
   it('does not take a holder record left by a killed worker for a worker, whatever pid it names', () => {

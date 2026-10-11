@@ -312,10 +312,10 @@ export function readSessionState(spoolDir: string, sessionId: string): SessionSt
 }
 
 /** The state, or why it could not be used, read under the buffer lock. A lock this process cannot take throws, as it does for every other reader here. */
-export function readSessionStateResult(spoolDir: string, sessionId: string): SessionStateRead {
+export function readSessionStateResult(spoolDir: string, sessionId: string, options: { createLock?: boolean } = {}): SessionStateRead {
   const lock = bufferLockPath(spoolDir, sessionId);
-  ensurePrivateFile(lock);
-  return withFileLockSync(lock, () => readSessionStateResultUnlocked(spoolDir, sessionId));
+  if (options.createLock !== false) ensurePrivateFile(lock);
+  return withFileLockSync(lock, () => readSessionStateResultUnlocked(spoolDir, sessionId), { create: options.createLock, readIfMissing: options.createLock === false });
 }
 
 /** Locked read-modify-write: `mutate` sees the current state and its edits are written back before the lock is released. */
