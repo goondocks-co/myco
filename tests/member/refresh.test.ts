@@ -21,6 +21,7 @@ import { buildIdentity, refreshDue, refreshMemberCredential, refreshMembership, 
 import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { deliveryNotice } from '@myco/member/delivery-notice.js';
+import { promptContextLogPrefix } from '@myco/member/context-diagnostics.js';
 import { type FetchLike } from '@myco/member/transport.js';
 import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
@@ -68,7 +69,7 @@ const transcriptFile = (): string => {
 
 /** Copilot's prompt hook ships the prompt row, so each prompt is a live send the rotation can ride. */
 /** A hook's own lines, without the member helper's progress lines (the helper runs inside `runHook` in these tests). */
-const hookLines = (stderr: string): string => stderr.split('\n').filter((line) => !line.startsWith('[myco] helper:')).join('\n').trim();
+const hookLines = (stderr: string): string => stderr.split('\n').filter((line) => !line.startsWith('[myco] helper:') && !line.startsWith(promptContextLogPrefix(SERVER_URL, PROJECT))).join('\n').trim();
 const prompt = (fetchImpl: FetchLike, text: string) =>
   runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: text }, { helpers: 'run', fetch: fetchImpl, symbiont: 'copilot' });
 

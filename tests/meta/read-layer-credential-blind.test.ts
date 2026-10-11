@@ -195,9 +195,9 @@ describe('read layer', () => {
     //                     one-prompt-content-per-session rule lives in the
     //                     primary key rather than in a caller
     //   core/recall.ts    what a prompt is served at submit time — it OWNS
-    //                     session_injections, and holds the INSERT OR IGNORE
-    //                     whose once-per-session rule lives in the primary key
-    //                     rather than in a caller
+    //                     session_injections and prompt_context_answers, holds
+    //                     the once-per-session INSERT OR IGNORE, and prunes
+    //                     expired prompt answer diagnostics in bounded batches
     //   core/remotes.ts   git remotes as Project names — it OWNS project_remotes,
     //                     and holds the INSERT OR IGNORE whose one-remote-one-Project
     //                     rule lives in the primary key rather than in a caller

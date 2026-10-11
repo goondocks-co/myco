@@ -35,13 +35,13 @@ import { backfillTitles, titleReadySessions } from './titling.js';
 import { reconcileReleaseProvenance } from './release-provenance.js';
 import { MAINTENANCE_JOB, runMaintenance, type MaintenanceCheck } from './store-maintenance.js';
 import { CAPABILITY_HOLDS } from '@goondocks/myco-shared/run-holds';
+import { PROMPT_ANSWER_RETENTION_DAYS, prunePromptAnswers } from './recall.js';
 
 /** The retention window when the leaf is unset, and the bounds the leaf's rule declares. */
 export const RUN_RETENTION_DAYS_DEFAULT = 30;
 const RUN_RETENTION_DAYS_MIN = 1;
 const RUN_RETENTION_DAYS_MAX = 365;
 const DAY_MS = 86_400_000;
-
 /** How many rows one pass of a job touches before it yields; the next tick continues. */
 export const JOB_BATCH = 500;
 
@@ -133,7 +133,9 @@ export async function runRetentionDays(env: ServerEnv): Promise<number> {
 export async function agentRunRetention(env: ServerEnv, now: number): Promise<number> {
   const cutoff = now - (await runRetentionDays(env)) * DAY_MS;
   const runs = await pruneTerminalRuns(env.db, cutoff, JOB_BATCH);
-  return runs + await pruneRevokedCredentials(env.db, HARNESS_MEMBER_ID, cutoff, JOB_BATCH);
+  const credentials = await pruneRevokedCredentials(env.db, HARNESS_MEMBER_ID, cutoff, JOB_BATCH);
+  const answers = await prunePromptAnswers(env.db, now - PROMPT_ANSWER_RETENTION_DAYS * DAY_MS, JOB_BATCH);
+  return runs + credentials + answers;
 }
 
 export { STALE_RUN_ERROR } from './reader-codes.js';

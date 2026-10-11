@@ -104,12 +104,39 @@ export interface InjectionLeaves {
 }
 
 /** Why the selector served nothing. Null means it served what it selected. */
-export type InjectionSkip = 'capability' | 'disabled' | 'short_prompt' | 'zero_max' | 'repeat' | 'empty' | 'provider_unavailable';
+export type InjectionSkip = 'capability' | 'disabled' | 'short_prompt' | 'zero_max' | 'repeat' | 'empty' | 'no_semantic' | 'provider_unavailable';
+
+/** Counts at each selector stage, including matches rejected by the receipt join or metadata post-filter. */
+export interface InjectionCounts {
+  sporeRawMatches: number; sporeJoined: number; sporeHits: number;
+  sporeRelevant: number; sporeHydrated: number;
+  planRawMatches: number; planJoined: number; planHits: number;
+  planUnserved: number; planHydrated: number; budgetKept: number;
+}
+
+export const emptyInjectionCounts = (): InjectionCounts => ({
+  sporeRawMatches: 0, sporeJoined: 0, sporeHits: 0, sporeRelevant: 0, sporeHydrated: 0,
+  planRawMatches: 0, planJoined: 0, planHits: 0, planUnserved: 0, planHydrated: 0, budgetKept: 0,
+});
 
 export interface InjectionSelection {
   items: InjectionItem[];
   context: string;
   skipped: InjectionSkip | null;
+  counts: InjectionCounts;
+}
+
+/** The selector operation that failed, with the original error retained for classification. */
+export class InjectionFailure extends Error {
+  constructor(readonly operation: 'embed' | 'candidates' | 'hydrate_spores' | 'hydrate_plans' | 'record', cause: unknown, readonly counts: InjectionCounts) {
+    super(`prompt injection failed: ${operation}`, { cause });
+    this.name = 'InjectionFailure';
+  }
+}
+
+async function duringInjection<T>(operation: InjectionFailure['operation'], counts: InjectionCounts, work: () => Promise<T>): Promise<T> {
+  try { return await work(); }
+  catch (error) { throw new InjectionFailure(operation, error, { ...counts }); }
 }
 
 export interface InjectionRecord {
@@ -294,52 +321,59 @@ export async function selectSporesForPrompt(
   input: { sessionId: string; promptId: string; promptHash: string; prompt: string; now: number },
   resolveSemantic?: () => Promise<SemanticSearch | null>,
 ): Promise<InjectionSelection> {
-  const nothing = (skipped: InjectionSkip): InjectionSelection => ({ items: [], context: '', skipped });
+  const counts = emptyInjectionCounts();
+  const nothing = (skipped: InjectionSkip): InjectionSelection => ({ items: [], context: '', skipped, counts });
   if (!capabilityOn) return nothing('capability');
   if (!leaves.enabled) return nothing('disabled');
   if (input.prompt.length < MIN_PROMPT_CHARS) return nothing('short_prompt');
   if (leaves.maxPerPrompt === 0) return nothing('zero_max');
 
-  const semantic = await resolveSemantic?.();
-  if (semantic == null) return nothing('provider_unavailable');
+  const semantic = await duringInjection('embed', counts, async () => resolveSemantic?.());
+  if (semantic == null) return nothing('no_semantic');
   let values: number[];
   try { values = await semantic.provider.embed(input.prompt); }
-  catch (error) { if (error instanceof EmbeddingUnavailable) return nothing('provider_unavailable'); throw error; }
+  catch (error) { if (error instanceof EmbeddingUnavailable) return nothing('provider_unavailable'); throw new InjectionFailure('embed', error, counts); }
 
-  const [sporeHits, planHits, servedSpores, servedPlans] = await Promise.all([
-    semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'spore', status: 'active' } }),
-    semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'plan' } }),
+  const [sporeHits, planHits, servedSpores, servedPlans] = await duringInjection('candidates', counts, () => Promise.all([
+    semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'spore', status: 'active' }, observe: (n) => { counts.sporeRawMatches = n.rawMatches; counts.sporeJoined = n.joinedHits; counts.sporeHits = n.filteredHits; } }),
+    semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'plan' }, observe: (n) => { counts.planRawMatches = n.rawMatches; counts.planJoined = n.joinedHits; counts.planHits = n.filteredHits; } }),
     injectedSporeIds(db, scope, input.sessionId),
     injectedPlanIds(db, scope, input.sessionId),
-  ]);
+  ]));
 
   const relevant = selectRelevantSpores(sporeHits.map((s) => ({ id: s.record_id, similarity: s.score, alreadyInjected: servedSpores.has(s.record_id),
     ...(s.neighbor_mean === null || s.neighbor_std === null ? {} : { neighborMean: s.neighbor_mean, neighborStd: s.neighbor_std }),
   })), { maxResults: leaves.maxPerPrompt });
-  const hydrated = await listSporesByIds(db, scope, relevant.map((s) => s.id));
+  counts.sporeRelevant = relevant.length;
+  const hydrated = await duringInjection('hydrate_spores', counts, () => listSporesByIds(db, scope, relevant.map((s) => s.id)));
   const bySpore = new Map(hydrated.filter((s) => s.status === 'active').map((s) => [s.id, s]));
   const sporeItems: InjectionItem[] = relevant.flatMap((s) => {
     const row = bySpore.get(s.id);
     return row === undefined ? [] : [{ kind: 'spore' as const, id: row.id, label: row.observationType, text: row.agentLine ?? row.content }];
   });
+  counts.sporeHydrated = sporeItems.length;
 
-  const planCandidates = planHits.filter((h) => !servedPlans.has(h.record_id)).slice(0, leaves.maxPerPrompt);
-  const planRows = await Promise.all(planCandidates.map((h) => getPlan(db, scope, h.record_id)));
+  const unservedPlans = planHits.filter((h) => !servedPlans.has(h.record_id));
+  counts.planUnserved = unservedPlans.length;
+  const planCandidates = unservedPlans.slice(0, leaves.maxPerPrompt);
+  const planRows = await duringInjection('hydrate_plans', counts, () => Promise.all(planCandidates.map((h) => getPlan(db, scope, h.record_id))));
   const planItems: InjectionItem[] = planRows.flatMap((row) =>
     row === null ? [] : [{ kind: 'plan' as const, id: row.planKey, label: `plan: ${row.status}`, text: row.title ?? row.planKey }]);
+  counts.planHydrated = planItems.length;
 
   const ordered = [...sporeItems, ...planItems];
   const served = itemsWithinBudget(ordered);
+  counts.budgetKept = served.length;
   if (served.length === 0) return nothing('empty');
 
   const idsOf = (kind: InjectionItem['kind']): string[] => served.filter((i) => i.kind === kind).map((i) => i.id);
-  const written = await db
+  const written = await duringInjection('record', counts, () => db
     .prepare(`INSERT OR IGNORE INTO spore_injections (project_id, session_id, prompt_id, prompt_hash, spore_ids, plan_ids, created_at)
               VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .bind(scope.projectId, input.sessionId, input.promptId, input.promptHash,
       JSON.stringify(idsOf('spore')), JSON.stringify(idsOf('plan')), input.now)
-    .run();
+    .run());
   if (written.meta.changes !== 1) return nothing('repeat');
 
-  return { items: served, context: renderInjectionContext(served, ordered.length > served.length), skipped: null };
+  return { items: served, context: renderInjectionContext(served, ordered.length > served.length), skipped: null, counts };
 }

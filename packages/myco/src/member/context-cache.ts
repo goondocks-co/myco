@@ -57,7 +57,7 @@ export interface ProjectContextCache {
 export interface SessionContextCache {
   version: typeof CACHE_VERSION;
   /** What the Deployment served for the session's latest prompt, rendered on the next one. */
-  prompt?: CachedBlock & { promptId: string };
+  prompt?: CachedBlock & { promptId: string; skipped?: string[] };
 }
 
 /** What a hook asks the helper to fetch for its session: kept in session state until the helper has asked. */

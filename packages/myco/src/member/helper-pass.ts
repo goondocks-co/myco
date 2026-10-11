@@ -14,6 +14,8 @@ import { liveRoutingEntry, routingEntry, sameRoutingIdentity, type MemberRouting
 import { MemberSpool } from './spool.js';
 import { backfillTranscriptPrompts } from './transcript-prompts.js';
 import { ServerClient, type FetchLike } from './transport.js';
+import { promptContextLogPrefix } from './context-diagnostics.js';
+import { terminalText } from '@myco/utils/terminal-text.js';
 
 /** One pass of the helper over a project, ending by `deadline`: the project's backlog delivered, then its retention. */
 export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps: {
@@ -44,7 +46,7 @@ export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps:
     const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: fetchImpl, now, budget, force, migrateLegacy: deps.migrateLegacy, rescan: false, newestFirst: true, credentialSource: deps.entry === undefined ? 'registry' : 'env' });
     let prefetched: Awaited<ReturnType<typeof prefetch>> = null;
     try { prefetched = await prefetch(); }
-    catch (error) { process.stderr.write(`[myco] helper: context prefetch failed: ${error instanceof Error ? error.message : String(error)}\n`); }
+    catch (error) { process.stderr.write(`${promptContextLogPrefix(route.serverUrl, route.projectId)}context prefetch failed: ${terminalText(error instanceof Error ? error.message : String(error))}\n`); }
     // Everything delivered (no journal and no transcript left behind): the state of sessions delivered long ago may go.
     const delivered = backlog.endedBy === 'done' && spool.sessionIds().length === 0 && spool.transcriptBacklogIds().length === 0;
     applySpoolRetention(spool, now(), { delivered });

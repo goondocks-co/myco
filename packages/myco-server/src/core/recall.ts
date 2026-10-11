@@ -32,17 +32,19 @@
  * The nudge is recorded LAST, after the spore selection has committed: a
  * failure in the spore half then leaves the nudge unburned for the next prompt.
  */
-import type { RelationalStore } from './adapters.js';
-import { INJECTION_LEAVES, injectionLeaves, selectSporesForPrompt, type InjectionLeaves, type InjectionSkip } from './injection.js';
+import type { ErrorClassifier, RelationalStore } from './adapters.js';
+import { INJECTION_LEAVES, InjectionFailure, emptyInjectionCounts, injectionLeaves, selectSporesForPrompt, type InjectionCounts, type InjectionLeaves, type InjectionSkip } from './injection.js';
 import type { SemanticSearch } from '../read/embedding.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingTexts } from './settings.js';
 import { sha256Hex } from '../hash.js';
 import type { ReadScope } from '../read/scope.js';
+import { classify, emit, type ErrorClass } from '../telemetry.js';
 import { BLOCK_JOIN, projectLine, sessionInjectionKind, type SessionContextRequest, type SessionContextIdentity } from '@goondocks/myco-shared/recall';
 export { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 
 /** The most text one prompt is served. A part that would cross it is dropped whole. */
 export const PROMPT_CONTEXT_MAX_CHARS = 10_000;
+export const PROMPT_ANSWER_RETENTION_DAYS = 30;
 
 /**
  * The most text one session start is served: the Project line beside a
@@ -182,6 +184,70 @@ export interface PromptContext {
   skipped: RecallSkip[];
 }
 
+/** A failed contributor's coded cause; no prompt body or arbitrary error text is retained. */
+export interface RecallFailure {
+  contributor: 'spores' | 'plan-nudge' | 'instructions';
+  error: ErrorClass;
+  operation?: InjectionFailure['operation'];
+}
+
+/** Isolates a contributor and records its failure before the remaining contributors run. */
+async function contribute<T>(
+  identity: { projectId: string; sessionId: string; promptId?: string },
+  contributor: RecallFailure['contributor'],
+  skipped: RecallSkip[],
+  failures: RecallFailure[],
+  work: () => Promise<T>,
+  classifyError?: ErrorClassifier,
+): Promise<T | null> {
+  try { return await work(); }
+  catch (error) {
+    const failure: RecallFailure = {
+      contributor, error: classify(error instanceof InjectionFailure ? error.cause : error, classifyError),
+      ...(error instanceof InjectionFailure ? { operation: error.operation } : {}),
+    };
+    skipped.push(contributor);
+    failures.push(failure);
+    emit({ kind: 'recall_contributor_failed', ...identity, ...failure });
+    return null;
+  }
+}
+
+/** Appends the answer under the prompt that asked, before capture has necessarily recorded that prompt. */
+async function recordPromptAnswer(
+  db: RelationalStore,
+  identity: { projectId: string; sessionId: string; promptId: string },
+  answer: PromptContext,
+  failures: readonly RecallFailure[],
+  selection: InjectionCounts,
+  now: number,
+  classifyError?: ErrorClassifier,
+): Promise<PromptContext> {
+  try {
+    await db.prepare(`INSERT INTO prompt_context_answers
+      (project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, selection, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(identity.projectId, identity.sessionId, identity.promptId, crypto.randomUUID(),
+        answer.context.length > 0 ? 'served' : 'empty', answer.context.length,
+        JSON.stringify(answer.parts.map((part) => part.kind === 'spores'
+          ? { kind: part.kind, sporeCount: part.sporeIds.length, planCount: part.planIds.length } : part)),
+        JSON.stringify(answer.skipped), JSON.stringify(failures), JSON.stringify(selection), now).run();
+  } catch (error) {
+    emit({ kind: 'recall_answer_unrecorded', ...identity, error: classify(error, classifyError) });
+  }
+  return answer;
+}
+
+export const PROMPT_ANSWER_RETENTION_SQL = `DELETE FROM prompt_context_answers WHERE rowid IN (
+  SELECT a.rowid FROM projects p CROSS JOIN prompt_context_answers a
+  WHERE a.project_id = p.project_id AND a.created_at < ? LIMIT ?)`;
+
+/** Deletes at most one batch of prompt answer diagnostics older than the cutoff across the Deployment's Projects. */
+export async function prunePromptAnswers(db: RelationalStore, cutoffMs: number, limit: number): Promise<number> {
+  const result = await db.prepare(PROMPT_ANSWER_RETENTION_SQL).bind(cutoffMs, limit).run();
+  return result.meta.changes;
+}
+
 export interface RecallSessionBlock {
   context: string;
   parts: SessionContextPart[];
@@ -241,45 +307,49 @@ export async function composePromptContext(
   capabilityOn: boolean,
   input: { sessionId: string; promptId: string; text: string; now: number },
   resolveSemantic?: () => Promise<SemanticSearch | null>,
+  classifyError?: ErrorClassifier,
 ): Promise<PromptContext> {
-  if (!capabilityOn) return { context: '', parts: [], skipped: ['capability'] };
+  const identity = { projectId: scope.projectId, sessionId: input.sessionId, promptId: input.promptId };
+  let counts = emptyInjectionCounts();
+  if (!capabilityOn) return recordPromptAnswer(db, identity, { context: '', parts: [], skipped: ['capability'] }, [], counts, input.now, classifyError);
 
   const skipped: RecallSkip[] = [];
+  const failures: RecallFailure[] = [];
 
-  let spores: Contribution | null = null;
-  try {
+  const spores = await contribute<Contribution | null>(identity, 'spores', skipped, failures, async () => {
     const selection = await selectSporesForPrompt(db, scope, leaves.injection, capabilityOn, {
       sessionId: input.sessionId,
       promptId: input.promptId,
       promptHash: await sha256Hex(input.text),
       prompt: input.text,
       now: input.now,
-    }, resolveSemantic);
+    }, resolveSemantic).catch((error: unknown) => {
+      if (error instanceof InjectionFailure) counts = error.counts;
+      throw error;
+    });
+    counts = selection.counts;
     if (selection.skipped !== null) skipped.push(`spores:${selection.skipped}`);
     else if (selection.context.length > 0) {
-      spores = { part: { kind: 'spores', sporeIds: selection.items.filter((i) => i.kind === 'spore').map((i) => i.id), planIds: selection.items.filter((i) => i.kind === 'plan').map((i) => i.id) }, text: selection.context };
+      return { part: { kind: 'spores', sporeIds: selection.items.filter((i) => i.kind === 'spore').map((i) => i.id), planIds: selection.items.filter((i) => i.kind === 'plan').map((i) => i.id) }, text: selection.context };
     }
-  } catch {
-    skipped.push('spores');
-  }
+    return null;
+  }, classifyError);
 
-  let nudge: Contribution | null = null;
-  try {
+  const nudge = await contribute<Contribution | null>(identity, 'plan-nudge', skipped, failures, async () => {
     if (!leaves.planNudge) skipped.push('plan-nudge:off');
     else if (!detectsPlanIntent(input.text)) skipped.push('plan-nudge:no_intent');
     else if (!(await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now))) skipped.push('plan-nudge:repeat');
-    else nudge = { part: { kind: 'plan-nudge' }, text: PLAN_INTENT_NUDGE };
-  } catch {
-    skipped.push('plan-nudge');
-  }
+    else return { part: { kind: 'plan-nudge' }, text: PLAN_INTENT_NUDGE };
+    return null;
+  }, classifyError);
 
   const kept = partsWithinBound([nudge, spores].filter((c): c is Contribution => c !== null));
 
-  return {
+  return recordPromptAnswer(db, identity, {
     context: kept.map((c) => c.text).join(JOIN),
     parts: kept.map((c) => c.part),
     skipped,
-  };
+  }, failures, counts, input.now, classifyError);
 }
 
 /**
@@ -326,7 +396,7 @@ export async function composeSessionContext(
    * `preview`: compose the block and record nothing, so no session is held to have been served it. What a member
    * asks for when it joins a project, to have the block cached before its first session starts.
    */
-  opts: { preview?: boolean } = {},
+  opts: { preview?: boolean; classifyError?: ErrorClassifier } = {},
 ): Promise<RecallSessionBlock> {
   const recordKind = sessionInjectionKind(input);
   const skipped: RecallSkip[] = [];
@@ -340,7 +410,7 @@ export async function composeSessionContext(
   const wantsInstructions = input.kind !== 'subagent'
     ? leaves.instructionsAtSessionStart
     : leaves.instructionsAtSubagentStart;
-  try {
+  await contribute({ projectId: scope.projectId, sessionId: input.sessionId }, 'instructions', skipped, [], async () => {
     if (!capabilityOn) skipped.push('capability');
     else if (!wantsInstructions) skipped.push('instructions:off');
     else {
@@ -353,9 +423,7 @@ export async function composeSessionContext(
         });
       }
     }
-  } catch {
-    skipped.push('instructions');
-  }
+  }, opts.classifyError);
 
   const kept = partsWithinBound(contributions, SESSION_CONTEXT_MAX_CHARS);
   if (kept.length === 0) return { context: '', parts: [], skipped, kind: recordKind };

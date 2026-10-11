@@ -23,7 +23,9 @@ import * as registry from '@myco/member/registry.js';
 import * as contextCache from '@myco/member/context-cache.js';
 import * as store from '@myco/member/store.js';
 import { deploymentFeaturesPath } from '@myco/member/registry.js';
-import { watchingFeatures } from '@myco/member/prefetch.js';
+import { prefetchContext, watchingFeatures } from '@myco/member/prefetch.js';
+import { promptContextLogPrefix } from '@myco/member/context-diagnostics.js';
+import { helperLogPath, routeStderrToHelperLog } from '@myco/member/helper.js';
 import { drainBacklog, holdsTranscriptTail } from '@myco/member/backlog.js';
 import { ENV_JOIN_CODE } from '@myco/member/constants.js';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
@@ -89,6 +91,59 @@ function servingPrompts(serve: (body: { promptId: string; text: string }) => str
 }
 
 describe('a prompt', () => {
+  it('persists a transient non-answer in the scoped helper log and keeps the prompt ask pending', async () => {
+    const serverUrl = 'https://member-test.invalid';
+    const fetch: FetchLike = async (input, init) => new URL(new Request(input, init).url).pathname === '/context/prompt'
+      ? Response.json({}, { status: 503, headers: { [PROTOCOL_HEADER]: '1' } }) : rig.fetch(input, init);
+    await runHook('user-prompt-submit', { session_id: 'sess-transient', prompt: 'look up controller evidence', transcript_path: transcript('sess-transient') }, { fetch, symbiont: 'copilot' });
+    const restore = routeStderrToHelperLog(mycoHome, 'proj_1', serverUrl);
+    try {
+      await prefetchContext({ spool: spool(), client: new ServerClient({ serverUrl, token: rig.token, projectId: 'proj_1' }, fetch), serverUrl, mycoHome, budget: deadlineBudget(Date.now() + 10_000), now: Date.now });
+    } finally { restore(); }
+    const log = fs.readFileSync(helperLogPath(mycoHome), 'utf8');
+    expect(log).toContain(`${serverUrl} proj_1 ${promptContextLogPrefix(serverUrl, 'proj_1')}context for sess-transient prompt `);
+    expect(log).toContain('not served (retry)');
+    expect(readSessionState(spool().dir, 'sess-transient').contextAsks).toHaveLength(1);
+  });
+
+  it('keeps skip reasons from empty prompt answers and writes safe helper diagnostics', async () => {
+    const skipped = ['spores:empty', 'plan-nudge:no_intent', 'server\u001b[31m\ntext'];
+    const fetch: FetchLike = async (input, init) => {
+      const req = new Request(input, init);
+      if (new URL(req.url).pathname !== '/context/prompt') return rig.fetch(req);
+      expect(req.headers.get('x-myco-project')).toBe('proj_1');
+      return Response.json({ persisted: true, context: '', skipped }, { headers: { [PROTOCOL_HEADER]: '1' } });
+    };
+    const ran = await runHook('user-prompt-submit', { session_id: 'sess-empty', prompt: 'look up controller evidence', transcript_path: transcript('sess-empty') }, { helpers: 'run', fetch, symbiont: 'copilot' });
+    expect(contextCache.readSessionContext(spool().dir, 'sess-empty').prompt).toMatchObject({ context: '', skipped });
+    expect(ran.stderr).toContain(`${promptContextLogPrefix('https://member-test.invalid', 'proj_1')}session sess-empty prompt `);
+    expect(ran.stderr).toContain('answered empty; skipped: spores:empty, plan-nudge:no_intent, server [31m text');
+    expect(ran.stderr).not.toContain('\u001b');
+    expect(readSessionState(spool().dir, 'sess-empty').contextAsks).toBeUndefined();
+    const next = await runHook('user-prompt-submit', { session_id: 'sess-empty', prompt: 'and now?', transcript_path: transcript('sess-empty') }, { fetch, symbiont: 'copilot' });
+    expect(contextOf(next.stdout)).toBe('Session:: `sess-empty`');
+  });
+
+  it('persists permanent prompt refusals in the destination-scoped helper log and settles the ask', async () => {
+    const serverUrl = 'https://member-test.invalid';
+    const fetch: FetchLike = async (input, init) => {
+      const req = new Request(input, init);
+      return new URL(req.url).pathname === '/context/prompt'
+        ? Response.json({ persisted: false, code: 'parse', message: 'invalid prompt' }, { headers: { [PROTOCOL_HEADER]: '1' } })
+        : rig.fetch(req);
+    };
+    await runHook('user-prompt-submit', { session_id: 'sess-refused', prompt: 'look up controller evidence', transcript_path: transcript('sess-refused') }, { fetch, symbiont: 'copilot' });
+    expect(readSessionState(spool().dir, 'sess-refused').contextAsks).toHaveLength(1);
+    const restore = routeStderrToHelperLog(mycoHome, 'proj_1', serverUrl);
+    try {
+      await prefetchContext({ spool: spool(), client: new ServerClient({ serverUrl, token: rig.token, projectId: 'proj_1' }, fetch), serverUrl, mycoHome, budget: deadlineBudget(Date.now() + 10_000), now: Date.now });
+    } finally { restore(); }
+    const log = fs.readFileSync(helperLogPath(mycoHome), 'utf8');
+    expect(log).toContain(`${serverUrl} proj_1 ${promptContextLogPrefix(serverUrl, 'proj_1')}session sess-refused prompt `);
+    expect(log).toContain('refused: parse');
+    expect(readSessionState(spool().dir, 'sess-refused').contextAsks).toBeUndefined();
+  });
+
   it('renders what was served for the session\'s previous prompt, and the helper asks with each prompt\'s own id and text', async () => {
     const tx = transcript('sess-p');
     const served = servingPrompts((body) => `Recalled for: ${body.text}`);
