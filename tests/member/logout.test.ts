@@ -20,6 +20,13 @@ import { executorServiceTarget } from '@myco/cli/worker-service.js';
 import { installWorkerService } from '@myco/runner/service.js';
 import { recordingPlatform } from '../helpers/fake-service-manager.js';
 import { memberRig } from './helpers/server.js';
+import { ROUTES } from '@myco-server-worker/routes.js';
+import { autoJoinHold, LEFT_ALONE } from '@myco/member/auto-join-hook.js';
+import { rootKeyFor, isLeft, markLeft, listJoinRequests } from '@myco/member/auto-join.js';
+import { cacheMachineSettings } from '@myco/member/machine-settings.js';
+import { pendingSpool } from '@myco/member/pending.js';
+import { reconcileProvisionDeployment } from '@myco/symbionts/member-provision-record.js';
+import { execFileSync } from 'node:child_process';
 
 const A = 'https://personal.example';
 const B = 'https://work.example';
@@ -71,6 +78,134 @@ beforeEach(() => {
 afterEach(() => { restore(); fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('Deployment-scoped logout', () => {
+  it('refuses a missing revoke route in the real pipeline and warns under local-only', async () => {
+    const rig = await memberRig();
+    const index = ROUTES.findIndex((r) => r.path === '/members/credential/revoke');
+    const [route] = Array.prototype.splice.call(ROUTES, index, 1);
+    try {
+      writeDeploymentMembership({ serverUrl: A, token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+      const held = bytes(deploymentPath(A, mycoHome));
+      await expect(logoutDeployment(A, { mode: 'revoke' }, { ...deps, fetch: rig.fetch })).rejects.toThrow('myco server update');
+      expect(bytes(deploymentPath(A, mycoHome))).toEqual(held);
+      const out: string[] = [];
+      expect(await logoutCli([A, '--local-only'], { ...deps, fetch: rig.fetch, stdout: (s) => out.push(s) })).toBe(true);
+      expect(out.join('\n')).toContain('Credential still valid on the Deployment');
+      expect(out.join('\n')).toContain('› machine_1 › Stop');
+      expect((await rig.fetch(`${A}/members/status`, { method: 'POST', headers: rig.headers(), body: '{}' })).status).toBe(200);
+    } finally { Array.prototype.splice.call(ROUTES, index, 0, route); rig.env.sqlite.close(); }
+  });
+
+  it('ends an eight-day-old refreshable credential before removing it locally', async () => {
+    const rig = await memberRig({ now: Date.now() - 8 * 24 * 60 * 60 * 1000 });
+    try {
+      writeDeploymentMembership({ serverUrl: A, token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+      expect((await logoutDeployment(A, { mode: 'revoke' }, { ...deps, fetch: rig.fetch })).revoked).toBe(true);
+      const refreshed = await rig.fetch(`${A}/tokens/refresh`, { method: 'POST', headers: rig.headers(), body: '{}' });
+      expect(refreshed.status).toBe(401);
+      expect((rig.env.sqlite.query('SELECT revoked_at FROM member_credentials WHERE id = ?').get(rig.tokenId) as { revoked_at: number | null }).revoked_at).not.toBeNull();
+    } finally { rig.env.sqlite.close(); }
+  });
+
+  it('keeps a lapsed credential when the real pipeline lacks the revoke route', async () => {
+    const rig = await memberRig({ now: Date.now() - 8 * 24 * 60 * 60 * 1000 });
+    const index = ROUTES.findIndex((r) => r.path === '/members/credential/revoke');
+    const [route] = Array.prototype.splice.call(ROUTES, index, 1);
+    try {
+      writeDeploymentMembership({ serverUrl: A, token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+      await expect(logoutDeployment(A, { mode: 'revoke' }, { ...deps, fetch: rig.fetch })).rejects.toThrow('myco server update');
+      expect(readDeploymentMembership(A, mycoHome)?.token).toBe(rig.token);
+      expect((rig.env.sqlite.query('SELECT revoked_at FROM member_credentials WHERE id = ?').get(rig.tokenId) as { revoked_at: number | null }).revoked_at).toBeNull();
+      expect((await logoutDeployment(A, { mode: 'local-only' }, { ...deps, fetch: rig.fetch })).revoked).toBe(false);
+    } finally { Array.prototype.splice.call(ROUTES, index, 0, route); rig.env.sqlite.close(); }
+  });
+
+  it('refuses a route-missing re-revoke after an interrupted acknowledgement', async () => {
+    const rig = await memberRig();
+    const index = ROUTES.findIndex((r) => r.path === '/members/credential/revoke');
+    const [route] = Array.prototype.splice.call(ROUTES, index, 1);
+    try {
+      writeDeploymentMembership({ serverUrl: A, token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+      await expect(logoutDeployment(A, { mode: 'revoke' }, { ...deps, checkpoint: (phase) => { if (phase === 'revoked') throw new Error('interrupted'); } })).rejects.toThrow('interrupted');
+      expect(JSON.parse(fs.readFileSync(logoutJournalPath(A, mycoHome), 'utf8')).phase).toBe('revoke');
+      await expect(logoutDeployment(A, { mode: 'revoke' }, { ...deps, fetch: rig.fetch })).rejects.toThrow('myco server update');
+      expect(readDeploymentMembership(A, mycoHome)).not.toBeNull();
+    } finally { Array.prototype.splice.call(ROUTES, index, 0, route); rig.env.sqlite.close(); }
+  });
+
+  it('counts and preserves pending capture only for the leaving Deployment', async () => {
+    join(A, 'proj_a'); join(B);
+    spool(A, 'proj_a');
+    for (const serverUrl of [A, B]) {
+      const folder = path.join(home, 'Repos', serverUrl === A ? 'held-personal' : 'held-work');
+      fs.mkdirSync(folder, { recursive: true });
+      const held = pendingSpool({ root: folder, rootKey: rootKeyFor(folder, mycoHome), serverUrl }, { mycoHome, now: 1 })!;
+      fs.writeFileSync(path.join(held.dir, 'session.jsonl'), 'retained capture\n');
+    }
+    const before = tree(path.join(mycoHome, 'member', 'pending'));
+    const report = await logoutDeployment(A, { mode: 'revoke' }, deps);
+    expect(report.keptSpool.sessions).toBe(2);
+    expect(report.keptSpool.paths).toHaveLength(2);
+    expect(tree(path.join(mycoHome, 'member', 'pending'))).toEqual(before);
+    expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(false);
+    expect(fs.existsSync(logoutJournalPath(A, mycoHome).replace(/\.json$/, '.lock'))).toBe(false);
+  });
+
+  it('reconciles a provision record naming the leaving origin with different URL spelling', () => {
+    join(A); globalInstaller(A).install();
+    const file = provisionRecordPath(mycoHome);
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.writeFileSync(file, JSON.stringify({ ...record, serverUrl: 'https://PERSONAL.example:443/' }));
+    reconcileProvisionDeployment(mycoHome, A, B);
+    expect(readProvisionRecord(mycoHome)?.serverUrl).toBe(B);
+  });
+
+  for (const workCache of ['empty', 'stale', 'unreadable'] as const) it(`leaves former personal repositories out of work auto-join and capture (work cache: ${workCache})`, async () => {
+    const homelab = path.join(home, 'Repos', 'homelab');
+    fs.mkdirSync(homelab, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: homelab });
+    writeRegistryEntry({ version: 2, root: homelab, projectId: 'proj_homelab', serverUrl: A, token: 'personal', machineId: 'machine_test', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    join(B, 'proj_work');
+    recordDefaultDeployment(B, { mycoHome });
+    cacheMachineSettings(B, { leaves: { 'capture.auto_join_roots': [path.join(home, 'Repos')], 'capture.connect_roots': workCache === 'empty' ? {} : { [rootKeyFor(homelab, mycoHome)]: '' } } }, mycoHome);
+    if (workCache === 'unreadable') fs.writeFileSync(machineSettingsPath(B, mycoHome), '{');
+    const beforeSettings = bytes(machineSettingsPath(B, mycoHome));
+    const beforeB = tree(path.join(mycoHome, 'member', 'pending'));
+    const out: string[] = [];
+    expect(await logoutCli([A], { ...deps, stdout: (s) => out.push(s) })).toBe(true);
+    expect(out.join('\n')).toContain("1 repositories won't be captured until you connect them again");
+    expect(out.join('\n')).toContain(homelab);
+    expect(bytes(machineSettingsPath(B, mycoHome))).toEqual(beforeSettings);
+    if (workCache === 'unreadable') cacheMachineSettings(B, { leaves: { 'capture.auto_join_roots': [path.join(home, 'Repos')], 'capture.connect_roots': { [rootKeyFor(homelab, mycoHome)]: '' } } }, mycoHome);
+    const steps: Array<() => void> = [];
+    const hold = autoJoinHold({ root: homelab, hookName: 'user-prompt-submit', agent: 'claude-code', sessionId: 'personal-session', mycoHome, now: Date.now(), env: { ...process.env, MYCO_TEMPORARY_FOLDERS: path.join(root, 'other-temp') }, later: (step) => steps.push(step) });
+    expect(hold).toBe(LEFT_ALONE);
+    expect(steps).toEqual([]);
+    expect(listJoinRequests(mycoHome)).toEqual([]);
+    expect(tree(path.join(mycoHome, 'member', 'pending'))).toEqual(beforeB);
+    expect(rootKeyFor(homelab, mycoHome)).toBeTruthy();
+    markLeft(rootKeyFor(homelab, mycoHome), mycoHome, Date.now());
+    cacheMachineSettings(B, { leaves: { 'capture.connect_roots': {} } }, mycoHome);
+    const hook = { root: homelab, hookName: 'user-prompt-submit' as const, agent: 'claude-code', sessionId: 'refreshed-directive', mycoHome, now: Date.now(), env: { ...process.env, MYCO_TEMPORARY_FOLDERS: path.join(root, 'other-temp') }, later: (step: () => void) => steps.push(step) };
+    expect(autoJoinHold(hook)).toBe(LEFT_ALONE);
+    cacheMachineSettings(B, { leaves: { 'capture.connect_roots': { [rootKeyFor(homelab, mycoHome)]: '' } } }, mycoHome);
+    expect(autoJoinHold(hook)).toBe(LEFT_ALONE);
+    expect(steps).toEqual([]);
+    expect(listJoinRequests(mycoHome)).toEqual([]);
+    expect(tree(path.join(mycoHome, 'member', 'pending'))).toEqual(beforeB);
+  });
+
+  it('reports only opted-out roots when a snapshotted root is rebound to work', async () => {
+    const folder = join(A, 'proj_a')!;
+    join(B);
+    deps.checkpoint = (phase) => {
+      if (phase === 'local') writeRegistryEntry({ version: 2, root: folder, projectId: 'proj_work', serverUrl: B, token: `${B}-secret`, machineId: 'machine_test', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    };
+    const report = await logoutDeployment(A, { mode: 'revoke' }, deps);
+    expect(report.leftRoots).toEqual([]);
+    expect(isLeft(rootKeyFor(folder, mycoHome), mycoHome)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(registryEntryPath(folder, mycoHome), 'utf8')).serverUrl).toBe(B);
+  });
+
   it('revokes one credential, removes its state and registrations, and keeps its capture', async () => {
     const folder = join(A, 'proj_a')!;
     recordDefaultDeployment(A, { mycoHome });
@@ -89,8 +224,9 @@ describe('Deployment-scoped logout', () => {
     expect(tree(dir)).toEqual(before);
     expect(report.keptSpool.sessions).toBe(1);
     expect(report.revoked).toBe(true);
-    expect(fs.readFileSync(logoutJournalPath(A, mycoHome), 'utf8')).not.toContain(`${A}-secret`);
-    await logoutDeployment(A, { mode: 'revoke' }, deps);
+    expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(false);
+    expect(fs.existsSync(logoutJournalPath(A, mycoHome).replace(/\.json$/, '.lock'))).toBe(false);
+    await expect(logoutDeployment(A, { mode: 'revoke' }, deps)).rejects.toThrow('No membership matches');
     expect(requests).toHaveLength(1);
   });
 
@@ -164,7 +300,7 @@ describe('Deployment-scoped logout', () => {
     await logoutDeployment(A, { mode: 'revoke' }, deps);
     expect(bytes(file)).toEqual(before);
     expect(globalInstaller(A).inspectMemberHooks().member).toBe(false);
-    expect(JSON.parse(fs.readFileSync(logoutJournalPath(A, mycoHome), 'utf8')).phase).toBe('done');
+    expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(false);
   });
 
   for (const name of ['codex', 'cline']) it(`preserves surviving ${name} registrations byte for byte, then removes them on last logout`, async () => {
@@ -410,7 +546,7 @@ describe('Deployment-scoped logout', () => {
       await child.exited;
       expect(JSON.parse(fs.readFileSync(logoutJournalPath(A, mycoHome), 'utf8')).phase).toBe(phase);
       await logoutDeployment(A, { mode: 'revoke' }, deps);
-      expect(JSON.parse(fs.readFileSync(logoutJournalPath(A, mycoHome), 'utf8')).phase).toBe('done');
+      expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(false);
       expect(fs.readFileSync(calls, 'utf8')).toBe('revoke\n');
       expect(requests).toHaveLength(0);
       expect(readDeploymentMembership(A, mycoHome)).toBeNull();
@@ -421,4 +557,52 @@ describe('Deployment-scoped logout', () => {
       await child.exited;
     }
   }, 15000);
+  for (const boundary of ['revoked', 'bindings-removed'] as const) it(`resumes after SIGKILL at ${boundary} against the real server`, async () => {
+    const rig = await memberRig();
+    let revokes = 0;
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: (request) => {
+      if (new URL(request.url).pathname === '/members/credential/revoke') revokes++;
+      return rig.fetch(request);
+    } });
+    const url = server.url.origin;
+    const folder = join(url, 'proj_personal')!;
+    writeDeploymentMembership({ serverUrl: url, token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    join(B, 'proj_work');
+    recordDefaultDeployment(B, { mycoHome });
+    const marker = path.join(root, 'checkpoint');
+    const source = path.resolve(import.meta.dir, '../../packages/myco/src/symbionts/logout-runtime.ts');
+    const script = path.join(root, 'interrupted-real.ts');
+    const stop = `fs.writeFileSync(${JSON.stringify(marker)}, 'ready'); Bun.sleepSync(60000);`;
+    const pause = boundary === 'revoked' ? `checkpoint: (phase) => { if (phase === 'revoked') { ${stop} } }` : `afterBindingsRemoved: () => { ${stop} }`;
+    fs.writeFileSync(script, `import fs from 'node:fs'; import { logoutDeployment } from ${JSON.stringify(source)}; await logoutDeployment(${JSON.stringify(url)}, { mode: 'revoke' }, { mycoHome: ${JSON.stringify(mycoHome)}, home: ${JSON.stringify(home)}, packageRoot: ${JSON.stringify(PKG)}, ${pause} });`);
+    const child = Bun.spawn([process.execPath, '--no-env-file', '--tsconfig-override', path.resolve(import.meta.dir, '../../tsconfig.json'), script], {
+      cwd: root, env: sandboxChildEnv(root, { HOME: home, MYCO_HOME: mycoHome }), stdout: 'pipe', stderr: 'pipe',
+    });
+    try {
+      const deadline = Date.now() + 8000;
+      while (!fs.existsSync(marker) && Date.now() < deadline && child.exitCode === null) await Bun.sleep(20);
+      if (!fs.existsSync(marker)) throw new Error(`child did not reach checkpoint: ${await new Response(child.stderr).text()}`);
+      child.kill('SIGKILL');
+      await child.exited;
+      expect(revokes).toBe(1);
+      expect(JSON.parse(fs.readFileSync(logoutJournalPath(url, mycoHome), 'utf8')).phase).toBe(boundary === 'revoked' ? 'revoke' : 'local');
+      expect(readDeploymentMembership(url, mycoHome)).not.toBeNull();
+      expect(fs.existsSync(registryEntryPath(folder, mycoHome))).toBe(boundary === 'revoked');
+      const report = await logoutDeployment(url, { mode: 'revoke' }, { ...deps, fetch: globalThis.fetch });
+      expect(report.revoked).toBe(true);
+      expect(report.leftRoots).toContain(folder);
+      expect(isLeft(rootKeyFor(folder, mycoHome), mycoHome)).toBe(true);
+      expect(revokes).toBe(boundary === 'revoked' ? 2 : 1);
+      expect(fs.existsSync(logoutJournalPath(url, mycoHome))).toBe(false);
+      expect(fs.existsSync(logoutJournalPath(url, mycoHome).replace(/\.json$/, '.lock'))).toBe(false);
+      expect(readDeploymentMembership(url, mycoHome)).toBeNull();
+      expect(readDeploymentMembership(B, mycoHome)).not.toBeNull();
+    } finally {
+      if (child.exitCode === null) child.kill('SIGKILL');
+      await child.exited;
+      await server.stop(true);
+      rig.env.sqlite.close();
+    }
+  }, 15000);
+
 });

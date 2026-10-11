@@ -14,17 +14,17 @@ export const credentialRevoke: ParityScenario = {
     const root = { id: `mt_revoke_${randomBytes(6).toString('hex')}`, token: randomBytes(32).toString('base64url') };
     const successor = { id: `mt_revoke_${randomBytes(6).toString('hex')}`, token: randomBytes(32).toString('base64url') };
     const other = { id: `mt_revoke_${randomBytes(6).toString('hex')}`, token: randomBytes(32).toString('base64url') };
-    const expires = now + 3_600_000;
+    const lapsedAt = now - 8 * 24 * 60 * 60 * 1000;
     const unseen = `proj_revoke_${randomBytes(5).toString('hex')}`;
     await target.sql(`INSERT INTO members(id,label,created_at,role) VALUES (${lit(memberId)},'revoke parity',${now},'member')`);
     try {
       await target.sql(`INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES (${lit(machineId)},${lit(memberId)},${now})`);
-      const insert = async (credential: typeof root, owner: string, machine: string, predecessor: string | null, lineageRoot: string) =>
+      const insert = async (credential: typeof root, owner: string, machine: string, predecessor: string | null, lineageRoot: string, issuedAt = lapsedAt) =>
         target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,bytes_written,predecessor_id,lineage_root,lineage_started_at)
-          VALUES (${lit(credential.id)},${lit(owner)},${lit(machine)},${lit(await sha256Hex(credential.token))},${now},${expires},0,${predecessor === null ? 'NULL' : lit(predecessor)},${lit(lineageRoot)},${now})`);
+          VALUES (${lit(credential.id)},${lit(owner)},${lit(machine)},${lit(await sha256Hex(credential.token))},${issuedAt},${issuedAt + 7 * 24 * 60 * 60 * 1000},0,${predecessor === null ? 'NULL' : lit(predecessor)},${lit(lineageRoot)},${issuedAt})`);
       await insert(root, memberId, machineId, null, root.id);
       await insert(successor, memberId, machineId, root.id, root.id);
-      await insert(other, MEMBER_ID, 'machine_parity', null, other.id);
+      await insert(other, MEMBER_ID, 'machine_parity', null, other.id, now);
       const { [PROJECT_HEADER]: _project, ...unbound } = memberHeadersFor(root.token, target.projectId);
       const post = (token: string, body = '{}', project?: string) => fetch(`${target.url}/members/credential/revoke`, {
         method: 'POST', headers: { ...unbound, authorization: `Bearer ${token}`, ...(project ? { [PROJECT_HEADER]: project } : {}), 'content-type': 'application/json' }, body,
@@ -46,6 +46,7 @@ export const credentialRevoke: ParityScenario = {
         });
       expect((await post(root.token)).status).toBe(401);
       expect((await post(successor.token)).status).toBe(401);
+      expect((await fetch(`${target.url}/tokens/refresh`, { method: 'POST', headers: { ...unbound, authorization: `Bearer ${root.token}`, 'content-type': 'application/json' }, body: '{}' })).status).toBe(401);
       const otherRead = await fetch(`${target.url}/members/status`, { method: 'POST',
         headers: { ...unbound, authorization: `Bearer ${other.token}`, 'content-type': 'application/json' }, body: '{}' });
       expect(otherRead.status).toBe(200);

@@ -4,7 +4,9 @@ import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock } from '../utils/lifecycle-lock.js';
 import { CONNECT_TIMEOUT_CAP_MS } from './constants.js';
 import { normalizeMemberServerAddress } from './server-url.js';
-import { ServerClient } from './transport.js';
+import { routeMissing, ServerClient } from './transport.js';
+import { isLeft, rootKeyFor } from './auto-join.js';
+import { pendingRoot } from './pending.js';
 import {
   deploymentKeyFor, deploymentUrl, listDeploymentMembershipsResult, logoutBindings, membershipTokenDigest,
   readDeploymentMembershipResult, removeDeploymentForLogout, withRegistryLock, type ProjectBinding,
@@ -32,9 +34,11 @@ interface LogoutJournal {
 export interface LogoutReport {
   serverUrl: string;
   revoked: boolean;
+  machineId: string;
+  leftRoots: string[];
   defaultUrl: string | null;
   survivors: string[];
-  keptSpool: { path: string; sessions: number };
+  keptSpool: { path: string; paths: string[]; sessions: number };
   runner: boolean;
 }
 
@@ -52,7 +56,9 @@ export interface LogoutDeps {
   now?: () => number;
   runtime: LogoutRuntime;
   /** A durable phase boundary for interruption fixtures. */
-  checkpoint?: (phase: LogoutPhase) => void | Promise<void>;
+  checkpoint?: (phase: LogoutPhase | 'revoked') => void | Promise<void>;
+  /** A synchronous interruption boundary while the registry lock is held. */
+  afterBindingsRemoved?: () => void;
 }
 
 export function logoutJournalPath(serverUrl: string, mycoHome: string): string {
@@ -95,15 +101,26 @@ async function revoke(j: LogoutJournal, mode: 'revoke' | 'local-only', deps: Log
   if (held.status !== 'present' || membershipTokenDigest(held.membership) !== j.tokenDigest) {
     throw new Error('The credential changed or is unavailable; logout cannot revoke the snapshotted credential');
   }
-  const response = await new ServerClient(held.membership, deps.fetch).request('POST', '/members/credential/revoke', {
+  const client = new ServerClient(held.membership, deps.fetch);
+  const budget = { connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS, requestTimeoutMs: CONNECT_TIMEOUT_CAP_MS };
+  const response = await client.request('POST', '/members/credential/revoke', {
     body: '{}', headers: { 'content-type': 'application/json' }, scope: 'deployment',
-    budget: { connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS, requestTimeoutMs: CONNECT_TIMEOUT_CAP_MS },
+    budget,
   });
   if (response.kind !== 'response') {
     if (mode === 'local-only') return 'still-valid';
     throw new Error('The Deployment could not be reached; retry logout, or use --local-only to leave its credential valid');
   }
-  if (response.status === 401) return 'revoked';
+  if (routeMissing(response)) {
+    if (mode === 'local-only') return 'still-valid';
+    throw new Error('This Deployment does not serve credential revocation; run `myco server update` for it, then retry logout');
+  }
+  if (response.status === 401) {
+    const refresh = await client.refresh(budget);
+    if (refresh.class === 'unauthorized' || (refresh.class === 'refused' && refresh.code === 'lineage_expired')) return 'revoked';
+    if (mode === 'local-only') return 'still-valid';
+    throw new Error('Credential revocation could not be confirmed; run `myco server update` for this Deployment, then retry logout');
+  }
   if (response.status >= 200 && response.status < 300) {
     if (response.json?.persisted === true) return 'revoked';
     throw new Error('The Deployment did not acknowledge revocation; local state was kept');
@@ -114,18 +131,21 @@ async function revoke(j: LogoutJournal, mode: 'revoke' | 'local-only', deps: Log
 
 function spoolReport(serverUrl: string, mycoHome: string): LogoutReport['keptSpool'] {
   const dir = path.join(memberRoot(mycoHome), 'spool', `d-${deploymentKeyFor(serverUrl)}`);
-  assertMemberPathContained(dir, mycoHome);
-  if (pathIsAbsent(dir)) return { path: dir, sessions: 0 };
+  const paths = [dir, path.join(pendingRoot(mycoHome), deploymentKeyFor(serverUrl))];
   let sessions = 0;
-  for (const project of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (!project.isDirectory()) continue;
-    const projectDir = path.join(dir, project.name);
-    assertMemberPathContained(projectDir, mycoHome);
-    const names = fs.readdirSync(projectDir);
-    sessions += new Set(names.flatMap((name) => name.endsWith('.jsonl') && name !== 'refused.jsonl' ? [name.slice(0, -6)]
-      : name.endsWith('.transcript-backlog') ? [name.slice(0, -19)] : [])).size;
+  for (const namespace of paths) {
+    assertMemberPathContained(namespace, mycoHome);
+    if (pathIsAbsent(namespace)) continue;
+    for (const project of fs.readdirSync(namespace, { withFileTypes: true })) {
+      if (!project.isDirectory()) continue;
+      const projectDir = path.join(namespace, project.name);
+      assertMemberPathContained(projectDir, mycoHome);
+      const names = fs.readdirSync(projectDir);
+      sessions += new Set(names.flatMap((name) => name.endsWith('.jsonl') && name !== 'refused.jsonl' ? [name.slice(0, -6)]
+        : name.endsWith('.transcript-backlog') ? [name.slice(0, -19)] : [])).size;
+    }
   }
-  return { path: dir, sessions };
+  return { path: dir, paths, sessions };
 }
 
 /** Revoke one Deployment credential and reconcile only the local state it owns. */
@@ -142,8 +162,10 @@ export async function logoutDeployment(input: string, opts: { mode: 'revoke' | '
   const dir = path.dirname(logoutJournalPath(serverUrl, mycoHome));
   ensureMemberDir(dir, mycoHome);
   const lock = path.join(dir, `${deploymentKeyFor(serverUrl)}.lock`);
-  ensurePrivateFile(lock);
-  const lease = LifecycleLock.acquire(lock, { command: 'myco logout' });
+  const lease = withRegistryLock(() => {
+    ensurePrivateFile(lock);
+    return LifecycleLock.acquire(lock, { command: 'myco logout' });
+  }, mycoHome);
   if (!lease.acquired) throw new Error('Logout is already running for this Deployment; retry when it finishes');
   try {
     let journal = withRegistryLock(() => {
@@ -171,13 +193,14 @@ export async function logoutDeployment(input: string, opts: { mode: 'revoke' | '
     };
     if (journal.phase === 'revoke') {
       journal.revoke = await revoke(journal, opts.mode, deps, mycoHome);
+      await deps.checkpoint?.('revoked');
       await advance('local');
     }
     if (journal.phase === 'local') {
       withRegistryLock(() => {
         removeDeploymentForLogout(serverUrl, journal.tokenDigest, journal.bindings, mycoHome, () => {
           deps.runtime.removeWorkers(journal.workerUrls);
-        });
+        }, deps.afterBindingsRemoved, journal.startedAt);
         const surviving = memberships(mycoHome);
         reconcileDefaultDeployment(serverUrl, surviving.length === 1 ? surviving[0].serverUrl : null, mycoHome);
       }, mycoHome);
@@ -192,10 +215,19 @@ export async function logoutDeployment(input: string, opts: { mode: 'revoke' | '
       }, mycoHome);
       await advance('done');
     }
-    return withRegistryLock(() => ({
-      serverUrl, revoked: journal.revoke === 'revoked', defaultUrl: readDefaultDeployment(mycoHome)?.serverUrl ?? null,
-      survivors: memberships(mycoHome).map((m) => m.serverUrl), keptSpool: spoolReport(serverUrl, mycoHome), runner: journal.runner,
-    }), mycoHome);
+    return withRegistryLock(() => {
+      const connectedRoots = new Set(logoutBindings(mycoHome).map((binding) => path.resolve(binding.root)));
+      const leftRoots = journal.bindings.map((binding) => binding.root)
+        .filter((root) => !connectedRoots.has(path.resolve(root)) && isLeft(rootKeyFor(root, mycoHome), mycoHome));
+      const report: LogoutReport = {
+        serverUrl, revoked: journal.revoke === 'revoked', machineId: journal.machineId, leftRoots, defaultUrl: readDefaultDeployment(mycoHome)?.serverUrl ?? null,
+        survivors: memberships(mycoHome).map((m) => m.serverUrl), keptSpool: spoolReport(serverUrl, mycoHome), runner: journal.runner,
+      };
+      fs.rmSync(logoutJournalPath(serverUrl, mycoHome), { force: true });
+      lease.lock.release();
+      fs.rmSync(lock, { force: true });
+      return report;
+    }, mycoHome);
   } finally {
     lease.lock.release();
   }

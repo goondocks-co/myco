@@ -122,7 +122,7 @@ describe('member ↔ worker pins', () => {
     const route = ROUTES.find((candidate) => candidate.method === 'POST' && candidate.path === '/members/credential/revoke');
     expect(route).toMatchObject({ auth: 'member', bodyMode: 'json', scope: 'credential', capture: false,
       shape: 'persisted', authorization: { resource: 'credential', action: 'edit', resolver: 'credential', subjects: ['member'], transport: 'http' } });
-    expect(route).not.toHaveProperty('admitsLapsed');
+    expect(route).toHaveProperty('admitsLapsed', true);
   });
 
   it('MEMBER_PROTOCOL is inside the server window', () => {

@@ -24,7 +24,7 @@ import path from 'node:path';
 import { getMachineId } from '../machine-id.js';
 import { resolveMycoHome } from '../paths/home.js';
 import {
-  clearJoinRequest, clearPendingImport, dropJoinRequest, isLeft, joinStanding, listJoinRequests, listPendingImports, markSweepDone, placeRepository, queueImport,
+  clearJoinRequest, clearPendingImport, dropJoinRequest, isLeft, leftForConnection, joinStanding, listJoinRequests, listPendingImports, markSweepDone, placeRepository, queueImport,
   readAutoJoinState, repositoryAt, sweepDone, takeRepositoryLock,
   clearLeft, forgetAutoJoinState, markLeft, markSessionsReported, nextAttemptAfter, rootKeyFor, silentRepository, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
 } from '../member/auto-join.js';
@@ -80,11 +80,16 @@ const STATE_TIMEOUT_MS = 10_000;
  * many records moved.
  */
 export async function settleConnection(entry: RegistryEntry, opts: { mycoHome: string; now: () => number; fetch?: FetchLike; tell: boolean }): Promise<number> {
-  assertDeploymentTokenPair(entry, opts.mycoHome);
   const rootKey = rootKeyFor(entry.root, opts.mycoHome);
-  // Joined again: a repository left with `myco member leave` is captured from now on, and a join a hook asked for is
-  // made.
-  clearLeft(rootKey, opts.mycoHome);
+  withRegistryLock(() => {
+    const held = readRegistryEntryResult(entry.root, opts.mycoHome);
+    if (held.status !== 'present' || held.entry.projectId !== entry.projectId
+      || deploymentUrl(held.entry.serverUrl) !== deploymentUrl(entry.serverUrl) || held.entry.token !== entry.token) {
+      throw new Error('The repository connection changed before its capture could be settled');
+    }
+    assertDeploymentTokenPair(entry, opts.mycoHome);
+    clearLeft(rootKey, opts.mycoHome);
+  }, opts.mycoHome);
   dropJoinRequest(rootKey, opts.mycoHome, entry.serverUrl);
   const moved = flushPending(rootKey, new MemberSpool(entry, { mycoHome: opts.mycoHome }), { mycoHome: opts.mycoHome, now: opts.now() });
   const state = readAutoJoinState(rootKey, opts.mycoHome, entry.serverUrl);
@@ -123,11 +128,8 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
   const leaves = machineAutoJoinLeaves(membership.serverUrl, mycoHome);
   const placement = placeRepository(repo, leaves);
   const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, repo.rootKey) ? leaves.connectRoots[repo.rootKey]! : null;
-  // Left with `myco member leave`, by the settings just read: no attempt joins it until "Needs you" connects it.
-  if (isLeft(repo.rootKey, mycoHome)) {
-    if (connectTo === null) return { root, result: 'left' };
-    clearLeft(repo.rootKey, mycoHome);
-  }
+  // Ordinary leave markers accept a new dashboard connection; logout markers require an explicit local join.
+  if (leftForConnection(repo.rootKey, mycoHome, connectTo)) return { root, result: 'left' };
   const client = new ServerClient({ serverUrl: membership.serverUrl, token: membership.token }, deps.fetch ?? globalThis.fetch);
   const budget = { connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS, requestTimeoutMs: REQUEST_TIMEOUT_MS };
   // What this machine holds of the repository's capture now, and the sessions that met it after its last report: the
@@ -182,6 +184,7 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
   const committed = withRegistryLock(() => {
     const held = readRegistryEntryResult(root, mycoHome);
     if (held.status !== 'missing') return held;
+    if (isLeft(repo.rootKey, mycoHome)) return { status: 'left' as const };
     const written: RegistryEntry = {
       version: REGISTRY_VERSION, projectId, serverUrl: membership.serverUrl, token: membership.token, root,
       machineId: membership.machineId ?? getMachineId(), joinedAt: now(), updatedAt: now(),
@@ -189,6 +192,7 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
     writeRegistryEntry(written, { mycoHome, locked: true });
     return { status: 'written' as const, entry: written };
   }, mycoHome);
+  if (committed.status === 'left') return { root, result: 'left' };
   if (committed.status === 'unavailable') return { root, result: 'binding-unavailable' };
   if (committed.status === 'present') return { root, result: deploymentUrl(committed.entry.serverUrl) === deploymentUrl(membership.serverUrl) ? 'connected' : 'connected-elsewhere' };
   const entry = committed.entry;

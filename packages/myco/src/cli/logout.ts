@@ -35,8 +35,11 @@ export async function run(args: readonly string[], deps: LogoutCliDeps = {}): Pr
     const pinned = chosen === null ? null : pinnedHomeLine(chosen, folder);
     if (pinned !== null) out(pinned);
     out(`Signed out of ${report.serverUrl}.`);
-    if (!report.revoked) out('Credential still valid on the Deployment; stop it on the dashboard: People & machines › this machine › Stop.');
-    out(`${report.keptSpool.sessions} undelivered sessions kept at ${report.keptSpool.path}; \`myco member drain\` after signing in again.`);
+    if (!report.revoked) out(`Credential still valid on the Deployment; stop it on the dashboard: People & machines › ${report.machineId} › Stop.`);
+    out(`${report.keptSpool.sessions} undelivered sessions kept at ${report.keptSpool.paths.join(', ')}; \`myco member drain\` after signing in again.`);
+    out(`${report.leftRoots.length} repositories won't be captured until you connect them again:`);
+    for (const root of report.leftRoots) out(`  ${root}`);
+    if (report.leftRoots.length > 0) out('Reconnect these repositories explicitly with `myco member join`.');
     if (report.defaultUrl !== null) out(`New repositories join ${report.defaultUrl}.`);
     else if (report.survivors.length > 1) out('Choose the Deployment new repositories join with `myco login --default <url>`.');
     if (report.runner) out(`This machine is also a runner for ${report.serverUrl}; remove it on the Runners page or \`myco runner uninstall --server ${report.serverUrl}\`.`);

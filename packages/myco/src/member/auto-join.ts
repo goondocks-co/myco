@@ -32,7 +32,7 @@ import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, r
 import { PENDING_MAX_RECORDS, type HeldEnd } from './pending.js';
 import { machineAutoJoinLeaves } from './machine-settings.js';
 import { isProjectId } from './constants.js';
-import { deploymentKeyFor, deploymentUrl } from './registry.js';
+import { deploymentKeyFor, deploymentUrl, withRegistryLock } from './registry.js';
 
 
 export const AUTO_JOIN_DIRNAME = 'auto-join';
@@ -431,10 +431,7 @@ export function joinStanding(root: string, rootKey: string, serverUrl: string, m
   const leaves = machineAutoJoinLeaves(serverUrl, mycoHome);
   const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, rootKey) ? leaves.connectRoots[rootKey]! : null;
   const state = readAutoJoinState(rootKey, mycoHome, serverUrl);
-  if (isLeft(rootKey, mycoHome)) {
-    if (connectTo === null) return { standing: 'left', leaves, state };
-    clearLeft(rootKey, mycoHome);
-  }
+  if (leftForConnection(rootKey, mycoHome, connectTo)) return { standing: 'left', leaves, state };
   const moved = settingsMoved(state, placeRepository({ root, rootKey }, leaves), connectTo);
   return { standing: moved || autoJoinDue(state, now) ? 'due' : 'waiting', leaves, state };
 }
@@ -616,11 +613,30 @@ const leftPath = (rootKey: string, mycoHome: string): string => path.join(autoJo
 
 /**
  * Opt a repository out of auto-join, as `myco member leave` there does: its hooks capture nothing, hold nothing and say
- * nothing, until it is joined again, or connected again from "Needs you".
+ * nothing, until it is joined again. Ordinary leave markers also accept a connection from "Needs you".
  */
-export function markLeft(rootKey: string, mycoHome: string, now: number): void {
-  ensureMemberDir(path.dirname(leftPath(rootKey, mycoHome)), mycoHome);
-  writePrivateFileAtomic(leftPath(rootKey, mycoHome), `${JSON.stringify({ at: now })}\n`);
+export function markLeft(rootKey: string, mycoHome: string, now: number, opts: { explicitJoinOnly?: true; locked?: true } = {}): void {
+  const mark = (): void => {
+    const file = leftPath(rootKey, mycoHome);
+    const held = readPrivateJson<{ explicitJoinOnly?: true }>(file);
+    if (!held.ok && !(held.reason === 'missing' && pathIsAbsent(file))) throw new Error('Could not read the repository opt-out; it was left in place');
+    const explicitJoinOnly = opts.explicitJoinOnly === true || (held.ok && held.value?.explicitJoinOnly === true);
+    ensureMemberDir(path.dirname(file), mycoHome);
+    writePrivateFileAtomic(file, `${JSON.stringify({ at: now, ...(explicitJoinOnly ? { explicitJoinOnly: true } : {}) })}\n`);
+  };
+  if (opts.locked) mark();
+  else withRegistryLock(mark, mycoHome);
+}
+
+/** Logout opt-outs require an explicit local join; settings directives carry no proof of a new connection choice. */
+export function leftForConnection(rootKey: string, mycoHome: string, connectTo: string | null): boolean {
+  return withRegistryLock(() => {
+    if (!isLeft(rootKey, mycoHome)) return false;
+    const read = readPrivateJson<{ at: number; explicitJoinOnly?: true }>(leftPath(rootKey, mycoHome));
+    if (!read.ok || read.value.explicitJoinOnly === true || connectTo === null) return true;
+    clearLeft(rootKey, mycoHome);
+    return false;
+  }, mycoHome);
 }
 
 export const isLeft = (rootKey: string, mycoHome: string): boolean => fs.existsSync(leftPath(rootKey, mycoHome));

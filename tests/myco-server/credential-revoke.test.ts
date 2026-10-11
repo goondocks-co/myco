@@ -12,7 +12,7 @@ const PATH = '/members/credential/revoke';
 
 for (const target of ['native SQLite', 'Cloudflare D1'] as const) {
   describe(`${target}: member credential self-revocation`, () => {
-    it('ends only the presented lineage and refuses its later use', async () => {
+    for (const age of [0, 8 * 24 * 60 * 60 * 1000]) it(`ends only the presented lineage at age ${age} and refuses its later use`, async () => {
       const fixture = sqliteEnv();
       const mf = target === 'Cloudflare D1' ? new Miniflare({ modules: true,
         script: 'export default { fetch() { return new Response(null); } }',
@@ -24,9 +24,9 @@ for (const target of ['native SQLite', 'Cloudflare D1'] as const) {
           await db.prepare("INSERT INTO members(id,label,created_at,role) VALUES ('mem_machine_1','one',0,'member'),('mem_machine_2','two',0,'member')").run();
           await db.prepare("INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES ('machine_1','mem_machine_1',0),('machine_2','mem_machine_2',0)").run();
         }
-        const root = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, NOW);
-        const successor = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, NOW + 1,
-          { predecessorId: root.tokenId, lineageRoot: root.tokenId, lineageStartedAt: NOW });
+        const root = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, NOW - age);
+        const successor = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, NOW - age + 1,
+          { predecessorId: root.tokenId, lineageRoot: root.tokenId, lineageStartedAt: NOW - age });
         const unrelated = await issueMemberToken(db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, NOW);
         const server = createServer({ now: () => NOW + 2, sourceOf: () => '192.0.2.1', fetchImpl: noOutboundFetch });
         const env = { ...fixture.serverEnv, db };
@@ -51,6 +51,7 @@ for (const target of ['native SQLite', 'Cloudflare D1'] as const) {
           { id: unrelated.tokenId, revoked_at: null, revoked_by: null },
         ].sort((a, b) => a.id < b.id ? -1 : 1));
         expect((await post(root.token)).status).toBe(401);
+        expect((await post(root.token, '{}', '/tokens/refresh')).status).toBe(401);
         expect((await post(successor.token)).status).toBe(401);
         expect((await post(unrelated.token, '{}', '/members/status')).status).toBe(200);
       } finally {

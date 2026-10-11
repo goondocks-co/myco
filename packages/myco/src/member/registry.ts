@@ -19,6 +19,7 @@
  * Both files are written atomically under the registry lock and read fail-closed;
  * lookup is by the worktree-aware project root, exact match.
  */
+import { markLeft, rootKeyFor } from './auto-join.js';
 import { pinLegacySpoolDestinationForProject } from './spool-migration.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -715,7 +716,7 @@ export function logoutBindings(mycoHome: string): ProjectBinding[] {
 }
 
 /** Remove only unchanged target records; captured data stays in its Deployment namespace. Caller holds the registry lock. */
-export function removeDeploymentForLogout(serverUrl: string, tokenDigest: string, snapshot: readonly ProjectBinding[], mycoHome: string, beforeRemove?: () => void): void {
+export function removeDeploymentForLogout(serverUrl: string, tokenDigest: string, snapshot: readonly ProjectBinding[], mycoHome: string, beforeRemove?: () => void, afterBindingsRemoved?: () => void, now: number = Date.now()): void {
   const membership = readDeploymentMembershipResult(serverUrl, mycoHome);
   if (membership.status === 'unavailable') throw new Error(`Could not read ${deploymentPath(serverUrl, mycoHome)}`);
   if (membership.status === 'present' && membershipTokenDigest(membership.membership) !== tokenDigest) {
@@ -729,7 +730,9 @@ export function removeDeploymentForLogout(serverUrl: string, tokenDigest: string
   for (const file of files) assertMemberPathContained(file, mycoHome);
   for (const binding of bindings) pinLegacySpoolDestinationForProject(binding.projectId, mycoHome);
   beforeRemove?.();
+  for (const binding of bindings) markLeft(rootKeyFor(binding.root, mycoHome), mycoHome, now, { explicitJoinOnly: true, locked: true });
   for (const binding of bindings) fs.rmSync(registryEntryPath(binding.root, mycoHome), { force: true });
+  afterBindingsRemoved?.();
   for (const file of files) fs.rmSync(file, { force: true });
 }
 
