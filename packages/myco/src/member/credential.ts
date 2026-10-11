@@ -118,7 +118,7 @@ export function resolveCredential(
     // miss is counted under the home this invocation resolved, where
     // `myco member status` reads it back.
     recordMissingMembership(root, { mycoHome, invokedBy: opts.invokedBy });
-    stderr(`no registry entry for ${root} — run \`myco member join <server-url> --project <id>\`; no capture`);
+    stderr(`no registry entry for ${root} — projects under your capture folders join when an agent works in them; otherwise run \`myco member join\`; no capture`);
     return null;
   }
   if (!admitMemberServerUrl(entry.serverUrl)) {

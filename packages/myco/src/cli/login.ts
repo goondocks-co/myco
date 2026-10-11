@@ -55,7 +55,8 @@ agent works in it: the project that already holds its remote, or a new one named
 after the folder. A repository you connect elsewhere with \`myco member join\`
 stays where you put it.
 
-In a sandbox or a CI job, set MYCO_JOIN_CODE to the same link instead of running
+In a sandbox or a CI job, ask an admin for a project-bound invitation and set MYCO_JOIN_CODE to that
+link instead of running
 this command. The first agent session redeems it and captures from then on, with
 nothing else to configure.
 `;

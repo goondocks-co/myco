@@ -1,3 +1,4 @@
+import { machineSettingsLocation } from '@goondocks/myco-shared/setup-guidance';
 /**
  * `myco cutover` — move retained 1.4 projects to their routed Deployments.
  *
@@ -805,7 +806,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       if (legacyPlanDirs.length === 0) out('   1.4 watched no extra plan folders on this machine');
       else {
         out(`   1.4 also watched these plan folders: ${legacyPlanDirs.join(', ')}`);
-        out(`   to keep any, add it under Access › Runtimes › Settings for this machine: ${deploymentUrl(serverUrl)}/access`);
+        out(`   to keep any, add it in ${machineSettingsLocation(deploymentUrl(serverUrl))}`);
       }
       out(ok ? 'Cutover complete.' : 'Cutover finished with the problems above; run it again once they are settled.');
       return ok;

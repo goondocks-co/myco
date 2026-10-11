@@ -11,6 +11,7 @@ import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
  * attempts found no membership at all; `mcp-headers` prints the member
  * headers a remote MCP entry asks for.
  */
+import { IDENTITY_LINK_TTL_MS } from '@myco-server-worker/auth/identity-link.js';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { seedMachineSettings } from '../member/machine-settings.js';
 import { listAutoJoinStates } from '../member/auto-join.js';
@@ -102,7 +103,7 @@ Ops:
                      machine is a member of several. No token is changed.
   link-github [--root <dir>] [--open]
                      Connect your GitHub account to this membership for the dashboard: prints a one-time
-                     link to open in a browser within ten minutes. --open hands it to the browser as well.
+                     link to open in a browser within ${IDENTITY_LINK_TTL_MS / 60_000} minutes. --open hands it to the browser as well.
   raw-claims [--credential registry|env] [--server <url>] [--apply --revision <reviewed-revision>]
                      Preview raw data with no recorded uploader, by project, kind, count and date.
                      Only the recorded owner may claim it. Review the preview, then explicitly apply
@@ -1289,7 +1290,7 @@ export async function runLinkGithub(args: readonly string[], deps: MemberCliDeps
   switch (outcome.class) {
     case 'linked': {
       const url = linkUrl(entry.serverUrl, outcome.key);
-      out(`Open this link within ten minutes to connect your GitHub account to this membership:`);
+      out(`Open this link within ${IDENTITY_LINK_TTL_MS / 60_000} minutes to connect your GitHub account to this membership:`);
       out(url);
       if (open) (deps.openBrowser ?? openBrowser)(url);
       return url;

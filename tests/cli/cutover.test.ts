@@ -223,12 +223,15 @@ describe('myco cutover', () => {
   }
 
   it('moves capture to 2.0 in place, takes 1.4 out for good, keeps the vault as it was, and brings its history; again changes nothing', async () => {
+    fs.writeFileSync(path.join(m.legacyHome, 'config.yaml'), 'capture:\n  plan_dirs: [custom-plans]\n');
     const vaultBytes = sha(m.vault);
     const settingsBytes = fs.readFileSync(settingsFile(), 'utf8');
     fs.chmodSync(settingsFile(), 0o600);
     const first = await m.run();
     expect(first.err).toEqual([]);
     expect(first.ok).toBe(true);
+    expect(first.out.join('\n')).toContain('My machines › Its settings');
+    expect(first.out.join('\n')).toContain(`${SERVER}/me/machines`);
 
     // The folder is connected; the claim names the 2.0 home, so a 1.4 daemon that comes back defers.
     expect(listRegistryEntries(m.mycoHome).map((e) => [e.root, e.projectId])).toEqual([[m.root, PROJECT]]);

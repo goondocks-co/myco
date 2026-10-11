@@ -46,3 +46,8 @@ export const toolsStayOnDeployment = (agent: string, url: string): string =>
   `${agent}'s Myco tools stay on ${url}; one machine can't point them at two Mycos yet. Capture goes to the right one. Run myco doctor from this repository to check capture.`;
 export const runnerCheckIn = (offered: readonly string[], withheld: readonly string[], at: number): string =>
   `Checked in: offering ${offered.join(', ') || 'none'}; unavailable: ${withheld.join(', ') || 'none'} (checked ${new Date(at).toISOString()}).${offered.length === 0 ? ' Run myco runner doctor to check which coding agents can run.' : ''}`;
+
+/** Where a member changes this machine's capture settings in the dashboard. */
+export const MACHINE_SETTINGS_CONTROLS = { page: 'My machines', path: '/me/machines', action: 'Its settings' } as const;
+export const machineSettingsLocation = (serverUrl: string | null): string =>
+  `the dashboard${serverUrl === null ? '' : ` (${serverUrl}${MACHINE_SETTINGS_CONTROLS.path})`}, under ${MACHINE_SETTINGS_CONTROLS.page} › ${MACHINE_SETTINGS_CONTROLS.action} for this machine`;
