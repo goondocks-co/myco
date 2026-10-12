@@ -9,7 +9,7 @@ Taken 2026-09-29 from the dogfood Deployment, read-only (D1 `SELECT`s, Vectorize
 - **Spores.** `corpus.json` holds all 368 active spores with a ready embedding receipt. That is exactly the set production calibrates hubness over.
 - **Plans.** `corpus.json` also holds the 14 plans. Each keeps its title and status; the body is replaced by a fixed placeholder, because injection renders only the title and the bodies carry working notes this repository should not publish.
 - **Prompts.** `gold.json` holds 48 real user prompts. Each case records its source (the 1.4 dogfood vault, 2026-03 to 08, or the 2.0 Deployment, 2026-08 to 09), harness, date, session id and prompt id.
-- **Judgements.** The owner reviewed every case and agreed with the suggested verdict. The five open cases (rp-02, rp-12, rp-28, rp-32, rp-39) are negatives.
+- **Judgements.** The owner reviewed every case and agreed with the suggested verdict. The five open cases (rp-02, rp-12, rp-28, rp-32, rp-39) are negatives. On 2026-10-12 the coordinator added the expected live plan `a3b1e332-96a2-56e0-9afa-01876916c3a3` (Myco 2.0 delivery reset) to rp-43. That additional plan judgment is pending owner review, as recorded in `expectedPlanReview`; it is separate from the original `ownerReview`.
 
 ## Vectors
 
@@ -34,7 +34,9 @@ After re-embedding, the served blocks move where the re-embedded rows move them:
 - 41 serve the same number of plans;
 - 10 serve an identical block, plans and order included.
 
-The owner's expected and must-not ids are unchanged. The recorded baseline is what the fixture serves, and the gate holds each release to it.
+The owner's expected and must-not spore ids are unchanged. The coordinator-added rp-43 plan expectation is pending owner review. The recorded baseline is what the fixture serves, and the gate holds each release to it.
+
+**Plan evidence is weaker than spore evidence.** All plan bodies are fixed placeholders, including the delivery-reset plan. Their shared text inflates plan-to-plan similarity, so success on these plan vectors does not establish calibration quality on production plan bodies.
 
 ## Embedding keys
 

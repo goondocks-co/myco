@@ -34,10 +34,10 @@ import { settingTexts } from './settings.js';
 import { listSporesByIds, type SporeRow } from './spores.js';
 import { getPlan } from '../read/plans.js';
 import type { ReadScope } from '../read/scope.js';
-import { distributionStats, selectRelevantPlans, selectRelevantSpores } from '@goondocks/myco-shared/relevance';
+import { distributionStats, hasPlanCalibration, PLAN_MIN_CALIBRATION, selectRelevantPlans, selectRelevantSpores, type PlanCalibration } from '@goondocks/myco-shared/relevance';
 import { semanticHits, type SemanticSearch } from '../read/embedding.js';
 import { EmbeddingUnavailable } from './embedding/provider.js';
-import { cosineSimilarity, VECTOR_QUERY_LIMIT } from './embedding/vectors.js';
+import { cosineSimilarity, normalizedVector, VECTOR_QUERY_LIMIT } from './embedding/vectors.js';
 
 /** A prompt shorter than this carries too little to serve against. */
 export const MIN_PROMPT_CHARS = 10;
@@ -109,6 +109,8 @@ export type InjectionSkip = 'capability' | 'disabled' | 'short_prompt' | 'zero_m
 
 /** Counts at each selector stage, including matches rejected by the receipt join or metadata post-filter. */
 export interface InjectionCounts {
+  planCalibration: PlanCalibration;
+  planCalibrationSamples: number;
   sporeRawMatches: number; sporeJoined: number; sporeHits: number;
   sporeCalibrated: number; sporeScored: number; sporeProbable: number; sporeSeparated: number;
   sporeRelevant: number; sporeHydrated: number;
@@ -118,6 +120,7 @@ export interface InjectionCounts {
 }
 
 export const emptyInjectionCounts = (): InjectionCounts => ({
+  planCalibration: 'none', planCalibrationSamples: 0,
   sporeRawMatches: 0, sporeJoined: 0, sporeHits: 0, sporeRelevant: 0, sporeHydrated: 0,
   sporeCalibrated: 0, sporeScored: 0, sporeProbable: 0, sporeSeparated: 0,
   planRawMatches: 0, planJoined: 0, planHits: 0, planUnserved: 0, planEligible: 0, planCalibrationFailed: 0, planCalibrated: 0,
@@ -302,6 +305,30 @@ function parseIds(raw: string): string[] {
   }
 }
 
+const PLAN_BACKGROUND_PROJECTS = 5;
+
+/** Deployment calibration returns scalar distances from current sources in live projects. */
+async function deploymentPlanBackground(db: RelationalStore, semantic: SemanticSearch, scope: ReadScope, values: number[]) {
+  const rows = await db.prepare(`WITH eligible AS (SELECT r.project_id, r.id FROM embedding_receipts r
+    JOIN embedding_sources s ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
+    JOIN projects p ON p.project_id = r.project_id
+    WHERE r.model_key = ? AND r.ready = 1 AND p.archived_at IS NULL
+    AND ((s.type = 'spore' AND s.status = 'active') OR (s.type = 'plan' AND s.status IN ('active', 'in_progress')))
+    AND NOT (r.project_id = ? AND r.type = 'plan'))
+    SELECT project_id, id FROM eligible WHERE project_id IN (SELECT DISTINCT project_id FROM eligible ORDER BY project_id LIMIT ?)
+    ORDER BY id LIMIT ?`)
+    .bind(semantic.provider.modelKey, scope.projectId, PLAN_BACKGROUND_PROJECTS, VECTOR_QUERY_LIMIT)
+    .all<{ project_id: string; id: string }>();
+  const partitions = new Map<string, string[]>();
+  for (const row of rows.results) partitions.set(row.project_id, [...(partitions.get(row.project_id) ?? []), row.id]);
+  const query = normalizedVector(values);
+  const samples = await Promise.all([...partitions].map(async ([projectId, ids]) => {
+    const vectors = await semantic.vectors.get({ projectId, modelKey: semantic.provider.modelKey }, ids);
+    return vectors.filter(v => ids.includes(v.id)).map(v => ({ id: v.id, similarity: cosineSimilarity(query, normalizedVector(v.values)) }));
+  }));
+  return samples.flat();
+}
+
 /**
  * The items one prompt is served, and the record of having served them.
  *
@@ -311,7 +338,8 @@ function parseIds(raw: string): string[] {
  * mean any of them.
  *
  * Two pools feed one budget. Spores rank by Mutual Proximity over the semantic
- * candidates; live plans use a plan-to-plan baseline within the same model.
+ * candidates; live plans use a plan-to-plan baseline within the same model,
+ * or a Deployment background when the Project's pool is small or flat.
  * Live plans occupy up to two of the guaranteed item places after the leading
  * spores. Remaining spores fill the budget in semantic order.
  *
@@ -359,13 +387,18 @@ export async function selectSporesForPrompt(
   const eligiblePlans = unservedPlans.filter(isLivePlan);
   counts.planEligible = eligiblePlans.length;
   const loadPlanVectors = async () => {
-    if (eligiblePlans.length === 0 || planHits.length < 2) return [];
+    if (eligiblePlans.length === 0 || planHits.length < PLAN_MIN_CALIBRATION) return [];
     try { return await semantic.vectors.get({ projectId: scope.projectId, modelKey: semantic.provider.modelKey }, planHits.map((h) => h.vector_id)); }
     catch { counts.planCalibrationFailed++; return []; }
   };
-  const [hydrated, planVectors] = await Promise.all([
+  const loadDeploymentBackground = async () => {
+    try { return await deploymentPlanBackground(db, semantic, scope, values); }
+    catch { counts.planCalibrationFailed++; return []; }
+  };
+  const [hydrated, planVectors, smallPoolBackground] = await Promise.all([
     duringInjection('hydrate_spores', counts, () => listSporesByIds(db, scope, relevant.map((s) => s.id))),
     loadPlanVectors(),
+    eligiblePlans.length > 0 && planHits.length < PLAN_MIN_CALIBRATION ? loadDeploymentBackground() : Promise.resolve(null),
   ]);
   const bySpore = new Map(hydrated.filter((s) => s.status === 'active').map((s) => [s.id, s]));
   const sporeItems: InjectionItem[] = relevant.flatMap((s) => {
@@ -386,7 +419,13 @@ export async function selectSporesForPrompt(
       ...(peers.length === 0 ? {} : { neighborMean: stats.mean, neighborStd: stats.std }) };
   });
   const liveBackground = planBackground.filter((h) => planHits.some((p) => p.record_id === h.id && isLivePlan(p)));
+  let deploymentCandidates: Array<{ id: string; similarity: number }> = [];
+  if (eligiblePlans.length > 0 && !hasPlanCalibration(planBackground)) {
+    deploymentCandidates = smallPoolBackground ?? await loadDeploymentBackground();
+    counts.planCalibrationSamples = deploymentCandidates.length;
+  }
   const planCandidates = selectRelevantPlans(liveBackground, {
+    deploymentCandidates, observeCalibration: stage => { counts.planCalibration = stage; },
     maxResults: Math.min(leaves.maxPerPrompt, MAX_PLANS_PER_PROMPT), referenceCandidates: planBackground, queryCandidates: [...sporeCandidates, ...planBackground],
     observe: (n) => { counts.planCalibrated = n.calibrated; counts.planScored = n.scored; counts.planProbable = n.probable; counts.planSeparated = n.separated; },
   });

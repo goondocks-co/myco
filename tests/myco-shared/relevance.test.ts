@@ -16,10 +16,11 @@ describe('prompt relevance', () => {
     ]);
   });
 
-  it('requires independent prompt-side evidence for uncalibrated plans', () => {
+  it('requires independent Deployment evidence for small plan pools', () => {
     for (const [offset, scale] of [[0, 1], [0.4, 0.5], [-0.5, 0.2]]) {
       const candidates = [{ id: 'capture', similarity: offset! + scale! * 0.53 }, { id: 'billing', similarity: offset! + scale! * 0.3 }];
-      expect(selectRelevantPlans(candidates, { maxResults: 2 }).map(c => c.id)).toEqual(['capture']);
+      const deploymentCandidates = Array.from({ length: 12 }, (_, i) => ({ id: `other-${i}`, similarity: offset! + scale! * (0.25 + i / 100) }));
+      expect(selectRelevantPlans(candidates, { maxResults: 2, deploymentCandidates }).map(c => c.id)).toEqual(['capture']);
       expect(selectRelevantPlans(candidates.slice(0, 1), { maxResults: 2 })).toEqual([]);
     }
     for (const similarity of [-0.39, -0.9]) {
@@ -29,18 +30,41 @@ describe('prompt relevance', () => {
     }
   });
 
+  it.each([false, true])('rejects irrelevant two-plan pools with calibrated=%s', calibrated => {
+    const plans = [-0.9, -0.92].map((similarity, i) => ({ id: `plan-${i}`, similarity,
+      ...(calibrated ? { neighborMean: 0.02, neighborStd: 0 } : {}) }));
+    const deploymentCandidates = Array.from({ length: 12 }, (_, i) => ({ id: `other-${i}`, similarity: 0.2 + i / 100 }));
+    expect(selectRelevantPlans(plans, { maxResults: 2, deploymentCandidates })).toEqual([]);
+  });
+
+  it('admits a lone relevant plan and rejects a lone irrelevant plan against Deployment distances', () => {
+    const deploymentCandidates = Array.from({ length: 12 }, (_, i) => ({ id: `other-${i}`, similarity: 0.2 + i / 100 }));
+    expect(selectRelevantPlans([{ id: 'reconnect', similarity: 0.95 }], { maxResults: 2, deploymentCandidates }).map(p => p.id)).toEqual(['reconnect']);
+    expect(selectRelevantPlans([{ id: 'billing', similarity: -0.9 }], { maxResults: 2, deploymentCandidates })).toEqual([]);
+  });
+
+  it('reports insufficient calibration for too few or flat Deployment samples and ignores a flat five-plan baseline', () => {
+    const plans = Array.from({ length: 5 }, (_, i) => ({ id: `plan-${i}`, similarity: 0.95 - i / 100, neighborMean: 0.02, neighborStd: 0 }));
+    for (const deploymentCandidates of [[], [{ id: 'other', similarity: 0.1 }], Array.from({ length: 12 }, (_, i) => ({ id: `other-${i}`, similarity: 0.1 }))]) {
+      let stage: unknown;
+      expect(selectRelevantPlans(plans, { maxResults: 2, deploymentCandidates, observeCalibration: s => { stage = s; } })).toEqual([]);
+      expect(stage).toBe('insufficient');
+    }
+  });
+
   it('admits a live transcript plan against its own model baseline and rejects an ordinary match', () => {
     const candidate = { id: 'preserve-pending-transcript-batches', similarity: 0.53, neighborMean: 0.3, neighborStd: 0.06 };
     const queryCandidates = Array.from({ length: 30 }, (_, i) => ({ id: 'other-' + i, similarity: 0.4 + i / 1000 }));
-    expect(selectRelevantPlans([candidate], { maxResults: 2, queryCandidates }).map(c => c.id)).toEqual([candidate.id]);
-    expect(selectRelevantPlans([{ ...candidate, similarity: 0.2 }], { maxResults: 2, queryCandidates })).toEqual([]);
+    const referenceCandidates = Array.from({ length: 5 }, (_, i) => ({ ...candidate, id: `peer-${i}` }));
+    expect(selectRelevantPlans([candidate], { maxResults: 2, queryCandidates, referenceCandidates }).map(c => c.id)).toEqual([candidate.id]);
+    expect(selectRelevantPlans([{ ...candidate, similarity: 0.2 }], { maxResults: 2, queryCandidates, referenceCandidates })).toEqual([]);
   });
 
   it('separates weaker plans after the probability floor', () => {
     let counts: unknown;
     const candidates = [{ id: 'strong', similarity: 0.9 }, { id: 'weak', similarity: 0.5 }];
-    const queryCandidates = [{ id: 'far', similarity: -0.2 }, { id: 'near', similarity: 0.6 }];
-    expect(selectRelevantPlans(candidates, { maxResults: 2, queryCandidates, observe: n => { counts = n; } }).map(c => c.id)).toEqual(['strong']);
+    const deploymentCandidates = Array.from({ length: 12 }, (_, i) => ({ id: `other-${i}`, similarity: -0.3 + i * 0.09 }));
+    expect(selectRelevantPlans(candidates, { maxResults: 2, deploymentCandidates, observe: n => { counts = n; } }).map(c => c.id)).toEqual(['strong']);
     expect(counts).toEqual({ calibrated: 0, scored: 2, probable: 2, separated: 1 });
   });
 

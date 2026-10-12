@@ -1686,7 +1686,13 @@
    },
    "expectedPlans": [
     "a3b1e332-96a2-56e0-9afa-01876916c3a3"
-   ]
+   ],
+   "expectedPlanReview": {
+    "source": "coordinator",
+    "date": "2026-10-12",
+    "status": "pending owner review",
+    "note": "Expected Myco 2.0 delivery reset plan added by the coordinator; the original owner-reviewed expected and must-not spore ids are unchanged."
+   }
   },
   {
    "id": "rp-44",

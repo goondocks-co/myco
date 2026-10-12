@@ -72,6 +72,8 @@ const DEFAULT_MIN_PROBABILITY = 0.5;
 const DEFAULT_RELATIVE_BAND = 0.6;
 const PLAN_MIN_PROBABILITY = 0.75;
 const PLAN_RELATIVE_BAND = 0.9;
+export const PLAN_MIN_CALIBRATION = 5;
+export type PlanCalibration = 'none' | 'project' | 'deployment' | 'insufficient';
 /** Upper end of the central 95% normal interval for candidate baselines. */
 const BASELINE_STD_LIMIT = 2;
 
@@ -196,17 +198,36 @@ export function selectRelevantSpores(
   return separated.slice(0, opts.maxResults).map(({ id, mp }) => ({ id, mp }));
 }
 
-/** Plan-side distances are centered on the prompt-side distribution before mutual proximity. */
-export function selectRelevantPlans(candidates: SporeCandidate[], opts: SelectOptions): SelectedSpore[] {
+export function hasPlanCalibration(candidates: SporeCandidate[]): boolean {
+  const calibrated = candidates.filter(isCalibrated);
+  return calibrated.length >= PLAN_MIN_CALIBRATION && calibrated.every(c => c.neighborStd > STD_EPSILON);
+}
+
+/** Small plan pools use independent Deployment distances; calibrated pools use centered mutual proximity. */
+export function selectRelevantPlans(candidates: SporeCandidate[], opts: SelectOptions & {
+  deploymentCandidates?: SporeCandidate[];
+  observeCalibration?: (stage: PlanCalibration) => void;
+}): SelectedSpore[] {
   const live = candidates.filter((c) => Number.isFinite(c.similarity));
   const calibrated = (opts.referenceCandidates ?? candidates).filter(isCalibrated);
   const queryStats = distributionStats((opts.queryCandidates ?? opts.referenceCandidates ?? candidates)
     .filter((c) => Number.isFinite(c.similarity)).map((c) => 1 - c.similarity));
-  const baseline = calibrated.length === 0 ? null : pooledCalibration(calibrated);
-  const scored = live.filter((c) => !c.alreadyInjected)
+  const projectCalibrated = hasPlanCalibration(calibrated);
+  const deployment = (opts.deploymentCandidates ?? []).filter(c => Number.isFinite(c.similarity));
+  const deploymentStats = distributionStats(deployment.map(c => 1 - c.similarity));
+  const deploymentCalibrated = deployment.length >= PLAN_MIN_CALIBRATION && deploymentStats.std > STD_EPSILON;
+  const baseline = projectCalibrated ? pooledCalibration(calibrated) : null;
+  const unserved = live.filter(c => !c.alreadyInjected);
+  const stage: PlanCalibration = unserved.length === 0 ? 'none' : projectCalibrated ? 'project' : deploymentCalibrated ? 'deployment' : 'insufficient';
+  opts.observeCalibration?.(stage);
+  if (stage === 'insufficient') {
+    opts.observe?.({ calibrated: calibrated.length, scored: 0, probable: 0, separated: 0 });
+    return [];
+  }
+  const scored = unserved
     .map((c) => {
       const own = isCalibrated(c) ? { mean: c.neighborMean, std: c.neighborStd } : baseline;
-      const mp = own === null || baseline === null ? proximityFactor(1 - c.similarity, queryStats) :
+      const mp = own === null || baseline === null ? proximityFactor(1 - c.similarity, deploymentStats) :
         mutualProximity(1 - c.similarity, queryStats, { mean: own.mean + queryStats.mean - baseline.mean, std: own.std });
       return { id: c.id, mp, similarity: c.similarity };
     })

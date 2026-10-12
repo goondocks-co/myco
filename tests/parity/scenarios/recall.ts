@@ -101,7 +101,7 @@ export const recall: ParityScenario = {
       sporeRawMatches: 0, sporeJoined: 0, sporeHits: 0, sporeCalibrated: 0, sporeScored: 0, sporeProbable: 0,
       sporeSeparated: 0, sporeRelevant: 0, sporeHydrated: 0,
       planRawMatches: 0, planJoined: 0, planHits: 0, planUnserved: 0, planEligible: 0,
-      planCalibrationFailed: 0, planCalibrated: 0, planScored: 0, planProbable: 0, planSeparated: 0, planRelevant: 0, planHydrated: 0, budgetKept: 0,
+      planCalibration: 'none', planCalibrationSamples: 0, planCalibrationFailed: 0, planCalibrated: 0, planScored: 0, planProbable: 0, planSeparated: 0, planRelevant: 0, planHydrated: 0, budgetKept: 0,
     });
     expect(answers.find((answer) => answer.prompt_id === p1)).toMatchObject({ outcome: 'served', parts: '[{"kind":"plan-nudge"}]', skipped: '["spores:no_semantic"]', failures: '[]' });
     expect(answers.filter((answer) => answer.outcome === 'empty')).toHaveLength(2);
