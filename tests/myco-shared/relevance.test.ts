@@ -1,11 +1,35 @@
 import { describe, expect, it } from 'bun:test';
-import { mutualProximity, selectRelevantSpores, type SporeCandidate } from '../../packages/myco-shared/src/relevance.js';
+import { mutualProximity, selectRelevantPlans, selectRelevantSpores, type SporeCandidate } from '../../packages/myco-shared/src/relevance.js';
 
 const background = (n = 30): SporeCandidate[] => Array.from({ length: n }, (_, i) => ({
   id: `background-${i}`, similarity: 0.1 + i / 1000, neighborMean: 0.5, neighborStd: 0.1,
 }));
 
 describe('prompt relevance', () => {
+  it('distinguishes missing calibration from a fully excluded calibrated pool', () => {
+    const counts: unknown[] = [];
+    selectRelevantSpores([{ id: 'new', similarity: 0.8 }], { maxResults: 7, observe: n => counts.push(n) });
+    selectRelevantSpores(background().map(c => ({ ...c, alreadyInjected: true })), { maxResults: 7, observe: n => counts.push(n) });
+    expect(counts).toEqual([
+      { calibrated: 0, scored: 0, probable: 0, separated: 0 },
+      { calibrated: 30, scored: 0, probable: 0, separated: 0 },
+    ]);
+  });
+
+  it('ranks new live plans relative to their own prompt similarities, including a single plan', () => {
+    for (const [offset, scale] of [[0, 1], [0.4, 0.5], [-0.5, 0.2]]) {
+      const candidates = [{ id: 'capture', similarity: offset! + scale! * 0.53 }, { id: 'billing', similarity: offset! + scale! * 0.3 }];
+      expect(selectRelevantPlans(candidates, { maxResults: 2 }).map(c => c.id)).toEqual(['capture']);
+      expect(selectRelevantPlans(candidates.slice(0, 1), { maxResults: 2 }).map(c => c.id)).toEqual(['capture']);
+    }
+  });
+
+  it('admits a live transcript plan against its own model baseline and rejects an ordinary match', () => {
+    const candidate = { id: 'preserve-pending-transcript-batches', similarity: 0.53, neighborMean: 0.65, neighborStd: 0.06 };
+    expect(selectRelevantPlans([candidate], { maxResults: 2 }).map(c => c.id)).toEqual([candidate.id]);
+    expect(selectRelevantPlans([{ ...candidate, similarity: 0.2 }], { maxResults: 2 })).toEqual([]);
+  });
+
   it('withholds an uncalibrated pool and uses two-sided corpus evidence for new spores', () => {
     const fresh = { id: 'new', similarity: 0.3 };
     expect(mutualProximity(0.7, { mean: 0.9, std: 0.1 })).toBe(0);

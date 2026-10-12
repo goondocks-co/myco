@@ -2,7 +2,7 @@
  * Prompt injection: the gates in order, the pool, the two rules the record's
  * primary key holds, and the reads over it.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
@@ -17,6 +17,8 @@ import { OBSERVATION_TYPES } from '@myco-server-worker/core/spores.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 import { semanticRecall } from './helpers/semantic-recall.js';
+import * as plans from '@myco-server-worker/read/plans.js';
+import { cosineSimilarity } from '@myco-server-worker/core/embedding/vectors.js';
 
 const SCOPE: ReadScope = { projectId: 'proj_one' };
 const OTHER: ReadScope = { projectId: 'proj_two' };
@@ -231,6 +233,80 @@ describe('the record', () => {
 });
 
 describe('plan selection', () => {
+  it.each(['active', 'completed', 'abandoned'])('handles a plans-only project with a %s transcript recovery plan', async (status) => {
+    const { db, sqlite } = store();
+    const title = 'Preserve pending transcript batches during member reconnect';
+    sqlite.query(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
+      VALUES (?, 'recovery', 'history', 'event', 'machine', ?, ?, 'hash', ?, ?, ?, 'fixture', ?)`)
+      .run(SCOPE.projectId, title, title, status, NOW, NOW, NOW);
+    const semantic = await semanticRecall(db, SCOPE, { backgroundSpores: false })();
+    expect(sqlite.query('SELECT COUNT(*) AS n FROM spores').get()).toEqual({ n: 0 });
+    const query = semantic.vectors.query;
+    semantic.vectors.query = async (partition, options) => (await query(partition, options)).map(h => ({ ...h, score: 0.52 }));
+    try {
+      const answer = await selectSporesForPrompt(db, SCOPE, ON, true, {
+        sessionId: SESSION, promptId: 'reconnect', promptHash: 'reconnect',
+        prompt: 'Keep pending transcript batches intact when the member reconnects and retries delivery.', now: NOW,
+      }, async () => semantic);
+      expect(answer.items.map(i => i.id)).toEqual(status === 'active' ? ['recovery'] : []);
+      expect(answer.counts).toMatchObject({ sporeHits: 0, sporeCalibrated: 0, planHits: 1, planEligible: status === 'active' ? 1 : 0, planCalibrated: 0 });
+      expect(rows(sqlite)).toHaveLength(status === 'active' ? 1 : 0);
+    } finally { sqlite.close(); }
+  });
+
+  it.each([0.55, 0.8])('serves relevant live plans using only plan vectors in the configured model (similarity %s)', async (similarity) => {
+    const { db, sqlite } = store();
+    const fixtures = [
+      ['capture', 'in_progress', 'Preserve pending transcript batches during member reconnect'],
+      ['retry', 'active', 'Retry transcript delivery after the member reconnects'],
+      ['receipts', 'active', 'Record transcript delivery receipts before removing pending batches'],
+      ['done', 'completed', 'Preserve transcript batches during member reconnect'],
+      ['abandoned', 'abandoned', 'Replace pending transcript storage on reconnect'],
+    ] as const;
+    for (const [key, status, title] of fixtures) {
+      sqlite.query(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
+        VALUES (?, ?, 'history', ?, 'machine', ?, ?, ?, ?, ?, ?, 'fixture', ?)`).run(SCOPE.projectId, key, key, title, title, key, status, NOW, NOW, NOW);
+    }
+    const semantic = await semanticRecall(db, SCOPE)();
+    sqlite.exec("UPDATE embedding_receipts SET neighbor_mean = 0.2, neighbor_std = 0.03 WHERE type = 'spore'");
+    const modelKey = semantic.provider.modelKey;
+    const receipts = sqlite.query("SELECT id, record_id FROM embedding_receipts WHERE type = 'plan' ORDER BY record_id").all() as Array<{ id: string; record_id: string }>;
+    const vectors = receipts.map((r, i) => ({
+      id: r.id, values: [similarity - i / 100, ...receipts.map((_, j) => i === j ? Math.sqrt(1 - (similarity - i / 100) ** 2) : 0)],
+      metadata: { type: 'plan' as const, record_id: r.record_id, revision: '', status: '', session_id: '', created_at: NOW, observation_type: '', release_state: '', release_confidence: '' },
+    }));
+    const prompt = 'Preserve pending transcript batches while a disconnected member reconnects and retries delivery.';
+    const query = [1, ...receipts.map(() => 0)];
+    const get = spyOn(semantic.vectors, 'get').mockImplementation(async (partition, ids) => {
+      expect(partition).toEqual({ projectId: SCOPE.projectId, modelKey });
+      expect(new Set(ids)).toEqual(new Set(receipts.map(r => r.id)));
+      return vectors;
+    });
+    semantic.provider.embed = async () => query;
+    const originalQuery = semantic.vectors.query;
+    semantic.vectors.query = async (partition, options) => options.filters?.type === 'plan' ?
+      vectors.map(v => ({ id: v.id, score: cosineSimilarity(query, v.values) })) : originalQuery(partition, options);
+    try {
+      const answer = await selectSporesForPrompt(db, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
+        { sessionId: SESSION, promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
+      expect(answer.items.map(i => i.id)).toEqual(['capture', 'receipts']);
+      expect(answer.context).toContain('Preserve pending transcript batches during member reconnect');
+      expect(answer.counts).toMatchObject({ planEligible: 3, planCalibrated: 5, planScored: 3, planProbable: 3, planRelevant: 2, planHydrated: 2 });
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(rows(sqlite)[0]!.plan_ids as string)).toEqual(['capture', 'receipts']);
+      const row = await plans.getPlan(db, SCOPE, 'retry');
+      const completed = spyOn(plans, 'getPlan').mockResolvedValue({ ...row!, status: 'completed' });
+      try {
+        const changed = await selectSporesForPrompt(db, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
+          { sessionId: 'changed', promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
+        expect(completed).toHaveBeenCalledTimes(2);
+        expect(changed.counts).toMatchObject({ planRelevant: 2, planHydrated: 0, budgetKept: 0 });
+        expect(changed.items).toEqual([]);
+        expect(rows(sqlite)).toHaveLength(1);
+      } finally { completed.mockRestore(); }
+    } finally { get.mockRestore(); sqlite.close(); }
+  });
+
   it('serves only relevant live plans and records every filtering stage', async () => {
     const { db, sqlite } = store();
     for (const [key, status] of [['live', 'active'], ['progress', 'in_progress'], ['done', 'completed'], ['abandoned', 'abandoned'], ['unrelated', 'active']]) {
@@ -254,9 +330,9 @@ describe('plan selection', () => {
     expect(JSON.parse(rows(sqlite)[0]!.plan_ids as string).sort()).toEqual(['live', 'progress']);
     sqlite.exec('UPDATE embedding_receipts SET neighbor_mean = NULL, neighbor_std = NULL');
     const uncalibrated = await ask('no-calibration');
-    expect(uncalibrated.skipped).toBe('empty');
-    expect(uncalibrated.counts).toMatchObject({ planEligible: 3, planScored: 0, planHydrated: 0, budgetKept: 0 });
-    expect(rows(sqlite)).toHaveLength(1);
+    expect(uncalibrated.items.map(i => i.id).sort()).toEqual(['live', 'progress']);
+    expect(uncalibrated.counts).toMatchObject({ sporeCalibrated: 0, planEligible: 3, planCalibrated: 0, planScored: 3, planHydrated: 2, budgetKept: 2 });
+    expect(rows(sqlite)).toHaveLength(2);
   });
 });
 

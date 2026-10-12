@@ -54,9 +54,9 @@ export interface SelectOptions {
   minProbability?: number;
   /** Keep this fraction of the strongest MP and distance-weighted evidence. */
   relativeBand?: number;
-  /** Semantic background for a pool without its own calibration, such as plans. */
+  /** Semantic background from the same record kind and embedding model. */
   referenceCandidates?: SporeCandidate[];
-  observe?: (counts: { scored: number; probable: number; separated: number }) => void;
+  observe?: (counts: { calibrated: number; scored: number; probable: number; separated: number }) => void;
 }
 
 export interface SelectedSpore {
@@ -85,6 +85,14 @@ function boundedCalibration(candidate: CalibratedCandidate, calibrated: Calibrat
   return { mean: Math.min(candidate.neighborMean, ceiling), std: candidate.neighborStd };
 }
 
+function pooledCalibration(calibrated: CalibratedCandidate[]): DistributionStats {
+  const { mean } = distributionStats(calibrated.map((c) => c.neighborMean));
+  return {
+    mean,
+    std: Math.sqrt(calibrated.reduce((sum, c) => sum + c.neighborStd ** 2 + (c.neighborMean - mean) ** 2, 0) / calibrated.length),
+  };
+}
+
 /**
  * Standard normal CDF via the Abramowitz & Stegun erf approximation
  * (max error ~1.5e-7). Φ(z) = 0.5 · (1 + erf(z / √2)).
@@ -94,6 +102,7 @@ export function standardNormalCdf(z: number): number {
 }
 
 function erf(x: number): number {
+  if (x === 0) return 0;
   const sign = x < 0 ? -1 : 1;
   const ax = Math.abs(x);
   const t = 1 / (1 + 0.3275911 * ax);
@@ -155,17 +164,12 @@ export function selectRelevantSpores(
 
   const reference = opts.referenceCandidates ?? candidates;
   const calibrated = reference.filter(isCalibrated);
-  const observe = (scored: number, probable: number, separated: number) => opts.observe?.({ scored, probable, separated });
+  const observe = (scored: number, probable: number, separated: number) => opts.observe?.({ calibrated: calibrated.length, scored, probable, separated });
   const pool = candidates.filter((c) => !c.alreadyInjected && Number.isFinite(c.similarity));
   if (pool.length === 0 || calibrated.length === 0) { observe(0, 0, 0); return []; }
 
   const queryStats = distributionStats(reference.filter((c) => Number.isFinite(c.similarity)).map((c) => 1 - c.similarity));
-  const baselines = distributionStats(calibrated.map((c) => c.neighborMean));
-  const pooled: DistributionStats = {
-    mean: baselines.mean,
-    std: Math.sqrt(calibrated.reduce((sum, c) =>
-      sum + c.neighborStd ** 2 + (c.neighborMean - baselines.mean) ** 2, 0) / calibrated.length),
-  };
+  const pooled = pooledCalibration(calibrated);
 
   const scored = pool
     .map((c) => {
@@ -186,4 +190,19 @@ export function selectRelevantSpores(
   const separated = probable.filter((s) => s.separation >= separationCutoff);
   observe(scored.length, probable.length, separated.length);
   return separated.slice(0, opts.maxResults).map(({ id, mp }) => ({ id, mp }));
+}
+
+/** Plans rank against plan-to-plan distances, or live-plan query distances when no baseline exists. */
+export function selectRelevantPlans(candidates: SporeCandidate[], opts: SelectOptions): SelectedSpore[] {
+  const live = candidates.filter((c) => Number.isFinite(c.similarity));
+  const calibrated = (opts.referenceCandidates ?? candidates).filter(isCalibrated);
+  const stats = calibrated.length === 0 ? distributionStats(live.map((c) => 1 - c.similarity)) : pooledCalibration(calibrated);
+  const scored = live.filter((c) => !c.alreadyInjected)
+    .map((c) => ({ id: c.id, mp: proximityFactor(1 - c.similarity,
+      isCalibrated(c) ? { mean: c.neighborMean, std: c.neighborStd } : stats), similarity: c.similarity }))
+    .sort((a, b) => b.mp - a.mp || b.similarity - a.similarity);
+  const cutoff = Math.max(opts.minProbability ?? DEFAULT_MIN_PROBABILITY, (scored[0]?.mp ?? 0) * (opts.relativeBand ?? DEFAULT_RELATIVE_BAND));
+  const probable = scored.filter((c) => c.mp >= cutoff);
+  opts.observe?.({ calibrated: calibrated.length, scored: scored.length, probable: probable.length, separated: probable.length });
+  return probable.slice(0, opts.maxResults).map(({ id, mp }) => ({ id, mp }));
 }
