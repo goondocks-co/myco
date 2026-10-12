@@ -65,7 +65,6 @@
     "tests/agent/skill-candidate-quality.test.ts": 552,
     "tests/skills/contamination.test.ts": 25,
     "tests/agent/skill-content-lint-script.test.ts": 1281,
-    "tests/agent/skill-decontaminate-recipe.test.ts": 131,
     "tests/agent/skill-drift.test.ts": 14,
     "tests/agent/skill-edit.test.ts": 1,
     "tests/agent/skill-record-bookkeeping-update.test.ts": 1,

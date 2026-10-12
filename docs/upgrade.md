@@ -54,7 +54,7 @@ The license changed from MIT to Apache 2.0 on 2026-04-29 (commit `57a9571a`). No
 
 Hosting a team and joining one are part of the main binary — the dashboard's Team page and the `myco host`, `myco join`, and `myco attach` commands alike — and they upgrade automatically with the rest of Myco. There's no separate package for them.
 
-When you update Myco across a team, **update the host first, then the members**, and finish any in-flight project move before updating either machine — see [Team Host](team-host.md) for the details.
+When you update Myco across a team, **update the host first, then the members**, and finish any in-flight project move before updating either machine — see [the Myco 1.4 Team Host guide](https://github.com/goondocks-co/myco/blob/release/1.4/docs/team-host.md) for the details.
 
 ## Verifying the upgrade
 
@@ -72,7 +72,7 @@ The dashboard's **Symbionts** page shows the live install state for every detect
 
 Contributors can run a development Myco service alongside the production install. Production upgrades do not take over development Groves, and development restarts do not disturb the production service.
 
-See [Lifecycle](lifecycle.md) for the contributor workflow.
+See [the Myco 1.4 lifecycle guide](https://github.com/goondocks-co/myco/blob/release/1.4/docs/lifecycle.md) for the contributor workflow.
 
 ## Rollback
 
@@ -90,7 +90,7 @@ To actually go back across a storage-format change, use the pre-upgrade backup w
 
 Restoring a backup **merges rows into** the target — it never converts a newer-format file in place, which is why the fresh data directory in step 2 is required. Restore checks the direction: a backup written at a newer storage format than the target database is refused with a message naming both versions, instead of failing partway through.
 
-To pin a specific release line, use the **Stable** / **Beta** channel toggle in the Settings page's Upgrade section — see [Lifecycle](lifecycle.md) for how channels work.
+To pin a specific release line, use the **Stable** / **Beta** channel toggle in the Settings page's Upgrade section — see [the Myco 1.4 lifecycle guide](https://github.com/goondocks-co/myco/blob/release/1.4/docs/lifecycle.md) for how channels work.
 
 If you want to remove Myco entirely:
 
@@ -131,6 +131,8 @@ If the local service stays down after a downgrade and `myco doctor` reports the 
 ### Downgrade leftovers when external access was on
 
 If a machine had **external agent access** enabled (Team page) and is moved to an older Myco that predates the feature, external access quietly turns off, and the public address entry it published through Tailscale Funnel can be left behind. It is inert but visible in `tailscale funnel status`; re-upgrading Myco cleans it up, or remove it manually with `tailscale funnel --https=443 off`. A machine that was mid-enable when the newer version stopped will refuse to start the older binary and say why — finish or disable external access on the newer version first.
+
+<a id="upgrading-from-myco-14"></a>
 
 ## Upgrading from Myco 1.4
 

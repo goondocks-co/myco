@@ -25,8 +25,8 @@ what else you have.
 
 ## Issue a key
 
-In the dashboard, open the project and add an access key under its access
-settings. Give it a label you will recognise later, such as the name of the
+In the dashboard, open the project and choose **Project settings › Access keys ›
+Add access key**. Give it a label you will recognise later, such as the name of the
 service that will hold it.
 
 **The key is shown once.** Copy it straight into the other service's secret
@@ -61,6 +61,15 @@ Copilot reads `AGENTS.md` from the head branch of the pull request it is
 reviewing, so the instructions telling it to use Myco belong in that file, on the
 branch. The line in this repository's own `AGENTS.md` is the working example.
 
+## Use the plugin
+
+Install Myco from your agent's plugin marketplace. The plugin connects to the
+same `/mcp` endpoint with the same project access
+key. Give it your Deployment URL and the key when your client asks. It carries
+tools and shipped skills, but no binary or hooks, so plugin-only sessions are
+not captured. Install the binary and [join your machine](quickstart.md) to add
+capture. See the [plugin README](../plugins/myco/README.md) for configuration.
+
 ## Citing what produced a finding
 
 An external agent has no Myco session to attach a finding to, so it cites the
@@ -75,7 +84,7 @@ it, months later, when the finding is all that survives.
 ## When something stops working
 
 An agent whose key has expired, or whose key you rotated or revoked, is refused
-outright. It is not told which of those happened; your project's activity log is.
+outright. Check its status in **Project settings › Access keys**.
 Issue a new key and update the other service's secret.
 
 Nothing an expired key wrote is lost. The spores it recorded keep their

@@ -13,22 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/**
- * Shipping user-facing text describes the transport the code HAS.
- *
- * The 1.4.0 transport change (a Myco-provisioned headscale/WireGuard overlay →
- * a Tailscale-Funnel-fronted public HTTPS endpoint) was invisible to every
- * check: the README, the landing page, `docs/team-host.md`, and the installer
- * kept advertising `--server-url`/`--overlay-address` and "encrypted overlay"
- * long after the flags stopped being read and the overlay stopped existing.
- * `help-matches-parser` guarded the CLI help strings; nothing guarded the docs,
- * the installer, or the dashboard copy. This is that guard.
- *
- * It is a DETERMINISTIC vocabulary/flag check, not a spell-checker: it fails on
- * the exact retired tokens, so a doc that reintroduces one goes red in the same
- * diff. CHANGELOG.md is excluded on purpose — it NARRATES the removal ("replaced
- * the overlay transport"), which is the one place those words belong.
- */
+/** Shipping docs, installers and dashboard copy use the supported transport vocabulary. */
 import { describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -157,7 +142,7 @@ describe('user-facing surface matches the shipped transport', () => {
       'host', 'project-id', 'allow-no-pull', 'serve', 'hostname', 'help',
     ]);
 
-    const surfaces = ['README.md', 'docs/install.sh', 'docs/team-host.md'];
+    const surfaces = ['README.md', 'docs/install.sh'];
     const phantom: string[] = [];
     for (const rel of surfaces) {
       for (const flag of teamHostFlags(read(rel))) {

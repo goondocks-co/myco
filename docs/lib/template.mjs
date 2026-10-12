@@ -52,16 +52,12 @@ export function renderPage({ slug, title, description, bodyHtml }) {
     <a class="brand" href="/">
       <img class="brand-mark" src="/assets/logo-mark.svg" alt="Myco">
       <span class="brand-wm">myco</span>
-      <span class="brand-tag" id="nav-version">loading…</span>
+      <span class="brand-tag" id="nav-version">2.0 docs</span>
     </a>
     <div class="nav-links">
       <a href="/#how">How it works</a>
-      <a href="/#lifecycle">Skills</a>
-      <a href="/#cortex">Cortex</a>
-      <a href="/#team">Team Host</a>
       <a href="/#agents">Agents</a>
       <a href="/#docs">Docs</a>
-      <a href="/#sponsor">Sponsor</a>
     </div>
     <div class="nav-right">
       <a class="github-pill" href="https://github.com/goondocks-co/myco" target="_blank" rel="noopener">
@@ -90,8 +86,7 @@ ${bodyHtml}
   </main>
 </div>
 <script>
-  // Populate the nav version pill and GitHub star count (same source as the
-  // homepage: npm dist-tags + the GitHub repo API). Best-effort, fails quiet.
+  // Display the public GitHub star count when available.
   (function () {
     function setText(id, txt) { var el = document.getElementById(id); if (el) el.textContent = txt; }
     function fmtStars(n) {
@@ -99,16 +94,6 @@ ${bodyHtml}
       if (n >= 1000) return '★ ' + (n / 1000).toFixed(1).replace(/\\.0$/, '') + 'k';
       return '★ ' + n;
     }
-    fetch('https://registry.npmjs.org/@goondocks%2Fmyco')
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (data) {
-        var tags = data && data['dist-tags'];
-        var v = tags && (tags.latest || tags.beta);
-        if (!v) { setText('nav-version', 'beta'); return; }
-        var isBeta = tags && !tags.latest && tags.beta;
-        setText('nav-version', (isBeta ? 'beta · ' : '') + 'v' + v);
-      })
-      .catch(function () { setText('nav-version', 'beta'); });
     fetch('https://api.github.com/repos/goondocks-co/myco')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (data) {

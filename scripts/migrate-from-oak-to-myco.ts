@@ -7,7 +7,7 @@
  * vault DB with sessions, prompt batches, and tool-call activities. Imported
  * rows are flagged unprocessed so Vault Evolve regenerates Myco-quality spores.
  *
- * See: docs/migrating-from-oak.md (user guide)
+ * See: https://github.com/goondocks-co/myco/blob/release/1.4/docs/migrating-from-oak.md (user guide)
  *      Myco plan: migrate-from-oak-to-myco-implementation
  */
 

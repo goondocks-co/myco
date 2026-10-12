@@ -1,31 +1,11 @@
-/**
- * Meta gate: the skill locations `docs/symbionts.md` publishes are locations the
- * installer actually writes.
- *
- * Where a symbiont keeps its skills is manifest data, and the manifests moved
- * seven agents onto the shared `~/.agents/skills` while the document kept the
- * per-agent paths those agents used before. Six of nine rows named a target the
- * installer now lists under `retiredGlobalSkillsTargets` and actively sweeps, so
- * a reader who followed one found nothing, or found a link about to be removed.
- *
- * Documenting a retired location is worse than documenting none: it reads as a
- * fact, and it fails silently for the person following it rather than for anyone
- * who could fix it.
- *
- * The gate is deliberately not a section-to-manifest mapping. The document's own
- * headings are a third naming of these agents — one section is titled for a
- * product rename the manifests do not carry — so keying on the heading would
- * encode a correspondence that is already untrue. It asserts the weaker property
- * that actually catches the defect: every skills path the document names is some
- * manifest's live target, and no path is a retired one.
- */
+/** Documented skill locations are live installer targets. */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const MANIFESTS = path.join(REPO_ROOT, 'packages/myco/src/symbionts/manifests');
-const DOC = path.join(REPO_ROOT, 'docs/symbionts.md');
+const DOC = path.join(REPO_ROOT, 'docs/agents.md');
 
 /** One scalar field from a manifest, read without a YAML dependency. */
 const field = (yaml: string, key: string): string | null =>
@@ -60,9 +40,9 @@ function manifestTargets(): { live: Set<string>; retired: Set<string> } {
   return { live, retired };
 }
 
-/** Every `| Skills | \`path\` …|` row the document publishes. */
+/** Every skills directory the document names. */
 function documentedPaths(): string[] {
-  return [...fs.readFileSync(DOC, 'utf-8').matchAll(/^\|\s*Skills\s*\|\s*`([^`]+)`/gm)].map((m) => normalize(m[1]));
+  return [...fs.readFileSync(DOC, 'utf-8').matchAll(/`(~\/[^`]+\/skills\/?)`/g)].map((m) => normalize(m[1]));
 }
 
 describe('documented skill locations', () => {

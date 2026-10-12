@@ -1396,6 +1396,7 @@ section.band + section.band { padding-top: 0; }
   letter-spacing: 0.12em;
   color: var(--outline);
 }
+.doc-card h3,
 .doc-card h4 {
   font-family: var(--font-heading);
   font-weight: 500;
@@ -1674,3 +1675,16 @@ section.band + section.band { padding-top: 0; }
   .brand-tag { display: none; }
   .tweaks { right: 10px; left: 10px; width: auto; bottom: 10px; }
 }
+
+
+/* Member journey prose and copyable install commands. */
+.member-journey > p {
+  margin-top: 20px;
+  line-height: 1.7;
+  color: var(--on-surface-variant);
+}
+.member-journey > h3 { margin: 28px 0 12px; }
+.member-journey a, #agents > .wrap > p a { color: var(--sage); text-decoration: underline; }
+.terminal-chrome > span { font-family: var(--font-data); font-size: 11px; color: var(--outline); }
+.terminal-body pre { overflow-x: auto; }
+#agents > .wrap > p { margin-top: 24px; line-height: 1.7; color: var(--on-surface-variant); }

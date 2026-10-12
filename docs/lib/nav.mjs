@@ -1,39 +1,24 @@
-// docs/lib/nav.mjs
-// Single source of truth for doc navigation: sidebar groups, ordering,
-// sitemap entries, and the index grid (see build.mjs and index.html).
-// slug -> source docs/<slug>.md, output _site/<slug>.html, URL /<slug>.
+// Navigation for the sidebar, sitemap and published Markdown.
 export const NAV = [
   {
     group: 'Getting started',
     items: [
-      { slug: 'quickstart', title: 'Quickstart' },
-      { slug: 'self-hosting', title: 'Self-hosting' },
-      { slug: 'migrating-from-oak', title: 'Migrating from OAK' },
-      { slug: 'upgrade', title: 'Upgrading Myco' },
+      { slug: 'quickstart', title: 'Join a Myco' },
+      { slug: 'self-hosting', title: 'Run your own Myco' },
+      { slug: 'upgrade', title: 'Moving from Myco 1.4' },
     ],
   },
   {
-    group: 'Core',
+    group: 'Using Myco',
     items: [
-      { slug: 'lifecycle', title: 'Local service lifecycle' },
-      { slug: 'groves', title: 'Grove management' },
-      { slug: 'skills', title: 'Skills' },
-      { slug: 'canopy', title: 'Canopy' },
-      { slug: 'symbionts', title: 'Symbionts' },
-      { slug: 'agent-harness', title: 'Agent harness' },
-      { slug: 'agent-tools', title: 'Agent MCP tools' },
-    ],
-  },
-  {
-    group: 'Team',
-    items: [
-      { slug: 'team-host', title: 'Team Host' },
+      { slug: 'agents', title: 'Agents' },
+      { slug: 'agent-tools', title: 'Agent tools' },
+      { slug: 'external-agents', title: 'External agents' },
     ],
   },
   {
     group: 'Reference',
     items: [
-      { slug: 'agent-teams', title: 'Agent teams' },
       { slug: 'architecture/actors-and-boundaries', title: 'Actors & boundaries' },
       { slug: 'architecture/platform-packages', title: 'Platform packages' },
     ],

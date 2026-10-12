@@ -1,46 +1,44 @@
-# @goondocks/myco
+# Myco
 
-`@goondocks/myco` is the main Myco package: the nervous system for AI-assisted software teams.
+Your agents learn from the work you have already done. Myco captures coding sessions; its own agent turns them into durable knowledge, alongside your agents' plans. Project instructions return at session start, and relevant spores and plans return with each prompt.
 
-Install it once to run the local dashboard and service, connect supported coding agents, capture project knowledge, and use the built-in intelligence pipeline.
+Capture works with Claude Code, Codex, Cursor, OpenCode, Pi and Cline. One server holds your projects, member machines send it sessions, and separately registered runners provide the signed-in agents that do Myco's own work.
 
-Myco is a self-contained native binary — **no Node runtime is required to run it**. The recommended install downloads the binary directly:
+## Install and join
 
-```bash
-curl -fsSL https://myco.sh/install.sh | sh        # macOS / Linux
-irm https://myco.sh/install.ps1 | iex             # Windows x64 (PowerShell)
-```
-
-This npm package is a thin bootstrap that converges to the same native binary, for people who prefer installing through npm (this path needs Node 22+):
+Use the native installer for Myco 2.0 on macOS or Linux:
 
 ```bash
-npm install -g @goondocks/myco
+curl -fsSL https://myco.sh/install.sh | sh
 ```
 
-Open a git project in any supported agent and Myco registers it automatically when the agent starts working there.
+Windows x64 has an installer; the 2.0 Windows path is not yet verified:
 
-macOS is the primary supported platform. Linux and Windows are in beta. On Windows, only **x64** is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
+```powershell
+irm https://myco.sh/install.ps1 | iex
+```
 
-## What you can do
+No Node runtime is needed. The installers select an available 2.x release. An unqualified npm install may still select the 1.4 release line.
 
-- Capture coding sessions into a local Myco vault
-- Run the local dashboard, service, and MCP server
-- Search sessions, spores, plans, and artifacts
-- Give agents shared project context without replacing their native memory or workflows
-- Share project intelligence by joining a Team Host, with no cloud account required
-- Connect multiple team workers to a Myco Collective
+New to the team? Run the one-time login command your administrator sends from **People & machines › Invite a teammate**. After you join, ask them to use **Connect GitHub** and send you the link to connect your account for dashboard access.
 
-## Upgrade
+If you already sign in to the dashboard, you can use the Myco's address instead:
 
-Myco keeps itself up to date automatically — the local service self-updates from your release channel in the background while it's idle. You can also trigger an upgrade from the **Upgrade** section of the dashboard's **Settings** page, or run `myco upgrade` (with `--channel stable|beta`) for advanced or scripted use. No `npm update` is required.
+```bash
+myco setup --join <address>
+```
 
-## Learn more
+Approve this machine in a browser signed in to your Myco. Start a new coding session in a repository under `~/Repos`, and see it on **Today**. Setup writes each installed agent's global configuration.
 
-- Project homepage: <https://github.com/goondocks-co/myco>
-- Quickstart: <https://github.com/goondocks-co/myco/blob/main/docs/quickstart.md>
-- Team Host: <https://github.com/goondocks-co/myco/blob/main/docs/team-host.md>
-- Collective: <https://github.com/goondocks-co/myco/blob/main/docs/collective.md>
+Learning runs on a runner your administrator sets up.
+
+- [Join a Myco](https://myco.sh/quickstart)
+- [Run your own Myco](https://myco.sh/self-hosting)
+- [Move from Myco 1.4](https://myco.sh/upgrade#upgrading-from-myco-14)
+- [Agents](https://myco.sh/agents)
+- [Agent tools and skills](https://myco.sh/agent-tools)
+- [External agents and plugin-only use](https://myco.sh/external-agents)
 
 ## License
 
-Apache-2.0
+Apache-2.0. Copyright Goondocks Consulting LLC.
