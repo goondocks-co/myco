@@ -60,6 +60,7 @@ export interface SessionResponse {
   /** Why the ended session has no title; null when it has one or is still open. */
   untitled?: UntitledReason | null;
   counts: SessionCounts;
+  metrics?: { tools: ToolUsage[]; tokens: null };
   /** Whether the session's work is released, or null when it has no release state. */
   release?: ReleaseStatus | null;
   /** What came of the session: the runs that read it or wrote from it, and the spores written from it. */
@@ -232,6 +233,8 @@ export interface TurnInjection {
   sporeIds: string[];
   createdAt: number;
   spores: InjectedSpore[];
+  planIds?: string[];
+  plans?: Array<{ planKey: string; title: string | null }>;
 }
 
 /** One turn's body; its tool calls are read on their own when opened. */
@@ -244,10 +247,13 @@ export interface TurnDetail {
   /** The observations Myco added to this prompt, or null when it added none. */
   injection: TurnInjection | null;
   children: TurnChild[];
+  metrics?: { tools: ToolUsage[]; durationMs: number | null; tokens: null };
+  context?: { start: boolean; subagents: number };
+  answers?: PromptAnswer[];
   cursors?: Record<TurnCollection, string | null>;
 }
 
-export type TurnCollection = 'responses' | 'attachments' | 'plans' | 'children';
+export type TurnCollection = 'responses' | 'attachments' | 'plans' | 'children' | 'answers';
 
 /** The image types the blob route serves with their stored type; anything else is served as a download and cannot render inline. */
 export const RENDERABLE_IMAGE_TYPES: readonly string[] = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
@@ -476,4 +482,12 @@ export function useProcessedText(projectId: string, ref: ProcessedBodyRef, revis
       return res.text();
     },
   });
+}
+
+export interface ToolUsage { toolName: string; count: number }
+export interface PromptAnswer {
+  id: string; createdAt: number; outcome: string; contextChars: number;
+  parts: Array<{ kind: string; sporeCount?: number; planCount?: number }>;
+  skipped: string[]; failures: Array<{ contributor: string; error: string; operation?: string }>;
+  selection: Record<string, number>;
 }

@@ -5,6 +5,7 @@
  * fetches one turn's body when it opens, so the list carries counts and a
  * preview, never a prompt's full text.
  */
+import { uuidv5 } from '../hash.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { injectionForPrompt, type PromptInjection } from '../core/injection.js';
 import { PROMPT_ORIGINS } from '../ingest/kinds.js';
@@ -13,7 +14,7 @@ import { keyset, page, type Page, type ReadScope } from './scope.js';
 
 /** How much of a prompt's inline text the list row carries. */
 export const TURN_PREVIEW_CHARS = 160;
-/** How many responses, attachments or steering children one turn's body carries; a turn beyond these is read through the paged children. */
+/** How many items each turn collection carries before its paged continuation. */
 export const TURN_BODY_LIMIT = 50;
 /** The origin the list shows when the caller names none: what a person typed. */
 export const DEFAULT_ORIGINS: readonly string[] = ['user'];
@@ -61,13 +62,16 @@ export interface TurnDetail {
   attachments: AttachmentRow[];
   /** The plans this prompt produced, in immutable key order. */
   plans: PlanRow[];
-  /** The observations Myco served with this prompt, with their spores hydrated; null when it served none. */
-  injection: PromptInjection | null;
+  /** The spores and plans Myco served with this prompt, hydrated from retained records; null when it served none. */
+  injection: (PromptInjection & { planIds: string[]; plans: Array<{ planKey: string; title: string | null }> }) | null;
+  metrics: TurnMetrics;
+  context: TurnContext;
+  answers: PromptAnswer[];
   children: TurnChild[];
   cursors: Record<TurnCollection, string | null>;
 }
 
-export const TURN_COLLECTIONS = ['responses', 'attachments', 'plans', 'children'] as const;
+export const TURN_COLLECTIONS = ['responses', 'attachments', 'plans', 'children', 'answers'] as const;
 export type TurnCollection = (typeof TURN_COLLECTIONS)[number];
 
 /** The origins a query names, or null when one is not an origin the wire admits. Absent means the default. */
@@ -152,22 +156,30 @@ export async function promptInSession(db: RelationalStore, scope: ReadScope, ses
 /** One turn's body, or null when no prompt of that id sits in the session. Tool calls are not here: they are read on their own, page by page, when the reader opens them. */
 export async function turnDetail(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string): Promise<TurnDetail | null> {
   const row = await db
-    .prepare(`SELECT ${PROMPT_COLUMNS} FROM prompt_batches pb WHERE pb.project_id = ? AND pb.session_id = ? AND pb.prompt_id = ?`)
-    .bind(scope.projectId, sessionId, promptId)
+    .prepare(`SELECT ${PROMPT_COLUMNS},
+      (SELECT MAX(created_at) FROM responses WHERE project_id = ? AND session_id = ? AND prompt_id = ?) AS last_reply,
+      (SELECT json_group_array(json_object('toolName', tool_name, 'count', n)) FROM (${toolUsageSql(true)})) AS tools,
+      (SELECT json_object('ids', json(COALESCE(i.plan_ids, '[]')), 'plans', json((SELECT json_group_array(json_object('planKey', p.plan_key, 'title', p.title))
+        FROM plans p WHERE p.project_id = i.project_id AND p.plan_key IN (SELECT value FROM json_each(i.plan_ids)))))
+        FROM spore_injections i WHERE i.project_id = pb.project_id AND i.session_id = pb.session_id AND i.prompt_id = pb.prompt_id ORDER BY i.created_at DESC LIMIT 1) AS injected_plans,
+      ${TURN_CONTEXT_COLUMNS}
+      FROM prompt_batches pb WHERE pb.project_id = ? AND pb.session_id = ? AND pb.prompt_id = ?`)
+    .bind(scope.projectId, sessionId, promptId, scope.projectId, sessionId, promptId, scope.projectId, sessionId, promptId)
     .first<Record<string, unknown>>();
   if (row === null) return null;
   const prompt = toPrompt(row);
   const body = { limit: TURN_BODY_LIMIT };
-  const [responses, attachments, plans, injection, children] = await Promise.all([
+  const [responses, attachments, plans, injection, children, answers] = await Promise.all([
     listChildren(db, RESPONSE_QUERY, scope, sessionId, { ...body, promptId }),
     listChildren(db, ATTACHMENT_QUERY, scope, sessionId, { ...body, promptId }),
     listChildren(db, TURN_PLAN_QUERY, scope, sessionId, { ...body, promptId }),
-    injectionForPrompt(db, scope, sessionId, promptId),
+    servedForPrompt(db, scope, sessionId, promptId, row.injected_plans as string | null),
     listSteeringChildren(db, scope, sessionId, promptId, body),
+    listChildren(db, ANSWER_QUERY, scope, sessionId, { ...body, promptId }),
   ]);
   return {
-    prompt, responses: [...responses.rows], attachments: [...attachments.rows], plans: [...plans.rows], injection, children: [...children.rows],
-    cursors: { responses: responses.cursor, attachments: attachments.cursor, plans: plans.cursor, children: children.cursor },
+    prompt, responses: [...responses.rows], attachments: [...attachments.rows], plans: [...plans.rows], injection, children: [...children.rows], metrics: { tools: JSON.parse(row.tools as string), durationMs: row.last_reply == null ? null : Math.max(0, (row.last_reply as number) - prompt.createdAt), tokens: null }, context: await contextForRow(row, sessionId), answers: [...answers.rows],
+    cursors: { responses: responses.cursor, attachments: attachments.cursor, plans: plans.cursor, children: children.cursor, answers: answers.cursor },
   };
 }
 
@@ -195,6 +207,75 @@ export function turnCollection(db: RelationalStore, scope: ReadScope, sessionId:
     case 'responses': return listChildren(db, RESPONSE_QUERY, scope, sessionId, bounded);
     case 'attachments': return listChildren(db, ATTACHMENT_QUERY, scope, sessionId, bounded);
     case 'plans': return listChildren(db, TURN_PLAN_QUERY, scope, sessionId, bounded);
+    case 'answers': return listChildren(db, ANSWER_QUERY, scope, sessionId, bounded);
     case 'children': return listSteeringChildren(db, scope, sessionId, promptId, bounded);
   }
+}
+
+
+export interface ToolUsage { toolName: string; count: number }
+export interface TurnMetrics { tools: ToolUsage[]; durationMs: number | null; tokens: null }
+export interface PromptAnswer {
+  id: string; createdAt: number; outcome: string; contextChars: number;
+  parts: Array<{ kind: string; sporeCount?: number; planCount?: number }>;
+  skipped: string[]; failures: Array<{ contributor: string; error: string; operation?: string }>;
+  selection: Record<string, number>;
+}
+export interface TurnContext { start: boolean; subagents: number }
+
+const ANSWER_QUERY = {
+  table: 'prompt_context_answers', idColumn: 'id', orderColumn: 'created_at',
+  columns: 'id, created_at, outcome, context_chars, parts, skipped, failures, selection',
+  map: (r: Record<string, unknown>): PromptAnswer => ({
+    id: r.id as string, createdAt: r.created_at as number, outcome: r.outcome as string, contextChars: r.context_chars as number,
+    parts: JSON.parse(r.parts as string), skipped: JSON.parse(r.skipped as string),
+    failures: JSON.parse(r.failures as string), selection: JSON.parse(r.selection as string),
+  }),
+};
+
+/** Counts every stored call, independent of the page of call details. */
+export async function toolUsage(db: RelationalStore, scope: ReadScope, sessionId: string, promptId?: string): Promise<ToolUsage[]> {
+  const { results } = await db.prepare(toolUsageSql(promptId !== undefined))
+    .bind(scope.projectId, sessionId, ...(promptId === undefined ? [] : [promptId])).all<{ tool_name: string; n: number }>();
+  return results.map((r) => ({ toolName: r.tool_name, count: r.n }));
+}
+
+function toolUsageSql(byPrompt: boolean): string {
+  return `SELECT tool_name, COUNT(*) AS n FROM tool_calls WHERE project_id = ? AND session_id = ? ${byPrompt ? 'AND prompt_id = ?' : ''}
+    GROUP BY tool_name ORDER BY n DESC, tool_name ASC`;
+}
+
+
+const SUBAGENT_CONTEXT_PREFIX = 'cortex:';
+
+const TURN_CONTEXT_COLUMNS = `EXISTS(SELECT 1 FROM session_injections i WHERE i.project_id = pb.project_id AND i.session_id = pb.session_id AND i.kind = 'cortex'
+    AND pb.prompt_id = (SELECT p.prompt_id FROM prompt_batches p WHERE p.project_id = pb.project_id AND p.session_id = pb.session_id
+      AND p.parent_prompt_id IS NULL AND p.origin = 'user' ORDER BY p.created_at, p.prompt_id LIMIT 1)) AS context_start,
+  pb.thread_id AS context_thread,
+  pb.prompt_id = (SELECT p.prompt_id FROM prompt_batches p WHERE p.project_id = pb.project_id AND p.session_id = pb.session_id
+    AND p.thread_id = pb.thread_id ORDER BY p.created_at, p.prompt_id LIMIT 1) AS first_in_thread,
+  (SELECT json_group_array(DISTINCT p.thread_id) FROM prompt_batches p WHERE p.project_id = pb.project_id AND p.session_id = pb.session_id AND p.thread_id IS NOT NULL) AS context_threads,
+  (SELECT json_group_array(substr(i.kind, ${SUBAGENT_CONTEXT_PREFIX.length + 1})) FROM session_injections i WHERE i.project_id = pb.project_id AND i.session_id = pb.session_id AND i.kind LIKE '${SUBAGENT_CONTEXT_PREFIX}%') AS context_receipts,
+  (SELECT json_group_array(json_extract(e.payload, '$.subagentId')) FROM events e WHERE e.project_id = pb.project_id AND e.session_id = pb.session_id
+    AND e.kind = 'subagent.start' AND json_extract(e.payload, '$.parentPromptId') = pb.prompt_id) AS context_agents`;
+
+/** Receipt attribution follows the member's derived thread and delegation identities. */
+async function contextForRow(row: Record<string, unknown>, sessionId: string): Promise<TurnContext> {
+  const agentIds = new Set<string>(JSON.parse(row.context_agents as string));
+  const threads = new Set<string>(JSON.parse(row.context_threads as string));
+  const receipts: string[] = JSON.parse(row.context_receipts as string);
+  const linked = await Promise.all(receipts.map(async (id) => {
+    const threadId = await uuidv5('thread', id);
+    if (threads.has(id) || threads.has(threadId)) return row.first_in_thread === 1 && (row.context_thread === id || row.context_thread === threadId);
+    return agentIds.has(await uuidv5('subagent', sessionId, id));
+  }));
+  return { start: row.context_start === 1, subagents: linked.filter(Boolean).length };
+}
+
+async function servedForPrompt(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string, rawPlans: string | null): Promise<TurnDetail['injection']> {
+  const injection = await injectionForPrompt(db, scope, sessionId, promptId);
+  if (injection === null) return null;
+  const { ids: planIds, plans }: { ids: string[]; plans: Array<{ planKey: string; title: string | null }> } = JSON.parse(rawPlans ?? '{"ids":[],"plans":[]}');
+  const byId = new Map(plans.map((r) => [r.planKey, r]));
+  return { ...injection, planIds, plans: planIds.flatMap((id) => { const r = byId.get(id); return r === undefined ? [] : [{ planKey: id, title: r.title }]; }) };
 }

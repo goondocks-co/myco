@@ -18,6 +18,8 @@ import { projectPath } from '../../routes/nav';
 import { PageScope } from '../../routes/scope';
 import { isLive } from '../today/timeline';
 import { ago, dayHeading, workPlace } from '../today/words';
+import { ToolUsageLine } from './Usage';
+import { formatMillis } from '../../lib/format';
 import { Conversation, PERSON_ONLY } from './Conversation';
 import { RawData, isRawSection } from './RawData';
 import { SessionActions } from './SessionActions';
@@ -141,7 +143,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
               <TabsTrigger value="plans" count={counts.plans}>Plans</TabsTrigger>
             </TabsList>
             <TabsContent value="conversation">
-              <Conversation projectId={projectId} sessionId={session.sessionId} />
+              <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} />
             </TabsContent>
             <TabsContent value="spores">
               <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />
@@ -209,6 +211,9 @@ function Facts({ answer, projectId, projectName, now, live, actions }: { answer:
       {session.endedAt !== null
         ? <FactRow term="Ended">{dateTime(session.endedAt, now)}{endedBy !== null && ` by ${endedBy}`}</FactRow>
         : <FactRow term={live ? 'Live' : 'Open'}>Last heard {ago(session.lastReceivedAt, now)}</FactRow>}
+      <FactRow term={session.endedAt === null ? 'Captured span' : 'Wall time'}>{formatMillis(Math.max(0, (session.endedAt ?? session.lastReceivedAt) - (session.startedAt ?? session.firstReceivedAt)))}</FactRow>
+      {answer.metrics && <FactRow term="Tools"><ToolUsageLine tools={answer.metrics.tools} /></FactRow>}
+      <FactRow term="Tokens">Not recorded, including sub-agents</FactRow>
       <FactRow term="Size">{[count(counts.prompts, 'prompt'), count(counts.toolCalls, 'tool call'), count(counts.responses, 'reply', 'replies')].join(' · ')}</FactRow>
       {release != null && <FactRow term="Release">{releaseStateLabel(release.state)}{release.ref !== null && release.state !== 'not_on_release_line' ? ` · ${shortRef(release.ref)}` : ''}</FactRow>}
       {session.parentSessionId !== null && (

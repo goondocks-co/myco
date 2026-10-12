@@ -8,7 +8,7 @@ import { Turn } from './Turn';
 export const PERSON_ONLY: readonly PromptOrigin[] = ['user'];
 
 /** A conversation opens at its newest page and reads earlier turns on request. A named turn is read independently. */
-export function Conversation({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+export function Conversation({ projectId, sessionId, agent = null }: { projectId: string; sessionId: string; agent?: string | null }) {
   const [showAll, setShowAll] = useState(false);
   const toggleId = useId();
   const turns = useTurns(projectId, sessionId, showAll ? PROMPT_ORIGINS : PERSON_ONLY);
@@ -45,7 +45,7 @@ export function Conversation({ projectId, sessionId }: { projectId: string; sess
           {target !== undefined && !turns.rows.some((row) => row.promptId === target.promptId) && <p className="t-small text-muted">The linked turn is shown alongside the latest turns. More turns may sit between them.</p>}
           <ol aria-label="Conversation" className="flex flex-col gap-s8">
             {rows.map((turn) => (
-              <Turn key={turn.promptId} projectId={projectId} sessionId={sessionId} turn={turn} scrollTo={turn.promptId === (target?.promptId ?? wanted)} />
+              <Turn key={turn.promptId} projectId={projectId} sessionId={sessionId} agent={agent} turn={turn} scrollTo={turn.promptId === (target?.promptId ?? wanted)} />
             ))}
           </ol>
         </>

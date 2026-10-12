@@ -17,6 +17,7 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
 import { sessionListPath } from '../../packages/myco-server/ui/src/hooks/use-sessions';
+import { displayPrompt } from '@goondocks/myco-shared/prompt-text';
 import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/ui/src/features/sessions/Turn';
 import { memberFilter, startedWords, windowBounds } from '../../packages/myco-server/ui/src/features/sessions/words';
 import { LIVE_WITHIN_MS } from '../../packages/myco-server/ui/src/features/today/timeline';
@@ -51,6 +52,7 @@ const BLOB = (key: string) => `/api/projects/x/blobs/${key}?raw=71`;
 const P1 = '00000000-0000-7000-8000-000000000001';
 const P2 = '00000000-0000-7000-8000-000000000002';
 const P3 = '00000000-0000-7000-8000-000000000003';
+const P4 = '00000000-0000-7000-8000-000000000004';
 
 /** A session as the server serves it: listed across projects, or read on its own. */
 const session = (over: Record<string, unknown> = {}) => ({
@@ -355,10 +357,14 @@ describe('the session reading page', () => {
       ],
       plans: [], injection: null, children: [],
     }),
+    [`/api/projects/x/sessions/s1/turns/${P4}`]: () => Response.json({
+      prompt: { promptId: P4, origin: 'user', promptKind: null, parentPromptId: P3, threadLabel: 'reviewer', text: 'steer it left', blobKey: null, createdAt: NOW - 900 },
+      responses: [{ responseId: 'r2', promptId: P4, text: 'steered', blobKey: null, createdAt: NOW - 800 }], attachments: [], plans: [], injection: null, children: [],
+    }),
     [`/api/projects/x/sessions/s1/turns/${P3}`]: () => Response.json({
       prompt: { promptId: P3, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: null, blobKey: KEY_TEXT, createdAt: NOW - 1000 },
       responses: [], attachments: [], plans: [], injection: null,
-      children: [{ prompt: { promptId: P2, origin: 'user', promptKind: null, parentPromptId: P3, threadLabel: 'reviewer', text: 'steer it left', blobKey: null, createdAt: NOW - 900 }, responses: [{ responseId: 'r2', promptId: P2, text: 'steered', blobKey: null, createdAt: NOW - 800, orderedAt: NOW - 800 }], toolCallCount: 0 }],
+      children: [{ prompt: { promptId: P4, origin: 'user', promptKind: null, parentPromptId: P3, threadLabel: 'reviewer', text: 'steer it left', blobKey: null, createdAt: NOW - 900 }, responses: [{ responseId: 'r2', promptId: P4, text: 'steered', blobKey: null, createdAt: NOW - 800, orderedAt: NOW - 800 }], toolCallCount: 0 }],
     }),
     [`/api/projects/x/sessions/s1/turns/${P1}/tool-calls?limit=200`]: () => page([
       { toolCallId: 't1', promptId: P1, toolName: 'Write', mycoTool: null, mycoOp: null, inputPreview: 'x'.repeat(20), inputBytes: 190_000, inputTruncated: true, inputBlobKey: null, outputPreview: 'wrote it', outputBlobKey: null, success: false, errorMessage: 'disk full', durationMs: 42, filesAffected: '["/repo/a.ts"]', createdAt: NOW - 2000, orderedAt: NOW - 2000 },
@@ -419,7 +425,7 @@ describe('the session reading page', () => {
     // The raw data is folded away at the foot, and the conversation's last typed turn is open.
     const raw = screen.getByRole('region', { name: 'Raw data' });
     expect(within(raw).getByRole('button', { name: 'Raw data' }).getAttribute('aria-expanded')).toBe('false');
-    expect(await within(await screen.findByTestId(`turn-${P3}`)).findByTestId('turn-body')).toBeTruthy();
+    expect((await within(await screen.findByTestId(`turn-${P3}`)).findAllByTestId('turn-body')).length).toBeGreaterThan(0);
     expect(rawIdsInPage()).toEqual([]);
   });
 
@@ -625,6 +631,7 @@ describe('the session reading page', () => {
         attachments: [], plans: [], injection: null,
         children: [{ prompt: { promptId: P2, text: null, blobKey: KEY_TEXT, origin: 'user', createdAt: NOW }, responses: [], toolCallCount: 0 }],
       }),
+      [`/api/projects/x/sessions/s1/turns/${P2}`]: () => Response.json({ prompt: { promptId: P2, text: null, blobKey: KEY_TEXT, origin: 'user', createdAt: NOW }, responses: [], attachments: [], plans: [], children: [], injection: null }),
       '/api/projects/x/processed/response/reply-spill': () => new Response('A complete processed reply'),
       [`/api/projects/x/processed/prompt/${P2}`]: () => new Response('A complete steering prompt'),
       [`/api/projects/x/sessions/s1/turns/${P1}/tool-calls?limit=200`]: () => page([
@@ -634,6 +641,7 @@ describe('the session reading page', () => {
     }, MEMBER));
     mount('/p/x/sessions/s1');
     expect(await screen.findByText('A complete processed reply')).toBeTruthy();
+    fireEvent.click(await within(screen.getByTestId(`turn-${P2}`)).findByRole('button', { name: 'Show the whole prompt' }));
     expect(await screen.findByText('A complete steering prompt')).toBeTruthy();
     const first = screen.getByTestId(`turn-${P1}`);
     fireEvent.click(within(first).getByTestId('tool-calls-toggle'));
@@ -646,6 +654,22 @@ describe('the session reading page', () => {
     fireEvent.click(within(legacy).getByRole('button'));
     expect(within(legacy).getByRole('link', { name: 'Full input' }).getAttribute('href')).toBe('/api/projects/x/processed/tool-input/t-legacy');
     expect(requested).not.toContain(BLOB(KEY_TEXT));
+  });
+
+  it('retains child replies from the parent read when the child detail fails, and offers a retry', async () => {
+    let failed = true;
+    server(routes({
+      [`/api/projects/x/sessions/s1/turns/${P4}`]: () => failed ? new Response(null, { status: 503 }) : Response.json({ prompt: { promptId: P4, origin: 'user', threadLabel: 'reviewer', text: 'steer it left', blobKey: null, createdAt: NOW }, responses: [{ responseId: 'r2', text: 'steered', blobKey: null, createdAt: NOW }], attachments: [], plans: [], children: [], injection: null, metrics: { tools: [{ toolName: 'Write', count: 1 }], durationMs: 100, tokens: null } }),
+    }));
+    mount('/p/x/sessions/s1', new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+    const child = await screen.findByTestId(`turn-${P4}`);
+    expect(await within(child).findByText('steered')).toBeTruthy();
+    expect((await within(child).findByRole('alert')).textContent).toContain('Couldn’t read the rest of this turn.');
+    failed = false;
+    fireEvent.click(within(child).getByRole('button', { name: 'Retry' }));
+    expect(await within(child).findByText('Write × 1')).toBeTruthy();
+    expect(within(child).queryByRole('alert')).toBeNull();
+    expect(within(child).getByText('steered')).toBeTruthy();
   });
 
   it('gate 1643.1: continues every turn collection and steering replies, retaining content when a page fails', async () => {
@@ -663,6 +687,7 @@ describe('the session reading page', () => {
       [`${turnPath}?collection=attachments&cursor=next`]: () => page(attachments(50, 1)),
       [`${turnPath}?collection=plans&cursor=next`]: () => page(plans(50, 1)),
       [`${turnPath}?collection=children&cursor=next`]: () => page(children(50, 1)),
+      ...Object.fromEntries(children(0, 51).map((child) => [`/api/projects/x/sessions/s1/turns/${child.prompt.promptId}`, () => Response.json({ prompt: child.prompt, responses: child.responses, attachments: [], plans: [], children: [], injection: null, cursors: { responses: child.responsesCursor } })])),
       '/api/projects/x/sessions/s1/turns/child-0?collection=responses&cursor=child-next': () => page(replies(50, 1, 'child-0')),
     }));
     mount('/p/x/sessions/s1', new QueryClient({ defaultOptions: { queries: { retry: false } } }));
@@ -673,7 +698,7 @@ describe('the session reading page', () => {
     expect(await screen.findByText('Plan 50')).toBeTruthy();
     expect(await screen.findByText('Steering 50')).toBeTruthy();
     const firstChild = screen.getAllByTestId('turn-child')[0]!;
-    fireEvent.click(within(firstChild).getByRole('button', { name: 'Show more replies' }));
+    fireEvent.click(await within(firstChild).findByRole('button', { name: 'Show more replies' }));
     expect(await screen.findByText('Reply child-0 50')).toBeTruthy();
     fireEvent.click(within(card).getByRole('button', { name: 'Show more replies' }));
     expect(await within(card).findByRole('alert')).toBeTruthy();
@@ -907,13 +932,80 @@ describe('the session reading page', () => {
     }));
     mount('/p/x/sessions/s1');
     const row = await within(await screen.findByTestId(`turn-${P1}`)).findByTestId('turn-injection');
-    expect(row.textContent).toContain('Myco added 2 spores to this prompt');
+    expect(row.textContent).toContain('Myco added 3 spores to this prompt');
     expect(within(row).queryByText('the selector reads recency')).toBeNull();
     fireEvent.click(within(row).getByRole('button'));
     expect(await within(row).findByText('the selector reads recency')).toBeTruthy();
     expect(within(row).getByText('Fix')).toBeTruthy();
     expect(within(row).getAllByRole('link').map((l) => l.getAttribute('href'))).toEqual(['/p/x/spores/sp1', '/p/x/spores/sp2']);
     expect(within(row).getByText('1 spore no longer kept')).toBeTruthy();
+  });
+
+
+  it('shows all contributions, empty-answer diagnostics, durations and a nested sub-agent without inventing tokens', async () => {
+    const prompt = (id: string, origin: string, text: string, parentPromptId: string | null = null) => ({ promptId: id, origin, text, parentPromptId, promptKind: null, threadLabel: null, blobKey: null, createdAt: NOW - 3000 });
+    const empty = { responses: [], attachments: [], plans: [], children: [], injection: null };
+    server(routes({
+      '/api/projects/x/sessions/s1': () => detail({ endedAt: NOW - 20 * MINUTE }, { metrics: { tools: [{ toolName: 'Read', count: 3 }], tokens: null } }),
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn()]),
+      [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({ ...empty,
+        prompt: prompt(P1, 'user', '<command-name>/fork</command-name>'),
+        context: { start: true, subagents: 0 }, metrics: { tools: [{ toolName: 'Read', count: 2 }], durationMs: 1234, tokens: null },
+        injection: { sporeIds: ['sp1'], spores: [{ id: 'sp1', observationType: 'decision', preview: 'Shared read path' }], planIds: ['plan1'], plans: [{ planKey: 'plan1', title: 'Session audit plan' }], createdAt: NOW },
+        answers: [{ id: 'answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores:empty', 'plan-nudge:no_intent'], failures: [{ contributor: 'spores', error: 'unavailable' }], selection: { candidates: 0 }, createdAt: NOW }],
+        children: [{ prompt: prompt(P2, 'agent_dispatch', 'Review the change', P1), responses: [], toolCallCount: 1 }, { prompt: prompt(P3, 'user', 'Also check the steering context', P1), responses: [], toolCallCount: 1 }],
+      }),
+      [`/api/projects/x/sessions/s1/turns/${P2}`]: () => Response.json({ ...empty, prompt: prompt(P2, 'agent_dispatch', 'Review the change', P1), context: { start: false, subagents: 1 }, metrics: { tools: [{ toolName: 'Read', count: 1 }], durationMs: 500, tokens: null } }),
+      [`/api/projects/x/sessions/s1/turns/${P3}`]: () => Response.json({ ...empty, prompt: prompt(P3, 'user', 'Also check the steering context', P1), metrics: { tools: [{ toolName: 'Write', count: 1 }], durationMs: 750, tokens: null }, answers: [{ id: 'steering-answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores:short_prompt'], failures: [], selection: {}, createdAt: NOW }] }),
+    }));
+    mount('/p/x/sessions/s1');
+    const parent = await screen.findByTestId(`turn-${P1}`);
+    await within(parent).findByText('Myco prepared session guidance');
+    expect(within(parent).getByText('/fork')).toBeTruthy();
+    expect(within(parent).getByText('Read × 2')).toBeTruthy();
+    expect(within(parent).getAllByText(/Prompt to last reply/).length).toBeGreaterThan(0);
+    fireEvent.click(within(parent).getByRole('button', { name: 'Myco prepared session guidance' }));
+    expect(within(parent).getByText(/original text is not retained/)).toBeTruthy();
+    fireEvent.click(within(parent).getByRole('button', { name: 'Myco context lookup failed' }));
+    expect(within(parent).getByText('No relevant memories found')).toBeTruthy();
+    expect(within(parent).getByText('candidates: 0')).toBeTruthy();
+    expect(within(parent).getByText('Memory lookup failed · unavailable')).toBeTruthy();
+    fireEvent.click(within(parent).getByRole('button', { name: 'Myco added 1 spore and 1 plan to this prompt' }));
+    expect(within(parent).getByRole('link', { name: 'Session audit plan' }).getAttribute('href')).toBe('/p/x/plans/plan1');
+    const child = await within(parent).findByTestId(`turn-${P2}`);
+    await within(child).findByText('Myco prepared 1 sub-agent preamble');
+    expect(within(child).getByText('Sub-agent tokens not recorded')).toBeTruthy();
+    const steering = await within(parent).findByTestId(`turn-${P3}`);
+    await within(steering).findByText('Write × 1');
+    fireEvent.click(within(steering).getByRole('button', { name: 'Myco prepared no context' }));
+    expect(within(steering).getByText('Prompt too short to match')).toBeTruthy();
+    expect(within(steering).getByText('Steered while it ran')).toBeTruthy();
+    expect(screen.getByText('Read × 3')).toBeTruthy();
+    expect(screen.getByText('Not recorded, including sub-agents')).toBeTruthy();
+    expect(screen.getByText('Wall time')).toBeTruthy();
+  });
+
+
+  it('normalizes long inline prompts once and normalizes fetched prompt bodies', async () => {
+    const promptText = 'file preamble\n## My request for Codex:\n' + 'word '.repeat(140) + '\n## My request for Codex:\nkeep this second marker';
+    const common = { origin: 'user', parentPromptId: null, threadLabel: null, promptKind: null, createdAt: NOW, responses: [], attachments: [], plans: [], injection: null, children: [] };
+    server(routes({
+      '/api/projects/x/sessions/s1': () => detail({ agent: 'codex' }),
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ promptId: P1 }), turn({ promptId: P2 })]),
+      [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({ ...common, prompt: { ...common, promptId: P1, text: promptText, blobKey: null } }),
+      [`/api/projects/x/sessions/s1/turns/${P2}`]: () => Response.json({ ...common, prompt: { ...common, promptId: P2, text: null, blobKey: KEY_TEXT } }),
+      [`/api/projects/x/processed/prompt/${P2}`]: () => new Response('<subagent_notification>Stored delegation</subagent_notification>'),
+    }));
+    mount('/p/x/sessions/s1');
+    const inline = await screen.findByTestId(`turn-${P1}`);
+    await within(inline).findByRole('button', { name: 'Show the whole prompt' });
+    expect(inline.textContent).not.toContain('file preamble');
+    fireEvent.click(within(inline).getByRole('button', { name: 'Show the whole prompt' }));
+    expect(inline.textContent).toContain('## My request for Codex:');
+    const stored = await screen.findByTestId(`turn-${P2}`);
+    fireEvent.click(within(stored).getByRole('button', { name: 'Show the whole prompt' }));
+    await within(stored).findByText('Stored delegation');
+    expect(stored.textContent).not.toContain('<subagent_notification>');
   });
 
   it('lists the session’s spores on their tab, whatever their status, and says when only the newest are listed', async () => {
@@ -1039,5 +1131,19 @@ describe('the session reading page', () => {
     expect(promptPreview({ preview: 'line one\n\nline   two', textChars: 19, blobKey: null })).toBe('line one line two');
     expect(promptPreview({ preview: null, textChars: null, blobKey: KEY_TEXT })).toBe('Stored text');
     expect(promptPreview({ preview: null, textChars: null, blobKey: null })).toBe('(no prompt)');
+  });
+});
+
+
+describe('prompt display follows harness formats', () => {
+  it.each([
+    ['claude-code', '<command-name>/fork</command-name><command-message>fork</command-message><local-command-stdout>done</local-command-stdout><system-reminder>guidance</system-reminder>', '/forkforkdoneguidance'],
+    ['codex', '<subagent_notification id="a">done</subagent_notification><environment_context>cwd</environment_context>', 'donecwd'],
+    ['cursor', '<timestamp>now</timestamp><user_query>fix the bug</user_query><attached_files>file</attached_files>', 'fix the bug'],
+    ['opencode', 'Keep <b>my markup</b>', 'Keep <b>my markup</b>'],
+  ])('%s markup', (agent, input, expected) => {
+    expect(displayPrompt(input, agent)).toBe(expected);
+    expect(displayPrompt('<b>user HTML</b>', agent)).toBe('<b>user HTML</b>');
+    if (agent !== 'cursor') expect(displayPrompt('Keep `<system-reminder>literal</system-reminder>`', agent)).toBe('Keep `<system-reminder>literal</system-reminder>`');
   });
 });

@@ -7,7 +7,7 @@ import { activityFeed } from '../read/activity.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listContextInjections, listPlans, listPrompts, listResponses, listToolCalls, untitledReason } from '../read/children.js';
-import { listTurns, parseOrigins, promptInSession, turnDetail, turnCollection, TURN_COLLECTIONS, type TurnCollection } from '../read/turns.js';
+import { listTurns, parseOrigins, promptInSession, turnDetail, turnCollection, TURN_COLLECTIONS, toolUsage, type TurnCollection } from '../read/turns.js';
 import { RawResourceReader, RAW_CACHE_HEADERS } from '../core/raw-resources.js';
 import { titleSession } from '../core/titling.js';
 import { changePlanStatus } from '../core/plans.js';
@@ -102,6 +102,7 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   if (read === null) return notFound();
   const [session] = nameOwnMachines([read], await ownMachineNames(env.db, ctx.member.id, ctx.now));
   return ok({
+    metrics: { tools: await toolUsage(env.db, scope, sessionId), tokens: null },
     session, resume: resumeCommandFor(session.agent, session.sessionId, session.originPath), untitled: await untitledReason(env.db, scope.projectId, sessionId), counts: await sessionCounts(env.db, scope, sessionId),
     release: await getReleaseStatus(env.db, scope, 'session', sessionId), outcome: await sessionOutcome(env.db, scope, sessionId), projectId: scope.projectId,
   });

@@ -118,6 +118,16 @@ async function expectReadingPage(page: Page, viewport: ViewportName, role: 'admi
   await expect(outcome).not.toContainText(/read nothing/i);
   await expect(page.locator('[data-outcome-run="unrecorded"]')).toHaveCount(2);
   await expect(page.getByRole('list', { name: 'Conversation' }).getByRole('listitem').first()).toBeVisible();
+  const conversation = page.getByRole('list', { name: 'Conversation', exact: true });
+  await expect(conversation.getByText('Myco prepared session guidance')).toBeVisible();
+  await expect(conversation.getByText('Myco prepared 1 sub-agent preamble')).toBeVisible();
+  await expect(conversation.getByText('Sub-agent tokens not recorded')).toBeVisible();
+  await expect(conversation).not.toContainText('<subagent_notification>');
+  await conversation.getByRole('button', { name: 'Myco prepared no context' }).click();
+  await expect(conversation.getByText('No relevant memories found')).toBeVisible();
+  await expect(conversation.getByText('candidates: 0')).toBeVisible();
+  await conversation.getByRole('button', { name: 'Myco prepared no context' }).click();
+  await expect(conversation.getByRole('button', { name: /Myco added .*spore/ })).toBeVisible();
   const raw = page.getByRole('region', { name: 'Raw data' });
   await expect(raw.getByRole('button', { name: 'Raw data' })).toHaveAttribute('aria-expanded', 'false');
   await expect(page.getByRole('button', { name: 'Session actions' })).toHaveCount(role === 'admin' ? 1 : 0);
