@@ -27,6 +27,12 @@ export async function extractionSourceSession(db: RelationalStore, scope: ReadSc
   return source?.sessionId ?? null;
 }
 
+/** Whether this Project has any prompts already marked extracted. */
+export async function hasProcessedPrompts(db: RelationalStore, scope: ReadScope): Promise<boolean> {
+  return await db.prepare('SELECT 1 AS found FROM prompt_batches WHERE project_id = ? AND processed = 1 LIMIT 1')
+    .bind(scope.projectId).first() !== null;
+}
+
 const ELIGIBLE_PROMPT_SQL = `p.processed = 0 AND p.origin IN (${READ_ORIGINS.map(() => '?').join(', ')})`;
 
 /** One unprocessed prompt. `text` and `response` are present only where the caller asked for bodies. */

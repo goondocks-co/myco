@@ -268,7 +268,7 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
         }
       }
     } catch (error) {
-      emit({ kind: 'schedule_project_failed', projectId: project.projectId, error: classify(error, env.platform.classifyError) });
+      emit({ kind: 'schedule_project_failed', projectId: project.projectId, error: classify(error, env.platform?.classifyError) });
     }
   }
   return report;

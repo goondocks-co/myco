@@ -135,16 +135,18 @@ for (const value of ['oops', '{"phase":"ramping","startedAt":"bad"}', JSON.strin
   } finally { log.mockRestore(); f.sqlite.close(); }
 });
 
-it('continues other Projects when one Project control-state read fails', async () => {
+for (const platform of [true, false]) it(`continues other Projects when one Project control-state read fails with platform=${platform}`, async () => {
   let reads = 0;
   const f = backlog(false, { onSql(sql) {
     if (sql.includes('FROM agent_state') && ++reads === 1) throw new Error('synthetic state read failure');
   } });
+  const env = f.serverEnv;
+  if (!platform) Reflect.deleteProperty(env, 'platform');
   const events: Array<{ kind: string; projectId?: string }> = [];
   const log = spyOn(console, 'log').mockImplementation(message => { events.push(JSON.parse(message)); });
   try {
     await settingsWriter(f.db).setLeaf('agent.scheduled_tasks_enabled', true, 'test', NOW);
-    expect((await runScheduledTasks(f.serverEnv, 'idle', NOW, 'https://s')).dispatched).toBe(1);
+    expect((await runScheduledTasks(env, 'idle', NOW, 'https://s')).dispatched).toBe(1);
     expect(f.sqlite.query("SELECT project_id FROM agent_runs WHERE status='queued'").all()).toEqual([{ project_id: 'proj_2' }]);
     expect(events).toContainEqual(expect.objectContaining({ kind: 'schedule_project_failed', projectId: 'proj_1' }));
   } finally { log.mockRestore(); f.sqlite.close(); }
@@ -197,5 +199,24 @@ it('resets a corrupted in-progress ramp conservatively after some history has be
       f.sqlite.run("UPDATE agent_runs SET status='completed' WHERE status='queued'");
     }
     expect((await runScheduledTasks(f.serverEnv, 'idle', NOW + 5 * HOUR, 'https://s')).dispatched).toBe(0);
+  } finally { f.sqlite.close(); }
+});
+
+it('writes ramp state only when it starts or completes, including concurrent evaluations', async () => {
+  const f = backlog();
+  f.sqlite.run('CREATE TABLE ramp_writes (at INTEGER)');
+  for (const operation of ['INSERT', 'UPDATE']) f.sqlite.run(`CREATE TRIGGER ramp_${operation} AFTER ${operation} ON agent_state BEGIN INSERT INTO ramp_writes VALUES (NEW.updated_at); END`);
+  const writes = () => f.sqlite.query('SELECT count(*) AS n FROM ramp_writes').get();
+  try {
+    expect(await Promise.all([extractionRamp(f.serverEnv, 'proj_1', NOW), extractionRamp(f.serverEnv, 'proj_1', NOW)])).toEqual([2, 2]);
+    expect(writes()).toEqual({ n: 1 });
+    expect(await extractionRamp(f.serverEnv, 'proj_1', NOW + HOUR)).toBe(2);
+    expect(writes()).toEqual({ n: 1 });
+    expect(f.sqlite.query("SELECT updated_at FROM agent_state WHERE project_id='proj_1'").get()).toEqual({ updated_at: NOW });
+    f.sqlite.run("UPDATE prompt_batches SET processed=1 WHERE project_id='proj_1'");
+    expect(await Promise.all([extractionRamp(f.serverEnv, 'proj_1', NOW + 2 * HOUR), extractionRamp(f.serverEnv, 'proj_1', NOW + 2 * HOUR)])).toEqual([null, null]);
+    expect(writes()).toEqual({ n: 2 });
+    expect(await extractionRamp(f.serverEnv, 'proj_1', NOW + 3 * HOUR)).toBeNull();
+    expect(writes()).toEqual({ n: 2 });
   } finally { f.sqlite.close(); }
 });

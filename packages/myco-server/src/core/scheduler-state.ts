@@ -31,7 +31,10 @@ export function schedulerState<T>(db: RelationalStore, projectId: string, key: s
     },
     async update(change: (current: T | null) => T): Promise<void> {
       await ensureAgent(db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: null, model: null, enabled: true }, now);
-      const stored = await mutateState(db, { projectId }, HARNESS_AGENT_ID, storedKey, current => JSON.stringify(change(parse(current))), now);
+      const stored = await mutateState(db, { projectId }, HARNESS_AGENT_ID, storedKey, current => {
+        const next = JSON.stringify(change(parse(current)));
+        return next === current ? null : next;
+      }, now);
       if (!stored) throw new Error('Scheduler state contention');
     },
   };
