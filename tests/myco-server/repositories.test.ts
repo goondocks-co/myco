@@ -4,7 +4,6 @@ import worker from '@myco-server-worker/index.js';
 import { projectRepositories, RepositoryConflictError } from '@myco-server-worker/core/repositories.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { handleRunRepository } from '@myco-server-worker/api/repositories.js';
 import type { RouteContext } from '@myco-server-worker/context.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { seedCredential } from './helpers/d1.js';
@@ -95,38 +94,5 @@ describe('project repository connection', () => {
     expect((await worker.fetch(await asOwner(r.db, '/api/projects/missing/repository'), env)).status).toBe(404);
     const removed = await worker.fetch(new Request(await asOwnerPost(r.db, path, { revision: repository.revision }), { method: 'DELETE' }), env);
     expect(removed.status).toBe(200);
-  });
-});
-
-describe('held run repository access', () => {
-  it('opens credentials only for the dispatched live code run', async () => {
-    const r = rig();
-    await r.repositories.save('proj_1', input, 'mem_machine_1', 1);
-    const ctx = run(r);
-    const answer = await handleRunRepository(r.serverEnv, ctx);
-    expect(answer.headers.get('cache-control')).toBe('no-store');
-    expect((await answer.json() as any).repository.credential.token).toBe(TOKEN);
-    for (const changed of [{ memberId: 'mem_machine_1' }, { tokenId: 'another' }, { projectId: 'proj_2' }, { now: ctx.now + 3_600_000 }]) {
-      const denied = await handleRunRepository(r.serverEnv, { ...ctx, ...changed });
-      expect(await jsonBody(denied)).toEqual({ persisted: true, held: false });
-    }
-    r.sqlite.query("UPDATE agent_runs SET task = 'title-summary'").run();
-    expect(await jsonBody((await handleRunRepository(r.serverEnv, ctx)))).toEqual({ persisted: true, held: false });
-  });
-
-  it('pins once, preserves other run context and refuses a changed repository', async () => {
-    const r = rig();
-    const connection = (await r.repositories.save('proj_1', input, 'mem_machine_1', 1))!;
-    const ctx = run(r);
-    const pin = async (commit: string) => (await handleRunRepository(r.serverEnv, { ...ctx, body: JSON.stringify({ runId: 'run_1', url: URL, branch: 'main', commit }) })).json() as Promise<any>;
-    expect((await pin(SHA)).pin.commit).toBe(SHA);
-    expect((await pin('b'.repeat(40))).pin.commit).toBe(SHA);
-    const { run_context } = r.sqlite.query('SELECT run_context FROM agent_runs').get() as { run_context: string };
-    expect(JSON.parse(run_context).input_hash).toBe('keep');
-    expect((await (await handleRunRepository(r.serverEnv, ctx)).json() as any).repository.commit).toBe(SHA);
-    await r.repositories.save('proj_1', { url: URL, branch: 'changed', revision: connection.revision }, 'mem_machine_1', 2);
-    expect((await (await handleRunRepository(r.serverEnv, ctx)).json() as any).error).toContain('changed');
-    r.sqlite.query("UPDATE agent_runs SET status = 'completed'").run();
-    expect(await jsonBody((await handleRunRepository(r.serverEnv, ctx)))).toEqual({ persisted: true, held: false });
   });
 });

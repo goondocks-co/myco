@@ -1,3 +1,4 @@
+import { embeddingFixture } from '../embedding/provider.ts';
 import { expect } from 'bun:test';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { MEMBER_ID, SESSION_SECRET, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
@@ -21,8 +22,10 @@ async function session(target: ParityTarget, sub: string): Promise<Record<string
 /** Demotion commits on the serving store before the guarded mutation batch begins. */
 export const liveActorWrites: ParityScenario = {
   name: 'live actor writes: settings and dispatch refuse demotion at the native and D1 commit',
-  dedicated: { cloudflare: { main: '../../tests/parity/owner-review/worker-entry.ts' }, stopRace: true, timeoutMs: 240_000 },
+  dedicated: { cloudflare: { main: '../../tests/parity/owner-review/embedding-worker-entry.ts' }, stopRace: true, timeoutMs: 240_000 },
   async run(target) {
+    const stopProvider = await embeddingFixture(target);
+    try {
     const now = Date.now();
     await target.sql(`INSERT INTO members (id, role, github_id, created_at) VALUES (${lit(ADMIN)}, 'admin', '720901', ${now}), (${lit(MEMBER)}, 'member', '720902', ${now})`);
     // Keep the admin distinct from the Deployment owner.
@@ -37,7 +40,7 @@ export const liveActorWrites: ParityScenario = {
     expect((await request(target, '/api/settings/agent.reasoning_map.claude-code.default', 'PUT', admin, { value: 'claude-opus-5' })).status).toBe(200);
     expect((await request(target, '/api/secrets/anthropic', 'PUT', admin, { value: 'synthetic-subscription' })).status).toBe(200);
     const cases = [
-      { path: '/api/harness/dispatch', method: 'POST', body: { task: 'container-smoke', projectId: target.projectId, fresh: true, timeoutSeconds: 123 }, write: 'INSERT INTO agent_runs', table: 'agent_runs', where: "task = 'container-smoke'" },
+      { path: '/api/harness/dispatch', method: 'POST', body: { task: 'embedding-reconcile', projectId: target.projectId, fresh: true, timeoutSeconds: 123 }, write: 'INSERT INTO agent_runs', table: 'agent_runs', where: "task = 'embedding-reconcile'" },
       { path: '/api/settings/agent.scheduled_tasks_enabled', method: 'PUT', body: { value: true }, write: 'INSERT INTO deployment_settings', table: 'deployment_settings', where: "leaf = 'agent.scheduled_tasks_enabled'" },
       { path: '/api/harness/dispatch', method: 'POST', body: { task: TASK, projectId: target.projectId, fresh: true, timeoutSeconds: 123 }, write: 'INSERT INTO agent_runs', table: 'agent_runs', where: '1=1' },
       { path: `/api/projects/${target.projectId}`, method: 'PATCH', body: { name: 'renamed' }, write: 'UPDATE projects', table: 'projects', where: `project_id = ${lit(target.projectId)}` },
@@ -81,5 +84,6 @@ export const liveActorWrites: ParityScenario = {
     expect((await request(target, '/api/harness/dispatch', 'POST', member, ordinary)).status).toBe(429);
     const [run] = await target.sql(`SELECT json_extract(run_context, '$.timeoutSeconds') AS timeout FROM agent_runs WHERE json_extract(dispatch_spec, '$.actor') = ${lit(MEMBER)}`);
     expect(run?.timeout).not.toBe(123);
+    } finally { stopProvider(); }
   },
 };

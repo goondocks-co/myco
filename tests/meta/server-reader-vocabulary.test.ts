@@ -16,7 +16,6 @@ const ALLOWED: Readonly<Record<string, string>> = {
   '../../myco-shared/src/run-text.ts:the harness stopped': 'Worker diagnostic code prefix; the dashboard renders reader code words.',
   'core/settings.ts:agent.harnesses. … .credential': 'Settings leaf address; the editor supplies a user-facing label.',
   'core/settings.ts:credential-source': 'Validation descriptor tag; the editor supplies a user-facing label.',
-  'core/runtime-probe.ts:The runtime probe model is only for the retained container probe': 'Programmer guard for a task-local resolver; the dashboard never renders it.',
   'core/worker-selection.ts:agent.harnesses. … .credential': 'Settings leaf address used to resolve the chosen agent; never a dashboard diagnostic.',
   'core/worker-selection.ts:worker.harness': 'Settings leaf address used to resolve the worker offer.',
   'core/worker-selection.ts:deployment': 'LoginPlan discriminator for credential source selection; never dashboard prose.',
@@ -57,7 +56,6 @@ const strings = serverReaderStrings([
   ...['api', 'core', 'read'].flatMap((dir) => sources(path.join(SRC, dir))),
   ...['bun', 'cloudflare'].map((target) => path.join(SRC, 'platform', target, 'store-maintenance.ts')),
   path.join(SRC, 'platform/cloudflare/recovery-export.ts'),
-  path.join(SRC, 'platform/bun/harness-runner.ts'),
 ], renderedFields);
 const key = (entry: { file: string; text: string }) => `${path.relative(SRC, entry.file)}:${entry.text}`;
 

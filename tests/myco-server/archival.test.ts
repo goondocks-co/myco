@@ -53,7 +53,7 @@ describe('an archived project', () => {
     expect(refreshed.refreshed).toBe(true);
     const run = await runRouteFixture('agent_arch');
     run.sqlite.run("UPDATE projects SET archived_at = 1 WHERE project_id = 'proj_1'");
-    const claim = await run.post('/runs/claim', { id: 'run_arch', agentId: 'agent_arch', task: 'digest', capability: 'cortex' });
+    const claim = await run.post('/runs/claim', { id: 'run_arch', agentId: 'agent_arch', task: 'embedding-reconcile', capability: 'cortex' });
     expect(claim).toMatchObject({ persisted: false, code: 'no_run' });
   });
 

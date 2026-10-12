@@ -13,14 +13,13 @@ import { repositoryIdentity } from './repositories.js';
  * A dispatch is two steps so a caller may decide between them. `prepareDispatch`
  * answers whether this Deployment CAN run the task — a bound runtime, a Project
  * it holds, a provider and its credential — and writes nothing. `launchDispatch`
- * mints the run's credential and starts its container. A caller with its own
+ * mints the run's credential and starts its in-process work. A caller with its own
  * claim to make (titling stamps the session first) prepares, claims, then
  * launches, and a refusal decided in preparation never costs it the claim.
  *
  * Worker tasks resolve their harness, execution profile and login at claim.
- * The retained runtime probe reads archived provider preferences and a per-task
- * model pin. Credentials travel only in the runtime environment, never in
- * telemetry or answers.
+ * Deterministic embedding work uses the configured embedding provider.
+ * Credentials travel only in the runtime environment, never in telemetry or answers.
  */
 import { DEPLOYMENT_WIDE_HOLDS, heldBy, readDispatchLimits, type DispatchLimits, type HeldBy } from './limits.js';
 import type { ServerEnv } from './adapters.js';
@@ -39,10 +38,9 @@ import { emit } from '../telemetry.js';
 import { workerClaimAdmission, claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordQueueHolder, recordTaskHolder, renewRunLeaseExpiry, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 export type { ActorCeiling } from './runs.js';
 import { TERMINAL_RUN_STATUSES, runUpdateStatement, runRemainingMs, applyRunUpdate, ensureAgent, ensureAgentStatement, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
-import { openHarnessCredential, openProviderCredential } from './provider-credentials.js';
-import { runtimeProbeModel } from './runtime-probe.js';
+import { openHarnessCredential } from './provider-credentials.js';
 import { embeddingWorkPlan } from './embedding/switch.js';
-import { credentialEnvFor, providerCredentialEnv } from '@goondocks/myco-shared/harness-providers';
+import { credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import type { ExecutionProfile, ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { taskTierRefusal } from './execution-profile.js';
 import {
@@ -64,7 +62,7 @@ export { RUN_OVERRUN_MARGIN_MS } from './run-deadline.js';
 export { MAX_RUN_ERROR_CHARS } from '../constants.js';
 /** What a run whose runtime would not start carries, before the refusal's own word. */
 export { LAUNCH_REFUSED_ERROR } from './reader-codes.js';
-/** The admission a capture-driven task carries into its container, in place of a capability name. */
+/** The admission a capture-driven task carries into its runtime, in place of a capability name. */
 export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 
 /** How many runs of one task a Project may have re-queued in a day in place of runs the platform replaced. */
@@ -81,7 +79,7 @@ const DISPATCHER_CONTEXT_KEYS = new Set(['timeoutSeconds', 'input_hash', 'counts
  */
 export type DispatchRefusal =
   | 'harness_unavailable' | 'unknown_task' | 'unknown_project' | 'repository_missing' | 'no_instruction' | 'not_landed'
-  | 'no_provider' | 'capability_off' | 'probe_preferences_invalid';
+  | 'no_provider' | 'capability_off';
 
 export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>> = {
   repository_missing: 'Connect the project repository in Settings before running a code task.',
@@ -90,7 +88,6 @@ export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>>
   no_instruction: 'this server has no instructions for that task',
   not_landed: 'no machine can run that task yet',
   unknown_project: 'the project is not on this server',
-  probe_preferences_invalid: 'The retained container check needs a usable Anthropic key and Claude Code default-tier model.',
   no_provider: 'search embeddings are unavailable; configure an embedding provider',
   capability_off: 'this task is turned off for the project; its capability is turned on in the project\'s Settings',
 };
@@ -104,9 +101,7 @@ export interface PreparedDispatch {
   projectId: string;
   /**
    * Who runs this task: a worker that claims it from the queue, or the launch
-   * seam. Two tasks have no MCP tool surface at all — their whole surface is a
-   * server-side step loop over a run route — so a worker whose only channel is
-   * MCP cannot serve them. They keep the seam until it retires with them.
+   * in-process embedding runtime, whose surface is a server-side step loop.
    */
   servedBy: 'worker' | 'runtime';
   /** Null for a worker-served task: which harness runs it, and under which credential, is resolved at the claim. */
@@ -249,33 +244,10 @@ export class NotQueued extends Error {
   constructor() { super('the run is not queued'); this.name = 'NotQueued'; }
 }
 
-/**
- * Why a runtime is not taking a run, when the answer is not the run's fault.
- *
- * `draining` is the shape of every deploy: the harness stops before the server
- * rolls, and it clears on its own. `unreachable` is a runtime that answered
- * nothing at all, which is a fault an operator has to see.
- */
+/** A runtime refusal to accept work during drain or loss of its execution channel. */
 export type RuntimeUnavailable = 'draining' | 'unreachable';
 
-/**
- * The runtime is not taking runs at this instant. The run goes back to the
- * queue rather than failing, and the next drain launches it; `runId` names the
- * row once `launchDispatch` has returned it.
- */
-/**
- * The runtime is already running the run this launch names.
- *
- * A launch answered after its bound is re-queued and offered again, and the
- * supervisor that started a child for it the first time refuses the second by
- * run id. The run is running: the row keeps the credential that child holds,
- * and the launch counts as landed.
- */
-/**
- * The runtime refused a launch on terms that end the run, and the row carries
- * that refusal. A caller reading this knows the run is answered; a throw of any
- * other kind reaches it from before the row write.
- */
+/** A launch refusal recorded as the run's terminal state. */
 export class LaunchRefused extends Error {
   constructor(message: string, options: { cause: unknown }) { super(message, options); this.name = 'LaunchRefused'; }
 }
@@ -295,10 +267,12 @@ async function dispatchAdmissionRefusal(env: ServerEnv, prepared: PreparedDispat
     ? new DispatchAdmissionRefused('capability_off', capability) : null;
 }
 
+/** The runtime already holds the run named by this launch. */
 export class RuntimeAlreadyHolding extends Error {
   constructor(message: string) { super(message); this.name = 'RuntimeAlreadyHolding'; }
 }
 
+/** The runtime queues a launch it cannot accept at this instant. */
 export class RuntimeDraining extends Error {
   constructor(message: string, readonly why: RuntimeUnavailable = 'draining', readonly runId?: string) {
     super(message);
@@ -549,21 +523,9 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
 
   if (env.harnessLaunch === undefined) return { ok: false, refusal: 'harness_unavailable' };
   if (!hasTaskRuntime(env, task)) return { ok: false, refusal: 'not_landed' };
-  if (gate.kind === 'embedding') {
-    const embedding = await embeddingWorkPlan(env, Date.now());
-    if (embedding === null) return { ok: false, refusal: 'no_provider' };
-    return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType: 'embedding', model: embedding.model, provider: {}, credentialEnv: {}, admission: CAPTURE_DRIVEN_ADMISSION } };
-  }
-
-  const key = await openProviderCredential(env.db, env.wrappingKey, 'anthropic');
-  if (key === null) return { ok: false, refusal: 'probe_preferences_invalid' };
-  const model = await runtimeProbeModel(env, task);
-  if (model === null) return { ok: false, refusal: 'probe_preferences_invalid' };
-  const providerType = 'anthropic';
-  const provider = { type: providerType, model };
-  const credentialEnv = providerCredentialEnv(providerType, key);
-  const admission = gate.kind === 'capture' ? CAPTURE_DRIVEN_ADMISSION : gate.capability;
-  return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType, model, provider, credentialEnv, admission } };
+  const embedding = await embeddingWorkPlan(env, Date.now());
+  if (embedding === null) return { ok: false, refusal: 'no_provider' };
+  return { ok: true, prepared: { task, projectId, servedBy: 'runtime', providerType: 'embedding', model: embedding.model, provider: {}, credentialEnv: {}, admission: CAPTURE_DRIVEN_ADMISSION } };
 }
 
 /** Whether an actor's ceiling is full, read after a write refused: the count the write compared against. */
@@ -574,7 +536,7 @@ async function ceilingHolds(db: ServerEnv['db'], ceiling: ActorCeiling | undefin
 /**
  * Launch a prepared dispatch: the runtime's member and agent rows, a credential
  * minted for this run alone, the run's row written `pending` with the
- * dispatch's parameters as its context, and the held container started with
+ * dispatch's parameters as its context, and in-process work started with
  * the whole dispatch as its environment. The row is the server's record of
  * the dispatch — the runtime's claim moves it to `running` and changes none
  * of it. Rejects when the runtime refuses to start, after marking the row

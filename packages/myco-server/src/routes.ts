@@ -8,8 +8,8 @@ import { handleRawClaimPreview, handleRawClaim, handleMemberRawClaimPreview, han
 import type { RawAction, RawResource } from './core/raw-resources.js';
 import { handleProcessedBody } from './api/processed.js';
 import { handleReleaseProvenance, handleRequestReleaseCheck, handleSaveReleaseProvenance } from './api/release-provenance.js';
-import { handleRepository, handleSaveRepository, handleRemoveRepository, handleRunRepository } from './api/repositories.js';
-import { handleProjectMap, handleRunMap } from './api/canopy.js';
+import { handleRepository, handleSaveRepository, handleRemoveRepository } from './api/repositories.js';
+import { handleProjectMap } from './api/canopy.js';
 import { handleMachineSettings, handleSetMachineSetting } from './api/machine-settings.js';
 import { handleMachineActivity, handleMachines, handleRenameMachine, handleStopMachine } from './api/machines.js';
 import { handleConnectUncaptured, handleListUncaptured } from './api/uncaptured.js';
@@ -50,7 +50,7 @@ import {
   handleProjectSkill, handleProjectSkills, handleProjectSpore, handleProjectSpores, handleProjectInstructions,
 } from './api/intelligence.js';
 import {
-  handleAgents, handleClaimRun, handleRegisterAgent, handleWriteReport, handleUpdateRun, retiredRunRoute,
+  handleAgents, handleClaimRun, handleRegisterAgent, handleWriteReport, handleUpdateRun,
 } from './api/runs.js';
 import { handleEmbeddingStep } from './api/embedding-task.js';
 import {
@@ -185,14 +185,8 @@ export const ROUTES: readonly Route[] = [
   // The retained runtime channel binds every operation to its dispatch credential,
   // Project, lifecycle and task capability at the pipeline. It is not member capture.
   { authorization: httpPolicy('run', 'execute', 'run', ['run']), method: 'POST', path: '/runs/claim', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleClaimRun },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/runs/get', auth: 'member', legacyRunRoute: true, retired: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: retiredRunRoute('/runs/get') },
   { authorization: httpPolicy('run', 'execute', 'run', ['run']), method: 'POST', path: '/runs/update', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleUpdateRun },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/runs/failed', auth: 'member', legacyRunRoute: true, retired: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: retiredRunRoute('/runs/failed') },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/runs/resume-admission', auth: 'member', legacyRunRoute: true, retired: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: retiredRunRoute('/runs/resume-admission') },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/runs/supersede', auth: 'member', legacyRunRoute: true, retired: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: retiredRunRoute('/runs/supersede') },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/runs/reports', auth: 'member', legacyRunRoute: true, retired: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: retiredRunRoute('/runs/reports') },
   { authorization: httpPolicy('run', 'execute', 'run', ['run']), method: 'POST', path: '/runs/report', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleWriteReport },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/runs/events', auth: 'member', legacyRunRoute: true, retired: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: retiredRunRoute('/runs/events') },
   { authorization: httpPolicy('run', 'execute', 'run', ['run']), method: 'POST', path: '/runs/embedding-step', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleEmbeddingStep },
   { authorization: httpPolicy('spore', 'edit', 'project', ['member']), method: 'POST', path: '/spores/save', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleSaveSpore },
   { authorization: httpPolicy('spore', 'read', 'project', ['member']), method: 'POST', path: '/spores/list', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleListSpores },
@@ -204,8 +198,6 @@ export const ROUTES: readonly Route[] = [
   // What a starting session or a starting subagent is served: the Project's
   // instructions, and the preferred digest where a Deployment asks for it.
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'POST', path: '/context/session', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleSessionContext },
-  { authorization: httpPolicy('run', 'execute', 'run', ['run']), method: 'POST', path: '/runs/repository', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRunRepository },
-  { authorization: httpPolicy('run', 'execute', 'run', ['run']), method: 'POST', path: '/runs/canopy-map', auth: 'member', legacyRunRoute: true, bodyMode: 'json', shape: 'persisted', capture: false, handler: handleRunMap },
   // The tool surface: the seven MCP tools over the Deployment for a member, the
   // read-only six for an External Agent grant, answered as JSON-RPC. `answered`
   // is its refusal shape — an error envelope, at 400 or 503.
@@ -361,7 +353,6 @@ export const ROUTES: readonly Route[] = [
 
 /** A 1.4.x wire route the server does not serve; each names the event kinds (or the blob route) that carry the same capture in 2.0, or says what it carried is gone. A retired path is unmatched and answers 401 like any other absent path. */
 export interface RetiredRoute {
-  authorization: AuthorizationDeclaration;
   method: string;
   path: string;
   replacedBy: readonly string[];
@@ -370,17 +361,25 @@ export interface RetiredRoute {
 }
 
 export const RETIRED_ROUTES: readonly RetiredRoute[] = [
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/sessions/register', replacedBy: ['session.start'] },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/sessions/unregister', replacedBy: ['session.end'] },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/events/stop', replacedBy: ['response'] },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/events/sync-transcript-prompts', replacedBy: ['prompt'] },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/routed-capture/transcript', replacedBy: ['POST /blobs/{sha256}', 'transcript.segment'] },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/routed-capture/plan', replacedBy: ['plan'] },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/context/subagent', replacedBy: ['subagent.start'] },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/runs/cortex-instructions', replacedBy: ['PUT /api/settings/{leaf}'] },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/runs/instruction', replacedBy: ['POST /worker/claim'] },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/runs/digest', replacedBy: ['GET /api/projects/{projectId}/digests'] },
-  { authorization: httpPolicy('protocol', 'never', 'protocol', ['member', 'run', 'grant']), method: 'POST', path: '/runs/digest-write', replacedBy: [], dropped: 'the generated digest goes (plan §3 D2, #1152); stored digests stay readable until #1170 drops the table' },
+  { method: 'POST', path: '/sessions/register', replacedBy: ['session.start'] },
+  { method: 'POST', path: '/sessions/unregister', replacedBy: ['session.end'] },
+  { method: 'POST', path: '/events/stop', replacedBy: ['response'] },
+  { method: 'POST', path: '/events/sync-transcript-prompts', replacedBy: ['prompt'] },
+  { method: 'POST', path: '/routed-capture/transcript', replacedBy: ['POST /blobs/{sha256}', 'transcript.segment'] },
+  { method: 'POST', path: '/routed-capture/plan', replacedBy: ['plan'] },
+  { method: 'POST', path: '/context/subagent', replacedBy: ['subagent.start'] },
+  { method: 'POST', path: '/runs/cortex-instructions', replacedBy: ['PUT /api/settings/{leaf}'] },
+  { method: 'POST', path: '/runs/instruction', replacedBy: ['POST /worker/claim'] },
+  { method: 'POST', path: '/runs/digest', replacedBy: ['GET /api/projects/{projectId}/digests'] },
+  { method: 'POST', path: '/runs/digest-write', replacedBy: [], dropped: 'the generated digest goes (plan §3 D2, #1152); stored digests stay readable until #1170 drops the table' },
+  { method: 'POST', path: '/runs/get', replacedBy: ['POST /worker/claim'] },
+  { method: 'POST', path: '/runs/failed', replacedBy: ['POST /worker/claim'] },
+  { method: 'POST', path: '/runs/resume-admission', replacedBy: ['POST /worker/claim'] },
+  { method: 'POST', path: '/runs/supersede', replacedBy: ['POST /worker/claim'] },
+  { method: 'POST', path: '/runs/reports', replacedBy: ['POST /worker/claim'] },
+  { method: 'POST', path: '/runs/events', replacedBy: ['POST /worker/claim'] },
+  { method: 'POST', path: '/runs/repository', replacedBy: ['POST /worker/claim'] },
+  { method: 'POST', path: '/runs/canopy-map', replacedBy: ['POST /worker/claim'] },
 ];
 
 /**

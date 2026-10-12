@@ -102,7 +102,7 @@ it('lists app-name, existing-app targets and discard in help', async () => {
   await expect(run(['--help'])).rejects.toThrow('fixture exit');
   const help = logs.join('\n');
   expect(help).toContain('--app-name <text>');
-  expect(help).toMatch(/github-app --existing[^\n]*--target local\|cloudflare\|compose/);
+  expect(help).toMatch(/github-app --existing[^\n]*--target local\|cloudflare/);
   expect(help).toContain('--discard-pending');
 });
 

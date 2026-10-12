@@ -57,8 +57,6 @@ export const RUN_REQUEST_FIELDS = {
     summary: (value: unknown) => str(value, MAX_REPORT_SUMMARY_CHARS),
     details: (value: unknown) => strOrNull(value, MAX_REPORT_DETAILS_CHARS), audit: unchanged },
   '/runs/embedding-step': { runId: (value: unknown) => str(value) },
-  '/runs/repository': { runId: (value: unknown) => str(value), commit: unchanged, url: unchanged, branch: unchanged },
-  '/runs/canopy-map': { runId: (value: unknown) => str(value), op: unchanged, source: unchanged, artifact: unchanged },
 } as const;
 
 /** Decode only declared fields; handler reads outside its table are an invalid contract. */

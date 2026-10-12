@@ -1,3 +1,4 @@
+import { embeddingFixture } from '../embedding/provider.ts';
 import { jsonBody } from '../../helpers/json-body.js';
 import { expect } from 'bun:test';
 import { sha256Hex } from '@myco-server-worker/hash.js';
@@ -18,7 +19,10 @@ import { lit, MEMBER_ID, memberHeadersFor, type ParityScenario, type ParityTarge
  */
 export const replacedRun: ParityScenario = {
   name: 'a replaced run: the row says a deploy ended it, a successor stands in for it once, and the day is not spent',
+  dedicated: { cloudflare: { main: '../../tests/parity/embedding/worker-entry.ts' }, timeoutMs: 120_000 },
   async run(target: ParityTarget) {
+    const stopProvider = await embeddingFixture(target);
+    try {
     const now = Date.now();
     const stamp = String(now);
     const secret = (method: 'PUT' | 'DELETE') => fetch(`${target.url}/api/secrets/anthropic`, {
@@ -30,25 +34,25 @@ export const replacedRun: ParityScenario = {
     // A clean board: nothing another scenario left holds a place, no limit holds
     // a dispatch, and no earlier run of this task has spent the day.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE status IN ('pending', 'running', 'queued')`);
-    await target.sql(`DELETE FROM agent_runs WHERE task = 'container-smoke'`);
+    await target.sql(`DELETE FROM agent_runs WHERE task = 'embedding-reconcile'`);
     await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.limits.concurrent_runs'`);
 
     const dispatch = async () => {
       const res = await fetch(`${target.url}/api/harness/dispatch`, {
         method: 'POST',
         headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-        body: JSON.stringify({ task: 'container-smoke', projectId: target.projectId, timeoutSeconds: 120 }),
+        body: JSON.stringify({ task: 'embedding-reconcile', projectId: target.projectId, timeoutSeconds: 120 }),
       });
       return { status: res.status, body: (await res.json()) as { runId?: string; error?: string; queued?: boolean } };
     };
     const row = async (runId: string) =>
       (await target.sql(`SELECT status, run_context AS runContext FROM agent_runs WHERE id = ${lit(runId)}`))[0] as { status: string; runContext: string | null };
     const successorOf = async (runId: string): Promise<string | null> => {
-      const rows = await target.sql(`SELECT id FROM agent_runs WHERE task = 'container-smoke' AND json_extract(CASE WHEN json_valid(run_context) THEN run_context END, '$.replaces') = ${lit(runId)}`);
+      const rows = await target.sql(`SELECT id FROM agent_runs WHERE task = 'embedding-reconcile' AND json_extract(CASE WHEN json_valid(run_context) THEN run_context END, '$.replaces') = ${lit(runId)}`);
       return rows.length === 0 ? null : String((rows[0] as { id: string }).id);
     };
     const listed = async () => {
-      const res = await fetch(`${target.url}/api/projects/${target.projectId}/runs?task=container-smoke`, { headers: target.ownerHeaders() });
+      const res = await fetch(`${target.url}/api/projects/${target.projectId}/runs?task=embedding-reconcile`, { headers: target.ownerHeaders() });
       expect(res.status).toBe(200);
       return ((await res.json()) as { rows: Array<{ id: string; replaced: boolean; replaces: string | null }> }).rows;
     };
@@ -136,5 +140,6 @@ export const replacedRun: ParityScenario = {
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${Date.now()} WHERE status IN ('pending', 'running', 'queued')`);
     expect((await secret('DELETE')).status).toBe(200);
     await target.sql(`UPDATE member_credentials SET revoked_at = ${Date.now()} WHERE id IN (${minted.map(lit).join(', ')})`);
+    } finally { stopProvider(); }
   },
 };

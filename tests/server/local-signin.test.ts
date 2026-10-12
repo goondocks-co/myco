@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, statSync } from "../support/fenced-fs.mjs";
+import { mkdtempSync, readFileSync, statSync, mkdirSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configureLocalSignIn, createLocalDeployment, DEFAULT_LOCAL_RECORD, readLocalSecrets, resolveLocalPaths, writeLocalSecrets } from '@myco/server/local.js';
-import { materializeBundle, resolveDeploymentPaths } from '@myco/server/deployment.js';
 import { LocalVolume, volumeIdentity, type VolumeStartup } from '@myco/server/local-volume.js';
 
 /** A start that needs no volume mutation: the shape a serving process takes its lease with. */
@@ -31,7 +30,8 @@ describe('native sign-in registration', () => {
     const f = fixture();
     expect(resolveSignInTarget(undefined, f.home)).toEqual({ kind: 'local', paths: f.paths });
     expect(resolveSignInTarget('local', f.home)).toEqual({ kind: 'local', paths: f.paths });
-    materializeBundle(resolveDeploymentPaths(f.home));
+    mkdirSync(join(f.home, 'server', 'compose'), { recursive: true });
+    writeFileSync(join(f.home, 'server', 'compose', 'compose.yaml'), 'services: {}');
     expect(() => resolveSignInTarget(undefined, f.home)).toThrow(/--target/);
     expect(resolveSignInTarget('local', f.home).kind).toBe('local');
   });

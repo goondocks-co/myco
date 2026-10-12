@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'bun:test';
+import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
+import { indexFixture } from './helpers/vector-index.js';
 import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
@@ -11,17 +13,17 @@ import { ROUTES } from '@myco-server-worker/routes.js';
 import { memberPost, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 
 const OFFERS = {
-  '/runs/claim': { id: 'target', agentId: 'myco-agent', task: 'title-summary', captureDriven: true, dryRun: true },
+  '/runs/claim': { id: 'target', agentId: 'myco-agent', task: 'embedding-reconcile', captureDriven: true, dryRun: true },
   '/runs/update': { runId: 'target', update: { tokens_used: 17 } },
-  '/runs/report': { runId: 'target', agentId: 'myco-agent', action: 'summary', summary: 'done' },
+  '/runs/report': { runId: 'target', agentId: 'myco-agent', action: 'embedding', summary: 'done' },
   '/runs/embedding-step': { runId: 'target' },
-  '/runs/repository': { runId: 'target' },
-  '/runs/canopy-map': { runId: 'target', op: 'prepare' },
 } as const;
-const TASKS: Record<string, string> = { '/runs/embedding-step': 'embedding-reconcile', '/runs/repository': 'vault-seed', '/runs/canopy-map': 'canopy-map' };
+const TASKS: Record<string, string> = { '/runs/embedding-step': 'embedding-reconcile' };
 
 async function fixture(target: 'cloudflare' | 'native', path: string, onSql?: Parameters<typeof sqliteEnv>[0], controlledClock = false) {
   const f = sqliteEnv(onSql);
+  f.env.VECTORIZE = indexFixture();
+  f.env.AI = { run: async () => ({ data: [[1, 0]] }) };
   let now = Date.now();
   turnOnGatedCapabilities(f.sqlite);
   await ensureMember(f.db, HARNESS_MEMBER_ID, now, 'member', 'harness');
@@ -34,14 +36,14 @@ async function fixture(target: 'cloudflare' | 'native', path: string, onSql?: Pa
   const member = await mint('mem_machine_1');
   const admin = await mint('mem_machine_2');
   f.sqlite.run("UPDATE members SET role = 'admin' WHERE id = 'mem_machine_2'");
-  const task = TASKS[path] ?? 'title-summary';
+  const task = TASKS[path] ?? 'embedding-reconcile';
   for (const [id, projectId, credential] of [['target', 'proj_1', holder], ['sibling', 'proj_1', sibling], ['foreign', 'proj_2', foreign]] as const) {
     await recordDispatch(f.db, { projectId }, { id, agentId: 'myco-agent', task, provider: null, model: null,
       runContext: JSON.stringify({ timeoutSeconds: 120 }), startedAt: now, dispatchedBy: credential.tokenId, dryRun: true });
     if (path !== '/runs/claim') f.sqlite.run("UPDATE agent_runs SET status = 'running' WHERE id = ?", [id]);
   }
   const nativeBase = serverEnvFromBunConfig({ sqlite: f.sqlite, blobDir: '/unused-run-authority-blobs' });
-  const native = { ...nativeBase, ...(onSql === undefined ? {} : { db: f.db }) };
+  const native = { ...nativeBase, vectors: cloudflareVectorStore(indexFixture()), embeddingProvider: async () => ({ modelKey: 'fixture-model', embed: async () => [1, 0] }), ...(onSql === undefined ? {} : { db: f.db }) };
   const pipeline = createServer({ now: () => now, sourceOf: () => '1.2.3.4', fetchImpl: fetch });
   const post = async (token: string, body: unknown, project = 'proj_1', route = path) => {
     const request = memberPost(token, body, route, { 'x-myco-project': project });
@@ -97,7 +99,7 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run
       expect(f.snapshot()).toEqual(before);
     } finally { f.sqlite.close(); }
   });
-  for (const path of ['/runs/repository', '/runs/canopy-map']) it(`${path} refuses a leased worker even with its rightful credential`, async () => {
+  for (const path of Object.keys(OFFERS)) it(`${path} refuses a leased worker even with its rightful credential`, async () => {
     const f = await fixture(target, path);
     try {
       f.sqlite.run("UPDATE agent_runs SET lease_expires_at = ? WHERE id = 'target'", [f.now + 10_000]);
@@ -109,7 +111,7 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run
   it('returns a stable credential-bound receipt for an admission refusal', async () => {
     const f = await fixture(target, '/runs/update');
     try {
-      f.sqlite.run("UPDATE agent_runs SET lease_expires_at = ? WHERE id = 'target'", [f.now - 1]);
+      f.sqlite.run("UPDATE agent_runs SET started_at = ? WHERE id = 'target'", [f.now - 1_000_000]);
       const offer = { runId: 'target', update: { status: 'failed', error: 'runtime overrun' } };
       const first = await f.post(f.holder.token, offer);
       const second = await f.post(f.holder.token, offer);
@@ -132,11 +134,11 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run
     } finally { f.sqlite.close(); }
   });
 
-  it('admits an embedding step while its rightful dispatch lease is live', async () => {
+  it('refuses a worker lease on the embedding channel', async () => {
     const f = await fixture(target, '/runs/embedding-step');
     try {
       f.sqlite.run("UPDATE agent_runs SET lease_expires_at = ? WHERE id = 'target'", [f.now + 10_000]);
-      expect((await f.post(f.holder.token, OFFERS['/runs/embedding-step'])).body).toMatchObject({ persisted: true, held: true });
+      expect((await f.post(f.holder.token, OFFERS['/runs/embedding-step'])).body).toMatchObject({ persisted: false, code: 'run_scope' });
     } finally { f.sqlite.close(); }
   });
   it('allows a late child to claim the queued dispatch that still names its credential', async () => {

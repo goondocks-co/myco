@@ -103,27 +103,6 @@ describe('a run whose report carries no audit', () => {
     expect(r.row(run.id)).toEqual({ status: 'completed', error: null, errorCode: null });
   });
 
-  it('owes nothing on the container\'s door, whose runs no worker claims, and closes there as it did', async () => {
-    const e = sqliteEnv();
-    turnOnGatedCapabilities(e.sqlite);
-    e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
-    e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, title, summary) VALUES ('proj_1', 's1', 'm1', 'tok_1', ?, ?, 'A title that stands', 'Its summary.')`, [NOW, NOW]);
-    await ensureMember(e.db, HARNESS_MEMBER_ID, NOW, 'member', 'harness runtime');
-    const minted = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, NOW);
-    await recordDispatch(e.db, SCOPE, {
-      id: 'run_door', agentId: 'myco-agent', task: 'title-summary', provider: null, model: null,
-      runContext: JSON.stringify({ timeoutSeconds: 120, session_id: 's1', mode: 'claim' }), dispatchedBy: minted.tokenId, startedAt: Date.now(),
-    });
-    e.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE id = 'run_door'`);
-    const post = async (path: string, body: unknown) => await (await worker.fetch(memberPost(minted.token, body, path), e.env)).json() as Record<string, unknown>;
-    expect(await post('/runs/report', { runId: 'run_door', agentId: 'myco-agent', action: RUN_SKIP_ACTION, summary: 'a title stands' }))
-      .toEqual({ persisted: true, recorded: true });
-    expect(await post('/runs/update', { runId: 'run_door', update: { status: 'completed', completed_at: Date.now() } }))
-      .toMatchObject({ persisted: true, applied: true });
-    expect(e.sqlite.query(`SELECT status, error, error_code AS errorCode FROM agent_runs WHERE id = 'run_door'`).get())
-      .toEqual({ status: 'completed', error: null, errorCode: null });
-  });
-
   it('reads a stored failure that carries no code in the same reader words', () => {
     expect(runErrorCode(RUN_CLOSE_AUDIT_ERROR)).toBe('report_without_audit');
     expect(runErrorCode(`${RUN_CLOSE_AUDIT_ERROR}: a call failed or was refused: Bash`)).toBe('report_without_audit');

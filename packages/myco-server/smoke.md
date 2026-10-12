@@ -494,3 +494,7 @@ Self-hosted: `npm run image:build:native && docker compose up`, then D1–D6 wit
 | `Host: evil.example.com` | 421 ahead of any asset |
 
 Cloudflare: `wrangler deploy --dry-run` on both tomls reads 18 files from `ui/dist` (174 KiB). D1–D7 on the edge await the promotion.
+
+## In-process embedding smoke
+
+Under an isolated home and a fresh volume, run the native server or plain server image, configure an embedding provider, and seed one source. Set `MYCO_ORIGIN` to the Deployment address. Wake it and verify an `embedding-reconcile` run completes, its report is stored, and a ready embedding receipt exists. Start no harness supervisor. Stop the server and verify its embedding work settles before the volume closes. `tests/myco-server/contract/server-bin.test.ts` exercises the process entry with a fixture provider; `tests/server/local-embedding.test.ts` also checks cancellation and provider failure.

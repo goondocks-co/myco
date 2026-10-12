@@ -464,19 +464,12 @@ describe('every Deployment leaf, the way the dashboard writes it', () => {
 
   it('changes task admission on the next run when a capability is toggled', async () => {
     const e = env();
-    const token = (await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now())).token;
-    e.sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_s', 'a', 'built-in', 1, ?)`).run(Date.now());
-    await ensureMember(e.db, HARNESS_MEMBER_ID, Date.now(), 'member', 'harness');
-    const claim = async (id: string) => {
-      const holder = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, Date.now());
-      await recordDispatch(e.db, { projectId: 'proj_1' }, { id, agentId: 'agent_s', task: `digest_${id}`, provider: null, model: null, runContext: '{}', startedAt: Date.now(), dispatchedBy: holder.tokenId });
-      return json(await worker.fetch(memberPost(holder.token, { id, agentId: 'agent_s', task: `digest_${id}`, capability: 'cortex' }, '/runs/claim'), e.all));
-    };
-    expect(await claim('run_default_on')).toMatchObject({ persisted: true, claimed: true });
-    expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/cortex', { enabled: true }), e.all))).toEqual({ applied: true });
-    expect(await claim('run_on')).toMatchObject({ persisted: true, claimed: true });
-    expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/cortex', { enabled: false }), e.all))).toEqual({ applied: true });
-    expect(await claim('run_off_again')).toMatchObject({ persisted: true, claimed: false, notAdmitted: 'cortex' });
+    const dispatch = async () => json(await worker.fetch(await asOwnerPost(e.db, '/api/harness/dispatch', { task: 'extract-curate', projectId: 'proj_1' }), e.all));
+    expect(await dispatch()).toMatchObject({ queued: true });
+    expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/vault_evolution', { enabled: true }), e.all))).toEqual({ applied: true });
+    expect(await dispatch()).toMatchObject({ queued: true });
+    expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/vault_evolution', { enabled: false }), e.all))).toEqual({ applied: true });
+    expect(await dispatch()).toMatchObject({ error: 'capability_off' });
   });
 });
 

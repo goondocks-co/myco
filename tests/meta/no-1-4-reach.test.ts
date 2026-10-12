@@ -83,8 +83,6 @@ const UNREACHED_2_0: Readonly<Record<string, string>> = {
  * how many. Each is text another program runs, not an import of this one's.
  */
 const UNFOLLOWABLE: Readonly<Record<string, number>> = {
-  // The vacuum script the Compose target runs inside its container (#1170 P7 deletes it).
-  'packages/myco/src/server/deployment.ts': 1,
   // The member plugins' and launchers' text, written into an agent's own configuration.
   'packages/myco/src/symbionts/templates.generated.ts': 4,
 };
@@ -94,10 +92,6 @@ const UNFOLLOWABLE: Readonly<Record<string, number>> = {
  * the `package.json` scripts, the Dockerfiles, the Makefile and the CI workflows and actions.
  */
 const ALLOWED_TEXT_REACH: Readonly<Record<string, string>> = {
-  'packages/myco-server/package.json packages/myco/src/agent/definitions': '#1170 P7: the harness image goes',
-  'packages/myco-server/package.json packages/myco/src/agent/prompts': '#1170 P7: the harness image goes',
-  'packages/myco-server/package.json packages/myco/src/agent/runtime/server-entry.ts': '#1170 P7: the harness image goes',
-  'packages/myco-server/package.json packages/myco/src/agent/runtime/supervisor.ts': '#1170 P7: the harness image goes',
 };
 
 const short = (key: string): string => (key.startsWith(MYCO) ? key.slice(MYCO.length) : key);

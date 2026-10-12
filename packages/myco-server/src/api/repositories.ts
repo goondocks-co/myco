@@ -1,13 +1,8 @@
-import { readRunFields } from './run-fields.js';
-import { refused } from '../ingest/events.js';
-import { refusal } from '../telemetry.js';
 import { RepositoryInputError } from '@goondocks/myco-shared/repository';
 import type { ServerEnv } from '../core/adapters.js';
-import type { OwnerContext, RouteContext } from '../context.js';
+import type { OwnerContext } from '../context.js';
 import { deploymentSecretStore, SecretValueError } from '../core/secrets.js';
 import { projectRepositories, RepositoryConflictError, type RepositoryConnectionWrite } from '../core/repositories.js';
-import { prepareRunRepository } from '../core/run-repository.js';
-import { CONTROL_CAPABILITIES, heldRun } from './run-admission.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 
 const capability = (env: ServerEnv) => projectRepositories(env.db, deploymentSecretStore(env.db, env.wrappingKey));
@@ -41,20 +36,6 @@ export async function handleRemoveRepository(env: ServerEnv, ctx: OwnerContext):
     return ok({ removed: true });
   } catch (error) {
     if (error instanceof RepositoryConflictError) return Response.json({ error: 'conflict', reason: error.message }, { status: 409 });
-    throw error;
-  }
-}
-
-/** Run preparation and pinning share the same held-task admission. */
-export async function handleRunRepository(env: ServerEnv, ctx: RouteContext): Promise<Response> {
-  const body = readRunFields(ctx.body, '/runs/repository');
-  if (body === null || body.runId === null) return Response.json(refused(ctx, refusal('runId is required', 'parse')));
-  const run = await heldRun(env, ctx, body.runId, CONTROL_CAPABILITIES['/runs/repository']!.tasks!);
-  if (run === null || run.leaseExpiresAt !== null) return ok({ persisted: true, held: false });
-  try {
-    return Response.json(await prepareRunRepository(env, ctx.projectId, run, body), { headers: { 'cache-control': 'no-store' } });
-  } catch (error) {
-    if (error instanceof RepositoryInputError) return Response.json(refused(ctx, refusal(error.message, 'parse')));
     throw error;
   }
 }

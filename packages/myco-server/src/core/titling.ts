@@ -117,7 +117,6 @@ const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
   no_instruction: 'error',
   not_landed: 'error',
   no_provider: 'error',
-  probe_preferences_invalid: 'error',
   // No capability gates titling, so a titling dispatch is never refused for one.
   capability_off: 'error',
   // A titling dispatch names a catalogued task and a session the scope already resolved; neither refusal has a path here.

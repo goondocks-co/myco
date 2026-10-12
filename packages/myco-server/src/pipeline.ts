@@ -1,7 +1,6 @@
 import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
 import { SIGN_IN_UNCONFIGURED } from '@goondocks/myco-shared/setup-guidance';
 import { memberWriteStore, MemberWriteRefused } from './auth/member-write-store.js';
-import { RETIRED_RUN_ROUTES } from './api/runs.js';
 import { authorizeDeclaration, deploymentIdentity, memberSubject, type AuthorizationSubject } from './auth/authorization.js';
 import { authorizeHttp, httpAuthorizationDecision } from './auth/http-authorization.js';
 import { emptyBodyRefusal, LINK_REQUIRES_ADMIN } from './auth/members.js';
@@ -14,7 +13,7 @@ import { TURN_END_HEADER } from './ingest/turns.js';
 import { stampRequest } from './core/activity.js';
 import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, releasedRunCredential, detectLineageReplay, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
-import { admitRunControl, CONTROL_CAPABILITIES, heldRunOfCredential, runDeadline, runtimeCaller } from './api/run-admission.js';
+import { admitRunControl, inProcessCredential, IN_PROCESS_SCOPE, CONTROL_CAPABILITIES, heldRunOfCredential, runDeadline, runtimeCaller } from './api/run-admission.js';
 import { runWriteStore, RunWriteExpired } from './core/run-write-store.js';
 import { recordRunCall, recordRunControlRefusal, type HeldRun } from './core/runs.js';
 import { HARNESS_MEMBER_ID } from './core/harness.js';
@@ -570,7 +569,7 @@ export function createServer(deps: ServerDeps) {
     if (route.auth !== 'member') return unauthorized();
     // Run control resolves its dispatch principal before member Project resolution.
     if (route.legacyRunRoute === true) {
-      if (auth.memberId !== HARNESS_MEMBER_ID && !('retired' in route && route.retired === true)) return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
+      if (auth.memberId !== HARNESS_MEMBER_ID) return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
       if (route.bodyMode !== 'json') return refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope');
       return asRunControl(request, env, auth, route, now);
     }
@@ -835,7 +834,7 @@ export function createServer(deps: ServerDeps) {
     const context = { projectId, memberId: auth.memberId, machineId: auth.machineId,
       tokenId: auth.tokenId, expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt,
       runtime: auth.runtime, body: body.text, bodyBytes: body.bytes, now, clock: deps.now, origin: new URL(request.url).origin };
-    if (route.retired === true) return refuse(auth, shapeOf(route), `${route.path} is retired: ${RETIRED_RUN_ROUTES[route.path]}`, 'route_retired');
+    if (!await inProcessCredential(env, auth.tokenId)) return receipt(refuse(auth, shapeOf(route), IN_PROCESS_SCOPE, 'run_scope'));
     const admission = await admitRunControl(env, auth, projectId, route.path, body.text, now);
     if (!admission.held) return receipt(refuse(auth, shapeOf(route), NO_LIVE_RUN, 'no_run'));
     if (!await authorizeHttp(env, route.authorization, await runSubject(env, admission.run, auth.tokenId), { projectId, run: admission.run, body: body.text })) return receipt(refuse(auth, shapeOf(route), RUN_SCOPE, 'run_scope'));

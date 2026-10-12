@@ -100,7 +100,7 @@ describe('one composer for a member request\'s headers', () => {
     const found = composers();
     expect(found.filter((c) => c.kind === 'member-composer').map((c) => c.module)).toEqual([MEMBER_COMPOSER]);
     expect(codeOf(path.join(SRC_ROOT, MEMBER_COMPATIBILITY))).toContain('@goondocks/myco-shared/member-protocol');
-    for (const module of ['runner/loop.ts', 'runner/mcp-config.ts', 'mcp/deployment-upstream.ts', 'agent/runtime/supervisor.ts', 'member/transport.ts']) {
+    for (const module of ['runner/loop.ts', 'runner/mcp-config.ts', 'mcp/deployment-upstream.ts', 'member/transport.ts']) {
       expect({ module, composes: found.some((c) => c.module === module) }).toEqual({ module, composes: false });
     }
     expect(found.filter((c) => c.kind === 'host-protocol').length).toBeGreaterThan(0);

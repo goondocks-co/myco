@@ -267,7 +267,7 @@ const embedding: SettingPolicy = {
 /** Execution profiles hold the task they name while a stored value is unusable, so they report it as nothing in effect. */
 const executionProfiles: SettingPolicy = {
   id: 'execution-profiles',
-  owners: ['core/worker-selection.ts', 'core/runtime-probe.ts'],
+  owners: ['core/worker-selection.ts'],
   leaves: CONFIGURABLE_PROFILE_HARNESSES.flatMap((harness) => [
     ...REASONING_TIERS.flatMap((tier) => [`agent.reasoning_map.${harness}.${tier}`, `agent.effort_map.${harness}.${tier}`]),
     `agent.harnesses.${harness}.credential`,

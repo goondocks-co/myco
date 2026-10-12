@@ -1,38 +1,7 @@
 /**
- * The C-local transport contract, enforced at startup.
- *
- * Loopback HTTP is permitted for a member reaching a same-machine container,
- * gated on a verified property of the socket, never on a configuration flag.
- * Four conditions hold together or the deployment does not start. Each one
- * alone turns "loopback only" into "reachable from the network".
- *
- * 1. A loopback LITERAL, never the name. The name resolves through host
- *    configuration this process cannot verify. Secure Contexts §3.1 separates
- *    the literals from the name; #835 records a `::1` hijack.
- * 2. BOTH loopback families bound, or refuse to start. One family bound leaves
- *    the other free for another process to claim, and a client resolving that
- *    family reaches the other process.
- * 3. A Host-header allowlist. A loopback socket answers requests carrying any
- *    Host, which a hostile page uses to steer a browser on the machine (DNS
- *    rebinding). The socket carries no evidence of it; the header does.
- * 4. Loopback-qualified publishing. `PORT:PORT` in Compose publishes on every
- *    interface with no signal inside the container, so condition 4 is verified
- *    against the shipped Compose file, not here.
- *
- * **Where conditions 1 and 2 apply.** They constrain the HOST-VISIBLE bind. A
- * process on the host binds the loopback literals itself. A container does not:
- * its network namespace has its own loopback, and Docker publishes a host
- * address to the container's `eth0` (172.17.0.2 in the default bridge), so a
- * process bound to 127.0.0.1 inside the namespace is unreachable through
- * published ports. Measured, not assumed: such a container answers `/health`
- * 200 from `docker exec` and refuses the connection from the host.
- *
- * For a container the namespace is the boundary and condition 4 is the
- * host-visible bind, so conditions 1 and 2 are satisfied by the publish spec
- * rather than by the process. `MYCO_BIND=all` selects that shape and is safe
- * ONLY alongside loopback-qualified publishing; the two ship in the same
- * Compose file and `compose-publish.test.ts` gates the pairing. Condition 3
- * holds in both shapes — a socket cannot see a forged Host either way.
+ * Loopback HTTP admission for native serving and explicitly isolated container ports.
+ * Container operators must publish on loopback and declare socket-derived source addresses.
+ * Native serving binds loopback literals directly.
  */
 
 /** Loopback literals, the only admissible bind targets. */

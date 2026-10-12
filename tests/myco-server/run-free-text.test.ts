@@ -100,8 +100,8 @@ describe('a worker\'s error, on the Deployment that stores it', () => {
 describe('a caller\'s error on the run routes', () => {
   it('is kept as a coded reason alone, through an update and a recorded failure alike', async () => {
     const { post, sqlite } = await routes();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
-    await post('/runs/claim', { id: 'r2', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'embedding-reconcile', capability: 'cortex' });
+    await post('/runs/claim', { id: 'r2', agentId: AGENT, task: 'embedding-reconcile', capability: 'cortex' });
     expect(await post('/runs/update', { runId: 'r1', update: { status: 'failed', completed_at: 50, error: SAID } })).toMatchObject({ applied: true });
     expect(await post('/runs/update', { runId: 'r2', update: { error: SAID } })).toMatchObject({ applied: true });
     const rows = sqlite.query(`SELECT id, error FROM agent_runs WHERE id IN ('r1', 'r2') ORDER BY id`).all() as Array<{ id: string; error: string }>;
@@ -117,22 +117,20 @@ describe('every text field the run routes still take', () => {
     const { post, sqlite } = await routes();
     let seq = 0;
     for (const leak of NAMES) {
-      for (const field of ['id', 'agentId', 'task', 'harness', 'provider', 'model'] as const) {
-        const claim = { id: `r_${seq += 1}`, agentId: AGENT, task: 'container-smoke', capability: 'cortex', [field]: leak.command };
-        // A model is named by the Deployment's own configuration, so it is held to the identifier shape alone.
-        if (field === 'model' && /^[A-Za-z0-9][A-Za-z0-9._:/@+[\]-]*$/.test(leak.command)) continue;
+      for (const field of ['id', 'agentId', 'task', 'harness', 'provider'] as const) {
+        const claim = { id: `r_${seq += 1}`, agentId: AGENT, task: 'embedding-reconcile', capability: 'cortex', [field]: leak.command };
         // A run's id is minted as a UUID, which is the one key shape it may hold.
         if (field === 'id' && leak.command === UUID_KEY) continue;
         expect({ field, leak: leak.name, persisted: (await post('/runs/claim', claim)).persisted }).toEqual({ field, leak: leak.name, persisted: false });
       }
-      expect(await post('/runs/claim', { id: `r_${seq += 1}`, agentId: AGENT, task: 'container-smoke', capability: 'cortex', runContext: JSON.stringify({ note: leak.command, nested: { key: leak.command, list: [leak.command] } }) })).toMatchObject({ claimed: true });
+      expect(await post('/runs/claim', { id: `r_${seq += 1}`, agentId: AGENT, task: 'embedding-reconcile', capability: 'cortex', runContext: JSON.stringify({ note: leak.command, nested: { key: leak.command, list: [leak.command] } }) })).toMatchObject({ claimed: true });
     }
     expect(leaked(NAMES, JSON.stringify(sqlite.query("SELECT id, agent_id, task, harness, provider, model, run_context FROM agent_runs WHERE status = 'running'").all()))).toEqual([]);
   });
 
   it('keeps an update\'s usage and cost data as structured records and its cost source as a name, never as sent', async () => {
     const { post, sqlite } = await routes();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'embedding-reconcile', capability: 'cortex' });
     for (const leak of [...NAMES, ...PROSE]) {
       const record = JSON.stringify({ model: leak.command, message: leak.command, breakdown: [{ note: leak.command }], [leak.command.slice(0, 20)]: 1 });
       expect(await post('/runs/update', { runId: 'r1', update: { usage_data: record, cost_data: record, tokens_used: 1 } })).toMatchObject({ applied: true });
@@ -144,9 +142,9 @@ describe('every text field the run routes still take', () => {
 
   it('refuses a report naming its agent or its action by anything but a name', async () => {
     const { post, sqlite } = await routes();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'embedding-reconcile', capability: 'cortex' });
     for (const leak of NAMES) {
-      expect(await post('/runs/report', { runId: 'r1', agentId: leak.command, action: 'container-smoke', summary: 's' })).toMatchObject({ persisted: false });
+      expect(await post('/runs/report', { runId: 'r1', agentId: leak.command, action: 'embedding', summary: 's' })).toMatchObject({ persisted: false });
       expect(await post('/runs/report', { runId: 'r1', agentId: AGENT, action: leak.command, summary: 's' })).toMatchObject({ persisted: false });
     }
     expect(sqlite.query(`SELECT COUNT(*) c FROM agent_reports`).get()).toEqual({ c: 0 });
@@ -206,9 +204,9 @@ describe('a report and its audit, as agent prose', () => {
 
   it('keeps no secret of a quoted command, and no key at all, on the run route', async () => {
     const { post, sqlite } = await routes();
-    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'container-smoke', capability: 'cortex' });
+    await post('/runs/claim', { id: 'r1', agentId: AGENT, task: 'embedding-reconcile', capability: 'cortex' });
     for (const { prose, command } of reports) {
-      expect(await post('/runs/report', { runId: 'r1', agentId: AGENT, action: 'container-smoke', summary: prose, details: prose, audit: audit(prose, command) })).toMatchObject({ recorded: true });
+      expect(await post('/runs/report', { runId: 'r1', agentId: AGENT, action: 'embedding', summary: prose, details: prose, audit: audit(prose, command) })).toMatchObject({ recorded: true });
     }
     expect(judged(sqlite.query(`SELECT summary, details, audit FROM agent_reports WHERE run_id = 'r1' ORDER BY id`).all() as Array<Record<string, unknown>>)).toEqual([]);
   });

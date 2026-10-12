@@ -147,28 +147,6 @@ describe('titleSession', () => {
     expect(logged.join('\n')).not.toContain(OAT);
   });
 
-  it('runs the retained probe with its Deployment login and current Claude Code default-tier model', async () => {
-    const h = harness();
-    await seedAnthropic(h);
-    h.setting('agent.reasoning_map.claude-code.default', 'opus');
-    expect(await dispatchTask(h.env, 'container-smoke', 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, NOW)).toMatchObject({ dispatched: true, queued: false });
-    const vars = h.launches[0]!.envVars;
-    expect({ apiKey: vars.ANTHROPIC_API_KEY, model: vars.MYCO_MODEL }).toEqual({ apiKey: KEY, model: 'opus' });
-    expect(vars.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    expect(JSON.parse(vars.MYCO_PROVIDER_JSON!)).toEqual({ type: 'anthropic', model: 'opus' });
-    expect(logged.join('\n')).not.toContain(KEY);
-
-    // A titling dispatch reads none of it: the harness that runs the run, and the credential that harness reads, are the worker's to resolve at the claim.
-    h.setting('agent.tasks', { 'title-summary': { provider: 'anthropic' } });
-    h.session('s1');
-    h.prompt('s1', 'p1', 'hello', NOW - 9000);
-    const titling = await h.title('s1');
-    expect(titling.outcome).toBe('queued');
-    const queued = h.runRow(titling.runId!)!;
-    expect({ provider: queued.provider, model: queued.model, credential: queued.dispatched_by }).toEqual({ provider: null, model: null, credential: null });
-    expect(h.launches).toHaveLength(1);
-  });
-
   it('makes one attempt per session even when two ends race, none for a session that has not ended, and one run each for two sessions ending together', async () => {
     const h = harness();
     await seedAnthropic(h);
@@ -207,9 +185,9 @@ describe('titleSession', () => {
     expect(h.runRows().map((r) => ({ status: r.status, task: r.task, held: r.held_by, credential: r.dispatched_by }))).toEqual([waiting, waiting]);
   });
 
-  it('queues session titles independently of the probe credential and model', async () => {
+  it('queues session titles independently of archived provider preferences', async () => {
     const h = harness();
-    expect(await prepareDispatch(h.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'probe_preferences_invalid' });
+    expect(await prepareDispatch(h.env, 'extract-curate', 'proj_1')).toMatchObject({ ok: true, prepared: { servedBy: 'worker' } });
 
     // A titling dispatch names no provider at all, so none of those settings decides it: each ask queues and spends its session's claim.
     const sessions = ['unserved', 'none', 'uncredentialed', 'bad-model'];

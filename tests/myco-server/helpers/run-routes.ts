@@ -5,12 +5,13 @@ import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/core/runs.js';
 import worker from '@myco-server-worker/index.js';
 import { memberPost, sqliteEnv } from './fixtures.js';
+import { indexFixture } from './vector-index.js';
 import { OWNER_ENV } from './owner.js';
 
 /** A dispatch credential per run for HTTP field and lifecycle contract tests. */
 export async function runRouteFixture(agentId: string) {
   const fixture = sqliteEnv();
-  const env = { ...fixture.env, ...OWNER_ENV };
+  const env = { ...fixture.env, ...OWNER_ENV, VECTORIZE: indexFixture(), AI: { run: async () => ({ data: [[1, 0]] }) } };
   const now = Date.now();
   await ensureMember(fixture.db, HARNESS_MEMBER_ID, now, 'member', 'harness');
   const token = await issueMemberToken(fixture.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, now);

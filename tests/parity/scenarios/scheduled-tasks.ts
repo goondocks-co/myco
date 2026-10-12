@@ -40,12 +40,12 @@ export const scheduledTasks: ParityScenario = {
     };
     const runs = (projectId: string) => target.sql(`SELECT status, harness, json_extract(run_context, '$.timeoutSeconds') AS timeoutSeconds, json_extract(run_context, '$.reason') AS reason FROM agent_runs WHERE project_id = ${lit(projectId)} AND task = 'extract-curate' ORDER BY COALESCE(queued_at, started_at), id`);
 
-    await leaf('agent.tasks', { 'container-smoke': { schedule: { enabled: true, runIn: ['active', 'idle', 'sleep'] } }, 'extract-curate': { schedule: { enabled: false } } });
+    await leaf('agent.tasks', { 'extract-curate': { schedule: { enabled: false } } });
     expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 0 });
-    expect(await target.sql(`SELECT id FROM agent_runs WHERE task = 'container-smoke' AND status IN ('pending','running','queued')`)).toEqual([]);
+    expect(await target.sql(`SELECT id FROM agent_runs WHERE task = 'embedding-reconcile' AND status IN ('pending','running','queued')`)).toEqual([]);
 
     // Extraction is enabled at every awake state for this scenario.
-    await leaf('agent.tasks', { 'container-smoke': { schedule: { enabled: true, runIn: ['active', 'idle', 'sleep'] } }, 'extract-curate': { schedule: { runIn: ['active', 'idle', 'sleep'], reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } } } });
+    await leaf('agent.tasks', { 'extract-curate': { schedule: { runIn: ['active', 'idle', 'sleep'], reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } } } });
     const first = await wake();
     expect(first.scheduled).toEqual({ dispatched: 1, skipped: 0 });
     expect(await runs(target.projectId)).toEqual([{ status: 'queued', harness: null, timeoutSeconds: 900, reason: null }]);

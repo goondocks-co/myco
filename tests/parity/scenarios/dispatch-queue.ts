@@ -84,26 +84,14 @@ export const dispatchQueue: ParityScenario = {
     await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, lineage_root, lineage_started_at, predecessor_id, first_used_at)
       VALUES (${lit(credential)}, 'mem_harness', 'harness', ${lit(`h_${credential}`)}, ${now}, ${now + 3_600_000}, NULL, 0, ${lit(credential)}, ${now}, NULL, NULL)`);
     await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, dispatched_by)
-      VALUES (${lit(target.projectId)}, ${lit(stranded)}, 'myco-agent', 'container-smoke', 'queued', ${now}, 'runtime',
+      VALUES (${lit(target.projectId)}, ${lit(stranded)}, 'myco-agent', 'unknown-parity-task', 'queued', ${now}, 'runtime',
               ${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, timeoutSeconds: 120 }))}, ${lit(credential)})`);
 
-    // A missing Anthropic key ends the run and revokes its credential.
-    expect((await secret('DELETE')).status).toBe(200);
-    try {
-      await wake();
-      expect(await target.sql(`SELECT status, error FROM agent_runs WHERE id = ${lit(stranded)}`))
-        .toEqual([{ status: 'failed', error: DISPATCH_REFUSAL_MESSAGE.probe_preferences_invalid }]);
-      expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
-        .toEqual([{ revoked: 1 }]);
-      await target.sql(`UPDATE agent_runs SET task = 'unknown-parity-task', status = 'queued' WHERE id = ${lit(stranded)}`);
-      await wake();
-      expect(await target.sql(`SELECT status, error FROM agent_runs WHERE id = ${lit(stranded)}`))
-        .toEqual([{ status: 'failed', error: DISPATCH_REFUSAL_MESSAGE.unknown_task }]);
-      expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
-        .toEqual([{ revoked: 1 }]);
-    } finally {
-      expect((await secret('PUT')).status).toBe(200);
-    }
+    await wake();
+    expect(await target.sql(`SELECT status, error FROM agent_runs WHERE id = ${lit(stranded)}`))
+      .toEqual([{ status: 'failed', error: DISPATCH_REFUSAL_MESSAGE.unknown_task }]);
+    expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
+      .toEqual([{ revoked: 1 }]);
 
     // Nothing this scenario launched stays live for the next one to count.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id IN (${[a.runId, b.runId].map(lit).join(', ')})`);

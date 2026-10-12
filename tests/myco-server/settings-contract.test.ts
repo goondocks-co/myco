@@ -433,7 +433,7 @@ describe('the settings contract', () => {
     const bound = SETTING_POLICIES.flatMap((policy) => policy.leaves);
     expect([...bound].sort()).toEqual([...LIVE_LEAVES].sort());
     expect(new Set(bound).size).toBe(bound.length);
-    expect(SETTING_POLICIES.find((policy) => policy.id === 'execution-profiles')?.owners).toContain('core/runtime-probe.ts');
+    expect(SETTING_POLICIES.find((policy) => policy.id === 'execution-profiles')?.owners).toContain('core/worker-selection.ts');
   });
 
   it('gives every Deployment leaf a typed rule and a behavior case', () => {

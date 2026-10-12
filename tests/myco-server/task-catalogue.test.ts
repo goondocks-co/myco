@@ -79,7 +79,7 @@ describe('what the clock runs', () => {
   });
 
   it('takes a switched-off override away from a task the Deployment otherwise runs', () => {
-    expect(scheduledTasks({ 'container-smoke': { schedule: { enabled: false } } }).map((t) => t.task)).toEqual([EXTRACTION_TASK]);
+    expect(scheduledTasks({ 'embedding-reconcile': { schedule: { enabled: false } } }).map((t) => t.task)).toEqual([EXTRACTION_TASK]);
   });
 });
 
@@ -169,7 +169,7 @@ describe('the tasks a run checks a repository out for', () => {
 
 
 it('keeps the retained probe manual-only even when an archived override asks for a schedule', () => {
-  expect(TASK_SCHEDULE['container-smoke']).toBeNull();
+  expect(TASK_SCHEDULE['container-smoke']).toBeUndefined();
   expect(scheduledTasks({ 'container-smoke': { schedule: { enabled: true, intervalSeconds: 1 } } }).map(({ task }) => task)).not.toContain('container-smoke');
 });
 it('names request-driven titling admission, and no retired use of the Anthropic key on the page', () => {
