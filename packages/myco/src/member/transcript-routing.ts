@@ -1,5 +1,6 @@
 import { withFileLockSync } from '../utils/lifecycle-lock.js';
 import path from 'node:path';
+import { isAgentScratchDirectory } from '../utils/temporary-folders.js';
 import { defaultMembership } from './default-deployment.js';
 import { resolveCredential, resolveMemberProjectRoot, type CredentialSource } from './credential.js';
 import { rootKeyFor } from './auto-join.js';
@@ -9,10 +10,12 @@ import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, memberRo
 
 const DESTINATION_FILE = 'destination.json';
 const ADOPTION_FILE = 'project-adoption.json';
+export const AGENT_SCRATCH_CAPTURE_NOTICE = '[myco] member: agent scratch directory — no capture';
 interface TranscriptDestination { serverUrl: string; projectId: string | null; rootKey?: string }
 
 /** The binary owns the namespace of plugin-written transcripts and their writer claims. */
 export function memberTranscriptRoutingKey(source: CredentialSource, cwd: string, mycoHome: string, env: NodeJS.ProcessEnv): string {
+  if (isAgentScratchDirectory(cwd, env)) throw new Error(AGENT_SCRATCH_CAPTURE_NOTICE);
   const record = resolveCredential(source, { cwd, mycoHome, env, invokedBy: 'member routing-key', claimsUnconnected: () => source === 'registry' && defaultMembership(mycoHome) !== null });
   let destination: TranscriptDestination;
   let key: string;

@@ -40,6 +40,7 @@ import { resolveCredential } from '@myco/member/credential.js';
 import { repositoryAt, rootKeyFor } from '@myco/member/auto-join.js';
 import { Client } from '@modelcontextprotocol/client';
 import { deploymentTransport, resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
+import { memberTranscriptRoutingKey } from '@myco/member/transcript-routing.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 
 const line = (o: Record<string, unknown>): string => `${JSON.stringify(o)}\n`;
@@ -1062,7 +1063,7 @@ describe('worktree capture and import attribution (#1722)', () => {
     }
   });
 
-  it('excludes a connected scratch worktree from live capture and import alike', async () => {
+  it('excludes a connected scratch worktree from live capture, plugin routing and import alike', async () => {
     const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-worktree-')));
     const { root } = repository(base, 'scratch-main');
     const tree = path.join(os.tmpdir(), 'claude-test', crypto.randomUUID(), 'scratchpad', 'lane');
@@ -1082,6 +1083,8 @@ describe('worktree capture and import attribution (#1722)', () => {
       const live = await runHook('session-start', { cwd: tree, session_id: 'scratch-live', transcript_path: r.files[0], source: 'startup' }, { fetch: async () => { throw new Error('ECONNREFUSED'); } });
       expect(live.stderr).toBe('[myco] member: agent scratch directory — no capture\n');
       expect(live.starts).toEqual([]);
+      expect(() => memberTranscriptRoutingKey('registry', tree, r.mycoHome, process.env)).toThrow(live.stderr.trim());
+      expect(fs.existsSync(path.join(r.mycoHome, 'member', 'transcripts'))).toBe(false);
       const spool = new MemberSpool(readRegistryEntry(root, r.mycoHome)!, { mycoHome: r.mycoHome });
       expect(spool.readRecords('scratch-live')).toEqual([]);
       const report = await r.run();

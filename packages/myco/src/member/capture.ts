@@ -27,7 +27,7 @@ import { appendPending, appendPendingTurnEnd } from './pending.js';
 import { restoreHeldReceiptsForHook } from './held.js';
 import { ensureJoinedFromCode } from './join-code.js';
 import type { EnvelopeContext, OutboundEvent } from './envelope.js';
-import { assertMemberTranscriptDestination } from './transcript-routing.js';
+import { AGENT_SCRATCH_CAPTURE_NOTICE, assertMemberTranscriptDestination } from './transcript-routing.js';
 import { kickHelper, markWork, runHelper, shipsInline, type KickOutcome, type KickReason } from './helper.js';
 import { hookDelivered, type HookAppended } from './backlog.js';
 import { helperPass } from './helper-pass.js';
@@ -199,7 +199,7 @@ export async function runMemberHook(
     const cwd = hookCwd(input);
     const env = opts.env ?? process.env;
     if (isAgentScratchDirectory(cwd, env)) {
-      process.stderr.write('[myco] member: agent scratch directory — no capture\n');
+      process.stderr.write(`${AGENT_SCRATCH_CAPTURE_NOTICE}\n`);
       return;
     }
     const mycoHome = resolveMycoHome({ cwd });
