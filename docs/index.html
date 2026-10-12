@@ -60,8 +60,10 @@
     <h3>Windows x64</h3>
     <div class="terminal"><div class="terminal-chrome"><span>PowerShell</span><button class="terminal-copy" data-copy="irm https://myco.sh/install.ps1 | iex">Copy</button></div><div class="terminal-body"><pre><code>irm https://myco.sh/install.ps1 | iex</code></pre></div></div>
     <p>No Node runtime is needed. The 2.0 Windows path is not yet verified. The installers select an available 2.x release; an unqualified npm install may select 1.4.</p>
-    <h3>Sign in and approve</h3>
-    <div class="terminal"><div class="terminal-chrome"><span>Use the address your administrator gave you</span></div><div class="terminal-body"><pre><code>myco setup --join &lt;address&gt;</code></pre></div></div>
+    <h3>Accept your invitation</h3>
+    <p>New to the team? Run the one-time login command your administrator sends from <strong>People &amp; machines › Invite a teammate</strong>. After you join, ask them to use <strong>Connect GitHub</strong> and send you the link to connect your account for dashboard access.</p>
+    <h3>If you already sign in to the dashboard</h3>
+    <div class="terminal"><div class="terminal-chrome"><span>Use your Myco’s address</span></div><div class="terminal-body"><pre><code>myco setup --join &lt;address&gt;</code></pre></div></div>
     <p>Open the printed URL in a browser signed in to your Myco, check the code and choose <strong>Approve this machine</strong>. Repositories under <code>~/Repos</code> join as you work. Start a new agent session and see it on <strong>Today</strong>.</p>
     <p><a href="/quickstart">Join a Myco, step by step →</a> · <a href="/upgrade#upgrading-from-myco-14">Moving from 1.4?</a></p>
   </div>
@@ -69,9 +71,7 @@
 <section class="band" id="your-myco">
   <div class="wrap-narrow member-journey">
     <div class="sec-head"><span class="eyebrow">Your Myco</span><h2 class="sec-title">One place for the <em>project's memory.</em></h2></div>
-    <p>One Myco server, called a Deployment, holds your projects and serves the dashboard. Run it on Cloudflare or your own machine, or join someone else's. Member machines send it sessions; separately registered runners lend signed-in coding agents to Myco's own work.</p>
-    <p>Learning needs a registered runner. An administrator turns on <strong>Work on a schedule</strong> in <strong>Settings</strong> for automatic learning, or uses <strong>Run a task</strong> under <strong>Myco’s work</strong>. The project switches <strong>Context for sessions</strong>, <strong>Code map</strong> and <strong>Learning</strong> are on by default.</p>
-    <p>Open <strong>Today</strong> to see work arrive, <strong>Sessions</strong> to revisit it, and <strong>Knowledge</strong> for spores, plans and the code map. Processed knowledge is shared across the Deployment; raw capture is private to its uploader.</p>
+    <p>Learning runs on a runner your administrator sets up.</p>
     <p><a href="/self-hosting">Run your own Myco →</a></p>
   </div>
 </section>
@@ -93,9 +93,9 @@
 <section class="band" id="docs">
   <div class="wrap"><div class="sec-head"><span class="eyebrow">Docs</span><h2 class="sec-title">Dig in.</h2><p class="sec-lede">Join a Myco, run your own, or learn how your agents use the project's knowledge.</p></div>
     <div class="docs-grid">
-      <a class="doc-card" href="/quickstart"><span class="kind">Getting started</span><h3>Join a Myco</h3><p>Install, sign in, approve, and see your first session on Today.</p><span class="go">Read guide</span></a>
+      <a class="doc-card" href="/quickstart"><span class="kind">Getting started</span><h3>Join a Myco</h3><p>Install, accept an invitation, and see your first session on Today.</p><span class="go">Read guide</span></a>
       <a class="doc-card" href="/self-hosting"><span class="kind">Getting started</span><h3>Run your own Myco</h3><p>Create a server on Cloudflare or your own machine, and register a runner.</p><span class="go">Read guide</span></a>
-      <a class="doc-card" href="/upgrade"><span class="kind">Getting started</span><h3>Updating Myco</h3><p>Update your installation or move existing data from Myco 1.4.</p><span class="go">Read guide</span></a>
+      <a class="doc-card" href="/upgrade"><span class="kind">Getting started</span><h3>Moving from Myco 1.4</h3><p>Move your existing data to Myco 2.0.</p><span class="go">Read guide</span></a>
       <a class="doc-card" href="/agents"><span class="kind">Using Myco</span><h3>Agents</h3><p>Six capture agents, global setup, delivery and visibility.</p><span class="go">Read guide</span></a>
       <a class="doc-card" href="/agent-tools"><span class="kind">Using Myco</span><h3>Agent tools</h3><p>Seven MCP tools and the skills that ship with Myco.</p><span class="go">Read guide</span></a>
       <a class="doc-card" href="/external-agents"><span class="kind">Using Myco</span><h3>External agents</h3><p>Project access keys for hosted reviewers and plugin-only agents.</p><span class="go">Read guide</span></a>

@@ -1,6 +1,6 @@
 # Join a Myco
 
-Connect your machine to a Myco, start a coding session, and see the work on Today. You need a supported coding agent and a Myco address or invitation from an administrator. To run your own instead, follow [Run your own Myco](self-hosting.md). Moving existing data? See [Upgrading from Myco 1.4](upgrade.md#upgrading-from-myco-14).
+Connect your machine to a Myco, start a coding session, and see the work on Today. You need a supported coding agent and an invitation from an administrator. If you already sign in to the dashboard, you can use its address instead. To run your own instead, follow [Run your own Myco](self-hosting.md). Moving existing data? See [Upgrading from Myco 1.4](upgrade.md#upgrading-from-myco-14).
 
 ## 1. Install
 
@@ -20,6 +20,14 @@ The 2.0 Windows path is not yet verified. The installers select an available 2.x
 
 ## 2. Sign this machine in
 
+### If you are new to the team
+
+Ask an administrator to open **People & machines**, choose **Invite a teammate**, and send you the one-time login command it shows. Run that command on this machine. An invitation expires and works once; ask for a fresh one if it is refused.
+
+After you join, ask an administrator to choose **Connect GitHub** for your entry on **People & machines** and send you the connection link. Open it in a browser and connect your GitHub account for dashboard access. Then open the dashboard at your Myco's address.
+
+### If you already sign in to the dashboard
+
 Run this from the repository you want to connect:
 
 ```bash
@@ -38,12 +46,6 @@ A bare address such as `myco.example.com` uses HTTPS. Use the full address, incl
 
 The terminal prints a URL and a code. Open that URL in a browser already signed in to the Myco dashboard. Check the code and machine details, then choose **Approve this machine**. The terminal waits for approval, so this works over SSH too.
 
-### If you are new to the team
-
-Ask an administrator to open **People & machines**, choose **Invite a teammate**, and send you the one-time login command it shows. Run that command in place of the address form above. An invitation expires and works once; ask for a fresh one if it is refused.
-
-After you join, ask an administrator to choose **Connect GitHub** for your entry on **People & machines** and send you the connection link. Open it in a browser and connect your GitHub account for dashboard access. Then open the dashboard at your Myco's address.
-
 ## 3. Let repositories join
 
 Myco sets up the installed capture agents in their **global** configuration: Claude Code, Codex, Cursor, OpenCode, Pi and Cline. Start a new agent session after setup. See [Agents](agents.md) for locations and controls.
@@ -53,10 +55,10 @@ Git repositories under `~/Repos` join the default Myco the first time an agent w
 For a repository elsewhere, run this inside it:
 
 ```bash
-myco member join --no-worker
+myco member join
 ```
 
-Choose an existing project or create one when asked. Only Git repositories capture. `myco member status` shows connected repositories and those that are still joining or could not join.
+Choose an existing project or create one when asked. To choose directly, use `myco member join --project <id-or-name>` or `myco member join --new [name]`. Only Git repositories capture. `myco member status` shows connected repositories and those that are still joining or could not join.
 
 ## 4. See the session on Today
 
@@ -92,4 +94,4 @@ myco logout <address>
 
 This revokes this machine's member credential for that Myco and removes its local connections. Captured data is kept. Other Mycos and runner registrations remain in place. If the server is unreachable, `myco logout <address> --local-only` removes the local connection without revoking the server credential; an administrator can stop it in the dashboard.
 
-**Known limit:** on a machine joined to two Deployments, an agent's single Myco MCP entry may reach only one of them. Check `myco doctor` before relying on tools across both ([#1724](https://github.com/goondocks-co/myco/issues/1724)).
+**Known limit:** on a machine joined to two Deployments, an agent's Myco tools may reach only one of them. Check `myco doctor` before relying on tools across both ([#1724](https://github.com/goondocks-co/myco/issues/1724)).

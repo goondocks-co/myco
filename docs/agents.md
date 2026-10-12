@@ -56,9 +56,9 @@ This removes that agent's Myco configuration. To sign the whole machine out, use
 
 ## What is captured
 
-Myco captures prompts, replies, tool activity and plans from the agent's session transcript. Hooks announce session activity and arrange transcript delivery. Joining can also import earlier sessions, within the server's capture and retention settings.
+Myco records your prompts, the agent's replies, its tool activity and plans as you work. Joining can also import earlier sessions, within the server's capture and retention settings.
 
-Repositories under your capture folders (`~/Repos` by default) join automatically when an agent works in them. Elsewhere, use `myco member join --no-worker` inside the Git repository. Change **Folders it captures** and **Extra plan folders** under **My machines**.
+Repositories under your capture folders (`~/Repos` by default) join automatically when an agent works in them. Elsewhere, use `myco member join` inside the Git repository. Change **Folders it captures** and **Extra plan folders** under **My machines**.
 
 When the server cannot be reached, capture waits on the machine. `myco member status` shows queued delivery and refusals; `myco member drain` delivers queued capture now.
 
@@ -66,9 +66,9 @@ When the server cannot be reached, capture waits on the machine. `myco member st
 
 Project instructions arrive at session start. Relevant spores and plans return with each prompt, and the [agent tools](agent-tools.md) let agents search further or record findings. The project's **Context for sessions** switch is on by default.
 
-Cursor and OpenCode use a local stdio bridge to the server's MCP tools. They still read and write the same project knowledge on the server.
+Cursor and OpenCode use a small local connection to reach Myco's tools. They read and write the same project knowledge as the other agents.
 
-**Known limit:** with two Deployments on one machine, an agent's single Myco MCP entry may reach only one. Use `myco doctor` to check the setup ([#1724](https://github.com/goondocks-co/myco/issues/1724)).
+**Known limit:** with two Deployments on one machine, an agent's Myco tools may reach only one. Use `myco doctor` to check the setup ([#1724](https://github.com/goondocks-co/myco/issues/1724)).
 
 ## Who sees what
 

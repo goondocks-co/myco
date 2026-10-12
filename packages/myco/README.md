@@ -20,13 +20,17 @@ irm https://myco.sh/install.ps1 | iex
 
 No Node runtime is needed. The installers select an available 2.x release. An unqualified npm install may still select the 1.4 release line.
 
+New to the team? Run the one-time login command your administrator sends from **People & machines › Invite a teammate**. After you join, ask them to use **Connect GitHub** and send you the link to connect your account for dashboard access.
+
+If you already sign in to the dashboard, you can use the Myco's address instead:
+
 ```bash
 myco setup --join <address>
 ```
 
-Approve this machine in a browser signed in to your Myco, then start a new coding session in a repository under `~/Repos`. See it on **Today**. Setup writes each installed agent's global configuration.
+Approve this machine in a browser signed in to your Myco. Start a new coding session in a repository under `~/Repos`, and see it on **Today**. Setup writes each installed agent's global configuration.
 
-Myco's own learning needs a registered runner with a signed-in coding agent. An administrator turns on **Work on a schedule** for automatic learning, or uses **Run a task**. The project switches **Context for sessions**, **Code map** and **Learning** are on by default.
+Learning runs on a runner your administrator sets up.
 
 - [Join a Myco](https://myco.sh/quickstart)
 - [Run your own Myco](https://myco.sh/self-hosting)

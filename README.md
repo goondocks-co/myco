@@ -12,9 +12,7 @@ Use Claude Code today and Codex tomorrow. Bring a teammate into the project. The
 2. **Learn from it.** Myco's agent draws out what is worth keeping, updates earlier knowledge and gives sessions useful titles. It can also learn from a connected repository and build a code map.
 3. **Bring it back.** Your agents receive project instructions at session start and relevant spores and plans with each prompt. They can search further and record what they learn through Myco's tools.
 
-One Myco server, called a **Deployment**, holds your projects and serves the dashboard. It runs on Cloudflare or your own machine. Member machines send it sessions; separately registered **runners** lend signed-in coding agents to Myco's own work. You can join someone else's Myco without running a server or runner yourself.
-
-Learning needs a registered runner with a signed-in coding agent. **Work on a schedule** starts off; an administrator enables it in **Settings** for automatic learning, or uses **Run a task** under **Myco’s work**. The project switches **Context for sessions**, **Code map** and **Learning** are on by default.
+Learning runs on a runner your administrator sets up.
 
 ## Get started
 
@@ -30,13 +28,15 @@ Windows x64 has an installer, but the 2.0 Windows path is not yet verified:
 irm https://myco.sh/install.ps1 | iex
 ```
 
-Then join the Myco whose address your administrator gave you:
+New to the team? Ask your administrator for the one-time login command from **People & machines › Invite a teammate**, and run it. After you join, ask them to use **Connect GitHub** and send you the link to connect your account for dashboard access.
+
+If you already sign in to the dashboard, you can use the Myco's address instead:
 
 ```bash
 myco setup --join <address>
 ```
 
-Approve the machine in a browser signed in to that Myco. Start a new agent session in a repository under `~/Repos`, and see it on **Today**. The [Join a Myco guide](docs/quickstart.md) covers invitations, other folders and checking your setup.
+Approve the machine in a browser signed in to that Myco. Start a new agent session in a repository under `~/Repos`, and see it on **Today**. The [Join a Myco guide](docs/quickstart.md) covers joining, other folders and checking your setup.
 
 - [Run your own Myco](docs/self-hosting.md) on Cloudflare or this machine.
 - [Move from Myco 1.4](docs/upgrade.md#upgrading-from-myco-14), keeping your existing data.

@@ -77,11 +77,18 @@ it('the setup skill uses address sign-in and docs let GitHub choose a unique app
   for (const route of ['/events', '/blobs/', '/import/']) expect(docs).toContain(route);
 });
 
-it('README install guidance matches the default 2.x installer and address sign-in', () => {
-  const readme = fs.readFileSync(path.join(repo, 'README.md'), 'utf8');
-  expect(readme).toContain('myco login <address>');
-  expect(readme).toContain('default installer selects the newest 2.x release, including prereleases while no stable 2.x release exists');
-  expect(readme).toContain('Existing 1.4 installations keep their 1.4 updates unless you explicitly choose replacement');
-  expect(readme).not.toContain('defaults to stable releases only');
-  expect(readme).not.toContain('myco login <invite link>');
+it('front doors lead with invitations and admin-linked dashboard access before address sign-in', () => {
+  for (const file of ['README.md', 'packages/myco/README.md', 'docs/index.html', 'docs/quickstart.md']) {
+    const text = fs.readFileSync(path.join(repo, file), 'utf8').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+    const addressCommand = text.indexOf('myco setup --join <address>');
+    const invite = text.indexOf('Invite a teammate');
+    const accountLink = text.indexOf('Connect GitHub');
+    expect(addressCommand, file).toBeGreaterThan(0);
+    expect(invite, file).toBeGreaterThan(0);
+    expect(accountLink, file).toBeGreaterThan(invite);
+    expect(accountLink, file).toBeLessThan(addressCommand);
+    expect(text, file).toContain('already sign in to the dashboard');
+    expect(text, file).toContain('https://myco.sh/install.sh');
+    expect(text, file).toContain('https://myco.sh/install.ps1');
+  }
 });
