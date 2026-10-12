@@ -329,8 +329,8 @@ describe('prompt selection diagnostics', () => {
       await composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, promptId: 'metadata', text: PROMPT, now: NOW }, async () => ({
         ...semantic, vectors: { ...semantic.vectors, query: (partition, options) => semantic.vectors.query(partition, { ...options, filters: { type: 'plan' } }) },
       }));
-      expect(selectionOf(sqlite, 'metadata')).toMatchObject({ sporeRawMatches: 1, sporeJoined: 1, sporeHits: 0, sporeCalibrated: 0, sporeScored: 0, sporeRelevant: 0, planHits: 1, planEligible: 1, planCalibrated: 0, planScored: 1, planRelevant: 1, planHydrated: 1, budgetKept: 1 });
-      expect(sqlite.query('SELECT parts FROM prompt_context_answers').get()).toEqual({ parts: '[{"kind":"spores","sporeCount":0,"planCount":1}]' });
+      expect(selectionOf(sqlite, 'metadata')).toMatchObject({ sporeRawMatches: 1, sporeJoined: 1, sporeHits: 0, sporeCalibrated: 0, sporeScored: 0, sporeRelevant: 0, planHits: 1, planEligible: 1, planCalibrated: 0, planScored: 1, planRelevant: 0, planHydrated: 0, budgetKept: 0 });
+      expect(sqlite.query('SELECT parts FROM prompt_context_answers').get()).toEqual({ parts: '[]' });
     } finally { sqlite.close(); }
   });
 
@@ -636,7 +636,7 @@ describe('POST /context/prompt', () => {
           sporeRawMatches: projectId === 'proj_1' ? 30 : 100, sporeJoined: projectId === 'proj_1' ? 30 : 100, sporeHits: projectId === 'proj_1' ? 30 : 100,
           sporeCalibrated: sporeHits, sporeScored: sporeHits, sporeProbable: legacyOnly ? 10 : 0, sporeSeparated: legacyOnly ? 10 : 0,
           sporeRelevant: spores, sporeHydrated: spores,
-          planRawMatches: planHits, planJoined: planHits, planHits, planUnserved: planHits, planEligible: planHits, planCalibrated: planHits,
+          planRawMatches: planHits, planJoined: planHits, planHits, planUnserved: planHits, planEligible: planHits, planCalibrationFailed: 0, planCalibrated: planHits,
           planScored: planHits, planProbable: planHits, planSeparated: planHits, planRelevant: hydratedPlans, planHydrated: hydratedPlans, budgetKept: spores + hydratedPlans,
         });
         expect(JSON.parse(row.parts)).toEqual([{ kind: 'spores', sporeCount: spores, planCount: hydratedPlans }]);

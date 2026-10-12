@@ -56,6 +56,8 @@ export interface SelectOptions {
   relativeBand?: number;
   /** Semantic background from the same record kind and embedding model. */
   referenceCandidates?: SporeCandidate[];
+  /** Prompt-side distances across all semantic record kinds in the same model. */
+  queryCandidates?: SporeCandidate[];
   observe?: (counts: { calibrated: number; scored: number; probable: number; separated: number }) => void;
 }
 
@@ -68,6 +70,8 @@ export interface SelectedSpore {
 const STD_EPSILON = 1e-6;
 const DEFAULT_MIN_PROBABILITY = 0.5;
 const DEFAULT_RELATIVE_BAND = 0.6;
+const PLAN_MIN_PROBABILITY = 0.75;
+const PLAN_RELATIVE_BAND = 0.9;
 /** Upper end of the central 95% normal interval for candidate baselines. */
 const BASELINE_STD_LIMIT = 2;
 
@@ -192,17 +196,24 @@ export function selectRelevantSpores(
   return separated.slice(0, opts.maxResults).map(({ id, mp }) => ({ id, mp }));
 }
 
-/** Plans rank against plan-to-plan distances, or live-plan query distances when no baseline exists. */
+/** Plan-side distances are centered on the prompt-side distribution before mutual proximity. */
 export function selectRelevantPlans(candidates: SporeCandidate[], opts: SelectOptions): SelectedSpore[] {
   const live = candidates.filter((c) => Number.isFinite(c.similarity));
   const calibrated = (opts.referenceCandidates ?? candidates).filter(isCalibrated);
-  const stats = calibrated.length === 0 ? distributionStats(live.map((c) => 1 - c.similarity)) : pooledCalibration(calibrated);
+  const queryStats = distributionStats((opts.queryCandidates ?? opts.referenceCandidates ?? candidates)
+    .filter((c) => Number.isFinite(c.similarity)).map((c) => 1 - c.similarity));
+  const baseline = calibrated.length === 0 ? null : pooledCalibration(calibrated);
   const scored = live.filter((c) => !c.alreadyInjected)
-    .map((c) => ({ id: c.id, mp: proximityFactor(1 - c.similarity,
-      isCalibrated(c) ? { mean: c.neighborMean, std: c.neighborStd } : stats), similarity: c.similarity }))
+    .map((c) => {
+      const own = isCalibrated(c) ? { mean: c.neighborMean, std: c.neighborStd } : baseline;
+      const mp = own === null || baseline === null ? proximityFactor(1 - c.similarity, queryStats) :
+        mutualProximity(1 - c.similarity, queryStats, { mean: own.mean + queryStats.mean - baseline.mean, std: own.std });
+      return { id: c.id, mp, similarity: c.similarity };
+    })
     .sort((a, b) => b.mp - a.mp || b.similarity - a.similarity);
-  const cutoff = Math.max(opts.minProbability ?? DEFAULT_MIN_PROBABILITY, (scored[0]?.mp ?? 0) * (opts.relativeBand ?? DEFAULT_RELATIVE_BAND));
-  const probable = scored.filter((c) => c.mp >= cutoff);
-  opts.observe?.({ calibrated: calibrated.length, scored: scored.length, probable: probable.length, separated: probable.length });
-  return probable.slice(0, opts.maxResults).map(({ id, mp }) => ({ id, mp }));
+  const probable = scored.filter((c) => c.mp > (opts.minProbability ?? PLAN_MIN_PROBABILITY));
+  const cutoff = (scored[0]?.mp ?? 0) * (opts.relativeBand ?? PLAN_RELATIVE_BAND);
+  const separated = probable.filter((c) => c.mp >= cutoff);
+  opts.observe?.({ calibrated: calibrated.length, scored: scored.length, probable: probable.length, separated: separated.length });
+  return separated.slice(0, opts.maxResults).map(({ id, mp }) => ({ id, mp }));
 }

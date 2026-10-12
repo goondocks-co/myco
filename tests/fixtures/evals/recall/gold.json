@@ -7,7 +7,7 @@
   "surface": "POST /context/prompt, fresh session per case, whole injected block (spores and plans)",
   "positive": "every expected id served and no mustNot id served",
   "negative": "nothing injected at all (no spore, no plan)",
-  "plans": "no plan is expected in any case; every served plan counts as unwanted",
+  "plans": "Only explicitly expected live plans earn recall and precision; every other served plan is unwanted",
   "ratchet": "per case and target: no expected id served at baseline may drop; no unwanted id absent at baseline may appear; pass count may not drop"
  },
  "cases": [
@@ -1683,7 +1683,10 @@
    "ownerReview": {
     "call": "agree",
     "note": ""
-   }
+   },
+   "expectedPlans": [
+    "a3b1e332-96a2-56e0-9afa-01876916c3a3"
+   ]
   },
   {
    "id": "rp-44",

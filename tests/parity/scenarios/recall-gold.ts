@@ -96,6 +96,7 @@ export const recallGold: ParityScenario = {
         if (answer.persisted !== true || refused.length > 0) throw new Error(`${c.id} was not scored: ${JSON.stringify(answer)}`);
         const part = answer.parts?.find((p) => p.kind === 'spores');
         measured[c.id] = { spores: part?.sporeIds ?? [], plans: part?.planIds ?? [] };
+        if (c.expectedPlans !== undefined) expect(measured[c.id]!.plans).toEqual(c.expectedPlans);
       }
 
       // The comparison runs first in either mode, so recording shows a reviewer what it changes, case by case.

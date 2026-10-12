@@ -233,7 +233,7 @@ describe('the record', () => {
 });
 
 describe('plan selection', () => {
-  it.each(['active', 'completed', 'abandoned'])('handles a plans-only project with a %s transcript recovery plan', async (status) => {
+  it.each(['active', 'completed', 'abandoned'])('withholds a lone %s plan without independent relevance evidence', async (status) => {
     const { db, sqlite } = store();
     const title = 'Preserve pending transcript batches during member reconnect';
     sqlite.query(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
@@ -248,9 +248,9 @@ describe('plan selection', () => {
         sessionId: SESSION, promptId: 'reconnect', promptHash: 'reconnect',
         prompt: 'Keep pending transcript batches intact when the member reconnects and retries delivery.', now: NOW,
       }, async () => semantic);
-      expect(answer.items.map(i => i.id)).toEqual(status === 'active' ? ['recovery'] : []);
+      expect(answer.items).toEqual([]);
       expect(answer.counts).toMatchObject({ sporeHits: 0, sporeCalibrated: 0, planHits: 1, planEligible: status === 'active' ? 1 : 0, planCalibrated: 0 });
-      expect(rows(sqlite)).toHaveLength(status === 'active' ? 1 : 0);
+      expect(rows(sqlite)).toHaveLength(0);
     } finally { sqlite.close(); }
   });
 
@@ -272,11 +272,12 @@ describe('plan selection', () => {
     const modelKey = semantic.provider.modelKey;
     const receipts = sqlite.query("SELECT id, record_id FROM embedding_receipts WHERE type = 'plan' ORDER BY record_id").all() as Array<{ id: string; record_id: string }>;
     const vectors = receipts.map((r, i) => ({
-      id: r.id, values: [similarity - i / 100, ...receipts.map((_, j) => i === j ? Math.sqrt(1 - (similarity - i / 100) ** 2) : 0)],
+      id: r.id, values: [similarity - i / 100, Math.sqrt(1 - (similarity - i / 100) ** 2) * Math.cos(i / 5), Math.sqrt(1 - (similarity - i / 100) ** 2) * Math.sin(i / 5)],
       metadata: { type: 'plan' as const, record_id: r.record_id, revision: '', status: '', session_id: '', created_at: NOW, observation_type: '', release_state: '', release_confidence: '' },
     }));
     const prompt = 'Preserve pending transcript batches while a disconnected member reconnects and retries delivery.';
-    const query = [1, ...receipts.map(() => 0)];
+    const query = [1, 0, 0];
+    expect(cosineSimilarity(vectors[0]!.values, vectors[1]!.values)).toBeGreaterThan(similarity);
     const get = spyOn(semantic.vectors, 'get').mockImplementation(async (partition, ids) => {
       expect(partition).toEqual({ projectId: SCOPE.projectId, modelKey });
       expect(new Set(ids)).toEqual(new Set(receipts.map(r => r.id)));
@@ -285,26 +286,51 @@ describe('plan selection', () => {
     semantic.provider.embed = async () => query;
     const originalQuery = semantic.vectors.query;
     semantic.vectors.query = async (partition, options) => options.filters?.type === 'plan' ?
-      vectors.map(v => ({ id: v.id, score: cosineSimilarity(query, v.values) })) : originalQuery(partition, options);
+      vectors.map(v => ({ id: v.id, score: cosineSimilarity(query, v.values) })) :
+      (await originalQuery(partition, options)).map(h => ({ ...h, score: similarity - 0.1 }));
     try {
       const answer = await selectSporesForPrompt(db, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
         { sessionId: SESSION, promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
-      expect(answer.items.map(i => i.id)).toEqual(['capture', 'receipts']);
+      const expected = similarity === 0.55 ? ['capture'] : ['capture', 'receipts'];
+      expect(answer.items.map(i => i.id)).toEqual(expected);
       expect(answer.context).toContain('Preserve pending transcript batches during member reconnect');
-      expect(answer.counts).toMatchObject({ planEligible: 3, planCalibrated: 5, planScored: 3, planProbable: 3, planRelevant: 2, planHydrated: 2 });
+      expect(answer.counts).toMatchObject({ planEligible: 3, planCalibrated: 5, planScored: 3, planRelevant: expected.length, planHydrated: expected.length });
+      expect(answer.counts.planProbable).toBeGreaterThanOrEqual(expected.length);
       expect(get).toHaveBeenCalledTimes(1);
-      expect(JSON.parse(rows(sqlite)[0]!.plan_ids as string)).toEqual(['capture', 'receipts']);
+      expect(JSON.parse(rows(sqlite)[0]!.plan_ids as string)).toEqual(expected);
       const row = await plans.getPlan(db, SCOPE, 'retry');
       const completed = spyOn(plans, 'getPlan').mockResolvedValue({ ...row!, status: 'completed' });
       try {
         const changed = await selectSporesForPrompt(db, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
           { sessionId: 'changed', promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
-        expect(completed).toHaveBeenCalledTimes(2);
-        expect(changed.counts).toMatchObject({ planRelevant: 2, planHydrated: 0, budgetKept: 0 });
+        expect(completed).toHaveBeenCalledTimes(expected.length);
+        expect(changed.counts).toMatchObject({ planRelevant: expected.length, planHydrated: 0, budgetKept: 0 });
         expect(changed.items).toEqual([]);
         expect(rows(sqlite)).toHaveLength(1);
       } finally { completed.mockRestore(); }
     } finally { get.mockRestore(); sqlite.close(); }
+  });
+
+  it('keeps selected spores when plan-vector statistics fail and records the degradation', async () => {
+    const { db, sqlite } = store();
+    await insertSpore(db, SCOPE, spore('remember', { content: 'Keep pending transcript batches until their delivery receipt arrives' }));
+    for (const key of ['capture', 'billing']) {
+      sqlite.query(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
+        VALUES (?, ?, 'history', ?, 'machine', ?, ?, ?, 'active', ?, ?, 'fixture', ?)`).run(SCOPE.projectId, key, key, key, key, key, NOW, NOW, NOW);
+    }
+    const semantic = await semanticRecall(db, SCOPE)();
+    const receipts = new Map((sqlite.query("SELECT id, record_id FROM embedding_receipts WHERE type = 'plan'").all() as Array<{ id: string; record_id: string }>).map(r => [r.id, r.record_id]));
+    const query = semantic.vectors.query;
+    semantic.vectors.query = async (partition, options) => (await query(partition, options)).map(h =>
+      receipts.has(h.id) ? { ...h, score: receipts.get(h.id) === 'capture' ? 0.85 : 0.1 } : h);
+    semantic.vectors.get = async () => { throw new Error('plan vector service unavailable'); };
+    try {
+      const answer = await selectSporesForPrompt(db, SCOPE, ON, true, { sessionId: SESSION, promptId: 'degraded', promptHash: 'degraded', prompt: PROMPT, now: NOW }, async () => semantic);
+      expect(answer.items.map(i => i.id)).toEqual(['remember', 'capture']);
+      expect(answer.counts).toMatchObject({ sporeRelevant: 1, sporeHydrated: 1, planCalibrationFailed: 1, planCalibrated: 0, planRelevant: 1, budgetKept: 2 });
+      expect(JSON.parse(rows(sqlite)[0]!.spore_ids as string)).toEqual(['remember']);
+      expect(JSON.parse(rows(sqlite)[0]!.plan_ids as string)).toEqual(['capture']);
+    } finally { sqlite.close(); }
   });
 
   it('serves only relevant live plans and records every filtering stage', async () => {

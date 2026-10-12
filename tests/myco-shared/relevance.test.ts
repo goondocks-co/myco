@@ -16,18 +16,32 @@ describe('prompt relevance', () => {
     ]);
   });
 
-  it('ranks new live plans relative to their own prompt similarities, including a single plan', () => {
+  it('requires independent prompt-side evidence for uncalibrated plans', () => {
     for (const [offset, scale] of [[0, 1], [0.4, 0.5], [-0.5, 0.2]]) {
       const candidates = [{ id: 'capture', similarity: offset! + scale! * 0.53 }, { id: 'billing', similarity: offset! + scale! * 0.3 }];
       expect(selectRelevantPlans(candidates, { maxResults: 2 }).map(c => c.id)).toEqual(['capture']);
-      expect(selectRelevantPlans(candidates.slice(0, 1), { maxResults: 2 }).map(c => c.id)).toEqual(['capture']);
+      expect(selectRelevantPlans(candidates.slice(0, 1), { maxResults: 2 })).toEqual([]);
+    }
+    for (const similarity of [-0.39, -0.9]) {
+      const lone = { id: 'unrelated', similarity };
+      expect(selectRelevantPlans([lone], { maxResults: 2 })).toEqual([]);
+      expect(selectRelevantPlans([lone], { maxResults: 2, queryCandidates: [lone, ...background()] })).toEqual([]);
     }
   });
 
   it('admits a live transcript plan against its own model baseline and rejects an ordinary match', () => {
-    const candidate = { id: 'preserve-pending-transcript-batches', similarity: 0.53, neighborMean: 0.65, neighborStd: 0.06 };
-    expect(selectRelevantPlans([candidate], { maxResults: 2 }).map(c => c.id)).toEqual([candidate.id]);
-    expect(selectRelevantPlans([{ ...candidate, similarity: 0.2 }], { maxResults: 2 })).toEqual([]);
+    const candidate = { id: 'preserve-pending-transcript-batches', similarity: 0.53, neighborMean: 0.3, neighborStd: 0.06 };
+    const queryCandidates = Array.from({ length: 30 }, (_, i) => ({ id: 'other-' + i, similarity: 0.4 + i / 1000 }));
+    expect(selectRelevantPlans([candidate], { maxResults: 2, queryCandidates }).map(c => c.id)).toEqual([candidate.id]);
+    expect(selectRelevantPlans([{ ...candidate, similarity: 0.2 }], { maxResults: 2, queryCandidates })).toEqual([]);
+  });
+
+  it('separates weaker plans after the probability floor', () => {
+    let counts: unknown;
+    const candidates = [{ id: 'strong', similarity: 0.9 }, { id: 'weak', similarity: 0.5 }];
+    const queryCandidates = [{ id: 'far', similarity: -0.2 }, { id: 'near', similarity: 0.6 }];
+    expect(selectRelevantPlans(candidates, { maxResults: 2, queryCandidates, observe: n => { counts = n; } }).map(c => c.id)).toEqual(['strong']);
+    expect(counts).toEqual({ calibrated: 0, scored: 2, probable: 2, separated: 1 });
   });
 
   it('withholds an uncalibrated pool and uses two-sided corpus evidence for new spores', () => {

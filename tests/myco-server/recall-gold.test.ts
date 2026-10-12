@@ -17,11 +17,19 @@ import { compareToBaseline, describeComparison, scoreCase, summarize, withTarget
 import { caseCount, recallBaseline, recallQuality } from '@myco-server-worker/evals/recall-baseline.js';
 import { RECALL_BASELINE_FILE, readRecallBaseline, renderRecallBaseline } from '../parity/recall/baseline-file.ts';
 import { readFileSync } from 'node:fs';
+import { distributionStats, selectRelevantPlans } from '../../packages/myco-shared/src/relevance.ts';
+import { cosineSimilarity } from '@myco-server-worker/core/embedding/vectors.js';
 
 const positive: GoldCase = { id: 'p', kind: 'positive', prompt: 'p', expected: ['a', 'b'], mustNot: ['x'] };
 const negative: GoldCase = { id: 'n', kind: 'negative', prompt: 'n', expected: [], mustNot: [] };
 
 describe('scoring one case', () => {
+  it('credits expected plans and penalizes unexpected plans', () => {
+    const planCase = { ...positive, expectedPlans: ['live'] };
+    expect(scoreCase(planCase, { spores: ['a', 'b'], plans: ['live'] })).toMatchObject({ pass: true, graded: 1, unwanted: [] });
+    expect(scoreCase(planCase, { spores: ['a', 'b'], plans: ['live', 'other'] })).toMatchObject({ pass: true, graded: 0.75, unwanted: ['other'] });
+    expect(scoreCase(planCase, { spores: ['a', 'b'], plans: [] })).toMatchObject({ pass: false, expectedServed: ['a', 'b'] });
+  });
   it('passes a positive serving every expected spore and no must-not, and grades recall times precision over the whole block', () => {
     expect(scoreCase(positive, { spores: ['a', 'b'], plans: [] })).toEqual({ pass: true, graded: 1, expectedServed: ['a', 'b'], unwanted: [] });
     // A plan is a served item nobody expected: it costs precision and counts as unwanted, but only a must-not fails the pass.
@@ -112,12 +120,35 @@ describe('the recall fixture', () => {
   const { gold, corpus, index, lookup } = loadRecallFixture();
   const spores = new Set(corpus.spores.map((s) => s.id));
 
+  it('serves the delivery-reset plan for real rp-43 vectors despite tighter plan-to-plan geometry', () => {
+    const { data } = loadRecallFixture();
+    const floats = new Float32Array(data);
+    const vectors = new Map(index.rows.map(r => [r.id, Array.from(floats.slice(r.row * index.dims, (r.row + 1) * index.dims))]));
+    const query = vectors.get('rp-43')!;
+    const plans = corpus.plans.map(p => {
+      const stats = distributionStats(corpus.plans.filter(other => other.planKey !== p.planKey)
+        .map(other => 1 - cosineSimilarity(vectors.get(p.planKey)!, vectors.get(other.planKey)!)));
+      return { id: p.planKey, similarity: cosineSimilarity(query, vectors.get(p.planKey)!), neighborMean: stats.mean, neighborStd: stats.std,
+        alreadyInjected: p.status !== 'active' && p.status !== 'in_progress' };
+    });
+    const spores = corpus.spores.map(s => ({ id: s.id, similarity: cosineSimilarity(query, vectors.get(s.id)!) }))
+      .sort((a, b) => b.similarity - a.similarity).slice(0, 100);
+    const expected = 'a3b1e332-96a2-56e0-9afa-01876916c3a3';
+    const plan = plans.find(p => p.id === expected)!;
+    expect(1 - plan.neighborMean).toBeGreaterThan(plan.similarity);
+    const selected = selectRelevantPlans(plans, { maxResults: 2, referenceCandidates: plans, queryCandidates: [...spores, ...plans] });
+    expect(selected.map(p => p.id)).toEqual([expected]);
+    expect(selected[0]!.mp).toBeGreaterThan(0.75);
+    expect(selected[0]!.mp).toBeLessThan(0.9);
+  });
+
   it('holds the reviewed cases, every expected and must-not id a spore of the corpus', () => {
     expect(gold.cases.length).toBe(48);
     expect(gold.maxPerPrompt).toBe(INJECTION_TARGET_ITEMS);
     for (const c of gold.cases) {
       const unknown = [...c.expected, ...c.mustNot].filter((id) => !spores.has(id));
       expect({ id: c.id, unknown }).toEqual({ id: c.id, unknown: [] });
+      expect((c.expectedPlans ?? []).every(id => corpus.plans.some(p => p.planKey === id && (p.status === 'active' || p.status === 'in_progress')))).toBe(true);
       if (c.kind === 'negative') expect({ id: c.id, expected: c.expected, mustNot: c.mustNot }).toEqual({ id: c.id, expected: [], mustNot: [] });
       else expect({ id: c.id, hasExpected: c.expected.length > 0 }).toEqual({ id: c.id, hasExpected: true });
     }

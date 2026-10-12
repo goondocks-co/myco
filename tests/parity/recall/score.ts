@@ -5,16 +5,15 @@
  * block is scored whole — spores and plans — because the whole block is what
  * an agent reads.
  *
- * - A **positive** case passes when every expected spore is served and no
- *   must-not spore is. Its graded score is the share of expected spores served
- *   times the share of served items that were expected (plans count as served
- *   items; none is ever expected).
+ * - A **positive** case passes when every expected spore and plan is served and
+ *   no must-not spore is. Its graded score is the share of expected items served
+ *   times the share of served items that were expected.
  * - A **negative** case passes, and scores 1, only when nothing is injected.
  *
  * The release gate is a per-case ratchet against the baseline recorded for
- * the same target. A case regresses when it stops serving an expected spore it
+ * the same target. A case regresses when it stops serving an expected item it
  * served at the baseline, when it starts serving a must-not spore it did not,
- * when it serves more plans than it did (a negative, also more spores), or
+ * when it serves more unexpected plans than it did (a negative, also more spores), or
  * when its graded score falls (an extra spore nobody listed still
  * dilutes the block). Any other change leaves the baseline describing a release
  * that no longer exists, so it fails too and asks for the baseline to be
@@ -27,6 +26,7 @@ export interface GoldCase {
   kind: 'positive' | 'negative';
   prompt: string;
   expected: string[];
+  expectedPlans?: string[];
   mustNot: string[];
 }
 
@@ -47,11 +47,13 @@ export function scoreCase(gold: GoldCase, served: Served): CaseScore {
   if (gold.kind === 'negative') {
     return { pass: total === 0, graded: total === 0 ? 1 : 0, expectedServed: [], unwanted: [...served.spores, ...served.plans] };
   }
-  const expectedServed = gold.expected.filter((id) => served.spores.includes(id));
-  const unwanted = [...served.spores.filter((id) => gold.mustNot.includes(id)), ...served.plans];
-  const recall = gold.expected.length === 0 ? 0 : expectedServed.length / gold.expected.length;
+  const expectedPlans = gold.expectedPlans ?? [];
+  const expectedServed = [...gold.expected.filter((id) => served.spores.includes(id)), ...expectedPlans.filter((id) => served.plans.includes(id))];
+  const unwanted = [...served.spores.filter((id) => gold.mustNot.includes(id)), ...served.plans.filter((id) => !expectedPlans.includes(id))];
+  const expectedCount = gold.expected.length + expectedPlans.length;
+  const recall = expectedCount === 0 ? 0 : expectedServed.length / expectedCount;
   const precision = total === 0 ? 0 : expectedServed.length / total;
-  const pass = expectedServed.length === gold.expected.length && !served.spores.some((id) => gold.mustNot.includes(id));
+  const pass = expectedServed.length === expectedCount && !served.spores.some((id) => gold.mustNot.includes(id));
   return { pass, graded: recall * precision, expectedServed, unwanted };
 }
 
@@ -131,7 +133,7 @@ export function compareToBaseline(gold: readonly GoldCase[], current: Record<str
     const before = scoreCase(g, then);
     const after = scoreCase(g, now);
     const lost = before.expectedServed.filter((id) => !after.expectedServed.includes(id));
-    // A must-not is named, so gaining one is judged by identity. Plans, and on a negative its spores, are unwanted
+    // A must-not is named, so gaining one is judged by identity. Unexpected plans, and on a negative its spores, are unwanted
     // without being named: one swapped for another is the same failure, so only more of them is worse. The two are
     // counted apart, so spores taking the places plans held on a negative still reads as worse.
     const named = (served: Served) => served.spores.filter((id) => g.mustNot.includes(id));
@@ -143,7 +145,8 @@ export function compareToBaseline(gold: readonly GoldCase[], current: Record<str
     if (g.kind === 'negative' && now.spores.length > then.spores.length) {
       worse.push(`now serves ${plural(now.spores.length, 'spore')} (was ${then.spores.length})`);
     }
-    if (now.plans.length > then.plans.length) worse.push(`now serves ${plural(now.plans.length, 'plan')} (was ${then.plans.length})`);
+    const unexpectedPlans = (s: Served) => s.plans.filter(id => !(g.expectedPlans ?? []).includes(id)).length;
+    if (unexpectedPlans(now) > unexpectedPlans(then)) worse.push(`now serves ${plural(unexpectedPlans(now), 'plan')} (was ${unexpectedPlans(then)})`);
     if (round(after.graded) < round(before.graded)) worse.push(`graded score fell ${figure(before.graded)} → ${figure(after.graded)}`);
     if (worse.length > 0) regressions.push(`${g.id}: ${worse.join('; ')}`);
     else if (round(after.graded) > round(before.graded) || (after.pass && !before.pass)) {
