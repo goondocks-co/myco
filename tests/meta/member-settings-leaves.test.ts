@@ -10,7 +10,7 @@
  *      alike, and none but theirs comes to `/members/settings`.
  *   2. No module in the member's import closure, the two readers aside, names a Deployment leaf, retired or not: a
  *      module that named one could apply it. The Deployment's own modules in the closure read their leaves as the
- *      Deployment, and two 1.4 modules name the 1.4 keys a leaf shares a name with (`COINCIDENT`).
+ *      Deployment, and a member module names a log kind a leaf shares a name with (`COINCIDENT`).
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -30,8 +30,6 @@ const ENTRIES = ['cli/member-dispatch.ts', 'cli/member-reads.ts', 'cli/login.ts'
 const COINCIDENT: Readonly<Record<string, readonly string[]>> = {
   // A log kind, the name of an event the member's log records.
   'packages/myco/src/constants/log-kinds.ts': ['embedding.provider'],
-  // The 1.4 configuration's tiers, read from the 1.4 config files and never from a Deployment answer.
-  'packages/myco/src/config/scope.ts': ['agent.event_tasks_enabled', 'agent.run_retention_days', 'agent.scheduled_tasks_enabled', 'agent.semantic_write_check_enabled', 'release_provenance.reconcile_interval_minutes'],
 };
 
 const parse = (file: string): ts.SourceFile => ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);

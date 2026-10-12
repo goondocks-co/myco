@@ -229,7 +229,7 @@ async function removeManagedInstallDir(mycoHome: string): Promise<boolean> {
     // The running binary locks its own image — finish after this process exits.
     try {
       const { resolveOrchestratorBinary } = await import('../upgrade/spawn.js');
-      const { spawnDetached } = await import('../upgrade/orchestrator.js');
+      const { spawnDetached } = await import('../upgrade/spawn.js');
       spawnDetached(resolveOrchestratorBinary(), ['__finish-uninstall', installRoot]);
       console.log(`  ✓ Scheduled removal of ${installRoot} after exit`);
       return true;

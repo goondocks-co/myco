@@ -1,34 +1,11 @@
 import fs from 'node:fs';
 import { StreamableHTTPClientTransport, type Client } from '@modelcontextprotocol/client';
-import { buildBridgeRequestHeaders } from '@myco/mcp/stdio-bridge.js';
+import { credentialRequiredError } from '@myco/mcp/credential-refusal.js';
 import { declaredCredentialSource, deploymentTransport, resolveDeploymentUpstream, withoutCredentialFlag } from '@myco/mcp/deployment-upstream.js';
 import { extractStructuredResult, withMcpClient as withTransportClient, type ToolCallError, type ToolCallOutcome } from '@myco/mcp/client-call.js';
 import { CREDENTIAL_FLAG, type CredentialSource } from '@myco/member/constants.js';
 
-/**
- * `myco tool list` / `myco tool call` — decision-14e572a3: the CLI is a thin
- * MCP client of the LOCAL daemon's `/mcp`, always. It never opens the vault
- * or dispatches tools in-process (that path — `createMycoTools` called
- * directly from this file — silently read the wrong data for an attached
- * project, since the local vault has no knowledge of a host-served Grove;
- * the daemon's `/mcp` handler is the one place that already knows how to
- * route an attached project's calls to its host, `mcp/http.ts`'s
- * `classifyRoute` chokepoint).
- *
- * Transport choice: the standard MCP SDK client (`StreamableHTTPClientTransport`
- * + `Client`) against a fresh connection per invocation — `mcp/http.ts` already
- * builds a stateless `StreamableHTTPServerTransport` per POST, so no hand-rolled
- * JSON-RPC is needed. The one gap the plain SDK client left was fidelity: the
- * standard `content: [{type:'text', ...}]` tool-call reply is intentionally
- * lossy for human/agent consumption (e.g. `myco_cortex` digest returns only the
- * digest text, not `{content, tier, fallback}`), and a thrown `ToolError`'s
- * string `code` doesn't survive the SDK's generic JSON-RPC error mapping.
- * Both gaps are closed with small ADDITIVE changes to the existing `/mcp`
- * surface instead of a bespoke fallback route: `mcp/server.ts` now also sets
- * the spec-legal `structuredContent: { result }` on every successful call
- * (ignored by clients that don't look for it), and `ToolError` now sets a
- * `.data` field the SDK's error-response builder already knows to forward.
- */
+/** CLI client of the member's Deployment MCP surface. */
 
 type ToolCliError = ToolCallError;
 
@@ -44,11 +21,7 @@ interface ParsedCallArgs {
   input?: string;
 }
 
-const DAEMON_UNAVAILABLE_MESSAGE =
-  'The Myco daemon is not running and could not be started automatically. '
-  + 'Run `myco doctor` to diagnose, or `myco service start` to start it, then try again.';
-
-export async function run(args: string[], vaultDir: string): Promise<void> {
+export async function run(args: string[], _vaultDir: string): Promise<void> {
   let source: CredentialSource | null;
   try {
     source = declaredCredentialSource(args);
@@ -57,11 +30,16 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  if (source === null) {
+    await writeEnvelope({ ok: false, error: credentialRequiredError() });
+    process.exitCode = 1;
+    return;
+  }
   const [subcommand, ...rest] = withoutCredentialFlag(args);
   const json = rest.includes('--json');
 
   if (subcommand === 'list') {
-    const listed = await withMcpClient(vaultDir, source, (client) => client.listTools());
+    const listed = await withMcpClient(source, (client) => client.listTools());
     if (!listed.ok) {
       await writeEnvelope({ ok: false, error: listed.error });
       process.exitCode = 1;
@@ -100,18 +78,9 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    // Parity with the shared dispatcher's `normalizeInput` (tools/index.ts):
-    // `--input null` has always meant "no arguments" ({}), exactly like an
-    // omitted --input. Only a non-null non-object (string, number, array)
-    // is invalid.
+    // Null input is an empty argument object.
     if (input === null) input = {};
-    // The wire contract (both the MCP `arguments` record schema and the
-    // shared dispatcher's own `normalizeInput`) requires a JSON object.
-    // Checked here — rather than round-tripped to the daemon — because the
-    // MCP SDK client validates outgoing `arguments` against a strict
-    // `record` schema; sending a non-object would fail as a generic
-    // transport/schema error, losing the specific `invalid_input` code the
-    // in-process dispatcher produced for the same input.
+    // MCP arguments must be an object.
     if (typeof input !== 'object' || Array.isArray(input)) {
       await writeEnvelope({
         ok: false,
@@ -122,7 +91,7 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
       return;
     }
 
-    const called = await withMcpClient(vaultDir, source, (client) =>
+    const called = await withMcpClient(source, (client) =>
       client.callTool({ name: tool, arguments: input as Record<string, unknown> }));
     if (!called.ok) {
       await writeEnvelope({ ok: false, tool, error: called.error });
@@ -138,38 +107,18 @@ export async function run(args: string[], vaultDir: string): Promise<void> {
   process.exitCode = 1;
 }
 
-/**
- * The transport for this invocation: the Deployment when a credential source
- * is declared, the local daemon otherwise. The daemon is `ensureRunning()`
- * first (spawned or recovered like every other daemon-backed CLI path), and a
- * daemon that still does not answer is a clear error rather than a hung
- * connection attempt.
- */
-async function transportFor(vaultDir: string, source: CredentialSource | null): Promise<{ ok: true; transport: StreamableHTTPClientTransport } | { ok: false; error: ToolCliError }> {
-  if (source !== null) {
-    const upstream = resolveDeploymentUpstream(source, { cwd: process.cwd(), env: process.env, invokedBy: 'tool' });
-    if (!upstream) return { ok: false, error: { code: 'credential_unavailable', message: `No member credential resolves for ${CREDENTIAL_FLAG} ${source}; the reason is on stderr.` } };
-    return { ok: true, transport: deploymentTransport(upstream) };
-  }
-  // The 1.4 daemon's client loads only on the path that talks to it, never for a credential's Deployment.
-  const { DaemonClient } = await import('@myco/daemon/client.js');
-  const daemonClient = new DaemonClient(vaultDir);
-  const refusal = daemonClient.memberHomeRefusal();
-  if (refusal !== null) return { ok: false, error: { code: 'member_home', message: refusal } };
-  const ready = await daemonClient.ensureRunning();
-  const info = daemonClient.getInfo();
-  if (!ready || !info) return { ok: false, error: { code: 'daemon_unavailable', message: DAEMON_UNAVAILABLE_MESSAGE } };
-  const headers = buildBridgeRequestHeaders(vaultDir, process.env, info.auth_token);
-  return { ok: true, transport: new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${info.port}/mcp`), { requestInit: { headers } }) };
+async function transportFor(source: CredentialSource): Promise<{ ok: true; transport: StreamableHTTPClientTransport } | { ok: false; error: ToolCliError }> {
+  const upstream = resolveDeploymentUpstream(source, { cwd: process.cwd(), env: process.env, invokedBy: 'tool' });
+  if (!upstream) return { ok: false, error: { code: 'credential_unavailable', message: `No member credential resolves for ${CREDENTIAL_FLAG} ${source}; the reason is on stderr.` } };
+  return { ok: true, transport: deploymentTransport(upstream) };
 }
 
 /** Run `fn` against a fresh client over this invocation's transport, and close. */
 async function withMcpClient<T>(
-  vaultDir: string,
-  source: CredentialSource | null,
+  source: CredentialSource,
   fn: (client: Client) => Promise<T>,
 ): Promise<ToolCallOutcome<T>> {
-  const resolved = await transportFor(vaultDir, source);
+  const resolved = await transportFor(source);
   if (!resolved.ok) return resolved;
   return withTransportClient(resolved.transport, fn);
 }

@@ -1023,7 +1023,7 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
   const mycoHome = homeFor(deps);
   const { root, all, entries, heldDestinations, ...registry } = registrySelection(args, deps);
   const { records: missedCapture, ...missedCaptureStore } = missedCaptureSelection(root, all, deps);
-  const { checkBinaryVersionSkew, checkRuntimePin, checkMemberMcpResolution } = await import('./doctor.js');
+  const { checkBinaryVersionSkew, checkRuntimePin, checkMemberMcpResolution } = await import('./doctor-member.js');
   const checkRoots = [...new Set(all ? entries.map((entry) => entry.root).filter((root) => root.length > 0) : root === null ? [] : [root])];
   const toFacts = (check: DoctorCheck, checkRoot: string | null = null) => ({
     name: check.name, status: check.status, reason: check.reason ?? null, symbiont: check.symbiont ?? null,

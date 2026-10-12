@@ -28,6 +28,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import semver from 'semver';
+import { ADOPT_FAILED_MARKER } from './adopt-failed.js';
+export { markAdoptFailed } from './adopt-failed.js';
 
 import {
   resolveMycoBinaryUpdateRefs,
@@ -245,39 +247,6 @@ export async function checkAndStage(
     versionDir: result.versionDir,
   });
   return { status: 'staged', version: result.version };
-}
-
-// ---------------------------------------------------------------------------
-// Failed-adopt marker
-// ---------------------------------------------------------------------------
-
-/**
- * Marker file written into a versioned slot when an adopt of that version
- * FAILED (the daemon came back on a different version). `resolveNewestStagedVersion`
- * skips marked versions so a known-bad release is not re-adopted on every idle
- * tick — without it the loop is only bounded by the ~10-min sentinel stale sweep.
- */
-const ADOPT_FAILED_MARKER = '.adopt-failed';
-
-/**
- * Record that adopting `version` failed by writing the marker into its versioned
- * slot. Best-effort and never throws — a missing marker only costs one extra
- * (bounded) retry. Called from the daemon startup path when the running version
- * does not match the sentinel's target (see daemon/main.ts).
- */
-export function markAdoptFailed(
-  home: string,
-  platform: NodeJS.Platform,
-  version: string,
-  localAppData?: string,
-): void {
-  try {
-    const dir = versionDir(home, platform, version, localAppData);
-    if (!fs.existsSync(dir)) return;
-    fs.writeFileSync(path.join(dir, ADOPT_FAILED_MARKER), `${new Date().toISOString()}\n`);
-  } catch {
-    /* best effort */
-  }
 }
 
 // ---------------------------------------------------------------------------

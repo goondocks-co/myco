@@ -4,7 +4,10 @@
  * reaches vault, Grove database or daemon code;
  * `tests/meta/member-read-boundary.test.ts` holds its import closure.
  */
+import fs from 'node:fs';
 import path from 'node:path';
+import { findCorePackageRoot } from '@myco/utils/find-package-root.js';
+import { getPluginVersion } from '@myco/version.js';
 import { fileURLToPath } from 'node:url';
 
 /** Column width for the check name in output. */
@@ -254,4 +257,106 @@ export function formatCheck(check: DoctorCheck): string {
   const { text, color } = STATUS_LABELS[check.status];
   const paddedText = text.padEnd(Math.max(STATUS_COL_WIDTH, text.length + 1));
   return `  ${name}${color}${paddedText}\x1b[0m${check.detail}`;
+}
+
+/** Compare the running binary version with its installed package manifest. */
+export function checkBinaryVersionSkew(): DoctorCheck {
+  const baked = getPluginVersion();
+  // Walk up from the binary to @goondocks/myco core — that's the manifest
+  // npm install actually shipped. (Source checkouts find packages/myco/.)
+  const argv0 = process.argv[0];
+  const installedRoot = argv0 ? findCorePackageRoot(path.dirname(argv0)) : null;
+  if (!installedRoot) {
+    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not find installed package.json to compare`, reason: 'binary_manifest_missing', fixable: false };
+  }
+  let installedVersion = '';
+  try {
+    installedVersion = (JSON.parse(fs.readFileSync(path.join(installedRoot, 'package.json'), 'utf-8')) as { version?: string }).version ?? '';
+  } catch (err) {
+    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not read installed package.json: ${(err as Error).message}`, reason: 'binary_manifest_unreadable', fixable: false };
+  }
+  if (!installedVersion) {
+    return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; installed package.json has no version`, reason: 'binary_manifest_unversioned', fixable: false };
+  }
+  if (installedVersion !== baked) {
+    return {
+      name: 'Binary version',
+      status: 'fail',
+      detail: `installed package.json says ${installedVersion} but binary --version reports ${baked} (npm upgrade refreshed JS but not the compiled binary; reinstall with \`npm install -g @goondocks/myco@${installedVersion}\` to fix)`,
+      reason: 'binary_version_skew',
+      fixable: false,
+    };
+  }
+  return { name: 'Binary version', status: 'ok', detail: baked, reason: 'binary_version_current', fixable: false };
+}
+
+/**
+ * Machine runtime pin health.
+ *
+ * The pin is an operator override that wins over every other resolution
+ * source; its absence is the normal state and emits no row. A pin naming the
+ * managed binary is redundant and removable; a pin whose target is gone
+ * breaks every consumer, with no fallback behind it.
+ *
+ * Pure classifier; {@link checkRuntimePin} injects the live values.
+ */
+export function classifyRuntimePin(args: {
+  facts: import('../runtime/binary-resolution.js').ResolutionFacts;
+  /** Whether the pin's target is present on disk. */
+  pinTargetExists: boolean;
+}): DoctorCheck | null {
+  const { facts, pinTargetExists } = args;
+  if (!facts.pin || !facts.pinPath) {
+    if (facts.pinRefusal) {
+      return {
+        name: 'Runtime pin',
+        status: 'fail',
+        detail: `${facts.pinRefusal.pinPath} exists but is refused (${facts.pinRefusal.reason}) — `
+          + 'every consumer ignores it. Fix its ownership/permissions (0644) or remove it.',
+        reason: 'runtime_pin_refused',
+        fixable: false,
+      };
+    }
+    return null;
+  }
+
+  if (facts.pin === facts.managedBinary) {
+    return {
+      name: 'Runtime pin',
+      status: 'warn',
+      detail: `${facts.pinPath} names the managed binary — redundant (resolution reaches it `
+        + 'without the pin) and it suppresses PATH diagnostics. Remove it.',
+      reason: 'runtime_pin_redundant',
+      fixable: true,
+      fixId: 'runtime-pin-redundant',
+      fixData: { pinPath: facts.pinPath, managedBinary: facts.managedBinary },
+    };
+  }
+
+  if (!pinTargetExists) {
+    return {
+      name: 'Runtime pin',
+      status: 'fail',
+      detail: `points at ${facts.pin}, which does not exist — the pin wins over every fallback, `
+        + 'so repoint it or remove it.',
+      reason: 'runtime_pin_target_absent',
+      fixable: false,
+    };
+  }
+
+  return { name: 'Runtime pin', status: 'ok', detail: `${facts.pin} (override)`, reason: 'runtime_pin_override', fixable: false };
+}
+
+/** {@link classifyRuntimePin} bound to the live install layout. */
+export async function checkRuntimePin(): Promise<DoctorCheck | null> {
+  try {
+    const { gatherFacts } = await import('../runtime/binary-resolution.js');
+    const facts = gatherFacts({ kind: 'machine' });
+    return classifyRuntimePin({
+      facts,
+      pinTargetExists: facts.pin !== null && fs.existsSync(facts.pin),
+    });
+  } catch {
+    return null;
+  }
 }

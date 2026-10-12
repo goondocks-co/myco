@@ -18,9 +18,10 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  cliVerbModules, closureOf, entryFiles, filesUnder, moduleKey, REPO_ROOT, withoutShebang, type Closure,
+  filesUnder, moduleKey, REPO_ROOT, pathToEntry, type Closure,
 } from '../helpers/import-closure.ts';
 
+import { walk } from '../helpers/2-0-closure.ts';
 import { LEGACY_DIRS, LEGACY_FILES, isLegacy } from '../helpers/legacy-boundary.ts';
 
 const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
@@ -30,34 +31,18 @@ const MYCO = 'packages/myco/src/';
 const isLegacyVerb = (key: string): boolean => key.startsWith(`${MYCO}cli/`) && LEGACY_FILES.includes(key.slice(MYCO.length));
 
 /**
- * The 2.0 entry points under `packages/myco/src` (`/**` = every file under), walked with every import they make, beside
- * the CLI itself and every verb module it dispatches to that is not a 1.4 verb (`cliVerbModules`).
- */
-const ENTRIES: readonly string[] = [
-  'cli.ts', 'entries/**', 'hooks/**', 'member/**', 'runner/**', 'server/**',
-  'mcp/stdio-bridge.ts', 'mcp/deployment-upstream.ts', 'mcp/client-call.ts',
-];
-
-/**
  * Every edge from 2.0 code into the 1.4 tree, `importer -> imported` (paths under `packages/myco/src`), with the #1170
  * phase that removes it. An edge from `cli.ts` to a 1.4 verb module is the verb's dispatch and is allowed by rule.
  */
 const ALLOWED_EDGES: Readonly<Record<string, string>> = {
   'cli.ts -> backup/pre-migration-checkpoint.ts': '#1170 P4: the pre-migration checkpoint leaves the 2.0 verbs',
-  'cli.ts -> daemon/main.ts': '#1170 P8: the daemon verb becomes the legacy adopt guard',
   'cli.ts -> grove/paths.ts': '#1170 P4: the pre-migration checkpoint leaves the 2.0 verbs',
-  'cli.ts -> upgrade/orchestrator.ts': '#1170 P6a: one myco update replaces the 1.4 orchestrator',
   'cli.ts -> vault/resolve.ts': '#1170 P3: vault/resolve moves into project-root.ts',
   'cli/cutover.ts -> grove/subsystem-claim.ts': '#1170 P8: cutover is deleted',
   'cli/cutover.ts -> service/home-daemon.ts': '#1170 P8: cutover is deleted',
   'cli/cutover.ts -> service/legacy-units.ts': '#1170 P8: cutover is deleted',
-  'cli/member.ts -> cli/doctor.ts': "#1170 P4: member export's checks move into doctor-member",
-  'cli/tool.ts -> daemon/client.ts': '#1170 P4: the daemon upstream is deleted',
   'cli/worker-service.ts -> grove/paths.ts': '#1170 P3: the 2.0 path helpers move to paths/',
   'cli/worker-service.ts -> service/spec-builder.ts': '#1170 P3: the service spec builder moves beside server/service.ts',
-  'mcp/stdio-bridge.ts -> daemon/client.ts': '#1170 P4: the daemon upstream is deleted',
-  'mcp/stdio-bridge.ts -> grove/request-context.ts': '#1170 P4: the daemon upstream is deleted',
-  'mcp/stdio-bridge.ts -> vault/resolve.ts': '#1170 P3: vault/resolve moves into project-root.ts',
   'member/spool.ts -> capture/buffer.ts': '#1170 P3: the capture leaves move to member/',
   'member/transcript.ts -> capture/prompt-kind.ts': '#1170 P3: the capture leaves move to member/',
   'member/transcript.ts -> capture/session-continuation.ts': '#1170 P3: the capture leaves move to member/',
@@ -75,7 +60,6 @@ const UNREACHED_2_0: Readonly<Record<string, string>> = {
   'symbionts/templates/cline/plugin.ts': 'a member plugin, embedded as text by `symbionts/templates.generated.ts`',
   'symbionts/templates/opencode/plugin.ts': 'a member plugin, embedded as text by `symbionts/templates.generated.ts`',
   'symbionts/templates/pi/plugin.ts': 'a member plugin, embedded as text by `symbionts/templates.generated.ts`',
-  'upgrade/release-resolver.ts': "reached only through the 1.4 upgrade verb until #1170 P6a's myco update reads it",
 };
 
 /**
@@ -95,21 +79,6 @@ const ALLOWED_TEXT_REACH: Readonly<Record<string, string>> = {
 };
 
 const short = (key: string): string => (key.startsWith(MYCO) ? key.slice(MYCO.length) : key);
-
-/** A per-target entry with its embedded-file imports (`with { type: 'file' }`) taken out: those embed bytes, not code. */
-const withoutEmbeds = (_file: string, text: string): string =>
-  text.replace(/^import\s+\w+\s+from\s+['"][^'"]+['"]\s+with\s*\{\s*type:\s*['"]file['"]\s*\};?\s*$/gm, '');
-
-/** The whole 2.0 closure, stopped at the 1.4 boundary: the CLI and every verb it dispatches, the other entry points, and the Deployment. */
-function walk(): { myco: Closure; server: Closure } {
-  const entries = [
-    ...entryFiles(SRC, ENTRIES),
-    ...cliVerbModules(SRC, (file) => isLegacy(moduleKey(file))),
-  ];
-  const myco = closureOf(entries, { stopAt: isLegacy, source: (file, text) => withoutEmbeds(file, withoutShebang(file, text)) });
-  const server = closureOf(entryFiles(path.join(REPO_ROOT, 'packages', 'myco-server'), ['src/**']), { stopAt: isLegacy });
-  return { myco, server };
-}
 
 /** Every edge a closure crossed from code outside the 1.4 tree into it, but the CLI's dispatch to a 1.4 verb. */
 function crossings(closure: Closure): string[] {
@@ -196,3 +165,21 @@ describe('the 2.0 code', () => {
     }
   });
 });
+
+const forbiddenRuntime = (key: string): boolean => key.startsWith(`${MYCO}daemon/`)
+  || key.startsWith(`${MYCO}db/`) || key === `${MYCO}grove/request-context.ts`;
+
+it('the 2.0 closure contains no daemon, database or Grove request-context module', () => {
+  const { myco, server } = walk();
+  for (const closure of [myco, server]) {
+    expect([...closure.modules.keys()].filter(forbiddenRuntime).map(key => pathToEntry(closure, key))).toEqual([]);
+  }
+}, 120_000);
+
+it('rejects restored runtime imports at the 1.4 boundary', () => {
+  for (const target of ['daemon/client.ts', 'db/schema.ts', 'grove/request-context.ts']) {
+    const { myco } = walk((file, text) => file.endsWith('/mcp/stdio-bridge.ts')
+      ? `import '@myco/${target}';\n${text}` : text);
+    expect([...myco.modules.keys()].filter(forbiddenRuntime)).toContain(`${MYCO}${target}`);
+  }
+}, 120_000);

@@ -40,7 +40,8 @@ function commandSurfaces(): Map<string, CommandSurface> {
   for (const command of names) {
     const delegated = CLI.match(new RegExp(`^  ${command}: async.*import\\('\\./([a-z/-]+)\\.js'\\)\\)\\.([A-Z_]+)`, 'm'));
     const dispatched = CLI.match(new RegExp(`case '${command}': return \\(await import\\('\\./([a-z/-]+)\\.js'\\)\\)`));
-    const relative = delegated?.[1] ?? dispatched?.[1];
+    const guarded = CLI.match(new RegExp(`if \\(cmd === '${command}'\\) \\{\\s*return \\(await import\\('\\./([a-z/-]+)\\.js'\\)\\)`));
+    const relative = delegated?.[1] ?? dispatched?.[1] ?? guarded?.[1];
     const source = relative ? readSource(`${relative}.ts`) : '';
     const help = command === 'doctor' || !delegated
       ? entries.get(command) ?? ''

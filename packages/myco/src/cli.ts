@@ -196,9 +196,6 @@ async function main(): Promise<void> {
   // Internal: spawned by the daemon to run a heavy restore out-of-process
   // (see backup/restore-runner.ts). Intentionally absent from the help text.
   if (cmd === '__restore-backup') return (await import('./cli/restore-backup.js')).run(args);
-  // Internal: spawned detached by the daemon to run the cross-platform update/
-  // restart orchestration after the daemon exits (see upgrade/orchestrator.ts).
-  if (cmd === '__apply-update') return (await import('./upgrade/orchestrator.js')).run(args);
   // Internal: spawned detached (from a temp-copy binary) by `myco remove --purge`
   // to delete the managed install dir once this process releases its exe lock.
   if (cmd === '__finish-uninstall') return (await import('./cli/finish-uninstall.js')).run(args);
@@ -214,7 +211,7 @@ async function main(): Promise<void> {
   }
   // One hook path for compiled binaries and source runs alike: `hooks/entry.ts`.
   if (cmd === 'hook') return (await import('./hooks/entry.js')).runHook(args);
-  if (cmd === 'daemon') return (await import('./daemon/main.js')).main();
+  if (cmd === 'daemon') return (await import('./cli/daemon-guard.js')).main();
   // Supervisor lifecycle — manages the platform service + daemon binary, never a
   // project vault. Belongs above the myco.yaml gate alongside daemon/update/remove,
   // so `myco service <verb>` works from any cwd (e.g. a fresh host with no project).
@@ -352,10 +349,8 @@ async function main(): Promise<void> {
   // re-exec'd even on a host with no project vault; the pinned binary owns the
   // gate decision after re-exec.
   if (cmd === 'tool') runLaunchPreamble('tool', args);
-  // A tool call that declares a credential source reaches the Deployment over
-  // the member credential and reads no project vault, so it sits above the
-  // myco.yaml gate like every other member operation.
-  if (cmd === 'tool' && (await import('./mcp/deployment-upstream.js')).credentialFlagPresent(args)) {
+  // Tool calls require a declared member credential and no project vault.
+  if (cmd === 'tool') {
     return (await import('./cli/tool.js')).run(args, resolveVaultDir());
   }
 
@@ -387,7 +382,6 @@ async function main(): Promise<void> {
       return (await import('./cli/agent-run.js')).run(args, vaultDir);
     }
     case 'task': return (await import('./cli/agent-tasks.js')).run(args, vaultDir);
-    case 'tool': return (await import('./cli/tool.js')).run(args, vaultDir);
     case 'logs': return (await import('./cli/logs.js')).run(args, vaultDir);
     default:
       console.error(`Unknown command: ${cmd}`);

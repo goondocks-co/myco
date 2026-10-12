@@ -22,19 +22,12 @@ import {
   DEFAULT_BINARY_UPDATE_DEPS,
   type StageBinaryDeps,
 } from '../upgrade/apply-binary.js';
-import { initiateAdopt, type InitiateAdoptOpts } from '../upgrade/adopt.js';
-import {
-  readMaxStampedSchemaVersion,
-  readSupportedSchemaVersion,
-  SchemaGapDowngradeError,
-} from '../upgrade/schema-gap.js';
 import { resolveMycoPackageCheck } from '../upgrade/checker.js';
-import { resolveMycoHome } from '../grove/paths.js';
+import { resolveMycoHome } from '../paths/home.js';
 import { readInstallMarker } from '../install/managed-binary.js';
 import { refreshMemberSetup } from '../member/refresh-setup.js';
 import { readRunnerUpdateState } from '../runner/update.js';
 import { isMemberHome } from '../member/home-role.js';
-import { resolveGlobalDaemonPort } from '../daemon/service-state.js';
 import { getPluginVersion } from '../version.js';
 import { listRunnerRecords, isLiveRunner } from '../runner/runner-registry.js';
 import { recordUpdateCheck, effectiveUpdateChannel } from '../upgrade/check-cache.js';
@@ -82,8 +75,6 @@ export interface UpgradeDeps {
   stageBinary?: typeof stageBinary;
   /** Inject stage-level deps (download/hash). */
   stageDeps?: StageBinaryDeps;
-  /** Inject initiateAdopt (for testing the adopt path). */
-  initiateAdopt?: typeof initiateAdopt;
   /** Place a verified member binary without a local daemon. */
   adoptStaged?: typeof adoptStaged;
   /** Override the current version. */
@@ -94,20 +85,12 @@ export interface UpgradeDeps {
   platform?: NodeJS.Platform;
   /** Override %LOCALAPPDATA% (win32 only). */
   localAppData?: string;
-  /** Override the daemon port. */
-  daemonPort?: number;
-  /** Override the myco binary path (for adopt's restart fallback). */
+  /** Override the managed binary destination. */
   mycoBinary?: string;
-  /** Override the project root (for adopt's restart cwd). */
-  projectRoot?: string;
   /** Inject the update-check function (for positive --check tests). */
   checkFn?: typeof resolveMycoPackageCheck;
   /** Resolve this machine's target triple (process.platform/arch by default). */
   targetTriple?: () => TargetTriple;
-  /** Inject the vault-side schema scan (downgrade schema-gap guard). */
-  readMaxStampedSchemaVersion?: typeof readMaxStampedSchemaVersion;
-  /** Inject the target-binary supported-schema read (downgrade schema-gap guard). */
-  readSupportedSchemaVersion?: typeof readSupportedSchemaVersion;
   /** Whether the home is a member's (`member/home-role.ts`). */
   isMemberHome?: (home: string) => boolean;
   /** Refresh a member home's agent setup with the adopted binary. */
@@ -262,27 +245,11 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
     await finish(currentVersion, `channel target ${refs.targetVersion} is older or outside '${channel}'; staying put`);
     return;
   }
-  const isV2 = isV2Version(currentVersion);
 
   console.log(`Updating Myco ${currentVersion} → ${refs.targetVersion}…`);
 
   const platform = deps.platform ?? (process.platform as NodeJS.Platform);
   const localAppData = deps.localAppData ?? process.env.LOCALAPPDATA;
-
-  // A known target storage format must support every local Grove's stamped format.
-  {
-    const readVaultSchema = deps.readMaxStampedSchemaVersion ?? readMaxStampedSchemaVersion;
-    const readTargetSchema = deps.readSupportedSchemaVersion ?? readSupportedSchemaVersion;
-    const targetSchema = readTargetSchema(home, platform, refs.targetVersion, localAppData);
-    if (targetSchema !== null) {
-      const vaultSchema = readVaultSchema(home);
-      if (vaultSchema !== null && targetSchema < vaultSchema) {
-        const refusal = new SchemaGapDowngradeError(refs.targetVersion, vaultSchema, targetSchema);
-        console.error(`myco update: ${refusal.message}`);
-        process.exit(1);
-      }
-    }
-  }
 
   // Stage the binary (download → verify → stage under versions/<v>/).
   console.log('  Downloading and verifying…');
@@ -302,40 +269,10 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
 
   // Installed member binaries retain the destination recorded by their installer.
   const mycoBinary = deps.mycoBinary
-    ?? (isV2 ? readInstallMarker(home, true)?.bin : undefined)
+    ?? readInstallMarker(home, true)?.bin
     ?? resolveBinary('managed-destination', { kind: 'machine' }, { mycoHome: home, platform, localAppData }).path;
-  if (isV2) {
-    if (platform === 'win32') throw new Error('Myco 2.0 member binary updates on Windows are not supported yet; the installed binary is unchanged.');
-    await (deps.adoptStaged ?? adoptStaged)({ home, platform, localAppData, version: stageResult.version, destination: mycoBinary });
-    await finish(stageResult.version);
-    return;
-  }
-
-  // Retained local runtimes restart through their installed service.
-  const projectRoot = deps.projectRoot ?? process.cwd();
-  const daemonPort = deps.daemonPort ?? resolveGlobalDaemonPort();
-  const { getServiceManager } = await import('../service/manager.js');
-  const { resolveRestartServiceLabel } = await import('../daemon/api/restart.js');
-  const serviceManagedLabel = await resolveRestartServiceLabel(getServiceManager());
-
-  const adoptOpts: InitiateAdoptOpts = {
-    source: 'cli',
-    targetVersion: stageResult.version,
-    prevVersion: currentVersion,
-    home,
-    platform,
-    localAppData,
-    daemonPort,
-    serviceManagedLabel,
-    mycoBinary,
-    projectRoot,
-    maxHealthAttempts: 30,
-    healthIntervalMs: 2000,
-  };
-
-  const adoptFn = deps.initiateAdopt ?? initiateAdopt;
-  await adoptFn(adoptOpts);
-
+  if (platform === 'win32') throw new Error('Myco 2.0 member binary updates on Windows are not supported yet; the installed binary is unchanged.');
+  await (deps.adoptStaged ?? adoptStaged)({ home, platform, localAppData, version: stageResult.version, destination: mycoBinary });
   await finish(stageResult.version);
 }
 
