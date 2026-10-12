@@ -14,7 +14,7 @@
  */
 import { expect, test, type Page } from '@playwright/test';
 import {
-  expectAxeClean, expectFits, pagesNav, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type ViewportName,
+  expectAxeClean, expectFits, pagesNav, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type PageWatch, type ViewportName,
 } from './checks.ts';
 import { SCREENS_ENV, screensEnv } from './env.ts';
 
@@ -89,14 +89,18 @@ async function expectStream(page: Page, viewport: ViewportName): Promise<void> {
 }
 
 /** Opens the replaced spore from the stream: the status filter first, then its card. */
-async function openReplacedSpore(page: Page): Promise<void> {
+async function openReplacedSpore(page: Page, watch: PageWatch): Promise<void> {
   await page.getByRole('combobox', { name: 'Status' }).click();
-  await page.getByRole('option', { name: 'Replaced' }).click();
-  await expect(page).toHaveURL(/status=superseded/);
+  await watch.navigate(async () => {
+    await page.getByRole('option', { name: 'Replaced' }).click();
+    await expect(page).toHaveURL(/status=superseded/);
+  });
   const card = cards(page).filter({ hasText: REPLACED_LINE });
   await expect(card).toContainText('Replaced');
-  await card.getByRole('link').click();
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText(REPLACED_LINE);
+  await watch.navigate(async () => {
+    await card.getByRole('link').click();
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(REPLACED_LINE);
+  });
 }
 
 async function expectArticle(page: Page, viewport: ViewportName): Promise<void> {
@@ -174,7 +178,7 @@ test.describe('Knowledge', () => {
     test(`spore stream ${role} ${viewport} ${mode}`, async ({ browser }) => {
       const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode, cookie: screensEnv(cookie) });
       try {
-        await openKnowledge(page, viewport);
+        await watch.navigate(() => openKnowledge(page, viewport));
         await expectStream(page, viewport);
         await settle(page, `knowledge-${role}`, viewport, mode);
         expectQuiet(watch);
@@ -187,8 +191,8 @@ test.describe('Knowledge', () => {
       test.skip(!onFixture(), 'the spore is the fixture’s');
       const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode, cookie: screensEnv(cookie) });
       try {
-        await openKnowledge(page, viewport);
-        await openReplacedSpore(page);
+        await watch.navigate(() => openKnowledge(page, viewport));
+        await openReplacedSpore(page, watch);
         // The article is a link of its own: loaded directly, it reads the same.
         await page.reload();
         await expect(page.getByRole('heading', { level: 1 })).toHaveText(REPLACED_LINE);
@@ -203,9 +207,11 @@ test.describe('Knowledge', () => {
     test(`plans board ${role} ${viewport} ${mode}`, async ({ browser }) => {
       const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode, cookie: screensEnv(cookie) });
       try {
-        await openKnowledge(page, viewport);
-        await page.getByRole('navigation', { name: 'Knowledge sections' }).getByRole('link', { name: 'Plans' }).click();
-        await expect(page).toHaveURL(/\/knowledge\/plans$/);
+        await watch.navigate(() => openKnowledge(page, viewport));
+        await watch.navigate(async () => {
+          await page.getByRole('navigation', { name: 'Knowledge sections' }).getByRole('link', { name: 'Plans' }).click();
+          await expect(page).toHaveURL(/\/knowledge\/plans$/);
+        });
         await expectBoard(page, viewport);
         await settle(page, `plans-${role}`, viewport, mode);
         expectQuiet(watch);
@@ -218,8 +224,10 @@ test.describe('Knowledge', () => {
       test.skip(!onFixture(), 'the plan is the fixture’s');
       const { context, page, watch } = await openPage(browser, { path: '/knowledge/plans', viewport, mode, cookie: screensEnv(cookie) });
       try {
-        await column(page, 'in_progress').getByRole('link', { name: PLAN_TITLE, exact: true }).click();
-        await expect(page).toHaveURL(/\/plans\/[0-9a-f-]+$/);
+        await watch.navigate(async () => {
+          await column(page, 'in_progress').getByRole('link', { name: PLAN_TITLE, exact: true }).click();
+          await expect(page).toHaveURL(/\/plans\/[0-9a-f-]+$/);
+        });
         await expectPlanPage(page, viewport, role);
         await settle(page, `plan-${role}`, viewport, mode);
         expectQuiet(watch);
@@ -280,7 +288,7 @@ test.describe('Knowledge', () => {
   test('the old address of a project’s spores leads to its Knowledge', async ({ browser }) => {
     test.skip(!onFixture(), 'the project is the fixture’s');
     const project = fixtureProject();
-    const { context, page, watch } = await openPage(browser, { path: `/p/${encodeURIComponent(project.projectId)}/spores?type=gotcha`, viewport: 'desktop', mode: 'dark', cookie: screensEnv('ownerCookie') });
+    const { context, page, watch } = await openPage(browser, { path: `/p/${encodeURIComponent(project.projectId)}/spores?type=gotcha`, destination: new RegExp(`/p/${project.projectId}/knowledge\\?type=gotcha$`), viewport: 'desktop', mode: 'dark', cookie: screensEnv('ownerCookie') });
     try {
       await expect(page).toHaveURL(new RegExp(`/p/${project.projectId}/knowledge\\?type=gotcha$`));
       await expect(page.getByRole('region', { name: 'Type' }).getByRole('button', { name: /^Gotchas/ })).toHaveAttribute('aria-pressed', 'true');

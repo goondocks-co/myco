@@ -95,19 +95,23 @@ test('watchPage reports ERR_ABORTED without a later navigation', async ({ page }
   expect(() => expectQuiet(watch)).toThrow();
 });
 
-test('watchPage stays quiet when SPA aborts precede the navigation action commit', async ({ page }) => {
+for (const loadInAction of [false, true]) test(`watchPage stays quiet when SPA aborts precede the navigation action commit${loadInAction ? ' after a document load in that action' : ''}`, async ({ page }) => {
   const watch = watchPage(page);
   const resources = ['runs', 'spores', 'sessions'];
   const urls = resources.map((resource) => `${origin}/pending?resource=${resource}`);
   const started = Promise.all(urls.map((url) => page.waitForRequest(url)));
   const failed = Promise.all(urls.map((url) => page.waitForEvent('requestfailed', (request) => request.url() === url)));
   await page.exposeFunction('abortsObserved', async () => { await failed; });
-  await page.goto(`${origin}/spa-navigation`);
-  await started;
   const events: string[] = [];
-  page.on('requestfailed', (request) => { events.push(request.failure()?.errorText ?? 'failed'); });
-  page.on('framenavigated', () => { events.push('commit'); });
+  const load = async () => {
+    await page.goto(`${origin}/spa-navigation`);
+    await started;
+    page.on('requestfailed', (request) => { events.push(request.failure()?.errorText ?? 'failed'); });
+    page.on('framenavigated', () => { events.push('commit'); });
+  };
+  if (!loadInAction) await load();
   await watch.navigate(async () => {
+    if (loadInAction) await load();
     await page.getByRole('link', { name: 'Navigate' }).click();
     await expect(page).toHaveURL(`${origin}/destination`);
   });

@@ -336,7 +336,7 @@ test.describe('old admin addresses', () => {
     ['/access', /\/people$/],
   ] as const) {
     test(`${from} leads to its new page`, async ({ browser }) => {
-      const { context, page } = await openPage(browser, { path: from, viewport: 'desktop', mode: 'dark', cookie: screensEnv('ownerCookie') });
+      const { context, page } = await openPage(browser, { path: from, destination: to, viewport: 'desktop', mode: 'dark', cookie: screensEnv('ownerCookie') });
       try {
         await expect(page).toHaveURL(to);
         await expect(page.getByRole('heading', { level: 1 })).toBeVisible();

@@ -116,6 +116,7 @@ export function watchPage(page: Page): PageWatch {
     pendingAborts.length = 0;
     navigation = undefined;
     navigationEpoch += 1;
+    if (actionEpoch !== undefined) actionEpoch = navigationEpoch;
   });
   page.on('console', (message) => {
     if (message.type() === 'error') watch.consoleErrors.push(message.text());
@@ -245,7 +246,7 @@ export interface OpenedPage {
 const onFixture = (): boolean => process.env[SCREENS_ENV.fixture] === '1';
 
 /** A fresh context at one viewport and mode, signed in when a cookie is given, with the page watched from its first request. */
-export async function openPage(browser: Browser, options: { path: string; viewport: ViewportName; mode: Mode; cookie?: string }): Promise<OpenedPage> {
+export async function openPage(browser: Browser, options: { path: string; viewport: ViewportName; mode: Mode; cookie?: string; destination?: RegExp }): Promise<OpenedPage> {
   const context = await browser.newContext({
     viewport: VIEWPORTS[options.viewport],
     colorScheme: options.mode,
@@ -258,7 +259,10 @@ export async function openPage(browser: Browser, options: { path: string; viewpo
   const page = await context.newPage();
   if (onFixture()) await page.clock.setFixedTime(fixtureNow());
   const watch = watchPage(page);
-  await page.goto(new URL(options.path, baseUrl()).href);
+  await watch.navigate(async () => {
+    await page.goto(new URL(options.path, baseUrl()).href);
+    if (options.destination) await expect(page).toHaveURL(options.destination);
+  });
   return { context, page, watch };
 }
 

@@ -132,7 +132,7 @@ test.describe('Sessions', () => {
     test(`sessions table ${role} ${viewport} ${mode}`, async ({ browser }) => {
       const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode, cookie: screensEnv(cookie) });
       try {
-        await openTable(page, viewport);
+        await watch.navigate(() => openTable(page, viewport));
         await expectTable(page, viewport);
         await page.waitForLoadState('networkidle');
         await expectFits(page, viewport);
@@ -149,8 +149,8 @@ test.describe('Sessions', () => {
       test.skip(!onFixture(), 'the session is the fixture’s');
       const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode, cookie: screensEnv(cookie) });
       try {
-        await openTable(page, viewport);
-        await openOutcomeSession(page);
+        await watch.navigate(() => openTable(page, viewport));
+        await watch.navigate(() => openOutcomeSession(page));
         // The reading page is a link of its own: loaded directly, it reads the same.
         await page.reload();
         await expect(page.getByRole('heading', { level: 1 })).toHaveText(OUTCOME_TITLE);
@@ -207,11 +207,15 @@ test.describe('Sessions', () => {
       // Filtering is the server's: an agent the project has no sessions from empties the table, and Clear brings it back.
       await page.getByRole('button', { name: /^Agent: / }).click();
       await page.getByRole('combobox', { name: 'Search agent' }).fill('Cursor');
-      await page.getByRole('option', { name: 'Cursor' }).click();
-      await expect(page).toHaveURL(/\?agent=cursor$/);
+      await watch.navigate(async () => {
+        await page.getByRole('option', { name: 'Cursor' }).click();
+        await expect(page).toHaveURL(/\?agent=cursor$/);
+      });
       await expect(rows(page, 'desktop')).toHaveCount(1);
-      await page.getByRole('button', { name: 'Clear search and filters' }).click();
-      await expect(page).toHaveURL(new RegExp(`/p/${project.projectId}/sessions$`));
+      await watch.navigate(async () => {
+        await page.getByRole('button', { name: 'Clear search and filters' }).click();
+        await expect(page).toHaveURL(new RegExp(`/p/${project.projectId}/sessions$`));
+      });
       await expect(rows(page, 'desktop').first()).toBeVisible();
       await page.waitForLoadState('networkidle');
       await expectFits(page, 'desktop');
