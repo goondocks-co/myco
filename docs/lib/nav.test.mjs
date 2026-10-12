@@ -16,7 +16,15 @@ test('every guide has a slug and title', () => {
 test('allSlugs is flat, unique, and covers known guides', () => {
   const slugs = allSlugs();
   assert.equal(new Set(slugs).size, slugs.length, 'no duplicate slugs');
-  for (const expected of ['quickstart', 'team-host', 'agent-teams', 'architecture/actors-and-boundaries']) {
+  for (const expected of ['quickstart', 'self-hosting', 'upgrade', 'agents', 'agent-tools', 'external-agents', 'architecture/actors-and-boundaries']) {
     assert.ok(slugs.includes(expected), `includes ${expected}`);
+  }
+});
+
+
+test('uses the published user-doc groups and excludes retired pages', () => {
+  assert.deepEqual(NAV.map((group) => group.group), ['Getting started', 'Using Myco', 'Reference']);
+  for (const retired of ['team-host', 'groves', 'lifecycle', 'canopy', 'skills', 'agent-harness', 'symbionts', 'migrating-from-oak', 'agent-teams']) {
+    assert.ok(!allSlugs().includes(retired), `excludes ${retired}`);
   }
 });

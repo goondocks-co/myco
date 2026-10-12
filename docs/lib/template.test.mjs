@@ -21,7 +21,7 @@ test('sets canonical and raw-markdown alternate', () => {
 });
 
 test('renders the sidebar with all guides and marks the current page active', () => {
-  assert.match(page, /href="\/team-host"/);
+  assert.match(page, /href="\/agents"/);
   assert.match(page, /class="ds-link active"[^>]*href="\/quickstart"/);
 });
 
@@ -47,4 +47,12 @@ test('escapes HTML special chars in title and sidebar text', () => {
   assert.match(p, /<meta name="description" content="Find &amp; recall &lt;stuff&gt;.">/);
   // breadcrumb element-text
   assert.match(p, /<span>Search &amp; &lt;Recall&gt;<\/span>/);
+});
+
+
+test('links only to current homepage sections and labels the docs version', () => {
+  for (const anchor of ['how', 'agents', 'docs']) assert.ok(page.includes(`href="/#${anchor}"`));
+  for (const retired of ['lifecycle', 'cortex', 'team', 'sponsor']) assert.ok(!page.includes(`href="/#${retired}"`));
+  assert.match(page, /id="nav-version">2\.0 docs/);
+  assert.ok(!page.includes('registry.npmjs.org'));
 });

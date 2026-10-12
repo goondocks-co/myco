@@ -17,7 +17,7 @@ import path from 'node:path';
 const REPO = path.resolve(import.meta.dir, '..', '..');
 
 /** The files a person installing Myco reads links from. */
-const SURFACES = ['docs/install.sh', 'docs/install.ps1', 'README.md', 'docs/quickstart.md', 'docs/team-host.md', '.github/workflows/publish.yml'];
+const SURFACES = ['docs/install.sh', 'docs/install.ps1', 'README.md', 'docs/quickstart.md', '.github/workflows/publish.yml'];
 
 /** Guides another PR adds, each with that PR. This PR (#1495) merges after it. */
 const PENDING: Readonly<Record<string, string>> = {};

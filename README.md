@@ -1,192 +1,72 @@
-<p align="center">
-  <img src="docs/assets/myco-hero-wide.jpg" alt="Myco" width="100%">
-</p>
+# Myco
 
-<p align="center">
-  <strong>The nervous system for AI-assisted software teams</strong>
-</p>
+**Your agents learn from the work you have already done.**
 
-<p align="center">
-  <a href="https://github.com/goondocks-co/myco/actions/workflows/ci.yml"><img src="https://github.com/goondocks-co/myco/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/goondocks-co/myco/actions/workflows/publish.yml"><img src="https://github.com/goondocks-co/myco/actions/workflows/publish.yml/badge.svg" alt="Release"></a>
-  <a href="https://www.npmjs.com/package/@goondocks/myco"><img src="https://img.shields.io/npm/v/@goondocks/myco?label=npm&color=22c55e" alt="npm"></a>
-  <a href="https://github.com/goondocks-co/myco/blob/main/LICENSE"><img src="https://img.shields.io/github/license/goondocks-co/myco?color=22c55e" alt="License"></a>
-  <a href="https://github.com/sponsors/goondocks-co"><img src="https://img.shields.io/badge/sponsor-GitHub%20Sponsors-22c55e" alt="Sponsor Myco"></a>
-  <img src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20Linux%20%7C%20Windows-22c55e" alt="Runs on macOS, Linux, Windows">
-  <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Cursor%20%7C%20Codex%20%7C%20Cline%20%7C%20Copilot%20%7C%20Antigravity%20%7C%20Devin%20Desktop%20%7C%20OpenCode%20%7C%20Pi-22c55e" alt="Claude Code | Cursor | Codex | Cline | Copilot | Antigravity | Devin Desktop | OpenCode | Pi">
-</p>
+Myco captures coding sessions, then its own agent turns that work into durable project knowledge: decisions, discoveries and lessons called **spores**, alongside the plans your agents write. That knowledge returns to your coding agents at session start and with each prompt, so the next session can build on the last.
 
-## What is Myco?
+Use Claude Code today and Codex tomorrow. Bring a teammate into the project. The knowledge stays with the project, across agents and machines.
 
-Myco is the nervous system for AI-assisted software teams. It captures what happens across your coding sessions, turns raw memory into durable project knowledge, and routes the right context back to every agent and teammate working in the Grove.
+## How it works
 
-Myco works automatically alongside the coding agents, subagents, and agent teams you already use. It does not replace their reasoning, memory, tools, or native workflows, and it does not lock you into one ecosystem.
+1. **Capture the work.** Myco records sessions and plans from Claude Code, Codex, Cursor, OpenCode, Pi and Cline.
+2. **Learn from it.** Myco's agent draws out what is worth keeping, updates earlier knowledge and gives sessions useful titles. It can also learn from a connected repository and build a code map.
+3. **Bring it back.** Your agents receive project instructions at session start and relevant spores and plans with each prompt. They can search further and record what they learn through Myco's tools.
 
-Instead, Myco gives them an enhanced nervous system: richer senses, durable project knowledge, contextual recall of decisions and pitfalls, semantic codebase awareness, and learned workflows that compound across sessions and teammates.
+One Myco server, called a **Deployment**, holds your projects and serves the dashboard. It runs on Cloudflare or your own machine. Member machines send it sessions; separately registered **runners** lend signed-in coding agents to Myco's own work. You can join someone else's Myco without running a server or runner yourself.
 
-Named after [mycorrhizal networks](https://en.wikipedia.org/wiki/Mycorrhizal_network), Myco is not another coding agent. It is the shared knowledge, signal layer, and coordination system beneath the agents you already use.
+Learning needs a registered runner with a signed-in coding agent. **Work on a schedule** starts off; an administrator enables it in **Settings** for automatic learning, or uses **Run a task** under **Myco’s work**. The project switches **Context for sessions**, **Code map** and **Learning** are on by default.
 
-That distinction matters. Basic memory systems preserve snapshots: what happened, when it happened, and what was said. Myco treats memory as living project material. Some observations become obsolete as the code changes; repeated observations become wisdom; hard-won gotchas become reusable guidance. The goal is to preserve the tribal knowledge that used to live in the heads of long-running human teams, so each new coding agent can inherit accumulated context instead of starting cold.
+## Get started
 
-That knowledge also evolves. Myco is not an ever-growing static archive. It keeps refining what the project knows, what the team has learned, and which workflows are still true. Because Myco lives with the project rather than inside any single coding agent or hosted harness, every connected agent can participate in that evolution without forcing your team into one AI ecosystem.
-
-## What Myco does
-
-- **Captures the work** — sessions, prompts, tool use, plans, screenshots, decisions, trade-offs, and gotchas.
-- **Builds project knowledge** — durable **spores**, wisdom, summaries, digests, and searchable context.
-- **Evolves what matters** — stale observations can be superseded, repeated lessons become wisdom, and workflows stay current as the code changes.
-- **Routes context to agents** — session briefings, relevant spores, and Canopy file anatomy surface when agents need them.
-- **Maps the codebase** — [Canopy](docs/canopy.md) gives agents semantic awareness of files before they open them.
-- **Learns workflows** — repeated procedures become reviewed [skills](docs/skills.md) that every connected agent can follow.
-- **Shares across teams** — an optional [Team Host](docs/team-host.md) connection routes a project's knowledge to a teammate's Myco directly and exposes it to non-member agents through a secure read-only MCP endpoint, no cloud account required.
-
-## Install
-
-macOS is the primary supported platform. Linux and Windows are in beta. On Windows, only **x64** is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
+Install the native binary on macOS or Linux; no Node runtime is needed:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
-myco login <address>
+curl -fsSL https://myco.sh/install.sh | sh
 ```
 
-On Windows x64 (PowerShell):
+Windows x64 has an installer, but the 2.0 Windows path is not yet verified:
 
 ```powershell
 irm https://myco.sh/install.ps1 | iex
 ```
 
-Myco is a self-contained native binary — **no Node runtime required**. On a fresh machine, the default installer selects the newest 2.x release, including prereleases while no stable 2.x release exists. Existing 1.4 installations keep their 1.4 updates unless you explicitly choose replacement. Choose a release channel with `curl -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=alpha sh` (alpha, beta or stable builds) or `MYCO_CHANNEL=beta` (beta or stable builds). A 2.0 install places the binary in `~/.myco/bin`, records its channel in `install.json`, and refreshes an existing membership; a first-time 2.0 install starts no service. `myco login` with your Myco address signs this machine in and connects your coding agents; to run your own Deployment instead, see [Self-hosting](docs/self-hosting.md). On a machine that has Myco 1.4, the installer installs nothing and says how to move over: `sh -s -- --replace-1.4` installs 2.0 in 1.4's place, then `myco login`, `myco cutover --dry-run` and `myco cutover` move the machine (see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14)).
-
-Provider configuration is optional at install time. Capture and full-text search work immediately; spores, digests, semantic search, Canopy summaries, and skill lifecycle features become active after you configure intelligence and embedding providers in the dashboard.
-
-### Plugin only
-
-If your team already runs a Myco deployment and you only want to read from it, install the Myco plugin from your agent's plugin marketplace instead. It carries the skills and the Myco tools and needs no binary: paste your deployment's URL and an access key when the plugin asks, and the tools answer. Sessions are not captured until you install the binary as well, and the `/myco-setup` skill walks through that when you want it.
-
-See [Quickstart](docs/quickstart.md) for setup details and platform notes, and [Self-hosting](docs/self-hosting.md) to run your own server on a laptop or a virtual machine.
-
-## Upgrade
-
-Myco keeps itself up to date **automatically** — the local service self-updates from the release channel in the background while it's idle.
-
-No `npm update` is needed. (A `myco upgrade` CLI exists for advanced or scripted use, with `--channel alpha|beta|stable`, but the automatic path is the normal way to stay current.) Upgrading from an older per-project install archives legacy Myco-owned files the next time Myco starts. See [Upgrading Myco](docs/upgrade.md).
-
-Team Host operator commands (`myco host`, `myco join`, `myco attach`) are part of the main binary and upgrade with it — no separate package.
-
-## How it works
-
-### Capture
-
-Symbionts connect Myco to the agents you already use. They capture session starts, prompts, tool calls, stops, transcripts, and attachments into the Grove vault without replacing the agent's own memory or workflow.
-
-### Intelligence
-
-The [agent harness](docs/agent-harness.md) runs Myco's background intelligence work. It reads captured sessions, extracts **spores** (decisions, gotchas, discoveries, trade-offs, fixes), generates titles and summaries, links them to their source sessions, and refreshes digest extracts.
-
-When Myco finds 3+ semantically similar spores, it synthesizes them into a **wisdom** spore — a higher-order observation that captures the pattern across sessions. Individual observations become institutional knowledge.
-
-As the project changes, that knowledge keeps moving. New sessions can reinforce a pattern, replace an outdated assumption, or expose a workflow that should become shared practice.
-
-Every task can use a different LLM provider. Run title generation on a fast local model via Ollama, extraction on Claude, and consolidation on a larger local model via LM Studio. Configure providers from the [dashboard](#dashboard).
-
-See the [Intelligence Pipeline docs](docs/agent-harness.md) for the task catalog, provider configuration, and scheduling.
-
-### Digest
-
-The digest synthesizes accumulated knowledge into tiered **extracts** — pre-computed context at different depths:
-
-| Tier | Purpose |
-|------|---------|
-| **1,500 tokens** | Executive briefing — what this project is, what's active, what to avoid |
-| **5,000 tokens** | Deep onboarding — trade-offs, patterns, team dynamics |
-| **10,000 tokens** | Institutional knowledge — full thread history and design tensions |
-
-Extracts refresh in the background as new knowledge arrives. When the project goes quiet, refresh slows; new sessions wake it back up.
-
-### Search
-
-Every record is indexed for both keyword search and semantic similarity. Use [Ollama](https://ollama.com) locally for embeddings, or [OpenRouter](https://openrouter.ai) / [OpenAI](https://platform.openai.com) in the cloud. The index is fully rebuildable from the database.
-
-### Canopy — codebase awareness
-
-Myco keeps a fresh per-file index of your project — exports, imports, top comment, optional one-line summary — and hands the agent that anatomy before it opens a file. A single `myco_cortex` call with `op: "canopy_map"` returns the project's architectural overview, so a new agent can orient in one tool call instead of a dozen searches. Manage it from the dashboard's **Cortex** tab. See the [Canopy docs](docs/canopy.md).
-
-### Context injection
-
-Myco routes project context to agents automatically:
-
-- **Session start** — a project briefing gives the agent pre-computed project understanding before it asks a single question.
-- **Per-prompt** — relevant spores are retrieved after user prompts, providing targeted context for the task at hand.
-- **Pre-read** — Canopy file anatomy appears before reads so agents can choose the right file faster.
-
-Agents can still use their own memory and tools. Myco adds shared project context without taking those systems over.
-
-### Dashboard
-
-Your Deployment serves the web dashboard. Read the day's sessions and Myco's work across every project, browse the spores and plans it keeps, manage members and their machines, configure models, capture, backups and sign-in, and watch the Deployment's health.
-
-Use the [Grove Management guide](docs/groves.md) to decide when to create additional Groves, move or archive projects, and toggle per-project capabilities such as Cortex, Canopy, Skills, and Vault Evolution.
-
-### Symbionts
-
-Myco integrates with coding agents through **symbionts**. Each symbiont connects Myco to an agent's native context, tools, skills, and permissions while preserving that agent's own workflow.
-
-Supported symbionts include Claude Code, Cursor, Codex, Cline, Copilot, Antigravity, Devin Desktop, OpenCode, and Pi. See the [Symbiont docs](docs/symbionts.md) for agent-specific details.
-
-### Team Host
-
-Share knowledge across machines and teammates with no cloud account. One teammate's Myco becomes the team's shared home; everyone else joins it directly.
-
-Both sides start on the dashboard's **Team** page, which opens on a choice: host a team on this machine, or join one a teammate already hosts. Hosting asks only for a name for the team's storage, then stands the host up — entirely as your user, with no administrator password — and publishes the address teammates dial through the host's own Tailscale Funnel. Mint a one-time join key from the same page and hand it, with that address, to a teammate who pastes both into the join form on theirs.
-
-For headless machines and scripted setups, the same two actions are commands:
+Then join the Myco whose address your administrator gave you:
 
 ```bash
-myco host enable --designate-fresh   # on the host machine; the address comes from Tailscale Funnel
-myco join <host> --key <one-time-key> --host-url <https://host.tailnet.ts.net:8443>   # on a member's machine
+myco setup --join <address>
 ```
 
-Once joined, connect the projects you want the team to share (Team page, or `myco attach [path] --host <id>`). Connecting a project moves its knowledge — sessions, spores, plans, skills — to the host, which holds the single copy while the project is connected; agent tools and search route to it transparently. Disconnecting (`myco detach`) brings the full history back home in one verified transfer.
+Approve the machine in a browser signed in to that Myco. Start a new agent session in a repository under `~/Repos`, and see it on **Today**. The [Join a Myco guide](docs/quickstart.md) covers invitations, other folders and checking your setup.
 
-For projects you haven't connected to a host, your local Grove databases remain the source of truth. Members reach the host over public HTTPS at its Tailscale Funnel address — nothing for a member to install — and each record carries a machine identity for attribution.
+- [Run your own Myco](docs/self-hosting.md) on Cloudflare or this machine.
+- [Move from Myco 1.4](docs/upgrade.md#upgrading-from-myco-14), keeping your existing data.
+- [Connect your agents](docs/agents.md) and see what is captured.
+- [Agent tools and skills](docs/agent-tools.md) for reading and recording project knowledge.
+- [External agents](docs/external-agents.md) for hosted reviewers and the plugin-only path.
 
-See the [Team Host docs](docs/team-host.md) for the full guide, including hosting from the command line and the external read-only MCP endpoint for agents that aren't Myco members.
+The installers select an available 2.x release. Use them for 2.0; the unqualified npm package may still select the 1.4 release line.
 
-### External read-only MCP
+## Your project's knowledge
 
-A Team Host can also expose a read-only, six-tool MCP endpoint over a secure public URL — for agents that aren't Myco members, like managed agents and automation platforms. Connect any tool that speaks MCP and it gets read access to the same team knowledge your local agents already have. See the [Team Host docs](docs/team-host.md#external-read-only-mcp) for the tool reference and setup.
+Open the dashboard at your Myco's address. **Today** shows the work arriving, **Sessions** lets you revisit it, and **Knowledge** holds spores, plans and the code map. **Myco’s work** shows what Myco's own agent has done. Administrators manage projects, people, runners and settings there too.
 
-### Skills — automated curation, not just memory
+Processed project knowledge is shared across the Deployment. Raw capture is private to its uploader. Keep separate security or client boundaries in separate Deployments.
 
-Memory is table stakes. Myco goes further: it turns accumulated project knowledge into **repeatable workflows** that every agent follows. The intelligence pipeline identifies procedural patterns across sessions — debugging the build, adding API routes, configuring providers, resolving common gotchas — and surfaces them as candidates. You approve what becomes canon; Myco generates and validates the skill, and when you **Publish** it, the SKILL.md file lands in your project under `.agents/skills/`, symlinked into every agent's native skills directory.
+Install Myco from your agent's plugin marketplace for tools and skills without the binary. Provide your Myco's address and a project access key when asked. The plugin alone does not capture sessions; the `/myco-setup` skill helps add the binary when you want capture. See [External agents](docs/external-agents.md).
 
-Skills evolve as your code does. When a pattern is abandoned, a new gotcha is discovered, or a workflow shifts, Myco refreshes affected skills — preserving what's still accurate, incorporating what's new, and splitting skills that have grown too broad. See the [Skills docs](docs/skills.md) for the full lifecycle.
-
-### Backup & restore
-
-Backups and restores are Grove-scoped. Local backups run automatically during idle periods, and destructive project deletion creates a fresh Grove backup first when backups are enabled. Configure a custom backup directory in the **Backup & Restore** section of the Settings page. Restore preserves existing records and avoids importing duplicates.
-
-## Health check
+## Check and update
 
 ```bash
 myco doctor
+myco setup --status
+myco update --check
+myco update
 ```
 
-Verifies your local Myco install, Grove data, provider setup, connected agents, service status, and dashboard access. Use `--fix` to auto-repair fixable issues.
-
-## Uninstall
-
-```bash
-myco remove           # removes Myco's contributions from every agent's global config
-myco remove --purge   # also removes ~/.myco/ itself
-```
-
-Removal preserves any user-pre-existing keys in agent config files (e.g. a Codex `[features].hooks` entry you added yourself stays put).
+To leave a Myco, use `myco logout <address>`. Captured data is kept; runner registrations are separate. See [Join a Myco](docs/quickstart.md#leaving-a-myco).
 
 ## Contributing
 
-Contributions welcome. See the [Contributing Guide](CONTRIBUTING.md) for development setup, and the [Lifecycle docs](docs/lifecycle.md) for architecture details. Please open an issue to discuss before submitting a PR.
+See [CONTRIBUTING.md](CONTRIBUTING.md), the [canonical architecture](docs/architecture/myco-2.0.md) and [Actors & boundaries](docs/architecture/actors-and-boundaries.md).
 
-## License
-
-Apache 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Licensed under [Apache 2.0](LICENSE). Copyright Goondocks Consulting LLC.

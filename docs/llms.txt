@@ -1,38 +1,24 @@
 # Myco
 
-> Myco is the nervous system for AI-assisted software teams. It works alongside coding agents, subagents, and agent teams to provide shared project knowledge, semantic codebase awareness, and learned workflows that evolve with the project.
+> Your agents learn from the work you have already done.
 
-Myco is not a replacement coding agent or hosted harness. It runs on your machine and works with every git project automatically when you use a supported agent, capturing development sessions into a local Grove and routing useful context back to the agents a team already uses. Local Grove data is the source of truth for projects not connected to a Team Host; a connected project's knowledge lives on its host until it is disconnected. Optional Team Host turns one teammate's Myco into the team's shared home — set up from the dashboard's Team page or the command line — so the rest of the team can join it directly, connect their projects, and expose team knowledge to non-member agents through a secure read-only MCP endpoint.
+Myco captures coding sessions. Its own agent turns them into durable project knowledge (spores), alongside captured plans. Project instructions return to coding agents at session start; relevant spores and plans return with each prompt. Tools let agents search further and record discoveries.
 
-macOS is the supported path. Linux and Windows are in beta (Windows x64 only).
+A Deployment is one Myco server on Cloudflare or your own machine. Member machines capture Claude Code, Codex, Cursor, OpenCode, Pi and Cline through global agent configuration. Separately registered runners lend signed-in coding agents to Myco's own work. Learning needs a runner; Work on a schedule starts off. Context for sessions, Code map and Learning are on by default per project.
 
-## Start here
+## Getting started
 
-- [Homepage](https://myco.sh/): Product overview, install command, feature summary, and supported agents.
-- [Quickstart](https://myco.sh/quickstart.md): Install Myco, open the local dashboard, configure providers, and understand what happens after setup.
-- [README](https://github.com/goondocks-co/myco/blob/main/README.md): Repository overview and release-facing product framing.
+- [Join a Myco](https://myco.sh/quickstart.md): Install, sign in, approve, let repositories join, and see a new session on Today.
+- [Run your own Myco](https://myco.sh/self-hosting.md): Create a server, connect the owner, register a runner and invite teammates.
+- [Updating Myco](https://myco.sh/upgrade.md#upgrading-from-myco-14): Updates and moving from Myco 1.4.
 
-## Core concepts
+## Using Myco
 
-- [Skills](https://myco.sh/skills.md): How accumulated project knowledge becomes reviewed workflows that connected agents can follow.
-- [Symbionts](https://myco.sh/symbionts.md): How Myco connects to supported coding agents, including Cline, while preserving each agent's native workflow.
-- [Canopy](https://myco.sh/canopy.md): Codebase awareness that helps agents understand files and architecture before they read deeply.
-- [Grove management](https://myco.sh/groves.md): How users organize projects into Groves, move/archive projects, and control per-project capabilities.
-- [Agent tools](https://myco.sh/agent-tools.md): MCP tools and slash-command skills available to connected agents.
-- [Agent harness](https://myco.sh/agent-harness.md): Background intelligence work that extracts spores, summaries, digests, and evolving skills.
+- [Agents](https://myco.sh/agents.md): Six capture agents, global configuration, delivery and visibility.
+- [Agent tools](https://myco.sh/agent-tools.md): The seven MCP tools, project arguments and shipped skills.
+- [External agents](https://myco.sh/external-agents.md): Project access keys, hosted reviewers and plugin-only use.
 
-## Team features
+## Reference
 
-- [Team Host](https://myco.sh/team-host.md): Host a team from the dashboard or the command line, join a teammate's host, connect projects, and expose team knowledge to non-member agents through a read-only MCP endpoint.
-
-## Operations
-
-- [Local service lifecycle](https://myco.sh/lifecycle.md): What gets captured, how the local service behaves, and what to do when something needs attention.
-- [Upgrade guide](https://myco.sh/upgrade.md): Upgrade Myco, preserve existing agent settings, and verify the install.
-- [Install script for macOS and Linux](https://myco.sh/install.sh): Shell installer. Linux support is in beta.
-- [Install script for Windows](https://myco.sh/install.ps1): PowerShell installer. Windows support is in beta (x64 only).
-
-## Optional
-
-- [Migrating from OAK](https://myco.sh/migrating-from-oak.md): Import OAK activity history into Myco when relevant.
-- [GitHub repository](https://github.com/goondocks-co/myco): Source code, issues, releases, and package details.
+- [Actors & boundaries](https://myco.sh/architecture/actors-and-boundaries.md): Users, coding agents and Myco's own agent.
+- [Platform packages](https://myco.sh/architecture/platform-packages.md): Package responsibilities.

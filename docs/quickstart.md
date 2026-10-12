@@ -1,203 +1,95 @@
-# Myco Quick Start
+# Join a Myco
 
-Myco is the nervous system for AI-assisted software teams. It captures session knowledge — events, observations, decisions, trade-offs, codebase context, and learned workflows — into a local Grove vault and routes the right context back to the coding agents, subagents, and agent teams you already use.
+Connect your machine to a Myco, start a coding session, and see the work on Today. You need a supported coding agent and a Myco address or invitation from an administrator. To run your own instead, follow [Run your own Myco](self-hosting.md). Moving existing data? See [Upgrading from Myco 1.4](upgrade.md#upgrading-from-myco-14).
 
-Myco does not replace an agent's reasoning, native memory, tools, or workflow. It augments those systems with shared project knowledge, semantic codebase awareness, and workflows that compound across sessions and teammates.
+## 1. Install
 
-## Requirements
-
-- **A supported OS** — macOS (arm64/x64), Linux (x64/arm64), or Windows (x64). Myco ships as a self-contained native binary, so **no Node runtime is required to run it**. macOS is the supported path, with **Linux and Windows in beta**. On Windows, only **x64** is supported — Windows on ARM (which runs the x64 build under emulation) is not supported.
-- **At least one supported coding agent** — Claude Code, Cursor, Codex, Cline, Copilot, Google Antigravity, Devin Desktop, OpenCode, or Pi
-- **Node 22+** is only needed for the optional npm install path.
-
-Provider configuration is **optional** at install time. Myco captures sessions and provides full-text search immediately. To enable spores, digests, semantic search, Canopy summaries, and skill lifecycle features, configure intelligence and embedding providers in the dashboard after install.
-
-When you're ready to enable intelligence features, you'll need:
-
-- **Myco Agent provider** (one of):
-  - **Anthropic** — uses your existing Claude Code subscription or `ANTHROPIC_API_KEY`
-  - [Ollama](https://ollama.com) — local models for extraction, summarization, and analysis
-  - [LM Studio](https://lmstudio.ai) — local models via OpenAI-compatible API
-- **Embedding provider** (one of):
-  - [Ollama](https://ollama.com) with `bge-m3` model (local, free, recommended)
-  - [OpenAI-compatible](https://platform.openai.com) endpoint
-
-## Install
+On macOS or Linux:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh
-myco login <address>
+curl -fsSL https://myco.sh/install.sh | sh
 ```
 
-The installer places the binary in `~/.myco/bin` and prints the next step: `myco login` with your Myco address, or [Self-hosting](self-hosting.md) to run your own. On a fresh machine, the default installer selects the newest 2.x release, including prereleases while no stable 2.x release exists. Existing 1.4 installations keep their 1.4 updates unless you explicitly choose replacement. `MYCO_CHANNEL=alpha` admits alpha, beta and stable builds; `MYCO_CHANNEL=beta` admits beta and stable builds. The channel is recorded for updates, which never downgrade; `--dry-run` shows what it would install. With Myco 1.4 on the machine it installs nothing unless you pass `--replace-1.4`, and never moves 1.4 over by itself; see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14).
+Myco is a native binary; no Node runtime is needed. On Windows x64:
 
-For an existing Myco 2.0 install, use `myco update --check` to see the newest eligible release, then `myco update` to update the binary and refresh your agents. The recorded channel stays in effect; `--channel beta` chooses a channel for that run only. Runner updates wait for active work to finish. See [Upgrading Myco](upgrade.md).
-
-On Windows x64 (PowerShell, beta):
 ```powershell
 irm https://myco.sh/install.ps1 | iex
 ```
 
-No Node runtime is required. The shell and PowerShell installers use the same release selection.
+The 2.0 Windows path is not yet verified. The installers select an available 2.x release; use them rather than an unqualified npm install, which may select 1.4.
 
-### Plugin only
+## 2. Sign this machine in
 
-The plugin is the other half of the install and stands on its own. Install it from your agent's plugin marketplace, give it your deployment's URL and an access key, and you get the Myco skills and tools with no binary on the machine. Capture starts when the binary is installed too; the `/myco-setup` skill covers that step.
-
-The access key reaches one project, is minted by a deployment administrator, and expires after ninety days by default.
-
-## Upgrade Existing Installs
-
-Use `myco update` to update this machine's Myco within its recorded channel and refresh member agent setup. `myco update --check` reports the available release; `--channel alpha|beta|stable` chooses a channel for one run.
-
-Manage runner machines from the dashboard's **Runners** page. The same `myco update` command is available on a runner machine and waits until active work finishes before restarting its service.
-
-Myco 1.4 retains its local service and background updater on the separate maintenance line. See [Upgrading Myco](upgrade.md).
-
-## That's it — ready by default
-
-Once Myco is installed, the local service starts automatically. On first boot it creates a **default Grove** to hold your captured sessions, then connects detected coding agents to Myco. The first time you use a supported agent from a real git repo, Myco auto-registers that project into your default Grove. The dashboard is available immediately — you can configure intelligence providers, create additional Groves, or move projects between Groves before your first captured session.
-
-New agent installed later? Myco detects it automatically, or you can re-detect from the dashboard's Symbionts page.
-
-To share a project with teammates, commit the `.myco/project.toml` file — Myco creates it automatically and tracks it in git. It carries the project's identity, so when a teammate clones the repo their sessions land in the same project. Everything else under `.myco/` is per-machine and stays out of git.
-
-Myco captures inside **git repositories only** — a project is a git repo. Work in a non-git folder isn't recorded; open a git repo (or run `git init`) to start capturing.
-
-Session capture starts immediately and you get full-text search out of the box. To enable the deeper intelligence features, configure an agent provider in the dashboard's **Myco Agent** section.
-
-### Configure Providers in the Dashboard
-
-Open the dashboard to the Settings page. Two cards are at the top:
-
-- **Myco Agent** — pick Anthropic, Ollama, or LM Studio. The dropdown lists detected models. Click **Save** to enable the intelligence pipeline.
-- **Embedding** — pick Ollama or an OpenAI-compatible endpoint. Embedding models are filtered automatically.
-
-Each section saves independently. You can enable just one (e.g. embedding-only for semantic search) or both.
-
-### Pull Ollama Models (if using Ollama)
+Run this from the repository you want to connect:
 
 ```bash
-ollama pull bge-m3                  # for embeddings
-ollama pull granite4:small-h        # for the agent (any LLM works)
+myco setup --join <address>
 ```
 
-### Health Check
+Setup guides sign-in, project selection and agent setup. You can run it again to resume. Joining does not require you to run Myco's own tasks; decline the runner choice if this machine is only for your coding sessions.
 
-After setup, verify everything is connected:
+If you only need sign-in and agent setup, use:
 
 ```bash
-myco doctor
+myco login <address>
 ```
 
-Doctor warns rather than errors when provider config is absent, because capture and full-text search are useful before intelligence providers are configured.
+A bare address such as `myco.example.com` uses HTTPS. Use the full address, including `http://` and the port, for a local server.
 
-## What Happens Next
+The terminal prints a URL and a code. Open that URL in a browser already signed in to the Myco dashboard. Check the code and machine details, then choose **Approve this machine**. The terminal waits for approval, so this works over SSH too.
 
-Once installed, Myco works automatically:
+### If you are new to the team
 
-- **Session start**: Myco adds a project briefing when intelligence providers are configured
-- **During the session**: Activity (prompts, tool calls, responses) is captured in the vault
-- **After the session**: Myco extracts spores, generates summaries, and links them to your sessions and plans
-- **Over time**: Repeated lessons become wisdom, stale knowledge can be superseded, and approved skills evolve with the code
+Ask an administrator to open **People & machines**, choose **Invite a teammate**, and send you the one-time login command it shows. Run that command in place of the address form above. An invitation expires and works once; ask for a fresh one if it is refused.
 
-You don't need to drive the loop manually. Myco captures knowledge in the background and augments your agents without taking over their native memory or workflows.
+After you join, ask an administrator to choose **Connect GitHub** for your entry on **People & machines** and send you the connection link. Open it in a browser and connect your GitHub account for dashboard access. Then open the dashboard at your Myco's address.
 
-## Dashboard
+## 3. Let repositories join
 
-The dashboard is served by your Deployment, not by the local install. Sign this machine in with your Myco address (`myco login <address>`) and approve the printed code in the dashboard, or run your own Deployment with `myco server create`. Then open the dashboard from any project that has joined it:
+Myco sets up the installed capture agents in their **global** configuration: Claude Code, Codex, Cursor, OpenCode, Pi and Cline. Start a new agent session after setup. See [Agents](agents.md) for locations and controls.
+
+Git repositories under `~/Repos` join the default Myco the first time an agent works in them. A repository joins the project that already holds its Git remote, or creates a project when none does. Change **Folders it captures** under **My machines** to use other parent folders.
+
+For a repository elsewhere, run this inside it:
 
 ```bash
-myco open
+myco member join --no-worker
 ```
 
-The dashboard lets you:
+Choose an existing project or create one when asked. Only Git repositories capture. `myco member status` shows connected repositories and those that are still joining or could not join.
 
-- **Configure** intelligence providers, per-task model assignments, and embedding settings
-- **Manage** Groves, projects, archive/unarchive, project capability toggles, and destructive delete with confirmation
-- **Run operations** like intelligence agent runs, index rebuilds, and manual digest cycles
-- **Monitor** service health, background activity, and system stats
-- **View logs** in real-time with level filtering
+## 4. See the session on Today
 
-The Settings page shows where each setting applies. Changes take effect automatically, and the dashboard prompts for a restart only when one is required.
+Start a **new** session in your coding agent and do some work. Open the dashboard at your Myco's address and select the project on **Today**. The session should appear there; **Sessions** lets you open it later. **Knowledge** holds the project's spores, plans and code map.
 
-See [Grove Management](groves.md) for the guide to Groves, project movement, capture-only projects, and capability toggles.
+Capture and learning are separate. Myco's own agent needs a registered runner with a signed-in coding agent before it can learn from sessions. An administrator registers one using the [self-hosting guide](self-hosting.md). For automatic learning, they also turn on **Work on a schedule** in **Settings**. They can run work manually with **Run a task** under **Myco’s work**.
 
-## MCP tools
+The project switches **Context for sessions**, **Code map** and **Learning** are on by default. A code map and learning from code also need a connected repository. You can see what ran under **Myco’s work**.
 
-Myco exposes a set of MCP tools to your coding agent — search, recall, remember, browse sessions and plans, and inspect skills. Agents discover them automatically through MCP.
-
-See [Agent Tools](agent-tools.md) for the full reference.
-
-## Skills
-
-Myco **auto-generates project-specific skills** from accumulated vault knowledge — repeatable workflows that teach every connected agent how to work in your codebase. As the intelligence pipeline processes sessions, it identifies procedural patterns with cross-session evidence and surfaces them as candidates. You approve what becomes canon in the Skills dashboard; Myco generates and validates the skill, and when you **Publish** it, the SKILL.md file lands in your project for every agent to load. Skills evolve automatically as your code does.
-
-Myco also ships a built-in `myco` skill that activates automatically during ongoing work (design decisions, debugging, vault hygiene), plus three slash-command skills:
-
-| Command | What it does |
-|---------|-------------|
-| `/myco-rules` | Keep `AGENTS.md` minimal, durable, and canonical across agents |
-| `/myco-okf` | Create and maintain an OKF-conformant project wiki from your Myco intelligence |
-| `/myco-handoff` | Hand work off between sessions with plans and context intact |
-
-See the [Skills docs](skills.md) for the full auto-curation lifecycle.
-
-## Troubleshooting
-
-### Something not working?
-
-Run the health check:
+## 5. Check the connection
 
 ```bash
 myco doctor
+myco setup --status
+myco member status
 ```
 
-To auto-repair fixable issues:
+Doctor checks membership, capture, queued delivery, tools, runner state and server reachability. Setup status reports observed progress without changing it. Neither is a replacement for browser approval.
+
+If the server is offline, capture waits on this machine and is delivered when it answers again. To deliver queued capture now, run `myco member drain` from the repository.
+
+If a session does not appear, check that the repository joined, that your agent started a new session after setup, and that the server is reachable. If sessions arrive but no spores appear, ask an administrator to check the runner, schedule and project switches.
+
+## Plugin only
+
+Install Myco from your agent's plugin marketplace, then provide your Myco's address and a project access key when asked. The plugin can read project knowledge and record findings. It carries tools and skills, but no binary or capture hooks. See [External agents](external-agents.md#use-the-plugin). Install the binary and join when you want this machine's sessions captured too.
+
+## Leaving a Myco
 
 ```bash
-myco doctor --fix
+myco logout <address>
 ```
 
-### Service not starting
+This revokes this machine's member credential for that Myco and removes its local connections. Captured data is kept. Other Mycos and runner registrations remain in place. If the server is unreachable, `myco logout <address> --local-only` removes the local connection without revoking the server credential; an administrator can stop it in the dashboard.
 
-Myco is installed as a per-user service and starts at login. Linux and Windows service support is in beta (Windows is x64-only). If it fails:
-
-```bash
-myco restart    # Manual restart
-myco stats      # Check status
-myco logs       # Tail the service log
-```
-
-If Myco is running but no projects are registered yet, start work with a supported agent from any git-tracked project. Myco auto-registers that project into your default Grove and capture starts immediately.
-
-### No observations being captured
-
-Verify your intelligence provider is configured and reachable:
-
-```bash
-myco doctor
-```
-
-For local providers, ensure they're running:
-
-```bash
-# For Ollama
-curl http://localhost:11434/api/tags
-
-# For LM Studio
-curl http://localhost:1234/v1/models
-```
-
-## Uninstall
-
-```bash
-myco remove           # remove Myco's contributions from every agent's global config
-myco remove --purge   # additionally remove ~/.myco/ itself
-```
-
-`myco remove` preserves user-pre-existing keys in shared agent config files (for example, a `[features].hooks` entry you added to `~/.codex/config.toml` yourself).
-
-## Sharing with a team
-
-Hosting a team and joining one both start on the dashboard's **Team** page, which opens on that choice. For headless machines and scripted setups, the same actions are commands in the main package (`myco host enable`, `myco join`, `myco attach`) — there's nothing extra to install. See the [Team Host guide](team-host.md).
+**Known limit:** on a machine joined to two Deployments, an agent's single Myco MCP entry may reach only one of them. Check `myco doctor` before relying on tools across both ([#1724](https://github.com/goondocks-co/myco/issues/1724)).

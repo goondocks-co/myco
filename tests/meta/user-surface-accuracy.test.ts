@@ -157,7 +157,7 @@ describe('user-facing surface matches the shipped transport', () => {
       'host', 'project-id', 'allow-no-pull', 'serve', 'hostname', 'help',
     ]);
 
-    const surfaces = ['README.md', 'docs/install.sh', 'docs/team-host.md'];
+    const surfaces = ['README.md', 'docs/install.sh'];
     const phantom: string[] = [];
     for (const rel of surfaces) {
       for (const flag of teamHostFlags(read(rel))) {
