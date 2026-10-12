@@ -36,6 +36,10 @@ const ENVELOPE_LABELS: Record<string, string> = {
 
 /** Leading envelopes are presentation metadata; capture rewrites never run on stored text. */
 export function promptDisplay(text: string, agent: string | null): DisplayPrompt {
+  return interpretPrompt(text, agent, true);
+}
+
+function interpretPrompt(text: string, agent: string | null, preserveUnclosed: boolean): DisplayPrompt {
   const bundle = CAPTURE_RULE_BUNDLES.find((item) => item.name === agent);
   const tags = new Set<string>(bundle?.displayEnvelopeTags);
   for (const rule of bundle?.rules ?? []) {
@@ -55,7 +59,7 @@ export function promptDisplay(text: string, agent: string | null): DisplayPrompt
     const tag = opening[1]!;
     const inner = rest.slice(opening[0].length);
     const close = new RegExp('</' + tag + '\\s*>').exec(inner);
-    if (close === null) { rest = inner; break; }
+    if (close === null) { if (!preserveUnclosed) rest = inner; break; }
     const content = inner.slice(0, close.index);
     rest = inner.slice(close.index + close[0].length);
     if (tag === 'user_query' || tag === 'command-args') person.push(content);
@@ -68,8 +72,9 @@ export function promptDisplay(text: string, agent: string | null): DisplayPrompt
 
 /** Plain labels use the same envelope interpretation as the conversation. */
 export function displayPrompt(text: string, agent: string | null): string {
-  const shown = promptDisplay(text, agent);
-  return [...shown.envelopes.map((item) => item.inlineText), shown.text].filter(Boolean).join(' ').trim();
+  const shown = interpretPrompt(text, agent, false);
+  const label = [...shown.envelopes.map((item) => item.inlineText), shown.text].filter(Boolean).join(' ').trim();
+  return label || shown.envelopes[0]?.label || '';
 }
 
 export function cleanSessionText(text: string | null | undefined, agent: string | null): string | null {

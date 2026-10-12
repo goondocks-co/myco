@@ -1071,6 +1071,35 @@ describe('the session reading page', () => {
     expect(within(line).getByRole('link', { name: 'Ship the thing' }).getAttribute('href')).toBe('/p/x/plans/plan-1');
   });
 
+  it('labels envelope-only prompt previews and attachment groups with the first chip', async () => {
+    const preview = '<local-command-stdout>tool output</local-command-stdout>';
+    expect(promptPreview({ preview, textChars: preview.length, blobKey: null }, 'claude-code')).toBe('Command output');
+    server(routes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ preview, textChars: preview.length })]),
+      '/api/projects/x/sessions/s1/turns?origins=agent_dispatch%2Chook_injected%2Csystem%2Cunknown%2Cuser&limit=200&order=desc': () => page([turn({ preview, textChars: preview.length })]),
+    }));
+    mount('/p/x/sessions/s1?raw=attachments');
+    const attachments = await screen.findByRole('region', { name: 'Attachments' });
+    const group = await within(attachments).findByRole('region', { name: 'Command output', exact: true });
+    expect(within(group).getByText('Command output', { exact: true })).toBeTruthy();
+    expect(within(group).getByRole('img', { name: 'a screenshot' })).toBeTruthy();
+    expect(within(group).getByRole('list', { name: 'Attachments of Command output' })).toBeTruthy();
+  });
+
+  it('preserves unclosed leading markup verbatim in the full turn body', async () => {
+    const text = '<skill> handling is broken';
+    server(routes({
+      [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
+        prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text, blobKey: null, createdAt: NOW },
+        responses: [], attachments: [], plans: [], children: [], injection: null,
+      }),
+    }));
+    mount('/p/x/sessions/s1');
+    const row = await screen.findByTestId(`turn-${P1}`);
+    expect(await within(row).findByText(text, { exact: true })).toBeTruthy();
+    expect(within(row).queryByRole('button', { name: 'Skill', exact: true })).toBeNull();
+  });
+
   it('folds the transcript, context and attachments into Raw data, links the transcript by piece, and never fetches its bytes', async () => {
     const { requested } = server(routes());
     mount('/p/x/sessions/s1');
@@ -1212,7 +1241,7 @@ describe('the session reading page', () => {
 describe('prompt display follows harness formats', () => {
   it.each([
     ['claude-code', '<command-name>/fork</command-name><command-message>fork</command-message><local-command-stdout>done</local-command-stdout><system-reminder>guidance</system-reminder>', '/fork'],
-    ['codex', '<subagent_notification id="a">done</subagent_notification><environment_context>cwd</environment_context>', ''],
+    ['codex', '<subagent_notification id="a">done</subagent_notification><environment_context>cwd</environment_context>', 'Sub-agent notification'],
     ['cursor', '<timestamp>now</timestamp><user_query>fix the bug</user_query><attached_files>file</attached_files>', 'fix the bug'],
     ['opencode', 'Keep <b>my markup</b>', 'Keep <b>my markup</b>'],
   ])('%s markup', (agent, input, expected) => {
@@ -1252,7 +1281,7 @@ describe('leading envelope ownership', () => {
   });
   it('keeps unclosed personal markup out of harness chrome', () => {
     const text = '<skill> handling is broken in the parser, please fix it';
-    expect(promptDisplay(text, 'claude-code')).toEqual({ text: ' handling is broken in the parser, please fix it', envelopes: [] });
+    expect(promptDisplay(text, 'claude-code')).toEqual({ text, envelopes: [] });
     expect(displayPrompt(text, 'opencode')).toBe(text);
     expect(promptDisplay('<system-reminder>please fix this', 'claude-code').envelopes).toEqual([]);
   });
