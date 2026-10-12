@@ -71,7 +71,7 @@ const held = (leaseMs: number) => {
 };
 const unreachable = () => Response.json({ error: 'unavailable' }, { status: 503 });
 
-async function expectLost(r: ReturnType<typeof rig>, worker: ReturnType<ReturnType<typeof rig>['start']>, latestStopMs: number): Promise<void> {
+async function expectLost(r: ReturnType<typeof rig>, worker: ReturnType<ReturnType<typeof rig>['start']>, latestStopMs: number, from?: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const settled = await Promise.race([worker.then(() => true), new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), 3_000); })]);
@@ -81,7 +81,9 @@ async function expectLost(r: ReturnType<typeof rig>, worker: ReturnType<ReturnTy
     expect(r.pids().map(alive)).toEqual([false]);
     const lost = r.lines.find(entry => entry.line.includes('stopping the harness'));
     expect(lost).toBeDefined();
-    expect(lost!.at - r.claimedAt()).toBeLessThan(latestStopMs);
+    const start = from ?? r.claimedAt();
+    expect(lost!.at).toBeGreaterThanOrEqual(start);
+    expect(lost!.at - start).toBeLessThan(latestStopMs);
   } finally { clearTimeout(timer); }
 }
 
@@ -102,12 +104,13 @@ describe('a worker stops at its accepted lease expiry', () => {
 
   it('checks awake clock expiry on a heartbeat while renewal requests never return', async () => {
     let offset = 0;
-    const r = rig({ heartbeatMs: 30, leaseMs: 300, renewal: () => new Promise<Response>(() => {}), clock: () => Date.now() + offset });
+    const r = rig({ heartbeatMs: 30, leaseMs: 1_000, renewal: () => new Promise<Response>(() => {}), clock: () => Date.now() + offset });
     const worker = r.start();
     try {
       await until(() => r.renewalCount() >= 3);
-      offset += 200;
-      await expectLost(r, worker, 250);
+      const jumped = Date.now();
+      offset += 900;
+      await expectLost(r, worker, 200, jumped);
     } finally { r.release(); r.stopping.abort(); await worker; }
   }, 10_000);
 
