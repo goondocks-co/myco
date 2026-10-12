@@ -98,9 +98,12 @@ test.describe('Myco’s work', () => {
     test.skip(!onFixture(), 'Requires the screen fixture’s failed run.');
     const { context, page, watch } = await openPage(browser, { path: workPath(), viewport: 'desktop', mode: 'light', cookie: screensEnv('ownerCookie') });
     try {
-      await card(page, 'map').getByRole('link', { name: 'Open the latest attempt →' }).click();
       const panel = page.locator('[data-slide-over]');
-      await expect(panel.locator('[data-run-failure]')).toContainText('The task stopped before it could finish.');
+      await watch.navigate(async () => {
+        await card(page, 'map').getByRole('link', { name: 'Open the latest attempt →' }).click();
+        await expect(page).toHaveURL(/\/work\/runs\//);
+        await expect(panel.locator('[data-run-failure]')).toContainText('The task stopped before it could finish.');
+      });
       await expect(panel).not.toContainText('the run ended without its artifact');
       await expect(panel.locator('[data-run-report]')).toContainText('repo.sha256');
       await panel.locator('[data-run-technical]').getByRole('button', { name: /Technical details/ }).click();
@@ -146,10 +149,12 @@ test.describe('Myco’s work', () => {
       try {
         const runs = card(page, 'learn').getByRole('list', { name: 'Latest learning runs' });
         const line = onFixture() ? runs.locator('li', { hasText: '4 spores' }) : runs.locator('li').first();
-        await line.getByRole('link').click();
         const panel = page.locator('[data-slide-over]');
-        await expect(panel).toBeVisible();
-        await expect(page).toHaveURL(/\/work\/runs\//);
+        await watch.navigate(async () => {
+          await line.getByRole('link').click();
+          await expect(panel).toBeVisible();
+          await expect(page).toHaveURL(/\/work\/runs\//);
+        });
         await expect(panel.locator('[data-run-headline]')).toBeInViewport();
         if (onFixture()) {
           await expect(panel.locator('[data-run-headline]')).toHaveText('Learned 4 spores from 1 session');
@@ -176,9 +181,11 @@ test.describe('Myco’s work', () => {
         await expectNoRawIds(page);
         await expectAxeClean(page, ['[data-slide-over]']);
         await shoot(page, `work-run-${role}`, viewport, mode);
-        await panel.getByRole('button', { name: 'Close' }).click();
-        await expect(panel).toHaveCount(0);
-        await expect(page).toHaveURL(new RegExp(`${workPath().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+        await watch.navigate(async () => {
+          await panel.getByRole('button', { name: 'Close' }).click();
+          await expect(panel).toHaveCount(0);
+          await expect(page).toHaveURL(new RegExp(`${workPath().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+        });
         expectQuiet(watch);
       } finally {
         await context.close();
@@ -255,7 +262,7 @@ test.describe('Myco’s work', () => {
 
   test('the Agent runs address leads to Myco’s work', async ({ browser }) => {
     const { projectId } = fixtureProject();
-    const { context, page, watch } = await openPage(browser, { path: `/p/${encodeURIComponent(projectId)}/runs`, viewport: 'desktop', mode: 'dark', cookie: screensEnv('memberCookie') });
+    const { context, page, watch } = await openPage(browser, { path: `/p/${encodeURIComponent(projectId)}/runs`, destination: new RegExp(`/p/${projectId}/work$`), viewport: 'desktop', mode: 'dark', cookie: screensEnv('memberCookie') });
     try {
       await expect(page).toHaveURL(new RegExp(`/p/${projectId}/work$`));
       await expect(page.getByRole('heading', { level: 1, name: 'Myco’s work' })).toBeVisible();
@@ -281,9 +288,11 @@ for (const viewport of ['desktop', 'phone'] as const) for (const mode of ['light
       await expectAxeClean(page);
       const shot = await shoot(page, 'run-panel-empty-window', viewport, mode, process.env.MYCO_RUN_PANEL_SHOTS);
       await page.screenshot({ path: shot, fullPage: false });
-      await all.click();
-      await expect(page.getByRole('button', { name: 'All-time run history' })).toHaveAttribute('aria-expanded', 'true');
-      await expect(page.getByRole('button', { name: 'Code map updates · all time' })).toHaveAttribute('aria-expanded', 'true');
+      await watch.navigate(async () => {
+        await all.click();
+        await expect(page.getByRole('button', { name: 'All-time run history' })).toHaveAttribute('aria-expanded', 'true');
+        await expect(page.getByRole('button', { name: 'Code map updates · all time' })).toHaveAttribute('aria-expanded', 'true');
+      });
       expectQuiet(watch);
     } finally { await context.close(); }
   });

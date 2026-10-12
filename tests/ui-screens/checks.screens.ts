@@ -7,7 +7,7 @@ let origin: string;
 
 test.beforeAll(async () => {
   server = createServer((request, response) => {
-    if (request.url === '/pending') {
+    if (request.url?.startsWith('/pending')) {
       return;
     }
     if (request.url === '/error') {
@@ -24,6 +24,25 @@ test.beforeAll(async () => {
             event.preventDefault();
             history.pushState({}, '', '/destination');
             controller.abort();
+          });
+        </script>
+      `);
+      return;
+    }
+    if (request.url === '/spa-navigation') {
+      response.writeHead(200, { 'Content-Type': 'text/html' }).end(`
+        <a href="/destination">Navigate</a>
+        <script>
+          const controllers = ['runs', 'spores', 'sessions'].map((resource) => {
+            const controller = new AbortController();
+            void fetch('/pending?resource=' + resource, { signal: controller.signal }).catch(() => {});
+            return controller;
+          });
+          document.querySelector('a').addEventListener('click', async (event) => {
+            event.preventDefault();
+            controllers.forEach((controller) => controller.abort());
+            await window.abortsObserved();
+            history.pushState({}, '', '/destination');
           });
         </script>
       `);
@@ -72,6 +91,56 @@ test('watchPage reports ERR_ABORTED without a later navigation', async ({ page }
   const failed = page.waitForEvent('requestfailed');
   await page.evaluate(() => fetch('/aborted').catch(() => undefined));
   expect((await failed).failure()?.errorText).toBe('net::ERR_ABORTED');
+  expect(watch.failedRequests).toEqual([`GET ${origin}/aborted: net::ERR_ABORTED`]);
+  expect(() => expectQuiet(watch)).toThrow();
+});
+
+for (const loadInAction of [false, true]) test(`watchPage stays quiet when SPA aborts precede the navigation action commit${loadInAction ? ' after a document load in that action' : ''}`, async ({ page }) => {
+  const watch = watchPage(page);
+  const resources = ['runs', 'spores', 'sessions'];
+  const urls = resources.map((resource) => `${origin}/pending?resource=${resource}`);
+  const started = Promise.all(urls.map((url) => page.waitForRequest(url)));
+  const failed = Promise.all(urls.map((url) => page.waitForEvent('requestfailed', (request) => request.url() === url)));
+  await page.exposeFunction('abortsObserved', async () => { await failed; });
+  const events: string[] = [];
+  const load = async () => {
+    await page.goto(`${origin}/spa-navigation`);
+    await started;
+    page.on('requestfailed', (request) => { events.push(request.failure()?.errorText ?? 'failed'); });
+    page.on('framenavigated', () => { events.push('commit'); });
+  };
+  if (!loadInAction) await load();
+  await watch.navigate(async () => {
+    if (loadInAction) await load();
+    await page.getByRole('link', { name: 'Navigate' }).click();
+    await expect(page).toHaveURL(`${origin}/destination`);
+  });
+  expect(events).toEqual(['net::ERR_ABORTED', 'net::ERR_ABORTED', 'net::ERR_ABORTED', 'commit']);
+  expectQuiet(watch);
+});
+
+test('watchPage reports an abort when the navigation action never commits', async ({ page }) => {
+  const watch = watchPage(page);
+  await page.goto(origin);
+  await page.route('**/aborted', (route) => route.abort('aborted'));
+  await watch.navigate(async () => {
+    const failed = page.waitForEvent('requestfailed');
+    await page.evaluate(() => fetch('/aborted').catch(() => undefined));
+    await failed;
+  });
+  await watch.navigate(() => page.goto(`${origin}/destination`));
+  expect(watch.failedRequests).toEqual([`GET ${origin}/aborted: net::ERR_ABORTED`]);
+  expect(() => expectQuiet(watch)).toThrow();
+});
+
+test('watchPage retains a genuine abort before a navigation action begins', async ({ page }) => {
+  const watch = watchPage(page);
+  await page.goto(origin);
+  await page.route('**/aborted', (route) => route.abort('aborted'));
+  const failed = page.waitForEvent('requestfailed');
+  await page.evaluate(() => fetch('/aborted').catch(() => undefined));
+  await failed;
+  await watch.navigate(() => page.goto(`${origin}/destination`));
   expect(watch.failedRequests).toEqual([`GET ${origin}/aborted: net::ERR_ABORTED`]);
   expect(() => expectQuiet(watch)).toThrow();
 });

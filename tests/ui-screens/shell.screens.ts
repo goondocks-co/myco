@@ -171,13 +171,17 @@ test.describe('dashboard shell', () => {
         // A pick keeps the section and the list's filters; All projects leads to the section's form across every project.
         const other = list.locator('[data-scope-option="project"]:not([aria-checked="true"])').first();
         if (await other.count() > 0) {
-          await other.click();
-          await expect(page).toHaveURL(/\/p\/[^/]+\/sessions\?state=ended$/);
+          await watch.navigate(async () => {
+            await other.click();
+            await expect(page).toHaveURL(/\/p\/[^/]+\/sessions\?state=ended$/);
+          });
           expect(new URL(page.url()).pathname).not.toBe(sessions);
           await page.locator('main [data-scope-switcher]').click();
         } else await trigger.click();
-        await page.getByRole('menu').locator('[data-scope-option="all"]').click();
-        await expect(page).toHaveURL(/\/sessions\?state=ended$/);
+        await watch.navigate(async () => {
+          await page.getByRole('menu').locator('[data-scope-option="all"]').click();
+          await expect(page).toHaveURL(/\/sessions\?state=ended$/);
+        });
         await expect(page.locator('main [data-scope-switcher]')).toHaveAttribute('data-scope-switcher', 'all');
         await expect(page.locator('main [data-scope-current]')).toHaveText('All projects');
         expectQuiet(watch);
