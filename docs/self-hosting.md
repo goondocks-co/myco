@@ -91,7 +91,9 @@ Run the command for your target. Local status distinguishes an installed service
 
 To watch a local server in this terminal, use `myco server run --target local`. Stop it with Ctrl-C. `myco server uninstall --target local` stops the installed service and keeps data; it does not stop a separate foreground process.
 
-`myco server destroy --target cloudflare --yes` removes the Worker while keeping storage and keys. A later create can bring it back. `myco server destroy --target local --data --yes` deletes the local Deployment's data. Also, **`myco remove --purge` deletes the Myco home, including a local Deployment**. Keep a verified backup and recovery credentials before removing data.
+`myco server destroy --target cloudflare --yes` removes the Worker while keeping storage and keys. A later create can bring it back. `myco server destroy --target local --data --yes` deletes the local Deployment's data.
+
+**Do not run `myco remove --purge` on a machine hosting a Deployment until [#1794](https://github.com/goondocks-co/myco/issues/1794) lands.** It deletes the entire Myco home, including a local server's data and the Cloudflare operator record. The current removal summary does not protect or clearly name those resources. Leaving a team or stopping a runner does not require purging data.
 
 ## Back up and restore
 
@@ -148,9 +150,23 @@ A database restore discards writes after its bookmark and does not restore R2 ob
 
 ## Custom-domain requests blocked before Myco
 
-If capture or import gets an HTTP 403 without Myco's JSON refusal, check Cloudflare **Security Events** for the request's Ray ID. A 403 alone does not prove a firewall rule blocked it. If those events identify a zone rule, use a narrowly scoped **Skip** rule for the Myco hostname and affected paths, placed before the blocking rules. Keep logging enabled; see Cloudflare's [Skip action](https://developers.cloudflare.com/waf/custom-rules/skip/).
+If login, capture, import or tool calls get an HTTP 403 or HTML challenge instead of a Myco response, check Cloudflare **Security Events** for the request's Ray ID. A 403 alone does not prove a firewall rule blocked it. If those events identify a zone rule, use a narrowly scoped **Skip** rule for the Myco hostname and affected paths. Place it **first**, before the blocking custom rules, and select only the rules Security Events identifies. Keep logging enabled; see Cloudflare's [Skip action](https://developers.cloudflare.com/waf/custom-rules/skip/).
 
-Capture and import use `/members/`, `/events`, `/blobs/` and `/import/` paths. Extend an exception only when evidence identifies another blocked route. Myco still checks credentials. Retry `myco import` from the affected repository, or resume a 1.4 move with `myco cutover`.
+Match only the affected routes: `/auth/` paths for sign-in and device polling, `/api/device/` paths for approval, `/mcp` for tool calls, and `/members/`, `/events`, `/blobs/` and `/import/` for joining, capture and imports. For example, when these routes are blocked:
+
+```text
+(http.host eq "myco.example.com" and (
+  starts_with(http.request.uri.path, "/auth/") or
+  starts_with(http.request.uri.path, "/api/device/") or
+  http.request.uri.path eq "/mcp" or
+  starts_with(http.request.uri.path, "/members/") or
+  http.request.uri.path eq "/events" or
+  starts_with(http.request.uri.path, "/blobs/") or
+  starts_with(http.request.uri.path, "/import/")
+))
+```
+
+Extend an exception only when evidence identifies another blocked route. Myco still checks credentials. Retry `myco import` from the affected repository, or resume a 1.4 move with `myco cutover`.
 
 <a id="unsupported-self-hosting"></a>
 

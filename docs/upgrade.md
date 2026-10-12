@@ -10,7 +10,7 @@ myco update
 myco doctor
 ```
 
-Members update on demand. `--check` reports availability without replacing the binary or changing agent setup. `myco update` verifies the download, replaces the installed binary and refreshes global agent configuration, even when the binary is already current. Read its result for any remaining step, then start a new coding-agent session. Doctor checks the connection and setup and reports cached update information.
+Myco 2.0 updates on demand on member machines. A member installation runs no member update timer or local service. `--check` reports availability without replacing the binary or changing agent setup. `myco update` verifies the download, replaces the installed binary and refreshes global agent configuration, even when the binary is already current. Read its result for any remaining step, then start a new coding-agent session. Doctor checks the connection and setup and reports cached update information.
 
 The installer records a release channel. **Stable** selects stable releases; **beta** includes beta and stable; **alpha** includes alpha, beta and stable. Updates choose the newest eligible version and keep your current build when the available one is older. A fresh installer chooses an available 2.x stable release, then beta, then alpha when no later release phase exists.
 
@@ -52,6 +52,8 @@ Take a verified full backup before a local storage-format change. Cloudflare sav
 
 ## Moving from Myco 1.4
 
+Myco 1.4 retains its local service and background updater. Moving to 2.0 hands capture to member hooks; Myco's own work needs a registered runner.
+
 Choose or [create a Deployment](self-hosting.md) and obtain its address first. Keep a backup of the 1.4 home. Installing 2.0 replaces the binary immediately; old hooks stop capturing until sign-in and cutover finish. The installer preserves a recognized 1.4 installation unless you explicitly pass `--replace-1.4`. It keeps and refuses an unrecognized binary rather than guessing.
 
 Preview the replacement, then install and sign in:
@@ -65,7 +67,7 @@ myco cutover --dry-run
 
 To choose a release phase explicitly, set `MYCO_CHANNEL=beta` or `MYCO_CHANNEL=alpha` on `sh`. On Windows x64, use the PowerShell installer's `-Replace14` option; the 2.0 Windows path is not yet verified.
 
-The cutover preview names the old homes, projects, destination for each project, agent settings changes, service handover and copies it would make. Review all of them. Cutover uses a repository's existing connection to choose its Deployment; it refuses unresolved projects rather than guessing. Sign in to each destination before continuing.
+The cutover preview names the old homes, projects, destination for each project, agent settings changes, service handover and copies it would make. Review all of them. Cutover uses a repository's existing connection or a saved destination receipt first. An existing Git repository without a connection or saved route goes to the default Deployment, labelled `(default Deployment; no repository route)` in the plan. Only absent or rootless repositories with no route are refused, unless you give `--route`, `--skip` or `--server`. Sign in to each destination before continuing.
 
 ### Resolve destinations and old folders
 

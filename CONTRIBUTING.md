@@ -84,4 +84,4 @@ Keep changes focused and explain the resulting behavior, the checks you ran and 
 
 Release preparation and publication are separate. Prepare version and generated-plugin changes in a reviewed PR. The exact tagged commit must have green main CI and pass code-generation drift checks; verify the dry-run publication before publishing. Do not use a local successful build as evidence that a release is available. Members update on demand; runners update between runs.
 
-Contributor references: [Plugin versions](docs/development/plugin-versioning-1709.md), [macOS signing](docs/development/macos-release-signing.md), [agent teams](docs/development/agent-teams.md), and the opt-in [worker smoke rig](docs/development/worker-smoke-rig.md).
+Contributor references: [Release ordering](docs/development/release-ordering.md), [Plugin versions](docs/development/plugin-versioning-1709.md), [macOS signing](docs/development/macos-release-signing.md), [agent teams](docs/development/agent-teams.md), and the opt-in [worker smoke rig](docs/development/worker-smoke-rig.md).

@@ -109,11 +109,11 @@ myco runner status --server <address>
 myco runner doctor --server <address>
 ```
 
-Check registration, recent contact and the agents offered or withheld. A running process alone does not prove an agent can take a task. The runner uses agents already signed in on that machine. For registration and operation, see [Run your own Myco](self-hosting.md).
+Check registration, recent contact and the agents offered or withheld. A running process alone does not prove an agent can take a task. The runner uses agents already signed in on that machine. For registration and operation, see [Runners](runners.md).
 
 ## Cloudflare returns 403
 
-If login, capture or tool calls receive an HTML challenge instead of a Myco response, ask the server's operator to check Cloudflare security events. A WAF or bot challenge can reject non-browser clients before Myco sees the request. Follow the WAF guidance in [Run your own Myco](self-hosting.md#on-cloudflare), then check Doctor again. Reinstalling capture hooks does not resolve a challenge at the server's front door.
+If login, capture or tool calls receive an HTML challenge instead of a Myco response, ask the server's operator to check Cloudflare security events. A WAF or bot challenge can reject non-browser clients before Myco sees the request. Follow the WAF guidance in [Run your own Myco](self-hosting.md#custom-domain-requests-blocked-before-myco), then check Doctor again. Reinstalling capture hooks does not resolve a challenge at the server's front door.
 
 ## Removing Myco
 

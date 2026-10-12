@@ -18,7 +18,7 @@ Plans come from your coding agents, rather than a Myco task. Capture sends their
 
 Every Myco task runs on a **registered runner**, using an agent already signed in on that machine: Claude Code, Codex, OpenCode, Cursor or Antigravity. The server holds the queue, builds the task's prompt and checks the result. The runner takes the work and drives the agent.
 
-Signing a machine in for capture does not register a runner. Running a server does not start one either. An administrator must explicitly register a runner and approve it in the dashboard; see [Run your own Myco](self-hosting.md). **Runners** shows registrations, contact and available agents.
+Signing a machine in for capture does not register a runner. Running a server does not start one either. An administrator must explicitly register a runner and approve it in the dashboard; see [Runners](runners.md). **Runners** shows registrations, contact and available agents.
 
 Work waits when no runner can take it. If a repository task is waiting, its runner also needs to be able to check out the connected repository. **Myco’s work** shows why a run is waiting.
 

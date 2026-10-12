@@ -37,11 +37,11 @@ On Windows x64, in PowerShell:
 irm https://myco.sh/install.ps1 | iex
 ```
 
-The 2.0 Windows path is not yet verified. Windows ARM has no supported build. A binary destination containing whitespace is refused; choose a destination without spaces rather than retrying unchanged.
+The 2.0 Windows path is not yet verified. Windows on ARM has no supported build. A binary destination containing whitespace is refused; choose a path with no spaces rather than retrying unchanged.
 
 ## 2. Join a Deployment
 
-Obtain the Myco address or the administrator's one-time invitation command. From the repository to connect:
+Obtain the Myco address or the administrator's one-time invitation command. An invite link is optional when you already sign in to the dashboard; a new teammate needs an administrator's invitation and GitHub account connection first. From the repository to connect:
 
 ```bash
 myco setup --join <address>
