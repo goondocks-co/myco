@@ -70,15 +70,15 @@ Four, and none is retryable — each names a fault in the caller's own request:
 | not a deployment-tier leaf | the name is not a leaf this tier owns |
 | unauthorized | the actor may not make this change |
 | invalid value | the leaf's own rule rejected it, with a detail naming why |
-| unknown capability | the capability name is not one of the four |
+| unknown capability | the capability name is not one of the three |
 
 ## Project capabilities
 
-Capabilities are the other half of this module, and they have one property worth stating loudly: **absent means disabled**.
+The three project capabilities are **Context for sessions**, **Code map** and **Learning**. All are **on by default**: a missing capability row means enabled. An explicit opt-out stays off, and archived projects are excluded from automatic work.
 
-A project appears the first time a member writes, with no provisioning moment. If an absent row meant enabled, every new project would silently acquire every cost-bearing capability the moment it appeared. So a capability is on only when a row says so, and the report of a project's capabilities defaults every missing row to off.
+Enabling a capability does not register a runner or turn on scheduled work. Myco's agent work runs only on registered runners. **Work on a schedule** starts off; automatic map updates also require **Update the map on its own**. Repository tasks need a connected repository.
 
-That is the inverse of the 1.4 local behaviour. If you are porting logic that assumed a default of enabled, it is wrong here.
+**Runs of one task at once** defaults to 2 across projects. Additional runs queue. First extraction of a large history ramps at two automatic runs a day until that initial history drains or the active window expires; recent live sessions have reserved daily slots. Use the settings module's effective capability read rather than testing for a stored row.
 
 ## The one setting people ask about
 

@@ -1,144 +1,87 @@
 # Contributing to Myco
 
-Myco is a collective intelligence plugin for coding projects, supporting Claude Code, Cursor, Codex, Cline, Copilot, Google Antigravity, Devin Desktop, OpenCode, and Pi. This guide covers development setup and project conventions. For architecture details, see [Lifecycle docs](https://github.com/goondocks-co/myco/blob/release/1.4/docs/lifecycle.md).
+Myco captures coding sessions and serves project knowledge back to agents. In 2.0, a server owns the data, member machines capture and read, and explicitly registered runners do Myco's agent work. Read [AGENTS.md](AGENTS.md) for repository rules and the [2.0 architecture](docs/architecture/myco-2.0.md) before changing runtime ownership. [Actors & boundaries](docs/architecture/actors-and-boundaries.md) defines who each surface serves.
 
-## Installing Myco (End Users)
+For installing and using Myco, start at [Join a Myco](docs/quickstart.md). This page is for working on the repository.
 
-```bash
-curl -fsSL https://myco.sh/install.sh | sh
-```
+## Set up a checkout
 
-Then in any project:
-
-```bash
-cd your-project
-myco init
-```
-
-This sets up the vault, configures your LLM backend, and starts capturing session knowledge.
-
-### Requirements
-
-- Node.js 22+
-- One or more supported coding agents (Claude Code, Cursor, Codex, Cline, Copilot, Google Antigravity, Devin Desktop, OpenCode, or Pi)
-- **Embedding provider** (one of): [Ollama](https://ollama.com) with `bge-m3` (local, free), [OpenRouter](https://openrouter.ai), or [OpenAI](https://platform.openai.com)
-- **Intelligence provider** (one of): Cloud (Claude), [Ollama](https://ollama.com), or [LM Studio](https://lmstudio.ai)
-
-For Ollama embeddings, pull the recommended model:
-
-```bash
-ollama pull bge-m3
-```
-
-## Development Setup
-
-### 1. Clone and install
+Install Node and npm for the build tooling, and the Bun version pinned in [.bun-version](.bun-version) for the runtime and tests. CI's setup is in [.github/actions/ci-setup/action.yml](.github/actions/ci-setup/action.yml).
 
 ```bash
 git clone https://github.com/goondocks-co/myco.git
 cd myco
-npm install
-npm run hooks:install
+npm ci
 ```
 
-The hook checks every staged file under `tests/fixtures/` for credential and identity patterns before a commit. It reads the Git index, including during partial commits. Redact recordings before staging them, then inspect the staged diff yourself: pattern checks cannot identify every sensitive detail. Failures show the file, line, and rule without printing the matched content. Run `npm run check:fixtures` to check the index manually.
-
-Hook installation preserves other Git hooks and refuses to replace an existing `pre-commit` or modify a custom `core.hooksPath`. If you manage hooks yourself, add `node --import tsx scripts/check-fixture-redaction.ts` to your pre-commit checks and propagate its exit status. Install once per clone; linked worktrees share the hook. Source archives have no Git hooks to install.
-
-### 2. Initialize the vault
+The server dashboard and documentation site have their own dependencies. Install them when working on those surfaces:
 
 ```bash
-myco init
+npm ci --prefix packages/myco-server/ui
+npm ci --prefix docs
 ```
 
-For dogfooding, the vault lives in the project-local `.myco/` directory — Myco vaults are always project-local, never global.
+Do not initialize a local vault to develop the 2.0 server. Keep test homes, credentials and databases separate from your real Myco installation. Tests that need a home should use disposable directories and the repository's isolation helpers; see [Test temporary directories](docs/development/test-temp-isolation.md).
 
-### 3. Verify
+## Repository layout
+
+| Path | Owns |
+|---|---|
+| `packages/myco/` | Native member and runner CLI, capture hooks, agent integration, shipped skills and server operator commands. Retained 1.4 runtime code also lives here. |
+| `packages/myco-server/src/` | The server: event processing, sessions, knowledge, settings, MCP and the task queue. |
+| `packages/myco-server/ui/` | The user dashboard. |
+| `packages/myco-shared/` | Contracts shared by the member, runner, server and dashboard. |
+| `packages/myco-{darwin,linux,windows}-*/` | Platform binary distribution packages. |
+| `plugins/myco/` | Generated plugin bundle; edit its sources under `packages/myco/skills/`. |
+| `tests/` | Source tests, integration tests and architectural gates. |
+| `docs/` | User site, architecture references and contributor material under `development/`. |
+
+The server is authoritative for 2.0 session processing and knowledge. Hooks build events, append them to the member spool and deliver within their budget. They do not import the daemon or process sessions themselves. UI, CLI and MCP operations share underlying implementations; route shared-state writes through the capabilities in AGENTS.md.
+
+## Check a change
+
+Start with the smallest relevant tests:
 
 ```bash
-myco doctor    # Health check
-myco stats     # Daemon status
+npm test -- tests/member/
+npm run lint
 ```
 
-## Development Workflow
+`npm test` is the canonical full test command. `make build` runs lint, the fast test profile and the distributable build; `make build-all` includes the full test sweep. Both also attempt a dogfood refresh in the main checkout. In a worktree that refresh is skipped. Use `make build-only` when you need artifacts without a dogfood refresh.
 
-### Build and test
+Before finishing a feature, run `make build` and smoke-test the changed behavior through the real command or runtime path. Use isolated homes for smoke tests. Do not install test services or connect test machines to real accounts.
+
+For documentation changes:
 
 ```bash
-make build             # lint + test + tsc + copy templates
-make check             # lint + test only (pre-commit gate)
-make watch             # tsc watch mode
-make clean             # remove dist/
+npm run build --prefix docs
+npm test --prefix docs
+npm test -- tests/meta/
 ```
 
-### After code changes
+The docs CLI accuracy gate checks commands on published pages against the 2.0 CLI. Verify page labels and settings against the server dashboard's navigation and settings catalogue too. Every server command example must choose its target explicitly.
 
-Hooks pick up new code on the next invocation. The daemon must be restarted separately:
+For shipped skill changes, regenerate the plugin bundle and both skill catalogues, then run their contracts:
 
 ```bash
-make build && myco restart
+npx tsx packages/myco/scripts/gen-plugin-bundle.ts
+npm test -- tests/skills/
 ```
 
-## Project Structure
+Generated files belong in the same commit as their sources. Skill trigger eval contracts check case structure and vocabulary; they do not prove a model will invoke a skill. See [Pull request checks](docs/development/ci.md) for the CI matrices and targeted shard commands.
 
-The repo is an npm workspace with three publishable packages and one private helper package under `packages/`.
+## Dogfood deliberately
 
-```
-myco/
-├── .github/                          # CI workflows + VS Code Copilot agent manifest
-├── packages/
-│   ├── myco/                         # Main package: CLI, daemon, hooks, MCP, dashboard
-│   │   ├── src/
-│   │   │   ├── agent/                # Intelligence pipeline: wave-based executor, task definitions, orchestrator
-│   │   │   ├── capture/              # Event buffering (EventBuffer) and buffer-based turn fallback
-│   │   │   ├── cli/                  # CLI commands (init wizard, doctor, config)
-│   │   │   ├── config/               # Vault config loading and Zod schema
-│   │   │   ├── context/              # Context injection for UserPromptSubmit hook
-│   │   │   ├── daemon/               # Long-lived HTTP daemon: batch processing, session lifecycle, digest
-│   │   │   ├── db/                   # SQLite database schema and migrations
-│   │   │   ├── entries/              # Hook entry wrappers
-│   │   │   ├── hooks/                # Hook entry points (thin — delegate to daemon)
-│   │   │   ├── index/                # SQLite FTS5 + sqlite-vec vector search
-│   │   │   ├── intelligence/         # LLM backend abstraction (Ollama, LM Studio, Anthropic)
-│   │   │   ├── mcp/                  # MCP server + tool handlers
-│   │   │   ├── prompts/              # LLM prompt templates (extraction, summary, title, classification)
-│   │   │   ├── services/             # Shared service logic (used by both CLI and API)
-│   │   │   ├── symbionts/            # Symbiont adapters and manifests (Claude Code, Cursor, Codex, Cline, Copilot, Antigravity, Devin Desktop, OpenCode, Pi) — transcript discovery, parsing, and project-local registration
-│   │   │   └── vault/                # Reader, writer, Zod schemas for database records
-│   │   └── skills/                   # Skill markdown files (subdirectory per skill)
-├── tests/                            # Mirrors packages/myco/src/ structure
-├── docs/                             # Lifecycle, quickstart, agent tools
-└── Makefile                          # Dev shortcuts
-```
+Development sessions are real project history. Preserve capture continuity and avoid destructive vault operations.
 
-## Architecture
+From the **main checkout**, `make dev-link` builds and installs the shared development binary. From a **Git worktree**, use `make dev-link-worktree`: it builds the worktree binary and writes a local runtime pin without replacing shared symlinks. See the `dogfood-worktree` skill before using it; worktrees can share capture storage, so schema changes need care.
 
-See [docs/lifecycle.md](https://github.com/goondocks-co/myco/blob/release/1.4/docs/lifecycle.md) for the full lifecycle with diagrams. Key points:
+Do not run `make dev-link` from a worktree. Prefer not to restart the shared daemon from a worktree. For retained hook or daemon changes, follow AGENTS.md's build and restart guidance. A member-only 2.0 machine has no capture daemon to restart.
 
-- **Hooks are thin** — they delegate to the daemon via HTTP. No business logic in hooks.
-- **The daemon is the authority** — all event processing, session recording, spore extraction, and embedding happen there.
-- **Transcripts are the source of truth** — session conversation turns are read from the agent's native transcript file (Claude Code `.jsonl`, Cursor `.txt`/`.jsonl`), not from Myco's event buffer. The buffer is the fallback when no transcript is available.
-- **Sessions are rebuilt from transcripts** — on each stop event, the full conversation is re-parsed from the transcript and the session record is regenerated. Data preservation is guaranteed by the transcript being append-only.
+## Pull requests and releases
 
-## Distribution
+Keep changes focused and explain the resulting behavior, the checks you ran and any validation limits. Add regression coverage when behavior changes. Keep comments about current behavior; put change history and decision rationale in the commit or PR description.
 
-One package is actively published to [npmjs.org](https://www.npmjs.com/) under the `@goondocks` scope:
+Release preparation and publication are separate. Prepare version and generated-plugin changes in a reviewed PR. The exact tagged commit must have green main CI and pass code-generation drift checks; verify the dry-run publication before publishing. Do not use a local successful build as evidence that a release is available. Members update on demand; runners update between runs.
 
-- [`@goondocks/myco`](https://www.npmjs.com/package/@goondocks/myco) — main CLI, daemon, hooks, and dashboard (plus its per-platform binary packages)
-
-`@goondocks/myco-team` and `@goondocks/myco-collective` are retired and removed from this repository; their published versions and release tags remain, which is why the updater still filters the `myco-team/v*` and `myco-collective/v*` tag namespaces.
-
-1. Push to `main` — CI runs lint + tests
-2. Tag a release (`myco/vX.Y.Z`) — triggers the publish workflow
-3. `npm publish` builds and pushes each publishable package to npmjs.org
-4. Installed Mycos self-update from their release channel; `npm update -g @goondocks/myco` also works for npm installs
-
-## Conventions
-
-- TypeScript strict mode, ES modules
-- Native binaries built with Bun compile (`packages/myco/scripts/build-single-target.mjs`); `make build` is the standard gate
-- `make check` must pass before committing
-- Prompt templates are markdown with `{{placeholder}}` syntax
-- Config is YAML (`myco.yaml`), records are stored in SQLite (FTS5 + sqlite-vec)
-- No magic literals — extract named constants
-- Idempotent operations by default
+Contributor references: [Plugin versions](docs/development/plugin-versioning-1709.md), [macOS signing](docs/development/macos-release-signing.md), [agent teams](docs/development/agent-teams.md), and the opt-in [worker smoke rig](docs/development/worker-smoke-rig.md).

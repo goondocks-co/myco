@@ -31,7 +31,7 @@ export const SHIPPED_SKILLS: readonly ShippedSkill[] = [
   },
   {
     "name": "myco-outcome-tasks",
-    "description": "Author and debug the tasks Myco's own agent runs. A task is one prompt with declared expected evidence, dispatched to a worker: no phases, no turn budget, no orchestrator. It declares the gate that admits it, the tools its run may call, its schedule if it has one, and how the server decides afterwards that it actually did the work. Getting those four declarations consistent is the whole job.",
+    "description": "Author and debug the tasks Myco's own agent runs. A task is one prompt with declared expected evidence, dispatched to a runner: no phases, no turn budget, no orchestrator. It declares the gate that admits it, the tools its run may call, its schedule if it has one, and how the server decides afterwards that it actually did the work. Getting those four declarations consistent is the whole job.",
     "when_to_use": "Use when adding a task to the catalogue, changing what a task may call, changing when it runs, or working out why a run never started, ended partial, or closed without doing anything. Also when a catalogue gate fails and the message names a task."
   },
   {

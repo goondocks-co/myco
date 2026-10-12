@@ -1,7 +1,9 @@
 # Pull request checks
 
-The CI workflow runs lint, the native build, eight Node test shards, two DOM test
-shards, three parity shards, container checks, and Windows contracts independently.
+The CI workflow runs lint, the native build, five Node test shards, two DOM test
+shards, seven parity shards, UI screen checks, hook startup checks, container checks,
+and Windows contracts independently. Darwin release-recipe build and verification
+jobs run when build or release inputs change.
 The `check` job requires every job to succeed, including every matrix entry.
 Superseded pull request runs are cancelled; pushes to main are not cancelled.
 
@@ -13,9 +15,9 @@ and Cloudflare targets and runs its selected scenarios against both.
 Run a shard locally:
 
 ```sh
-MYCO_TEST_KIND=node MYCO_TEST_SHARD=1/8 npm test
+MYCO_TEST_KIND=node MYCO_TEST_SHARD=1/5 npm test
 MYCO_TEST_KIND=dom MYCO_TEST_SHARD=1/2 npm test
-MYCO_PARITY_SHARD=1/3 npm run test:parity
+MYCO_PARITY_SHARD=1/7 npm run test:parity
 ```
 
 To repeat one whole group, use the workflow's shard assignment and the label
@@ -54,7 +56,7 @@ durations. Splitting jobs adds setup work and may increase billed runner minutes
 
 macOS distribution builds also verify the staged executable and the binary
 inside the packed npm platform package. Tagged releases require this gate
-before GitHub or npm publication; see [macOS release signing](development/macos-release-signing.md).
+before GitHub or npm publication; see [macOS release signing](macos-release-signing.md).
 
 Every main push and PRs changing build or release inputs also cross-compile
 darwin-arm64 on Linux, then sign it on macos-14 through the release's shared

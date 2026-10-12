@@ -94,15 +94,16 @@ do not delete them without saying so — the user decides.
 Before touching the source tree, gather what Myco already knows, in this
 order:
 
-1. **Repository structure** — read it from the checkout. There is no served
-   repo map: use the tree itself to decide what deserves a wiki page, and
+1. **Repository structure** — read the project's code map with
+   `myco_cortex({"op":"canopy_map","project":"<project id>"})` when available,
+   then check the checkout. Use the tree to decide what deserves a wiki page, and
    spend your reading budget on the parts the wiki will actually cover.
 2. **Standing guidance** — `myco_cortex({"op":"instructions"})`. The
    project's own guidance and its project id. There is no pre-synthesized
    project narrative to draw on, so the "decisions" and "architecture" pages
-   are assembled from spores and sessions rather than from a digest.
+   are assembled from spores and sessions.
 3. **Targeted search** — `myco_search({"query": "<component or topic>"})`
-   for each area the Canopy map or digest surfaced as wiki-worthy. Follow
+   for each area the code map or repository tree surfaced as wiki-worthy. Follow
    each result's `retrieve` hint to pull the full record (`myco_spores`,
    `myco_sessions`, `myco_plans`, `myco_skills`).
 4. **Spores directly** — `myco_spores({"op":"list", ...})` for durable
