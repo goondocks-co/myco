@@ -3,7 +3,7 @@ import { sha256Hex } from '@myco-server-worker/hash.js';
 import { lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { loadRecallFixture, seedStatements } from '../recall/fixture.ts';
 import { startEmbeddingStub } from '../recall/embedding-stub.ts';
-import { compareToBaseline, describeComparison, withTarget, type Served } from '../recall/score.ts';
+import { compareToBaseline, describeComparison, mustNotRegressions, withTarget, type Served } from '../recall/score.ts';
 import { readRecallBaseline, writeRecallBaseline } from '../recall/baseline-file.ts';
 
 /** Steps past which calibration is taken as stuck: one per source, then the hubness pages, with room to spare. */
@@ -96,12 +96,19 @@ export const recallGold: ParityScenario = {
         if (answer.persisted !== true || refused.length > 0) throw new Error(`${c.id} was not scored: ${JSON.stringify(answer)}`);
         const part = answer.parts?.find((p) => p.kind === 'spores');
         measured[c.id] = { spores: part?.sporeIds ?? [], plans: part?.planIds ?? [] };
+        if (c.expectedPlans !== undefined) expect(measured[c.id]!.plans).toEqual(c.expectedPlans);
       }
 
       // The comparison runs first in either mode, so recording shows a reviewer what it changes, case by case.
       const door = FRONT_DOOR[target.name];
+      expect({ target: door, mustNotRegressions: mustNotRegressions(gold.cases, measured, gold.precisionRatchet) })
+        .toEqual({ target: door, mustNotRegressions: [] });
       const recorded = readRecallBaseline();
       const previous = recorded?.targets[door];
+      if (previous?.mustNot !== undefined) {
+        expect({ target: door, mustNotRegressions: mustNotRegressions(gold.cases, measured, previous.mustNot) })
+          .toEqual({ target: door, mustNotRegressions: [] });
+      }
       const comparison = previous === undefined ? null : compareToBaseline(gold.cases, measured, previous);
       if (process.env.MYCO_EVAL_RECORD === '1') {
         console.log(comparison === null ? `recall gold set, ${door}: no previous record; recording ${gold.cases.length} cases` : describeComparison(door, comparison));

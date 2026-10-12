@@ -34,13 +34,15 @@ import { settingTexts } from './settings.js';
 import { listSporesByIds, type SporeRow } from './spores.js';
 import { getPlan } from '../read/plans.js';
 import type { ReadScope } from '../read/scope.js';
-import { selectRelevantSpores } from '@goondocks/myco-shared/relevance';
+import { distributionStats, PLAN_MIN_CALIBRATION, selectRelevantPlans, selectRelevantSpores, type PlanCalibration } from '@goondocks/myco-shared/relevance';
 import { semanticHits, type SemanticSearch } from '../read/embedding.js';
 import { EmbeddingUnavailable } from './embedding/provider.js';
-import { VECTOR_QUERY_LIMIT } from './embedding/vectors.js';
+import { cosineSimilarity, VECTOR_QUERY_LIMIT } from './embedding/vectors.js';
 
 /** A prompt shorter than this carries too little to serve against. */
 export const MIN_PROMPT_CHARS = 10;
+/** Unitless item count bounds the plans' share of the prompt budget. */
+const MAX_PLANS_PER_PROMPT = 2;
 /** The rendered block's ceiling in estimated tokens. */
 export const INJECTION_BUDGET_TOKENS = 300;
 /** The fewest items a prompt carrying any must serve, and what the per-line cap is derived from. */
@@ -108,15 +110,22 @@ export type InjectionSkip = 'capability' | 'disabled' | 'short_prompt' | 'zero_m
 
 /** Counts at each selector stage, including matches rejected by the receipt join or metadata post-filter. */
 export interface InjectionCounts {
+  planCalibration: PlanCalibration;
+  planQueryCandidates: number;
   sporeRawMatches: number; sporeJoined: number; sporeHits: number;
+  sporeCalibrated: number; sporeScored: number; sporeProbable: number; sporeSeparated: number;
   sporeRelevant: number; sporeHydrated: number;
   planRawMatches: number; planJoined: number; planHits: number;
-  planUnserved: number; planHydrated: number; budgetKept: number;
+  planUnserved: number; planEligible: number; planCalibrationFailed: number; planCalibrated: number; planScored: number; planProbable: number; planSeparated: number;
+  planRelevant: number; planHydrated: number; budgetKept: number;
 }
 
 export const emptyInjectionCounts = (): InjectionCounts => ({
+  planCalibration: 'none', planQueryCandidates: 0,
   sporeRawMatches: 0, sporeJoined: 0, sporeHits: 0, sporeRelevant: 0, sporeHydrated: 0,
-  planRawMatches: 0, planJoined: 0, planHits: 0, planUnserved: 0, planHydrated: 0, budgetKept: 0,
+  sporeCalibrated: 0, sporeScored: 0, sporeProbable: 0, sporeSeparated: 0,
+  planRawMatches: 0, planJoined: 0, planHits: 0, planUnserved: 0, planEligible: 0, planCalibrationFailed: 0, planCalibrated: 0,
+  planScored: 0, planProbable: 0, planSeparated: 0, planRelevant: 0, planHydrated: 0, budgetKept: 0,
 });
 
 export interface InjectionSelection {
@@ -197,6 +206,7 @@ export interface InjectionItem {
 }
 
 const itemLine = (item: InjectionItem): string => `\n- [${item.id}] (${item.label}) ${oneLine(item.text)}`;
+const isLivePlan = (plan: { status: string }): boolean => plan.status === 'active' || plan.status === 'in_progress';
 
 /**
  * The items that fit, in the order given.
@@ -305,9 +315,10 @@ function parseIds(raw: string): string[] {
  * mean any of them.
  *
  * Two pools feed one budget. Spores rank by Mutual Proximity over the semantic
- * candidates; plans rank by similarity alone. Spores stand ahead of every plan,
- * and within each kind the weakest score stands last, so the budget drops plans
- * before spores and the weakest first.
+ * candidates; live plans require a calibrated pool of at least five embedded
+ * plans of any status within the same model.
+ * Live plans occupy up to two of the guaranteed item places after the leading
+ * spores. Remaining spores fill the budget in semantic order.
  *
  * The record names exactly what the block rendered. A record naming more than
  * the agent saw would count an observation as served that never reached it, and
@@ -341,11 +352,26 @@ export async function selectSporesForPrompt(
     injectedPlanIds(db, scope, input.sessionId),
   ]));
 
-  const relevant = selectRelevantSpores(sporeHits.map((s) => ({ id: s.record_id, similarity: s.score, alreadyInjected: servedSpores.has(s.record_id),
+  const sporeCandidates = sporeHits.map((s) => ({ id: s.record_id, similarity: s.score, alreadyInjected: servedSpores.has(s.record_id),
     ...(s.neighbor_mean === null || s.neighbor_std === null ? {} : { neighborMean: s.neighbor_mean, neighborStd: s.neighbor_std }),
-  })), { maxResults: leaves.maxPerPrompt });
+  }));
+  const relevant = selectRelevantSpores(sporeCandidates, { maxResults: leaves.maxPerPrompt,
+    observe: (n) => { counts.sporeCalibrated = n.calibrated; counts.sporeScored = n.scored; counts.sporeProbable = n.probable; counts.sporeSeparated = n.separated; },
+  });
   counts.sporeRelevant = relevant.length;
-  const hydrated = await duringInjection('hydrate_spores', counts, () => listSporesByIds(db, scope, relevant.map((s) => s.id)));
+  const unservedPlans = planHits.filter((h) => !servedPlans.has(h.record_id));
+  counts.planUnserved = unservedPlans.length;
+  const eligiblePlans = unservedPlans.filter(isLivePlan);
+  counts.planEligible = eligiblePlans.length;
+  const loadPlanVectors = async () => {
+    if (eligiblePlans.length === 0 || planHits.length < PLAN_MIN_CALIBRATION) return [];
+    try { return await semantic.vectors.get({ projectId: scope.projectId, modelKey: semantic.provider.modelKey }, planHits.map((h) => h.vector_id)); }
+    catch { counts.planCalibrationFailed++; return []; }
+  };
+  const [hydrated, planVectors] = await Promise.all([
+    duringInjection('hydrate_spores', counts, () => listSporesByIds(db, scope, relevant.map((s) => s.id))),
+    loadPlanVectors(),
+  ]);
   const bySpore = new Map(hydrated.filter((s) => s.status === 'active').map((s) => [s.id, s]));
   const sporeItems: InjectionItem[] = relevant.flatMap((s) => {
     const row = bySpore.get(s.id);
@@ -353,15 +379,31 @@ export async function selectSporesForPrompt(
   });
   counts.sporeHydrated = sporeItems.length;
 
-  const unservedPlans = planHits.filter((h) => !servedPlans.has(h.record_id));
-  counts.planUnserved = unservedPlans.length;
-  const planCandidates = unservedPlans.slice(0, leaves.maxPerPrompt);
-  const planRows = await duringInjection('hydrate_plans', counts, () => Promise.all(planCandidates.map((h) => getPlan(db, scope, h.record_id))));
+  const byVector = new Map(planVectors.map((v) => [v.id, v.values]));
+  const planBackground = planHits.map((h) => {
+    const values = byVector.get(h.vector_id);
+    const peers = values === undefined ? [] : planHits.flatMap((p) => {
+      const other = byVector.get(p.vector_id);
+      return p.vector_id === h.vector_id || other === undefined ? [] : [1 - cosineSimilarity(values, other)];
+    });
+    const stats = distributionStats(peers);
+    return { id: h.record_id, similarity: h.score, alreadyInjected: !isLivePlan(h) || servedPlans.has(h.record_id),
+      ...(peers.length === 0 ? {} : { neighborMean: stats.mean, neighborStd: stats.std }) };
+  });
+  const liveBackground = planBackground.filter((h) => planHits.some((p) => p.record_id === h.id && isLivePlan(p)));
+  const planCandidates = selectRelevantPlans(liveBackground, {
+    observeCalibration: (stage, n) => { counts.planCalibration = stage; counts.planQueryCandidates = n; },
+    maxResults: Math.min(leaves.maxPerPrompt, MAX_PLANS_PER_PROMPT), referenceCandidates: planBackground, sporeCandidates,
+    observe: (n) => { counts.planCalibrated = n.calibrated; counts.planScored = n.scored; counts.planProbable = n.probable; counts.planSeparated = n.separated; },
+  });
+  counts.planRelevant = planCandidates.length;
+  const planRows = await duringInjection('hydrate_plans', counts, () => Promise.all(planCandidates.map((h) => getPlan(db, scope, h.id))));
   const planItems: InjectionItem[] = planRows.flatMap((row) =>
-    row === null ? [] : [{ kind: 'plan' as const, id: row.planKey, label: `plan: ${row.status}`, text: row.title ?? row.planKey }]);
+    row === null || !isLivePlan(row) ? [] : [{ kind: 'plan' as const, id: row.planKey, label: `plan: ${row.status}`, text: row.title ?? row.planKey }]);
   counts.planHydrated = planItems.length;
 
-  const ordered = [...sporeItems, ...planItems];
+  const leadingSpores = Math.max(0, INJECTION_MIN_ITEMS - planItems.length);
+  const ordered = [...sporeItems.slice(0, leadingSpores), ...planItems, ...sporeItems.slice(leadingSpores)];
   const served = itemsWithinBudget(ordered);
   counts.budgetKept = served.length;
   if (served.length === 0) return nothing('empty');

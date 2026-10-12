@@ -9,7 +9,7 @@ Taken 2026-09-29 from the dogfood Deployment, read-only (D1 `SELECT`s, Vectorize
 - **Spores.** `corpus.json` holds all 368 active spores with a ready embedding receipt. That is exactly the set production calibrates hubness over.
 - **Plans.** `corpus.json` also holds the 14 plans. Each keeps its title and status; the body is replaced by a fixed placeholder, because injection renders only the title and the bodies carry working notes this repository should not publish.
 - **Prompts.** `gold.json` holds 48 real user prompts. Each case records its source (the 1.4 dogfood vault, 2026-03 to 08, or the 2.0 Deployment, 2026-08 to 09), harness, date, session id and prompt id.
-- **Judgements.** The owner reviewed every case and agreed with the suggested verdict. The five open cases (rp-02, rp-12, rp-28, rp-32, rp-39) are negatives.
+- **Judgements.** The owner reviewed every case and agreed with the suggested verdict. The five open cases (rp-02, rp-12, rp-28, rp-32, rp-39) are negatives. On 2026-10-12 the coordinator added the expected live plan `a3b1e332-96a2-56e0-9afa-01876916c3a3` (Myco 2.0 delivery reset) to rp-43. That additional plan judgment is pending owner review, as recorded in `expectedPlanReview`; it is separate from the original `ownerReview`.
 
 ## Vectors
 
@@ -34,7 +34,13 @@ After re-embedding, the served blocks move where the re-embedded rows move them:
 - 41 serve the same number of plans;
 - 10 serve an identical block, plans and order included.
 
-The owner's expected and must-not ids are unchanged. The recorded baseline is what the fixture serves, and the gate holds each release to it.
+The owner's expected and must-not spore ids are unchanged. The coordinator-added rp-43 plan expectation is pending owner review. The recorded baseline is what the fixture serves, and the gate holds each release to it.
+
+On 2026-10-12 the coordinator approved recording the affine-invariant spore z-score band: recall quality 0.3979 → 0.3962, passing cases 9/48 → 12/48, and named must-not case/item matches 67 → 26, with zero newly introduced matches and zero unexpected plans. This accepts the documented expected-spore losses in favor of precision over recall. `gold.json.precisionRatchet` initially pinned the 26-match ceiling and the 17 affected case IDs; the gate also ratchets against each door's recorded count and case IDs. Both precision checks apply during recording even when recall regressions are explicitly accepted. Original owner spore judgments are unchanged.
+
+Correction 6, directed by the coordinator on 2026-10-12, records leave-one-out prompt statistics and a named minimum of five finite, calibrated spore candidates. Each spore's query-side MP and z-score exclude that spore's own distance. The minimum alone leaves the frozen gold blocks unchanged (100 calibrated candidates per prompt). Leave-one-out changes recall quality 0.3962 → 0.3910, keeps 12/48 passing, and reduces named must-not matches 26 → 25 with none new. rp-31 loses expected `decision-1d95cf73`; rp-45 loses must-not `decision-4e185ae3`; rp-43's expected live plan and served spores are unchanged. The precision ceiling is tightened to 25 matches, with the same 17 allowed affected case IDs. The original owner spore judgments and coordinator-added plan provenance remain unchanged.
+
+**Plan evidence is weaker than spore evidence.** All plan bodies are fixed placeholders, including the delivery-reset plan. Their shared text inflates plan-to-plan similarity, so success on these plan vectors does not establish calibration quality on production plan bodies.
 
 ## Embedding keys
 

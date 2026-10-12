@@ -10,18 +10,130 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { EMBEDDING_TEXT_CHARS } from '@myco-server-worker/core/embedding/provider.js';
-import { INJECTION_TARGET_ITEMS } from '@myco-server-worker/core/injection.js';
-import { loadRecallFixture } from '../parity/recall/fixture.ts';
+import { INJECTION_TARGET_ITEMS, selectSporesForPrompt } from '@myco-server-worker/core/injection.js';
+import { loadRecallFixture, seedStatements } from '../parity/recall/fixture.ts';
 import { UnknownFixtureText } from '../parity/recall/lookup.ts';
-import { compareToBaseline, describeComparison, scoreCase, summarize, withTarget, type GoldCase, type RecallBaseline } from '../parity/recall/score.ts';
+import { compareToBaseline, describeComparison, mustNotRegressions, scoreCase, summarize, summarizeMustNot, withTarget, type GoldCase, type RecallBaseline } from '../parity/recall/score.ts';
 import { caseCount, recallBaseline, recallQuality } from '@myco-server-worker/evals/recall-baseline.js';
 import { RECALL_BASELINE_FILE, readRecallBaseline, renderRecallBaseline } from '../parity/recall/baseline-file.ts';
 import { readFileSync } from 'node:fs';
+import { distributionStats, selectRelevantPlans } from '../../packages/myco-shared/src/relevance.ts';
+import { cosineSimilarity, vectorId, vectorMatches, type StoredVector } from '@myco-server-worker/core/embedding/vectors.js';
+import { Database } from 'bun:sqlite';
+import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
+import type { EmbeddingSource, SemanticSearch } from '@myco-server-worker/read/embedding.js';
+
+describe('model-relative prompt selection on frozen gold geometry', () => {
+  const { gold, corpus, index, data } = loadRecallFixture();
+  const floats = new Float32Array(data);
+  const original = new Map(index.rows.map(r => [r.id, Array.from(floats.slice(r.row * index.dims, (r.row + 1) * index.dims))]));
+  const sporeStats = new Map(corpus.spores.map(s => [s.id, distributionStats(corpus.spores.filter(p => p.id !== s.id)
+    .map(p => 1 - cosineSimilarity(original.get(s.id)!, original.get(p.id)!)))]));
+  const scope = { projectId: 'affine-gold' };
+
+  async function measure(a: number, b: number, sporeLimit = 100) {
+    // Shared and row-private orthogonal coordinates realize a + b*cosine for every distinct pair.
+    const geometry = new Map(index.rows.map(r => {
+      const v = original.get(r.id)!;
+      const magnitude = Math.hypot(...v);
+      const transformed = [...v.map(x => Math.sqrt(b) * x / magnitude), Math.sqrt(a), ...index.rows.map(() => 0)];
+      transformed[index.dims + 1 + r.row] = Math.sqrt(1 - a - b);
+      return [r.id, transformed] as const;
+    }));
+    const sqlite = new Database(':memory:');
+    try {
+      sqlite.exec('PRAGMA foreign_keys = ON');
+      for (const migration of renderMigrationFiles()) sqlite.exec(migration.sql);
+      sqlite.query('INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, 0)').run(scope.projectId, 'Affine gold');
+      sqlite.exec("INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('affine', 'affine', 'built-in', 1, 0)");
+      for (const statement of seedStatements(scope.projectId, corpus, 'affine', 0)) sqlite.exec(statement);
+      const db = sqliteRelationalStore(sqlite);
+      const partition = { ...scope, modelKey: `affine-${a}-${b}` };
+      const sources = (await db.prepare("SELECT * FROM embedding_sources WHERE project_id = ? AND type IN ('spore', 'plan')")
+        .bind(scope.projectId).all<EmbeddingSource>()).results;
+      const vectors: StoredVector[] = await Promise.all(sources.map(async source => {
+        const id = await vectorId(partition, source.type, source.record_id, source.revision);
+        const stats = sporeStats.get(source.record_id);
+        await db.prepare(`INSERT INTO embedding_receipts(project_id, model_key, id, type, record_id, revision, ready, updated_at, neighbor_mean, neighbor_std)
+          VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`).bind(scope.projectId, partition.modelKey, id, source.type, source.record_id, source.revision,
+          stats === undefined ? null : 1 - a - b + b * stats.mean, stats === undefined ? null : b * stats.std).run();
+        return { id, values: geometry.get(source.record_id)!, metadata: source };
+      }));
+      const semantic: SemanticSearch = {
+        provider: { modelKey: partition.modelKey, embed: async text => geometry.get(gold.cases.find(c => c.prompt === text)!.id)! },
+        vectors: {
+          query: async (asked, options) => {
+            expect(asked).toEqual(partition);
+            return vectors.filter(v => vectorMatches(v.metadata, options.filters))
+              .map(v => ({ id: v.id, score: cosineSimilarity(options.values, v.values) }))
+              .sort((x, y) => y.score - x.score).slice(0, options.filters?.type === 'spore' ? Math.min(sporeLimit, options.topK) : options.topK);
+          },
+          get: async (asked, ids) => { expect(asked).toEqual(partition); return vectors.filter(v => ids.includes(v.id)); },
+          upsert: async () => { throw new Error('read-only gold vectors'); },
+          delete: async () => { throw new Error('read-only gold vectors'); },
+        },
+      };
+      const answers = [];
+      for (const c of gold.cases) {
+        const answer = await selectSporesForPrompt(db, scope, { enabled: true, maxPerPrompt: 7 }, true,
+          { sessionId: c.id, promptId: c.id, promptHash: c.id, prompt: c.prompt, now: 1 }, async () => semantic);
+        answers.push({ id: c.id, items: answer.items.map(i => ({ id: i.id, kind: i.kind })), counts: answer.counts });
+      }
+      return answers;
+    } finally { sqlite.close(); }
+  }
+
+  it('keeps served spores and plans identical under affine similarity changes', async () => {
+    const baseline = await measure(0, 1);
+    expect(baseline.find(a => a.id === 'rp-43')!.items.filter(i => i.kind === 'plan').map(i => i.id))
+      .toEqual(['a3b1e332-96a2-56e0-9afa-01876916c3a3']);
+    expect(baseline.some(a => a.items.some(i => i.kind === 'spore'))).toBe(true);
+    for (const [a, b] of [[0.3, 0.5], [0, 0.5], [0.6, 0.39], [0.05, 0.3]] as const) {
+      const transformed = await measure(a, b);
+      expect(transformed.map(({ id, items }) => ({ id, items }))).toEqual(baseline.map(({ id, items }) => ({ id, items })));
+    }
+  }, 30_000);
+
+  it.each([0, 1, 4])('withholds real-vector plans and spores with only %s independent spore candidates', async size => {
+    const answers = await measure(0, 1, size);
+    expect(answers.every(a => a.items.length === 0)).toBe(true);
+    expect(answers.every(a => a.counts.planCalibration === 'insufficient' && a.counts.planQueryCandidates === size)).toBe(true);
+    expect(answers.every(a => a.counts.planCalibrated === corpus.plans.length)).toBe(true);
+    expect(answers.every(a => a.counts.sporeCalibrated === size && a.counts.sporeScored === 0
+      && a.counts.sporeProbable === 0 && a.counts.sporeSeparated === 0)).toBe(true);
+  }, 30_000);
+});
 
 const positive: GoldCase = { id: 'p', kind: 'positive', prompt: 'p', expected: ['a', 'b'], mustNot: ['x'] };
 const negative: GoldCase = { id: 'n', kind: 'negative', prompt: 'n', expected: [], mustNot: [] };
 
+describe('must-not precision ratchet', () => {
+  const gold = [positive, { ...positive, id: 'q', mustNot: ['y'] }];
+  const ceiling = { matches: 1, caseIds: ['p'] };
+  it('allows fewer matches and fewer affected cases', () => {
+    const served = { p: { spores: ['a'], plans: [] }, q: { spores: ['a'], plans: [] } };
+    expect(summarizeMustNot(gold, served)).toEqual({ matches: 0, caseIds: [] });
+    expect(mustNotRegressions(gold, served, ceiling)).toEqual([]);
+  });
+  it('rejects an added match even within an already affected case', () => {
+    const expanded = [{ ...positive, mustNot: ['x', 'z'] }, gold[1]!];
+    expect(mustNotRegressions(expanded, { p: { spores: ['x', 'z'], plans: [] }, q: { spores: [], plans: [] } }, ceiling))
+      .toEqual(['must-not matches rose 1 → 2']);
+  });
+  it('rejects a new affected case even when total matches stay unchanged', () => {
+    expect(mustNotRegressions(gold, { p: { spores: [], plans: [] }, q: { spores: ['y'], plans: [] } }, ceiling))
+      .toEqual(['new must-not cases: q']);
+  });
+});
+
 describe('scoring one case', () => {
+  it('credits expected plans and penalizes unexpected plans', () => {
+    const planCase = { ...positive, expectedPlans: ['live'] };
+    expect(scoreCase(planCase, { spores: ['a', 'b'], plans: ['live'] })).toMatchObject({ pass: true, graded: 1, unwanted: [] });
+    expect(scoreCase(planCase, { spores: ['a', 'b'], plans: ['live', 'other'] })).toMatchObject({ pass: true, graded: 0.75, unwanted: ['other'] });
+    expect(scoreCase(planCase, { spores: ['a', 'b'], plans: [] })).toMatchObject({ pass: false, expectedServed: ['a', 'b'] });
+  });
   it('passes a positive serving every expected spore and no must-not, and grades recall times precision over the whole block', () => {
     expect(scoreCase(positive, { spores: ['a', 'b'], plans: [] })).toEqual({ pass: true, graded: 1, expectedServed: ['a', 'b'], unwanted: [] });
     // A plan is a served item nobody expected: it costs precision and counts as unwanted, but only a must-not fails the pass.
@@ -112,12 +224,35 @@ describe('the recall fixture', () => {
   const { gold, corpus, index, lookup } = loadRecallFixture();
   const spores = new Set(corpus.spores.map((s) => s.id));
 
+  it('serves the delivery-reset plan for real rp-43 vectors despite tighter plan-to-plan geometry', () => {
+    const { data } = loadRecallFixture();
+    const floats = new Float32Array(data);
+    const vectors = new Map(index.rows.map(r => [r.id, Array.from(floats.slice(r.row * index.dims, (r.row + 1) * index.dims))]));
+    const query = vectors.get('rp-43')!;
+    const plans = corpus.plans.map(p => {
+      const stats = distributionStats(corpus.plans.filter(other => other.planKey !== p.planKey)
+        .map(other => 1 - cosineSimilarity(vectors.get(p.planKey)!, vectors.get(other.planKey)!)));
+      return { id: p.planKey, similarity: cosineSimilarity(query, vectors.get(p.planKey)!), neighborMean: stats.mean, neighborStd: stats.std,
+        alreadyInjected: p.status !== 'active' && p.status !== 'in_progress' };
+    });
+    const spores = corpus.spores.map(s => ({ id: s.id, similarity: cosineSimilarity(query, vectors.get(s.id)!) }))
+      .sort((a, b) => b.similarity - a.similarity).slice(0, 100);
+    const expected = 'a3b1e332-96a2-56e0-9afa-01876916c3a3';
+    const plan = plans.find(p => p.id === expected)!;
+    expect(1 - plan.neighborMean).toBeGreaterThan(plan.similarity);
+    const selected = selectRelevantPlans(plans, { maxResults: 2, referenceCandidates: plans, sporeCandidates: spores });
+    expect(selected.map(p => p.id)).toEqual([expected]);
+    expect(selected[0]!.mp).toBeGreaterThan(0.75);
+    expect(selected[0]!.mp).toBeLessThan(0.9);
+  });
+
   it('holds the reviewed cases, every expected and must-not id a spore of the corpus', () => {
     expect(gold.cases.length).toBe(48);
     expect(gold.maxPerPrompt).toBe(INJECTION_TARGET_ITEMS);
     for (const c of gold.cases) {
       const unknown = [...c.expected, ...c.mustNot].filter((id) => !spores.has(id));
       expect({ id: c.id, unknown }).toEqual({ id: c.id, unknown: [] });
+      expect((c.expectedPlans ?? []).every(id => corpus.plans.some(p => p.planKey === id && (p.status === 'active' || p.status === 'in_progress')))).toBe(true);
       if (c.kind === 'negative') expect({ id: c.id, expected: c.expected, mustNot: c.mustNot }).toEqual({ id: c.id, expected: [], mustNot: [] });
       else expect({ id: c.id, hasExpected: c.expected.length > 0 }).toEqual({ id: c.id, hasExpected: true });
     }
@@ -142,6 +277,38 @@ describe('the recall fixture', () => {
 describe('the committed baseline', () => {
   const { gold } = loadRecallFixture();
   const baseline = recallBaseline as RecallBaseline;
+
+  it('holds the approved must-not count and case identities on both doors', () => {
+    expect(gold.precisionRatchet.matches).toBe(25);
+    for (const target of Object.values(baseline.targets)) {
+      expect(mustNotRegressions(gold.cases, target.cases, gold.precisionRatchet)).toEqual([]);
+      expect(target.mustNot).toEqual(summarizeMustNot(gold.cases, target.cases));
+    }
+  });
+
+  it('rejects one additional must-not match in a recorded gold block', () => {
+    for (const target of Object.values(baseline.targets)) {
+      const changed = structuredClone(target.cases);
+      const c = gold.cases.find(c => target.mustNot.caseIds.includes(c.id)
+        && c.mustNot.some(id => !changed[c.id]!.spores.includes(id)))!;
+      changed[c.id]!.spores.push(c.mustNot.find(id => !changed[c.id]!.spores.includes(id))!);
+      expect(mustNotRegressions(gold.cases, changed, target.mustNot))
+        .toEqual([`must-not matches rose ${target.mustNot.matches} → ${target.mustNot.matches + 1}`]);
+    }
+  });
+
+  it('rejects moving a recorded must-not match to a new gold case', () => {
+    for (const target of Object.values(baseline.targets)) {
+      const changed = structuredClone(target.cases);
+      const removed = gold.cases.find(c => c.mustNot.some(id => changed[c.id]!.spores.includes(id)))!;
+      const id = removed.mustNot.find(id => changed[removed.id]!.spores.includes(id))!;
+      changed[removed.id]!.spores = changed[removed.id]!.spores.filter(served => served !== id);
+      const added = gold.cases.find(c => !target.mustNot.caseIds.includes(c.id) && c.mustNot.length > 0)!;
+      changed[added.id]!.spores.push(added.mustNot[0]!);
+      expect(summarizeMustNot(gold.cases, changed).matches).toBe(target.mustNot.matches);
+      expect(mustNotRegressions(gold.cases, changed, target.mustNot)).toEqual([`new must-not cases: ${added.id}`]);
+    }
+  });
 
   it('records both front doors over every case, and reports what those cases score', () => {
     expect(Object.keys(baseline.targets)).toEqual(['hosted', 'self-hosted']);

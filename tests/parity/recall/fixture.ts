@@ -8,14 +8,14 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { lit } from '../harness.ts';
 import { fixtureLookup, type VectorIndexFile } from './lookup.ts';
-import type { GoldCase } from './score.ts';
+import type { GoldCase, MustNotSummary } from './score.ts';
 
 export const FIXTURE_DIR = path.resolve(import.meta.dir, '..', '..', 'fixtures', 'evals', 'recall');
 
 export interface CorpusSpore { id: string; observationType: string; status: string; content: string; agentLine: string | null; createdAt: number | null; embedKey: string }
 export interface CorpusPlan { planKey: string; title: string | null; status: string; content: string; embedKey: string }
 export interface Corpus { spores: CorpusSpore[]; plans: CorpusPlan[] }
-export interface GoldFile { version: 1; maxPerPrompt: number; cases: Array<GoldCase & { class: string; provenance: Record<string, unknown> }> }
+export interface GoldFile { version: 1; maxPerPrompt: number; precisionRatchet: MustNotSummary & { reason: string }; cases: Array<GoldCase & { class: string; provenance: Record<string, unknown> }> }
 
 const json = <T,>(name: string): T => JSON.parse(readFileSync(path.join(FIXTURE_DIR, name), 'utf8')) as T;
 
