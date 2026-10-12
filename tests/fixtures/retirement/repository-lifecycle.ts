@@ -30,11 +30,14 @@ const clean = (step: string) => {
   assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }), '', step);
   console.log(`clean: ${step}`);
 };
-assert(await runJoin(['https://server.example', '--project', 'proj_1', '--token-stdin', '--root', root, '--no-worker'], { ...deps, stdin: () => rig.token }));
+const joinRoot = process.env.MYCO_FIXTURE_JOIN_ROOT ?? root;
+assert(await runJoin(['https://server.example', '--project', 'proj_1', '--token-stdin', '--root', joinRoot, '--no-worker'], { ...deps, stdin: () => rig.token }));
 clean('join');
-assert(fs.readFileSync(path.join(root, '.git', 'info', 'exclude'), 'utf8').includes('.myco/runtime.home'));
+assert(fs.readFileSync(path.join(root, '.git', 'info', 'exclude'), 'utf8').split('\n').includes('/' + path.relative(root, path.join(joinRoot, '.myco/runtime.home')).split(path.sep).join('/')));
+if (joinRoot === root) {
 assert(runProvision(['codex'], deps));
 assert(runProvision(['claude-code'], deps));
+assert(runProvision(['cursor'], deps));
 clean('provision');
 assert(runProvision(['--refresh'], deps));
 clean('refresh');
@@ -42,13 +45,24 @@ await update([], { home: mycoHome, currentVersion: '2.0.0-alpha.2', resolveRefs:
   refreshMember: async () => { assert(runProvision(['--refresh'], deps)); } });
 clean('update');
 await doctor([], 'registry', deps);
-assert(output.some(line => line.includes('mcpServers.myco')));
-assert(output.some(line => line.includes('mcp_servers.myco')));
+if (process.env.MYCO_FIXTURE_HOME_DOCTOR === '1') {
+  for (const dotfiles of [false, true]) {
+    if (dotfiles) execFileSync('git', ['init', '-q'], { cwd: home });
+    const homeOutput: string[] = [];
+    await doctor([], 'registry', { ...deps, cwd: home, stdout: line => homeOutput.push(line), stderr: line => homeOutput.push(line) });
+    assert(!homeOutput.some(line => line.includes('Repository entries')), homeOutput.join('\n'));
+    console.log('quiet: home doctor ' + (dotfiles ? 'dotfiles' : 'non-repository'));
+  }
+} else {
+  assert(output.some(line => line.includes('mcpServers.myco')));
+  assert(output.some(line => line.includes('mcp_servers.myco')));
+}
 clean('doctor');
 assert(runLeave([], deps));
 await new Promise<void>(resolve => setImmediate(resolve));
 clean('leave');
 await logoutDeployment('https://server.example', { mode: 'local-only' }, { ...deps, home });
 clean('logout');
+}
 assert.equal(platform.commands.length, 0);
 rig.env.sqlite.close();

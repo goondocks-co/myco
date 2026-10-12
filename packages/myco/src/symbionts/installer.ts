@@ -33,7 +33,6 @@ import { deploymentUrl } from '../member/registry.js';
 import { MCP_PATH } from '../plugins/spec.js';
 import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
 import { readRegistryEntry } from '../member/registry.js';
-import { ensureGitIgnored } from '../utils/git-exclude.js';
 import { resolveRuntimeCommand, resolveRuntimeHome } from '../runtime/runtime-pin.js';
 import { managedBinaryPath, managedSkillsDir } from '../install/managed-binary.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';

@@ -148,8 +148,8 @@ describe('member export --all across two projects', () => {
     fs.writeFileSync(path.join(beta, '.cursor', 'mcp.json'), 'not configuration at all', 'utf-8');
 
     const found = repositoryMycoEntries([alpha, beta]);
-    expect(found).toContainEqual({ root: alpha, file: path.join(alpha, '.cursor', 'mcp.json'), entry: 'mcpServers.myco' });
-    expect(found).toContainEqual({ root: beta, file: path.join(beta, '.cursor', 'mcp.json'), entry: 'unreadable (entries unknown)' });
+    expect(found).toContainEqual({ root: alpha, file: path.join(alpha, '.cursor', 'mcp.json'), kind: 'found', entry: 'mcpServers.myco' });
+    expect(found).toContainEqual({ root: beta, file: path.join(beta, '.cursor', 'mcp.json'), kind: 'unreadable' });
     expect(fs.readFileSync(path.join(beta, '.cursor', 'mcp.json'), 'utf8')).toBe('not configuration at all');
   });
 });

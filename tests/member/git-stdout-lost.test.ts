@@ -188,7 +188,7 @@ describe('a git stdout lost in transit', () => {
     git.loseNext(1, 'rev-parse --git-path info/exclude');
     ensureGitIgnored(checkout, path.join(checkout, '.myco/runtime.home'));
     expect(git.armsLeft()).toBe(0);
-    expect(fs.readFileSync(path.join(checkout, '.git', 'info', 'exclude'), 'utf-8').split('\n')).toContain('.myco/runtime.home');
+    expect(fs.readFileSync(path.join(checkout, '.git', 'info', 'exclude'), 'utf-8').split('\n')).toContain('/.myco/runtime.home');
     expect(fs.existsSync(path.join(checkout, 'info'))).toBe(false);
     resetMachineIdCache();
   });

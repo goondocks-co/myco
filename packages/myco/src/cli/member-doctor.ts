@@ -234,7 +234,9 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
     checks.push(row('Repository entries', 'warn', `left repository paths unavailable: ${error instanceof Error ? error.message : String(error)}`));
   }
   for (const leftover of repositoryMycoEntries(leftoverRoots)) {
-    checks.push(row('Repository entries', 'warn', `${leftover.root}: ${leftover.file} — ${leftover.entry}. Myco 2.0 does not manage repository harness config; review and remove this entry by hand.`));
+    checks.push(row('Repository entries', 'warn', leftover.kind === 'unreadable'
+      ? `${leftover.root}: could not check ${leftover.file}.`
+      : `${leftover.root}: ${leftover.file} — ${leftover.entry}. Myco 2.0 does not manage repository harness config; review and remove these entries by hand.`));
   }
   for (const entry of projects.entries) {
     checks.push(row('Repository', 'ok', `${entry.root} → ${entry.serverUrl} / ${entry.projectId}.`));
