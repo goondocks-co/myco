@@ -109,14 +109,18 @@ export type InjectionSkip = 'capability' | 'disabled' | 'short_prompt' | 'zero_m
 /** Counts at each selector stage, including matches rejected by the receipt join or metadata post-filter. */
 export interface InjectionCounts {
   sporeRawMatches: number; sporeJoined: number; sporeHits: number;
+  sporeScored: number; sporeProbable: number; sporeSeparated: number;
   sporeRelevant: number; sporeHydrated: number;
   planRawMatches: number; planJoined: number; planHits: number;
-  planUnserved: number; planHydrated: number; budgetKept: number;
+  planUnserved: number; planEligible: number; planScored: number; planProbable: number; planSeparated: number;
+  planRelevant: number; planHydrated: number; budgetKept: number;
 }
 
 export const emptyInjectionCounts = (): InjectionCounts => ({
   sporeRawMatches: 0, sporeJoined: 0, sporeHits: 0, sporeRelevant: 0, sporeHydrated: 0,
-  planRawMatches: 0, planJoined: 0, planHits: 0, planUnserved: 0, planHydrated: 0, budgetKept: 0,
+  sporeScored: 0, sporeProbable: 0, sporeSeparated: 0,
+  planRawMatches: 0, planJoined: 0, planHits: 0, planUnserved: 0, planEligible: 0,
+  planScored: 0, planProbable: 0, planSeparated: 0, planRelevant: 0, planHydrated: 0, budgetKept: 0,
 });
 
 export interface InjectionSelection {
@@ -197,6 +201,7 @@ export interface InjectionItem {
 }
 
 const itemLine = (item: InjectionItem): string => `\n- [${item.id}] (${item.label}) ${oneLine(item.text)}`;
+const isLivePlan = (plan: { status: string }): boolean => plan.status === 'active' || plan.status === 'in_progress';
 
 /**
  * The items that fit, in the order given.
@@ -305,7 +310,8 @@ function parseIds(raw: string): string[] {
  * mean any of them.
  *
  * Two pools feed one budget. Spores rank by Mutual Proximity over the semantic
- * candidates; plans rank by similarity alone. Spores stand ahead of every plan,
+ * candidates; live plans use the same gate against the spore background.
+ * Spores stand ahead of every plan,
  * and within each kind the weakest score stands last, so the budget drops plans
  * before spores and the weakest first.
  *
@@ -341,9 +347,12 @@ export async function selectSporesForPrompt(
     injectedPlanIds(db, scope, input.sessionId),
   ]));
 
-  const relevant = selectRelevantSpores(sporeHits.map((s) => ({ id: s.record_id, similarity: s.score, alreadyInjected: servedSpores.has(s.record_id),
+  const sporeCandidates = sporeHits.map((s) => ({ id: s.record_id, similarity: s.score, alreadyInjected: servedSpores.has(s.record_id),
     ...(s.neighbor_mean === null || s.neighbor_std === null ? {} : { neighborMean: s.neighbor_mean, neighborStd: s.neighbor_std }),
-  })), { maxResults: leaves.maxPerPrompt });
+  }));
+  const relevant = selectRelevantSpores(sporeCandidates, { maxResults: leaves.maxPerPrompt,
+    observe: (n) => { counts.sporeScored = n.scored; counts.sporeProbable = n.probable; counts.sporeSeparated = n.separated; },
+  });
   counts.sporeRelevant = relevant.length;
   const hydrated = await duringInjection('hydrate_spores', counts, () => listSporesByIds(db, scope, relevant.map((s) => s.id)));
   const bySpore = new Map(hydrated.filter((s) => s.status === 'active').map((s) => [s.id, s]));
@@ -355,10 +364,16 @@ export async function selectSporesForPrompt(
 
   const unservedPlans = planHits.filter((h) => !servedPlans.has(h.record_id));
   counts.planUnserved = unservedPlans.length;
-  const planCandidates = unservedPlans.slice(0, leaves.maxPerPrompt);
-  const planRows = await duringInjection('hydrate_plans', counts, () => Promise.all(planCandidates.map((h) => getPlan(db, scope, h.record_id))));
+  const eligiblePlans = unservedPlans.filter(isLivePlan);
+  counts.planEligible = eligiblePlans.length;
+  const planCandidates = selectRelevantSpores(eligiblePlans.map((h) => ({ id: h.record_id, similarity: h.score })), {
+    maxResults: leaves.maxPerPrompt, referenceCandidates: sporeCandidates,
+    observe: (n) => { counts.planScored = n.scored; counts.planProbable = n.probable; counts.planSeparated = n.separated; },
+  });
+  counts.planRelevant = planCandidates.length;
+  const planRows = await duringInjection('hydrate_plans', counts, () => Promise.all(planCandidates.map((h) => getPlan(db, scope, h.id))));
   const planItems: InjectionItem[] = planRows.flatMap((row) =>
-    row === null ? [] : [{ kind: 'plan' as const, id: row.planKey, label: `plan: ${row.status}`, text: row.title ?? row.planKey }]);
+    row === null || !isLivePlan(row) ? [] : [{ kind: 'plan' as const, id: row.planKey, label: `plan: ${row.status}`, text: row.title ?? row.planKey }]);
   counts.planHydrated = planItems.length;
 
   const ordered = [...sporeItems, ...planItems];

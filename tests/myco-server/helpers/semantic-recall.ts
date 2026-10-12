@@ -23,8 +23,8 @@ export function semanticRecall(db: RelationalStore, scope: ReadScope): () => Pro
       .bind(scope.projectId).all<EmbeddingSource>()).results;
     const scored = await Promise.all(sources.map(async (source, i) => {
       const id = await vectorId(partition, source.type, source.record_id, source.revision);
-      await db.prepare(`INSERT OR IGNORE INTO embedding_receipts(project_id, model_key, id, type, record_id, revision, ready, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 1, 0)`).bind(scope.projectId, modelKey, id, source.type, source.record_id, source.revision).run();
+      await db.prepare(`INSERT OR IGNORE INTO embedding_receipts(project_id, model_key, id, type, record_id, revision, ready, updated_at, neighbor_mean, neighbor_std)
+        VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0.5, 0.1)`).bind(scope.projectId, modelKey, id, source.type, source.record_id, source.revision).run();
       const base = source.type === 'plan' ? 0.5 : 0.95;
       return { id, source, score: source.record_id.startsWith('background-') ? 0 : base - i / 1000 };
     }));

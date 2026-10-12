@@ -15,7 +15,7 @@
  */
 
 /**
- * Hubness-aware, parameter-free relevance selection for spore injection.
+ * Hubness-aware relevance selection for prompt injection.
  *
  * Raw cosine similarity is a poor injection gate: an absolute threshold is
  * model-dependent, and long "hub" spores sit near the corpus centroid and look
@@ -32,8 +32,8 @@ export interface SporeCandidate {
   /** Cosine similarity to the query, in [-1, 1]. Distance = 1 - similarity. */
   similarity: number;
   /** Mean cosine *distance* from this spore to the rest of the corpus (its
-   *  hubness baseline). Small mean = central hub. Optional; when absent, MP
-   *  falls back to the query-side factor only. */
+   *  hubness baseline). Small mean = central hub. Missing statistics use the
+   *  calibrated candidates' pooled distribution. */
   neighborMean?: number;
   /** Std-dev of this spore's cosine distance to the corpus. */
   neighborStd?: number;
@@ -52,8 +52,11 @@ export interface SelectOptions {
   /** Minimum MP probability to inject at all. 0.5 = "more likely than not
    *  mutually-near"; a probability midpoint, not a model-dependent cosine. */
   minProbability?: number;
-  /** Keep results within this fraction of the top MP score (separation band). */
+  /** Keep this fraction of the strongest MP and distance-weighted evidence. */
   relativeBand?: number;
+  /** Semantic background for a pool without its own calibration, such as plans. */
+  referenceCandidates?: SporeCandidate[];
+  observe?: (counts: { scored: number; probable: number; separated: number }) => void;
 }
 
 export interface SelectedSpore {
@@ -65,6 +68,22 @@ export interface SelectedSpore {
 const STD_EPSILON = 1e-6;
 const DEFAULT_MIN_PROBABILITY = 0.5;
 const DEFAULT_RELATIVE_BAND = 0.6;
+/** Upper end of the central 95% normal interval for candidate baselines. */
+const BASELINE_STD_LIMIT = 2;
+
+type CalibratedCandidate = SporeCandidate & { neighborMean: number; neighborStd: number };
+
+function isCalibrated(c: SporeCandidate): c is CalibratedCandidate {
+  return c.neighborMean !== undefined && Number.isFinite(c.neighborMean)
+    && c.neighborStd !== undefined && Number.isFinite(c.neighborStd) && c.neighborStd >= 0;
+}
+
+function boundedCalibration(candidate: CalibratedCandidate, calibrated: CalibratedCandidate[]): DistributionStats {
+  const peers = calibrated.filter((c) => c.id !== candidate.id);
+  const baselines = distributionStats(peers.map((c) => c.neighborMean));
+  const ceiling = peers.length === 0 ? candidate.neighborMean : baselines.mean + BASELINE_STD_LIMIT * baselines.std;
+  return { mean: Math.min(candidate.neighborMean, ceiling), std: candidate.neighborStd };
+}
 
 /**
  * Standard normal CDF via the Abramowitz & Stegun erf approximation
@@ -108,7 +127,7 @@ function proximityFactor(distance: number, stats: DistributionStats): number {
 
 /**
  * Mutual Proximity: the product of the query-side and spore-side proximity
- * factors. When spore-side stats are absent, only the query-side factor applies.
+ * factors. Both distributions are required to establish mutual proximity.
  */
 export function mutualProximity(
   distance: number,
@@ -116,7 +135,7 @@ export function mutualProximity(
   sporeStats?: DistributionStats,
 ): number {
   const queryFactor = proximityFactor(distance, queryStats);
-  if (!sporeStats || sporeStats.std === undefined) return queryFactor;
+  if (!sporeStats) return 0;
   return queryFactor * proximityFactor(distance, sporeStats);
 }
 
@@ -134,27 +153,37 @@ export function selectRelevantSpores(
   const minProbability = opts.minProbability ?? DEFAULT_MIN_PROBABILITY;
   const relativeBand = opts.relativeBand ?? DEFAULT_RELATIVE_BAND;
 
-  const pool = candidates.filter((c) => !c.alreadyInjected);
-  if (pool.length === 0) return [];
+  const reference = opts.referenceCandidates ?? candidates;
+  const calibrated = reference.filter(isCalibrated);
+  const observe = (scored: number, probable: number, separated: number) => opts.observe?.({ scored, probable, separated });
+  const pool = candidates.filter((c) => !c.alreadyInjected && Number.isFinite(c.similarity));
+  if (pool.length === 0 || calibrated.length === 0) { observe(0, 0, 0); return []; }
 
-  const queryStats = distributionStats(pool.map((c) => 1 - c.similarity));
+  const queryStats = distributionStats(reference.filter((c) => Number.isFinite(c.similarity)).map((c) => 1 - c.similarity));
+  const baselines = distributionStats(calibrated.map((c) => c.neighborMean));
+  const pooled: DistributionStats = {
+    mean: baselines.mean,
+    std: Math.sqrt(calibrated.reduce((sum, c) =>
+      sum + c.neighborStd ** 2 + (c.neighborMean - baselines.mean) ** 2, 0) / calibrated.length),
+  };
 
   const scored = pool
-    .map((c) => ({
-      id: c.id,
-      mp: mutualProximity(
+    .map((c) => {
+      const mp = mutualProximity(
         1 - c.similarity,
         queryStats,
-        c.neighborStd !== undefined && c.neighborMean !== undefined
-          ? { mean: c.neighborMean, std: c.neighborStd }
-          : undefined,
-      ),
-    }))
+        isCalibrated(c) ? boundedCalibration(c, calibrated) : pooled,
+      );
+      // Shift cosine to [0, 1] so separation retains distance information when MP saturates.
+      return { id: c.id, mp, separation: mp * (1 + c.similarity) / 2 };
+    })
     .sort((a, b) => b.mp - a.mp);
 
   const top = scored[0].mp;
-  if (top < minProbability) return [];
-
   const cutoff = Math.max(minProbability, top * relativeBand);
-  return scored.filter((s) => s.mp >= cutoff).slice(0, opts.maxResults);
+  const probable = scored.filter((s) => s.mp >= cutoff);
+  const separationCutoff = Math.max(...probable.map((s) => s.separation)) * relativeBand;
+  const separated = probable.filter((s) => s.separation >= separationCutoff);
+  observe(scored.length, probable.length, separated.length);
+  return separated.slice(0, opts.maxResults).map(({ id, mp }) => ({ id, mp }));
 }

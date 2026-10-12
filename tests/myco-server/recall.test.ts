@@ -301,12 +301,15 @@ describe('prompt selection diagnostics', () => {
     const { db, sqlite } = store();
     seedPlan(sqlite);
     const semantic = await semanticRecall(db, SCOPE)();
+    const query = semantic.vectors.query;
+    semantic.vectors.query = async (partition, options) => (await query(partition, options)).map(hit =>
+      options.filters?.type === 'plan' ? { ...hit, score: 0.95 } : hit);
     const ask = (promptId: string, resolve = async () => semantic) => composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, promptId, text: PROMPT, now: NOW }, resolve);
     try {
       await ask('no-hits', async () => ({ ...semantic, vectors: { ...semantic.vectors, query: async () => [] } }));
       expect(selectionOf(sqlite, 'no-hits')).toEqual(emptyInjectionCounts());
       const nullPlan = spyOn(plans, 'getPlan').mockResolvedValue(null);
-      try { await ask('null-plan'); } finally { nullPlan.mockRestore(); }
+      try { await ask('null-plan'); expect(nullPlan).toHaveBeenCalledTimes(1); } finally { nullPlan.mockRestore(); }
       const missing = selectionOf(sqlite, 'null-plan');
       expect(missing).toMatchObject({ planRawMatches: 1, planJoined: 1, planHits: 1, planUnserved: 1, planHydrated: 0, budgetKept: 0 });
       expect(missing).not.toEqual(selectionOf(sqlite, 'no-hits'));
@@ -326,8 +329,8 @@ describe('prompt selection diagnostics', () => {
       await composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, promptId: 'metadata', text: PROMPT, now: NOW }, async () => ({
         ...semantic, vectors: { ...semantic.vectors, query: (partition, options) => semantic.vectors.query(partition, { ...options, filters: { type: 'plan' } }) },
       }));
-      expect(selectionOf(sqlite, 'metadata')).toMatchObject({ sporeRawMatches: 1, sporeJoined: 1, sporeHits: 0, sporeRelevant: 0, planHits: 1, planHydrated: 1, budgetKept: 1 });
-      expect(sqlite.query('SELECT parts FROM prompt_context_answers').get()).toEqual({ parts: '[{"kind":"spores","sporeCount":0,"planCount":1}]' });
+      expect(selectionOf(sqlite, 'metadata')).toMatchObject({ sporeRawMatches: 1, sporeJoined: 1, sporeHits: 0, sporeScored: 0, sporeRelevant: 0, planHits: 1, planEligible: 1, planScored: 0, planRelevant: 0, planHydrated: 0, budgetKept: 0 });
+      expect(sqlite.query('SELECT parts FROM prompt_context_answers').get()).toEqual({ parts: '[]' });
     } finally { sqlite.close(); }
   });
 
@@ -580,7 +583,7 @@ describe('POST /context/prompt', () => {
     const e = sqliteEnv();
     const issued = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     e.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [AGENT, NOW]);
-    e.env.AI = { run: async (_model: string, input: { text: string[] }) => ({ data: input.text.map((text) => text.includes('background') ? [0, 1] : text.includes('network') ? (legacyOnly ? [1, 0] : [0.6, 0.8]) : [1, 0]) }) };
+    e.env.AI = { run: async (_model: string, input: { text: string[] }) => ({ data: input.text.map((text) => text.includes('background') ? [0, 1] : text.includes('plan') ? [1, 0] : text.includes('network') ? (legacyOnly ? [1, 0] : [0.6, 0.8]) : [1, 0]) }) };
     if (legacyOnly) await settingsWriter(e.db).setLeaf('cortex.spores.max_per_prompt', 3, 'mem_machine_1', NOW);
     const planKeys = new Map<string, Set<string>>();
     const index = indexFixture();
@@ -602,7 +605,7 @@ describe('POST /context/prompt', () => {
           planKeys.get(projectId)!.add(key);
           e.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at, origin_path)
             VALUES (?, ?, 'history', ?, 'machine_1', ?, 'network evidence collection', ?, 'active', ?, ?, 'fixture', ?, ?)`,
-          [projectId, key, `event-${i}`, `${name} network evidence collection`, `hash-${i}`, NOW, NOW, NOW, imported(i) ? normalized : origin]);
+          [projectId, key, `event-${i}`, `${name} network plan evidence collection`, `hash-${i}`, NOW, NOW, NOW, imported(i) ? normalized : origin]);
         }
         const semantic = (await resolveSemanticSearch(e.serverEnv))!;
         for (let i = 0; i < 3000; i++) if ((await reconcileEmbedding({ db: e.db, blobs: e.bucket, ...semantic }, projectId, NOW)).processed === 0) break;
@@ -628,10 +631,10 @@ describe('POST /context/prompt', () => {
         const spores = legacyOnly ? 3 : 0;
         const planHits = projectId === 'proj_1' ? 4 : 100;
         const hydratedPlans = Math.min(planHits, legacyOnly ? 3 : 7);
-        expect(JSON.parse(row.selection)).toEqual({
+        expect(JSON.parse(row.selection)).toMatchObject({
           sporeRawMatches: projectId === 'proj_1' ? 30 : 100, sporeJoined: projectId === 'proj_1' ? 30 : 100, sporeHits: projectId === 'proj_1' ? 30 : 100,
           sporeRelevant: spores, sporeHydrated: spores,
-          planRawMatches: planHits, planJoined: planHits, planHits, planUnserved: planHits, planHydrated: hydratedPlans, budgetKept: spores + hydratedPlans,
+          planRawMatches: planHits, planJoined: planHits, planHits, planUnserved: planHits, planEligible: planHits, planScored: planHits, planRelevant: hydratedPlans, planHydrated: hydratedPlans, budgetKept: spores + hydratedPlans,
         });
         expect(JSON.parse(row.parts)).toEqual([{ kind: 'spores', sporeCount: spores, planCount: hydratedPlans }]);
       }

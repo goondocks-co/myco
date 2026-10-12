@@ -97,7 +97,12 @@ export const recall: ParityScenario = {
     const answers = await target.sql(`SELECT prompt_id, outcome, parts, skipped, failures, selection FROM prompt_context_answers
       WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)} ORDER BY created_at, prompt_id`) as Array<{ prompt_id: string; outcome: string; parts: string; skipped: string; failures: string; selection: string }>;
     expect(answers).toHaveLength(3);
-    for (const answer of answers) expect(Object.values(JSON.parse(answer.selection))).toEqual(Array(11).fill(0));
+    for (const answer of answers) expect(JSON.parse(answer.selection)).toEqual({
+      sporeRawMatches: 0, sporeJoined: 0, sporeHits: 0, sporeScored: 0, sporeProbable: 0,
+      sporeSeparated: 0, sporeRelevant: 0, sporeHydrated: 0,
+      planRawMatches: 0, planJoined: 0, planHits: 0, planUnserved: 0, planEligible: 0,
+      planScored: 0, planProbable: 0, planSeparated: 0, planRelevant: 0, planHydrated: 0, budgetKept: 0,
+    });
     expect(answers.find((answer) => answer.prompt_id === p1)).toMatchObject({ outcome: 'served', parts: '[{"kind":"plan-nudge"}]', skipped: '["spores:no_semantic"]', failures: '[]' });
     expect(answers.filter((answer) => answer.outcome === 'empty')).toHaveLength(2);
     expect(answers.filter((answer) => answer.outcome === 'empty').every((answer) => JSON.parse(answer.skipped).includes('plan-nudge:repeat'))).toBe(true);

@@ -158,6 +158,20 @@ describe('the pool', () => {
 });
 
 describe('the record', () => {
+  it('does not burn a prompt hash when calibration leaves the block empty', async () => {
+    const { db, sqlite } = store();
+    await insertSpore(db, SCOPE, spore('new'));
+    const semantic = await semanticRecall(db, SCOPE)();
+    sqlite.exec('UPDATE embedding_receipts SET neighbor_mean = NULL, neighbor_std = NULL');
+    const ask = () => selectSporesForPrompt(db, SCOPE, ON, true, {
+      sessionId: SESSION, promptId: 'new-prompt', promptHash: 'same', prompt: PROMPT, now: NOW,
+    }, async () => semantic);
+    expect((await ask()).skipped).toBe('empty');
+    expect(rows(sqlite)).toEqual([]);
+    sqlite.exec('UPDATE embedding_receipts SET neighbor_mean = 0.5, neighbor_std = 0.1');
+    expect((await ask()).items.map(i => i.id)).toEqual(['new']);
+  });
+
   it('names the prompt it was served with, and holds one row per prompt content in the session', async () => {
     const { db, sqlite } = store();
     await insertSpore(db, SCOPE, spore('a', { createdAt: NOW - 1 }));
@@ -213,6 +227,36 @@ describe('the record', () => {
     await insertSpore(db, OTHER, spore('a'));
     const served = await select(db, { scope: OTHER, promptId: 'p1', promptHash: 'h1' });
     expect(served.items.map((s) => s.id)).toEqual(['a']);
+  });
+});
+
+describe('plan selection', () => {
+  it('serves only relevant live plans and records every filtering stage', async () => {
+    const { db, sqlite } = store();
+    for (const [key, status] of [['live', 'active'], ['progress', 'in_progress'], ['done', 'completed'], ['abandoned', 'abandoned'], ['unrelated', 'active']]) {
+      sqlite.query(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
+        VALUES (?, ?, 'history', ?, 'machine', ?, 'plan evidence', ?, ?, ?, ?, 'fixture', ?)`).run(SCOPE.projectId, key!, key!, key!, key!, status!, NOW, NOW, NOW);
+    }
+    const semantic = await semanticRecall(db, SCOPE)();
+    const keys = new Map((sqlite.query('SELECT id, record_id FROM embedding_receipts WHERE type = \'plan\'').all() as Array<{ id: string; record_id: string }>).map(r => [r.id, r.record_id]));
+    const ask = (sessionId: string) => selectSporesForPrompt(db, SCOPE, ON, true, {
+      sessionId, promptId: 'plans', promptHash: 'plans', prompt: PROMPT, now: NOW,
+    }, async () => ({ ...semantic, vectors: { ...semantic.vectors,
+      query: async (partition, options) => (await semantic.vectors.query(partition, options)).map(h =>
+        keys.has(h.id) ? { ...h, score: keys.get(h.id) === 'unrelated' ? 0.1 : 0.95 } : h),
+    } }));
+    const served = await ask(SESSION);
+    expect(served.items.map(i => i.id).sort()).toEqual(['live', 'progress']);
+    expect(served.counts).toMatchObject({
+      planRawMatches: 5, planJoined: 5, planHits: 5, planUnserved: 5, planEligible: 3,
+      planScored: 3, planProbable: 2, planSeparated: 2, planRelevant: 2, planHydrated: 2, budgetKept: 2,
+    });
+    expect(JSON.parse(rows(sqlite)[0]!.plan_ids as string).sort()).toEqual(['live', 'progress']);
+    sqlite.exec('UPDATE embedding_receipts SET neighbor_mean = NULL, neighbor_std = NULL');
+    const uncalibrated = await ask('no-calibration');
+    expect(uncalibrated.skipped).toBe('empty');
+    expect(uncalibrated.counts).toMatchObject({ planEligible: 3, planScored: 0, planHydrated: 0, budgetKept: 0 });
+    expect(rows(sqlite)).toHaveLength(1);
   });
 });
 
