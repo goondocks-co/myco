@@ -73,12 +73,28 @@ export async function setAppearance(context: BrowserContext, mode: Mode): Promis
 export interface PageWatch {
   consoleErrors: string[];
   failedRequests: string[];
+  /** Correlates cancellations with a test action; the action must await its destination route. */
+  navigate(action: () => Promise<unknown>): Promise<void>;
 }
 
 /** Records console errors, uncaught page errors and failed requests (network failures and 4xx/5xx answers). */
 export function watchPage(page: Page): PageWatch {
-  const watch: PageWatch = { consoleErrors: [], failedRequests: [] };
+  const watch: PageWatch = {
+    consoleErrors: [],
+    failedRequests: [],
+    async navigate(action) {
+      if (actionEpoch !== undefined) throw new Error('navigation actions must not overlap');
+      actionEpoch = navigationEpoch;
+      try {
+        await action();
+      } finally {
+        actionEpoch = undefined;
+        pendingAborts.length = 0;
+      }
+    },
+  };
   let navigationEpoch = 0;
+  let actionEpoch: number | undefined;
   const requestEpochs = new WeakMap<Request, number>();
   let navigation: { request: Request; epoch: number } | undefined;
   const pendingAborts: Array<{ epoch: number; index: number; failures: string[] }> = [];
@@ -93,7 +109,7 @@ export function watchPage(page: Page): PageWatch {
     if (frame !== page.mainFrame()) return;
     // Cancellation can arrive before the main frame's navigation commit.
     for (const abort of pendingAborts.reverse()) {
-      if (abort.epoch === navigationEpoch && abort.epoch === navigation?.epoch && abort.failures === watch.failedRequests) {
+      if (abort.epoch === navigationEpoch && abort.epoch === (navigation?.epoch ?? actionEpoch) && abort.failures === watch.failedRequests) {
         watch.failedRequests.splice(abort.index, 1);
       }
     }
@@ -115,7 +131,7 @@ export function watchPage(page: Page): PageWatch {
     const startedAt = requestEpochs.get(request);
     if (error === 'net::ERR_ABORTED' && startedAt !== undefined) {
       if (startedAt === navigationEpoch - 1) return;
-      if (startedAt === navigation?.epoch) {
+      if (startedAt === (navigation?.epoch ?? actionEpoch)) {
         pendingAborts.push({ epoch: startedAt, index: watch.failedRequests.length, failures: watch.failedRequests });
       }
     }

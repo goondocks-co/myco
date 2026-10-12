@@ -135,8 +135,10 @@ test('run task names link to their task card', async ({ browser }) => {
   try {
     const link = page.locator('[data-run-task]').getByRole('link');
     await expect(link).toHaveAttribute('href', /\/work\/tasks#canopy-map$/);
-    await link.click();
-    await expect(page).toHaveURL(/\/work\/tasks#canopy-map$/);
+    await watch.navigate(async () => {
+      await link.click();
+      await expect(page).toHaveURL(/\/work\/tasks#canopy-map$/);
+    });
     await expect(page.locator('article[data-task="canopy-map"]')).toBeInViewport();
     expectQuiet(watch);
   } finally { await context.close(); }
