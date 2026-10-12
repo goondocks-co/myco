@@ -233,51 +233,21 @@ describe('the record', () => {
 });
 
 describe('plan selection', () => {
-  it.each([
-    ['two-plan irrelevant', [-0.9, -0.92], []],
-    ['lone relevant', [0.95], ['reconnect-0']],
-    ['lone irrelevant', [-0.9], []],
-  ] as const)('uses the configured model background from another live project for a %s pool', async (_name, similarities, expected) => {
+  it.each([1, 2, 4])('withholds a project with only %s embedded plans as insufficient', async size => {
     const { db, sqlite } = store();
-    const title = 'Preserve pending transcript batches while a member reconnects';
-    for (let i = 0; i < similarities.length; i++) sqlite.query(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
-      VALUES (?, ?, 'history', ?, 'machine', ?, ?, ?, 'active', ?, ?, 'fixture', ?)`).run(SCOPE.projectId, `reconnect-${i}`, `plan-${i}`, title, title, `hash-${i}`, NOW, NOW, NOW);
+    for (let i = 0; i < size; i++) sqlite.query(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
+      VALUES (?, ?, 'history', ?, 'machine', 'Preserve transcript batches during member reconnect', 'Keep pending receipts intact', ?, ?, ?, ?, 'fixture', ?)`)
+      .run(SCOPE.projectId, 'plan-' + i, 'event-' + i, 'hash-' + i, 'active', NOW, NOW, NOW);
     const semantic = await semanticRecall(db, SCOPE, { backgroundSpores: false })();
-    for (let i = 0; i < 6; i++) await insertSpore(db, OTHER, spore(`other-${i}`, { content: 'Review release notes for the dashboard navigation' }));
-    await semanticRecall(db, OTHER, { backgroundSpores: false })();
-    const sources = sqlite.query(`SELECT s.*, r.id FROM embedding_sources s JOIN embedding_receipts r
-      ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
-      WHERE r.model_key = ? ORDER BY s.record_id`).all(semantic.provider.modelKey) as Array<{ id: string; project_id: string; record_id: string }>;
-    const background = sources.filter(s => s.project_id === OTHER.projectId);
-    const own = sources.filter(s => s.project_id === SCOPE.projectId);
-    const planVectors = own.map((s, i) => {
-      const similarity = similarities[i]!;
-      return { id: s.id, values: [similarity, Math.sqrt(1 - similarity ** 2) * Math.cos(i / 10), Math.sqrt(1 - similarity ** 2) * Math.sin(i / 10)] };
-    });
-    if (planVectors.length === 2) expect(cosineSimilarity(planVectors[0]!.values, planVectors[1]!.values)).toBeGreaterThan(similarities[0]!);
-    semantic.provider.embed = async () => [1, 0, 0];
-    semantic.vectors.query = async (partition, options) => {
-      expect(partition).toEqual({ projectId: SCOPE.projectId, modelKey: semantic.provider.modelKey });
-      return options.filters?.type === 'plan' ? planVectors.map(s => ({ id: s.id, score: cosineSimilarity([1, 0, 0], s.values) })) : [];
-    };
-    const get = spyOn(semantic.vectors, 'get').mockImplementation(async (partition, ids) => {
-      expect(partition).toEqual({ projectId: OTHER.projectId, modelKey: semantic.provider.modelKey });
-      return background.filter(s => ids.includes(s.id)).map((s, i) => {
-        const similarity = 0.2 + i * 0.04;
-        return { id: s.id, values: [similarity, Math.sqrt(1 - similarity ** 2) * Math.cos(i / 10), Math.sqrt(1 - similarity ** 2) * Math.sin(i / 10)],
-          metadata: { type: 'spore' as const, record_id: s.record_id, revision: '', status: 'active', session_id: '', created_at: NOW, observation_type: 'gotcha', release_state: '', release_confidence: '' } };
-      });
-    });
+    const query = semantic.vectors.query;
+    semantic.vectors.query = async (partition, options) => (await query(partition, options)).map(h => ({ ...h, score: 0.95 }));
+    const get = spyOn(semantic.vectors, 'get');
     try {
-      const answer = await selectSporesForPrompt(db, SCOPE, ON, true, { sessionId: SESSION, promptId: 'small', promptHash: 'small', prompt: title, now: NOW }, async () => semantic);
-      expect(answer.items.map(i => i.id)).toEqual([...expected]);
-      expect(answer.counts).toMatchObject({ planCalibration: 'deployment', planCalibrationSamples: 6, planCalibrationFailed: 0 });
-      expect(get).toHaveBeenCalledTimes(1);
-      expect(rows(sqlite)).toHaveLength(expected.length === 0 ? 0 : 1);
-      sqlite.query('UPDATE projects SET archived_at = ? WHERE project_id = ?').run(NOW, OTHER.projectId);
-      const archived = await selectSporesForPrompt(db, SCOPE, ON, true, { sessionId: 'archived', promptId: 'small', promptHash: 'small', prompt: title, now: NOW }, async () => semantic);
-      expect(archived.items).toEqual([]);
-      expect(archived.counts).toMatchObject({ planCalibration: 'insufficient', planCalibrationSamples: 0 });
+      const answer = await selectSporesForPrompt(db, SCOPE, ON, true, { sessionId: SESSION, promptId: 'small', promptHash: 'small', prompt: PROMPT, now: NOW }, async () => semantic);
+      expect(answer.items).toEqual([]);
+      expect(answer.counts).toMatchObject({ planHits: size, planEligible: size, planCalibration: 'insufficient', planCalibrated: 0, planCalibrationFailed: 0, planScored: 0 });
+      expect(get).not.toHaveBeenCalled();
+      expect(rows(sqlite)).toHaveLength(0);
     } finally { get.mockRestore(); sqlite.close(); }
   });
 
@@ -371,17 +341,18 @@ describe('plan selection', () => {
     const query = semantic.vectors.query;
     semantic.vectors.query = async (partition, options) => (await query(partition, options)).map(h =>
       receipts.has(h.id) ? { ...h, score: receipts.get(h.id) === 'capture' ? 0.85 : 0.1 } : h);
-    semantic.vectors.get = async () => { throw new Error('plan vector service unavailable'); };
+    const get = spyOn(semantic.vectors, 'get').mockRejectedValue(new Error('plan vector service unavailable'));
     try {
       const answer = await selectSporesForPrompt(db, SCOPE, ON, true, { sessionId: SESSION, promptId: 'degraded', promptHash: 'degraded', prompt: PROMPT, now: NOW }, async () => semantic);
+      expect(get).toHaveBeenCalledTimes(1);
       expect(answer.items.map(i => i.id)).toEqual(['remember']);
-      expect(answer.counts).toMatchObject({ sporeRelevant: 1, sporeHydrated: 1, planCalibrationFailed: 2, planCalibration: 'insufficient', planCalibrated: 0, planRelevant: 0, budgetKept: 1 });
+      expect(answer.counts).toMatchObject({ sporeRelevant: 1, sporeHydrated: 1, planCalibrationFailed: 1, planCalibration: 'insufficient', planCalibrated: 0, planRelevant: 0, budgetKept: 1 });
       expect(JSON.parse(rows(sqlite)[0]!.spore_ids as string)).toEqual(['remember']);
       expect(JSON.parse(rows(sqlite)[0]!.plan_ids as string)).toEqual([]);
-    } finally { sqlite.close(); }
+    } finally { get.mockRestore(); sqlite.close(); }
   });
 
-  it('serves only relevant live plans and records every filtering stage', async () => {
+  it('withholds plans with unavailable ready vectors and records every filtering stage', async () => {
     const { db, sqlite } = store();
     for (const [key, status] of [['live', 'active'], ['progress', 'in_progress'], ['done', 'completed'], ['abandoned', 'abandoned'], ['unrelated', 'active']]) {
       sqlite.query(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
@@ -396,17 +367,17 @@ describe('plan selection', () => {
         keys.has(h.id) ? { ...h, score: keys.get(h.id) === 'unrelated' ? 0.1 : 0.95 } : h),
     } }));
     const served = await ask(SESSION);
-    expect(served.items.map(i => i.id).sort()).toEqual(['live', 'progress']);
+    expect(served.items).toEqual([]);
     expect(served.counts).toMatchObject({
       planRawMatches: 5, planJoined: 5, planHits: 5, planUnserved: 5, planEligible: 3,
-      planScored: 3, planProbable: 2, planSeparated: 2, planRelevant: 2, planHydrated: 2, budgetKept: 2,
+      planCalibration: 'insufficient', planCalibrated: 0, planScored: 0, planProbable: 0, planSeparated: 0, planRelevant: 0, planHydrated: 0, budgetKept: 0,
     });
-    expect(JSON.parse(rows(sqlite)[0]!.plan_ids as string).sort()).toEqual(['live', 'progress']);
+    expect(rows(sqlite)).toHaveLength(0);
     sqlite.exec('UPDATE embedding_receipts SET neighbor_mean = NULL, neighbor_std = NULL');
     const uncalibrated = await ask('no-calibration');
-    expect(uncalibrated.items.map(i => i.id).sort()).toEqual(['live', 'progress']);
-    expect(uncalibrated.counts).toMatchObject({ sporeCalibrated: 0, planEligible: 3, planCalibrated: 0, planScored: 3, planHydrated: 2, budgetKept: 2 });
-    expect(rows(sqlite)).toHaveLength(2);
+    expect(uncalibrated.items).toEqual([]);
+    expect(uncalibrated.counts).toMatchObject({ sporeCalibrated: 0, planEligible: 3, planCalibration: 'insufficient', planCalibrated: 0, planScored: 0, planHydrated: 0, budgetKept: 0 });
+    expect(rows(sqlite)).toHaveLength(0);
   });
 });
 

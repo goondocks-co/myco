@@ -300,7 +300,16 @@ describe('prompt selection diagnostics', () => {
   it('distinguishes no matches, stale receipt revisions and null plan hydration in stored rows', async () => {
     const { db, sqlite } = store();
     seedPlan(sqlite);
+    for (let i = 0; i < 4; i++) sqlite.query(`INSERT INTO plans
+      (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
+      VALUES (?, ?, 'history', ?, 'machine', 'Historical controller plan', 'controller evidence', ?, 'completed', ?, ?, 'fixture', ?)`)
+      .run(SCOPE.projectId, 'history-' + i, 'event-' + i, 'hash-' + i, NOW, NOW, NOW);
     const semantic = await semanticRecall(db, SCOPE)();
+    const receipts = sqlite.query("SELECT id, record_id FROM embedding_receipts WHERE type = 'plan' ORDER BY record_id").all() as Array<{ id: string; record_id: string }>;
+    semantic.vectors.get = async (_partition, ids) => receipts.filter(r => ids.includes(r.id)).map((r, i) => ({ id: r.id,
+      values: [0.5 + i / 100, Math.sqrt(1 - (0.5 + i / 100) ** 2) * Math.cos(i / 5), Math.sqrt(1 - (0.5 + i / 100) ** 2) * Math.sin(i / 5)],
+      metadata: { type: 'plan' as const, record_id: r.record_id, revision: '', status: '', session_id: '', created_at: NOW, observation_type: '', release_state: '', release_confidence: '' },
+    }));
     const query = semantic.vectors.query;
     semantic.vectors.query = async (partition, options) => (await query(partition, options)).map(hit =>
       options.filters?.type === 'plan' ? { ...hit, score: 0.95 } : hit);
@@ -311,12 +320,12 @@ describe('prompt selection diagnostics', () => {
       const nullPlan = spyOn(plans, 'getPlan').mockResolvedValue(null);
       try { await ask('null-plan'); expect(nullPlan).toHaveBeenCalledTimes(1); } finally { nullPlan.mockRestore(); }
       const missing = selectionOf(sqlite, 'null-plan');
-      expect(missing).toMatchObject({ planRawMatches: 1, planJoined: 1, planHits: 1, planUnserved: 1, planHydrated: 0, budgetKept: 0 });
+      expect(missing).toMatchObject({ planRawMatches: 5, planJoined: 5, planHits: 5, planUnserved: 5, planCalibration: 'project', planHydrated: 0, budgetKept: 0 });
       expect(missing).not.toEqual(selectionOf(sqlite, 'no-hits'));
       sqlite.exec("UPDATE embedding_receipts SET revision = 'stale'");
       await ask('stale');
       const stale = selectionOf(sqlite, 'stale');
-      expect(stale).toMatchObject({ planRawMatches: 1, planJoined: 0, planHits: 0, planUnserved: 0, planHydrated: 0, budgetKept: 0 });
+      expect(stale).toMatchObject({ planRawMatches: 5, planJoined: 0, planHits: 0, planUnserved: 0, planHydrated: 0, budgetKept: 0 });
       expect(stale).not.toEqual(missing);
     } finally { sqlite.close(); }
   });
@@ -329,7 +338,7 @@ describe('prompt selection diagnostics', () => {
       await composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, promptId: 'metadata', text: PROMPT, now: NOW }, async () => ({
         ...semantic, vectors: { ...semantic.vectors, query: async (partition, options) => (await semantic.vectors.query(partition, { ...options, filters: { type: 'plan' } })).map(h => ({ ...h, score: -0.9 })) },
       }));
-      expect(selectionOf(sqlite, 'metadata')).toMatchObject({ sporeRawMatches: 1, sporeJoined: 1, sporeHits: 0, sporeCalibrated: 0, sporeScored: 0, sporeRelevant: 0, planHits: 1, planEligible: 1, planCalibrated: 0, planCalibration: 'deployment', planCalibrationSamples: 24, planScored: 1, planRelevant: 0, planHydrated: 0, budgetKept: 0 });
+      expect(selectionOf(sqlite, 'metadata')).toMatchObject({ sporeRawMatches: 1, sporeJoined: 1, sporeHits: 0, sporeCalibrated: 0, sporeScored: 0, sporeRelevant: 0, planHits: 1, planEligible: 1, planCalibrated: 0, planCalibration: 'insufficient', planScored: 0, planRelevant: 0, planHydrated: 0, budgetKept: 0 });
       expect(sqlite.query('SELECT parts FROM prompt_context_answers').get()).toEqual({ parts: '[]' });
     } finally { sqlite.close(); }
   });
@@ -583,7 +592,7 @@ describe('POST /context/prompt', () => {
     const e = sqliteEnv();
     const issued = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     e.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [AGENT, NOW]);
-    e.env.AI = { run: async (_model: string, input: { text: string[] }) => ({ data: input.text.map((text) => text.includes('background') ? [0, 1] : text.includes('plan') ? [1, 0] : text.includes('network') ? (legacyOnly ? [1, 0] : [0.6, 0.8]) : [1, 0]) }) };
+    e.env.AI = { run: async (_model: string, input: { text: string[] }) => ({ data: input.text.map((text) => text.includes('background') ? [0, 1] : [1, 0]) }) };
     if (legacyOnly) await settingsWriter(e.db).setLeaf('cortex.spores.max_per_prompt', 3, 'mem_machine_1', NOW);
     const planKeys = new Map<string, Set<string>>();
     const index = indexFixture();
@@ -622,23 +631,23 @@ describe('POST /context/prompt', () => {
           const part = answer.parts.find((part) => part.kind === 'spores')!;
           expect(part.sporeIds).toHaveLength(3);
           expect(part.sporeIds!.every((id) => id.startsWith('spore_'))).toBe(true);
-          expect(part.planIds).toHaveLength(2);
+          expect(part.planIds).toHaveLength(0);
           expect(part.planIds!.every((id) => planKeys.get(projectId)!.has(id))).toBe(true);
         }
         expect(new Set(namespaces)).toEqual(new Set([await vectorNamespace({ projectId, modelKey: semantic.provider.modelKey })]));
         expect({ projectId, skipped: answer.skipped, nonempty: answer.context.length > 0 }).toEqual({ projectId, skipped: ['plan-nudge:no_intent'], nonempty: true });
         const row = e.sqlite.query('SELECT selection, parts FROM prompt_context_answers WHERE project_id = ?').get(projectId) as { selection: string; parts: string };
-        const spores = legacyOnly ? 3 : 0;
+        const spores = legacyOnly ? 3 : 7;
         const planHits = projectId === 'proj_1' ? 4 : 100;
-        const hydratedPlans = 2;
+        const hydratedPlans = 0;
         const sporeHits = projectId === 'proj_1' ? 30 : 100;
         expect(JSON.parse(row.selection)).toEqual({
-          planCalibration: 'deployment', planCalibrationSamples: 100,
+          planCalibration: 'insufficient',
           sporeRawMatches: projectId === 'proj_1' ? 30 : 100, sporeJoined: projectId === 'proj_1' ? 30 : 100, sporeHits: projectId === 'proj_1' ? 30 : 100,
-          sporeCalibrated: sporeHits, sporeScored: sporeHits, sporeProbable: legacyOnly ? 10 : 0, sporeSeparated: legacyOnly ? 10 : 0,
+          sporeCalibrated: sporeHits, sporeScored: sporeHits, sporeProbable: 10, sporeSeparated: 10,
           sporeRelevant: spores, sporeHydrated: spores,
           planRawMatches: planHits, planJoined: planHits, planHits, planUnserved: planHits, planEligible: planHits, planCalibrationFailed: 0, planCalibrated: projectId === 'proj_1' ? 0 : planHits,
-          planScored: planHits, planProbable: planHits, planSeparated: planHits, planRelevant: hydratedPlans, planHydrated: hydratedPlans, budgetKept: spores + hydratedPlans,
+          planScored: 0, planProbable: 0, planSeparated: 0, planRelevant: hydratedPlans, planHydrated: hydratedPlans, budgetKept: spores + hydratedPlans,
         });
         expect(JSON.parse(row.parts)).toEqual([{ kind: 'spores', sporeCount: spores, planCount: hydratedPlans }]);
       }

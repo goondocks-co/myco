@@ -26,15 +26,14 @@ export function semanticRecall(db: RelationalStore, scope: ReadScope, options: {
       await db.prepare(`INSERT OR IGNORE INTO embedding_receipts(project_id, model_key, id, type, record_id, revision, ready, updated_at, neighbor_mean, neighbor_std)
         VALUES (?, ?, ?, ?, ?, ?, 1, 0, 0.5, 0.1)`).bind(scope.projectId, modelKey, id, source.type, source.record_id, source.revision).run();
       const base = source.type === 'plan' ? 0.5 : 0.95;
-      return { id, source, score: source.record_id.startsWith('background-') ? 0.2 + i / 1000 : base - i / 1000 };
+      return { id, source, score: source.record_id.startsWith('background-') ? 0 : base - i / 1000 };
     }));
     return {
       provider: { modelKey, embed: async () => [1, 0] },
       vectors: {
         query: async (asked, options) => asked.projectId !== scope.projectId || asked.modelKey !== modelKey ? []
           : scored.filter((s) => vectorMatches(s.source, options.filters)).slice(0, options.topK).map(({ id, score }) => ({ id, score })),
-        get: async (asked, ids) => asked.projectId !== scope.projectId || asked.modelKey !== modelKey ? [] :
-          scored.filter(s => s.source.type === 'spore' && ids.includes(s.id)).map(s => ({ id: s.id, metadata: s.source, values: [s.score, Math.sqrt(1 - s.score ** 2)] })),
+        get: async () => [],
         upsert: async () => { throw new Error('read-only recall fixture'); },
         delete: async () => { throw new Error('read-only recall fixture'); },
       },
