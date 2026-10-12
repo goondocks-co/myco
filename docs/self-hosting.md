@@ -177,3 +177,11 @@ VMs, VPS hosting, Fly.io, Cloudflare Tunnel and Tailscale Funnel are outside the
 A VM needs persistent storage and a service that stays alive after logout. Fly.io needs persistent volume storage; this guide provides no beta deployment recipe for it. A named Cloudflare Tunnel or Tailscale Funnel can supply a public HTTPS address, but that also requires correct sign-in callbacks and trusted caller-address handling.
 
 For a reverse proxy, stop the local server before editing its record. `myco server status --target local` prints **Directory**; the settings file is **`server.json` inside that directory**, normally `~/.myco/server/local/server.json`. Preserve its other fields. Set `origin` to the public origin, `sourceFrom` to `proxy`, `trustedHeader` to the header your proxy overwrites with the caller's address, and `trustedHops` to the number of trusted proxies (at least 1). The proxy must prevent callers from forging that trusted header. Register GitHub sign-in for the public origin before starting again. Direct loopback access uses `sourceFrom: "socket"`.
+
+### Plain server image
+
+The plain server image runs the server and keeps its data on a mounted volume. It runs no coding agent. Publish its port on loopback and set `MYCO_BIND=all` so the published port reaches it inside the container. Set `MYCO_ORIGIN` to the address your members use. The image brings the mounted storage up to date before starting the server.
+
+Search indexing runs inside the server, including behind a trusted reverse proxy. Agent work needs a separately registered runner, just as it does on a native server. For cloud execution, register a runner on a cloud VM and sign its coding agent in there.
+
+The Compose lifecycle target and harness image are retired. `myco server create --target local` creates a native Deployment. If you already have one, `--target local` selects it even when an old Compose bundle is still held on disk. Keep that bundle and its data until you have chosen how to move them.

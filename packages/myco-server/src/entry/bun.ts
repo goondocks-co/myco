@@ -78,6 +78,8 @@ export interface BunServerOptions extends Omit<BunServerConfig, 'sqlite'>, Trust
 
 export interface BunHandler {
   fetch(request: Request): Promise<Response>;
+  /** Private dispatch retains authentication with a process-owned source identity. */
+  handleInProcess(request: Request): Promise<Response>;
   /** The assembled environment this handler answers against, for a caller that acts on the Deployment beside serving it. */
   env: BunServerEnv;
   /** Binds the listening server, which is what can report a socket address. */
@@ -101,17 +103,38 @@ export async function createBunHandler(options: BunServerOptions): Promise<BunHa
   let bound: AddressableServer | null = null;
   const sourceOf = options.sourceFrom === 'socket' ? socketSourceOf(() => bound) : trustedProxySourceOf(options);
   const server = createServer({ now: () => Date.now(), sourceOf, fetchImpl: options.fetchImpl ?? fetch });
+  const inProcessRequests = new Set<Promise<Response>>();
+  const internal = createServer({ now: () => Date.now(), sourceOf: () => 'in-process', fetchImpl: options.fetchImpl ?? fetch });
   const core = (request: Request) => server.handleRequest(request, env);
   return {
     env,
+    handleInProcess: async (request) => {
+      request.signal.throwIfAborted();
+      const stopped = Promise.withResolvers<Response>();
+      const onAbort = () => stopped.reject(request.signal.reason);
+      request.signal.addEventListener('abort', onAbort, { once: true });
+      const work = internal.handleRequest(request, env);
+      inProcessRequests.add(work);
+      void work.then(() => inProcessRequests.delete(work), () => inProcessRequests.delete(work));
+      try { return await Promise.race([work, stopped.promise]); }
+      finally { request.signal.removeEventListener('abort', onAbort); }
+    },
     fetch: options.uiAssets !== undefined ? withStaticMap(options.uiAssets, core)
       : options.uiDir === undefined ? core : withStaticAssets(options.uiDir, core),
     bind: (listening: AddressableServer) => { bound = listening; if (options.originOf !== undefined && typeof listening.port === 'number') env.origin = options.originOf(listening.port); },
-    close: async () => { await loop?.stop(); await env.settle(); sqlite.close(); },
+    close: async () => {
+      try {
+        await loop?.stop();
+        const settled = await Promise.allSettled(inProcessRequests);
+        await env.settle();
+        const errors = settled.filter(result => result.status === 'rejected').map(result => result.reason);
+        if (errors.length > 0) throw new AggregateError(errors, 'in-process requests failed during shutdown');
+      } finally { sqlite.close(); }
+    },
   };
 }
 
-export async function serve(options: BunServerOptions): Promise<{ port: number; stop(): Promise<void>; env: BunServerEnv }> {
+export async function serve(options: BunServerOptions): Promise<{ port: number; stop(): Promise<void>; env: BunServerEnv; handleInProcess: BunHandler['handleInProcess'] }> {
   const handler = await createBunHandler(options);
   const loopbackOnly = (options.transport ?? 'loopback') === 'loopback';
 
@@ -172,6 +195,7 @@ export async function serve(options: BunServerOptions): Promise<{ port: number; 
   return {
     port: servingPort,
     env: handler.env,
+    handleInProcess: handler.handleInProcess,
     /**
      * Drain, then close.
      *

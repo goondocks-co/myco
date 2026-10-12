@@ -27,7 +27,7 @@ export async function embeddingRuntimeContract(model: string, runtime: 'bun' | '
     alter?.(route, body);
     return fetch(input, { ...init, body: JSON.stringify(body) });
   };
-  const native = new EmbeddingRuntime(() => {}, fetcher);
+  const native = new EmbeddingRuntime(() => server.env, fetcher, () => {});
   const server = await startDeployment({ databasePath, blobDir: path.join(root, 'blobs'), port: 0,
     sourceFrom: 'socket', transport: 'loopback', harnessTasks: ['embedding-reconcile'],
     harnessLaunchFor: (origin) => async (spec) => {

@@ -14,7 +14,7 @@
  * (`platform/bun/source.ts:59`), and the core answers 503 to every request
  * while the container reports healthy.
  */
-import { afterAll, afterEach, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "../../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
@@ -38,7 +38,14 @@ const TOUCHED = [
   'MYCO_SOURCE_FROM', 'MYCO_TRUSTED_HEADER', 'MYCO_TRUSTED_HOPS',
   'SECRET_WRAP_KEY', 'SECRET_WRAP_KEY_FILE',
 ] as const;
-afterEach(() => { for (const key of TOUCHED) delete process.env[key]; });
+const originalEnv = Object.fromEntries(TOUCHED.map(key => [key, process.env[key]]));
+beforeEach(() => { for (const key of TOUCHED) delete process.env[key]; });
+afterEach(() => {
+  for (const key of TOUCHED) {
+    if (originalEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = originalEnv[key];
+  }
+});
 
 describe('migrateOnly', () => {
   it('brings a fresh volume to a servable schema', () => {
@@ -351,7 +358,7 @@ describe('bind mode', () => {
 });
 
 
-it('main binds embedding in process without runtime environment configuration', async () => {
+it.each(['socket', 'proxy'] as const)('main binds embedding in process with %s source identity', async (sourceFrom) => {
   const root = scratch();
   const databasePath = join(root, 'myco.sqlite');
   migrateOnly(databasePath);
@@ -359,11 +366,17 @@ it('main binds embedding in process without runtime environment configuration', 
   sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','fixture',1)");
   sqlite.run("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_1','memory','user','A durable decision','decision',1)");
   sqlite.close();
-  Object.assign(process.env, { MYCO_DATABASE: databasePath, MYCO_BLOB_DIR: join(root, 'blobs'), MYCO_PORT: '0' });
+  Object.assign(process.env, { MYCO_DATABASE: databasePath, MYCO_BLOB_DIR: join(root, 'blobs'), MYCO_PORT: '0',
+    MYCO_SOURCE_FROM: sourceFrom, ...(sourceFrom === 'proxy' ? { MYCO_TRUSTED_HEADER: 'x-forwarded-for' } : {}),
+  });
   const server = await main();
   if (server === undefined) throw new Error('main did not start');
   try {
     server.env.origin = `http://127.0.0.1:${server.port}`;
+    if (sourceFrom === 'proxy') {
+      const external = await fetch(server.env.origin + '/runs/claim', { method: 'POST', body: '{}' });
+      expect(external.status).toBe(503);
+    }
     server.env.embeddingProvider = async () => ({ modelKey: 'fixture-model', embed: async () => [1, 0] });
     const { dispatchEmbeddingWork } = await import('@myco-server-worker/core/embedding/jobs.js');
     expect(await dispatchEmbeddingWork(server.env, Date.now())).toBe(1);

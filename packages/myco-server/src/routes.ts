@@ -110,7 +110,7 @@ export type Shape = 'persisted' | 'stored' | 'refreshed' | 'answered';
 /** `capture: false` marks a member route that is not a member's capture: it is answered on an archived Project, where a capture route is refused. Absent, the route is capture. No route, capture or not, is refused for the bytes a credential has stored. `scope: 'credential'` marks a route answered on the presented credential alone: no Project is read from the request or resolved, whatever header it carries. Only such a route may declare `admitsLapsed: true`, the credential routes where a credential past its own expiry still authenticates — refresh decides against the lineage ceiling, and self-revocation ends its authority; every other route refuses an expired credential. `mintsAuthority: true` marks a member route whose answer is an authority that can outlive the presented credential — a successor token, a key that links a GitHub account and so opens the dashboard's session routes, where invitations, runtimes and grants are minted, a claimed run's credential and the provider key its harness reads, or a leased run's repository credential; a credential its issuer minted not to rotate is refused on every such route. */
 export type Route = { authorization: AuthorizationDeclaration } & (
   | { method: string; path: string; auth: 'public'; bodyMode: 'none'; handler: PublicHandler }
-  | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; capture?: boolean; mintsAuthority?: true; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true; retired?: true }
+  | ({ method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: Exclude<Shape, 'stored'>; capture?: boolean; mintsAuthority?: true; handler: MemberHandler; grant?: GrantHandler; run?: RunHandler; legacyRunRoute?: true }
     & ({ unbound?: never } | { shape: 'answered'; capture: false; unbound: UnboundMemberHandler }))
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'refreshed' | 'persisted'; capture: false; scope: 'credential'; admitsLapsed?: true; mintsAuthority?: true; credential: CredentialHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; capture: false; scope: 'deployment'; mintsAuthority?: true; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
@@ -372,14 +372,14 @@ export const RETIRED_ROUTES: readonly RetiredRoute[] = [
   { method: 'POST', path: '/runs/instruction', replacedBy: ['POST /worker/claim'] },
   { method: 'POST', path: '/runs/digest', replacedBy: ['GET /api/projects/{projectId}/digests'] },
   { method: 'POST', path: '/runs/digest-write', replacedBy: [], dropped: 'the generated digest goes (plan §3 D2, #1152); stored digests stay readable until #1170 drops the table' },
-  { method: 'POST', path: '/runs/get', replacedBy: ['POST /worker/claim'] },
-  { method: 'POST', path: '/runs/failed', replacedBy: ['POST /worker/claim'] },
-  { method: 'POST', path: '/runs/resume-admission', replacedBy: ['POST /worker/claim'] },
-  { method: 'POST', path: '/runs/supersede', replacedBy: ['POST /worker/claim'] },
-  { method: 'POST', path: '/runs/reports', replacedBy: ['POST /worker/claim'] },
-  { method: 'POST', path: '/runs/events', replacedBy: ['POST /worker/claim'] },
-  { method: 'POST', path: '/runs/repository', replacedBy: ['POST /worker/claim'] },
-  { method: 'POST', path: '/runs/canopy-map', replacedBy: ['POST /worker/claim'] },
+  { method: 'POST', path: '/runs/get', replacedBy: ['GET /api/projects/{projectId}/runs/{runId}'] },
+  { method: 'POST', path: '/runs/failed', replacedBy: ['POST /runs/update', 'POST /worker/end'] },
+  { method: 'POST', path: '/runs/resume-admission', replacedBy: [], dropped: 'a failed run is never resumed in 2.0; a fresh run is dispatched' },
+  { method: 'POST', path: '/runs/supersede', replacedBy: [], dropped: 'a failed run is never resumed in 2.0, so none is superseded' },
+  { method: 'POST', path: '/runs/reports', replacedBy: ['GET /api/projects/{projectId}/runs/{runId}'] },
+  { method: 'POST', path: '/runs/events', replacedBy: [], dropped: "a run's calls are recorded by the Deployment as the run makes them" },
+  { method: 'POST', path: '/runs/repository', replacedBy: ['POST /worker/repository'] },
+  { method: 'POST', path: '/runs/canopy-map', replacedBy: ['myco_run_map'] },
 ];
 
 /**

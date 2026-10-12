@@ -9,5 +9,5 @@ export function retiredComposeBundle(mycoHome = resolveMycoHome()): string | nul
 }
 
 export function composeRetiredMessage(bundle: string | null): string {
-  return `The Compose target is retired${bundle === null ? '' : `: bundle held at ${bundle}`}. Keep its data and run myco server create --target local, or run the plain server image.`;
+  return `The Compose target is retired${bundle === null ? '' : `: bundle held at ${bundle}`}. Keep its data. Use --target local to select an existing native Deployment, or run myco server create --target local to create one. You can also run the plain server image.`;
 }

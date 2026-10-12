@@ -2,6 +2,8 @@ import type { ServerEnv } from '../../core/adapters.js';
 import { RuntimeAlreadyHolding, RuntimeDraining } from '../../core/harness.js';
 import { EMBEDDING_TASK } from '../../core/embedding/jobs.js';
 import { executeEmbeddingRun } from '../../core/embedding/run.js';
+import { failStaleRun, getRun } from '../../core/runs.js';
+import { releaseRun } from '../../core/release.js';
 import { runControlClient } from '@goondocks/myco-shared/run-control';
 
 type Launch = NonNullable<ServerEnv['harnessLaunch']>;
@@ -12,8 +14,13 @@ export class EmbeddingRuntime {
   readonly tasks = [EMBEDDING_TASK];
   private readonly running = new Map<string, { controller: AbortController; done: Promise<void> }>();
   private draining = false;
+  private readonly failures: unknown[] = [];
 
-  constructor(private readonly report: (message: string) => void = console.error, private readonly fetcher: Parameters<typeof runControlClient>[1] = fetch) {}
+  constructor(
+    private readonly env: () => ServerEnv,
+    private readonly fetcher: Parameters<typeof runControlClient>[1],
+    private readonly report: (message: string) => void = console.error,
+  ) {}
 
   launchFor(callbackOrigin: () => string): Launch {
     return async (spec) => {
@@ -23,7 +30,22 @@ export class EmbeddingRuntime {
       const origin = callbackOrigin();
       const controller = new AbortController();
       const done = this.execute(spec, origin, controller.signal)
-        .catch((error: unknown) => this.report(`Embedding run ${spec.runId} failed: ${error instanceof Error ? error.message : String(error)}`))
+        .catch(async (error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.report(`Embedding run ${spec.runId} failed: ${message}`);
+          try {
+            const env = this.env();
+            const scope = { projectId: spec.envVars.MYCO_PROJECT! };
+            const now = Date.now();
+            if (await failStaleRun(env.db, scope, spec.runId, now, message, 'run_failed')) {
+              const run = await getRun(env.db, scope, spec.runId);
+              if (run !== null) await releaseRun(env, scope, run, now);
+            }
+          } catch (persistenceError) {
+            this.failures.push(persistenceError);
+            this.report(`Embedding run ${spec.runId} failure could not be persisted: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}`);
+          }
+        })
         .finally(() => { this.running.delete(spec.runId); });
       this.running.set(spec.runId, { controller, done });
     };
@@ -37,6 +59,7 @@ export class EmbeddingRuntime {
 
   async waitForIdle(): Promise<void> {
     await Promise.all([...this.running.values()].map(run => run.done));
+    if (this.failures.length > 0) throw new AggregateError(this.failures, 'embedding failures could not be persisted');
   }
 
   private async execute(spec: LaunchSpec, origin: string, stopped: AbortSignal): Promise<void> {

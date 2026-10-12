@@ -76,6 +76,8 @@ function positiveInt(name: string, fallback: number): number {
 export interface StartedDeployment {
   /** The port the socket bound, which is the port the runtime calls back to. */
   port: number;
+  /** Private authenticated dispatch for work owned by this process. */
+  handleInProcess: Awaited<ReturnType<typeof serve>>['handleInProcess'];
   stop(): Promise<void>;
   /** The in-process launch this Deployment bound. */
   harnessLaunch?: NonNullable<ServerEnv['harnessLaunch']>;
@@ -277,14 +279,21 @@ export async function startDeployment(options: DeploymentOptions): Promise<Start
   // at each launch, from the socket, and a launch before the socket is bound is
   // one the queue holds rather than one the row fails on.
   let boundPort: number | null = null;
-  const runtime = options.harnessLaunchFor === undefined ? new EmbeddingRuntime() : undefined;
+  let started: Awaited<ReturnType<typeof serve>> | undefined;
+  const deployment = () => {
+    if (started === undefined) throw new RuntimeDraining('the deployment is not ready for in-process work');
+    return started;
+  };
+  const runtime = options.harnessLaunchFor === undefined
+    ? new EmbeddingRuntime(() => deployment().env, (input, init) => deployment().handleInProcess(new Request(input, init)))
+    : undefined;
   const launchFor = options.harnessLaunchFor ?? ((origin) => runtime!.launchFor(origin));
   const harnessLaunch = launchFor(() => {
     if (boundPort === null) throw new RuntimeDraining('the deployment has not bound its port, so no runtime can be told where to call back');
     return `http://127.0.0.1:${boundPort}`;
   });
 
-  const started = await serve({
+  started = await serve({
     databasePath: options.databasePath,
     blobDir: options.blobDir,
     port: options.port ?? DEFAULT_PORT,
@@ -313,7 +322,7 @@ export async function startDeployment(options: DeploymentOptions): Promise<Start
     try { await options.beforeStop?.(); }
     finally {
       try { await runtime?.stop(); }
-      finally { await started.stop(); }
+      finally { await deployment().stop(); }
     }
   })();
 
@@ -331,7 +340,7 @@ export async function startDeployment(options: DeploymentOptions): Promise<Start
     });
   }
 
-  return { port: started.port, stop, env: started.env, ...(harnessLaunch === undefined ? {} : { harnessLaunch }) };
+  return { port: started.port, handleInProcess: started.handleInProcess, stop, env: started.env, ...(harnessLaunch === undefined ? {} : { harnessLaunch }) };
 }
 
 export async function main(): Promise<StartedDeployment | undefined> {

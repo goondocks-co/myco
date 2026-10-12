@@ -15,6 +15,7 @@ import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
+import { RUN_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { CLOCK_NAME, RETIRED_CLOCK_NAMES } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
@@ -200,7 +201,7 @@ describe('gates', () => {
     for (const r of RETIRED_ROUTES) {
       expect(served.has(`${r.method} ${r.path}`)).toBe(false);
       expect({ path: r.path, answered: r.replacedBy.length > 0 || (r.dropped !== undefined && r.dropped.length > 0) }).toEqual({ path: r.path, answered: true });
-      for (const target of r.replacedBy) expect({ target, known: served.has(target) || kindSpec(target) !== null }).toEqual({ target, known: true });
+      for (const target of r.replacedBy) expect({ target, known: served.has(target) || kindSpec(target) !== null || RUN_TOOLS.some(tool => tool === target) }).toEqual({ target, known: true });
       const anonymous = await worker.fetch(withSource(r.path, { method: r.method, body: '{}' }), env());
       expect({ path: r.path, status: anonymous.status }).toEqual({ path: r.path, status: 401 });
       const e = sqliteEnv({ workerLogin: true });
@@ -208,6 +209,22 @@ describe('gates', () => {
       const member = await worker.fetch(new Request(`https://s${r.path}`, { method: r.method, headers: memberHeaders(t.token), body: '{}' }), e.env);
       expect({ path: r.path, status: member.status }).toEqual({ path: r.path, status: 401 });
     }
+  });
+
+  it('pins the replacement or dropped reason for each retired container-path route', () => {
+    expect(RETIRED_ROUTES.filter(route => [
+      '/runs/get', '/runs/failed', '/runs/resume-admission', '/runs/supersede',
+      '/runs/reports', '/runs/events', '/runs/repository', '/runs/canopy-map',
+    ].includes(route.path))).toEqual([
+      { method: 'POST', path: '/runs/get', replacedBy: ['GET /api/projects/{projectId}/runs/{runId}'] },
+      { method: 'POST', path: '/runs/failed', replacedBy: ['POST /runs/update', 'POST /worker/end'] },
+      { method: 'POST', path: '/runs/resume-admission', replacedBy: [], dropped: 'a failed run is never resumed in 2.0; a fresh run is dispatched' },
+      { method: 'POST', path: '/runs/supersede', replacedBy: [], dropped: 'a failed run is never resumed in 2.0, so none is superseded' },
+      { method: 'POST', path: '/runs/reports', replacedBy: ['GET /api/projects/{projectId}/runs/{runId}'] },
+      { method: 'POST', path: '/runs/events', replacedBy: [], dropped: "a run's calls are recorded by the Deployment as the run makes them" },
+      { method: 'POST', path: '/runs/repository', replacedBy: ['POST /worker/repository'] },
+      { method: 'POST', path: '/runs/canopy-map', replacedBy: ['myco_run_map'] },
+    ]);
   });
 
   it('refuses credential-free access to protected routes; public enrollment grants nothing without admitted evidence', async () => {
