@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { noteTurnStarted } from '@myco-server-worker/api/recall.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 
@@ -72,11 +72,11 @@ export default {
   },
 };`;
 
-const mf = new Miniflare({
+const mf = new Miniflare(convertV4MiniflareOptions({
   modules: [{ type: 'ESModule', path: 'worker.js', contents: worker }, { type: 'ESModule', path: 'stamp.js', contents: stamp }],
   compatibilityDate: '2026-07-01',
   d1Databases: ['DB'],
-});
+}));
 try {
   await (await mf.dispatchFetch('http://runtime/seed')).json();
   for (const order of ['first', 'after'] as const) {

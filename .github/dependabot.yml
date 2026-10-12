@@ -49,8 +49,6 @@ updates:
       - dependency-name: "typescript-v6"
         update-types:
           - "version-update:semver-major"
-      # Held at 0.20.3 until its Miniflare D1 configuration is ported (#1787).
-      - dependency-name: "@cloudflare/vitest-pool-workers"
 
   - package-ecosystem: "github-actions"
     directory: "/"

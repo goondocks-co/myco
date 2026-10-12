@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { diskBlobStore, DIGEST_MISMATCH_MESSAGE } from '@myco-server-worker/platform/bun/blobs.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -129,7 +129,7 @@ describe('blob publication durability', () => {
       format: 'esm', target: 'browser', external: ['cloudflare:workers'] });
     if (!bundle.success) throw new Error(bundle.logs.map(String).join('\n'));
     const environment = bundle.outputs.find((output) => output.path.endsWith('env.js'))!;
-    const mf = new Miniflare({ modules: [
+    const mf = new Miniflare(convertV4MiniflareOptions({ modules: [
       { type: 'ESModule', path: 'worker.js', contents: `import { serverEnvFromBindings } from './env.js';
         export default { async fetch(request, bindings) {
           const env = serverEnvFromBindings({ MYCO_DB: bindings.DB, BUCKET: bindings.BUCKET,
@@ -142,7 +142,7 @@ describe('blob publication durability', () => {
             largePresent: await env.blobs.ensureDurable('project/large') });
         } };` },
       { type: 'ESModule', path: 'env.js', contents: await environment.text() },
-    ], compatibilityDate: '2026-07-01', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'], r2Buckets: ['BUCKET'] });
+    ], compatibilityDate: '2026-07-01', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'], r2Buckets: ['BUCKET'] }));
     try {
       const response = await mf.dispatchFetch('http://durability/', { method: 'POST', body: 'durable body' });
       expect({ status: response.status, answer: await response.json() }).toEqual({ status: 200,

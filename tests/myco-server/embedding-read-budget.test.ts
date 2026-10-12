@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { runEmbeddingJob, embeddingKeepsAwake, hasEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
@@ -37,8 +37,8 @@ async function seedCaughtUp(d1: RelationalStore, size: number) {
 }
 
 test('caught-up D1 embedding wake reads stay constant as the corpus grows', async () => {
-  const mf = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
-    compatibilityDate: '2026-07-01', d1Databases: ['DB'] });
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
+    compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
   try {
     const d1 = await mf.getD1Database('DB');
     for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map((sql) => d1.prepare(sql)));

@@ -1,6 +1,6 @@
 import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { rawMemberResourceSql } from '@myco-server-worker/core/raw-resources.js';
@@ -31,8 +31,8 @@ type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;
 const CAPTURE_WRITE_NAMES = Object.keys(CAPTURE_WRITE_LIMITS) as CaptureWrite[];
 
 it('D1 event admission reads stay bounded as unrelated archive bundles and events grow', async () => {
-  const mf = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
-    compatibilityDate: '2026-07-01', d1Databases: ['DB'] });
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
+    compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
   try {
     const db = await mf.getD1Database('DB');
     for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
@@ -166,8 +166,8 @@ const HISTORY_INDEXES = [
 ] as const;
 
 it('D1 recurring history readers keep the existing rows-read budget at both corpus sizes', async () => {
-  const mf = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
-    compatibilityDate: '2026-07-01', d1Databases: ['DB'] });
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
+    compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
   const native = new Database(':memory:');
   try {
     const d1 = await mf.getD1Database('DB');
@@ -260,8 +260,8 @@ it('D1 recurring history readers keep the existing rows-read budget at both corp
 it('D1 capture writes stay within their rows-written ceilings at both corpus sizes', async () => {
   const captureWrites = new Map<CaptureWrite, number[][]>(CAPTURE_WRITE_NAMES.map(name => [name, []]));
   for (const size of CORPUS_SIZES) {
-    const mf = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
-      compatibilityDate: '2026-07-01', d1Databases: ['DB'] });
+    const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
+      compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
     try {
       const db = await mf.getD1Database('DB');
       for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
