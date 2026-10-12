@@ -20,22 +20,32 @@ The Cloudflare Deployment is one of two front doors. It is storage, MCP, ingest 
 
 ## The operator contract
 
-Node and wrangler are a prerequisite **on the operator's own machine, for these verbs only**. Never on a member host, never on a worker host, never inside the Deployment.
+Node and wrangler are prerequisites **on the operator's machine for provisioning**, not on machines merely capturing sessions or running tasks, and not inside the Deployment.
 
 ```bash
 npm install -g wrangler && wrangler login
 myco server create --target cloudflare --account-id <id> [--url https://myco.example.com]
+myco server github-app --target cloudflare --url <chosen-address>
+myco server setup-owner --target cloudflare
 myco server status   --target cloudflare
 myco server update   --target cloudflare
 myco server rollback --target cloudflare [--version <id>]
 myco server destroy  --target cloudflare --yes
 ```
 
+Choose the address before registering GitHub sign-in. Use the printed workers.dev address or a custom domain in the same Cloudflare account. Complete GitHub app registration, then open the private, expiring owner link from `setup-owner`, sign in and choose **Connect this account**. Repeating owner setup replaces a pending link; an already connected account is preserved and setup refuses. Hosted owner setup works through the operator's Cloudflare login while the Deployment keeps serving.
+
+Sign this machine in with `myco setup --join <address>`. Invite teammates through **People & machines** → **Invite a teammate** and connect dashboard accounts through **Connect GitHub**. Owner creation uses the manual server commands above.
+
+Enroll a runner explicitly on a machine with a supported coding agent already signed in: `myco runner register <address>`, approve its device code as an owner or administrator, then `myco runner install --server <address>`. Check `myco runner doctor --server <address>` and the dashboard's **Runners** page. Membership and server creation do not enroll a runner; queued work waits until one is ready.
+
+Project capabilities **Context for sessions**, **Code map** and **Learning** default on. Automatic work also needs **Work on a schedule** enabled in **Settings**. **Runs of one task at once** defaults to 2 across projects and is configurable there. Large initial history learns under a separate first-extraction ramp; see [Runners](https://myco.sh/runners).
+
 `create` is idempotent: every resource is ensured, an existing record keeps its ids, and a re-run converges. That also makes it the adopt path for resources created by hand. `destroy` removes the Worker only — the database, bucket, store and record all stand, because the Worker is re-creatable from the binary and the data is not.
 
 Every verb checks those prerequisites before it runs anything: wrangler resolvable without a fetch (`npx --no-install`), and a Cloudflare identity — an interactive `wrangler login`, or `CLOUDFLARE_API_TOKEN` in a shell that cannot open a browser, which is taken on trust rather than verified, so a stale or wrong-scope token fails in the first command's own words. Each missing one is refused by name in one line, so the first thing an operator reads is Myco's instruction rather than wrangler's.
 
-`--account-id` is required rather than defaulted. A login reaching several accounts and a command that picks one silently is how resources land in the wrong account, and a half-provisioned account is worse than a refused command. `wrangler whoami` lists them.
+Creating resources requires `--account-id`; subsequent commands can use the recorded account. A login reaching several accounts must not silently choose where new resources go. `wrangler whoami` lists the accounts.
 
 `--dir` and `--no-drain` are refused **by name**. Neither applies: there is no checkout to point at, and a deploy replaces no runtime so it waits for nothing.
 
@@ -90,6 +100,12 @@ Cloudflare's newer declarative `exports` field is mutually exclusive with `migra
 
 Migrations apply **before** the deploy, always. The schema window is fail-closed forward: a Worker running against a database it is ahead of refuses rather than half-applying.
 
+Before advancing an existing database's schema, create and update obtain a current D1 Time Travel bookmark and save it with the before/after schema versions, timestamp and prior Worker version in `~/.myco/server/cloudflare/record.json` under `schemaUpdates`. A missing or invalid bookmark refuses the operation before remote mutation. Fresh provisioning into a verified empty database is exempt; a resumed create uses the existing-database gate. Code-only updates need no bookmark. Recovery records admitted bookmarks in `recovery.json` until publication.
+
+`myco server rollback --target cloudflare` rolls back code only. For a schema rollback, use the exact database restore command printed by the update within Time Travel retention, then return to the compatible Worker version with `myco server rollback --target cloudflare --version <worker-version-before-update>`. Database restore discards later writes and does not restore R2 objects. Keep its output and undo bookmark.
+
+Use `myco server backup --target cloudflare --to <dir>` for a full verified database-and-blob recovery artifact. Keep the credentials it names separately. Restore into fresh resources under a fresh `MYCO_HOME` with `myco server restore --target cloudflare --from <dir> --secrets-from <file> --account-id <id> --source-retired --yes` only when the source is retired; use `--fork` instead if it remains serving. See [backup and recovery](https://myco.sh/self-hosting#back-up-and-restore).
+
 The deployment record at `~/.myco/server/cloudflare/record.json` is written **before** the first deploy, so a failure mid-create leaves a record naming what already exists. It holds no credentials — the account id and resource names are not secrets, and the token that reaches them lives in the operator's own wrangler login.
 
 Secrets travel on **stdin, never argv**: the wrapping key into the Secrets Store, `SESSION_SECRET` onto the live Worker after the first deploy. Never `WRANGLER_LOG=debug` while installing one; it prints the request.
@@ -100,8 +116,8 @@ Secrets travel on **stdin, never argv**: the wrapping key into the Secrets Store
 - **`The entry-point file ... was not found`** — a config outside the package. Wrangler resolves `main` relative to the config file's own directory.
 - **`assets.directory ... does not exist`** — building the bundle against the committed config instead of the stripped one.
 - **A deploy that carries 30-odd extra modules** — `find_additional_modules` is on, or something joined the entry's directory.
-- **Nothing dispatches** — expected until a worker attaches. The Worker runs no harness; `myco server status` reports the runtime capability as absent, and every dispatch is refused by name until then.
+- **Work stays queued** — check `myco server status --target cloudflare` and **Runners**. The Deployment runs no harness; queued work waits for a registered runner with a usable agent sign-in and model profile. A concurrency limit also queues work; a daily ceiling holds off another start until a later wake.
 
 ## What this Deployment does not do
 
-It runs no harness and starts no container. Task execution belongs to workers that attach from wherever harnesses are logged in. A change that gives the Worker a runtime is a change of architecture, not a configuration edit — take it to the plan first.
+It runs no harness and starts no container. Task execution belongs to registered runners using coding agents signed in on their machines. Runners update themselves between runs. A change that gives the Worker a runtime is a change of architecture, not a configuration edit — take it to the plan first.

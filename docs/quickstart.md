@@ -1,6 +1,6 @@
 # Join a Myco
 
-Connect your machine to a Myco, start a coding session, and see the work on Today. You need a supported coding agent and an invitation from an administrator. If you already sign in to the dashboard, you can use its address instead. To run your own instead, follow [Run your own Myco](self-hosting.md). Moving existing data? See [Upgrading from Myco 1.4](upgrade.md#upgrading-from-myco-14).
+Connect your machine to a Myco, start a coding session, and see the work on Today. You need a supported coding agent and an invitation from an administrator. If you already sign in to the dashboard, you can use its address instead. To run your own instead, follow [Run your own Myco](self-hosting.md). Moving existing data? See [Moving from Myco 1.4](upgrade.md#upgrading-from-myco-14).
 
 ## 1. Install
 
@@ -64,7 +64,7 @@ Choose an existing project or create one when asked. To choose directly, use `my
 
 Start a **new** session in your coding agent and do some work. Open the dashboard at your Myco's address and select the project on **Today**. The session should appear there; **Sessions** lets you open it later. **Knowledge** holds the project's spores, plans and code map.
 
-Capture and learning are separate. Myco's own agent needs a registered runner with a signed-in coding agent before it can learn from sessions. An administrator registers one using the [self-hosting guide](self-hosting.md). For automatic learning, they also turn on **Work on a schedule** in **Settings**. They can run work manually with **Run a task** under **Myco’s work**.
+Capture and learning are separate. Myco's own agent needs a registered runner with a signed-in coding agent before it can learn from sessions. An administrator registers one using the [runner guide](runners.md). For automatic learning, they also turn on **Work on a schedule** in **Settings**. They can run work manually with **Run a task** under **Myco’s work**.
 
 The project switches **Context for sessions**, **Code map** and **Learning** are on by default. A code map and learning from code also need a connected repository. You can see what ran under **Myco’s work**.
 

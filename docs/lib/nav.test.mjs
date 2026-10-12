@@ -16,7 +16,7 @@ test('every guide has a slug and title', () => {
 test('allSlugs is flat, unique, and covers known guides', () => {
   const slugs = allSlugs();
   assert.equal(new Set(slugs).size, slugs.length, 'no duplicate slugs');
-  for (const expected of ['quickstart', 'self-hosting', 'upgrade', 'dashboard', 'how-myco-learns', 'configuration', 'troubleshooting', 'agents', 'agent-tools', 'external-agents', 'architecture/actors-and-boundaries']) {
+  for (const expected of ['quickstart', 'self-hosting', 'runners', 'upgrade', 'dashboard', 'how-myco-learns', 'configuration', 'troubleshooting', 'agents', 'agent-tools', 'external-agents', 'architecture/actors-and-boundaries']) {
     assert.ok(slugs.includes(expected), `includes ${expected}`);
   }
 });

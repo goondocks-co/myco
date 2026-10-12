@@ -1,120 +1,119 @@
 ---
 name: myco-setup
 description: >-
-  Finish setting Myco up on this machine. The plugin alone gives you skills and
-  the Myco tools; the binary adds session capture, plan capture, import and the
-  optional runner. This skill checks what is present, installs the binary with the user's
-  consent, signs in or redeems a join code, wires the agent's hooks and verifies
-  the result — and names the outcome plainly when an install cannot proceed.
+  Finish setting Myco up on this machine: install the binary, join a Deployment,
+  connect repositories and verify capture. Also use for a 1.4 cutover, an optional
+  runner, or leaving the wrong Deployment.
 when_to_use: >-
-  Use when no Myco context arrives at session start, when this project's
-  sessions are not being recorded, when a Myco tool call is refused for want of
-  a credential, or when the user says "set up Myco", "install Myco", "connect me
-  to our Myco deployment" or "why isn't my work being captured".
+  Use when no Myco context arrives at session start, sessions are not captured,
+  tools lack a credential, or the user asks to install or connect Myco.
 allowed-tools: Read, Bash, Grep, Glob
 user-invocable: true
 ---
 
 # Setting Myco up
 
-Two things can be installed, and they are independent.
+After verifying the installed binary below, lead with `myco setup --join <address>`. It guides sign-in, project selection and global agent setup; `myco setup --status` reports observed progress without changing it. Bare `myco setup` offers joining or running Myco's work. Creating a Deployment and moving 1.4 history use the manual commands in their sections below.
 
-| Installed | You get |
-|---|---|
-| The plugin | the skills, and the Myco tools over your deployment's URL |
-| The binary as well | session capture, plan capture, import, and optional runner commands |
+The plugin supplies skills and remote tools. Installing the binary adds session and plan capture, import and optional runner commands. A working plugin alone does not mean capture is installed.
 
-The plugin can answer tools without the binary. If capture is missing, follow the checks below to identify which step remains.
-
-**Ask before installing anything.** This writes to the user's machine and to their agent's configuration. Say what will be installed and where, then wait.
-
-## 1. Is the binary already here?
+## 1. Verify or install the binary
 
 Before invoking any Myco command, read the installation's `install.json` (normally `~/.myco/install.json`, or under `MYCO_HOME`). Require a `bin` matching the executable you intend to run. For a curl install, require a 2.x `version` and a `binary_sha256` matching that file. For an npm install whose marker lacks those fields, read the installed `@goondocks/myco` and platform package metadata without executing either binary: require matching 2.x versions and a hash match between the platform package's binary and the marker's `bin`. This applies to commands on `PATH` and binaries outside it.
 
-If the marker is missing, unreadable, older, or does not match, inspect files without executing the binary. Continue with the installer's preview and ask before replacing 1.4 with `--replace-1.4`.
+If the marker is missing, unreadable, older, or does not match, inspect files without executing the binary. Use the installer's preview and obtain consent before replacing 1.4 with `--replace-1.4`.
 
-Once the matching 2.x binary is verified:
+Once verified, run `myco version`; use the verified absolute `bin` path if it is outside `PATH`.
 
-```bash
-myco version
-```
-
-If it answers, skip to step 3. If it is outside `PATH`, run the verified absolute `bin` path from the marker instead.
-
-
-## 2. Install it
-
-macOS and Linux:
+Before installing, explain the binary destination and global agent configuration changes and obtain the user's consent. On macOS and Linux:
 
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh
 ```
 
-Windows, in PowerShell:
+On Windows x64, in PowerShell:
 
 ```powershell
 irm https://myco.sh/install.ps1 | iex
 ```
 
-**Two installs cannot succeed, and both fail for a reason no retry changes:**
+The 2.0 Windows path is not yet verified. Windows on ARM has no supported build. A binary destination containing whitespace is refused; choose a path with no spaces rather than retrying unchanged.
 
-- **Windows on ARM.** The installer refuses and exits. There is no supported build; a different machine or an x64 host is the only path. Do not suggest workarounds.
-- **A destination path containing a space.** Hooks are spawned as a direct argument vector for several agents, so a binary path with whitespace in it breaks them. The installer refuses rather than writing hooks that would fail later. The fix is a path with no spaces: the defaults, `~/.myco/bin` and `%LOCALAPPDATA%\Myco\bin`, already satisfy this, so it only appears when a custom install directory or a pinned runtime path was chosen.
+## 2. Join a Deployment
 
-## 3. Connect to a deployment
-
-Ask for the Myco address from whoever runs it. An invite link is optional.
+Obtain the Myco address or the administrator's one-time invitation command. An invite link is optional when you already sign in to the dashboard; a new teammate needs an administrator's invitation and GitHub account connection first. From the repository to connect:
 
 ```bash
+myco setup --join <address>
+```
+
+Open the printed approval page in a browser signed in to that dashboard, check the code and machine, and approve. An administrator invites a new teammate through **People & machines** → **Invite a teammate** and connects their dashboard account with **Connect GitHub**. Invitations and join codes expire and work once; a refusal needs a fresh invitation.
+
+Setup resumes when rerun. `myco login <address>` is the manual sign-in and agent-setup path; login already provisions agents. Use `myco member provision --refresh` only when refreshing existing setup is needed. A bare host uses HTTPS; a loopback Deployment needs its full `http://127.0.0.1:8787` address.
+
+To run a new Deployment, follow **myco-server-provisioning** for Cloudflare or [Run your own Myco](https://myco.sh/self-hosting) for local. The owner sequence is create, choose the address, github-app, setup-owner, connect the owner and sign this machine in. Every server command needs an explicit `--target local` or `--target cloudflare`.
+
+## 3. Connect repositories
+
+Git repositories under `~/Repos` auto-join the default Deployment on the first agent hook. An existing project with that Git remote is reused, otherwise one is created. Change **Folders it captures** under **My machines** for other parent folders.
+
+For a repository elsewhere, run inside it:
+
+```bash
+myco member join
+```
+
+Choose an existing project or create one. `myco member join --project <id-or-name>` and `myco member join --new [name]` make that choice explicit. `myco member status` shows connected repositories and pending or refused joins. Only Git repositories capture.
+
+Start a new coding-agent session after setup. Confirm its session appears on **Today**; context alone does not prove the server recorded the session.
+
+## 4. Move a 1.4 installation
+
+Choose a Deployment and keep a backup of the old home before replacing its binary. Replacement stops old hooks capturing until sign-in and cutover finish.
+
+```bash
+curl -fsSL https://myco.sh/install.sh | sh -s -- --dry-run --replace-1.4
+curl -fsSL https://myco.sh/install.sh | sh -s -- --replace-1.4
 myco login <address>
+myco cutover --dry-run
 ```
 
-For an interactive sign-in, open the printed approval page, sign in with GitHub and approve the matching code.
+Review every destination and proposed agent and service change before `myco cutover`. For several Deployments, sign in to each first. Use `--route <id>=<url>` for an explicit project destination, `--skip <id>` to leave history and spool in place, and `--map <old-dir>=<repo-root>` for transcripts from old directories. Preview with the same options you will apply. An unresolved or conflicting route needs a decision, not a guessed default.
 
-In a sandbox or a continuous-integration job, use an administrator-issued join code: the same string is placed in the environment as a join code and redeemed on the first agent session.
+Cutover preserves original vaults, verifies copies and records history and transcript progress separately in `~/.myco/member/cutover.json`. A partial import remains unfinished; fix the named problem and rerun. It reports old extra plan folders; add wanted folders under **My machines** → **Extra plan folders**. Verify imported history and a new captured session before retiring old data. See [Moving from 1.4](https://myco.sh/upgrade#upgrading-from-myco-14) for fallback routing and additional homes.
 
-A join code and an invite link are single-use and expire. If one is refused, the answer is a fresh link from an administrator, not a retry.
+## 5. Optional: enroll a runner
 
-## 4. Wire the agent up
+Capture, login and server startup do not enroll an executor. Continue only when the owner has chosen this machine to run this Deployment's agent work.
+
+Sign in to a supported coding agent on the runner machine under the service account. Then:
 
 ```bash
-myco member provision --refresh
+myco runner register <address>
+myco runner install --server <address>
+myco runner doctor --server <address>
 ```
 
-This refreshes the member's hooks, remote MCP registration and managed skills. It works without fetching a release and is safe to repeat. To update the binary within its recorded channel and then refresh setup, run `myco update` (`myco upgrade` is an alias). Installed runners hand off the update only between runs; combined member and runner homes finish agent refresh with an interactive `myco update` after the handoff.
+An owner or administrator approves the printed device code. Check contact and agent sign-in on **Runners**. Registered runners use their own machine's sign-ins; server-held provider credentials do not sign them in.
 
-## 5. Optional: the owner opts a machine into agent work
+**Context for sessions**, **Code map** and **Learning** default on per project. Enable **Work on a schedule** in **Settings** for automatic work. **Runs of one task at once** defaults to 2 across projects; a large initial history has a separate first-extraction ramp. See [Runners](https://myco.sh/runners).
 
-Developer laptops run no agent work by default. Login, member join, provision and server startup configure no executor. Capture and runner execution are independent.
+Existing legacy worker services stay until explicitly retired. `myco worker status` prints the retirement command. Let active work finish first; retiring a worker preserves capture and membership.
 
-Continue here only when the machine's owner explicitly asks to make it a runner for this Deployment. Otherwise skip to verification. Name the Deployment and machine in the request; a membership is not runner enrollment.
-
-```bash
-myco runner register <host>
-myco runner install --server <url>
-```
-
-The owner or an administrator approves registration on the Deployment's device page. Installation then starts this enrolled runner's per-user service. It offers supported agents already signed in on that machine. Verify with `myco runner doctor --server <url>`.
-
-Existing legacy worker services remain until explicitly retired in their owning home. `myco worker status` lists them and prints the exact retirement command. Preserve active work; stopping a legacy service leaves membership and capture unchanged.
-
-## 6. Verify
+## 6. Verify or leave
 
 ```bash
 myco doctor
+myco setup --status
+myco member status
 ```
 
-This checks the wiring, the credential, and whether the deployment answers from this machine. Read what it reports rather than assuming success — it is the only step that tells you the whole path works.
+Read the results for credential, agent wiring, queued delivery, runner state and server reachability. Confirm a new session on Today and, when a runner is configured, a completed task under **Myco’s work**.
 
-Then start a new agent session. Myco context should arrive at session start; if it does, capture is running.
+For the wrong Deployment, use `myco logout <address>`: it revokes this machine's member credential and removes local connections while preserving captured data and runner registrations. If unreachable, `myco logout <address> --local-only` removes only local connections; an administrator must revoke the server credential.
 
-## About the key the plugin uses
+Member machines update on demand with `myco update`. Installed runners update between runs; a combined member and runner home may need an interactive `myco update` or `myco member provision --refresh` after handoff to finish agent refresh.
 
-The plugin authenticates with a per-project access key, and three things follow that are worth telling the user before they are surprised by them:
+## Plugin access keys
 
-- **It is bound to one project.** Working across several repositories means configuring the plugin once per project.
-- **It expires.** Ninety days by default, and the deployment's administrator can set anything up to a year. When it lapses, tool calls stop being answered and the fix is a new key pasted into the plugin's configuration.
-- **Only an administrator can mint one.** It comes from the deployment's dashboard. The plugin cannot request one for itself, so a user without a key needs a person, not a command.
-
-Installing the binary replaces that key with a credential of the user's own, which is the other reason to finish setup.
+A plugin-only access key is project-bound and expires (90 days by default, at most a year). An administrator creates it in the dashboard; an expired key needs replacement. Installing the binary and signing in uses the user's own credential instead.

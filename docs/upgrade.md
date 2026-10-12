@@ -1,159 +1,109 @@
-# Upgrading Myco
+# Updating Myco
 
-For Myco 2.0, the installer records `alpha`, `beta`, or `stable` in `install.json`. The install marker is the channel authority for installed machines. The existing channel-setting operation updates the marker atomically; installations without a marker use machine `daemon.update_channel`. The manual machine setting still disables automatic updates. Alpha selects the newest alpha, beta or stable build; beta selects the newest beta or stable; stable selects releases only. Release candidates (`rc`) and unknown prerelease shapes are outside these channels. Ordering uses numeric SemVer precedence, independent of GitHub publish order. Updates and repeat online installs keep the running build if the newest eligible tag is older, and report that they are staying put.
+Coding machines, runners and the Deployment have separate update steps. Updating a coding machine does not update the server it connects to.
 
-Release operators must publish the stable or next tag **first**, then delete old prerelease tags. Removing a prerelease before its replacement exists must not force installed machines onto an older stable release. Repoint npm prerelease dist-tags when retiring the corresponding releases. Releases require green main-push CI on the exact tagged SHA; alpha tags may be cut from main only after that gate passes.
+## Update this machine
 
-Myco 2.0 updates on demand. It runs no member update timer or local service. Check the recorded channel and adopt an eligible build with:
-
-```sh
+```bash
 myco update --check
 myco update
-myco update --channel beta   # choose beta for this run only
-```
-
-The updater verifies SHA256SUMS, atomically replaces the recorded binary destination, and refreshes the agents on a joined machine. It keeps the running build when no newer eligible release exists. Repeat installs preserve the recorded channel unless `MYCO_CHANNEL` or `--channel` explicitly changes it. A fresh install defaults to stable.
-
-Use the dashboard to manage runner machines, or run `myco update` on the machine. A runner with an installed service delegates to `myco runner update`, queues a busy service's update, and restarts only between runs. `myco upgrade` is a compatibility alias for `myco update`.
-
-After a runner handoff on a combined member and runner home, agent refresh remains pending until an interactive `myco update` or `myco member provision --refresh`. The guardian reports `agents_refresh_pending` and does not detect agents in its service environment.
-
-Member agent refresh has a two-minute limit and also runs when the binary is already current. The result says whether agents were refreshed and names any next step. `--check` changes no binary or agent setup. `myco doctor` reports a newer release from the last cached channel check, without fetching releases on each invocation.
-
-## Myco 1.4 updates
-
-Myco 1.4 retains its local service and background updater. Its dashboard Settings page offers **Upgrade & Restart**; `myco upgrade` is also available for explicit updates. The following migration and local-service guidance applies to 1.4 installations.
-
-## v1.0: agent and embedding settings now live in the Grove
-
-Myco v1.0 makes agent and embedding configuration **Grove-scoped** — one setting shared by every project in a Grove, instead of a separate copy in each project's `myco.yaml`.
-
-**Breaking change.** On the first restart after upgrading to v1.0, Myco removes agent and embedding settings from every project's `myco.yaml` and resets those projects to the Grove's configuration. The fields reset are the agent provider, harness, model, per-task overrides, the scheduling toggles, and the embedding provider, model, and base URL.
-
-Most projects carried these values only because older Myco wrote them per-project, so the Grove already holds the same configuration and the reset changes nothing you can observe. If a project ran a genuinely different agent or embedding setup, reconfigure it at the **Grove** scope from the dashboard's **Settings** page after the upgrade.
-
-Need a per-project value for a specific field? Use the scope pill on that field in the dashboard to opt it back to project scope. Layering is opt-in per field — nothing is project-scoped by default.
-
-The previous values are not lost: the pre-upgrade `myco.yaml` is in your git history, and Myco archives older Myco-owned files rather than deleting them.
-
-## From v0.25.x or earlier (per-project install era)
-
-If you previously had per-project `.agents/` installs:
-
-1. Let Myco self-update, or trigger **Upgrade & Restart** from the Settings page's Upgrade section.
-2. Myco archives older Myco-owned per-project files in place.
-3. Per-project overrides now live in the dashboard's **Symbionts** page. You can disable a symbiont in a specific project from there.
-
-After the upgrade, verify with `myco doctor`. It reports anything Myco could not update automatically.
-
-## From per-machine MIT-era installs
-
-The license changed from MIT to Apache 2.0 on 2026-04-29 (commit `57a9571a`). No code action required, but if your team's compliance review tracks license metadata, re-acknowledge.
-
-## Teams
-
-Hosting a team and joining one are part of the main binary — the dashboard's Team page and the `myco host`, `myco join`, and `myco attach` commands alike — and they upgrade automatically with the rest of Myco. There's no separate package for them.
-
-When you update Myco across a team, **update the host first, then the members**, and finish any in-flight project move before updating either machine — see [the Myco 1.4 Team Host guide](https://github.com/goondocks-co/myco/blob/release/1.4/docs/team-host.md) for the details.
-
-## Verifying the upgrade
-
-After Myco restarts:
-
-```bash
 myco doctor
 ```
 
-Doctor checks your local Myco install, Grove data, providers, connected agents, service status, and dashboard access. Use `--fix` to auto-repair fixable issues.
+Myco 2.0 updates on demand on member machines. A member installation runs no member update timer or local service. `--check` reports availability without replacing the binary or changing agent setup. `myco update` verifies the download, replaces the installed binary and refreshes global agent configuration, even when the binary is already current. Read its result for any remaining step, then start a new coding-agent session. Doctor checks the connection and setup and reports cached update information.
 
-The dashboard's **Symbionts** page shows the live install state for every detected agent and offers a re-detect trigger if anything looks off.
+The installer records a release channel. **Stable** selects stable releases; **beta** includes beta and stable; **alpha** includes alpha, beta and stable. Updates choose the newest eligible version and keep your current build when the available one is older. A fresh installer chooses an available 2.x stable release, then beta, then alpha when no later release phase exists.
 
-## Contributor dogfood installs
-
-Contributors can run a development Myco service alongside the production install. Production upgrades do not take over development Groves, and development restarts do not disturb the production service.
-
-See [the Myco 1.4 lifecycle guide](https://github.com/goondocks-co/myco/blob/release/1.4/docs/lifecycle.md) for the contributor workflow.
-
-## Rollback
-
-Myco archives older Myco-owned per-project files rather than deleting them. The self-updater also keeps the previously installed binary, so if an update misbehaves Myco falls back to the prior version automatically — except across a storage-format change, below.
-
-**Rollback is refused across a storage-format change.** Some upgrades update the on-disk format of your data. An older Myco cannot read the newer format, so once an upgrade has updated your data, going back to the older version — automatically after a failed update, or explicitly via `myco upgrade <older-version>` or the Stable/Beta toggle — is refused rather than leaving you with a service that cannot start. The refusal message, `myco doctor`, and the dashboard all say exactly which versions are involved.
-
-**Before any storage-format update, Myco takes a backup automatically.** The backup lands in the affected Grove's regular backup folder, records the pre-upgrade format version inside the file, and is pinned so retention cleanup never reclaims it. If the backup cannot be taken, the format update itself is refused — your data is never migrated without the safety net.
-
-To actually go back across a storage-format change, use the pre-upgrade backup with a fresh data directory:
-
-1. Stop the service (`myco service stop`) and move the affected Grove's data file aside (keep it — it is your newest data): `~/.myco/groves/<grove-id>/myco.db`.
-2. Install the older Myco and start it once — it creates a fresh, empty data file in the old format.
-3. Restore the pre-upgrade backup into it from the dashboard's backup page (or `myco __restore-backup <db> <backup> <out>` for scripted recovery).
-
-Restoring a backup **merges rows into** the target — it never converts a newer-format file in place, which is why the fresh data directory in step 2 is required. Restore checks the direction: a backup written at a newer storage format than the target database is refused with a message naming both versions, instead of failing partway through.
-
-To pin a specific release line, use the **Stable** / **Beta** channel toggle in the Settings page's Upgrade section — see [the Myco 1.4 lifecycle guide](https://github.com/goondocks-co/myco/blob/release/1.4/docs/lifecycle.md) for how channels work.
-
-If you want to remove Myco entirely:
+To use another channel for one update:
 
 ```bash
-myco remove           # remove Myco's contributions from every agent's global config
-myco remove --purge   # additionally remove ~/.myco/ itself
+myco update --channel beta
 ```
 
-Removal preserves user-pre-existing keys in shared agent config files.
+This does not change the recorded channel. An explicit channel on a repeat install does.
 
-## Common failure modes
+## Update runners
 
-### Myco didn't pick up the new version
+Installed runners check for releases and update themselves **between runs**, within their recorded channel. In **Runners**, an owner or administrator can choose **Update now** when a connected runner reports an available update. A busy runner finishes its run first. The page shows its version, channel and last update result.
 
-The self-updater applies an update and restarts the service on the next idle window. To take it immediately, click **Upgrade & Restart** in the Settings page's Upgrade section, or run `myco restart` after `myco upgrade`.
+On the runner machine, `myco update` also queues the service's update between runs. For checks and recovery details, see [Runner updates](runners.md#updates-between-runs). On a machine that both captures and runs tasks, an update handoff can leave agent refresh pending; finish with an interactive `myco update` or `myco member provision --refresh` after the handoff.
 
-### Dashboard shows "Connecting to Myco..."
+## Update a Deployment
 
-Hard-reload the tab (Cmd+Shift+R / Ctrl+Shift+R), then run:
+On the machine that manages it, update the binary, then run the command for its target:
 
 ```bash
-myco open
-myco doctor
+myco update
+myco server update --target local
+myco server status --target local
 ```
 
-### A connected agent is not capturing in a new worktree
+For Cloudflare:
 
-Open the dashboard's Symbionts page and trigger re-detect. If you committed project-level Myco config in the main checkout and need the same identity in a worktree, use the Symbionts page for that worktree too.
+```bash
+myco update
+myco server update --target cloudflare
+myco server status --target cloudflare
+```
 
-### `myco doctor` reports agent configuration drift
-
-Run `myco doctor --fix`, or visit the Symbionts page in the dashboard and trigger re-detect.
-
-### The service won't start after going back to an older version
-
-If the local service stays down after a downgrade and `myco doctor` reports the data is at a newer storage format than the binary supports: the data was written by a newer Myco, and the older binary refuses to touch it rather than risk it. Nothing has been modified. Upgrade Myco back (`myco upgrade`), or follow the recovery steps under [Rollback](#rollback) to go back with a pre-upgrade backup.
-
-### Downgrade leftovers when external access was on
-
-If a machine had **external agent access** enabled (Team page) and is moved to an older Myco that predates the feature, external access quietly turns off, and the public address entry it published through Tailscale Funnel can be left behind. It is inert but visible in `tailscale funnel status`; re-upgrading Myco cleans it up, or remove it manually with `tailscale funnel --https=443 off`. A machine that was mid-enable when the newer version stopped will refuse to start the older binary and say why — finish or disable external access on the newer version first.
+Take a verified full backup before a local storage-format change. Cloudflare saves a D1 Time Travel bookmark before advancing an existing database's schema; a Worker rollback alone leaves that database unchanged. Follow [Update and recover an update](self-hosting.md#update-and-recover-an-update) for bookmarks, rollback and full recovery. After updating, check dashboard sign-in, new capture and runner contact.
 
 <a id="upgrading-from-myco-14"></a>
 
-## Upgrading from Myco 1.4
+## Moving from Myco 1.4
 
-Installing 2.0 over 1.4 replaces the binary immediately. Its old hooks stop capturing until you finish joining a Deployment and cut over. The installer keeps an existing 1.4 machine on 1.x updates unless you pass `--replace-1.4`, including after 2.x becomes stable. A fresh machine gets 2.x stable when available, otherwise the newest beta, or the newest alpha before any beta exists; it never falls back to 1.4. The selected channel is recorded in `install.json`. Explicit `MYCO_CHANNEL=stable` selects stable releases only.
+Myco 1.4 retains its local service and background updater. Moving to 2.0 hands capture to member hooks; Myco's own work needs a registered runner.
 
-Choose a Deployment and obtain its Myco address before replacing 1.4. Keep a backup of the 1.4 home. To preview the install and then opt in to alpha:
+Choose or [create a Deployment](self-hosting.md) and obtain its address first. Keep a backup of the 1.4 home. Installing 2.0 replaces the binary immediately; old hooks stop capturing until sign-in and cutover finish. The installer preserves a recognized 1.4 installation unless you explicitly pass `--replace-1.4`. It keeps and refuses an unrecognized binary rather than guessing.
 
-```sh
-curl -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=alpha sh -s -- --dry-run --replace-1.4
-curl -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=alpha sh -s -- --replace-1.4
-myco login <your-myco-address>
+Preview the replacement, then install and sign in:
+
+```bash
+curl -fsSL https://myco.sh/install.sh | sh -s -- --dry-run --replace-1.4
+curl -fsSL https://myco.sh/install.sh | sh -s -- --replace-1.4
+myco login <address>
 myco cutover --dry-run
+```
+
+To choose a release phase explicitly, set `MYCO_CHANNEL=beta` or `MYCO_CHANNEL=alpha` on `sh`. On Windows x64, use the PowerShell installer's `-Replace14` option; the 2.0 Windows path is not yet verified.
+
+The cutover preview names the old homes, projects, destination for each project, agent settings changes, service handover and copies it would make. Review all of them. Cutover uses a repository's existing connection or a saved destination receipt first. An existing Git repository without a connection or saved route goes to the default Deployment, labelled `(default Deployment; no repository route)` in the plan. Only absent or rootless repositories with no route are refused, unless you give `--route`, `--skip` or `--server`. Sign in to each destination before continuing.
+
+### Resolve destinations and old folders
+
+Use the project ids printed by the preview:
+
+| Option | Use it for |
+|---|---|
+| `--route <id>=<url>` | Sending one 1.4 project's history to a signed-in Deployment, including a project whose repository no longer exists |
+| `--skip <id>` | Leaving one project's history and spool in place for now |
+| `--server <url>` | Choosing a fallback for projects without a repository connection; existing connections still determine their destinations |
+| `--map <old-dir>=<repo-root>` | Attributing agent transcripts from an old or deleted worktree directory to the project connected at the current repository root |
+| `--legacy-home <dir>` | Including another 1.4 home |
+
+These options can be repeated for multiple projects, folders or homes, except `--server`, which names one fallback. Quote a mapping containing a trailing `*` to match sibling transcript directories. `--map` attributes transcripts; it does not choose a vault project's Deployment. A project without a usable repository needs `--route` or `--skip`, or an explicit `--server` fallback. A route that conflicts with an existing repository connection is refused; review the connection first.
+
+For example, preview an explicit route and skip before applying them:
+
+```bash
+myco cutover --dry-run --route <project-id>=<address> --skip <other-project-id> --map '<old-dir>=<repo-root>'
+myco cutover --route <project-id>=<address> --skip <other-project-id> --map '<old-dir>=<repo-root>'
+```
+
+For a preview that needs no extra options, apply it with:
+
+```bash
 myco cutover
 ```
 
-Use `MYCO_CHANNEL=beta` for beta or stable builds, or omit the channel with `--replace-1.4` to select the current 2.x default. Review the cutover preview before proceeding. Cutover copies and imports the 1.4 data; the installer does not move or delete vaults. Verify the imported projects, sessions, spores and plans in the Deployment and confirm that new sessions are captured before retiring any 1.4 data.
+### What moves, and how to check it
 
-### Installer classification and execution
+Cutover backs up changed agent settings, connects the old project folders, hands agent configuration to 2.0 and stops the 1.4 service. It then copies and verifies each old vault before importing project history and agent transcripts. The original vaults stay in place. Copies and imports can resume when you rerun the command.
 
-Both installers read the installed version from `install.json` first when its recorded binary hash matches the live file, then look for a byte-identical binary in `bin/versions/<version>/`, including development-version slots. They never execute an existing binary to classify it. Only a positively identified 1.x binary, or legacy vault/groves markers with no binary and no member markers, admits 1.x updates. A home with member or cutover markers never selects 1.x. An unclassifiable binary is preserved and refused with a non-zero exit, including symlinks and empty files. To replace it with 2.x explicitly, use `--replace-1.4` (`-Replace14` or `MYCO_REPLACE_LEGACY=1` on Windows). For an intentional 1.x update, use `npm install -g @goondocks/myco@1`. Strings embedded in an executable can belong to dependencies, so they are not used as version evidence.
+Receipts in `~/.myco/member/cutover.json` record destinations, verified copies, history import and transcript progress separately. A partial or refused import is unfinished, even if agent setup succeeded. Fix the named problem, preview again and rerun with the same routing choices. If a repository now points elsewhere than its receipt, confirm the new destination with `--route` or leave it with `--skip`.
 
-An explicit channel with an eligible 2.x release also requires replacement consent on a 1.4 machine; it does not silently substitute a 1.x update. Local artifacts supplied through `MYCO_INSTALL_FROM` must report a valid version; when `MYCO_INSTALL_VERSION` is supplied, the reported version must match it. Without an explicit version, the reported version names the installed slot and marker.
+Old extra plan folders are reported, not silently copied into machine settings. Add the ones you still want under **My machines** → **Extra plan folders**. Configure the Deployment's models and schedule in **Settings** and register a [runner](runners.md); moving history does not enroll a runner.
 
-New installs record the version and binary hash alongside the channel. A stale marker after an interrupted replacement cannot override the live binary's matching versioned slot; when the recorded version is 1.x and the live binary is 2.x, the slot's release phase recovers the channel. Existing channel records are preserved unless a channel is explicitly selected; opting into replacement of 1.4 without an explicit channel selects the 2.x default. Neither installer executes downloaded 1.x artifacts, starts services, or changes agent configuration for fresh installs or replacements. Existing 1.4 services retain their configuration; service installation and Team Host commands are printed for the operator to run explicitly. Downloaded 2.x artifacts retain checksum and launch admission (and macOS signature verification), with the launch check using private configuration homes. Only an already joined 2.x machine receives the documented `myco member provision --refresh` after installation.
+Run `myco doctor` and `myco member status`. In the dashboard, check each destination's projects, sessions, spores and plans, then start a new coding session and confirm it appears on **Today**. Keep 1.4 data and the cutover copies until you have verified both history and new capture.
+
+The 1.4 move currently uses these manual cutover commands. For maintaining an installation that stays on 1.4, use the [1.4 documentation](https://github.com/goondocks-co/myco/tree/release/1.4/docs).

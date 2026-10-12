@@ -1,14 +1,21 @@
-# Running your own Myco server
+# Run your own Myco
 
-Myco's server is one file. It holds your team's sessions, spores and plans, answers your coding agents over MCP, and schedules the work that turns transcripts into knowledge. You can run it on the laptop you already code on, or on a small virtual machine your team shares.
+A Deployment is one Myco server. It holds your projects' sessions, spores and plans, serves the dashboard and agent tools, and queues Myco's own work. A separately registered [runner](runners.md) does that work using a coding agent signed in on its machine.
 
-It needs no container runtime, no Node.js, and no source checkout. The `myco` binary you already installed is the server.
+Install the Myco binary using the [installation steps](quickstart.md#1.-install), then choose where the Deployment lives:
 
-There is one exception, and it is on your own computer rather than the server: putting a server on Cloudflare uses Cloudflare's own command-line tool, which needs Node.js. Nothing is installed on the server itself.
+| Run it on | Choose this when | What you need |
+|---|---|---|
+| Cloudflare | Teammates, remote runners or cloud agents need to reach it | A Cloudflare account; Node.js and Wrangler on the machine you deploy from |
+| This machine | You want a personal Myco reached only from this machine | The Myco binary; no Node.js or container runtime |
 
-To update an installed machine, run `myco update` (or `myco update --check` to report only). It follows that machine's recorded channel and refreshes member agent setup. Runner services update only between runs. Cloudflare Deployments then use `myco server update --target cloudflare` to deploy the server bundled in the updated binary; updating this machine alone does not deploy it.
+**At beta, self-hosting on your own machine supports loopback access only.** Use Cloudflare for a shared address. VM hosting and exposing a local server are covered only in the [unsupported appendix](#unsupported-self-hosting).
 
-## On your laptop
+Choose the address before setting up GitHub sign-in. The sign-in callback belongs to that address; changing it means configuring sign-in again and signing machines in again. Owner creation currently uses the manual commands below.
+
+## On this machine
+
+Run these in order, while the server is stopped:
 
 ```bash
 myco server create --target local
@@ -17,99 +24,141 @@ myco server setup-owner --target local
 myco server install --target local
 ```
 
-The first command prepares your server and generates its storage keys. The second opens GitHub to register an identity-only sign-in app under your account. Confirm the app there, then return to the terminal. `setup-owner` prints a private link for connecting your GitHub account to the first administrator. The last command starts the server and makes it come back whenever you log in.
+`create` prepares storage and generates keys. `github-app` opens GitHub to register the dashboard's sign-in app; confirm there and return to the terminal. `setup-owner` prints a private account-link URL. `install` starts the server and runs it whenever you log in.
 
-Open the private link printed by `setup-owner`. Sign in with GitHub, check the account shown, and click **Connect this account**, then **Open Projects**. The link expires after 15 minutes. Keep it private: whoever uses it can become this server's administrator.
+After the server starts, open the private link, sign in with GitHub, check the account and choose **Connect this account**, then **Open Projects**. The link expires after 15 minutes. Keep it private: whoever uses it can become the administrator.
 
-Sign this machine in with `myco login http://127.0.0.1:8787`, then approve its code in the dashboard. Agent work needs a runner: opt in with `myco runner register http://127.0.0.1:8787`, then `myco runner install --server http://127.0.0.1:8787`.
+If the link expires, stop the foreground server with Ctrl-C, or stop its installed service with `myco server uninstall --target local`. Rerun `myco server setup-owner --target local`, then start it again. The replacement link invalidates the previous one. Once an account is connected, owner setup refuses; use the existing sign-in and invitation flow instead.
 
-Owner setup requires a stopped server. If its link expires, stop the server, rerun `setup-owner`, and start it again; the replacement link invalidates the previous one. Once an account is connected, setup refuses. Existing or restored memberships use their existing sign-in and invitation flow; setup does not replace them.
-
-Your server lives at `http://127.0.0.1:8787` and listens only on your own machine. Nothing outside your laptop can reach it until you choose to expose it.
-
-`myco server status` tells you whether the service is set to run and whether the server is actually answering, which are different things: a server that starts and immediately fails still counts as installed.
-
-```bash
-myco server status --target local     # address, whether it is running, where its data lives
-myco server run --target local        # run it in this terminal instead, to watch it work
-```
-
-Its data sits in `~/.myco/server/local/`, and its output goes to `~/.myco/logs/server.log` on every platform.
-
-Pick a different port with `--port` if 8787 is taken. To stop it starting at login, run `myco server uninstall --target local`; your data is kept. `myco server destroy --target local --data --yes` removes the server and everything in it.
-
-Both of those act on the service. A server you started yourself with `myco server run` keeps running in its own terminal until you stop it there.
-
-### Changing the sign-in app
-
-Stop a foreground server with Ctrl-C and wait for it to exit. For an installed service, run `myco server uninstall --target local`; this keeps your data. Run the `github-app` command again, then restart with `myco server run --target local` or `myco server install --target local`.
-
-Setup refuses while the server is running. During registration, another server cannot start on the same data. Your storage and session keys stay unchanged when you replace the GitHub sign-in pair. If registration expires or GitHub refuses it, rerun the command. Keep the server stopped until setup finishes, then verify sign-in in the dashboard.
-
-Use the server's configured public origin as `--url` when a reverse proxy fronts it. The app's callback must match the address the server uses.
-
-## On a virtual machine
-
-Anywhere that runs a Linux binary works. A machine with 1 GB of memory and a few gigabytes of disk is enough for a small team.
-
-Copy the binary across, then provision it, configure sign-in and install its service as above. The server runs through your user's service manager, so nothing runs as root.
-
-**Fly.io** is the least work if you would rather not manage a machine. Its builds happen remotely, so you never need a container runtime on your own computer, and a machine with a small volume attached costs a few dollars a month. Give the volume to `~/.myco/server/local/` and the server keeps its data across restarts.
-
-**A plain VPS** works the same way. A basic droplet or equivalent is about the same price. Copy the binary, follow the setup commands above, and put a reverse proxy in front of it for HTTPS.
-
-On Linux, a user service stops when you log out unless the machine is told to keep it running:
-
-```bash
-sudo loginctl enable-linger "$USER"
-```
-
-Without that, a server on a VM you connect to over SSH stops the moment you disconnect.
-
-When something else terminates HTTPS in front of your server, tell it which header carries the caller's real address. `myco server status` shows the settings file to edit. The server refuses to start rather than trusting an address a caller could have written itself.
+The address is `http://127.0.0.1:8787`. If that port is taken, pass `--port <number>` to `myco server create --target local` and use that port in the sign-in URL too. Data lives in `~/.myco/server/local/`; service output goes to `~/.myco/logs/server.log`.
 
 ## On Cloudflare
 
-Your server can also run on Cloudflare's free plan, where there is no machine to keep alive and no address to expose. Its storage, its files and its scheduled work all live on Cloudflare, and it costs nothing until your team is large.
-
-You need three things on your own computer, and none of them on the server: the `myco` binary, Node.js, and the Cloudflare command-line tool signed in to your account.
+Install Node.js and Wrangler on the machine you deploy from, and sign Wrangler in to your Cloudflare account:
 
 ```bash
-npm install -g wrangler && wrangler login
+npm install -g wrangler
+wrangler login
+wrangler whoami
 ```
 
-Myco never installs the Cloudflare tool for you. Without it, or without a login, every command stops and prints these two commands.
-
-Then three commands, the same three as on your laptop:
+Use the account id shown by `whoami`. Myco requires it explicitly so resources go into the account you choose.
 
 ```bash
-myco server create --target cloudflare --account-id <your account id>
-myco server github-app --target cloudflare --url <the address create printed>
+myco server create --target cloudflare --account-id <account-id>
+myco server github-app --target cloudflare --url <address-printed-by-create>
 myco server setup-owner --target cloudflare
 ```
 
-`wrangler whoami` lists the accounts your login can reach, with their ids. Naming one is required rather than optional, so resources can never land in an account you did not mean.
+`create` provisions storage and deploys the server carried by your binary. Add `--dry-run` to preview the resources it would create or keep. Repeating a create keeps existing resources and keys and resumes unfinished provisioning.
 
-`create` creates everything the server needs, brings its storage up to date, and puts it online. It ends by printing the other two commands with your server's address filled in. Re-running it is safe: it keeps what already exists and moves the rest forward, which also makes it the way to adopt pieces you created by hand. That includes a session key or storage key a stopped run never set: a re-run sets it, and never replaces one that is already there.
+For a domain you own in the same Cloudflare account, add `--url https://myco.example.com` to the create command. Otherwise use the printed `workers.dev` address. Make this choice before `github-app`; let that command choose its host-derived app name because GitHub App names are global.
 
-To see what `create` would do before it does anything, add `--dry-run`. It lists every resource and key it would create or keep, and everything the server will be connected to, and changes nothing in your account or on your computer.
+Complete GitHub registration, then open the private link from `setup-owner` and choose **Connect this account**. The link expires after 15 minutes; rerunning setup replaces it. Hosted owner setup works through your Cloudflare login while the server keeps serving. It requires configured GitHub sign-in and refuses once an account is connected.
 
-Choose the address before registering sign-in: changing it later means registering sign-in again and signing each machine in again. Let `github-app` choose its host-derived name; GitHub App names are global.
+## Connect this machine, add a runner and invite people
 
-Add `--url https://myco.example.com` to put the server on a domain you own, if the domain is already in the same Cloudflare account. Without it you get a `workers.dev` address, which works just as well for agents.
+From a repository you want to capture, sign this machine in using the chosen address:
 
-`github-app` registers the sign-in app, as on your laptop. `setup-owner` then prints a private link for connecting your GitHub account to the first administrator. It works over your Cloudflare login, from your own computer, while the server keeps running: there is nothing to stop and no database command to run. It refuses until sign-in works, and names the command that sets it up.
+```bash
+myco setup --join <address>
+```
 
-Open the link, sign in with GitHub and click **Connect this account**. The link expires after 15 minutes, and running `setup-owner` again replaces it. Once an account is connected, setup refuses, and **Members** is where you invite everyone else.
+Approve the printed code in a browser signed in to the dashboard. Setup guides project selection and agent configuration. Start a new coding-agent session afterward. See [Join a Myco](quickstart.md) for repository auto-join and connection checks.
 
-### Custom-domain security rules
+Choose a machine to do Myco's own work, sign in to a supported coding agent on it, and register it explicitly:
 
-Cloudflare zone security rules apply to your custom domain. On the owner's deployment, custom WAF and managed rules blocked history imports with HTTP 403 before requests reached Myco. A Skip rule placed first for the Myco paths resolved it.
+```bash
+myco runner register <address>
+myco runner install --server <address>
+myco runner doctor --server <address>
+```
 
-If an import gets a 403 without Myco's JSON refusal, check Cloudflare **Security Events** for the request's Ray ID and the blocking rule. A 403 alone does not prove WAF blocked it. In the zone's **Security rules**, add a custom rule with the **Skip** action, limited to your Myco hostname and the affected Myco paths. For capture and history import, for example:
+An owner or administrator approves the runner's device code. For a loopback Deployment, the runner must be on the same machine. Creating the server or joining a coding machine does not start a runner. Without one, sessions still capture and agent work waits in the queue. Follow [Runners](runners.md) for sign-in, capacity and updates.
+
+In **People & machines**, choose **Invite a teammate** and share its one-time login command. To give that person dashboard sign-in, choose **Connect GitHub** for their entry and send the connection link.
+
+The project switches **Context for sessions**, **Code map** and **Learning** are on by default. In **Settings** → **Myco’s work**, turn on **Work on a schedule** for automatic work; scheduling starts off. Connect a repository in **Project settings** for code-based work. Use **Run a task** under **Myco’s work** to start work manually, then check its result there.
+
+## Check and stop the server
+
+```bash
+myco server status --target local
+myco server status --target cloudflare
+```
+
+Run the command for your target. Local status distinguishes an installed service from a server actually answering; a loaded service alone does not prove it is healthy. Hosted status reports the recorded account, address and deployed version, and names any failure to read live state.
+
+To watch a local server in this terminal, use `myco server run --target local`. Stop it with Ctrl-C. `myco server uninstall --target local` stops the installed service and keeps data; it does not stop a separate foreground process.
+
+`myco server destroy --target cloudflare --yes` removes the Worker while keeping storage and keys. A later create can bring it back. `myco server destroy --target local --data --yes` deletes the local Deployment's data.
+
+**Do not run `myco remove --purge` on a machine hosting a Deployment until [#1794](https://github.com/goondocks-co/myco/issues/1794) lands.** It deletes the entire Myco home, including a local server's data and the Cloudflare operator record. The current removal summary does not protect or clearly name those resources. Leaving a team or stopping a runner does not require purging data.
+
+## Back up and restore
+
+Use the backup command for the target you run:
+
+```bash
+myco server backup --target local --to <backup-directory>
+myco server backup --target cloudflare --to <backup-directory>
+```
+
+The command snapshots the database, copies its blobs and verifies every blob. Repeat the same command to resume an interrupted backup. Until it completes, the source retains objects the snapshot needs, so storage can grow. **Settings** → **Backups** also controls automatic backups.
+
+Keep the recovery credentials named by the backup output in separate secure storage. The data artifact alone is insufficient. Recovery reads an independently held credentials file with the original wrapping key and sign-in credentials; for a local Deployment, the source file is `~/.myco/server/local/secrets.env`. Protect it separately from the backup directory.
+
+Restore into a fresh Myco home and fresh resources. To replace a retired source, set `MYCO_HOME` to a new directory, then run the appropriate command:
+
+```bash
+myco server restore --target local --from <backup-directory> --secrets-from <credentials-file> --source-retired --yes
+myco server restore --target cloudflare --from <backup-directory> --secrets-from <credentials-file> --account-id <account-id> --source-retired --yes
+```
+
+`--source-retired` confirms that the original serving instance has been retired. Replacement retains its identity and memberships; two addresses do not make those copies separate Mycos. If the source will remain serving, use `--fork` instead: it creates a separate Myco, keeps history and revokes copied credentials, invitations and active runs. The owner signs in again and reconnects machines.
+
+With `--new-signin`, only the original wrapping key is required; configure GitHub sign-in afterward with `myco server github-app --target local --url <address>` or `myco server github-app --target cloudflare --url <address>`. Restore keeps its source and refuses an existing destination. For local recovery, start the restored server with `myco server install --target local`. Verify dashboard sign-in, projects, history, search and new capture before relying on the replacement.
+
+## Update and recover an update
+
+Update the operator machine's binary first, then deploy the server it carries:
+
+```bash
+myco update
+myco server update --target local
+```
+
+For Cloudflare, use `myco server update --target cloudflare` instead. Updating this machine alone does not update the Deployment. See [Updating Myco](upgrade.md) for member and runner updates.
+
+**Before a local storage-format change, make and verify a full backup and keep its recovery credentials.** An older binary refuses newer storage. Local storage has no D1 Time Travel; recover into a fresh directory with a compatible backup or apply a forward fix.
+
+A Cloudflare update that advances an existing database's schema obtains a D1 Time Travel bookmark before migration. It saves the bookmark, schema versions, timestamp and previous Worker version in `~/.myco/server/cloudflare/record.json` under `schemaUpdates`. If it cannot obtain a valid bookmark, it refuses before changing remote resources. A code-only update needs no bookmark. Keep a full backup for disaster recovery too.
+
+For a code rollback:
+
+```bash
+myco server rollback --target cloudflare
+```
+
+This rolls back the Worker, **not the database or blobs**. For a schema rollback, use the exact database restore command printed by the update while its bookmark remains within Time Travel retention, then return to the compatible Worker version:
+
+```bash
+myco server rollback --target cloudflare --account-id <account-id> --version <worker-version-before-update>
+```
+
+A database restore discards writes after its bookmark and does not restore R2 objects. Keep the restore output, including its undo bookmark. Choose full recovery into fresh resources when the database and blobs need to be recovered together.
+
+## Custom-domain requests blocked before Myco
+
+If login, capture, import or tool calls get an HTTP 403 or HTML challenge instead of a Myco response, check Cloudflare **Security Events** for the request's Ray ID. A 403 alone does not prove a firewall rule blocked it. If those events identify a zone rule, use a narrowly scoped **Skip** rule for the Myco hostname and affected paths. Place it **first**, before the blocking custom rules, and select only the rules Security Events identifies. Keep logging enabled; see Cloudflare's [Skip action](https://developers.cloudflare.com/waf/custom-rules/skip/).
+
+Match only the affected routes: `/auth/` paths for sign-in and device polling, `/api/device/` paths for approval, `/mcp` for tool calls, and `/members/`, `/events`, `/blobs/` and `/import/` for joining, capture and imports. For example, when these routes are blocked:
 
 ```text
 (http.host eq "myco.example.com" and (
+  starts_with(http.request.uri.path, "/auth/") or
+  starts_with(http.request.uri.path, "/api/device/") or
+  http.request.uri.path eq "/mcp" or
   starts_with(http.request.uri.path, "/members/") or
   http.request.uri.path eq "/events" or
   starts_with(http.request.uri.path, "/blobs/") or
@@ -117,92 +166,14 @@ If an import gets a 403 without Myco's JSON refusal, check Cloudflare **Security
 ))
 ```
 
-Place it **first**, before custom rules that block those requests. Select the remaining custom rules and managed rules that Security Events identified; keep logging enabled. Extend the path match only when another Myco route is blocked. Myco still checks credentials and permissions on these requests. See Cloudflare's [Skip action](https://developers.cloudflare.com/waf/custom-rules/skip/) and [skip options](https://developers.cloudflare.com/waf/custom-rules/skip/options/).
+Extend an exception only when evidence identifies another blocked route. Myco still checks credentials. Retry `myco import` from the affected repository, or resume a 1.4 move with `myco cutover`.
 
-After saving the rule, run `myco import` again from the affected repository; an interrupted import resumes. For retained 1.4 history, review `myco cutover --dry-run` and resume with `myco cutover`.
+<a id="unsupported-self-hosting"></a>
 
-```bash
-myco server status --target cloudflare      # the account, the address, and the version serving
-myco server update --target cloudflare      # move it to the version this binary carries
-myco server rollback --target cloudflare    # go back to the version that served before
-```
+## Appendix: exposing a self-hosted server (unsupported for beta)
 
-Updating waits for nothing and interrupts nothing: a request already in progress finishes on the version that took it.
+VMs, VPS hosting, Fly.io, Cloudflare Tunnel and Tailscale Funnel are outside the supported beta self-hosting path. Use Cloudflare when other machines or cloud agents need access. A cloud agent cannot reach your laptop's loopback address.
 
-When an update or a create against an existing database advances the hosted schema, it first reads the live schema and obtains a current D1 Time Travel bookmark.
-It durably appends the bookmark, schema versions before and after, timestamp, and prior Worker version to
-`~/.myco/server/cloudflare/record.json` under `schemaUpdates`, before applying any migration. If the bookmark cannot be
-obtained or is invalid, the operation refuses before changing remote resources, the database, or the Worker. An update
-with no schema advance needs no bookmark. Fresh provisioning into a database created by this operation and verified
-empty is exempt. Retrying an interrupted create uses the existing-database gate, including when the schema is still empty.
-Replacement recovery gates migrations after importing data, and repeats admission on resume. Its bookmarks are saved
-in `~/.myco/server/cloudflare/recovery.json` under `schemaUpdates` until publication copies the history to the
-deployment record. Full `myco server backup --target cloudflare --to <dir>` remains available
-for disaster recovery, independently of updates.
+A VM needs persistent storage and a service that stays alive after logout. Fly.io needs persistent volume storage; this guide provides no beta deployment recipe for it. A named Cloudflare Tunnel or Tailscale Funnel can supply a public HTTPS address, but that also requires correct sign-in callbacks and trusted caller-address handling.
 
-The update prints the exact database rollback command with the recorded account and staged configuration. Run that
-command on the operator machine while the bookmark is within D1's Time Travel retention window. For example:
-
-```bash
-CLOUDFLARE_ACCOUNT_ID='<account-id>' npx --no-install wrangler d1 time-travel restore '<database-name>' --bookmark=<recorded-bookmark> -c '<absolute-path-to-wrangler.deploy.toml>'
-myco server rollback --target cloudflare --account-id '<account-id>' --version '<workerVersionBefore>'
-```
-
-Answer the D1 restore prompt with `y`; there is no `--yes` flag. Restore replaces the database in place, discards writes
-after the bookmark, cancels in-flight queries, and prints an undo bookmark: retain that output. Time Travel restores
-the database only; it does not restore R2 objects. Roll back the Worker too if its code depends on the new schema,
-using the pre-update version printed by the update and saved in the record. If that version is unavailable, inspect
-`wrangler deployments list --name <worker-name>` in the same account to identify the compatible version.
-See [Cloudflare's Time Travel procedure and retention limits](https://developers.cloudflare.com/d1/reference/time-travel/).
-
-`myco server destroy --target cloudflare --yes` takes the server offline. Your data is kept — the database, the file storage and the stored keys all stay, and creating again brings the same server back.
-
-## Reaching it from cloud agents
-
-Agents that run on your own machine reach your server directly. Agents that run in someone else's cloud — Claude Code on the web, Codex cloud, a code review agent on a pull request — cannot see `127.0.0.1`, so your server needs a public address before they can read your context.
-
-Two ways to give it one without moving it:
-
-**Tailscale Funnel** gives your machine a stable `https://…ts.net` name on any plan. You will need MagicDNS and HTTPS certificates turned on for your network, and the machine needs permission to use Funnel. It listens on 443, 8443 or 10000 only.
-
-**Cloudflare Tunnel** connects your machine to a hostname you control. The quick version that needs no account is meant for testing and does not support the streaming transport MCP uses, so use a named tunnel with your own domain for anything you rely on.
-
-Either way your server stays where it is and keeps its data locally. Only the address changes.
-
-## Keeping it current
-
-`myco update` replaces the binary. Then bring the server's storage up to date and restart it:
-
-```bash
-myco server update --target local
-```
-
-It stops the server, brings its storage up to date, and starts it again. Running an older server against newer storage is refused rather than half-applied, so an interrupted update leaves your data intact.
-
-Native storage has no D1 Time Travel. Before a native schema advance, make and verify a full backup with
-`myco server backup --target local --to <dir>`; a hosted bookmark cannot protect a native volume.
-
-Installed runner services check for releases within their `install.json` channel every six to ten hours, between runs. On the dashboard's **Runners** page, an owner or administrator can select **Update now** for a connected runner. The page shows its version, channel, available release, and last update result. A request waits for the current run to finish; it does not interrupt that run.
-
-The secondary command is `myco update` on the runner machine; add `--check` to check without applying. `myco runner status` shows the last check and result. Both paths verify the checksum, the macOS signature, and the staged program's exact `--version` before replacement. macOS accepts valid ad hoc signatures; signer identity is not pinned. The running binary is trusted for backup and is copied to a temporary guardian slot to watch the restart. The new runner must make authenticated contact, then complete its first claim or stay healthy for five minutes before beginning one. An active first claim stays under probation until it completes. A crash or refused contact restores the previous binary. An unreachable Deployment records a failure and restores the previous binary for a later retry. Current and previous versions are retained. A foreground runner using another executable refuses service updates. Member machines update on demand with `myco update`.
-
-An older runner must first install a version that reports update support before the dashboard can request its updates. A restore clears pending update requests and reported availability; connected runners report their current state again. A release that crashes or is refused is blocked for 24 hours. The dashboard shows the reason and expiry; **Clear block and update** or `myco runner update` retries immediately. Staging refusals back off per release up to 24 hours. A stuck handoff gives up within three minutes, and cleanup failures retry with backoff while the runner continues claiming work. Unreadable update metadata is quarantined and reported without preventing execution.
-
-## Backing it up
-
-Everything the server holds is in one directory. Stop it, copy `~/.myco/server/local/`, and start it again. Restoring is the same in reverse.
-
-## What is proven, and what is not
-
-A server started this way is verified end to end in the test suite: it comes up on a fresh directory, accepts a session, and serves its dashboard, all through the artifacts the binary carries rather than anything installed on the machine.
-
-Each release also runs its compiled Linux binary before publishing. The binary creates a server on a fresh directory and answers its health check.
-
-Turning captured sessions into knowledge (titles and summaries, extracted observations, the Canopy map and the seeded vault) is done by agent runs. The owner explicitly enrolls a separate runner with `myco runner register <host>`, then starts it with `myco runner install --server <url>`. That runner claims the runs and drives supported coding agents already signed in on its machine. No automated test runs that path against a real agent subscription yet, so expect rough edges there.
-
-
-## Behavior change: explicit runner opt-in
-
-`myco server run` serves the Deployment without starting an agent executor, including after an upgrade. A native Deployment that relied on an in-process worker needs an explicitly enrolled runner to serve its queued agent work. On this machine or another, register against the Deployment's reachable address, then install its runner service. Developer laptops run no agent work by default.
-
-Startup and doctor name this next step. The dashboard reports queued work when no executor has checked in. Existing standalone legacy worker services keep running until the owner explicitly retires them; retiring one preserves membership and capture.
+For a reverse proxy, stop the local server before editing its record. `myco server status --target local` prints **Directory**; the settings file is **`server.json` inside that directory**, normally `~/.myco/server/local/server.json`. Preserve its other fields. Set `origin` to the public origin, `sourceFrom` to `proxy`, `trustedHeader` to the header your proxy overwrites with the caller's address, and `trustedHops` to the number of trusted proxies (at least 1). The proxy must prevent callers from forging that trusted header. Register GitHub sign-in for the public origin before starting again. Direct loopback access uses `sourceFrom: "socket"`.
