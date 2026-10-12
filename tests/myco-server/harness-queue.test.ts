@@ -105,13 +105,13 @@ describe('what holds a dispatch', () => {
     expect(heldBy({ liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 5 }, { ...none, task_runs_per_hour: 5 })).toBe('task_runs_per_hour');
   });
 
-  it('reads each owner limit from its leaf, unset or malformed meaning none, and the fleet from what the operator deployed', async () => {
+  it('reads declared defaults for unset or malformed limits, explicit overrides, and the fleet from what the operator deployed', async () => {
     const f = await fixture();
-    expect(await readDispatchLimits(f.env)).toEqual({ concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null });
+    expect(await readDispatchLimits(f.env)).toEqual({ concurrent_runs: null, task_concurrent_runs: 2, task_runs_per_hour: null, fleet: null });
     f.setting('agent.limits.concurrent_runs', 3);
     f.setting('agent.limits.task_runs_per_hour', 0);
     f.setting('agent.limits.task_concurrent_runs', 2.9);
-    expect(await readDispatchLimits(f.env)).toEqual({ concurrent_runs: 3, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null });
+    expect(await readDispatchLimits(f.env)).toEqual({ concurrent_runs: 3, task_concurrent_runs: 2, task_runs_per_hour: null, fleet: null });
     expect(await readDispatchLimits({ ...f.env, fleet: 12 })).toMatchObject({ fleet: 12 });
     expect(await readDispatchLimits({ ...f.env, fleet: 0 })).toMatchObject({ fleet: null });
   });

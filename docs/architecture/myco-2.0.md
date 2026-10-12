@@ -929,7 +929,7 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `agent.run_retention_days` | REPLACE | Deployment | Core | Retention of Deployment-held agent run records | #915 |
 | `agent.titling_idle_close_minutes` | NEW | Deployment | Core | Minutes without activity after which a session still open counts as ended for titling only; default 120. The session's own `ended_at` is untouched | #1684 |
 | `agent.limits.concurrent_runs` | NEW | Deployment | Core | Runs at once across the Deployment; a dispatch past it waits in the queue | #1091 |
-| `agent.limits.task_concurrent_runs` | NEW | Deployment | Core | Runs of one task at once; past it, the dispatch waits | #1091 |
+| `agent.limits.task_concurrent_runs` | NEW | Deployment | Core | Runs of one task at once across all Projects, default 2; explicit null means unlimited; past the limit, the dispatch waits | #1091 |
 | `agent.limits.task_runs_per_hour` | NEW | Deployment | Core | Runs of one task started in the trailing hour; past it, the dispatch waits | #1091 |
 | `backup.retention.keep_daily` | REPLACE | Deployment | Core | Newest manual relational export copies; default 14, pruned when a manual export is created | #923 |
 | `backup.retention.keep_weekly` | REPLACE | Deployment | Core | Newest manual relational export from each of the 8 most recent UTC weeks containing exports by default; empty weeks consume no slot, pruned when a manual export is created | #923 |

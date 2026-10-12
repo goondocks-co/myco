@@ -23,6 +23,8 @@ export interface LeafField {
   options?: readonly (string | number)[];
   optionLabels?: Readonly<Record<string, string>>;
   min?: number;
+  /** Offers an explicit null override that removes the limit. */
+  unlimited?: boolean;
   max?: number;
   /**
    * Characters a `textarea` accepts. The browser counts UTF-16 units and the
@@ -88,11 +90,11 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     id: 'limits',
     section: 'work',
     label: 'How much at once',
-    note: 'How much of Myco’s work runs at once. Work past a limit waits its turn; nothing is refused. Unset means no limit.',
+    note: 'How much of Myco’s work runs at once. Work past a limit waits its turn; nothing is refused. Clear a stored value to restore the server default, or choose No limit.',
     leaves: [
-      { leaf: 'agent.limits.concurrent_runs', label: 'Tasks at once', kind: 'number', min: 1 },
-      { leaf: 'agent.limits.task_concurrent_runs', label: 'Runs of one task at once', kind: 'number', min: 1 },
-      { leaf: 'agent.limits.task_runs_per_hour', label: 'Runs of one task per hour', kind: 'number', min: 1 },
+      { leaf: 'agent.limits.concurrent_runs', label: 'Tasks at once', kind: 'number', min: 1, unlimited: true },
+      { leaf: 'agent.limits.task_concurrent_runs', label: 'Runs of one task at once', kind: 'number', min: 1, unlimited: true, note: 'Across all projects, this many runs of the same task can work at once. Further runs wait until one finishes.' },
+      { leaf: 'agent.limits.task_runs_per_hour', label: 'Runs of one task per hour', kind: 'number', min: 1, unlimited: true },
     ],
   },
   {

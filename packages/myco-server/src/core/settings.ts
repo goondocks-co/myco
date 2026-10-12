@@ -41,8 +41,8 @@ export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
  * remedy, rather than acting on it. A consumer reads a live leaf through
  * `settingTexts`, which hands it only a value that holds its rule.
  *
- * `boolean` means true or false. `integer` with `nullable` also takes null,
- * which means the same as no value. `agent` names an agent a worker can run,
+ * `boolean` means true or false. `integer` with `nullable` also takes null; a declared `default` applies
+ * only when no usable stored value exists. `agent` names an agent a worker can run,
  * or null for none; `agent-list` names each such agent once. `pattern-list`
  * is a list of distinct non-empty path patterns. `embedding` is one part of the
  * embedding selection, judged with the other two parts and the target
@@ -58,7 +58,7 @@ export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
 export type LeafSpec =
   | Record<string, never>
   | { readonly type: 'boolean' }
-  | { readonly type: 'integer'; readonly min: number; readonly max: number; readonly nullable?: true }
+  | { readonly type: 'integer'; readonly min: number; readonly max: number; readonly nullable?: true; readonly default?: number | null }
   | { readonly type: 'agent' }
   | { readonly type: 'agent-list' }
   | { readonly type: 'pattern-list'; readonly maxItems: number; readonly maxChars: number }
@@ -91,7 +91,7 @@ const LIMIT_SPEC: LeafSpec = { type: 'integer', min: 1, max: 10_000, nullable: t
 export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.cold_project_threshold_days': { type: 'integer', min: 0, max: 365 },
   'agent.limits.concurrent_runs': LIMIT_SPEC,
-  'agent.limits.task_concurrent_runs': LIMIT_SPEC,
+  'agent.limits.task_concurrent_runs': { ...LIMIT_SPEC, default: 2 },
   'agent.limits.task_runs_per_hour': LIMIT_SPEC,
   ...Object.fromEntries(CONFIGURABLE_PROFILE_HARNESSES.flatMap((harness) => [
     ...REASONING_TIERS.map((tier) => [`agent.reasoning_map.${harness}.${tier}`, { type: 'profile-model', harness }]),
@@ -572,8 +572,8 @@ export function storedLeafViolation(leaf: string, text: string): string | null {
 }
 
 /**
- * The stored text of each named leaf a consumer may act on: absent where nothing is written, and absent where the
- * stored value breaks the leaf's rule, so the consumer applies the same default it applies to an unwritten leaf and
+ * The text of each named leaf a consumer may act on: a declared default where nothing usable is written,
+ * otherwise absent where the stored value breaks the leaf's rule, so the consumer applies the same default it applies to an unwritten leaf and
  * the settings surface reports the stored value as invalid. Task overrides, execution profiles and the embedding
  * selection pass through whole: their consumers judge them.
  */
@@ -583,6 +583,10 @@ export async function settingTexts(db: RelationalStore, leaves: readonly string[
     const spec = DEPLOYMENT_LEAF_SPECS[leaf];
     if (spec !== undefined && 'type' in spec && SELF_JUDGED.has(spec.type)) continue;
     if (storedLeafViolation(leaf, text) !== null) held.delete(leaf);
+  }
+  for (const leaf of leaves) {
+    const spec = DEPLOYMENT_LEAF_SPECS[leaf];
+    if (!held.has(leaf) && spec !== undefined && 'default' in spec) held.set(leaf, JSON.stringify(spec.default));
   }
   return held;
 }
