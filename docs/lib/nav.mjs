@@ -11,9 +11,13 @@ export const NAV = [
   {
     group: 'Using Myco',
     items: [
+      { slug: 'dashboard', title: 'The dashboard' },
+      { slug: 'how-myco-learns', title: 'How Myco learns' },
       { slug: 'agents', title: 'Agents' },
       { slug: 'agent-tools', title: 'Agent tools' },
       { slug: 'external-agents', title: 'External agents' },
+      { slug: 'configuration', title: 'Configuration' },
+      { slug: 'troubleshooting', title: 'Troubleshooting' },
     ],
   },
   {

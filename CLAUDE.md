@@ -1,6 +1,6 @@
 ## Agent Teams
 
-Use Claude Code agent teams for parallelizable work where teammates need to communicate with each other. See [docs/agent-teams.md](docs/agent-teams.md) for the full reference.
+Use Claude Code agent teams for parallelizable work where teammates need to communicate with each other. See [docs/development/agent-teams.md](docs/development/agent-teams.md) for the full reference.
 
 ### When to use agent teams
 

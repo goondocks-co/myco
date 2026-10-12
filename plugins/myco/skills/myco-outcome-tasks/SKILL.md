@@ -2,7 +2,7 @@
 name: myco-outcome-tasks
 description: >-
   Author and debug the tasks Myco's own agent runs. A task is one prompt with
-  declared expected evidence, dispatched to a worker: no phases, no turn budget,
+  declared expected evidence, dispatched to a runner: no phases, no turn budget,
   no orchestrator. It declares the gate that admits it, the tools its run may
   call, its schedule if it has one, and how the server decides afterwards that
   it actually did the work. Getting those four declarations consistent is the
@@ -18,7 +18,7 @@ user-invocable: true
 
 # Outcome tasks
 
-Myco 1.4 ran a phased executor with turn budgets, per-phase model routing and resume. None of that survives. A run is **one prompt to one harness on a worker, with declared expected evidence**. Retry is the next tick. Partial writes stand and the run is marked partial.
+Myco 1.4 ran a phased executor with turn budgets, per-phase model routing and resume. None of that survives. A run is **one prompt to one harness on a registered runner, with declared expected evidence**. Retry is the next tick. Partial writes stand and the run is marked partial.
 
 If you are porting something that expects phases or a resume point, it does not exist. Say so rather than reintroducing it.
 

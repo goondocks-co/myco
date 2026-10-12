@@ -49,11 +49,14 @@ myco_spores { "op": "save", "type": "gotcha", "project": "<project id>",
 
 Good spores are specific and durable. A gotcha names the trap and the tell that reveals it. A decision names what was chosen, what was rejected, and why. Neither is a status update: "finished the parser" helps nobody in three months.
 
-Search before you save. If a spore already covers the ground, supersede it rather than adding a near-duplicate:
+Search before you save. If a spore already covers the ground, save its replacement first, then supersede the old spore using the new id:
 
 ```
-myco_spores { "op": "supersede", "id": "<old id>", "project": "<project id>",
-              "content": "..." }
+myco_spores { "op": "save", "type": "gotcha", "project": "<project id>",
+              "session_id": "<session id>", "content": "<replacement finding>" }
+myco_spores { "op": "supersede", "old_spore_id": "<old id>",
+              "new_spore_id": "<id returned by save>", "project": "<project id>",
+              "session_id": "<session id>" }
 ```
 
 Plans are the same shape — `myco_plans` with `op: "save"` — and are for work that spans sessions. Status changes through an explicit status-only save.
