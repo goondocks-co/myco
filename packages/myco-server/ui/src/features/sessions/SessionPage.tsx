@@ -18,6 +18,8 @@ import { projectPath } from '../../routes/nav';
 import { PageScope } from '../../routes/scope';
 import { isLive } from '../today/timeline';
 import { ago, dayHeading, workPlace } from '../today/words';
+import { ToolUsageLine } from './Usage';
+import { formatElapsed } from '../../lib/format';
 import { Conversation, PERSON_ONLY } from './Conversation';
 import { RawData, isRawSection } from './RawData';
 import { SessionActions } from './SessionActions';
@@ -141,7 +143,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
               <TabsTrigger value="plans" count={counts.plans}>Plans</TabsTrigger>
             </TabsList>
             <TabsContent value="conversation">
-              <Conversation projectId={projectId} sessionId={session.sessionId} />
+              <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} />
             </TabsContent>
             <TabsContent value="spores">
               <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />
@@ -150,7 +152,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
               <SessionPlans projectId={projectId} sessionId={session.sessionId} now={now} />
             </TabsContent>
           </Tabs>
-          <RawData projectId={projectId} sessionId={session.sessionId} open={isRawSection(raw) ? raw : null} now={now} />
+          <RawData agent={session.agent} projectId={projectId} sessionId={session.sessionId} open={isRawSection(raw) ? raw : null} now={now} />
         </div>
         {/* After the conversation in reading order; beside it from the desktop width. */}
         <aside aria-label="About this session" className="flex min-w-0 flex-col gap-s4 lg:col-start-2 lg:row-span-2 lg:row-start-1">
@@ -209,6 +211,9 @@ function Facts({ answer, projectId, projectName, now, live, actions }: { answer:
       {session.endedAt !== null
         ? <FactRow term="Ended">{dateTime(session.endedAt, now)}{endedBy !== null && ` by ${endedBy}`}</FactRow>
         : <FactRow term={live ? 'Live' : 'Open'}>Last heard {ago(session.lastReceivedAt, now)}</FactRow>}
+      <FactRow term={session.endedAt === null ? 'Time observed' : 'Wall time'}>{answer.metrics?.durationMs === null ? 'Not recorded' : formatElapsed(answer.metrics?.durationMs ?? Math.max(0, (session.endedAt ?? session.lastReceivedAt) - (session.startedAt ?? session.firstReceivedAt)))}</FactRow>
+      {answer.metrics && <FactRow term="Tools"><ToolUsageLine tools={answer.metrics.tools} /></FactRow>}
+      <FactRow term="Tokens">{answer.metrics?.tokens == null ? 'Not recorded, including sub-agents' : answer.metrics.tokens.toLocaleString()}</FactRow>
       <FactRow term="Size">{[count(counts.prompts, 'prompt'), count(counts.toolCalls, 'tool call'), count(counts.responses, 'reply', 'replies')].join(' · ')}</FactRow>
       {release != null && <FactRow term="Release">{releaseStateLabel(release.state)}{release.ref !== null && release.state !== 'not_on_release_line' ? ` · ${shortRef(release.ref)}` : ''}</FactRow>}
       {session.parentSessionId !== null && (

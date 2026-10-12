@@ -1,3 +1,4 @@
+import { emptyInjectionCounts } from '@myco-server-worker/core/injection.js';
 /**
  * The screens fixture: a production-shaped Deployment with no production data.
  *
@@ -403,6 +404,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
 
   // Search reads with Ollama's bge-m3, chosen before anything was built, and a switch to nomic-embed-text is under way.
   await expectOk(await fetch(`${url}/api/embedding`, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ provider: 'ollama', model: 'bge-m3' }) }), 'choose the embedding model');
+  await seedSessionAudit(ctx.databasePath, sessionIds[OUTCOME_SESSION]!, sporeIds[0]!);
   seedEmbeddingSwitch(ctx.databasePath, now);
 
   settleReceiptTimes(ctx.databasePath, liveSessionId, now);
@@ -720,4 +722,26 @@ function seedBackup(databasePath: string, now: number): void {
   } finally {
     sqlite.close();
   }
+}
+
+
+/** Historical context receipts and a linked delegation in the session reading fixture. */
+async function seedSessionAudit(databasePath: string, sessionId: string, sporeId: string): Promise<void> {
+  const sqlite = new Database(databasePath);
+  try {
+    const projectId = idOf('myco');
+    const first = sqlite.query('SELECT prompt_id, created_at FROM prompt_batches WHERE project_id = ? AND session_id = ? ORDER BY created_at, prompt_id LIMIT 1').get(projectId, sessionId) as { prompt_id: string; created_at: number };
+    const child = await uuidv5('screens-audit-child', sessionId);
+    sqlite.query("INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,parent_prompt_id,thread_id,thread_label,origin,text,content_hash,created_at,updated_at,token_id,received_at) VALUES (?,?,?,'audit-child',?,'audit-review','Reviewer','agent_dispatch','Check the port fix','audit',?,?,'fixture',?)")
+      .run(projectId, sessionId, child, first.prompt_id, first.created_at + 1000, first.created_at + 1000, first.created_at + 1000);
+    sqlite.query('INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES (?,?,?,?)').run(projectId, sessionId, 'cortex', first.created_at - 1000);
+    sqlite.query('INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES (?,?,?,?)').run(projectId, sessionId, 'cortex:audit-review', first.created_at + 900);
+    sqlite.query('INSERT INTO prompt_context_answers(project_id,session_id,prompt_id,id,outcome,context_chars,parts,skipped,failures,selection,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run(projectId, sessionId, first.prompt_id, 'audit-empty', 'empty', 0, '[]', JSON.stringify(['spores:empty', 'plan-nudge:no_intent']), '[]', JSON.stringify({ ...emptyInjectionCounts(), sporeRawMatches: 12 }), first.created_at);
+    const plan = sqlite.query('SELECT plan_key FROM plans WHERE project_id = ? LIMIT 1').get(projectId) as { plan_key: string } | null;
+    sqlite.query('INSERT INTO spore_injections(project_id,session_id,prompt_id,prompt_hash,spore_ids,plan_ids,created_at) VALUES (?,?,?,?,?,?,?)')
+      .run(projectId, sessionId, first.prompt_id, 'audit', JSON.stringify([sporeId]), JSON.stringify(plan === null ? [] : [plan.plan_key]), first.created_at + 1);
+    sqlite.query("UPDATE prompt_batches SET text = '<subagent_notification>/audit</subagent_notification> This test fails one run in twenty' WHERE project_id = ? AND prompt_id = ?")
+      .run(projectId, first.prompt_id);
+  } finally { sqlite.close(); }
 }

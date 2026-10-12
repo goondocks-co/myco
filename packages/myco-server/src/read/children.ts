@@ -51,9 +51,10 @@ export async function listChildrenByPrompt<T>(db: RelationalStore, query: ChildQ
   const { results } = await db.prepare(`SELECT * FROM (
     SELECT ${query.columns}, ${query.orderColumn} AS order_at, ${query.idColumn},
       ROW_NUMBER() OVER (PARTITION BY prompt_id ORDER BY ${query.orderColumn} ASC, ${query.idColumn} ASC) AS page_row
-    FROM ${query.table} WHERE project_id = ? AND session_id = ? AND prompt_id IN (SELECT value FROM json_each(?))
+    FROM (SELECT value AS wanted_prompt FROM json_each(?)) wanted CROSS JOIN ${query.table}
+    WHERE project_id = ? AND session_id = ? AND prompt_id = wanted.wanted_prompt
   ) WHERE page_row <= ? ORDER BY prompt_id, order_at ASC, ${query.idColumn} ASC`)
-    .bind(scope.projectId, sessionId, JSON.stringify(promptIds), limit + 1).all<Record<string, unknown>>();
+    .bind(JSON.stringify(promptIds), scope.projectId, sessionId, limit + 1).all<Record<string, unknown>>();
   const grouped = new Map<string, Record<string, unknown>[]>();
   for (const r of results) {
     const id = r.prompt_id as string;

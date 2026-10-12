@@ -6,6 +6,8 @@ export { containsPattern };
 import { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 import { sessionMaterialReadySql, titlingClaimAvailableSql } from './material-readiness.js';
 import { SQL_NOW_MS } from '../core/run-deadline.js';
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
+import { sourceTimestampsRecorded } from '@goondocks/myco-shared/capture-rules';
 
 export interface ProjectRow {
   projectId: string;
@@ -412,6 +414,22 @@ export async function getSession(db: RelationalStore, scope: ReadScope, sessionI
     .bind(scope.projectId, sessionId)
     .first<Record<string, unknown>>();
   return row === null ? null : toSession(row, nowMs);
+}
+
+/** Elapsed source time, or observed time when a recorded endpoint anchors it. Synthetic transcript bounds establish neither. */
+export async function sessionDurationMs(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<number | null> {
+  const row = await db.prepare(`SELECT agent, started_at, ended_at, ended_by, occurred_started_at, occurred_ended_at,
+    first_received_at, last_received_at FROM sessions WHERE project_id = ? AND session_id = ?`)
+    .bind(scope.projectId, sessionId).first<{
+      agent: string | null; started_at: number | null; ended_at: number | null; ended_by: string | null;
+      occurred_started_at: number | null; occurred_ended_at: number | null; first_received_at: number; last_received_at: number;
+    }>();
+  if (row === null) return null;
+  const recorded = sourceTimestampsRecorded(CAPTURE_RULE_BUNDLES, row.agent);
+  const start = recorded ? row.occurred_started_at ?? row.started_at : row.occurred_started_at === null ? row.started_at : null;
+  const end = recorded ? row.occurred_ended_at ?? row.ended_at : row.occurred_ended_at === null || row.ended_by !== null ? row.ended_at : null;
+  if (start === null && end === null) return null;
+  return Math.max(0, (end ?? row.last_received_at) - (start ?? row.first_received_at));
 }
 
 /**

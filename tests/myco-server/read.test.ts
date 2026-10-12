@@ -6,7 +6,7 @@ import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { clampLimit, decodeCursor, encodeCursor, page, DEFAULT_PAGE, MAX_PAGE } from '@myco-server-worker/read/scope.js';
 
-import { archiveProject, getSession, listProjects, listSessions, projectStats, renameProject, sessionLabel, unarchiveProject, LABEL_MAX_CHARS, SESSION_OCCURRED_AT } from '@myco-server-worker/read/sessions.js';
+import { archiveProject, getSession, listProjects, listSessions, projectStats, renameProject, sessionLabel, sessionDurationMs, unarchiveProject, LABEL_MAX_CHARS, SESSION_OCCURRED_AT } from '@myco-server-worker/read/sessions.js';
 import { activityFeed } from '@myco-server-worker/read/activity.js';
 
 function seedSessions(sqlite: import('bun:sqlite').Database) {
@@ -61,6 +61,22 @@ describe('read/sessions', () => {
     expect(exact[LABEL_MAX_CHARS]).toBe(' ');
     expect(sessionLabel(null, exact, null, 'x')).toBe(`${'abcdefghij '.repeat(7)}abc…`);
     expect(sessionLabel('  Titled  ', 'prompt', 'agent', 'x')).toBe('Titled');
+  });
+
+  it('distinguishes recorded endpoints from synthetic transcript bounds for session durations', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedSessions(sqlite);
+    sqlite.run("UPDATE sessions SET agent='cursor', started_at=1, ended_at=10, occurred_started_at=1, occurred_ended_at=10 WHERE session_id='s1'");
+    expect(await sessionDurationMs(db, { projectId: 'proj_1' }, 's1')).toBeNull();
+    expect(await sessionDurationMs(db, { projectId: 'proj_2' }, 's1')).toBeNull();
+    sqlite.run("UPDATE sessions SET occurred_started_at=NULL, occurred_ended_at=NULL WHERE session_id='s1'");
+    expect(await sessionDurationMs(db, { projectId: 'proj_1' }, 's1')).toBe(9);
+    sqlite.run("UPDATE sessions SET occurred_started_at=1, occurred_ended_at=10, agent='claude-code' WHERE session_id='s1'");
+    expect(await sessionDurationMs(db, { projectId: 'proj_1' }, 's1')).toBe(9);
+    sqlite.run("UPDATE sessions SET agent='cursor', started_at=NULL, ended_at=NULL, occurred_started_at=NULL, occurred_ended_at=NULL WHERE session_id='s1'");
+    expect(await sessionDurationMs(db, { projectId: 'proj_1' }, 's1')).toBeNull();
+    sqlite.run("UPDATE sessions SET agent='claude-code' WHERE session_id='s1'");
+    expect(await sessionDurationMs(db, { projectId: 'proj_1' }, 's1')).toBeNull();
   });
 
   it('renames a project, archived or not, and says so when none carries the id', async () => {
@@ -220,7 +236,7 @@ describe('read/children', () => {
   });
 });
 
-import { listTurns, parseOrigins, turnDetail, DEFAULT_ORIGINS, TURN_PREVIEW_CHARS } from '@myco-server-worker/read/turns.js';
+import { listTurns, parseOrigins, turnDetail, DEFAULT_ORIGINS, TURN_PREVIEW_CHARS, toolUsage, turnCollection, sessionTurnContexts, toolUsageSql } from '@myco-server-worker/read/turns.js';
 import { listAttachments } from '@myco-server-worker/read/children.js';
 import { bucketActivity, containsPattern, listSessionSummaries, ACTIVITY_BUCKETS } from '@myco-server-worker/read/sessions.js';
 import { inListChunks, MAX_IN_LIST } from '@myco-server-worker/read/scope.js';
@@ -299,13 +315,62 @@ describe('read/turns', () => {
     sqlite.run(`INSERT INTO spore_injections (project_id, session_id, prompt_id, prompt_hash, spore_ids, created_at)
       VALUES ('proj_1','s1',?,'ph1',?,9)`, [UUID(1), JSON.stringify(['sp1', 'sp_gone'])]);
 
+    const prepare = db.prepare.bind(db);
+    let reads = 0;
+    db.prepare = (...args) => { reads++; return prepare(...args); };
     const detail = await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(1));
+    expect(reads).toBeLessThanOrEqual(12);
     expect(detail?.injection).toEqual({
+      planIds: [], plans: [],
       sporeIds: ['sp1', 'sp_gone'],
       createdAt: 9,
       spores: [{ id: 'sp1', observationType: 'decision', preview: 'the selector reads recency' }],
     });
     expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(4)))?.injection).toBeNull();
+  });
+
+
+  it('joins context receipts, served plans, answer reasons and complete metrics to their own prompt', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedTurns(sqlite);
+    sqlite.run("UPDATE prompt_batches SET origin = 'agent_dispatch', thread_id = 'reviewer' WHERE project_id = 'proj_1' AND prompt_id = ?", [UUID(3)]);
+    sqlite.run("INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES ('proj_1','s1','cortex',1),('proj_1','s1','cortex:reviewer',22)");
+    sqlite.run("INSERT INTO prompt_context_answers VALUES ('proj_1','s1',?,'a','empty',0,'[]',?, ?, ?,9)",
+      [UUID(1), JSON.stringify(['spores:empty','plan-nudge:no_intent']), JSON.stringify([{ contributor: 'spores', error: 'unavailable' }]), JSON.stringify({ candidates: 0 })]);
+    sqlite.run("INSERT INTO prompt_context_answers VALUES ('proj_1','s1',?,'b','empty',0,'[]','[\"spores:short_prompt\"]','[]','{}',10)", [UUID(4)]);
+    sqlite.run("INSERT INTO spore_injections(project_id,session_id,prompt_id,prompt_hash,spore_ids,plan_ids,created_at) VALUES ('proj_1','s1',?,'h','[]',?,9)", [UUID(1), JSON.stringify([UUID(5), 'gone'])]);
+    sqlite.run("UPDATE tool_calls SET duration_ms = 250 WHERE tool_call_id = 'tc1'");
+    const detail = await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(1));
+    expect((await sessionTurnContexts(db, { projectId: 'proj_1' }, 's1'))[UUID(1)]).toEqual({ start: true, subagents: 0 });
+    expect(detail?.metrics).toEqual({ tools: [{ toolName: 'Edit', count: 1 }, { toolName: 'Read', count: 1 }], durationMs: 3, tokens: null });
+    expect(detail?.injection?.plans).toEqual([{ planKey: UUID(5), title: 'Plan' }]);
+    expect(detail?.injection?.planIds).toEqual([UUID(5), 'gone']);
+    expect((await turnCollection(db, { projectId: 'proj_1' }, 's1', UUID(1), 'answers', {})).rows).toMatchObject([{ id: 'a' }]);
+    expect((await turnCollection(db, { projectId: 'proj_1' }, 's1', UUID(4), 'answers', {})).rows).toMatchObject([{ id: 'b' }]);
+    expect(detail?.answers.map(a => a.id)).toEqual(['a']);
+    expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(4)))?.answers.map(a => a.id)).toEqual(['b']);
+    expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(3)))?.answers).toEqual([]);
+    expect(detail?.answers[0]).toMatchObject({ outcome: 'empty', skipped: ['spores:empty','plan-nudge:no_intent'], failures: [{ contributor: 'spores', error: 'unavailable' }], selection: { candidates: 0 } });
+    expect((await sessionTurnContexts(db, { projectId: 'proj_1' }, 's1'))[UUID(3)]).toEqual({ start: false, subagents: 1 });
+    const { subagentIdFor, deriveId } = await import('@myco/member/envelope.js');
+    sqlite.run("UPDATE prompt_batches SET thread_id = ? WHERE project_id = 'proj_1' AND prompt_id = ?", [deriveId('thread', 'reviewer'), UUID(3)]);
+    expect((await sessionTurnContexts(db, { projectId: 'proj_1' }, 's1'))[UUID(3)]).toEqual({ start: false, subagents: 1 });
+    sqlite.run("INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES ('proj_1','s1','cortex:raw-agent',24)");
+    sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES ('proj_1','agent-start','s1','t','subagent.start','hook',?,'hash',24,24)", [JSON.stringify({ subagentId: subagentIdFor('s1', 'raw-agent'), parentPromptId: UUID(1) })]);
+    expect((await sessionTurnContexts(db, { projectId: 'proj_1' }, 's1'))[UUID(1)]).toEqual({ start: true, subagents: 1 });
+    for (let n = 1; n <= 50; n++) sqlite.run("INSERT INTO prompt_context_answers VALUES ('proj_1','s1',?,?,'empty',0,'[]','[]','[]','{}',?)", [UUID(1), 'answer-' + n, 10 + n]);
+    const paged = await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(1));
+    expect(paged?.answers).toHaveLength(50);
+    expect(paged?.cursors.answers).not.toBeNull();
+    expect((await turnCollection(db, { projectId: 'proj_1' }, 's1', UUID(1), 'answers', { cursor: paged!.cursors.answers! })).rows).toHaveLength(1);
+
+    expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(4)))?.metrics.durationMs).toBeNull();
+    expect(await toolUsage(db, { projectId: 'proj_1' }, 's1')).toEqual([{ toolName: 'Bash', count: 1 }, { toolName: 'Edit', count: 1 }, { toolName: 'Read', count: 1 }]);
+    expect(await toolUsage(db, { projectId: 'proj_2' }, 's1')).toEqual([]);
+    const answers = await turnCollection(db, { projectId: 'proj_2' }, 's1', UUID(1), 'answers', {});
+    expect(answers.rows).toEqual([]);
+    const { listToolCalls } = await import('@myco-server-worker/read/children.js');
+    expect((await listToolCalls(db, { projectId: 'proj_1' }, 's1', { promptId: UUID(1) })).rows[0]?.durationMs).toBe(250);
   });
 
   it('narrows a child read to one prompt, and carries the prompt an attachment accompanies', async () => {
@@ -315,6 +380,22 @@ describe('read/turns', () => {
     expect((await listToolCalls(db, { projectId: 'proj_1' }, 's1', { promptId: UUID(1) })).rows.map((t) => t.toolCallId)).toEqual(['tc1', 'tc2']);
     expect((await listToolCalls(db, { projectId: 'proj_1' }, 's1', { promptId: UUID(3), limit: 1 })).rows.map((t) => t.toolName)).toEqual(['Bash']);
     expect((await listAttachments(db, { projectId: 'proj_1' }, 's1')).rows.map((a) => a.promptId)).toEqual([UUID(1)]);
+  });
+  it('seeks session/prompt tool calls without statistics', () => {
+    const { sqlite } = sqliteEnv();
+    seedTurns(sqlite);
+    for (const prompt of [false, true]) {
+      const params = ['proj_1', 's1', ...(prompt ? [UUID(1)] : [])];
+      const plan = sqlite.query('EXPLAIN QUERY PLAN ' + toolUsageSql(prompt)).all(...params) as { detail: string }[];
+      expect(plan.find(p => p.detail.startsWith('SEARCH tool_calls'))?.detail).toContain('idx_tool_calls_prompt (project_id=? AND session_id=?');
+      if (prompt) expect(plan.find(p => p.detail.startsWith('SEARCH tool_calls'))?.detail).toContain('prompt_id=?');
+    }
+  });
+  it('returns unknown duration for synthetic Cursor timestamps', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedTurns(sqlite);
+    sqlite.run("UPDATE sessions SET agent = 'cursor' WHERE session_id = 's1'");
+    expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(1)))?.metrics.durationMs).toBeNull();
   });
 });
 

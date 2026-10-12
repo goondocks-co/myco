@@ -4,7 +4,9 @@ import type { CaptureRuleBundle } from './capture-rules.js';
 export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "antigravity",
-    "rules": []
+    "rules": [],
+    "displayEnvelopeTags": [],
+    "transcriptTimestamps": "recorded"
   },
   {
     "name": "claude-code",
@@ -159,7 +161,14 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "trim": true,
         "set_origin": "system"
       }
-    ]
+    ],
+    "displayEnvelopeTags": [
+      "command-args",
+      "command-contents",
+      "timestamp",
+      "pasted_content"
+    ],
+    "transcriptTimestamps": "recorded"
   },
   {
     "name": "cline",
@@ -192,7 +201,9 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         },
         "trim": true
       }
-    ]
+    ],
+    "displayEnvelopeTags": [],
+    "transcriptTimestamps": "recorded"
   },
   {
     "name": "codex",
@@ -335,11 +346,15 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "trim": true,
         "set_origin": "system"
       }
-    ]
+    ],
+    "displayEnvelopeTags": [],
+    "transcriptTimestamps": "recorded"
   },
   {
     "name": "copilot",
-    "rules": []
+    "rules": [],
+    "displayEnvelopeTags": [],
+    "transcriptTimestamps": "recorded"
   },
   {
     "name": "cursor",
@@ -358,18 +373,32 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         },
         "trim": true
       }
-    ]
+    ],
+    "displayEnvelopeTags": [
+      "timestamp",
+      "attached_files",
+      "user_info",
+      "additional_data",
+      "pasted_content"
+    ],
+    "transcriptTimestamps": "synthetic"
   },
   {
     "name": "opencode",
-    "rules": []
+    "rules": [],
+    "displayEnvelopeTags": [],
+    "transcriptTimestamps": "recorded"
   },
   {
     "name": "pi",
-    "rules": []
+    "rules": [],
+    "displayEnvelopeTags": [],
+    "transcriptTimestamps": "recorded"
   },
   {
     "name": "windsurf",
-    "rules": []
+    "rules": [],
+    "displayEnvelopeTags": [],
+    "transcriptTimestamps": "recorded"
   }
 ] as const;

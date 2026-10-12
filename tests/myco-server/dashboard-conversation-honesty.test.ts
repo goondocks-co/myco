@@ -59,6 +59,8 @@ describe('dashboard conversation honesty', () => {
       expect(id).toBe(uuid(({ responses: 1050, attachments: 2050, plans: 3050, children: 150 })[collection]));
     }
     const child = wire.children[0];
+    expect(child.body.responses).toEqual(child.responses);
+    expect(child.body.cursors.responses).toBe(child.responsesCursor);
     const nextReply = await e.read<Page<{ responseId: string }>>(`${e.base}/${child.prompt.promptId}?collection=responses&cursor=${encodeURIComponent(child.responsesCursor!)}`);
     expect(nextReply.rows.map((r) => r.responseId)).toEqual([uuid(10050)]);
     expect(nextReply.cursor).toBeNull();

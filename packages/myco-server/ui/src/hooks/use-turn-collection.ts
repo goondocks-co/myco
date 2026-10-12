@@ -7,7 +7,7 @@ import type { TurnCollection } from './use-sessions';
 interface CollectionPage<T> extends Page<T> { embedded: boolean }
 
 /** An embedded first page seeds a collection; opened collections retain and refresh their complete page set. */
-export function useTurnCollection<T>(projectId: string, sessionId: string, promptId: string, collection: TurnCollection, initial: T[], cursor: string | null | undefined, rowKey: (row: T) => string) {
+export function useTurnCollection<T>(projectId: string, sessionId: string, promptId: string, collection: TurnCollection, initial: T[], cursor: string | null | undefined, rowKey: (row: T) => string, unloaded = false) {
   const client = useQueryClient();
   const key = useMemo(() => ['turn', projectId, sessionId, promptId, 'collection', collection], [projectId, sessionId, promptId, collection]);
   const path = `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(promptId)}?collection=${collection}`;
@@ -16,7 +16,7 @@ export function useTurnCollection<T>(projectId: string, sessionId: string, promp
     staleTime: Infinity,
     refetchOnMount: (cached) => cached.state.data?.pages.some((page) => !page.embedded) ? 'always' : false,
     initialPageParam: null as string | null,
-    initialData: { pages: [{ rows: initial, cursor: cursor ?? null, embedded: true }], pageParams: [null] },
+    initialData: unloaded ? undefined : { pages: [{ rows: initial, cursor: cursor ?? null, embedded: true }], pageParams: [null] },
     queryFn: async ({ pageParam, signal }): Promise<CollectionPage<T>> => ({
       ...await fetchJson<Page<T>>(pageParam === null ? path : `${path}&cursor=${encodeURIComponent(pageParam)}`, signal),
       embedded: false,
@@ -30,6 +30,7 @@ export function useTurnCollection<T>(projectId: string, sessionId: string, promp
       parent.current = { initial, cursor };
       parentChanged.current = true;
     }
+    if (query.data === undefined) return;
     const seed = query.data.pages.length === 1 && query.data.pages[0]!.embedded;
     if (seed && !query.isFetching && (query.data.pages[0]!.rows !== initial || query.data.pages[0]!.cursor !== (cursor ?? null))) {
       client.setQueryData<InfiniteData<CollectionPage<T>, string | null>>(key, (current) =>
@@ -42,11 +43,11 @@ export function useTurnCollection<T>(projectId: string, sessionId: string, promp
       if (!seed) void query.refetch();
     }
   }, [client, key, initial, cursor, query.data, query.isFetching, query.refetch]);
-  const rows = useMemo(() => [...new Map(query.data.pages.flatMap((page) => page.rows).map((row) => [rowKey(row), row])).values()], [query.data, rowKey]);
+  const rows = useMemo(() => [...new Map((query.data?.pages ?? []).flatMap((page) => page.rows).map((row) => [rowKey(row), row])).values()], [query.data, rowKey]);
   return {
     rows,
     hasMore: query.hasNextPage,
-    pending: query.isFetchingNextPage,
+    pending: query.isPending || query.isFetchingNextPage,
     error: query.error,
     more: () => { void query.fetchNextPage({ cancelRefetch: false }); },
     retry: () => { if (query.isFetchNextPageError) void query.fetchNextPage({ cancelRefetch: false }); else void query.refetch(); },

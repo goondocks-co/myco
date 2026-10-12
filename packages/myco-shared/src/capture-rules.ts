@@ -5,6 +5,12 @@ import { ANY_AGENT_RULES_HARNESS } from './any-agent-rules.generated.js';
 export interface CaptureRuleBundle {
   name: string;
   rules: readonly CaptureRule[];
+  displayEnvelopeTags?: readonly string[];
+  transcriptTimestamps?: 'recorded' | 'synthetic';
+}
+
+export function sourceTimestampsRecorded(bundles: readonly CaptureRuleBundle[], agent: string | null): boolean {
+  return bundles.find(bundle => bundle.name === agent)?.transcriptTimestamps !== 'synthetic';
 }
 
 export function envelopeTagAtStart(prompt: string, tags: readonly string[]): boolean {

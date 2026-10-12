@@ -29,6 +29,16 @@ function fixture() {
 }
 
 describe('full-text search', () => {
+  it('uses the shared harness display for prompt search labels', async () => {
+    const f = fixture();
+    f.sqlite.run("UPDATE sessions SET agent = 'claude-code' WHERE project_id = 'search-a'");
+    f.prompt('envelope', '<system-reminder>cobalt guidance</system-reminder>Ship the change');
+    expect((await f.search('cobalt', { type: 'prompt' })).results[0]?.preview).toBe('Ship the change');
+    f.prompt('envelope-only', '<local-command-stdout>outputneedle</local-command-stdout>');
+    expect((await f.search('outputneedle', { type: 'prompt' })).results[0]?.preview).toBe('Command output');
+    f.sqlite.run("UPDATE sessions SET agent = 'opencode' WHERE project_id = 'search-a'");
+    expect((await f.search('cobalt', { type: 'prompt' })).results[0]?.preview).toBe('<system-reminder>cobalt guidance</system-reminder>Ship the change');
+  });
   it('rolls back chunks with their cursor on failure and converges under overlapping index jobs', async () => {
     const f = fixture();
     await f.blob('retry-body', `${'padding '.repeat(10000)} retryneedle`);

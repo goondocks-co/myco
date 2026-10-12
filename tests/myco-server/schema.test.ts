@@ -22,6 +22,22 @@ const indexes = (sqlite: Database, t: string) => (sqlite.query(`PRAGMA index_lis
 const indexColumns = (sqlite: Database, i: string) => (sqlite.query(`PRAGMA index_info(${i})`).all() as { name: string }[]).map((c) => c.name);
 
 describe('server schema', () => {
+  it('adds the subagent-start access path without changing retained events', () => {
+    const sqlite = new Database(':memory:');
+    try {
+      for (const step of SCHEMA_STEPS.filter(step => step.version < 85)) for (const sql of step.statements) sqlite.exec(sql);
+      sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('p','Project',1)");
+      sqlite.run("INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES('p','s','t',1,2)");
+      sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES('p','e','s','t','subagent.start','hook','{}','h',1,1)");
+      const before = sqlite.query('SELECT * FROM events').all();
+      const step = SCHEMA_STEPS.find(step => step.version === 85)!;
+      for (let repeat = 0; repeat < 2; repeat++) for (const sql of step.statements) sqlite.exec(sql);
+      expect(sqlite.query('SELECT * FROM events').all()).toEqual(before);
+      const plan = sqlite.query("EXPLAIN QUERY PLAN SELECT payload FROM events WHERE project_id='p' AND session_id='s' AND kind='subagent.start'").all() as { detail: string }[];
+      expect(plan.map(row => row.detail).join(' ')).toContain('USING INDEX idx_events_subagent_start');
+    } finally { sqlite.close(); }
+  });
+
   it('indexes every foreign-key child with its complete leading column sequence', () => {
     const sqlite = applied();
     try {

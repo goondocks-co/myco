@@ -2,12 +2,12 @@ import { getReleaseStatus } from '../core/provenance.js';
 import { nameOwnMachines, ownMachineNames } from '../read/capture.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { getSession, listSessionSummaries, projectStats, sessionCounts, type SessionFilters } from '../read/sessions.js';
+import { getSession, listSessionSummaries, projectStats, sessionCounts, sessionDurationMs, type SessionFilters } from '../read/sessions.js';
 import { activityFeed } from '../read/activity.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listContextInjections, listPlans, listPrompts, listResponses, listToolCalls, untitledReason } from '../read/children.js';
-import { listTurns, parseOrigins, promptInSession, turnDetail, turnCollection, TURN_COLLECTIONS, type TurnCollection } from '../read/turns.js';
+import { listTurns, parseOrigins, promptInSession, turnDetail, turnCollection, TURN_COLLECTIONS, toolUsage, sessionTurnContexts, type TurnCollection } from '../read/turns.js';
 import { RawResourceReader, RAW_CACHE_HEADERS } from '../core/raw-resources.js';
 import { titleSession } from '../core/titling.js';
 import { changePlanStatus } from '../core/plans.js';
@@ -102,6 +102,9 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   if (read === null) return notFound();
   const [session] = nameOwnMachines([read], await ownMachineNames(env.db, ctx.member.id, ctx.now));
   return ok({
+    turnContexts: await sessionTurnContexts(env.db, scope, sessionId),
+    metrics: { tools: await toolUsage(env.db, scope, sessionId), tokens: null,
+      durationMs: await sessionDurationMs(env.db, scope, sessionId) },
     session, resume: resumeCommandFor(session.agent, session.sessionId, session.originPath), untitled: await untitledReason(env.db, scope.projectId, sessionId), counts: await sessionCounts(env.db, scope, sessionId),
     release: await getReleaseStatus(env.db, scope, 'session', sessionId), outcome: await sessionOutcome(env.db, scope, sessionId), projectId: scope.projectId,
   });
