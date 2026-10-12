@@ -10,7 +10,8 @@ A Deployment is one Myco server on Cloudflare or your own machine. Member machin
 
 - [Join a Myco](https://myco.sh/quickstart.md): Install, accept an invitation, connect your dashboard account, and see a new session on Today.
 - [Run your own Myco](https://myco.sh/self-hosting.md): Create a server, connect the owner, register a runner and invite teammates.
-- [Moving from Myco 1.4](https://myco.sh/upgrade.md#upgrading-from-myco-14): Move existing data to Myco 2.0.
+- [Runners](https://myco.sh/runners.md): Register a machine, sign in to its coding agents, manage capacity and update between runs.
+- [Updating Myco](https://myco.sh/upgrade.md): Update machines, runners and Deployments, or move existing data from Myco 1.4.
 
 ## Using Myco
 

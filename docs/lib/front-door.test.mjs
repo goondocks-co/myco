@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { allSlugs } from './nav.mjs';
 import { renderMarkdown } from './render.mjs';
+import { rewriteHtmlLinks } from './links.mjs';
 
 const homepage = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const llms = fs.readFileSync(new URL('../llms.txt', import.meta.url), 'utf8');
@@ -26,6 +27,23 @@ test('the LLM index covers every published guide', () => {
 
 test('the installer migration anchor survives rendering', async () => {
   const upgrade = fs.readFileSync(new URL('../upgrade.md', import.meta.url), 'utf8');
-  assert.match(upgrade, /^## Upgrading from Myco 1\.4$/m);
+  assert.match(upgrade, /^## Moving from Myco 1\.4$/m);
   assert.match(await renderMarkdown(upgrade), /id="upgrading-from-myco-14"/);
+});
+
+test('Deployment, runner and update guide links reach rendered anchors', async () => {
+  const pages = new Map(await Promise.all(allSlugs().map(async (slug) => {
+    const source = fs.readFileSync(new URL(`../${slug}.md`, import.meta.url), 'utf8');
+    return [slug, rewriteHtmlLinks(await renderMarkdown(source), slug)];
+  })));
+  for (const slug of ['self-hosting', 'runners', 'upgrade']) {
+    for (const [, href] of pages.get(slug).matchAll(/href="([^"]+)"/g)) {
+      if (!href.startsWith('/') && !href.startsWith('#')) continue;
+      const [page, anchor] = href.split('#');
+      if (!anchor) continue;
+      const target = pages.get(page ? page.slice(1) : slug);
+      assert.ok(target, `${slug}: published target ${href}`);
+      assert.ok([...target.matchAll(/id="([^"]+)"/g)].some(([, id]) => id === anchor), `${slug}: anchor ${href}`);
+    }
+  }
 });

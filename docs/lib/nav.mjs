@@ -5,7 +5,8 @@ export const NAV = [
     items: [
       { slug: 'quickstart', title: 'Join a Myco' },
       { slug: 'self-hosting', title: 'Run your own Myco' },
-      { slug: 'upgrade', title: 'Moving from Myco 1.4' },
+      { slug: 'runners', title: 'Runners' },
+      { slug: 'upgrade', title: 'Updating Myco' },
     ],
   },
   {
