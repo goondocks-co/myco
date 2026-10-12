@@ -1,3 +1,4 @@
+import { emptyInjectionCounts } from '@myco-server-worker/core/injection.js';
 /**
  * The screens fixture: a production-shaped Deployment with no production data.
  *
@@ -736,7 +737,7 @@ async function seedSessionAudit(databasePath: string, sessionId: string, sporeId
     sqlite.query('INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES (?,?,?,?)').run(projectId, sessionId, 'cortex', first.created_at - 1000);
     sqlite.query('INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES (?,?,?,?)').run(projectId, sessionId, 'cortex:audit-review', first.created_at + 900);
     sqlite.query('INSERT INTO prompt_context_answers(project_id,session_id,prompt_id,id,outcome,context_chars,parts,skipped,failures,selection,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-      .run(projectId, sessionId, first.prompt_id, 'audit-empty', 'empty', 0, '[]', JSON.stringify(['spores:empty', 'plan-nudge:no_intent']), '[]', JSON.stringify({ candidates: 0 }), first.created_at);
+      .run(projectId, sessionId, first.prompt_id, 'audit-empty', 'empty', 0, '[]', JSON.stringify(['spores:empty', 'plan-nudge:no_intent']), '[]', JSON.stringify({ ...emptyInjectionCounts(), sporeRawMatches: 12 }), first.created_at);
     const plan = sqlite.query('SELECT plan_key FROM plans WHERE project_id = ? LIMIT 1').get(projectId) as { plan_key: string } | null;
     sqlite.query('INSERT INTO spore_injections(project_id,session_id,prompt_id,prompt_hash,spore_ids,plan_ids,created_at) VALUES (?,?,?,?,?,?,?)')
       .run(projectId, sessionId, first.prompt_id, 'audit', JSON.stringify([sporeId]), JSON.stringify(plan === null ? [] : [plan.plan_key]), first.created_at + 1);

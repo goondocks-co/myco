@@ -60,7 +60,8 @@ export interface SessionResponse {
   /** Why the ended session has no title; null when it has one or is still open. */
   untitled?: UntitledReason | null;
   counts: SessionCounts;
-  metrics?: { tools: ToolUsage[]; tokens: null };
+  metrics?: { tools: ToolUsage[]; tokens: number | null; durationMs?: number | null };
+  turnContexts?: Record<string, { start: boolean; subagents: number }>;
   /** Whether the session's work is released, or null when it has no release state. */
   release?: ReleaseStatus | null;
   /** What came of the session: the runs that read it or wrote from it, and the spores written from it. */
@@ -219,6 +220,8 @@ export interface TurnChild {
   responses: ResponseRow[];
   toolCallCount: number;
   responsesCursor?: string | null;
+  body?: TurnDetail;
+  childCount?: number;
 }
 
 /** One observation Myco added to a prompt. */

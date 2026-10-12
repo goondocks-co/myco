@@ -5,9 +5,11 @@
  * fetches one turn's body when it opens, so the list carries counts and a
  * preview, never a prompt's full text.
  */
+import { sourceTimestampsRecorded } from '../ingest/parsers/source-time.js';
 import { uuidv5 } from '../hash.js';
 import type { RelationalStore } from '../core/adapters.js';
-import { injectionForPrompt, type PromptInjection } from '../core/injection.js';
+import { oneLine, type PromptInjection } from '../core/injection.js';
+import { listSporesByIds, MAX_SPORE_LIMIT } from '../core/spores.js';
 import { PROMPT_ORIGINS } from '../ingest/kinds.js';
 import { ATTACHMENT_QUERY, TURN_PLAN_QUERY, RESPONSE_QUERY, listChildren, listChildrenByPrompt, type AttachmentRow, type PlanRow, type ResponseRow } from './children.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
@@ -54,6 +56,8 @@ export interface TurnChild {
   responses: ResponseRow[];
   toolCallCount: number;
   responsesCursor: string | null;
+  body: TurnDetail;
+  childCount: number;
 }
 
 export interface TurnDetail {
@@ -65,7 +69,6 @@ export interface TurnDetail {
   /** The spores and plans Myco served with this prompt, hydrated from retained records; null when it served none. */
   injection: (PromptInjection & { planIds: string[]; plans: Array<{ planKey: string; title: string | null }> }) | null;
   metrics: TurnMetrics;
-  context: TurnContext;
   answers: PromptAnswer[];
   children: TurnChild[];
   cursors: Record<TurnCollection, string | null>;
@@ -155,49 +158,93 @@ export async function promptInSession(db: RelationalStore, scope: ReadScope, ses
 
 /** One turn's body, or null when no prompt of that id sits in the session. Tool calls are not here: they are read on their own, page by page, when the reader opens them. */
 export async function turnDetail(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string): Promise<TurnDetail | null> {
-  const row = await db
-    .prepare(`SELECT ${PROMPT_COLUMNS},
-      (SELECT MAX(created_at) FROM responses WHERE project_id = ? AND session_id = ? AND prompt_id = ?) AS last_reply,
-      (SELECT json_group_array(json_object('toolName', tool_name, 'count', n)) FROM (${toolUsageSql(true)})) AS tools,
-      (SELECT json_object('ids', json(COALESCE(i.plan_ids, '[]')), 'plans', json((SELECT json_group_array(json_object('planKey', p.plan_key, 'title', p.title))
-        FROM plans p WHERE p.project_id = i.project_id AND p.plan_key IN (SELECT value FROM json_each(i.plan_ids)))))
-        FROM spore_injections i WHERE i.project_id = pb.project_id AND i.session_id = pb.session_id AND i.prompt_id = pb.prompt_id ORDER BY i.created_at DESC LIMIT 1) AS injected_plans,
-      ${TURN_CONTEXT_COLUMNS}
-      FROM prompt_batches pb WHERE pb.project_id = ? AND pb.session_id = ? AND pb.prompt_id = ?`)
-    .bind(scope.projectId, sessionId, promptId, scope.projectId, sessionId, promptId, scope.projectId, sessionId, promptId)
-    .first<Record<string, unknown>>();
-  if (row === null) return null;
-  const prompt = toPrompt(row);
-  const body = { limit: TURN_BODY_LIMIT };
-  const [responses, attachments, plans, injection, children, answers] = await Promise.all([
-    listChildren(db, RESPONSE_QUERY, scope, sessionId, { ...body, promptId }),
-    listChildren(db, ATTACHMENT_QUERY, scope, sessionId, { ...body, promptId }),
-    listChildren(db, TURN_PLAN_QUERY, scope, sessionId, { ...body, promptId }),
-    servedForPrompt(db, scope, sessionId, promptId, row.injected_plans as string | null),
-    listSteeringChildren(db, scope, sessionId, promptId, body),
-    listChildren(db, ANSWER_QUERY, scope, sessionId, { ...body, promptId }),
-  ]);
-  return {
-    prompt, responses: [...responses.rows], attachments: [...attachments.rows], plans: [...plans.rows], injection, children: [...children.rows], metrics: { tools: JSON.parse(row.tools as string), durationMs: row.last_reply == null ? null : Math.max(0, (row.last_reply as number) - prompt.createdAt), tokens: null }, context: await contextForRow(row, sessionId), answers: [...answers.rows],
-    cursors: { responses: responses.cursor, attachments: attachments.cursor, plans: plans.cursor, children: children.cursor, answers: answers.cursor },
-  };
+  return readTurnBody(db, scope, sessionId, promptId, true);
 }
 
-/** A bounded page of steering prompts, with each prompt's first reply page hydrated in one read. */
+async function readTurnBody(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string, withChildren: boolean): Promise<TurnDetail | null> {
+  const bodies = await readTurnBodies(db, scope, sessionId, [promptId]);
+  const body = bodies.get(promptId);
+  if (body === undefined) return null;
+  if (withChildren) {
+    const children = await listSteeringChildren(db, scope, sessionId, promptId, { limit: TURN_BODY_LIMIT });
+    body.children = [...children.rows];
+    body.cursors.children = children.cursor;
+  }
+  return body;
+}
+
+/** First pages are hydrated in bulk; each child keeps its own collection cursors. */
+async function readTurnBodies(db: RelationalStore, scope: ReadScope, sessionId: string, promptIds: readonly string[]): Promise<Map<string, TurnDetail>> {
+  const bodies = new Map<string, TurnDetail>();
+  if (promptIds.length === 0) return bodies;
+  const { results } = await db.prepare(`SELECT ${PROMPT_COLUMNS},
+    (SELECT MAX(+created_at) FROM responses WHERE project_id = pb.project_id AND session_id = pb.session_id AND prompt_id = pb.prompt_id) AS last_reply,
+    (SELECT json_group_array(json_object('toolName', tool_name, 'count', n)) FROM (
+      ${toolUsageSql(true, true)})) AS tools,
+    (SELECT json_object('sporeIds', i.spore_ids, 'createdAt', i.created_at, 'planIds', json(COALESCE(i.plan_ids, '[]')),
+      'plans', json((SELECT json_group_array(json_object('planKey', p.plan_key, 'title', p.title))
+        FROM plans p WHERE p.project_id = i.project_id AND p.plan_key IN (SELECT value FROM json_each(i.plan_ids)))))
+      FROM spore_injections i WHERE i.project_id = pb.project_id AND i.session_id = pb.session_id AND i.prompt_id = pb.prompt_id
+      ORDER BY +i.created_at DESC LIMIT 1) AS injection,
+    (SELECT agent FROM sessions s WHERE s.project_id = pb.project_id AND s.session_id = pb.session_id) AS agent
+    FROM (SELECT value AS wanted_prompt FROM json_each(?)) wanted CROSS JOIN prompt_batches pb
+    WHERE pb.project_id = ? AND pb.session_id = ? AND pb.prompt_id = wanted.wanted_prompt`)
+    .bind(JSON.stringify(promptIds), scope.projectId, sessionId).all<Record<string, unknown>>();
+  const ids = results.map(r => r.prompt_id as string);
+  const [responses, attachments, plans, answers] = await Promise.all([
+    listChildrenByPrompt(db, RESPONSE_QUERY, scope, sessionId, ids, TURN_BODY_LIMIT),
+    listChildrenByPrompt(db, ATTACHMENT_QUERY, scope, sessionId, ids, TURN_BODY_LIMIT),
+    listChildrenByPrompt(db, TURN_PLAN_QUERY, scope, sessionId, ids, TURN_BODY_LIMIT),
+    listChildrenByPrompt(db, ANSWER_QUERY, scope, sessionId, ids, TURN_BODY_LIMIT),
+  ]);
+  type Served = { sporeIds: string[]; createdAt: number; planIds: string[]; plans: Array<{ planKey: string; title: string | null }> };
+  const served = new Map(results.map(r => {
+    const raw = r.injection === null ? null : JSON.parse(r.injection as string) as Omit<Served, 'sporeIds'> & { sporeIds: string };
+    return [r.prompt_id as string, raw === null ? null : { ...raw, sporeIds: retainedIds(raw.sporeIds) }] as const;
+  }));
+  const sporeIds = [...new Set([...served.values()].flatMap(i => i?.sporeIds ?? []))];
+  const spores = [];
+  for (let offset = 0; offset < sporeIds.length; offset += MAX_SPORE_LIMIT) spores.push(...await listSporesByIds(db, scope, sporeIds.slice(offset, offset + MAX_SPORE_LIMIT)));
+  const byId = new Map(spores.map(spore => [spore.id, spore]));
+  for (const row of results) {
+    const prompt = toPrompt(row);
+    const id = prompt.promptId;
+    const receipt = served.get(id);
+    const planById = new Map(receipt?.plans.map(plan => [plan.planKey, plan]));
+    const injection = receipt == null ? null : { ...receipt,
+      plans: receipt.planIds.flatMap(id => { const plan = planById.get(id); return plan === undefined ? [] : [plan]; }),
+      spores: receipt.sporeIds.flatMap(id => {
+        const spore = byId.get(id);
+        return spore === undefined ? [] : [{ id, observationType: spore.observationType, preview: oneLine(spore.agentLine ?? spore.content) }];
+      }) };
+    bodies.set(id, {
+      prompt, responses: [...responses.get(id)!.rows], attachments: [...attachments.get(id)!.rows],
+      plans: [...plans.get(id)!.rows], answers: [...answers.get(id)!.rows], injection, children: [],
+      metrics: { tools: JSON.parse(row.tools as string), durationMs: !sourceTimestampsRecorded(row.agent as string | null) || row.last_reply == null ? null : Math.max(0, (row.last_reply as number) - prompt.createdAt), tokens: null },
+      cursors: { responses: responses.get(id)!.cursor, attachments: attachments.get(id)!.cursor,
+        plans: plans.get(id)!.cursor, answers: answers.get(id)!.cursor, children: null },
+    });
+  }
+  return bodies;
+}
+
+/** A bounded page of steering prompts, with their bodies hydrated together. */
 export async function listSteeringChildren(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string, opts: { limit?: number; cursor?: string } = {}): Promise<Page<TurnChild>> {
   const k = keyset(opts, { order: 'pb.created_at', id: 'pb.prompt_id', direction: 'ASC' });
   if (k === null) return { rows: [], cursor: null };
-  const { results } = await db.prepare(`SELECT ${PROMPT_COLUMNS}, ${TOOL_CALL_COUNT} AS tool_call_count FROM prompt_batches pb
+  const { results } = await db.prepare(`SELECT ${PROMPT_COLUMNS}, ${TOOL_CALL_COUNT} AS tool_call_count, ${CHILD_COUNT} AS child_count FROM prompt_batches pb
     WHERE pb.project_id = ? AND pb.session_id = ? AND pb.parent_prompt_id = ? ${k.where === '' ? '' : `AND ${k.where}`}
-    ORDER BY pb.created_at ASC, pb.prompt_id ASC LIMIT ?`)
+    ORDER BY +pb.created_at ASC, pb.prompt_id ASC LIMIT ?`)
     .bind(scope.projectId, sessionId, promptId, ...k.params, k.limit + 1).all<Record<string, unknown>>();
   const children = page(results, k.limit, (r) => ({ createdAt: r.created_at as number, id: r.prompt_id as string }));
-  const replies = await listChildrenByPrompt(db, RESPONSE_QUERY, scope, sessionId, children.rows.map((r) => r.prompt_id as string), TURN_BODY_LIMIT);
-  return { cursor: children.cursor, rows: children.rows.map((r) => {
+  const bodies = await readTurnBodies(db, scope, sessionId, children.rows.map(r => r.prompt_id as string));
+  const rows = children.rows.map(r => {
     const prompt = toPrompt(r);
-    const responses = replies.get(prompt.promptId)!;
-    return { prompt, responses: [...responses.rows], responsesCursor: responses.cursor, toolCallCount: r.tool_call_count as number };
-  }) };
+    const body = bodies.get(prompt.promptId)!;
+    return { prompt, responses: body.responses, responsesCursor: body.cursors.responses,
+      toolCallCount: r.tool_call_count as number, childCount: r.child_count as number, body };
+  });
+  return { cursor: children.cursor, rows };
 }
 
 /** A turn collection's continuation, confined to the prompt's Project and session. */
@@ -225,7 +272,7 @@ export interface TurnContext { start: boolean; subagents: number }
 
 const ANSWER_QUERY = {
   table: 'prompt_context_answers', idColumn: 'id', orderColumn: 'created_at',
-  columns: 'id, created_at, outcome, context_chars, parts, skipped, failures, selection',
+  columns: 'prompt_id, id, created_at, outcome, context_chars, parts, skipped, failures, selection',
   map: (r: Record<string, unknown>): PromptAnswer => ({
     id: r.id as string, createdAt: r.created_at as number, outcome: r.outcome as string, contextChars: r.context_chars as number,
     parts: JSON.parse(r.parts as string), skipped: JSON.parse(r.skipped as string),
@@ -240,42 +287,46 @@ export async function toolUsage(db: RelationalStore, scope: ReadScope, sessionId
   return results.map((r) => ({ toolName: r.tool_name, count: r.n }));
 }
 
-function toolUsageSql(byPrompt: boolean): string {
-  return `SELECT tool_name, COUNT(*) AS n FROM tool_calls WHERE project_id = ? AND session_id = ? ${byPrompt ? 'AND prompt_id = ?' : ''}
-    GROUP BY tool_name ORDER BY n DESC, tool_name ASC`;
+export function toolUsageSql(byPrompt: boolean, correlated = false): string {
+  const project = correlated ? 'pb.project_id' : '?';
+  const session = correlated ? 'pb.session_id' : '?';
+  const prompt = correlated ? 'pb.prompt_id' : '?';
+  return `SELECT tool_name, COUNT(*) AS n FROM tool_calls WHERE project_id = ${project} AND session_id = ${session} ${byPrompt ? 'AND prompt_id = ' + prompt : ''}
+    GROUP BY +tool_name ORDER BY n DESC, tool_name ASC`;
 }
 
 
 const SUBAGENT_CONTEXT_PREFIX = 'cortex:';
 
-const TURN_CONTEXT_COLUMNS = `EXISTS(SELECT 1 FROM session_injections i WHERE i.project_id = pb.project_id AND i.session_id = pb.session_id AND i.kind = 'cortex'
-    AND pb.prompt_id = (SELECT p.prompt_id FROM prompt_batches p WHERE p.project_id = pb.project_id AND p.session_id = pb.session_id
-      AND p.parent_prompt_id IS NULL AND p.origin = 'user' ORDER BY p.created_at, p.prompt_id LIMIT 1)) AS context_start,
-  pb.thread_id AS context_thread,
-  pb.prompt_id = (SELECT p.prompt_id FROM prompt_batches p WHERE p.project_id = pb.project_id AND p.session_id = pb.session_id
-    AND p.thread_id = pb.thread_id ORDER BY p.created_at, p.prompt_id LIMIT 1) AS first_in_thread,
-  (SELECT json_group_array(DISTINCT p.thread_id) FROM prompt_batches p WHERE p.project_id = pb.project_id AND p.session_id = pb.session_id AND p.thread_id IS NOT NULL) AS context_threads,
-  (SELECT json_group_array(substr(i.kind, ${SUBAGENT_CONTEXT_PREFIX.length + 1})) FROM session_injections i WHERE i.project_id = pb.project_id AND i.session_id = pb.session_id AND i.kind LIKE '${SUBAGENT_CONTEXT_PREFIX}%') AS context_receipts,
-  (SELECT json_group_array(json_extract(e.payload, '$.subagentId')) FROM events e WHERE e.project_id = pb.project_id AND e.session_id = pb.session_id
-    AND e.kind = 'subagent.start' AND json_extract(e.payload, '$.parentPromptId') = pb.prompt_id) AS context_agents`;
-
-/** Receipt attribution follows the member's derived thread and delegation identities. */
-async function contextForRow(row: Record<string, unknown>, sessionId: string): Promise<TurnContext> {
-  const agentIds = new Set<string>(JSON.parse(row.context_agents as string));
-  const threads = new Set<string>(JSON.parse(row.context_threads as string));
-  const receipts: string[] = JSON.parse(row.context_receipts as string);
-  const linked = await Promise.all(receipts.map(async (id) => {
-    const threadId = await uuidv5('thread', id);
-    if (threads.has(id) || threads.has(threadId)) return row.first_in_thread === 1 && (row.context_thread === id || row.context_thread === threadId);
-    return agentIds.has(await uuidv5('subagent', sessionId, id));
-  }));
-  return { start: row.context_start === 1, subagents: linked.filter(Boolean).length };
+/** Receipt attribution is computed once for a session, using retained identities. */
+export async function sessionTurnContexts(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<Record<string, TurnContext>> {
+  const [prompts, receipts, agents] = await Promise.all([
+    db.prepare('SELECT prompt_id, thread_id, parent_prompt_id, origin FROM prompt_batches WHERE project_id = ? AND session_id = ? ORDER BY created_at, prompt_id')
+      .bind(scope.projectId, sessionId).all<{ prompt_id: string; thread_id: string | null; parent_prompt_id: string | null; origin: string }>(),
+    db.prepare("SELECT kind FROM session_injections WHERE project_id = ? AND session_id = ? AND (kind = 'cortex' OR kind LIKE 'cortex:%')")
+      .bind(scope.projectId, sessionId).all<{ kind: string }>(),
+    db.prepare("SELECT json_extract(payload, '$.subagentId') AS agent, json_extract(payload, '$.parentPromptId') AS parent FROM events WHERE project_id = ? AND session_id = ? AND kind = 'subagent.start'")
+      .bind(scope.projectId, sessionId).all<{ agent: string; parent: string }>(),
+  ]);
+  const contexts: Record<string, TurnContext> = {};
+  const firstByThread = new Map<string, string>();
+  for (const p of prompts.results) if (p.thread_id !== null && !firstByThread.has(p.thread_id)) firstByThread.set(p.thread_id, p.prompt_id);
+  const parents = new Map(agents.results.map(a => [a.agent, a.parent]));
+  const first = prompts.results.find(p => p.parent_prompt_id === null && p.origin === 'user')?.prompt_id;
+  const add = (id: string): TurnContext => contexts[id] ??= { start: false, subagents: 0 };
+  for (const receipt of receipts.results) {
+    if (receipt.kind === 'cortex') { if (first !== undefined) add(first).start = true; continue; }
+    const id = receipt.kind.slice(SUBAGENT_CONTEXT_PREFIX.length);
+    const prompt = firstByThread.get(id) ?? firstByThread.get(await uuidv5('thread', id)) ?? parents.get(await uuidv5('subagent', sessionId, id));
+    if (prompt !== undefined && prompts.results.some(p => p.prompt_id === prompt)) add(prompt).subagents++;
+  }
+  return contexts;
 }
 
-async function servedForPrompt(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string, rawPlans: string | null): Promise<TurnDetail['injection']> {
-  const injection = await injectionForPrompt(db, scope, sessionId, promptId);
-  if (injection === null) return null;
-  const { ids: planIds, plans }: { ids: string[]; plans: Array<{ planKey: string; title: string | null }> } = JSON.parse(rawPlans ?? '{"ids":[],"plans":[]}');
-  const byId = new Map(plans.map((r) => [r.planKey, r]));
-  return { ...injection, planIds, plans: planIds.flatMap((id) => { const r = byId.get(id); return r === undefined ? [] : [{ planKey: id, title: r.title }]; }) };
+
+function retainedIds(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch { return []; }
 }

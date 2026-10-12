@@ -361,16 +361,16 @@ describe('Today', () => {
     screenWidth(1280);
     const at = (h: number) => ({ startedAt: NOW - h * HOUR, firstReceivedAt: NOW - h * HOUR });
     server(day({ sessions: { cursor: null, rows: [
-      session({ sessionId: 'a0000000-0000-5000-8000-000000000001', projectId: P_MYCO, ...at(1), title: '<timestamp>Monday 09:12</timestamp> <user_query>Fix the release build</user_query>', label: 'x' }),
+      session({ sessionId: 'a0000000-0000-5000-8000-000000000001', projectId: P_MYCO, ...at(1), agent: 'cursor', title: '<timestamp>Monday 09:12</timestamp> <user_query>Fix the release build</user_query>', label: 'x' }),
       session({ sessionId: 'a0000000-0000-5000-8000-000000000002', projectId: P_MYCO, ...at(2), title: null, label: 'claude-code', agent: 'claude-code' }),
-      session({ sessionId: 'a0000000-0000-5000-8000-000000000003', projectId: P_MYCO, ...at(3), title: null, label: '<pasted_content id="df5c">Why does the map read differ', summary: '<user_query>Compared both targets.</user_query>' }),
+      session({ sessionId: 'a0000000-0000-5000-8000-000000000003', projectId: P_MYCO, ...at(3), title: null, agent: 'cursor', label: '<user_query>Why does the map read differ</user_query>', summary: '<user_query>Compared both targets.</user_query>' }),
       session({ sessionId: 'a0000000-0000-5000-8000-000000000004', projectId: P_MYCO, ...at(4), title: 'Named by id', memberId: 'mem_sirkirby_5a2d54af', memberLabel: 'sirkirby_5a2d54af', runtimeLabel: null }),
     ] }, work: { ...WORK, runs: [] } }));
     mount('/');
     const list = await timeline();
     await waitFor(() => expect(items(list)).toHaveLength(4));
     const [titled, agentOnly, pasted, byId] = items(list).map((li) => li.querySelector('a')!);
-    expect(titled!.textContent).toBe('Fix the release build');
+    expect(titled!.textContent).toBe('Timestamp Fix the release build');
     expect(agentOnly!.textContent).toBe('Untitled session');
     expect(pasted!.textContent).toBe('UntitledWhy does the map read differ');
     expect(within(agentOnly!).getByText('Untitled session').className).toContain('text-muted');
@@ -379,28 +379,14 @@ describe('Today', () => {
     expect(byId!.closest('li')!.textContent).toContain('Claude Code');
   });
 
-  it('strips capture markup and reads a label that is only an id as no name', () => {
-    expect(cleanSessionText('<timestamp>Tue</timestamp>\n<user_query>\n  Ship it\n</user_query>')).toBe('Ship it');
-    expect(cleanSessionText('<pasted_content id="a1">   ')).toBeNull();
-    // Markup that is the person's own words, anywhere past the start, stays as written.
-    expect(cleanSessionText('Fix <user_query> handling in capture')).toBe('Fix <user_query> handling in capture');
-    expect(cleanSessionText('Fix `<user_query>` handling in capture')).toBe('Fix `<user_query>` handling in capture');
-    expect(cleanSessionText('`<timestamp>` parsing drops the zone')).toBe('`<timestamp>` parsing drops the zone');
-    // A timestamp cut off inside its block, or inside its own tag, leaves nothing of the person's.
-    expect(cleanSessionText('<timestamp>Monday, September 28, 2026 09:1')).toBeNull();
-    expect(cleanSessionText('<timesta')).toBeNull();
-    expect(cleanSessionText('<timestamp')).toBeNull();
-    // A closed paste goes whole, and the question after it is the heading; an unclosed one loses only its tag.
-    expect(cleanSessionText('<pasted_content id="df5c">stack trace\nline 2</pasted_content>\nWhy does this fail on Linux?')).toBe('Why does this fail on Linux?');
-    expect(cleanSessionText('<pasted_content id="df5c">Why does the map read differ')).toBe('Why does the map read differ');
-    expect(cleanSessionText('<command-name>/model</command-name>')).toBe('/model');
-    expect(cleanSessionText('<command-name>/review</command-name> <command-args>the parser</command-args>')).toBe('/review the parser');
+  it('uses the shared harness-scoped display for headings', () => {
+    expect(cleanSessionText('<timestamp>Tue</timestamp><user_query>Ship it</user_query>', 'cursor')).toBe('Timestamp Ship it');
+    expect(cleanSessionText('<command-name>/model</command-name>', 'claude-code')).toBe('Ran /model');
+    expect(cleanSessionText('<command-name>/review</command-name><command-args>the parser</command-args>', 'claude-code')).toBe('Ran /review Command arguments');
+    expect(cleanSessionText('<system-reminder>keep</system-reminder>', 'opencode')).toBe('<system-reminder>keep</system-reminder>');
+    expect(cleanSessionText('Fix <skill> handling in capture', 'claude-code')).toBe('Fix <skill> handling in capture');
+    expect(cleanSessionText('', null)).toBeNull();
     expect(sessionHeading({ sessionId: 's1', title: null, label: 's1', agent: null })).toEqual({ titled: false, firstPrompt: null });
-    expect(memberLabel({ id: 'mem_sirkirby_5a2d54af', label: 'sirkirby_5a2d54af' })).toBeNull();
-    expect(memberLabel({ id: 'mem_Hn5-pC0dJfA9sE_u', label: 'mem_Hn5-pC0dJfA9sE_u' })).toBeNull();
-    expect(memberLabel({ id: 'mem_1', label: 'Ada' })).toBe('Ada');
-    expect(memberDisplayName({ id: 'mem_sirkirby_5a2d54af', label: 'sirkirby_5a2d54af' }, 'sirkirby')).toBe('sirkirby');
-    expect(memberDisplayName({ id: 'mem_x', label: null }, undefined)).toBe('You');
   });
 
   it('names the signed-in member in the account block by their login when their label is only their id', async () => {

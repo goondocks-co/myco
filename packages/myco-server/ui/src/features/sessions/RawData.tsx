@@ -23,7 +23,7 @@ export function isRawSection(value: string | null): value is RawSection {
  * the transcript files and their stored pieces, the context Myco prepared for
  * the session, and every attachment. It is for debugging, not reading.
  */
-export function RawData({ projectId, sessionId, open, now }: { projectId: string; sessionId: string; open: RawSection | null; now: number }) {
+export function RawData({ projectId, sessionId, open, now, agent = null }: { projectId: string; sessionId: string; open: RawSection | null; now: number; agent?: string | null }) {
   return (
     <section aria-label="Raw data" data-raw-data="" className="border-t border-line pt-s4">
       <Disclosure defaultOpen={open !== null} summary="Raw data">
@@ -35,7 +35,7 @@ export function RawData({ projectId, sessionId, open, now }: { projectId: string
             <ContextHistory projectId={projectId} sessionId={sessionId} now={now} />
           </RawPart>
           <RawPart id="attachments" title="Attachments" scrollTo={open === 'attachments'}>
-            <Attachments projectId={projectId} sessionId={sessionId} now={now} />
+            <Attachments projectId={projectId} sessionId={sessionId} now={now} agent={agent} />
           </RawPart>
         </div>
       </Disclosure>
@@ -141,13 +141,13 @@ function ContextHistory({ projectId, sessionId, now }: { projectId: string; sess
 interface AttachmentGroup { key: string; label: string; rows: AttachmentRow[]; /** The top-level turn the group opens, when it has one. */ turn: string | null }
 
 /** The attachments a turn carries, grouped under the turn in turn order; those on prompts the conversation does not list on its own share one group, and those tied to no prompt sit last. */
-export function attachmentGroups(rows: readonly AttachmentRow[], turns: readonly TurnRow[]): AttachmentGroup[] {
+export function attachmentGroups(rows: readonly AttachmentRow[], turns: readonly TurnRow[], agent: string | null = null): AttachmentGroup[] {
   const byPrompt = new Map<string | null, AttachmentRow[]>();
   for (const row of rows) byPrompt.set(row.promptId, [...(byPrompt.get(row.promptId) ?? []), row]);
   const groups: AttachmentGroup[] = [];
   for (const turn of turns) {
     const mine = byPrompt.get(turn.promptId);
-    if (mine !== undefined) { groups.push({ key: turn.promptId, label: promptPreview(turn), rows: mine, turn: turn.promptId }); byPrompt.delete(turn.promptId); }
+    if (mine !== undefined) { groups.push({ key: turn.promptId, label: promptPreview(turn, agent), rows: mine, turn: turn.promptId }); byPrompt.delete(turn.promptId); }
   }
   const untied = byPrompt.get(null) ?? [];
   byPrompt.delete(null);
@@ -157,7 +157,7 @@ export function attachmentGroups(rows: readonly AttachmentRow[], turns: readonly
   return groups;
 }
 
-function Attachments({ projectId, sessionId, now }: { projectId: string; sessionId: string; now: number }) {
+function Attachments({ projectId, sessionId, now, agent }: { projectId: string; sessionId: string; now: number; agent: string | null }) {
   const attachments = useSessionChildren<AttachmentRow>(projectId, sessionId, 'attachments');
   const turns = useTurns(projectId, sessionId, PROMPT_ORIGINS);
   if (attachments.isPending || turns.isPending) return <LoadingState label="Loading the attachments" count={2} />;
@@ -166,7 +166,7 @@ function Attachments({ projectId, sessionId, now }: { projectId: string; session
   if (attachments.rows.length === 0) return <p className="t-small text-muted">No attachments in this session.</p>;
   return (
     <div className="flex flex-col gap-s5">
-      {attachmentGroups(attachments.rows, turns.rows).map((group) => (
+      {attachmentGroups(attachments.rows, turns.rows, agent).map((group) => (
         <section key={group.key} aria-label={group.label} className="flex flex-col gap-s2">
           <div className="flex items-baseline justify-between gap-s3">
             <h4 className="min-w-0 truncate t-small font-medium text-ink-2">{group.label}</h4>

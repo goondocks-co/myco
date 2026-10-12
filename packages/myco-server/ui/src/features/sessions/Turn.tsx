@@ -7,7 +7,8 @@ import { PlanLine } from '../knowledge/PlanLine';
 import { TextOrBlob } from './StoredText';
 import { ToolCalls } from './ToolCalls';
 import { formatMillis } from '../../lib/format';
-import { displayPrompt } from '@goondocks/myco-shared/prompt-text';
+import { projectPath, PLAN_SUFFIX } from '../../routes/nav';
+import { displayPrompt, promptDisplay } from '@goondocks/myco-shared/prompt-text';
 import { ToolUsageLine } from './Usage';
 import { clockTime, count, sporeTypeWord } from './words';
 
@@ -26,9 +27,9 @@ const ORIGIN_LABEL: Record<string, string> = {
 };
 
 /** A prompt's opening on one line, as the list row carries it. */
-export function promptPreview(turn: Pick<TurnRow, 'preview' | 'textChars' | 'blobKey'>): string {
+export function promptPreview(turn: Pick<TurnRow, 'preview' | 'textChars' | 'blobKey'>, agent: string | null = null): string {
   if (turn.preview === null || turn.preview === '') return turn.blobKey !== null ? 'Stored text' : '(no prompt)';
-  const line = turn.preview.replace(/\s+/g, ' ').trim();
+  const line = displayPrompt(turn.preview, agent).replace(/\s+/g, ' ').trim();
   const cut = line.length > PROMPT_PREVIEW_CHARS ? `${line.slice(0, PROMPT_PREVIEW_CHARS)}…` : line;
   return cut.length < line.length || (turn.textChars !== null && turn.textChars > turn.preview.length) ? (cut.endsWith('…') ? cut : `${cut}…`) : cut;
 }
@@ -51,12 +52,13 @@ function useSeen<T extends Element>(): [RefObject<T | null>, boolean] {
   return [ref, seen];
 }
 
-function TurnPages<T>({ projectId, sessionId, promptId, collection, initial, cursor, rowKey, label, children }: {
+function TurnPages<T>({ projectId, sessionId, promptId, collection, initial, cursor, rowKey, label, children, unloaded = false }: {
   projectId: string; sessionId: string; promptId: string; collection: TurnCollection; initial: T[]; cursor?: string | null;
-  rowKey: (row: T) => string; label: string; children: (rows: T[]) => ReactNode;
+  rowKey: (row: T) => string; label: string; unloaded?: boolean; children: (rows: T[]) => ReactNode;
 }) {
-  const pages = useTurnCollection(projectId, sessionId, promptId, collection, initial, cursor, rowKey);
+  const pages = useTurnCollection(projectId, sessionId, promptId, collection, initial, cursor, rowKey, unloaded);
   return <>
+    {unloaded && pages.pending && pages.rows.length === 0 && <p role="status" className="t-small text-muted">Reading {label}…</p>}
     {children(pages.rows)}
     {pages.error && <p role="alert" className="t-small text-bad">More {label} could not be read. The items above are still available.</p>}
     {(pages.hasMore || pages.error) && <Button variant="secondary" className="w-fit" onClick={pages.error ? pages.retry : pages.more} disabled={pages.pending}>
@@ -119,7 +121,7 @@ function Injection({ projectId, injection }: { projectId: string; injection: Tur
               </ItemLink>
             </li>
           ))}
-          {(injection.plans ?? []).map((plan) => <li key={plan.planKey} className="t-small"><ItemLink to={`/p/${encodeURIComponent(projectId)}/plans/${encodeURIComponent(plan.planKey)}`}>{plan.title ?? 'Untitled plan'}</ItemLink></li>)}
+          {(injection.plans ?? []).map((plan) => <li key={plan.planKey} className="t-small"><ItemLink to={projectPath(projectId, PLAN_SUFFIX + '/' + encodeURIComponent(plan.planKey))}>{plan.title ?? 'Untitled plan'}</ItemLink></li>)}
           {planIds.length > (injection.plans?.length ?? 0) && <li className="t-small text-muted">{count(planIds.length - (injection.plans?.length ?? 0), 'plan')} no longer kept</li>}
           {missing > 0 && <li className="t-small text-muted">{count(missing, 'spore')} no longer kept</li>}
         </ul>
@@ -131,18 +133,25 @@ function Injection({ projectId, injection }: { projectId: string; injection: Tur
 /** The prompt itself: its whole text once the body is read, its opening before; a long one shows its opening until asked. */
 function PromptText({ projectId, turn, text, blobKey, agent }: { projectId: string; turn: TurnRow; text: string | null | undefined; blobKey: string | null | undefined; agent: string | null }) {
   const [whole, setWhole] = useState(false);
-  const shown = text == null ? text : displayPrompt(text, agent);
-  if (text === undefined) return <p className="whitespace-pre-wrap break-words t-body font-medium text-ink">{promptPreview({ ...turn, preview: turn.preview === null ? null : displayPrompt(turn.preview, agent) })}</p>;
+  if (text === undefined) return <p className="whitespace-pre-wrap break-words t-body font-medium text-ink">{promptPreview(turn, agent)}</p>;
   const stored = text === null && blobKey != null;
-  if (!whole && (stored || (shown?.length ?? 0) > LONG_PROMPT_CHARS)) {
-    return (
-      <div className="flex flex-col items-start gap-s1">
-        <p className="line-clamp-6 whitespace-pre-wrap break-words t-body font-medium text-ink">{shown ?? promptPreview({ ...turn, preview: turn.preview === null ? null : displayPrompt(turn.preview, agent) })}</p>
-        <Button variant="ghost" size="sm" className="-ml-s3" onClick={() => setWhole(true)}>Show the whole prompt</Button>
-      </div>
-    );
+  if (!whole && (stored || (text?.length ?? 0) > LONG_PROMPT_CHARS)) {
+    return <div className="flex flex-col items-start gap-s1">
+      {text === null ? <p>{promptPreview(turn, agent)}</p> : <PromptContent text={text} agent={agent} folded />}
+      <Button variant="ghost" size="sm" className="-ml-s3" onClick={() => setWhole(true)}>Show the whole prompt</Button>
+    </div>;
   }
-  return <div className="font-medium text-ink"><TextOrBlob projectId={projectId} text={shown ?? null} blobKey={blobKey ?? null} body={{ kind: 'prompt', id: turn.promptId }} transform={shown == null ? (value) => displayPrompt(value, agent) : undefined} /></div>;
+  return <TextOrBlob projectId={projectId} text={text} blobKey={blobKey ?? null} body={{ kind: 'prompt', id: turn.promptId }} render={(value) => <PromptContent text={value} agent={agent} />} />;
+}
+
+function PromptContent({ text, agent, folded = false }: { text: string; agent: string | null; folded?: boolean }) {
+  const shown = promptDisplay(text, agent);
+  return <div className="flex flex-col gap-s2">
+    {shown.envelopes.map((envelope, i) => <Disclosure key={i} summary={<StatusChip>{envelope.label}</StatusChip>}>
+      <p className="whitespace-pre-wrap break-words t-small text-muted">{envelope.text}</p>
+    </Disclosure>)}
+    {shown.text !== '' && <p className={cn('whitespace-pre-wrap break-words t-body font-medium text-ink', folded && 'line-clamp-6')}>{shown.text}</p>}
+  </div>;
 }
 
 export interface TurnProps {
@@ -154,28 +163,32 @@ export interface TurnProps {
   agent?: string | null;
   steering?: boolean;
   initial?: TurnChild;
+  contexts?: Record<string, { start: boolean; subagents: number }>;
 }
 
 /**
  * One turn of the conversation, read inline: the prompt as a bubble, then what
- * followed it and the replies. Only the tool calls fold away. The turn's body
- * is read once the turn comes near the viewport, so a long conversation reads
- * only what the reader reaches.
+ * followed it and the replies. Details expand on request. Root bodies are read
+ * near the viewport; child bodies arrive with their parent, and deeper branches
+ * are read when expanded.
  */
-export const Turn = memo(function Turn({ projectId, sessionId, turn, scrollTo = false, agent = null, steering = false, initial }: TurnProps) {
+export const Turn = memo(function Turn({ projectId, sessionId, turn, scrollTo = false, agent = null, steering = false, initial, contexts }: TurnProps) {
   const injected = turn.origin !== 'user';
+  const [showChildren, setShowChildren] = useState(false);
+  const deferredChildren = initial?.body !== undefined && (initial.childCount ?? 0) > 0;
   const [ref, seen] = useSeen<HTMLLIElement>();
-  const detail = useTurnDetail(projectId, sessionId, turn.promptId, seen || scrollTo);
+  const detail = useTurnDetail(projectId, sessionId, turn.promptId, initial?.body === undefined && (seen || scrollTo));
   useEffect(() => {
     if (scrollTo && typeof ref.current?.scrollIntoView === 'function') ref.current.scrollIntoView({ block: 'start' });
   }, [scrollTo, ref]);
-  const body: TurnDetail | undefined = detail.data ?? (initial === undefined ? undefined : {
+  const body: TurnDetail | undefined = initial?.body ?? detail.data ?? (initial === undefined ? undefined : {
     prompt: initial.prompt, responses: initial.responses, attachments: [], plans: [], injection: null, children: [],
     cursors: { responses: initial.responsesCursor ?? null, attachments: null, plans: null, children: null, answers: null },
   });
-  const partial = detail.data === undefined && initial !== undefined;
+  const partial = initial?.body === undefined && detail.data === undefined && initial !== undefined;
+  const context = contexts?.[turn.promptId] ?? body?.context;
   return (
-    <li ref={ref} data-testid={`turn-${turn.promptId}`} data-origin={turn.origin} className="flex flex-col gap-s3">
+    <li ref={ref} data-testid={`turn-${turn.promptId}`} data-child={initial !== undefined ? 'true' : undefined} data-origin={turn.origin} className="flex flex-col gap-s3">
       <div className={cn('flex flex-col gap-s1 rounded-card border px-s4 py-s3', injected ? 'border-dashed border-line-strong' : 'border-line bg-surface-2')}>
         <span className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-meta text-muted">
           {steering && <span>Steered while it ran</span>}
@@ -193,12 +206,12 @@ export const Turn = memo(function Turn({ projectId, sessionId, turn, scrollTo = 
               {(rows) => <Attachments projectId={projectId} attachments={rows} />}
             </TurnPages>
             {body.metrics && <div className="flex flex-col gap-s1 t-meta text-muted" data-testid="turn-metrics">
-              <span>{body.metrics.durationMs === null ? 'No reply time recorded' : `Prompt to last reply · ${formatMillis(body.metrics.durationMs)}`}</span>
+              <span>{body.metrics.durationMs === null ? 'Reply time not recorded' : `Prompt to last reply · ${formatMillis(body.metrics.durationMs)}`}</span>
               <ToolUsageLine tools={body.metrics.tools} />
               {turn.origin === 'agent_dispatch' && <span>Sub-agent tokens not recorded</span>}
             </div>}
-            {body.context?.start && <Contribution label="Myco prepared session guidance" />}
-            {(body.context?.subagents ?? 0) > 0 && <Contribution label={`Myco prepared ${count(body.context!.subagents, 'sub-agent preamble')}`} />}
+            {context?.start && <Contribution label="Myco sent the session start block" />}
+            {(context?.subagents ?? 0) > 0 && <Contribution label={`Myco prepared ${count(context!.subagents, 'sub-agent preamble')}`} />}
             <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="answers" initial={body.answers ?? []} cursor={body.cursors?.answers} rowKey={(row) => row.id} label="context answers">
               {(rows) => rows.map((answer) => <ContextAnswer key={answer.id} answer={answer} />)}
             </TurnPages>
@@ -209,9 +222,9 @@ export const Turn = memo(function Turn({ projectId, sessionId, turn, scrollTo = 
               </div>}
             </TurnPages>
             <ToolCalls projectId={projectId} sessionId={sessionId} promptId={turn.promptId} total={turn.toolCallCount} />
-            <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="children" initial={body.children} cursor={body.cursors?.children} rowKey={(row) => row.prompt.promptId} label="steering prompts">
-              {(rows) => <ol className="flex flex-col gap-s4 border-l-2 border-line-strong pl-s4" aria-label="Child prompts">{rows.map((child) => <li key={child.prompt.promptId} data-testid="turn-child"><ol><Turn projectId={projectId} sessionId={sessionId} agent={agent} initial={child} steering={child.prompt.origin === 'user'} turn={{ ...child.prompt, preview: child.prompt.text, textChars: child.prompt.text?.length ?? null, toolCallCount: child.toolCallCount, responseCount: child.responses.length, childCount: 0, planCount: 0, attachmentCount: 0 }} /></ol></li>)}</ol>}
-            </TurnPages>
+            {deferredChildren && !showChildren ? <Button variant="secondary" className="w-fit" onClick={() => setShowChildren(true)}>Show child prompts</Button> : <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="children" unloaded={initial?.body !== undefined && (initial.childCount ?? 0) > 0} initial={body.children} cursor={body.cursors?.children} rowKey={(row) => row.prompt.promptId} label="steering prompts">
+              {(rows) => <ol className="flex flex-col gap-s4 border-l-2 border-line-strong pl-s4" aria-label="Child prompts">{rows.map((child) => <Turn key={child.prompt.promptId} projectId={projectId} sessionId={sessionId} contexts={contexts} agent={agent} initial={child} steering={child.prompt.origin === 'user'} turn={{ ...child.prompt, preview: child.prompt.text, textChars: child.prompt.text?.length ?? null, toolCallCount: child.toolCallCount, responseCount: child.responses.length, childCount: child.childCount ?? 0, planCount: child.body?.plans.length ?? 0, attachmentCount: child.body?.attachments.length ?? 0 }} />)}</ol>}
+            </TurnPages>}
             <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="responses" initial={body.responses} cursor={body.cursors?.responses} rowKey={(row) => row.responseId} label="replies">
               {(rows) => <Replies projectId={projectId} responses={rows} />}
             </TurnPages>
@@ -242,13 +255,32 @@ const SKIP_WORDS: Record<string, string> = {
 };
 const words = (value: string) => SKIP_WORDS[value] ?? value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_:]/g, ' ').toLowerCase();
 function ContextAnswer({ answer }: { answer: PromptAnswer }) {
+  const selection = selectionWords(answer);
   return <Disclosure summary={<StatusChip>{answer.failures.length > 0 ? (answer.outcome === 'empty' ? 'Myco context lookup failed' : 'Myco context partly prepared') : answer.outcome === 'empty' ? 'Myco prepared no context' : 'Myco prepared context'}</StatusChip>}>
     <div className="flex flex-col gap-s1 t-small text-muted">
-      <time>{clockTime(answer.createdAt)}</time>
+      <time dateTime={new Date(answer.createdAt).toISOString()}>{clockTime(answer.createdAt)}</time>
       {answer.parts.map((part, i) => <p key={i}>{part.kind === 'plan-nudge' ? 'Plan reminder served' : `${count(part.sporeCount ?? 0, 'spore')} and ${count(part.planCount ?? 0, 'plan')} served`}</p>)}
-      {answer.skipped.map((skip) => <p key={skip}>{words(skip)}</p>)}
-      {answer.failures.map((failure, i) => <p key={i} className="text-bad">{words(failure.contributor)} · {words(failure.error)}{failure.operation ? ` · ${words(failure.operation)}` : ''}</p>)}
-      {Object.entries(answer.selection).map(([stage, n]) => <p key={stage}>{words(stage)}: {n}</p>)}
+      {answer.skipped.filter((skip) => !answer.failures.some(f => skip === f.contributor)).map((skip) => <p key={skip}>{words(skip)}</p>)}
+      {answer.failures.map((failure, i) => <p key={i} className="text-bad">{words(failure.contributor)} · {ERROR_WORDS[failure.error] ?? 'The request could not be completed'}</p>)}
+      {selection !== null && <p>{selection}</p>}
     </div>
   </Disclosure>;
+}
+
+const ERROR_WORDS: Record<string, string> = {
+  parse: 'The response could not be understood', store_quota: 'Storage is full', store_size: 'The stored item is too large',
+  constraint: 'The stored records conflict', schema: 'Storage needs an update', db: 'Storage could not be read',
+  revoked: 'Access was revoked', unknown: 'An unexpected problem occurred', unavailable: 'The service is unavailable',
+};
+
+function selectionWords(answer: PromptAnswer): string | null {
+  const selection = answer.selection;
+  const matches = (selection.sporeRawMatches ?? 0) + (selection.planRawMatches ?? 0);
+  const relevant = (selection.sporeRelevant ?? 0) + (selection.planUnserved ?? 0);
+  const served = selection.budgetKept ?? 0;
+  if (matches === 0) return answer.failures.length === 0 && answer.skipped.includes('spores:empty') ? 'No matches found' : null;
+  if (answer.failures.length > 0) return count(matches, 'match', 'matches') + ', lookup incomplete';
+  if (relevant === 0) return count(matches, 'match', 'matches') + ', none relevant enough';
+  if (served === 0) return count(matches, 'match', 'matches') + ', none served';
+  return count(matches, 'match', 'matches') + ', ' + count(served, 'item') + ' served';
 }

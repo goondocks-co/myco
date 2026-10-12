@@ -1,3 +1,4 @@
+import { displayPrompt } from '@goondocks/myco-shared/prompt-text';
 import { processedResourceProofSql } from '../core/processed-resources.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { occurredAt, presentedStatus } from '../db/session-dates.js';
@@ -49,7 +50,7 @@ function typesFor(value: string | undefined): readonly SearchType[] {
   return [type as SearchType];
 }
 
-interface Hit { project_id: string; id: string; title: string; preview: string; rank: number; created_at: number; session_id: string | null; prompt_id: string | null }
+interface Hit { agent: string | null; project_id: string; id: string; title: string; preview: string; rank: number; created_at: number; session_id: string | null; prompt_id: string | null }
 
 /** Where a search reads: one Project, or a set of them. */
 type SearchReach = ReadScope | ProjectSet;
@@ -124,7 +125,7 @@ async function searchType(db: RelationalStore, reach: SearchReach, type: SearchT
       ${s.created} AS created_at, ${s.session} AS session_id, ${s.prompt} AS prompt_id
     FROM candidates CROSS JOIN ${s.table} d ON d.rowid = candidates.source_rowid
     ${where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`} GROUP BY d.rowid ORDER BY rank, created_at DESC, id, d.project_id LIMIT ?)
-    SELECT kept.project_id, kept.id, kept.title, kept.rank, kept.created_at, kept.session_id, kept.prompt_id, ${preview} AS preview
+    SELECT kept.project_id, kept.id, kept.title, kept.rank, kept.created_at, kept.session_id, kept.prompt_id, (SELECT agent FROM sessions WHERE project_id = kept.project_id AND session_id = kept.session_id) AS agent, ${preview} AS preview
     FROM kept ORDER BY kept.rank, kept.created_at DESC, kept.id, kept.project_id`).bind(...params).all<Hit>()).results;
   const best = Math.max(...rows.map((r) => Math.abs(r.rank)), Number.MIN_VALUE);
   // No `skill` entry: `myco_skills` answers from the shipped catalogue, so a
@@ -133,7 +134,7 @@ async function searchType(db: RelationalStore, reach: SearchReach, type: SearchT
   const tools: Partial<Record<SearchType, string>> = { session: 'myco_sessions', spore: 'myco_spores', plan: 'myco_plans' };
   const tool = tools[type];
   return rows.filter((r) => r.id.length > 0).map((r) => ({
-    projectId: r.project_id, id: r.id, type, title: r.title, preview: (r.preview ?? '').slice(0, SEARCH_PREVIEW_CHARS), score: Math.abs(r.rank) / best,
+    projectId: r.project_id, id: r.id, type, title: type === 'session' ? displayPrompt(r.title, r.agent) : r.title, preview: (type === 'session' || type === 'prompt' ? displayPrompt(r.preview ?? '', r.agent) : r.preview ?? '').slice(0, SEARCH_PREVIEW_CHARS), score: Math.abs(r.rank) / best,
     ...(r.session_id === null ? {} : { session_id: r.session_id }),
     ...(r.prompt_id === null ? {} : { prompt_id: r.prompt_id }),
     ...(tool === undefined ? {} : { retrieve: { tool, input: { op: 'get', id: r.id } } }),

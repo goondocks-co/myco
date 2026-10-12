@@ -187,7 +187,7 @@ function Table({ count: rows, groups, pending, error, onRetry, scoped, projectNa
       groups={groups}
       rowKey={rowKey}
       rowHref={(row) => projectPath(row.projectId, `/sessions/${encodeURIComponent(row.sessionId)}`)}
-      detail={(row) => cleanSessionText(row.summary)}
+      detail={(row) => cleanSessionText(row.summary, row.agent)}
       phoneMeta={(row) => [scoped ? null : project(row), agentName(row.agent), count(row.promptCount, 'prompt'), started(row)].filter(Boolean).join(' · ')}
       rowData={(row) => ({ 'data-live': isLiveRow(row) ? '' : undefined })}
     />

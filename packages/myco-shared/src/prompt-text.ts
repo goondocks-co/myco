@@ -21,24 +21,58 @@ export function cursorPromptText(text: string): string {
 }
 
 
-/** Display text keeps the contents of manifest-named envelopes and removes only their markup. */
-export function displayPrompt(text: string, agent: string | null): string {
+
+export interface PromptEnvelope { label: string; text: string }
+export interface DisplayPrompt { text: string; envelopes: PromptEnvelope[] }
+
+const ENVELOPE_LABELS: Record<string, string> = {
+  'command-message': 'Command', 'command-args': 'Command arguments', 'command-contents': 'Command',
+  'local-command-stdout': 'Command output', 'local-command-caveat': 'Command notice',
+  'system-reminder': 'System reminder', 'task-notification': 'Task notification',
+  skill: 'Skill', environment_context: 'Environment', subagent_notification: 'Sub-agent notification',
+  timestamp: 'Timestamp', attached_files: 'Attached files', user_info: 'User context',
+  additional_data: 'Additional context', pasted_content: 'Pasted content',
+};
+
+/** Leading envelopes are presentation metadata; capture rewrites never run on stored text. */
+export function promptDisplay(text: string, agent: string | null): DisplayPrompt {
   const bundle = CAPTURE_RULE_BUNDLES.find((item) => item.name === agent);
-  if (bundle === undefined) return text;
-  if (bundle.rules.some((rule) => rule.event === 'user_prompt' && rule.strip_envelope?.open === '<user_query>')) return cursorPromptText(text);
   const tags = new Set<string>();
-  let displayed = text;
-  for (const rule of bundle.rules) {
+  for (const rule of bundle?.rules ?? []) {
     if (rule.event !== 'user_prompt') continue;
     for (const tag of rule.when.prompt_envelope_tag_in ?? []) tags.add(tag);
-    const prefix = rule.when.prompt_starts_with?.match(/^<([\w-]+)>$/)?.[1];
-    if (prefix !== undefined) tags.add(prefix);
-    if (rule.strip_envelope !== undefined) {
-      const tag = rule.strip_envelope.open.match(/^<([\w-]+)>$/)?.[1];
+    for (const open of [rule.when.prompt_starts_with, rule.strip_envelope?.open]) {
+      const tag = open?.match(/^<([\w-]+)>$/)?.[1];
       if (tag !== undefined) tags.add(tag);
     }
-    if (rule.extract_after !== undefined && displayed.includes(rule.extract_after)) displayed = displayed.slice(displayed.indexOf(rule.extract_after) + rule.extract_after.length);
   }
-  if (!tags.has(displayed.trimStart().match(/^<([A-Za-z][\w-]*)[\s>]/)?.[1] ?? '')) return displayed;
-  return displayed.split(/(```[\s\S]*?```|`[^`\n]*`)/g).map((part, index) => index % 2 === 1 ? part : part.replace(/<\/?([A-Za-z][\w-]*)(?:\s[^<>]*?)?\s*\/?>/g, (markup, tag: string) => tags.has(tag) ? '' : markup)).join('').trim();
+  // Command fields and query context belong to their declared envelope family.
+  if (tags.has('command-name')) for (const tag of ['command-args', 'command-contents']) tags.add(tag);
+  if (tags.has('user_query')) for (const tag of ['timestamp', 'attached_files', 'user_info', 'additional_data', 'pasted_content']) tags.add(tag);
+  const envelopes: PromptEnvelope[] = [];
+  let rest = text;
+  const person: string[] = [];
+  while (true) {
+    const opening = /^\s*<([\w-]+)(?:\s[^<>]*?)?>/.exec(rest);
+    if (opening === null || !tags.has(opening[1]!)) break;
+    const tag = opening[1]!;
+    const inner = rest.slice(opening[0].length);
+    const close = new RegExp('</' + tag + '\\s*>').exec(inner);
+    const content = close === null ? inner : inner.slice(0, close.index);
+    rest = close === null ? '' : inner.slice(close.index + close[0].length);
+    if (tag === 'user_query') person.push(content);
+    else envelopes.push({ label: tag === 'command-name' ? 'Ran ' + content.trim() : ENVELOPE_LABELS[tag] ?? tag.replace(/[-_]/g, ' '), text: content.trim() });
+  }
+  return { text: [...person, rest].filter(Boolean).join('\n\n'), envelopes };
+}
+
+/** Plain labels use the same envelope interpretation as the conversation. */
+export function displayPrompt(text: string, agent: string | null): string {
+  const shown = promptDisplay(text, agent);
+  return [...shown.envelopes.map((item) => item.label), shown.text].filter(Boolean).join(' ').trim();
+}
+
+export function cleanSessionText(text: string | null | undefined, agent: string | null): string | null {
+  const line = text == null ? '' : displayPrompt(text, agent).replace(/\s+/g, ' ').trim();
+  return line === '' ? null : line;
 }

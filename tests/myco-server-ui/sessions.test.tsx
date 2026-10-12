@@ -1,3 +1,4 @@
+import { emptyInjectionCounts } from '@myco-server-worker/core/injection.js';
 /**
  * Sessions: the table across every project and within one, and a session's
  * reading page with what came of it, its conversation, its tabs, its raw data
@@ -603,8 +604,8 @@ describe('the session reading page', () => {
       expect(await within(last).findByText('{"a":1}')).toBeTruthy();
       expect(requested).toContain(`/api/projects/x/processed/prompt/${P3}`);
       expect(requested).not.toContain(BLOB(KEY_TEXT));
-      expect(within(last).getByTestId('turn-child').textContent).toContain('steer it left');
-      expect(within(last).getByTestId('turn-child').textContent).toContain('reviewer');
+      expect(within(last).getByTestId(`turn-${P4}`).textContent).toContain('steer it left');
+      expect(within(last).getByTestId(`turn-${P4}`).textContent).toContain('reviewer');
       expect(requested.filter((p) => p.includes('/turns/'))).toEqual([`/api/projects/x/sessions/s1/turns/${P3}`]);
 
       await reach(first);
@@ -697,7 +698,7 @@ describe('the session reading page', () => {
     expect(await screen.findByText('Download File 50')).toBeTruthy();
     expect(await screen.findByText('Plan 50')).toBeTruthy();
     expect(await screen.findByText('Steering 50')).toBeTruthy();
-    const firstChild = screen.getAllByTestId('turn-child')[0]!;
+    const firstChild = screen.getAllByTestId(/^turn-child-/)[0]!;
     fireEvent.click(await within(firstChild).findByRole('button', { name: 'Show more replies' }));
     expect(await screen.findByText('Reply child-0 50')).toBeTruthy();
     fireEvent.click(within(card).getByRole('button', { name: 'Show more replies' }));
@@ -945,31 +946,37 @@ describe('the session reading page', () => {
   it('shows all contributions, empty-answer diagnostics, durations and a nested sub-agent without inventing tokens', async () => {
     const prompt = (id: string, origin: string, text: string, parentPromptId: string | null = null) => ({ promptId: id, origin, text, parentPromptId, promptKind: null, threadLabel: null, blobKey: null, createdAt: NOW - 3000 });
     const empty = { responses: [], attachments: [], plans: [], children: [], injection: null };
-    server(routes({
-      '/api/projects/x/sessions/s1': () => detail({ endedAt: NOW - 20 * MINUTE }, { metrics: { tools: [{ toolName: 'Read', count: 3 }], tokens: null } }),
+    const { requested } = server(routes({
+      '/api/projects/x/sessions/s1': () => detail({ endedAt: NOW - 20 * MINUTE }, { turnContexts: { [P1]: { start: true, subagents: 0 }, [P2]: { start: false, subagents: 1 } }, metrics: { tools: [{ toolName: 'Read', count: 3 }], tokens: null } }),
       '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn()]),
       [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({ ...empty,
         prompt: prompt(P1, 'user', '<command-name>/fork</command-name>'),
         context: { start: true, subagents: 0 }, metrics: { tools: [{ toolName: 'Read', count: 2 }], durationMs: 1234, tokens: null },
         injection: { sporeIds: ['sp1'], spores: [{ id: 'sp1', observationType: 'decision', preview: 'Shared read path' }], planIds: ['plan1'], plans: [{ planKey: 'plan1', title: 'Session audit plan' }], createdAt: NOW },
-        answers: [{ id: 'answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores:empty', 'plan-nudge:no_intent'], failures: [{ contributor: 'spores', error: 'unavailable' }], selection: { candidates: 0 }, createdAt: NOW }],
-        children: [{ prompt: prompt(P2, 'agent_dispatch', 'Review the change', P1), responses: [], toolCallCount: 1 }, { prompt: prompt(P3, 'user', 'Also check the steering context', P1), responses: [], toolCallCount: 1 }],
+        answers: [{ id: 'empty-answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores:empty'], failures: [], selection: { ...emptyInjectionCounts(), sporeRawMatches: 12 }, createdAt: NOW }, { id: 'answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores', 'plan-nudge:no_intent'], failures: [{ contributor: 'spores', error: 'store_quota', operation: 'hydrate_spores' }], selection: emptyInjectionCounts(), createdAt: NOW }],
+        children: [
+          { prompt: prompt(P2, 'agent_dispatch', 'Review the change', P1), responses: [], toolCallCount: 1, childCount: 0,
+            body: { ...empty, prompt: prompt(P2, 'agent_dispatch', 'Review the change', P1), metrics: { tools: [{ toolName: 'Read', count: 1 }], durationMs: 500, tokens: null } } },
+          { prompt: prompt(P3, 'user', 'Also check the steering context', P1), responses: [], toolCallCount: 1, childCount: 0,
+            body: { ...empty, prompt: prompt(P3, 'user', 'Also check the steering context', P1), metrics: { tools: [{ toolName: 'Write', count: 1 }], durationMs: 750, tokens: null }, answers: [{ id: 'steering-answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores:short_prompt'], failures: [], selection: emptyInjectionCounts(), createdAt: NOW }] } },
+        ],
       }),
       [`/api/projects/x/sessions/s1/turns/${P2}`]: () => Response.json({ ...empty, prompt: prompt(P2, 'agent_dispatch', 'Review the change', P1), context: { start: false, subagents: 1 }, metrics: { tools: [{ toolName: 'Read', count: 1 }], durationMs: 500, tokens: null } }),
       [`/api/projects/x/sessions/s1/turns/${P3}`]: () => Response.json({ ...empty, prompt: prompt(P3, 'user', 'Also check the steering context', P1), metrics: { tools: [{ toolName: 'Write', count: 1 }], durationMs: 750, tokens: null }, answers: [{ id: 'steering-answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores:short_prompt'], failures: [], selection: {}, createdAt: NOW }] }),
     }));
     mount('/p/x/sessions/s1');
     const parent = await screen.findByTestId(`turn-${P1}`);
-    await within(parent).findByText('Myco prepared session guidance');
-    expect(within(parent).getByText('/fork')).toBeTruthy();
+    await within(parent).findByText('Myco sent the session start block');
+    expect(within(parent).getByText('Ran /fork')).toBeTruthy();
     expect(within(parent).getByText('Read × 2')).toBeTruthy();
     expect(within(parent).getAllByText(/Prompt to last reply/).length).toBeGreaterThan(0);
-    fireEvent.click(within(parent).getByRole('button', { name: 'Myco prepared session guidance' }));
+    fireEvent.click(within(parent).getByRole('button', { name: 'Myco sent the session start block' }));
     expect(within(parent).getByText(/original text is not retained/)).toBeTruthy();
     fireEvent.click(within(parent).getByRole('button', { name: 'Myco context lookup failed' }));
-    expect(within(parent).getByText('No relevant memories found')).toBeTruthy();
-    expect(within(parent).getByText('candidates: 0')).toBeTruthy();
-    expect(within(parent).getByText('Memory lookup failed · unavailable')).toBeTruthy();
+    expect(within(parent).getAllByText(/Memory lookup failed/)).toHaveLength(1);
+    fireEvent.click(within(parent).getAllByRole('button', { name: 'Myco prepared no context' })[0]!);
+    expect(within(parent).getByText('12 matches, none relevant enough')).toBeTruthy();
+    expect(within(parent).getByText('Memory lookup failed · Storage is full')).toBeTruthy();
     fireEvent.click(within(parent).getByRole('button', { name: 'Myco added 1 spore and 1 plan to this prompt' }));
     expect(within(parent).getByRole('link', { name: 'Session audit plan' }).getAttribute('href')).toBe('/p/x/plans/plan1');
     const child = await within(parent).findByTestId(`turn-${P2}`);
@@ -979,10 +986,13 @@ describe('the session reading page', () => {
     await within(steering).findByText('Write × 1');
     fireEvent.click(within(steering).getByRole('button', { name: 'Myco prepared no context' }));
     expect(within(steering).getByText('Prompt too short to match')).toBeTruthy();
+    expect(within(steering).queryByText('No matches found')).toBeNull();
     expect(within(steering).getByText('Steered while it ran')).toBeTruthy();
     expect(screen.getByText('Read × 3')).toBeTruthy();
     expect(screen.getByText('Not recorded, including sub-agents')).toBeTruthy();
     expect(screen.getByText('Wall time')).toBeTruthy();
+    expect(requested).not.toContain('/api/projects/x/sessions/s1/turns/' + P2);
+    expect(requested).not.toContain('/api/projects/x/sessions/s1/turns/' + P3);
   });
 
 
@@ -999,11 +1009,12 @@ describe('the session reading page', () => {
     mount('/p/x/sessions/s1');
     const inline = await screen.findByTestId(`turn-${P1}`);
     await within(inline).findByRole('button', { name: 'Show the whole prompt' });
-    expect(inline.textContent).not.toContain('file preamble');
+    expect(inline.textContent).toContain('file preamble');
     fireEvent.click(within(inline).getByRole('button', { name: 'Show the whole prompt' }));
     expect(inline.textContent).toContain('## My request for Codex:');
     const stored = await screen.findByTestId(`turn-${P2}`);
     fireEvent.click(within(stored).getByRole('button', { name: 'Show the whole prompt' }));
+    fireEvent.click(await within(stored).findByRole('button', { name: 'Sub-agent notification' }));
     await within(stored).findByText('Stored delegation');
     expect(stored.textContent).not.toContain('<subagent_notification>');
   });
@@ -1132,18 +1143,78 @@ describe('the session reading page', () => {
     expect(promptPreview({ preview: null, textChars: null, blobKey: KEY_TEXT })).toBe('Stored text');
     expect(promptPreview({ preview: null, textChars: null, blobKey: null })).toBe('(no prompt)');
   });
+  it('opens descendants only on request and never refetches embedded child bodies', async () => {
+    const body = (id: string, text: string, children: unknown[] = []) => ({
+      prompt: { promptId: id, origin: 'agent_dispatch', promptKind: null, parentPromptId: P1, threadLabel: null, text, blobKey: null, createdAt: NOW },
+      responses: [], attachments: [], plans: [], children, injection: null,
+    });
+    const child = { prompt: body(P2, 'Child review').prompt, responses: [], toolCallCount: 0, childCount: 1, body: body(P2, 'Child review') };
+    const grandchild = { prompt: body(P3, 'Nested review').prompt, responses: [], toolCallCount: 0, childCount: 0, body: body(P3, 'Nested review') };
+    const { requested } = server(routes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn()]),
+      [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json(body(P1, 'Parent review', [child])),
+      [`/api/projects/x/sessions/s1/turns/${P2}?collection=children`]: () => page([grandchild]),
+    }));
+    mount('/p/x/sessions/s1');
+    const row = await screen.findByTestId(`turn-${P2}`);
+    expect(requested.filter(path => path.includes('/turns/'))).toEqual([`/api/projects/x/sessions/s1/turns/${P1}`]);
+    fireEvent.click(within(row).getByRole('button', { name: 'Show child prompts' }));
+    expect(await within(row).findByText('Nested review')).toBeTruthy();
+    expect(requested.filter(path => path.includes('/turns/'))).toEqual([
+      `/api/projects/x/sessions/s1/turns/${P1}`, `/api/projects/x/sessions/s1/turns/${P2}?collection=children`,
+    ]);
+  });
+
+  it('shows Cursor reply time as not recorded and uses days for recorded session endpoints', async () => {
+    server(routes({
+      '/api/projects/x/sessions/s1': () => detail({ agent: 'cursor', endedAt: NOW }, { metrics: { tools: [], tokens: null, durationMs: 2 * 86400000 } }),
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn()]),
+      [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
+        prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: 'A Cursor prompt', blobKey: null, createdAt: NOW },
+        responses: [], attachments: [], plans: [], children: [], injection: null,
+        metrics: { tools: [], tokens: null, durationMs: null },
+      }),
+    }));
+    mount('/p/x/sessions/s1');
+    expect(await screen.findByText('Reply time not recorded')).toBeTruthy();
+    expect(screen.getByText('2d 0h')).toBeTruthy();
+    expect(screen.queryByText('Prompt to last reply · 4ms')).toBeNull();
+  });
 });
 
 
 describe('prompt display follows harness formats', () => {
   it.each([
-    ['claude-code', '<command-name>/fork</command-name><command-message>fork</command-message><local-command-stdout>done</local-command-stdout><system-reminder>guidance</system-reminder>', '/forkforkdoneguidance'],
-    ['codex', '<subagent_notification id="a">done</subagent_notification><environment_context>cwd</environment_context>', 'donecwd'],
-    ['cursor', '<timestamp>now</timestamp><user_query>fix the bug</user_query><attached_files>file</attached_files>', 'fix the bug'],
+    ['claude-code', '<command-name>/fork</command-name><command-message>fork</command-message><local-command-stdout>done</local-command-stdout><system-reminder>guidance</system-reminder>', 'Ran /fork Command Command output System reminder'],
+    ['codex', '<subagent_notification id="a">done</subagent_notification><environment_context>cwd</environment_context>', 'Sub-agent notification Environment'],
+    ['cursor', '<timestamp>now</timestamp><user_query>fix the bug</user_query><attached_files>file</attached_files>', 'Timestamp Attached files fix the bug'],
     ['opencode', 'Keep <b>my markup</b>', 'Keep <b>my markup</b>'],
   ])('%s markup', (agent, input, expected) => {
     expect(displayPrompt(input, agent)).toBe(expected);
     expect(displayPrompt('<b>user HTML</b>', agent)).toBe('<b>user HTML</b>');
     if (agent !== 'cursor') expect(displayPrompt('Keep `<system-reminder>literal</system-reminder>`', agent)).toBe('Keep `<system-reminder>literal</system-reminder>`');
+  });
+});
+
+describe('stored prompt display regressions', () => {
+  it('preserves Codex request markers already processed at capture', () => {
+    const text = 'Review this: the desktop app adds "## My request for Codex:\n" before my text. Why?';
+    expect(displayPrompt(text, 'codex')).toBe(text);
+  });
+  it.each([
+    ['claude-code', '<subagent_notification>keep</subagent_notification>'],
+    ['codex', '<system-reminder>keep</system-reminder>'],
+    ['cursor', '<skill>keep</skill>'],
+    ['opencode', '<skill>keep</skill>'],
+    [null, '<system-reminder>keep</system-reminder>'],
+  ])('preserves foreign tags for %s', (agent, text) => {
+    expect(displayPrompt(text, agent)).toBe(text);
+  });
+  it('preserves personal mentions after a leading envelope', () => {
+    expect(displayPrompt('<system-reminder>context</system-reminder>Why name <skill> and <task-notification>?', 'claude-code'))
+      .toContain('Why name <skill> and <task-notification>?');
+  });
+  it('does not discard stored Cursor snake_case text', () => {
+    expect(displayPrompt('<my_notes>keep this</my_notes>', 'cursor')).toBe('<my_notes>keep this</my_notes>');
   });
 });

@@ -57,6 +57,8 @@ export const sessionTurns: ParityScenario = {
 
     const base = `/api/projects/${target.projectId}/sessions/${session}`;
     interface TurnRow { promptId: string; origin: string; preview: string | null; toolCallCount: number; responseCount: number; childCount: number }
+    await target.sql(`INSERT INTO prompt_context_answers(project_id,session_id,prompt_id,id,outcome,context_chars,parts,skipped,failures,selection,created_at)
+      VALUES (${lit(target.projectId)},${lit(session)},${lit(p3)},'child-answer','empty',0,'[]','["spores:short_prompt"]','[]','{}',4)`);
     const turns = await owner<{ rows: TurnRow[]; cursor: string | null }>(`${base}/turns`);
     expect(turns.status).toBe(200);
     expect(turns.body.rows.map((r) => [r.promptId, r.origin, r.toolCallCount, r.responseCount, r.childCount])).toEqual([[p1, 'user', 2, 1, 1]]);
@@ -79,16 +81,20 @@ export const sessionTurns: ParityScenario = {
     expect(detail.body.attachments.map((a) => [a.attachmentId, a.promptId, a.blobKey, a.mediaType])).toEqual([[UUID(3), p1, key, 'image/png']]);
     expect(detail.body.children.map((c) => [c.prompt.promptId, c.prompt.threadLabel, c.toolCallCount, c.responses.map((r) => r.text)])).toEqual([[p3, 'reviewer', 1, ['Used the other card.']]]);
 
-    const audit = await owner<{ context: { start: boolean; subagents: number }; metrics: { tools: { toolName: string; count: number }[]; durationMs: number | null; tokens: null }; answers: { outcome: string; skipped: string[] }[] }>(`${base}/turns/${p1}`);
-    expect(audit.body.context).toEqual({ start: true, subagents: 0 });
+    const audit = await owner<{ context: { start: boolean; subagents: number }; metrics: { tools: { toolName: string; count: number }[]; durationMs: number | null; tokens: null }; answers: { id: string; outcome: string; skipped: string[] }[] }>(`${base}/turns/${p1}`);
+
     expect(audit.body.metrics.tools).toEqual([{ toolName: 'Bash', count: 1 }, { toolName: 'Read', count: 1 }]);
     expect(audit.body.metrics.durationMs).toBeGreaterThanOrEqual(0);
     expect(audit.body.metrics.tokens).toBeNull();
+    expect(audit.body.answers.map(a => a.id)).toEqual(['answer']);
     expect(audit.body.answers[0]).toMatchObject({ outcome: 'empty', skipped: ['spores:empty'] });
-    const childAudit = await owner<{ context: { start: boolean; subagents: number } }>(`${base}/turns/${p3}`);
-    expect(childAudit.body.context).toEqual({ start: false, subagents: 1 });
-    const sessionAudit = await owner<{ metrics: { tools: { toolName: string; count: number }[]; tokens: null } }>(base);
-    expect(sessionAudit.body.metrics).toEqual({ tools: [{ toolName: 'Bash', count: 1 }, { toolName: 'Edit', count: 1 }, { toolName: 'Read', count: 1 }], tokens: null });
+    const childAudit = await owner<{ answers: { id: string }[] }>(`${base}/turns/${p3}`);
+    expect(childAudit.body.answers.map(a => a.id)).toEqual(['child-answer']);
+    expect((await owner<{ answers: unknown[] }>(`${base}/turns/${p2}`)).body.answers).toEqual([]);
+    const sessionAudit = await owner<{ turnContexts: Record<string, { start: boolean; subagents: number }>; metrics: { tools: { toolName: string; count: number }[]; tokens: null } }>(base);
+    expect(sessionAudit.body.turnContexts[p1]).toEqual({ start: true, subagents: 0 });
+    expect(sessionAudit.body.turnContexts[p3]).toEqual({ start: false, subagents: 1 });
+    expect(sessionAudit.body.metrics).toMatchObject({ tools: [{ toolName: 'Bash', count: 1 }, { toolName: 'Edit', count: 1 }, { toolName: 'Read', count: 1 }], tokens: null });
 
     const calls = await owner<{ rows: { toolCallId: string; toolName: string; success: boolean; errorMessage: string | null; outputPreview: string | null }[] }>(`${base}/turns/${p1}/tool-calls`);
     expect(calls.body.rows.map((t) => [t.toolCallId, t.toolName, t.success, t.errorMessage, t.outputPreview])).toEqual([[UUID(1), 'Read', true, null, 'the file'], [UUID(2), 'Bash', false, 'exit 1', null]]);

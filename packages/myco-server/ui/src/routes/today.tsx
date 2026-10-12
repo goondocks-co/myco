@@ -221,7 +221,7 @@ function SessionItem({ entry, scoped, projectName, now }: { entry: SessionEntry;
           {heading.titled ? heading.title : <UntitledHeading firstPrompt={heading.firstPrompt} />}
         </TitleLink>
       )}
-      summary={cleanSessionText(session.summary) ?? undefined}
+      summary={cleanSessionText(session.summary, session.agent) ?? undefined}
     />
   );
 }
