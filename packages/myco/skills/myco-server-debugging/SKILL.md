@@ -63,9 +63,9 @@ The deployment has exactly one scheduler — the wake tick — and it is idempot
 
 1. **Is the task scheduled at all?** Most tasks in the catalogue carry no schedule and run only when asked. A task with no schedule is not broken.
 2. **Is it switched off?** A declaration that is switched off is absent from the clock's list rather than visited and skipped, so it will leave no trace of being considered.
-3. **Was it admitted?** Every task names one admission gate — a project capability, an embedding provider, or a model provider. **A capability absent means disabled**, so a project that never turned anything on has nothing admitted. This is the single most common answer.
+3. **Was it admitted?** Every task names one admission gate — a project capability, an embedding provider, or a model provider. **A missing capability row means enabled** for a live project. Context for sessions, Code map and Learning are on by default; an explicit opt-out stays off, and archived projects are excluded from automatic work.
 4. **Did it hit its ceiling?** Tasks carry a per-day cap. A capped task is skipped with a reason, not failed.
-5. **Did it fail?** A failed job emits its own event. If you find neither a ran event nor a failed one, it was never admitted — go back to step 3.
+5. **Did it fail?** A failed job emits its own event. If you find neither a ran event nor a failed one, inspect scheduling, admission and queue state before diagnosing the prompt.
 
 ## When events are not landing
 

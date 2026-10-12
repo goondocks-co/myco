@@ -10,7 +10,7 @@ myco member status
 
 Doctor checks this machine's memberships, server reachability, agent setup, delivery and runner records. From a connected repository it also checks authenticated project access. A local credential that has not expired is not proof the server still accepts it. Rows marked **not-checked** say what remains unverified.
 
-Setup status reports observed progress without changing it or contacting the server. It is useful after an interrupted setup. Neither status command repairs an installation; Doctor's repair flag does not automatically repair a 2.0 home.
+Setup status reports observed progress without changing it or contacting the server. It is useful after an interrupted setup. Neither status command repairs an installation; follow the action named by each row.
 
 ## Read the status rows
 

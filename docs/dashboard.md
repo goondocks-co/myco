@@ -6,7 +6,7 @@ The dashboard is where your team sees what its agents did and what Myco learned 
 myco open
 ```
 
-You sign in with GitHub. Your GitHub account reaches the dashboard through your sign-in as a member. An administrator connects it from **People & machines**: they choose **Connect GitHub** on your row and send you the link it makes. Open that link while signed in to GitHub as yourself. The one exception is a brand-new server where no administrator has connected GitHub yet: there, `myco member link-github` on an administrator's machine prints the link, so the first administrator can connect their own account.
+You sign in with GitHub. Your GitHub account reaches the dashboard through your sign-in as a member. An administrator connects it from **People & machines**: they choose **Connect GitHub** on your row and send you the link it makes. Open that link while signed in to GitHub as yourself. For a brand-new server, the operator creates the first administrator with `myco server setup-owner --target local` or `myco server setup-owner --target cloudflare`, then follows the private GitHub account-link URL it prints. Local setup requires a stopped server; Cloudflare setup keeps it serving.
 
 ## Your projects
 

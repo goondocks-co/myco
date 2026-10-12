@@ -83,7 +83,7 @@ It shows server, machine and member settings. The configuration CLI is read-only
 
 ## Sandboxes and CI
 
-Project-bound join codes for unattended capture are still pending [#1551](https://github.com/goondocks-co/myco/issues/1551). Do not treat generated hooks as a signed-in machine.
+Generated hooks do not sign a sandbox or CI job in.
 
 One piece already works: generate an agent's settings with Myco's hooks, without signing in, for a job to write into its sandbox:
 

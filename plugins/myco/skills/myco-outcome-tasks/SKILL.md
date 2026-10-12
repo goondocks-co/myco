@@ -34,7 +34,7 @@ A task is named in four places and they must agree. A gate holds each of them, s
 | an embedding provider | one is configured |
 | a model provider | one is configured for this task, or by default |
 
-**A capability absent means disabled.** Projects appear the moment a member writes, with no provisioning step, so any other default would silently admit every new project to every cost-bearing task. When a run "never starts", check this first — it is almost always the answer.
+**A missing capability row means enabled.** Context for sessions, Code map and Learning are on by default for live projects. An explicit opt-out stays off; archived projects are excluded from automatic work. Read the effective capability through the settings module rather than testing whether a row exists.
 
 **2. The tools its run may call.** A task declares its tool names, and those become the run's entire MCP surface, mapped onto operation pairs and enforced at the one chokepoint. A tool the task did not declare answers as though it does not exist.
 
@@ -76,10 +76,14 @@ Declaring no hash is a real choice, not an omission. A task whose run judges for
 
 In order, cheapest first:
 
-1. **Never admitted** — the capability is off, or no provider is configured. No run row will exist.
-2. **Skipped as unchanged** — only possible if the task declares an input hash.
-3. **Capped** — the per-day ceiling was reached; skipped with a reason.
-4. **Overlapped** — a run was already in flight and the task skips rather than queues.
-5. **Ran and wrote nothing** — the run exists and closed partial or failed its close rule. This is the only one of the five that is a prompt problem, and the only one where reading the run's own record helps.
+1. **Never admitted** — the capability was explicitly turned off, the project is archived, or a required provider is not configured. A missing capability row does not disable it.
+2. **Waiting for a runner** — no runner is registered or online that can take the task. Agent work runs only on registered runners; a queued run waits until one is available.
+3. **Waiting for concurrency** — **Runs of one task at once** defaults to 2 across projects. Further runs queue until one finishes.
+4. **Schedule switched off** — **Work on a schedule** starts off. Automatic work also needs its task's schedule enabled; automatic maps need **Update the map on its own**.
+5. **First-extraction ramp** — a large initial history is limited to two automatic extraction runs a day until that history drains or the active window expires. Later inflow does not extend the initial ramp.
+6. **Skipped as unchanged** — only possible if the task declares an input hash.
+7. **Capped** — the per-day ceiling was reached; skipped with a reason.
+8. **Overlapped** — a run was already in flight and the task skips rather than queues.
+9. **Ran and wrote nothing** — the run exists and closed partial or failed its close rule. Read its record and close evidence before diagnosing the prompt.
 
-Working down that list beats reading the prompt first, because four of the five failures never reach the prompt at all.
+Check admission, scheduling and queue state before reading the prompt; waiting or skipped work has not reached the agent.
