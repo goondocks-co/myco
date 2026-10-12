@@ -694,7 +694,7 @@ describe('POST /context/prompt', () => {
     await insertSpore(e.db, { projectId: 'proj_1' }, spore('sp_route', { observationType: 'decision', content: 'the hook answers first' }));
     e.env.AI = { run: async (_model: string, input: { text: string[] }) => ({ data: [input.text[0]!.includes('background') ? [0, 1] : [1, 0]] }) };
     e.env.VECTORIZE = indexFixture();
-    for (let i = 0; i < 3; i++) await insertSpore(e.db, { projectId: 'proj_1' }, spore(`background-${i}`));
+    for (let i = 0; i < 4; i++) await insertSpore(e.db, { projectId: 'proj_1' }, spore(`background-${i}`));
     const semantic = (await resolveSemanticSearch(e.serverEnv))!;
     for (let i = 0; i < 10; i++) {
       if ((await reconcileEmbedding({ db: e.db, blobs: e.bucket, ...semantic }, 'proj_1', NOW)).processed === 0) break;

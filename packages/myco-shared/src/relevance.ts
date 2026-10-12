@@ -70,6 +70,8 @@ const STD_EPSILON = 1e-6;
 const DEFAULT_MIN_PROBABILITY = 0.5;
 /** Unitless fraction of the strongest spore evidence retains a relative relevance band. */
 const DEFAULT_RELATIVE_BAND = 0.6;
+/** Unitless sample count requires multiple calibrated spores for a prompt baseline. */
+export const SPORE_MIN_CALIBRATION = 5;
 /** Unitless probability floor requires stronger mutual evidence for plans. */
 const PLAN_MIN_PROBABILITY = 0.75;
 /** Unitless fraction of the strongest plan probability keeps a narrow relative band. */
@@ -173,17 +175,17 @@ export function selectRelevantSpores(
   const minProbability = opts.minProbability ?? DEFAULT_MIN_PROBABILITY;
   const relativeBand = opts.relativeBand ?? DEFAULT_RELATIVE_BAND;
 
-  const reference = opts.referenceCandidates ?? candidates;
+  const reference = (opts.referenceCandidates ?? candidates).filter(c => Number.isFinite(c.similarity));
   const calibrated = reference.filter(isCalibrated);
   const observe = (scored: number, probable: number, separated: number) => opts.observe?.({ calibrated: calibrated.length, scored, probable, separated });
   const pool = candidates.filter((c) => !c.alreadyInjected && Number.isFinite(c.similarity));
-  if (pool.length === 0 || calibrated.length === 0) { observe(0, 0, 0); return []; }
+  if (pool.length === 0 || calibrated.length < SPORE_MIN_CALIBRATION) { observe(0, 0, 0); return []; }
 
-  const queryStats = distributionStats(reference.filter((c) => Number.isFinite(c.similarity)).map((c) => 1 - c.similarity));
   const pooled = pooledCalibration(calibrated);
 
   const scored = pool
     .map((c) => {
+      const queryStats = distributionStats(reference.filter(peer => peer.id !== c.id).map(peer => 1 - peer.similarity));
       const mp = mutualProximity(
         1 - c.similarity,
         queryStats,

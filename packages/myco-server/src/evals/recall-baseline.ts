@@ -4,19 +4,19 @@
  * Recorded, never edited: `MYCO_EVAL_RECORD=1 npm run test:parity` writes it, the parity eval holds every release to it,
  * and `tests/myco-server/recall-gold.test.ts` recomputes both headline figures from the record.
  */
-export const recallQuality = 0.3962;
+export const recallQuality = 0.391;
 export const caseCount = 48;
 
 export const recallBaseline = {
  "version": 1,
  "caseCount": 48,
- "recallQuality": 0.3962,
+ "recallQuality": 0.391,
  "targets": {
   "hosted": {
-   "recallQuality": 0.3962,
+   "recallQuality": 0.391,
    "passed": 12,
    "mustNot": {
-    "matches": 26,
+    "matches": 25,
     "caseIds": [
      "rp-01",
      "rp-09",
@@ -306,12 +306,11 @@ export const recallBaseline = {
     "rp-31": {
      "spores": [
       "decision-c0b31bb6",
-      "decision-30ad1abc",
-      "decision-1d95cf73"
+      "decision-30ad1abc"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.75
+     "graded": 0.5
     },
     "rp-32": {
      "spores": [
@@ -427,7 +426,6 @@ export const recallBaseline = {
       "gotcha-89a50d19",
       "decision-358cba44",
       "gotcha-3da46fc2",
-      "decision-4e185ae3",
       "gotcha-20d2fea0"
      ],
      "plans": [],
@@ -469,10 +467,10 @@ export const recallBaseline = {
    }
   },
   "self-hosted": {
-   "recallQuality": 0.3962,
+   "recallQuality": 0.391,
    "passed": 12,
    "mustNot": {
-    "matches": 26,
+    "matches": 25,
     "caseIds": [
      "rp-01",
      "rp-09",
@@ -762,12 +760,11 @@ export const recallBaseline = {
     "rp-31": {
      "spores": [
       "decision-c0b31bb6",
-      "decision-30ad1abc",
-      "decision-1d95cf73"
+      "decision-30ad1abc"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.75
+     "graded": 0.5
     },
     "rp-32": {
      "spores": [
@@ -883,7 +880,6 @@ export const recallBaseline = {
       "gotcha-89a50d19",
       "decision-358cba44",
       "gotcha-3da46fc2",
-      "decision-4e185ae3",
       "gotcha-20d2fea0"
      ],
      "plans": [],

@@ -6,6 +6,24 @@ const background = (n = 30): SporeCandidate[] => Array.from({ length: n }, (_, i
 }));
 
 describe('prompt relevance', () => {
+  it('leaves the outlier out of its own query statistics so it cannot widen the spore band', () => {
+    const candidates = [0.9, 0.77, 0.3, 0.32, 0.35, 0.39].map((similarity, i) => ({
+      id: i === 0 ? 'outlier' : i === 1 ? 'runner-up' : `peer-${i}`,
+      similarity, neighborMean: 0.7, neighborStd: 0.06,
+    }));
+    expect(selectRelevantSpores(candidates, { maxResults: 7 }).map(c => c.id)).toEqual(['outlier']);
+  });
+
+  it('withholds spores with fewer than five calibrated reference candidates', () => {
+    const fresh = { id: 'new', similarity: 0.9 };
+    for (const size of [0, 1, 2, 3, 4]) {
+      let counts: unknown;
+      expect(selectRelevantSpores([fresh, ...background(size)], { maxResults: 7, observe: n => { counts = n; } })).toEqual([]);
+      expect(counts).toEqual({ calibrated: size, scored: 0, probable: 0, separated: 0 });
+    }
+    expect(selectRelevantSpores([fresh, ...background(5)], { maxResults: 7 }).map(c => c.id)).toEqual(['new']);
+  });
+
   it('distinguishes missing calibration from a fully excluded calibrated pool', () => {
     const counts: unknown[] = [];
     selectRelevantSpores([{ id: 'new', similarity: 0.8 }], { maxResults: 7, observe: n => counts.push(n) });

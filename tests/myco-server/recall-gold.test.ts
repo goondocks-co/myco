@@ -89,17 +89,19 @@ describe('model-relative prompt selection on frozen gold geometry', () => {
     expect(baseline.find(a => a.id === 'rp-43')!.items.filter(i => i.kind === 'plan').map(i => i.id))
       .toEqual(['a3b1e332-96a2-56e0-9afa-01876916c3a3']);
     expect(baseline.some(a => a.items.some(i => i.kind === 'spore'))).toBe(true);
-    for (const [a, b] of [[0.3, 0.5], [0, 0.5]] as const) {
+    for (const [a, b] of [[0.3, 0.5], [0, 0.5], [0.6, 0.39], [0.05, 0.3]] as const) {
       const transformed = await measure(a, b);
       expect(transformed.map(({ id, items }) => ({ id, items }))).toEqual(baseline.map(({ id, items }) => ({ id, items })));
     }
   }, 30_000);
 
-  it.each([0, 1, 4])('withholds all real-vector plans with only %s independent spore candidates', async size => {
+  it.each([0, 1, 4])('withholds real-vector plans and spores with only %s independent spore candidates', async size => {
     const answers = await measure(0, 1, size);
-    expect(answers.every(a => a.items.every(i => i.kind !== 'plan'))).toBe(true);
+    expect(answers.every(a => a.items.length === 0)).toBe(true);
     expect(answers.every(a => a.counts.planCalibration === 'insufficient' && a.counts.planQueryCandidates === size)).toBe(true);
     expect(answers.every(a => a.counts.planCalibrated === corpus.plans.length)).toBe(true);
+    expect(answers.every(a => a.counts.sporeCalibrated === size && a.counts.sporeScored === 0
+      && a.counts.sporeProbable === 0 && a.counts.sporeSeparated === 0)).toBe(true);
   }, 30_000);
 });
 
@@ -277,7 +279,7 @@ describe('the committed baseline', () => {
   const baseline = recallBaseline as RecallBaseline;
 
   it('holds the approved must-not count and case identities on both doors', () => {
-    expect(gold.precisionRatchet.matches).toBe(26);
+    expect(gold.precisionRatchet.matches).toBe(25);
     for (const target of Object.values(baseline.targets)) {
       expect(mustNotRegressions(gold.cases, target.cases, gold.precisionRatchet)).toEqual([]);
       expect(target.mustNot).toEqual(summarizeMustNot(gold.cases, target.cases));
