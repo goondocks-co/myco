@@ -1,11 +1,7 @@
 /**
- * Provisioning: the `member-project` install scope writes the member's hooks
- * into the symbiont's own member target and nothing else — never the file a
- * 1.4 project or global install owns — preserving foreign hooks and the
- * file's other keys, asserting the target is git-ignored; `myco settings`
- * prints the same block with `--credential env`; `myco member join` verifies
- * without writing to the server and never takes a token on the command line;
- * `myco member leave --purge` removes what provisioning wrote.
+ * Global member provisioning preserves foreign hooks and harness settings.
+ * Settings prints the same hook block; join validates membership, and leave
+ * preserves repository-level harness files.
  */
 import { joinRefusalsDir } from '@myco/member/join-code.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
@@ -28,7 +24,7 @@ import { memberRig, type MemberRig } from './helpers/server.js';
 import { recordingPlatform } from './helpers/service-platform.js';
 
 const PKG_ROOT = path.resolve(__dirname, '..', '..', 'packages', 'myco');
-const MEMBER_TARGET = path.join('.claude', 'settings.local.json');
+const MEMBER_TARGET = path.join('.claude', 'settings.json');
 const PROJECT_TARGET = path.join('.claude', 'settings.json');
 const PROJECT = 'proj_1';
 
@@ -39,8 +35,8 @@ let fixtureRoot: string;
 let restoreHome: () => void;
 
 const claudeCode = () => loadManifests().find((m) => m.name === 'claude-code')!;
-const memberInstaller = (root = projectRoot) => new SymbiontInstaller(claudeCode(), root, PKG_ROOT, false, undefined, null, 'member-project');
-const readTarget = (root = projectRoot): Record<string, unknown> => JSON.parse(fs.readFileSync(path.join(root, MEMBER_TARGET), 'utf-8'));
+const memberInstaller = (root = projectRoot) => new SymbiontInstaller(claudeCode(), root, PKG_ROOT, false, undefined, null, 'member-global');
+const readTarget = (): Record<string, unknown> => JSON.parse(fs.readFileSync(path.join(home, MEMBER_TARGET), 'utf-8'));
 
 /**
  * A repository whose only ignore rules are its own. `git check-ignore` reads
@@ -70,101 +66,6 @@ afterEach(() => {
   restoreHome();
   resetMachineIdCache();
   fs.rmSync(fixtureRoot, { recursive: true, force: true });
-});
-
-describe('the member-project install scope', () => {
-  it('writes the member hooks to the manifest\'s member target and touches no other settings file', () => {
-    writeRegistryEntry({
-      version: REGISTRY_VERSION, projectId: PROJECT, serverUrl: 'https://srv.example', token: 'A'.repeat(43), root: projectRoot, machineId: 'm1', joinedAt: 1, updatedAt: 1,
-    }, { mycoHome });
-    expect(memberInstaller().install().hooks).toBe(true);
-
-    const commands = hookCommands(readTarget().hooks);
-    expect(commands.length).toBeGreaterThan(0);
-    for (const command of commands) {
-      expect(command).toContain(`${CREDENTIAL_FLAG} registry`);
-      expect(command).toContain('--myco-managed');
-      expect(command).toContain('--symbiont claude-code');
-      expect(path.isAbsolute(command.split(' ')[0])).toBe(true);
-      // No environment prefix: the binary resolves the home from the project's
-      // own pin, so a command carrying one would freeze this machine's home
-      // into a file the project keeps.
-      expect(command).not.toContain('MYCO_HOME');
-      expect(hookNameInCommand(command)).not.toBe(NEVER_DRAINS_HOOK);
-    }
-    expect(Object.keys(readTarget().hooks as object)).not.toContain('PreToolUse');
-    expect(JSON.stringify(readTarget())).not.toContain('allowedEnvVars');
-
-    // The 1.4 project file and the user-global file are the two a member install must never reach.
-    expect(fs.existsSync(path.join(projectRoot, PROJECT_TARGET))).toBe(false);
-    expect(fs.existsSync(path.join(home, '.claude', 'settings.json'))).toBe(false);
-    // The member scope writes two files for an mcp-transport symbiont: the hooks target and the MCP server list.
-    expect(fs.readdirSync(projectRoot).sort()).toEqual(['.claude', '.mcp.json']);
-    expect(fs.readdirSync(path.join(projectRoot, '.claude'))).toEqual(['settings.local.json']);
-    const mcp = JSON.parse(fs.readFileSync(path.join(projectRoot, '.mcp.json'), 'utf8')) as { mcpServers: Record<string, { type: string; url: string; headersHelper: string; env?: Record<string, string> }> };
-    expect(Object.keys(mcp.mcpServers)).toEqual(['myco']);
-    expect(mcp.mcpServers.myco.type).toBe('http');
-    expect(mcp.mcpServers.myco.url).toBe('https://srv.example/mcp');
-    expect(mcp.mcpServers.myco.headersHelper).toContain(`member mcp-headers ${CREDENTIAL_FLAG} registry --server https://srv.example`);
-    expect(path.isAbsolute(mcp.mcpServers.myco.headersHelper.split(' ')[0])).toBe(true);
-    // Nor does the MCP entry name a home or carry a token: the helper resolves the project's pin and reads the registry itself.
-    expect(mcp.mcpServers.myco.env).toBeUndefined();
-    expect(JSON.stringify(mcp)).not.toContain('A'.repeat(43));
-  });
-
-  it('preserves the file\'s other keys and every hook it does not own', () => {
-    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
-    fs.writeFileSync(path.join(projectRoot, MEMBER_TARGET), JSON.stringify({
-      permissions: { allow: ['Bash(ls:*)'] },
-      enabledMcpjsonServers: ['someone-else'],
-      hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: '/usr/local/bin/their-tool' }] }] },
-    }));
-
-    expect(memberInstaller().install().hooks).toBe(true);
-
-    const settings = readTarget();
-    expect(settings.permissions).toEqual({ allow: ['Bash(ls:*)'] });
-    expect(settings.enabledMcpjsonServers).toEqual(['someone-else']);
-    const stop = (settings.hooks as Record<string, unknown[]>).Stop;
-    expect(hookCommands(stop)).toContain('/usr/local/bin/their-tool');
-    expect(hookCommands(stop).some((c) => c.includes(`${CREDENTIAL_FLAG} registry`))).toBe(true);
-
-    // A second pass replaces Myco's groups without duplicating them or the foreign one.
-    memberInstaller().install();
-    expect(hookCommands((readTarget().hooks as Record<string, unknown[]>).Stop).length).toBe(2);
-  });
-
-  it('adds an unignored member target to .git/info/exclude', () => {
-    initRepo(projectRoot);
-    memberInstaller().install();
-    const exclude = fs.readFileSync(path.join(projectRoot, '.git', 'info', 'exclude'), 'utf-8');
-    expect(exclude.split('\n')).toContain('.claude/settings.local.json');
-
-    // Already ignored the second time: the entry is not repeated.
-    memberInstaller().install();
-    expect(fs.readFileSync(path.join(projectRoot, '.git', 'info', 'exclude'), 'utf-8')).toBe(exclude);
-  });
-
-  it('declares a member plugin target only for Cline, OpenCode and Pi, and installs nothing for any other plugin-file symbiont', () => {
-    // Cline, OpenCode and Pi load a project plugin that the global Myco plugin steps aside for (tests/member/member-plugins.test.ts).
-    const pluginFile = loadManifests().filter((m) => m.registration?.hooksFormat === 'plugin-file');
-    expect(pluginFile.filter((m) => m.registration?.memberHooksTarget).map((m) => m.name).sort()).toEqual(['cline', 'opencode', 'pi']);
-    const others = pluginFile.filter((m) => !m.registration?.memberHooksTarget);
-    expect(others.length).toBeGreaterThan(0);
-    for (const manifest of others) {
-      const installer = new SymbiontInstaller(manifest, projectRoot, PKG_ROOT, false, undefined, null, 'member-project');
-      expect({ agent: manifest.name, hooks: installer.install().hooks }).toEqual({ agent: manifest.name, hooks: false });
-    }
-    expect(fs.readdirSync(projectRoot)).toEqual([]);
-  });
-
-  it('leaves .git/info/exclude alone when the repository already ignores the target', () => {
-    initRepo(projectRoot);
-    fs.writeFileSync(path.join(projectRoot, '.gitignore'), '.claude/\n');
-    const before = fs.readFileSync(path.join(projectRoot, '.git', 'info', 'exclude'), 'utf-8');
-    memberInstaller().install();
-    expect(fs.readFileSync(path.join(projectRoot, '.git', 'info', 'exclude'), 'utf-8')).toBe(before);
-  });
 });
 
 describe('myco settings', () => {

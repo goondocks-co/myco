@@ -237,7 +237,7 @@ describe('migrateProjectToGlobalInstall', () => {
   // migrateProjectToGlobalInstall must do the same once-per-project so
   // the first hook event on a legacy project produces a healthy
   // .gitignore, without waiting for the next `myco update` cycle.
-  it('reconciles project .gitignore for skill + wrangler entries', () => {
+  it('preserves the repository gitignore while migrating global installation', () => {
     // Seed an empty .gitignore so the reconcile writes its block.
     fs.writeFileSync(path.join(projectRoot, '.gitignore'), '', 'utf-8');
     // Seed a bundled-skill source so listSkillDirs has something to find.
@@ -263,7 +263,7 @@ describe('migrateProjectToGlobalInstall', () => {
     });
 
     const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
-    expect(gitignore).toContain('sample-skill');
+    expect(gitignore).toBe('');
 
     fs.rmSync(pkgRoot, { recursive: true, force: true });
   });

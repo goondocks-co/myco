@@ -199,7 +199,6 @@ export const LOG_KINDS = {
   RELEASE_PROVENANCE_RECONCILE: 'release-provenance.reconcile',
 
   // Symbionts
-  MANAGED_FILES_RECONCILE: 'symbionts.managed-files-reconcile',
 
   // Groves discovery API (daemon/api/groves.ts)
   // A local-Grove row and an attached (Team Host) ref collide on the same

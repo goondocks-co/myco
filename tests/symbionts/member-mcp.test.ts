@@ -5,7 +5,7 @@
  * credential flag. The template shape is untouched — the launcher stays a
  * stdio command — so `mcp-template-shape.test.ts` keeps holding it.
  */
-import { afterEach, describe, expect, it } from 'bun:test';
+import { beforeEach, afterEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,14 +31,20 @@ function joinRoot(root: string): void {
 }
 
 const roots: string[] = [];
+let previousHome: string | undefined;
+beforeEach(() => { previousHome = process.env.HOME; });
+afterEach(() => { if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome; });
 afterEach(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); roots.length = 0; });
 
 function memberInstaller(name: string): { installer: SymbiontInstaller; root: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-mcp-'));
   roots.push(root);
+  const home = path.join(root, 'home');
+  fs.mkdirSync(home);
+  process.env.HOME = home;
   const manifest = loadManifests().find((m) => m.name === name);
   if (!manifest) throw new Error(`no manifest ${name}`);
-  return { installer: new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-project'), root };
+  return { installer: new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-global'), root };
 }
 
 describe('memberMcpTemplate', () => {
@@ -78,7 +84,7 @@ describe('the member MCP server', () => {
     expect(installer.installMemberHooks()).toBe(true);
     const result = installer.install();
     expect({ hooks: result.hooks, mcp: result.mcp }).toEqual({ hooks: false, mcp: true });
-    expect(JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8')).mcpServers.myco).toEqual(claudeRemote());
+    expect(JSON.parse(fs.readFileSync(path.join(process.env.HOME!, '.claude.json'), 'utf8')).mcpServers.myco).toEqual(claudeRemote());
   });
 
   it('renders Claude Code\'s entry as the Deployment\'s remote MCP with a headersHelper, and nothing before the project is joined', () => {
@@ -108,22 +114,22 @@ describe('the member MCP server', () => {
     });
   });
 
-  it('refuses, before any write, a Codex entry the global config would merge into one Codex refuses, and leaves the global file as it is', () => {
+  it('refuses foreign and unreadable global Codex entries before any write', () => {
     const { installer, root } = memberInstaller('codex');
     joinRoot(root);
-    const globalConfig = path.join(os.homedir(), '.codex', 'config.toml');
+    const globalConfig = path.join(process.env.HOME!, '.codex', 'config.toml');
     fs.mkdirSync(path.dirname(globalConfig), { recursive: true });
     const stdio = '[mcp_servers.myco]\ncommand = "/opt/myco"\nargs = ["mcp"]\n';
     try {
       fs.writeFileSync(globalConfig, stdio);
       expect(() => installer.install()).toThrow(MemberMcpConflictError);
-      expect(() => installer.install()).toThrow(/command, args/);
+      expect(() => installer.install()).toThrow(/another installation/);
       expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
       expect(fs.readFileSync(globalConfig, 'utf8')).toBe(stdio);
 
-      // A credential of the global entry's own would replace the helper's.
+      // A different Deployment owns this global entry.
       fs.writeFileSync(globalConfig, '[mcp_servers.myco]\nurl = "https://elsewhere.example/mcp"\nbearer_token_env_var = "OTHER_TOKEN"\n');
-      expect(() => installer.install()).toThrow(/bearer_token_env_var/);
+      expect(() => installer.install()).toThrow(/another installation/);
       expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
 
       // A global file that cannot be parsed is not "no global config".
@@ -131,21 +137,20 @@ describe('the member MCP server', () => {
       expect(() => installer.install()).toThrow(/could not read/);
       expect(fs.existsSync(path.join(root, '.codex'))).toBe(false);
 
-      // A remote global entry with its own options merges cleanly (Codex accepts
-      // url + startup_timeout_sec), and so does another server.
-      fs.writeFileSync(globalConfig, `[mcp_servers.myco]\nurl = "${SERVER_URL}/mcp"\nstartup_timeout_sec = 45\ntool_timeout_sec = 90\n\n[mcp_servers.other]\ncommand = "x"\n`);
+      // A matching Deployment and helper admit refresh while preserving user options.
+      fs.writeFileSync(globalConfig, `[mcp_servers.myco]\nurl = "${SERVER_URL}/mcp"\nhttp_headers_helper = "${helperFor('registry')}"\nstartup_timeout_sec = 45\ntool_timeout_sec = 90\n\n[mcp_servers.other]\ncommand = "x"\n`);
       expect(installer.install().mcp).toBe(true);
     } finally {
       fs.rmSync(path.dirname(globalConfig), { recursive: true, force: true });
     }
   });
 
-  it('writes the remote server into Codex\'s TOML server list beside the keys the agent owns, replacing a stdio entry, and removes only its own section', () => {
+  it('writes the remote server into Codex\'s TOML server list beside the keys the agent owns, preserving user keys, and removes only its own section', () => {
     const { installer, root } = memberInstaller('codex');
     joinRoot(root);
-    const target = path.join(root, '.codex', 'config.toml');
+    const target = path.join(process.env.HOME!, '.codex', 'config.toml');
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, `model = "gpt-5"\n\n[mcp_servers.myco]\ncommand = "/opt/myco"\nargs = ["mcp", "${CREDENTIAL_FLAG}", "registry"]\ncwd = "${root}"\n\n[mcp_servers.other]\ncommand = "x"\n`);
+    fs.writeFileSync(target, `model = "gpt-5"\n\n[mcp_servers.myco]\ncommand = "/opt/myco"\nargs = ["mcp", "${CREDENTIAL_FLAG}", "registry"]\nurl = "${SERVER_URL}/mcp"\nhttp_headers_helper = "${helperFor('registry')}"\ncwd = "${root}"\n\n[mcp_servers.other]\ncommand = "x"\n`);
     expect(installer.installMemberMcp()).toBe(true);
     const written = parseToml(fs.readFileSync(target, 'utf8')) as { model: string; mcp_servers: Record<string, Record<string, unknown>> };
     expect(written.model).toBe('gpt-5');
@@ -165,7 +170,7 @@ describe('the member MCP server', () => {
   it('writes the server into the symbiont\'s server list on install beside the hooks, keeps a foreign server, and removes only its own on uninstall', () => {
     const { installer, root } = memberInstaller('claude-code');
     joinRoot(root);
-    const target = path.join(root, '.mcp.json');
+    const target = path.join(process.env.HOME!, '.claude.json');
     fs.writeFileSync(target, JSON.stringify({ mcpServers: { other: { command: 'x' } } }));
     const result = installer.install();
     expect({ hooks: result.hooks, mcp: result.mcp }).toEqual({ hooks: true, mcp: true });
@@ -181,7 +186,7 @@ describe('the member MCP server', () => {
     const { installer, root } = memberInstaller('claude-code');
     joinRoot(root);
     installer.install();
-    const target = path.join(root, '.mcp.json');
+    const target = path.join(process.env.HOME!, '.claude.json');
     expect(fs.existsSync(target)).toBe(true);
     expect(installer.uninstallMemberMcp()).toBe(true);
     expect(fs.existsSync(target)).toBe(false);
@@ -446,20 +451,6 @@ describe('what a report reads from the member MCP targets', () => {
     for (const file of globalTargetPaths(installer)) fs.writeFileSync(file, 'not configuration at all', 'utf-8');
 
     expect(installer.inspectMemberMcp().every((t) => !t.readable && !t.present)).toBe(true);
-  });
-
-  it('reads the project target under an override, never the global one', () => {
-    const { root } = globalInstaller('claude-code');
-    const manifest = loadManifests().find((m) => m.name === 'claude-code')!;
-    const override = new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-project');
-    const projectTarget = path.join(root, manifest.registration!.mcpTarget!);
-    fs.mkdirSync(path.dirname(projectTarget), { recursive: true });
-    fs.writeFileSync(projectTarget, JSON.stringify({ mcpServers: { myco: claudeRemote() } }), 'utf-8');
-
-    const seen = override.inspectMemberMcp();
-    // One target, the project's own: the member scope's global paths are not consulted.
-    expect(seen).toEqual([{ scope: 'project', present: true, transport: 'http', carriesCredential: true, declaredCwd: null, deploymentsAgree: true, namesExpectedDeployment: null, readable: true }]);
-    expect(globalTargetPaths(override)).toEqual([projectTarget]);
   });
 });
 

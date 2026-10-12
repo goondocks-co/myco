@@ -16,14 +16,12 @@ import { gitFacts } from '@myco/member/git-facts.js';
 import { unmemberedDir } from '@myco/member/no-membership.js';
 import { planRootFor } from '@myco/member/plan-files.js';
 import { isSafeProjectRoot, resolveWorktreeRoot } from '@myco/project-root.js';
-import { loadManifests } from '@myco/symbionts/detect.js';
-import { SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { ensureGitIgnored } from '@myco/utils/git-exclude.js';
 import { findGitBinary } from '@myco/utils/git.js';
 import { registerTestMember } from './helpers/hooks.js';
 import { installLostGit, type LostGit } from './helpers/lost-git.js';
 import { tempMycoHome } from './helpers/server.js';
 
-const PKG_ROOT = path.resolve(__dirname, '..', '..', 'packages', 'myco');
 
 let git: LostGit;
 let mycoHome: string;
@@ -187,11 +185,10 @@ describe('a git stdout lost in transit', () => {
     const excludes = path.join(checkout, '.git', 'empty-excludes');
     fs.writeFileSync(excludes, '');
     realGit(['config', 'core.excludesFile', excludes], checkout);
-    const claudeCode = loadManifests().find((m) => m.name === 'claude-code')!;
-    git.loseNext(1, 'rev-parse --git-dir');
-    new SymbiontInstaller(claudeCode, checkout, PKG_ROOT, false, undefined, null, 'member-project').install();
+    git.loseNext(1, 'rev-parse --git-path info/exclude');
+    ensureGitIgnored(checkout, path.join(checkout, '.myco/runtime.home'));
     expect(git.armsLeft()).toBe(0);
-    expect(fs.readFileSync(path.join(checkout, '.git', 'info', 'exclude'), 'utf-8').split('\n')).toContain('.claude/settings.local.json');
+    expect(fs.readFileSync(path.join(checkout, '.git', 'info', 'exclude'), 'utf-8').split('\n')).toContain('/.myco/runtime.home');
     expect(fs.existsSync(path.join(checkout, 'info'))).toBe(false);
     resetMachineIdCache();
   });

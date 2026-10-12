@@ -15,8 +15,8 @@
  * Two strengths. The read handler reaches nothing local at all. The machine
  * verbs read the harnesses' configuration through the one symbiont installer
  * and the worker service through `cli/worker-service.ts`, and those shared
- * modules reach a fixed set of 1.4 leaves — path arithmetic, the config schema
- * and loader, service labels — none of which the member verbs call. That set is
+ * modules reach a fixed set of 1.4 leaves — path arithmetic and service
+ * labels — none of which the member verbs call. That set is
  * listed by module in `SHARED_LEGACY_LEAVES`; it only shrinks, and a module that
  * leaves the closure must leave the list. Nothing else under a local-runtime
  * tree may appear, and no member verb module imports one directly.
@@ -58,18 +58,7 @@ const FORBIDDEN: readonly string[] = [
 const SHARED_LEGACY_LEAVES: Readonly<Record<string, string>> = {
   [`${SRC}/grove/paths.ts`]: 'home-directory path arithmetic, via symbionts/detect.ts and cli/worker-service.ts',
   [`${SRC}/grove/ids.ts`]: 'branded id types, via grove/paths.ts',
-  [`${SRC}/grove/registry-resolve.ts`]: 'via config/project-manifest.ts',
   [`${SRC}/grove/subsystem-claim.ts`]: 'via symbionts/installer.ts',
-  [`${SRC}/vault/gitignore.ts`]: 'via config/project-manifest.ts',
-  [`${SRC}/config/loader.ts`]: 'via symbionts/installer.ts',
-  [`${SRC}/config/schema.ts`]: 'via config/loader.ts',
-  [`${SRC}/config/appearance-values.ts`]: 'via config/schema.ts',
-  [`${SRC}/config/capabilities.ts`]: 'via config/loader.ts',
-  [`${SRC}/config/leaf-paths.ts`]: 'via config/loader.ts',
-  [`${SRC}/config/migrations.ts`]: 'via config/loader.ts',
-  [`${SRC}/config/project-manifest.ts`]: 'via config/loader.ts',
-  [`${SRC}/config/scope.ts`]: 'via config/loader.ts',
-  [`${SRC}/config/sparse.ts`]: 'via config/loader.ts',
   [`${SRC}/service/spec-builder.ts`]: 'a dev-build check, via cli/worker-service.ts',
   [`${SRC}/service/labels.ts`]: 'via service/spec-builder.ts',
   [`${SRC}/service/paths.ts`]: 'via service/spec-builder.ts',

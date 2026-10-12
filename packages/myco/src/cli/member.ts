@@ -53,7 +53,7 @@ import { getPluginVersion } from '../version.js';
 import { postRoute } from './deployment-reader.js';
 import { detectMachineInstalledSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MemberMcpConflictError, MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
-import { ensureVaultGitignoreCurrent } from '../vault/gitignore.js';
+import { ensureGitIgnored } from '@myco/utils/git-exclude.js';
 import { describeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
 
 export const MEMBER_HELP = `Usage: myco member <op> [options]
@@ -830,15 +830,6 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   // would send every hook here to look for a membership that is gone, and each
   // one would count another miss.
   if (unpinProjectHome(root, mycoHome)) out(`removed this project's ${RUNTIME_HOME_FILENAME} pin`);
-  // A member plugin makes the agent's global Myco plugin step aside, and a
-  // member MCP server answers over a credential this project no longer holds.
-  // Both go with the membership, so the agent falls back to its global plugin
-  // and its global server rather than to a surface that cannot work.
-  for (const manifest of loadManifests()) {
-    const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
-    if (installer.isMemberPluginFile() && installer.uninstallMemberHooks()) out(`removed ${manifest.displayName} member plugin from ${root}`);
-    relinquish(() => installer.uninstallMemberMcp(), `removed ${manifest.displayName} MCP server from ${root}`, `${manifest.displayName}'s MCP server`, out, err);
-  }
   if (!args.includes('--purge')) {
     const depth = new MemberSpool(entry, { mycoHome }).sessionIds().length;
     out(`spool kept: ${depth} session file(s) — \`myco member drain\` after re-joining, or \`myco member leave --purge\` to discard`);
@@ -847,11 +838,6 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   fs.rmSync(new MemberSpool(entry, { mycoHome }).dir, { recursive: true, force: true });
   out('spool discarded');
   if (clearJoinRefusals(mycoHome)) out('recorded join refusals cleared: a join code is presented again');
-  for (const manifest of loadManifests()) {
-    const installer = new SymbiontInstaller(manifest, root, deps.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-project');
-    if (installer.uninstallMemberHooks()) out(`removed ${manifest.displayName} hooks from ${root}`);
-    relinquish(() => installer.uninstallMemberMcp(), `removed ${manifest.displayName} MCP server from ${root}`, `${manifest.displayName}'s MCP server`, out, err);
-  }
   return true;
 }
 
@@ -1097,12 +1083,8 @@ type PinOutcome =
  * holds this project's membership. Nothing is written for the default home:
  * that is what an unpinned project already resolves.
  *
- * The pin names an absolute path on THIS machine, so it must never reach the
- * repository: the vault `.gitignore` (which already lists `runtime.home`) is
- * written first, and a gate runs `git check-ignore` over the file this writes.
- * A committed pin would route a teammate's capture at a home that does not
- * exist on their machine — and their clone makes them its owner, so it would be
- * trusted — which is the silent loss this whole change exists to end.
+ * The pin names a machine-local absolute path. Git's clone-local exclude
+ * file must ignore it before the pin is created.
  *
  * A pin naming a DIFFERENT home is never overwritten: it is the record of
  * another install (a `make dev-link` dogfood pin, say) and rewriting it would
@@ -1117,7 +1099,7 @@ function pinProjectHome(root: string, mycoHome: string): PinOutcome {
   if (existing === home || pathsEquivalentHome(home, defaultMycoHome())) return { kind: 'settled' };
   try {
     fs.mkdirSync(path.dirname(pinPath), { recursive: true });
-    ensureVaultGitignoreCurrent(path.dirname(pinPath));
+    ensureGitIgnored(root, pinPath);
     createHomePin(pinPath, home);
     return { kind: 'written', pinPath };
   } catch {

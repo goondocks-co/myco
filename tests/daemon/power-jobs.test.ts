@@ -408,64 +408,6 @@ describe('release-provenance power job', () => {
   });
 });
 
-describe('registerPowerJobs — managed-files-reconcile', () => {
-  let fx: GroveFixture;
-  let pm: FakeJobRunner;
-
-  beforeEach(() => {
-    fx = setupGrove();
-    pm = new FakeJobRunner();
-  });
-
-  afterEach(() => fx.cleanup());
-
-  it('registers a managed-files-reconcile job that runs in active/idle/sleep', () => {
-    registerPowerJobs(pm as never, buildDeps(fx));
-    const job = pm.find('managed-files-reconcile');
-    expect(job.runIn).toEqual(['active', 'idle', 'sleep']);
-  });
-
-  it('skips reconciliation and never creates the working tree for a project with no local root', async () => {
-    // The host never writes a member's working tree (B1) — and there is no
-    // tree here to write to regardless. Before the treeAvailable gate this
-    // threw ENOENT trying to write AGENTS.md into a nonexistent directory.
-    const projectRoot = path.join(fx.workDir, 'never-created', 'hosted');
-    registerProjectInGrove(fx.grove.id, {
-      projectId: 'proj_' + 'dddd111122223333dddd111122223333',
-      projectName: 'hosted',
-      projectRoot,
-    }, fx.mycoHome);
-
-    registerPowerJobs(pm as never, buildDeps(fx));
-    const job = pm.find('managed-files-reconcile');
-    const errorSpy = vi.spyOn(fx.logger, 'error');
-
-    await expect(job.fn()).resolves.toBeUndefined();
-
-    expect(errorSpy).not.toHaveBeenCalled();
-    expect(fs.existsSync(projectRoot)).toBe(false);
-  });
-
-  it('does not skip a project whose working tree exists', async () => {
-    const projectRoot = path.join(fx.workDir, 'projects', 'local');
-    const projectVaultDir = resolveProjectVaultDir(projectRoot);
-    fs.mkdirSync(projectVaultDir, { recursive: true });
-    fs.writeFileSync(path.join(projectVaultDir, 'myco.yaml'), 'version: 3\n');
-    registerProjectInGrove(fx.grove.id, {
-      projectId: 'proj_' + 'eeee111122223333eeee111122223333',
-      projectName: 'local',
-      projectRoot,
-    }, fx.mycoHome);
-
-    registerPowerJobs(pm as never, buildDeps(fx));
-    const job = pm.find('managed-files-reconcile');
-    const errorSpy = vi.spyOn(fx.logger, 'error');
-
-    await expect(job.fn()).resolves.toBeUndefined();
-    expect(errorSpy).not.toHaveBeenCalled();
-  });
-});
-
 // ---------------------------------------------------------------------------
 // embedding-reconcile — runs in active/idle/sleep, fans out per Grove
 // ---------------------------------------------------------------------------

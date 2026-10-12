@@ -11,6 +11,7 @@ import { observationInstant as iso, observeProjectCapture, observeRunnerService 
 import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member/refused-hooks.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
+import { repositoryMycoEntries } from '@myco/symbionts/repository-entries.js';
 import { SymbiontInstaller } from '../symbionts/installer.js';
 import { readProvisionRecord } from '../symbionts/member-provision-record.js';
 import { missingMemberSkills } from '../symbionts/member-skill-links.js';
@@ -67,8 +68,7 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string, requ
   let capturing = 0;
   for (const manifest of loadManifests()) {
     if (!manifest.registration?.hooksTarget && !manifest.registration?.memberHooksTarget) continue;
-    const at = (scope: 'member-global' | 'member-project') => new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, scope, mycoHome);
-    const seen = [at('member-global').inspectMemberHooks(), at('member-project').inspectMemberHooks()];
+    const seen = [new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, 'member-global', mycoHome).inspectMemberHooks()];
     for (const hooks of seen) {
       if (!hooks.readable) {
         checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) could not be read, so whether it captures is unknown. Run \`myco member provision ${manifest.name}\`.`));
@@ -227,6 +227,17 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
   }
   const projects = listRegistryEntriesResult(home);
   if (!projects.readable || projects.unavailableEntries > 0) checks.push(row('Repositories', 'fail', 'repository routes could not all be read; routing is unknown for those entries. Run `myco member join` from each affected repository.'));
+  const leftoverRoots = [rootOf(deps), ...projects.entries.map(entry => entry.root)];
+  try {
+    leftoverRoots.push(...listLeftRepositories(home).flatMap(repository => 'error' in repository || !repository.root ? [] : [repository.root]));
+  } catch (error) {
+    checks.push(row('Repository entries', 'warn', `left repository paths unavailable: ${error instanceof Error ? error.message : String(error)}`));
+  }
+  for (const leftover of repositoryMycoEntries(leftoverRoots)) {
+    checks.push(row('Repository entries', 'warn', leftover.kind === 'unreadable'
+      ? `${leftover.root}: could not check ${leftover.file}.`
+      : `${leftover.root}: ${leftover.file} — ${leftover.entry}. Myco 2.0 does not manage repository harness config; review and remove these entries by hand.`));
+  }
   for (const entry of projects.entries) {
     checks.push(row('Repository', 'ok', `${entry.root} → ${entry.serverUrl} / ${entry.projectId}.`));
     const facts = observeProjectCapture(entry, home, now);

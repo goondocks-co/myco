@@ -55,7 +55,7 @@ describe('global member installation', () => {
     }
   });
 
-  it('preserves legacy and foreign project commands while removing member commands', () => {
+  it('preserves every project hook while provisioning global commands', () => {
     const target = path.join(root, '.codex', 'hooks.json');
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const legacy = { command: '/opt/myco hook stop --myco-managed' };
@@ -63,7 +63,7 @@ describe('global member installation', () => {
     const member = { command: '/opt/myco hook stop --credential registry --myco-managed' };
     fs.writeFileSync(target, JSON.stringify({ hooks: { Stop: [{ hooks: [legacy, foreign, member] }], SessionStart: [legacy, member] } }));
     installer('codex').install();
-    expect(JSON.parse(fs.readFileSync(target, 'utf8')).hooks).toEqual({ Stop: [{ hooks: [legacy, foreign] }], SessionStart: [legacy] });
+    expect(JSON.parse(fs.readFileSync(target, 'utf8')).hooks).toEqual({ Stop: [{ hooks: [legacy, foreign, member] }], SessionStart: [legacy, member] });
   });
 
   it('installs Codex hooks, enables hooks, and writes remote MCP globally without project configuration', () => {
@@ -95,29 +95,13 @@ describe('global member installation', () => {
     expect(fs.readdirSync(root)).toEqual([]);
   });
 
-  it('removes the project member registration only after installing its global replacement and preserves foreign settings', () => {
-    const manifest = loadManifests().find((m) => m.name === 'codex')!;
-    new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-project', mycoHome).install();
-    const localConfig = path.join(root, '.codex', 'config.toml');
-    fs.appendFileSync(localConfig, '\n[mcp_servers.other]\ncommand = "other"\n');
-    const localHooks = path.join(root, '.codex', 'hooks.json');
-    const hooks = JSON.parse(fs.readFileSync(localHooks, 'utf8'));
-    const foreign = { type: 'command', command: 'other-hook' };
-    hooks.hooks.Stop[0].hooks.push(foreign);
-    fs.writeFileSync(localHooks, JSON.stringify(hooks));
-    installer('codex').install();
-    expect(JSON.parse(fs.readFileSync(localHooks, 'utf8')).hooks.Stop).toEqual([{ hooks: [foreign] }]);
-    expect(parseToml(fs.readFileSync(localConfig, 'utf8')).mcp_servers).toEqual({ other: { command: 'other' } });
-    expect(fs.existsSync(path.join(home, '.codex', 'hooks.json'))).toBe(true);
-  });
-
-  it('leaves global and local registrations untouched when the local configuration cannot be read', () => {
+  it('provisions globally while leaving unreadable repository configuration untouched', () => {
     const localConfig = path.join(root, '.codex', 'config.toml');
     fs.mkdirSync(path.dirname(localConfig), { recursive: true });
     fs.writeFileSync(localConfig, '[mcp_servers.myco');
-    expect(() => installer('codex').install()).toThrow(/could not read/);
+    expect(installer('codex').install().hooks).toBe(true);
     expect(fs.readFileSync(localConfig, 'utf8')).toBe('[mcp_servers.myco');
-    expect(fs.existsSync(path.join(home, '.codex'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.codex'))).toBe(true);
   });
 
   it('refuses an unclassified global capture installation before writing either registration', () => {

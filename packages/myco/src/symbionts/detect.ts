@@ -6,7 +6,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { expandHome } from '../grove/paths.js';
-import { CANONICAL_PROJECT_SKILLS_DIR } from '../skills/names.js';
 
 export interface DetectedSymbiont {
   manifest: SymbiontManifest;
@@ -74,28 +73,6 @@ export function loadManifests(): SymbiontManifest[] {
  */
 function byName(manifests: SymbiontManifest[]): SymbiontManifest[] {
   return [...manifests].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-}
-
-/**
- * The manifest to drive a symbiont-AGNOSTIC project-file reconcile with.
- *
- * `SymbiontInstaller` is constructed around one manifest even for the managed
- * project files that belong to no symbiont in particular (AGENTS.md guidance,
- * the `.gitignore` block of canonical skill dirs + configured plan dirs +
- * wrangler cache). Those writers still read `manifest.registration.skillsTarget`
- * — `updateGitignore()` returns without writing when it is absent — so the
- * manifest handed in must declare one. `antigravity` deliberately omits
- * `skillsTarget`, so an arbitrary pick (`manifests[0]`) silently turns the
- * whole managed-file reconcile into a no-op whenever it lands first.
- *
- * Prefer a manifest registered against the canonical cross-agent skills dir:
- * that is the only path the managed `.gitignore` block names.
- */
-export function manifestForManagedProjectFiles(
-  manifests: SymbiontManifest[] = loadManifests(),
-): SymbiontManifest | undefined {
-  return manifests.find((m) => m.registration?.skillsTarget === CANONICAL_PROJECT_SKILLS_DIR)
-    ?? manifests.find((m) => m.registration?.skillsTarget);
 }
 
 /** Find a loaded manifest by symbiont name, or undefined. */

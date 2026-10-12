@@ -22,7 +22,7 @@ import path from 'node:path';
 import { resolveProjectVaultDir, resolveMycoHome } from './paths.js';
 import { listGroves, listRegisteredProjects } from './registry.js';
 import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
-import { loadManifests, manifestForManagedProjectFiles, resolvePackageRoot } from '../symbionts/detect.js';
+import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { SymbiontInstaller, removeProjectLaunchers, MYCO_MCP_SERVER_NAME } from '../symbionts/installer.js';
 import { isMycoHookGroup } from '../symbionts/install-helpers.js';
 import { readJsonFile, writeOrDeleteJsonFile } from '../symbionts/json-helpers.js';
@@ -307,25 +307,6 @@ export function migrateProjectToGlobalInstall(
   };
   fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
   fs.writeFileSync(sentinelPath, JSON.stringify(sentinel, null, 2) + '\n', 'utf-8');
-
-  // Step 7 — reconcile project-managed local files: rules guidance plus
-  // `.gitignore` for bundled skill dirs, configured plan dirs, and wrangler
-  // cache. No background walker keeps this in sync; running it
-  // here covers the first-event / hot-path entry, while `myco update` has a
-  // dedicated variant-scoped managed-file pass for already-migrated projects.
-  // /code-review finding C10.
-  const managedFilesManifest = manifestForManagedProjectFiles(manifests);
-  if (managedFilesManifest) {
-    try {
-      const installer = new SymbiontInstaller(
-        managedFilesManifest, projectRoot, packageRoot, false, undefined, null, 'project',
-      );
-      installer.reconcileManagedProjectFiles();
-    } catch {
-      // Best-effort. Failures don't roll back the sentinel — the user's
-      // capture is the priority; managed-file drift is recoverable.
-    }
-  }
 
   return {
     alreadyDone: false,

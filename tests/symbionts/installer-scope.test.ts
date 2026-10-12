@@ -1,12 +1,7 @@
 /**
- * SymbiontInstaller scope-aware behavior (Step 4).
- *
- * Covers the operations that diverge between `'project'` and `'global'`
- * scope: project-content surfaces are skipped under `'global'`, target
- * paths come from `globalXxxTarget`, the global hook-guard step cleans up
- * any retired `~/.myco/launcher.cjs` + `mcp-launcher.cjs` trampolines (the
- * binary is the launcher now), and a detection gate refuses installs when
- * the agent's `detectionDir` is absent.
+ * SymbiontInstaller scope-aware behavior: agent detection, ownership claims,
+ * scoped hook/MCP targets, preservation of unmanaged project content, and
+ * deferred removal of global launchers.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
@@ -159,7 +154,7 @@ describe('SymbiontInstaller installScope=global', () => {
     expect(fs.existsSync(mcpLauncherPath)).toBe(true);
   });
 
-  it('project scope is unchanged — AGENTS.md + .gitignore + hook guard land under projectRoot', () => {
+  it('project scope installs harness config without creating unmanaged project content', () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-installer-scope-proj-'));
     try {
       fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
@@ -174,8 +169,10 @@ describe('SymbiontInstaller installScope=global', () => {
       );
       installer.install();
 
-      expect(fs.existsSync(path.join(projectRoot, 'AGENTS.md'))).toBe(true);
-      expect(fs.existsSync(path.join(projectRoot, '.gitignore'))).toBe(true);
+      expect(JSON.parse(fs.readFileSync(path.join(projectRoot, '.claude', 'settings.json'), 'utf8')).hooks).toBeDefined();
+      expect(JSON.parse(fs.readFileSync(path.join(projectRoot, '.mcp.json'), 'utf8')).mcpServers?.myco).toBeDefined();
+      expect(fs.existsSync(path.join(projectRoot, 'AGENTS.md'))).toBe(false);
+      expect(fs.existsSync(path.join(projectRoot, '.gitignore'))).toBe(false);
       expect(fs.existsSync(path.join(projectRoot, '.agents', 'myco-run.cjs'))).toBe(true);
       expect(fs.existsSync(path.join(projectRoot, '.agents', 'myco-cli.cjs'))).toBe(true);
     } finally {
@@ -212,7 +209,7 @@ describe('SymbiontInstaller installScope=global', () => {
     }
   });
 
-  it('project scope still writes under a peer claim — the gate is global-only', () => {
+  it('a peer global claim permits project harness configuration and preserves unmanaged content', () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-scope-proj-claim-'));
     const claimsHome = resolveClaimsHome();
     const peer = daemonIdentity(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-proj-peer-')));
@@ -222,8 +219,8 @@ describe('SymbiontInstaller installScope=global', () => {
       new SymbiontInstaller(
         getManifest('claude-code'), projectRoot, PKG_ROOT, false, undefined, null, 'project',
       ).install();
-      // installScope === 'global' is false → project writes proceed despite the claim.
-      expect(fs.existsSync(path.join(projectRoot, 'AGENTS.md'))).toBe(true);
+      expect(JSON.parse(fs.readFileSync(path.join(projectRoot, '.claude', 'settings.json'), 'utf8')).hooks).toBeDefined();
+      expect(fs.existsSync(path.join(projectRoot, 'AGENTS.md'))).toBe(false);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
       releaseSubsystemClaim(SYMBIONT_CONFIG_SUBSYSTEM, peer, { claimsHome });

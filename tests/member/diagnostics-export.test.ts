@@ -238,16 +238,23 @@ describe('an unjoined project still produces a report', () => {
   });
 });
 
-it('exports the MCP configuration of the selected project', async () => {
+it('exports global MCP configuration for the selected project', async () => {
   const project = tempProjectRoot();
   writeRegistryEntry(entry({ root: project }), { mycoHome });
-  fs.mkdirSync(path.join(project, '.codex'));
-  fs.writeFileSync(path.join(project, '.codex', 'config.toml'),
-    '[mcp_servers.myco]\nurl = "https://myco.example.com/mcp"\nhttp_headers_helper = "myco member mcp-headers --credential registry --server https://myco.example.com"\n');
-  const lines: string[] = [];
-  await runExport([], { mycoHome, cwd: project, stdout: (line) => lines.push(line) });
-  const report = JSON.parse(lines.join('\n'));
-  expect(report.checks).toContainEqual(expect.objectContaining({ symbiont: 'codex', scope: 'project', reason: 'mcp_entry_http' }));
+  const previousHome = process.env.HOME;
+  const harnessHome = path.join(mycoHome, 'harness-home');
+  process.env.HOME = harnessHome;
+  try {
+    fs.mkdirSync(path.join(harnessHome, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(harnessHome, '.codex', 'config.toml'),
+      '[mcp_servers.myco]\nurl = "https://myco.example.com/mcp"\nhttp_headers_helper = "myco member mcp-headers --credential registry --server https://myco.example.com"\n');
+    const lines: string[] = [];
+    await runExport([], { mycoHome, cwd: project, stdout: (line) => lines.push(line) });
+    const report = JSON.parse(lines.join('\n'));
+    expect(report.checks).toContainEqual(expect.objectContaining({ symbiont: 'codex', scope: 'global', reason: 'mcp_entry_http' }));
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+  }
 });
 
 describe('a log that could not be read is not an empty one', () => {

@@ -1954,12 +1954,6 @@ export async function main(): Promise<void> {
   // toggle flips immediately.
   reactions.on([], (ctx) => { liveConfig.current = ctx; });
 
-  // Managed project files (AGENTS.md guidance + `.gitignore` Myco block) are no
-  // longer reconciled at write time. A write only knows the one project it
-  // touched, but machine-scoped `capture.*` settings affect every project's
-  // managed files — so reconciliation is a periodic all-projects PowerManager
-  // sweep (POWER_JOB_NAMES.MANAGED_FILES_RECONCILE) instead.
-
   // Refresh the in-memory plan-watch list on capture changes.
   reactions.on(['capture'], createPlanWatchReaction({
     symbiontPlanDirs,

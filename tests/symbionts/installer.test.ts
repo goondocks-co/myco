@@ -383,12 +383,6 @@ function setupPackageRoot(): void {
     'windsurf.cascadeCommandsAllowList': ['myco', 'myco-dev'],
   });
 
-  // Create shared instruction stub template
-  fs.writeFileSync(
-    path.join(packageRoot, 'src/symbionts/templates/instructions-stub.md'),
-    '# Project Instructions\n\n> **Source of truth:** Read and follow [`AGENTS.md`](AGENTS.md)\n>\n> If anything in this file conflicts with `AGENTS.md`, **`AGENTS.md` wins**.\n\n<!-- This file exists so {agentDisplayName} discovers project instructions. -->\n<!-- All rules are maintained in AGENTS.md to avoid cross-agent duplication. -->\n<!-- Edit AGENTS.md, not this file, when adding or changing project rules. -->\n',
-  );
-
   // Create a skill directory
   const skillDir = path.join(packageRoot, 'skills/myco');
   fs.mkdirSync(skillDir, { recursive: true });
@@ -1130,7 +1124,7 @@ describe('install', () => {
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
     expect(result.settings).toBe(true);
-    expect(result.instructions).toBe(true);
+    expect(result.instructions).toBe(false);
   });
 
   it('verifies all files exist after Claude Code install', () => {
@@ -1173,7 +1167,7 @@ describe('install', () => {
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
     expect(result.settings).toBe(true);
-    expect(result.instructions).toBe(true);
+    expect(result.instructions).toBe(false);
 
     // Hooks in .github/hooks/myco-hooks.json
     expect(fs.existsSync(path.join(projectRoot, '.github/hooks/myco-hooks.json'))).toBe(true);
@@ -1196,7 +1190,7 @@ describe('install', () => {
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
     expect(result.settings).toBe(true);
-    expect(result.instructions).toBe(true);
+    expect(result.instructions).toBe(false);
 
     // All in one file
     const settings = readJson(path.join(projectRoot, '.gemini/settings.json'));
@@ -1219,7 +1213,7 @@ describe('install', () => {
     expect(result1.hooks).toBe(true);
     expect(result1.mcp).toBe(true);
     expect(result1.settings).toBe(true);
-    expect(result1.instructions).toBe(true);
+    expect(result1.instructions).toBe(false);
     expect(result2.hooks).toBe(false);
     expect(result2.mcp).toBe(false);
     expect(result2.settings).toBe(false);
@@ -1232,120 +1226,6 @@ describe('install', () => {
     // Should not have duplicated hook groups
     expect(hooks.SessionStart).toHaveLength(1);
     expect(hooks.Stop).toHaveLength(1);
-  });
-});
-
-// =====================
-// gitignore management
-// =====================
-
-describe('gitignore management', () => {
-  it('adds per-skill canonical entries to project .gitignore', () => {
-    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install();
-
-    const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
-    expect(gitignore).toContain('.agents/skills/myco');
-    // Should NOT blanket-ignore the directory (generated skills need to be committed)
-    expect(gitignore).not.toContain('.agents/skills/\n');
-  });
-
-  it('creates local .gitignore in agent-specific skills directory', () => {
-    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install();
-
-    const localGitignore = fs.readFileSync(path.join(projectRoot, '.claude/skills/.gitignore'), 'utf-8');
-    expect(localGitignore).toContain('*');
-    expect(localGitignore).toContain('!.gitignore');
-    // Project-level .gitignore should NOT contain agent-specific skill entries
-    const projectGitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
-    expect(projectGitignore).not.toContain('.claude/skills/');
-  });
-
-  it('does not duplicate existing entries', () => {
-    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
-
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install();
-    installer.install(); // Second run
-
-    const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
-    const matches = gitignore.match(/\.agents\/skills\/myco\b/g);
-    expect(matches?.length).toBe(1);
-  });
-
-  it('appends to existing .gitignore content', () => {
-    fs.writeFileSync(path.join(projectRoot, '.gitignore'), 'node_modules/\n.env\n');
-    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
-
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install();
-
-    const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
-    expect(gitignore).toContain('node_modules/');
-    expect(gitignore).toContain('.agents/skills/myco');
-  });
-
-  it('adds repo-relative custom plan dirs when ignore_plan_dirs_in_git is enabled', () => {
-    fs.writeFileSync(path.join(projectRoot, '.gitignore'), 'node_modules/\n');
-    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
-    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
-    fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), [
-      'version: 3',
-      'capture:',
-      '  plan_dirs:',
-      '    - docs/design',
-      '    - ./docs/specs/',
-      '    - ~/plans',
-      '    - /tmp/plans',
-      '  ignore_plan_dirs_in_git: true',
-      '',
-    ].join('\n'));
-
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install();
-
-    const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
-    expect(gitignore).toContain('docs/design/');
-    expect(gitignore).toContain('docs/specs/');
-    expect(gitignore).not.toContain('~/plans');
-    expect(gitignore).not.toContain('/fixture/plans');
-  });
-
-  it('removes custom plan dirs from the managed block when the flag is disabled', () => {
-    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
-    fs.mkdirSync(path.join(projectRoot, '.myco'), { recursive: true });
-    fs.writeFileSync(path.join(projectRoot, '.myco/myco.yaml'), [
-      'version: 3',
-      'capture:',
-      '  plan_dirs:',
-      '    - docs/design',
-      '  ignore_plan_dirs_in_git: true',
-      '',
-    ].join('\n'));
-
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install();
-
-    // capture.* is Machine-tier (2026-06 scope correction): the first install's
-    // loadMergedConfig relocated the planted capture block out of myco.yaml and
-    // into machine config. To flip the flag we must edit the machine config,
-    // not myco.yaml (which no longer carries capture).
-    const machineConfigPath = path.join(installerMycoHome, 'config.yaml');
-    fs.writeFileSync(machineConfigPath, [
-      'capture:',
-      '  plan_dirs:',
-      '    - docs/design',
-      '  ignore_plan_dirs_in_git: false',
-      '',
-    ].join('\n'));
-    installer.install();
-
-    const gitignore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
-    expect(gitignore).not.toContain('docs/design/');
-    expect(gitignore).toContain('.agents/skills/myco');
   });
 });
 
@@ -1885,23 +1765,6 @@ describe('uninstall', () => {
     expect(fs.existsSync(path.join(projectRoot, '.claude/skills/myco'))).toBe(false);
   });
 
-  it('cleans gitignore entries', () => {
-    // Pre-create .gitignore with non-Myco content so it survives uninstall
-    fs.writeFileSync(path.join(projectRoot, '.gitignore'), 'node_modules/\n');
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install();
-
-    const gitignoreBefore = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
-    expect(gitignoreBefore).toContain('.agents/skills/');
-
-    installer.uninstall();
-
-    const gitignoreAfter = fs.readFileSync(path.join(projectRoot, '.gitignore'), 'utf-8');
-    expect(gitignoreAfter).not.toContain('.agents/skills/');
-    expect(gitignoreAfter).not.toContain('.claude/skills/myco');
-    expect(gitignoreAfter).toContain('node_modules/');
-  });
-
   it('removes permissions from Claude Code settings', () => {
     const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
     installer.install();
@@ -2066,7 +1929,7 @@ describe('uninstall', () => {
     expect(result.mcp).toBe(true);
     expect(result.skills).toBe(true);
     expect(result.settings).toBe(true);
-    expect(result.instructions).toBe(true);
+    expect(result.instructions).toBe(false);
 
     // .mcp.json should be gone (was only myco)
     expect(fs.existsSync(path.join(projectRoot, '.mcp.json'))).toBe(false);
@@ -2239,181 +2102,6 @@ describe('Windsurf install', () => {
     expect(allowList).toContain('user-cmd');
     // Myco's own additions (just `myco`) are gone.
     expect(allowList).not.toContain('myco');
-  });
-});
-
-// =====================
-// installInstructions
-// =====================
-
-describe('installInstructions', () => {
-  it('creates instruction stub for Claude Code', () => {
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    const result = installer.installInstructions();
-    expect(result).toBe(true);
-    const content = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8');
-    expect(content).toContain('AGENTS.md');
-    expect(content).toContain('Claude Code');
-  });
-
-  it('prepends reference block to existing instruction file', () => {
-    fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# My custom rules\n\nDo not use var.\n');
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    const result = installer.installInstructions();
-    expect(result).toBe(true);
-    const content = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8');
-    // Reference block prepended
-    expect(content).toContain('AGENTS.md');
-    expect(content).toContain('myco:agents-ref:start');
-    // Original content preserved
-    expect(content).toContain('# My custom rules');
-    expect(content).toContain('Do not use var.');
-  });
-
-  it('is idempotent — does not duplicate reference on existing file', () => {
-    fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# My rules\n');
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.installInstructions();
-    const result = installer.installInstructions(); // Second run
-    expect(result).toBe(false);
-    const content = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8');
-    const matches = content.match(/myco:agents-ref:start/g);
-    expect(matches?.length).toBe(1);
-  });
-
-  it('creates .github/ directory for Copilot instructions', () => {
-    const installer = new SymbiontInstaller(COPILOT_MANIFEST, projectRoot, packageRoot);
-    installer.installInstructions();
-    expect(fs.existsSync(path.join(projectRoot, '.github/copilot-instructions.md'))).toBe(true);
-    const content = fs.readFileSync(path.join(projectRoot, '.github/copilot-instructions.md'), 'utf-8');
-    expect(content).toContain('GitHub Copilot');
-  });
-
-  it('creates instruction stub for Gemini CLI', () => {
-    const installer = new SymbiontInstaller(GEMINI_MANIFEST, projectRoot, packageRoot);
-    const result = installer.installInstructions();
-    expect(result).toBe(true);
-    const content = fs.readFileSync(path.join(projectRoot, 'GEMINI.md'), 'utf-8');
-    expect(content).toContain('AGENTS.md');
-    expect(content).toContain('Gemini CLI');
-  });
-
-  it('installs bundled AGENTS and instructions templates without package template files on disk', () => {
-    fs.rmSync(packageRoot, { recursive: true, force: true });
-    fs.mkdirSync(packageRoot, { recursive: true });
-
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    const result = installer.installInstructions();
-    expect(result).toBe(true);
-
-    const agents = fs.readFileSync(path.join(projectRoot, 'AGENTS.md'), 'utf-8');
-    expect(agents).toContain('Project Rules');
-    expect(agents).toContain('/myco-rules');
-
-    const instructions = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8');
-    expect(instructions).toContain('Claude Code');
-    expect(instructions).toContain('AGENTS.md');
-  });
-
-  it('returns false when no instructionsFile in manifest', () => {
-    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
-    expect(installer.installInstructions()).toBe(false);
-  });
-
-  it('loads template from dist layout as fallback', () => {
-    // Remove source layout template
-    const srcPath = path.join(packageRoot, 'src/symbionts/templates/instructions-stub.md');
-    fs.unlinkSync(srcPath);
-
-    // Create dist layout template
-    const distDir = path.join(packageRoot, 'dist/src/symbionts/templates');
-    fs.mkdirSync(distDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(distDir, 'instructions-stub.md'),
-      '# Project Instructions\n\n<!-- This file exists so {agentDisplayName} discovers project instructions. -->\n<!-- Edit AGENTS.md, not this file, when adding or changing project rules. -->\n',
-    );
-
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    const result = installer.installInstructions();
-    expect(result).toBe(true);
-    const content = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8');
-    expect(content).toContain('Claude Code');
-  });
-});
-
-describe('AGENTS.md managed guidance', () => {
-  it('adds the Myco-managed guidance block to an existing AGENTS.md', () => {
-    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
-    fs.writeFileSync(path.join(projectRoot, 'AGENTS.md'), '# Project Rules\n\nKeep tests current.\n');
-
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install();
-
-    const content = fs.readFileSync(path.join(projectRoot, 'AGENTS.md'), 'utf-8');
-    expect(content).toContain('myco:managed:start');
-    expect(content).toContain('capture.ignore_plan_dirs_in_git');
-    expect(content).toContain('Myco tools take a `project` argument');
-    expect(content).not.toContain('canopy_map');
-    expect(content).not.toContain('myco tool call');
-    expect(content).toContain('Keep tests current.');
-  });
-
-  it('reconciles the managed guidance block without duplicating it', () => {
-    fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
-
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.install();
-    installer.install();
-
-    const content = fs.readFileSync(path.join(projectRoot, 'AGENTS.md'), 'utf-8');
-    const matches = content.match(/myco:managed:start/g);
-    expect(matches?.length).toBe(1);
-  });
-});
-
-// =====================
-// uninstallInstructions
-// =====================
-
-describe('uninstallInstructions', () => {
-  it('removes unmodified stub', () => {
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.installInstructions();
-    expect(fs.existsSync(path.join(projectRoot, 'CLAUDE.md'))).toBe(true);
-
-    expect(installer.uninstallInstructions()).toBe(true);
-    expect(fs.existsSync(path.join(projectRoot, 'CLAUDE.md'))).toBe(false);
-  });
-
-  it('removes prepended reference block, preserves user content', () => {
-    // Simulate: user had custom rules, then the installer prepended the reference
-    fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# My custom rules\n');
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    installer.installInstructions(); // Prepends reference
-
-    expect(installer.uninstallInstructions()).toBe(true);
-    const after = fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf-8');
-    // Reference block removed
-    expect(after).not.toContain('myco:agents-ref:start');
-    // User content preserved
-    expect(after).toContain('# My custom rules');
-  });
-
-  it('preserves file with no Myco content', () => {
-    fs.writeFileSync(path.join(projectRoot, 'CLAUDE.md'), '# Pure user rules\n');
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    expect(installer.uninstallInstructions()).toBe(false);
-    expect(fs.existsSync(path.join(projectRoot, 'CLAUDE.md'))).toBe(true);
-  });
-
-  it('returns false when no instructionsFile in manifest', () => {
-    const installer = new SymbiontInstaller(CURSOR_MANIFEST, projectRoot, packageRoot);
-    expect(installer.uninstallInstructions()).toBe(false);
-  });
-
-  it('returns false when file does not exist', () => {
-    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
-    expect(installer.uninstallInstructions()).toBe(false);
   });
 });
 
@@ -3301,5 +2989,26 @@ describe('direct-binary hook commands', () => {
     for (const groups of Object.values(hooks)) {
       expect(groups.length).toBe(1);
     }
+  });
+});
+
+// Repository ownership
+describe('repository files outside installation ownership', () => {
+  it('preserves existing rules, instruction stubs, config and ignore entries on install and uninstall', () => {
+    const files = {
+      'AGENTS.md': '# Rules\n<!-- myco:managed:start -->\nkeep\n<!-- myco:managed:end -->\n',
+      'CLAUDE.md': 'Edit AGENTS.md, not this file\n',
+      '.gitignore': '# Myco managed (machine-specific)\ndocs/plans/\n',
+      '.myco/myco.yaml': 'capture:\n  plan_dirs: [docs/plans]\n',
+    };
+    for (const [file, content] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(projectRoot, file)), { recursive: true });
+      fs.writeFileSync(path.join(projectRoot, file), content);
+    }
+    const installer = new SymbiontInstaller(CLAUDE_MANIFEST, projectRoot, packageRoot);
+    installer.install();
+    for (const [file, content] of Object.entries(files)) expect(fs.readFileSync(path.join(projectRoot, file), 'utf8')).toBe(content);
+    installer.uninstall();
+    for (const [file, content] of Object.entries(files)) expect(fs.readFileSync(path.join(projectRoot, file), 'utf8')).toBe(content);
   });
 });

@@ -1,4 +1,4 @@
-/** Global member plugin provisioning and cleanup of retained project overrides. */
+/** Global member plugin provisioning preserves repository overrides. */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -112,7 +112,7 @@ describe('member plugins for plugin-file agents', () => {
     });
   }
 
-  it('refuses before any write to replace a project plugin file Myco does not own, and leaves it as it is', async () => {
+  it('provisions global plugins while preserving foreign repository plugin files', async () => {
     join();
     for (const agent of ['opencode', 'pi'] as const) {
       const target = path.join(root, TARGETS[agent]);
@@ -121,39 +121,20 @@ describe('member plugins for plugin-file agents', () => {
       fs.writeFileSync(target, own);
       process.exitCode = 0;
       const refused = await member(['provision', agent]);
-      expect(refused.out).toEqual([]);
-      expect(refused.err.join('\n')).toContain(`${target} is not a Myco plugin`);
-      expect(process.exitCode).toBe(2);
+      expect(refused.err).toEqual([]);
+      expect(process.exitCode).not.toBe(2);
       expect(fs.readFileSync(target, 'utf8')).toBe(own);
       expect(fs.existsSync(path.join(root, '.git', 'info', 'exclude')) && fs.readFileSync(path.join(root, '.git', 'info', 'exclude'), 'utf8').includes(TARGETS[agent])).toBe(false);
     }
   });
 
-  it('leave, with or without --purge, removes the member plugins and never a 1.4 project plugin', async () => {
-    join();
-    for (const name of ['opencode', 'pi']) {
-      new SymbiontInstaller(loadManifests().find((m) => m.name === name)!, root, resolvePackageRoot(), false, undefined, null, 'member-project', mycoHome).install();
-    }
-    const left = await member(['leave']);
-    expect(left.out.filter((l) => l.includes('member plugin'))).toHaveLength(2);
-    for (const agent of ['opencode', 'pi'] as const) expect(fs.existsSync(path.join(root, TARGETS[agent]))).toBe(false);
-
-    // A 1.4 project-scope plugin at the same path carries only the generic marker.
-    join();
-    const projectPlugin = path.join(root, TARGETS.opencode);
-    fs.mkdirSync(path.dirname(projectPlugin), { recursive: true });
-    fs.writeFileSync(projectPlugin, '// myco:plugin-marker — Myco owns this file\n');
-    await member(['leave', '--purge']);
-    expect(fs.readFileSync(projectPlugin, 'utf8')).toContain('myco:plugin-marker');
-  });
-
   it('JSON-hook agents still render no member plugin and plugin-file agents render no JSON hook block', () => {
     for (const name of ['opencode', 'pi']) {
-      const installer = new SymbiontInstaller(loadManifests().find((m) => m.name === name)!, root, resolvePackageRoot(), false, undefined, null, 'member-project');
+      const installer = new SymbiontInstaller(loadManifests().find((m) => m.name === name)!, root, resolvePackageRoot(), false, undefined, null, 'member-global');
       expect(installer.renderMemberHooks('registry')).toBeNull();
       expect(installer.isMemberPluginFile()).toBe(true);
     }
-    const codex = new SymbiontInstaller(loadManifests().find((m) => m.name === 'codex')!, root, resolvePackageRoot(), false, undefined, null, 'member-project');
+    const codex = new SymbiontInstaller(loadManifests().find((m) => m.name === 'codex')!, root, resolvePackageRoot(), false, undefined, null, 'member-global');
     expect(codex.isMemberPluginFile()).toBe(false);
   });
 });

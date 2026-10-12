@@ -45,7 +45,7 @@ afterEach(() => {
 
 async function loadPlugin(instance = '') {
   const manifest = loadManifests().find((m) => m.name === 'opencode')!;
-  const rendered = new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-project', home).renderMemberPlugin('registry')!;
+  const rendered = new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-global', home).renderMemberPlugin('registry')!;
   const file = path.join(root, '.opencode', 'plugins', 'myco.ts');
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, rendered);

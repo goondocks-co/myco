@@ -17,7 +17,7 @@
 import nodeFs from 'node:fs';
 const { mkdirSync, rmSync, writeFileSync } = nodeFs;
 import path from 'node:path';
-import { syncSkillSymlinks } from '@myco/symbionts/installer.js';
+import { syncSkillSymlinks } from '@myco/symbionts/legacy-skill-links.js';
 import { CANONICAL_PROJECT_SKILLS_DIR, isSafeSkillNameForFs } from './names.js';
 
 export { CANONICAL_PROJECT_SKILLS_DIR };
