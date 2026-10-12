@@ -437,6 +437,18 @@ describe('the session page a run reads', () => {
 });
 
 describe('a run\'s state is a compare-and-set', () => {
+  it('refuses run writes to server scheduler control state and leaves it unchanged', async () => {
+    const f = await setup();
+    try {
+      await f.dispatch('run_e', SWEEP);
+      for (const key of ['server.schedule.extract-curate.ramp', 'server.schedule.skip.canopy-map']) {
+        const result = await f.call(f.harness.token, 'myco_run', { op: 'state_set', key, value: 'oops' });
+        expect(result.result).toMatchObject({ ok: false, error: 'server control state is read-only' });
+        expect(f.sqlite.query('SELECT value FROM agent_state WHERE key=?').get(key)).toBeNull();
+      }
+    } finally { f.sqlite.close(); }
+  });
+
   it('carries a read-modify-write, refuses the write whose version is stale, and lets the loser retry from a fresh read', async () => {
     const { harness, dispatch, call } = await setup();
     await dispatch('run_e', SWEEP);

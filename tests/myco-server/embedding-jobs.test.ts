@@ -88,3 +88,30 @@ for (const restore of [false, true]) test(`archived vector housekeeping stays re
     expect(f.sqlite.query('SELECT count(*) AS n FROM embedding_receipts').get()).toEqual({ n: 1 });
   } finally { f.sqlite.close(); }
 });
+
+
+for (const archived of [['proj_1'], ['proj_0', 'proj_1']]) test(`archived retirement of five orphans per Project (${archived.length} Projects) does not delay a live Project embedding launch`, async () => {
+  const f = sqliteEnv();
+  try {
+    const now = Date.now(), launched: string[] = [];
+    for (const projectId of archived) {
+      f.sqlite.run('INSERT OR IGNORE INTO projects(project_id,name,created_at) VALUES(?,?,?)', [projectId, projectId, now]);
+      f.sqlite.run('UPDATE projects SET archived_at=? WHERE project_id=?', [now, projectId]);
+    }
+    f.sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,?)", [now]);
+    f.sqlite.run("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_2','unbuilt','myco-agent','pending source','decision',?)", [now]);
+    const modelKey = JSON.stringify(['cloudflare', EMBEDDING_MODEL]);
+    for (const projectId of archived) for (let n = 0; n < 5; n++) {
+      const id = await vectorId({ projectId, modelKey }, 'spore', 'gone_' + n, 'v');
+      f.sqlite.run("INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at) VALUES(?,?,?,'spore',?,'v',1,1)", [projectId, modelKey, id, 'gone_' + n]);
+    }
+    const env: ServerEnv = { ...f.serverEnv, origin: 'https://myco.example', vectors: cloudflareVectorStore(indexFixture()),
+      embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }, { model: EMBEDDING_MODEL, modelKey }),
+      harnessLaunch: async (spec) => { launched.push(spec.runId); },
+    };
+    await dispatchEmbeddingWork(env, now);
+    expect(launched).toHaveLength(1);
+    expect(f.sqlite.query('SELECT project_id FROM agent_runs').all()).toEqual([{ project_id: 'proj_2' }]);
+    expect(f.sqlite.query('SELECT count(*) AS n FROM embedding_receipts WHERE ready=1').get()).toEqual({ n: archived.length * 5 - 1 });
+  } finally { f.sqlite.close(); }
+});

@@ -20,14 +20,15 @@ import type { ServerEnv } from './adapters.js';
 import { AlreadyRunning, CeilingReached, DispatchAdmissionRefused, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, repositoryWorkerAvailable, type LaunchSpec } from './harness.js';
 import { buildTaskInput } from './task-inputs.js';
 import type { PowerState } from './power.js';
-import { ensureAgent, getState, mutateState, INPUT_UNCHANGED, recordSkipped, taskFactsKey, taskRunFacts, type TaskRunFacts } from './runs.js';
+import { ensureAgent, INPUT_UNCHANGED, recordSkipped, taskFactsKey, taskRunFacts, type TaskRunFacts } from './runs.js';
 import { enabledCapabilities, type ProjectCapability } from './settings.js';
 import { type TaskSchedule } from './jobs.js';
 import { declared } from './declared.js';
 import { admissionForTask, EXTRACTION_TASK, runTimeoutForTask } from './task-catalogue.js';
 import { listProjects } from '../read/sessions.js';
 import { extractionRamp } from './extraction-ramp.js';
-import { emit } from '../telemetry.js';
+import { classify, emit } from '../telemetry.js';
+import { schedulerState } from './scheduler-state.js';
 import {
   ACCELERATORS, ACTIVE_WINDOW_DAYS_DEFAULT, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, effectiveIntervalSeconds, hasUnprocessedPrompts, MEMBER_RUNS_PER_DAY_DEFAULT,
   memberRunsPerDay, PRE_CONDITIONS, resolveSchedule, scheduledTasks, scheduleFor, scheduleLeaves, scheduleOverride, type ScheduleLeaves,
@@ -46,21 +47,18 @@ const PERSISTENT_SKIPS = new Set<ScheduleSkip>(['repository_missing', 'repositor
 async function emitScheduleSkip(env: ServerEnv, projectId: string, task: string, skip: ScheduleSkip, now: number): Promise<void> {
   if (skip === 'not_yet' || skip === 'quiet') return;
   if (PERSISTENT_SKIPS.has(skip)) {
-    const key = `schedule.skip.${task}`;
-    const due = (value: string | null): boolean => {
-      if (value === null) return true;
-      const previous: unknown = JSON.parse(value);
-      if (typeof previous !== 'object' || previous === null || !('skip' in previous) || !('at' in previous) || typeof previous.at !== 'number') throw new Error('Invalid schedule skip state');
-      return previous.skip !== skip || now - previous.at >= PERSISTENT_SKIP_INTERVAL_MS;
-    };
-    if (!due((await getState(env.db, { projectId }, HARNESS_AGENT_ID, key))?.value ?? null)) return;
-    await ensureAgent(env.db, { id: HARNESS_AGENT_ID, name: HARNESS_AGENT_ID, provider: null, model: null, enabled: true }, now);
+    type SkipState = { skip: string; at: number };
+    const valid = (value: unknown): value is SkipState => typeof value === 'object' && value !== null && 'skip' in value && 'at' in value
+      && typeof value.skip === 'string' && PERSISTENT_SKIPS.has(value.skip as ScheduleSkip)
+      && typeof value.at === 'number' && Number.isSafeInteger(value.at) && value.at >= 0 && value.at <= now;
+    const state = schedulerState(env.db, projectId, `skip.${task}`, valid, now);
+    const due = (previous: SkipState | null): boolean => previous === null || previous.skip !== skip || now - previous.at >= PERSISTENT_SKIP_INTERVAL_MS;
+    if (!due((await state.read()).value)) return;
     let changed = false;
-    const stored = await mutateState(env.db, { projectId }, HARNESS_AGENT_ID, key, (current) => {
+    await state.update(current => {
       changed = due(current);
-      return changed ? JSON.stringify({ skip, at: now }) : null;
-    }, now);
-    if (!stored) throw new Error('Schedule skip state contention');
+      return changed ? { skip, at: now } : current!;
+    });
     if (!changed) return;
   }
   emit({ kind: 'task_skipped', task, projectId, skip });
@@ -173,7 +171,7 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
     if (check === undefined || !(await check({ db: env.db, projectId, now }))) return 'precondition';
   }
   if (task === EXTRACTION_TASK) {
-    const ramp = await extractionRamp(env.db, projectId, now);
+    const ramp = await extractionRamp(env, projectId, now, { activeWindowDays: leaves.activeWindowDays, runsPerDay: schedule.rampRunsPerDay });
     if (ramp !== null) {
       held.rampCeilings?.set(projectId, ramp);
       if (runs.entriesSince >= ramp) return 'extraction_ramp';
@@ -214,59 +212,63 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
     return available;
   };
   for (const project of await listProjects(env.db)) {
-    for (const { task, schedule } of tasks) {
-      const skip = await decideTask(env, project.projectId, project.lastActivityAt, task, schedule, state, leaves, now, facts, workerAvailable);
-      if (skip === 'max_runs_per_day' || skip === 'reserved_runs_per_day') {
-        // The entry that filled the window names the episode; it cannot move while the window stays full.
-        const filledAt = facts.runs.get(taskFactsKey(project.projectId, task))?.lastEntryAt ?? null;
-        await recordClockSkip(env, project.projectId, task, skip, ceilingSkipId(project.projectId, task, filledAt) + (skip === 'reserved_runs_per_day' ? '_reserved' : ''), now);
-        emit({ kind: 'task_skipped', task, projectId: project.projectId, skip });
-        report.skipped += 1;
-        continue;
-      }
-      if (skip !== null) {
-        await emitScheduleSkip(env, project.projectId, task, skip, now);
-        continue;
-      }
-      const prepared = await prepareDispatch(env, task, project.projectId);
-      if (!prepared.ok) {
-        emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: 'refused', refusal: prepared.refusal });
-        continue;
-      }
-      // A task whose prompt the server builds is compared against the artifact
-      // it last wrote: a Project that has not moved leaves a skipped row naming
-      // that, and no model is called.
-      const built = await buildTaskInput(env, task, project.projectId, now);
-      if (built !== null && built.unchanged) {
-        await recordClockSkip(env, project.projectId, task, INPUT_UNCHANGED, `run_${crypto.randomUUID()}`, now);
-        emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: INPUT_UNCHANGED });
-        report.skipped += 1;
-        continue;
-      }
-      const input: Pick<LaunchSpec, 'instruction' | 'inputHash' | 'counts'> = built === null || built.unchanged
-        ? {}
-        : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
-      try {
-        // A skip-overlap task's write refuses beside another live run of it: two wakes deciding at once write one row.
-        const budget = runTimeoutForTask(task);
-        const ramp = task === EXTRACTION_TASK ? facts.rampCeilings?.get(project.projectId) : undefined;
-        const outcome = await dispatchPrepared(env, prepared.prepared, {
-          serverUrl, actor: CLOCK_ACTOR, ...input, ...(budget === null ? {} : { timeoutSeconds: budget }),
-        }, now, { singleFlight: schedule.overlap === 'skip', ...(ramp === undefined ? {} : { ceiling: { actor: CLOCK_ACTOR, task, projectId: project.projectId, perDay: ramp, sinceMs: now - DAY_MS } }) });
-        emit({ kind: 'task_scheduled', task, projectId: project.projectId, runId: outcome.runId, queued: outcome.queued });
-        report.dispatched += 1;
-      } catch (err) {
-        if (err instanceof CeilingReached) {
-          await emitScheduleSkip(env, project.projectId, task, 'extraction_ramp', now);
+    try {
+      for (const { task, schedule } of tasks) {
+        const skip = await decideTask(env, project.projectId, project.lastActivityAt, task, schedule, state, leaves, now, facts, workerAvailable);
+        if (skip === 'max_runs_per_day' || skip === 'reserved_runs_per_day') {
+          // The entry that filled the window names the episode; it cannot move while the window stays full.
+          const filledAt = facts.runs.get(taskFactsKey(project.projectId, task))?.lastEntryAt ?? null;
+          await recordClockSkip(env, project.projectId, task, skip, ceilingSkipId(project.projectId, task, filledAt) + (skip === 'reserved_runs_per_day' ? '_reserved' : ''), now);
+          emit({ kind: 'task_skipped', task, projectId: project.projectId, skip });
+          report.skipped += 1;
           continue;
         }
-        if (err instanceof DispatchAdmissionRefused) {
-          emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: 'refused', refusal: err.refusal });
+        if (skip !== null) {
+          await emitScheduleSkip(env, project.projectId, task, skip, now);
           continue;
         }
-        if (!(err instanceof AlreadyRunning)) throw err;
-        emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: 'already_running' });
+        const prepared = await prepareDispatch(env, task, project.projectId);
+        if (!prepared.ok) {
+          emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: 'refused', refusal: prepared.refusal });
+          continue;
+        }
+        // A task whose prompt the server builds is compared against the artifact
+        // it last wrote: a Project that has not moved leaves a skipped row naming
+        // that, and no model is called.
+        const built = await buildTaskInput(env, task, project.projectId, now);
+        if (built !== null && built.unchanged) {
+          await recordClockSkip(env, project.projectId, task, INPUT_UNCHANGED, `run_${crypto.randomUUID()}`, now);
+          emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: INPUT_UNCHANGED });
+          report.skipped += 1;
+          continue;
+        }
+        const input: Pick<LaunchSpec, 'instruction' | 'inputHash' | 'counts'> = built === null || built.unchanged
+          ? {}
+          : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
+        try {
+          // A skip-overlap task's write refuses beside another live run of it: two wakes deciding at once write one row.
+          const budget = runTimeoutForTask(task);
+          const ramp = task === EXTRACTION_TASK ? facts.rampCeilings?.get(project.projectId) : undefined;
+          const outcome = await dispatchPrepared(env, prepared.prepared, {
+            serverUrl, actor: CLOCK_ACTOR, ...input, ...(budget === null ? {} : { timeoutSeconds: budget }),
+          }, now, { singleFlight: schedule.overlap === 'skip', ...(ramp === undefined ? {} : { ceiling: { actor: CLOCK_ACTOR, task, projectId: project.projectId, perDay: ramp, sinceMs: now - DAY_MS } }) });
+          emit({ kind: 'task_scheduled', task, projectId: project.projectId, runId: outcome.runId, queued: outcome.queued });
+          report.dispatched += 1;
+        } catch (err) {
+          if (err instanceof CeilingReached) {
+            await emitScheduleSkip(env, project.projectId, task, 'extraction_ramp', now);
+            continue;
+          }
+          if (err instanceof DispatchAdmissionRefused) {
+            emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: 'refused', refusal: err.refusal });
+            continue;
+          }
+          if (!(err instanceof AlreadyRunning)) throw err;
+          emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: 'already_running' });
+        }
       }
+    } catch (error) {
+      emit({ kind: 'schedule_project_failed', projectId: project.projectId, error: classify(error, env.platform.classifyError) });
     }
   }
   return report;

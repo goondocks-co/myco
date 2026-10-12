@@ -176,7 +176,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 
 /** The fields each retained task's consumers read. */
 const TASK_FIELDS = ['harness', 'model', 'reasoningLevel', 'schedule'] as const;
-const SCHEDULE_FIELDS = ['enabled', 'intervalSeconds', 'runIn', 'preCondition', 'accelerator', 'maxRunsPerDay', 'memberRunsPerDay', 'reservedRunsPerDay', 'runWhenCold', 'overlap'] as const;
+const SCHEDULE_FIELDS = ['enabled', 'intervalSeconds', 'runIn', 'preCondition', 'accelerator', 'maxRunsPerDay', 'rampRunsPerDay', 'memberRunsPerDay', 'reservedRunsPerDay', 'runWhenCold', 'overlap'] as const;
 const consumedTaskFields = (task: string): readonly string[] => {
   if (!(OUTCOME_TASKS as readonly string[]).includes(task)) return [];
   return task === TITLING_TASK || TASK_SCHEDULE[task] != null ? TASK_FIELDS : TASK_FIELDS.filter((field) => field !== 'schedule');
@@ -260,9 +260,9 @@ function preserveRetiredTaskOverrides(value: unknown, previous: unknown): unknow
 
 /**
  * The schedule counts a task override carries, each a whole number of 0 or more when given: the clock's own daily
- * ceiling, and how many runs of the task a member who is not an admin may start by hand in a day.
+ * ceiling, its initial-history ramp ceiling, and a member's daily allowance for starts by hand.
  */
-export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay', 'memberRunsPerDay'] as const;
+export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay', 'rampRunsPerDay', 'memberRunsPerDay'] as const;
 
 /** What a changed per-task override violates; unchanged stored fields remain available for a separate repair. */
 function taskOverridesViolation(value: unknown, previous?: unknown): string | null {
@@ -573,7 +573,7 @@ export function storedLeafViolation(leaf: string, text: string): string | null {
 
 /**
  * The text of each named leaf a consumer may act on: a declared default where nothing usable is written,
- * otherwise absent where the stored value breaks the leaf's rule, so the consumer applies the same default it applies to an unwritten leaf and
+ * absent for a refused value with no declared default. Consumer defaults apply to absent values, and
  * the settings surface reports the stored value as invalid. Task overrides, execution profiles and the embedding
  * selection pass through whole: their consumers judge them.
  */

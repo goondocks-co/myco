@@ -181,6 +181,25 @@ describe('default-on task enforcement', () => {
     } finally { sqlite.close(); }
   });
 
+  for (const value of ['oops', '{"skip":"repository_missing","at":"bad"}']) it(`resets invalid persistent skip state ${value} and visits both Projects`, async () => {
+    const f = sqliteEnv();
+    const events: Array<{ kind: string; projectId?: string; task?: string; skip?: string }> = [];
+    const log = spyOn(console, 'log').mockImplementation(message => { events.push(JSON.parse(message)); });
+    try {
+      const writer = settingsWriter(f.db);
+      await writer.setLeaf('agent.scheduled_tasks_enabled', true, 'test', NOW);
+      await writer.setLeaf('cortex.canopy.refresh.background_enabled', true, 'test', NOW);
+      f.sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,?)", [NOW]);
+      f.sqlite.run("INSERT INTO agent_state(project_id,agent_id,key,value,updated_at) VALUES('proj_1','myco-agent','server.schedule.skip.canopy-map',?,?)", [value, NOW]);
+      for (const project of ['proj_1', 'proj_2']) f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES(?,'recent','m','t',?,?)", [project, NOW, NOW]);
+      expect((await runScheduledTasks(f.serverEnv, 'sleep', NOW, 'https://s')).dispatched).toBe(0);
+      expect(events.filter(event => event.kind === 'task_skipped' && event.task === MAP_TASK).map(event => event.projectId)).toEqual(['proj_1', 'proj_2']);
+      expect(events.filter(event => event.kind === 'schedule_state_reset')).toEqual([expect.objectContaining({ projectId: 'proj_1' })]);
+      const row = f.sqlite.query("SELECT value FROM agent_state WHERE project_id='proj_1' AND key='server.schedule.skip.canopy-map'").get() as { value: string };
+      expect(JSON.parse(row.value)).toEqual({ skip: 'repository_missing', at: NOW });
+    } finally { log.mockRestore(); f.sqlite.close(); }
+  });
+
   it('reads repository workers once per task per wake and rate-limits persistent skip telemetry per Project', async () => {
     const f = sqliteEnv();
     const events: Array<{ kind: string; task?: string; projectId?: string; skip?: string }> = [];

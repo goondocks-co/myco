@@ -54,20 +54,25 @@ export async function dispatchEmbeddingWork(env: ServerEnv, now: number): Promis
     }
   }
   if (served.length === 0 || await hasLiveTaskRunAnywhere(env.db, EMBEDDING_TASK)) return 0;
+  let changed = 0;
+  let retired = false;
   for (const { projectId, last, retireOnly } of served.sort((a, b) => (a.last ?? 0) - (b.last ?? 0))) {
     if (last !== null && now - last < EMBEDDING_RETRY_MS) continue;
     if (retireOnly) {
+      if (retired) continue;
+      retired = true;
       const step = await advanceEmbedding(env, projectId, now, { retireOnly: true });
-      return 'processed' in step ? step.processed : 0;
+      changed += 'processed' in step ? step.processed : 0;
+      continue;
     }
     const prepared = await prepareDispatch(env, EMBEDDING_TASK, projectId);
     if (!prepared.ok) continue;
     try {
       await dispatchPrepared(env, prepared.prepared, { serverUrl: env.origin, actor: 'clock' }, now, { singleFlight: true });
-      return 1;
+      return changed + 1;
     } catch (error) { if (!(error instanceof AlreadyRunning)) throw error; }
   }
-  return 0;
+  return changed;
 }
 
 /** The registry chains bounded sweep pages independently of dispatching an embedding run. */

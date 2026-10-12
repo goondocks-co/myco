@@ -186,6 +186,7 @@ export function resolveSchedule(declared: TaskSchedule, override: unknown): Task
     preCondition: typeof o.preCondition === 'string' ? o.preCondition : declared.preCondition,
     accelerator: accelerator(o.accelerator) ?? declared.accelerator,
     maxRunsPerDay: (isScheduleCount(wholeCap) ? wholeCap : undefined) ?? declared.maxRunsPerDay,
+    rampRunsPerDay: (isScheduleCount(o.rampRunsPerDay) ? o.rampRunsPerDay : undefined) ?? declared.rampRunsPerDay,
     reservedRunsPerDay: reservedRunsPerDay(o.reservedRunsPerDay) ?? declared.reservedRunsPerDay,
     runWhenCold: typeof o.runWhenCold === 'boolean' ? o.runWhenCold : declared.runWhenCold,
     overlap: o.overlap === 'skip' || o.overlap === 'queue' ? o.overlap : declared.overlap,
