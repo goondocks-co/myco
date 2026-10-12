@@ -22,7 +22,7 @@ export function cursorPromptText(text: string): string {
 
 
 
-export interface PromptEnvelope { label: string; text: string }
+export interface PromptEnvelope { label: string; text: string; inlineText?: string }
 export interface DisplayPrompt { text: string; envelopes: PromptEnvelope[] }
 
 const ENVELOPE_LABELS: Record<string, string> = {
@@ -37,7 +37,7 @@ const ENVELOPE_LABELS: Record<string, string> = {
 /** Leading envelopes are presentation metadata; capture rewrites never run on stored text. */
 export function promptDisplay(text: string, agent: string | null): DisplayPrompt {
   const bundle = CAPTURE_RULE_BUNDLES.find((item) => item.name === agent);
-  const tags = new Set<string>();
+  const tags = new Set<string>(bundle?.displayEnvelopeTags);
   for (const rule of bundle?.rules ?? []) {
     if (rule.event !== 'user_prompt') continue;
     for (const tag of rule.when.prompt_envelope_tag_in ?? []) tags.add(tag);
@@ -46,9 +46,6 @@ export function promptDisplay(text: string, agent: string | null): DisplayPrompt
       if (tag !== undefined) tags.add(tag);
     }
   }
-  // Command fields and query context belong to their declared envelope family.
-  if (tags.has('command-name')) for (const tag of ['command-args', 'command-contents']) tags.add(tag);
-  if (tags.has('user_query')) for (const tag of ['timestamp', 'attached_files', 'user_info', 'additional_data', 'pasted_content']) tags.add(tag);
   const envelopes: PromptEnvelope[] = [];
   let rest = text;
   const person: string[] = [];
@@ -58,10 +55,13 @@ export function promptDisplay(text: string, agent: string | null): DisplayPrompt
     const tag = opening[1]!;
     const inner = rest.slice(opening[0].length);
     const close = new RegExp('</' + tag + '\\s*>').exec(inner);
-    const content = close === null ? inner : inner.slice(0, close.index);
-    rest = close === null ? '' : inner.slice(close.index + close[0].length);
-    if (tag === 'user_query') person.push(content);
-    else envelopes.push({ label: tag === 'command-name' ? 'Ran ' + content.trim() : ENVELOPE_LABELS[tag] ?? tag.replace(/[-_]/g, ' '), text: content.trim() });
+    if (close === null) { rest = inner; break; }
+    const content = inner.slice(0, close.index);
+    rest = inner.slice(close.index + close[0].length);
+    if (tag === 'user_query' || tag === 'command-args') person.push(content);
+    else if (content.trim() !== '') envelopes.push(tag === 'command-name'
+      ? { label: 'Ran ' + content.trim(), text: '', inlineText: content.trim() }
+      : { label: ENVELOPE_LABELS[tag] ?? tag.replace(/[-_]/g, ' '), text: content.trim() });
   }
   return { text: [...person, rest].filter(Boolean).join('\n\n'), envelopes };
 }
@@ -69,7 +69,7 @@ export function promptDisplay(text: string, agent: string | null): DisplayPrompt
 /** Plain labels use the same envelope interpretation as the conversation. */
 export function displayPrompt(text: string, agent: string | null): string {
   const shown = promptDisplay(text, agent);
-  return [...shown.envelopes.map((item) => item.label), shown.text].filter(Boolean).join(' ').trim();
+  return [...shown.envelopes.map((item) => item.inlineText), shown.text].filter(Boolean).join(' ').trim();
 }
 
 export function cleanSessionText(text: string | null | undefined, agent: string | null): string | null {

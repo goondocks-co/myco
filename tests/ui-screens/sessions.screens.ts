@@ -123,6 +123,12 @@ async function expectReadingPage(page: Page, viewport: ViewportName, role: 'admi
   await expect(conversation.getByText('Myco prepared 1 sub-agent preamble')).toBeVisible();
   await expect(conversation.getByText('Sub-agent tokens not recorded')).toBeVisible();
   await expect(conversation).not.toContainText('<subagent_notification>');
+  await expect(conversation.getByText('This test fails one run in twenty', { exact: true })).toBeVisible();
+  const envelope = conversation.getByRole('button', { name: 'Sub-agent notification', exact: true });
+  await expect(envelope).toBeVisible();
+  await envelope.click();
+  await expect(conversation.getByText('/audit', { exact: true })).toBeVisible();
+  await envelope.click();
   await conversation.getByRole('button', { name: 'Myco prepared no context' }).click();
   await expect(conversation.getByText('No relevant memories found')).toBeVisible();
   await expect(conversation.getByText('12 matches, none relevant enough')).toBeVisible();

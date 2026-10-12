@@ -147,7 +147,7 @@ function PromptText({ projectId, turn, text, blobKey, agent }: { projectId: stri
 function PromptContent({ text, agent, folded = false }: { text: string; agent: string | null; folded?: boolean }) {
   const shown = promptDisplay(text, agent);
   return <div className="flex flex-col gap-s2">
-    {shown.envelopes.map((envelope, i) => <Disclosure key={i} summary={<StatusChip>{envelope.label}</StatusChip>}>
+    {shown.envelopes.map((envelope, i) => envelope.text === '' ? <StatusChip key={i}>{envelope.label}</StatusChip> : <Disclosure key={i} summary={<StatusChip>{envelope.label}</StatusChip>}>
       <p className="whitespace-pre-wrap break-words t-small text-muted">{envelope.text}</p>
     </Disclosure>)}
     {shown.text !== '' && <p className={cn('whitespace-pre-wrap break-words t-body font-medium text-ink', folded && 'line-clamp-6')}>{shown.text}</p>}
@@ -222,7 +222,7 @@ export const Turn = memo(function Turn({ projectId, sessionId, turn, scrollTo = 
               </div>}
             </TurnPages>
             <ToolCalls projectId={projectId} sessionId={sessionId} promptId={turn.promptId} total={turn.toolCallCount} />
-            {deferredChildren && !showChildren ? <Button variant="secondary" className="w-fit" onClick={() => setShowChildren(true)}>Show child prompts</Button> : <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="children" unloaded={initial?.body !== undefined && (initial.childCount ?? 0) > 0} initial={body.children} cursor={body.cursors?.children} rowKey={(row) => row.prompt.promptId} label="steering prompts">
+            {deferredChildren && !showChildren ? <Button variant="secondary" className="w-fit" onClick={() => setShowChildren(true)}>Show child prompts ({initial?.childCount})</Button> : <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="children" unloaded={initial?.body !== undefined && (initial.childCount ?? 0) > 0} initial={body.children} cursor={body.cursors?.children} rowKey={(row) => row.prompt.promptId} label="steering prompts">
               {(rows) => <ol className="flex flex-col gap-s4 border-l-2 border-line-strong pl-s4" aria-label="Child prompts">{rows.map((child) => <Turn key={child.prompt.promptId} projectId={projectId} sessionId={sessionId} contexts={contexts} agent={agent} initial={child} steering={child.prompt.origin === 'user'} turn={{ ...child.prompt, preview: child.prompt.text, textChars: child.prompt.text?.length ?? null, toolCallCount: child.toolCallCount, responseCount: child.responses.length, childCount: child.childCount ?? 0, planCount: child.body?.plans.length ?? 0, attachmentCount: child.body?.attachments.length ?? 0 }} />)}</ol>}
             </TurnPages>}
             <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="responses" initial={body.responses} cursor={body.cursors?.responses} rowKey={(row) => row.responseId} label="replies">
@@ -278,7 +278,7 @@ function selectionWords(answer: PromptAnswer): string | null {
   const matches = (selection.sporeRawMatches ?? 0) + (selection.planRawMatches ?? 0);
   const relevant = (selection.sporeRelevant ?? 0) + (selection.planUnserved ?? 0);
   const served = selection.budgetKept ?? 0;
-  if (matches === 0) return answer.failures.length === 0 && answer.skipped.includes('spores:empty') ? 'No matches found' : null;
+  if (matches === 0) return null;
   if (answer.failures.length > 0) return count(matches, 'match', 'matches') + ', lookup incomplete';
   if (relevant === 0) return count(matches, 'match', 'matches') + ', none relevant enough';
   if (served === 0) return count(matches, 'match', 'matches') + ', none served';

@@ -6,7 +6,7 @@ import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { clampLimit, decodeCursor, encodeCursor, page, DEFAULT_PAGE, MAX_PAGE } from '@myco-server-worker/read/scope.js';
 
-import { archiveProject, getSession, listProjects, listSessions, projectStats, renameProject, sessionLabel, unarchiveProject, LABEL_MAX_CHARS, SESSION_OCCURRED_AT } from '@myco-server-worker/read/sessions.js';
+import { archiveProject, getSession, listProjects, listSessions, projectStats, renameProject, sessionLabel, sessionDurationMs, unarchiveProject, LABEL_MAX_CHARS, SESSION_OCCURRED_AT } from '@myco-server-worker/read/sessions.js';
 import { activityFeed } from '@myco-server-worker/read/activity.js';
 
 function seedSessions(sqlite: import('bun:sqlite').Database) {
@@ -61,6 +61,22 @@ describe('read/sessions', () => {
     expect(exact[LABEL_MAX_CHARS]).toBe(' ');
     expect(sessionLabel(null, exact, null, 'x')).toBe(`${'abcdefghij '.repeat(7)}abc…`);
     expect(sessionLabel('  Titled  ', 'prompt', 'agent', 'x')).toBe('Titled');
+  });
+
+  it('distinguishes recorded endpoints from synthetic transcript bounds for session durations', async () => {
+    const { db, sqlite } = sqliteEnv();
+    seedSessions(sqlite);
+    sqlite.run("UPDATE sessions SET agent='cursor', started_at=1, ended_at=10, occurred_started_at=1, occurred_ended_at=10 WHERE session_id='s1'");
+    expect(await sessionDurationMs(db, { projectId: 'proj_1' }, 's1')).toBeNull();
+    expect(await sessionDurationMs(db, { projectId: 'proj_2' }, 's1')).toBeNull();
+    sqlite.run("UPDATE sessions SET occurred_started_at=NULL, occurred_ended_at=NULL WHERE session_id='s1'");
+    expect(await sessionDurationMs(db, { projectId: 'proj_1' }, 's1')).toBe(9);
+    sqlite.run("UPDATE sessions SET occurred_started_at=1, occurred_ended_at=10, agent='claude-code' WHERE session_id='s1'");
+    expect(await sessionDurationMs(db, { projectId: 'proj_1' }, 's1')).toBe(9);
+    sqlite.run("UPDATE sessions SET agent='cursor', started_at=NULL, ended_at=NULL, occurred_started_at=NULL, occurred_ended_at=NULL WHERE session_id='s1'");
+    expect(await sessionDurationMs(db, { projectId: 'proj_1' }, 's1')).toBeNull();
+    sqlite.run("UPDATE sessions SET agent='claude-code' WHERE session_id='s1'");
+    expect(await sessionDurationMs(db, { projectId: 'proj_1' }, 's1')).toBeNull();
   });
 
   it('renames a project, archived or not, and says so when none carries the id', async () => {

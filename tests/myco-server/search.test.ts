@@ -33,7 +33,7 @@ describe('full-text search', () => {
     const f = fixture();
     f.sqlite.run("UPDATE sessions SET agent = 'claude-code' WHERE project_id = 'search-a'");
     f.prompt('envelope', '<system-reminder>cobalt guidance</system-reminder>Ship the change');
-    expect((await f.search('cobalt', { type: 'prompt' })).results[0]?.preview).toBe('System reminder Ship the change');
+    expect((await f.search('cobalt', { type: 'prompt' })).results[0]?.preview).toBe('Ship the change');
     f.sqlite.run("UPDATE sessions SET agent = 'opencode' WHERE project_id = 'search-a'");
     expect((await f.search('cobalt', { type: 'prompt' })).results[0]?.preview).toBe('<system-reminder>cobalt guidance</system-reminder>Ship the change');
   });

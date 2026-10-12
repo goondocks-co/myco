@@ -50,6 +50,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       ],
       "planTags": [],
       "rules": [],
+      "displayEnvelopeTags": [],
+      "transcriptTimestamps": "recorded",
       "transcriptDiscovery": {
         "roots": [
           "~/.gemini/antigravity-cli",
@@ -518,6 +520,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "set_origin": "system"
         }
       ],
+      "displayEnvelopeTags": [
+        "command-args",
+        "command-contents",
+        "timestamp",
+        "pasted_content"
+      ],
+      "transcriptTimestamps": "recorded",
       "prompts": {
         "shapes": [
           {
@@ -1031,6 +1040,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "trim": true
         }
       ],
+      "displayEnvelopeTags": [],
+      "transcriptTimestamps": "recorded",
       "transcriptDiscovery": {
         "roots": [
           "@memberHome/member/transcripts"
@@ -1323,6 +1334,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "set_origin": "system"
         }
       ],
+      "displayEnvelopeTags": [],
+      "transcriptTimestamps": "recorded",
       "prompts": {
         "shapes": [
           {
@@ -1654,6 +1667,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "planDirs": [],
       "planTags": [],
       "rules": [],
+      "displayEnvelopeTags": [],
+      "transcriptTimestamps": "recorded",
       "transcriptDiscovery": {
         "roots": [
           "~/.copilot/session-state"
@@ -1983,6 +1998,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "trim": true
         }
       ],
+      "displayEnvelopeTags": [
+        "timestamp",
+        "attached_files",
+        "user_info",
+        "additional_data",
+        "pasted_content"
+      ],
+      "transcriptTimestamps": "synthetic",
       "transcriptDiscovery": {
         "roots": [
           "~/.cursor/projects"
@@ -2326,6 +2349,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       ],
       "planTags": [],
       "rules": [],
+      "displayEnvelopeTags": [],
+      "transcriptTimestamps": "recorded",
       "transcriptDiscovery": {
         "roots": [
           "@memberHome/member/transcripts"
@@ -2684,6 +2709,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       ],
       "planTags": [],
       "rules": [],
+      "displayEnvelopeTags": [],
+      "transcriptTimestamps": "recorded",
       "transcriptDiscovery": {
         "roots": [
           "~/.pi/agent/sessions"
@@ -2812,6 +2839,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       ],
       "planTags": [],
       "rules": [],
+      "displayEnvelopeTags": [],
+      "transcriptTimestamps": "recorded",
       "transcriptDiscovery": {
         "roots": [
           "~/.windsurf/transcripts"

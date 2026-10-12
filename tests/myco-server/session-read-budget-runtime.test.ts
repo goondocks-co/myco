@@ -2,6 +2,7 @@ import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sessionTurnContexts, turnDetail, toolUsage } from '@myco-server-worker/read/turns.js';
+import { uuidv5 } from '@myco-server-worker/hash.js';
 import { measuredStore } from './helpers/read-budget.js';
 
 it('D1 session contributions are attributed once and opening 500 turns stays within the rows-read budget', async () => {
@@ -31,15 +32,18 @@ it('D1 session contributions are attributed once and opening 500 turns stays wit
       SELECT 'project','session','prompt-'||i,'answer-'||i,'empty',0,'[]','["spores:empty"]','[]','{}',i FROM seq`).run();
     await db.prepare(sequence + ` INSERT INTO spore_injections(project_id,session_id,prompt_id,prompt_hash,spore_ids,plan_ids,created_at)
       SELECT 'project','session','prompt-'||i,'hash-'||i,'[]','[]',i FROM seq`).run();
+    await db.prepare("UPDATE events SET kind='subagent.start', payload=? WHERE event_id='event-1'")
+      .bind(JSON.stringify({ subagentId: await uuidv5('subagent', 'session', 'raw-agent'), parentPromptId: 'prompt-1' })).run();
+    await db.prepare("INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES('project','session','cortex:raw-agent',1)").run();
     const measured = measuredStore(db);
     let statements = 0;
     const prepare = measured.db.prepare.bind(measured.db);
     measured.db.prepare = sql => { statements++; return prepare(sql); };
     const scope = { projectId: 'project' };
-    expect(await sessionTurnContexts(measured.db, scope, 'session')).toEqual({ 'prompt-1': { start: true, subagents: 0 } });
+    expect(await sessionTurnContexts(measured.db, scope, 'session')).toEqual({ 'prompt-1': { start: true, subagents: 1 } });
     expect(await toolUsage(measured.db, scope, 'session')).toEqual([{ toolName: 'Read', count: 500 }]);
     const headerReads = measured.reads();
-    expect(headerReads).toBeLessThan(50_000);
+    expect(headerReads).toBeLessThan(2_000);
     let turnReads = 0;
     let maxTurnReads = 0;
     for (let i = 1; i <= 500; i++) {
@@ -54,11 +58,11 @@ it('D1 session contributions are attributed once and opening 500 turns stays wit
         expect(body?.children.every(child => child.body.answers.length === 0)).toBe(true);
       }
       expect(measured.reads()).toBeLessThan(i === 1 ? 2000 : 100);
-      expect(statements).toBeLessThanOrEqual(11);
+      expect(statements).toBeLessThanOrEqual(9);
       turnReads += measured.reads();
       maxTurnReads = Math.max(maxTurnReads, measured.reads());
     }
-    expect(headerReads + turnReads).toBeLessThan(100_000);
+    expect(headerReads + turnReads).toBeLessThan(30_000);
     console.info('SESSION_READ_BUDGET', { turns: 500, children: 50, events: 20000, headerReads, turnReads, maxTurnReads });
   } finally { await mf.dispose(); }
 }, 120_000);

@@ -18,7 +18,7 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
 import { sessionListPath } from '../../packages/myco-server/ui/src/hooks/use-sessions';
-import { displayPrompt } from '@goondocks/myco-shared/prompt-text';
+import { displayPrompt, promptDisplay } from '@goondocks/myco-shared/prompt-text';
 import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/ui/src/features/sessions/Turn';
 import { memberFilter, startedWords, windowBounds } from '../../packages/myco-server/ui/src/features/sessions/words';
 import { LIVE_WITHIN_MS } from '../../packages/myco-server/ui/src/features/today/timeline';
@@ -950,7 +950,7 @@ describe('the session reading page', () => {
       '/api/projects/x/sessions/s1': () => detail({ endedAt: NOW - 20 * MINUTE }, { turnContexts: { [P1]: { start: true, subagents: 0 }, [P2]: { start: false, subagents: 1 } }, metrics: { tools: [{ toolName: 'Read', count: 3 }], tokens: null } }),
       '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn()]),
       [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({ ...empty,
-        prompt: prompt(P1, 'user', '<command-name>/fork</command-name>'),
+        prompt: prompt(P1, 'user', '<command-name>/fork</command-name><command-args></command-args>'),
         context: { start: true, subagents: 0 }, metrics: { tools: [{ toolName: 'Read', count: 2 }], durationMs: 1234, tokens: null },
         injection: { sporeIds: ['sp1'], spores: [{ id: 'sp1', observationType: 'decision', preview: 'Shared read path' }], planIds: ['plan1'], plans: [{ planKey: 'plan1', title: 'Session audit plan' }], createdAt: NOW },
         answers: [{ id: 'empty-answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores:empty'], failures: [], selection: { ...emptyInjectionCounts(), sporeRawMatches: 12 }, createdAt: NOW }, { id: 'answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores', 'plan-nudge:no_intent'], failures: [{ contributor: 'spores', error: 'store_quota', operation: 'hydrate_spores' }], selection: emptyInjectionCounts(), createdAt: NOW }],
@@ -968,6 +968,9 @@ describe('the session reading page', () => {
     const parent = await screen.findByTestId(`turn-${P1}`);
     await within(parent).findByText('Myco sent the session start block');
     expect(within(parent).getByText('Ran /fork')).toBeTruthy();
+    expect(within(parent).queryByRole('button', { name: 'Ran /fork' })).toBeNull();
+    expect(within(parent).queryByText('/fork')).toBeNull();
+    expect(within(parent).queryByRole('button', { name: 'Command arguments' })).toBeNull();
     expect(within(parent).getByText('Read × 2')).toBeTruthy();
     expect(within(parent).getAllByText(/Prompt to last reply/).length).toBeGreaterThan(0);
     fireEvent.click(within(parent).getByRole('button', { name: 'Myco sent the session start block' }));
@@ -995,6 +998,21 @@ describe('the session reading page', () => {
     expect(requested).not.toContain('/api/projects/x/sessions/s1/turns/' + P3);
   });
 
+
+  it('explains an empty match set once', async () => {
+    server(routes({
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn()]),
+      [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
+        prompt: { promptId: P1, origin: 'user', promptKind: null, parentPromptId: null, threadLabel: null, text: 'Review this', blobKey: null, createdAt: NOW },
+        responses: [], attachments: [], plans: [], children: [], injection: null,
+        answers: [{ id: 'empty', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores:empty'], failures: [], selection: emptyInjectionCounts(), createdAt: NOW }],
+      }),
+    }));
+    mount('/p/x/sessions/s1');
+    fireEvent.click(await screen.findByRole('button', { name: 'Myco prepared no context' }));
+    expect(screen.getAllByText('No relevant memories found')).toHaveLength(1);
+    expect(screen.queryByText('No matches found')).toBeNull();
+  });
 
   it('normalizes long inline prompts once and normalizes fetched prompt bodies', async () => {
     const promptText = 'file preamble\n## My request for Codex:\n' + 'word '.repeat(140) + '\n## My request for Codex:\nkeep this second marker';
@@ -1158,11 +1176,19 @@ describe('the session reading page', () => {
     mount('/p/x/sessions/s1');
     const row = await screen.findByTestId(`turn-${P2}`);
     expect(requested.filter(path => path.includes('/turns/'))).toEqual([`/api/projects/x/sessions/s1/turns/${P1}`]);
-    fireEvent.click(within(row).getByRole('button', { name: 'Show child prompts' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Show child prompts (1)' }));
     expect(await within(row).findByText('Nested review')).toBeTruthy();
     expect(requested.filter(path => path.includes('/turns/'))).toEqual([
       `/api/projects/x/sessions/s1/turns/${P1}`, `/api/projects/x/sessions/s1/turns/${P2}?collection=children`,
     ]);
+  });
+
+  it('shows an imported Cursor session duration as not recorded', async () => {
+    server(routes({
+      '/api/projects/x/sessions/s1': () => detail({ agent: 'cursor', endedAt: NOW }, { metrics: { tools: [], tokens: null, durationMs: null } }),
+    }));
+    mount('/p/x/sessions/s1');
+    expect(await screen.findByText('Not recorded')).toBeTruthy();
   });
 
   it('shows Cursor reply time as not recorded and uses days for recorded session endpoints', async () => {
@@ -1185,9 +1211,9 @@ describe('the session reading page', () => {
 
 describe('prompt display follows harness formats', () => {
   it.each([
-    ['claude-code', '<command-name>/fork</command-name><command-message>fork</command-message><local-command-stdout>done</local-command-stdout><system-reminder>guidance</system-reminder>', 'Ran /fork Command Command output System reminder'],
-    ['codex', '<subagent_notification id="a">done</subagent_notification><environment_context>cwd</environment_context>', 'Sub-agent notification Environment'],
-    ['cursor', '<timestamp>now</timestamp><user_query>fix the bug</user_query><attached_files>file</attached_files>', 'Timestamp Attached files fix the bug'],
+    ['claude-code', '<command-name>/fork</command-name><command-message>fork</command-message><local-command-stdout>done</local-command-stdout><system-reminder>guidance</system-reminder>', '/fork'],
+    ['codex', '<subagent_notification id="a">done</subagent_notification><environment_context>cwd</environment_context>', ''],
+    ['cursor', '<timestamp>now</timestamp><user_query>fix the bug</user_query><attached_files>file</attached_files>', 'fix the bug'],
     ['opencode', 'Keep <b>my markup</b>', 'Keep <b>my markup</b>'],
   ])('%s markup', (agent, input, expected) => {
     expect(displayPrompt(input, agent)).toBe(expected);
@@ -1206,9 +1232,9 @@ describe('stored prompt display regressions', () => {
     ['codex', '<system-reminder>keep</system-reminder>'],
     ['cursor', '<skill>keep</skill>'],
     ['opencode', '<skill>keep</skill>'],
-    [null, '<system-reminder>keep</system-reminder>'],
+    ['unknown', '<system-reminder>keep</system-reminder>'],
   ])('preserves foreign tags for %s', (agent, text) => {
-    expect(displayPrompt(text, agent)).toBe(text);
+    expect(displayPrompt(text, agent === 'unknown' ? null : agent)).toBe(text);
   });
   it('preserves personal mentions after a leading envelope', () => {
     expect(displayPrompt('<system-reminder>context</system-reminder>Why name <skill> and <task-notification>?', 'claude-code'))
@@ -1216,5 +1242,24 @@ describe('stored prompt display regressions', () => {
   });
   it('does not discard stored Cursor snake_case text', () => {
     expect(displayPrompt('<my_notes>keep this</my_notes>', 'cursor')).toBe('<my_notes>keep this</my_notes>');
+  });
+});
+
+describe('leading envelope ownership', () => {
+  it.each(['claude-code', 'cursor'])('%s keeps paste follow-up text in labels', agent => {
+    expect(displayPrompt('<pasted_content id="a">stack trace</pasted_content> Summarise this', agent)).toBe('Summarise this');
+    expect(displayPrompt('<pasted_content id="a">Summarise this', agent)).toBe('Summarise this');
+  });
+  it('keeps unclosed personal markup out of harness chrome', () => {
+    const text = '<skill> handling is broken in the parser, please fix it';
+    expect(promptDisplay(text, 'claude-code')).toEqual({ text: ' handling is broken in the parser, please fix it', envelopes: [] });
+    expect(displayPrompt(text, 'opencode')).toBe(text);
+    expect(promptDisplay('<system-reminder>please fix this', 'claude-code').envelopes).toEqual([]);
+  });
+  it('keeps command arguments as person text and omits empty chrome', () => {
+    const text = '<command-name>/review</command-name><command-args>the parser</command-args>';
+    expect(displayPrompt(text, 'claude-code')).toBe('/review the parser');
+    expect(promptDisplay(text, 'claude-code')).toEqual({ text: 'the parser', envelopes: [{ label: 'Ran /review', text: '', inlineText: '/review' }] });
+    expect(promptDisplay('<command-name>/fork</command-name><command-args></command-args>', 'claude-code')).toEqual({ text: '', envelopes: [{ label: 'Ran /fork', text: '', inlineText: '/fork' }] });
   });
 });

@@ -19,6 +19,8 @@ hookFields:
     - '/agent-transcripts/([^/]+)/\1\.jsonl$'
     - '(?:^|/)([^/.]+)\.txt$'
 capture:
+  transcriptTimestamps: synthetic
+  displayEnvelopeTags: [timestamp, attached_files, user_info, additional_data, pasted_content]
   # Two layouts are in use: a flat `.txt` and a per-session directory holding
   # `.jsonl`. Order is significant — a session with both resolves to `.txt`.
   transcriptDiscovery:

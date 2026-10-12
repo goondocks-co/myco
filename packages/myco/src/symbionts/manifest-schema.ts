@@ -200,6 +200,10 @@ const CaptureManifestSchema = z.object({
   planDirs: z.array(z.string()).default([]),
   planTags: z.array(z.string()).default([]),
   rules: z.array(CaptureRuleSchema).default([]),
+  /** Envelope tags used only to present stored prompts, without changing capture rules. */
+  displayEnvelopeTags: z.array(z.string().regex(/^[\w-]+$/)).default([]),
+  /** Whether transcript ordering instants are recorded by the harness or synthesized by the parser. */
+  transcriptTimestamps: z.enum(['recorded', 'synthetic']).default('recorded'),
   prompts: CapturePromptsSchema.optional(),
   /**
    * Absent means this agent's on-disk layout is undeclared: readers fall back

@@ -16,6 +16,7 @@ hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
 capture:
+  displayEnvelopeTags: [command-args, command-contents, timestamp, pasted_content]
   # A session that continues one compacted starts with `source: compact` (`member/compaction.ts`).
   compactionStart:
     field: source

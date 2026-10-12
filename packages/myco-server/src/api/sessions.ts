@@ -2,7 +2,7 @@ import { getReleaseStatus } from '../core/provenance.js';
 import { nameOwnMachines, ownMachineNames } from '../read/capture.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { getSession, listSessionSummaries, projectStats, sessionCounts, type SessionFilters } from '../read/sessions.js';
+import { getSession, listSessionSummaries, projectStats, sessionCounts, sessionDurationMs, type SessionFilters } from '../read/sessions.js';
 import { activityFeed } from '../read/activity.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { decodeCursor } from '../read/scope.js';
@@ -104,7 +104,7 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   return ok({
     turnContexts: await sessionTurnContexts(env.db, scope, sessionId),
     metrics: { tools: await toolUsage(env.db, scope, sessionId), tokens: null,
-      durationMs: Math.max(0, (session.endedAt ?? session.lastReceivedAt) - (session.startedAt ?? session.firstReceivedAt)) },
+      durationMs: await sessionDurationMs(env.db, scope, sessionId) },
     session, resume: resumeCommandFor(session.agent, session.sessionId, session.originPath), untitled: await untitledReason(env.db, scope.projectId, sessionId), counts: await sessionCounts(env.db, scope, sessionId),
     release: await getReleaseStatus(env.db, scope, 'session', sessionId), outcome: await sessionOutcome(env.db, scope, sessionId), projectId: scope.projectId,
   });

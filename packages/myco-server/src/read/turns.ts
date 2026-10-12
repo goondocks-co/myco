@@ -5,7 +5,8 @@
  * fetches one turn's body when it opens, so the list carries counts and a
  * preview, never a prompt's full text.
  */
-import { sourceTimestampsRecorded } from '../ingest/parsers/source-time.js';
+import { sourceTimestampsRecorded } from '@goondocks/myco-shared/capture-rules';
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { uuidv5 } from '../hash.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { oneLine, type PromptInjection } from '../core/injection.js';
@@ -158,18 +159,12 @@ export async function promptInSession(db: RelationalStore, scope: ReadScope, ses
 
 /** One turn's body, or null when no prompt of that id sits in the session. Tool calls are not here: they are read on their own, page by page, when the reader opens them. */
 export async function turnDetail(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string): Promise<TurnDetail | null> {
-  return readTurnBody(db, scope, sessionId, promptId, true);
-}
-
-async function readTurnBody(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string, withChildren: boolean): Promise<TurnDetail | null> {
-  const bodies = await readTurnBodies(db, scope, sessionId, [promptId]);
+  const children = await steeringChildPage(db, scope, sessionId, promptId, { limit: TURN_BODY_LIMIT });
+  const bodies = await readTurnBodies(db, scope, sessionId, [promptId, ...children.rows.map(r => r.prompt_id as string)]);
   const body = bodies.get(promptId);
   if (body === undefined) return null;
-  if (withChildren) {
-    const children = await listSteeringChildren(db, scope, sessionId, promptId, { limit: TURN_BODY_LIMIT });
-    body.children = [...children.rows];
-    body.cursors.children = children.cursor;
-  }
+  body.children = [...steeringBodies(children, bodies).rows];
+  body.cursors.children = children.cursor;
   return body;
 }
 
@@ -220,7 +215,7 @@ async function readTurnBodies(db: RelationalStore, scope: ReadScope, sessionId: 
     bodies.set(id, {
       prompt, responses: [...responses.get(id)!.rows], attachments: [...attachments.get(id)!.rows],
       plans: [...plans.get(id)!.rows], answers: [...answers.get(id)!.rows], injection, children: [],
-      metrics: { tools: JSON.parse(row.tools as string), durationMs: !sourceTimestampsRecorded(row.agent as string | null) || row.last_reply == null ? null : Math.max(0, (row.last_reply as number) - prompt.createdAt), tokens: null },
+      metrics: { tools: JSON.parse(row.tools as string), durationMs: !sourceTimestampsRecorded(CAPTURE_RULE_BUNDLES, row.agent as string | null) || row.last_reply == null ? null : Math.max(0, (row.last_reply as number) - prompt.createdAt), tokens: null },
       cursors: { responses: responses.get(id)!.cursor, attachments: attachments.get(id)!.cursor,
         plans: plans.get(id)!.cursor, answers: answers.get(id)!.cursor, children: null },
     });
@@ -230,14 +225,22 @@ async function readTurnBodies(db: RelationalStore, scope: ReadScope, sessionId: 
 
 /** A bounded page of steering prompts, with their bodies hydrated together. */
 export async function listSteeringChildren(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string, opts: { limit?: number; cursor?: string } = {}): Promise<Page<TurnChild>> {
+  const children = await steeringChildPage(db, scope, sessionId, promptId, opts);
+  const bodies = await readTurnBodies(db, scope, sessionId, children.rows.map(r => r.prompt_id as string));
+  return steeringBodies(children, bodies);
+}
+
+async function steeringChildPage(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string, opts: { limit?: number; cursor?: string }): Promise<Page<Record<string, unknown>>> {
   const k = keyset(opts, { order: 'pb.created_at', id: 'pb.prompt_id', direction: 'ASC' });
   if (k === null) return { rows: [], cursor: null };
   const { results } = await db.prepare(`SELECT ${PROMPT_COLUMNS}, ${TOOL_CALL_COUNT} AS tool_call_count, ${CHILD_COUNT} AS child_count FROM prompt_batches pb
     WHERE pb.project_id = ? AND pb.session_id = ? AND pb.parent_prompt_id = ? ${k.where === '' ? '' : `AND ${k.where}`}
     ORDER BY +pb.created_at ASC, pb.prompt_id ASC LIMIT ?`)
     .bind(scope.projectId, sessionId, promptId, ...k.params, k.limit + 1).all<Record<string, unknown>>();
-  const children = page(results, k.limit, (r) => ({ createdAt: r.created_at as number, id: r.prompt_id as string }));
-  const bodies = await readTurnBodies(db, scope, sessionId, children.rows.map(r => r.prompt_id as string));
+  return page(results, k.limit, (r) => ({ createdAt: r.created_at as number, id: r.prompt_id as string }));
+}
+
+function steeringBodies(children: Page<Record<string, unknown>>, bodies: Map<string, TurnDetail>): Page<TurnChild> {
   const rows = children.rows.map(r => {
     const prompt = toPrompt(r);
     const body = bodies.get(prompt.promptId)!;
