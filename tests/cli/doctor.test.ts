@@ -886,9 +886,9 @@ describe('checkMemberMcpResolution', () => {
   const remote = (url: string, helperServer: string) => JSON.stringify({
     mcpServers: { myco: { type: 'http', url: `${url}/mcp`, headersHelper: `/opt/myco member mcp-headers --credential registry --server ${helperServer}` } },
   });
-  /** Writes that entry where Claude Code reads a project's servers. */
-  const writeRemote = (root: string, url: string, helperServer: string) =>
-    fs.writeFileSync(path.join(root, '.mcp.json'), remote(url, helperServer));
+  /** Writes that entry in Claude Code's user-level MCP file. */
+  const writeRemote = (url: string, helperServer: string) =>
+    fs.writeFileSync(path.join(homeDir, '.claude.json'), remote(url, helperServer));
 
   it('says nothing for a project that is not a member', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
@@ -896,28 +896,28 @@ describe('checkMemberMcpResolution', () => {
     expect(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).toEqual([]);
   });
 
-  it('names the scope and transport of a member entry a project override carries', async () => {
+  it('names the scope and transport of a global member entry', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
-    fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
+    fs.mkdirSync(path.join(homeDir, '.cursor'), { recursive: true });
     // Cursor takes no headers helper, so its member entry is the stdio bridge carrying the credential flag.
-    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { type: 'stdio', command: '/opt/myco', args: ['mcp', '--credential', 'registry'] } } }));
+    fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { type: 'stdio', command: '/opt/myco', args: ['mcp', '--credential', 'registry'] } } }));
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_entry_stdio', symbiont: 'cursor', scope: 'project', status: 'ok' });
+      .toContainEqual({ reason: 'mcp_entry_stdio', symbiont: 'cursor', scope: 'global', status: 'ok' });
   });
 
   it('names a Codex TOML entry under its own servers section, which a JSON key would miss', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
-    fs.mkdirSync(path.join(root, '.codex'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.codex', 'config.toml'),
+    fs.mkdirSync(path.join(homeDir, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.codex', 'config.toml'),
       '[mcp_servers.myco]\nurl = "https://srv.example/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers --credential registry --server https://srv.example"\n');
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_entry_http', symbiont: 'codex', scope: 'project', status: 'ok' });
+      .toContainEqual({ reason: 'mcp_entry_http', symbiont: 'codex', scope: 'global', status: 'ok' });
   });
 
   /** Cursor's member entry: the stdio bridge, optionally naming the directory it starts in. */
@@ -930,22 +930,22 @@ describe('checkMemberMcpResolution', () => {
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
     member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2');
-    fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), launcher());
+    fs.mkdirSync(path.join(homeDir, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), launcher());
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_cwd_ambiguous', symbiont: 'cursor', scope: 'project', status: 'warn' });
+      .toContainEqual({ reason: 'mcp_cwd_ambiguous', symbiont: 'cursor', scope: 'global', status: 'warn' });
   });
 
   it('accepts a launcher naming no directory where the machine holds one membership', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
-    fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), launcher());
+    fs.mkdirSync(path.join(homeDir, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), launcher());
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_entry_stdio', symbiont: 'cursor', scope: 'project', status: 'ok' });
+      .toContainEqual({ reason: 'mcp_entry_stdio', symbiont: 'cursor', scope: 'global', status: 'ok' });
   });
 
   it('accepts a launcher that names this project, and warns about one naming another directory', async () => {
@@ -954,15 +954,15 @@ describe('checkMemberMcpResolution', () => {
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
     member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2');
-    fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
+    fs.mkdirSync(path.join(homeDir, '.cursor'), { recursive: true });
 
-    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), launcher(root));
+    fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), launcher(root));
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_entry_stdio', symbiont: 'cursor', scope: 'project', status: 'ok' });
+      .toContainEqual({ reason: 'mcp_entry_stdio', symbiont: 'cursor', scope: 'global', status: 'ok' });
 
-    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), launcher(elsewhere));
+    fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), launcher(elsewhere));
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_cwd_elsewhere', symbiont: 'cursor', scope: 'project', status: 'warn' });
+      .toContainEqual({ reason: 'mcp_cwd_elsewhere', symbiont: 'cursor', scope: 'global', status: 'warn' });
   });
 
   it('warns on a relative directory, which names no launch location the report can check', async () => {
@@ -970,12 +970,12 @@ describe('checkMemberMcpResolution', () => {
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
     member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2');
-    fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
+    fs.mkdirSync(path.join(homeDir, '.cursor'), { recursive: true });
     // A relative directory resolves against whoever reads it, not against the harness.
-    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), launcher('.'));
+    fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), launcher('.'));
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_cwd_ambiguous', symbiont: 'cursor', scope: 'project', status: 'warn' });
+      .toContainEqual({ reason: 'mcp_cwd_ambiguous', symbiont: 'cursor', scope: 'global', status: 'warn' });
   });
 
   it('leaves a remote entry alone: its headers helper resolves the membership without a directory', async () => {
@@ -983,12 +983,12 @@ describe('checkMemberMcpResolution', () => {
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
     member(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj2-')), path.join(homeDir, '.myco'), 'proj_2');
-    fs.mkdirSync(path.join(root, '.codex'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.codex', 'config.toml'),
+    fs.mkdirSync(path.join(homeDir, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.codex', 'config.toml'),
       '[mcp_servers.myco]\nurl = "https://srv.example/mcp"\nhttp_headers_helper = "/opt/myco member mcp-headers --credential registry --server https://srv.example"\n');
 
     const found = reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)).filter((r) => r.symbiont === 'codex');
-    expect(found).toContainEqual({ reason: 'mcp_entry_http', symbiont: 'codex', scope: 'project', status: 'ok' });
+    expect(found).toContainEqual({ reason: 'mcp_entry_http', symbiont: 'codex', scope: 'global', status: 'ok' });
     expect(found.every((r) => r.reason !== 'mcp_cwd_ambiguous')).toBe(true);
   });
 
@@ -997,10 +997,10 @@ describe('checkMemberMcpResolution', () => {
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
     // The URL names A; the helper mints for B.
-    writeRemote(root, 'https://srv.example', 'https://other.example');
+    writeRemote('https://srv.example', 'https://other.example');
 
     const found = await checkMemberMcpResolution(path.join(root, '.myco'), process.env);
-    expect(reasons(found)).toContainEqual({ reason: 'mcp_server_mismatch', symbiont: 'claude-code', scope: 'project', status: 'warn' });
+    expect(reasons(found)).toContainEqual({ reason: 'mcp_server_mismatch', symbiont: 'claude-code', scope: 'global', status: 'warn' });
     // The entry is wrong wherever it is read from, so it names no root.
     expect(found.find((c) => c.reason === 'mcp_server_mismatch')?.root).toBeUndefined();
   });
@@ -1010,10 +1010,10 @@ describe('checkMemberMcpResolution', () => {
     fs.mkdirSync(path.join(root, '.myco'));
     // The membership is on A; the entry pairs B with B.
     member(root, path.join(homeDir, '.myco'), 'proj_1');
-    writeRemote(root, 'https://other.example', 'https://other.example');
+    writeRemote('https://other.example', 'https://other.example');
 
     const found = await checkMemberMcpResolution(path.join(root, '.myco'), process.env);
-    expect(reasons(found)).toContainEqual({ reason: 'mcp_server_stale', symbiont: 'claude-code', scope: 'project', status: 'warn' });
+    expect(reasons(found)).toContainEqual({ reason: 'mcp_server_stale', symbiont: 'claude-code', scope: 'global', status: 'warn' });
     // True of this project alone, so it carries the root it was asked about.
     expect(found.find((c) => c.reason === 'mcp_server_stale')?.root).toBe(root);
   });
@@ -1022,33 +1022,33 @@ describe('checkMemberMcpResolution', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
-    writeRemote(root, 'https://srv.example', 'https://srv.example');
+    writeRemote('https://srv.example', 'https://srv.example');
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_entry_http', symbiont: 'claude-code', scope: 'project', status: 'ok' });
+      .toContainEqual({ reason: 'mcp_entry_http', symbiont: 'claude-code', scope: 'global', status: 'ok' });
   });
 
   it('names a target it could not read, rather than reading it as no entry', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
-    fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), 'not configuration at all');
+    fs.mkdirSync(path.join(homeDir, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), 'not configuration at all');
 
     expect(reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env)))
-      .toContainEqual({ reason: 'mcp_target_unreadable', symbiont: 'cursor', scope: 'project', status: 'warn' });
+      .toContainEqual({ reason: 'mcp_target_unreadable', symbiont: 'cursor', scope: 'global', status: 'warn' });
   });
 
   it('warns that a member entry naming no command carries no credential, without calling it a launcher', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-doctor-mcp-proj-'));
     fs.mkdirSync(path.join(root, '.myco'));
     member(root, path.join(homeDir, '.myco'), 'proj_1');
-    fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
+    fs.mkdirSync(path.join(homeDir, '.cursor'), { recursive: true });
     // The flag is there; no command runs it, so nothing resolves the membership.
-    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { args: ['mcp', '--credential', 'registry'] } } }));
+    fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { myco: { args: ['mcp', '--credential', 'registry'] } } }));
 
     const found = reasons(await checkMemberMcpResolution(path.join(root, '.myco'), process.env));
-    expect(found).toContainEqual({ reason: 'mcp_entry_no_credential', symbiont: 'cursor', scope: 'project', status: 'warn' });
+    expect(found).toContainEqual({ reason: 'mcp_entry_no_credential', symbiont: 'cursor', scope: 'global', status: 'warn' });
     expect(found.every((r) => !(r.symbiont === 'cursor' && r.reason === 'mcp_entry_stdio'))).toBe(true);
   });
 
@@ -1115,8 +1115,8 @@ describe('checkMemberMcpResolution reading the registry for a report', () => {
       version: 1, projectId: 'proj_1', serverUrl: 'https://srv.example/', token: 'A'.repeat(43),
       root, machineId: 'm1', joinedAt: 1, updatedAt: 1,
     }), { mode: 0o600 });
-    fs.mkdirSync(path.join(root, '.cursor'), { recursive: true });
-    fs.writeFileSync(path.join(root, '.cursor', 'mcp.json'), JSON.stringify({
+    fs.mkdirSync(path.join(homeDir, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.cursor', 'mcp.json'), JSON.stringify({
       mcpServers: { myco: { type: 'stdio', command: '/opt/myco', args: ['mcp', '--credential', 'registry'] } },
     }));
     return { root, mycoHome };

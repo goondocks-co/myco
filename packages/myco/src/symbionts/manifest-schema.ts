@@ -292,13 +292,7 @@ const CaptureManifestSchema = z.object({
 
 const RegistrationSchema = z.object({
   hooksTarget: z.string().optional(),
-  /**
-   * Project-relative path where the `member-project` scope writes the 2.0
-   * member's hook block. Separate from `hooksTarget` on purpose: the member
-   * scope must never touch the file a 1.4 project-scope install owns, so the
-   * two scopes can never collapse each other's hooks. Absent means the
-   * symbiont has no member surface and the scope installs nothing.
-   */
+  /** Repository-relative member hook path recognized by read-only leftover-entry diagnostics. */
   memberHooksTarget: z.string().optional(),
   /**
    * A line `myco member provision` prints after writing this symbiont's member
@@ -473,14 +467,6 @@ const RegistrationSchema = z.object({
    * supplying the member credential's headers, rather than a stdio launcher.
    */
   memberMcpHeadersHelperKey: z.string().optional(),
-  /**
-   * True when this host merges a project's `myco` MCP server into the global
-   * one of the same name instead of replacing it, so keys only the global
-   * entry declares still reach the project's server. Member provisioning
-   * refuses, before any write, a global entry whose surviving keys would
-   * leave the member's server unusable.
-   */
-  memberMcpGlobalMerge: z.boolean().optional(),
   skillsTarget: z.string().optional(),
   /**
    * Legacy project-local skill dirs for this agent — locations from before its

@@ -1,7 +1,7 @@
 /**
  * `myco settings --harness <name> --project <id>` prints the harness settings
  * block a sandbox launch hands to `--settings`: the member's hooks, declaring
- * `--credential env`, and nothing else. It is the `member-project` install
+ * `--credential env`, and nothing else. It is the `member-global` install
  * scope's emitter run print-only, so a sandbox and a laptop can differ only in
  * where the credential comes from.
  *
@@ -61,7 +61,7 @@ export function run(args: readonly string[], deps: SettingsCliDeps = {}): void {
     process.exitCode = 2;
     return;
   }
-  const installer = new SymbiontInstaller(manifest, deps.cwd ?? process.cwd(), resolvePackageRoot(), false, undefined, null, 'member-project');
+  const installer = new SymbiontInstaller(manifest, deps.cwd ?? process.cwd(), resolvePackageRoot(), false, undefined, null, 'member-global');
   const hooks = installer.renderMemberHooks('env');
   if (hooks !== null) {
     out(JSON.stringify({ hooks }, null, 2));

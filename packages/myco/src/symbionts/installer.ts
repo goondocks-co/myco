@@ -24,7 +24,7 @@ import {
   type JsonSettingsAudit,
 } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
-import { ensureAgentsMd, ensureSymlink, isMycoHookCommand, isMycoHookGroup, withoutMycoHooks, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
+import { ensureSymlink, isMycoHookCommand, isMycoHookGroup, withoutMycoHooks, containsMycoLauncherReference, hasMycoManagedMarker, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, SERVER_FLAG, type CredentialSource } from '../member/constants.js';
 import { parseCredentialFlag } from '../member/credential.js';
@@ -33,11 +33,10 @@ import { deploymentUrl } from '../member/registry.js';
 import { MCP_PATH } from '../plugins/spec.js';
 import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
 import { readRegistryEntry } from '../member/registry.js';
-import { runGit, runGitAnswer } from '../utils/git.js';
+import { ensureGitIgnored } from '../utils/git-exclude.js';
 import { resolveRuntimeCommand, resolveRuntimeHome } from '../runtime/runtime-pin.js';
 import { managedBinaryPath, managedSkillsDir } from '../install/managed-binary.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
-import { loadMergedConfig } from '../config/loader.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 import { BUNDLED_SKILLS } from './skills.generated.js';
 import {
@@ -46,44 +45,17 @@ import {
   HOOK_GUARD_PROJECT_PATH,
   LEGACY_BUILTIN_SKILL_NAMES,
   LEGACY_HOOK_GUARD_PATH,
-  ensureLocalSkillsGitignore,
-  reconcileProjectSkillSymlinks,
   removeProjectLaunchers,
-} from './installer/project-files.js';
+} from './installer/legacy-artifacts.js';
 export {
   removeProjectLaunchers,
-  syncSkillSymlinks,
   type RemoveProjectLaunchersOptions,
-} from './installer/project-files.js';
+} from './installer/legacy-artifacts.js';
 
 /** Myco's commands in a shared hook group, with the group's matcher fields. */
 function managedHookGroup(group: Record<string, unknown>): Record<string, unknown> {
   if (!Array.isArray(group.hooks)) return group;
   return { ...group, hooks: group.hooks.filter((hook: { command?: string }) => typeof hook.command === 'string' && isMycoHookCommand(hook.command)) };
-}
-
-/** Current comment header for Myco-managed .gitignore block. */
-const GITIGNORE_COMMENT = '# Myco managed (machine-specific)';
-
-/** Legacy comment header — recognized for cleanup during reconciliation. */
-const GITIGNORE_SKILLS_COMMENT_LEGACY = '# Myco skill symlinks (machine-specific)';
-
-/** Wrangler cache directory created by team sync operations. */
-const WRANGLER_CACHE_DIR = '.wrangler/';
-const AGENTS_MANAGED_START = '<!-- myco:managed:start -->';
-const AGENTS_MANAGED_END = '<!-- myco:managed:end -->';
-
-/** The always-present managed guidance lines. */
-const AGENTS_MANAGED_BASE_LINES = [
-  '- When `capture.ignore_plan_dirs_in_git` is enabled, custom directories in `capture.plan_dirs` may be intentionally gitignored after capture into Myco.',
-  '- Do not force-add files from intentionally gitignored custom plan directories unless the user explicitly asks.',
-  '- Myco tools take a `project` argument; pass this repo\'s git remote or the project id from session-start context. Writes without it are refused.',
-] as const;
-
-/** Managed AGENTS.md block. */
-export function buildAgentsManagedBlock(): string {
-  const lines: string[] = [...AGENTS_MANAGED_BASE_LINES];
-  return `${AGENTS_MANAGED_START}\n## Myco Managed Guidance\n\n${lines.join('\n')}\n${AGENTS_MANAGED_END}\n`;
 }
 
 /** Subdirectory within the package where symbiont templates live. */
@@ -112,30 +84,8 @@ export class MemberMcpConflictError extends MemberProvisionConflictError {
   }
 }
 
-/** A global Myco plugin that would load beside the project's member plugin instead of stepping aside for it. */
+/** A member plugin target that cannot be read or safely replaced. */
 export class MemberPluginConflictError extends MemberProvisionConflictError {}
-
-/**
- * Keys of a global `myco` server that conflict with a member's remote entry
- * when a TOML host merges the two: a stdio transport (Codex refuses `command`
- * or `cwd` beside `url`) or a credential other than the headers helper.
- */
-const GLOBAL_MCP_CONFLICT_KEYS: readonly string[] = [
-  'command', 'args', 'env', 'env_vars', 'cwd',
-  'bearer_token', 'bearer_token_env_var', 'http_headers', 'env_http_headers', 'oauth',
-];
-
-/**
- * Keys of a global `myco` server that survive a JSON host's merge into a
- * member's stdio entry and leave it unusable: a remote transport and its
- * credential, or an environment the bridge would inherit (a `MYCO_HOME` of
- * the global install's choosing sends it to the wrong vault). The project's
- * own `command` always wins, so a global launcher is no conflict.
- */
-const GLOBAL_JSON_MCP_CONFLICT_KEYS: readonly string[] = ['url', 'headers', 'oauth', 'environment'];
-
-/** The key a JSON host reads to switch a merged server off; `false` is what does it. */
-const MCP_ENABLED_KEY = 'enabled';
 
 /** The table a TOML host keeps its MCP servers in. */
 const TOML_MCP_SERVERS_KEY = 'mcp_servers';
@@ -166,16 +116,8 @@ const KNOWN_MCP_SERVERS_KEYS = ['mcpServers', 'servers', 'mcp'] as const;
  */
 export { MYCO_PLUGIN_FILE_MARKER } from './legacy-verdict.js';
 
-/**
- * The comment line only a member plugin carries: the one `member leave` may
- * delete, and the one a global plugin steps aside for. Matched as the whole
- * comment prefix, never the bare word, so a plugin that names it in its own
- * code does not match itself.
- */
+/** Ownership marker recognized on member plugin registrations. */
 export { MEMBER_PLUGIN_MARKER } from './legacy-verdict.js';
-
-/** The comment line a global Myco plugin carries when it steps aside for a project's member plugin. */
-const MEMBER_PLUGIN_COMPAT_MARKER = '// myco:defers-to-member-plugin';
 
 /** Where a plugin template names the credential source the binary is to read. */
 const CREDENTIAL_SOURCE_PLACEHOLDER = '{{mycoCredentialSource}}';
@@ -326,9 +268,6 @@ function assertSafeBinaryPathForUnquoted(binaryPath: string): void {
   throw new Error(`Refusing to install symbiont hooks: binary path "${binaryPath}" ${WHITESPACE_PATH_REFUSAL}`);
 }
 
-/** Marker text used to identify unmodified instruction stubs. */
-const INSTRUCTIONS_STUB_MARKER = 'Edit AGENTS.md, not this file';
-
 
 /**
  * The hook commands a hooks file declares under `hooks`. A file that is not
@@ -342,17 +281,6 @@ function hookCommandsIn(raw: string): string[] {
     return [...raw.matchAll(/"command"\s*:\s*("(?:[^"\\]|\\.)*")/g)].map((m) => JSON.parse(m[1]) as string);
   }
 }
-
-/** Start/end markers for the reference block prepended to existing instruction files. */
-const INSTRUCTIONS_REF_START = '<!-- myco:agents-ref:start -->';
-const INSTRUCTIONS_REF_END = '<!-- myco:agents-ref:end -->';
-
-/** Reference block prepended to existing instruction files. */
-const INSTRUCTIONS_REF_BLOCK = `${INSTRUCTIONS_REF_START}
-> **Project intelligence:** This project uses [Myco](https://myco.sh). The canonical project rules are in [\`AGENTS.md\`](AGENTS.md) — read and follow it alongside this file.
-${INSTRUCTIONS_REF_END}
-
-`;
 
 export interface InstallResult {
   hooks: boolean;
@@ -387,46 +315,10 @@ function emptyInstallResult(): InstallResult {
   };
 }
 
-export interface ManagedProjectFilesResult {
-  /**
-   * Root rules file with Myco's managed guidance block. This is project-local
-   * even under global install because agents read it from the repository.
-   */
-  agentsMd: boolean;
-  /**
-   * Repository .gitignore entries for Myco-managed local artifacts.
-   */
-  gitignore: boolean;
-  /**
-   * Count of agent skill symlinks created + pruned this pass (e.g.
-   * `.claude/skills/<name>` → `.agents/skills/<name>`). Non-zero whenever the
-   * reconcile healed missing links or cleaned stale/retired ones.
-   */
-  skillSymlinks: number;
-}
+export type InstallScope = 'project' | 'global' | 'member-global';
 
-export type InstallScope = 'project' | 'global' | 'member-project' | 'member-global';
-
-/**
- * Per-scope capability switch. Centralizes the "which operations run
- * under which scope" decision so it lives in one declarative table
- * instead of scattered `if (installScope === 'global')` guards through
- * every install / uninstall method.
- *
- * Project scope: full project-content management (AGENTS.md stub,
- * .gitignore, instruction files), per-project launcher writes, and a
- * canonical-symlink skills layer.
- *
- * Global scope: project-content surfaces are skipped (the install
- * doesn't touch the project tree), the hook guard becomes the shared
- * `~/.myco/launcher.cjs` + `mcp-launcher.cjs`, skills symlink directly
- * into the agent's globalSkillsTarget, and plugin package deps are
- * irrelevant.
- */
+/** Operations the install scope manages. */
 interface ScopeCapabilities {
-  agentsMd: boolean;
-  gitignore: boolean;
-  instructions: boolean;
   pluginPackage: boolean;
   globalLauncher: boolean;
   flatSkills: boolean;
@@ -437,23 +329,15 @@ interface ScopeCapabilities {
 
 const SCOPE_CAPABILITIES: Record<InstallScope, ScopeCapabilities> = {
   project: {
-    agentsMd: true, gitignore: true, instructions: true, pluginPackage: true,
+    pluginPackage: true,
     globalLauncher: false, flatSkills: false, detectionGate: false, mcpHomeEnv: true,
   },
   global: {
-    agentsMd: false, gitignore: false, instructions: false, pluginPackage: false,
+    pluginPackage: false,
     globalLauncher: true, flatSkills: true, detectionGate: true, mcpHomeEnv: true,
   },
-  // The 2.0 member scope writes the symbiont's memberHooksTarget and, for an
-  // mcp-transport symbiont, its MCP server list. Every project-content surface,
-  // the launchers, skills and the settings template are off, so no path through
-  // this scope can reach the file a 1.4 project install owns.
-  'member-project': {
-    agentsMd: false, gitignore: false, instructions: false, pluginPackage: false,
-    globalLauncher: false, flatSkills: false, detectionGate: false, mcpHomeEnv: false,
-  },
   'member-global': {
-    agentsMd: false, gitignore: false, instructions: false, pluginPackage: false,
+    pluginPackage: false,
     globalLauncher: false, flatSkills: true, detectionGate: false, mcpHomeEnv: false,
   },
 };
@@ -509,19 +393,7 @@ export class SymbiontInstaller {
   private readonly vaultDir: string;
   /** Grove id for config loading — undefined triggers a dev-mode warning. */
   private readonly groveId: string | null | undefined;
-  /**
-   * Scope governs *which operations execute* and *where files land*.
-   *
-   *   - `'project'`: today's behavior. Files write under `projectRoot`;
-   *     project-content surfaces (AGENTS.md, `.gitignore`, instruction
-   *     stubs) are managed in step.
-   *   - `'global'`: user-global install. Target paths come from each
-   *     manifest's `global*Target` fields; project-content surfaces are
-   *     skipped entirely; the hook guard is replaced by the absolute-path
-   *     launchers at `~/.myco/launcher.cjs` + `~/.myco/mcp-launcher.cjs`.
-   *     A detection gate refuses to install when the agent's
-   *     `manifest.detectionDir` does not exist on disk.
-   */
+  /** Scope selects project or user-level registration targets. */
   private readonly installScope: InstallScope;
 
   constructor(
@@ -535,8 +407,7 @@ export class SymbiontInstaller {
     vaultDir?: string,
     groveId?: string | null,
     installScope: InstallScope = 'project',
-    // The home a member-project install reads the project's membership from.
-    // Defaults to the home the project resolves; `myco member` passes its own.
+    // The member home used for registry and provisioning reads.
     private memberHome?: string,
   ) {
     this.vaultDir = vaultDir ?? path.join(projectRoot, '.myco');
@@ -554,7 +425,7 @@ export class SymbiontInstaller {
   }
 
   private get isMemberScope(): boolean {
-    return this.installScope === 'member-project' || this.installScope === 'member-global';
+    return this.installScope === 'member-global';
   }
 
   /**
@@ -594,13 +465,6 @@ export class SymbiontInstaller {
         : (reg.globalSettingsTarget ?? null);
       if (!target) return null;
       return this.installScope === 'member-global' ? throughLink(expandHome(target)) : expandHome(target);
-    }
-    if (this.installScope === 'member-project') {
-      // The member scope has exactly one surface. Anything else resolves to
-      // null so a stray call writes nothing rather than falling back to the
-      // 1.4 project target.
-      if (field !== 'hooks' || !reg.memberHooksTarget) return null;
-      return path.join(this.projectRoot, reg.memberHooksTarget);
     }
     const target = field === 'hooks' ? reg.hooksTarget
       : field === 'skills' ? reg.skillsTarget
@@ -866,12 +730,6 @@ export class SymbiontInstaller {
    * `runtime-redirect.cjs` shim; the env is what carries that operator's
    * intent through to the server.
    *
-   * OFF under `member-project`: that scope's `.mcp.json` lives in the project
-   * tree and is normally committed, so a machine's absolute home path would
-   * travel to everyone who clones it. Nothing is lost — `myco mcp` resolves the
-   * project's own `runtime.home` pin (`paths/home.ts`), reaching the same home
-   * without the committed file naming it.
-   *
    * No pin → no injection either way: the daemon-agnostic prod default (see
    * `resolveManagedBinaryPath`) is preserved so a config never embeds a home
    * nothing asked for. Mirrors the CLI/hook redirect: same layered pin, same
@@ -942,9 +800,6 @@ export class SymbiontInstaller {
       // create the agent's config dir on its behalf.
       return emptyInstallResult();
     }
-    // Project-content surfaces (AGENTS.md, .gitignore, instruction stubs)
-    // are intentionally project-scope-only — they live in the repo tree.
-    if (this.capabilities.agentsMd) this.reconcileAgentsMd();
     // Install hook guard before hooks so the guard script is in place when hooks reference it.
     // Write-ordering invariant: launchers MUST land before any agent's
     // global config is updated to reference them.
@@ -961,73 +816,11 @@ export class SymbiontInstaller {
           mcp: this.installMcp(),
           skills: this.installSkills(),
           settings: this.installSettings(),
-          instructions: this.capabilities.instructions ? this.installInstructions() : false,
+          instructions: false,
           pluginPackage: this.installPluginPackage(),
           pluginManifest: this.installPluginManifest(),
         };
-    if (this.capabilities.gitignore) this.updateGitignore();
     return result;
-  }
-
-  private reconcileAgentsMd(): boolean {
-    ensureAgentsMd(this.projectRoot);
-    const agentsPath = path.join(this.projectRoot, 'AGENTS.md');
-    let content = '';
-    try {
-      content = fs.readFileSync(agentsPath, 'utf-8');
-    } catch {
-      return false;
-    }
-
-    const block = buildAgentsManagedBlock();
-
-    const stripped = this.stripManagedAgentsBlock(content);
-    const separator = stripped.length > 0 && !stripped.endsWith('\n') ? '\n' : '';
-    const spacer = stripped.trimEnd().length > 0 ? '\n' : '';
-    const result = `${stripped}${separator}${spacer}${block}`;
-    if (result === content) return false;
-    fs.writeFileSync(agentsPath, result, 'utf-8');
-    return true;
-  }
-
-  private stripManagedAgentsBlock(content: string): string {
-    const startIdx = content.indexOf(AGENTS_MANAGED_START);
-    if (startIdx === -1) return content.trimEnd();
-    const endIdx = content.indexOf(AGENTS_MANAGED_END, startIdx);
-    if (endIdx === -1) return content.trimEnd();
-    const afterEnd = endIdx + AGENTS_MANAGED_END.length;
-    return (content.slice(0, startIdx) + content.slice(afterEnd)).trimEnd();
-  }
-
-  private getCustomPlanGitignoreEntries(): string[] {
-    const config = this.loadProjectConfig();
-    if (!config?.capture.ignore_plan_dirs_in_git) return [];
-
-    return [...new Set(
-      config.capture.plan_dirs
-        .map((dir) => this.normalizeProjectRelativeDir(dir))
-        .filter((dir): dir is string => dir !== null),
-    )];
-  }
-
-  private loadProjectConfig() {
-    try {
-      return loadMergedConfig(this.vaultDir, { groveId: this.groveId });
-    } catch {
-      return null;
-    }
-  }
-
-  private normalizeProjectRelativeDir(dir: string): string | null {
-    const slashNormalized = dir.trim().replaceAll('\\', '/');
-    if (!slashNormalized) return null;
-    if (slashNormalized.startsWith('~/')) return null;
-    if (path.posix.isAbsolute(slashNormalized) || path.win32.isAbsolute(slashNormalized)) return null;
-
-    const withoutDotPrefix = slashNormalized.replace(/^\.\//, '');
-    const normalized = path.posix.normalize(withoutDotPrefix);
-    if (normalized === '.' || normalized === '..' || normalized.startsWith('../')) return null;
-    return normalized.endsWith('/') ? normalized : `${normalized}/`;
   }
 
   /**
@@ -1275,35 +1068,16 @@ export class SymbiontInstaller {
       mcp,
       skills: this.installSkills(),
       settings,
-      instructions: this.installInstructions(),
+      instructions: false,
       pluginPackage: this.installPluginPackage(),
       pluginManifest: this.installPluginManifest(),
     };
   }
 
-  /**
-   * Remove all Myco registration from this symbiont's project files.
-   *
-   * Scope: only this symbiont's own config files. The project-shared
-   * launcher (`.agents/myco-run.cjs` / `myco-cli.cjs`) is NOT removed
-   * here — uninstalling symbiont A must not break symbiont B's hooks.
-   * Callers that want full project-level teardown (`myco remove`) call
-   * `removeProjectLaunchers(projectRoot)` explicitly after looping
-   * uninstall over every symbiont.
-   *
-   * Project-content surfaces (`.gitignore` Myco block, instruction
-   * stubs) are scrubbed by default, because `myco remove` wants them
-   * gone too. The migration walker passes `keepProjectContent: true`
-   * to retain those — they're project-level concerns that survive a
-   * per-symbiont config cleanup (e.g., plan-capture `.gitignore`
-   * entries stay relevant whether the symbiont install is project- or
-   * global-scoped, and instruction stubs reference AGENTS.md which
-   * outlives any individual symbiont).
-   */
-  uninstall(options: { keepProjectContent?: boolean } = {}): InstallResult {
+  /** Remove this symbiont's hooks, MCP, skills and settings registration. */
+  uninstall(_options: { keepProjectContent?: boolean } = {}): InstallResult {
     if (this.deferGlobalSymbiontConfig()) return emptyInstallResult();
     const reg = this.manifest.registration;
-    const keepProjectContent = options.keepProjectContent === true;
     const result = this.shouldBatchJsonTargets(reg)
       ? this.uninstallBatchedJson(reg!)
       : {
@@ -1311,9 +1085,7 @@ export class SymbiontInstaller {
           mcp: this.uninstallMcp(),
           skills: this.uninstallSkills(),
           settings: this.uninstallSettings(),
-          instructions: this.capabilities.instructions && !keepProjectContent
-            ? this.uninstallInstructions()
-            : false,
+          instructions: false,
           pluginPackage: false,
           // Plugin-bundle marker (e.g., antigravity's `plugin.json`) is
           // a per-symbiont config file, not project-content. Always
@@ -1323,9 +1095,6 @@ export class SymbiontInstaller {
           // present, which the walker has just removed.
           pluginManifest: this.uninstallPluginManifest(),
         };
-    if (this.capabilities.gitignore && !keepProjectContent) {
-      this.cleanGitignore();
-    }
     return result;
   }
 
@@ -1341,7 +1110,7 @@ export class SymbiontInstaller {
         mcp: false,
         skills: this.uninstallSkills(),
         settings: false,
-        instructions: this.uninstallInstructions(),
+        instructions: false,
         pluginPackage: false,
         pluginManifest: false,
       };
@@ -1404,86 +1173,10 @@ export class SymbiontInstaller {
       mcp,
       skills: this.uninstallSkills(),
       settings,
-      instructions: this.uninstallInstructions(),
+      instructions: false,
       pluginPackage: false,
       pluginManifest: false,
     };
-  }
-
-  /**
-   * Ensure the instruction file references AGENTS.md.
-   * - File doesn't exist: write the full stub template.
-   * - File exists without reference: prepend a reference block.
-   * - File already has reference: skip (idempotent).
-   *
-   * Also ensures AGENTS.md exists — creates a starter if missing.
-   */
-  installInstructions(): boolean {
-    const reg = this.manifest.registration;
-    if (!reg?.instructionsFile) return false;
-
-    // Ensure AGENTS.md exists before creating stubs that reference it
-    ensureAgentsMd(this.projectRoot);
-
-    const targetPath = path.join(this.projectRoot, reg.instructionsFile);
-
-    // Check if file already exists
-    let existing: string | null = null;
-    try { existing = fs.readFileSync(targetPath, 'utf-8'); } catch { /* doesn't exist */ }
-
-    if (existing !== null) {
-      // File exists — check if it already has our reference
-      if (existing.includes(INSTRUCTIONS_REF_START) || existing.includes(INSTRUCTIONS_STUB_MARKER)) {
-        return false; // Already has reference — idempotent
-      }
-      // Prepend reference block to existing content
-      fs.writeFileSync(targetPath, INSTRUCTIONS_REF_BLOCK + existing, 'utf-8');
-      return true;
-    }
-
-    // File doesn't exist — write the full stub template
-    let stub = this.readTemplateFile('instructions-stub.md');
-    if (!stub) return false;
-
-    stub = stub.replace('{agentDisplayName}', this.manifest.displayName);
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, stub, 'utf-8');
-    return true;
-  }
-
-  /**
-   * Remove Myco's instruction file reference.
-   * - If file is the full stub (only Myco content): delete it.
-   * - If file has user content + prepended reference: remove just the reference block.
-   */
-  uninstallInstructions(): boolean {
-    const reg = this.manifest.registration;
-    if (!reg?.instructionsFile) return false;
-
-    const targetPath = path.join(this.projectRoot, reg.instructionsFile);
-    let content: string;
-    try { content = fs.readFileSync(targetPath, 'utf-8'); } catch { return false; }
-
-    // Case 1: Full stub — delete the file entirely
-    if (content.includes(INSTRUCTIONS_STUB_MARKER)) {
-      fs.unlinkSync(targetPath);
-      return true;
-    }
-
-    // Case 2: Prepended reference block — remove just the block
-    if (content.includes(INSTRUCTIONS_REF_START)) {
-      const startIdx = content.indexOf(INSTRUCTIONS_REF_START);
-      const endIdx = content.indexOf(INSTRUCTIONS_REF_END);
-      if (endIdx > startIdx) {
-        // Remove from start marker through end marker + trailing whitespace
-        const afterEnd = endIdx + INSTRUCTIONS_REF_END.length;
-        const cleaned = (content.slice(0, startIdx) + content.slice(afterEnd)).replace(/^\n+/, '');
-        atomicWriteFileSync(targetPath, cleaned);
-        return true;
-      }
-    }
-
-    return false;
   }
 
   /**
@@ -1594,148 +1287,6 @@ export class SymbiontInstaller {
   }
 
   /**
-   * Reconcile the Myco-managed `.gitignore` block for the project this
-   * installer is rooted at. Public so the migration walker / detect-
-   * tick can re-assert the block once per project regardless of which
-   * scope the symbiont install lives in — `.gitignore` plan-capture
-   * entries are a project-level concern that must survive even when
-   * per-symbiont configs are uninstalled.
-   *
-   * Idempotent: when the strip-and-rewrite cycle produces identical
-   * content the function returns without writing. Safe to call on
-   * every detect tick.
-   */
-  reconcileProjectGitignore(): boolean {
-    return this.updateGitignore();
-  }
-
-  /**
-   * Reconcile project-local files Myco owns under the global-install model.
-   * This is the project-content counterpart to global symbiont install:
-   * `myco update` must refresh managed repository files, but it must not
-   * recreate project-local launchers or write agent config under the repo.
-   *
-   * Add future project-managed files here so update/bootstrap code has a
-   * single durable surface to call instead of growing one-off reconciler hooks.
-   */
-  reconcileManagedProjectFiles(): ManagedProjectFilesResult {
-    const agentsMd = this.reconcileAgentsMd();
-    const gitignore = this.updateGitignore();
-    // Reconcile this project's generated-skill symlinks: create missing links
-    // into machine-detected, non-opted-out agents and prune stale/retired ones.
-    // Symbiont-agnostic free function — it must NOT read `this.manifest`, which
-    // is an arbitrary `manifests[0]` for this project-files reconcile. Isolated
-    // in try/catch so a symlink-FS failure can't abort the AGENTS.md/.gitignore
-    // reconcile above.
-    let skillSymlinks = 0;
-    try {
-      const { created, pruned } = reconcileProjectSkillSymlinks(this.projectRoot, {
-        vaultDir: this.vaultDir,
-        groveId: this.groveId,
-      });
-      skillSymlinks = created + pruned;
-    } catch (err) {
-      console.warn(
-        `[reconcileManagedProjectFiles] skill symlink reconcile failed for ${this.projectRoot}:`,
-        err instanceof Error ? err.message : err,
-      );
-    }
-    return { agentsMd, gitignore, skillSymlinks };
-  }
-
-  /**
-   * Narrow compatibility wrapper for callers that only care about AGENTS.md.
-   */
-  reconcileAgentsManagedGuidance(): boolean {
-    return this.reconcileAgentsMd();
-  }
-
-  /**
-   * Reconcile Myco-owned skill entries in project .gitignore.
-   * Computes the desired entry set, strips any existing Myco block
-   * (and legacy entries), then writes the current block if changed.
-   */
-  private updateGitignore(): boolean {
-    const reg = this.manifest.registration;
-    if (!reg?.skillsTarget) return false;
-
-    const skillNames = this.listSkillDirs();
-
-    // Desired state: canonical per-skill entries + infrastructure artifacts.
-    // Agent-specific targets (e.g. .claude/skills/) use local .gitignore files
-    // instead of polluting the project-level .gitignore.
-    const desired = [
-      ...skillNames.map((name) => `${CANONICAL_SKILLS_DIR}/${name}`),
-      ...this.getCustomPlanGitignoreEntries(),
-      WRANGLER_CACHE_DIR,
-    ];
-
-    const gitignorePath = path.join(this.projectRoot, '.gitignore');
-    let content = '';
-    try { content = fs.readFileSync(gitignorePath, 'utf-8'); } catch { /* doesn't exist yet */ }
-
-    // Strip existing Myco block and any legacy entries
-    const stripped = this.stripMycoGitignoreBlock(content, skillNames);
-
-    // Build the new block
-    const desiredBlock = desired.length > 0
-      ? `${GITIGNORE_COMMENT}\n${desired.join('\n')}\n`
-      : '';
-
-    // Check if anything changed
-    if (stripped === content && desiredBlock === '') return false;
-    const separator = stripped.length > 0 && !stripped.endsWith('\n') ? '\n' : '';
-    const spacer = stripped.length > 0 && desiredBlock.length > 0 ? '\n' : '';
-    const result = stripped + separator + spacer + desiredBlock;
-    if (result === content) return false;
-
-    fs.writeFileSync(gitignorePath, result, 'utf-8');
-    return true;
-  }
-
-  /**
-   * Remove all Myco-owned gitignore entries: the comment header, per-skill
-   * entries for both canonical and agent-specific paths, and legacy blanket
-   * directory entries. Returns the cleaned content.
-   */
-  private stripMycoGitignoreBlock(content: string, skillNames: string[]): string {
-    let stripped = content;
-
-    const managedStart = stripped.indexOf(GITIGNORE_COMMENT);
-    if (managedStart !== -1) {
-      const managedEndMatch = stripped.slice(managedStart).match(/\n\n/);
-      const managedEnd = managedEndMatch
-        ? managedStart + managedEndMatch.index! + managedEndMatch[0].length
-        : stripped.length;
-      stripped = stripped.slice(0, managedStart) + stripped.slice(managedEnd);
-    }
-
-    const reg = this.manifest.registration;
-    const legacyOwnedLines = new Set<string>([
-      GITIGNORE_SKILLS_COMMENT_LEGACY,
-      `${CANONICAL_SKILLS_DIR}/`,
-      WRANGLER_CACHE_DIR,
-    ]);
-    for (const name of skillNames) {
-      legacyOwnedLines.add(`${CANONICAL_SKILLS_DIR}/${name}`);
-      if (reg?.skillsTarget && reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
-        legacyOwnedLines.add(`${reg.skillsTarget}/${name}`);
-      }
-    }
-    for (const name of LEGACY_BUILTIN_SKILL_NAMES) {
-      legacyOwnedLines.add(`${CANONICAL_SKILLS_DIR}/${name}`);
-      if (reg?.skillsTarget && reg.skillsTarget !== CANONICAL_SKILLS_DIR) {
-        legacyOwnedLines.add(`${reg.skillsTarget}/${name}`);
-      }
-    }
-
-    const filtered = stripped
-      .split('\n')
-      .filter((line) => !legacyOwnedLines.has(line));
-    return filtered.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + (filtered.length > 0 ? '\n' : '');
-  }
-
-  /**
    * Merge hooks template into the target settings file.
    * Replaces all Myco-owned hook groups; preserves non-Myco hooks.
    *
@@ -1798,8 +1349,7 @@ export class SymbiontInstaller {
 
   /**
    * The member's hook block for `source`, rendered from this symbiont's own
-   * hook template — never written, so `myco settings` and the `member-project`
-   * scope print and install the same bytes. Null when the manifest declares no
+   * hook template, shared by global provisioning and sandbox settings. Null when the manifest declares no
    * member surface (`memberHooksTarget`) or its hooks are a plugin file, which
    * Plan 3 leaves out of member scope entirely.
    */
@@ -1818,7 +1368,7 @@ export class SymbiontInstaller {
     return block;
   }
 
-  /** Write scoped member hooks, preserving foreign commands and excluding project targets from git. */
+  /** Write global member hooks, preserving foreign commands and user settings. */
   installMemberHooks(): boolean {
     this.assertMemberMcpWritable();
     const block = this.renderMemberHooks('registry');
@@ -1849,7 +1399,6 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (reg?.hooksConfigVersion !== undefined) settings.version = reg.hooksConfigVersion;
     const written = writeJsonFile(targetPath, settings);
-    if (!this.isGlobalScope) this.ensureGitIgnored(targetPath);
     return written;
   }
 
@@ -1887,37 +1436,6 @@ export class SymbiontInstaller {
     return this.isMemberScope ? resolveManagedBinaryPath(this.memberHomeDir()) : resolveManagedBinaryPath();
   }
 
-  /**
-   * Refuse, before any member write, a global `myco` server this host merges
-   * into the project's entry carrying keys that leave it unusable: an
-   * incompatible transport or a competing credential on a TOML host, a remote
-   * transport, an inherited environment or a disabled server on a JSON one.
-   * A global file that cannot be read or parsed refuses too; only a missing
-   * file is no global config.
-   */
-  private assertNoMemberMcpConflict(): void {
-    if (this.isGlobalScope) return;
-    const reg = this.manifest.registration;
-    if (!reg?.memberMcpGlobalMerge || !reg.mcpTarget) return;
-    const toml = reg.mcpFormat === 'toml';
-    for (const target of reg.globalMcpTarget ?? []) {
-      const globalPath = expandHome(target.path);
-      const serversKey = toml ? TOML_MCP_SERVERS_KEY : (target.serversKey ?? reg.mcpServersKey ?? 'mcpServers');
-      const entry = this.mycoServerIn(globalPath, toml, serversKey);
-      if (entry === null) continue;
-      const conflicting = toml
-        ? Object.keys(entry).filter((key) => GLOBAL_MCP_CONFLICT_KEYS.includes(key))
-        : Object.keys(entry).filter((key) => GLOBAL_JSON_MCP_CONFLICT_KEYS.includes(key));
-      if (!toml && entry[MCP_ENABLED_KEY] === false) conflicting.push(MCP_ENABLED_KEY);
-      if (conflicting.length === 0) continue;
-      const section = toml ? `[${TOML_MCP_SERVERS_KEY}.${MYCO_MCP_SERVER_NAME}]` : `\`${serversKey}.${MYCO_MCP_SERVER_NAME}\``;
-      throw this.memberMcpConflict(
-        `${globalPath} declares a \`${MYCO_MCP_SERVER_NAME}\` MCP server with ${conflicting.join(', ')}, which ${this.manifest.displayName} merges into this project's \`${MYCO_MCP_SERVER_NAME}\` entry — leaving it pointed elsewhere, carrying another credential, or switched off`,
-        `Remove those keys from ${section} in ${globalPath} if no other project needs them`,
-      );
-    }
-  }
-
   /** Refuses a member MCP write, naming what was found, that nothing was written, and the command to run once it is fixed. */
   private memberMcpConflict(problem: string, remedy: string, cause?: unknown): MemberMcpConflictError {
     return new MemberMcpConflictError(
@@ -1927,23 +1445,13 @@ export class SymbiontInstaller {
     );
   }
 
-  /** The member's MCP file in the selected installation scope, or null. */
+  /** The member's global MCP target, resolving any harness configuration symlink. */
   private memberMcpTargetPath(): string | null {
-    if (this.isGlobalScope) {
-      const target = this.resolveAbsoluteMcpTargets()[0]?.path ?? null;
-      return target !== null && this.installScope === 'member-global' ? throughLink(target) : target;
-    }
-    const target = this.manifest.registration?.mcpTarget;
-    return target ? path.join(this.projectRoot, target) : null;
+    const target = this.resolveAbsoluteMcpTargets()[0]?.path ?? null;
+    return target === null ? null : throughLink(target);
   }
 
-  /**
-   * Write the member's MCP server into the manifest's mcpTarget under the
-   * symbiont's server-list key, keeping every other server the file holds and
-   * sweeping a `myco` entry left under a historical key. The file is left to
-   * git as the 1.4 project install leaves it: a repository may track its MCP
-   * server list, and an exclude entry on a tracked file hides its changes.
-   */
+  /** Write the member's global MCP entry, preserving other servers and user-owned keys. */
   installMemberMcp(): boolean {
     this.assertMemberMcpWritable();
     const block = this.renderMemberMcp('registry');
@@ -2241,27 +1749,18 @@ export class SymbiontInstaller {
     });
   }
 
-  /**
-   * Every member MCP refusal, before the first write of either surface: the
-   * project's own target must be readable, and the global server this host
-   * merges into it must carry no key that leaves the member's entry unusable.
-   */
+  /** Validate the global member target and its ownership before either surface is written. */
   private assertMemberMcpWritable(): void {
     this.readMemberMcpTarget();
-    this.assertNoMemberMcpConflict();
     if (this.installScope === 'member-global') this.assertGlobalMemberOwnership();
   }
 
-  /** Record global provisioning and retire this project's replaced member registrations. */
+  /** Record global member provisioning. */
   private finishMemberInstall(result: InstallResult): InstallResult {
     if (this.installScope !== 'member-global') return result;
     const serverUrl = readRegistryEntry(this.projectRoot, this.memberHomeDir())?.serverUrl ?? this.deploymentUrl;
     if (serverUrl !== undefined) recordProvision(this.memberHomeDir(), { version: getPluginVersion(), serverUrl, agents: [this.manifest.name], binaries: { [this.manifest.name]: this.binaryPath() } });
-    if (this.noProjectRoot) return result;
-    const local = this.projectMemberInstaller();
-    const hooks = local.uninstallMemberHooks();
-    const mcp = local.uninstallMemberMcp();
-    return { ...result, hooks: hooks || result.hooks, mcp: mcp || result.mcp };
+    return result;
   }
 
   /** 1.4 homes whose global registrations member provisioning may replace in place (`replacingLegacy`). */
@@ -2318,12 +1817,6 @@ export class SymbiontInstaller {
       this.assertGlobalMemberOwnership('hooks');
       this.uninstallMemberHooks();
     }
-  }
-
-  /** Remove the leaving Deployment's registrations from a project root. */
-  relinquishDeploymentProject(leavingUrl: string): void {
-    this.reconcileDeploymentMcp(leavingUrl, null, true);
-    if (this.isMemberPluginFile()) this.uninstallMemberHooks();
   }
 
   private reconcileDeploymentMcp(leavingUrl: string, nextDefault: string | null, removeUnscoped: boolean): void {
@@ -2399,15 +1892,13 @@ export class SymbiontInstaller {
   /**
    * Every file global member provisioning writes or rewrites: the global
    * hooks target, the one MCP file it writes (`memberMcpTargetPath`, the first
-   * of an agent's MCP targets), and with them the settings target and the
-   * project member targets it retires (`all`).
+   * of an agent's MCP targets), and with them the settings target (`all`).
    */
   memberGlobalTargets(): { hooks: string | null; mcp: string[]; all: string[] } {
-    const local = this.noProjectRoot ? null : this.projectMemberInstaller();
     const hooks = this.resolveAbsoluteTarget('hooks');
     const written = this.memberMcpTargetPath();
     const mcp = written === null ? [] : [written];
-    const all = [hooks, ...mcp, this.resolveAbsoluteTarget('settings'), local?.resolveAbsoluteTarget('hooks') ?? null, local?.memberMcpTargetPath() ?? null];
+    const all = [hooks, ...mcp, this.resolveAbsoluteTarget('settings')];
     return { hooks, mcp, all: [...new Set(all.filter((file): file is string => file !== null))] };
   }
 
@@ -2502,11 +1993,6 @@ export class SymbiontInstaller {
     }
     if (!this.noProjectRoot) {
       assertSafeProjectRoot(this.projectRoot);
-      const local = this.projectMemberInstaller();
-      local.readMemberMcpTarget();
-      const localHooks = local.resolveAbsoluteTarget('hooks');
-      if (localHooks && !this.isMemberPluginFile()) this.readMcpFile(localHooks, false);
-      if (localHooks && this.isMemberPluginFile()) local.assertMemberPluginTargetIsMyco(localHooks);
     }
     const target = this.resolveAbsoluteTarget('hooks');
     if (target && fs.existsSync(target)) {
@@ -2556,10 +2042,6 @@ export class SymbiontInstaller {
     }
   }
 
-  private projectMemberInstaller(): SymbiontInstaller {
-    return new SymbiontInstaller(this.manifest, this.projectRoot, this.packageRoot, this.suppressBundledTemplates, this.vaultDir, this.groveId, 'member-project', this.memberHomeDir());
-  }
-
   /** Legacy reconciliation cannot replace a global member registration. */
   private assertLegacyGlobalInstallAllowed(): void {
     if (this.installScope !== 'global') return;
@@ -2582,25 +2064,17 @@ export class SymbiontInstaller {
     return reg?.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE && Boolean(reg.memberHooksTarget);
   }
 
-  /**
-   * The one writer of a member plugin: refuses before any write when the
-   * agent's global Myco plugin would keep capturing beside it, or when the
-   * project's target file is not Myco's, then writes the rendered plugin into
-   * `memberHooksTarget`. The file names this machine's binary, so it is kept
-   * out of git.
-   */
+  /** Write a global member plugin only into a missing or Myco-owned target. */
   private writeMemberPlugin(): boolean {
     const rendered = this.renderMemberPlugin('registry');
     const targetPath = this.resolveAbsoluteTarget('hooks');
     if (rendered === null || targetPath === null) return false;
-    if (!this.isGlobalScope) this.assertNoMemberPluginConflict();
     this.assertMemberPluginTargetIsMyco(targetPath);
     const written = this.writeManagedFile(targetPath, rendered);
-    if (!this.isGlobalScope) this.ensureGitIgnored(targetPath);
     return written;
   }
 
-  /** Refuse to replace a file at the project's plugin path that Myco does not own; it is left as it is. */
+  /** Refuse to replace a global plugin file that Myco does not own. */
   private assertMemberPluginTargetIsMyco(targetPath: string): void {
     let content: string;
     try {
@@ -2614,32 +2088,6 @@ export class SymbiontInstaller {
     if (content.includes(MYCO_PLUGIN_FILE_MARKER) || rawHasMycoOwnershipSignal(content)) return;
     throw new MemberPluginConflictError(
       `${targetPath} is not a Myco plugin, so nothing was written and it was left as it is. Move it elsewhere if ${this.manifest.displayName} should load Myco's plugin here, then run \`myco member provision ${this.manifest.name}\`.`,
-    );
-  }
-
-  /**
-   * Refuse, before any member write, when the agent's global Myco plugin does
-   * not step aside for a project's member plugin: both would load and capture
-   * the session twice. Only a missing file, or one Myco does not own, is no
-   * global plugin.
-   */
-  private assertNoMemberPluginConflict(): void {
-    const target = this.manifest.registration?.globalHooksTarget;
-    if (!target) return;
-    const globalPath = expandHome(target);
-    let content: string;
-    try {
-      content = fs.readFileSync(globalPath, 'utf-8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw new MemberPluginConflictError(
-        `could not read ${globalPath} (${error instanceof Error ? error.message : String(error)}), so nothing was written. Fix the file, then run \`myco member provision ${this.manifest.name}\`.`,
-      );
-    }
-    if (!content.includes(MYCO_PLUGIN_FILE_MARKER) && !rawHasMycoOwnershipSignal(content)) return;
-    if (content.includes(MEMBER_PLUGIN_COMPAT_MARKER)) return;
-    throw new MemberPluginConflictError(
-      `${globalPath} is a Myco plugin that does not step aside for a project's member plugin, so ${this.manifest.displayName} would load both and capture every session twice; nothing was written. Update the Myco install that owns ${globalPath}, then run \`myco member provision ${this.manifest.name}\`.`,
     );
   }
 
@@ -2685,29 +2133,6 @@ export class SymbiontInstaller {
       return true;
     }
     return writeJsonFile(targetPath, settings);
-  }
-
-  /** Add `targetPath` to `.git/info/exclude` when git does not already ignore it. A path outside any repository needs nothing. */
-  private ensureGitIgnored(targetPath: string): void {
-    const relative = path.relative(this.projectRoot, targetPath).split(path.sep).join('/');
-    try {
-      runGit(['check-ignore', '-q', '--', relative], this.projectRoot);
-      return;
-    } catch {
-      // Not ignored, or not a repository — the next call tells the two apart.
-    }
-    let gitDir: string;
-    try {
-      gitDir = path.resolve(this.projectRoot, runGitAnswer(['rev-parse', '--git-dir'], this.projectRoot));
-    } catch {
-      return;
-    }
-    const excludeFile = path.join(gitDir, 'info', 'exclude');
-    let existing = '';
-    try { existing = fs.readFileSync(excludeFile, 'utf-8'); } catch { /* first entry */ }
-    if (existing.split('\n').some((line) => line.trim() === relative)) return;
-    fs.mkdirSync(path.dirname(excludeFile), { recursive: true });
-    fs.writeFileSync(excludeFile, `${existing}${existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''}${relative}\n`, 'utf-8');
   }
 
   /**
@@ -3212,7 +2637,6 @@ export class SymbiontInstaller {
       for (const name of skillNames) {
         this.linkOrWarn(path.join(agentSkillsDir, name), path.join(canonicalRel, name));
       }
-      ensureLocalSkillsGitignore(agentSkillsDir);
     }
 
     return true;
@@ -3715,20 +3139,6 @@ export class SymbiontInstaller {
     try { fs.rmdirSync(path.join(this.projectRoot, '.agents')); } catch { /* not empty or missing */ }
 
     return removed;
-  }
-
-  /** Remove Myco entries from project .gitignore. */
-  private cleanGitignore(): void {
-    const gitignorePath = path.join(this.projectRoot, '.gitignore');
-    let content = '';
-    try { content = fs.readFileSync(gitignorePath, 'utf-8'); } catch { return; }
-
-    const cleaned = this.stripMycoGitignoreBlock(content, this.listSkillDirs()).trim();
-    if (cleaned) {
-      fs.writeFileSync(gitignorePath, cleaned + '\n', 'utf-8');
-    } else {
-      try { fs.unlinkSync(gitignorePath); } catch { /* ignore */ }
-    }
   }
 }
 

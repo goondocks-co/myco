@@ -1,7 +1,7 @@
 import { memberServerDialUrl } from '@myco/member/server-url.js';
 /**
  * The member's hook block, derived from a symbiont's own hook template — the
- * one emitter behind both the `member-project` install scope (which writes it)
+ * one emitter behind both the `member-global` install scope (which writes it)
  * and `myco settings` (which prints it), so a provisioned laptop and a
  * provisioned sandbox can only differ in the credential source they declare.
  *

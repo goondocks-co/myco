@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { resolveHomeDir, resolveMycoHome } from '../paths/home.js';
 import { readRunnerRecord } from '../runner/runner-registry.js';
 import { listWorkerUnits, uninstallWorkerService } from '../runner/service.js';
@@ -7,7 +6,6 @@ import {
   logoutDeployment as logoutMemberDeployment,
   type LogoutDeps, type LogoutReport, type LogoutRuntime,
 } from '../member/logout.js';
-import type { ProjectBinding } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from './detect.js';
 import { SymbiontInstaller } from './installer.js';
 import { readProvisionRecord, reconcileProvisionDeployment } from './member-provision-record.js';
@@ -46,16 +44,11 @@ export function logoutDeployment(
         }
       }
     },
-    reconcile: (serverUrl, nextDefault, keepHooks, bindings: readonly ProjectBinding[], liveBindings: readonly ProjectBinding[]) => {
+    reconcile: (serverUrl, nextDefault, keepHooks) => {
       const packageRoot = deps.packageRoot ?? resolvePackageRoot();
       for (const manifest of loadManifests()) {
         const installer = new SymbiontInstaller(manifest, mycoHome, packageRoot, false, undefined, null, 'member-global', mycoHome).withoutProjectRoot();
         installer.reconcileDeploymentLogout(serverUrl, nextDefault, keepHooks);
-        for (const binding of bindings) {
-          if (liveBindings.some((live) => path.resolve(live.root) === path.resolve(binding.root))) continue;
-          const local = new SymbiontInstaller(manifest, binding.root, packageRoot, false, undefined, null, 'member-project', mycoHome);
-          local.relinquishDeploymentProject(serverUrl);
-        }
       }
       reconcileProvisionDeployment(mycoHome, serverUrl, nextDefault);
     },

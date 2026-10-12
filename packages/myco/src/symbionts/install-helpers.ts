@@ -2,14 +2,6 @@ import { MYCO_LAUNCHER_SUBSTRINGS, MYCO_MANAGED_MARKER, hasMycoManagedMarker, co
 export { MYCO_LAUNCHER_SUBSTRINGS, MYCO_MANAGED_MARKER, hasMycoManagedMarker, containsMycoLauncherReference } from '@myco/member/registration-ownership.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BUNDLED_TEMPLATES } from './templates.generated.js';
-
-const DEFAULT_AGENTS_STARTER = `# Project Rules
-
-<!-- This starter file was created by Myco. Replace it with your project's rules and conventions. -->
-
-Rules haven't been defined yet. Use the /myco-rules skill to add durable project rules, or edit this file directly.
-`;
 
 /**
  * Check if a hook command string belongs to Myco.
@@ -72,21 +64,6 @@ export function withoutMycoHooks(groups: Array<Record<string, unknown>>, matches
     }
     return typeof group.command === 'string' && owned(group.command) ? [] : [group];
   });
-}
-
-/**
- * Create a starter AGENTS.md if the project doesn't have one.
- * Idempotent — skips if AGENTS.md already exists.
- */
-export function ensureAgentsMd(projectRoot: string): void {
-  const agentsMdPath = path.join(projectRoot, 'AGENTS.md');
-  if (fs.existsSync(agentsMdPath)) return;
-
-  fs.writeFileSync(
-    agentsMdPath,
-    BUNDLED_TEMPLATES['agents-starter.md'] ?? DEFAULT_AGENTS_STARTER,
-    'utf-8',
-  );
 }
 
 /**

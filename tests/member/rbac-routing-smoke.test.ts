@@ -5,7 +5,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { parse as parseToml } from 'smol-toml';
 import { issueMemberToken, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
@@ -106,16 +105,13 @@ it.skipIf(!fs.existsSync(BINARY) && !process.env.CI)('routes one machine and ide
     const joined = await cli(root, ['member', 'join', deployment.url, '--project', PROJECT, '--token-stdin', '--no-worker'], `${deployment.token}\n`);
     expect(joined.code, joined.err).toBe(0);
     expect(readRegistryEntry(root, mycoHome)?.serverUrl).toBe(deployment.url);
-    const codex = loadManifests().find((manifest) => manifest.name === 'codex')!;
-    expect(new SymbiontInstaller(codex, root, resolvePackageRoot(), false, undefined, null, 'member-project', mycoHome).installMemberMcp()).toBe(true);
   }
 
   for (const [index, root] of roots.entries()) {
     const deployment = deployments[index];
-    const installed = parseToml(fs.readFileSync(path.join(root, '.codex', 'config.toml'), 'utf8')) as {
-      mcp_servers: { myco: { url: string; http_headers_helper: string } };
-    };
-    const entry = installed.mcp_servers.myco;
+    const codex = loadManifests().find((manifest) => manifest.name === 'codex')!;
+    const rendered = new SymbiontInstaller(codex, root, resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome).renderMemberMcp('registry');
+    const entry = rendered!.myco as { url: string; http_headers_helper: string };
     expect(entry.url).toBe(`${deployment.url}/mcp`);
     const [binary, ...args] = entry.http_headers_helper.split(' ');
     expect(binary).toBe(managedBinary);

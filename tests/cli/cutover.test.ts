@@ -285,8 +285,8 @@ describe('myco cutover', () => {
     expect(again.out.join('\n')).not.toContain('backed up');
   });
 
-  it('writes nothing inside a connected project but the member configs it means to change', async () => {
-    // The project's own member hooks, which provisioning globally retires, and the person's own files beside them.
+  it('preserves early-alpha member configs inside a connected project', async () => {
+    // Repository member hooks and user files remain outside global provisioning ownership.
     const memberHook = `${path.join(m.mycoHome, 'bin', 'myco')} hook stop --symbiont claude-code ${CREDENTIAL_FLAG} registry --myco-managed`;
     writeJson(path.join(m.root, '.claude', 'settings.local.json'), { permissions: { allow: ['Bash(ls)'] }, hooks: { Stop: [{ hooks: [{ type: 'command', command: memberHook }] }] } });
     fs.writeFileSync(path.join(m.root, 'notes.md'), 'mine\n');
@@ -294,10 +294,7 @@ describe('myco cutover', () => {
     const result = await m.run();
     expect(result.ok).toBe(true);
     const after = tree(m.root);
-    const intended = new Set([path.join('.claude', 'settings.local.json'), '.mcp.json']);
-    const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((rel) => before[rel] !== after[rel]);
-    expect(changed).toContain(path.join('.claude', 'settings.local.json'));
-    expect(changed.filter((rel) => !intended.has(rel))).toEqual([]);
+    expect(after).toEqual(before);
   });
 
   it('plans on a dry run exactly the changes the real run makes, and makes none of them', async () => {

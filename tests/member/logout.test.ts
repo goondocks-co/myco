@@ -318,16 +318,17 @@ describe('Deployment-scoped logout', () => {
     expect(installer.inspectMemberMcp().some((entry) => entry.present)).toBe(false);
   });
 
-  it('keeps project-scoped B entries while removing project-scoped A entries', async () => {
+  it('keeps all repository harness entries when logging out of a Deployment', async () => {
     const folderA = join(A, 'proj_a')!;
     const folderB = join(B, 'proj_b')!;
-    const local = (folder: string) => new SymbiontInstaller(claude(), folder, PKG, false, undefined, null, 'member-project', mycoHome);
-    local(folderA).installMemberMcp();
-    local(folderB).installMemberMcp();
+    const localA = path.join(folderA, '.mcp.json');
+    fs.writeFileSync(localA, JSON.stringify({ mcpServers: { myco: { url: A + '/mcp' } } }));
+    fs.writeFileSync(path.join(folderB, '.mcp.json'), JSON.stringify({ mcpServers: { myco: { url: B + '/mcp' } } }));
+    const beforeA = bytes(localA);
     const fileB = path.join(folderB, '.mcp.json');
     const before = bytes(fileB);
     await logoutDeployment(A, { mode: 'revoke' }, deps);
-    expect(local(folderA).inspectMemberMcp().some((entry) => entry.present)).toBe(false);
+    expect(bytes(localA)).toEqual(beforeA);
     expect(bytes(fileB)).toEqual(before);
   });
 

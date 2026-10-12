@@ -21,45 +21,10 @@ import {
   cliVerbModules, closureOf, entryFiles, filesUnder, moduleKey, REPO_ROOT, withoutShebang, type Closure,
 } from '../helpers/import-closure.ts';
 
+import { LEGACY_DIRS, LEGACY_FILES, isLegacy } from '../helpers/legacy-boundary.ts';
+
 const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const MYCO = 'packages/myco/src/';
-
-/** The 1.4 directories under `packages/myco/src`: everything beneath each is 1.4 code. */
-const LEGACY_DIRS: readonly string[] = [
-  'agent', 'backup', 'canopy', 'capture', 'cli/providers', 'config', 'context', 'daemon', 'db', 'grove', 'host',
-  'intelligence', 'logs', 'notifications', 'prompts', 'providers', 'release-provenance', 'service', 'services', 'sessions',
-  'spores', 'team', 'team-host', 'templates', 'test-utils', 'tools', 'vault',
-];
-
-/** The 1.4 files in directories 2.0 shares. */
-const LEGACY_FILES: readonly string[] = [
-  // The 1.4 verbs the CLI dispatches to.
-  'cli/agent-run.ts', 'cli/agent-tasks.ts', 'cli/attach.ts', 'cli/bootstrap.ts', 'cli/config.ts', 'cli/detect-providers.ts',
-  'cli/doctor.ts', 'cli/doctor-fixes.ts', 'cli/grove.ts', 'cli/host.ts', 'cli/join.ts', 'cli/logs.ts',
-  'cli/remove.ts', 'cli/restart.ts', 'cli/restore-backup.ts', 'cli/search.ts', 'cli/service.ts', 'cli/session.ts',
-  'cli/setup-digest.ts', 'cli/setup-llm.ts', 'cli/shared.ts', 'cli/stats.ts', 'cli/subsystem.ts', 'cli/update.ts',
-  'cli/upgrade.ts', 'cli/verify.ts',
-  // What only the 1.4 verbs and the daemon read.
-  'cli/args.ts', 'cli/confirm.ts', 'cli/dashboard-url.ts',
-  'constants/power-jobs.ts', 'constants/skill-candidate-status.ts', 'constants/spore-status.ts',
-  'mcp/server.ts', 'mcp/http.ts', 'mcp/external-surface.ts',
-  'plans/identity.ts', 'plans/list-for-mcp.ts', 'plans/save-mcp.ts',
-  'search-results.ts', 'semantic-search-filters.ts',
-  'skills/content.ts', 'skills/publication.ts',
-  'symbionts/canopy-read-tools.ts', 'symbionts/capabilities.ts', 'symbionts/index.ts', 'symbionts/injection-support.ts',
-  'symbionts/parsers/index.ts', 'symbionts/parsers/types.ts', 'symbionts/reconcile.ts',
-  'static-assets.generated.ts',
-  'upgrade/adopt.ts', 'upgrade/auto-check.ts', 'upgrade/checker.ts', 'upgrade/in-progress.ts', 'upgrade/orchestrator.ts',
-  'upgrade/schema-gap.ts', 'upgrade/spawn.ts', 'upgrade/update-events.ts',
-  'utils/error-message.ts', 'utils/instrumented-fetch.ts', 'utils/interpolate-args.ts', 'utils/interpolate.ts',
-  'utils/is-plain-table.ts', 'utils/json-sentinel.ts', 'utils/json.ts', 'utils/mtime-cache.ts', 'utils/parse-csv-list.ts',
-  'utils/parse-json-array.ts', 'utils/per-user-lock-namespace.ts', 'utils/physical-path-identity.ts', 'utils/presence.ts',
-  'utils/user-lock-root.ts', 'utils/windows-native-profile.ts',
-];
-
-const isLegacy = (key: string): boolean =>
-  LEGACY_DIRS.some((dir) => key.startsWith(`${MYCO}${dir}/`))
-  || LEGACY_FILES.some((file) => key === `${MYCO}${file}`);
 
 /** A 1.4 verb module the CLI dispatches to: an edge from `cli.ts` to one is the dispatch, allowed until its verb goes. */
 const isLegacyVerb = (key: string): boolean => key.startsWith(`${MYCO}cli/`) && LEGACY_FILES.includes(key.slice(MYCO.length));
@@ -87,7 +52,6 @@ const ALLOWED_EDGES: Readonly<Record<string, string>> = {
   'cli/cutover.ts -> service/home-daemon.ts': '#1170 P8: cutover is deleted',
   'cli/cutover.ts -> service/legacy-units.ts': '#1170 P8: cutover is deleted',
   'cli/member.ts -> cli/doctor.ts': "#1170 P4: member export's checks move into doctor-member",
-  'cli/member.ts -> vault/gitignore.ts': '#1170 P5: the vault .gitignore writer is dropped',
   'cli/tool.ts -> daemon/client.ts': '#1170 P4: the daemon upstream is deleted',
   'cli/worker-service.ts -> grove/paths.ts': '#1170 P3: the 2.0 path helpers move to paths/',
   'cli/worker-service.ts -> service/spec-builder.ts': '#1170 P3: the service spec builder moves beside server/service.ts',
@@ -99,10 +63,8 @@ const ALLOWED_EDGES: Readonly<Record<string, string>> = {
   'member/transcript.ts -> capture/session-continuation.ts': '#1170 P3: the capture leaves move to member/',
   'member/transcript.ts -> capture/transcript-id.ts': '#1170 P3: the capture leaves move to member/',
   'symbionts/detect.ts -> grove/paths.ts': '#1170 P3: the 2.0 path helpers move to paths/',
-  'symbionts/installer.ts -> config/loader.ts': "#1170 P5: the installer's project-scope writers are dropped",
   'symbionts/installer.ts -> grove/paths.ts': '#1170 P3: the 2.0 path helpers move to paths/',
   'symbionts/installer.ts -> grove/subsystem-claim.ts': '#1170 P3: subsystem-claim moves to member/',
-  'symbionts/installer/project-files.ts -> config/loader.ts': "#1170 P5: the installer's project-scope writers are dropped",
   'symbionts/member-skill-links.ts -> grove/subsystem-claim.ts': '#1170 P3: subsystem-claim moves to member/',
 };
 

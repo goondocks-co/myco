@@ -75,9 +75,8 @@ export async function checkWorkerServices(vaultDir: string, deps: import('./work
  * machine: the machine pin for a non-default home, and the Myco MCP server each
  * symbiont declares.
  *
- * The entry is read where the installer writes it — the symbiont's global
- * targets under the member scope, its project target under an override — and
- * the check reports which scope carries it, over what transport, and whether
+ * The entry is read at the symbiont's global installation targets, and
+ * the check reports its scope, transport, and whether
  * it is the entry provisioning writes — the one carrying this member's
  * credential — or that a target could not be read. It reports what the
  * configuration declares, never that a server answers or that a credential
@@ -115,10 +114,7 @@ export async function checkMemberMcpResolution(
       fixable: false,
     });
   }
-  // The member's MCP entry lives where the installer writes it: the symbiont's
-  // global targets under the member scope, its project target under an
-  // override. Every scope a target was read at is reported on its own; which
-  // one a given host prefers is not decided here.
+  // Global member targets are the active registrations this check validates.
   const { SymbiontInstaller } = await import('../symbionts/installer.js');
   // Counted as a report reads it: no migration, and an entry it could not read is not one it can claim resolves.
   const readable = listRegistryEntriesResult(home);
@@ -126,9 +122,8 @@ export async function checkMemberMcpResolution(
   const TRANSPORT_REASON = { http: 'mcp_entry_http', stdio: 'mcp_entry_stdio' } as const;
   for (const manifest of loadManifests()) {
     if (!manifest.registration) continue;
-    const at = (scope: 'member-global' | 'member-project') => new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, scope, home);
-    const global = at('member-global');
-    const seen = [...global.inspectMemberMcp(selectedDeployment), ...at('member-project').inspectMemberMcp(selectedDeployment)];
+    const global = new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, 'member-global', home);
+    const seen = global.inspectMemberMcp(selectedDeployment);
     if (seen.length === 0) continue;
 
     for (const target of seen.filter((t) => t.present)) {

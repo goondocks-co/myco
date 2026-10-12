@@ -18,11 +18,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  CANONICAL_SKILLS_DIR,
-  reconcileProjectSkillSymlinks,
   resolveEnabledSkillTargets,
   syncSkillSymlinks,
-} from '@myco/symbionts/installer/project-files.js';
+} from '@myco/symbionts/legacy-skill-links.js';
+import { CANONICAL_SKILLS_DIR } from '@myco/symbionts/installer/legacy-artifacts.js';
 import { isSafeSkillNameForFs } from '@myco/skills/names.js';
 
 const CLAUDE = { home: '.claude', target: '.claude/skills', name: 'claude-code' };
@@ -132,84 +131,6 @@ describe('project skill symlinks', () => {
       detectAgent(CLAUDE.home);
       syncSkillSymlinks(project, '../escape');
       expect(exists('.claude/skills')).toBe(false);
-    });
-  });
-
-  describe('reconcileProjectSkillSymlinks', () => {
-    test('creates missing, prunes stale/retired, preserves user links', () => {
-      detectAgent(CLAUDE.home); // cline NOT detected
-      writeSkill('alpha');
-      writeSkill('beta');
-
-      const claudeDir = path.join(project, '.claude/skills');
-      fs.mkdirSync(claudeDir, { recursive: true });
-      // (1) stale Myco link to a removed skill — dangling, under .agents/skills.
-      fs.symlinkSync(path.join('..', '..', CANONICAL_SKILLS_DIR, 'gone'), path.join(claudeDir, 'gone'));
-      // (2) user-owned link pointing OUTSIDE .agents/skills — must be preserved.
-      fs.mkdirSync(path.join(project, 'external-skill'), { recursive: true });
-      fs.symlinkSync(path.join('..', '..', 'external-skill'), path.join(claudeDir, 'mine'));
-      // (3) retired .cursor/skills Myco link — must be pruned.
-      const cursorDir = path.join(project, '.cursor/skills');
-      fs.mkdirSync(cursorDir, { recursive: true });
-      fs.symlinkSync(path.join('..', '..', CANONICAL_SKILLS_DIR, 'alpha'), path.join(cursorDir, 'alpha'));
-
-      const { created, pruned } = reconcileProjectSkillSymlinks(project);
-
-      // created: alpha + beta linked into the detected .claude/skills
-      expect(exists('.claude/skills/alpha')).toBe(true);
-      expect(exists('.claude/skills/beta')).toBe(true);
-      expect(created).toBeGreaterThanOrEqual(2);
-      // pruned: dangling `gone` + retired `.cursor/skills/alpha`
-      expect(exists('.claude/skills/gone')).toBe(false);
-      expect(exists('.cursor/skills/alpha')).toBe(false);
-      expect(pruned).toBeGreaterThanOrEqual(2);
-      // preserved: user link pointing outside .agents/skills
-      expect(exists('.claude/skills/mine')).toBe(true);
-      // undetected agent gets nothing
-      expect(exists('.cline/skills/alpha')).toBe(false);
-    });
-
-    test('removes links for an opted-out agent', () => {
-      detectAgent(CLAUDE.home);
-      detectAgent(CLINE.home);
-      writeSkill('alpha');
-      // first reconcile: both detected, no opt-out → both linked
-      reconcileProjectSkillSymlinks(project);
-      expect(exists('.claude/skills/alpha')).toBe(true);
-      expect(exists('.cline/skills/alpha')).toBe(true);
-
-      // opt cline out, reconcile again → cline link pruned, claude kept
-      fs.writeFileSync(
-        path.join(project, '.myco', 'myco.yaml'),
-        `version: 3\nsymbionts:\n  ${CLAUDE.name}:\n    enabled: true\n  ${CLINE.name}:\n    enabled: false\n`,
-        'utf-8',
-      );
-      reconcileProjectSkillSymlinks(project);
-      expect(exists('.claude/skills/alpha')).toBe(true);
-      expect(exists('.cline/skills/alpha')).toBe(false);
-    });
-
-    test('does NOT mass-prune live-target links when no agent is detected', () => {
-      // No detectAgent() calls → detectMachineInstalledSymbionts() is empty.
-      // A transient empty detection must not delete every existing skill link;
-      // only dangling (skill gone) and retired-dir links are still pruned.
-      writeSkill('alpha');
-      const claudeDir = path.join(project, '.claude/skills');
-      fs.mkdirSync(claudeDir, { recursive: true });
-      // existing Myco link for a REAL skill — must be preserved
-      fs.symlinkSync(path.join('..', '..', CANONICAL_SKILLS_DIR, 'alpha'), path.join(claudeDir, 'alpha'));
-      // dangling link (skill removed) — still pruned
-      fs.symlinkSync(path.join('..', '..', CANONICAL_SKILLS_DIR, 'gone'), path.join(claudeDir, 'gone'));
-      // retired .cursor/skills link — still pruned
-      const cursorDir = path.join(project, '.cursor/skills');
-      fs.mkdirSync(cursorDir, { recursive: true });
-      fs.symlinkSync(path.join('..', '..', CANONICAL_SKILLS_DIR, 'alpha'), path.join(cursorDir, 'alpha'));
-
-      reconcileProjectSkillSymlinks(project);
-
-      expect(exists('.claude/skills/alpha')).toBe(true);  // preserved (no mass-prune)
-      expect(exists('.claude/skills/gone')).toBe(false);  // dangling still pruned
-      expect(exists('.cursor/skills/alpha')).toBe(false); // retired still pruned
     });
   });
 });
