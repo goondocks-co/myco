@@ -1896,5 +1896,28 @@
     "note": ""
    }
   }
- ]
+ ],
+ "precisionRatchet": {
+  "matches": 26,
+  "caseIds": [
+   "rp-01",
+   "rp-09",
+   "rp-11",
+   "rp-13",
+   "rp-14",
+   "rp-18",
+   "rp-19",
+   "rp-22",
+   "rp-24",
+   "rp-25",
+   "rp-27",
+   "rp-30",
+   "rp-35",
+   "rp-37",
+   "rp-45",
+   "rp-46",
+   "rp-47"
+  ],
+  "reason": "Coordinator-approved 2026-10-12: affine invariance and precision over recall. Gold 0.3979 (9/48) to 0.3962 (12/48); named must-not matches 67 to 26, with zero new case/item matches and zero unexpected plans. Original owner spore judgments remain unchanged."
+ }
 }

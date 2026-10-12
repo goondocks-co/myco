@@ -305,11 +305,11 @@ describe('plan selection', () => {
     const originalQuery = semantic.vectors.query;
     semantic.vectors.query = async (partition, options) => options.filters?.type === 'plan' ?
       vectors.map(v => ({ id: v.id, score: cosineSimilarity(query, v.values) })) :
-      (await originalQuery(partition, options)).map(h => ({ ...h, score: similarity - 0.1 }));
+      (await originalQuery(partition, options)).map((h, i) => ({ ...h, score: similarity - 0.1 - i / 1000 }));
     try {
       const answer = await selectSporesForPrompt(db, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
         { sessionId: SESSION, promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
-      const expected = similarity === 0.55 ? ['capture'] : ['capture', 'receipts'];
+      const expected = ['capture', 'receipts'];
       expect(answer.items.map(i => i.id)).toEqual(expected);
       expect(answer.context).toContain('Preserve pending transcript batches during member reconnect');
       expect(answer.counts).toMatchObject({ planEligible: 3, planCalibrated: 5, planScored: 3, planRelevant: expected.length, planHydrated: expected.length });

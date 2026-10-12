@@ -36,6 +36,8 @@ After re-embedding, the served blocks move where the re-embedded rows move them:
 
 The owner's expected and must-not spore ids are unchanged. The coordinator-added rp-43 plan expectation is pending owner review. The recorded baseline is what the fixture serves, and the gate holds each release to it.
 
+On 2026-10-12 the coordinator approved recording the affine-invariant spore z-score band: recall quality 0.3979 → 0.3962, passing cases 9/48 → 12/48, and named must-not case/item matches 67 → 26, with zero newly introduced matches and zero unexpected plans. This accepts the documented expected-spore losses in favor of precision over recall. `gold.json.precisionRatchet` pins the 26-match ceiling and the 17 affected case IDs; the gate also ratchets against each door's recorded count and case IDs. Both precision checks apply during recording even when recall regressions are explicitly accepted. Original owner spore judgments are unchanged.
+
 **Plan evidence is weaker than spore evidence.** All plan bodies are fixed placeholders, including the delivery-reset plan. Their shared text inflates plan-to-plan similarity, so success on these plan vectors does not establish calibration quality on production plan bodies.
 
 ## Embedding keys

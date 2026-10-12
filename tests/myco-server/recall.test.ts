@@ -311,8 +311,8 @@ describe('prompt selection diagnostics', () => {
       metadata: { type: 'plan' as const, record_id: r.record_id, revision: '', status: '', session_id: '', created_at: NOW, observation_type: '', release_state: '', release_confidence: '' },
     }));
     const query = semantic.vectors.query;
-    semantic.vectors.query = async (partition, options) => (await query(partition, options)).map(hit =>
-      options.filters?.type === 'plan' ? { ...hit, score: 0.95 } : hit);
+    semantic.vectors.query = async (partition, options) => (await query(partition, options)).map((hit, i) =>
+      options.filters?.type === 'plan' ? { ...hit, score: 0.95 } : { ...hit, score: i / 1000 });
     const ask = (promptId: string, resolve = async () => semantic) => composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, promptId, text: PROMPT, now: NOW }, resolve);
     try {
       await ask('no-hits', async () => ({ ...semantic, vectors: { ...semantic.vectors, query: async () => [] } }));
@@ -642,7 +642,7 @@ describe('POST /context/prompt', () => {
         const hydratedPlans = 0;
         const sporeHits = projectId === 'proj_1' ? 30 : 100;
         expect(JSON.parse(row.selection)).toEqual({
-          planCalibration: 'insufficient',
+          planCalibration: 'insufficient', planQueryCandidates: sporeHits,
           sporeRawMatches: projectId === 'proj_1' ? 30 : 100, sporeJoined: projectId === 'proj_1' ? 30 : 100, sporeHits: projectId === 'proj_1' ? 30 : 100,
           sporeCalibrated: sporeHits, sporeScored: sporeHits, sporeProbable: 10, sporeSeparated: 10,
           sporeRelevant: spores, sporeHydrated: spores,

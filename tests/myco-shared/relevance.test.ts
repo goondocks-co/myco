@@ -19,36 +19,46 @@ describe('prompt relevance', () => {
   it.each([1, 2, 4])('withholds a pool of %s calibrated live plans as insufficient', size => {
     let stage: unknown;
     const candidates = Array.from({ length: size }, (_, i) => ({ id: 'plan-' + i, similarity: 0.95 - i / 100, neighborMean: 0.3, neighborStd: 0.06 }));
-    expect(selectRelevantPlans(candidates, { maxResults: 2, queryCandidates: background(), observeCalibration: s => { stage = s; } })).toEqual([]);
+    expect(selectRelevantPlans(candidates, { maxResults: 2, sporeCandidates: background(), observeCalibration: s => { stage = s; } })).toEqual([]);
+    expect(stage).toBe('insufficient');
+  });
+
+  it.each([0, 1, 4])('withholds an adequate plan pool with only %s independent spores', size => {
+    let stage: unknown;
+    const plans = Array.from({ length: 8 }, (_, i) => ({
+      id: 'plan-' + i, similarity: 0.53 - i / 100, neighborMean: 0.3, neighborStd: 0.06,
+    }));
+    expect(selectRelevantPlans(plans, { maxResults: 2, sporeCandidates: background(size),
+      observeCalibration: s => { stage = s; } })).toEqual([]);
     expect(stage).toBe('insufficient');
   });
 
   it('withholds a flat adequate-size live pool as insufficient', () => {
     let stage: unknown;
     const candidates = Array.from({ length: 5 }, (_, i) => ({ id: 'plan-' + i, similarity: 0.95 - i / 100, neighborMean: 0.3, neighborStd: 0 }));
-    expect(selectRelevantPlans(candidates, { maxResults: 2, queryCandidates: background(), observeCalibration: s => { stage = s; } })).toEqual([]);
+    expect(selectRelevantPlans(candidates, { maxResults: 2, sporeCandidates: background(), observeCalibration: s => { stage = s; } })).toEqual([]);
     expect(stage).toBe('insufficient');
   });
 
   it('admits a live transcript plan against its own model baseline and rejects an ordinary match', () => {
     const candidate = { id: 'preserve-pending-transcript-batches', similarity: 0.53, neighborMean: 0.3, neighborStd: 0.06 };
-    const queryCandidates = Array.from({ length: 30 }, (_, i) => ({ id: 'other-' + i, similarity: 0.4 + i / 1000 }));
+    const sporeCandidates = Array.from({ length: 30 }, (_, i) => ({ id: 'other-' + i, similarity: 0.4 + i / 1000 }));
     const referenceCandidates = Array.from({ length: 5 }, (_, i) => ({ ...candidate, id: `peer-${i}` }));
-    expect(selectRelevantPlans([candidate], { maxResults: 2, queryCandidates, referenceCandidates }).map(c => c.id)).toEqual([candidate.id]);
-    expect(selectRelevantPlans([{ ...candidate, similarity: 0.2 }], { maxResults: 2, queryCandidates, referenceCandidates })).toEqual([]);
+    expect(selectRelevantPlans([candidate], { maxResults: 2, sporeCandidates, referenceCandidates }).map(c => c.id)).toEqual([candidate.id]);
+    expect(selectRelevantPlans([{ ...candidate, similarity: 0.2 }], { maxResults: 2, sporeCandidates, referenceCandidates })).toEqual([]);
   });
 
   it('withholds a plan missing its own statistics even with an adequate calibration pool', () => {
     const referenceCandidates = Array.from({ length: 5 }, (_, i) => ({ id: 'peer-' + i, similarity: 0.4, neighborMean: 0.3, neighborStd: 0.06 }));
-    expect(selectRelevantPlans([{ id: 'unproven', similarity: 0.95 }], { maxResults: 2, referenceCandidates, queryCandidates: background() })).toEqual([]);
+    expect(selectRelevantPlans([{ id: 'unproven', similarity: 0.95 }], { maxResults: 2, referenceCandidates, sporeCandidates: background() })).toEqual([]);
   });
 
   it('separates weaker plans after the probability floor', () => {
     let counts: unknown;
     const candidates = [{ id: 'strong', similarity: 0.9, neighborMean: 0.5, neighborStd: 0.1 }, { id: 'weak', similarity: 0.55, neighborMean: 0.5, neighborStd: 0.1 }];
-    const queryCandidates = Array.from({ length: 12 }, (_, i) => ({ id: 'other-' + i, similarity: -0.3 + i * 0.09 }));
+    const sporeCandidates = Array.from({ length: 12 }, (_, i) => ({ id: 'other-' + i, similarity: -0.3 + i * 0.09 }));
     const referenceCandidates = Array.from({ length: 5 }, (_, i) => ({ id: 'plan-' + i, similarity: 0.1, neighborMean: 0.5, neighborStd: 0.1 }));
-    expect(selectRelevantPlans(candidates, { maxResults: 2, queryCandidates, referenceCandidates, observe: n => { counts = n; } }).map(c => c.id)).toEqual(['strong']);
+    expect(selectRelevantPlans(candidates, { maxResults: 2, sporeCandidates, referenceCandidates, observe: n => { counts = n; } }).map(c => c.id)).toEqual(['strong']);
     expect(counts).toEqual({ calibrated: 5, scored: 2, probable: 2, separated: 1 });
   });
 

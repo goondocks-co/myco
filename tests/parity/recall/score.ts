@@ -67,7 +67,37 @@ export interface TargetBaseline {
   /** The mean graded score over every case. */
   recallQuality: number;
   passed: number;
+  mustNot: MustNotSummary;
   cases: Record<string, RecordedCase>;
+}
+
+export interface MustNotSummary {
+  matches: number;
+  caseIds: string[];
+}
+
+/** Named must-not spore matches, counted per case and item. */
+export function summarizeMustNot(gold: readonly GoldCase[], cases: Record<string, Served>): MustNotSummary {
+  let matches = 0;
+  const caseIds: string[] = [];
+  for (const c of gold) {
+    const served = cases[c.id];
+    if (served === undefined) throw new Error(`no served block recorded for ${c.id}`);
+    const count = c.mustNot.filter(id => served.spores.includes(id)).length;
+    matches += count;
+    if (count > 0) caseIds.push(c.id);
+  }
+  return { matches, caseIds: caseIds.sort() };
+}
+
+/** Precision ceilings apply independently of recall-regression recording overrides. */
+export function mustNotRegressions(gold: readonly GoldCase[], cases: Record<string, Served>, ceiling: MustNotSummary): string[] {
+  const current = summarizeMustNot(gold, cases);
+  const failures: string[] = [];
+  if (current.matches > ceiling.matches) failures.push(`must-not matches rose ${ceiling.matches} → ${current.matches}`);
+  const gained = current.caseIds.filter(id => !ceiling.caseIds.includes(id));
+  if (gained.length > 0) failures.push(`new must-not cases: ${gained.join(', ')}`);
+  return failures;
 }
 
 export interface RecallBaseline {
@@ -91,6 +121,7 @@ export function summarize(gold: readonly GoldCase[], cases: Record<string, Serve
   return {
     recallQuality: round(all.reduce((sum, c) => sum + c.graded, 0) / all.length),
     passed: all.filter((c) => c.pass).length,
+    mustNot: summarizeMustNot(gold, cases),
     cases: recorded,
   };
 }

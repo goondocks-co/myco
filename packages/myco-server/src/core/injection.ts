@@ -111,6 +111,7 @@ export type InjectionSkip = 'capability' | 'disabled' | 'short_prompt' | 'zero_m
 /** Counts at each selector stage, including matches rejected by the receipt join or metadata post-filter. */
 export interface InjectionCounts {
   planCalibration: PlanCalibration;
+  planQueryCandidates: number;
   sporeRawMatches: number; sporeJoined: number; sporeHits: number;
   sporeCalibrated: number; sporeScored: number; sporeProbable: number; sporeSeparated: number;
   sporeRelevant: number; sporeHydrated: number;
@@ -120,7 +121,7 @@ export interface InjectionCounts {
 }
 
 export const emptyInjectionCounts = (): InjectionCounts => ({
-  planCalibration: 'none',
+  planCalibration: 'none', planQueryCandidates: 0,
   sporeRawMatches: 0, sporeJoined: 0, sporeHits: 0, sporeRelevant: 0, sporeHydrated: 0,
   sporeCalibrated: 0, sporeScored: 0, sporeProbable: 0, sporeSeparated: 0,
   planRawMatches: 0, planJoined: 0, planHits: 0, planUnserved: 0, planEligible: 0, planCalibrationFailed: 0, planCalibrated: 0,
@@ -391,8 +392,8 @@ export async function selectSporesForPrompt(
   });
   const liveBackground = planBackground.filter((h) => planHits.some((p) => p.record_id === h.id && isLivePlan(p)));
   const planCandidates = selectRelevantPlans(liveBackground, {
-    observeCalibration: stage => { counts.planCalibration = stage; },
-    maxResults: Math.min(leaves.maxPerPrompt, MAX_PLANS_PER_PROMPT), referenceCandidates: planBackground, queryCandidates: [...sporeCandidates, ...planBackground],
+    observeCalibration: (stage, n) => { counts.planCalibration = stage; counts.planQueryCandidates = n; },
+    maxResults: Math.min(leaves.maxPerPrompt, MAX_PLANS_PER_PROMPT), referenceCandidates: planBackground, sporeCandidates,
     observe: (n) => { counts.planCalibrated = n.calibrated; counts.planScored = n.scored; counts.planProbable = n.probable; counts.planSeparated = n.separated; },
   });
   counts.planRelevant = planCandidates.length;

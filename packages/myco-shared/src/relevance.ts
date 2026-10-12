@@ -52,12 +52,10 @@ export interface SelectOptions {
   /** Minimum MP probability to inject at all. 0.5 = "more likely than not
    *  mutually-near"; a probability midpoint, not a model-dependent cosine. */
   minProbability?: number;
-  /** Keep this fraction of the strongest MP and distance-weighted evidence. */
+  /** Keep this fraction of the strongest MP and standardized-distance evidence. */
   relativeBand?: number;
   /** Semantic background from the same record kind and embedding model. */
   referenceCandidates?: SporeCandidate[];
-  /** Prompt-side distances across all semantic record kinds in the same model. */
-  queryCandidates?: SporeCandidate[];
   observe?: (counts: { calibrated: number; scored: number; probable: number; separated: number }) => void;
 }
 
@@ -78,6 +76,8 @@ const PLAN_MIN_PROBABILITY = 0.75;
 const PLAN_RELATIVE_BAND = 0.9;
 /** Unitless sample count requires multiple embedded plans for a distribution baseline. */
 export const PLAN_MIN_CALIBRATION = 5;
+/** Unitless sample count requires independent spores for prompt-side plan evidence. */
+export const PLAN_MIN_QUERY_CANDIDATES = 5;
 export type PlanCalibration = 'none' | 'project' | 'insufficient';
 /** Unitless standard-deviation bound for the central 95% normal interval of candidate baselines. */
 const BASELINE_STD_LIMIT = 2;
@@ -189,10 +189,11 @@ export function selectRelevantSpores(
         queryStats,
         isCalibrated(c) ? boundedCalibration(c, calibrated) : pooled,
       );
-      // Shift cosine to [0, 1] so separation retains distance information when MP saturates.
-      return { id: c.id, mp, separation: mp * (1 + c.similarity) / 2 };
+      // Query-relative excess retains distance information when probability factors saturate.
+      const excess = Math.max(0, (queryStats.mean - (1 - c.similarity)) / Math.max(queryStats.std, STD_EPSILON));
+      return { id: c.id, mp, similarity: c.similarity, separation: mp * excess };
     })
-    .sort((a, b) => b.mp - a.mp);
+    .sort((a, b) => b.mp - a.mp || b.similarity - a.similarity);
 
   const top = scored[0].mp;
   const cutoff = Math.max(minProbability, top * relativeBand);
@@ -210,16 +211,19 @@ export function hasPlanCalibration(candidates: SporeCandidate[]): boolean {
 
 /** Embedded plans of any status calibrate centered mutual proximity for live candidates. */
 export function selectRelevantPlans(candidates: SporeCandidate[], opts: SelectOptions & {
-  observeCalibration?: (stage: PlanCalibration) => void;
+  /** Independent prompt-side distances from spores in the same model. */
+  sporeCandidates?: SporeCandidate[];
+  observeCalibration?: (stage: PlanCalibration, queryCandidates: number) => void;
 }): SelectedSpore[] {
   const live = candidates.filter((c) => Number.isFinite(c.similarity));
   const calibrated = (opts.referenceCandidates ?? candidates).filter(isCalibrated);
-  const queryStats = distributionStats((opts.queryCandidates ?? opts.referenceCandidates ?? candidates)
-    .filter((c) => Number.isFinite(c.similarity)).map((c) => 1 - c.similarity));
-  const projectCalibrated = hasPlanCalibration(calibrated);
+  const queryCandidates = (opts.sporeCandidates ?? []).filter(c => Number.isFinite(c.similarity));
+  const queryStats = distributionStats(queryCandidates.map(c => 1 - c.similarity));
+  const projectCalibrated = hasPlanCalibration(calibrated)
+    && queryCandidates.length >= PLAN_MIN_QUERY_CANDIDATES && queryStats.std > STD_EPSILON;
   const unserved = live.filter(c => !c.alreadyInjected);
   const stage: PlanCalibration = unserved.length === 0 ? 'none' : projectCalibrated ? 'project' : 'insufficient';
-  opts.observeCalibration?.(stage);
+  opts.observeCalibration?.(stage, queryCandidates.length);
   if (stage === 'insufficient' || unserved.length === 0) {
     opts.observe?.({ calibrated: calibrated.length, scored: 0, probable: 0, separated: 0 });
     return [];
