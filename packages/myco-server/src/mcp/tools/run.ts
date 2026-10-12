@@ -19,6 +19,7 @@
  * admitted against a value the caller did not read, never a lost write.
  */
 import { sha256Hex } from '../../hash.js';
+import { SERVER_STATE_PREFIX } from '../../core/scheduler-state.js';
 import { getState, mutateState } from '../../core/runs.js';
 import { MAX_REPORT_DETAILS_CHARS as MAX_DETAILS_CHARS, MAX_REPORT_SUMMARY_CHARS as MAX_SUMMARY_CHARS, recordReport } from '../../core/run-postconditions.js';
 import { RUN_AUDIT_SHAPE } from '../../core/run-audit.js';
@@ -74,6 +75,7 @@ export async function handleRun(input: ToolInput, ctx: ToolContext): Promise<unk
     return { key, value, updated_at: row?.updatedAt ?? null, ...(version === undefined ? {} : { version }) };
   }
 
+  if (key.startsWith(SERVER_STATE_PREFIX)) return failure('server control state is read-only');
   const value = str(input.value, MAX_STATE_VALUE_CHARS);
   if (value === undefined) return failure(`value is required for op: state_set, and is at most ${MAX_STATE_VALUE_CHARS} characters`);
   const named = input.version === undefined ? undefined : str(input.version, VERSION_CHARS);

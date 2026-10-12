@@ -1,8 +1,8 @@
 /**
  * The Deployment's dispatch limits, and what holds a dispatch back.
  *
- * A limit is a Settings leaf, never a number in the code: unset means
- * unbounded. A dispatch past a limit is queued and drained as capacity
+ * A limit is a Settings leaf, never a number in the code: a declared default applies
+ * when unset, and explicit null means unbounded. A dispatch past a limit is queued and drained as capacity
  * returns — the run is the unit of work, and a constraint changes when it
  * runs, never whether.
  *
@@ -27,7 +27,7 @@ export const LIMIT_LEAVES: Readonly<Record<Exclude<HeldBy, 'fleet' | 'runtime' |
   task_runs_per_hour: 'agent.limits.task_runs_per_hour',
 };
 
-/** Each limit as set, or null where the Deployment sets none. A runtime hold has no number to compare against and is absent here. */
+/** Each resolved limit, or null where no bound applies. A runtime hold has no number to compare against and is absent here. */
 export type DispatchLimits = Readonly<Record<Exclude<HeldBy, 'runtime' | 'worker' | CapabilityHold>, number | null>>;
 
 /** What the Deployment is doing when a dispatch asks to run. */

@@ -27,6 +27,12 @@ export async function extractionSourceSession(db: RelationalStore, scope: ReadSc
   return source?.sessionId ?? null;
 }
 
+/** Whether this Project has any prompts already marked extracted. */
+export async function hasProcessedPrompts(db: RelationalStore, scope: ReadScope): Promise<boolean> {
+  return await db.prepare('SELECT 1 AS found FROM prompt_batches WHERE project_id = ? AND processed = 1 LIMIT 1')
+    .bind(scope.projectId).first() !== null;
+}
+
 const ELIGIBLE_PROMPT_SQL = `p.processed = 0 AND p.origin IN (${READ_ORIGINS.map(() => '?').join(', ')})`;
 
 /** One unprocessed prompt. `text` and `response` are present only where the caller asked for bodies. */
@@ -47,9 +53,32 @@ export interface UnprocessedOptions {
   includeActive?: boolean;
   /** The prompt body, read only when asked: a page without it reads no blobs. */
   includeText?: boolean;
+  /** Material received by the snapshot instant in the sessions eligible at that instant. */
+  history?: { receivedThrough: number; sessionIds: readonly string[] };
 }
 
 type SessionSelection = { id: string; exclude: boolean };
+
+/** The shared eligibility and partition predicates for extraction reads and history snapshots. */
+function unprocessedConditions(scope: ReadScope, opts: UnprocessedOptions) {
+  const conditions = ['p.project_id = ?', ELIGIBLE_PROMPT_SQL, notTombstonedSql('s'), sessionMaterialReadySql('s')];
+  const params: unknown[] = [scope.projectId, ...READ_ORIGINS];
+  if (opts.history !== undefined) {
+    conditions.push('p.received_at <= ?', 'p.session_id IN (SELECT value FROM json_each(?))');
+    params.push(opts.history.receivedThrough, JSON.stringify(opts.history.sessionIds));
+  }
+  if (opts.includeActive !== true) conditions.push('s.ended_at IS NOT NULL');
+  return { conditions, params };
+}
+
+/** Sessions with eligible unread material at the first extraction wake. */
+export async function extractionHistorySessions(db: RelationalStore, scope: ReadScope): Promise<string[]> {
+  const { conditions, params } = unprocessedConditions(scope, {});
+  const { results } = await db.prepare(`SELECT DISTINCT p.session_id AS id FROM prompt_batches p
+    JOIN sessions s ON s.project_id = p.project_id AND s.session_id = p.session_id
+    WHERE ${conditions.join(' AND ')}`).bind(...params).all<{ id: string }>();
+  return results.map(row => row.id);
+}
 
 /** One chronological partition of eligible prompts. */
 async function readUnprocessedPrompts(
@@ -58,9 +87,7 @@ async function readUnprocessedPrompts(
   const k = keyset(opts, { order: 'p.created_at', id: 'p.prompt_id', direction: 'ASC' });
   if (k === null) return { rows: [], cursor: null };
 
-  const conditions = ['p.project_id = ?', ELIGIBLE_PROMPT_SQL, notTombstonedSql('s'), sessionMaterialReadySql('s')];
-  const params: unknown[] = [scope.projectId, ...READ_ORIGINS];
-  if (opts.includeActive !== true) conditions.push('s.ended_at IS NOT NULL');
+  const { conditions, params } = unprocessedConditions(scope, opts);
   if (session !== undefined) { conditions.push(`p.session_id ${session.exclude ? '!=' : '='} ?`); params.push(session.id); }
   if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
 

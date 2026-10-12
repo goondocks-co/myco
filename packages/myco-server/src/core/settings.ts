@@ -2,7 +2,7 @@ import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS, isReasoningTier, modelRefusal, effortRefusal, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
-import { OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK } from './task-catalogue.js';
+import { admissionForTask, OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK } from './task-catalogue.js';
 import { TASK_SCHEDULE } from './jobs.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { EMBEDDING_CATALOGUE, isEmbeddingProvider, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
@@ -41,8 +41,8 @@ export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
  * remedy, rather than acting on it. A consumer reads a live leaf through
  * `settingTexts`, which hands it only a value that holds its rule.
  *
- * `boolean` means true or false. `integer` with `nullable` also takes null,
- * which means the same as no value. `agent` names an agent a worker can run,
+ * `boolean` means true or false. `integer` with `nullable` also takes null; a declared `default` applies
+ * only when no usable stored value exists. `agent` names an agent a worker can run,
  * or null for none; `agent-list` names each such agent once. `pattern-list`
  * is a list of distinct non-empty path patterns. `embedding` is one part of the
  * embedding selection, judged with the other two parts and the target
@@ -58,7 +58,7 @@ export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
 export type LeafSpec =
   | Record<string, never>
   | { readonly type: 'boolean' }
-  | { readonly type: 'integer'; readonly min: number; readonly max: number; readonly nullable?: true }
+  | { readonly type: 'integer'; readonly min: number; readonly max: number; readonly nullable?: true; readonly default?: number | null }
   | { readonly type: 'agent' }
   | { readonly type: 'agent-list' }
   | { readonly type: 'pattern-list'; readonly maxItems: number; readonly maxChars: number }
@@ -91,7 +91,7 @@ const LIMIT_SPEC: LeafSpec = { type: 'integer', min: 1, max: 10_000, nullable: t
 export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.cold_project_threshold_days': { type: 'integer', min: 0, max: 365 },
   'agent.limits.concurrent_runs': LIMIT_SPEC,
-  'agent.limits.task_concurrent_runs': LIMIT_SPEC,
+  'agent.limits.task_concurrent_runs': { ...LIMIT_SPEC, default: 2 },
   'agent.limits.task_runs_per_hour': LIMIT_SPEC,
   ...Object.fromEntries(CONFIGURABLE_PROFILE_HARNESSES.flatMap((harness) => [
     ...REASONING_TIERS.map((tier) => [`agent.reasoning_map.${harness}.${tier}`, { type: 'profile-model', harness }]),
@@ -176,7 +176,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 
 /** The fields each retained task's consumers read. */
 const TASK_FIELDS = ['harness', 'model', 'reasoningLevel', 'schedule'] as const;
-const SCHEDULE_FIELDS = ['enabled', 'intervalSeconds', 'runIn', 'preCondition', 'accelerator', 'maxRunsPerDay', 'memberRunsPerDay', 'reservedRunsPerDay', 'runWhenCold', 'overlap'] as const;
+const SCHEDULE_FIELDS = ['enabled', 'intervalSeconds', 'runIn', 'preCondition', 'accelerator', 'maxRunsPerDay', 'rampRunsPerDay', 'memberRunsPerDay', 'reservedRunsPerDay', 'runWhenCold', 'overlap'] as const;
 const consumedTaskFields = (task: string): readonly string[] => {
   if (!(OUTCOME_TASKS as readonly string[]).includes(task)) return [];
   return task === TITLING_TASK || TASK_SCHEDULE[task] != null ? TASK_FIELDS : TASK_FIELDS.filter((field) => field !== 'schedule');
@@ -260,9 +260,9 @@ function preserveRetiredTaskOverrides(value: unknown, previous: unknown): unknow
 
 /**
  * The schedule counts a task override carries, each a whole number of 0 or more when given: the clock's own daily
- * ceiling, and how many runs of the task a member who is not an admin may start by hand in a day.
+ * ceiling, its initial-history ramp ceiling, and a member's daily allowance for starts by hand.
  */
-export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay', 'memberRunsPerDay'] as const;
+export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay', 'rampRunsPerDay', 'memberRunsPerDay'] as const;
 
 /** What a changed per-task override violates; unchanged stored fields remain available for a separate repair. */
 function taskOverridesViolation(value: unknown, previous?: unknown): string | null {
@@ -462,13 +462,7 @@ export interface SettingsWriter {
   setCapability(projectId: string, capability: string, enabled: boolean, actor: string, nowMs: number): Promise<SettingsResult>;
   /** Every stored Deployment leaf. Absent leaves are not defaulted here; a reader layers these over its own defaults. */
   leaves(): Promise<Record<string, LeafRecord>>;
-  /**
-   * Whether `projectId` is admitted to `capability`.
-   *
-   * ABSENT MEANS FALSE. A Project appears from a member's first write with no
-   * provisioning step, so anything else silently admits every new Project to
-   * every cost-bearing capability.
-   */
+  /** Whether a live Project has this capability on; an absent row is on and an explicit zero is off. */
   capabilityEnabled(projectId: string, capability: ProjectCapability): Promise<boolean>;
   /** Every capability this Project is admitted to. */
   capabilities(projectId: string): Promise<Record<ProjectCapability, boolean>>;
@@ -578,8 +572,8 @@ export function storedLeafViolation(leaf: string, text: string): string | null {
 }
 
 /**
- * The stored text of each named leaf a consumer may act on: absent where nothing is written, and absent where the
- * stored value breaks the leaf's rule, so the consumer applies the same default it applies to an unwritten leaf and
+ * The text of each named leaf a consumer may act on: a declared default where nothing usable is written,
+ * absent for a refused value with no declared default. Consumer defaults apply to absent values, and
  * the settings surface reports the stored value as invalid. Task overrides, execution profiles and the embedding
  * selection pass through whole: their consumers judge them.
  */
@@ -589,6 +583,10 @@ export async function settingTexts(db: RelationalStore, leaves: readonly string[
     const spec = DEPLOYMENT_LEAF_SPECS[leaf];
     if (spec !== undefined && 'type' in spec && SELF_JUDGED.has(spec.type)) continue;
     if (storedLeafViolation(leaf, text) !== null) held.delete(leaf);
+  }
+  for (const leaf of leaves) {
+    const spec = DEPLOYMENT_LEAF_SPECS[leaf];
+    if (!held.has(leaf) && spec !== undefined && 'default' in spec) held.set(leaf, JSON.stringify(spec.default));
   }
   return held;
 }
@@ -744,21 +742,53 @@ export async function writeSwitchedEmbedding(
   return results[statements.length]!.meta.changes === 1;
 }
 
-/**
- * Every capability of `capabilities` a Project has turned on, for every Project or the one named, in one statement:
- * the read `capabilityEnabled` makes of one Project, made once for the Deployment.
- */
-/** A capability turned on for a Project, as a condition a write carries. Bound as: Project, capability. */
-export const CAPABILITY_ON_SQL = `EXISTS (SELECT 1 FROM project_capabilities pc WHERE pc.project_id = ? AND pc.capability = ? AND pc.enabled = 1)`;
+/** A Project accepting new intelligence work, with any additional admission bound inside the same read. */
+function projectWorkSql(project: string, admission = ''): string {
+  return `EXISTS (SELECT 1 FROM projects capability_project
+    WHERE capability_project.project_id = ${project} AND capability_project.archived_at IS NULL ${admission})`;
+}
 
+/** A live Project's admission to intelligence work, bound as: Project. */
+export const PROJECT_WORK_SQL = projectWorkSql('?');
+
+/** Whether a Project accepts new intelligence work. */
+export async function projectWorkEnabled(db: RelationalStore, projectId: string): Promise<boolean> {
+  return (await db.prepare(`SELECT ${PROJECT_WORK_SQL} AS enabled`).bind(projectId).first<{ enabled: number }>())?.enabled === 1;
+}
+
+/** Current task capabilities and live-project admission for the retained run protocol. */
+export async function taskWorkEnabled(db: RelationalStore, projectId: string, task: string | null): Promise<boolean> {
+  const gate = task === null ? null : admissionForTask(task);
+  return gate?.kind === 'capability'
+    ? settingsWriter(db).capabilityEnabled(projectId, gate.capability)
+    : projectWorkEnabled(db, projectId);
+}
+
+/** A live Project's missing capability row enables it; only an explicit zero opts it out. */
+function capabilityOnSql(project: string, capability: string): string {
+  return projectWorkSql(project, `AND NOT EXISTS (SELECT 1 FROM project_capabilities pc
+        WHERE pc.project_id = capability_project.project_id AND pc.capability = ${capability} AND pc.enabled = 0)`);
+}
+
+/** A capability's admission condition, bound as: Project, capability. */
+export const CAPABILITY_ON_SQL = capabilityOnSql('?', '?');
+
+function requestedCapabilities(capabilities: readonly ProjectCapability[]): string {
+  return capabilities.map(() => 'SELECT ? AS capability').join(' UNION ALL ');
+}
+
+/** Enabled capabilities for every stored Project or the Project named, in one statement. */
 export function enabledCapabilities(db: RelationalStore, capabilities: readonly ProjectCapability[], projectId?: string): {
   statement: PreparedStatement;
   read: (rows: ReadonlyArray<Record<string, unknown>>) => Array<{ projectId: string; capability: string }>;
 } {
   const statement = db.prepare(
-    `SELECT project_id AS projectId, capability FROM project_capabilities
-      WHERE enabled = 1 AND capability IN (${capabilities.map(() => '?').join(', ')})${projectId === undefined ? '' : ' AND project_id = ?'}`,
-  ).bind(...capabilities, ...(projectId === undefined ? [] : [projectId]));
+    capabilities.length === 0
+      ? 'SELECT project_id AS projectId, NULL AS capability FROM projects WHERE 0'
+      : `SELECT p.project_id AS projectId, requested.capability FROM projects p
+         CROSS JOIN (${requestedCapabilities(capabilities)}) requested
+         WHERE ${capabilityOnSql('p.project_id', 'requested.capability')}${projectId === undefined ? '' : ' AND p.project_id = ?'}`,
+  ).bind(...capabilities, ...(capabilities.length === 0 || projectId === undefined ? [] : [projectId]));
   return { statement, read: (rows) => rows.map((row) => ({ projectId: String(row.projectId), capability: String(row.capability) })) };
 }
 
@@ -969,11 +999,9 @@ export function settingsWriter(
     },
 
     async capabilityEnabled(projectId, capability) {
-      const row = await db
-        .prepare(`SELECT enabled FROM project_capabilities WHERE project_id = ? AND capability = ?`)
-        .bind(projectId, capability)
-        .first<{ enabled: number }>();
-      return row !== null && row.enabled === 1;
+      const row = await db.prepare(`SELECT ${CAPABILITY_ON_SQL} AS enabled`)
+        .bind(projectId, capability).first<{ enabled: number }>();
+      return row?.enabled === 1;
     },
 
     async retiredCapabilities(projectId) {
@@ -984,14 +1012,11 @@ export function settingsWriter(
     },
 
     async capabilities(projectId) {
-      const { results } = await db
-        .prepare(`SELECT capability, enabled FROM project_capabilities WHERE project_id = ?`)
-        .bind(projectId)
-        .all<{ capability: string; enabled: number }>();
-      const admitted = new Map(results.map((r) => [r.capability, r.enabled === 1]));
-      return Object.fromEntries(
-        PROJECT_CAPABILITIES.map((c) => [c, admitted.get(c) ?? false]),
-      ) as Record<ProjectCapability, boolean>;
+      const { results } = await db.prepare(
+        `SELECT requested.capability, ${capabilityOnSql('?', 'requested.capability')} AS enabled
+         FROM (${requestedCapabilities(PROJECT_CAPABILITIES)}) requested`,
+      ).bind(projectId, ...PROJECT_CAPABILITIES).all<{ capability: ProjectCapability; enabled: number }>();
+      return Object.fromEntries(results.map((row) => [row.capability, row.enabled === 1])) as Record<ProjectCapability, boolean>;
     },
   };
 }

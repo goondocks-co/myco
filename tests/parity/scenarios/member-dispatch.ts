@@ -64,6 +64,8 @@ export const memberDispatch: ParityScenario = {
       // A task a capability gates is refused, to a member and an admin alike, where the Project has it off.
       const gated = `parity-member-gate-${Date.now()}`;
       await target.sql(`INSERT INTO projects (project_id, name, created_at) VALUES (${lit(gated)}, ${lit(gated)}, ${Date.now()})`);
+      await target.sql(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by)
+        VALUES (${lit(gated)}, 'vault_evolution', 0, ${Date.now()}, 'fixture')`);
       for (const headers of [member, admin]) {
         const res = await fetch(`${target.url}/api/harness/dispatch`, { method: 'POST', headers, body: JSON.stringify({ task: 'extract-curate', projectId: gated }) });
         expect({ status: res.status, body: await res.json() }).toMatchObject({ status: 409, body: { error: 'capability_off', capability: 'vault_evolution' } });

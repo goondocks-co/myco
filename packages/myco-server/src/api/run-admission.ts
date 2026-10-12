@@ -7,6 +7,7 @@ export { runDeadline } from '../core/run-deadline.js';
 import { getRun, isTerminalRunStatus, liveRunsOfCredential, runsOfCredential, type HeldRun, type RunRow, type RunCaller } from '../core/runs.js';
 import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
+import { projectWorkEnabled, taskWorkEnabled } from '../core/settings.js';
 import { strictName } from '@goondocks/myco-shared/run-text';
 import { decodeRunUpdate, endedAnswer, RUN_UPDATE_FIELDS } from './run-fields.js';
 
@@ -19,6 +20,8 @@ export const CONTROL_CAPABILITIES: Readonly<Record<string, { tasks: readonly str
   '/runs/repository': { tasks: REPOSITORY_TASKS, unleased: true, writeGuard: 'batch' },
   '/runs/canopy-map': { tasks: [MAP_TASK], unleased: true, writeGuard: 'batch' },
 };
+
+const WORK_CONTROL_PATHS = new Set(['/runs/embedding-step', '/runs/repository', '/runs/canopy-map']);
 
 export type RunControlAdmission = { held: true; run: HeldRun; settled?: Response } | { held: false };
 
@@ -45,6 +48,8 @@ export async function admitRunControl(
     const settled = closeRetry(run, path, offer);
     return settled === null ? { held: false } : { held: true, run, settled };
   }
+  if (path === '/runs/claim' && !(await projectWorkEnabled(env.db, projectId))) return { held: false };
+  if (WORK_CONTROL_PATHS.has(path) && !(await taskWorkEnabled(env.db, run.projectId, run.task))) return { held: false };
   const pending = run.status === 'pending' || (run.status === 'queued' && path === '/runs/claim');
   if (capability.unleased && run.leaseExpiresAt !== null) return { held: false };
   if (pending && path !== '/runs/claim' && path !== '/runs/update') return { held: false };
@@ -90,7 +95,7 @@ export async function heldRun(env: ServerEnv, ctx: RouteContext, runId: string, 
   if (ctx.memberId !== HARNESS_MEMBER_ID) return null;
   const run = await getRun(env.db, { projectId: ctx.projectId }, runId);
   if (run === null || run.dispatchedBy !== ctx.tokenId) return null;
-  if (run.task === null || !tasks.includes(run.task) || !isLiveRun(run, ctx.now)) return null;
+  if (run.task === null || !tasks.includes(run.task) || !isLiveRun(run, ctx.now) || !(await taskWorkEnabled(env.db, ctx.projectId, run.task))) return null;
   return run;
 }
 

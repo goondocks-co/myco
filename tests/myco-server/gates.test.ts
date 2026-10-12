@@ -54,7 +54,7 @@ const sharedFiles = () =>
     !f.includes(`${join(SRC, 'platform')}/`) && !f.includes(`${join(SRC, 'entry')}/`) && f !== join(SRC, 'index.ts'));
 
 /** Every `emit` call across src; a call removed or added moves the total. */
-const EMIT_CALLS = 170;
+const EMIT_CALLS = 174;
 /** The one migrations directory: the emit script writes it, the rendered-steps gate verifies it, and wrangler.toml applies from it. */
 const MIGRATIONS_DIR = 'migrations';
 const K = SyntaxKind as unknown as Record<string, number>;
@@ -987,7 +987,7 @@ describe('gates', () => {
     // launched runtime's environment and nothing else; and the release check,
     // which opens its own purpose-labelled slot to authenticate GitHub reads.
     // A new file here is the thing to look at.
-    expect(callers.sort()).toEqual([join('api', 'release-provenance.ts'), join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'provider-credentials.ts'), join('core', 'release-provenance.ts'), join('core', 'run-repository.ts')]);
+    expect(callers.sort()).toEqual([join('api', 'release-provenance.ts'), join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'provider-credentials.ts'), join('core', 'release-provenance.ts'), join('core', 'run-repository.ts'), join('core', 'scheduled-tasks.ts')]);
     const credentialCallers = files(SRC).filter((f) => (/\bopenProviderCredential\(/.test(stripComments(readFileSync(f, 'utf8'))) || sourceCalls(readFileSync(f, 'utf8')).some((call) => call.called === 'openProviderCredential')))
       .map((f) => f.slice(SRC.length + 1)).sort();
     expect(credentialCallers).toEqual([join('core', 'embedding', 'configured-provider.ts'), join('core', 'harness.ts'), join('core', 'provider-credentials.ts')]);

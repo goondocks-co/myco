@@ -3,8 +3,9 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { cloudflareVectorStore } from '../../packages/myco-server/src/platform/cloudflare/vectors.js';
 import { cloudflareEmbeddingProvider, EMBEDDING_MODEL } from '../../packages/myco-server/src/platform/cloudflare/embedding.js';
-import { dispatchEmbeddingWork, embeddingKeepsAwake } from '../../packages/myco-server/src/core/embedding/jobs.js';
+import { dispatchEmbeddingWork, embeddingKeepsAwake, embeddingSweepPending, runEmbeddingJob } from '../../packages/myco-server/src/core/embedding/jobs.js';
 import { settingsWriter } from '../../packages/myco-server/src/core/settings.js';
+import { vectorId } from '@myco-server-worker/core/embedding/vectors.js';
 import type { ServerEnv } from '../../packages/myco-server/src/core/adapters.js';
 
 test('embedding backlog dispatches once without LLM credentials and respects the idle setting', async () => {
@@ -52,5 +53,65 @@ test('keeps one embedding run in flight across the Deployment: the next Project 
     f.sqlite.query("UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE task = 'embedding-reconcile'").run(now + 130_000);
     expect(await dispatchEmbeddingWork(env, now + 140_000)).toBe(1);
     expect(runs()).toEqual([{ project_id: 'proj_1' }, { project_id: 'proj_2' }]);
+  } finally { f.sqlite.close(); }
+});
+
+
+for (const restore of [false, true]) test(`archived vector housekeeping stays retire-only ${restore ? 'across restoration' : 'across duplicate wakes'}`, async () => {
+  let restored = false;
+  const f = sqliteEnv({ onSql: (sql, sqlite) => {
+    if (restore && !restored && sql.startsWith('SELECT COALESCE(queued_at, started_at) AS at FROM agent_runs')) {
+      sqlite.run("UPDATE projects SET archived_at=NULL WHERE project_id='proj_1'");
+      restored = true;
+    }
+  } });
+  try {
+    const now = Date.now(), launched: string[] = [];
+    f.sqlite.run("UPDATE projects SET archived_at=?", [now]);
+    f.sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,?)", [now]);
+    f.sqlite.run("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_1','unbuilt','myco-agent','pending source','decision',?)", [now]);
+    const modelKey = JSON.stringify(['cloudflare', EMBEDDING_MODEL]);
+    const id = await vectorId({ projectId: 'proj_1', modelKey }, 'spore', 'gone', 'v');
+    f.sqlite.run("INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at) VALUES('proj_1',?,?,'spore','gone','v',1,1)", [modelKey, id]);
+    const env: ServerEnv = { ...f.serverEnv, origin: 'https://myco.example', vectors: cloudflareVectorStore(indexFixture()),
+      embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }, { model: EMBEDDING_MODEL, modelKey: JSON.stringify(['cloudflare', EMBEDDING_MODEL]) }),
+      harnessLaunch: async (spec) => { launched.push(spec.runId); },
+    };
+    expect(await embeddingKeepsAwake(env, now)).toBe(true);
+    expect(await embeddingSweepPending(env, now)).toBe(false);
+    const attempts = await Promise.all(Array.from({ length: restore ? 1 : 2 }, () => dispatchEmbeddingWork(env, now)));
+    expect(attempts.reduce((sum, count) => sum + count, 0)).toBe(1);
+    expect(restored).toBe(restore);
+    expect(f.sqlite.query('SELECT ready FROM embedding_receipts').get()).toEqual({ ready: -1 });
+    if (!restore) expect(await runEmbeddingJob(env, now)).toEqual({ changed: 0, more: false });
+    expect(launched).toEqual([]);
+    expect(f.sqlite.query('SELECT count(*) AS n FROM embedding_receipts').get()).toEqual({ n: 1 });
+  } finally { f.sqlite.close(); }
+});
+
+
+for (const archived of [['proj_1'], ['proj_0', 'proj_1']]) test(`archived retirement of five orphans per Project (${archived.length} Projects) does not delay a live Project embedding launch`, async () => {
+  const f = sqliteEnv();
+  try {
+    const now = Date.now(), launched: string[] = [];
+    for (const projectId of archived) {
+      f.sqlite.run('INSERT OR IGNORE INTO projects(project_id,name,created_at) VALUES(?,?,?)', [projectId, projectId, now]);
+      f.sqlite.run('UPDATE projects SET archived_at=? WHERE project_id=?', [now, projectId]);
+    }
+    f.sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,?)", [now]);
+    f.sqlite.run("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_2','unbuilt','myco-agent','pending source','decision',?)", [now]);
+    const modelKey = JSON.stringify(['cloudflare', EMBEDDING_MODEL]);
+    for (const projectId of archived) for (let n = 0; n < 5; n++) {
+      const id = await vectorId({ projectId, modelKey }, 'spore', 'gone_' + n, 'v');
+      f.sqlite.run("INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at) VALUES(?,?,?,'spore',?,'v',1,1)", [projectId, modelKey, id, 'gone_' + n]);
+    }
+    const env: ServerEnv = { ...f.serverEnv, origin: 'https://myco.example', vectors: cloudflareVectorStore(indexFixture()),
+      embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }, { model: EMBEDDING_MODEL, modelKey }),
+      harnessLaunch: async (spec) => { launched.push(spec.runId); },
+    };
+    await dispatchEmbeddingWork(env, now);
+    expect(launched).toHaveLength(1);
+    expect(f.sqlite.query('SELECT project_id FROM agent_runs').all()).toEqual([{ project_id: 'proj_2' }]);
+    expect(f.sqlite.query('SELECT count(*) AS n FROM embedding_receipts WHERE ready=1').get()).toEqual({ n: archived.length * 5 - 1 });
   } finally { f.sqlite.close(); }
 });

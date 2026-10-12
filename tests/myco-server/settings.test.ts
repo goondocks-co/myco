@@ -2,8 +2,7 @@
  * Deployment Settings — the one validated write path (#915 L2).
  *
  * Every write validates, authorizes, persists, records its actor, and re-arms.
- * The tests below are about that order holding and about the fail-closed default
- * on capability admission, which is the property #428 exists to protect.
+ * Capability reads default on and preserve explicit per-Project opt-outs.
  */
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -189,16 +188,16 @@ describe('task document repair', () => {
 });
 
 describe('project capability admission', () => {
-  it('reads every capability OFF for a Project nothing has admitted', async () => {
+  it('reads every capability ON for a Project with no rows', async () => {
     const r = rig();
-    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: false, canopy: false, vault_evolution: false });
-    for (const c of PROJECT_CAPABILITIES) expect(await r.w.capabilityEnabled('proj_1', c)).toBe(false);
+    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: true, canopy: true, vault_evolution: true });
+    for (const c of PROJECT_CAPABILITIES) expect(await r.w.capabilityEnabled('proj_1', c)).toBe(true);
   });
 
-  it('admits one capability without admitting the others', async () => {
+  it('switches off one capability without changing the others', async () => {
     const r = rig();
-    expect(await r.w.setCapability('proj_1', 'cortex', true, 'mem_1', 1_000)).toEqual({ applied: true });
-    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: true, canopy: false, vault_evolution: false });
+    expect(await r.w.setCapability('proj_1', 'cortex', false, 'mem_1', 1_000)).toEqual({ applied: true });
+    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: false, canopy: true, vault_evolution: true });
   });
 
   it('withdraws an admitted capability', async () => {
@@ -210,10 +209,10 @@ describe('project capability admission', () => {
       .toEqual({ updated_by: 'mem_2' });
   });
 
-  it('keeps one Project\'s admission from admitting another', async () => {
+  it('keeps one Project\'s opt-out from disabling another', async () => {
     const r = rig();
-    await r.w.setCapability('proj_1', 'canopy', true, 'mem_1', 1_000);
-    expect(await r.w.capabilityEnabled('proj_2', 'canopy')).toBe(false);
+    await r.w.setCapability('proj_1', 'canopy', false, 'mem_1', 1_000);
+    expect(await r.w.capabilityEnabled('proj_2', 'canopy')).toBe(true);
   });
 
   it('refuses a capability it does not define', async () => {
@@ -224,12 +223,7 @@ describe('project capability admission', () => {
 });
 
 describe('a Project created by ingest', () => {
-  it('is admitted to NOTHING — the property #428 exists to protect', async () => {
-    // A Project appears from a member's first write, with no provisioning step and
-    // no member ceremony. On the member side a new vault is made capture-only by
-    // `reseedCaptureOnly()` writing `false` at provision; there is no equivalent
-    // moment here, so the default itself has to carry the property. If it does not,
-    // every project a member touches silently acquires every cost-bearing feature.
+  it('has every capability on without materializing rows', async () => {
     const e = sqliteEnv();
     const token = (await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now())).token;
     const res = await worker.fetch(new Request('https://s/events', {
@@ -241,7 +235,7 @@ describe('a Project created by ingest', () => {
     expect(e.sqlite.query(`SELECT 1 FROM projects WHERE project_id='proj_brand_new'`).get()).not.toBeNull();
 
     const w = settingsWriter(e.db);
-    expect(await w.capabilities('proj_brand_new')).toEqual({ cortex: false, canopy: false, vault_evolution: false });
+    expect(await w.capabilities('proj_brand_new')).toEqual({ cortex: true, canopy: true, vault_evolution: true });
     // And nothing wrote a row on its behalf.
     expect((e.sqlite.query(`SELECT COUNT(*) c FROM project_capabilities`).get() as any).c).toBe(0);
   });
@@ -327,7 +321,7 @@ describe('obsolete capability contracts', () => {
     const r = rig();
     r.sqlite.run(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'skills', 1, 1, 'historic')`);
     expect(await r.w.setCapability('proj_1', 'skills', false, 'mem_1', 2)).toEqual({ applied: false, refusal: { reason: 'unknown_capability', capability: 'skills' } });
-    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: false, canopy: false, vault_evolution: false });
+    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: true, canopy: true, vault_evolution: true });
     expect(await r.w.retiredCapabilities('proj_1')).toEqual({ skills: true });
     expect(r.sqlite.query(`SELECT enabled, updated_by FROM project_capabilities WHERE capability='skills'`).get()).toEqual({ enabled: 1, updated_by: 'historic' });
   });

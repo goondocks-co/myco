@@ -37,7 +37,8 @@ import { recordAttemptStatement } from './run-steps.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { emit } from '../telemetry.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
-import { CAPABILITY_ON_SQL, settingsWriter, type ProjectCapability } from './settings.js';
+import { admissionForTask } from './task-catalogue.js';
+import { CAPABILITY_ON_SQL, PROJECT_WORK_SQL, settingsWriter, type ProjectCapability } from './settings.js';
 import { TITLING_TASK } from './task-catalogue.js';
 import { NOT_TOMBSTONED_PARAMS } from './tombstones.js';
 import { contextValue, DISPATCH_ACTOR_SQL } from '../db/run-context.js';
@@ -138,7 +139,7 @@ const CLAIM_SQL = `INSERT INTO agent_runs
 const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
    SET status = 'running', harness = ?, instruction = COALESCE(?, instruction), provider = COALESCE(provider, ?), model = COALESCE(model, ?),
        started_at = COALESCE(started_at, ?), held_by = NULL
- WHERE project_id = ? AND id = ? AND ${UNCLAIMED_RUN_STATUSES} AND dispatched_by = ?`;
+ WHERE project_id = ? AND id = ? AND ${UNCLAIMED_RUN_STATUSES} AND dispatched_by = ? AND task IS ?`;
 
 /**
  * The one exclusion rule: a run is never counted by a limit it is itself being
@@ -189,8 +190,8 @@ const ACTOR_ENTRY_SQL = `task = ? AND status != 'skipped' AND COALESCE(${context
        AND COALESCE(queued_at, started_at) >= ? AND ${DISPATCH_ACTOR_SQL} = ?`;
 
 /**
- * A ceiling on the entries one actor may make of a task across the whole
- * Deployment in a window: the write that records the run refuses once the
+ * A ceiling on the entries one actor may make of a task in a window,
+ * across the Deployment or within one Project: the write that records the run refuses once the
  * window holds that many, in the same statement that counts them.
  */
 export interface ActorCeiling {
@@ -198,14 +199,24 @@ export interface ActorCeiling {
   task: string;
   perDay: number;
   sinceMs: number;
+  /** Restrict this ceiling to one Project; absent spans the Deployment. */
+  projectId?: string;
 }
 
-/** The ceiling check, as part of the write that records a run. Bound as: per-day, task, window start, actor, run, run, per-day. */
+/** The ceiling check, as part of the write that records a run. Bound as: per-day, task, window start, actor, project, project, run, run, per-day. */
+const ACTOR_PROJECT_SQL = '(? IS NULL OR project_id = ?)';
 const ACTOR_CEILING_WHERE = `
-   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${ACTOR_ENTRY_SQL} AND ${NOT_THE_RUN_ADMITTED}) < ?)`;
+   AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${ACTOR_ENTRY_SQL} AND ${ACTOR_PROJECT_SQL} AND ${NOT_THE_RUN_ADMITTED}) < ?)`;
 
 function actorCeilingParams(runId: string, ceiling: ActorCeiling | undefined): (string | number | null)[] {
-  return ceiling === undefined ? [null, null, null, null, runId, runId, null] : [ceiling.perDay, ceiling.task, ceiling.sinceMs, ceiling.actor, runId, runId, ceiling.perDay];
+  return ceiling === undefined ? [null, null, null, null, null, null, runId, runId, null] : [ceiling.perDay, ceiling.task, ceiling.sinceMs, ceiling.actor, ceiling.projectId ?? null, ceiling.projectId ?? null, runId, runId, ceiling.perDay];
+}
+
+/** Project gates carried by queue, launch and claim writes. */
+const PROJECT_ADMISSION_WHERE = ` AND ${PROJECT_WORK_SQL} AND (? IS NULL OR ${CAPABILITY_ON_SQL})`;
+
+function projectAdmissionParams(scope: ReadScope, capability?: string | null): (string | null)[] {
+  return [scope.projectId, capability ?? null, scope.projectId, capability ?? null];
 }
 
 /**
@@ -223,14 +234,14 @@ const ADMISSION_WHERE = `
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${LIVE_RUN_STATUSES} AND task = ? AND ${NOT_THE_RUN_ADMITTED}) < ?)
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) < ?)
    AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES} AND id != ?))${ACTOR_CEILING_WHERE}
-   AND (? IS NULL OR ${CAPABILITY_ON_SQL})`;
+${PROJECT_ADMISSION_WHERE}`;
 
 /**
  * What a write is admitted against, or none: an unguarded write is a claim the
  * dispatcher already decided elsewhere. `singleFlight` names a task that runs
  * once at a time in a Project: the write refuses while another run of it is
  * live, in the same statement, so two wakes deciding at once write one row.
- * `ceiling` names an actor's Deployment-wide window the write refuses past. `capability` names one the Project must
+ * `ceiling` names an actor's window the write refuses past. `capability` names one the Project must
  * have turned on.
  */
 export interface WriteAdmission {
@@ -257,6 +268,8 @@ function admissionParams(scope: ReadScope, task: string | null, runId: string, a
   const l = admission?.limits ?? NO_LIMITS;
   const hourStart = (admission?.now ?? 0) - 3_600_000;
   const single = admission?.singleFlight === true ? task : null;
+  const gate = task === null ? null : admissionForTask(task);
+  const capability = gate === null ? admission?.capability : gate.kind === 'capability' ? gate.capability : null;
   return [
     l.fleet, runId, runId, l.fleet,
     l.concurrent_runs, runId, runId, l.concurrent_runs,
@@ -264,7 +277,7 @@ function admissionParams(scope: ReadScope, task: string | null, runId: string, a
     l.task_runs_per_hour, task, runId, runId, hourStart, l.task_runs_per_hour,
     single, scope.projectId, task, runId,
     ...actorCeilingParams(runId, admission?.ceiling),
-    admission?.capability ?? null, scope.projectId, admission?.capability ?? null,
+    ...projectAdmissionParams(scope, capability),
   ];
 }
 
@@ -336,9 +349,8 @@ export async function recordDispatch(db: RelationalStore, scope: ReadScope, reco
  *
  * Admission is checked HERE rather than by the caller. A separate call is one a
  * caller can forget and claim anyway; folding it in makes a claim without
- * admission unrepresentable. Absence of a capability row means NOT admitted, so
- * a Project that appeared from a member's first write is admitted to nothing
- * until an operator says so.
+ * admission unrepresentable. A capability is enabled unless the Project has
+ * explicitly switched it off.
  *
  * A refused admission and an id already claimed are different answers. Both
  * report `claimed: false`, so a caller reading one as the other would retry a
@@ -354,34 +366,41 @@ export async function claimRun(
   guard: { taskName: string; admission: RunAdmissionGate; dispatchedOnly?: boolean; embeddingConfigured?: boolean; caller?: RunCaller },
   _now: number,
 ): Promise<ClaimOutcome> {
-  if (guard.admission.kind === 'capability') {
-    if (!(await settingsWriter(db).capabilityEnabled(scope.projectId, guard.admission.capability))) {
-      return { claimed: false, notAdmitted: guard.admission.capability };
-    }
-  } else if (guard.admission.kind === 'embedding' && guard.embeddingConfigured !== true) {
+  const admission = admissionForTask(row.task ?? guard.taskName) ?? guard.admission;
+  const capability = admission.kind === 'capability' ? admission.capability : null;
+  const admissionRefusal = async (): Promise<ClaimOutcome | null> =>
+    capability !== null && !(await settingsWriter(db).capabilityEnabled(scope.projectId, capability))
+      ? { claimed: false, notAdmitted: capability } : null;
+  const refused = await admissionRefusal();
+  if (refused !== null) return refused;
+  if (admission.kind === 'embedding' && guard.embeddingConfigured !== true) {
     return { claimed: false, noProvider: true };
   }
+  const admissionSql = PROJECT_ADMISSION_WHERE;
+  const admissionValues = projectAdmissionParams(scope, capability);
+  const failedClaim = async (): Promise<ClaimOutcome> => {
+    const denied = await admissionRefusal();
+    if (denied !== null) return denied;
+    const held = await db.prepare(RUN_REF_SQL).bind(scope.projectId, row.id).first<RunningRunRef>();
+    return { claimed: false, running: held ?? null };
+  };
   if (row.dispatchedBy !== null) {
     const caller = runCallerGuard(guard.caller, UNCLAIMED_RUN_STATUSES);
-    const dispatched = await db.prepare(CLAIM_DISPATCHED_SQL + caller.sql).bind(
+    const dispatched = await db.prepare(CLAIM_DISPATCHED_SQL + caller.sql + admissionSql).bind(
       row.harness, row.instruction, row.provider, row.model, row.startedAt,
-      scope.projectId, row.id, row.dispatchedBy, ...caller.params,
+      scope.projectId, row.id, row.dispatchedBy, row.task, ...caller.params, ...admissionValues,
     ).run();
     if (dispatched.meta.changes === 1) return { claimed: true };
   }
-  if (guard.dispatchedOnly === true) {
-    const held = await db.prepare(RUN_REF_SQL).bind(scope.projectId, row.id).first<RunningRunRef>();
-    return { claimed: false, running: held ?? null };
-  }
-  const result = await db.prepare(CLAIM_SQL).bind(
+  if (guard.dispatchedOnly === true) return failedClaim();
+  const result = await db.prepare(CLAIM_SQL + admissionSql).bind(
     scope.projectId, row.id, row.agentId, row.task, row.instruction, row.harness, row.provider, row.model,
     row.dryRun ? 1 : 0, row.startedAt, row.runContext, row.dispatchedBy,
-    scope.projectId, row.id,
+    scope.projectId, row.id, ...admissionValues,
   ).run();
 
   if (result.meta.changes === 1) return { claimed: true };
-  const running = await db.prepare(RUN_REF_SQL).bind(scope.projectId, row.id).first<RunningRunRef>();
-  return { claimed: false, running: running ?? null };
+  return failedClaim();
 }
 
 /**
@@ -1167,16 +1186,18 @@ const RECORD_QUEUED_SQL = `INSERT INTO agent_runs
     (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, queued_at, held_by, dispatch_spec, run_context)
   SELECT ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)
-   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES}))${ACTOR_CEILING_WHERE}`;
+   AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES}))${ACTOR_CEILING_WHERE}${PROJECT_ADMISSION_WHERE}`;
 
 /** Record a dispatch the Deployment holds back: a run row in `queued`, with no credential until it launches. A single-flight task is refused while another run of it is live, and a write past an actor's ceiling is refused in the same statement. */
 export async function recordQueued(db: RelationalStore, scope: ReadScope, record: QueuedRecord, options: { singleFlight?: boolean; ceiling?: ActorCeiling; actor?: MemberWriteActor; setup?: PreparedStatement[] } = {}): Promise<boolean> {
+  const gate = admissionForTask(record.task);
   const statement = db.prepare(RECORD_QUEUED_SQL).bind(
     scope.projectId, record.id, record.agentId, record.task, record.instruction ?? null, record.provider, record.model,
     record.dryRun === true ? 1 : 0, record.queuedAt, record.heldBy, record.dispatchSpec, record.runContext ?? null,
     scope.projectId, record.id,
     options.singleFlight === true ? record.task : null, scope.projectId, record.task,
     ...actorCeilingParams(record.id, options.ceiling),
+    ...projectAdmissionParams(scope, gate?.kind === 'capability' ? gate.capability : null),
   );
   return writeDispatchRecord(db, statement, options);
 }
@@ -1191,11 +1212,11 @@ export async function recordQueued(db: RelationalStore, scope: ReadScope, record
 const LAUNCH_QUEUED_SQL = `UPDATE agent_runs
    SET status = 'pending', dispatched_by = ?, started_at = ?, run_context = ?, instruction = COALESCE(?, instruction),
        provider = COALESCE(?, provider), model = COALESCE(?, model), held_by = NULL
- WHERE project_id = ? AND id = ? AND status = 'queued'${ADMISSION_WHERE}`;
+ WHERE project_id = ? AND id = ? AND status = 'queued' AND task = ?${ADMISSION_WHERE}`;
 
 export async function launchQueued(db: RelationalStore, scope: ReadScope, runId: string, launch: { task: string; dispatchedBy: string; startedAt: number; runContext: string | null; instruction?: string | null; provider: string | null; model: string | null }, admission?: WriteAdmission): Promise<boolean> {
   const statement = db.prepare(LAUNCH_QUEUED_SQL).bind(
-    launch.dispatchedBy, launch.startedAt, launch.runContext, launch.instruction ?? null, launch.provider, launch.model, scope.projectId, runId,
+    launch.dispatchedBy, launch.startedAt, launch.runContext, launch.instruction ?? null, launch.provider, launch.model, scope.projectId, runId, launch.task,
     ...admissionParams(scope, launch.task, runId, admission),
   );
   return writeDispatchRecord(db, statement, admission);
@@ -1370,8 +1391,8 @@ export async function nextClaimable(db: RelationalStore, excluded: readonly stri
 /** The queued row and all launch limits required by both credential minting and claim. */
 export function workerClaimPredicate(candidate: ClaimCandidate, admission: WriteAdmission): { sql: string; params: (string | number | null)[] } {
   return {
-    sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND status = 'queued' AND dispatched_by IS NULL${ADMISSION_WHERE})`,
-    params: [candidate.projectId, candidate.id, ...admissionParams({ projectId: candidate.projectId }, candidate.task, candidate.id, admission)],
+    sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND status = 'queued' AND task = ? AND dispatched_by IS NULL${ADMISSION_WHERE})`,
+    params: [candidate.projectId, candidate.id, candidate.task, ...admissionParams({ projectId: candidate.projectId }, candidate.task, candidate.id, admission)],
   };
 }
 
@@ -1716,9 +1737,9 @@ export function lastTaskEntryQueries(scope: ReadScope, task: string, actor?: str
   }));
 }
 
-/** Entries of `task` by `actor` from `sinceMs` on, across every Project: the count a Deployment-wide daily ceiling reads. Skipped and replaced rows are not entries. */
-export async function deploymentTaskEntriesSince(db: RelationalStore, task: string, sinceMs: number, actor: string): Promise<number> {
-  const row = await db.prepare(`SELECT COUNT(*) AS c FROM agent_runs WHERE ${ACTOR_ENTRY_SQL}`).bind(task, sinceMs, actor).first<{ c: number }>();
+/** Entries of `task` by `actor` from `sinceMs` on, across every Project or the one named. Skipped and replaced rows are not entries. */
+export async function deploymentTaskEntriesSince(db: RelationalStore, task: string, sinceMs: number, actor: string, projectId?: string): Promise<number> {
+  const row = await db.prepare(`SELECT COUNT(*) AS c FROM agent_runs WHERE ${ACTOR_ENTRY_SQL} AND ${ACTOR_PROJECT_SQL}`).bind(task, sinceMs, actor, projectId ?? null, projectId ?? null).first<{ c: number }>();
   return row?.c ?? 0;
 }
 

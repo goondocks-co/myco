@@ -397,8 +397,8 @@ describe('Settings, in five sections', () => {
     // Nothing stored: the field shows the server's default in words, so the status says only that it is the default.
     expect(statusOf('cortex.spores.inject_on_prompt_submit')).toBe('This setting is on (server default).');
     expect(statusOf('agent.scheduled_tasks_active_window_days')).toBe('Myco uses 14 days (server default).');
-    expect(statusOf('agent.limits.concurrent_runs')).toBe('Myco uses none (not set).');
-    expect((screen.getByLabelText('Tasks at once') as HTMLInputElement).placeholder).toBe('Not set');
+    expect(statusOf('agent.limits.concurrent_runs')).toBe('Myco uses no limit (not set).');
+    expect((screen.getByLabelText('Tasks at once') as HTMLInputElement).placeholder).toBe('No limit');
     expect(screen.queryByRole('region', { name: 'Older settings' })).toBeNull();
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
@@ -1215,7 +1215,33 @@ it('keeps blank-input placeholders short and the reason in the status sentence',
   server(base({ '/api/settings': () => Response.json({ ...leaves(), leaves: leaves().leaves.map((row) => row.leaf === leaf ? { ...row, effective: null, reason } : row) }) }));
   mount('/settings');
   await waitFor(() => expect(statusOf(leaf)).toContain(reason));
-  expect((screen.getByRole('spinbutton', { name: 'Tasks at once' }) as HTMLInputElement).placeholder).toBe('Not set');
-  expect(statusOf(leaf)).toContain('Myco uses none (not set).');
+  expect((screen.getByRole('spinbutton', { name: 'Tasks at once' }) as HTMLInputElement).placeholder).toBe('No limit');
+  expect(statusOf(leaf)).toContain('Myco uses no limit (not set).');
   expect(screen.queryByRole('heading', { name: 'Container smoke test' })).toBeNull();
+});
+
+
+it('shows the server task concurrency default and saves an explicit unlimited override separately from reset', async () => {
+  const leaf = 'agent.limits.task_concurrent_runs';
+  let value: number | null | undefined;
+  const { sent } = server(base({
+    '/api/settings': () => Response.json(leaves({ [leaf]: { value } })),
+    ['/api/settings/' + leaf]: (init) => {
+      value = init?.method === 'DELETE' ? undefined : JSON.parse(String(init?.body)).value;
+      return Response.json({ applied: true });
+    },
+  }));
+  mount('/settings');
+  const input = await screen.findByRole('spinbutton', { name: 'Runs of one task at once' });
+  expect((input as HTMLInputElement).placeholder).toBe('2');
+  expect(statusOf(leaf)).toContain('Myco uses 2 (server default).');
+  expect(screen.getByText('Across all projects, this many runs of the same task can work at once. Further runs wait until one finishes.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Set no limit for Runs of one task at once' }));
+  await waitFor(() => expect(sent).toHaveLength(1));
+  expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/' + leaf, body: { value: null } });
+  await waitFor(() => expect(statusOf(leaf)).toContain('Myco uses no limit (stored value).'));
+  fireEvent.click(screen.getByRole('button', { name: 'Clear the stored value for Runs of one task at once' }));
+  await waitFor(() => expect(sent).toHaveLength(2));
+  expect(sent[1]).toMatchObject({ method: 'DELETE', path: '/api/settings/' + leaf });
+  await waitFor(() => expect(statusOf(leaf)).toContain('Myco uses 2 (server default).'));
 });

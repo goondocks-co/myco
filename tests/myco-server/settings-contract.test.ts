@@ -266,7 +266,7 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
     observe: async (r) => scheduledTasks((await scheduleLeaves(r.env)).overrides).find((t) => t.task === 'extract-curate')?.schedule.intervalSeconds,
   },
   ...Object.fromEntries((['concurrent_runs', 'task_concurrent_runs', 'task_runs_per_hour'] as const).map((limit) => [`agent.limits.${limit}`, {
-    consumer: at('core/harness.ts', dispatchTask), value: () => 2, invalid: () => 1.5, observe: heldDispatch,
+    consumer: at('core/harness.ts', dispatchTask), value: () => 1, invalid: () => 1.5, observe: heldDispatch,
   } satisfies BehaviorCase])),
   'worker.harness': {
     consumer: at(harnessModule, selectWorkerExecution), setup: () => [...workerLogin('claude-code'), ...workerLogin('codex'), ...modelFor('codex', 'default')],
@@ -380,9 +380,9 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
   ...profileCases(),
 };
 
-/** What the dispatcher answers for an extraction while five runs of it are live: the limit it is held by, if any. */
+/** What the dispatcher answers for an extraction while one run of it is live: the limit it is held by, if any. */
 async function heldDispatch(r: Rig): Promise<unknown> {
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 1; i++) {
     r.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', ?, 'myco-agent', 'extract-curate', 'running', ?)`, [`run_live_${i}`, NOW - 10 * 60_000]);
   }
   const outcome = await dispatchTask(r.env, 'extract-curate', 'proj_1', { serverUrl: ORIGIN, actor: 'test', timeoutSeconds: 120 }, NOW);

@@ -498,7 +498,7 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
         expect({ key, facts: whole.runs.get(key) ?? { live: false, lastEntryAt: null, entriesSince: 0 } }).toEqual({ key, facts: perProject });
       }
     }
-    expect([...whole.capabilities].sort()).toEqual([taskFactsKey('proj_1', 'cortex'), taskFactsKey('proj_2', 'cortex'), taskFactsKey('proj_2', 'vault_evolution')]);
+    expect([...whole.capabilities].sort()).toEqual(['proj_1', 'proj_2', 'proj_3'].flatMap((id) => ['cortex', 'vault_evolution'].map((capability) => taskFactsKey(id, capability))).sort());
   });
 
   it('reads every Project\'s runs through the Project-and-task index, never by scanning the runs', () => {

@@ -26,9 +26,8 @@ async function harness(opts: { admit?: boolean; admission?: RunClaimAdmission; p
   const now = Date.now();
   sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(PROJECT, PROJECT, now);
   sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`).run(AGENT, now);
-  if (opts.admit !== false) {
-    sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, 'cortex', 1, ?, 'test')`).run(PROJECT, now);
-  }
+  sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, 'cortex', ?, ?, 'test')`)
+    .run(PROJECT, opts.admit === false ? 0 : 1, now);
   if (opts.provider !== undefined) {
     sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.provider.type', ?, ?, 'test')`).run(JSON.stringify(opts.provider), now);
   }

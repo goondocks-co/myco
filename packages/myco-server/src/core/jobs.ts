@@ -230,6 +230,8 @@ export interface TaskSchedule {
   preCondition?: string;
   accelerator?: { name: string; thresholds: { steady: number; accelerated: number } };
   maxRunsPerDay?: number;
+  /** Daily automatic extraction slots while the first eligible history partition is ramping. */
+  rampRunsPerDay?: number;
   /** Daily automatic slots available only when the named condition passes. */
   reservedRunsPerDay?: { count: number; preCondition: string };
   runWhenCold?: boolean;
@@ -246,7 +248,7 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
   [MAP_TASK]: { enabled: false, intervalSeconds: 21_600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 4, preCondition: 'has-capture-since-map' },
   'embedding-reconcile': null,
   'container-smoke': null,
-  [EXTRACTION_TASK]: { intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12, reservedRunsPerDay: { count: 3, preCondition: 'has-recent-live-prompts' }, preCondition: 'has-unprocessed-prompts' },
+  [EXTRACTION_TASK]: { intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12, rampRunsPerDay: 2, reservedRunsPerDay: { count: 3, preCondition: 'has-recent-live-prompts' }, preCondition: 'has-unprocessed-prompts' },
   [SEEDING_TASK]: null,
   [TITLING_TASK]: null,
 };

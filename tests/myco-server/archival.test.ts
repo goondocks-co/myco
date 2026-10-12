@@ -3,8 +3,8 @@ import { runRouteFixture } from './helpers/run-routes.js';
  * Project archival.
  *
  * An archived project refuses capture on the two capture routes with a named,
- * terminal refusal in each route's shape, and on nothing else: the credential
- * still rotates and the run control plane still answers. Listings hide it by
+ * terminal refusal in each route's shape. Credentials still rotate; archived
+ * Projects refuse new intelligence claims. Listings hide it by
  * default and show it on request; everything captured stays readable; unarchive
  * restores capture.
  */
@@ -46,7 +46,7 @@ describe('an archived project', () => {
     expect({ events: r.count('events'), blobs: r.count('blobs') }).toEqual(before);
   });
 
-  it('leaves the credential and the run control plane alone: a refresh still rotates and a claim still claims', async () => {
+  it('keeps credential refresh available and refuses intelligence claims', async () => {
     const r = await rig();
     await r.ownerPost('/api/projects/proj_1/archive');
     const refreshed = await json(await r.fetch(memberPost(r.windowed, {}, '/tokens/refresh')));
@@ -54,7 +54,7 @@ describe('an archived project', () => {
     const run = await runRouteFixture('agent_arch');
     run.sqlite.run("UPDATE projects SET archived_at = 1 WHERE project_id = 'proj_1'");
     const claim = await run.post('/runs/claim', { id: 'run_arch', agentId: 'agent_arch', task: 'digest', capability: 'cortex' });
-    expect(claim.persisted).toBe(true);
+    expect(claim).toMatchObject({ persisted: false, code: 'no_run' });
   });
 
   it('is restored by unarchive: capture answers persisted again', async () => {

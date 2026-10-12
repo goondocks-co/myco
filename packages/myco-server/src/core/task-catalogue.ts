@@ -12,7 +12,7 @@
  * first write — so admission has to be asked per run, and this is the table that
  * answers it. Every retained task names one gate:
  *
- * - **A capability**, per Project, absent meaning not admitted.
+ * - **A capability**, per Project, enabled unless explicitly switched off.
  * - **Capture**, for request-driven titling. The worker claim selects the
  *   harness, tier profile and login; no provider setting gates the request.
  * - **An embedding provider**, per Deployment, for deterministic vector work.

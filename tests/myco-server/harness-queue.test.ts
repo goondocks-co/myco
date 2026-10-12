@@ -19,6 +19,7 @@ import { indexFixture } from './helpers/vector-index.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { cloudflareEmbeddingProvider, EMBEDDING_MODEL } from '@myco-server-worker/platform/cloudflare/embedding.js';
 import { prepared } from './helpers/prepared.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 
 const NOW = 1_800_000_000_000;
@@ -58,6 +59,42 @@ describe('what holds a dispatch', () => {
     expect(f.launches).toEqual([]);
     f.sqlite.close();
   });
+  it('refuses runtime probes when cortex is off, including an opt-out after preparation', async () => {
+    const f = await fixture();
+    try {
+      const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+      expect(prepared.ok).toBe(true);
+      await settingsWriter(f.env.db).setCapability('proj_1', 'cortex', false, 'test', NOW);
+      expect(await f.dispatch()).toMatchObject({ dispatched: false, refusal: 'capability_off' });
+      if (!prepared.ok) throw new Error('fixture did not prepare');
+      await expect(launchDispatch(f.env, prepared.prepared, { serverUrl: ORIGIN, actor: 'test' }, NOW)).rejects.toThrow('capability');
+      expect(f.launches).toEqual([]);
+      expect(f.sqlite.query('SELECT count(*) AS n FROM agent_runs').get()).toEqual({ n: 0 });
+    } finally { f.sqlite.close(); }
+  });
+
+  it('settles a runtime queue opt-out at launch and continues draining', async () => {
+    const f = await fixture();
+    try {
+      f.setting('agent.limits.concurrent_runs', 1);
+      const first = await f.dispatch() as { runId: string };
+      const queued = await f.dispatch('container-smoke', NOW + 1) as { runId: string };
+      f.complete(first.runId);
+      const db: ServerEnv['db'] = {
+        ...f.env.db,
+        prepare: (sql) => {
+          if (sql.includes("UPDATE agent_runs") && sql.includes("status = 'pending'")) {
+            f.sqlite.run("UPDATE project_capabilities SET enabled=0 WHERE project_id='proj_1' AND capability='cortex'");
+          }
+          return f.env.db.prepare(sql);
+        },
+      };
+      expect(await drainQueue({ ...f.env, db }, NOW + 2)).toBe(0);
+      expect(f.run(queued.runId)).toMatchObject({ status: 'skipped', runContext: JSON.stringify({ reason: 'capability_off' }) });
+      expect(f.launches).toHaveLength(1);
+    } finally { f.sqlite.close(); }
+  });
+
   it('is null with no limit set, and names the first limit the load is at, the fleet first', () => {
     const none = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
     expect(heldBy({ liveRuns: 100, liveTaskRuns: 100, taskRunsLastHour: 100 }, none)).toBeNull();
@@ -68,13 +105,13 @@ describe('what holds a dispatch', () => {
     expect(heldBy({ liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 5 }, { ...none, task_runs_per_hour: 5 })).toBe('task_runs_per_hour');
   });
 
-  it('reads each owner limit from its leaf, unset or malformed meaning none, and the fleet from what the operator deployed', async () => {
+  it('reads declared defaults for unset or malformed limits, explicit overrides, and the fleet from what the operator deployed', async () => {
     const f = await fixture();
-    expect(await readDispatchLimits(f.env)).toEqual({ concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null });
+    expect(await readDispatchLimits(f.env)).toEqual({ concurrent_runs: null, task_concurrent_runs: 2, task_runs_per_hour: null, fleet: null });
     f.setting('agent.limits.concurrent_runs', 3);
     f.setting('agent.limits.task_runs_per_hour', 0);
     f.setting('agent.limits.task_concurrent_runs', 2.9);
-    expect(await readDispatchLimits(f.env)).toEqual({ concurrent_runs: 3, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null });
+    expect(await readDispatchLimits(f.env)).toEqual({ concurrent_runs: 3, task_concurrent_runs: 2, task_runs_per_hour: null, fleet: null });
     expect(await readDispatchLimits({ ...f.env, fleet: 12 })).toMatchObject({ fleet: 12 });
     expect(await readDispatchLimits({ ...f.env, fleet: 0 })).toMatchObject({ fleet: null });
   });

@@ -83,6 +83,26 @@ describe('the claim queue', () => {
     expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running'`).get()).toEqual({ n: 1 });
   });
 
+  it('holds a third extraction across Projects at the default task cap until a running extraction finishes', async () => {
+    const f = fixture();
+    try {
+      f.e.sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES ('proj_3','three',?)", [NOW]);
+      for (const n of [1, 2, 3]) {
+        f.queue('run_' + n, NOW + n);
+        f.e.sqlite.run('UPDATE agent_runs SET project_id=? WHERE id=?', ['proj_' + n, 'run_' + n]);
+      }
+      const tokens = await Promise.all(['mem_a','mem_b','mem_c'].map(f.worker));
+      const claim = (n: number, at: number) => claimNextRun(f.e.serverEnv, { principal: legacyWorker(tokens[n]!, 'm' + n), harnesses: OFFERED, now: at });
+      expect(await claim(0, NOW + 4)).toMatchObject({ claimed: true, run: { projectId: 'proj_1' } });
+      expect(await claim(1, NOW + 5)).toMatchObject({ claimed: true, run: { projectId: 'proj_2' } });
+      expect(await claim(2, NOW + 6)).toEqual({ claimed: false, reason: 'at_limit' });
+      expect(f.e.sqlite.query("SELECT status,held_by FROM agent_runs WHERE id='run_3'").get()).toEqual({ status: 'queued', held_by: 'task_concurrent_runs' });
+      f.e.sqlite.run("UPDATE agent_runs SET status='completed',completed_at=? WHERE id='run_1'", [NOW + 7]);
+      expect(await claim(2, NOW + 8)).toMatchObject({ claimed: true, run: { projectId: 'proj_3' } });
+      expect(f.e.sqlite.query("SELECT COUNT(*) AS n FROM agent_runs WHERE status='running'").get()).toEqual({ n: 2 });
+    } finally { f.e.sqlite.close(); }
+  });
+
   it('holds a claim at the limits the Deployment set, and records the limit on the run', async () => {
     const f = fixture();
     f.e.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.limits.concurrent_runs', '1', ?, 'test')`, [NOW]);

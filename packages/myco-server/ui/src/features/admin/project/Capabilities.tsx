@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useProjects } from '../../../hooks/use-projects';
 import { Disclosure, ErrorState, LoadingState, Switch } from '../../../design';
 import { settingsRefusalText, useCapabilities, useSettingsActions } from '../../../hooks/use-settings';
 import { PROJECT_SETTINGS_ANCHORS } from '../../../routes/nav';
@@ -45,9 +46,12 @@ function CapabilityRow({ projectId, capability, enabled }: { projectId: string; 
 /** What Myco does in a project: a switch per capability. */
 export function Capabilities({ projectId }: { projectId: string }) {
   const caps = useCapabilities(projectId);
+  const projects = useProjects();
+  const archived = projects.data?.projects.find((project) => project.projectId === projectId)?.archivedAt != null;
   return (
-    <AdminSection id={PROJECT_SETTINGS_ANCHORS.capabilities} title="What Myco does here" description="Each switch saves as you flip it.">
-      {caps.isPending ? <LoadingState label="Loading what Myco does here" count={4} />
+    <AdminSection id={PROJECT_SETTINGS_ANCHORS.capabilities} title="What Myco does here" description={archived ? undefined : "Each switch saves as you flip it."}>
+      {archived ? <fieldset disabled><p className="t-small text-muted">Archived: Myco does no work here until it's restored</p></fieldset>
+        : caps.isPending ? <LoadingState label="Loading what Myco does here" count={4} />
         : caps.isError ? <ErrorState error={caps.error} onRetry={() => void caps.refetch()} />
         : (
           <>

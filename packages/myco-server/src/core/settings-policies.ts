@@ -112,7 +112,7 @@ const limits: SettingPolicy = {
   leaves: Object.values(LIMIT_LEAVES),
   async resolve(env) {
     const set = await readDispatchLimits(env);
-    const answer = (n: number | null): LeafAnswer => ({ effective: n, meanwhile: 'No limit applies', ...(n === null ? { reason: 'No limit applies.' } : {}) });
+    const answer = (n: number | null): LeafAnswer => ({ effective: n, ...(n === null ? { meanwhile: 'No limit applies', reason: 'No limit applies.' } : { meanwhile: `A limit of ${n} applies` }) });
     return {
       [LIMIT_LEAVES.concurrent_runs]: answer(set.concurrent_runs),
       [LIMIT_LEAVES.task_concurrent_runs]: answer(set.task_concurrent_runs),

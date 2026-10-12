@@ -33,7 +33,7 @@ function valueWords(field: LeafField, value: unknown): string {
   if (field.kind === 'agents' || field.kind === 'patterns') {
     return Array.isArray(value) && value.length > 0 ? value.map((v) => (field.kind === 'agents' ? harnessLabel(String(v)) : String(v))).join(', ') : 'none';
   }
-  if (value === null || value === undefined || value === '') return 'none';
+  if (value === null || value === undefined || value === '') return field.unlimited === true ? 'no limit' : 'none';
   if (typeof value === 'object') return Object.keys(value).length === 0 ? 'none' : `overrides for ${Object.keys(value).join(', ')}`;
   return `${field.optionLabels?.[String(value)] ?? String(value)}${field.unit !== undefined ? ` ${field.unit}` : ''}`;
 }
@@ -41,7 +41,7 @@ function valueWords(field: LeafField, value: unknown): string {
 /** The effective value a blank override leaves in use. */
 function emptyText(field: LeafField, row: LeafRow | undefined): string {
   if (row === undefined || row.state === 'unknown') return 'Not known';
-  if (row.effective === null) return 'Not set';
+  if (row.effective === null) return field.unlimited === true ? 'No limit' : 'Not set';
   return valueWords(field, row.effective).replace(field.unit === undefined ? '' : ` ${field.unit}`, '');
 }
 
@@ -179,6 +179,7 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
           onBlur={commitText}
           onKeyDown={(e) => { if (e.key === 'Enter') commitText(); }}
         />
+        {field.unlimited === true && !locked && <Button size="sm" aria-label={`Set no limit for ${field.label}`} disabled={pending || (row?.configured === true && value === null)} onClick={() => save(null)}>No limit</Button>}
         {field.unit !== undefined && <span className="shrink-0 t-small text-muted">{field.unit}</span>}
       </>
     );

@@ -17,7 +17,7 @@ import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
-  applyRunUpdate, claimRun, getRun, getRunningRunForTask, getState, mutateState, MUTATE_ATTEMPTS, recordDispatch,
+  applyRunUpdate, claimRun, getRun, getRunningRunForTask, getState, mutateState, MUTATE_ATTEMPTS, recordDispatch, recordQueued, launchQueued, workerClaimPredicate, NO_LIMITS,
   RUN_IMMUTABLE_COLUMNS, RUN_UPDATE_COLUMNS,
   upsertCortexInstructions, type RunInsert,
 } from '@myco-server-worker/core/runs.js';
@@ -43,7 +43,7 @@ function store(): { db: RelationalStore; sqlite: Database } {
   }
   sqlite.query(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, ?, 'built-in', 1, ?)`).run(AGENT, 'agent', NOW);
   const db = sqliteRelationalStore(sqlite);
-  // Absence means NOT admitted, so a fixture that wants a claim to land says so.
+  // Explicit on rows exercise the same admission as live Projects with no rows.
   for (const p of [SCOPE.projectId, OTHER.projectId]) {
     sqlite.query(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, ?, 1, ?, 'test')`).run(p, CAPABILITY, NOW);
   }
@@ -76,6 +76,38 @@ const runCount = (sqlite: Database, projectId = SCOPE.projectId) =>
   (sqlite.query(`SELECT COUNT(*) c FROM agent_runs WHERE project_id = ?`).get(projectId) as { c: number }).c;
 
 describe('claimRun', () => {
+  it('enforces declared capabilities at dispatch, queued launch and worker admission without a caller capability', async () => {
+    const { db, sqlite } = store();
+    try {
+      const task = 'extract-curate';
+      const record = { id: 'pending', agentId: AGENT, task, provider: null, model: null, runContext: null, dispatchedBy: null, startedAt: NOW };
+      expect(await recordDispatch(db, SCOPE, record)).toBe(true);
+      expect(await recordQueued(db, SCOPE, { id: 'queued', agentId: AGENT, task, provider: null, model: null, heldBy: 'worker', queuedAt: NOW, dispatchSpec: '{}' })).toBe(true);
+      await settingsWriter(db).setCapability(SCOPE.projectId, 'vault_evolution', false, 'test', NOW);
+      expect(await recordDispatch(db, SCOPE, { ...record, id: 'omitted' })).toBe(false);
+      expect(await recordDispatch(db, SCOPE, { ...record, id: 'wrong' }, { limits: NO_LIMITS, now: NOW, capability: 'cortex' })).toBe(false);
+      expect(await launchQueued(db, SCOPE, 'queued', { task, dispatchedBy: 'unused', startedAt: NOW, runContext: null, provider: null, model: null })).toBe(false);
+      const predicate = workerClaimPredicate({ projectId: SCOPE.projectId, id: 'queued', task, instruction: null, dispatchSpec: '{}' }, { limits: NO_LIMITS, now: NOW });
+      expect(await db.prepare(`SELECT ${predicate.sql} AS admitted`).bind(...predicate.params).first<{ admitted: number }>()).toEqual({ admitted: 0 });
+      expect(await launchQueued(db, SCOPE, 'queued', { task: 'title-summary', dispatchedBy: 'unused', startedAt: NOW, runContext: null, provider: null, model: null })).toBe(false);
+      const mismatch = workerClaimPredicate({ projectId: SCOPE.projectId, id: 'queued', task: 'title-summary', instruction: null, dispatchSpec: '{}' }, { limits: NO_LIMITS, now: NOW });
+      expect(await db.prepare(`SELECT ${mismatch.sql} AS admitted`).bind(...mismatch.params).first<{ admitted: number }>()).toEqual({ admitted: 0 });
+      expect(runCount(sqlite)).toBe(2);
+    } finally { sqlite.close(); }
+  });
+
+  it('uses the declared task capability even when a claim offers capture-driven admission', async () => {
+    const { db, sqlite } = store();
+    try {
+      const guard = { taskName: 'extract-curate', admission: { kind: 'capture' as const } };
+      expect(await claimRun(db, SCOPE, run('default', 'extract-curate'), guard, NOW)).toEqual({ claimed: true });
+      await settingsWriter(db).setCapability(SCOPE.projectId, 'vault_evolution', false, 'test', NOW);
+      expect(await claimRun(db, SCOPE, run('refused', 'extract-curate'), guard, NOW))
+        .toEqual({ claimed: false, notAdmitted: 'vault_evolution' });
+      expect(runCount(sqlite)).toBe(1);
+    } finally { sqlite.close(); }
+  });
+
   it('reports the claim through meta.changes, so the adapter does not read the INSERT ... SELECT as row-producing', async () => {
     const { db, sqlite } = store();
     expect(await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest', 3600), NOW))
@@ -184,18 +216,60 @@ describe('claimRun', () => {
 describe('capability admission', () => {
   it('refuses a claim for a Project not admitted to the capability, and names it', async () => {
     const { db, sqlite } = store();
-    sqlite.query(`DELETE FROM project_capabilities WHERE project_id = ?`).run(SCOPE.projectId);
+    sqlite.query(`UPDATE project_capabilities SET enabled = 0 WHERE project_id = ?`).run(SCOPE.projectId);
     const outcome = await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);
     expect(outcome).toEqual({ claimed: false, notAdmitted: CAPABILITY });
     expect(runCount(sqlite)).toBe(0);
   });
 
-  it('treats an absent capability row as not admitted, so a Project that appeared from a first write is admitted to nothing', async () => {
+  it('admits a Project whose capability row is absent', async () => {
     const { db, sqlite } = store();
     sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_new', 'proj_new', ?)`).run(NOW);
     const outcome = await claimRun(db, { projectId: 'proj_new' }, run('r1', 'digest'), guardFor('digest'), NOW);
-    expect(outcome).toEqual({ claimed: false, notAdmitted: CAPABILITY });
-    expect(runCount(sqlite, 'proj_new')).toBe(0);
+    expect(outcome).toEqual({ claimed: true });
+    expect(runCount(sqlite, 'proj_new')).toBe(1);
+  });
+
+  it('refuses an archive or opt-out between admission and the dispatched or fresh claim write', async () => {
+    for (const dispatched of [false, true]) for (const change of ['archive', 'off']) {
+      const { db, sqlite } = store();
+      try {
+        const row = { ...run('r_race', 'digest'), dispatchedBy: dispatched ? 'cred_1' : null };
+        if (dispatched) await recordDispatch(db, SCOPE, {
+          id: row.id, agentId: AGENT, task: 'digest', provider: null, model: null, runContext: null, dispatchedBy: 'cred_1', startedAt: NOW,
+        });
+        let changed = false;
+        const interleaved: RelationalStore = {
+          prepare: (sql) => {
+            if (!changed && (sql.startsWith('INSERT INTO agent_runs') || sql.startsWith('UPDATE agent_runs'))) {
+              changed = true;
+              if (change === 'archive') sqlite.run('UPDATE projects SET archived_at=? WHERE project_id=?', [NOW, SCOPE.projectId]);
+              else sqlite.run('UPDATE project_capabilities SET enabled=0 WHERE project_id=? AND capability=?', [SCOPE.projectId, CAPABILITY]);
+            }
+            return db.prepare(sql);
+          },
+          batch: db.batch,
+        };
+        expect(await claimRun(interleaved, SCOPE, row, { ...guardFor('digest'), dispatchedOnly: dispatched }, NOW))
+          .toEqual({ claimed: false, notAdmitted: CAPABILITY });
+        expect(changed).toBe(true);
+        expect(sqlite.query("SELECT status FROM agent_runs WHERE project_id=?").all(SCOPE.projectId))
+          .toEqual(dispatched ? [{ status: 'pending' }] : []);
+      } finally { sqlite.close(); }
+    }
+  });
+
+  it('refuses capture-driven run writes for archived Projects', async () => {
+    const { db, sqlite } = store();
+    try {
+      sqlite.run('UPDATE projects SET archived_at=? WHERE project_id=?', [NOW, SCOPE.projectId]);
+      expect(await recordDispatch(db, SCOPE, {
+        id: 'r_archived', agentId: AGENT, task: 'title-summary', provider: null, model: null, runContext: null, dispatchedBy: 'cred_1', startedAt: NOW,
+      })).toBe(false);
+      expect(await claimRun(db, SCOPE, run('r_archived', 'title-summary'), { taskName: 'title-summary', admission: { kind: 'capture' } }, NOW))
+        .toEqual({ claimed: false, running: null });
+      expect(runCount(sqlite)).toBe(0);
+    } finally { sqlite.close(); }
   });
 
   it('refuses a claim whose capability is withdrawn even while another remains admitted', async () => {
