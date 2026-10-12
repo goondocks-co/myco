@@ -1,6 +1,6 @@
 import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { runControlWait } from './helpers/run-control-wait.js';
@@ -22,14 +22,14 @@ it('D1 workerd: retained publication and pin writes refuse authority lost in the
   if (!bundle.success) throw new Error(bundle.logs.map(String).join('\n'));
   const scenario = bundle.outputs.find(output => output.path.endsWith('run-control-wait.js'))!;
   const environment = bundle.outputs.find(output => output.path.endsWith('env.js'))!;
-  const mf = new Miniflare({ modules: [
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: [
     { type: 'ESModule', path: 'worker.js', contents: `import { runControlWait } from './scenario.js'; import { serverEnvFromBindings } from './env.js';
       export default { async fetch(request, env) { try { return Response.json(await runControlWait(serverEnvFromBindings({ MYCO_DB: env.DB, BUCKET: env.BUCKET,
         SOURCE_LIMIT: {limit: async()=>({success:true})}, TOKEN_LIMIT: {limit: async()=>({success:true})} }))); }
         catch(error) { return Response.json({ error: String(error.stack) }, { status: 500 }); } } };` },
     { type: 'ESModule', path: 'scenario.js', contents: await scenario.text() },
     { type: 'ESModule', path: 'env.js', contents: await environment.text() },
-  ], compatibilityDate: '2026-07-01', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'], r2Buckets: ['BUCKET'] });
+  ], compatibilityDate: '2026-07-01', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'], r2Buckets: ['BUCKET'] }));
   try {
     const db = await mf.getD1Database('DB');
     for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));

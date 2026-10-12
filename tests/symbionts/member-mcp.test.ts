@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { parse as parseToml } from 'smol-toml';
 import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
 import { REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
@@ -53,6 +54,24 @@ describe('memberMcpTemplate', () => {
 });
 
 describe('the member MCP server', () => {
+  it('reads TOML MCP tables as plain objects at every depth', () => {
+    const { installer, root } = memberInstaller('codex');
+    const target = path.join(root, '.codex', 'config.toml');
+    const raw = '[features]\nhooks = true\n\n[mcp_servers.myco]\nurl = "https://myco.example/mcp"\nargs = ["mcp"]\n';
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, raw);
+
+    const parsed = installer['readMcpFile'](target, true);
+    const expected = { features: { hooks: true }, mcp_servers: { myco: { url: 'https://myco.example/mcp', args: ['mcp'] } } };
+    expect(isDeepStrictEqual(parsed, expected)).toBe(true);
+    function assertPlainObjects(value: unknown): void {
+      if (value === null || typeof value !== 'object') return;
+      if (!Array.isArray(value)) expect(Object.getPrototypeOf(value)).toBe(Object.prototype);
+      for (const child of Object.values(value)) assertPlainObjects(child);
+    }
+    assertPlainObjects(parsed);
+  });
+
   it('installs a missing MCP entry when the member hooks are already current', () => {
     const { installer, root } = memberInstaller('claude-code');
     joinRoot(root);

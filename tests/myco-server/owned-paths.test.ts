@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { RETIRED_ROUTES, ROUTES, isOwnedPath, ownedPathPatterns } from '@myco-server-worker/routes.js';
 import { withStaticAssets, withStaticMap } from '@myco-server-worker/platform/bun/static.js';
 
@@ -40,16 +40,17 @@ let mf: Miniflare | null = null;
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'myco-owned-paths-'));
   writeFileSync(join(dir, 'index.html'), SHELL);
-  mf = new Miniflare({
+  mf = new Miniflare(convertV4MiniflareOptions({
     modules: true,
     script: `export default { fetch: () => new Response(${JSON.stringify(SERVER)}, { status: 401 }) }`,
     compatibilityDate: JSON.parse(tomlValue('compatibility_date')) as string,
     assets: {
       directory: dir,
-      routerConfig: { has_user_worker: true, invoke_user_worker_ahead_of_assets: false, static_routing: { user_worker: RUN_WORKER_FIRST } },
-      assetConfig: { not_found_handling: JSON.parse(tomlValue('not_found_handling')) as 'single-page-application', has_static_routing: true },
+      routerConfig: { has_user_worker: true },
+      run_worker_first: RUN_WORKER_FIRST,
+      assetConfig: { not_found_handling: JSON.parse(tomlValue('not_found_handling')) as 'single-page-application' },
     },
-  });
+  }));
   await mf.ready;
 }, 60_000);
 afterAll(async () => {

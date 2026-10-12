@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
@@ -16,7 +16,7 @@ it('workerd D1/R2 sweeps all-held pages, a sparse orphan, and a late orphan behi
   });
   if (!bundle.success) throw new Error(bundle.logs.map(String).join('\n'));
   const source = new Map(await Promise.all(bundle.outputs.map(async output => [output.path.split('/').at(-1)!, await output.text()] as const)));
-  const mf = new Miniflare({ modules: [
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: [
     { type: 'ESModule', path: 'worker.js', contents: `import { freeOrphanedBlobs } from './retention.js';
       import { serverEnvFromBindings } from './env.js';
       import { drainObjectReleases } from './object-release.js';
@@ -29,7 +29,7 @@ it('workerd D1/R2 sweeps all-held pages, a sparse orphan, and a late orphan behi
         return Response.json({ freed });
       }};` },
     ...[...source].map(([name, contents]) => ({ type: 'ESModule' as const, path: name, contents })),
-  ], compatibilityDate: '2026-07-01', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'], r2Buckets: ['BUCKET'] });
+  ], compatibilityDate: '2026-07-01', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'], r2Buckets: ['BUCKET'] }));
   try {
     const db = await mf.getD1Database('DB');
     const bucket = await mf.getR2Bucket('BUCKET');

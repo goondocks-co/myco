@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '../../../packages/myco-server/src/db/schema.js';
 import { reconcileEmbedding, type EmbeddingContext } from '../../../packages/myco-server/src/core/embedding/reconcile.js';
 import { hasEmbeddingWork } from '../../../packages/myco-server/src/core/embedding/jobs.js';
@@ -43,7 +43,7 @@ function embedding(text: string): number[] {
   });
 }
 
-const mf = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] });
+const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
 try {
   const db = await mf.getD1Database('DB') as unknown as RelationalStore;
   for (const step of SCHEMA_STEPS) for (const sql of step.statements) await db.prepare(sql).run();

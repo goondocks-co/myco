@@ -8,6 +8,15 @@ test('renders headings with anchor ids', async () => {
   assert.match(html, /<h2[^>]*id="install-steps"/);
 });
 
+test('keeps heading ids unique within a document and isolated across documents', async () => {
+  const first = await renderMarkdown('## Install Steps\n\n## Install Steps');
+  assert.match(first, /id="install-steps"/);
+  assert.match(first, /id="install-steps-1"/);
+  const second = await renderMarkdown('## Install Steps');
+  assert.match(second, /id="install-steps"/);
+  assert.doesNotMatch(second, /id="install-steps-1"/);
+});
+
 test('renders GFM tables', async () => {
   const html = await renderMarkdown('| A | B |\n|---|---|\n| 1 | 2 |');
   assert.match(html, /<table>/);

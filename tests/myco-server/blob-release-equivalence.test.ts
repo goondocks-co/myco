@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { BLOB_REFERENCES, blobHeld } from '@myco-server-worker/core/blob-references.js';
 import { blobObjectKey, blobObjectKeySql } from '@myco-server-worker/core/blob-objects.js';
@@ -136,8 +136,8 @@ async function exercise(db: RelationalStore, decision: typeof blobDecisionStatem
 
 describe('blob release decision contract on native SQLite and local D1', () => {
   it.each(['native', 'D1'] as const)('preserves deletion sets, all catalogue holders, holds, duplicate pairs and physical generations on %s', async (target) => {
-    const mf = target === 'D1' ? new Miniflare({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
-      compatibilityDate: '2026-07-01', d1Databases: ['OLD', 'NEW'] }) : null;
+    const mf = target === 'D1' ? new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
+      compatibilityDate: '2026-07-01', d1Databases: ['OLD', 'NEW'] })) : null;
     const oldNative = new Database(':memory:');
     const newNative = new Database(':memory:');
     try {
@@ -150,8 +150,8 @@ describe('blob release decision contract on native SQLite and local D1', () => {
   }, 120_000);
 
   it('seeks blob and candidate primary keys for every decision and blob-presence read on both targets', async () => {
-    const mf = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
-      compatibilityDate: '2026-07-01', d1Databases: ['DB'] });
+    const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
+      compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
     const native = new Database(':memory:');
     try {
       const d1 = await mf.getD1Database('DB');

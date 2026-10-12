@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 
 const ROOT = path.resolve(import.meta.dir, '../../..');
 const RUN = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-store-maintenance-runtime-'));
@@ -65,14 +65,14 @@ export default {
   },
 };`;
 
-const mf = new Miniflare({
+const mf = new Miniflare(convertV4MiniflareOptions({
   modules: [
     { type: 'ESModule', path: 'worker.js', contents: worker },
     { type: 'ESModule', path: 'port.js', contents: port },
   ],
   compatibilityDate: '2026-07-01',
   d1Databases: ['DB'],
-});
+}));
 const call = async (step: string) => (await mf.dispatchFetch(`http://runtime/${step}`)).json() as Promise<any>;
 
 try {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { backupCheckpointRestoreScenario, HOSTED_SQL_FUNCTION_ARGUMENT_CEILING, snapshotFunctionBounds, snapshotAdmission, snapshotRefusals, snapshotScenario } from './helpers/backup-snapshot.js';
@@ -85,7 +85,7 @@ describe('relational backup snapshot', () => {
     it(`D1 workerd: capture, tombstone and editorial writes at the ${boundary} boundary restore one committed snapshot`, async () => {
       const bundle = await Bun.build({ entrypoints: [`${import.meta.dir}/helpers/backup-snapshot.ts`], format: 'esm', target: 'browser' });
       if (!bundle.success) throw new Error(bundle.logs.map(String).join('\n'));
-      const mf = new Miniflare({
+      const mf = new Miniflare(convertV4MiniflareOptions({
         modules: [
           { type: 'ESModule', path: 'worker.js', contents: `import { backupCheckpointRestoreScenario, snapshotFunctionBounds, snapshotAdmission, snapshotRefusals, snapshotScenario } from './snapshot.js';
             export default { async fetch(request, env) {
@@ -101,7 +101,7 @@ describe('relational backup snapshot', () => {
           { type: 'ESModule', path: 'snapshot.js', contents: await bundle.outputs[0]!.text() },
         ],
         compatibilityDate: '2026-07-01', d1Databases: ['DB', 'TARGET'], r2Buckets: ['BUCKET'],
-      });
+      }));
       try {
         for (const name of ['DB', 'TARGET']) {
           const db = await mf.getD1Database(name);

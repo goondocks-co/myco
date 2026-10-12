@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { RAW_BACKFILL_BATCH, RAW_BACKFILL_BUDGET, rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
 import { PROCESSED_FIELDS } from '@myco-server-worker/core/processed-resources.js';
@@ -55,7 +55,7 @@ async function assertPageSeeks(db: RelationalStore): Promise<void> {
 it('workerd D1 and native SQLite produce identical bounded backfill runs', async () => {
   const bundle = await Bun.build({ entrypoints: [`${import.meta.dir}/../../packages/myco-server/src/core/raw-backfill.ts`], format: 'esm', target: 'browser' });
   if (!bundle.success) throw new Error(bundle.logs.map(String).join('\n'));
-  const mf = new Miniflare({ modules: [
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: [
     { type: 'ESModule', path: 'worker.js', contents: `import { RAW_BACKFILL_BUDGET, rawBackfill } from './backfill.js';
       export default { async fetch(request, env) {
         const measurements = []; const pages = []; let pageStart = 0; let source = null; let rows = 0;
@@ -74,7 +74,7 @@ it('workerd D1 and native SQLite produce identical bounded backfill runs', async
         catch(error) { return Response.json({ error: String(error.stack) }, { status: 500 }); }
       }};` },
     { type: 'ESModule', path: 'backfill.js', contents: await bundle.outputs[0]!.text() },
-  ], compatibilityDate: '2026-08-01', d1Databases: ['DB'] });
+  ], compatibilityDate: '2026-08-01', d1Databases: ['DB'] }));
   const native = new Database(':memory:');
   try {
     const d1 = await mf.getD1Database('DB');

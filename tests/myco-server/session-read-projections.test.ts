@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { READ_BUDGET_SESSION_STATEMENTS } from '@myco-server-worker/db/read-budget-session-statements.js';
@@ -139,6 +139,6 @@ test('native 82→83 backfill and every session eligibility/count mutation prese
 });
 
 test('local D1 82→83 backfill and every session eligibility/count mutation preserve source parity', async () => {
-  const mf = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] });
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
   try { await verify(await mf.getD1Database('DB')); } finally { await mf.dispose(); }
 }, 30_000);

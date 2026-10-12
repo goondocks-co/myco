@@ -55,7 +55,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
-    "@cloudflare/vitest-pool-workers": "0.20.3",
+    "@cloudflare/vitest-pool-workers": "^0.23.0",
     "@cloudflare/workers-types": "^5.20261008.1",
     "@playwright/test": "^1.64.0",
     "@tanstack/react-query": "^5.104.1",

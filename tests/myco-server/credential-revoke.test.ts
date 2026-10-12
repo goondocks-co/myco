@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
@@ -14,9 +14,9 @@ for (const target of ['native SQLite', 'Cloudflare D1'] as const) {
   describe(`${target}: member credential self-revocation`, () => {
     for (const age of [0, 8 * 24 * 60 * 60 * 1000]) it(`ends only the presented lineage at age ${age} and refuses its later use`, async () => {
       const fixture = sqliteEnv();
-      const mf = target === 'Cloudflare D1' ? new Miniflare({ modules: true,
+      const mf = target === 'Cloudflare D1' ? new Miniflare(convertV4MiniflareOptions({ modules: true,
         script: 'export default { fetch() { return new Response(null); } }',
-        compatibilityDate: '2026-07-01', d1Databases: ['DB'] }) : null;
+        compatibilityDate: '2026-07-01', d1Databases: ['DB'] })) : null;
       try {
         const db: RelationalStore = mf === null ? fixture.db : await mf.getD1Database('DB') as unknown as RelationalStore;
         if (mf !== null) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { ingestContinuityRuntime } from './helpers/ingest-continuity-runtime.js';
@@ -19,7 +19,7 @@ describe('ingest continuation runtime parity', () => {
   it('D1 workerd: real uploads preserve complete rows across live appends and later oversized turns', async () => {
     const bundle = await Bun.build({ entrypoints: [`${import.meta.dir}/helpers/ingest-continuity-runtime.ts`], format: 'esm', target: 'browser', external: ['cloudflare:workers'] });
     if (!bundle.success) throw new Error(bundle.logs.map(String).join('\n'));
-    const mf = new Miniflare({
+    const mf = new Miniflare(convertV4MiniflareOptions({
       modules: [
         { type: 'ESModule', path: 'worker.js', contents: `import { ingestContinuityRuntime } from './scenario.js';
           export default { async fetch(request, env) {
@@ -29,7 +29,7 @@ describe('ingest continuation runtime parity', () => {
         { type: 'ESModule', path: 'scenario.js', contents: await bundle.outputs[0]!.text() },
       ],
       compatibilityDate: '2026-07-01', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'], r2Buckets: ['BUCKET'],
-    });
+    }));
     try {
       const db = await mf.getD1Database('DB');
       for (const step of SCHEMA_STEPS) await db.batch(step.statements.map((sql) => db.prepare(sql)));
