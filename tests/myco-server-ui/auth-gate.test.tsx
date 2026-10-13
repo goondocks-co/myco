@@ -57,7 +57,7 @@ describe('the auth gate', () => {
     const { asked } = server({ '/auth/me': () => Response.json({ error: 'sign_in_unconfigured' }, { status: 401 }) });
     mount('/projects');
     expect(await screen.findByRole('heading', { name: 'Set up GitHub sign-in' })).toBeTruthy();
-    expect(screen.getByText(new RegExp(`myco server github-app --url ${window.location.origin}`))).toBeTruthy();
+    expect(screen.getByText(`GitHub sign-in is not set up for this Myco (${window.location.origin}). On the machine that created it, run myco setup to finish sign-in, then reload this page. Manual path: myco server github-app --target local --url ${window.location.origin} for self-hosting, or myco server github-app --target cloudflare --url ${window.location.origin} for Cloudflare.`)).toBeTruthy();
     expect(screen.queryByText('Sign in with GitHub')).toBeNull();
     expect(asked).toEqual(['/auth/me']);
   });
@@ -66,7 +66,7 @@ describe('the auth gate', () => {
     server({ '/auth/me': () => Response.json({ sub: '9', login: 'octocat', member: null, membership: { state: 'unclaimed', reason: null } }) });
     mount('/projects');
     expect(await screen.findByRole('heading', { name: 'Finish linking the owner' })).toBeTruthy();
-    expect(screen.getByText(/myco server setup-owner/)).toBeTruthy();
+    expect(screen.getByText(/myco setup/)).toBeTruthy();
   });
 
   for (const path of ['/', '/projects', '/p/proj_1/sessions']) {
@@ -145,7 +145,7 @@ describe('the auth gate', () => {
   it('an unclaimed link page with no key names the owner recovery without asking for an admin', async () => {
     server({ '/auth/me': () => Response.json(dashboardMe({ ...ME, member: null, membership: { state: 'unclaimed' as const, reason: null } })) });
     mount('/link');
-    expect(await screen.findByText(/myco server setup-owner/)).toBeTruthy();
+    expect(await screen.findByText(/myco setup/)).toBeTruthy();
     expect(screen.queryByText(/Ask an admin of this server/)).toBeNull();
   });
 

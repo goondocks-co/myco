@@ -146,13 +146,13 @@ describe('auth setup refusals', () => {
       for (const path of ['/auth/me', '/auth/login']) {
         const response = await server.handleRequest(new Request('https://s' + path), env);
         expect(response.status).toBe(401);
-        expect(await response.json()).toMatchObject({ error: 'sign_in_unconfigured', reason: expect.stringContaining('myco server github-app --url https://s') });
+        expect(await response.json()).toMatchObject({ error: 'sign_in_unconfigured', reason: 'GitHub sign-in is not set up for this Myco (https://s). On the machine that created it, run myco setup to finish sign-in, then reload this page. Manual path: myco server github-app --target local --url https://s for self-hosting, or myco server github-app --target cloudflare --url https://s for Cloudflare.' });
         expect(response.headers.get('location')).toBeNull();
       }
       const browser = await server.handleRequest(new Request('https://s/auth/login', { headers: { accept: 'text/html' } }), env);
       expect(browser.status).toBe(401);
       expect(browser.headers.get('content-type')).toContain('text/html');
-      expect(await browser.text()).toContain('myco server github-app --url https://s');
+      expect(await browser.text()).toContain('myco server github-app --target local --url https://s for self-hosting, or myco server github-app --target cloudflare --url https://s for Cloudflare.');
       env.sourceLimit = { limit: async () => ({ success: false }) };
       expect((await server.handleRequest(new Request('https://s/auth/me'), env)).status).toBe(429);
     } finally { e.sqlite.close(); }

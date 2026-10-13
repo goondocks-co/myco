@@ -18,7 +18,7 @@ const ANSWER = { joined: true, memberId: 'mem_device', token: 'test-machine-cred
 
 describe('terminal device sign-in', () => {
   for (const [status, error, code, words] of [
-    [409, 'no_owner', 'no_owner', 'myco server setup-owner'],
+    [409, 'no_owner', 'no_owner', 'myco setup'],
     [429, 'limited', 'slow_down', 'Wait a minute'],
     [403, 'future_code', 'refused', 'refused to start'],
     [503, 'no_owner', 'unreachable', 'could not complete'],
@@ -39,7 +39,7 @@ describe('terminal device sign-in', () => {
           stderr: line => errors.push(line), stdout: line => lines.push(line),
           fetch: async () => Response.json({ error }, { status }),
         })).toBe(false);
-        expect(errors).toEqual(['myco login: https://s has no owner yet, so nobody can approve this machine. Whoever created it finishes with myco server setup-owner on the machine that created it, then run myco login https://s again. (no_owner)']);
+        expect(errors).toEqual(['myco login: https://s has no owner yet, so nobody can approve this machine. Whoever created it finishes with myco setup on the machine that created it, then run myco setup --join https://s. (no_owner)']);
       }
     });
   }

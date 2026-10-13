@@ -89,7 +89,7 @@ int main(int argc, char **argv) {
   & ${quote(file)} ${opts.install ? '' : '-DryRun'} ${opts.replace ? '-Replace14' : ''}
   `;
   const run = spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', program], {
-    cwd: home, env: sandboxChildEnv(home, { PROCESSOR_ARCHITECTURE: 'AMD64', PROCESSOR_ARCHITEW6432: '', LOCALAPPDATA: home,
+    cwd: home, env: sandboxChildEnv(home, { NO_COLOR: '1', PROCESSOR_ARCHITECTURE: 'AMD64', PROCESSOR_ARCHITEW6432: '', LOCALAPPDATA: home,
       MYCO_BIN_DIR: bin, ...(opts.probe ? { MYCO_PROBE_LOG: path.join(home, 'probe-env.log') } : {}), ...(opts.channel ? { MYCO_CHANNEL: opts.channel } : {}) }),
     encoding: 'utf8', timeout: 60_000,
   });
@@ -174,7 +174,7 @@ describe('the Windows installer', () => {
     expect(run.status).not.toBe(0);
     expect(run.out).toContain('Nothing was installed');
     expect(run.out).toContain('-Replace14');
-    expect(run.out).toContain('myco cutover --dry-run');
+    expect(run.out.replace(/\n\s*\|\s*/g, ' ').replace(/\s+/g, ' ')).toContain('then run myco setup --cutover. Manual path: myco login <your-myco-address>, then myco cutover --dry-run (changes nothing).');
     expect(run.out).not.toContain('Found: myco/v1.');
     expect(fs.readFileSync(run.exe)).toEqual(run.before!);
   });
@@ -240,11 +240,20 @@ describe('the Windows installer', () => {
       if (scenario.install.startsWith('1.')) {
         expect(run.out).toContain('To move to 2.0:');
         expect(run.out).toContain('--replace-1.4');
+        expect(run.out).not.toContain('myco login');
+        expect(run.out).not.toContain('myco server create');
+        expect(run.out).toContain('After installing 2.0, guide the move with:\n    myco setup --cutover');
+        expect(run.out).not.toContain('invite link');
+      }
+      if (scenario.replace) {
+        expect(run.out).toContain("  To guide the move to 2.0, run:\n    myco setup --cutover\n  Setup can also run Myco's work on an always-on machine (a runner).\n  Manual path: myco login <your-myco-address>, then myco cutover --dry-run (changes nothing).");
+      }
+      if (!scenario.joined) {
+        expect(run.out).not.toContain('`');
+        expect(run.out).toMatch(/^    myco setup(?: --cutover)?$/m);
       }
       if (!scenario.current && !scenario.joined) {
-        expect(run.out).toContain('myco login <your-myco-address>');
-        expect(run.out).toContain('docs/self-hosting.md');
-        expect(run.out).not.toContain('myco setup');
+        expect(run.out).toContain("  Run:\n    myco setup\n  Choose to start your own Myco, join one, or run Myco's work\n  on an always-on machine (a runner).");
       }
     }
   });

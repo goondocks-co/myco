@@ -5,16 +5,16 @@
 #
 # Myco 2.0 installs the binary without starting a service. On a
 # first-time machine no agent is changed, and the next step it prints is
-# `myco login <your-myco-address>` to join your team's Deployment, or the
-# self-hosting guide to run your own. On a machine already joined to a
-# Deployment it is the upgrade: it then runs `myco member provision --refresh`
-# so the agents' hooks and MCP entries run the build it installed.
+# `myco setup` to create or join a Deployment, or run Myco's work.
+# On a machine already joined to a Deployment it is the upgrade: it then runs
+# `myco member provision --refresh` so the agents' hooks and MCP entries run
+# the build it installed.
 # Fresh defaults select 2.x stable, then beta, then alpha. Existing legacy
 # machines keep 1.x updates until --replace-1.4; legacy binaries are never run.
 #
 # Positive 1.x evidence keeps updates on 1.x. An explicit channel with a 2.x
 # candidate requires --replace-1.4 (or MYCO_REPLACE_LEGACY=1): 2.0 takes 1.4's
-# place until `myco cutover` moves the machine over. Unclassifiable binaries
+# place until `myco setup --cutover` moves the machine over. Unclassifiable binaries
 # are preserved and refused unless replacement is explicit. Vaults are never moved.
 #
 # Options:
@@ -71,7 +71,7 @@ Usage: curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh [-s
 Installs the selected Myco binary to $MYCO_HOME/bin (default ~/.myco/bin).
 Fresh defaults choose 2.x stable, then beta, then alpha; existing 1.4 stays on 1.x.
   --dry-run       say what it would install and change nothing
-  --replace-1.4   install over Myco 1.4 (then run `myco cutover`)
+  --replace-1.4   install over Myco 1.4 (then run myco setup)
   --channel NAME  select alpha, beta or stable
   --serve         enable a team host on a legacy 1.4 install
   --hostname NAME set the legacy team host hostname
@@ -197,13 +197,12 @@ agents_binary_words() {
   fi
 }
 
-# A first-time machine signs in to its Deployment address.
-login_hand_off() {
-  echo "  Next, join your team's Deployment at its Myco address:"
-  echo ""
-  echo "    myco login <your-myco-address>"
-  echo ""
-  echo "  Or run your own server: ${SELF_HOSTING_GUIDE}"
+# Guided setup handles new owners, joining and optional runners.
+setup_hand_off() {
+  echo "  Run:"
+  echo "    myco setup"
+  echo "  It guides you through starting your own Myco, joining one, or running"
+  echo "  Myco's work on an always-on machine (a runner)."
 }
 
 RELEASES_FILE=""
@@ -679,7 +678,7 @@ main() {
     info "Dry run: nothing was downloaded or changed."
     if [ "$BLOCKS_INSTALL" = "1" ] && [ "$REPLACE_LEGACY" = "0" ] && [ "$LEGACY_INSTALL" = 0 ]; then
       echo "  Myco 1.4 is on this machine (${LEGACY}), so it would install nothing."
-      echo "  With --replace-1.4 it would install ${ASSET} (${VERSION}) in 1.4's place, and 1.4 would stop capturing until you run myco cutover."
+      echo "  With --replace-1.4 it would install ${ASSET} (${VERSION}) in 1.4's place, and 1.4 would stop capturing until you run myco setup --cutover."
       exit 0
     fi
     echo "  Would install ${ASSET} (${VERSION}) from ${SOURCE}"
@@ -687,7 +686,7 @@ main() {
     if [ "$UNKNOWN_BINARY" = 1 ]; then
       echo "  The unclassifiable binary ($LEGACY) would be replaced explicitly with 2.0; existing vaults would be preserved."
     elif [ "$BLOCKS_INSTALL" = "1" ] && [ "$LEGACY_INSTALL" = 0 ]; then
-      echo "  Myco 1.4 is on this machine (${LEGACY}); --replace-1.4 was given, so 2.0 would take its place and 1.4 would stop capturing until you run myco cutover. Nothing of 1.4 would be moved or deleted."
+      echo "  Myco 1.4 is on this machine (${LEGACY}); --replace-1.4 was given, so 2.0 would take its place and 1.4 would stop capturing until you run myco setup --cutover. Nothing of 1.4 would be moved or deleted."
     elif [ "$LEGACY_INSTALL" = 1 ]; then
       echo "  Would update Myco 1.4 (${LEGACY}); its existing service and capture configuration would be preserved."
       echo "  To move to 2.0: ${ONE_LINER} -s -- --replace-1.4"
@@ -699,13 +698,12 @@ main() {
     error "Myco 1.4 is on this machine (${LEGACY}). Nothing was installed."
     {
       echo "  Installing Myco 2.0 here takes 1.4's place, and 1.4 stops capturing from that"
-      echo "  moment until the machine is moved to 2.0. To move it, get an invite link from"
-      echo "  your Deployment's administrator, then run these one after another:"
+      echo "  moment until the machine is moved to 2.0. To move it, run:"
       echo ""
       echo "    ${ONE_LINER} -s -- --replace-1.4"
-      echo "    myco login <your-myco-address>"
-      echo "    myco cutover --dry-run"
-      echo "    myco cutover"
+      echo "    myco setup --cutover"
+      echo "  Setup guides the move."
+      echo "  Manual path: myco login <your-myco-address>, then myco cutover --dry-run (changes nothing)."
       echo ""
       echo "  Guide: ${UPGRADE_GUIDE}"
     } >&2
@@ -855,32 +853,30 @@ main() {
     echo "  Myco 1.4 was updated; its existing service and capture configuration were preserved."
     echo "  To move to 2.0: ${ONE_LINER} -s -- --replace-1.4"
     echo "  To install its managed service explicitly: myco service install"
-    echo "  Next, sign this machine in with the invite link an admin gave you:"
-    echo "    myco login <link>"
-    echo "  Or run your own Deployment with: myco server create"
+    echo "  After installing 2.0, guide the move with:"
+    echo "    myco setup --cutover"
     if [ "$SERVE" = 1 ]; then
       echo "  To enable Team Host explicitly:"
       echo "    myco host enable ${SERVE_HOSTNAME:+--hostname $SERVE_HOSTNAME }--designate-default --emit-join"
     fi
   elif [ "$UNKNOWN_BINARY" = 1 ]; then
     echo "  The unclassifiable binary was replaced explicitly; existing vaults were preserved."
-    if [ "$MEMBER_HOME" = 1 ]; then refresh_member_setup; else login_hand_off; fi
+    if [ "$MEMBER_HOME" = 1 ]; then refresh_member_setup; else setup_hand_off; fi
   elif [ -n "$LEGACY" ]; then
     warn "Myco 1.4 is on this machine (${LEGACY})."
     if [ "$BLOCKS_INSTALL" = "1" ]; then
       echo "  2.0 took its place, so 1.4 captures nothing until you move over."
     fi
-    echo "  Nothing was moved over. To move it to 2.0:"
-    echo ""
-    echo "    myco login <your-myco-address>     # your Deployment's address"
-    echo "    myco cutover --dry-run       # shows every change it would make; changes nothing"
-    echo "    myco cutover"
-    echo ""
+    echo "  Nothing was moved over. To guide the move to 2.0, run:"
+    echo "    myco setup --cutover"
+    echo "  It also offers running Myco's work on an always-on machine (a runner)."
+    echo "  Manual path: myco login <your-myco-address>, then myco cutover --dry-run (changes nothing)."
+    echo "  Review the preview before running myco cutover."
     echo "  The 1.4 vaults stay where they are; the cutover copies and imports them."
   elif [ "$MEMBER_HOME" = "1" ]; then
     refresh_member_setup
   else
-    login_hand_off
+    setup_hand_off
   fi
   echo ""
 }

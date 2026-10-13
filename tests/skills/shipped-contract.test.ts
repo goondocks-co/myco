@@ -182,6 +182,22 @@ describe('the setup skill against the code it drives', () => {
   const SETUP = 'myco-setup';
   const markdown = read(SETUP);
 
+  it('leads owners, members, 1.4 moves and runners through guided setup', () => {
+    expect(markdown).toContain('Setup handles new owners, joining, running work and moving 1.4 history.');
+    expect(markdown).toContain('myco setup --join <address>');
+    expect(markdown).toContain('myco setup --create cloudflare');
+    expect(markdown).toContain('myco setup --create local');
+    expect(markdown).toContain('myco setup --cutover\n```\n\nSetup guides the move, previews changes and resumes after interruption.');
+    expect(markdown).toContain('For the manual path, sign in to the chosen Deployment and preview:');
+    expect(markdown).toContain('myco cutover --dry-run');
+    expect(markdown).toContain('Use `--no-cutover` to leave the move pending.');
+    expect(markdown).toContain('Repeat `--route <projectId>=<url>`');
+    expect(markdown).toContain('`--skip <projectId>`');
+    expect(markdown).toContain('on the manual cutover command, `--map <old-dir>=<repo-root>`');
+    expect(markdown).toContain("On an always-on machine, run `myco setup` and choose **Run Myco's work**.");
+    expect(markdown).toContain('myco setup --runner <address>');
+  });
+
   it('names only commands the CLI registers', () => {
     const registered = new Set(Object.keys(COMMANDS));
     expect(registered.size).toBeGreaterThan(0);

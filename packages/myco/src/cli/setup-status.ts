@@ -1,4 +1,5 @@
 import os from 'node:os';
+import path from 'node:path';
 import type { Observation } from '@myco/setup/observe.js';
 
 const labels: Record<string, string> = {
@@ -56,7 +57,7 @@ function describe(fact: Observation, url: string | undefined): string {
   if (fact.id === 'machine.agents') {
     if (complete) return fact.detail === 'current' ? `set up for ${fact.hooksDeployment ?? address}` : fact.detail === 'declined' ? 'Setup declined.' : 'No supported agents installed.';
     if (fact.detail === 'deferred-legacy') return 'Myco 1.4 still owns agent capture. Preview the handover with myco setup --cutover.';
-    return fact.state === 'absent' ? 'Agent hooks are not set up; run myco member provision --server <address>.' : 'Agent hooks are out of date; run myco member provision --refresh';
+    return fact.state === 'absent' ? `Not set up; run myco member provision --server ${address}.` : 'Out of date; run myco member provision --refresh.';
   }
   if (fact.id === 'project') {
     if (fact.detail.startsWith('bound-cutover: ')) return `${shortPath(fact.scope)}: sends to ${fact.detail.slice('bound-cutover: '.length)} (cutover destination).`;
@@ -104,6 +105,7 @@ export function renderSetupStatus(facts: readonly Observation[]): string[] {
   const ordered = [...groups].sort(([a], [b]) => a === b ? 0 : a === defaultUrl ? -1 : b === defaultUrl ? 1 : (a ?? '').localeCompare(b ?? ''));
   for (const [url, group] of ordered) {
     if (url) lines.push(`Deployment ${url}`);
+    const serviceDeclined = group.some(fact => fact.id === 'runner.service.choice' && fact.state === 'complete' && fact.detail === 'skip');
     let setupPrinted = false;
     for (const fact of group) {
       if (fact.id === 'journey') {
@@ -113,6 +115,13 @@ export function renderSetupStatus(facts: readonly Observation[]): string[] {
         const detail = roles.includes('join') && roles.includes('runner') ? 'This machine joins and runs work for this Deployment.' : describe(fact, url);
         lines.push(`  Setup: ${detail}`);
         continue;
+      }
+      if (serviceDeclined && fact.state === 'complete') {
+        if (fact.id === 'runner.service.choice') {
+          lines.push(`  Runner start at login: Declined. Run myco runner run --server ${url ?? '<address>'} when ready.`);
+          continue;
+        }
+        if (fact.id === 'runner.service' && fact.detail === 'declined' || fact.id === 'runner.offer' && fact.detail.startsWith('Service declined;')) continue;
       }
       if (fact.id === 'runner.choice' && (fact.detail === 'unasked' && !group.some(candidate => candidate.id === 'runner.enrollment') || group.some(candidate => candidate.id === 'runner.enrollment' && candidate.state === 'complete'))) continue;
       if (captureIds.has(fact.id) || (fact.id === 'project' && fact.informational && fact.detail.startsWith('bound-elsewhere:'))) continue;
@@ -143,7 +152,7 @@ export function renderSetupStatus(facts: readonly Observation[]): string[] {
       const commands = [...new Set(rows.filter(fact => fact.state !== 'unavailable').map(fact => fact.id === 'machine.refusals' ? 'myco logs' : 'myco member drain'))];
       const displayPath = shortPath(root);
       const cd = displayPath.startsWith('~/') ? '~/' + quote(displayPath.slice(2)) : quote(displayPath);
-      lines.push(`    ${details.join('; ')}.${commands.length ? ` Run: cd ${cd} && ${commands.join(' && ')}.` : ` Repository: ${displayPath}.`}`);
+      lines.push(`    ${path.basename(root)}: ${details.join('; ')}.${commands.length ? ` Run: cd ${cd} && ${commands.join(' && ')}.` : ` Repository: ${displayPath}.`}`);
     }
   }
   return lines;

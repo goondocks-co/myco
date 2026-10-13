@@ -21,6 +21,7 @@ import { recordRefusedHook, REFUSED_HOOK_RETENTION_MS } from '@myco/member/refus
 import { newRunnerBearer, runnerRecordPath } from '@myco/runner/runner-registry.js';
 import { installWorkerService } from '@myco/runner/service.js';
 import { recordingPlatform } from '../member/helpers/service-platform.js';
+import { statusHome, STATUS_NOW } from '../setup/fixtures/status-home.js';
 
 let scratch: string;
 let home: string;
@@ -63,7 +64,7 @@ describe('home doctor', () => {
     const lines: string[] = [];
     expect(await runMemberVerb('doctor', [], { ...deps, stdout: line => lines.push(line) })).toBe(true);
     expect(lines.join('\n')).toContain('joined no Myco');
-    expect(lines.join('\n')).toContain('myco login <address>');
+    expect(lines.join('\n')).toContain('this machine has joined no Myco. Run `myco setup`.');
     expect(lines.join('\n')).not.toContain('myco member provision');
     expect(fs.readdirSync(home)).toEqual([]);
     expect(fs.existsSync(path.join(scratch, '.myco'))).toBe(false);
@@ -100,6 +101,20 @@ describe('home doctor', () => {
     expect(rows.filter(check => check.name === 'Setup')).toHaveLength(1);
     expect(rows.some(check => check.name === 'Agents')).toBe(false);
     expect(text).not.toContain('no provisioning recorded for this Deployment');
+  });
+
+  it('leads capture attention rows with their repository before the recovery command', async () => {
+    const fixture = statusHome(path.join(scratch, 'capture'));
+    const rows = await homeReport(fixture.home, { ...deps, now: () => STATUS_NOW });
+    for (const [name, root, command] of [
+      ['Capture backlog', fixture.repositories[0], 'myco member drain'],
+      ['Capture', fixture.repositories[0], 'myco member drain'],
+      ['Refusals', fixture.repositories[1], 'myco logs'],
+    ]) {
+      const check = rows.find(check => check.name === name && check.detail.startsWith(root + ':'));
+      expect(check?.status).toBe('warn');
+      expect(check?.detail.indexOf(command)).toBeGreaterThan(root.length);
+    }
   });
 
   it('uses the canonical remedy when a credential cannot renew', async () => {

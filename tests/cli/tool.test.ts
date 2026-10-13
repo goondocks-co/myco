@@ -87,9 +87,12 @@ for (const kind of ['empty', 'member', 'legacy']) it('refuses credential-less to
   await run(['list', '--json'], path.join(root, '.myco'));
   const result = JSON.parse(written.join(''));
   expect(result.error.code).toBe(kind === 'member' ? 'member_home' : 'credential_required');
-  expect(result.error.message).toContain('--credential registry');
-  expect(result.error.message).toContain('myco member provision');
-  if (kind === 'legacy') expect(result.error.message).toContain('myco cutover --dry-run');
+  if (kind === 'legacy') {
+    expect(result.error.message).toBe('To move your Myco 1.4 data to Myco 2.0, run `myco setup --cutover`. It guides sign-in, previews the move and sets up your agents. For the manual path, sign in with `myco login <address>`, then run `myco cutover --dry-run` before `myco cutover`.');
+  } else {
+    expect(result.error.message).toContain('--credential registry');
+    expect(result.error.message).toContain('myco member provision');
+  }
   expect(calls).toHaveLength(0);
   expect(process.exitCode).toBe(1);
 });

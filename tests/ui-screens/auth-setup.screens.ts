@@ -5,16 +5,16 @@ import { baseUrl, setAppearance } from './checks';
 import { dashboardMe } from '../helpers/dashboard-permissions';
 
 const scenarios = [
-  { name: 'device-unclaimed', url: '/device?code=BCDF-2345', state: 'unclaimed', words: 'myco server setup-owner' },
+  { name: 'device-unclaimed', url: '/device?code=BCDF-2345', state: 'unclaimed', words: 'myco setup' },
   { name: 'device-unlinked', url: '/device', state: 'unlinked', words: 'Ask an owner or admin' },
   { name: 'owner-link-expired', url: '/link#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', state: 'unclaimed', words: 'This owner link has expired' },
-  { name: 'owner-link-missing', url: '/link', state: 'unclaimed', words: 'myco server setup-owner' },
+  { name: 'owner-link-missing', url: '/link', state: 'unclaimed', words: 'myco setup' },
   { name: 'member-link-missing', url: '/link', state: 'unlinked', words: 'Ask an admin of this server' },
   { name: 'not-a-member', url: '/projects', state: 'unlinked', words: 'Ask an owner or admin' },
-  { name: 'owner-unclaimed', url: '/projects', state: 'unclaimed', words: 'myco server setup-owner' },
+  { name: 'owner-unclaimed', url: '/projects', state: 'unclaimed', words: 'myco setup' },
   { name: 'signed-out', url: '/projects', state: 'signed-out', words: 'Sign in with GitHub' },
-  { name: 'sign-in-unconfigured', url: '/projects', state: 'unconfigured', words: 'myco server github-app' },
-  { name: 'link-unconfigured', url: '/link#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', state: 'unconfigured', words: 'myco server github-app' },
+  { name: 'sign-in-unconfigured', url: '/projects', state: 'unconfigured', words: 'myco setup' },
+  { name: 'link-unconfigured', url: '/link#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', state: 'unconfigured', words: 'myco setup' },
   { name: 'projects-empty', url: '/projects', state: 'active', words: 'Get started' },
   { name: 'device-prefill', url: '/device?code=BCDF-2345', state: 'active', words: 'Check machine' },
 ] as const;
@@ -51,10 +51,10 @@ for (const mode of ['light', 'dark'] as const) {
         }
         if (scenario.state === 'unconfigured') {
           await expect(page.getByText('Sign in with GitHub')).toHaveCount(0);
-          await expect(page.getByText(`myco server github-app --url ${origin}`, { exact: false })).toBeVisible();
+          await expect(page.getByText(`myco server github-app --target local --url ${origin} for self-hosting, or myco server github-app --target cloudflare --url ${origin} for Cloudflare.`, { exact: false })).toBeVisible();
         }
         if (scenario.name === 'owner-link-missing') await expect(page.getByText('Ask an admin of this server', { exact: false })).toHaveCount(0);
-        if (scenario.name === 'projects-empty') await expect(page.locator('body')).toContainText('myco setup');
+        if (['projects-empty', 'device-unclaimed', 'owner-link-expired', 'owner-link-missing', 'owner-unclaimed', 'sign-in-unconfigured', 'link-unconfigured'].includes(scenario.name)) await expect(page.locator('body')).toContainText('myco setup');
         else await expect(page.locator('body')).not.toContainText('myco setup');
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
         const out = path.resolve('tests/ui-screens/evidence/auth-setup');

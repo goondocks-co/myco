@@ -13,7 +13,7 @@ user-invocable: true
 
 # Setting Myco up
 
-After verifying the installed binary below, lead with `myco setup --join <address>` when joining an existing Myco. It guides sign-in, project selection and global agent setup; `myco setup --status` reports observed progress without changing it. Bare `myco setup` offers starting a new Myco, joining one or running Myco's work. Creation supports Cloudflare and loopback access on this machine; moving 1.4 history uses the manual commands below.
+After verifying the installed binary below, lead with `myco setup --join <address>` when joining an existing Myco. It guides sign-in, project selection and global agent setup; `myco setup --status` reports observed progress without changing it. Bare `myco setup` offers starting a new Myco, joining one or running Myco's work. Setup handles new owners, joining, running work and moving 1.4 history. Creation supports Cloudflare and loopback access on this machine.
 
 The plugin supplies skills and remote tools. Installing the binary adds session and plan capture, import and optional runner commands. A working plugin alone does not mean capture is installed.
 
@@ -74,11 +74,19 @@ Choose a Deployment and keep a backup of the old home before replacing its binar
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh -s -- --dry-run --replace-1.4
 curl -fsSL https://myco.sh/install.sh | sh -s -- --replace-1.4
+myco setup --cutover
+```
+
+Setup guides the move, previews changes and resumes after interruption. Use `--no-cutover` to leave the move pending. Repeat `--route <projectId>=<url>` to choose project destinations and `--skip <projectId>` to leave chosen history and spools in place.
+
+For the manual path, sign in to the chosen Deployment and preview:
+
+```bash
 myco login <address>
 myco cutover --dry-run
 ```
 
-Review every destination and proposed agent and service change before `myco cutover`. For several Deployments, sign in to each first. Use `--route <id>=<url>` for an explicit project destination, `--skip <id>` to leave history and spool in place, and `--map <old-dir>=<repo-root>` for transcripts from old directories. Preview with the same options you will apply. An unresolved or conflicting route needs a decision, not a guessed default.
+Review every destination and proposed agent and service change before `myco cutover`. For several Deployments, sign in to each first. Use `--route <id>=<url>` for an explicit project destination, `--skip <id>` to leave history and spool in place, and, on the manual cutover command, `--map <old-dir>=<repo-root>` for transcripts from old directories. Preview with the same options you will apply. An unresolved or conflicting route needs a decision, not a guessed default.
 
 Cutover preserves original vaults, verifies copies and records history and transcript progress separately in `~/.myco/member/cutover.json`. A partial import remains unfinished; fix the named problem and rerun. It reports old extra plan folders; add wanted folders under **My machines** → **Extra plan folders**. Verify imported history and a new captured session before retiring old data. See [Moving from 1.4](https://myco.sh/upgrade#upgrading-from-myco-14) for fallback routing and additional homes.
 
@@ -86,11 +94,10 @@ Cutover preserves original vaults, verifies copies and records history and trans
 
 Capture, login and server startup do not enroll an executor. Continue only when the owner has chosen this machine to run this Deployment's agent work.
 
-Sign in to a supported coding agent on the runner machine under the service account. Then:
+On an always-on machine, run `myco setup` and choose **Run Myco's work**. Sign in to a supported coding agent there under the service account. For a known Myco address:
 
 ```bash
-myco runner register <address>
-myco runner install --server <address>
+myco setup --runner <address>
 myco runner doctor --server <address>
 ```
 

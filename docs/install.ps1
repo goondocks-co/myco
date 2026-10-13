@@ -20,7 +20,6 @@ $BinDir = if ($env:MYCO_BIN_DIR) { $env:MYCO_BIN_DIR } else { Join-Path $env:LOC
 $Exe = Join-Path $BinDir 'myco.exe'
 $Asset = "myco-windows-x64.exe"
 $Marker = Join-Path $MycoHome 'install.json'
-$SelfHostingGuide = "https://github.com/$Repo/blob/main/docs/self-hosting.md"
 $ReplaceCommand = '$env:MYCO_REPLACE_LEGACY="1"; irm https://myco.sh/install.ps1 | iex'
 $Replace14 = $Replace14 -or $env:MYCO_REPLACE_LEGACY -eq '1'
 $ChannelExplicit = $Channel -ne "" -or $null -ne $env:MYCO_CHANNEL
@@ -250,7 +249,7 @@ if ($tag -eq 'stay-put') { Write-Host "Newest eligible release is older than ins
 if (-not $tag) { throw "No eligible Myco release found on channel $Channel; nothing was installed. For published alpha builds, retry with MYCO_CHANNEL=alpha. Check https://github.com/$Repo/releases" }
 Write-Host "Found: $tag" -ForegroundColor Cyan
 if ($Legacy -and -not $Replace14 -and -not $LegacyInstall) {
-    throw "Myco 1.4 is on this machine. Nothing was installed. To move to 2.0: $ReplaceCommand (equivalent to --replace-1.4, or -Replace14 when invoking the script), then run myco login <your-myco-address> and myco cutover --dry-run. Guide: https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14"
+    throw "Myco 1.4 is on this machine. Nothing was installed. To move to 2.0: $ReplaceCommand (equivalent to --replace-1.4, or -Replace14 when invoking the script), then run myco setup --cutover. Manual path: myco login <your-myco-address>, then myco cutover --dry-run (changes nothing). Guide: https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14"
 }
 
 # ---------------------------------------------------------------------------
@@ -422,14 +421,14 @@ if ($LegacyInstall) {
     Write-Host "  Myco 1.4 was updated; its existing service and capture configuration were preserved."
     Write-Host "  To move to 2.0: $ReplaceCommand (equivalent to --replace-1.4)."
     Write-Host "  To install its managed service explicitly: myco service install"
-    Write-Host "  Next, sign this machine in with the invite link an admin gave you:"
-    Write-Host "    myco login <link>"
-    Write-Host "  Or run your own Deployment with: myco server create"
+    Write-Host "  After installing 2.0, guide the move with:"
+    Write-Host '    myco setup --cutover'
 } elseif ($Legacy) {
     Write-Host "  2.0 took 1.4's place. Nothing was moved or deleted."
-    Write-Host "    myco login <your-myco-address>"
-    Write-Host "    myco cutover --dry-run"
-    Write-Host "    myco cutover"
+    Write-Host "  To guide the move to 2.0, run:"
+    Write-Host '    myco setup --cutover'
+    Write-Host "  Setup can also run Myco's work on an always-on machine (a runner)."
+    Write-Host "  Manual path: myco login <your-myco-address>, then myco cutover --dry-run (changes nothing)."
 } elseif ($MemberHome) {
     Write-Host "  Refreshing this joined machine's agents: myco member provision --refresh"
     try {
@@ -441,8 +440,9 @@ if ($LegacyInstall) {
         Write-Warning "Refresh failed: $_ Run: myco member provision --refresh"
     }
 } else {
-    Write-Host "  Next, join your team's Deployment:"
-    Write-Host "    myco login <your-myco-address>"
-    Write-Host "  Or run your own server: $SelfHostingGuide"
+    Write-Host "  Run:"
+    Write-Host '    myco setup'
+    Write-Host "  Choose to start your own Myco, join one, or run Myco's work"
+    Write-Host "  on an always-on machine (a runner)."
 }
 Write-Host ""

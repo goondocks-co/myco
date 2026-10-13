@@ -22,8 +22,10 @@ for (const command of ['mcp', 'tool']) for (const kind of ['empty', 'member', 'l
     expect(result.stderr).not.toContain('FORBIDDEN_PROCESS_SPAWN');
     expect(result.status).toBe(1);
     const output = result.stdout + result.stderr;
-    expect(output).toContain('--credential registry');
-    expect(output).toContain('myco member provision');
+    if (kind !== 'legacy') {
+      expect(output).toContain('--credential registry');
+      expect(output).toContain('myco member provision');
+    }
     if (kind === 'member') {
       expect(output).toContain(command === 'mcp' ? 'myco mcp --credential registry' : 'myco tool call <tool> --credential registry');
       expect(output).toContain('refresh a leftover MCP entry');
@@ -31,7 +33,7 @@ for (const command of ['mcp', 'tool']) for (const kind of ['empty', 'member', 'l
     }
     if (kind === 'empty') expect(fs.existsSync(path.join(env.MYCO_HOME!, 'groves'))).toBe(false);
     if (kind === 'legacy') {
-      expect(output).toMatch(/myco login <invite link>.*myco cutover --dry-run.*After the move.*--credential registry/s);
+      expect(output).toContain('To move your Myco 1.4 data to Myco 2.0, run `myco setup --cutover`. It guides sign-in, previews the move and sets up your agents. For the manual path, sign in with `myco login <address>`, then run `myco cutover --dry-run` before `myco cutover`.');
       expect(output).not.toMatch(/daemon|Keep Myco 1\.4 serving/);
     }
     expect(fs.existsSync(path.join(env.MYCO_HOME!, 'service', 'daemon.json'))).toBe(false);

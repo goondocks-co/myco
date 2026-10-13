@@ -24,7 +24,7 @@ for (const verb of [
   const result = spawnSync(process.execPath, [fixture, verb], { cwd, env, encoding: 'utf8', timeout: 15_000 });
   expect(result.stderr).not.toContain('FORBIDDEN_PROCESS_SPAWN');
   expect(result.status).toBe(1);
-  expect(result.stderr).toMatch(/myco login <invite link>.*myco cutover --dry-run.*myco cutover/s);
+  expect(result.stderr).toMatch(/myco setup --cutover.*myco login <address>.*myco cutover --dry-run.*myco cutover/s);
   expect(fs.readFileSync(legacy.vault)).toEqual(before);
 });
 
@@ -32,7 +32,7 @@ it('help prints member usage and migration guidance on an unmoved home', () => {
   const result = spawnSync(process.execPath, [cli, '--help'], { cwd, env, encoding: 'utf8', timeout: 15_000 });
   expect(result.status).toBe(0);
   expect(result.stdout).toContain('Project intelligence (answered by the Deployment for this project)');
-  expect(result.stdout).toContain('myco login <invite link>');
+  expect(result.stdout).toContain('To move your Myco 1.4 data to Myco 2.0, run `myco setup --cutover`. It guides sign-in, previews the move and sets up your agents.');
   expect(result.stdout).toContain('myco cutover --dry-run');
   expect(result.stdout).not.toContain('grove <subcommand>');
 });
