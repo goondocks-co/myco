@@ -1,4 +1,4 @@
-export const SEARCH_TYPES = ['session', 'spore', 'plan', 'skill', 'prompt', 'response'] as const;
+export const SEARCH_TYPES = ['session', 'spore', 'plan', 'prompt', 'response'] as const;
 export type SearchType = typeof SEARCH_TYPES[number];
 export const SEARCH_API_LIMIT = 20;
 export const SEARCH_TOOL_LIMIT = 10;

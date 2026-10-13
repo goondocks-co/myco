@@ -62,6 +62,7 @@ export async function handleRestorePreview(env: ServerEnv, ctx: OwnerContext): P
   } catch (err) {
     const refusal = storedArtifactRefusal(err);
     if (refusal !== null) return refusal;
+    if (err instanceof BackupApplyError) return badRequest(err.message);
     if (err instanceof SyntaxError) return badRequest('the artifact is not a backup this server can read');
     throw err;
   }

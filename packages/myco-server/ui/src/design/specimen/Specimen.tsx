@@ -180,7 +180,7 @@ export function Specimen() {
             </div>
             <label className="flex flex-col gap-s1 t-small text-ink-2 sm:col-span-2">
               Instructions
-              <Textarea defaultValue="Keep the digest under 1,500 words." />
+              <Textarea defaultValue="Summarize the project in a few sentences." />
             </label>
           </div>
           <SearchInput label="Search everything" hint="⌘K" />

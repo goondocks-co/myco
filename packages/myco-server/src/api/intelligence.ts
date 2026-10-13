@@ -17,11 +17,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { instantParam, notFound, ok, resolveProjectScope } from './scope.js';
 import { countSpores, getSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds } from '../core/spores.js';
-import { getPublishedSkillContent, listLineageForSkill, listSkillRecords } from '../core/skills.js';
-import { listDigestRevisions, listDigests } from '../core/digests.js';
 import { canonicalNamespace, listReleaseStates } from '../core/provenance.js';
-import { listInstructions } from '../read/cortex.js';
-import { getRun } from '../core/runs.js';
 
 /** The largest page this surface serves, whatever a caller asks for. */
 export const MAX_PAGE = 200;
@@ -80,96 +76,6 @@ export async function handleProjectSpore(env: ServerEnv, ctx: OwnerContext): Pro
     listSupersededSporeIds(env.db, scope, spore.id),
   ]);
   return ok({ spore, supersededBy, supersedes });
-}
-
-export async function handleProjectSkills(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await scopeOf(env, ctx);
-  if (scope === null) return notFound();
-  return ok({
-    skills: await listSkillRecords(env.db, scope, {
-      status: ctx.url.searchParams.get('status') ?? undefined,
-      limit: clampLimit(ctx.url.searchParams.get('limit')),
-    }),
-  });
-}
-
-/**
- * A skill's published content and its lineage.
- *
- * The content comes from the latest lineage snapshot rather than the record:
- * `skill_records` carries metadata and a path, and the file on disk is a
- * materialization that a server has no copy of.
- */
-export async function handleProjectSkill(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await scopeOf(env, ctx);
-  if (scope === null) return notFound();
-  const skillId = ctx.params.skillId ?? '';
-  const [content, lineage] = await Promise.all([
-    getPublishedSkillContent(env.db, scope, skillId),
-    listLineageForSkill(env.db, scope, skillId, clampLimit(ctx.url.searchParams.get('limit'))),
-  ]);
-  if (content === null && lineage.length === 0) return notFound();
-  return ok({ content, lineage });
-}
-
-export async function handleProjectDigests(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await scopeOf(env, ctx);
-  if (scope === null) return notFound();
-  return ok({ digests: await listDigests(env.db, scope, ctx.url.searchParams.get('agentId') ?? undefined) });
-}
-
-/** The bodies a digest displaced, newest first — the history a replacement preserves rather than overwrites. */
-export async function handleProjectDigestRevisions(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await scopeOf(env, ctx);
-  if (scope === null) return notFound();
-  const agentId = ctx.url.searchParams.get('agentId');
-  const tier = Number(ctx.params.tier);
-  if (agentId === null || !Number.isSafeInteger(tier)) return notFound();
-  return ok({ revisions: await listDigestRevisions(env.db, scope, agentId, tier, clampLimit(ctx.url.searchParams.get('limit'))) });
-}
-
-/** What the material behind one instructions row counted, as the run that wrote it recorded. */
-export interface InstructionsCounts {
-  sessions: number;
-  spores: number;
-  plans: number;
-}
-
-const whole = (value: unknown): number | null => (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null);
-
-/**
- * What the run that wrote an instructions row read, from the context the
- * dispatch recorded on that run.
- *
- * Read here rather than in the read layer: a run's context carries the resolved
- * dispatch, and the read layer names none of those columns.
- */
-function countsOf(runContext: string | null): InstructionsCounts | null {
-  if (runContext === null) return null;
-  try {
-    const parsed: unknown = JSON.parse(runContext);
-    const held = typeof parsed === 'object' && parsed !== null ? (parsed as { counts?: unknown }).counts : undefined;
-    if (typeof held !== 'object' || held === null) return null;
-    const c = held as Record<string, unknown>;
-    const sessions = whole(c.sessions);
-    const spores = whole(c.spores);
-    const plans = whole(c.plans);
-    return sessions === null || spores === null || plans === null ? null : { sessions, spores, plans };
-  } catch {
-    return null;
-  }
-}
-
-/** The instructions each agent currently generates for session start, newest first, each with what its run read. */
-export async function handleProjectInstructions(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await scopeOf(env, ctx);
-  if (scope === null) return notFound();
-  const rows = await listInstructions(env.db, scope);
-  const instructions = await Promise.all(rows.map(async (row) => ({
-    ...row,
-    counts: row.sourceRunId === null ? null : countsOf((await getRun(env.db, scope, row.sourceRunId))?.runContext ?? null),
-  })));
-  return ok({ instructions });
 }
 
 export async function handleProjectReleaseStates(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

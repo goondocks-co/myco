@@ -861,8 +861,8 @@ export async function recordRunCall(
  * pass a run whose write did nothing.
  *
  * It is the run key for an artifact whose own row carries none. Where the
- * artifact table names the run itself (`digest_extract_revisions.run_id`,
- * `canopy_maps.source_run_id`) the rule reads that instead.
+ * artifact table names the run itself (`canopy_maps.source_run_id`) the rule
+ * reads that instead.
  */
 export const RUN_WRITE_EVENT = 'run_write';
 
@@ -966,39 +966,6 @@ export async function recordRunEvents(db: RelationalStore, scope: ReadScope, eve
           scope.projectId, event.runId));
   const results = await db.batch(statements);
   return results.reduce((landed, result) => landed + result.meta.changes, 0);
-}
-
-export interface CortexInstructionsUpsert {
-  agentId: string;
-  content: string;
-  inputHash: string;
-  generatedAt: number;
-  sourceRunId: string | null;
-  id?: string;
-}
-
-/**
- * Write the current Cortex instructions for an agent within a Project.
- *
- * The conflict resolves on `(project_id, id)`, and those two are exactly the
- * columns the update leaves alone — rewriting either would move the row rather
- * than update it.
- */
-export async function upsertCortexInstructions(
-  db: RelationalStore,
-  scope: ReadScope,
-  row: CortexInstructionsUpsert,
-): Promise<void> {
-  const id = row.id ?? `${row.agentId}:instructions`;
-  await db.prepare(`INSERT INTO cortex_instructions
-      (project_id, id, agent_id, content, input_hash, source_run_id, generated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (project_id, id) DO UPDATE SET
-        agent_id = excluded.agent_id, content = excluded.content,
-        input_hash = excluded.input_hash, source_run_id = excluded.source_run_id,
-        generated_at = excluded.generated_at`)
-    .bind(scope.projectId, id, row.agentId, row.content, row.inputHash, row.sourceRunId, row.generatedAt)
-    .run();
 }
 
 // ---------------------------------------------------------------------------

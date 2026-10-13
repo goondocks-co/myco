@@ -33,13 +33,12 @@ const SOURCES: Record<SearchType, Source> = {
   session: { table: 'sessions', id: 'session_id', title: "COALESCE(NULLIF(d.title, ''), 'Session ' || substr(d.session_id, -6))", created: occurredAt('d.'), session: 'd.session_id', prompt: 'NULL', status: presentedStatus('d.'), namespace: 'sessions' },
   spore: { table: 'spores', id: 'id', title: 'd.observation_type', created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', status: 'd.status', namespace: 'spores', line: 'd.agent_line' },
   plan: { table: 'plans', id: 'plan_key', title: "COALESCE(NULLIF(d.title, ''), 'Plan')", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', status: 'd.status', blob: 'plan', namespace: 'plans' },
-  skill: { table: 'skill_records', id: 'id', title: "COALESCE(NULLIF(d.display_name, ''), d.name)", created: 'd.created_at', session: 'NULL', prompt: 'NULL', status: 'd.status', namespace: 'skill_records' },
   prompt: { table: 'prompt_batches', id: 'prompt_id', title: "'Prompt'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', blob: 'prompt', namespace: 'prompt_batches' },
   response: { table: 'responses', id: 'response_id', title: "'Response'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', blob: 'response', namespace: 'responses' },
 };
 
 const ALIASES: Record<string, SearchType> = {
-  sessions: 'session', spores: 'spore', plans: 'plan', skills: 'skill', skill_records: 'skill',
+  sessions: 'session', spores: 'spore', plans: 'plan',
   prompts: 'prompt', prompt_batches: 'prompt', responses: 'response',
 };
 
@@ -128,9 +127,6 @@ async function searchType(db: RelationalStore, reach: SearchReach, type: SearchT
     SELECT kept.project_id, kept.id, kept.title, kept.rank, kept.created_at, kept.session_id, kept.prompt_id, (SELECT agent FROM sessions WHERE project_id = kept.project_id AND session_id = kept.session_id) AS agent, ${preview} AS preview
     FROM kept ORDER BY kept.rank, kept.created_at DESC, kept.id, kept.project_id`).bind(...params).all<Hit>()).results;
   const best = Math.max(...rows.map((r) => Math.abs(r.rank)), Number.MIN_VALUE);
-  // No `skill` entry: `myco_skills` answers from the shipped catalogue, so a
-  // hint naming a generated record's id would send a caller to a refusal. The
-  // rows survive until #1170 removes the table; the hint does not.
   const tools: Partial<Record<SearchType, string>> = { session: 'myco_sessions', spore: 'myco_spores', plan: 'myco_plans' };
   const tool = tools[type];
   return rows.filter((r) => r.id.length > 0).map((r) => ({

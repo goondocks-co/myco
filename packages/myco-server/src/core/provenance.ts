@@ -20,7 +20,7 @@ import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 
 /** The namespaces a caller names. */
-export const RELEASE_NAMESPACES = ['spore', 'skill', 'session', 'plan'] as const;
+export const RELEASE_NAMESPACES = ['spore', 'session', 'plan'] as const;
 export type ReleaseNamespace = (typeof RELEASE_NAMESPACES)[number];
 
 /**
@@ -31,7 +31,6 @@ export type ReleaseNamespace = (typeof RELEASE_NAMESPACES)[number];
  */
 const STORED_FORMS: Readonly<Record<ReleaseNamespace, readonly [string, string]>> = {
   spore: ['spore', 'spores'],
-  skill: ['skill', 'skill_records'],
   session: ['session', 'sessions'],
   plan: ['plan', 'plans'],
 };

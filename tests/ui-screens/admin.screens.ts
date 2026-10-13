@@ -103,8 +103,6 @@ async function expectSettings(page: Page, viewport: ViewportName): Promise<void>
       await expect(control.locator('input, textarea, button')).toHaveCount(0);
     } else await expect(control).toHaveCount(0);
   }
-  const digest = settings.leaves.find((row: { leaf: string }) => row.leaf === 'cortex.digest.tier');
-  expect(digest).toBeUndefined();
 }
 
 async function expectModels(page: Page): Promise<void> {
@@ -155,7 +153,6 @@ async function expectProjectSettings(page: Page, name: string): Promise<void> {
   await expect(page.getByText(name).first()).toBeInViewport();
   for (const id of ['capabilities', 'repository', 'access-keys', 'release-tracking']) await expect(page.locator(`section#${id}`)).toBeVisible();
   await expect(page.locator('section#capabilities').getByRole('switch').first()).toBeVisible();
-  await expect(page.getByRole('switch', { name: 'Skills', exact: true })).toHaveCount(0);
   if (onFixture()) await expect(page.locator('section#access-keys')).toContainText('CI deploys');
 }
 

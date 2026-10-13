@@ -44,7 +44,6 @@ export const search: ParityScenario = {
     await post('plan', { planKey: plan, promptId: prompt, title: `${word} titleword`, blob: key, status: 'active' });
     const spore = await mcp<{ id: string }>('myco_spores', { op: 'save', type: 'decision', content: `${word} advice`, project: target.projectId });
     await target.sql(`UPDATE sessions SET title = ${lit(word)} WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`);
-    await target.sql(`INSERT INTO skill_records(project_id,id,agent_id,name,display_name,description,path,created_at,updated_at) VALUES (${lit(target.projectId)},${lit(word)},'user',${lit(word)},'Search skill','procedure','skills/search',${stamp},${stamp})`);
     let indexed = await owner(word);
     for (let attempt = 0; indexed.coverage.pending_blobs > 0 && attempt < 4; attempt++) {
       const wake = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: '{}' });
@@ -52,7 +51,7 @@ export const search: ParityScenario = {
       indexed = await owner(word);
     }
     expect(indexed.coverage.pending_blobs).toBe(0);
-    expect(indexed.results.map((r) => r.type).sort()).toEqual(['plan', 'prompt', 'response', 'session', 'skill', 'spore']);
+    expect(indexed.results.map((r) => r.type).sort()).toEqual(['plan', 'prompt', 'response', 'session', 'spore']);
     expect(await mcp<SearchAnswer>('myco_search', { query: word, limit: 20 })).toEqual(indexed);
     expect((await owner(`${word} distantneedle`)).results.map((r) => r.id).sort()).toEqual([prompt, response, plan].sort());
     expect((await owner('titleword distantneedle')).results.map((r) => r.id)).toEqual([plan]);
@@ -87,7 +86,6 @@ export const search: ParityScenario = {
     expect((await across(word, [`absent-${stamp}`])).status).toBe(404);
     expect((await fetch(`${target.url}/api/search?q=${word}`, { headers: target.memberHeaders() })).status).toBe(401);
     await target.sql(`UPDATE sessions SET title = 'changed title' WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`);
-    await target.sql(`DELETE FROM skill_records WHERE project_id = ${lit(target.projectId)} AND id = ${lit(word)}`);
     expect((await owner(word)).results.map((r) => r.type).sort()).toEqual(['plan', 'prompt', 'response', 'spore']);
   },
 };

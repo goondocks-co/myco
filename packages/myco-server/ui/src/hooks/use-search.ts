@@ -58,19 +58,13 @@ export function useSearch(scope: SearchScope, filters: SearchFilters, enabled: b
   });
 }
 
-/**
- * Where a hit opens, or null when this dashboard has no page for it.
- *
- * A skill is read from the catalogue that ships with Myco rather than from a page
- * here, so a skill hit has no destination. Answering null is what lets the result
- * list show the hit and not pretend it is a link.
- */
+/** Where a hit opens, or null when this dashboard has no page for it. */
 export function searchResultPath(projectId: string, hit: SearchResult): string | null {
   const base = `/p/${encodeURIComponent(projectId)}`;
   const id = encodeURIComponent(hit.id);
   if (hit.type === 'spore') return `${base}/spores/${id}`;
-  if (hit.type === 'skill') return null;
   if (hit.type === 'plan') return planPagePath(projectId, { planKey: hit.id });
+  if (hit.type !== 'session' && hit.type !== 'prompt' && hit.type !== 'response') return null;
   const session = `${base}/sessions/${encodeURIComponent(hit.session_id ?? hit.id)}`;
   if (hit.prompt_id) return `${session}?${new URLSearchParams({ turn: hit.prompt_id })}`;
   return session;

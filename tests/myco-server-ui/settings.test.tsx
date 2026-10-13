@@ -825,7 +825,6 @@ describe('older links to a Settings tab', () => {
     expect(oldTabTarget('capabilities')).toBe('/settings/access#projects');
     expect(oldTabTarget('records')).toBe('/settings/capture#records');
     expect(oldTabTarget('agent')).toBe('/settings/models');
-    expect(oldTabTarget('skills')).toBe('/settings');
     expect(oldTabTarget('backup')).toBe('/settings/backups#backup');
     expect(oldTabTarget('maintenance')).toBe('/settings/backups#maintenance');
     expect(oldTabTarget('cortex')).toBe('/settings#cortex');

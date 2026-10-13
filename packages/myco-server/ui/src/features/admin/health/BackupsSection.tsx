@@ -111,6 +111,11 @@ export function BackupsSection() {
         {confirming !== null && (
           <>
             <p className="t-small text-muted" data-restore-counts="">It holds {countsWords(confirming.preview.header.counts)}</p>
+            {Object.entries(confirming.preview.tables ?? {}).filter(([, table]) => table.skipped !== undefined).map(([name, table]) => (
+              <p key={name} className="t-small text-warn" data-restore-skipped="">
+                Will skip {table.rows.toLocaleString()} {name.replace(/_/g, ' ')}: {table.skipped}
+              </p>
+            ))}
             {confirming.preview.restore?.allowed !== true && (
               <p className="t-small text-muted" data-restore-reason="">{confirming.preview.restore?.reason ?? 'Restore permission is unavailable. Refresh the preview.'}</p>
             )}
