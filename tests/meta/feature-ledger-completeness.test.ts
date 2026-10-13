@@ -1,4 +1,4 @@
-import { MEMBER_VERBS } from '@myco/cli/member-verbs.js';
+import { COMMANDS } from '@myco/cli/command-registry.js';
 /**
  * Meta gate: every 1.4 surface carries an explicit 2.0 disposition AND an owning surface.
  *
@@ -14,7 +14,7 @@ import { MEMBER_VERBS } from '@myco/cli/member-verbs.js';
  * the 2.0 surface, and asserts every token appears in a ledger row with BOTH a
  * disposition and an owning surface, failing by name when either is missing:
  *
- *   - CLI commands   — `cmd === '<name>'` / `case '<name>':` in `packages/myco/src/cli.ts`
+ *   - CLI commands   — public and compatibility registrations in `cli/command-registry.ts`
  *   - Dashboard routes — `path="<literal>"` in `packages/myco/ui/src/App.tsx` (retired)
  *   - MCP tools      — `TOOL_* = 'myco_*'` in `packages/myco/src/tools/definitions.ts`
  *   - Agent tasks    — YAML filenames under `src/agent/definitions/tasks/`
@@ -63,9 +63,6 @@ const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const DYNAMIC_CONFIG_BLOCKS = ['agent.tasks', 'notifications.domains', 'symbionts', 'release_provenance.package_map'];
 
 
-/** CLI tokens that are flag aliases, not commands. */
-const CLI_FLAG_ALIASES = new Set(['--help', '-h', '--version', '-v']);
-
 const read = (p: string): string => fs.readFileSync(p, 'utf8');
 
 const LEDGER = parseLedger();
@@ -82,11 +79,7 @@ const rowIn = (section: string, token: string) => BY_SECTION.get(section)?.get(t
 // ---------------------------------------------------------------------------
 
 function cliCommands(): string[] {
-  const src = read(path.join(SRC_ROOT, 'cli.ts'));
-  const found = new Set<string>(MEMBER_VERBS);
-  for (const m of src.matchAll(/cmd === '([^']+)'/g)) found.add(m[1]);
-  for (const m of src.matchAll(/case '([^']+)':/g)) found.add(m[1]);
-  return [...found].filter((c) => !CLI_FLAG_ALIASES.has(c)).sort();
+  return Object.keys(COMMANDS).filter(name => !name.startsWith('-')).sort();
 }
 
 function dashboardRoutes(): string[] {
@@ -224,7 +217,7 @@ interface Registry {
 }
 
 const REGISTRIES: readonly Registry[] = [
-  { label: 'CLI commands', source: 'packages/myco/src/cli.ts', section: '7.1', scan: cliCommands },
+  { label: 'CLI commands', source: 'packages/myco/src/cli/command-registry.ts', section: '7.1', scan: cliCommands },
   { label: 'dashboard routes', source: 'packages/myco/ui/src/App.tsx', section: '7.2', scan: dashboardRoutes },
   { label: 'MCP tools', source: 'packages/myco/src/tools/definitions.ts', section: '7.3', scan: mcpTools },
   { label: 'agent tasks', source: 'packages/myco/src/agent/definitions/tasks', section: '7.4', scan: agentTasks },

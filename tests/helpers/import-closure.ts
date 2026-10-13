@@ -302,11 +302,11 @@ export function cliVerbModules(src: string, exclude: (file: string) => boolean =
   const cli = path.join(src, 'cli.ts');
   const toModule = (from: string, specifier: string): string => path.resolve(path.dirname(from), specifier.replace(/\.js$/, '.ts'));
   const dispatched = runtimeEdges(withoutShebang(cli, fs.readFileSync(cli, 'utf-8')), cli).specifiers
-    .filter((s) => s.startsWith('./')).map((s) => toModule(cli, s)).filter((file) => fs.existsSync(file) && !exclude(file));
+    .filter((s) => s.startsWith('.')).map((s) => toModule(cli, s)).filter((file) => fs.existsSync(file) && !exclude(file));
   const modules = new Set(dispatched);
   for (const queue = [...dispatched]; queue.length > 0;) {
     const file = queue.pop()!;
-    for (const specifier of dynamicSpecifiers(fs.readFileSync(file, 'utf-8'), file).filter((s) => s.startsWith('./'))) {
+    for (const specifier of dynamicSpecifiers(fs.readFileSync(file, 'utf-8'), file).filter((s) => s.startsWith('.'))) {
       const lazy = toModule(file, specifier);
       if (fs.existsSync(lazy) && !exclude(lazy) && !modules.has(lazy)) { modules.add(lazy); queue.push(lazy); }
     }

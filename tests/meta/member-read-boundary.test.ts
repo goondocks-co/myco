@@ -26,7 +26,7 @@
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { MEMBER_READ_VERBS } from '@myco/cli/member-verbs.js';
+import { MEMBER_READ_VERBS, MEMBER_VERBS } from '@myco/cli/member-verbs.js';
 import { closureOf, pathToEntry, REPO_ROOT, runtimeEdges } from '../helpers/import-closure.ts';
 
 const SRC = 'packages/myco/src';
@@ -101,7 +101,10 @@ describe('the member verbs reach no local-runtime code', () => {
 describe('the dispatcher uses member verbs with no vault configuration gate', () => {
   const cli = fs.readFileSync(path.join(REPO_ROOT, SRC, 'cli.ts'), 'utf8');
   it('dispatches the shared member verb registry and has no myco.yaml gate', () => {
-    expect(cli).toContain('if (isMemberVerb(cmd))');
+    expect(cli).toContain('COMMANDS[cmd]');
+    const registry = fs.readFileSync(path.join(REPO_ROOT, SRC, 'cli/command-registry.ts'), 'utf8');
+    for (const verb of MEMBER_VERBS) expect(registry).toContain("runMemberVerb('" + verb + "', args)");
+    expect(registry).not.toContain('myco.yaml');
     expect(cli).not.toContain('myco.yaml');
   });
 

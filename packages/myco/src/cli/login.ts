@@ -34,10 +34,12 @@ An invite link still works:
 
   myco login https://myco.example.com/join#<key>
 
-The link works once and expires. If yours is refused, ask for a fresh one.
+An invite link signs this machine in to the Deployment. It works once and
+expires. If yours is refused, ask for a fresh one. The dashboard creates
+Deployment invitations; use myco member join to connect a specific project.
 
 Options:
-  --root <dir>   The project to connect, when the invite names one.
+  --root <dir>   The project to connect, when this directory is one.
                  Defaults to the project you are in.
   --no-agents    Sign in without setting up your agents. Set them up later
                  with \`myco member provision\`.
@@ -48,17 +50,15 @@ Every agent installed on this machine (Claude Code, Codex, Cursor, OpenCode, ...
 is set up to capture. An agent whose settings belong to another Myco
 installation is left as it is and named.
 
-If the invite names a project, that project is connected and your agents start
-capturing there. Any other git repository under your capture folders (~/Repos
+After sign-in, a git repository under your capture folders (~/Repos
 unless you change them in the dashboard) joins the deployment the first time an
 agent works in it: the project that already holds its remote, or a new one named
 after the folder. A repository you connect elsewhere with \`myco member join\`
 stays where you put it.
 
-In a sandbox or a CI job, ask an admin for a project-bound invitation and set MYCO_JOIN_CODE to that
-link instead of running
-this command. The first agent session redeems it and captures from then on, with
-nothing else to configure.
+In a sandbox or a CI job, set MYCO_JOIN_CODE to a Deployment invite link instead
+of running this command. The first agent session redeems it. Repositories join
+through the same capture-folder rules described above.
 `;
 
 export interface LoginDeps {
