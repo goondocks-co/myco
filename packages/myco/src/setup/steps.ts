@@ -616,8 +616,10 @@ export async function conductSetup(home: string, file: SetupFile, deps: SetupDep
   const remaining = ctx.facts.find((entry) => !entry.informational && entry.state !== 'complete');
   if (remaining) throw new Error(`${remaining.id} remains ${remaining.state}: ${remaining.detail}. Run myco setup again to resume.`);
   const answers = chosen(ctx);
+  const project = fact(ctx, 'project');
+  const projectUrl = project?.detail.startsWith('bound-cutover: ') ? project.detail.slice('bound-cutover: '.length) : answers.url;
   const summary = isMember(ctx)
-    ? answers.root ? `Setup connected ${path.resolve(answers.root)} to ${fact(ctx, 'project')?.detail.startsWith('bound-cutover: ') ? fact(ctx, 'project')!.detail.slice('bound-cutover: '.length) : answers.url}. Start a session in your agent here, then open ${answers.url}.`
+    ? answers.root ? `Setup connected ${path.resolve(answers.root)} to ${projectUrl}. Start a session in your agent here, then open ${projectUrl}.`
       : `Your Myco is ready at ${answers.url}, and this machine is signed in. Next, run myco setup --join ${answers.url} from a git repository to connect a project.`
     : `Runner setup for ${answers.url}. Review this machine on ${answers.url}/runners.`;
   ctx.out(summary);

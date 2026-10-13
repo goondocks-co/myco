@@ -72,6 +72,12 @@ For an existing Deployment:
 
 ```bash
 myco setup --join <address> --cutover
+myco setup --status
+```
+
+For routes across several Deployments, sign in to the other destination before setup:
+
+```bash
 myco login <other-address>
 myco setup --join <address> --cutover --route <project-id>=<other-address> --skip <other-project-id> --yes --no-runner
 myco setup --status

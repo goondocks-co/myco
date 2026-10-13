@@ -103,7 +103,9 @@ describe('legacy journey (e)', () => {
     expect({ code: await run(flags, deps), errors }).toEqual({ code: 0, errors: [] });
     expect(lines.filter(line => line.startsWith('Moved to 2.0.'))).toHaveLength(1);
     expect(readRegistryEntry(deps.cwd, home)?.serverUrl).toBe(LEGACY_URLS[1]);
+    expect(lines.at(-1)).toContain(`then open ${LEGACY_URLS[1]}.`);
     expect(await run([], deps)).toBe(0);
+    expect(lines.at(-1)).toContain(`then open ${LEGACY_URLS[1]}.`);
   });
 
   it('discloses fallback placement before consent and requires choices with two memberships', async () => {
@@ -402,6 +404,63 @@ describe('legacy journey (e)', () => {
     expect(await run(['--yes'], fixture.deps)).toBe(2);
     expect(errors.join('\n')).toContain('changed plans require fresh consent');
     expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
+  });
+
+  it('refuses capture growth on resume when only an earlier run stopped 1.4', async () => {
+    const fixture = await rig();
+    const interrupted = { ...fixture.deps, cutoverDeps: { ...fixture.deps.cutoverDeps, onCheckpoint: (boundary: string) => {
+      if (boundary === 'quiescent') throw new Error('interrupted after handover');
+    } } };
+    expect(await run(flags, interrupted)).toBe(2);
+    expect(legacyMigrationState(home).state).toBe('partial');
+    const plan = planCutover(home, { requireSourceMatch: true, homeDir: fixture.legacy.home }, { ...fixture.deps.cutoverDeps, agents: () => [] });
+    expect(plan.handover.find(step => step.step === 6)?.actions).toEqual([]);
+    const consent = readSetupFile(home).consented.cutover;
+    fixture.calls.length = 0;
+    errors = [];
+    let written: ReturnType<typeof fs.readFileSync> | undefined;
+    let reachedFinalSource = false;
+    const resumed = { ...fixture.deps, cutoverDeps: { ...fixture.deps.cutoverDeps,
+      stopDaemon: async () => { throw new Error('this run must stop no service'); },
+      onCheckpoint: (boundary: string) => {
+        if (boundary === 'destinations') {
+          const db = new Database(fixture.legacy.vault);
+          try { db.run("INSERT INTO sessions (id, agent, project_root, project_id, started_at, ended_at, status, created_at) SELECT 'capture_after_prior_stop', agent, project_root, project_id, started_at, ended_at, status, created_at FROM sessions LIMIT 1"); } finally { db.close(); }
+          written = fs.readFileSync(fixture.legacy.vault);
+        }
+        if (boundary === 'stopped-source:final') reachedFinalSource = true;
+      },
+    } };
+    expect(await run(['--yes'], resumed)).toBe(2);
+    expect(written).toBeDefined();
+    expect(errors.join('\n')).toContain('the stopped source changed after consent');
+    expect(reachedFinalSource).toBe(false);
+    expect(readSetupFile(home).consented.cutover).toBe(consent);
+    expect(fixture.calls.filter(call => call.route === '/events' || call.route === '/spores/save')).toEqual([]);
+    expect(fs.readFileSync(fixture.legacy.vault).toString('base64')).toBe(written!.toString('base64'));
+  });
+
+  it('reasks when stopped-source reconciliation matches the plan but consent belongs to an unrelated plan', async () => {
+    const fixture = await rig();
+    expect(await run(flags, { ...fixture.deps, cutoverDeps: { ...fixture.deps.cutoverDeps, onCheckpoint: (boundary: string) => {
+      if (boundary === 'quiescent') throw new Error('interrupted before import');
+    } } })).toBe(2);
+    const reconciliation = readCutoverState(home).handover!.reconciliation!;
+    const plan = planCutover(home, { requireSourceMatch: true, homeDir: fixture.legacy.home }, { ...fixture.deps.cutoverDeps, agents: () => [] });
+    expect(planFingerprint(cutoverConsentPlan(plan))).toBe(planFingerprint(JSON.parse(reconciliation.after)));
+    const file = readSetupFile(home);
+    file.consented.cutover = planFingerprint({ url: 'https://unrelated.invalid' });
+    expect(file.consented.cutover).not.toBe(planFingerprint(JSON.parse(reconciliation.before)));
+    saveSetupFile(home, file);
+    const bytes = fs.readFileSync(fixture.legacy.vault);
+    fixture.calls.length = 0;
+    errors = [];
+    expect(await run(['--yes'], fixture.deps)).toBe(2);
+    expect(errors.join('\n')).toContain('changed plans require fresh consent');
+    expect(readSetupFile(home).consented.cutover).toBe(file.consented.cutover);
+    expect(fixture.calls.filter(call => call.route === '/events' || call.route === '/spores/save')).toEqual([]);
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
+    expect(await run(['--yes'], { ...fixture.deps, ask: async () => 'yes' })).toBe(0);
   });
 
   for (const change of ['project', 'destination'] as const) it(`requires fresh consent for a changed ${change} after the stop`, async () => {
