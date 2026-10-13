@@ -6,6 +6,7 @@ const labels: Record<string, string> = {
   'machine.signin': 'Signed in', 'machine.credential': 'Sign-in credential',
   'machine.agents': 'Agent hooks', project: 'Repository',
   'deployment.health': 'Deployment', 'deployment.signin': 'GitHub sign-in',
+  'deployment.create': 'Deployment creation', 'deployment.owner': 'Owner account', 'deployment.serving': 'Serving',
   'runner.choice': 'Runner', 'runner.enrollment': 'Runner',
   'runner.service.choice': 'Runner start at login', 'runner.service': 'Runner service',
   'runner.offer': 'Runner agents', 'runner.authority': 'Runner authority',
@@ -45,7 +46,10 @@ function describe(fact: Observation, url: string | undefined): string {
   if (fact.id === 'runner.service.choice' && complete) return fact.detail === 'skip' ? 'Start at login declined.' : 'Start at login selected.';
   const joinSetup = 'myco setup --join <address>'.replace('<address>', address);
   const setup = fact.id.startsWith('runner.') ? 'myco setup --runner <address>'.replace('<address>', address) : joinSetup;
-  if (fact.id === 'journey') return complete ? fact.detail === 'join' ? 'This machine joins this Deployment.' : 'This machine runs work for this Deployment.' : fact.detail;
+  if (fact.id === 'journey') return complete ? fact.detail === 'create' ? 'This machine manages this Deployment.' : fact.detail === 'join' ? 'This machine joins this Deployment.' : 'This machine runs work for this Deployment.' : fact.detail;
+  if (fact.target && ['deployment.create', 'deployment.owner', 'deployment.serving', 'deployment.signin'].includes(fact.id)) {
+    return fact.informational ? fact.detail : complete ? sentence(fact.detail) + '.' : `${sentence(fact.detail)}. Run myco setup --create ${fact.target}.`;
+  }
   if (fact.id === 'default' && fact.state === 'absent') return `Not selected. New repositories will not automatically join a Deployment. Run myco login --default ${address} (approves this machine again).`;
   if (fact.id === 'default' && complete) return `${fact.detail} — new repositories join it.`;
   if (fact.id === 'machine.signin') return complete ? 'This machine is signed in (remote authentication not checked).' : `${sentence(fact.detail)}. Run myco login ${address}.`;

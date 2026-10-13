@@ -8,5 +8,6 @@ export function openBrowser(url: string): void {
       : 'xdg-open';
   const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
   const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+  child.once('error', () => {});
   child.unref();
 }

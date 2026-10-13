@@ -13,7 +13,7 @@ user-invocable: true
 
 # Setting Myco up
 
-After verifying the installed binary below, lead with `myco setup --join <address>`. It guides sign-in, project selection and global agent setup; `myco setup --status` reports observed progress without changing it. Bare `myco setup` offers joining or running Myco's work. Creating a Deployment and moving 1.4 history use the manual commands in their sections below.
+After verifying the installed binary below, lead with `myco setup --join <address>` when joining an existing Myco. It guides sign-in, project selection and global agent setup; `myco setup --status` reports observed progress without changing it. Bare `myco setup` offers starting a new Myco, joining one or running Myco's work. Creation supports Cloudflare and loopback access on this machine; moving 1.4 history uses the manual commands below.
 
 The plugin supplies skills and remote tools. Installing the binary adds session and plan capture, import and optional runner commands. A working plugin alone does not mean capture is installed.
 
@@ -51,7 +51,7 @@ Open the printed approval page in a browser signed in to that dashboard, check t
 
 Setup resumes when rerun. `myco login <address>` is the manual sign-in and agent-setup path; login already provisions agents. Use `myco member provision --refresh` only when refreshing existing setup is needed. A bare host uses HTTPS; a loopback Deployment needs its full `http://127.0.0.1:8787` address.
 
-To run a new Deployment, follow **myco-server-provisioning** for Cloudflare or [Run your own Myco](https://myco.sh/self-hosting) for local. The owner sequence is create, choose the address, github-app, setup-owner, connect the owner and sign this machine in. Every server command needs an explicit `--target local` or `--target cloudflare`.
+For a new owner, run `myco setup --create cloudflare` or `myco setup --create local`. Setup chooses the address before GitHub registration, prints a private owner link, waits for linking and signs this machine in. Rerun after an interruption to resume from observed state. Local setup is loopback only; a foreground server runs in the user's separate terminal. Follow **myco-server-provisioning** or [Run your own Myco](https://myco.sh/self-hosting) for the standalone operations. Every server command needs an explicit `--target local` or `--target cloudflare`.
 
 ## 3. Connect repositories
 

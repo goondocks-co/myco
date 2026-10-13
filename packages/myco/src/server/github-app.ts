@@ -305,6 +305,11 @@ function readSignInPending(target: SignInTarget, url?: string): PendingSignIn | 
   }
 }
 
+/** Validate a pending conversion without exposing its credentials to the conductor. */
+export function hasPendingSignIn(target: SignInTarget, url: string): boolean {
+  return readSignInPending(target, url) !== null;
+}
+
 function assertPendingUrl(target: SignInTarget, pending: PendingSignIn, url: string): void {
   if (pending.url !== new URL(url).origin) throw pendingRefusal(target, `Pending sign-in registration at ${signInPendingPath(target)} belongs to ${pending.url}; use that URL to finish it`);
 }

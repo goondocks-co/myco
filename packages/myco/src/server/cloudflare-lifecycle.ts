@@ -107,7 +107,7 @@ export interface CreateResult {
 }
 
 /** One thing `create` would do: a resource or a secret created or kept as it is, the migrations applied, the Worker deployed. */
-export interface PlannedStep { kind: string; name: string; action: 'create' | 'reuse' | 'apply' | 'deploy' }
+export interface PlannedStep { kind: string; name: string; displayName?: string; action: 'create' | 'reuse' | 'apply' | 'deploy' }
 
 export interface CreatePlan {
   accountId: string;
@@ -151,7 +151,7 @@ async function planIn(options: LifecycleOptions & { url?: string }, configDir: s
     step('d1 database', resources.databaseName, existing?.databaseId !== undefined || held.databases.includes(resources.databaseName)),
     step('r2 bucket', resources.bucketName, held.buckets.includes(resources.bucketName)),
     step('r2 bucket', resources.recoveryBucketName, held.buckets.includes(resources.recoveryBucketName)),
-    step('secrets store', storeId ?? 'myco', storeId !== null),
+    { ...step('secrets store', 'account secrets store', storeId !== null), displayName: storeId ?? 'account store' },
     step('store secret', resources.wrapKeySecretName, storeSecrets.includes(resources.wrapKeySecretName)),
     { kind: 'd1 migrations', name: resources.databaseName, action: 'apply' },
     { kind: 'worker', name: resources.workerName, action: 'deploy' },

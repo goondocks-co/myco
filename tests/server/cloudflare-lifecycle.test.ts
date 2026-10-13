@@ -136,7 +136,7 @@ describe('account secrets store', () => {
       const { home, options } = setup();
       const selected = runner({ 'secrets-store store list': { code: 1, [output]: '✘ [ERROR] List request returned no stores.' } });
       const plan = await planCloudflareDeployment({ ...options, runner: selected });
-      expect(plan.steps).toContainEqual({ kind: 'secrets store', name: 'myco', action: 'create' });
+      expect(plan.steps).toContainEqual({ kind: 'secrets store', name: 'account secrets store', displayName: 'account store', action: 'create' });
       expect(calls.some((c) => c.args.includes('create'))).toBe(false);
       const result = await createCloudflareDeployment({ ...options, runner: selected });
       expect(result.createdResources).toContain('secrets store');
@@ -149,7 +149,7 @@ describe('account secrets store', () => {
     const { home, options } = setup();
     const selected = runner({ 'secrets-store store list': { stdout: `│ another-store │ ${STORE} │` } });
     const plan = await planCloudflareDeployment({ ...options, runner: selected });
-    expect(plan.steps).toContainEqual({ kind: 'secrets store', name: STORE, action: 'reuse' });
+    expect(plan.steps).toContainEqual({ kind: 'secrets store', name: 'account secrets store', displayName: STORE, action: 'reuse' });
     const result = await createCloudflareDeployment({ ...options, runner: selected });
     expect(result.createdResources).not.toContain('secrets store');
     expect(readDeploymentRecord(home)?.storeId).toBe(STORE);
@@ -676,7 +676,7 @@ describe('what the CLI prints when this machine is not ready', () => {
       expect(done.printed).toContain(`Cloudflare Deployment plan for account ${ACCOUNT}. Nothing was created or changed.`);
       const lines = account === 'held'
         ? ['reuse   d1 database myco-server', 'reuse   vectorize index myco-server-memory', `reuse   secrets store ${STORE}`]
-        : ['create  d1 database myco-server', 'create  vectorize index myco-server-memory', 'create  secrets store myco'];
+        : ['create  d1 database myco-server', 'create  vectorize index myco-server-memory', 'create  secrets store account store'];
       for (const line of [...lines, 'create  r2 bucket myco-server-blobs', 'create  store secret myco-secret-wrap-key', 'apply   d1 migrations myco-server',
         'deploy  worker myco-server', 'create  worker secret SESSION_SECRET']) {
         expect(done.printed).toContain(line);

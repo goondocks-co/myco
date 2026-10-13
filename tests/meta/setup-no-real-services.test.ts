@@ -13,7 +13,7 @@ afterEach(() => { for (const root of roots.splice(0)) {
   fs.rmSync(root, { recursive: true, force: true });
 } });
 const repo = fileURLToPath(new URL('../../', import.meta.url));
-for (const operation of ['inspect', 'prepare', 'recover']) for (const stub of [true, false]) {
+for (const operation of ['inspect', 'prepare', 'recover', 'setup-status', 'setup-create']) for (const stub of [true, false]) {
   it(`native setup ${operation} ${stub ? 'uses its injected runner' : 'refuses before real platform execution'}`, () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-setup-service-'));
     roots.push(root);

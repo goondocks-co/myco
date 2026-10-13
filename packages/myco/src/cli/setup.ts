@@ -7,18 +7,26 @@ import { UNUSUAL } from '@myco/utils/git-files.js';
 import { runGitAnswer } from '@myco/utils/git.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { runnerServerUrl, RUNNER_NAME_PATTERN } from '@myco/cli/runner-deps.js';
-import { readSetupFile, saveSetupFile, type SetupAnswers } from '@myco/setup/answers.js';
+import { readSetupFile, saveSetupFile, setupCloudflareUrl, type SetupAnswers } from '@myco/setup/answers.js';
 import { observeSetupStatus, setupExitCode } from '@myco/setup/observe.js';
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { conductSetup, type SetupDeps } from '@myco/setup/steps.js';
 import { askOnTerminal, askRequired } from '@myco/setup/prompt.js';
+import { APP_NAME_MAX } from '@myco/server/github-app.js';
 
 export const SETUP_HELP = `Usage: myco setup [options]
 
-Guide this machine through joining a Myco or becoming a runner. Run again to
-resume from observed state. Creating a Deployment and guided legacy migration
-are not available here yet; use myco server create or myco cutover --dry-run.
+Guide this machine through starting or joining a Myco, or becoming a runner.
+Run again to resume from observed state. For legacy migration, use
+myco cutover --dry-run.
 
+  --create cloudflare|local     Start a Deployment (local is loopback only)
+  --account-id <id>             Cloudflare account (32 hexadecimal characters)
+  --url https://<host>          Custom domain; omit for workers.dev
+  --org <name>                 GitHub organization owning the sign-in app
+  --app-name <name>             Sign-in app name (default: derived from the host)
+  --port <n>                   Local port (default: 8787)
+  --serve service|terminal      Start at login, or run in a separate terminal
   --join <host-or-invite-link>   Sign this machine in, then connect a project
   --project <id|name> | --new [name]   Choose or create the project
   --root <dir>                  Repository to connect (default: current repository)
@@ -98,14 +106,53 @@ export function parseSetupOptions(args: readonly string[]): Options {
       case '--yes': options.yes = true; break;
       case '--change': options.change = true; break;
       case '--help': case '-h': break;
-      case '--create': throw new Error('Guided Deployment creation is not available here yet; use myco server create --target cloudflare|local.');
+      case '--create': {
+        const target = value();
+        if (target !== 'cloudflare' && target !== 'local') throw new Error('--create needs cloudflare or local');
+        options.answers.role = 'create'; options.answers.target = target; break;
+      }
+      case '--account-id': {
+        const id = value();
+        if (!/^[a-f0-9]{32}$/.test(id)) throw new Error('--account-id needs 32 hexadecimal characters');
+        options.answers.accountId = id; break;
+      }
+      case '--url': {
+        options.answers.customUrl = setupCloudflareUrl(value()); options.answers.addressChoice = 'custom'; break;
+      }
+      case '--org': {
+        const org = value();
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*$/.test(org)) throw new Error('--org needs a GitHub organization name');
+        options.answers.org = org; break;
+      }
+      case '--app-name': {
+        const name = value().trim();
+        if (name.length === 0 || name.length > APP_NAME_MAX) throw new Error(`--app-name needs 1 to ${APP_NAME_MAX} characters`);
+        options.answers.appName = name; break;
+      }
+      case '--port': {
+        const port = value();
+        if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('--port needs an integer from 1 to 65535');
+        options.answers.port = Number(port); break;
+      }
+      case '--serve': {
+        const serve = value();
+        if (serve !== 'service' && serve !== 'terminal') throw new Error('--serve needs service or terminal');
+        options.answers.serve = serve; break;
+      }
       case '--cutover': case '--no-cutover': case '--route': case '--skip': throw new Error('Guided migration is not available here yet; use myco cutover --dry-run.');
       default: throw new Error('unknown setup option; run myco setup --help');
     }
   }
-  for (const [a, b] of [['--join', '--runner'], ['--project', '--new'], ['--default', '--keep-default'], ['--run-work', '--no-runner'], ['--status', '--change']]) exclusive(a, b);
+  for (const [a, b] of [['--join', '--runner'], ['--create', '--join'], ['--create', '--runner'], ['--project', '--new'], ['--default', '--keep-default'], ['--run-work', '--no-runner'], ['--status', '--change']]) exclusive(a, b);
+  validateCreationOptions(options.answers);
   if ((options.json || options.checkRemote) && !options.status) throw new Error('--json and --check-remote require --status');
   return options;
+}
+
+function validateCreationOptions(answers: SetupAnswers): void {
+  if (answers.target === 'local' && (answers.customUrl || answers.accountId || answers.org)) throw new Error('Local setup is loopback only; use --port and --serve, without --url, --account-id or --org.');
+  if (answers.target === 'cloudflare' && (answers.port !== undefined || answers.serve !== undefined)) throw new Error('Cloudflare setup uses --account-id and --url, without --port or --serve.');
+  if (answers.role && answers.role !== 'create' && [answers.target, answers.customUrl, answers.accountId, answers.org, answers.appName, answers.port, answers.serve].some(value => value !== undefined)) throw new Error('Creation options require --create cloudflare or --create local.');
 }
 
 export async function run(args: readonly string[], deps: SetupDeps = {}): Promise<number> {
@@ -116,10 +163,12 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     const options = parseSetupOptions(args);
     const home = deps.mycoHome ?? resolveMycoHome();
     const file = readSetupFile(home);
-    const changedTarget = options.answers.url !== undefined && (options.answers.url !== file.answers.url || options.answers.role !== file.answers.role);
+    const changedTarget = (options.answers.url !== undefined && (options.answers.url !== file.answers.url || options.answers.role !== file.answers.role))
+      || (options.answers.role === 'create' && (file.answers.role !== 'create' || options.answers.target !== file.answers.target));
     const newProjectChanged = options.answers.newProject !== undefined && (options.answers.newProject !== file.answers.newProject
       || changedTarget || (options.answers.root !== undefined && options.answers.root !== file.answers.root));
     file.answers = { ...(options.change || changedTarget ? {} : file.answers), ...options.answers };
+    validateCreationOptions(file.answers);
     if (options.answers.project !== undefined) delete file.answers.newProject;
     if (options.answers.newProject !== undefined) delete file.answers.project;
     if (options.status) {
@@ -131,18 +180,22 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     }
     const ask = deps.ask ?? askOnTerminal;
     if (!file.answers.role) {
-      const role = await askRequired(ask, 'What should this machine do? 1) Join a Myco 2) Run Myco’s work', '--join <address> or --runner <address>');
-      if (role !== '1' && role !== '2') throw new Error('Choose 1 or 2; use myco server create to create a Deployment.');
-      file.answers.role = role === '1' ? 'join' : 'runner';
+      const role = await askRequired(ask, 'What should this machine do? 1) Start a new Myco 2) Join a Myco 3) Run Myco’s work', '--create cloudflare|local, --join <address> or --runner <address>');
+      if (!['1', '2', '3'].includes(role)) throw new Error('Choose 1, 2 or 3; run myco setup --help for the available choices.');
+      file.answers.role = role === '1' ? 'create' : role === '2' ? 'join' : 'runner';
+      validateCreationOptions(file.answers);
+      saveSetupFile(home, file);
     }
-    if (!file.answers.url) {
+    if (!file.answers.url && file.answers.role !== 'create') {
       const address = await askRequired(ask, 'What is your Myco’s address?', file.answers.role === 'join' ? '--join <address>' : '--runner <address>');
       const selected = parseSetupOptions([file.answers.role === 'join' ? '--join' : '--runner', address]);
       file.answers.url = selected.answers.url;
       options.address = address;
       options.answers.role = selected.answers.role;
     }
+    validateCreationOptions(file.answers);
     if (file.answers.role === 'join') file.answers.root ??= resolveMemberProjectRoot(deps.cwd);
+    if (file.answers.role === 'create') file.answers.root ??= statusRepository(deps.cwd ?? process.cwd());
     saveSetupFile(home, file);
     await conductSetup(home, file, { ...deps, loginAddress: options.address }, { yes: options.yes, explicitJoin: options.answers.role === 'join', explicitDefault: args.includes('--default'), explicitProject: args.includes('--project'), newProjectChanged });
     return 0;
