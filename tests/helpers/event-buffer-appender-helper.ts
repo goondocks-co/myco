@@ -9,7 +9,7 @@
  * success.
  */
 
-import { EventBuffer } from '@myco/capture/buffer.js';
+import { EventBuffer } from '@myco/member/buffer.js';
 
 const bufferDir = process.argv[2];
 const sessionId = process.argv[3];

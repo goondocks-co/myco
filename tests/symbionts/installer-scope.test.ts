@@ -11,7 +11,7 @@ import path from 'node:path';
 
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
-import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
+import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/member/subsystem-claim.js';
 import { daemonIdentity } from '@myco/grove/paths.js';
 
 const PKG_ROOT = path.resolve(__dirname, '..', '..', 'packages', 'myco');

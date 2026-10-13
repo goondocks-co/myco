@@ -54,7 +54,7 @@ import type { SessionRegistry } from './lifecycle.js';
 import { handleUserPrompt, handleToolUse, handleToolFailure } from './event-handlers.js';
 import { ensureSession, ENSURE_SESSION_SOURCE } from './session-lifecycle.js';
 import { gateEventByCaptureRules } from './capture-gating.js';
-import { classifyNextPromptDecision } from '@myco/capture/prompt-kind.js';
+import { classifyNextPromptDecision } from '@myco/member/prompt-kind.js';
 import {
   eventDedupKey,
   eventTimestampMs,

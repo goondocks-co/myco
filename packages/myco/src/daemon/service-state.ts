@@ -44,9 +44,8 @@ import {
   resolveServiceDir,
 } from '@myco/grove/paths.js';
 import type { MycoRequestContext } from '@myco/grove/request-context.js';
-import { readJsonFile } from '../utils/json.js';
-import { derivePort } from './port.js';
-import YAML from 'yaml';
+import { readDaemonState, resolveGlobalDaemonPort, type DaemonState } from '@myco/member/legacy-daemon-state.js';
+export { readDaemonState, resolveGlobalDaemonPort, type DaemonState } from '@myco/member/legacy-daemon-state.js';
 
 export class GroveBindingRequiredError extends Error {
   constructor(vaultDir: string) {
@@ -73,23 +72,6 @@ export type DaemonServiceScope = 'global';
  */
 export type DaemonStatePath = string & { readonly __brand: 'DaemonStatePath' };
 
-export interface DaemonState {
-  pid: number;
-  port: number;
-  command?: string | null;
-  started?: string;
-  sessions?: string[];
-  version?: string;
-  /**
-   * Daemon-issued bearer token surfaced via `MYCO_DAEMON_AUTH` and the
-   * `x-myco-auth` header. Local children inherit it through the env;
-   * the daemon also writes it here so newer-than-spawn children
-   * (manual `myco doctor`, third-party tools) can fetch it from
-   * daemon.json. Absent when the daemon predates G4.
-   */
-  auth_token?: string;
-}
-
 export interface DaemonServiceState {
   scope: DaemonServiceScope;
   stateDir: string;
@@ -107,34 +89,6 @@ export interface DaemonServiceState {
 export interface ResolveDaemonServiceStateOptions {
   requestContext?: MycoRequestContext;
   env?: Record<string, string | undefined>;
-}
-
-/**
- * Reads `daemon.port` from `<mycoHome>/config.yaml` directly (not via the
- * tiered config loader). Returns a port in [1024, 65535], or null when absent,
- * out of range, or unreadable.
- */
-function readDaemonPortOverride(mycoHome: string): number | null {
-  try {
-    const raw = fs.readFileSync(path.join(mycoHome, 'config.yaml'), 'utf-8');
-    const doc = YAML.parse(raw) as { daemon?: { port?: unknown } } | null;
-    const port = doc?.daemon?.port;
-    if (typeof port === 'number' && Number.isInteger(port) && port >= 1024 && port <= 65535) {
-      return port;
-    }
-  } catch {
-    /* missing / malformed config.yaml — fall back to the derived port */
-  }
-  return null;
-}
-
-/**
- * The daemon's binding port: `daemon.port` from `<mycoHome>/config.yaml` if
- * set, else `derivePort(resolveServiceDir(mycoHome))`. All consumers resolve
- * the port through this function.
- */
-export function resolveGlobalDaemonPort(mycoHome = resolveMycoHome()): number {
-  return readDaemonPortOverride(mycoHome) ?? derivePort(resolveServiceDir(mycoHome));
 }
 
 export function resolveDaemonServiceState(
@@ -175,16 +129,6 @@ export function resolveDaemonLogDir(
   options: ResolveDaemonServiceStateOptions = {},
 ): string {
   return path.join(resolveDaemonServiceState(vaultDir, options).stateDir, 'logs');
-}
-
-function isDaemonState(value: unknown): value is DaemonState {
-  if (!value || typeof value !== 'object') return false;
-  const v = value as Partial<DaemonState>;
-  return typeof v.pid === 'number' && typeof v.port === 'number';
-}
-
-export function readDaemonState(statePath: string): DaemonState | null {
-  return readJsonFile(statePath, isDaemonState);
 }
 
 /**

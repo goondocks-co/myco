@@ -8,9 +8,9 @@ import {
   type TaskSchedulerRegistration,
   type TaskSchedulerState,
   type WindowsManagerOptions,
-} from '../../packages/myco/src/service/windows';
-import { renderWindowsServiceScript } from '../../packages/myco/src/service/windows-task';
-import type { ServiceSpec } from '../../packages/myco/src/service/types';
+} from '../../packages/myco/src/member/legacy-service/windows';
+import { renderWindowsServiceScript } from '../../packages/myco/src/member/legacy-service/windows-task';
+import type { ServiceSpec } from '../../packages/myco/src/member/legacy-service/types';
 
 function tmp(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -701,7 +701,7 @@ describe('WindowsTaskServiceManager', () => {
   function recordingMgr(events: string[], opts: {
     resolveDaemonPort?: (label: string) => number | null;
     cooperativeShutdown?: (port: number) => Promise<
-      import('../../packages/myco/src/service/cooperative-shutdown').CooperativeShutdownResult
+      import('../../packages/myco/src/member/legacy-service/cooperative-shutdown').CooperativeShutdownResult
     >;
     withExternalMcpContainment?: <T>(
       continuation: () => Promise<T>,

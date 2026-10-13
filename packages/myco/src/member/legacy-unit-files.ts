@@ -1,7 +1,7 @@
 /** File-only discovery of retained Myco daemon units. */
 import fs from 'node:fs';
 import path from 'node:path';
-import { parsePlistDocument, parseSystemdCommand, type PlistValue } from '@myco/member/unit-parsers.js';
+import { parsePlistDocument, parseSystemdCommand, parseWindowsLauncherCommand, parseWindowsLauncherHome, type PlistValue } from '@myco/member/unit-parsers.js';
 import { resolveBootServiceUnitDirs, resolveServiceUnitDir } from '@myco/paths/service-units.js';
 export interface MycoUnit {
   label: string;
@@ -12,7 +12,7 @@ export interface MycoUnit {
   scope: 'user' | 'boot';
 }
 
-const UNIT_FILE = /^co\.goondocks\.myco.*\.(plist|service)$/;
+const UNIT_FILE = /^co\.goondocks\.myco.*\.(plist|service|ps1)$/;
 
 const strings = (value: PlistValue | undefined): string[] | null =>
   Array.isArray(value) && value.every((v) => typeof v === 'string') ? value as string[] : null;
@@ -38,24 +38,36 @@ function readSystemdUnit(file: string, scope: MycoUnit['scope']): MycoUnit | nul
   return { label: path.basename(file, '.service'), file, executable: command.executable, args: command.args, home, scope };
 }
 
+function readWindowsUnit(file: string, scope: MycoUnit['scope']): MycoUnit | null {
+  const script = fs.readFileSync(file, 'utf8');
+  const command = parseWindowsLauncherCommand(script);
+  if (command === null) return null;
+  return { ...command, label: path.basename(file, '.ps1'), file, home: parseWindowsLauncherHome(script), scope };
+}
+
 export function readMycoUnits(dir: string, scope: MycoUnit['scope']): MycoUnit[] {
   let names: string[];
   try { names = fs.readdirSync(dir); } catch { return []; }
   return names.filter((name) => UNIT_FILE.test(name)).flatMap((name) => {
     const file = path.join(dir, name);
     try {
-      const unit = name.endsWith('.plist') ? readPlistUnit(file, scope) : readSystemdUnit(file, scope);
+      const unit = name.endsWith('.plist') ? readPlistUnit(file, scope)
+        : name.endsWith('.ps1') ? readWindowsUnit(file, scope) : readSystemdUnit(file, scope);
       return unit === null ? [] : [unit];
     } catch { return []; }
   });
 }
 
 export const isDaemonUnit = (unit: MycoUnit): boolean =>
-  /^myco(\.exe)?$/.test(path.basename(unit.executable)) && unit.args[0] === 'daemon';
+  /^myco(\.exe)?$/.test(path.win32.basename(unit.executable)) && unit.args[0] === 'daemon';
 
 export function unitDirectories(env: NodeJS.ProcessEnv, homeDir: string, platform: NodeJS.Platform = process.platform): Array<{ dir: string; scope: MycoUnit['scope'] }> {
+  const userDirs = [resolveServiceUnitDir({ env, homeDir, platform })];
+  if (platform === 'win32' && !env.MYCO_LAUNCH_AGENTS_DIR?.trim() && env.MYCO_HOME?.trim()) {
+    userDirs.push(path.join(env.MYCO_HOME, 'service'));
+  }
   return [
-    { dir: resolveServiceUnitDir({ env, homeDir, platform }), scope: 'user' as const },
+    ...[...new Set(userDirs)].map(dir => ({ dir, scope: 'user' as const })),
     ...(env.MYCO_LAUNCH_AGENTS_DIR?.trim() ? [] : resolveBootServiceUnitDirs({ platform }).map((dir) => ({ dir, scope: 'boot' as const }))),
   ];
 }

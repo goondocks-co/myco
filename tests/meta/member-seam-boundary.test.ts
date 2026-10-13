@@ -3,7 +3,7 @@
  *
  * A member hook may only reach the modules the spec allowlists: the hook and
  * member code itself, the extracted leaves (paths/home, project-root,
- * machine-id, capture/transcript-id, the transcript parser, the generated hook
+ * machine-id, member/transcript-id, the transcript parser, the generated hook
  * config), the small utils the hooks use, constants/version, and built-ins. It
  * must not reach daemon/, service/, grove/, vault/, db/, host/, mcp/, tools/,
  * agent/, the installer, or the YAML manifest loader — and no module in its
@@ -62,11 +62,7 @@ const ALLOWLIST: readonly string[] = [
   'packages/myco-shared/src/run-control.ts',
   // The shape of a session id 1.4 minted, which the legacy import and the Deployment both recognise.
   'packages/myco-shared/src/session-ids.ts',
-  'capture/buffer.ts',
-  'capture/transcript-id.ts',
   // Transcript-derived capture: the prompt walker, session lineage, and plan-tag envelopes.
-  'capture/prompt-kind.ts',
-  'capture/session-continuation.ts',
   'plans/tag-envelopes.ts',
   // The transcript parsers and the per-symbiont turn extraction they back.
   'symbionts/parsers/**',
@@ -138,7 +134,7 @@ const ENFORCED_LEAVES: readonly string[] = [
   'project-root.ts',
   'machine-id.ts',
   'utils/temporary-folders.ts',
-  'capture/transcript-id.ts',
+  'member/transcript-id.ts',
   'symbionts/parsers/**',
   'symbionts/adapter.ts',
   'hooks/hook-config.generated.ts',
@@ -335,7 +331,7 @@ interface Closure {
   unknowable: Map<string, number>;
 }
 
-function closureOf(entries: readonly string[]): Closure {
+function closureOf(entries: readonly string[], mutate?: (file: string, text: string) => string): Closure {
   const modules = new Map<string, string>();
   const via = new Map<string, string | null>();
   const externals = new Map<string, string>();
@@ -350,7 +346,8 @@ function closureOf(entries: readonly string[]): Closure {
   }
   while (queue.length > 0) {
     const file = queue.shift()!;
-    const source = fs.readFileSync(file, 'utf-8');
+    const raw = fs.readFileSync(file, 'utf-8');
+    const source = mutate ? mutate(file, raw) : raw;
     const edges = runtimeEdges(source, file);
     if (edges.unknowableDynamic > 0) unknowable.set(moduleKey(file), edges.unknowableDynamic);
     for (const specifier of edges.specifiers) {
@@ -442,8 +439,14 @@ function listTs(dir: string): string[] {
   return out.sort();
 }
 
+function isCaptureEntry(file: string): boolean {
+  const key = moduleKey(file);
+  return !key.startsWith('member/legacy-service/')
+    && !['member/legacy-units.ts', 'member/legacy-daemon-stop.ts', 'member/legacy-daemon-state.ts', 'member/subsystem-claim.ts'].includes(key);
+}
+
 function expandLeaf(pattern: string): string[] {
-  if (pattern.endsWith('/**')) return listTs(path.join(SRC_ROOT, pattern.slice(0, -3)));
+  if (pattern.endsWith('/**')) return listTs(path.join(SRC_ROOT, pattern.slice(0, -3))).filter(isCaptureEntry);
   return [path.join(SRC_ROOT, pattern)];
 }
 
@@ -453,9 +456,9 @@ function expandLeaf(pattern: string): string[] {
 
 describe('member seam boundary (transitive)', () => {
   const hookEntries = listTs(path.join(SRC_ROOT, 'hooks')).filter((f) => path.dirname(f) === path.join(SRC_ROOT, 'hooks'));
-  const memberEntries = listTs(path.join(SRC_ROOT, 'member'));
+  const memberEntries = listTs(path.join(SRC_ROOT, 'member')).filter(isCaptureEntry);
 
-  it('walks every hooks/ and member/ entry and keeps the whole closure inside the allowlist (enforced)', () => {
+  it('walks every hook and capture member entry and keeps the whole closure inside the allowlist (enforced)', () => {
     expect(hookEntries.length).toBeGreaterThan(0);
     const closure = closureOf([...hookEntries, ...memberEntries]);
     const violations = [...moduleViolationsOf(closure), ...externalViolationsOf(closure), ...unknowableViolationsOf(closure)];
@@ -470,6 +473,12 @@ describe('member seam boundary (transitive)', () => {
       .toEqual({ outside: 0, literals: 0, externals: 0, unknowable: 0 });
   });
 
+  it('rejects an external package added to the retained legacy import entry', () => {
+    const closure = closureOf([...hookEntries, ...memberEntries], (file, text) => file.endsWith('/member/legacy-import.ts')
+      ? "import YAML from 'yaml';\n" + text : text);
+    expect(externalViolationsOf(closure)).toContainEqual({ module: 'yaml', reason: 'external package', chain: expect.arrayContaining(['member/legacy-import.ts']) });
+  });
+
   it('keeps server implementation imports out of the member CLI', () => {
     const file = path.join(SRC_ROOT, 'cli/member.ts');
     const edges = runtimeEdges(fs.readFileSync(file, 'utf8'), file);
@@ -478,6 +487,18 @@ describe('member seam boundary (transitive)', () => {
       return resolved.kind === 'module' && moduleKey(resolved.file).startsWith('packages/myco-server/');
     });
     expect(serverImports).toEqual([]);
+  });
+
+  it('keeps migration administration out of every hook', () => {
+    expect([...closureOf(hookEntries).modules.values()].filter(file => !isCaptureEntry(file))).toEqual([]);
+  });
+
+  it('rejects migration administration imported by a hook', () => {
+    for (const target of ['legacy-daemon-stop', 'legacy-service/windows', 'subsystem-claim']) {
+      const closure = closureOf(hookEntries, (file, text) => file.endsWith('/hooks/normalize.ts')
+        ? "import '@myco/member/" + target + ".js';\n" + text : text);
+      expect([...closure.modules.values()].some(file => !isCaptureEntry(file))).toBe(true);
+    }
   });
 
   it('keeps the import pass out of every hook: a walk of every harness store does not fit a hook budget', () => {
@@ -497,7 +518,7 @@ describe('member seam boundary (transitive)', () => {
     // member at all. These are the modules a hook MUST still reach to capture.
     for (const required of [
       'member/spool.ts', 'member/transport.ts', 'member/envelope.ts', 'member/capture.ts', 'member/transcript.ts',
-      'hooks/normalize.ts', 'hooks/capture-rules.ts', 'capture/prompt-kind.ts', 'symbionts/adapter.ts',
+      'hooks/normalize.ts', 'hooks/capture-rules.ts', 'member/prompt-kind.ts', 'symbionts/adapter.ts',
     ]) {
       expect({ required, reached: modules.has(required) }).toEqual({ required, reached: true });
     }

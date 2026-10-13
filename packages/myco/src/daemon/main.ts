@@ -27,7 +27,7 @@ import { claudeCodeAdapter } from '../symbionts/claude-code.js';
 import { attemptDaemonStartup, type LockHandle } from './lifecycle-lock-startup.js';
 import * as updateInProgress from '@myco/upgrade/in-progress.js';
 import { resolveVaultDir, resolveProjectRoot, projectTreeAvailable } from '../vault/resolve.js';
-import { EventBuffer } from '../capture/buffer.js';
+import { EventBuffer } from '../member/buffer.js';
 import { listAllProjectBufferDirs } from '../capture/buffer-location.js';
 import { runGlobalBootstrap, shouldRunGlobalBootstrap } from '../cli/bootstrap.js';
 import { resolveMycoHome, resolveGroveDbPath, resolveProjectVaultDir } from '../grove/paths.js';

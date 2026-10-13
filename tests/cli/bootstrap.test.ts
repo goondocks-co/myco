@@ -36,7 +36,7 @@ import {
 import { resolveProjectBufferDirFromRoot } from '@myco/capture/buffer-location.js';
 import { ensureProjectVault } from '@myco/vault/provision.js';
 import { managedSkillsDir } from '@myco/install/managed-binary.js';
-import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
+import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/member/subsystem-claim.js';
 import { daemonIdentity } from '@myco/grove/paths.js';
 import { testPerUserLockNamespace } from '../helpers/per-user-lock-namespace.js';
 

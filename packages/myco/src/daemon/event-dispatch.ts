@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { RouteHandler } from './router.js';
 import { SessionRegistry } from './lifecycle.js';
-import { EventBuffer } from '@myco/capture/buffer.js';
+import { EventBuffer } from '@myco/member/buffer.js';
 import { readEventId } from '@myco/capture/event-id.js';
 import { resolveProjectBufferDir } from '@myco/grove/paths.js';
 import { DaemonLogger } from './logger.js';

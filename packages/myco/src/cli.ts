@@ -168,7 +168,7 @@ async function main(): Promise<void> {
   // Hooks and MCP use the member transport and never migrate a Grove database.
   if (cmd !== 'hook' && cmd !== 'mcp') {
     const { installPreMigrationCheckpoint } = await import('./backup/pre-migration-checkpoint.js');
-    const { resolveMycoHome } = await import('./grove/paths.js');
+    const { resolveMycoHome } = await import('@myco/paths/home.js');
     installPreMigrationCheckpoint({ mycoHome: resolveMycoHome() });
   }
 

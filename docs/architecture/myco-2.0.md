@@ -330,7 +330,7 @@ The settled glossary names surfaces the tree does **not yet carry**. These are a
 - **Single-owner GitHub OAuth** (#904) — replaced by flat multi-member enrollment (#912) once #907 settles the mechanism.
 - **Per-Project member tokens** (#900, #901) — replaced by the individually attributable Member Credential (#912).
 - **Both-mode 1.4/2.0 dogfood** — deliberately preserved until #924 cuts over (§3.5).
-- **The 1.4 tree retires from `main` now** (owner, 2026-09-30), superseding #1170's after-cutover ordering. The retirement goes phase by phase, each a PR that cuts the edges 2.0 still makes into the 1.4 tree or deletes what nothing reaches; `myco import --legacy` keeps a minimal vault reader until the owner's last 1.4 machine is migrated.
+- **The 1.4 tree retires from `main` now** (owner, 2026-09-30), superseding #1170's after-cutover ordering. The retirement goes phase by phase, each a PR that cuts the edges 2.0 still makes into the 1.4 tree or deletes what nothing reaches; `myco import --legacy` keeps a minimal vault reader as deliberate, retained migration support, together with `myco cutover` and its ownership claims, unit attribution and verified backups.
 
 ## 7. The feature-preservation ledger
 

@@ -352,7 +352,7 @@ const NO_ISOLATE_NODE_GROUPS = [
       // it must never share a process with a file that mocks
       // @myco/daemon/machine-id.js.
       'tests/daemon/machine-id.test.ts',
-      'tests/daemon/subsystem-claim.test.ts',
+      'tests/member/subsystem-claim.test.ts',
     ],
   },
   {

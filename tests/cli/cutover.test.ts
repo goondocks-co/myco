@@ -1,3 +1,5 @@
+import { legacyWindowsUnit } from '../helpers/legacy-windows-unit.ts';
+import { CutoverBackup, cutoverBackupDir } from '@myco/member/cutover-backup.js';
 import { refuseImportAfter } from '../setup/fixtures/interruption.js';
 /**
  * `myco cutover`, against the real worker and a machine laid out the way a 1.4
@@ -35,7 +37,7 @@ import { deploymentKeyFor } from '@myco/member/registry.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { legacyMigrationState, readCutoverState } from '@myco/member/legacy-migration.js';
 import { provisionGlobally } from '@myco/cli/member.js';
-import { stopHomeDaemon } from '@myco/service/home-daemon.js';
+import { stopHomeDaemon } from '@myco/member/legacy-daemon-stop.js';
 import type { LaunchctlRunner } from '@myco/service/launchd.js';
 import { resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { hookCommands } from '@myco/symbionts/member-hooks.js';
@@ -50,7 +52,7 @@ const DAEMON_LABEL = 'co.goondocks.myco';
 const OTHER_DAEMON_LABEL = 'co.goondocks.myco.0ther000';
 const WORKER_LABEL = 'co.goondocks.myco-worker.0ther000';
 
-type RunOpts = { stopDaemon?: CutoverDeps['stopDaemon']; signal?: AbortSignal; fetch?: MemberRig['fetch']; mycoHome?: string | null; env?: NodeJS.ProcessEnv; provision?: CutoverDeps['provision']; agents?: string[]; unitDirs?: CutoverDeps['unitDirs'] };
+type RunOpts = { platform?: CutoverDeps['platform']; schtasks?: CutoverDeps['schtasks']; stopDaemon?: CutoverDeps['stopDaemon']; signal?: AbortSignal; fetch?: MemberRig['fetch']; mycoHome?: string | null; env?: NodeJS.ProcessEnv; provision?: CutoverDeps['provision']; agents?: string[]; unitDirs?: CutoverDeps['unitDirs'] };
 interface Machine {
   rig: MemberRig;
   home: string;
@@ -147,7 +149,7 @@ async function machine(opts: { legacyHome?: string } = {}): Promise<Machine> {
       signal: o.signal, fetch: o.fetch ?? rig.fetch, mycoHome: o.mycoHome === null ? undefined : (o.mycoHome ?? mycoHome), machineId: TEST_MACHINE_ID,
       env: o.env ?? { ...process.env, HOME: home, MYCO_LAUNCH_AGENTS_DIR: agentsDir },
       sleep: async () => {}, stdout: (l) => out.push(l), stderr: (l) => err.push(l), packageRoot: resolvePackageRoot(),
-      agents: () => o.agents ?? ['claude-code'], platform: 'darwin',
+      agents: () => o.agents ?? ['claude-code'], platform: o.platform ?? 'darwin', schtasks: o.schtasks,
       launchctl: fakeLaunchctl(launchctl.loaded, launchctl.calls),
       stopDaemon: o.stopDaemon ?? (async () => 'none'),
       provision: o.provision,
@@ -525,6 +527,90 @@ describe('myco cutover', () => {
     expect(result.ok).toBe(true);
     expect(bootouts()).toEqual([DAEMON_LABEL]);
     expect(fs.existsSync(path.join(m.agentsDir, 'co.goondocks.myco.renamed.plist'))).toBe(false);
+  });
+
+  it('backs up and unregisters a Windows daemon launcher after its own home drains', async () => {
+    const dir = path.join(m.home, 'windows-units');
+    const task = legacyWindowsUnit(dir, m.legacyHome);
+    const options: RunOpts = {
+      platform: 'win32', schtasks: task.runner, unitDirs: [{ dir, scope: 'user' }],
+      stopDaemon: async home => { expect(home).toBe(m.legacyHome); task.exit(); return 'stopped'; },
+    };
+    expect((await m.run(['--dry-run'], options)).ok).toBe(true);
+    expect(task.calls).toEqual([]);
+    expect(fs.existsSync(task.file)).toBe(true);
+    expect((await m.run([], options)).ok).toBe(true);
+    expect(m.done.slice().sort()).toEqual(m.planned.at(-1)!.slice().sort());
+    expect(fs.existsSync(task.file)).toBe(false);
+    expect(backupsOf(task.file)).toHaveLength(1);
+    expect(fs.readFileSync(backupsOf(task.file)[0], 'utf8')).toBe(task.script);
+    expect(backupsOf(path.join(m.legacyHome, 'claims', 'symbiont-config.json'))).toHaveLength(1);
+    const [folder] = fs.readdirSync(path.join(m.mycoHome, 'backups'));
+    const backupDir = path.join(m.mycoHome, 'backups', folder);
+    const manifest = readJson(path.join(backupDir, 'manifest.json')).entries as Array<{ task?: string; backup: string }>;
+    const snapshot = manifest.find(entry => entry.task === task.label)!;
+    expect(fs.readFileSync(snapshot.backup, 'utf8')).toBe(task.xml);
+    const recipe = fs.readFileSync(path.join(backupDir, 'restore.md'), 'utf8');
+    expect(recipe).toContain('Copy-Item -LiteralPath');
+    expect(recipe).toContain(`Register-ScheduledTask -TaskName '${task.label}'`);
+    expect(recipe).toContain(snapshot.backup);
+    expect(recipe).toContain('-Raw -Encoding UTF8');
+  });
+
+  it('writes PowerShell recovery for Windows claims even without a scheduled task', async () => {
+    expect((await m.run([], { platform: 'win32', unitDirs: [], stopDaemon: async () => 'none' })).ok).toBe(true);
+    const [folder] = fs.readdirSync(path.join(m.mycoHome, 'backups'));
+    const recipe = fs.readFileSync(path.join(m.mycoHome, 'backups', folder, 'restore.md'), 'utf8');
+    expect(recipe).toContain('```powershell');
+    expect(recipe).toContain('Copy-Item -LiteralPath');
+    expect(recipe).not.toContain('Register-ScheduledTask');
+  });
+
+  it('keeps the Windows definition and explains recovery when its daemon does not drain', async () => {
+    const dir = path.join(m.home, 'windows-units');
+    const task = legacyWindowsUnit(dir, m.legacyHome);
+    const result = await m.run([], {
+      platform: 'win32', schtasks: task.runner, unitDirs: [{ dir, scope: 'user' }],
+      stopDaemon: async () => 'none',
+    });
+    expect(result.ok).toBe(false);
+    expect(result.err.join('\n')).toContain('Recovery instructions:');
+    expect(task.calls.some(args => args[0] === '/delete')).toBe(false);
+    expect(fs.readFileSync(task.file, 'utf8')).toBe(task.script);
+    const [folder] = fs.readdirSync(path.join(m.mycoHome, 'backups'));
+    const backupDir = path.join(m.mycoHome, 'backups', folder);
+    const entries = readJson(path.join(backupDir, 'manifest.json')).entries as Array<{ task?: string; backup: string }>;
+    expect(fs.readFileSync(entries.find(entry => entry.task === task.label)!.backup, 'utf8')).toBe(task.xml);
+    expect(fs.readFileSync(path.join(backupDir, 'restore.md'), 'utf8')).toContain('Register-ScheduledTask');
+  });
+
+  it('restores the enabled task definition after two failed Windows cutovers', async () => {
+    const dir = path.join(m.home, 'windows-units');
+    const task = legacyWindowsUnit(dir, m.legacyHome);
+    new CutoverBackup(cutoverBackupDir(m.mycoHome, '2000-01-01'), 'cutover', 'win32')
+      .scheduledTask(task.label, task.xml.replace('<Task>', '<Task><Description>obsolete task</Description>'));
+    const options: RunOpts = {
+      platform: 'win32', schtasks: task.runner, unitDirs: [{ dir, scope: 'user' }],
+      stopDaemon: async () => 'not-this-home',
+    };
+    const first = await m.run([], options);
+    expect(first.ok).toBe(false);
+    const firstRecipe = first.err.find(line => line.includes('Recovery instructions: '))!.trim().slice('Recovery instructions: '.length);
+    const firstEntries = readJson(path.join(path.dirname(firstRecipe), 'manifest.json')).entries as Array<{ task?: string; backup: string }>;
+    const original = firstEntries.find(entry => entry.task === task.label)!;
+    expect(fs.readFileSync(original.backup, 'utf8')).toContain('<Enabled>true</Enabled>');
+    expect(await task.runner.queryState(task.label)).toBe('disabled');
+
+    const second = await m.run([], options);
+    expect(second.ok).toBe(false);
+    const secondRecipe = second.err.find(line => line.includes('Recovery instructions: '))!.trim().slice('Recovery instructions: '.length);
+    expect(secondRecipe).not.toBe(firstRecipe);
+    const entries = readJson(path.join(path.dirname(secondRecipe), 'manifest.json')).entries as Array<{ task?: string; backup: string }>;
+    const snapshot = entries.find(entry => entry.task === task.label)!;
+    expect(fs.readFileSync(snapshot.backup, 'utf8')).toBe(task.xml);
+    expect(fs.readFileSync(secondRecipe, 'utf8')).toContain(original.backup);
+    expect(fs.existsSync(task.file)).toBe(true);
+    expect(task.calls.some(args => args[0] === '/delete')).toBe(false);
   });
 
   it('refuses a 1.4 unit that starts at boot rather than stopping it as a user unit', async () => {

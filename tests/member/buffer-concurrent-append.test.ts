@@ -118,7 +118,7 @@ describe.skipIf(!supported)('EventBuffer.deleteIfSync — cross-process flock mu
   });
 
   it('a delete racing a lock-holding appender blocks, then refuses — the straggler line is never destroyed', async () => {
-    const { EventBuffer } = await import('@myco/capture/buffer.js');
+    const { EventBuffer } = await import('@myco/member/buffer.js');
     const sessionId = 'locked-delete-001';
     const buffer = new EventBuffer(bufferDir, sessionId);
     buffer.append({ type: 'user_prompt', session_id: sessionId, prompt: 'acked-record' }); // record 0

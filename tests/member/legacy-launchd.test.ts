@@ -2,9 +2,9 @@ import { describe, expect, test, beforeEach, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { LaunchdServiceManager, type LaunchctlRunner } from '../../packages/myco/src/service/launchd';
-import { renderLaunchdPlist } from '../../packages/myco/src/service/launchd-plist';
-import type { ServiceSpec } from '../../packages/myco/src/service/types';
+import { LaunchdServiceManager, type LaunchctlRunner } from '../../packages/myco/src/member/legacy-service/launchd';
+import { renderLaunchdPlist } from '../../packages/myco/src/member/legacy-service/launchd-plist';
+import type { ServiceSpec } from '../../packages/myco/src/member/legacy-service/types';
 
 class FakeRunner implements LaunchctlRunner {
   calls: string[][] = [];

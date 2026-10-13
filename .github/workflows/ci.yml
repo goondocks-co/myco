@@ -472,7 +472,8 @@ jobs:
         run: >-
           npm test --
           tests/service/windows-native-ci-contract.test.ts
-          tests/service/windows.test.ts
+          tests/member/legacy-windows.test.ts
+          tests/member/legacy-units.test.ts
           tests/service/sandbox-runner-gate.test.ts
           tests/utils/windows-atomic-replace.test.ts
           tests/utils/user-lock-root.test.ts

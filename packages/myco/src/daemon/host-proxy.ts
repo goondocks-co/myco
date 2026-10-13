@@ -43,7 +43,7 @@ import {
   HOST_PROXY_MCP_IDLE_TIMEOUT_MS,
   REFUSAL_LOG_THROTTLE_INTERVAL_MS,
 } from '../constants.js';
-import { EventBuffer } from '../capture/buffer.js';
+import { EventBuffer } from '../member/buffer.js';
 import { stampCollectRoute } from '../capture/collect-buffer-route.js';
 import { ensureEventId } from '../capture/event-id.js';
 import { getMachineId } from '../machine-id.js';

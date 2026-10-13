@@ -64,7 +64,7 @@ import {
 } from '../grove/paths.js';
 import type { RouteRequest, RouteResponse } from '../daemon/router.js';
 
-export { deriveTranscriptId } from '../capture/transcript-id.js';
+export { deriveTranscriptId } from '../member/transcript-id.js';
 
 /**
  * Per-POST byte cap the MEMBER drain (C1) splits at, exported as the shared

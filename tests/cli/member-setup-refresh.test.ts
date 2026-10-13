@@ -15,7 +15,7 @@ import { setupChecks } from '@myco/cli/member-doctor.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { BUNDLED_SKILLS } from '@myco/symbionts/skills.generated.js';
-import { claimSubsystem, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
+import { claimSubsystem, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/member/subsystem-claim.js';
 import { linkMemberSkills } from '@myco/symbionts/member-skill-links.js';
 import { getPluginVersion } from '@myco/version.js';
 

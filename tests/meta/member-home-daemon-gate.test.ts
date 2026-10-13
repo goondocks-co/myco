@@ -101,7 +101,6 @@ const LEGACY_IMPORT_NAMES: Readonly<Record<string, readonly string[]>> = {
   'cli.ts -> cli/join.ts': ['JOIN_HELP','LEAVE_HELP','runJoin','runLeave'],
   'cli.ts -> cli/host.ts': ['HOST_HELP','runHostCommand'],
   'cli.ts -> backup/pre-migration-checkpoint.ts': ['installPreMigrationCheckpoint'],
-  'cli.ts -> grove/paths.ts': ['resolveMycoHome'],
   'cli.ts -> cli/restore-backup.ts': ['run'],
   'cli.ts -> cli/detect-providers.ts': ['run'],
   'cli.ts -> cli/service.ts': ['run'],
@@ -114,19 +113,6 @@ const LEGACY_IMPORT_NAMES: Readonly<Record<string, readonly string[]>> = {
   'cli.ts -> cli/session.ts': ['run'],
   'cli.ts -> cli/setup-digest.ts': ['run'],
   'cli.ts -> cli/logs.ts': ['run'],
-  'member/spool.ts -> capture/buffer.ts': ['BUFFER_QUARANTINE_DIRNAME','EventBuffer','listBufferSessionIds'],
-  'member/transcript.ts -> capture/prompt-kind.ts': ['extractUserPromptRecordsWithDrops'],
-  'member/transcript.ts -> capture/session-continuation.ts': ['eventsOwnedBySession','findSessionContinuation'],
-  'member/transcript.ts -> capture/transcript-id.ts': ['deriveTranscriptId'],
-  'cli/cutover.ts -> grove/subsystem-claim.ts': ['SYMBIONT_CONFIG_SUBSYSTEM','claimSubsystem','readClaim','resolveClaimsHome'],
-  'cli/cutover.ts -> service/home-daemon.ts': ['stopHomeDaemon'],
-  'cli/cutover.ts -> service/legacy-units.ts': ['attributeLegacyUnits','stopUnit','unitDirectories'],
-  'cli/worker-service.ts -> grove/paths.ts': ['isDefaultMycoHome'],
-  'cli/worker-service.ts -> service/spec-builder.ts': ['looksLikeDevBuildExecutable'],
-  'symbionts/detect.ts -> grove/paths.ts': ['expandHome'],
-  'symbionts/installer.ts -> grove/paths.ts': ['expandHome','resolveMycoHome'],
-  'symbionts/installer.ts -> grove/subsystem-claim.ts': ['SYMBIONT_CONFIG_SUBSYSTEM','isClaimedByPeer','readClaim','resolveClaimsHome','shouldDeferSubsystem'],
-  'symbionts/member-skill-links.ts -> grove/subsystem-claim.ts': ['SYMBIONT_CONFIG_SUBSYSTEM','isClaimedByPeer','readClaim','resolveClaimsHome'],
 };
 
 function unapprovedLegacyImports(mutate?: (file: string, text: string) => string): string[] {

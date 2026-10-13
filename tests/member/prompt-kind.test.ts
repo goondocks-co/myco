@@ -5,7 +5,7 @@ import {
   extractUserPromptKinds,
   extractUserPromptRecords,
   extractUserPromptRecordsWithDrops,
-} from '@myco/capture/prompt-kind.js';
+} from '@myco/member/prompt-kind.js';
 import { CodexJsonlParser } from '@myco/symbionts/parsers/codex-jsonl.js';
 
 // Regression: Claude Code writes real user prompts with `message.content` as a

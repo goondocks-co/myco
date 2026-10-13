@@ -17,7 +17,7 @@ import path from 'node:path';
 import { writePrivateFileAtomic } from './store.js';
 
 export type BackupEntry =
-  | { original: string; backup: string; sha256: string }
+  | { original: string; backup: string; sha256: string; task?: string }
   | { original: string; created: true }
   | { original: string; link: string };
 
@@ -26,6 +26,7 @@ export const RESTORE_FILE = 'restore.md';
 const FOLDER_PREFIX = 'cutover-';
 
 const sha256 = (bytes: Buffer): string => crypto.createHash('sha256').update(bytes).digest('hex');
+const psQuote = (p: string): string => `'${p.replaceAll("'", "''")}'`;
 const quote = (p: string): string => `'${p.replaceAll("'", "'\\''")}'`;
 
 /** Where a cutover run's backups go. */
@@ -53,12 +54,31 @@ export function earlierCopyHolds(mycoHome: string, file: string): boolean {
 export type BackupPurpose = 'cutover' | 'provision';
 
 /** The commands that undo a cutover's (or a provisioning's) changes, newest first. */
-export function restoreRecipe(entries: readonly BackupEntry[], purpose: BackupPurpose = 'cutover'): string {
-  const lines = [...entries].reverse().map((e) => {
+export function restoreRecipe(entries: readonly BackupEntry[], purpose: BackupPurpose = 'cutover', platform: NodeJS.Platform = process.platform): string {
+  const windows = platform === 'win32';
+  const reversed = [...entries].reverse();
+  const lines = reversed.filter((e) => !('task' in e)).map((e) => {
+    if (windows) {
+      if ('backup' in e) return `Copy-Item -LiteralPath ${psQuote(e.backup)} -Destination ${psQuote(e.original)} -Force`;
+      if ('link' in e) return `New-Item -ItemType SymbolicLink -Path ${psQuote(e.original)} -Target ${psQuote(e.link)} -Force`;
+      return `Remove-Item -LiteralPath ${psQuote(e.original)} -Force -ErrorAction SilentlyContinue`;
+    }
     if ('backup' in e) return `cp -p ${quote(e.backup)} ${quote(e.original)}`;
     if ('link' in e) return `ln -sfn ${quote(e.link)} ${quote(e.original)}`;
     return `rm -f ${quote(e.original)}`;
   });
+  if (windows) {
+    const tasks = reversed.flatMap((e) => 'task' in e && e.task !== undefined
+      ? [`Register-ScheduledTask -TaskName ${psQuote(e.task)} -Xml (Get-Content -LiteralPath ${psQuote(e.backup)} -Raw -Encoding UTF8) -Force`]
+      : []);
+    return [
+      purpose === 'provision' ? '# Undo a Myco agent setup' : '# Undo a Myco cutover', '',
+      'Stop anything using Myco 2.0 on this machine, then run in PowerShell:', '',
+      '```powershell', ...lines, ...tasks, '```', '',
+      ...(tasks.length > 0 ? ['Task definitions retain their saved enable state. Start the restored task when ready.'] : []),
+      ...(purpose === 'cutover' ? ['The 1.4 vaults were never changed; the Deployment keeps what was imported.'] : []), '',
+    ].join('\n');
+  }
   if (purpose === 'provision') {
     return ['# Undo a Myco agent setup', '', 'Run, from any directory:', '', '```sh', ...lines, '```', ''].join('\n');
   }
@@ -81,7 +101,7 @@ export function restoreRecipe(entries: readonly BackupEntry[], purpose: BackupPu
 export class CutoverBackup {
   private readonly entries: BackupEntry[] = [];
 
-  constructor(readonly dir: string, private readonly purpose: BackupPurpose = 'cutover') {}
+  constructor(readonly dir: string, private readonly purpose: BackupPurpose = 'cutover', private readonly platform: NodeJS.Platform = process.platform) {}
 
   /** The copy's path: the original's absolute path, mirrored under the folder. */
   pathFor(original: string): string {
@@ -97,6 +117,23 @@ export class CutoverBackup {
     return this.record({ original, backup, sha256: sha256(fs.readFileSync(backup)) });
   }
 
+  /** Keep a Task Scheduler definition before disabling or unregistering it. */
+  scheduledTask(label: string, xml: string, previouslyDisabled = false): BackupEntry {
+    if (previouslyDisabled && fs.existsSync(path.dirname(this.dir))) {
+      const root = path.dirname(this.dir);
+      const folders = fs.readdirSync(root).filter(folder => folder.startsWith(FOLDER_PREFIX) && path.join(root, folder) !== this.dir).sort().reverse();
+      for (const folder of folders) {
+        const entry = readManifest(path.join(root, folder)).find(entry => 'task' in entry && entry.task === label);
+        if (entry !== undefined && 'backup' in entry && fs.existsSync(entry.backup)
+          && sha256(fs.readFileSync(entry.backup)) === entry.sha256) return this.record(entry);
+      }
+    }
+    const backup = path.join(this.dir, 'windows-tasks', `${crypto.createHash('sha256').update(label).digest('hex')}.xml`);
+    fs.mkdirSync(path.dirname(backup), { recursive: true, mode: 0o700 });
+    writePrivateFileAtomic(backup, xml);
+    return this.record({ original: `schtasks:${label}`, backup, sha256: sha256(Buffer.from(xml)), task: label });
+  }
+
   /** Record a file the cutover creates, so undoing it removes the file. */
   created(original: string): BackupEntry {
     return this.record({ original, created: true });
@@ -110,7 +147,7 @@ export class CutoverBackup {
   /** Drop the copies of files still holding the bytes they were copied with; answer the entries kept. */
   pruneUnchanged(): BackupEntry[] {
     const kept = this.entries.filter((entry) => {
-      if (!('sha256' in entry)) return true;
+      if (!('sha256' in entry) || 'task' in entry) return true;
       let current: string | null = null;
       try { current = sha256(fs.readFileSync(entry.original)); } catch { /* a removed original keeps its copy */ }
       if (current !== entry.sha256) return true;
@@ -136,6 +173,6 @@ export class CutoverBackup {
   private write(): void {
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     writePrivateFileAtomic(path.join(this.dir, MANIFEST_FILE), `${JSON.stringify({ entries: this.entries }, null, 2)}\n`);
-    writePrivateFileAtomic(path.join(this.dir, RESTORE_FILE), restoreRecipe(this.entries, this.purpose));
+    writePrivateFileAtomic(path.join(this.dir, RESTORE_FILE), restoreRecipe(this.entries, this.purpose, this.platform));
   }
 }

@@ -15,7 +15,7 @@ import type { RouteRequest, RouteResponse } from '../router.js';
 import type { SessionRegistry } from '../lifecycle.js';
 import type { DaemonLogger } from '../logger.js';
 import type { DaemonServer } from '../server.js';
-import type { EventBuffer } from '@myco/capture/buffer.js';
+import type { EventBuffer } from '@myco/member/buffer.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { resolveTenantConfig } from '../request-config.js';
 import { updateSession } from '@myco/db/queries/sessions.js';

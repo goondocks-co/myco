@@ -1,24 +1,23 @@
 /**
- * Meta gate: what 2.0 runs reaches the 1.4 tree only through edges this file names (#1170, arch §9).
+ * Meta gate: the 2.0 closure crosses the 1.4 boundary only through the named pending CLI crossings.
  *
- * The 1.4 tree is one strongly connected component: its directories import one another in a cycle, so it can only be
- * deleted once nothing 2.0 imports into it. This walks the import closure of the 2.0 entry points, static and dynamic
- * alike (a lazily loaded chunk ships in the same binary), and stops at the 1.4 boundary. Every edge that crosses it is
- * named below with the #1170 phase that removes it. A new crossing fails by name, and so does a named edge that no
- * longer exists: the list only shrinks, and each phase deletes its own rows.
+ * The walk follows static and literal dynamic imports from every 2.0 entry point and stops at the 1.4 boundary.
+ * CLI dispatch to a 1.4 verb is excluded by rule; every other crossing must equal the named CLI crossings exactly. New crossings
+ * fail, and a named crossing that no longer exists fails until its row is deleted. The exception list only shrinks.
+ * ALLOWED_EDGES is empty: there are no shared-leaf exceptions to the boundary.
  *
- * The boundary is closed: every file under `packages/myco/src` is reached by the walk, sits inside the 1.4 tree, or is
- * named below with why nothing reaches it. Reach that is not an import is held too: a script, a Dockerfile, the
- * Makefile or a CI workflow that names a 1.4 path is named below with its phase.
+ * The boundary is closed: every file under packages/myco/src is reached, inside the 1.4 tree, or named with why it
+ * is unreached. Scripts, Dockerfiles, the Makefile and CI workflows may name only the listed 1.4 paths, each with
+ * its removal phase. A listed path no longer named must have its row deleted too.
  *
- * The walk is the shared one (`tests/helpers/import-closure.ts`), so the edges are the runtime's own: a type-only
- * import is no edge, and a literal `import()` is.
+ * The shared import-closure walker reads the runtime's edges: type-only imports are no edges; literal import()
+ * calls are. Unfollowable dynamic imports are named explicitly, so unknown runtime reach cannot pass silently.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  filesUnder, moduleKey, REPO_ROOT, pathToEntry, type Closure,
+  filesUnder, moduleKey, REPO_ROOT, pathToEntry, closureOf, type Closure,
 } from '../helpers/import-closure.ts';
 
 import { walk, walkMemberRuntime, isLegacyVerb } from '../helpers/2-0-closure.ts';
@@ -28,26 +27,14 @@ const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const MYCO = 'packages/myco/src/';
 
 /**
- * Every edge from 2.0 code into the 1.4 tree, `importer -> imported` (paths under `packages/myco/src`), with the #1170
- * phase that removes it. An edge from `cli.ts` to a 1.4 verb module is the verb's dispatch and is allowed by rule.
+ * Shared-leaf exceptions from 2.0 into the 1.4 tree. Empty: retained CLI crossings are named separately.
  */
-const ALLOWED_EDGES: Readonly<Record<string, string>> = {
+const ALLOWED_EDGES: Readonly<Record<string, string>> = {};
+
+/** Retained CLI edges whose dispatch and checkpoint are removed together. */
+const PR3_EDGES: Readonly<Record<string, string>> = {
   'cli.ts -> backup/pre-migration-checkpoint.ts': '#1170 P4: PR 3 removes the pre-migration checkpoint from the 2.0 verbs',
-  'cli.ts -> grove/paths.ts': '#1170 P4: the pre-migration checkpoint leaves the 2.0 verbs',
   'cli.ts -> vault/resolve.ts': '#1170 P3: vault/resolve moves into project-root.ts',
-  'cli/cutover.ts -> grove/subsystem-claim.ts': '#1170 P8: cutover is deleted',
-  'cli/cutover.ts -> service/home-daemon.ts': '#1170 P8: cutover is deleted',
-  'cli/cutover.ts -> service/legacy-units.ts': '#1170 P8: cutover is deleted',
-  'cli/worker-service.ts -> grove/paths.ts': '#1170 P3: the 2.0 path helpers move to paths/',
-  'cli/worker-service.ts -> service/spec-builder.ts': '#1170 P3: the service spec builder moves beside server/service.ts',
-  'member/spool.ts -> capture/buffer.ts': '#1170 P3: the capture leaves move to member/',
-  'member/transcript.ts -> capture/prompt-kind.ts': '#1170 P3: the capture leaves move to member/',
-  'member/transcript.ts -> capture/session-continuation.ts': '#1170 P3: the capture leaves move to member/',
-  'member/transcript.ts -> capture/transcript-id.ts': '#1170 P3: the capture leaves move to member/',
-  'symbionts/detect.ts -> grove/paths.ts': '#1170 P3: the 2.0 path helpers move to paths/',
-  'symbionts/installer.ts -> grove/paths.ts': '#1170 P3: the 2.0 path helpers move to paths/',
-  'symbionts/installer.ts -> grove/subsystem-claim.ts': '#1170 P3: subsystem-claim moves to member/',
-  'symbionts/member-skill-links.ts -> grove/subsystem-claim.ts': '#1170 P3: subsystem-claim moves to member/',
 };
 
 /** The 2.0 files under `packages/myco/src` nothing in the walk imports, each with how it is used. */
@@ -129,14 +116,12 @@ function legacyPathsIn(file: string): string[] {
 }
 
 describe('the 2.0 code', () => {
-  it('imports the 1.4 tree through the named direct edges alone, and every named edge still exists', () => {
+  it('imports no edge at all into the 1.4 tree outside retained PR 3 CLI carriers', () => {
     const { myco, server } = walk();
     // An `import(expr)` names no module the walk can follow, so each one in the 2.0 closure is named here: none of them is code.
     expect(Object.fromEntries([...myco.unknowable, ...server.unknowable])).toEqual(UNFOLLOWABLE);
     const found = [...new Set([...crossings(myco), ...crossings(server)])].sort();
-    const named = Object.keys(ALLOWED_EDGES).sort();
-    expect(found.filter((edge) => !named.includes(edge)), 'a new edge from 2.0 code into the 1.4 tree').toEqual([]);
-    expect(named.filter((edge) => !found.includes(edge)), 'a named edge that no longer exists: delete its row').toEqual([]);
+    expect(found, 'the only 2.0 crossings are the named PR 3 CLI edges; delete a row when its edge disappears').toEqual(Object.keys(PR3_EDGES).sort());
   }, 120_000);
 
   it('leaves no file under packages/myco/src unaccounted for: each is reached, inside the 1.4 tree, or named', () => {
@@ -157,7 +142,7 @@ describe('the 2.0 code', () => {
   });
 
   it('names, for every edge and every path it allows, the #1170 phase that removes it', () => {
-    for (const [entry, phase] of Object.entries({ ...ALLOWED_EDGES, ...ALLOWED_TEXT_REACH })) {
+    for (const [entry, phase] of Object.entries({ ...PR3_EDGES, ...ALLOWED_TEXT_REACH })) {
       expect({ entry, phase }).toEqual({ entry, phase: expect.stringMatching(/^#1170 P(?:[1-9]|1[0-2])[ab]?: \S/) });
     }
   });
@@ -176,7 +161,6 @@ it('no 2.0 module directly imports a daemon, database or Grove request-context m
 /** The retained carriers of forbidden runtime modules, with the PR that removes each edge. */
 const RUNTIME_CARRIERS: Readonly<Record<string, string>> = {
   'cli.ts -> backup/pre-migration-checkpoint.ts': 'PR 3',
-  'cli/cutover.ts -> service/home-daemon.ts': 'PR 4',
 };
 
 /** All paths reachable without a named carrier, including alternate paths into shared leaves. */
@@ -208,7 +192,7 @@ it('hooks, member code and MCP have no transitive daemon, database or Grove requ
 }, 120_000);
 
 it('rejects a forbidden runtime import hidden behind the shared capture boundary', () => {
-  const mutate = (file: string, text: string): string => file.endsWith('/capture/buffer.ts')
+  const mutate = (file: string, text: string): string => file.endsWith('/member/buffer.ts')
     ? `import '@myco/daemon/client.js';\n${text}` : text;
   expect(uncarriedRuntime(walk(mutate, isLegacyVerb).myco, RUNTIME_CARRIERS)
     .some(chain => chain.at(-1) === MYCO + 'daemon/client.ts')).toBe(true);
@@ -221,5 +205,30 @@ it('rejects restored runtime imports at the 1.4 boundary', () => {
     const { myco } = walk((file, text) => file.endsWith('/mcp/stdio-bridge.ts')
       ? `import '@myco/${target}';\n${text}` : text);
     expect([...myco.modules.keys()].filter(forbiddenRuntime)).toContain(`${MYCO}${target}`);
+  }
+}, 120_000);
+
+/** Migration administration is retained 2.0 code, including every legacy helper entry. */
+function migrationClosure(mutate?: (file: string, text: string) => string): Closure {
+  const roots = filesUnder(SRC).filter(file => {
+    const relative = path.relative(SRC, file).split(path.sep).join('/');
+    return relative === 'cli/cutover.ts' || relative.startsWith('member/legacy-');
+  });
+  return closureOf(roots, { source: mutate });
+}
+
+it('cutover and every member legacy helper are retained and reach no 1.4 module', () => {
+  const { myco } = walk();
+  const retained = migrationClosure();
+  expect(retained.modules.has(MYCO + 'cli/cutover.ts')).toBe(true);
+  expect([...retained.via].filter(([, parent]) => parent === null).every(([key]) => myco.modules.has(key))).toBe(true);
+  expect([...retained.modules.keys()].filter(isLegacy).map(key => pathToEntry(retained, key))).toEqual([]);
+}, 120_000);
+
+it('rejects direct and transitive 1.4 imports in retained migration administration', () => {
+  for (const importer of ['cli/cutover.ts', 'member/legacy-daemon-stop.ts', 'member/legacy-service/windows.ts']) {
+    const mutated = migrationClosure((file, text) => file.endsWith('/' + importer)
+      ? "import '@myco/service/home-daemon.js';\n" + text : text);
+    expect([...mutated.modules.keys()].filter(isLegacy)).toContain(MYCO + 'service/home-daemon.ts');
   }
 }, 120_000);
