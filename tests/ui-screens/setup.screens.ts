@@ -19,6 +19,7 @@ for (const { viewport, mode } of SHOT_MATRIX) for (const role of ['admin', 'memb
       await expect(card.locator('[data-state="unchecked"]')).toHaveCount(0);
       await expect(card.locator('[data-setup-item]')).toHaveCount(role === 'admin' ? 7 : 2);
       if (role === 'admin') {
+        await expect(card.locator('[data-setup-item="capture"]')).toHaveAttribute('data-state', 'done');
         await expect(card.locator('[data-setup-item="runner"]')).toContainText(`myco setup --runner ${new URL(page.url()).origin}`);
         await expect(card.locator('[data-setup-item="work"]')).toContainText('last 31 days');
       } else {

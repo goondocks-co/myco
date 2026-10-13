@@ -1,3 +1,4 @@
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { deploymentOwnerSql, linkedHumanAdminSql } from '../core/ownership.js';
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import { credentialLive } from '../db/liveness.js';
@@ -8,6 +9,7 @@ import { projectsFiltering } from './scope.js';
 import { producedSql } from './run-outcome.js';
 
 const SETUP_CAPTURE_CANDIDATES_PER_HARNESS = 8;
+const SETUP_CAPTURE_HARNESS_IDS = JSON.stringify(CAPTURE_RULE_BUNDLES.map(bundle => bundle.name));
 
 export interface SetupObservations {
   machines: { signedIn: number };
@@ -26,12 +28,11 @@ export async function readSetupProgress(env: ServerEnv, scope: MachineScope, now
     WHERE c.machine_id = mc.machine_id AND c.member_id = mc.member_id AND ${credentialLive('c')})`;
   const claims = `machine_claims mc INDEXED BY ${scope.all ? 'idx_machine_claims_claimed' : 'idx_machine_claims_member'}`;
   const claimScope = scope.all ? 'mc.claimed_at >= 0' : 'mc.member_id = ?';
-  // Only reported harnesses establish live capture; sessions with a NULL agent do not count.
+  // Sessions whose agent isn't a known harness don't count.
   const capture = `EXISTS (SELECT 1 FROM ${claims} WHERE ${claimScope} AND ${liveClaim}
-    AND EXISTS (SELECT 1 FROM machine_harness_reports r JOIN json_each(r.harnesses) h
-      WHERE r.machine_id = mc.machine_id AND EXISTS (SELECT 1 FROM (
+    AND EXISTS (SELECT 1 FROM json_each(?) h WHERE EXISTS (SELECT 1 FROM (
         SELECT s.project_id, s.session_id, s.created_by_token_id FROM sessions s INDEXED BY idx_sessions_harness_live
-        WHERE s.machine_id = mc.machine_id AND s.agent = json_extract(h.value, '$.id')
+        WHERE s.machine_id = mc.machine_id AND s.agent = h.value
           AND s.last_live_received_at IS NOT NULL AND s.last_live_received_at >= mc.claimed_at
         ORDER BY s.last_live_received_at DESC LIMIT ${SETUP_CAPTURE_CANDIDATES_PER_HARNESS}
       ) s WHERE EXISTS (SELECT 1 FROM member_credentials source WHERE source.id = s.created_by_token_id
@@ -45,7 +46,7 @@ export async function readSetupProgress(env: ServerEnv, scope: MachineScope, now
     EXISTS (SELECT 1 FROM agent_runs a INDEXED BY idx_fleet_queue WHERE a.status = 'queued'
       AND ${projectsFiltering({ all: true }, 'a').sql}) AS queued,
     EXISTS (SELECT 1 FROM runners WHERE id > '' AND state = 'enabled') AS enabled_runner`)
-    .bind(...(scope.all ? [] : [scope.memberId]), now, ...(scope.all ? [] : [scope.memberId]), now)
+    .bind(...(scope.all ? [] : [scope.memberId]), now, ...(scope.all ? [] : [scope.memberId]), now, SETUP_CAPTURE_HARNESS_IDS)
     .first<{ signed_in: number; projects: number; live_capture: number; queued: number; enabled_runner: number }>();
   if (row === null) throw new Error('Setup observations unavailable');
   // Members receive only the queue boolean, with no runner inventory or outcome history.

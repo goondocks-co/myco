@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { seedCredential } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
@@ -17,7 +18,6 @@ function rig() {
     memberId ? { all: false, memberId } : { all: true }, NOW);
   const claim = (machine = 'machine_1', member = 'mem_machine_1') => {
     sql('INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES (?,?,?)', machine, member, NOW - DAY);
-    sql('INSERT INTO machine_harness_reports(machine_id,harnesses,reported_at) VALUES (?,?,?)', machine, JSON.stringify([{ id: 'claude-code', provisioned: true, state: 'ready', sinceAt: 0 }]), NOW);
     seedCredential(f.sqlite, { id: `mt_${machine}`, machineId: machine, memberId: member, expiresAt: NOW + DAY });
   };
   const capture = (machine = 'machine_1', project = 'proj_1', live: number | null = NOW) => {
@@ -57,9 +57,22 @@ describe('observed setup progress', () => {
     expect(await read()).toMatchObject({ machines: { signedIn: 0 }, liveCapture: false });
   });
 
+  it('counts known-harness live capture without a machine harness report', async () => {
+    const { f, read, claim, capture } = rig(); claim(); capture();
+    expect(f.sqlite.query('SELECT COUNT(*) AS n FROM machine_harness_reports').get()).toEqual({ n: 0 });
+    expect((await read()).liveCapture).toBe(true);
+    expect((await read('mem_machine_1')).liveCapture).toBe(true);
+  });
+
+  for (const { name } of CAPTURE_RULE_BUNDLES) it(`counts ${name} capture without a machine harness report`, async () => {
+    const { read, claim, capture, sql } = rig(); claim(); capture();
+    sql('UPDATE sessions SET agent = ?', name);
+    expect((await read()).liveCapture).toBe(true);
+  });
+
   for (const [name, change] of [
     ['a session with no harness', 'UPDATE sessions SET agent = NULL'],
-    ['a session from an unreported harness', "UPDATE sessions SET agent = 'other-agent'"],
+    ['a session whose agent is not a known harness', "UPDATE sessions SET agent = 'other-agent'"],
     ['imported history', "UPDATE sessions SET last_live_received_at = NULL"],
     ['a stopped machine', "UPDATE member_credentials SET revoked_at = 1"],
     ['an expired machine', `UPDATE member_credentials SET expires_at = ${NOW}`],
@@ -83,7 +96,7 @@ describe('observed setup progress', () => {
     expect((await read()).liveCapture).toBe(false);
   });
 
-  it('examines only the latest eight post-claim receipts per reported harness', async () => {
+  it('examines only the latest eight post-claim receipts per known harness', async () => {
     const { read, claim, capture, sql } = rig(); claim(); capture();
     sql("UPDATE sessions SET last_live_received_at = ?", NOW - 100);
     for (let i = 0; i < 8; i++) {

@@ -37,8 +37,6 @@ export const setupProgress: ParityScenario = {
       VALUES ('reclaimed_setup_machine',${lit(MEMBER_ID)},${now})`);
     await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,lineage_root,lineage_started_at)
       VALUES ('mt_setup_current',${lit(MEMBER_ID)},'reclaimed_setup_machine','fixture-current-hash',${now},${now + 86_400_000},'mt_setup_current',${now})`);
-    await target.sql(`INSERT INTO machine_harness_reports(machine_id,harnesses,reported_at)
-      VALUES ('reclaimed_setup_machine','[{"id":"claude-code","provisioned":true,"state":"ready","sinceAt":0}]',${now})`);
     type Measurement = { rowsRead: number | null; progress: { liveCapture: boolean } };
     const measure = async (): Promise<Measurement> => {
       if (target.name !== 'cloudflare') return { rowsRead: null, progress: await read() };
@@ -66,10 +64,9 @@ export const setupProgress: ParityScenario = {
       VALUES ('established_setup_machine',${lit(MEMBER_ID)},${now - 1000})`);
     await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,lineage_root,lineage_started_at)
       VALUES ('mt_setup_established',${lit(MEMBER_ID)},'established_setup_machine','fixture-established-hash',${old},${now + 86_400_000},'mt_setup_established',${old})`);
-    await target.sql(`INSERT INTO machine_harness_reports(machine_id,harnesses,reported_at)
-      VALUES ('established_setup_machine','[{"id":"claude-code","provisioned":true,"state":"ready","sinceAt":0}]',${now})`);
     await target.sql(`INSERT INTO sessions(project_id,session_id,machine_id,agent,created_by_token_id,first_received_at,last_received_at,last_live_received_at)
       VALUES ('proj_setup_parity','established_live','established_setup_machine','claude-code','mt_setup_established',${now},${now},${now})`);
+    expect((await read()).liveCapture).toBe(true);
     const established = await measure();
     expect(established.progress.liveCapture).toBe(true);
     await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
