@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { homedir } from 'node:os';
-import { resolveMycoHome, resolveHomeDir, canonicalHomePath } from '../paths/home.js';
+import { resolveMycoHome, resolveHomeDir, canonicalHomePath, defaultMycoHome } from '../paths/home.js';
 import { parseStrictFlags } from './args.js';
 import { confirmDestructive } from './confirm.js';
 import { isMemberHome, legacyVaultFiles } from '../member/home-role.js';
@@ -17,7 +17,7 @@ import { LocalVolume } from '../server/local-volume.js';
 import { resolveLocalPaths } from '../server/local.js';
 import { legacyMigrationState } from '../member/legacy-migration.js';
 import { defaultSpec, serviceHomeOwnership, statusOfService } from '../server/service.js';
-import { listRunnerRecords } from '../runner/runner-registry.js';
+import { readInstallMarker } from '../install/managed-binary.js';
 
 export const USAGE = `Usage: myco remove [--purge] [--allow-deployment-loss] [--yes]
 
@@ -41,24 +41,42 @@ interface RemoveDeps {
 
 const LEGACY_HOME_ENTRIES = ['groves', 'myco.db', 'config.yaml', 'myco.yaml', 'service'];
 export const MEMBER_HOME_PURGE_ENTRIES = [
-  'member', 'skills', 'bin', 'install.json', 'runtime.command', 'runtime.home', 'logs', 'runner', 'worker', 'server', 'installer-audit',
+  'member', 'skills', 'bin', 'install.json', 'runtime.command', 'runtime.home', 'logs', 'runner', 'worker', 'server', 'installer-audit', 'setup.json', 'last-update-check.json',
 ] as const;
 const DEPLOYMENT_LEASE_FILES = ['cloudflare.lock', 'local.lock'];
 
-function assertPurgeHome(home: string): void {
+const purgePathKey = (file: string, platform = process.platform): string =>
+  platform === 'win32' ? path.win32.resolve(file).toLowerCase() : path.resolve(file);
+
+/** Home, ancestor, root and cwd refusal using the target platform's path semantics. */
+export function unsafePurgePath(target: string, userHomes: readonly string[], cwd: string, platform = process.platform): boolean {
+  const paths = platform === 'win32' ? path.win32 : path;
+  const key = purgePathKey(target, platform);
+  const containsUser = userHomes.some(user => {
+    const relative = paths.relative(key, purgePathKey(user, platform));
+    return relative === '' || (!relative.startsWith(`..${paths.sep}`) && relative !== '..' && !paths.isAbsolute(relative));
+  });
+  return key === purgePathKey(paths.parse(key).root, platform) || containsUser || key === purgePathKey(cwd, platform);
+}
+
+function assertPurgeHome(home: string): string {
   const target = canonicalHomePath(path.resolve(home));
   const userHomes = [resolveHomeDir(), homedir()].map(canonicalHomePath);
-  const containsUser = userHomes.some(user => {
-    const relative = path.relative(target, user);
-    return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
-  });
-  if (target === path.parse(target).root || containsUser
-    || target === canonicalHomePath(process.cwd())) {
-    throw new Error(`Refusing --purge of ${home}: it is the user home, an ancestor of it, a filesystem root or the current directory. No files were removed.`);
+  if (unsafePurgePath(target, userHomes, canonicalHomePath(process.cwd()))) {
+    throw new Error(`Refusing --purge of ${home}: it is the user home, an ancestor of it, a filesystem root or the current directory. This path will not be purged.`);
   }
   if ([home, path.join(home, 'server'), path.join(home, 'member')].some(file => fs.lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink())) {
-    throw new Error('Refusing --purge of a symlinked home, member or Deployment directory; no files were removed.');
+    throw new Error('Refusing --purge of a symlinked home, member or Deployment directory; this path will not be purged.');
   }
+  return target;
+}
+
+function assertDedicatedHome(home: string, deletions: readonly string[]): void {
+  if (deletions.length === 0 || purgePathKey(home) === purgePathKey(canonicalHomePath(defaultMycoHome()))) return;
+  const marker = fs.lstatSync(path.join(home, 'install.json'), { throwIfNoEntry: false });
+  if (marker?.isFile() && readInstallMarker(home, true) !== null) return;
+  throw new Error(`Refusing --purge: ${home} is not the default home and has no install.json marking a dedicated Myco home. Would delete:
+${deletions.map(entry => path.join(home, entry)).join('\n')}`);
 }
 
 function assertServerUninstalled(home: string, deps: WorkerServiceDeps = {}): void {
@@ -96,8 +114,12 @@ function legacyPreservation(home: string, entries: readonly string[]): string | 
   if (entries.length === 0) return null;
   const state = legacyMigrationState(home);
   const kept = entries.map(entry => path.join(home, entry)).join(', ');
-  return `Your 1.4 files remain at ${kept}; check backups/cutover-* before deleting them by hand.`
-    + (state.state === 'unmoved' ? ` ${LEGACY_MIGRATION_GUIDANCE}` : state.state === 'unavailable' ? ` Migration status unavailable: ${state.detail}` : '');
+  const retained = `Your 1.4 files remain at ${kept}.`;
+  if (state.state === 'moved') return `${retained} Check backups/cutover-* before deleting them by hand.`;
+  const detail = state.state === 'changed' ? ` ${state.warning}`
+    : state.state === 'unavailable' ? ` Migration status unavailable: ${state.detail}` : '';
+  const guidance = state.state === 'unmoved' ? LEGACY_MIGRATION_GUIDANCE : 'Run `myco cutover --dry-run` to review the remaining migration work, then `myco cutover`.';
+  return `${retained}${detail} ${guidance}`;
 }
 
 /** Remove member-owned integrations and an explicitly admitted 2.0 home. */
@@ -110,10 +132,18 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
   const purge = parsed.has('--purge');
   const allowLoss = parsed.has('--allow-deployment-loss');
   if (allowLoss && !purge) throw new Error('--allow-deployment-loss requires --purge.');
-  if (purge) {
-    assertPurgeHome(home);
-    assertServerUninstalled(home, deps.worker);
-  }
+  const canonical = purge ? assertPurgeHome(home) : home;
+  const checkedIdentity = purge ? fs.lstatSync(canonical, { bigint: true, throwIfNoEntry: false }) : undefined;
+  const assertUnchangedHome = (): void => {
+    if (!purge) return;
+    const current = assertPurgeHome(home);
+    const identity = fs.lstatSync(canonical, { bigint: true, throwIfNoEntry: false });
+    if (purgePathKey(current) !== purgePathKey(canonical)
+      || identity?.dev !== checkedIdentity?.dev || identity?.ino !== checkedIdentity?.ino) {
+      throw new Error('Refusing --purge: the canonical home changed after its deletion plan was checked. Deletion stopped.');
+    }
+  };
+  if (purge) assertServerUninstalled(home, deps.worker);
   const entries = fs.existsSync(home) ? fs.readdirSync(home).sort() : [];
   const legacy = entries.filter(entry => LEGACY_HOME_ENTRIES.includes(entry));
   const legacyMessage = legacyPreservation(home, legacy);
@@ -128,11 +158,7 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
       ? fs.readdirSync(path.join(home, entry)).filter(file => file !== 'cutover.json').map(file => path.join(entry, file))
       : [entry]);
   const losses = deploymentLosses(home);
-  if (purge && deletions.length > 0 && !isMemberHome(home) && listRunnerRecords(home).length === 0 && losses.length === 0) {
-    console.error(`Refusing --purge: ${home} is not a registered Myco 2.0 home. Its files were preserved.`);
-    process.exitCode = 1;
-    return;
-  }
+  if (purge) assertDedicatedHome(canonical, deletions);
   if (purge && losses.length > 0 && !allowLoss) {
     console.error(`Refusing --purge. It would lose:\n${losses.join('\n')}\n`
       + 'After backing up or moving it, pass --purge --allow-deployment-loss to proceed anyway.');
@@ -146,6 +172,25 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
     process.exitCode = 1;
     return;
   }
+  assertUnchangedHome();
+  if (purge) {
+    assertDedicatedHome(canonical, deletions);
+    assertServerUninstalled(home, deps.worker);
+  }
+  const removeEntry = (relative: string, recursive = true): void => {
+    assertUnchangedHome();
+    let parent = canonical;
+    for (const part of relative.split(path.sep).slice(0, -1)) {
+      parent = path.join(parent, part);
+      const stat = fs.lstatSync(parent, { throwIfNoEntry: false });
+      if (stat === undefined) return;
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Refusing --purge through a changed parent at ${parent}.`);
+    }
+    const file = path.join(canonical, relative);
+    const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+    if (stat?.isSymbolicLink()) fs.unlinkSync(file);
+    else if (stat !== undefined) fs.rmSync(file, { recursive, force: true });
+  };
   const provision = readProvisionRecord(home);
   const memberOwned = isMemberHome(home) || provision !== null;
   const deployment = provision?.serverUrl ?? readDefaultDeployment(home)?.serverUrl ?? null;
@@ -162,38 +207,40 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
     return { installer, registered, removeSkills };
   });
   const remove = (): void => {
+    assertUnchangedHome();
     const sweep = sweepWorkerServices({ ...deps.worker, mycoHome: home }, { onlyThisHome: true });
     for (const unit of sweep.kept) console.log(`Preserved ${unit.unitFile}: ${unit.reason}`);
     for (const { installer, registered, removeSkills } of registrations) {
       if (registered) installer.uninstallMemberRegistration();
       removeSkills();
     }
-    if (purge && fs.existsSync(home)) {
+    if (purge && fs.existsSync(canonical)) {
       for (const entry of deletions) {
         if (losses.length > 0 && entry === 'server') {
-          const server = path.join(home, entry);
+          const server = path.join(canonical, entry);
           for (const file of fs.readdirSync(server)) {
-            if (!DEPLOYMENT_LEASE_FILES.includes(file)) fs.rmSync(path.join(server, file), { recursive: true, force: true });
+            if (!DEPLOYMENT_LEASE_FILES.includes(file)) removeEntry(path.join(entry, file));
           }
-        } else fs.rmSync(path.join(home, entry), { recursive: true, force: true });
+        } else removeEntry(entry);
       }
     }
   };
   // Serving and provisioning hold these same leases for their entire operation.
   if (purge && losses.length > 0) {
-    withCloudflareOperation(home, () => {
-      const local = path.join(home, 'server', 'local');
-      if (fs.existsSync(local)) new LocalVolume(resolveLocalPaths(home)).exclusive(remove);
+    withCloudflareOperation(canonical, () => {
+      const local = path.join(canonical, 'server', 'local');
+      if (fs.existsSync(local)) new LocalVolume(resolveLocalPaths(canonical)).exclusive(remove);
       else remove();
     });
   } else remove();
-  if (purge && fs.existsSync(home)) {
-    const server = path.join(home, 'server');
+  if (purge && fs.existsSync(canonical)) {
+    assertUnchangedHome();
+    const server = path.join(canonical, 'server');
     if (losses.length > 0) {
-      for (const file of DEPLOYMENT_LEASE_FILES) fs.rmSync(path.join(server, file), { force: true });
+      for (const file of DEPLOYMENT_LEASE_FILES) removeEntry(path.join('server', file), false);
       fs.rmdirSync(server);
     }
-    if (fs.readdirSync(home).length === 0) fs.rmdirSync(home);
+    if (fs.readdirSync(canonical).length === 0) fs.rmdirSync(canonical);
   }
   if (purge && preserveReceipt) console.log(`Preserved migration receipt at ${path.join(home, 'member', 'cutover.json')}.`);
   if (legacyMessage) console.log(legacyMessage);

@@ -383,8 +383,8 @@ Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — t
 | `service` | DROP | — | Blk | 1.4's platform service exists to manage the daemon that retires with it; CLI handler retired. Use `myco login <invite link>` and `myco cutover --dry-run` for unmoved 1.4 data | #925 |
 | `subsystem` | DROP | — | Blk | Machine-global daemon ownership arbitration; no daemon to arbitrate; CLI handler retired. Use `myco login <invite link>` and `myco cutover --dry-run` for unmoved 1.4 data | #925 |
 | `grove` | DROP | — | Blk | Grove is deleted; Deployment is the boundary; CLI handler retired. Use `myco login <invite link>` and `myco cutover --dry-run` for unmoved 1.4 data | #925 |
-| `join` | DROP | — | Blk | Team Host enrollment retired; `member join` is the 2.0 path; CLI handler retired. Use `myco login <invite link>` and `myco cutover --dry-run` for unmoved 1.4 data | #925 |
-| `leave` | DROP | — | Blk | Team Host detach retired; `member leave` is the 2.0 path; CLI handler retired. Use `myco login <invite link>` and `myco cutover --dry-run` for unmoved 1.4 data | #925 |
+| `join` | DROP | — | Blk | Team Host enrollment retired; `myco member join` is the 2.0 path; CLI handler retired. Use `myco login <invite link>` and `myco cutover --dry-run` for unmoved 1.4 data | #925 |
+| `leave` | DROP | — | Blk | Team Host detach retired; `myco member leave` is the 2.0 path; CLI handler retired. Use `myco login <invite link>` and `myco cutover --dry-run` for unmoved 1.4 data | #925 |
 | `attach` | DROP | — | Blk | Team Host project routing retired; Project Binding replaces it; CLI handler retired. Use `myco login <invite link>` and `myco cutover --dry-run` for unmoved 1.4 data | #925 |
 | `detach` | DROP | — | Blk | Team Host project routing retired; CLI handler retired. Use `myco login <invite link>` and `myco cutover --dry-run` for unmoved 1.4 data | #925 |
 | `host` | DROP | — | Blk | Team Host serving retired; a Deployment is the server; CLI handler retired. Use `myco login <invite link>` and `myco cutover --dry-run` for unmoved 1.4 data | #925 |

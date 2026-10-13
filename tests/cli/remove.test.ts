@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { run, deploymentLosses } from '@myco/cli/remove.js';
+import { run, deploymentLosses, unsafePurgePath } from '@myco/cli/remove.js';
 import { runProvision } from '@myco/cli/member.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
@@ -13,6 +13,10 @@ import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { LocalVolume } from '@myco/server/local-volume.js';
 import { resolveLocalPaths } from '@myco/server/local.js';
 import { spyOn } from 'bun:test';
+import { Database } from 'bun:sqlite';
+import { writeInstallMarker } from '@myco/install/managed-binary.js';
+import { runnerRecordPath } from '@myco/runner/runner-registry.js';
+import { readVaultContent } from '@myco/member/legacy-backup.js';
 import { retiredVerbMessage } from '@myco/cli/retired-verbs.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 import { defaultSpec, servicePaths, renderUnit } from '@myco/server/service.js';
@@ -60,7 +64,12 @@ const write = (relative: string, text = 'preserve') => {
   fs.writeFileSync(file, text);
 };
 
+function installMarker(at = home): void {
+  writeInstallMarker(at, { channel: 'stable', source: 'npm', bin: path.join(at, 'bin', 'myco') });
+}
+
 function member(): void {
+  installMarker();
   writeDeploymentMembership({ serverUrl: SERVER, token: 'm'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 } as never, { mycoHome: home });
   recordDefaultDeployment(SERVER, { mycoHome: home });
   fs.mkdirSync(path.join(user, '.claude'), { recursive: true });
@@ -193,25 +202,161 @@ describe('member-only remove', () => {
       expect(process.exitCode).toBe(0);
       expect(legacyMigrationState(home).state).toBe('moved');
       const message = output.mock.calls.flat().join('\n');
-      expect(message).toContain('check backups/cutover-* before deleting them by hand');
+      expect(message).toContain('Check backups/cutover-* before deleting them by hand');
       expect(message).not.toContain('myco login');
     } finally { output.mockRestore(); }
   });
 
-  for (const unsafe of ['user', 'ancestor', 'cwd', 'root', 'symlink-user', 'symlink-ancestor']) {
+  for (const state of ['changed', 'needs-destination'] as const) {
+    it(`never suggests hand deletion while migration is ${state}`, async () => {
+      member();
+      const fixture = legacyFixtureHome(path.join(root, 'legacy'));
+      const vault = path.join(home, 'groves', 'fixture', 'myco.db');
+      fs.mkdirSync(path.dirname(vault), { recursive: true });
+      fs.copyFileSync(fixture.vault, vault);
+      const stamp = fs.statSync(vault);
+      const receipt = {
+        version: 2, backups: { [vault]: { copy: path.join(home, 'backups', 'cutover-fixture'), counts: {}, digest: readVaultContent(vault).digest, at: 1 } },
+        handover: { at: 1, legacyHomes: [home], agents: [] },
+        ...(state === 'changed' ? { migrations: { [vault]: { digest: readVaultContent(vault).digest, size: stamp.size, mtimeMs: stamp.mtimeMs, projects: Object.fromEntries(fixture.projects.map(p => [p.id, { destination: { skip: true, at: 1 } }])) } } } : {}),
+      };
+      write('member/cutover.json', JSON.stringify(receipt));
+      fs.chmodSync(path.join(home, 'member', 'cutover.json'), 0o600);
+      if (state === 'changed') {
+        const db = new Database(vault);
+        try { db.run("UPDATE sessions SET title = 'retained capture after cutover'"); } finally { db.close(); }
+        fs.utimesSync(vault, new Date(), new Date(stamp.mtimeMs + 1000));
+      }
+      expect(legacyMigrationState(home).state).toBe(state);
+      const before = fs.readFileSync(vault);
+      const output = spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        for (const args of [['--yes'], ['--purge', '--yes']]) {
+          await run(args, deps());
+          expect(process.exitCode).toBe(0);
+          const message = output.mock.calls.flat().join('\n');
+          expect(message).toContain('myco cutover --dry-run');
+          expect(message).not.toContain('deleting them by hand');
+          if (state === 'changed') expect(message).toContain('Myco 1.4 wrote more data after migration');
+          expect(fs.readFileSync(vault)).toEqual(before);
+          output.mockClear();
+        }
+      } finally { output.mockRestore(); }
+    });
+  }
+
+  for (const artifact of ['server/local/myco.sqlite', 'runner']) {
+    it(`refuses a legacy home containing ${artifact} without a membership`, async () => {
+      const fixture = legacyFixtureHome(path.join(root, 'legacy'));
+      const file = artifact === 'runner' ? runnerRecordPath(SERVER, fixture.mycoHome) : path.join(fixture.mycoHome, artifact);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, artifact === 'runner' ? JSON.stringify({ version: 1, serverUrl: SERVER, name: 'fixture' }) : 'legacy retained data', { mode: 0o600 });
+      fs.writeFileSync(path.join(fixture.mycoHome, 'install.json'), JSON.stringify({ channel: 'stable', source: 'npm', bin: fixture.binary }));
+      const before = snapshot(fixture.root);
+      await run(['--purge', '--allow-deployment-loss', '--yes'], { ...deps(), mycoHome: fixture.mycoHome });
+      expect(process.exitCode).toBe(1);
+      expect(snapshot(fixture.root)).toEqual(before);
+      expect(platform.commands).toEqual([]);
+    });
+  }
+
+  it('refuses a membership placed in Documents without a dedicated install marker', async () => {
+    const documents = path.join(user, 'Documents');
+    writeDeploymentMembership({ serverUrl: SERVER, token: 'm'.repeat(43), machineId: 'documents', joinedAt: 1, updatedAt: 1 } as never, { mycoHome: documents });
+    for (const name of ['bin', 'logs', 'skills']) {
+      fs.mkdirSync(path.join(documents, name), { recursive: true });
+      fs.writeFileSync(path.join(documents, name, 'user-file'), 'user-owned bytes');
+    }
+    const before = snapshot(root);
+    const error = await run(['--purge', '--yes'], { ...deps(), mycoHome: documents }).then(() => null, error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('dedicated Myco home');
+    for (const name of ['bin', 'logs', 'skills', 'member']) expect(error.message).toContain(path.join(documents, name));
+    expect(snapshot(root)).toEqual(before);
+    expect(platform.commands).toEqual([]);
+  });
+
+  it('admits the default home without an install marker', async () => {
+    const defaultHome = path.join(user, '.myco');
+    writeDeploymentMembership({ serverUrl: SERVER, token: 'm'.repeat(43), machineId: 'default-home', joinedAt: 1, updatedAt: 1 } as never, { mycoHome: defaultHome });
+    await run(['--purge', '--yes'], { ...deps(), mycoHome: defaultHome });
+    expect(process.exitCode).toBe(0);
+    expect(fs.existsSync(defaultHome)).toBe(false);
+  });
+
+  it('unlinks an allowlisted symlink swapped during confirmation without following its target', async () => {
+    member();
+    write('logs/member.log', 'owned log');
+    const external = path.join(root, 'external-logs');
+    fs.mkdirSync(external);
+    fs.writeFileSync(path.join(external, 'user-file'), 'external bytes');
+    await run(['--purge'], { ...deps(), confirm: async () => {
+      fs.renameSync(path.join(home, 'logs'), path.join(root, 'saved-logs'));
+      fs.symlinkSync(external, path.join(home, 'logs'), 'dir');
+      return true;
+    } });
+    expect(process.exitCode).toBe(0);
+    expect(fs.readFileSync(path.join(external, 'user-file'), 'utf8')).toBe('external bytes');
+    expect(fs.lstatSync(path.join(home, 'logs'), { throwIfNoEntry: false })).toBeUndefined();
+  });
+
+  for (const kind of ['home-swap', 'parent-swap', 'member-swap']) {
+    it(`refuses a ${kind} while confirmation is pending before any teardown`, async () => {
+      member();
+      const victim = path.join(root, 'victim');
+      fs.mkdirSync(path.join(victim, 'member'), { recursive: true });
+      fs.writeFileSync(path.join(victim, 'member', 'notes.txt'), 'victim bytes');
+      const bytes = snapshot(victim);
+      let configured = home;
+      if (kind === 'parent-swap') {
+        fs.mkdirSync(path.join(victim, 'member-home', 'member'), { recursive: true });
+        fs.writeFileSync(path.join(victim, 'member-home', 'member', 'notes.txt'), 'victim member bytes');
+        configured = path.join(root, 'parent-alias', 'member-home');
+        fs.symlinkSync(root, path.join(root, 'parent-alias'), 'dir');
+      }
+      await expect(run(['--purge'], { ...deps(), mycoHome: configured, confirm: async () => {
+        if (kind === 'member-swap') {
+          fs.renameSync(path.join(home, 'member'), path.join(root, 'saved-member'));
+          fs.symlinkSync(path.join(victim, 'member'), path.join(home, 'member'), 'dir');
+        } else if (kind === 'parent-swap') {
+          fs.unlinkSync(path.join(root, 'parent-alias'));
+          fs.symlinkSync(victim, path.join(root, 'parent-alias'), 'dir');
+        } else {
+          fs.renameSync(home, path.join(root, 'saved-home'));
+          fs.symlinkSync(victim, home, 'dir');
+        }
+        return true;
+      } })).rejects.toThrow('Refusing --purge');
+      expect(fs.readFileSync(path.join(victim, 'member', 'notes.txt'), 'utf8')).toBe('victim bytes');
+      if (kind !== 'parent-swap') expect(snapshot(victim)).toEqual(bytes);
+      else expect(fs.readFileSync(path.join(victim, 'member-home', 'member', 'notes.txt'), 'utf8')).toBe('victim member bytes');
+      expect(platform.commands).toEqual([]);
+    });
+  }
+
+  for (const unsafe of ['user', 'ancestor', 'cwd', 'root', 'symlink-user', 'symlink-ancestor', 'symlink-parent', 'symlink-home']) {
     it(`refuses purge of ${unsafe} before any teardown`, async () => {
       member();
       const previous = process.cwd();
       let target = unsafe === 'user' ? user : unsafe === 'ancestor' ? root : unsafe === 'root' ? path.parse(root).root : home;
       if (unsafe === 'cwd') process.chdir(home);
-      if (unsafe.startsWith('symlink')) {
+      if (unsafe === 'symlink-parent') {
+        const parent = path.join(root, 'parent-link');
+        fs.symlinkSync(root, parent, 'dir');
+        target = path.join(parent, 'user');
+      } else if (unsafe === 'symlink-home') {
+        const alias = path.join(root, 'user-alias');
+        fs.symlinkSync(user, alias, 'dir');
+        process.env.HOME = alias;
+        target = user;
+      } else if (unsafe.startsWith('symlink')) {
         target = path.join(root, 'unsafe-link');
         fs.symlinkSync(unsafe === 'symlink-user' ? user : root, target, 'dir');
       }
       if (unsafe !== 'root' && unsafe !== 'cwd') writeDeploymentMembership({ serverUrl: SERVER, token: 'm'.repeat(43), machineId: 'guard-fixture', joinedAt: 1, updatedAt: 1 } as never, { mycoHome: fs.realpathSync(target) });
       const before = snapshot(root);
       try {
-        await expect(run(['--purge', '--allow-deployment-loss', '--yes'], { ...deps(), mycoHome: target })).rejects.toThrow('Refusing --purge');
+        await expect(run(['--purge', '--allow-deployment-loss', '--yes'], { ...deps(), mycoHome: target })).rejects.toThrow('user home, an ancestor of it');
         expect(snapshot(root)).toEqual(before);
         expect(platform.commands).toEqual([]);
       } finally { process.chdir(previous); }
@@ -220,7 +365,7 @@ describe('member-only remove', () => {
 
   it('deletes only the named 2.0 entries and lists the exact plan and retained unknown files', async () => {
     member();
-    for (const entry of ['bin/myco', 'install.json', 'runtime.command', 'runtime.home', 'logs/member.log', 'worker/refusals/fixture']) write(entry);
+    for (const entry of ['bin/myco', 'runtime.command', 'runtime.home', 'logs/member.log', 'worker/refusals/fixture', 'setup.json', 'last-update-check.json']) write(entry);
     write('unrecognized.txt', 'user document');
     write('Documents/thesis.docx', 'user research');
     let prompt = '';
@@ -231,7 +376,7 @@ describe('member-only remove', () => {
       expect(fs.readFileSync(path.join(home, 'unrecognized.txt'), 'utf8')).toBe('user document');
       expect(fs.readFileSync(path.join(home, 'Documents/thesis.docx'), 'utf8')).toBe('user research');
       expect(fs.readdirSync(home).sort()).toEqual(['Documents', 'backups', 'unrecognized.txt']);
-      for (const entry of ['member', 'skills', 'bin', 'install.json', 'runtime.command', 'runtime.home', 'logs', 'worker']) expect(prompt).toContain(`DELETE ${path.join(home, entry)}`);
+      for (const entry of ['member', 'skills', 'bin', 'install.json', 'runtime.command', 'runtime.home', 'logs', 'worker', 'setup.json', 'last-update-check.json']) expect(prompt).toContain(`DELETE ${path.join(home, entry)}`);
       expect(prompt).not.toContain('DELETE ' + path.join(home, 'Documents'));
       expect(output.mock.calls.flat().join('\n')).toContain('unrecognized.txt');
     } finally { output.mockRestore(); }
@@ -394,6 +539,7 @@ describe('member-only remove', () => {
   });
 
   it('keeps lease files until the Deployment lease has closed', async () => {
+    installMarker();
     write('server/local/myco.sqlite');
     const original = LocalVolume.prototype.exclusive;
     const lease = spyOn(LocalVolume.prototype, 'exclusive').mockImplementation(function(this: LocalVolume, callback: () => unknown) {
@@ -430,6 +576,7 @@ for (const artifact of ['server/local/myco.sqlite', 'server/cloudflare/record.js
     expect(platform.commands).toEqual([]);
   });
   it(`explicit second flag permits loss of ${artifact}`, async () => {
+    installMarker();
     write(artifact);
     await run(['--purge', '--allow-deployment-loss', '--yes'], deps());
     expect(process.exitCode).toBe(0);
@@ -440,4 +587,13 @@ for (const artifact of ['server/local/myco.sqlite', 'server/cloudflare/record.js
 it('the deployment-loss flag alone is refused', async () => {
   await expect(run(['--allow-deployment-loss', '--yes'], deps())).rejects.toThrow('requires --purge');
   expect(fs.existsSync(home)).toBe(true);
+});
+
+it('compares win32 user homes, ancestors, cwd and roots case-insensitively', () => {
+  const user = String.raw`C:\Users\Chris`;
+  const cwd = String.raw`D:\Myco\Work`;
+  for (const target of [String.raw`c:\USERS\CHRIS`, String.raw`C:\uSeRs`, String.raw`d:\myco\work`, 'c:/']) {
+    expect(unsafePurgePath(target, [user], cwd, 'win32')).toBe(true);
+  }
+  expect(unsafePurgePath(String.raw`C:\Users\Chris\.myco`, [user], cwd, 'win32')).toBe(false);
 });

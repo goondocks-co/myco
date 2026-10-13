@@ -44,12 +44,13 @@ for (const kind of ['fresh', 'member']) it(`retired verbs on a ${kind} home give
   fs.mkdirSync(path.join(home, 'member'), { recursive: true });
   if (kind === 'member') fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: {} }), { mode: 0o600 });
   const environment = sandboxChildEnv(root, { HOME: user, MYCO_HOME: home });
-  for (const verb of ['restart', 'verify']) {
+  for (const verb of ['restart', 'verify', 'join', 'leave']) {
     const result = spawnSync(process.execPath, [fixture, verb], { cwd, env: environment, encoding: 'utf8', timeout: 15_000 });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('myco --help');
     expect(result.stderr).not.toContain('myco cutover');
     expect(result.stderr).not.toContain('myco login');
     if (verb === 'verify') expect(result.stderr).toContain('myco doctor');
+    if (verb === 'join' || verb === 'leave') expect(result.stderr).toContain(`myco member ${verb}`);
   }
 });
