@@ -145,4 +145,6 @@ myco remove
 
 The command asks for confirmation and keeps captured data by default.
 
-**Do not run `myco remove --purge` on a machine hosting a Deployment until [#1794](https://github.com/goondocks-co/myco/issues/1794) lands.** It deletes the entire Myco home, including a local server's data and the Cloudflare operator record. The current removal summary does not protect or clearly name those resources. Leaving a team or stopping a runner does not require purging data.
+`myco remove` unregisters this home's member integrations and worker/runner services while preserving data. `--purge` deletes only the named 2.0 entries: `member/`, `skills/`, `bin/`, `install.json`, `runtime.command`, `runtime.home`, `logs/`, `runner/`, `worker/` and `installer-audit/`. It preserves 1.4 files, their cutover receipt, `backups/cutover-*` and unknown entries, prints what remains, and removes the home directory only when empty. The confirmation lists each deletion. Purge refuses the user home, its ancestors, filesystem roots, the current directory and symlinked homes.
+
+A home holding `server/` or a Cloudflare operator record refuses purge unless you also pass `--allow-deployment-loss`. Back up the Deployment first; the override admits deletion of `server/`, including its data and operator records. An installed native Deployment service blocks purge even with the override: run `myco server uninstall --target local` first. Check retained 1.4 backups before deleting legacy files by hand.

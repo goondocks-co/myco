@@ -36,3 +36,20 @@ it('help prints member usage and migration guidance on an unmoved home', () => {
   expect(result.stdout).toContain('myco cutover --dry-run');
   expect(result.stdout).not.toContain('grove <subcommand>');
 });
+
+
+for (const kind of ['fresh', 'member']) it(`retired verbs on a ${kind} home give current help and successors`, () => {
+  const user = path.join(root, kind, 'user');
+  const home = path.join(user, '.myco');
+  fs.mkdirSync(path.join(home, 'member'), { recursive: true });
+  if (kind === 'member') fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: {} }), { mode: 0o600 });
+  const environment = sandboxChildEnv(root, { HOME: user, MYCO_HOME: home });
+  for (const verb of ['restart', 'verify']) {
+    const result = spawnSync(process.execPath, [fixture, verb], { cwd, env: environment, encoding: 'utf8', timeout: 15_000 });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('myco --help');
+    expect(result.stderr).not.toContain('myco cutover');
+    expect(result.stderr).not.toContain('myco login');
+    if (verb === 'verify') expect(result.stderr).toContain('myco doctor');
+  }
+});

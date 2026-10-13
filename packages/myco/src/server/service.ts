@@ -28,6 +28,7 @@ import nodeFs from 'node:fs';
 const { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } = nodeFs;
 import path from 'node:path';
 import { homedir } from 'node:os';
+import { canonicalHomePath } from '../paths/home.js';
 
 /** What a service is: the names the platform records it under, what it runs, and where it writes. */
 export interface ServiceUnit {
@@ -161,23 +162,35 @@ export function servicePaths(spec: ServiceSpec, platform = process.platform): Se
   throw new ServicePlatformUnsupported(`no per-user service is defined for ${platform}`);
 }
 
-/** Refuse a native unit that points at another Deployment's home. */
-export function assertServiceTargetHome(spec: ServiceSpec, options: ServiceOptions = {}): void {
+/** Ownership recorded by a native unit; ambiguous records do not authorize lifecycle changes. */
+export function serviceHomeOwnership(spec: ServiceSpec, options: ServiceOptions = {}): 'same' | 'foreign' | 'unknown' | 'absent' {
   const expected = spec.env.MYCO_HOME;
-  if (expected === undefined) return;
   const platform = options.platform ?? process.platform;
   const paths = servicePaths(spec, platform);
-  if (!existsSync(paths.unitFile)) return;
+  if (!existsSync(paths.unitFile)) return 'absent';
+  if (expected === undefined) return 'same';
   const source = readFileSync(paths.unitFile, 'utf8');
   const pattern = platform === 'darwin' ? /<key>MYCO_HOME<\/key>\s*<string>([^<]*)<\/string>/g
     : platform === 'linux' ? /^Environment=MYCO_HOME=(.*)$/gm
       : /set &quot;MYCO_HOME=(.*?)&quot;/g;
   const homes = [...source.matchAll(pattern)].map(match => match[1]);
-  const target = platform === 'linux' ? expected : xmlEscape(expected);
-  if (homes.length === 1 && homes[0] === target) return;
-  if (homes.length === 0 && !source.includes('MYCO_HOME') && expected === path.join(spec.home, '.myco')) return;
-  throw new Error(`the installed native service does not belong to ${expected}; keep its Deployment running and reconcile its service before setup`);
+  const same = (target: string): 'same' | 'foreign' | 'unknown' => !path.isAbsolute(target) ? 'unknown'
+    : canonicalHomePath(target) === canonicalHomePath(expected) ? 'same' : 'foreign';
+  if (homes.length === 1) return same(platform === 'linux' ? homes[0] : xmlUnescape(homes[0]));
+  if (homes.length === 0 && !source.includes('MYCO_HOME')) return same(path.join(spec.home, '.myco'));
+  return 'unknown';
 }
+
+/** Refuse a native unit that points at another Deployment's home. */
+export function assertServiceTargetHome(spec: ServiceSpec, options: ServiceOptions = {}): void {
+  if (spec.env.MYCO_HOME === undefined) return;
+  const ownership = serviceHomeOwnership(spec, options);
+  if (ownership === 'same' || ownership === 'absent') return;
+  throw new Error(`the installed native service does not belong to ${spec.env.MYCO_HOME}; keep its Deployment running and reconcile its service before setup`);
+}
+
+const XML_ENTITIES: Readonly<Record<string, string>> = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"' };
+const xmlUnescape = (value: string): string => value.replace(/&(amp|lt|gt|quot);/g, entity => XML_ENTITIES[entity]!);
 
 const xmlEscape = (value: string): string =>
   value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

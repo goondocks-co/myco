@@ -5,8 +5,7 @@ import { resolveVaultDir } from './project-root.js';
 import { runLaunchPreamble } from './cli/launch-preamble.js';
 import { isMemberVerb } from './cli/member-verbs.js';
 import { keepLoopbackOffProxy } from './cli/loopback-proxy.js';
-import { isRetiredVerb } from './cli/retired-verbs.js';
-import { LEGACY_MIGRATION_GUIDANCE } from './member/migration-guidance.js';
+import { isRetiredVerb, retiredVerbMessage } from './cli/retired-verbs.js';
 
 loadEnv();
 
@@ -68,7 +67,7 @@ async function main(): Promise<void> {
     return;
   }
   if (isRetiredVerb(cmd)) {
-    console.error(`myco ${cmd} is retired in Myco 2.0. ${LEGACY_MIGRATION_GUIDANCE}`);
+    console.error(await retiredVerbMessage(cmd));
     process.exitCode = 1;
     return;
   }

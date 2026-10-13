@@ -207,14 +207,18 @@ it('rejects restored runtime imports at the 1.4 boundary', () => {
   }
 }, 120_000);
 
+const SUPERVISOR_STOP_CARRIERS: Readonly<Record<string, string>> = {
+  ...RUNTIME_CARRIERS,
+  'cli/cutover.ts -> service/legacy-units.ts': 'PR 4',
+};
+
 /** Supervisor access is confined to the retained cutover stop carrier. */
 function supervisorReach(mutate?: (file: string, text: string) => string): string[][] {
   const closure = walk(mutate, () => false).myco;
   const via = new Map<string, string | null>([...closure.via].filter(([, from]) => from === null));
   const queue = [...via.keys()];
   for (const from of queue) for (const to of closure.edges.get(from) ?? []) {
-    if (`${short(from)} -> ${short(to)}` in RUNTIME_CARRIERS
-      || `${short(from)} -> ${short(to)}` === 'cli/cutover.ts -> service/legacy-units.ts' || via.has(to)) continue;
+    if (`${short(from)} -> ${short(to)}` in SUPERVISOR_STOP_CARRIERS || via.has(to)) continue;
     via.set(to, from);
     queue.push(to);
   }
@@ -238,9 +242,17 @@ function supervisorStarts(text: string, file: string): string[] {
   const found: string[] = [];
   const starts = new Set(['start', 'restart', 'ensureRunning']);
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  const literal = (node: ts.Expression): string | null => ts.isStringLiteralLike(node) ? node.text
+    : ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken
+      ? (() => { const left = literal(node.left); const right = literal(node.right); return left === null || right === null ? null : left + right; })() : null;
   const visit = (node: ts.Node): void => {
+    if (ts.isStringLiteralLike(node) && /\b(?:launchctl\b.*\bkickstart|systemctl\b.*\b(?:start|restart)|schtasks\b.*\/run)\b/i.test(node.text)) found.push('supervisor exec');
+    if (ts.isCallExpression(node)) {
+      const values = node.arguments.flatMap(arg => ts.isArrayLiteralExpression(arg) ? arg.elements.map(element => ts.isExpression(element) ? literal(element) : null) : [literal(arg)]).filter(value => value !== null);
+      if (/\b(?:launchctl\b.*\bkickstart|systemctl\b.*\b(?:start|restart)|schtasks\b.*\/run)\b/i.test(values.join(' '))) found.push('supervisor exec');
+    }
     const name = ts.isPropertyAccessExpression(node) ? node.name.text
-      : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) ? node.argumentExpression.text
+      : ts.isElementAccessExpression(node) ? literal(node.argumentExpression)
       : ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)
         ? (node.propertyName ?? node.name).getText(source).replace(/^['"]|['"]$/g, '') : null;
     if (name !== null && starts.has(name)) found.push(name);
@@ -260,7 +272,7 @@ it('no 2.0 path can reach DaemonClient.ensureRunning or a 1.4 supervisor start',
 
 it('rejects a start added to a cutover stop carrier', () => {
   const file = path.join(SRC, 'service/legacy-units.ts');
-  for (const call of ['manager.start(label);', "manager['start'](label);", 'const { start: launch } = manager; launch(label);']) {
+  for (const call of ['manager.start(label);', "manager['start'](label);", "manager['sta' + 'rt'](label);", 'const { start: launch } = manager; launch(label);']) {
     const text = fs.readFileSync(file, 'utf8') + '\n' + call;
     expect(supervisorStarts(text, file)).toContain('start');
   }
@@ -314,3 +326,14 @@ it('rejects direct and transitive 1.4 imports in retained migration administrati
     expect([...mutated.modules.keys()].filter(isLegacy)).toContain(MYCO + 'service/home-daemon.ts');
   }
 }, 120_000);
+
+
+it('rejects raw platform starts added to a cutover stop carrier', () => {
+  const file = path.join(SRC, 'service/legacy-units.ts');
+  for (const call of [
+    "execFileSync('launchctl', ['kickstart', '-k', label]);",
+    "execFileSync('systemctl', ['--user', 'start', label]);",
+    "execFileSync('schtasks', ['/Run', '/TN', label]);",
+    "execSync('launchctl kickstart ' + label);",
+  ]) expect(supervisorStarts(call, file)).toContain('supervisor exec');
+});

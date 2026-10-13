@@ -8,6 +8,7 @@
  * re-exports everything here for the rest of the binary.
  */
 import os from 'node:os';
+import fs from 'node:fs';
 import path from 'node:path';
 import { readTrustedPin, type PinRefusalReporter, type PinTrustOptions } from './pin-trust.js';
 
@@ -269,4 +270,15 @@ function assertSandboxedHome(home: string): void {
  */
 export function isDefaultMycoHome(mycoHome: string): boolean {
   return path.resolve(mycoHome) === resolveMycoHome({ env: {} });
+}
+
+/** Physical home path, with missing suffixes anchored to the nearest existing ancestor. */
+export function canonicalHomePath(file: string): string {
+  try { return fs.realpathSync(file); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    const parent = path.dirname(file);
+    if (parent === file) throw error;
+    return path.join(canonicalHomePath(parent), path.basename(file));
+  }
 }

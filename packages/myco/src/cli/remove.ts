@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveMycoHome } from '../paths/home.js';
+import { homedir } from 'node:os';
+import { resolveMycoHome, resolveHomeDir, canonicalHomePath } from '../paths/home.js';
 import { parseStrictFlags } from './args.js';
 import { confirmDestructive } from './confirm.js';
 import { isMemberHome, legacyVaultFiles } from '../member/home-role.js';
@@ -14,6 +15,8 @@ import { sweepWorkerServices, type WorkerServiceDeps } from './worker-service.js
 import { withCloudflareOperation } from '../server/cloudflare-operation.js';
 import { LocalVolume } from '../server/local-volume.js';
 import { resolveLocalPaths } from '../server/local.js';
+import { legacyMigrationState } from '../member/legacy-migration.js';
+import { defaultSpec, serviceHomeOwnership, statusOfService } from '../server/service.js';
 import { listRunnerRecords } from '../runner/runner-registry.js';
 
 export const USAGE = `Usage: myco remove [--purge] [--allow-deployment-loss] [--yes]
@@ -24,7 +27,7 @@ are preserved. Member credentials and captured data stay unless --purge is passe
 Shared Windows binaries outside this home stay installed.
 
 Options:
-  --purge                  Delete the 2.0 home, including credentials and buffered capture
+  --purge                  Delete only owned 2.0 entries; preserve 1.4 and unknown files
   --allow-deployment-loss  With --purge, also allow loss of Deployment data and operator records
   --yes                    Skip the confirmation prompt
   -h, --help               Show this help
@@ -37,20 +40,64 @@ interface RemoveDeps {
 }
 
 const LEGACY_HOME_ENTRIES = ['groves', 'myco.db', 'config.yaml', 'myco.yaml', 'service'];
+export const MEMBER_HOME_PURGE_ENTRIES = [
+  'member', 'skills', 'bin', 'install.json', 'runtime.command', 'runtime.home', 'logs', 'runner', 'worker', 'server', 'installer-audit',
+] as const;
 const DEPLOYMENT_LEASE_FILES = ['cloudflare.lock', 'local.lock'];
+
+function assertPurgeHome(home: string): void {
+  const target = canonicalHomePath(path.resolve(home));
+  const userHomes = [resolveHomeDir(), homedir()].map(canonicalHomePath);
+  const containsUser = userHomes.some(user => {
+    const relative = path.relative(target, user);
+    return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  });
+  if (target === path.parse(target).root || containsUser
+    || target === canonicalHomePath(process.cwd())) {
+    throw new Error(`Refusing --purge of ${home}: it is the user home, an ancestor of it, a filesystem root or the current directory. No files were removed.`);
+  }
+  if ([home, path.join(home, 'server'), path.join(home, 'member')].some(file => fs.lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink())) {
+    throw new Error('Refusing --purge of a symlinked home, member or Deployment directory; no files were removed.');
+  }
+}
+
+function assertServerUninstalled(home: string, deps: WorkerServiceDeps = {}): void {
+  const platform = deps.platform ?? process.platform;
+  const spec = defaultSpec(deps.binaryPath ?? process.execPath, deps.home ?? resolveHomeDir(), platform, home);
+  const options = { platform, runner: deps.runner };
+  const ownership = serviceHomeOwnership(spec, options);
+  if (ownership === 'foreign') return;
+  if (ownership === 'unknown') throw new Error('Cannot establish which home the native Deployment service serves; reconcile its service before purge.');
+  const installed = ownership === 'same';
+  const task = !installed && platform === 'win32' ? statusOfService(spec, { ...options, inspectMissing: true }) : null;
+  if (task?.detail === "the platform's service manager could not be run") {
+    throw new Error('Cannot inspect the native Deployment scheduled task; purge aborted.');
+  }
+  if (installed || task?.loaded) throw new Error(`Refusing --purge while a native Deployment service is installed. Run \`myco server uninstall --target local\` with MYCO_HOME=${home} first; stopping it leaves the installed service in place.`);
+}
 
 /** Existing paths whose loss requires separate, explicit consent. */
 export function deploymentLosses(home: string): string[] {
   const losses: string[] = [];
-  if (fs.existsSync(path.join(home, 'server'))) {
-    losses.push(`Deployment files at ${path.join(home, 'server')} (all retained contents, including any databases, object storage, configuration and credentials). `
-      + 'Back it up outside this home with `myco server backup --target local --to <backup-dir>`, or move the Deployment first.');
+  const server = path.join(home, 'server');
+  if (fs.existsSync(server)) {
+    losses.push(`Deployment files at ${server} (all retained contents, including any databases, object storage, configuration and credentials).`);
+    if (fs.existsSync(path.join(server, 'local'))) losses.push('Back up the local Deployment outside this home with `myco server backup --target local --to <backup-dir>`.');
   }
-  for (const record of [path.join(home, 'server', 'cloudflare', 'record.json'), path.join(home, 'server', 'cloudflare.json')]) {
+  for (const record of [path.join(server, 'cloudflare', 'record.json'), path.join(server, 'cloudflare.json')]) {
     if (fs.existsSync(record)) losses.push(`Cloudflare operator record at ${record} (Deployment resource identities and recovery metadata). `
-      + 'Back up the Deployment with `myco server backup --target cloudflare --to <backup-dir>` and move this operator record outside the home first.');
+      + 'Back up the Deployment with `myco server backup --target cloudflare --to <backup-dir>`. '
+      + "Copy this record into another home's server/cloudflare/record.json, or re-adopt later with `myco server create --target cloudflare --account-id <id>`.");
   }
   return losses;
+}
+
+function legacyPreservation(home: string, entries: readonly string[]): string | null {
+  if (entries.length === 0) return null;
+  const state = legacyMigrationState(home);
+  const kept = entries.map(entry => path.join(home, entry)).join(', ');
+  return `Your 1.4 files remain at ${kept}; check backups/cutover-* before deleting them by hand.`
+    + (state.state === 'unmoved' ? ` ${LEGACY_MIGRATION_GUIDANCE}` : state.state === 'unavailable' ? ` Migration status unavailable: ${state.detail}` : '');
 }
 
 /** Remove member-owned integrations and an explicitly admitted 2.0 home. */
@@ -63,16 +110,25 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
   const purge = parsed.has('--purge');
   const allowLoss = parsed.has('--allow-deployment-loss');
   if (allowLoss && !purge) throw new Error('--allow-deployment-loss requires --purge.');
-  if (purge && [home, path.join(home, 'server')].some(file => fs.lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink())) {
-    throw new Error('Refusing --purge of a symlinked home or Deployment directory; no files were removed.');
+  if (purge) {
+    assertPurgeHome(home);
+    assertServerUninstalled(home, deps.worker);
   }
-  if (LEGACY_HOME_ENTRIES.some(entry => fs.existsSync(path.join(home, entry))) || legacyVaultFiles(home).length > 0) {
-    console.error(`Refusing to remove a Myco 1.4 home at ${home}. ${LEGACY_MIGRATION_GUIDANCE}`);
+  const entries = fs.existsSync(home) ? fs.readdirSync(home).sort() : [];
+  const legacy = entries.filter(entry => LEGACY_HOME_ENTRIES.includes(entry));
+  const legacyMessage = legacyPreservation(home, legacy);
+  if (purge && !isMemberHome(home) && (legacy.length > 0 || legacyVaultFiles(home).length > 0)) {
+    console.error(`Refusing --purge of a Myco 1.4 home at ${home}. ${legacyMessage ?? LEGACY_MIGRATION_GUIDANCE}`);
     process.exitCode = 1;
     return;
   }
+  const preserveReceipt = legacy.length > 0 && fs.existsSync(path.join(home, 'member', 'cutover.json'));
+  const deletions = entries.filter(entry => MEMBER_HOME_PURGE_ENTRIES.some(owned => owned === entry)).flatMap(entry =>
+    entry === 'member' && preserveReceipt
+      ? fs.readdirSync(path.join(home, entry)).filter(file => file !== 'cutover.json').map(file => path.join(entry, file))
+      : [entry]);
   const losses = deploymentLosses(home);
-  if (purge && fs.existsSync(home) && !isMemberHome(home) && listRunnerRecords(home).length === 0 && losses.length === 0) {
+  if (purge && deletions.length > 0 && !isMemberHome(home) && listRunnerRecords(home).length === 0 && losses.length === 0) {
     console.error(`Refusing --purge: ${home} is not a registered Myco 2.0 home. Its files were preserved.`);
     process.exitCode = 1;
     return;
@@ -84,13 +140,15 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
     return;
   }
   const summary = `Remove this home's member registrations and worker/runner services. `
-    + (purge ? `DELETE ${home} (credentials and buffered capture).\n${losses.join('\n')}` : `Preserve data at ${home}.`);
+    + (purge ? `Delete only these 2.0 entries (including member credentials and buffered capture):\n${deletions.map(entry => `DELETE ${path.join(home, entry)}`).join('\n')}\n${losses.join('\n')}` : `Preserve data at ${home}.`);
   if (!parsed.has('--yes') && !await (deps.confirm ?? confirmDestructive)(summary)) {
     console.error('Aborted — nothing was removed.');
     process.exitCode = 1;
     return;
   }
-  const deployment = readProvisionRecord(home)?.serverUrl ?? readDefaultDeployment(home)?.serverUrl ?? null;
+  const provision = readProvisionRecord(home);
+  const memberOwned = isMemberHome(home) || provision !== null;
+  const deployment = provision?.serverUrl ?? readDefaultDeployment(home)?.serverUrl ?? null;
   const registrations = loadManifests().map(manifest => {
     const installer = new SymbiontInstaller(manifest, home, resolvePackageRoot(), false, undefined, null, 'member-global', home).withoutProjectRoot();
     if (deployment !== null) installer.forDeployment(deployment);
@@ -100,7 +158,7 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
     const registered = hooks.member || mcp.some(entry => entry.carriesCredential);
     if (registered) installer.assertMemberUninstallable();
     const target = manifest.registration?.globalSkillsTarget;
-    const removeSkills = target ? prepareMemberSkillRemoval(home, skillsFolder(target)) : () => {};
+    const removeSkills = target && (memberOwned || registered) ? prepareMemberSkillRemoval(home, skillsFolder(target)) : () => {};
     return { installer, registered, removeSkills };
   });
   const remove = (): void => {
@@ -111,7 +169,7 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
       removeSkills();
     }
     if (purge && fs.existsSync(home)) {
-      for (const entry of fs.readdirSync(home)) {
+      for (const entry of deletions) {
         if (losses.length > 0 && entry === 'server') {
           const server = path.join(home, entry);
           for (const file of fs.readdirSync(server)) {
@@ -135,8 +193,11 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
       for (const file of DEPLOYMENT_LEASE_FILES) fs.rmSync(path.join(server, file), { force: true });
       fs.rmdirSync(server);
     }
-    fs.rmdirSync(home);
+    if (fs.readdirSync(home).length === 0) fs.rmdirSync(home);
   }
-  console.log(purge ? `Purged member home ${home}.` : `Member install removed; preserved data at ${home}.`);
+  if (purge && preserveReceipt) console.log(`Preserved migration receipt at ${path.join(home, 'member', 'cutover.json')}.`);
+  if (legacyMessage) console.log(legacyMessage);
+  if (purge && fs.existsSync(home)) console.log(`Preserved entries at ${home}: ${fs.readdirSync(home).join(', ')}`);
+  console.log(purge ? `Purged owned 2.0 entries at ${home}.` : `Member install removed; preserved data at ${home}.`);
   if (purge && process.platform === 'win32') console.log('Preserved the shared Windows managed binary and versions outside this home; other Myco homes may use them.');
 }

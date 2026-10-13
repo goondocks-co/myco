@@ -13,6 +13,9 @@ import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { LocalVolume } from '@myco/server/local-volume.js';
 import { resolveLocalPaths } from '@myco/server/local.js';
 import { spyOn } from 'bun:test';
+import { retiredVerbMessage } from '@myco/cli/retired-verbs.js';
+import { legacyMigrationState } from '@myco/member/legacy-migration.js';
+import { defaultSpec, servicePaths, renderUnit } from '@myco/server/service.js';
 
 const SERVER = 'https://member.example';
 let root: string;
@@ -98,7 +101,7 @@ describe('member-only remove', () => {
     const before = snapshot(legacy.root);
     await run(['--purge', '--yes'], deps());
     expect(process.exitCode).toBe(0);
-    expect(fs.existsSync(home)).toBe(false);
+    expect(fs.readdirSync(home)).toEqual(['backups']);
     expect(snapshot(legacy.root)).toEqual(before);
   });
 
@@ -107,6 +110,21 @@ describe('member-only remove', () => {
     const before = snapshot(legacy.root);
     await run(['--purge', '--allow-deployment-loss', '--yes'], { ...deps(), mycoHome: legacy.mycoHome });
     expect(process.exitCode).toBe(1);
+    expect(snapshot(legacy.root)).toEqual(before);
+    expect(platform.commands).toEqual([]);
+  });
+
+  it('plain remove leaves a legacy-only home and its legacy skill links byte-identical', async () => {
+    const legacy = legacyFixtureHome(path.join(root, 'legacy'));
+    Object.assign(process.env, sandboxChildEnv(root, { HOME: legacy.home, MYCO_HOME: legacy.mycoHome }));
+    const source = path.join(legacy.mycoHome, 'skills', 'old-skill');
+    const target = path.join(legacy.home, '.claude', 'skills', 'old-skill');
+    fs.mkdirSync(source, { recursive: true });
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.symlinkSync(source, target, 'dir');
+    const before = snapshot(legacy.root);
+    await run(['--yes'], { ...deps(), mycoHome: legacy.mycoHome, worker: { ...deps().worker, home: legacy.home } });
+    expect(process.exitCode).toBe(0);
     expect(snapshot(legacy.root)).toEqual(before);
     expect(platform.commands).toEqual([]);
   });
@@ -120,41 +138,194 @@ describe('member-only remove', () => {
     expect(platform.commands).toEqual([]);
   });
 
-  for (const entry of ['config.yaml', 'myco.yaml', 'service/daemon.json', 'myco.db']) {
-    it(`preserves a legacy-only home containing ${entry} without a nonempty vault`, async () => {
+  for (const entry of ['groves/empty', 'config.yaml', 'myco.yaml', 'service/daemon.json', 'myco.db']) {
+    it(`preserves and names legacy ${entry} in a member home`, async () => {
+      member();
       write(entry, '');
+      const output = spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        await run(['--purge', '--allow-deployment-loss', '--yes'], deps());
+        expect(process.exitCode).toBe(0);
+        expect(fs.readFileSync(path.join(home, entry), 'utf8')).toBe('');
+        expect(output.mock.calls.flat().join('\n')).toContain(`Your 1.4 files remain at ${path.join(home, entry.split('/')[0])}`);
+      } finally { output.mockRestore(); }
+    });
+  }
+
+  it('preserves unrecognized entries on a repeated or unregistered home', async () => {
+    write('unrecognized.txt');
+    const before = snapshot(root);
+    await run(['--purge', '--yes'], deps());
+    expect(process.exitCode).toBe(0);
+    expect(snapshot(root)).toEqual(before);
+  });
+
+  it('plain remove and purge work after cutover, preserving legacy vault and backups byte for byte', async () => {
+    member();
+    const legacy = legacyFixtureHome(path.join(root, 'legacy'));
+    const vault = path.join(home, 'groves', 'grove_fixture', 'myco.db');
+    fs.mkdirSync(path.dirname(vault), { recursive: true });
+    fs.copyFileSync(legacy.vault, vault);
+    write('config.yaml', 'legacy settings');
+    write('backups/cutover-fixture/myco.db', fs.readFileSync(vault).toString('base64'));
+    const stamp = fs.statSync(vault);
+    write('member/cutover.json', JSON.stringify({ version: 2, backups: {}, handover: { at: 1, legacyHomes: [home], agents: [] }, migrations: {
+      [vault]: { digest: 'fixture', size: stamp.size, mtimeMs: stamp.mtimeMs, projects: Object.fromEntries(legacy.projects.map(p => [p.id, { destination: { skip: true, at: 1 } }])) },
+    } }));
+    fs.chmodSync(path.join(home, 'member/cutover.json'), 0o600);
+    expect(legacyMigrationState(home).state).toBe('moved');
+    expect(await retiredVerbMessage('restart')).not.toContain('myco cutover');
+    const before = snapshot(path.join(home, 'groves'));
+    const backups = snapshot(path.join(home, 'backups'));
+    await run(['--yes'], deps());
+    expect(process.exitCode).toBe(0);
+    expect(fs.readFileSync(path.join(user, '.claude', 'settings.json'), 'utf8')).not.toContain('--credential');
+    const output = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await run(['--purge', '--yes'], deps());
+      expect(process.exitCode).toBe(0);
+      expect(snapshot(path.join(home, 'groves'))).toEqual(before);
+      expect(snapshot(path.join(home, 'backups'))).toEqual(backups);
+      expect(fs.readFileSync(path.join(home, 'config.yaml'), 'utf8')).toBe('legacy settings');
+      expect(fs.readdirSync(path.join(home, 'member'))).toEqual(['cutover.json']);
+      expect(legacyMigrationState(home).state).toBe('moved');
+      await run(['--purge', '--yes'], deps());
+      expect(process.exitCode).toBe(0);
+      expect(legacyMigrationState(home).state).toBe('moved');
+      const message = output.mock.calls.flat().join('\n');
+      expect(message).toContain('check backups/cutover-* before deleting them by hand');
+      expect(message).not.toContain('myco login');
+    } finally { output.mockRestore(); }
+  });
+
+  for (const unsafe of ['user', 'ancestor', 'cwd', 'root', 'symlink-user', 'symlink-ancestor']) {
+    it(`refuses purge of ${unsafe} before any teardown`, async () => {
+      member();
+      const previous = process.cwd();
+      let target = unsafe === 'user' ? user : unsafe === 'ancestor' ? root : unsafe === 'root' ? path.parse(root).root : home;
+      if (unsafe === 'cwd') process.chdir(home);
+      if (unsafe.startsWith('symlink')) {
+        target = path.join(root, 'unsafe-link');
+        fs.symlinkSync(unsafe === 'symlink-user' ? user : root, target, 'dir');
+      }
+      if (unsafe !== 'root' && unsafe !== 'cwd') writeDeploymentMembership({ serverUrl: SERVER, token: 'm'.repeat(43), machineId: 'guard-fixture', joinedAt: 1, updatedAt: 1 } as never, { mycoHome: fs.realpathSync(target) });
       const before = snapshot(root);
-      await run(['--purge', '--allow-deployment-loss', '--yes'], deps());
-      expect(process.exitCode).toBe(1);
+      try {
+        await expect(run(['--purge', '--allow-deployment-loss', '--yes'], { ...deps(), mycoHome: target })).rejects.toThrow('Refusing --purge');
+        expect(snapshot(root)).toEqual(before);
+        expect(platform.commands).toEqual([]);
+      } finally { process.chdir(previous); }
+    });
+  }
+
+  it('deletes only the named 2.0 entries and lists the exact plan and retained unknown files', async () => {
+    member();
+    for (const entry of ['bin/myco', 'install.json', 'runtime.command', 'runtime.home', 'logs/member.log', 'worker/refusals/fixture']) write(entry);
+    write('unrecognized.txt', 'user document');
+    write('Documents/thesis.docx', 'user research');
+    let prompt = '';
+    const output = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await run(['--purge'], { ...deps(), confirm: async summary => { prompt = summary; return true; } });
+      expect(process.exitCode).toBe(0);
+      expect(fs.readFileSync(path.join(home, 'unrecognized.txt'), 'utf8')).toBe('user document');
+      expect(fs.readFileSync(path.join(home, 'Documents/thesis.docx'), 'utf8')).toBe('user research');
+      expect(fs.readdirSync(home).sort()).toEqual(['Documents', 'backups', 'unrecognized.txt']);
+      for (const entry of ['member', 'skills', 'bin', 'install.json', 'runtime.command', 'runtime.home', 'logs', 'worker']) expect(prompt).toContain(`DELETE ${path.join(home, entry)}`);
+      expect(prompt).not.toContain('DELETE ' + path.join(home, 'Documents'));
+      expect(output.mock.calls.flat().join('\n')).toContain('unrecognized.txt');
+    } finally { output.mockRestore(); }
+  });
+
+  for (const osPlatform of ['darwin', 'linux', 'win32'] as const) {
+    it(`refuses purge with an installed native Deployment service on ${osPlatform}`, async () => {
+      member();
+      const spec = defaultSpec(path.join(home, 'bin', 'myco'), user, osPlatform, home);
+      const paths = servicePaths(spec, osPlatform);
+      fs.mkdirSync(path.dirname(paths.unitFile), { recursive: true });
+      fs.writeFileSync(paths.unitFile, renderUnit(spec, paths, osPlatform));
+      const before = snapshot(root);
+      await expect(run(['--purge', '--allow-deployment-loss', '--yes'], { ...deps(), worker: { ...deps().worker, platform: osPlatform } })).rejects.toThrow('myco server uninstall --target local');
       expect(snapshot(root)).toEqual(before);
       expect(platform.commands).toEqual([]);
     });
   }
 
-  it('preserves an unrecognized home', async () => {
-    write('unrecognized.txt');
-    const before = snapshot(root);
-    await run(['--purge', '--yes'], deps());
-    expect(process.exitCode).toBe(1);
-    expect(snapshot(root)).toEqual(before);
-  });
+  for (const osPlatform of ['darwin', 'linux', 'win32'] as const) {
+    it(`preserves a foreign native Deployment service while purging this member home on ${osPlatform}`, async () => {
+      member();
+      const other = path.join(root, 'other-deployment');
+      const spec = defaultSpec(path.join(other, 'bin', 'myco'), user, osPlatform, other);
+      const paths = servicePaths(spec, osPlatform);
+      fs.mkdirSync(path.dirname(paths.unitFile), { recursive: true });
+      const unit = renderUnit(spec, paths, osPlatform);
+      fs.writeFileSync(paths.unitFile, unit);
+      await run(['--purge', '--yes'], { ...deps(), worker: { ...deps().worker, platform: osPlatform } });
+      expect(process.exitCode).toBe(0);
+      expect(fs.readFileSync(paths.unitFile, 'utf8')).toBe(unit);
+      expect(fs.existsSync(path.join(home, 'member'))).toBe(false);
+      expect(platform.commands.some(command => command.includes('myco-server'))).toBe(false);
+    });
+  }
 
-  it('preserves legacy state even when the home also holds a member registration', async () => {
+  it('refuses a symlinked member parent before preserving a cutover receipt or deleting external children', async () => {
     member();
     write('config.yaml', 'legacy settings');
+    const external = path.join(root, 'external-member');
+    fs.renameSync(path.join(home, 'member'), external);
+    fs.writeFileSync(path.join(external, 'cutover.json'), JSON.stringify({ backups: {} }), { mode: 0o600 });
+    fs.writeFileSync(path.join(external, 'personal-document'), 'preserve external bytes');
+    fs.symlinkSync(external, path.join(home, 'member'), 'dir');
     const before = snapshot(root);
-    await run(['--purge', '--allow-deployment-loss', '--yes'], deps());
-    expect(process.exitCode).toBe(1);
+    await expect(run(['--purge', '--yes'], deps())).rejects.toThrow('symlinked');
     expect(snapshot(root)).toEqual(before);
     expect(platform.commands).toEqual([]);
   });
 
-  it('a repeated purge succeeds after the member home is gone', async () => {
+  for (const osPlatform of ['darwin', 'linux', 'win32'] as const) {
+    it(`refuses the native service for a physical alias of this home on ${osPlatform}`, async () => {
+      member();
+      write('server/local/myco.sqlite', 'deployment bytes');
+      const alias = path.join(root, 'home-alias');
+      fs.symlinkSync(home, alias, 'dir');
+      const spec = defaultSpec(path.join(home, 'bin', 'myco'), user, osPlatform, alias);
+      const paths = servicePaths(spec, osPlatform);
+      fs.mkdirSync(path.dirname(paths.unitFile), { recursive: true });
+      fs.writeFileSync(paths.unitFile, renderUnit(spec, paths, osPlatform));
+      const before = snapshot(root);
+      await expect(run(['--purge', '--allow-deployment-loss', '--yes'], { ...deps(), worker: { ...deps().worker, platform: osPlatform } })).rejects.toThrow('myco server uninstall --target local');
+      expect(snapshot(root)).toEqual(before);
+      expect(platform.commands).toEqual([]);
+    });
+  }
+
+  it('refuses ambiguous native service ownership before any teardown', async () => {
+    member();
+    const spec = defaultSpec(path.join(home, 'bin', 'myco'), user, 'darwin', home);
+    const unit = servicePaths(spec, 'darwin').unitFile;
+    fs.mkdirSync(path.dirname(unit), { recursive: true });
+    fs.writeFileSync(unit, '<key>MYCO_HOME</key><string>relative-home</string>');
+    const before = snapshot(root);
+    await expect(run(['--purge', '--yes'], deps())).rejects.toThrow('Cannot establish which home');
+    expect(snapshot(root)).toEqual(before);
+    expect(platform.commands).toEqual([]);
+  });
+
+  it('refuses a registered Windows server task even when its XML file is missing', async () => {
+    member();
+    platform.loaded.add('myco-server');
+    const before = snapshot(root);
+    await expect(run(['--purge', '--allow-deployment-loss', '--yes'], { ...deps(), worker: { ...deps().worker, platform: 'win32' } })).rejects.toThrow('myco server uninstall --target local');
+    expect(snapshot(root)).toEqual(before);
+    expect(platform.commands.every(command => command.startsWith('schtasks /Query') || command.startsWith('powershell.exe'))).toBe(true);
+  });
+
+  it('a repeated purge preserves retained backups', async () => {
     member();
     await run(['--purge', '--yes'], deps());
     await run(['--purge', '--yes'], deps());
     expect(process.exitCode).toBe(0);
-    expect(fs.existsSync(home)).toBe(false);
+    expect(fs.readdirSync(home)).toEqual(['backups']);
   });
 
   for (const directory of ['home', 'server']) {
@@ -245,7 +416,13 @@ for (const artifact of ['server/local/myco.sqlite', 'server/cloudflare/record.js
     member();
     write(artifact);
     expect(deploymentLosses(home).join('\n')).toContain('myco server backup --target');
-    if (artifact.includes('cloudflare')) expect(deploymentLosses(home).join('\n')).toContain('resource identities and recovery metadata');
+    if (artifact.includes('cloudflare')) {
+      const message = deploymentLosses(home).join('\n');
+      expect(message).toContain('resource identities and recovery metadata');
+      expect(message).not.toContain('backup --target local');
+      expect(message).toContain('myco server create --target cloudflare --account-id <id>');
+      expect(message).toContain("another home's server/cloudflare/record.json");
+    }
     const before = snapshot(root);
     await run(['--purge', '--yes'], deps());
     expect(process.exitCode).toBe(1);
