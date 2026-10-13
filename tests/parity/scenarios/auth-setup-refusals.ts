@@ -82,7 +82,7 @@ export const authSetupRefusals: ParityScenario = {
       for (const path of ['/auth/me', '/auth/login']) {
         const response = await fetch(url + path, { headers: { 'cf-connecting-ip': '1.2.3.4', 'x-test-sign-in-unconfigured': '1' }, redirect: 'manual' });
         expect(response.status).toBe(401);
-        expect(await response.json()).toMatchObject({ error: 'sign_in_unconfigured', reason: expect.stringContaining(`myco server github-app --url ${url}`) });
+        expect(await response.json()).toMatchObject({ error: 'sign_in_unconfigured', reason: expect.stringContaining(`myco setup for ${url}`) });
         expect(response.headers.get('location')).toBeNull();
       }
     } finally { await native?.stop(); }

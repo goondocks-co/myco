@@ -174,7 +174,7 @@ describe('the Windows installer', () => {
     expect(run.status).not.toBe(0);
     expect(run.out).toContain('Nothing was installed');
     expect(run.out).toContain('-Replace14');
-    expect(run.out).toContain('myco cutover --dry-run');
+    expect(run.out).toContain('then run myco setup. Manual preview: myco cutover --dry-run.');
     expect(run.out).not.toContain('Found: myco/v1.');
     expect(fs.readFileSync(run.exe)).toEqual(run.before!);
   });
@@ -240,11 +240,16 @@ describe('the Windows installer', () => {
       if (scenario.install.startsWith('1.')) {
         expect(run.out).toContain('To move to 2.0:');
         expect(run.out).toContain('--replace-1.4');
+        expect(run.out).not.toContain('myco login');
+        expect(run.out).not.toContain('myco server create');
+        expect(run.out).toContain('After installing 2.0, run `myco setup` to guide the move.');
+        expect(run.out).not.toContain('invite link');
+      }
+      if (scenario.replace) {
+        expect(run.out).toContain("  Run `myco setup` to guide the move to 2.0.\n  Setup can also run Myco's work on an always-on machine (a runner).\n  For the manual path, preview with myco cutover --dry-run, then review before myco cutover.");
       }
       if (!scenario.current && !scenario.joined) {
-        expect(run.out).toContain('myco login <your-myco-address>');
-        expect(run.out).toContain('docs/self-hosting.md');
-        expect(run.out).not.toContain('myco setup');
+        expect(run.out).toContain("  Run `myco setup`.\n  Choose to start your own Myco, join one, or run Myco's work\n  on an always-on machine (a runner).");
       }
     }
   });

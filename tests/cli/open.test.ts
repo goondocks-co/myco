@@ -53,7 +53,7 @@ describe('myco open', () => {
     const said: string[] = [];
     expect(await run([], { cwd: root, mycoHome: home, openBrowser: (url) => opened.push(url), stderr: (line) => said.push(line) })).toBe(false);
     expect(opened).toEqual([]);
-    expect(JOIN_A_DEPLOYMENT).toContain('myco login <address>');
+    expect(JOIN_A_DEPLOYMENT).toBe("Run `myco setup` to start your own Myco, join one with its address, or run Myco's work on an always-on machine (a runner).");
     expect(JOIN_A_DEPLOYMENT).not.toContain('admin gave you');
     expect(said).toEqual([`This machine has not joined a Deployment, so there is no dashboard to open. ${JOIN_A_DEPLOYMENT}`]);
   });

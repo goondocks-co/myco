@@ -44,7 +44,7 @@ for (const args of [[], ['--join', STATUS_URL]]) for (const inside of [false, tr
     const text = lines.join('\n');
     expect(text).toContain(`Deployment ${STATUS_URL}`);
     expect(text).toContain('Signed in: This machine is signed in');
-    expect(text).toContain('Agent hooks: Agent hooks are out of date');
+    expect(text).toContain('Agent hooks: Out of date; run myco member provision --refresh.');
     expect(text).toContain(`myco member provision --refresh`);
     expect(text).toContain('Default Deployment: Not selected. New repositories will not automatically join');
     expect(text).toContain(`myco login --default <address>`);
@@ -266,6 +266,7 @@ it('describes current global hooks against their recorded Deployment and shorten
   expect(text).not.toContain(process.env.HOME!);
   expect(text).toContain('Capture: 1 repository:');
   expect(text.match(/Repos\/synthetic/g)).toHaveLength(1);
+  expect(text).toContain(`    synthetic: 1 event waiting; delivery paused until ${new Date(STATUS_NOW).toISOString()}.`);
 });
 
 it('uses recorded global hooks even when saved answers declined agents for another Deployment', async () => {
@@ -273,7 +274,7 @@ it('uses recorded global hooks even when saved answers declined agents for anoth
   recordProvision(fixture.home, { serverUrl: other, agents: ['claude-code'], version: 'stale-version', at: 1 });
   const facts = await observeSetupStatus(fixture.home, { role: 'join', url: STATUS_URL, noAgents: true }, deps());
   expect(facts.find(fact => fact.id === 'machine.agents')).toMatchObject({ detail: 'stale', state: 'incomplete', hooksDeployment: other });
-  expect(renderSetupStatus(facts).join('\n')).toContain('Agent hooks are out of date; run myco member provision --refresh');
+  expect(renderSetupStatus(facts).join('\n')).toContain('Agent hooks: Out of date; run myco member provision --refresh.');
 });
 it('explains destination selection when legacy still owns capture', () => {
   expect(renderSetupStatus([{ id: 'legacy', scope: fixture.home, state: 'incomplete', detail: 'needs-destination Agent setup deferred until cutover.' }])).toEqual([
@@ -298,4 +299,25 @@ it('reports stored home facts even when no journey remains', async () => {
   expect(facts.find(fact => fact.id === 'machine.agents')).toMatchObject({ detail: 'stale', hooksDeployment: STATUS_URL });
   expect(facts.find(fact => fact.id === 'default')).toMatchObject({ detail: STATUS_URL });
   for (const fact of facts) expect(fact).not.toHaveProperty('deployment');
+});
+
+it('prints one declined runner-service line while preserving registration and unavailable observations', async () => {
+  const record = runnerRecordPath(STATUS_URL, fixture.home);
+  fs.mkdirSync(path.dirname(record), { recursive: true });
+  fs.writeFileSync(record, JSON.stringify({ version: 1, serverUrl: STATUS_URL, name: 'Synthetic runner', token: newRunnerBearer(), runnerId: 'rn_synthetic', deploymentId: 'synthetic' }), { mode: 0o600 });
+  saveSetupFile(fixture.home, { version: 1, answers: { role: 'runner', url: STATUS_URL, runnerService: 'skip' }, consented: {} });
+  await run(['--status'], deps());
+  const declined = lines.filter(line => /Runner start at login:|Runner service:|Runner agents:/.test(line));
+  expect(declined).toEqual([`  Runner start at login: Declined. Run myco runner run --server ${STATUS_URL} when ready.`]);
+  expect(lines.join('\n')).toContain('Runner: live: Synthetic runner');
+  expect(renderSetupStatus([
+    { id: 'runner.service.choice', scope: STATUS_URL, deployment: STATUS_URL, state: 'complete', detail: 'skip' },
+    { id: 'runner.service', scope: STATUS_URL, deployment: STATUS_URL, state: 'unavailable', detail: 'cannot read service' },
+  ]).join('\n')).toContain('Runner service: Could not read Runner service: cannot read service.');
+});
+
+it('prints the agent-hook label once when setup is missing', () => {
+  expect(renderSetupStatus([{ id: 'machine.agents', scope: fixture.home, state: 'absent', detail: 'none', hooksDeployment: STATUS_URL }])).toEqual([
+    `Agent hooks: Not set up; run myco member provision --server ${STATUS_URL}.`,
+  ]);
 });

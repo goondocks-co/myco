@@ -33,7 +33,7 @@ describe('device approval page', () => {
     it(`names the recovery for ${state} without offering device actions`, async () => {
       globalThis.fetch = (async () => Response.json({ ...ME, member: null, membership: { state, reason: null } })) as typeof fetch;
       mount();
-      expect(await screen.findByText(state === 'unclaimed' ? /myco server setup-owner/ : /Ask an owner or admin/)).toBeTruthy();
+      expect(await screen.findByText(state === 'unclaimed' ? 'This Myco has no owner yet, so nobody can approve this machine. Whoever created it must run myco setup on the machine that created it, then open and complete the fresh owner link.' : /Ask an owner or admin/)).toBeTruthy();
       expect(screen.queryByText('Check machine')).toBeNull();
     });
   }

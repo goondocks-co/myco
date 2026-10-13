@@ -30,7 +30,7 @@ describe('myco runner register', () => {
   let err: string[];
   let calls: Call[];
 
-  for (const [status, error, words] of [[409, 'no_owner', 'myco server setup-owner'], [403, 'not_admin', 'owner or an admin'], [429, 'limited', 'Wait a minute'], [400, 'unknown', 'refused to start']] as const) {
+  for (const [status, error, words] of [[409, 'no_owner', 'myco setup'], [403, 'not_admin', 'owner or an admin'], [429, 'limited', 'Wait a minute'], [400, 'unknown', 'refused to start']] as const) {
     it(`explains start refusal ${error} without polling`, async () => {
       const exit = await run(['register', SERVER, '--name', NAME], {
         mycoHome: home, hostname: () => 'Laptop', machineId: 'new_runner', stdout: line => out.push(line), stderr: line => err.push(line),

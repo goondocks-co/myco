@@ -146,13 +146,13 @@ describe('auth setup refusals', () => {
       for (const path of ['/auth/me', '/auth/login']) {
         const response = await server.handleRequest(new Request('https://s' + path), env);
         expect(response.status).toBe(401);
-        expect(await response.json()).toMatchObject({ error: 'sign_in_unconfigured', reason: expect.stringContaining('myco server github-app --url https://s') });
+        expect(await response.json()).toMatchObject({ error: 'sign_in_unconfigured', reason: expect.stringContaining('myco setup for https://s') });
         expect(response.headers.get('location')).toBeNull();
       }
       const browser = await server.handleRequest(new Request('https://s/auth/login', { headers: { accept: 'text/html' } }), env);
       expect(browser.status).toBe(401);
       expect(browser.headers.get('content-type')).toContain('text/html');
-      expect(await browser.text()).toContain('myco server github-app --url https://s');
+      expect(await browser.text()).toContain('myco setup for https://s');
       env.sourceLimit = { limit: async () => ({ success: false }) };
       expect((await server.handleRequest(new Request('https://s/auth/me'), env)).status).toBe(429);
     } finally { e.sqlite.close(); }

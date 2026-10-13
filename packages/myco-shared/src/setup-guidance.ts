@@ -16,13 +16,12 @@ const CODEX_INSTALLATION_REASONS: Readonly<Record<CodexInstallationRule, string>
 };
 export const codexInstallationRefusal = (directory: string, rule: CodexInstallationRule): string =>
   `Myco won't run Codex from ${directory}: that folder ${CODEX_INSTALLATION_REASONS[rule]}, so a run could reach what it must not. Install Codex somewhere narrower (for example npm install -g @openai/codex), then check myco runner status.`;
-export const DOCTOR_SIGN_IN = 'this machine has joined no Myco. Run `myco login <address>`.';
+export const DOCTOR_SIGN_IN = 'this machine has joined no Myco. Run `myco setup`.';
 export const DOCTOR_REFUSED_HOOK_REPAIR = 'Run `myco member provision` to rewrite the hooks Myco installed; start a new agent session to check capture.';
-export const OWNER_SETUP_COMMAND = 'myco server setup-owner';
-export const SIGN_IN_SETUP_COMMAND = 'myco server github-app';
+export const OWNER_SETUP_COMMAND = 'myco setup';
 export const OWNER_UNCLAIMED = `This Myco has no owner yet, so nobody can approve this machine. Whoever created it must run ${OWNER_SETUP_COMMAND} on the machine that created it, then open and complete the fresh owner link.`;
 export const OWNER_LINK_DENIED = `This owner link has expired or was already used. On the machine that created this Myco, run ${OWNER_SETUP_COMMAND} again for a fresh link, then open and complete it.`;
-export const SIGN_IN_UNCONFIGURED = (origin: string): string => `GitHub sign-in is not set up for this Myco. Whoever created it must run ${SIGN_IN_SETUP_COMMAND} --url ${origin} on the machine that created it, then reload this page.`;
+export const SIGN_IN_UNCONFIGURED = (origin: string): string => `GitHub sign-in is not set up for this Myco. Whoever created it must run ${OWNER_SETUP_COMMAND} for ${origin} on the machine that created it, then reload this page.`;
 export const ACCOUNT_UNLINKED = 'Your GitHub account is not connected to a member of this Myco. Ask an owner or admin to connect it from People & machines, then open the link they send while signed in to this account.';
 export const SIGN_IN_WAIT = 'If nobody approves within 10 minutes, this stops; the approval page says what is missing.';
 export const SETUP_CREATE_GUIDANCE = {
@@ -45,7 +44,7 @@ export const LINK_REFUSALS: Readonly<Record<string, string>> = {
   member_revoked: 'That membership is inactive. Ask an owner or admin to restore access, then ask for a fresh link.',
   link_requires_admin: ACCOUNT_UNLINKED,
 };
-export const noOwnerSignIn = (url: string): string => `${url} has no owner yet, so nobody can approve this machine. Whoever created it finishes with ${OWNER_SETUP_COMMAND} on the machine that created it, then run myco login ${url} again.`;
+export const noOwnerSignIn = (url: string): string => `${url} has no owner yet, so nobody can approve this machine. Whoever created it finishes with ${OWNER_SETUP_COMMAND} on the machine that created it, then run myco setup --join ${url} again.`;
 
 export const ownerLinkNext = (url: string, target: 'local' | 'cloudflare'): string =>
   `It expires in 15 minutes; run myco server setup-owner --target ${target} again for a fresh one.${target === 'local' ? ' Stop it first with Ctrl-C in its terminal, or myco server uninstall --target local; then start it with myco server install --target local.' : ''} Then on each machine you use: myco login ${new URL(url).origin}.`;
