@@ -116,7 +116,7 @@ describe('the auth gate', () => {
   it('a member reaches the application', async () => {
     server({ '/auth/me': () => Response.json(dashboardMe(ME)), '/api/projects': () => Response.json({ projects: [] }) });
     mount('/projects');
-    expect(await within(await screen.findByRole('main')).findByText('No projects yet.')).toBeTruthy();
+    expect(await within(await screen.findByRole('main')).findByText('Get started')).toBeTruthy();
   });
 
   it('a signed-in account that is not a member reaches the not-a-member page', async () => {

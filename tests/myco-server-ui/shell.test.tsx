@@ -93,12 +93,11 @@ async function openScope(): Promise<HTMLElement> {
 const scopeOptions = (menu: HTMLElement) => [...menu.querySelectorAll<HTMLElement>('[data-scope-option]')];
 
 describe('the dashboard shell', () => {
-  it('names an existing sign-in command when there are no projects', async () => {
+  it('shows Get started with existing setup commands when there are no projects', async () => {
     server({ '/auth/me': me(), '/api/projects': () => Response.json(dashboardMe({ projects: [] })) });
     mount('/projects');
-    expect(await within(await screen.findByRole('main')).findByText('No projects yet.')).toBeTruthy();
-    expect(await screen.findByText(`myco login ${window.location.origin}`)).toBeTruthy();
-    expect(screen.queryByText('myco setup')).toBeNull();
+    expect(await within(await screen.findByRole('main')).findByText('Get started')).toBeTruthy();
+    expect(screen.getAllByText('myco setup').length).toBeGreaterThan(0);
   });
 
   it('shows the sign-in state when the server answers 401', async () => {

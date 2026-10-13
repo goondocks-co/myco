@@ -212,3 +212,17 @@ export interface TodaySporePage {
   readonly spores: readonly TodaySpore[];
   readonly total: number;
 }
+
+/** Observed setup facts; a member's runner counts are redacted. */
+export interface SetupProgress {
+  ownerLinked: boolean;
+  viewerIsOwner: boolean;
+  signInWorking: boolean;
+  machines: { signedIn: number };
+  projects: number;
+  liveCapture: boolean;
+  runnersReady: number | null;
+  workProduced: boolean;
+  legacyWorkers: number | null;
+  queuedWithoutRunner: boolean;
+}

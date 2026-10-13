@@ -1,3 +1,4 @@
+import { GetStarted } from '../features/today/GetStarted';
 import { pendingDeviceCode } from '../lib/pending-device';
 import { ReadState } from '../design';
 import { failureWords } from '../features/work/words';
@@ -50,8 +51,6 @@ export function Today() {
   const { projectId, standIn } = useRouteProject();
   const projects = useProjects();
   if (standIn !== null) return standIn;
-  // A server with no project yet has no day to show; the Projects page says how to add one.
-  if (projectId === null && projects.data?.projects.length === 0) return <Navigate to="/projects" replace />;
   // Across every project the day's reads start beside the projects' read; the page shows once the list has answered.
   return <TodayPage projectId={projectId} waiting={projects.isPending} />;
 }
@@ -94,6 +93,7 @@ function TodayPage({ projectId, waiting }: { projectId: string | null; waiting: 
       <div className="grid items-start gap-s6 lg:grid-rail">
         {/* The rail comes first in reading order, so Needs you is reached before the day's timeline; the grid places it to the right. */}
         <div className="order-2 flex min-w-0 flex-col gap-s4 lg:col-start-2 lg:row-start-1">
+          <GetStarted />
           {!compact && <NeedsYouPanel {...needsYou} />}
           <CapturePanel
             rows={status.data?.capture}

@@ -47,7 +47,7 @@ export async function handleMachines(env: ServerEnv, ctx: OwnerContext): Promise
   return ok({ ...result, machines } satisfies DashboardMachinesAnswer);
 }
 
-function machineScope(ctx: OwnerContext): MachineScope {
+export function machineScope(ctx: OwnerContext): MachineScope {
   return isAdmin(ctx.member.role) ? { all: true } : { all: false, memberId: ctx.member.id };
 }
 
