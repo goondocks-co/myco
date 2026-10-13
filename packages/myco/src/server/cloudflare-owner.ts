@@ -16,6 +16,21 @@ import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
 import { d1OperatorStore } from './d1-operator-store.js';
 import { signInConfigured } from './github-app.js';
+import path from 'node:path';
+import fs from 'node:fs';
+import { peekDeploymentRecord } from './cloudflare.js';
+import { ownerLinked } from './local-owner.js';
+import { resolveMycoHome } from '@myco/paths/home.js';
+
+/** Read the linked administrator through the operator store without migrating the local layout. */
+export async function cloudflareOwnerLinked(options: CloudflareOwnerOptions): Promise<boolean> {
+  const record = peekDeploymentRecord(options.mycoHome);
+  if (!record?.databaseId || record.accountId !== options.accountId) throw new Error('Cloudflare owner state unavailable; check myco server status --target cloudflare for the selected account.');
+  const root = path.join(options.mycoHome ?? resolveMycoHome(), 'server');
+  const configDir = fs.existsSync(path.join(root, 'cloudflare', 'record.json')) ? path.join(root, 'cloudflare') : root;
+  const login = operatorLogin({ ...options, configDir });
+  return ownerLinked(d1OperatorStore({ accountId: record.accountId, databaseId: record.databaseId, login, fetch: options.fetch, report: options.report }));
+}
 
 export const CLOUDFLARE_SCHEMA_MISMATCH = `the Deployment must run this binary's schema (${SERVER_SCHEMA_VERSION}) before owner setup; run \`myco server update --target cloudflare\``;
 

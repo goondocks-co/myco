@@ -5,7 +5,15 @@ import { z } from 'zod';
 import { readPrivateJson, writePrivateFileAtomic } from '@myco/member/store.js';
 
 const AnswersSchema = z.object({
-  role: z.enum(['join', 'runner']).optional(),
+  role: z.enum(['create', 'join', 'runner']).optional(),
+  target: z.enum(['cloudflare', 'local']).optional(),
+  accountId: z.string().regex(/^[a-f0-9]{32}$/).optional(),
+  customUrl: z.url().refine(value => new URL(value).origin === value && new URL(value).protocol === 'https:').optional(),
+  addressChoice: z.enum(['workers.dev', 'custom']).optional(),
+  org: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9-]*$/).optional(),
+  appName: z.string().trim().min(1).max(34).optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+  serve: z.enum(['service', 'terminal']).optional(),
   url: z.url().refine((value) => new URL(value).origin === value, 'expected a Deployment origin').optional(),
   root: z.string().optional(),
   project: z.string().optional(),
@@ -25,6 +33,14 @@ const SetupFileSchema = z.object({
 export type SetupAnswers = z.infer<typeof AnswersSchema>;
 export type SetupFile = z.infer<typeof SetupFileSchema>;
 export const setupFilePath = (home: string): string => path.join(home, 'setup.json');
+
+/** The hosted address is an HTTPS origin with no embedded credentials. */
+export function setupCloudflareUrl(value: string): string {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error('--url needs an https Deployment origin, with no path, query or fragment'); }
+  if (url.protocol !== 'https:' || url.pathname !== '/' || url.search || url.hash || url.username || url.password) throw new Error('--url needs an https Deployment origin, with no path, query or fragment');
+  return url.origin;
+}
 
 export function readSetupFile(home: string): SetupFile {
   const file = setupFilePath(home);

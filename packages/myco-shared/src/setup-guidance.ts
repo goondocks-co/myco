@@ -25,6 +25,14 @@ export const OWNER_LINK_DENIED = `This owner link has expired or was already use
 export const SIGN_IN_UNCONFIGURED = (origin: string): string => `GitHub sign-in is not set up for this Myco. Whoever created it must run ${SIGN_IN_SETUP_COMMAND} --url ${origin} on the machine that created it, then reload this page.`;
 export const ACCOUNT_UNLINKED = 'Your GitHub account is not connected to a member of this Myco. Ask an owner or admin to connect it from People & machines, then open the link they send while signed in to this account.';
 export const SIGN_IN_WAIT = 'If nobody approves within 10 minutes, this stops; the approval page says what is missing.';
+export const SETUP_CREATE_GUIDANCE = {
+  loopbackOnly: 'Guided local setup is loopback only. Keep this Myco’s configuration and use myco server status --target local.',
+  addressMissing: 'Cloudflare has not reported your Myco’s address; run myco server status --target cloudflare, then myco setup again.',
+  signInPending: 'GitHub sign-in is not answering yet; check myco server github-app --target cloudflare, then run myco setup again.',
+  ownerPending: 'Owner linking is pending; run myco setup again when ready.',
+  ownerExpired: 'Owner link expired; run myco setup again to make a fresh link.',
+  ownerMissing: 'No owner link was issued; run myco server setup-owner, then myco setup again.',
+} as const;
 export const START_SLOW_DOWN = 'Too many requests. Wait a minute, then run the command again.';
 export const RUNNER_NEEDS_ADMIN = 'Only the owner or an admin can register a runner. Ask one to open the approval page and approve your code, then run myco runner register again.';
 export const DEVICE_MEMBERSHIP_REFUSAL = 'You cannot approve this request with your current membership. Ask the owner or an admin to approve a runner; sign in with your linked GitHub account to approve your own machine.';

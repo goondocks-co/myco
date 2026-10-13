@@ -11,7 +11,18 @@ Install the Myco binary using the [installation steps](quickstart.md#1.-install)
 
 **At beta, self-hosting on your own machine supports loopback access only.** Use Cloudflare for a shared address. VM hosting and exposing a local server are covered only in the [unsupported appendix](#unsupported-self-hosting).
 
-Choose the address before setting up GitHub sign-in. The sign-in callback belongs to that address; changing it means configuring sign-in again and signing machines in again. Owner creation currently uses the manual commands below.
+Choose the address before setting up GitHub sign-in. The sign-in callback belongs to that address; changing it means configuring sign-in again and signing machines in again.
+
+For guided setup, run one of these from a repository you want to connect:
+
+```bash
+myco setup --create cloudflare
+myco setup --create local
+```
+
+Setup asks for the account and address before creating Cloudflare resources. For local hosting, it asks for a port and whether to start at login or wait for you to run `myco server run --target local` in another terminal. It guides GitHub registration, private owner linking and this machine's sign-in, then asks about a project and a runner. A runner is a separate choice; creating a server never starts agent work by itself.
+
+Rerun the same command after an interruption. Progress comes from the Deployment and machine records; `setup.json` holds choices and consent fingerprints. Changed plans require fresh consent. `myco setup --status` reads local state; add `--check-remote` to check the server. Hosted owner linking is checked through your operator login during setup; status leaves that check pending. The standalone operations below remain available.
 
 ## On this machine
 

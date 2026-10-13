@@ -9,6 +9,7 @@ export interface CommandResult {
 
 /** How a command is run: where, with what environment, what it reads on stdin, and how long it may take. A secret travels on stdin, never in argv. */
 export interface RunOptions {
+  stdio?: 'inherit';
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   input?: string;
@@ -151,7 +152,7 @@ export function systemRunner(): CommandRunner {
         const child = spawn(command, [...args], {
           cwd: options?.cwd,
           env: options?.env ?? process.env,
-          stdio: [options?.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+          stdio: options?.stdio ?? [options?.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
           // A command that can be ended — by its deadline or by its caller — leads its own group, so ending it
           // ends what it started. One that can be ended by neither shares this process's group and ends with it.
           detached: (options?.timeoutMs !== undefined || options?.signal !== undefined) && process.platform !== 'win32',

@@ -11,10 +11,11 @@ import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { readLockHolder } from '@myco/utils/lifecycle-lock.js';
 import { createLocalDeployment, localSecretNames, localStorageKeysReady, LOCAL_STORAGE_KEYS_MISSING, LOCAL_DATABASE_MISSING, DEFAULT_LOCAL_RECORD, peekLocalPaths, readLocalRecord, assertRecordServable } from './local.js';
 import { localOwnerState, localOwnerLinkExpiry, setupLocalOwner, type LocalOwnerLink, type OwnerState } from './local-owner.js';
-import { registerGitHubApp, type RegisterOptions } from './github-app.js';
+import { hasPendingSignIn, registerGitHubApp, type RegisterOptions } from './github-app.js';
 import { assertUnquotablePath, assertServiceTargetHome, defaultSpec, installService, startService, stopService, statusOfService, servicePaths, UNIT_NOT_HELD, type ServiceOptions, type ServiceSpec } from './service.js';
 
 export interface LocalInspection {
+  url?: string;
   creation: 'absent' | { incomplete: ('record' | 'secrets' | 'schema')[] } | 'complete' | 'behind' | { unavailable: string };
   signIn: 'absent' | 'configured' | { unavailable: string };
   owner: OwnerState | { unavailable: string };
@@ -83,6 +84,7 @@ export async function inspectLocal(home: string, deps: LocalLifecycleDeps = {}):
       const record = readLocalRecord(paths);
       assertRecordServable(record);
       url = `http://127.0.0.1:${record.port}`;
+      result.url = url;
     }
     const names = localSecretNames(paths);
     if (fs.existsSync(paths.recordFile) && !fs.existsSync(paths.databasePath)) throw new Error(LOCAL_DATABASE_MISSING);
@@ -184,7 +186,7 @@ export async function prepareLocal(home: string, plan: LocalPreparePlan, deps: L
   const record = fs.existsSync(paths.recordFile) ? readLocalRecord(paths) : { ...DEFAULT_LOCAL_RECORD, port: plan.port };
   if (record.port !== plan.port) throw new Error(`native Deployment uses port ${record.port}; keep that port in the setup plan`);
   const create = before.creation !== 'complete';
-  const signIn = plan.signIn !== 'skip' && before.signIn === 'absent';
+  const signIn = plan.signIn !== 'skip' && (before.signIn === 'absent' || hasPendingSignIn({ kind: 'local', paths }, plan.signIn.url));
   const pendingLive = before.owner === 'pending-link' && (before.ownerLinkExpiresAt ?? 0) > (deps.now ?? Date.now)();
   const mint = plan.owner === 'mint' && before.owner !== 'linked' && (!pendingLive || deps.renewOwnerLink === true);
   const exclusive = create || signIn || mint;

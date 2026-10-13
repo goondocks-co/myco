@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { run } from '@myco/cli/setup.js';
+import { execFileSync, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+import { run, parseSetupOptions } from '@myco/cli/setup.js';
 import { run as login } from '@myco/cli/login.js';
 import { runRunnerService } from '@myco/cli/runner-service.js';
 import { executorServiceTarget } from '@myco/cli/worker-service.js';
@@ -35,6 +37,13 @@ import { seededSqlite } from '../myco-server/helpers/d1.js';
 import { SESSION_SECRET } from '../myco-server/helpers/owner.js';
 import { OAUTH_STATE_COOKIE } from '@myco-server-worker/auth/owner/github.js';
 import { SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
+import { ownerDeployment, ACCOUNT, HOSTED_URL } from './fixtures/owner-deployment.js';
+import { createCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
+import { prepareLocal } from '@myco/server/local-lifecycle.js';
+import { registerGitHubApp, convertManifestCode, writeSignInPending, signInPendingPath } from '@myco/server/github-app.js';
+import { peekDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudflare.js';
+import { peekLocalPaths, readLocalSecrets, createLocalDeployment, DEFAULT_LOCAL_RECORD } from '@myco/server/local.js';
+import { runJoin } from '@myco/cli/member.js';
 
 const URL = 'https://setup.invalid';
 const fakeFetch = (fn: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>): typeof fetch => Object.assign(fn, { preconnect: () => {} });
@@ -73,6 +82,469 @@ function snapshot(directory: string): unknown {
     return [name, stat.mode, stat.mtimeMs, stat.isDirectory() ? snapshot(file) : stat.isSymbolicLink() ? fs.readlinkSync(file) : fs.readFileSync(file).toString('base64')];
   });
 }
+
+describe('new owner journeys (a) and (b)', () => {
+  const affirmative = async (question: string) => question.includes('already have') ? 'no' : 'yes';
+  for (const target of ['cloudflare', 'local'] as const) {
+    const address = target === 'local' ? 'http://127.0.0.1:8787' : HOSTED_URL;
+    const flags = () => ['--create', target, ...(target === 'local' ? ['--port', '8787', '--serve', 'service'] : ['--account-id', ACCOUNT]), '--new', 'Owner project', '--no-agents', '--no-runner', '--yes'];
+    it(`creates ${target}, links through fake GitHub OAuth, signs in and connects once`, async () => {
+      const server = ownerDeployment(root, home, target, address);
+      closers.push(server.close);
+      const deps = { ...base(), ...server.deps, sleep: async () => {}, loginDeps: { machineId: `owner-${target}` } };
+      expect(await run(flags(), deps)).toBe(0);
+      expect(errors).toEqual([]);
+      const membership = readDeploymentMembership(address, home);
+      expect(membership?.memberId).toBeTruthy();
+      expect(readRegistryEntry(project, home)?.serverUrl).toBe(address);
+      expect(server.links).toHaveLength(1);
+      expect(server.github.calls.filter(call => call.url.includes('/conversions'))).toHaveLength(1);
+      expect(server.github.calls.filter(call => call.url.includes('/access_token'))).toHaveLength(1);
+      expect(server.calls.filter(route => route === '/auth/device/start')).toHaveLength(1);
+      expect(lines.filter(line => line.startsWith('Setup connected'))).toHaveLength(1);
+      expect(lines.join('\n')).not.toContain('/link#');
+      const saved = fs.readFileSync(setupFilePath(home), 'utf8');
+      expect(saved).not.toContain('/link#');
+      expect(saved).not.toContain(SETUP_APP.clientSecret);
+      expect(saved).not.toContain('complete');
+      const created = server.commands.filter(command => command.startsWith('d1 create') || command.startsWith('deploy ')).length;
+      expect(await run([], deps)).toBe(0);
+      expect(server.commands.filter(command => command.startsWith('d1 create') || command.startsWith('deploy '))).toHaveLength(created);
+      expect(server.links).toHaveLength(1);
+      expect(server.calls.filter(route => route === '/auth/device/start')).toHaveLength(1);
+      expect(readDeploymentMembership(address, home)?.token).toBe(membership?.token);
+      const before = snapshot(root);
+      const commandCount = server.commands.length;
+      expect(await run(['--status', '--json'], { ...deps, fetch: fakeFetch(async () => { throw new Error('status network'); }) })).toBe(0);
+      expect(snapshot(root)).toEqual(before);
+      expect(server.commands).toHaveLength(commandCount);
+      fs.unlinkSync(setupFilePath(home));
+      const withoutAnswers = snapshot(root);
+      const beforeRemoteStatus = server.commands.length;
+      expect(await run(['--status', '--json', '--create', target, '--check-remote'], deps)).toBe(0);
+      const observed = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
+      for (const id of ['journey', 'deployment.health', 'deployment.signin', 'machine.signin', 'project']) expect(observed.find(fact => fact.id === id)?.state).toBe('complete');
+      expect(observed.find(fact => fact.id === 'deployment.owner')).toMatchObject(target === 'cloudflare' ? { state: 'incomplete', informational: true } : { state: 'complete' });
+      expect(server.commands).toHaveLength(beforeRemoteStatus);
+      expect(snapshot(root)).toEqual(withoutAnswers);
+      expect(await run(['--status', '--create', target], deps)).toBe(0);
+      expect(lines.join('\n')).toContain('This machine manages this Deployment.');
+      expect(lines.join('\n')).not.toContain('This machine runs work for this Deployment.');
+      expect(await run(['--status', '--json', '--check-remote'], deps)).toBe(0);
+      const discovered = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
+      expect(discovered.find(fact => fact.id === 'deployment.create' && fact.target === target)?.state).toBe('complete');
+      expect(discovered.find(fact => fact.id === 'deployment.owner' && fact.target === target)?.state).toBe(target === 'cloudflare' ? 'incomplete' : 'complete');
+      expect(snapshot(root)).toEqual(withoutAnswers);
+      expect(await run(['--create', target, ...(target === 'local' ? ['--serve', 'service'] : []), '--yes', '--no-runner', '--no-agents'], deps)).toBe(0);
+      expect(server.github.calls.filter(call => call.url.includes('/conversions'))).toHaveLength(1);
+      expect(server.links).toHaveLength(1);
+      const stale = readSetupFile(home);
+      stale.answers.url = 'https://stale.invalid';
+      saveSetupFile(home, stale);
+      expect(await run(['--status', '--create', target, '--json', '--check-remote'], deps)).toBe(0);
+      const current = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
+      expect(current.find(fact => fact.id === 'machine.signin')?.scope).toBe(address);
+      expect(current.find(fact => fact.id === 'deployment.health')?.scope).toBe(address);
+      expect(current.find(fact => fact.id === 'journey')?.deployment).toBe(address);
+      expect(server.github.calls.filter(call => call.url.includes('/conversions'))).toHaveLength(1);
+    });
+
+    for (const boundary of ['create', 'conversion', 'signin', 'owner-mint', 'owner-link', 'machine', 'project'] as const) {
+      it(`resumes ${target} after interruption at ${boundary} without duplicated resources or lost state`, async () => {
+        const server = ownerDeployment(root, home, target, address);
+        closers.push(server.close);
+        let interrupted = false;
+        const interrupt = () => { if (!interrupted) { interrupted = true; throw new Error(`interrupted after ${boundary}`); } };
+        const deps: SetupDeps = { ...base(), ...server.deps, sleep: async () => {}, ask: affirmative, loginDeps: { machineId: `interrupted-${target}` },
+          createCloudflare: async options => { const result = await createCloudflareDeployment(options); if (boundary === 'create') interrupt(); return result; },
+          registerApp: async options => {
+            if (boundary === 'create' && target === 'local') interrupt();
+            if (boundary === 'conversion' && !interrupted) {
+              const savedRunner = options.runner;
+              if (target === 'cloudflare') options = { ...options, runner: { run: async (command, args, opts) => { if (args.includes('bulk')) interrupt(); return savedRunner!.run(command, args, opts); } } };
+            }
+            const result = await registerGitHubApp(options);
+            if (boundary === 'signin') interrupt();
+            return result;
+          },
+          prepareLocal: async (localHome, plan, localDeps) => { const result = await prepareLocal(localHome, plan, localDeps); if (boundary === 'owner-mint') interrupt(); return result; },
+          openUrl: async url => {
+            if (new globalThis.URL(url).hash && boundary === 'owner-mint' && target === 'cloudflare') interrupt();
+            await server.openUrl(url);
+            if (new globalThis.URL(url).hash && boundary === 'owner-link') interrupt();
+          },
+          login: async (args, loginDeps) => { const result = await login(args, loginDeps); if (boundary === 'machine') interrupt(); return result; },
+          join: async (args, joinDeps) => { const result = await runJoin(args, joinDeps); if (boundary === 'project') interrupt(); return result; },
+        };
+        if (boundary === 'conversion' && target === 'local') {
+          const original = deps.registerApp!;
+          deps.registerApp = async options => {
+            if (!interrupted) { await writeSignInPending(options.target, await convertManifestCode('setup-conversion', server.github.registrationFetch), options.url); interrupt(); }
+            return original(options);
+          };
+        }
+        expect(await run(flags(), deps)).toBe(2);
+        expect(interrupted).toBe(true);
+        const keys = target === 'local' ? readLocalSecrets(peekLocalPaths(home)) : null;
+        const databaseId = peekDeploymentRecord(home)?.databaseId;
+        const resumed = await run([], deps);
+        expect({ code: resumed, errors }).toEqual({ code: 0, errors: expect.any(Array) });
+        expect(readDeploymentMembership(address, home)).not.toBeNull();
+        expect(readRegistryEntry(project, home)).not.toBeNull();
+        if (target === 'local') {
+          const after = readLocalSecrets(peekLocalPaths(home));
+          for (const key of ['SESSION_SECRET', 'SECRET_WRAP_KEY'] as const) expect(after[key]).toBe(keys![key]);
+        } else expect(peekDeploymentRecord(home)?.databaseId).toBe(databaseId);
+        expect(server.commands.filter(command => command.startsWith('d1 create '))).toHaveLength(target === 'local' ? 0 : 1);
+        expect(server.github.calls.filter(call => call.url.includes('/conversions')).length).toBeLessThanOrEqual(1);
+        expect(server.calls.filter(route => route === '/auth/device/start')).toHaveLength(1);
+        expect(await run([], deps)).toBe(0);
+      });
+    }
+  }
+
+  it('offers the custom domain before registration, selects the one account and asks before Cloudflare login', async () => {
+    const address = 'https://myco.custom.invalid';
+    const server = ownerDeployment(root, home, 'cloudflare', address);
+    closers.push(server.close);
+    server.signOutWrangler();
+    const questions: string[] = [];
+    const deps: SetupDeps = { ...base(), ...server.deps, sleep: async () => {}, ask: async question => {
+      questions.push(question);
+      if (question.includes('already have')) return 'no';
+      if (question.startsWith('Choose the address')) return '2';
+      if (question.startsWith('What is the custom domain')) return address;
+      return 'yes';
+    } };
+    expect(await run(['--create', 'cloudflare', '--new', 'Custom', '--no-agents', '--no-runner'], deps)).toBe(0);
+    expect(errors).toEqual([]);
+    expect(questions.findIndex(question => question.startsWith('Choose the address'))).toBeLessThan(questions.findIndex(question => question.startsWith('Do you already have')));
+    expect(lines.join('\n')).toContain('Cloudflare zone security rules');
+    expect(lines.join('\n')).toContain('Myco (myco.custom.invalid)');
+    expect(server.commands.filter(command => command === 'login')).toHaveLength(1);
+    expect(readSetupFile(home).answers.accountId).toBe(ACCOUNT);
+    expect(peekDeploymentRecord(home)?.url).toBe(address);
+  });
+
+  it('requires creation consent despite saved answers, and re-asks for a changed app plan even with --yes', async () => {
+    const server = ownerDeployment(root, home, 'cloudflare');
+    closers.push(server.close);
+    const file = readSetupFile(home);
+    saveSetupFile(home, { ...file, answers: { role: 'create', target: 'cloudflare', accountId: ACCOUNT, addressChoice: 'workers.dev', runWork: false, noAgents: true } });
+    expect(await run([], { ...base(), ...server.deps })).toBe(2);
+    expect(errors.at(-1)).toContain('pass --yes');
+    expect(server.commands.filter(command => command.startsWith('d1 create'))).toEqual([]);
+    let calls = 0;
+    const deps: SetupDeps = { ...base(), ...server.deps, registerApp: async () => { calls++; throw new Error('registration interrupted'); } };
+    expect(await run(['--yes', '--app-name', 'First app'], deps)).toBe(2);
+    expect(calls).toBe(1);
+    expect(await run(['--yes', '--app-name', 'Changed app'], deps)).toBe(2);
+    expect(calls).toBe(1);
+    expect(errors.at(-1)).toContain('changed plans require fresh consent');
+    expect(lines.join('\n')).toContain('This plan changed; its previous consent no longer applies.');
+  });
+
+  it('refuses incompatible prompted choices before saving them', async () => {
+    expect(await run(['--port', '8787'], { ...base(), ask: async () => '2' })).toBe(2);
+    expect(errors.at(-1)).toBe('myco setup: Creation options require --create cloudflare or --create local.');
+    expect(fs.existsSync(setupFilePath(home))).toBe(false);
+    expect(readSetupFile(home).answers).toEqual({});
+  });
+
+  it('accepts Enter for the advertised native port default', async () => {
+    const server = ownerDeployment(root, home, 'local', 'http://127.0.0.1:8787');
+    closers.push(server.close);
+    const deps = { ...base(), ...server.deps, sleep: async () => {}, ask: async (question: string) => question.startsWith('Only this machine can reach it.') ? '' : question.includes('already have') ? 'no' : 'yes' };
+    expect(await run(['--create', 'local', '--serve', 'service', '--new', 'Default port', '--no-agents', '--no-runner'], deps)).toBe(0);
+    expect(readSetupFile(home).answers.port).toBe(8787);
+    expect(errors).toEqual([]);
+  });
+
+  it('names --port when the native port question has no terminal', async () => {
+    const server = ownerDeployment(root, home, 'local', 'http://127.0.0.1:8787');
+    closers.push(server.close);
+    expect(await run(['--create', 'local', '--serve', 'service'], { ...base(), ...server.deps })).toBe(2);
+    expect(errors.at(-1)).toBe('myco setup: no terminal to ask "Only this machine can reach it. Port [8787]:"; pass --port <n>');
+    expect(fs.existsSync(peekLocalPaths(home).databasePath)).toBe(false);
+  });
+
+  for (const answer of ['', 'maybe']) it(`local runner choice refuses ${JSON.stringify(answer)} with no default`, async () => {
+    const server = ownerDeployment(root, home, 'local', 'http://127.0.0.1:8787');
+    closers.push(server.close);
+    const deps = { ...base(), ...server.deps, sleep: async () => {}, ask: async () => answer };
+    expect(await run(['--create', 'local', '--serve', 'service', '--yes', '--new', 'Local', '--no-agents'], deps)).toBe(2);
+    expect(errors.at(-1)).toBe(answer === '' ? 'myco setup: an answer is required; pass --run-work or --no-runner' : 'myco setup: Answer yes or no; pass --run-work or --no-runner.');
+    expect(readSetupFile(home).answers.runWork).toBeUndefined();
+    expect(await run(['--no-runner'], deps)).toBe(0);
+  });
+
+  for (const target of ['cloudflare', 'local'] as const) it(`offers an existing GitHub app recovery command for ${target}`, async () => {
+    const address = target === 'local' ? 'http://127.0.0.1:8787' : HOSTED_URL;
+    const server = ownerDeployment(root, home, target, address);
+    closers.push(server.close);
+    const deps = { ...base(), ...server.deps, ask: async () => 'yes' };
+    expect(await run(['--create', target, ...(target === 'local' ? ['--port', '8787', '--serve', 'service'] : ['--account-id', ACCOUNT, '--url', HOSTED_URL]), '--no-agents', '--no-runner'], deps)).toBe(2);
+    expect(errors.at(-1)).toBe(`myco setup: ${target === 'local' ? 'Run myco server create --target local first. ' : ''}Use myco server github-app --target ${target} --url ${address} --existing --client-id <id> --client-secret-stdin with its regenerated secret, then run myco setup again.`);
+    expect(server.github.calls).toHaveLength(0);
+  });
+
+  it('resumes a native pending registration even when its secrets are already configured', async () => {
+    const server = ownerDeployment(root, home, 'local', 'http://127.0.0.1:8787');
+    closers.push(server.close);
+    let registrations = 0;
+    const deps: SetupDeps = { ...base(), ...server.deps, sleep: async () => {}, registerApp: async options => {
+      registrations++;
+      const result = await registerGitHubApp(options);
+      if (registrations === 1) { await writeSignInPending(options.target, SETUP_APP, options.url); throw new Error('interrupted after secrets, before journal cleanup'); }
+      return result;
+    } };
+    const flags = ['--create', 'local', '--serve', 'service', '--yes', '--new', 'Pending', '--no-agents', '--no-runner'];
+    expect(await run(flags, deps)).toBe(2);
+    expect(readLocalSecrets(peekLocalPaths(home)).GITHUB_CLIENT_ID).toBe(SETUP_APP.clientId);
+    const pending = signInPendingPath({ kind: 'local', paths: peekLocalPaths(home) });
+    expect(fs.existsSync(pending)).toBe(true);
+    const result = await run(['--yes'], deps);
+    expect({ code: result, errors }).toMatchObject({ code: 0 });
+    expect(registrations).toBe(2);
+    expect(fs.existsSync(pending)).toBe(false);
+    expect(server.github.calls.filter(call => call.url.includes('/conversions'))).toHaveLength(1);
+  });
+
+  it('pins the missing hosted address refusal while keeping provisioned resources', async () => {
+    const server = ownerDeployment(root, home, 'cloudflare');
+    closers.push(server.close);
+    const runner = { run: async (...args: Parameters<typeof server.runner.run>) => {
+      const result = await server.runner.run(...args);
+      return args[1].includes('deploy') ? { ...result, stdout: result.stdout.replace(HOSTED_URL, '') } : result;
+    } };
+    expect(await run(['--create', 'cloudflare', '--account-id', ACCOUNT, '--yes'], { ...base(), ...server.deps, cloudflare: { ...server.deps.cloudflare, runner } })).toBe(2);
+    expect(errors.at(-1)).toBe('myco setup: Cloudflare has not reported your Myco’s address; run myco server status --target cloudflare, then myco setup again.');
+    expect(peekDeploymentRecord(home)?.databaseId).toBeTruthy();
+    expect(server.github.calls).toHaveLength(0);
+  });
+
+  it('pins delayed GitHub verification and resumes the installed app without registering again', async () => {
+    const server = ownerDeployment(root, home, 'cloudflare');
+    closers.push(server.close);
+    const deps = { ...base(), ...server.deps, sleep: async () => {}, registerApp: async (options: Parameters<typeof registerGitHubApp>[0]) => ({ ...await registerGitHubApp(options), verified: { ok: false as const, reason: 'fixture propagation' } }) };
+    expect(await run(['--create', 'cloudflare', '--account-id', ACCOUNT, '--new', 'Delayed', '--no-agents', '--no-runner', '--yes'], deps)).toBe(2);
+    expect(errors.at(-1)).toBe('myco setup: GitHub sign-in is not answering yet; check myco server github-app --target cloudflare, then run myco setup again.');
+    expect(await run(['--yes'], { ...deps, registerApp: registerGitHubApp })).toBe(0);
+    expect(server.github.calls.filter(call => call.url.includes('/conversions'))).toHaveLength(1);
+  });
+
+  it('stops on unavailable hosted sign-in without recreating resources or registering an app', async () => {
+    const server = ownerDeployment(root, home, 'cloudflare');
+    closers.push(server.close);
+    const deps: SetupDeps = { ...base(), ...server.deps, createCloudflare: async options => { await createCloudflareDeployment(options); throw new Error('interrupted before sign-in'); } };
+    expect(await run(['--create', 'cloudflare', '--account-id', ACCOUNT, '--yes'], deps)).toBe(2);
+    const record = peekDeploymentRecord(home);
+    expect(await run(['--yes'], { ...deps, fetch: fakeFetch(async (input, init) => {
+      if (new globalThis.URL(new Request(input, init).url).pathname === '/auth/login') throw new Error('fixture sign-in unavailable');
+      return server.fetchImpl(input, init);
+    }) })).toBe(2);
+    expect(errors.at(-1)).toBe(`myco setup: deployment.signin (${HOSTED_URL}) unavailable: ${HOSTED_URL} did not answer: fixture sign-in unavailable. Restore access, then run myco setup again.`);
+    expect(peekDeploymentRecord(home)).toEqual(record);
+    expect(server.commands.filter(command => command.startsWith('deploy '))).toHaveLength(1);
+    expect(server.github.calls).toHaveLength(0);
+  });
+
+  it('pins account mismatch before running any Cloudflare command', async () => {
+    const server = ownerDeployment(root, home, 'cloudflare');
+    closers.push(server.close);
+    writeDeploymentRecord({ accountId: 'b'.repeat(32), workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: new Date(0).toISOString() }, home);
+    const recordFile = path.join(home, 'server', 'cloudflare', 'record.json');
+    const before = fs.readFileSync(recordFile);
+    expect(await run(['--create', 'cloudflare', '--account-id', ACCOUNT, '--yes'], { ...base(), ...server.deps })).toBe(2);
+    expect(errors.at(-1)).toBe(`myco setup: deployment.create (${home}) unavailable: Selected Cloudflare account does not match the Deployment record; keep its --account-id. Restore access, then run myco setup again.`);
+    expect(server.commands).toEqual([]);
+    expect(peekDeploymentRecord(home)?.accountId).toBe('b'.repeat(32));
+    expect(fs.readFileSync(recordFile)).toEqual(before);
+  });
+
+  it('pins the refusal to change an existing native port and keeps its keys', async () => {
+    const server = ownerDeployment(root, home, 'local', 'http://127.0.0.1:8787');
+    closers.push(server.close);
+    createLocalDeployment(DEFAULT_LOCAL_RECORD, { library: null, vec0: null }, peekLocalPaths(home));
+    const keys = readLocalSecrets(peekLocalPaths(home));
+    expect(await run(['--create', 'local', '--port', '8788', '--serve', 'terminal', '--yes'], { ...base(), ...server.deps })).toBe(2);
+    expect(errors.at(-1)).toBe('myco setup: This Deployment uses port 8787; run myco setup --port 8787.');
+    expect(readLocalSecrets(peekLocalPaths(home))).toEqual(keys);
+    expect(server.platform.commands).toEqual([]);
+  });
+
+  it('pins missing Wrangler guidance and keeps the selected target', async () => {
+    const runner = { run: async () => ({ code: 1, stdout: '', stderr: 'fixture absent' }) };
+    expect(await run(['--create', 'cloudflare', '--yes'], { ...base(), cloudflare: { runner } })).toBe(2);
+    expect(errors.at(-1)).toBe('myco setup: wrangler is not installed; `npm install -g wrangler`, then `wrangler login`, and retry');
+    expect(readSetupFile(home).answers.target).toBe('cloudflare');
+    expect(peekDeploymentRecord(home)).toBeNull();
+  });
+
+  it('pins the refusal to guide a shared native Deployment', async () => {
+    const server = ownerDeployment(root, home, 'local', 'http://127.0.0.1:8787');
+    closers.push(server.close);
+    createLocalDeployment({ ...DEFAULT_LOCAL_RECORD, origin: 'https://existing.invalid' }, { library: null, vec0: null }, peekLocalPaths(home));
+    const data = fs.readFileSync(peekLocalPaths(home).databasePath);
+    expect(await run(['--create', 'local', '--serve', 'service', '--yes'], { ...base(), ...server.deps })).toBe(2);
+    expect(errors.at(-1)).toBe('myco setup: Guided local setup is loopback only. Keep this Myco’s configuration and use myco server status --target local.');
+    expect(fs.readFileSync(peekLocalPaths(home).databasePath)).toEqual(data);
+    expect(server.platform.commands).toEqual([]);
+  });
+
+  for (const refusal of ['pending', 'missing'] as const) it(`pins the ${refusal} native owner link refusal`, async () => {
+    const server = ownerDeployment(root, home, 'local', 'http://127.0.0.1:8787');
+    closers.push(server.close);
+    const deps: SetupDeps = { ...base(), ...server.deps, sleep: async () => {},
+      ask: async question => question.includes('already have') || (refusal === 'pending' && question.startsWith('Make a fresh link?')) ? 'no' : 'yes',
+      prepareLocal: async (localHome, plan, localDeps) => ({ ...await prepareLocal(localHome, plan, localDeps), ownerLink: null }),
+      ...(refusal === 'missing' ? { recoverLocal: async () => ({ url: 'http://127.0.0.1:8787', ownerLink: null }) } : {}),
+    };
+    expect(await run(['--create', 'local', '--port', '8787', '--serve', 'service', '--new', 'Owner', '--no-agents', '--no-runner'], deps)).toBe(2);
+    expect(errors.at(-1)).toBe(refusal === 'pending' ? 'myco setup: Owner linking is pending; run myco setup again when ready.' : 'myco setup: No owner link was issued; run myco server setup-owner, then myco setup again.');
+  });
+
+  it('pins an expired owner link refusal and keeps the first owner for a rerun', async () => {
+    const server = ownerDeployment(root, home, 'cloudflare');
+    closers.push(server.close);
+    let expired = false;
+    const deps: SetupDeps = { ...base(), ...server.deps, sleep: async () => {}, now: () => Date.now() + (expired ? 16 * 60_000 : 0),
+      ask: async question => question.includes('already have') || question.startsWith('The owner link expired.') ? 'no' : 'yes',
+      openUrl: async url => { if (new globalThis.URL(url).hash) { expired = true; return; } await server.openUrl(url); },
+    };
+    expect(await run(['--create', 'cloudflare', '--account-id', ACCOUNT, '--url', HOSTED_URL, '--new', 'Expired', '--no-agents', '--no-runner'], deps)).toBe(2);
+    expect(errors.at(-1)).toBe('myco setup: Owner link expired; run myco setup again to make a fresh link.');
+    expect((server.sqlite.query('SELECT count(*) AS count FROM members').get() as { count: number }).count).toBe(1);
+    expect(await run(['--yes'], { ...deps, now: Date.now, openUrl: server.openUrl })).toBe(0);
+  });
+
+  for (const target of ['cloudflare', 'local'] as const) it(`an expired ${target} owner link is replaced with consent and completes`, async () => {
+    const address = target === 'local' ? 'http://127.0.0.1:8787' : HOSTED_URL;
+    const server = ownerDeployment(root, home, target, address);
+    closers.push(server.close);
+    let expired = false;
+    let opens = 0;
+    const deps: SetupDeps = { ...base(), ...server.deps, now: () => Date.now() + (expired ? 16 * 60_000 : 0), sleep: async () => {},
+      openUrl: async url => {
+        if (new globalThis.URL(url).hash && ++opens === 1) { expired = true; return; }
+        expired = false;
+        await server.openUrl(url);
+      },
+    };
+    expect(await run(['--create', target, ...(target === 'local' ? ['--serve', 'service'] : ['--account-id', ACCOUNT]), '--yes', '--new', 'Expiry', '--no-agents', '--no-runner'], deps)).toBe(0);
+    expect(errors).toEqual([]);
+    expect(opens).toBe(2);
+    expect(server.links).toHaveLength(1);
+    if (target === 'local') expect(server.platform.commands.some(command => command.includes('unload'))).toBe(true);
+  });
+
+  for (const expire of [false, 'wait', 'resume'] as const) it(`terminal setup ${expire ? `recovers an expired link during ${expire}` : 'asks the user to serve'} and never starts a service`, async () => {
+    const address = 'http://127.0.0.1:8787';
+    const server = ownerDeployment(root, home, 'local', address);
+    closers.push(server.close);
+    let serves = 0;
+    let expired = false;
+    let opens = 0;
+    let terminal: (() => void)[] = [];
+    closers.unshift(() => { terminal.forEach(release => release()); });
+    const deps: SetupDeps = { ...base(), ...server.deps, cwd: root, sleep: async () => {}, now: () => Date.now() + (expired ? 16 * 60_000 : 0), openUrl: async url => {
+      if (new globalThis.URL(url).hash && ++opens === 1 && expire) {
+        expired = true;
+        if (expire === 'resume') throw new Error('interrupted with the terminal server still running');
+        return;
+      }
+      expired = false;
+      await server.openUrl(url);
+    }, stdout: line => {
+      lines.push(line);
+      if (line.startsWith('Stop your Myco')) { terminal.forEach(release => release()); terminal = []; return; }
+      if (!line.startsWith('In another terminal, run:') && !line.startsWith('Start it again:')) return;
+      if (terminal.length > 0) return;
+      serves++;
+      const paths = peekLocalPaths(home);
+      for (const [name, mode] of [[`${paths.root}.serve.lock`, 'exclusive'], [`${paths.root}.lock`, 'shared']] as const) {
+        const held = LifecycleLock.acquire(name, { command: 'fixture separate terminal', mode });
+        if (!held.acquired) throw new Error('fixture terminal lease unavailable');
+        terminal.push(() => held.lock.release());
+      }
+    } };
+    const result = await run(['--create', 'local', '--serve', 'terminal', '--yes', '--no-agents', '--no-runner'], deps);
+    expect(result).toBe(expire === 'resume' ? 2 : 0);
+    if (expire === 'resume') {
+      expect(errors.pop()).toBe('myco setup: interrupted with the terminal server still running');
+      expect(await run(['--yes'], deps)).toBe(0);
+    }
+    expect(errors).toEqual([]);
+    expect(serves).toBe(expire ? 2 : 1);
+    expect(server.platform.commands).toEqual([]);
+    expect(lines).toContain('In another terminal, run: myco server run --target local');
+    expect(lines.at(-1)).toContain('from a git repository');
+  });
+
+  for (const target of ['local', 'cloudflare'] as const) it(`create ${target} status on an absent home is file-only, read-only and never runs tools`, async () => {
+    const before = snapshot(root);
+    expect(await run(['--status', '--json', '--create', target], { ...base(), fetch: fakeFetch(async () => { throw new Error('network forbidden'); }), cloudflare: { runner: { run: async () => { throw new Error('wrangler forbidden'); } } }, local: { native: { library: null, vec0: null }, service: { runner: () => { throw new Error('service forbidden'); } } } })).toBe(3);
+    expect(snapshot(root)).toEqual(before);
+    const observations = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
+    expect(observations.find(fact => fact.id === 'deployment.create')?.state).toBe('absent');
+  });
+
+  for (const [flags, refusal] of [
+    [['--create', 'other'], '--create needs cloudflare or local'],
+    [['--create', 'local', '--url', 'https://example.invalid'], 'Local setup is loopback only; use --port and --serve, without --url, --account-id or --org.'],
+    [['--create', 'cloudflare', '--port', '8787'], 'Cloudflare setup uses --account-id and --url, without --port or --serve.'],
+    [['--account-id', 'wrong'], '--account-id needs 32 hexadecimal characters'],
+    [['--url', 'http://remote.invalid'], '--url needs an https Deployment origin, with no path, query or fragment'],
+    [['--org', 'bad org'], '--org needs a GitHub organization name'],
+    [['--app-name', 'x'.repeat(35)], '--app-name needs 1 to 34 characters'],
+    [['--port', '0'], '--port needs an integer from 1 to 65535'],
+    [['--port', '1.5'], '--port needs an integer from 1 to 65535'],
+    [['--serve', 'foreground'], '--serve needs service or terminal'],
+    [['--create', 'local', '--join', URL], '--create and --join cannot be combined'],
+    [['--create', 'local', '--runner', URL], '--create and --runner cannot be combined'],
+  ] as const) it(`pins the refusal for ${flags.join(' ')}`, () => {
+    expect(() => parseSetupOptions(flags)).toThrow(refusal);
+  });
+});
+
+describe('create journeys across SIGKILL', () => {
+  const repo = fileURLToPath(new globalThis.URL('../../', import.meta.url));
+  for (const target of ['cloudflare', 'local']) for (const boundary of ['create', 'conversion', 'signin', 'owner-mint', 'owner-link', 'machine', 'project', target === 'cloudflare' ? 'cloudflare-login' : 'service']) {
+    it(`${target}: resumes after SIGKILL at ${boundary}`, async () => {
+      const childRoot = path.join(root, 'child');
+      fs.mkdirSync(childRoot);
+      fs.renameSync(project, path.join(childRoot, 'repo'));
+      const args = ['test', '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'), '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/create_journey_interruption_test.ts')];
+      const env = sandboxChildEnv(childRoot, { MYCO_SETUP_FIXTURE_ROOT: childRoot, MYCO_SETUP_TARGET: target });
+      const child = spawn(process.execPath, args, { env: { ...env, MYCO_SETUP_STOP_AFTER: boundary }, cwd: childRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = '';
+      child.stdout.on('data', chunk => { output += chunk; });
+      child.stderr.on('data', chunk => { output += chunk; });
+      const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+      try {
+        const deadline = Date.now() + 15_000;
+        while (!fs.existsSync(path.join(childRoot, 'reached')) && child.exitCode === null && Date.now() < deadline) await Bun.sleep(20);
+        expect({ reached: fs.existsSync(path.join(childRoot, 'reached')), output }).toMatchObject({ reached: true });
+      } finally { if (child.exitCode === null) child.kill('SIGKILL'); await exited; }
+      const childHome = path.join(childRoot, 'myco');
+      const keys = target === 'local' ? readLocalSecrets(peekLocalPaths(childHome)) : null;
+      const record = peekDeploymentRecord(childHome);
+      const result = Bun.spawnSync([process.execPath, ...args], { env: { ...env, MYCO_SETUP_RESUME: '1' }, cwd: childRoot, stdout: 'pipe', stderr: 'pipe' });
+      expect({ code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
+      const resumed = JSON.parse(fs.readFileSync(path.join(childRoot, 'resumed'), 'utf8'));
+      expect(resumed.commands.filter((command: string) => command.startsWith('d1 create'))).toHaveLength(boundary === 'cloudflare-login' ? 1 : 0);
+      expect(resumed.conversions).toBe(boundary === 'create' || boundary === 'cloudflare-login' ? 1 : 0);
+      const address = target === 'cloudflare' ? HOSTED_URL : 'http://127.0.0.1:8787';
+      expect(readDeploymentMembership(address, childHome)).not.toBeNull();
+      expect(readRegistryEntry(path.join(childRoot, 'repo'), childHome)).not.toBeNull();
+      if (target === 'cloudflare') {
+        if (record) expect(peekDeploymentRecord(childHome)?.databaseId).toBe(record.databaseId);
+        else expect(peekDeploymentRecord(childHome)?.databaseId).toBeTruthy();
+      }
+      else for (const key of ['SESSION_SECRET', 'SECRET_WRAP_KEY'] as const) expect(readLocalSecrets(peekLocalPaths(childHome))[key]).toBe(keys![key]);
+    }, 30_000);
+  }
+});
 
 function migrationFixture(state: LegacyMigrationState['state'], owner?: 'unit' | 'registration') {
   const user = path.join(root, 'user');
