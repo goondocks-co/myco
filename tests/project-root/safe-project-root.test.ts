@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import os from 'node:os';
 import path from 'node:path';
-import { assertSafeProjectRoot, UnsafeProjectRootError } from '@myco/vault/resolve';
+import { assertSafeProjectRoot, UnsafeProjectRootError } from '@myco/project-root';
 
 describe('assertSafeProjectRoot', () => {
   it('rejects $HOME', () => {

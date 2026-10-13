@@ -1,41 +1,21 @@
 /**
- * Meta gate: the 2.0 closure crosses the 1.4 boundary only through the named pending CLI crossings.
- *
- * The walk follows static and literal dynamic imports from every 2.0 entry point and stops at the 1.4 boundary.
- * CLI dispatch to a 1.4 verb is excluded by rule; every other crossing must equal the named CLI crossings exactly. New crossings
- * fail, and a named crossing that no longer exists fails until its row is deleted. The exception list only shrinks.
- * ALLOWED_EDGES is empty: there are no shared-leaf exceptions to the boundary.
- *
- * The boundary is closed: every file under packages/myco/src is reached, inside the 1.4 tree, or named with why it
- * is unreached. Scripts, Dockerfiles, the Makefile and CI workflows may name only the listed 1.4 paths, each with
- * its removal phase. A listed path no longer named must have its row deleted too.
- *
- * The shared import-closure walker reads the runtime's edges: type-only imports are no edges; literal import()
- * calls are. Unfollowable dynamic imports are named explicitly, so unknown runtime reach cannot pass silently.
+ * The 2.0 import closure has no crossing into the 1.4 tree, including CLI dispatch.
+ * Every source file is reached, inside that tree, or named as unreached. The runtime walker follows static and
+ * literal dynamic imports; unfollowable imports and non-source path references are admitted explicitly.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { supervisorStarts } from '../helpers/supervisor-starts.ts';
 import {
-  filesUnder, moduleKey, REPO_ROOT, pathToEntry, closureOf, type Closure,
+  closureOf, filesUnder, moduleKey, REPO_ROOT, pathToEntry, withoutShebang, type Closure,
 } from '../helpers/import-closure.ts';
 
-import { walk, walkMemberRuntime, isLegacyVerb } from '../helpers/2-0-closure.ts';
+import { walk, walkMemberRuntime } from '../helpers/2-0-closure.ts';
 import { LEGACY_DIRS, LEGACY_FILES, isLegacy } from '../helpers/legacy-boundary.ts';
 
 const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const MYCO = 'packages/myco/src/';
-
-/**
- * Shared-leaf exceptions from 2.0 into the 1.4 tree. Empty: retained CLI crossings are named separately.
- */
-const ALLOWED_EDGES: Readonly<Record<string, string>> = {};
-
-/** Retained CLI edges whose dispatch and checkpoint are removed together. */
-const PR3_EDGES: Readonly<Record<string, string>> = {
-  'cli.ts -> backup/pre-migration-checkpoint.ts': '#1170 P4: PR 3 removes the pre-migration checkpoint from the 2.0 verbs',
-  'cli.ts -> vault/resolve.ts': '#1170 P3: vault/resolve moves into project-root.ts',
-};
 
 /** The 2.0 files under `packages/myco/src` nothing in the walk imports, each with how it is used. */
 const UNREACHED_2_0: Readonly<Record<string, string>> = {
@@ -64,13 +44,13 @@ const ALLOWED_TEXT_REACH: Readonly<Record<string, string>> = {
 
 const short = (key: string): string => (key.startsWith(MYCO) ? key.slice(MYCO.length) : key);
 
-/** Every edge a closure crossed from code outside the 1.4 tree into it, but the CLI's dispatch to a 1.4 verb. */
+/** Every edge a closure crossed from code outside the 1.4 tree into it, including CLI dispatch. */
 function crossings(closure: Closure): string[] {
   const out: string[] = [];
   for (const [from, imported] of closure.edges) {
     if (isLegacy(from)) continue;
     for (const to of imported) {
-      if (!isLegacy(to) || (from === `${MYCO}cli.ts` && isLegacyVerb(to))) continue;
+      if (!isLegacy(to)) continue;
       out.push(`${short(from)} -> ${short(to)}`);
     }
   }
@@ -116,12 +96,12 @@ function legacyPathsIn(file: string): string[] {
 }
 
 describe('the 2.0 code', () => {
-  it('imports no edge at all into the 1.4 tree outside retained PR 3 CLI carriers', () => {
+  it('imports no edge at all into the 1.4 tree', () => {
     const { myco, server } = walk();
     // An `import(expr)` names no module the walk can follow, so each one in the 2.0 closure is named here: none of them is code.
     expect(Object.fromEntries([...myco.unknowable, ...server.unknowable])).toEqual(UNFOLLOWABLE);
     const found = [...new Set([...crossings(myco), ...crossings(server)])].sort();
-    expect(found, 'the only 2.0 crossings are the named PR 3 CLI edges; delete a row when its edge disappears').toEqual(Object.keys(PR3_EDGES).sort());
+    expect(found, 'a crossing from 2.0 code into the 1.4 tree').toEqual([]);
   }, 120_000);
 
   it('leaves no file under packages/myco/src unaccounted for: each is reached, inside the 1.4 tree, or named', () => {
@@ -141,8 +121,8 @@ describe('the 2.0 code', () => {
     expect(listed.filter((entry) => !found.includes(entry)), 'a listed 1.4 path no longer named: delete its row').toEqual([]);
   });
 
-  it('names, for every edge and every path it allows, the #1170 phase that removes it', () => {
-    for (const [entry, phase] of Object.entries({ ...PR3_EDGES, ...ALLOWED_TEXT_REACH })) {
+  it('names the removal phase of every allowed non-source path', () => {
+    for (const [entry, phase] of Object.entries(ALLOWED_TEXT_REACH)) {
       expect({ entry, phase }).toEqual({ entry, phase: expect.stringMatching(/^#1170 P(?:[1-9]|1[0-2])[ab]?: \S/) });
     }
   });
@@ -158,45 +138,27 @@ it('no 2.0 module directly imports a daemon, database or Grove request-context m
   }
 }, 120_000);
 
-/** The retained carriers of forbidden runtime modules, with the PR that removes each edge. */
-const RUNTIME_CARRIERS: Readonly<Record<string, string>> = {
-  'cli.ts -> backup/pre-migration-checkpoint.ts': 'PR 3',
-};
-
-/** All paths reachable without a named carrier, including alternate paths into shared leaves. */
-function uncarriedRuntime(closure: Closure, carriers: Readonly<Record<string, string>> = {}): string[][] {
-  const via = new Map<string, string | null>([...closure.via].filter(([, importer]) => importer === null));
-  const queue = [...via.keys()];
-  for (const from of queue) {
-    for (const to of closure.edges.get(from) ?? []) {
-      if (`${short(from)} -> ${short(to)}` in carriers || via.has(to)) continue;
-      via.set(to, from);
-      queue.push(to);
-    }
-  }
-  return [...via.keys()].filter(forbiddenRuntime).map(key => pathToEntry({ ...closure, via }, key));
+/** Forbidden runtime modules anywhere in the full import closure. */
+function forbiddenRuntimePaths(closure: Closure): string[][] {
+  return [...closure.modules.keys()].filter(forbiddenRuntime).map(key => pathToEntry(closure, key));
 }
 
-it('transitive runtime reach requires a named carrier and its retiring PR', () => {
-  const { myco, server } = walk(undefined, isLegacyVerb);
-  for (const edge of Object.keys(RUNTIME_CARRIERS)) {
-    const [from, to] = edge.split(' -> ');
-    expect(myco.edges.get(MYCO + from)?.has(MYCO + to), `retired carrier: delete ${edge}`).toBe(true);
-  }
-  expect(uncarriedRuntime(myco, RUNTIME_CARRIERS)).toEqual([]);
-  expect(uncarriedRuntime(server)).toEqual([]);
+it('no 2.0 path transitively reaches a daemon, database or Grove request context', () => {
+  const { myco, server } = walk(undefined, () => false);
+  expect(forbiddenRuntimePaths(myco)).toEqual([]);
+  expect(forbiddenRuntimePaths(server)).toEqual([]);
 }, 120_000);
 
 it('hooks, member code and MCP have no transitive daemon, database or Grove request-context dependency', () => {
-  expect(uncarriedRuntime(walkMemberRuntime())).toEqual([]);
+  expect(forbiddenRuntimePaths(walkMemberRuntime())).toEqual([]);
 }, 120_000);
 
 it('rejects a forbidden runtime import hidden behind the shared capture boundary', () => {
   const mutate = (file: string, text: string): string => file.endsWith('/member/buffer.ts')
     ? `import '@myco/daemon/client.js';\n${text}` : text;
-  expect(uncarriedRuntime(walk(mutate, isLegacyVerb).myco, RUNTIME_CARRIERS)
+  expect(forbiddenRuntimePaths(walk(mutate, () => false).myco)
     .some(chain => chain.at(-1) === MYCO + 'daemon/client.ts')).toBe(true);
-  expect(uncarriedRuntime(walkMemberRuntime(mutate))
+  expect(forbiddenRuntimePaths(walkMemberRuntime(mutate))
     .some(chain => chain.at(-1) === MYCO + 'daemon/client.ts')).toBe(true);
 }, 120_000);
 
@@ -207,6 +169,64 @@ it('rejects restored runtime imports at the 1.4 boundary', () => {
     expect([...myco.modules.keys()].filter(forbiddenRuntime)).toContain(`${MYCO}${target}`);
   }
 }, 120_000);
+
+function supervisorReach(mutate?: (file: string, text: string) => string): string[][] {
+  const { myco, server } = walk(mutate, () => false);
+  const supervisor = /^(?:daemon\/|service\/(?:manager|scoped|self-install|launchd|systemd|windows)\.ts$)/;
+  return [myco, server].flatMap(closure => [...closure.modules.keys()].filter(key => supervisor.test(short(key))).map(key => pathToEntry(closure, key)));
+}
+
+it('the CLI dispatches no 1.4 verb and has no legacy-verb walk exemption', () => {
+  const { myco } = walk();
+  expect([...myco.edges.get(MYCO + 'cli.ts') ?? []].filter(key => key.startsWith(MYCO + 'cli/') && isLegacy(key))).toEqual([]);
+  expect(fs.readFileSync(path.join(REPO_ROOT, 'tests/helpers/2-0-closure.ts'), 'utf8')).not.toContain('isLegacyVerb');
+});
+
+it('rejects a restored 1.4 CLI handler', () => {
+  const { myco } = walk((file, text) => file.endsWith('/src/cli.ts') ? `${text}\nimport './cli/doctor.js';` : text);
+  expect([...myco.edges.get(MYCO + 'cli.ts') ?? []].filter(key => key.startsWith(MYCO + 'cli/') && isLegacy(key)))
+    .toContain(MYCO + 'cli/doctor.ts');
+});
+
+it('no 2.0 path can reach DaemonClient.ensureRunning or a 1.4 supervisor start', () => {
+  expect(supervisorReach()).toEqual([]);
+  for (const closure of Object.values(walk(undefined, () => false))) expect(supervisorStarts(closure)).toEqual([]);
+}, 120_000);
+
+it('rejects direct, computed and bound starts anywhere cutover reaches', () => {
+  for (const call of [
+    'manager.start(label);', "manager['start'](label);", "manager['sta' + 'rt'](label);",
+    "const verb = 'start'; manager[verb](label);", 'const { start: launch } = manager; launch(label);',
+    'client.ensureRunning();',
+  ]) {
+    const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-units.ts') ? text + '\n' + call : text;
+    expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length, call).toBeGreaterThan(0);
+  }
+}, 120_000);
+
+it('rejects supervisor access restored behind a shared leaf', () => {
+  for (const target of ['daemon/client.ts', 'service/manager.ts', 'service/scoped.ts', 'service/launchd.ts']) {
+    const mutate = (file: string, text: string): string => file.endsWith('/member/buffer.ts')
+      ? `${text}\nimport '@myco/${target}';` : text;
+    expect(supervisorReach(mutate).some(chain => chain.at(-1) === MYCO + target)).toBe(true);
+  }
+}, 120_000);
+
+function startupModules(mutate?: (file: string, text: string) => string): string[] {
+  return [...closureOf([path.join(SRC, 'cli.ts')], {
+    staticOnly: true,
+    source: (file, text) => withoutShebang(file, mutate ? mutate(file, text) : text),
+  }).modules.keys()];
+}
+
+it('CLI startup loads no db/schema through static imports', () => {
+  expect(startupModules()).not.toContain(MYCO + 'db/schema.ts');
+});
+
+it('rejects a static schema import restored through a startup leaf', () => {
+  expect(startupModules((file, text) => file.endsWith('/cli/retired-verbs.ts')
+    ? `${text}\nimport '@myco/db/schema.js';` : text)).toContain(MYCO + 'db/schema.ts');
+});
 
 /** Migration administration is retained 2.0 code, including every legacy helper entry. */
 function migrationClosure(mutate?: (file: string, text: string) => string): Closure {
@@ -231,4 +251,47 @@ it('rejects direct and transitive 1.4 imports in retained migration administrati
       ? "import '@myco/service/home-daemon.js';\n" + text : text);
     expect([...mutated.modules.keys()].filter(isLegacy)).toContain(MYCO + 'service/home-daemon.ts');
   }
+}, 120_000);
+
+
+it('rejects raw platform starts including const-spread arguments', () => {
+  for (const call of [
+    "execFileSync('launchctl', ['kickstart', '-k', label]);",
+    "execFileSync('systemctl', ['--user', 'start', label]);",
+    "execFileSync('schtasks', ['/Run', '/TN', label]);",
+    "execSync('launchctl kickstart ' + label);",
+    "const argv = ['kickstart', '-k']; execFileSync('launchctl', [...argv, label]);",
+  ]) {
+    const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-units.ts') ? text + '\n' + call : text;
+    expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(found => found.endsWith('supervisor exec')), call).toBe(true);
+  }
+}, 120_000);
+
+it('follows cutover through concrete methods and interface implementations', () => {
+  for (const [needle, injected] of [
+    ['private async isLoaded(label: string): Promise<boolean> {', 'await this.start(label);'],
+    ["return spawnCombinedOutput('launchctl', args);", "execFileSync('launchctl', ['kickstart', '-k', 'unit']);"],
+    ['private async isLoaded(label: string): Promise<boolean> {', "await this.runner.run(['kickstart', '-k', label]);"],
+  ]) {
+    const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-service/launchd.ts')
+      ? text.replace(needle, needle.startsWith('return ') ? injected + needle : needle + injected) : text;
+    expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length, injected).toBeGreaterThan(0);
+  }
+}, 120_000);
+
+it('follows object and class-expression runner implementations', () => {
+  for (const implementation of [
+    "const runner: LaunchctlRunner = { async run(args: string[]) { return spawnCombinedOutput('launchctl', ['kickstart', '-k', 'unit']); } }; return runner.run(args);",
+    "const Runner = class implements LaunchctlRunner { async run(args: string[]) { return spawnCombinedOutput('launchctl', ['kickstart', '-k', 'unit']); } }; return new Runner().run(args);",
+  ]) {
+    const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-service/launchd.ts')
+      ? text.replace("return spawnCombinedOutput('launchctl', args);", implementation) : text;
+    expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length, implementation).toBeGreaterThan(0);
+  }
+}, 120_000);
+
+it('rejects a raw supervisor start in the Deployment closure', () => {
+  const mutate = (file: string, text: string): string => file.endsWith('/myco-server/src/index.ts')
+    ? text + "\nexecFileSync('launchctl', ['kickstart', '-k', 'unit']);" : text;
+  expect(supervisorStarts(walk(mutate, () => false).server, mutate).some(found => found.endsWith('supervisor exec'))).toBe(true);
 }, 120_000);

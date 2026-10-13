@@ -21,14 +21,12 @@
  * leaves the closure must leave the list. Nothing else under a local-runtime
  * tree may appear, and no member verb module imports one directly.
  *
- * The dispatcher half: every member verb is a verb `cli.ts` dispatches, and the
- * branch that routes it to the member sits above the `myco.yaml` gate, so a
- * joined checkout with no vault is never asked for one.
+ * The dispatcher routes the shared member verb registry with no vault configuration gate.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { MEMBER_READ_VERBS, MEMBER_VERBS } from '@myco/cli/member-verbs.js';
+import { MEMBER_READ_VERBS } from '@myco/cli/member-verbs.js';
 import { closureOf, pathToEntry, REPO_ROOT, runtimeEdges } from '../helpers/import-closure.ts';
 
 const SRC = 'packages/myco/src';
@@ -92,20 +90,19 @@ describe('the member verbs reach no local-runtime code', () => {
     expect(direct).toEqual([]);
   });
 
-  it('sees a violation where one exists: the 1.4 search handler reaches the local database', () => {
-    expect(reached(`${SRC}/cli/search.ts`).forbidden.some((key) => key.startsWith(`${SRC}/db/`))).toBe(true);
+  it('rejects a restored database import', () => {
+    const closure = closureOf([path.join(REPO_ROOT, READ_ENTRY)], {
+      source: (file, text) => file.endsWith('/cli/member-reads.ts') ? `import '@myco/db/client.js';\n${text}` : text,
+    });
+    expect([...closure.modules.keys()].some(key => key.startsWith(`${SRC}/db/`))).toBe(true);
   });
 });
 
-describe('the dispatcher routes the member verbs above the myco.yaml gate', () => {
+describe('the dispatcher uses member verbs with no vault configuration gate', () => {
   const cli = fs.readFileSync(path.join(REPO_ROOT, SRC, 'cli.ts'), 'utf8');
-  const routed = cli.indexOf('if (isMemberVerb(cmd))');
-  const gate = cli.indexOf("path.join(vaultDir, 'myco.yaml')");
-
-  it('the member branch precedes the vault gate', () => {
-    expect(routed).toBeGreaterThan(-1);
-    expect(gate).toBeGreaterThan(-1);
-    expect(routed).toBeLessThan(gate);
+  it('dispatches the shared member verb registry and has no myco.yaml gate', () => {
+    expect(cli).toContain('if (isMemberVerb(cmd))');
+    expect(cli).not.toContain('myco.yaml');
   });
 
   it('the Deployment-read verbs are exactly the §7.1 CLI rows the ledger names as answered by the Deployment', () => {
@@ -116,7 +113,4 @@ describe('the dispatcher routes the member verbs above the myco.yaml gate', () =
     expect([...MEMBER_READ_VERBS].sort() as string[]).toEqual(ledger);
   });
 
-  it.each([...MEMBER_VERBS])('%s is a verb the dispatcher knows', (verb) => {
-    expect(cli.includes(`case '${verb}':`) || cli.includes(`cmd === '${verb}'`)).toBe(true);
-  });
 });

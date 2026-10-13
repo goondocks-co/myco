@@ -37,7 +37,7 @@ import { reconcileReleaseProvenance } from '@myco/release-provenance/reconcile.j
 import { releaseProvenanceConfig } from '@myco/release-provenance/config.js';
 import { refreshReleaseVectorMetadata } from '@myco/release-provenance/vector-metadata.js';
 import { projectScope, type GroveProjectId } from '@myco/grove/ids.js';
-import { projectTreeAvailable } from '@myco/vault/resolve.js';
+import { projectTreeAvailable } from '@myco/project-root.js';
 
 // ---------------------------------------------------------------------------
 // Types

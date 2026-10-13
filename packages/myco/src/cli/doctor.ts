@@ -10,7 +10,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import type { StateMutationLogger } from '../daemon/daemon-state-authority.js';
-import { resolveProjectRoot } from '../vault/resolve.js';
+import { resolveProjectRoot } from '../project-root.js';
 import { loadProjectManifest } from '../config/project-manifest.js';
 import { describeCaptureOnly, isCaptureOnly } from '../config/capabilities.js';
 import type { MycoConfig } from '../config/schema.js';
@@ -1314,7 +1314,7 @@ export async function checkServiceScope(
 async function checkService(): Promise<DoctorCheck> {
   const { getServiceManager } = await import('../service/manager.js');
   const { serviceLabel } = await import('../service/labels.js');
-  const { resolveServiceExecutable } = await import('./service.js');
+  const { resolveServiceExecutable } = await import('./shared.js');
   const { isDefaultMycoHome } = await import('../grove/paths.js');
   const { managedBinaryPath } = await import('../install/managed-binary.js');
   const mgr = getServiceManager();

@@ -90,29 +90,6 @@ it('rejects literal, bound, concatenated, spread, mutated, conditional and templ
 
 /** The runtime names each 2.0 caller may use across the retained 1.4 boundary. */
 const LEGACY_IMPORT_NAMES: Readonly<Record<string, readonly string[]>> = {
-  'cli.ts -> vault/resolve.ts': ['resolveVaultDir'],
-  'cli.ts -> cli/agent-run.ts': ['AGENT_USAGE','run'],
-  'cli.ts -> cli/agent-tasks.ts': ['TASK_RUN_USAGE','TASK_USAGE','run'],
-  'cli.ts -> cli/grove.ts': ['USAGE','run'],
-  'cli.ts -> cli/subsystem.ts': ['USAGE','run'],
-  'cli.ts -> cli/remove.ts': ['USAGE','run'],
-  'cli.ts -> cli/doctor.ts': ['USAGE','run'],
-  'cli.ts -> cli/setup-llm.ts': ['USAGE','run'],
-  'cli.ts -> cli/join.ts': ['JOIN_HELP','LEAVE_HELP','runJoin','runLeave'],
-  'cli.ts -> cli/host.ts': ['HOST_HELP','runHostCommand'],
-  'cli.ts -> backup/pre-migration-checkpoint.ts': ['installPreMigrationCheckpoint'],
-  'cli.ts -> cli/restore-backup.ts': ['run'],
-  'cli.ts -> cli/detect-providers.ts': ['run'],
-  'cli.ts -> cli/service.ts': ['run'],
-  'cli.ts -> cli/attach.ts': ['runAttach','runDetach'],
-  'cli.ts -> cli/restart.ts': ['run'],
-  'cli.ts -> cli/config.ts': ['run'],
-  'cli.ts -> cli/verify.ts': ['run'],
-  'cli.ts -> cli/stats.ts': ['run'],
-  'cli.ts -> cli/search.ts': ['run','runVectors'],
-  'cli.ts -> cli/session.ts': ['run'],
-  'cli.ts -> cli/setup-digest.ts': ['run'],
-  'cli.ts -> cli/logs.ts': ['run'],
 };
 
 function unapprovedLegacyImports(mutate?: (file: string, text: string) => string): string[] {

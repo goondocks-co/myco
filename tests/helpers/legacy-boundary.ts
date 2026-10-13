@@ -9,14 +9,11 @@ export const LEGACY_DIRS: readonly string[] = [
 
 /** The 1.4 files in directories 2.0 shares. */
 export const LEGACY_FILES: readonly string[] = [
-  // The 1.4 verbs the CLI dispatches to.
-  'cli/agent-run.ts', 'cli/agent-tasks.ts', 'cli/attach.ts', 'cli/bootstrap.ts', 'cli/config.ts', 'cli/detect-providers.ts',
-  'cli/doctor.ts', 'cli/doctor-fixes.ts', 'cli/grove.ts', 'cli/host.ts', 'cli/join.ts', 'cli/logs.ts',
-  'cli/remove.ts', 'cli/restart.ts', 'cli/restore-backup.ts', 'cli/search.ts', 'cli/service.ts', 'cli/session.ts',
-  'cli/setup-digest.ts', 'cli/setup-llm.ts', 'cli/shared.ts', 'cli/stats.ts', 'cli/subsystem.ts',
-  'cli/verify.ts',
-  // What only the 1.4 verbs and the daemon read.
-  'cli/confirm.ts', 'cli/dashboard-url.ts',
+  // Retained local-runtime diagnostic helpers.
+  'cli/bootstrap.ts',
+  'cli/doctor.ts', 'cli/doctor-fixes.ts', 'cli/shared.ts',
+  // What only the local runtime reads.
+  'cli/dashboard-url.ts',
   'constants/power-jobs.ts', 'constants/skill-candidate-status.ts', 'constants/spore-status.ts',
   'mcp/server.ts', 'mcp/http.ts', 'mcp/external-surface.ts',
   'plans/identity.ts', 'plans/list-for-mcp.ts', 'plans/save-mcp.ts',

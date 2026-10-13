@@ -1,15 +1,7 @@
 import path from 'node:path';
-import fs from 'node:fs';
-import { cliVerbModules, closureOf, dynamicSpecifiers, entryFiles, moduleKey, REPO_ROOT, withoutShebang, type Closure } from './import-closure.ts';
+import { cliVerbModules, closureOf, entryFiles, moduleKey, REPO_ROOT, withoutShebang, type Closure } from './import-closure.ts';
 import { isLegacy } from './legacy-boundary.ts';
 const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
-const CLI = path.join(SRC, 'cli.ts');
-const LEGACY_VERBS = new Set(dynamicSpecifiers(withoutShebang(CLI, fs.readFileSync(CLI, 'utf8')), CLI)
-  .filter(specifier => specifier.startsWith('./cli/'))
-  .map(specifier => moduleKey(path.resolve(SRC, specifier.replace(/\.js$/, '.ts'))))
-  .filter(isLegacy));
-/** Only retained 1.4 verb dispatches stop the transitive walk; legacy CLI helpers are walked. */
-export const isLegacyVerb = (key: string): boolean => LEGACY_VERBS.has(key);
 /**
  * The 2.0 entry points under `packages/myco/src` (`/**` = every file under), walked with every import they make, beside
  * the CLI itself and every verb module it dispatches to that is not a 1.4 verb (`cliVerbModules`).

@@ -1,17 +1,20 @@
 import { resolveMycoHome } from '@myco/paths/home.js';
-import { isMemberHome, memberHomeDaemonRefusal, unmovedLegacyVaults } from '@myco/member/home-role.js';
+import { isMemberHome, unmovedLegacyVaults } from '@myco/member/home-role.js';
+
+import { LEGACY_MIGRATION_GUIDANCE } from '../member/migration-guidance.js';
 
 /** Credential-less clients have no upstream on any home. */
-export function credentialRequiredError(): { code: string; message: string } {
+export function credentialRequiredError(surface: 'mcp' | 'tool'): { code: string; message: string } {
   const home = resolveMycoHome();
-  if (isMemberHome(home)) return { code: 'member_home', message: memberHomeDaemonRefusal(home) };
+  if (isMemberHome(home)) {
+    const command = surface === 'mcp' ? 'myco mcp --credential registry' : 'myco tool call <tool> --credential registry';
+    return { code: 'member_home', message: `This Myco member home requires a member credential. Run \`${command}\`. `
+      + 'Run `myco member provision <agent>` to refresh a leftover MCP entry.' };
+  }
   if (unmovedLegacyVaults(home).length > 0) {
     return {
       code: 'credential_required',
-      message: 'To move your Myco 1.4 data to Myco 2.0, run `myco login <invite link>`, '
-        + 'then `myco cutover --dry-run` to preview the move, then `myco cutover`. '
-        + 'After the move, run `myco member provision <agent>` to set up your agent, '
-        + 'and use `--credential registry` for MCP and tool commands.',
+      message: LEGACY_MIGRATION_GUIDANCE,
     };
   }
   return {

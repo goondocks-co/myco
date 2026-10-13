@@ -26,7 +26,7 @@ import { filesystemRootFromRequestContext, rowProjectIdFromRequestContext } from
 import type { MycoConfig } from '../../config/schema.js';
 import { loadMergedConfig } from '../../config/loader.js';
 import { capabilityEnabled } from '../../config/capabilities.js';
-import { projectTreeAvailable } from '../../vault/resolve.js';
+import { projectTreeAvailable } from '../../project-root.js';
 import type { CanopyEntry } from '../../db/schema.js';
 import type { Database } from '../../db/client.js';
 import type { RouteRequest, RouteResponse } from '../router.js';

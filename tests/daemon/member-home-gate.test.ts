@@ -19,7 +19,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { DaemonClient } from '@myco/daemon/client.js';
 import { runSymbiontDetection } from '@myco/cli/bootstrap.js';
-import { assertSafeServiceMutation } from '@myco/cli/service.js';
 import { ensureSelfInstalledAsService } from '@myco/service/self-install.js';
 import { isMemberHome, unmovedLegacyVaults } from '@myco/member/home-role.js';
 import { getPluginVersion } from '@myco/version.js';
@@ -128,11 +127,9 @@ describe('a 2.0 member home and the 1.4 daemon', () => {
     for (const args of [['service', 'install'], ['service', 'start'], ['service', 'restart'], ['service', 'reconcile'], ['restart']]) {
       const result = run(args);
       expect({ args, status: result.status }).toEqual({ args, status: 1 });
-      expect(result.stderr).toContain('is a Myco 2.0 member home');
+      expect(result.stderr).toContain('is retired in Myco 2.0');
     }
     expect(fs.existsSync(agents) ? fs.readdirSync(agents) : []).toEqual([]);
-    expect(assertSafeServiceMutation({ action: 'install' }, process.execPath, mycoHome)).toContain('is a Myco 2.0 member home');
-    expect(assertSafeServiceMutation({ action: 'stop' }, process.execPath, mycoHome)).toBeNull();
   });
 
   it('keeps 1.4 behaviour for a home with no membership', () => {

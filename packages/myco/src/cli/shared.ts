@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { resolveServiceDir, DAEMON_STATE_FILENAME } from '../grove/paths.js';
 import { isMemberHome, memberHomeDaemonRefusal } from '../member/home-role.js';
 import { resolveMycoHome } from '../paths/home.js';
 import type { DaemonClient } from '../daemon/client.js';
@@ -117,4 +120,12 @@ export function daemonErrorMessage(body: unknown): string | null {
 
 export function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+/** The recorded daemon executable, falling back to this process for diagnostic comparison. */
+export function resolveServiceExecutable(mycoHome: string = resolveMycoHome()): string {
+  try {
+    const state = JSON.parse(fs.readFileSync(path.join(resolveServiceDir(mycoHome), DAEMON_STATE_FILENAME), 'utf8')) as { command?: string };
+    return state.command || process.execPath;
+  } catch { return process.execPath; }
 }

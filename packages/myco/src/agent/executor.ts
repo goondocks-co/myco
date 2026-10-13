@@ -1,7 +1,7 @@
 /** Agent executor — orchestrates a single agent run end to end. */
 
 import crypto from 'node:crypto';
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
+import { resolveProjectRoot } from '@myco/project-root.js';
 import {
   epochSeconds,
   estimateTokens,

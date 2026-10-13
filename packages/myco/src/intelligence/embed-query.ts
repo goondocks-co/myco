@@ -30,7 +30,7 @@ export async function tryEmbed(text: string): Promise<number[] | null> {
     // In Phase 1, embedding providers may not be configured.
     const { createEmbeddingProvider } = await import('./llm.js');
     const { loadMergedConfig } = await import('@myco/config/loader.js');
-    const { resolveVaultDir } = await import('@myco/vault/resolve.js');
+    const { resolveVaultDir } = await import('@myco/project-root.js');
     const { loadProjectManifest } = await import('@myco/config/project-manifest.js');
 
     const vaultDir = resolveVaultDir();

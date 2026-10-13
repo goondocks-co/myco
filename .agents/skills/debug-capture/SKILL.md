@@ -32,7 +32,7 @@ Required:
 
 - A **session_id** that's suspected to be under-captured.
 - The **vault dir** the agent is using. Typically `<repo-root>/.myco`. In a worktree it walks up to the main repo's `.myco`.
-- The **Grove database path**. Typically `~/.myco/groves/<grove-id>/myco.db`. Find it with `myco grove list` if unsure.
+- The **Grove database path**. Typically `~/.myco/groves/<grove-id>/myco.db`. For retained 1.4 data, inspect the existing `groves/*/myco.db` paths read-only; `myco cutover --dry-run` lists migration sources.
 - The **agent's transcript path**, if available. The hook payload at Stop carries this; otherwise infer per `references/symbiont-capture-contract.md`.
 
 ## Procedure

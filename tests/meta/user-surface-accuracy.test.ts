@@ -20,8 +20,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { HOST_HELP } from '@myco/cli/host';
-import { JOIN_HELP, LEAVE_HELP } from '@myco/cli/join';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -81,28 +79,6 @@ const RETIRED_VOCAB: Array<{ label: string; re: RegExp }> = [
   { label: 'overlay (as a standalone word)', re: /(?<![-\w])overlay(?![-\w])/i },
 ];
 
-/** Long flags a text tells the user to pass. */
-function longFlags(text: string): string[] {
-  return [...new Set(Array.from(text.matchAll(/--([a-z][a-z0-9-]+)/g), (m) => m[1]!))];
-}
-
-/**
- * Long flags advertised specifically on team-host command lines — a `myco
- * host/join/leave/attach/detach` invocation, or the `--serve` installer path.
- * Scoping to those lines keeps flags for unrelated commands (`doctor --fix`,
- * `uninstall --purge`) and third-party tools in the installer (jq's `--arg`)
- * out of the check, which is only about the team-host surface.
- */
-function teamHostFlags(text: string): string[] {
-  const context = /\bmyco (host|join|leave|attach|detach)\b|--serve\b/;
-  const flags = new Set<string>();
-  for (const line of text.split('\n')) {
-    if (!context.test(line)) continue;
-    for (const flag of longFlags(line)) flags.add(flag);
-  }
-  return [...flags];
-}
-
 describe('user-facing surface matches the shipped transport', () => {
   // README + everything under docs/ EXCEPT CHANGELOG (which lives at the repo
   // root and legitimately narrates the removal). install.sh and index.html are
@@ -130,29 +106,4 @@ describe('user-facing surface matches the shipped transport', () => {
     ).toEqual([]);
   });
 
-  test('every flag the README + installer advertise is a real, parsed flag', () => {
-    // The real flag vocabulary IS the CLI help (which `help-matches-parser`
-    // already pins to the parsers), plus the attach/detach/installer flags no
-    // team-host help string carries.
-    const realFlags = new Set<string>([
-      ...longFlags(HOST_HELP),
-      ...longFlags(JOIN_HELP),
-      ...longFlags(LEAVE_HELP),
-      // attach/detach + installer + generic — documented outside host/join help.
-      'host', 'project-id', 'allow-no-pull', 'serve', 'hostname', 'help',
-    ]);
-
-    const surfaces = ['README.md', 'docs/install.sh'];
-    const phantom: string[] = [];
-    for (const rel of surfaces) {
-      for (const flag of teamHostFlags(read(rel))) {
-        if (!realFlags.has(flag)) phantom.push(`${rel}: --${flag}`);
-      }
-    }
-    expect(
-      phantom,
-      'These surfaces advertise a flag no parser reads — a user copying the command gets silence, '
-      + 'not an error. Document only real flags (see HOST_HELP / JOIN_HELP).\n\n' + phantom.join('\n'),
-    ).toEqual([]);
-  });
 });

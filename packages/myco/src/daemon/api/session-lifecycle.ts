@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
+import { resolveProjectRoot } from '@myco/project-root.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { SessionRegistry } from '../lifecycle.js';
 import type { DaemonLogger } from '../logger.js';

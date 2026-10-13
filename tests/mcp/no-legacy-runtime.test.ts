@@ -24,6 +24,11 @@ for (const command of ['mcp', 'tool']) for (const kind of ['empty', 'member', 'l
     const output = result.stdout + result.stderr;
     expect(output).toContain('--credential registry');
     expect(output).toContain('myco member provision');
+    if (kind === 'member') {
+      expect(output).toContain(command === 'mcp' ? 'myco mcp --credential registry' : 'myco tool call <tool> --credential registry');
+      expect(output).toContain('refresh a leftover MCP entry');
+      expect(output).not.toMatch(/daemon/i);
+    }
     if (kind === 'empty') expect(fs.existsSync(path.join(env.MYCO_HOME!, 'groves'))).toBe(false);
     if (kind === 'legacy') {
       expect(output).toMatch(/myco login <invite link>.*myco cutover --dry-run.*After the move.*--credential registry/s);

@@ -14,6 +14,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
+import { MEMBER_VERBS } from '../../packages/myco/src/cli/member-verbs.js';
 import path from 'node:path';
 import {
   SHIPPED_SKILLS_DIR,
@@ -185,6 +186,7 @@ describe('the setup skill against the code it drives', () => {
     const cli = fs.readFileSync(path.join(REPO_ROOT, 'packages/myco/src/cli.ts'), 'utf-8');
     // The verbs the dispatcher answers, read from the dispatcher itself.
     const registered = new Set([
+      ...MEMBER_VERBS,
       ...[...cli.matchAll(/cmd === '([a-z-]+)'/g)].map((m) => m[1]),
       ...[...cli.matchAll(/case '([a-z-]+)':/g)].map((m) => m[1]),
     ]);

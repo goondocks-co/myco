@@ -11,8 +11,7 @@
  * and the dispatcher are a member's.
  *
  * `doctor`, `config get`, `logs` and `--help` run as the member there too. A
- * checkout with no membership refuses without creating a vault. Only unmoved
- * 1.4 capture retains its handlers and command list.
+ * checkout with no membership refuses without creating a vault. Unmoved 1.4 capture receives cutover guidance.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -201,7 +200,7 @@ describe('the dispatched read verbs in a fresh joined checkout', () => {
     expect(legacyArtifacts(m)).toEqual([]);
   }, 40_000);
 
-  it('an unjoined checkout refuses without creating a vault, using legacy handlers only while unmoved', async () => {
+  it('an unjoined checkout refuses without creating a vault, including an unmoved home', async () => {
     const m = machine(false);
     const ran = await cli(m, 'search', 'quokka');
     expect(ran.status).toBe(1);
@@ -213,11 +212,11 @@ describe('the dispatched read verbs in a fresh joined checkout', () => {
     fs.writeFileSync(path.join(m.home, 'myco.db'), 'fixture');
     const before = legacyArtifacts(m);
     const legacy = await cli(m, '--help');
-    expect(legacy.stdout).toContain('grove <subcommand>');
+    expect(legacy.stdout).toContain('myco cutover --dry-run');
     expect(legacy.stdout).not.toContain('2.0 member (a project joined');
     expect(legacyArtifacts(m)).toEqual(before);
     const legacyRead = await cli(m, 'search', 'quokka');
-    expect(legacyRead.stderr).toContain('No myco.yaml found');
+    expect(legacyRead.stderr).toContain('myco cutover --dry-run');
     const vault = path.join(m.home, 'myco.db');
     const stat = fs.statSync(vault);
     fs.mkdirSync(path.join(m.home, 'member'), { recursive: true });

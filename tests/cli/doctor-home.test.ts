@@ -173,7 +173,7 @@ describe('home doctor', () => {
     expect(unbound.join('\n')).toContain('myco doctor (member)');
     expect(unbound.join('\n')).toContain('confirm where each project went');
     expect(unbound.join('\n')).not.toContain('migration pending');
-    expect(helpText('legacy commands', deps)).toBe(MEMBER_USAGE);
+    expect(helpText(deps)).toBe(MEMBER_USAGE);
     expect((await homeReport(home, deps)).filter(check => check.name === 'Myco 1.4')).toEqual([]);
     join(personal);
     const lines: string[] = [];
@@ -185,12 +185,13 @@ describe('home doctor', () => {
   it('ignores empty groves and names pending vaults in the default home', async () => {
     fs.mkdirSync(path.join(home, 'groves'));
     expect(useHomeDoctor(home)).toBe(true);
-    expect(helpText('legacy commands', deps)).toBe(MEMBER_USAGE);
+    expect(helpText(deps)).toBe(MEMBER_USAGE);
     const vault = path.join(process.env.HOME!, '.myco', 'myco.db');
     fs.mkdirSync(path.dirname(vault), { recursive: true });
     fs.writeFileSync(vault, 'fixture');
     expect(useHomeDoctor(home)).toBe(false);
-    expect(helpText('legacy commands', deps)).toBe('legacy commands');
+    expect(helpText(deps)).toContain(MEMBER_USAGE);
+    expect(helpText(deps)).toContain('myco cutover --dry-run');
     join(personal);
     const check = (await homeReport(home, deps)).find(check => check.name === 'Myco 1.4')!;
     expect(check.status).toBe('warn');
@@ -223,7 +224,7 @@ describe('home doctor', () => {
     expect(check.status).toBe('fail');
     expect(check.detail).toContain('unavailable');
     expect(check.detail).toContain(path.join(home, 'member', 'cutover.json'));
-    expect(helpText('legacy commands', deps)).toBe(MEMBER_USAGE);
+    expect(helpText(deps)).toBe(MEMBER_USAGE);
   });
 
   it('names the offending agent registration file when migration cannot be read', async () => {
@@ -235,7 +236,7 @@ describe('home doctor', () => {
     expect(check.status).toBe('fail');
     expect(check.detail).toContain(`Inspect ${file}`);
     expect(check.detail).not.toContain(`Inspect ${home},`);
-    expect(helpText('legacy commands', deps)).toBe(MEMBER_USAGE);
+    expect(helpText(deps)).toBe(MEMBER_USAGE);
   });
 
   it('reports broken hooks and refused capture with the repair command', async () => {

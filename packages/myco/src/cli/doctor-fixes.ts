@@ -168,65 +168,7 @@ export const DOCTOR_FIXERS: Record<DoctorFixerId, (ctx: DoctorFixContext, matche
     return actions;
   },
 
-  // Reinstall the daemon service unit. Covers both Service failure
-  // modes — not installed, and installed-but-executable-missing. Runs
-  // once even when both checks matched.
-  'service-reinstall': async () => {
-    const { resolveServiceExecutable, assertSafeServiceMutation } = await import('./service.js');
-    const { buildServiceSpec } = await import('../service/spec-builder.js');
-    const { getServiceManager } = await import('../service/manager.js');
-    const { serviceLabel } = await import('../service/labels.js');
-    const { resolveMycoHome } = await import('../grove/paths.js');
-
-    const mycoHome = resolveMycoHome();
-    const refusal = assertSafeServiceMutation({ action: 'install' }, process.execPath, mycoHome);
-    if (refusal) return [refusal];
-
-    // Spec R-M3: the dangerous shape is a BOOT-observed unit — reinstalling
-    // the login unit beside it gives two supervisors one daemon. Keyed on
-    // OBSERVED state (config intent alone would miss intent-login+observed-boot).
-    {
-      const { resolveObservedScope } = await import('../service/scoped.js');
-      const { serviceLabel: resolveLabel } = await import('../service/labels.js');
-      const observed = await resolveObservedScope(resolveLabel(mycoHome));
-      if (observed === 'boot' || observed === 'both') {
-        return [
-          `Refusing service-reinstall: the ${observed === 'both' ? 'boot AND login units' : 'boot unit'} `
-          + 'own this daemon. Use `myco service install` to converge scope instead.',
-        ];
-      }
-    }
-
-    // The 'executable missing' check fires precisely when the recorded
-    // command is gone, and buildServiceSpec throws on a missing path —
-    // fall back to the running binary.
-    let executable = resolveServiceExecutable(mycoHome);
-    if (!fs.existsSync(executable)) {
-      // Recorded command gone: fall back to the service-unit policy (managed
-      // binary for the default home only), never a raw execPath.
-      const { resolveBinary } = await import('../runtime/binary-resolution.js');
-      executable = resolveBinary('home-scoped-managed', { kind: 'machine' }, { mycoHome }).path;
-    }
-
-    let spec: import('../service/types.js').ServiceSpec;
-    try {
-      spec = buildServiceSpec({ mycoHome, executable });
-    } catch (err) {
-      return [err instanceof Error ? err.message : String(err)];
-    }
-    const mgr = getServiceManager();
-    const label = serviceLabel(mycoHome);
-    // A throwing manager must surface as a failed action, not escape
-    // fix() — an uncaught throw would discard the other fixers' action
-    // reports and skip the post-fix recheck.
-    try {
-      await mgr.install(spec, { force: true });
-      await mgr.start(label);
-    } catch (err) {
-      return [`Service reinstall failed: ${err instanceof Error ? err.message : String(err)}`];
-    }
-    return [`Reinstalled ${label} service and started it`];
-  },
+  'service-reinstall': async () => ['The Myco 1.4 service commands are retired. Run `myco login <invite link>`, then `myco cutover --dry-run`.'],
 
   // Re-run global symbiont detection, which rewrites every Myco-owned
   // hook group in every detected agent's global config. Foreign hook

@@ -414,19 +414,6 @@ describe('resolveObservedScope — file existence across both domains + the Linu
 });
 
 describe('round-3 follow-ups', () => {
-  it('the CLI refuses a root boot install BEFORE any manager or preflight call (source-order pin)', () => {
-    const source = fs.readFileSync(
-      path.join(process.cwd(), 'packages/myco/src/cli/service.ts'),
-      'utf-8',
-    );
-    const refusal = source.indexOf('Refusing to install a boot-scoped service as root');
-    const preflight = source.indexOf('await supportsScope(targetScope)');
-    const transition = source.indexOf('transitionServiceScope({');
-    expect(refusal).toBeGreaterThanOrEqual(0);
-    expect(preflight).toBeGreaterThan(refusal);
-    expect(transition).toBeGreaterThan(refusal);
-  });
-
   it('GATE (M4): a failed sudo rm during uninstall THROWS — never "✓ Unregistered" over a surviving root unit', async () => {
     delete process.env[SERVICE_UNIT_DIR_ENV];
     const { unitDir, stagingDir } = tmpDirs();

@@ -35,8 +35,9 @@ function linkTarget(link: string): string | null {
   try {
     if (!fs.lstatSync(link).isSymbolicLink()) return null;
     return path.resolve(path.dirname(link), fs.readlinkSync(link));
-  } catch {
-    return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
   }
 }
 
@@ -99,4 +100,24 @@ export function missingMemberSkills(mycoHome: string, target: string): string[] 
   const source = managedSkillsDir(mycoHome);
   const folder = skillsFolder(target);
   return Object.keys(BUNDLED_SKILLS).filter((name) => !fs.existsSync(path.join(folder, name)) || !fs.existsSync(path.join(source, name)));
+}
+
+/** Remove only links into this home's skill source, validating before teardown and rechecking before unlinking. */
+export function prepareMemberSkillRemoval(mycoHome: string, folder: string): () => void {
+  const source = path.resolve(managedSkillsDir(mycoHome));
+  let names: string[];
+  try { names = fs.readdirSync(folder); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return () => {};
+    throw error;
+  }
+  const links = names.flatMap(name => {
+    const link = path.join(folder, name);
+    const target = linkTarget(link);
+    return target !== null && within(target, source) ? [{ link, target }] : [];
+  });
+  return () => {
+    for (const { link, target } of links) {
+      if (linkTarget(link) === target) fs.unlinkSync(link);
+    }
+  };
 }

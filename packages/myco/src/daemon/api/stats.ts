@@ -7,7 +7,7 @@ import { gatherStats } from '@myco/services/stats.js';
 import { loadProjectManifest, type ProjectManifest } from '@myco/config/project-manifest.js';
 import { resolveMycoHome } from '@myco/grove/paths.js';
 import { listGroves, type GroveRecord } from '@myco/grove/registry.js';
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
+import { resolveProjectRoot } from '@myco/project-root.js';
 import { projectScopeFromRequestContext, type MycoRequestContext } from '@myco/grove/request-context.js';
 import type { RouteHandler, RouteResponse } from '../router.js';
 

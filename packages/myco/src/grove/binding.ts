@@ -16,7 +16,7 @@ import {
   registerProjectInGrove,
   type ResolvedRegisteredProject,
 } from './registry.js';
-import { resolveProjectRoot } from '../vault/resolve.js';
+import { resolveProjectRoot } from '../project-root.js';
 import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 
 /**

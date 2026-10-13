@@ -17,7 +17,7 @@
  */
 
 import type { RouteRequest, RouteResponse } from '../router.js';
-import { projectTreeAvailable } from '@myco/vault/resolve.js';
+import { projectTreeAvailable } from '@myco/project-root.js';
 import {
   createGroveBackup,
   listGroveBackups,

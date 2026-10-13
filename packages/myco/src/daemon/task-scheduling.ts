@@ -1,7 +1,7 @@
 import type { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
-import { projectTreeAvailable } from '@myco/vault/resolve.js';
+import { projectTreeAvailable } from '@myco/project-root.js';
 import type { JobRunner } from './job-runner.js';
 import type {
   ProjectTaskLastRunMap,
