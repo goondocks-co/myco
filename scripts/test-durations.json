@@ -208,7 +208,7 @@
     "tests/meta/cloudflare-schema-admission.test.ts": 203,
     "tests/meta/comments-describe-current-state.test.ts": 492,
     "tests/meta/container-bun-pin.test.ts": 50,
-    "tests/meta/daemon-start-boundary.test.ts": 36000,
+    "tests/meta/daemon-start-boundary.test.ts": 16000,
     "tests/meta/darwin-distribution-gate.test.ts": 756,
     "tests/meta/dashboard-import-boundary.test.ts": 104,
     "tests/meta/dev-wrapper.test.ts": 738,

@@ -203,7 +203,7 @@ function supervisorStarts(closure: Closure, program: ts.Program, reuse: Implemen
       if (node.text === 'RELOAD_SCRIPT' && node.getSourceFile().fileName === path.join(REPO_ROOT, 'packages/myco/src/server/service.ts')) {
         let owner: ts.Node | undefined = node.parent;
         while (owner && !ts.isFunctionDeclaration(owner)) owner = owner.parent;
-        if (owner?.name?.text === 'reloadServiceDetached') return resolved.map(value => value.replaceAll('launchctl load -w "$unit"', ''));
+        if (owner?.name?.text === 'reloadServiceDetached') return resolved.map(value => value.split('\n').filter(line => line.trim() !== 'launchctl load -w "$unit"').join('\n'));
       }
       return resolved;
     }
