@@ -381,7 +381,7 @@ describe('a joined member with no 1.4 vault', () => {
     const unjoined = help(freshCheckout());
     expect(unjoined.startsWith(MEMBER_USAGE)).toBe(true);
     expect(unjoined).toContain('myco cutover --dry-run');
-    for (const retired of [/\bgrove\b/i, /\bdaemon\b/i, /stdio/i, /^\s+restart\b/m, /^\s+service\b/m]) {
+    for (const retired of [/\bgrove\b/i, /\bdaemon\b/i, /^\s+mcp\b/m, /^\s+hook\b/m, /stdio/i, /^\s+restart\b/m, /^\s+service\b/m]) {
       expect(MEMBER_USAGE).not.toMatch(retired);
     }
     for (const kept of ['search <query>', 'session [id|latest]', 'stats', 'doctor', 'logs', 'config get', 'login <address-or-invite-link>', 'member <op>']) {

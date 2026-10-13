@@ -1260,18 +1260,27 @@ export function runMcpHeaders(args: readonly string[], deps: MemberCliDeps = {})
 }
 
 interface MemberCommandRegistration {
+  hidden?: boolean;
   help: string;
   run: (rest: readonly string[], deps: MemberCliDeps) => Promise<void>;
 }
 
+const memberHelpCommand: MemberCommandRegistration = {
+  hidden: true,
+  help: '',
+  run: async (_rest, deps) => { (deps.stdout ?? console.log)(MEMBER_HELP.trimEnd()); },
+};
+
 export const MEMBER_COMMANDS: Record<string, MemberCommandRegistration> = {
+  '--help': memberHelpCommand,
+  '-h': memberHelpCommand,
   'join': {
     help: `  join [--project <id|name> | --new [name]] [--root <dir>] [--no-agents] [<server-url>]
                      Connect the repository you are in to a project on the Deployment this machine is
                      signed in to (\`myco login\`): an existing one by id or name, or a new one (named
                      for the folder unless you name it). With neither, a terminal asks which. Your agents
                      are set up to capture there; --no-agents leaves them as they are.
-  join <server-url> --project <id> (--token-stdin | --token-env <NAME>) [--root <dir>] [--provision <agent>] [--no-worker]
+  join <server-url> --project <id> (--token-stdin | --token-env <NAME>) [--root <dir>] [--provision <agent>]
                      Record this machine's membership of a project on a Myco server. The token is read
                      from stdin or from the named environment variable — never from the command line.
                      --provision installs the agent's hooks and MCP entry globally. Execution is a
@@ -1395,15 +1404,11 @@ export const MEMBER_COMMANDS: Record<string, MemberCommandRegistration> = {
 export const MEMBER_HELP = `Usage: myco member <op> [options]
 
 Ops:
-${Object.values(MEMBER_COMMANDS).map(command => command.help).join('\n')}
+${Object.values(MEMBER_COMMANDS).filter(command => !command.hidden).map(command => command.help).join('\n')}
 `;
 
 export async function run(args: readonly string[], deps: MemberCliDeps = {}): Promise<void> {
   const [op, ...rest] = args;
-  if (op === '--help' || op === '-h') {
-    (deps.stdout ?? console.log)(MEMBER_HELP.trimEnd());
-    return;
-  }
   const command = op !== undefined && Object.hasOwn(MEMBER_COMMANDS, op) ? MEMBER_COMMANDS[op] : undefined;
   if (command) return command.run(rest, deps);
   (deps.stderr ?? console.error)(MEMBER_HELP.trimEnd());

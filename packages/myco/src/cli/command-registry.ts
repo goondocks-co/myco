@@ -2,12 +2,25 @@ import { resolveVaultDir } from '../project-root.js';
 import { runLaunchPreamble } from './launch-preamble.js';
 
 export interface CommandRegistration {
+  hidden?: boolean;
+  aliasFor?: string;
   group: string;
   usage: string;
   description: string;
   help: string | (() => Promise<string>);
   run: (args: string[]) => Promise<void>;
 }
+
+const helpCommand: CommandRegistration = {
+  hidden: true, group: 'Help', usage: '', description: 'Show help',
+  help: async () => (await import('./help.js')).helpText(),
+  run: async () => { process.stdout.write((await import('./help.js')).helpText()); },
+};
+const versionAlias: CommandRegistration = {
+  hidden: true, group: 'This machine', usage: '', description: 'Show the installed version',
+  help: async () => helpForCommand('version'),
+  run: async args => COMMANDS.version.run(args),
+};
 
 export const COMMANDS: Record<string, CommandRegistration> = {
   setup: {
@@ -62,7 +75,7 @@ export const COMMANDS: Record<string, CommandRegistration> = {
   worker: {
     group: "Membership",
     usage: "[options]",
-    description: "Inspect harnesses and manage runner or legacy worker services",
+    description: "Check installed agents and manage services that run Myco tasks",
     help: async () => (await import('./worker.js')).WORKER_HELP,
     run: async args => { if (!await (await import('./worker.js')).run(args)) process.exitCode = 2; },
   },
@@ -111,7 +124,7 @@ export const COMMANDS: Record<string, CommandRegistration> = {
   doctor: {
     group: "This machine",
     usage: "",
-    description: "Check membership, capture, spool, MCP, worker and Deployment reachability",
+    description: "Check sign-in, session capture, agent connections and server access",
     help: "Usage: myco doctor\n\nCheck member wiring and Deployment reachability.\n",
     run: async args => { if (!await (await import('./member-dispatch.js')).runMemberVerb('doctor', args)) process.exitCode = 1; },
   },
@@ -132,13 +145,13 @@ export const COMMANDS: Record<string, CommandRegistration> = {
   settings: {
     group: "This machine",
     usage: "",
-    description: "Print harness settings for a sandboxed agent (--harness <name> --project <id>)",
+    description: "Print agent settings for an isolated session (--harness <name> --project <id>)",
     help: async () => (await import('./settings.js')).SETTINGS_HELP,
     run: async args => (await import('./settings.js')).run(args),
   },
   update: {
     group: "This machine",
-    usage: "(alias: upgrade)",
+    usage: "",
     description: "Update Myco within its recorded channel; refresh member agents",
     help: async () => (await import('./update.js')).UPDATE_HELP,
     run: async args => (await import('./update.js')).run(args),
@@ -146,7 +159,7 @@ export const COMMANDS: Record<string, CommandRegistration> = {
   remove: {
     group: "This machine",
     usage: "[--purge] [--allow-deployment-loss]",
-    description: "Remove member integrations; optionally purge owned 2.0 data",
+    description: "Remove Myco's agent hooks and services from this machine; --purge also deletes its data",
     help: async () => (await import('./remove.js')).USAGE,
     run: async args => (await import('./remove.js')).run(args),
   },
@@ -165,6 +178,8 @@ export const COMMANDS: Record<string, CommandRegistration> = {
     run: async args => (await import('./server.js')).run(args),
   },
   upgrade: {
+    hidden: true,
+    aliasFor: 'update',
     group: "This machine",
     usage: "[options]",
     description: "Alias for update",
@@ -172,6 +187,7 @@ export const COMMANDS: Record<string, CommandRegistration> = {
     run: async args => (await import('./upgrade.js')).run(args),
   },
   hook: {
+    hidden: true,
     group: "Agent integration",
     usage: "<name>",
     description: "Run a capture hook using JSON input from the agent",
@@ -179,36 +195,41 @@ export const COMMANDS: Record<string, CommandRegistration> = {
     run: async args => (await import('../hooks/entry.js')).runHook(args),
   },
   mcp: {
+    hidden: true,
     group: "Agent integration",
     usage: "--credential registry",
     description: "Serve the configured MCP connection",
     help: "Usage: myco mcp --credential registry\n\nServe the configured MCP stdio surface.\n",
     run: async args => { runLaunchPreamble('mcp', args); await (await import('../mcp/stdio-bridge.js')).main(); },
   },
+  daemon: {
+    hidden: true, group: 'Compatibility', usage: '', description: 'Acknowledge a retired daemon launch',
+    help: "Usage: myco daemon [kill]\n\nAcknowledge a retired daemon launch without starting a runtime.\n",
+    run: async () => (await import('./daemon-guard.js')).main(),
+  },
+  '--help': helpCommand,
+  '-h': helpCommand,
+  '--version': versionAlias,
+  '-v': versionAlias,
+
 
 };
 
 export function renderTopLevelHelp(): string {
   const groups = new Map<string, string[]>();
   for (const [name, command] of Object.entries(COMMANDS)) {
+    if (command.hidden) continue;
+    const aliases = Object.entries(COMMANDS).filter(([, entry]) => entry.aliasFor === name).map(([alias]) => alias);
+    const usage = [name, command.usage, aliases.length ? '(alias: ' + aliases.join(', ') + ')' : ''].filter(Boolean).join(' ');
     const lines = groups.get(command.group) ?? [];
-    lines.push("  " + [name, command.usage].filter(Boolean).join(" ").padEnd(48) + " " + command.description);
+    lines.push("  " + usage.padEnd(48) + " " + command.description);
     groups.set(command.group, lines);
   }
   return "Usage: myco <command> [args]\n\n" + [...groups].map(([group, lines]) => group + ":\n" + lines.join("\n")).join("\n\n") + "\n";
 }
 
-/** Retired launch compatibility is separate from the public 2.0 commands. */
-export const COMPATIBILITY_COMMANDS: Record<string, Pick<CommandRegistration, 'help' | 'run'>> = {
-  daemon: {
-    help: "Usage: myco daemon [kill]\n\nAcknowledge a retired daemon launch without starting a runtime.\n",
-    run: async () => (await import('./daemon-guard.js')).main(),
-  },
-};
-
 export async function helpForCommand(command: string): Promise<string> {
-  const registration = Object.hasOwn(COMMANDS, command) ? COMMANDS[command]
-    : Object.hasOwn(COMPATIBILITY_COMMANDS, command) ? COMPATIBILITY_COMMANDS[command] : undefined;
+  const registration = Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
   if (!registration) return `Usage: myco ${command} [args]\n\nRun \`myco --help\` for the full command list.\n`;
   return typeof registration.help === 'string' ? registration.help : await registration.help();
 }

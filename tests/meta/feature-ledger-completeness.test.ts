@@ -1,4 +1,4 @@
-import { COMMANDS, COMPATIBILITY_COMMANDS } from '@myco/cli/command-registry.js';
+import { COMMANDS } from '@myco/cli/command-registry.js';
 /**
  * Meta gate: every 1.4 surface carries an explicit 2.0 disposition AND an owning surface.
  *
@@ -79,7 +79,7 @@ const rowIn = (section: string, token: string) => BY_SECTION.get(section)?.get(t
 // ---------------------------------------------------------------------------
 
 function cliCommands(): string[] {
-  return [...Object.keys(COMMANDS), ...Object.keys(COMPATIBILITY_COMMANDS)].sort();
+  return Object.keys(COMMANDS).filter(name => !name.startsWith('-')).sort();
 }
 
 function dashboardRoutes(): string[] {

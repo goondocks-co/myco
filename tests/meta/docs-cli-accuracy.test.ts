@@ -25,7 +25,7 @@ function functionSource(source: string, name: string): string {
 
 /** Published commands and flags come from registered help. */
 async function commandSurfaces(): Promise<Map<string, CommandSurface>> {
-  const names = Object.keys(COMMANDS);
+  const names = Object.keys(COMMANDS).filter(name => !COMMANDS[name].hidden || COMMANDS[name].aliasFor);
   const surfaces = new Map<string, CommandSurface>();
   for (const command of names) {
     const source = command === 'server' || command === 'tool' ? readSource('cli/' + command + '.ts') : '';

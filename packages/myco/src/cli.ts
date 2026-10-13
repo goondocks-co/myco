@@ -4,17 +4,13 @@ import { loadEnv } from './cli/env-file.js';
 import { keepLoopbackOffProxy } from './cli/loopback-proxy.js';
 import { isRetiredVerb, retiredVerbMessage } from './cli/retired-verbs.js';
 
-import { COMMANDS, COMPATIBILITY_COMMANDS, helpForCommand } from './cli/command-registry.js';
+import { COMMANDS, helpForCommand } from './cli/command-registry.js';
 
 loadEnv();
 
 async function main(): Promise<void> {
   keepLoopbackOffProxy();
-  const [cmd, ...args] = process.argv.slice(2);
-  if (!cmd || cmd === '--help' || cmd === '-h') {
-    process.stdout.write((await import('./cli/help.js')).helpText());
-    return;
-  }
+  const [cmd = '--help', ...args] = process.argv.slice(2);
   if (isRetiredVerb(cmd)) {
     console.error(await retiredVerbMessage(cmd));
     process.exitCode = 1;
@@ -24,7 +20,7 @@ async function main(): Promise<void> {
     process.stdout.write(await helpForCommand(cmd));
     return;
   }
-  const command = Object.hasOwn(COMMANDS, cmd) ? COMMANDS[cmd] : Object.hasOwn(COMPATIBILITY_COMMANDS, cmd) ? COMPATIBILITY_COMMANDS[cmd] : cmd === '--version' || cmd === '-v' ? COMMANDS.version : undefined;
+  const command = Object.hasOwn(COMMANDS, cmd) ? COMMANDS[cmd] : undefined;
   if (command) return command.run(args);
   console.error(`Unknown command: ${cmd}`);
   process.stdout.write((await import('./cli/help.js')).helpText());
