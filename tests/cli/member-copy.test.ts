@@ -14,10 +14,11 @@ import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 const source = (file: string): string => readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8');
 
 describe('member recovery copy', () => {
-  it('uses the identity link lifetime and requires a project-bound sandbox invitation', () => {
+  it('uses the identity link lifetime and describes Deployment sandbox invitations', () => {
     expect(MEMBER_HELP).toContain(`within ${IDENTITY_LINK_TTL_MS / 60_000} minutes`);
     expect(MEMBER_HELP).not.toContain('ten minutes');
-    expect(LOGIN_HELP).toContain('project-bound invitation');
+    expect(LOGIN_HELP).toContain('Deployment invitations');
+    expect(LOGIN_HELP).not.toContain('project-bound invitation');
     expect(LOGIN_HELP).not.toContain('same link');
   });
 

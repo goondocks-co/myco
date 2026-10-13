@@ -56,74 +56,6 @@ import { MemberMcpConflictError, MemberProvisionConflictError, SymbiontInstaller
 import { ensureGitIgnored } from '@myco/utils/git-exclude.js';
 import { describeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
 
-export const MEMBER_HELP = `Usage: myco member <op> [options]
-
-Ops:
-  join [--project <id|name> | --new [name]] [--root <dir>] [--no-agents] [<server-url>]
-                     Connect the repository you are in to a project on the Deployment this machine is
-                     signed in to (\`myco login\`): an existing one by id or name, or a new one (named
-                     for the folder unless you name it). With neither, a terminal asks which. Your agents
-                     are set up to capture there; --no-agents leaves them as they are.
-  join <server-url> --project <id> (--token-stdin | --token-env <NAME>) [--root <dir>] [--provision <agent>] [--no-worker]
-                     Record this machine's membership of a project on a Myco server. The token is read
-                     from stdin or from the named environment variable — never from the command line.
-                     --provision installs the agent's hooks and MCP entry globally. Execution is a
-                     separate opt-in through \`myco runner register <host>\` and \`myco runner install\`.
-  leave [--purge]    Forget this project's membership, and remove the surfaces that answer over it: any
-                     member plugin (OpenCode, Pi) and the project's own Myco MCP entry, so those agents
-                     fall back to what is installed for all your projects. Runner and legacy worker
-                     services are kept. The spool is kept unless
-                     --purge is given, which also removes the hooks this project was provisioned with.
-  drain [--all]      Deliver every spooled event for this project (or every joined project with --all);
-                     no harness budget, the offline latch is ignored, retention is applied first.
-  drain --assign-legacy --server <url> --project <id>
-                     Assign held Project-only capture to the named destination, then migrate and drain it.
-  drain --assign-pending --root-key <key> --server <url> --project <id>
-                     Assign legacy pending capture to the named destination, then drain it.
-  helper --project <id> --server <url> --home <dir>
-                     The project's helper: ships its spool in passes under the helper lock until nothing is
-                     left, then exits (at most 120 s). Hooks start it detached; its log is
-                     <home>/logs/helper.log (\`--stderr\` keeps it on stderr).
-  status [--all]     The registry entry (token redacted), expiry, spool depth per session,
-                     last acknowledgement and refusal, the offline latch, any capture
-                     attempts that found no membership, the default Deployment, and the
-                     repositories that did not join or are still joining.
-  export [--all]     The same facts as status, as one JSON document, with the binary, runtime-pin
-                     and MCP-resolution checks. Carries no token, no captured content and no
-                     free-text detail; the document's omissions list names what is left out.
-  refresh [--all]    Rotate the member token when its refresh window is open. The predecessor keeps
-                     working until the successor is first used; an env-sourced token is never rotated.
-  provision [<agent>] [--root <dir>] [--server <url>]
-  provision --remove <agent>
-                     Install the agent's hooks and MCP entry globally using the recorded membership, or
-                     every agent installed on this machine when none is named. An agent whose entries
-                     belong to another installation is left alone and named. --root selects the
-                     membership, not the installation scope; --server picks the Deployment when this
-                     machine is a member of several. No token is changed.
-  link-github [--root <dir>] [--open]
-                     Connect your GitHub account to this membership for the dashboard: prints a one-time
-                     link to open in a browser within ${IDENTITY_LINK_TTL_MS / 60_000} minutes. --open hands it to the browser as well.
-  raw-claims [--credential registry|env] [--server <url>] [--apply --revision <reviewed-revision>]
-                     Preview raw data with no recorded uploader, by project, kind, count and date.
-                     Only the recorded owner may claim it. Review the preview, then explicitly apply
-                     its revision to make that data private to you. No captured content is printed.
-                     Uses the recorded default Deployment or --server. Env needs only
-                     MYCO_SERVER_URL and MYCO_MEMBER_TOKEN; neither command needs a Project.
-  ownership [--credential registry|env] [--server <url>] [--owner <member-id> | --transfer <member-id>] [--revision <reviewed-revision>]
-                     Preview this Deployment's recorded owner and eligible admins. Use --owner to
-                     record an initial owner, or --transfer to name a new owner from the preview.
-  role [--credential registry|env] [--server <url>] [--member <member-id> --role admin|member --revision <reviewed-revision>]
-                     Preview members and their role revisions. The owner can explicitly promote or
-                     demote one member using the role revision from that preview.
-  auto-join (--root <dir> | --sweep)
-                     Join a repository with no connection to this machine's default Deployment, or
-                     record why it cannot; --sweep does it for every repository met before. Your
-                     agents' hooks start it on their own; \`status\` shows what it did.
-  mcp-headers --credential registry|env --server <server-url>
-                     Print this project's MCP request headers as JSON, for an agent that reaches the
-                     server's MCP over HTTP and asks a command for its headers. Prints nothing unless
-                     the membership is on <server-url>. Written by --provision.
-`;
 
 export interface MemberCliDeps {
   fetch?: FetchLike;
@@ -1327,12 +1259,37 @@ export function runMcpHeaders(args: readonly string[], deps: MemberCliDeps = {})
   out(JSON.stringify(memberHeaders(record)));
 }
 
-export async function run(args: readonly string[], deps: MemberCliDeps = {}): Promise<void> {
-  const [op, ...rest] = args;
-  switch (op) {
-    case 'join': await runJoin(rest, deps); return;
-    case 'leave': runLeave(rest, deps); return;
-    case 'routing-key': {
+interface MemberCommandRegistration {
+  help: string;
+  run: (rest: readonly string[], deps: MemberCliDeps) => Promise<void>;
+}
+
+export const MEMBER_COMMANDS: Record<string, MemberCommandRegistration> = {
+  'join': {
+    help: `  join [--project <id|name> | --new [name]] [--root <dir>] [--no-agents] [<server-url>]
+                     Connect the repository you are in to a project on the Deployment this machine is
+                     signed in to (\`myco login\`): an existing one by id or name, or a new one (named
+                     for the folder unless you name it). With neither, a terminal asks which. Your agents
+                     are set up to capture there; --no-agents leaves them as they are.
+  join <server-url> --project <id> (--token-stdin | --token-env <NAME>) [--root <dir>] [--provision <agent>] [--no-worker]
+                     Record this machine's membership of a project on a Myco server. The token is read
+                     from stdin or from the named environment variable — never from the command line.
+                     --provision installs the agent's hooks and MCP entry globally. Execution is a
+                     separate opt-in through \`myco runner register <host>\` and \`myco runner install\`.`,
+    run: async (rest, deps) => { await runJoin(rest, deps); },
+  },
+  'leave': {
+    help: `  leave [--purge]    Forget this project's membership, and remove the surfaces that answer over it: any
+                     member plugin (OpenCode, Pi) and the project's own Myco MCP entry, so those agents
+                     fall back to what is installed for all your projects. Runner and legacy worker
+                     services are kept. The spool is kept unless
+                     --purge is given, which also removes the hooks this project was provisioned with.`,
+    run: async (rest, deps) => { runLeave(rest, deps); },
+  },
+  'routing-key': {
+    help: `  routing-key --credential registry|env [--root <dir>]
+                     Print the transcript destination key for the selected project.`,
+    run: async (rest, deps) => {
       const source = parseCredentialFlag(rest);
       if (source === null) { (deps.stderr ?? console.error)('myco member routing-key: declare --credential registry|env'); process.exitCode = 2; return; }
       const rootAt = rest.indexOf('--root');
@@ -1341,26 +1298,114 @@ export async function run(args: readonly string[], deps: MemberCliDeps = {}): Pr
       try { (deps.stdout ?? console.log)(memberTranscriptRoutingKey(source, cwd, homeFor(deps, cwd), deps.env ?? process.env)); }
       catch (error) { (deps.stderr ?? console.error)(`myco member routing-key: ${(error as Error).message}`); process.exitCode = 1; }
       return;
-    }
-    case 'drain': await runDrain(rest, deps); return;
-    case 'helper': await (await import('./member-helper.js')).runHelperVerb(rest, { fetch: deps.fetch, now: deps.now }); return;
-    case 'status': runStatus(rest, deps); return;
-    case 'export': await runExport(rest, deps); return;
-    case 'refresh': await runRefresh(rest, deps); return;
-    case 'link-github': await runLinkGithub(rest, deps); return;
-    case 'raw-claims': if (!await (await import('./member-raw-claims.js')).runRawClaims(rest, deps)) process.exitCode = 2; return;
-    case 'ownership': if (!await (await import('./member-ownership.js')).runOwnership(rest, deps)) process.exitCode = 2; return;
-    case 'role': if (!await (await import('./member-role.js')).runRole(rest, deps)) process.exitCode = 2; return;
-    case 'provision': {
+    },
+  },
+  'drain': {
+    help: `  drain [--all]      Deliver every spooled event for this project (or every joined project with --all);
+                     no harness budget, the offline latch is ignored, retention is applied first.
+  drain --assign-legacy --server <url> --project <id>
+                     Assign held Project-only capture to the named destination, then migrate and drain it.
+  drain --assign-pending --root-key <key> --server <url> --project <id>
+                     Assign legacy pending capture to the named destination, then drain it.`,
+    run: async (rest, deps) => { await runDrain(rest, deps); },
+  },
+  'helper': {
+    help: `  helper --project <id> --server <url> --home <dir>
+                     The project's helper: ships its spool in passes under the helper lock until nothing is
+                     left, then exits (at most 120 s). Hooks start it detached; its log is
+                     <home>/logs/helper.log (\`--stderr\` keeps it on stderr).`,
+    run: async (rest, deps) => { await (await import('./member-helper.js')).runHelperVerb(rest, { fetch: deps.fetch, now: deps.now }); },
+  },
+  'status': {
+    help: `  status [--all]     The registry entry (token redacted), expiry, spool depth per session,
+                     last acknowledgement and refusal, the offline latch, any capture
+                     attempts that found no membership, the default Deployment, and the
+                     repositories that did not join or are still joining.`,
+    run: async (rest, deps) => { runStatus(rest, deps); },
+  },
+  'export': {
+    help: `  export [--all]     The same facts as status, as one JSON document, with the binary, runtime-pin
+                     and MCP-resolution checks. Carries no token, no captured content and no
+                     free-text detail; the document's omissions list names what is left out.`,
+    run: async (rest, deps) => { await runExport(rest, deps); },
+  },
+  'refresh': {
+    help: `  refresh [--all]    Rotate the member token when its refresh window is open. The predecessor keeps
+                     working until the successor is first used; an env-sourced token is never rotated.`,
+    run: async (rest, deps) => { await runRefresh(rest, deps); },
+  },
+  'link-github': {
+    help: `  link-github [--root <dir>] [--open]
+                     Connect your GitHub account to this membership for the dashboard: prints a one-time
+                     link to open in a browser within ${IDENTITY_LINK_TTL_MS / 60_000} minutes. --open hands it to the browser as well.`,
+    run: async (rest, deps) => { await runLinkGithub(rest, deps); },
+  },
+  'raw-claims': {
+    help: `  raw-claims [--credential registry|env] [--server <url>] [--apply --revision <reviewed-revision>]
+                     Preview raw data with no recorded uploader, by project, kind, count and date.
+                     Only the recorded owner may claim it. Review the preview, then explicitly apply
+                     its revision to make that data private to you. No captured content is printed.
+                     Uses the recorded default Deployment or --server. Env needs only
+                     MYCO_SERVER_URL and MYCO_MEMBER_TOKEN; neither command needs a Project.`,
+    run: async (rest, deps) => { if (!await (await import('./member-raw-claims.js')).runRawClaims(rest, deps)) process.exitCode = 2; },
+  },
+  'ownership': {
+    help: `  ownership [--credential registry|env] [--server <url>] [--owner <member-id> | --transfer <member-id>] [--revision <reviewed-revision>]
+                     Preview this Deployment's recorded owner and eligible admins. Use --owner to
+                     record an initial owner, or --transfer to name a new owner from the preview.`,
+    run: async (rest, deps) => { if (!await (await import('./member-ownership.js')).runOwnership(rest, deps)) process.exitCode = 2; },
+  },
+  'role': {
+    help: `  role [--credential registry|env] [--server <url>] [--member <member-id> --role admin|member --revision <reviewed-revision>]
+                     Preview members and their role revisions. The owner can explicitly promote or
+                     demote one member using the role revision from that preview.`,
+    run: async (rest, deps) => { if (!await (await import('./member-role.js')).runRole(rest, deps)) process.exitCode = 2; },
+  },
+  'provision': {
+    help: `  provision [<agent>] [--root <dir>] [--server <url>] [--refresh]
+  provision --remove <agent>
+                     Install the agent's hooks and MCP entry globally using the recorded membership, or
+                     every agent installed on this machine when none is named. An agent whose entries
+                     belong to another installation is left alone and named. --root selects the
+                     membership, not the installation scope; --server picks the Deployment when this
+                     machine is a member of several. --refresh repairs agent setup and checks the member token for renewal.`,
+    run: async (rest, deps) => {
       let refresh: { result: KeepCurrentResult | null; home: string } | undefined;
       runProvision(rest, deps, (result, home) => { refresh = { result, home }; });
       if (refresh !== undefined) await reportHarnesses(refresh.result, refresh.home, (deps.now ?? Date.now)() + HARNESS_REPORT_WINDOW_MS, deps);
       return;
-    }
-    case 'mcp-headers': runMcpHeaders(rest, deps); return;
-    case 'auto-join': await (await import('./member-auto-join.js')).runAutoJoin(rest, deps); return;
-    default:
-      (deps.stderr ?? ((l) => process.stderr.write(`${l}\n`)))(MEMBER_HELP.trimEnd());
-      process.exitCode = 2;
+    },
+  },
+  'mcp-headers': {
+    help: `  mcp-headers --credential registry|env --server <server-url>
+                     Print this project's MCP request headers as JSON, for an agent that reaches the
+                     server's MCP over HTTP and asks a command for its headers. Prints nothing unless
+                     the membership is on <server-url>. Written by --provision.`,
+    run: async (rest, deps) => { runMcpHeaders(rest, deps); },
+  },
+  'auto-join': {
+    help: `  auto-join (--root <dir> | --sweep)
+                     Join a repository with no connection to this machine's default Deployment, or
+                     record why it cannot; --sweep does it for every repository met before. Your
+                     agents' hooks start it on their own; \`status\` shows what it did.`,
+    run: async (rest, deps) => { await (await import('./member-auto-join.js')).runAutoJoin(rest, deps); },
+  },
+};
+
+export const MEMBER_HELP = `Usage: myco member <op> [options]
+
+Ops:
+${Object.values(MEMBER_COMMANDS).map(command => command.help).join('\n')}
+`;
+
+export async function run(args: readonly string[], deps: MemberCliDeps = {}): Promise<void> {
+  const [op, ...rest] = args;
+  if (op === '--help' || op === '-h') {
+    (deps.stdout ?? console.log)(MEMBER_HELP.trimEnd());
+    return;
   }
+  const command = op !== undefined && Object.hasOwn(MEMBER_COMMANDS, op) ? MEMBER_COMMANDS[op] : undefined;
+  if (command) return command.run(rest, deps);
+  (deps.stderr ?? console.error)(MEMBER_HELP.trimEnd());
+  process.exitCode = 2;
 }

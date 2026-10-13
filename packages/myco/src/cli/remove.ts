@@ -74,8 +74,16 @@ function assertPurgeHome(home: string): string {
 function assertDedicatedHome(home: string, deletions: readonly string[]): void {
   if (deletions.length === 0 || purgePathKey(home) === purgePathKey(canonicalHomePath(defaultMycoHome()))) return;
   const marker = fs.lstatSync(path.join(home, 'install.json'), { throwIfNoEntry: false });
-  if (marker?.isFile() && readInstallMarker(home, true) !== null) return;
-  throw new Error(`Refusing --purge: ${home} is not the default home and has no install.json marking a dedicated Myco home. Would delete:
+  if (marker?.isFile()) {
+    try {
+      if (readInstallMarker(home, true) !== null) return;
+    } catch (error) {
+      const invalidMarker = error instanceof SyntaxError || (error instanceof Error && error.message.startsWith('Invalid install marker at '));
+      if (!invalidMarker) throw error;
+      throw new Error('Refusing --purge: ' + path.join(home, 'install.json') + ' is not a Myco install marker. Delete these by hand, or run purge from an installed home.');
+    }
+  }
+  throw new Error(`Refusing --purge: ${home} is not the default home and has no install.json marking a dedicated Myco home. Delete these by hand, or run purge from an installed home. Would delete:
 ${deletions.map(entry => path.join(home, entry)).join('\n')}`);
 }
 
@@ -215,7 +223,7 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
       removeSkills();
     }
     if (purge && fs.existsSync(canonical)) {
-      for (const entry of deletions) {
+      for (const entry of deletions.filter(entry => entry !== 'install.json')) {
         if (losses.length > 0 && entry === 'server') {
           const server = path.join(canonical, entry);
           for (const file of fs.readdirSync(server)) {
@@ -240,6 +248,7 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
       for (const file of DEPLOYMENT_LEASE_FILES) removeEntry(path.join('server', file), false);
       fs.rmdirSync(server);
     }
+    if (deletions.includes('install.json')) removeEntry('install.json');
     if (fs.readdirSync(canonical).length === 0) fs.rmdirSync(canonical);
   }
   if (purge && preserveReceipt) console.log(`Preserved migration receipt at ${path.join(home, 'member', 'cutover.json')}.`);

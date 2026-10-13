@@ -11,7 +11,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.js';
-import { MEMBER_USAGE, helpText, runMemberVerb } from '@myco/cli/member-dispatch.js';
+import { runMemberVerb } from '@myco/cli/member-dispatch.js';
+import { helpText, MEMBER_USAGE } from '@myco/cli/help.js';
 import { runProvision } from '@myco/cli/member.js';
 import { MEMBER_SETTINGS_ISSUE, MEMBER_TIER_LEAVES } from '@myco/cli/member-config.js';
 import type { MemberVerb } from '@myco/cli/member-verbs.js';
@@ -380,10 +381,10 @@ describe('a joined member with no 1.4 vault', () => {
     const unjoined = help(freshCheckout());
     expect(unjoined.startsWith(MEMBER_USAGE)).toBe(true);
     expect(unjoined).toContain('myco cutover --dry-run');
-    for (const retired of [/\bgrove\b/i, /\bdaemon\b/i, /^\s+mcp\b/m, /stdio/i, /^\s+hook\b/m, /^\s+restart\b/m, /^\s+service\b/m]) {
+    for (const retired of [/\bgrove\b/i, /\bdaemon\b/i, /stdio/i, /^\s+restart\b/m, /^\s+service\b/m]) {
       expect(MEMBER_USAGE).not.toMatch(retired);
     }
-    for (const kept of ['search <query>', 'session [id|latest]', 'stats', 'doctor', 'logs', 'config get', 'login <address>', 'member <op>']) {
+    for (const kept of ['search <query>', 'session [id|latest]', 'stats', 'doctor', 'logs', 'config get', 'login <address-or-invite-link>', 'member <op>']) {
       expect(MEMBER_USAGE).toContain(kept);
     }
   });

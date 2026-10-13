@@ -1,3 +1,4 @@
+import { COMMANDS, helpForCommand } from '@myco/cli/command-registry.js';
 /** Published commands, subcommands and flags match the CLI source vocabulary. */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -6,7 +7,6 @@ import { NAV } from '../../docs/lib/nav.mjs';
 
 const ROOT = path.join(import.meta.dir, '..', '..');
 const SRC = path.join(ROOT, 'packages', 'myco', 'src');
-const CLI = fs.readFileSync(path.join(SRC, 'cli.ts'), 'utf8');
 
 /** Front doors and published user guides. */
 export const USER_DOCS = ['README.md', 'packages/myco/README.md', 'docs/index.html', 'docs/llms.txt', ...NAV.flatMap((g) => g.items.map((i) => i.slug))
@@ -23,29 +23,13 @@ function functionSource(source: string, name: string): string {
   return match[0];
 }
 
-/** Read help without importing modules that can start the runtime. */
-function helpConstant(source: string, name: string): string {
-  const match = [...source.matchAll(/(?:export )?const ([A-Z_]+) = `((?:\\.|[^`\\])*)`/g)].find((m) => m[1] === name);
-  if (!match) throw new Error(`Missing help constant: ${name}`);
-  return match[2];
-}
-
-/** The public member vocabulary, with cli.ts used only to locate help-owning modules. */
-function commandSurfaces(): Map<string, CommandSurface> {
-  const usage = helpConstant(readSource('cli/member-dispatch.ts'), 'MEMBER_USAGE');
-  const entries = new Map([...usage.matchAll(/^  ([a-z][a-z0-9-]*)\b([^\n]*)/gm)].map((m) => [m[1], m[2]]));
-  const names = new Set([...entries.keys(), 'setup', 'cutover', 'logout']);
-  for (const alias of usage.matchAll(/alias: ([a-z-]+)/g)) names.add(alias[1]);
+/** Published commands and flags come from registered help. */
+async function commandSurfaces(): Promise<Map<string, CommandSurface>> {
+  const names = Object.keys(COMMANDS);
   const surfaces = new Map<string, CommandSurface>();
   for (const command of names) {
-    const delegated = CLI.match(new RegExp(`^  ${command}: async.*import\\('\\./([a-z/-]+)\\.js'\\)\\)\\.([A-Z_]+)`, 'm'));
-    const dispatched = CLI.match(new RegExp(`case '${command}': return \\(await import\\('\\./([a-z/-]+)\\.js'\\)\\)`));
-    const guarded = CLI.match(new RegExp(`if \\(cmd === '${command}'\\)\\s*(?:\\{[^{}]*?|\\s*)return \\(await import\\('\\./([a-z/-]+)\\.js'\\)\\)`));
-    const relative = delegated?.[1] ?? dispatched?.[1] ?? guarded?.[1];
-    const source = relative ? readSource(`${relative}.ts`) : '';
-    const help = command === 'doctor' || !delegated
-      ? entries.get(command) ?? ''
-      : helpConstant(source, delegated[2]);
+    const source = command === 'server' || command === 'tool' ? readSource('cli/' + command + '.ts') : '';
+    const help = await helpForCommand(command);
     const subcommands = new Map<string, Set<string>>();
     const nested = ['member', 'server', 'runner'].includes(command);
     if (nested) {
@@ -57,12 +41,6 @@ function commandSurfaces(): Map<string, CommandSurface> {
           subcommands.set(signature[1], current);
         } else if (line.trim() && !/^\s/.test(line)) current = undefined;
         if (current) for (const flag of flagsIn(line)) current.add(flag);
-      }
-      if (command === 'member') {
-        const publicOps = new Set((entries.get('member') ?? '').replace(/^\s*<op>\s*/, '').split(/\s*\|\s*/));
-        for (const op of subcommands.keys()) if (!publicOps.has(op)) subcommands.delete(op);
-        // Provision's parser also accepts refresh, which its help omits.
-        for (const flag of flagsIn(functionSource(source, 'runProvision'))) subcommands.get('provision')!.add(flag);
       }
       if (command === 'server') {
         for (const [op, flags] of subcommands) {
@@ -143,8 +121,9 @@ function problemsFor(surfaces: Map<string, CommandSurface>, invocation: Invocati
   return problems;
 }
 
+const surfaces = await commandSurfaces();
+
 describe('the user docs name only what the CLI has', () => {
-  const surfaces = commandSurfaces();
 
   it('finds the published pages and the commands in them', () => {
     for (const file of USER_DOCS) expect({ file, exists: fs.existsSync(path.join(ROOT, file)) }).toEqual({ file, exists: true });

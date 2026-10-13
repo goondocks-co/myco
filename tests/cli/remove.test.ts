@@ -271,9 +271,52 @@ describe('member-only remove', () => {
     const error = await run(['--purge', '--yes'], { ...deps(), mycoHome: documents }).then(() => null, error => error);
     expect(error).toBeInstanceOf(Error);
     expect(error.message).toContain('dedicated Myco home');
+    expect(error.message).toContain('Delete these by hand, or run purge from an installed home');
     for (const name of ['bin', 'logs', 'skills', 'member']) expect(error.message).toContain(path.join(documents, name));
     expect(snapshot(root)).toEqual(before);
     expect(platform.commands).toEqual([]);
+  });
+
+  it('keeps the install marker through a failed purge so the same home can retry', async () => {
+    installMarker();
+    write('logs/blocked/keep', 'retry me');
+    const blocked = path.join(home, 'logs', 'blocked');
+    fs.chmodSync(blocked, 0o500);
+    try {
+      await expect(run(['--purge', '--yes'], deps())).rejects.toThrow();
+      expect(fs.existsSync(path.join(home, 'install.json'))).toBe(true);
+      expect(fs.readFileSync(path.join(blocked, 'keep'), 'utf8')).toBe('retry me');
+    } finally {
+      fs.chmodSync(blocked, 0o700);
+    }
+    await run(['--purge', '--yes'], deps());
+    expect(fs.existsSync(home)).toBe(false);
+  });
+
+  it('preserves a strict marker read failure instead of calling it a foreign marker', async () => {
+    installMarker();
+    const marker = path.join(home, 'install.json');
+    const failure = Object.assign(new Error('marker read failed'), { code: 'EIO' });
+    const read = fs.readFileSync;
+    const fault = spyOn(fs, 'readFileSync').mockImplementation((file, ...args) => {
+      if (String(file) === marker) throw failure;
+      return Reflect.apply(read, fs, [file, ...args]);
+    });
+    try {
+      await expect(run(['--purge', '--yes'], deps())).rejects.toBe(failure);
+    } finally {
+      fault.mockRestore();
+    }
+    expect(fs.existsSync(marker)).toBe(true);
+  });
+
+  it('names manual removal for a foreign install marker without changing any files', async () => {
+    write('install.json', JSON.stringify({ application: 'another product' }));
+    write('logs/user-file', 'keep');
+    const before = snapshot(home);
+    await expect(run(['--purge', '--yes'], deps())).rejects.toThrow('not a Myco install marker');
+    await expect(run(['--purge', '--yes'], deps())).rejects.toThrow('Delete these by hand, or run purge from an installed home');
+    expect(snapshot(home)).toEqual(before);
   });
 
   it('admits the default home without an install marker', async () => {

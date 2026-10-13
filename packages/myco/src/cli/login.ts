@@ -34,7 +34,9 @@ An invite link still works:
 
   myco login https://myco.example.com/join#<key>
 
-The link works once and expires. If yours is refused, ask for a fresh one.
+An invite link signs this machine in to the Deployment. It works once and
+expires. If yours is refused, ask for a fresh one. The dashboard creates
+Deployment invitations; use myco member join to connect a specific project.
 
 Options:
   --root <dir>   The project to connect, when the invite names one.
@@ -55,10 +57,9 @@ agent works in it: the project that already holds its remote, or a new one named
 after the folder. A repository you connect elsewhere with \`myco member join\`
 stays where you put it.
 
-In a sandbox or a CI job, ask an admin for a project-bound invitation and set MYCO_JOIN_CODE to that
-link instead of running
-this command. The first agent session redeems it and captures from then on, with
-nothing else to configure.
+In a sandbox or a CI job, set MYCO_JOIN_CODE to a Deployment invite link instead
+of running this command. The first agent session redeems it. Repositories join
+through the same capture-folder rules described above.
 `;
 
 export interface LoginDeps {

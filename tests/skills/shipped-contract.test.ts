@@ -1,3 +1,4 @@
+import { COMMANDS } from '@myco/cli/command-registry.js';
 /**
  * The contract every skill that ships with Myco is held to.
  *
@@ -14,7 +15,6 @@
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
-import { MEMBER_VERBS } from '../../packages/myco/src/cli/member-verbs.js';
 import path from 'node:path';
 import {
   SHIPPED_SKILLS_DIR,
@@ -183,17 +183,8 @@ describe('the setup skill against the code it drives', () => {
   const markdown = read(SETUP);
 
   it('names only commands the CLI registers', () => {
-    const cli = fs.readFileSync(path.join(REPO_ROOT, 'packages/myco/src/cli.ts'), 'utf-8');
-    // The verbs the dispatcher answers, read from the dispatcher itself.
-    const registered = new Set([
-      ...MEMBER_VERBS,
-      ...[...cli.matchAll(/cmd === '([a-z-]+)'/g)].map((m) => m[1]),
-      ...[...cli.matchAll(/case '([a-z-]+)':/g)].map((m) => m[1]),
-    ]);
+    const registered = new Set(Object.keys(COMMANDS));
     expect(registered.size).toBeGreaterThan(0);
-    // Commands appear two ways: a line inside a fenced block, and an inline
-    // code span. Prose mentioning the binary by name is not an invocation, so
-    // neither pattern reads bare text.
     const fenced = [...markdown.matchAll(/```[a-z]*\n([\s\S]*?)```/g)].map((m) => m[1]).join('\n');
     const named = [
       ...[...fenced.matchAll(/^myco ([a-z][a-z-]*)/gm)].map((m) => m[1]),
