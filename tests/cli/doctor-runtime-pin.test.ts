@@ -9,9 +9,7 @@ import { afterEach, describe, it, expect } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { checkBinaryVersionSkew, classifyRuntimePin } from '@myco/cli/doctor';
-import { DOCTOR_FIXERS } from '@myco/cli/doctor-fixes';
-import type { DoctorCheck, DoctorFixContext } from '@myco/cli/doctor-fixes';
+import { checkBinaryVersionSkew, classifyRuntimePin } from '@myco/cli/doctor-member';
 import type { ResolutionFacts } from '@myco/runtime/binary-resolution.js';
 
 const MANAGED = '/home/u/.myco/bin/myco';
@@ -82,50 +80,6 @@ describe('classifyRuntimePin', () => {
   });
 });
 
-describe('runtime-pin-redundant fixer', () => {
-  const tmpDirs: string[] = [];
-  afterEach(() => {
-    for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
-  });
-
-  const ctx = {} as DoctorFixContext;
-
-  function matched(pinPath: string, managedBinary: string): DoctorCheck[] {
-    return [{
-      name: 'Runtime pin',
-      status: 'warn',
-      detail: '',
-      fixable: true,
-      fixId: 'runtime-pin-redundant',
-      fixData: { pinPath, managedBinary },
-    }] as DoctorCheck[];
-  }
-
-  it('removes a pin whose content still names the managed binary', async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-pin-fix-'));
-    tmpDirs.push(home);
-    const pinPath = path.join(home, 'runtime.command');
-    fs.writeFileSync(pinPath, `${MANAGED}\n`);
-
-    const actions = await DOCTOR_FIXERS['runtime-pin-redundant'](ctx, matched(pinPath, MANAGED));
-
-    expect(fs.existsSync(pinPath)).toBe(false);
-    expect(actions.join(' ')).toContain('Removed redundant runtime pin');
-  });
-
-  it('leaves a pin that changed between detection and fix', async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-pin-fix-'));
-    tmpDirs.push(home);
-    const pinPath = path.join(home, 'runtime.command');
-    fs.writeFileSync(pinPath, '/operator/override/myco\n');
-
-    const actions = await DOCTOR_FIXERS['runtime-pin-redundant'](ctx, matched(pinPath, MANAGED));
-
-    expect(fs.existsSync(pinPath)).toBe(true);
-    expect(actions.join(' ')).toContain('left in place');
-  });
-});
-
 describe('the binary version row', () => {
   it('names why it could not compare, or that it matched', () => {
     // The live install decides which branch answers; every one of them carries
@@ -135,6 +89,6 @@ describe('the binary version row', () => {
     expect([
       'binary_manifest_missing', 'binary_manifest_unreadable', 'binary_manifest_unversioned',
       'binary_version_skew', 'binary_version_current',
-    ]).toContain(check.reason);
+    ]).toContain(check.reason ?? 'missing_reason');
   });
 });

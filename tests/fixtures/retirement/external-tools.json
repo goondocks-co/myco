@@ -1,0 +1,26 @@
+{
+  "myco_search": [
+    "*"
+  ],
+  "myco_cortex": [
+    "instructions"
+  ],
+  "myco_plans": [
+    "get",
+    "list"
+  ],
+  "myco_sessions": [
+    "get",
+    "list"
+  ],
+  "myco_skills": [
+    "get",
+    "list"
+  ],
+  "myco_spores": [
+    "get",
+    "list",
+    "save",
+    "supersede"
+  ]
+}

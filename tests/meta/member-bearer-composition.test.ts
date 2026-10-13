@@ -11,17 +11,10 @@ const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const MEMBER_COMPOSER = 'myco-shared/src/member-protocol.ts';
 const MEMBER_COMPATIBILITY = 'member/constants.ts';
 
-/** The marker a host-protocol call carries: its own versioned protocol header. */
-const HOST_PROTOCOL_MARKER = 'HOST_PROTOCOL_HEADER';
-
 /** Calls to APIs outside Myco, with what each talks to. Adding one is a reviewed act. */
 const FOREIGN: Readonly<Record<string, string>> = {
   'server/cloudflare.ts': 'the Cloudflare R2 object API',
-  'release-provenance/github.ts': 'the GitHub REST API',
   'upgrade/release-assets.ts': 'the GitHub release assets API',
-  'agent/cost/openrouter.ts': 'the OpenRouter pricing API',
-  'cli/providers/cloud-embedding-base.ts': 'a cloud embedding provider',
-  'daemon/api/models.ts': 'a model provider\'s own API',
 };
 
 /**
@@ -52,7 +45,7 @@ const key = (file: string): string => path.relative(SRC_ROOT, file).split(path.s
 interface Composer {
   module: string;
   /** Which protocol the file declares alongside the bearer, or null when it declares none. */
-  kind: 'member-composer' | 'host-protocol' | 'foreign' | 'undeclared';
+  kind: 'member-composer' | 'foreign' | 'undeclared';
 }
 
 /** Every header composer the composer module exports, read from its own source. */
@@ -70,8 +63,7 @@ function composers(): Composer[] {
     out.push({
       module,
       kind: module === MEMBER_COMPOSER ? 'member-composer'
-        : code.includes(HOST_PROTOCOL_MARKER) ? 'host-protocol'
-          : module in FOREIGN ? 'foreign'
+        : module in FOREIGN ? 'foreign'
             : 'undeclared',
     });
   }
@@ -103,7 +95,6 @@ describe('one composer for a member request\'s headers', () => {
     for (const module of ['runner/loop.ts', 'runner/mcp-config.ts', 'mcp/deployment-upstream.ts', 'member/transport.ts']) {
       expect({ module, composes: found.some((c) => c.module === module) }).toEqual({ module, composes: false });
     }
-    expect(found.filter((c) => c.kind === 'host-protocol').length).toBeGreaterThan(0);
   });
 
   it('every member-side call to a Deployment routes its headers through a composer the composer module exports', () => {

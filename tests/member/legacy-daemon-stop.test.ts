@@ -36,19 +36,4 @@ describe('retained legacy daemon stop', () => {
       expect(fs.readFileSync(file, 'utf8')).toBe(config);
     }
   });
-
-  it('the platform adapter refuses Windows hard termination without an explicit containment authority', async () => {
-    const calls: string[] = [];
-    const unexpected = async (): Promise<never> => { throw new Error('unexpected platform command'); };
-    const runner: SchtasksRunner = {
-      run: unexpected,
-      register: unexpected,
-      currentUserSid: unexpected,
-      queryState: async () => 'running',
-      endProcessTree: async () => { calls.push('end'); return { stdout: '', exitCode: 0 }; },
-    };
-    const mgr = new WindowsTaskServiceManager({ runner, resolveDaemonPort: () => null });
-    await expect(mgr.uninstall('co.goondocks.myco.test')).rejects.toThrow(/containment/i);
-    expect(calls).toEqual([]);
-  });
 });

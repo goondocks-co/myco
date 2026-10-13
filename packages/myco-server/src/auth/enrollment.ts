@@ -387,29 +387,6 @@ export async function deviceReclamationPending(db: RelationalStore, nowMs: numbe
 }
 
 /**
- * Claims `machineId` for `memberId`, or reports who already holds it.
- *
- * The insert is `OR IGNORE` against a PRIMARY KEY, so the claim is decided by the
- * database rather than by whoever reads first: two joins racing for one identity
- * produce one holder and one refusal. The read afterwards names the holder — it
- * never decides the outcome, only reports it.
- *
- * A member re-claiming an identity it already holds succeeds, which is what lets
- * a machine re-join after its credential is revoked or expires.
- */
-export async function claimMachineIdentity(
-  db: RelationalStore, machineId: string, memberId: string, nowMs: number,
-): Promise<{ claimed: boolean; heldBy: string }> {
-  await claimMachineIdentityStatement(db, machineId, memberId, nowMs).run();
-  const row = await db
-    .prepare(`SELECT member_id FROM machine_claims WHERE machine_id = ?`)
-    .bind(machineId)
-    .first<{ member_id: string }>();
-  const heldBy = row!.member_id;
-  return { claimed: heldBy === memberId, heldBy };
-}
-
-/**
  * Name a machine: one write to its claim, by an admin or the member the machine belongs to, the rule held in the
  * statement. True when the machine took the name; false for a machine that is absent or that `actor` may not rename,
  * which the caller answers alike.

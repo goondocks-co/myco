@@ -95,7 +95,6 @@ const MAX_PREFIX_CHARS = '\n- ['.length + MAX_ID_CHARS + '] ('.length + MAX_LABE
 
 /** The most an item's text may carry, and the cut a fallback preview takes. */
 export const AGENT_LINE_MAX_CHARS = MAX_LINE_CHARS - MAX_PREFIX_CHARS;
-export const INJECTION_PREVIEW_CHARS = AGENT_LINE_MAX_CHARS;
 
 /** The leaves this selector reads. */
 export const INJECTION_LEAVES: readonly string[] = ['cortex.spores.inject_on_prompt_submit', 'cortex.spores.max_per_prompt'];
@@ -178,12 +177,6 @@ const parse = (value: string | undefined): unknown => {
   if (value === undefined) return undefined;
   try { return JSON.parse(value); } catch { return undefined; }
 };
-
-/** The Deployment's stored injection leaves, defaulted. */
-export async function readInjectionLeaves(db: RelationalStore): Promise<InjectionLeaves> {
-  const byLeaf = await settingTexts(db, INJECTION_LEAVES);
-  return injectionLeaves(Object.fromEntries(INJECTION_LEAVES.map((leaf) => [leaf, parse(byLeaf.get(leaf))])));
-}
 
 /** One line of an item's text: whitespace folded, cut at the cap the budget derives. */
 export function oneLine(text: string): string {

@@ -54,7 +54,7 @@ function makeTempHomeWithoutManagedBinary(): string {
 
 describe('resolveManagedBinaryPath', () => {
   describe('pin wins (machine runtime.command)', () => {
-    it('returns the pin path when resolveRuntimeCommand returns a value, ignoring managed binary existence', () => {
+    it('returns the pin path when the machine runtime pin names a value, ignoring managed binary existence', () => {
       const { home, managedPath } = makeTempHomeWithManagedBinary();
       const pin = '/opt/special/bin/myco';
       writeMachinePin(home, pin);

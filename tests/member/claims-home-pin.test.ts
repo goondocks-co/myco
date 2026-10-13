@@ -13,7 +13,7 @@ it('a pinned home reads global symbiont ownership from the machine’s shared cl
     const project = path.join(root, 'repo');
     for (const dir of [prod, dev, path.join(project, '.myco')]) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(prod, 'runtime.home'), `${dev}\n`);
-    const claims = new URL('../../packages/myco/src/grove/subsystem-claim.ts', import.meta.url).href;
+    const claims = new URL('../../packages/myco/src/member/subsystem-claim.ts', import.meta.url).href;
     const paths = new URL('../../packages/myco/src/paths/home.ts', import.meta.url).href;
     const env = sandboxChildEnv(root, { HOME: root, MYCO_HOME: prod });
     const run = (source: string) => spawnSync(process.execPath, ['--no-env-file', '--eval', source], { cwd: project, env, encoding: 'utf8', timeout: 15_000 });

@@ -159,14 +159,10 @@ describe('myco member provision', () => {
       fs.writeFileSync(path.join(root, '.myco', 'runtime.home'), `${mycoHome}\n`, { mode: 0o644 });
       for (const name of ['codex', 'claude-code']) {
         const manifest = loadManifests().find((m) => m.name === name)!;
-        new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-global').install();
+        new SymbiontInstaller(manifest, root, resolvePackageRoot(), false).install();
       }
       for (const command of emitted()) expect({ command, binary: command.split(' ')[0] }).toEqual({ command, binary: memberBinary });
 
-      // Every other scope keeps the machine's binary.
-      const codex = loadManifests().find((m) => m.name === 'codex')!;
-      const globalMcp = new SymbiontInstaller(codex, '/', resolvePackageRoot(), false, undefined, null, 'global').loadMcpTemplate() as { myco: { command: string } };
-      expect(globalMcp.myco.command).toBe(defaultBinary);
     } finally {
       if (savedMycoHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedMycoHome;
       fs.rmSync(path.join(defaultHome, 'bin'), { recursive: true, force: true });

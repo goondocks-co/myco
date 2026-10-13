@@ -637,9 +637,6 @@ const CapabilitiesSchema = z.object({
   pathBearingTools: [],
 }));
 
-export type SymbiontCapabilities = z.infer<typeof CapabilitiesSchema>;
-export type SymbiontCanopyReadTool = z.infer<typeof CanopyReadToolSchema>;
-
 /**
  * Phases a stop-style hook event can carry data for. Manifests declare
  * which phases each agent event covers so the daemon's stop dispatcher

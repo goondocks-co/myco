@@ -51,9 +51,6 @@ export function runDefinitions(allow: RunAllowlist): ToolDefinition[] {
   return narrowDefinitions([...TOOL_DEFINITIONS, ...RUN_DEFINITIONS], Object.fromEntries(allow), RUN_PROJECT_DESCRIPTION);
 }
 
-/** Every run-only tool the surface can serve, in catalogue order. */
-export const RUN_SURFACE_TOOLS: readonly string[] = RUN_TOOLS;
-
 /** Every operation a Myco tool takes, served or run-only: the only operations a step a worker names a Myco call keeps. */
 export const MYCO_TOOL_OPS: ReadonlySet<string> = new Set([...TOOL_DEFINITIONS, ...RUN_DEFINITIONS]
   .flatMap((definition) => (definition.inputSchema.properties.op?.enum ?? []).filter((op): op is string => typeof op === 'string')));

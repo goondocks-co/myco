@@ -44,7 +44,7 @@ function memberInstaller(name: string): { installer: SymbiontInstaller; root: st
   process.env.HOME = home;
   const manifest = loadManifests().find((m) => m.name === name);
   if (!manifest) throw new Error(`no manifest ${name}`);
-  return { installer: new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-global'), root };
+  return { installer: new SymbiontInstaller(manifest, root, resolvePackageRoot(), false), root };
 }
 
 describe('memberMcpTemplate', () => {
@@ -215,7 +215,7 @@ describe('what a report reads from the member MCP targets', () => {
     process.env.MYCO_SANDBOX_ROOT = sandbox;
     const manifest = loadManifests().find((m) => m.name === name);
     if (!manifest) throw new Error(`no manifest ${name}`);
-    return { installer: new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-global', path.join(home, '.myco')), root, home };
+    return { installer: new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, path.join(home, '.myco')), root, home };
   }
 
   /** Writes the member's server into every target the installer resolves, as the install does. */

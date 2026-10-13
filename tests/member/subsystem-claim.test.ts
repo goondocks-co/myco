@@ -13,7 +13,7 @@ import {
   guardBySubsystemClaim,
   SYMBIONT_CONFIG_SUBSYSTEM,
 } from '@myco/member/subsystem-claim.js';
-import { daemonIdentity } from '@myco/grove/paths.js';
+import { daemonIdentity } from '@myco/paths/ids.js';
 
 // The subsystem-claim primitive: an operator writes a durable claim into the
 // shared claims area; a peer defers while a DIFFERENT owner token holds the

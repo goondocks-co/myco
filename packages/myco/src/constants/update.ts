@@ -18,15 +18,6 @@ export const UPDATE_CONFIG_PATH = path.join(MYCO_GLOBAL_DIR, 'update.yaml');
 export const UPDATE_ERROR_PATH = path.join(MYCO_GLOBAL_DIR, 'update-error.json');
 
 /**
- * Append-only event log the DETACHED adopt orchestrator writes (it is
- * `stdio:'ignore'` and cannot reach the grove DB it is restarting). The daemon
- * drains it on the next startup and replays each line through the structured
- * logger (LOG_KINDS.UPGRADE_ADOPT) into `log_entries`, so the self-upgrade
- * sequence is visible in the log viewer instead of vanishing into /dev/null.
- */
-export const UPDATE_EVENTS_PATH = path.join(MYCO_GLOBAL_DIR, 'update-events.jsonl');
-
-/**
  * Filename for the machine-scope runtime command pin (lives in `~/.myco/`).
  *
  * An operator override: when present and trusted it redirects every
@@ -46,9 +37,6 @@ export const MACHINE_RUNTIME_COMMAND_FILENAME = 'runtime.command';
  * Read under the same G7 trust check as `runtime.command`.
  */
 export const MACHINE_RUNTIME_HOME_FILENAME = RUNTIME_HOME_FILENAME;
-
-/** Filename for the restart reason signal file (lives inside vault .myco/). */
-export const RESTART_REASON_FILENAME = 'restart-reason.json';
 
 /** Default check interval in hours. */
 export const UPDATE_CHECK_INTERVAL_HOURS = 6;

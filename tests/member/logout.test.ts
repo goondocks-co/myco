@@ -40,7 +40,7 @@ let requests: Request[];
 let deps: LogoutRuntimeDeps;
 
 const claude = () => loadManifests().find((m) => m.name === 'claude-code')!;
-const globalInstaller = (url: string) => new SymbiontInstaller(claude(), mycoHome, PKG, false, undefined, null, 'member-global', mycoHome).withoutProjectRoot().forDeployment(url);
+const globalInstaller = (url: string) => new SymbiontInstaller(claude(), mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(url);
 function join(url: string, project?: string): string | null {
   const membership = { serverUrl: url, token: `${url}-secret`, machineId: 'machine_test', joinedAt: 1, updatedAt: 1 };
   if (project === undefined) { writeDeploymentMembership(membership, { mycoHome }); return null; }
@@ -307,7 +307,7 @@ describe('Deployment-scoped logout', () => {
     join(A); join(B);
     recordDefaultDeployment(B, { mycoHome });
     const manifest = loadManifests().find((m) => m.name === name)!;
-    const installer = new SymbiontInstaller(manifest, mycoHome, PKG, false, undefined, null, 'member-global', mycoHome).withoutProjectRoot().forDeployment(B);
+    const installer = new SymbiontInstaller(manifest, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(B);
     installer.install();
     const files = installer.memberGlobalTargets().all.filter((file) => fs.existsSync(file));
     const before = files.map(bytes);
@@ -337,7 +337,7 @@ describe('Deployment-scoped logout', () => {
     recordDefaultDeployment(A, { mycoHome });
     const copilot = loadManifests().find((m) => m.name === 'copilot')!;
     const manifest = { ...claude(), registration: { ...claude().registration!, globalMcpTarget: copilot.registration!.globalMcpTarget } };
-    const installer = new SymbiontInstaller(manifest, mycoHome, PKG, false, undefined, null, 'member-global', mycoHome).withoutProjectRoot();
+    const installer = new SymbiontInstaller(manifest, mycoHome, PKG, false, mycoHome).withoutProjectRoot();
     const targets = manifest.registration!.globalMcpTarget!;
     expect(targets.length).toBeGreaterThan(1);
     const paths = targets.map((t) => path.join(home, t.path.replace(/^~\//, '')));

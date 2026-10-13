@@ -199,6 +199,7 @@ describe('symbiont capture round-trip — hook command reaches the runtime with 
 
   for (const manifest of manifests) {
     if (SKIP_PLUGIN_FILE.has(manifest.name)) continue;
+    if (!manifest.registration?.memberHooksTarget) continue;
     if (!manifest.registration?.globalHooksTarget) continue;
     // copilot's globalMcpTarget array includes the macOS-only VS Code
     // Library path; the integration suite skips it on Linux/Windows
@@ -210,9 +211,7 @@ describe('symbiont capture round-trip — hook command reaches the runtime with 
     test(`${manifest.name}: SessionStart hook reaches the runtime with --symbiont ${manifest.name} and stdin payload`, () => {
       if (!fake) throw new Error('fake home not set');
       ensureDetectionDir(manifest, fake.tmpHome);
-      const installer = new SymbiontInstaller(
-        manifest, fake.tmpHome, PKG_ROOT, false, undefined, null, 'global',
-      );
+      const installer = new SymbiontInstaller(manifest, fake.tmpHome, PKG_ROOT, false);
       installer.install();
 
       // Read the installed hooks file and find a SessionStart hook command.

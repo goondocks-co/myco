@@ -663,31 +663,6 @@ export function sessionNamedByRun(run: RunRow): string | null {
   }
 }
 
-/** The hash of the material the server built this run's prompt from, as its context records it. */
-export function inputHashOf(run: RunRow): string | null {
-  if (run.runContext === null) return null;
-  try {
-    const parsed: unknown = JSON.parse(run.runContext);
-    const value = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as { input_hash?: unknown }).input_hash : undefined;
-    return typeof value === 'string' && value.length > 0 ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The instruction one run carries, read on its own.
- *
- * Kept out of `RUN_SELECT`: `getRun` runs on every served tool call
- * (`api/run-admission.ts`), and an instruction is tens of kilobytes that no
- * caller of it reads. A run asks for its own prompt once, at its start.
- */
-export async function runInstruction(db: RelationalStore, scope: ReadScope, runId: string): Promise<string | null> {
-  const row = await db.prepare(`SELECT instruction FROM agent_runs WHERE project_id = ? AND id = ?`)
-    .bind(scope.projectId, runId).first<{ instruction: string | null }>();
-  return row?.instruction ?? null;
-}
-
 /** The dispatch credential and admission clock carried into an atomic runtime write. */
 export interface RunCaller { tokenId: string; now: number; deadline: number; clock?: () => number; refusalId?: string }
 
@@ -1024,22 +999,6 @@ export async function upsertCortexInstructions(
         generated_at = excluded.generated_at`)
     .bind(scope.projectId, id, row.agentId, row.content, row.inputHash, row.sourceRunId, row.generatedAt)
     .run();
-}
-
-/**
- * Whether a Project is admitted to a capability.
- *
- * The claim is the enforcing check and this is not a substitute for it — a
- * caller that asks and then claims still meets the same gate inside `claimRun`.
- * It exists so a caller can report WHY a run will not start without first
- * attempting one and reading the refusal.
- */
-export async function projectAdmission(
-  db: RelationalStore,
-  scope: ReadScope,
-  capability: ProjectCapability,
-): Promise<{ admitted: boolean; capability: ProjectCapability }> {
-  return { admitted: await settingsWriter(db).capabilityEnabled(scope.projectId, capability), capability };
 }
 
 // ---------------------------------------------------------------------------

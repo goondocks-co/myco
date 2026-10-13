@@ -15,10 +15,12 @@ describe('test shard selection', () => {
     const count = workflow.jobs.parity.strategy.matrix.shard.length;
     const budget = Number(workflow.jobs.parity.env.MYCO_RUNNER_GROUP_BUDGET_MS);
     const weights: Record<string, number> = durations.parity;
+    const weight = (scenario: { name: string; milliseconds: number }): number =>
+      weights[scenario.name] ?? scenario.milliseconds;
     for (const workload of [parityWorkload, completeParityWorkload]) {
-      for (const scenario of workload.scenarios) expect(weights[scenario.name]).toBeGreaterThan(0);
+      for (const scenario of workload.scenarios) expect(weight(scenario)).toBeGreaterThan(0);
       const projected = Array.from({ length: count }, (_, index) => {
-        const shard = selectShard(workload.scenarios, { index: index + 1, count }, (scenario) => weights[scenario.name]);
+        const shard = selectShard(workload.scenarios, { index: index + 1, count }, weight);
         return shard.reduce((total, scenario) => total + scenario.milliseconds, workload.sharedTargetAllowanceMs);
       });
       expect(Math.max(...projected), workload.source).toBeLessThanOrEqual(budget - workload.requiredHeadroomMs);

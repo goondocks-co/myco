@@ -95,7 +95,7 @@ describe('myco member mcp-headers', () => {
     process.env.MYCO_HOME = mycoHome;
     let entry: { url: string; http_headers_helper: string };
     try {
-      const block = new SymbiontInstaller(codex, root, resolvePackageRoot(), false, undefined, null, 'member-global').renderMemberMcp('registry');
+      const block = new SymbiontInstaller(codex, root, resolvePackageRoot(), false).renderMemberMcp('registry');
       entry = (block as { myco: typeof entry }).myco;
     } finally {
       if (previous === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = previous;

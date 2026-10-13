@@ -5,7 +5,9 @@
  */
 import { afterEach, describe, expect, it } from 'bun:test';
 import { vi } from '../helpers/vi-shim.js';
-import { estimateOpenRouterCost, getCostProvider, resolveCost } from '@myco-server-worker/core/cost/index.js';
+import { estimateOpenRouterCost } from '@myco-server-worker/core/cost/openrouter.js';
+import { getCostProvider } from '@myco-server-worker/core/cost/providers.js';
+import { resolveCost } from '@myco-server-worker/core/cost/resolver.js';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 

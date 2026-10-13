@@ -91,10 +91,9 @@ describe('the member verbs reach no local-runtime code', () => {
   });
 
   it('rejects a restored database import', () => {
-    const closure = closureOf([path.join(REPO_ROOT, READ_ENTRY)], {
+    expect(() => closureOf([path.join(REPO_ROOT, READ_ENTRY)], {
       source: (file, text) => file.endsWith('/cli/member-reads.ts') ? `import '@myco/db/client.js';\n${text}` : text,
-    });
-    expect([...closure.modules.keys()].some(key => key.startsWith(`${SRC}/db/`))).toBe(true);
+    })).toThrow('unresolvable alias import');
   });
 });
 

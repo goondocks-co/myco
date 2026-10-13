@@ -78,6 +78,18 @@ function member(): void {
 }
 
 describe('member-only remove', () => {
+  it('removes registrations despite a truncated internal audit and preserves unowned settings', async () => {
+    member();
+    const target = path.join(user, '.claude/settings.json');
+    const installed = JSON.parse(fs.readFileSync(target, 'utf8'));
+    fs.writeFileSync(path.join(home, 'installer-audit', 'claude-code-global-settings.json'), '{');
+    await run(['--yes'], deps());
+    expect(process.exitCode).toBe(0);
+    const kept = JSON.parse(fs.readFileSync(target, 'utf8'));
+    expect(kept.permissions).toEqual(installed.permissions);
+    expect(kept.hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(home, 'installer-audit', 'claude-code-global-settings.json'))).toBe(false);
+  });
   it('removes member hooks, MCP, skill links and both executor services, preserving capture, legacy files and repository files', async () => {
     member();
     const legacy = legacyFixtureHome(path.join(root, 'legacy'));
@@ -96,7 +108,7 @@ describe('member-only remove', () => {
     expect(fs.readFileSync(path.join(home, 'member/spool/captured.jsonl'), 'utf8')).toBe('real capture fixture');
     expect(snapshot(legacy.root)).toEqual(before);
     expect(snapshot(repo)).toEqual(repoBefore);
-    expect(fs.readFileSync(path.join(user, '.claude', 'settings.json'), 'utf8')).not.toContain('--credential');
+    expect((fs.existsSync(path.join(user, '.claude', 'settings.json')) ? fs.readFileSync(path.join(user, '.claude', 'settings.json'), 'utf8') : '')).not.toContain('--credential');
     const mcp = path.join(user, '.claude.json');
     expect(fs.existsSync(mcp) ? fs.readFileSync(mcp, 'utf8') : '').not.toContain('mcpServers');
     expect(fs.readdirSync(path.join(user, '.claude', 'skills'))).toEqual([]);
@@ -188,7 +200,7 @@ describe('member-only remove', () => {
     const backups = snapshot(path.join(home, 'backups'));
     await run(['--yes'], deps());
     expect(process.exitCode).toBe(0);
-    expect(fs.readFileSync(path.join(user, '.claude', 'settings.json'), 'utf8')).not.toContain('--credential');
+    expect((fs.existsSync(path.join(user, '.claude', 'settings.json')) ? fs.readFileSync(path.join(user, '.claude', 'settings.json'), 'utf8') : '')).not.toContain('--credential');
     const output = spyOn(console, 'log').mockImplementation(() => {});
     try {
       await run(['--purge', '--yes'], deps());

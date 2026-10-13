@@ -27,9 +27,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { run as runCutover, planCutover, runCutover as executeCutoverPlan, type CutoverDeps } from '@myco/cli/cutover.js';
-import { openDatabase } from '@myco/db/client.js';
-import { createSchema } from '@myco/db/schema.js';
-import { resolveServiceDaemonStatePath } from '@myco/grove/paths.js';
+import { Database } from 'bun:sqlite';
+
+import { resolveServiceDaemonStatePath } from '@myco/paths/service.js';
 import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
 import { listRegistryEntries, registryEntryPath, writeRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
 import { routedSpoolDir } from '@myco/member/routing.js';
@@ -38,7 +38,7 @@ import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { legacyMigrationState, readCutoverState } from '@myco/member/legacy-migration.js';
 import { provisionGlobally } from '@myco/cli/member.js';
 import { stopHomeDaemon } from '@myco/member/legacy-daemon-stop.js';
-import type { LaunchctlRunner } from '@myco/service/launchd.js';
+import type { LaunchctlRunner } from '@myco/member/legacy-service/launchd.js';
 import { resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { hookCommands } from '@myco/symbionts/member-hooks.js';
 import { resolveManagedBinaryPath } from '@myco/symbionts/installer.js';
@@ -106,8 +106,8 @@ async function machine(opts: { legacyHome?: string } = {}): Promise<Machine> {
   // The 1.4 vault.
   const vault = path.join(legacyHome, 'groves', 'grove_a', 'myco.db');
   fs.mkdirSync(path.dirname(vault), { recursive: true });
-  const db = openDatabase(vault);
-  createSchema(db);
+  const db = new Database(vault);
+  db.exec(fs.readFileSync(new URL('../fixtures/legacy/vault-v76.sql', import.meta.url), 'utf8'));
   db.run('PRAGMA foreign_keys = OFF');
   db.run(`INSERT INTO sessions (id, agent, project_root, project_id, started_at, ended_at, status, title, created_at) VALUES (?, 'claude-code', ?, ?, ?, ?, 'completed', 'A 1.4 session', ?)`,
     ['00000000-0000-4000-8000-000000000001', root, PROJECT, NOW_S - 86_400 * 40, NOW_S - 86_400 * 40 + 600, NOW_S - 86_400 * 40]);
@@ -639,7 +639,7 @@ describe('myco cutover', () => {
   });
 
   it('refuses when every vault session was captured on another machine, and warns when some were', async () => {
-    const db = openDatabase(m.vault);
+    const db = new Database(m.vault);
     db.run(`UPDATE sessions SET machine_id = 'old_machine_1234'`);
     db.run('PRAGMA wal_checkpoint(TRUNCATE)');
     db.close();
@@ -649,7 +649,7 @@ describe('myco cutover', () => {
     expect(refused.err.join('\n')).toContain(`every session in the 1.4 vaults was captured under another machine id (old_machine_1234: 1), not this machine's (${TEST_MACHINE_ID})`);
     unchanged();
 
-    const again = openDatabase(m.vault);
+    const again = new Database(m.vault);
     again.run('PRAGMA foreign_keys = OFF');
     again.run(`INSERT INTO sessions (id, agent, project_root, project_id, started_at, ended_at, status, machine_id, created_at) VALUES (?, 'claude-code', ?, ?, ?, ?, 'completed', ?, ?)`,
       ['00000000-0000-4000-8000-000000000009', m.root, PROJECT, NOW_S - 86_400 * 30, NOW_S - 86_400 * 30 + 60, TEST_MACHINE_ID, NOW_S - 86_400 * 30]);
@@ -681,7 +681,7 @@ describe('myco cutover', () => {
 
   it('takes a new copy of a vault that changed since the last run, and imports from it', async () => {
     expect((await m.run()).ok).toBe(true);
-    const db = openDatabase(m.vault);
+    const db = new Database(m.vault);
     db.run(`UPDATE spores SET content = 'changed in 1.4' WHERE id = 'gotcha-1'`);
     db.run('PRAGMA wal_checkpoint(TRUNCATE)');
     db.close();
@@ -690,7 +690,7 @@ describe('myco cutover', () => {
     expect(again.out.join('\n')).toContain('the vault changed since the earlier copy');
     const copies = fs.readdirSync(path.join(m.legacyHome, 'backups')).sort();
     expect(copies.length).toBe(2);
-    const latest = openDatabase(path.join(m.legacyHome, 'backups', copies[1], 'grove_a', 'myco.db'));
+    const latest = new Database(path.join(m.legacyHome, 'backups', copies[1], 'grove_a', 'myco.db'));
     expect(latest.query(`SELECT content FROM spores`).all()).toEqual([{ content: 'changed in 1.4' }]);
     latest.close();
   });
@@ -698,7 +698,7 @@ describe('myco cutover', () => {
   it('takes a new copy when the one recorded no longer holds what the vault holds', async () => {
     expect((await m.run()).ok).toBe(true);
     const [first] = fs.readdirSync(path.join(m.legacyHome, 'backups'));
-    const copy = openDatabase(path.join(m.legacyHome, 'backups', first, 'grove_a', 'myco.db'));
+    const copy = new Database(path.join(m.legacyHome, 'backups', first, 'grove_a', 'myco.db'));
     copy.run(`UPDATE spores SET content = 'altered in the copy' WHERE id = 'gotcha-1'`);
     copy.run('PRAGMA wal_checkpoint(TRUNCATE)');
     copy.close();
@@ -838,8 +838,8 @@ describe('myco cutover on two 1.4 homes, one pinned as the 2.0 home (the owner\'
       const prod = path.join(m.home, '.myco');
       const prodVault = path.join(prod, 'groves', 'grove_p', 'myco.db');
       fs.mkdirSync(path.dirname(prodVault), { recursive: true });
-      const db = openDatabase(prodVault);
-      createSchema(db);
+      const db = new Database(prodVault);
+      db.exec(fs.readFileSync(new URL('../fixtures/legacy/vault-v76.sql', import.meta.url), 'utf8'));
       db.run('PRAGMA foreign_keys = OFF');
       db.run(`INSERT INTO spores (id, project_id, agent_id, observation_type, status, content, created_at) VALUES ('prod-1', ?, 'user', 'gotcha', 'active', 'from ~/.myco', ?)`, [PROJECT, NOW_S]);
       db.run('PRAGMA wal_checkpoint(TRUNCATE)');
@@ -935,7 +935,7 @@ describe('cutover project destinations and receipts', () => {
     writeDeploymentMembership({ serverUrl: PERSONAL, token: personal.token, tokenId: personal.tokenId, machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now() }, { mycoHome: m.mycoHome });
     writeRegistryEntry({ version: 2, root: homelab, projectId: HOMELAB, serverUrl: PERSONAL, token: personal.token, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome: m.mycoHome });
     recordDefaultDeployment(SERVER, { mycoHome: m.mycoHome });
-    const db = openDatabase(m.vault);
+    const db = new Database(m.vault);
     try {
       db.run('PRAGMA foreign_keys=OFF');
       db.run("INSERT INTO sessions (id,agent,project_root,project_id,started_at,ended_at,status,title,created_at) VALUES ('00000000-0000-4000-8000-000000000002','claude-code',?,?,?,?,'completed','personal session',?)", [homelab, HOMELAB, NOW_S - 86400, NOW_S - 86000, NOW_S - 86400]);
@@ -1052,7 +1052,7 @@ describe('cutover project destinations and receipts', () => {
   it('allows every project to be skipped without a membership or import identity', async () => {
     fs.rmSync(path.join(m.mycoHome, 'member', 'deployments'), { recursive: true, force: true });
     fs.unlinkSync(path.join(m.mycoHome, 'machine_id'));
-    const db = openDatabase(m.vault);
+    const db = new Database(m.vault);
     try { db.run("UPDATE sessions SET machine_id='retained-legacy-machine'"); db.run('PRAGMA wal_checkpoint(TRUNCATE)'); } finally { db.close(); }
     const deps = { agents: () => [], unitDirs: [], stopDaemon: async () => 'none' as const, stdout: () => {}, stderr: () => {} };
     const plan = planCutover(m.mycoHome, { homeDir: m.home, skips: new Set([PROJECT, HOMELAB]) }, deps);
@@ -1088,7 +1088,7 @@ describe('cutover project destinations and receipts', () => {
   });
 
   it('does not let skipped foreign-machine sessions block routed spore history', async () => {
-    const db = openDatabase(m.vault);
+    const db = new Database(m.vault);
     try {
       db.run('PRAGMA foreign_keys=OFF');
       db.run('DELETE FROM prompt_batches WHERE project_id=?', [PROJECT]);
@@ -1137,7 +1137,7 @@ describe('cutover project destinations and receipts', () => {
     const deps = { fetch: fetchBoth, agents: () => [], unitDirs: [], machineId: TEST_MACHINE_ID, stdout: () => {},
       stopDaemon: async (home: string) => { stopped.push(home); return 'stopped' as const; } };
     const plan = planCutover(m.mycoHome, { homeDir: m.home }, deps);
-    const db = openDatabase(m.vault);
+    const db = new Database(m.vault);
     try { db.run("UPDATE spores SET content='changed' WHERE id='gotcha-1'"); } finally { db.close(); }
     const errors: string[] = [];
     expect((await executeCutoverPlan(plan, { ...deps, stderr: (l) => errors.push(l) })).ok).toBe(true);
@@ -1150,7 +1150,7 @@ describe('cutover project destinations and receipts', () => {
   for (const override of [null, 'MYCO_PROJECT_ROOT', 'MYCO_VAULT_DIR'] as const) for (const rootless of [false, true]) it(`requires a disposition for an unrouted ${rootless ? 'rootless' : 'absent'} project with ${override ?? 'no project override'}`, async () => {
     fs.rmSync(m.root, { recursive: true });
     if (rootless) {
-      const db = openDatabase(m.vault);
+      const db = new Database(m.vault);
       try { db.run('UPDATE sessions SET project_root=NULL WHERE project_id=?', [PROJECT]); } finally { db.close(); }
     }
     const held = override === null ? undefined : process.env[override];
@@ -1218,13 +1218,14 @@ describe('cutover project destinations and receipts', () => {
     let copying = false;
     let reads = 0;
     const original = fs.statSync;
-    const stat = spyOn(fs, 'statSync').mockImplementation((...args) => {
+    const stat = spyOn(fs, 'statSync').mockImplementation(((file: fs.PathLike, options?: fs.StatOptions) => {
+      const args = [file, options];
       if (copying && String(args[0]) === m.vault && ++reads === 2) {
-        const db = openDatabase(m.vault);
+        const db = new Database(m.vault);
         try { db.run("UPDATE spores SET content='write during copy' WHERE id='gotcha-1'"); } finally { db.close(); }
       }
       return Reflect.apply(original, fs, args);
-    });
+    }) as typeof fs.statSync);
     const errors: string[] = [];
     try {
       const deps = { fetch: fetchBoth, agents: () => [], unitDirs: [], machineId: TEST_MACHINE_ID,
@@ -1285,7 +1286,7 @@ describe('cutover project destinations and receipts', () => {
 
   it('receipts describe the verified copy after the last 1.4 write during handover', async () => {
     const result = await m.run([], { fetch: fetchBoth, agents: [], stopDaemon: async () => {
-      const db = openDatabase(m.vault);
+      const db = new Database(m.vault);
       try { db.run("UPDATE spores SET content='last 1.4 write' WHERE id='gotcha-1'"); db.run('PRAGMA wal_checkpoint(TRUNCATE)'); } finally { db.close(); }
       return 'stopped';
     } });
@@ -1295,7 +1296,7 @@ describe('cutover project destinations and receipts', () => {
 
   it('refuses new project destinations that appear during handover before uploading anything', async () => {
     const result = await m.run([], { fetch: fetchBoth, agents: [], stopDaemon: async () => {
-      const db = openDatabase(m.vault);
+      const db = new Database(m.vault);
       try { db.run("UPDATE spores SET project_id='proj_new' WHERE id='gotcha-1'"); db.run('PRAGMA wal_checkpoint(TRUNCATE)'); } finally { db.close(); }
       return 'stopped';
     } });
@@ -1306,7 +1307,7 @@ describe('cutover project destinations and receipts', () => {
   it('keeps per-destination receipts when the source changes and a project is skipped', async () => {
     expect((await m.run([], { fetch: fetchBoth, agents: [] })).ok).toBe(true);
     const old = readCutoverState(m.mycoHome).migrations![m.vault];
-    const db = openDatabase(m.vault);
+    const db = new Database(m.vault);
     try { db.run("UPDATE spores SET content='later 1.4 write' WHERE id='gotcha-1'"); } finally { db.close(); }
     expect((await m.run(['--skip', PROJECT], { fetch: fetchBoth, agents: [] })).ok).toBe(true);
     const receipt = readCutoverState(m.mycoHome).migrations![m.vault].projects[PROJECT];
