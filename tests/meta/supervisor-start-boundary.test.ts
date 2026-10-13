@@ -49,9 +49,11 @@ it('resolves a renamed PowerShell host from its initializer', () => {
   expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
 });
 
-it.each(['outside', 'inside'])('rejects starts %s the owned native service reload command', location => {
+it.each(['outside', 'inside', 'altered'])('rejects starts %s the owned native service reload command', location => {
   const mutate = (file: string, text: string): string => file.endsWith('/server/service.ts')
-    ? location === 'inside'
+    ? location === 'altered'
+      ? text.replace("  '  launchctl load -w \"$unit\"',", "  '  launchctl load -w \"$unit\"/../evil.plist',")
+      : location === 'inside'
       ? text.replace("  '  launchctl load -w \"$unit\"',", "  'launchctl kickstart com.myco.daemon',\n  '  launchctl load -w \"$unit\"',")
       : text.replace('export function reloadServiceDetached(', "execFileSync('launchctl', ['kickstart', '-k', 'com.myco.daemon']);\nexport function reloadServiceDetached(") : text;
   expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
