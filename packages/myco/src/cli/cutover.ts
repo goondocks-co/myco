@@ -474,7 +474,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
   if (split.thisMachine === 0 && elsewhere.length > 0) {
     blockers.push(`every session in the 1.4 vaults was captured under another machine id (${elsewhere.map(([m, n]) => `${m}: ${n}`).join(', ')}), not this machine's (${machineId}), so none would be imported. Run the cutover on the machine that captured them.`);
   }
-  const units = attributeLegacyUnits(deps.unitDirs ?? unitDirectories(env, homeDir, platform).concat(platform === 'win32' && !env.MYCO_LAUNCH_AGENTS_DIR?.trim() ? legacyHomes.map(home => ({ dir: path.join(home, 'service'), scope: 'user' as const })) : []), legacyHomes);
+  const units = attributeLegacyUnits(deps.unitDirs ?? unitDirectories(env, homeDir, platform).concat(platform === 'win32' && !env.MYCO_LAUNCH_AGENTS_DIR?.trim() ? legacyHomes.map(home => ({ dir: path.join(home, 'service'), scope: 'user' as const })) : []), legacyHomes, platform);
   for (const unit of units.unattributable) blockers.push(`${unit.file} runs \`myco daemon\` but names no home (no MYCO_HOME, no working directory), so it cannot be told apart from another installation's. Remove it if it is 1.4's, then run again.`);
   for (const unit of units.boot) blockers.push(`${unit.file} starts ${unit.home}'s 1.4 daemon at boot; remove it as an administrator (\`sudo launchctl bootout system/${unit.label}\` and delete the file), then run again.`);
 
@@ -624,7 +624,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
         would: `would stop and remove ${unit.label} (${unit.file}), the 1.4 daemon of ${unit.home}`, outcomes: [`unit ${unit.file}`],
         run: async () => {
           backup.take(unit.file);
-          await stopUnit(unit, platform, deps.launchctl, { runner: deps.schtasks, stopDaemon: deps.stopDaemon, sleep: deps.sleep, backupTask: (label, xml) => { backup.scheduledTask(label, xml); } });
+          await stopUnit(unit, platform, deps.launchctl, { runner: deps.schtasks, stopDaemon: deps.stopDaemon, sleep: deps.sleep, backupTask: (label, xml, previouslyDisabled) => { backup.scheduledTask(label, xml, previouslyDisabled); } });
           return { lines: [`stopped and removed ${unit.label} (${unit.file})`], made: fs.existsSync(unit.file) ? [] : [`unit ${unit.file}`] };
         },
       })),

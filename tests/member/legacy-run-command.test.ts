@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { spawnCombinedOutput } from '@myco/member/legacy-service/run-command.js';
+import { spawnCombinedOutput, spawnRawOutput } from '@myco/member/legacy-service/run-command.js';
 
 describe('spawnCombinedOutput', () => {
   // Regression: the launchd/systemd runners accumulated output via
@@ -44,4 +44,13 @@ describe('spawnCombinedOutput', () => {
     expect(res.exitCode).toBe(1);
     expect(res.stdout.length).toBeGreaterThan(0);
   });
+});
+
+it('preserves UTF-16 stdout bytes across chunks independently from stderr', async () => {
+  const xml = '<Task><Description>' + 'Ω日本語'.repeat(30_000) + '</Description></Task>';
+  const script = "process.stdout.write(Buffer.from('<Task><Description>' + 'Ω日本語'.repeat(30000) + '</Description></Task>', 'utf16le')); process.stderr.write('warning');";
+  const result = await spawnRawOutput(process.execPath, ['-e', script]);
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toEqual(Buffer.from(xml, 'utf16le'));
+  expect(result.stderr.toString('utf8')).toBe('warning');
 });

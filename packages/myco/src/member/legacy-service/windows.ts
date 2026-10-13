@@ -5,7 +5,7 @@ import path from 'node:path';
 import { sleep } from '@myco/utils/sleep.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { renderWindowsServiceScript } from './windows-task.js';
-import { spawnCombinedOutput, assertRunSucceeded } from './run-command.js';
+import { spawnCombinedOutput, spawnRawOutput, assertRunSucceeded, type RawCommandOutput } from './run-command.js';
 import { SERVICE_UNIT_DIR_ENV } from '@myco/paths/service-units.js';
 import {
   requestCooperativeShutdownResult,
@@ -44,7 +44,7 @@ function readDaemonPortForLabel(_label: string): number | null {
 }
 
 export interface SchtasksRunner {
-  run(args: string[]): Promise<{ stdout: string; exitCode: number }>;
+  run(args: string[]): Promise<{ stdout: string; stderr?: string; exitCode: number }>;
   queryState(label: string): Promise<TaskSchedulerState>;
   currentUserSid(): Promise<string>;
   register(registration: TaskSchedulerRegistration): Promise<{
@@ -80,14 +80,23 @@ export type TaskSchedulerState =
  * stub to observe argv without touching the real scheduler.
  */
 export class RealSchtasksRunner implements SchtasksRunner {
-  async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
+  async run(args: string[]): Promise<{ stdout: string; stderr?: string; exitCode: number }> {
     if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) {
       return {
         stdout: `[sandbox] skipped schtasks ${args.join(' ')}`,
         exitCode: args[0] === '/query' ? 1 : 0,
       };
     }
-    return spawnCombinedOutput('schtasks', args);
+    const result = await this.runSchtasks(args);
+    const stderr = result.stderr.toString('utf8');
+    if (args[0]?.toLowerCase() === '/query' && args.some(arg => arg.toLowerCase() === '/xml')) {
+      return { stdout: decodeTaskXmlOutput(result.stdout), stderr, exitCode: result.exitCode };
+    }
+    return { stdout: result.stdout.toString('utf8') + stderr, exitCode: result.exitCode };
+  }
+
+  protected runSchtasks(args: string[]): Promise<RawCommandOutput> {
+    return spawnRawOutput('schtasks', args);
   }
 
   async queryState(label: string): Promise<TaskSchedulerState> {
@@ -259,6 +268,27 @@ function windowsTaskHostArguments(scriptPath: string): string {
   return `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedCommand}`;
 }
 
+function decodeTaskXmlOutput(bytes: Buffer): string {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return bytes.subarray(2).toString('utf16le');
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return Buffer.from(bytes.subarray(2)).swap16().toString('utf16le');
+  if (bytes[0] === 0x3c && bytes[1] === 0) return bytes.toString('utf16le');
+  return bytes.toString('utf8');
+}
+
+function taskActionMatchesLauncher(action: ReturnType<typeof parseTaskAction>, launcherFile: string): boolean {
+  if (action?.command.toLowerCase() !== WINDOWS_TASK_HOST.toLowerCase()) return false;
+  const encoded = /^-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ([A-Za-z0-9+/]+={0,2})$/i.exec(action.arguments)?.[1];
+  if (encoded === undefined) return false;
+  const bytes = Buffer.from(encoded, 'base64');
+  if (bytes.length % 2 !== 0 || bytes.toString('base64') !== encoded) return false;
+  const literal = /^& '((?:[^']|'')*)'$/.exec(bytes.toString('utf16le'))?.[1];
+  if (literal === undefined) return false;
+  const decodedPath = literal.replaceAll("''", "'");
+  return path.win32.isAbsolute(decodedPath)
+    && path.win32.parse(path.win32.normalize(decodedPath)).root.toLowerCase() === path.win32.parse(path.win32.normalize(launcherFile)).root.toLowerCase()
+    && path.win32.resolve(decodedPath).toLowerCase() === path.win32.resolve(launcherFile).toLowerCase();
+}
+
 export class ExternalMcpHardKillBlockedError extends Error {
   constructor(options?: ErrorOptions) {
     super('External MCP containment was not confirmed; refusing hard process termination', options);
@@ -389,12 +419,11 @@ export class WindowsTaskServiceManager implements ServiceManager {
       if (await this.runner.queryState(label) === 'absent') return null;
       throw new Error(
         `Task Scheduler task inspection failed for ${label}: `
-        + `schtasks /query exited ${task.exitCode}: ${task.stdout}`,
+        + `schtasks /query exited ${task.exitCode}: ${task.stdout}${task.stderr ?? ''}`,
       );
     }
     const taskAction = parseTaskAction(task.stdout);
-    if (taskAction?.command.toLowerCase() !== WINDOWS_TASK_HOST.toLowerCase()
-      || taskAction.arguments !== windowsTaskHostArguments(scriptPath)) {
+    if (!taskActionMatchesLauncher(taskAction, scriptPath)) {
       return null;
     }
     const currentUserSid = await this.runner.currentUserSid();
@@ -449,7 +478,7 @@ export class WindowsTaskServiceManager implements ServiceManager {
     label: string,
     launcherFile: string,
     drain: () => Promise<'stopped' | 'none' | 'not-this-home'>,
-    backupTask: (label: string, xml: string) => void,
+    backupTask: (label: string, xml: string, previouslyDisabled: boolean) => void,
   ): Promise<void> {
     const before = await this.requireTaskState(label);
     if (before === 'absent') return;
@@ -458,14 +487,13 @@ export class WindowsTaskServiceManager implements ServiceManager {
     const action = parseTaskAction(task.stdout);
     const principal = singleXmlElementBody(task.stdout, 'Principal');
     const sid = await this.runner.currentUserSid();
-    if (action?.command.toLowerCase() !== WINDOWS_TASK_HOST.toLowerCase()
-      || action.arguments !== windowsTaskHostArguments(launcherFile)
+    if (!taskActionMatchesLauncher(action, launcherFile)
       || principal === null
       || singleXmlText(principal, 'UserId')?.toLowerCase() !== sid.toLowerCase()
       || singleXmlText(principal, 'LogonType') !== 'InteractiveToken') {
       throw new Error(`Task Scheduler task ${label} does not belong to this user's launcher ${launcherFile}`);
     }
-    backupTask(label, task.stdout);
+    backupTask(label, task.stdout, before === 'disabled');
     assertRunSucceeded(
       await this.runner.run(['/change', '/tn', label, '/disable']),
       `schtasks /change /tn ${label} /disable`,

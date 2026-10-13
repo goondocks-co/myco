@@ -441,7 +441,8 @@ function listTs(dir: string): string[] {
 
 function isCaptureEntry(file: string): boolean {
   const key = moduleKey(file);
-  return !key.startsWith('member/legacy-') && key !== 'member/subsystem-claim.ts';
+  return !key.startsWith('member/legacy-service/')
+    && !['member/legacy-units.ts', 'member/legacy-daemon-stop.ts', 'member/legacy-daemon-state.ts', 'member/subsystem-claim.ts'].includes(key);
 }
 
 function expandLeaf(pattern: string): string[] {
@@ -470,6 +471,12 @@ describe('member seam boundary (transitive)', () => {
     }
     expect({ outside: outside.size, literals: literals.length, externals: externals.length, unknowable: unknowable.length })
       .toEqual({ outside: 0, literals: 0, externals: 0, unknowable: 0 });
+  });
+
+  it('rejects an external package added to the retained legacy import entry', () => {
+    const closure = closureOf([...hookEntries, ...memberEntries], (file, text) => file.endsWith('/member/legacy-import.ts')
+      ? "import YAML from 'yaml';\n" + text : text);
+    expect(externalViolationsOf(closure)).toContainEqual({ module: 'yaml', reason: 'external package', chain: expect.arrayContaining(['member/legacy-import.ts']) });
   });
 
   it('keeps server implementation imports out of the member CLI', () => {

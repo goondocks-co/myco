@@ -75,7 +75,7 @@ export function restoreRecipe(entries: readonly BackupEntry[], purpose: BackupPu
       purpose === 'provision' ? '# Undo a Myco agent setup' : '# Undo a Myco cutover', '',
       'Stop anything using Myco 2.0 on this machine, then run in PowerShell:', '',
       '```powershell', ...lines, ...tasks, '```', '',
-      ...(tasks.length > 0 ? ['The task definitions include their original enable state. Start the restored task when ready.'] : []),
+      ...(tasks.length > 0 ? ['Task definitions retain their saved enable state. Start the restored task when ready.'] : []),
       ...(purpose === 'cutover' ? ['The 1.4 vaults were never changed; the Deployment keeps what was imported.'] : []), '',
     ].join('\n');
   }
@@ -118,7 +118,16 @@ export class CutoverBackup {
   }
 
   /** Keep a Task Scheduler definition before disabling or unregistering it. */
-  scheduledTask(label: string, xml: string): BackupEntry {
+  scheduledTask(label: string, xml: string, previouslyDisabled = false): BackupEntry {
+    if (previouslyDisabled && fs.existsSync(path.dirname(this.dir))) {
+      const root = path.dirname(this.dir);
+      const folders = fs.readdirSync(root).filter(folder => folder.startsWith(FOLDER_PREFIX) && path.join(root, folder) !== this.dir).sort().reverse();
+      for (const folder of folders) {
+        const entry = readManifest(path.join(root, folder)).find(entry => 'task' in entry && entry.task === label);
+        if (entry !== undefined && 'backup' in entry && fs.existsSync(entry.backup)
+          && sha256(fs.readFileSync(entry.backup)) === entry.sha256) return this.record(entry);
+      }
+    }
     const backup = path.join(this.dir, 'windows-tasks', `${crypto.createHash('sha256').update(label).digest('hex')}.xml`);
     fs.mkdirSync(path.dirname(backup), { recursive: true, mode: 0o700 });
     writePrivateFileAtomic(backup, xml);

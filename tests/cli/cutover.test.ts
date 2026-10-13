@@ -1,4 +1,5 @@
 import { legacyWindowsUnit } from '../helpers/legacy-windows-unit.ts';
+import { CutoverBackup, cutoverBackupDir } from '@myco/member/cutover-backup.js';
 import { refuseImportAfter } from '../setup/fixtures/interruption.js';
 /**
  * `myco cutover`, against the real worker and a machine laid out the way a 1.4
@@ -581,6 +582,35 @@ describe('myco cutover', () => {
     const entries = readJson(path.join(backupDir, 'manifest.json')).entries as Array<{ task?: string; backup: string }>;
     expect(fs.readFileSync(entries.find(entry => entry.task === task.label)!.backup, 'utf8')).toBe(task.xml);
     expect(fs.readFileSync(path.join(backupDir, 'restore.md'), 'utf8')).toContain('Register-ScheduledTask');
+  });
+
+  it('restores the enabled task definition after two failed Windows cutovers', async () => {
+    const dir = path.join(m.home, 'windows-units');
+    const task = legacyWindowsUnit(dir, m.legacyHome);
+    new CutoverBackup(cutoverBackupDir(m.mycoHome, '2000-01-01'), 'cutover', 'win32')
+      .scheduledTask(task.label, task.xml.replace('<Task>', '<Task><Description>obsolete task</Description>'));
+    const options: RunOpts = {
+      platform: 'win32', schtasks: task.runner, unitDirs: [{ dir, scope: 'user' }],
+      stopDaemon: async () => 'not-this-home',
+    };
+    const first = await m.run([], options);
+    expect(first.ok).toBe(false);
+    const firstRecipe = first.err.find(line => line.includes('Recovery instructions: '))!.trim().slice('Recovery instructions: '.length);
+    const firstEntries = readJson(path.join(path.dirname(firstRecipe), 'manifest.json')).entries as Array<{ task?: string; backup: string }>;
+    const original = firstEntries.find(entry => entry.task === task.label)!;
+    expect(fs.readFileSync(original.backup, 'utf8')).toContain('<Enabled>true</Enabled>');
+    expect(await task.runner.queryState(task.label)).toBe('disabled');
+
+    const second = await m.run([], options);
+    expect(second.ok).toBe(false);
+    const secondRecipe = second.err.find(line => line.includes('Recovery instructions: '))!.trim().slice('Recovery instructions: '.length);
+    expect(secondRecipe).not.toBe(firstRecipe);
+    const entries = readJson(path.join(path.dirname(secondRecipe), 'manifest.json')).entries as Array<{ task?: string; backup: string }>;
+    const snapshot = entries.find(entry => entry.task === task.label)!;
+    expect(fs.readFileSync(snapshot.backup, 'utf8')).toBe(task.xml);
+    expect(fs.readFileSync(secondRecipe, 'utf8')).toContain(original.backup);
+    expect(fs.existsSync(task.file)).toBe(true);
+    expect(task.calls.some(args => args[0] === '/delete')).toBe(false);
   });
 
   it('refuses a 1.4 unit that starts at boot rather than stopping it as a user unit', async () => {

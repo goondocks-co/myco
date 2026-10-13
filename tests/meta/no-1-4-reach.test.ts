@@ -1,4 +1,18 @@
-/** The 2.0 closure has no 1.4 crossings except the pending CLI dispatch and checkpoint removals. */
+/**
+ * Meta gate: the 2.0 closure crosses the 1.4 boundary only through the named pending CLI crossings.
+ *
+ * The walk follows static and literal dynamic imports from every 2.0 entry point and stops at the 1.4 boundary.
+ * CLI dispatch to a 1.4 verb is excluded by rule; every other crossing must equal the named CLI crossings exactly. New crossings
+ * fail, and a named crossing that no longer exists fails until its row is deleted. The exception list only shrinks.
+ * ALLOWED_EDGES is empty: there are no shared-leaf exceptions to the boundary.
+ *
+ * The boundary is closed: every file under packages/myco/src is reached, inside the 1.4 tree, or named with why it
+ * is unreached. Scripts, Dockerfiles, the Makefile and CI workflows may name only the listed 1.4 paths, each with
+ * its removal phase. A listed path no longer named must have its row deleted too.
+ *
+ * The shared import-closure walker reads the runtime's edges: type-only imports are no edges; literal import()
+ * calls are. Unfollowable dynamic imports are named explicitly, so unknown runtime reach cannot pass silently.
+ */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,8 +27,7 @@ const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const MYCO = 'packages/myco/src/';
 
 /**
- * Every edge from 2.0 code into the 1.4 tree, `importer -> imported` (paths under `packages/myco/src`), with the #1170
- * phase that removes it. An edge from `cli.ts` to a 1.4 verb module is the verb's dispatch and is allowed by rule.
+ * Shared-leaf exceptions from 2.0 into the 1.4 tree. Empty: retained CLI crossings are named separately.
  */
 const ALLOWED_EDGES: Readonly<Record<string, string>> = {};
 
@@ -108,10 +121,7 @@ describe('the 2.0 code', () => {
     // An `import(expr)` names no module the walk can follow, so each one in the 2.0 closure is named here: none of them is code.
     expect(Object.fromEntries([...myco.unknowable, ...server.unknowable])).toEqual(UNFOLLOWABLE);
     const found = [...new Set([...crossings(myco), ...crossings(server)])].sort();
-    expect(ALLOWED_EDGES).toEqual({});
-    const named = Object.keys(PR3_EDGES).sort();
-    expect(found.filter((edge) => !named.includes(edge)), 'a new edge from 2.0 code into the 1.4 tree').toEqual([]);
-    expect(named.filter((edge) => !found.includes(edge)), 'a named edge that no longer exists: delete its row').toEqual([]);
+    expect(found, 'the only 2.0 crossings are the named PR 3 CLI edges; delete a row when its edge disappears').toEqual(Object.keys(PR3_EDGES).sort());
   }, 120_000);
 
   it('leaves no file under packages/myco/src unaccounted for: each is reached, inside the 1.4 tree, or named', () => {

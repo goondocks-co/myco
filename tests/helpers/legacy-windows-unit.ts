@@ -27,7 +27,8 @@ export function legacyWindowsUnit(dir: string, home: string, label = 'co.goondoc
     endProcessTree: unexpected,
     run: async args => {
       calls.push(args);
-      if (args[0] === '/query') return { stdout: xml, exitCode: 0 };
+      if (args[0] === '/query') return { stdout: state === 'disabled' ? xml.replace('<Enabled>true</Enabled>', '<Enabled>false</Enabled>') : xml, exitCode: 0 };
+      if (args[0] === '/change') state = 'disabled';
       if (args[0] === '/delete') state = 'absent';
       return { stdout: '', exitCode: 0 };
     },

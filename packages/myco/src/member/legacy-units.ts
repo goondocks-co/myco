@@ -28,18 +28,19 @@ export interface UnitAttribution {
 }
 
 /** Attribute every daemon unit in `dirs` to the 1.4 homes being cut over. */
-export function attributeLegacyUnits(dirs: ReadonlyArray<{ dir: string; scope: MycoUnit['scope'] }>, legacyHomes: readonly string[]): UnitAttribution {
-  const homes = new Set(legacyHomes.map((home) => path.resolve(home)));
+export function attributeLegacyUnits(dirs: ReadonlyArray<{ dir: string; scope: MycoUnit['scope'] }>, legacyHomes: readonly string[], platform: NodeJS.Platform = process.platform): UnitAttribution {
+  const resolveHome = (home: string) => platform === 'win32' ? path.win32.resolve(home).toLowerCase() : path.resolve(home);
+  const homes = new Set(legacyHomes.map(resolveHome));
   const seen = new Set<string>();
   const out: UnitAttribution = { stop: [], boot: [], unattributable: [] };
   for (const { dir, scope } of dirs) {
     for (const unit of readMycoUnits(dir, scope)) {
-      const key = scope + ':' + path.resolve(unit.file);
+      const key = scope + ':' + (platform === 'win32' ? fs.realpathSync.native(unit.file).toLowerCase() : path.resolve(unit.file));
       if (seen.has(key)) continue;
       seen.add(key);
       if (!isDaemonUnit(unit)) continue;
       if (unit.home === null) { out.unattributable.push(unit); continue; }
-      if (!homes.has(path.resolve(unit.home))) continue;
+      if (!homes.has(resolveHome(unit.home))) continue;
       (scope === 'boot' ? out.boot : out.stop).push(unit);
     }
   }
@@ -47,7 +48,7 @@ export function attributeLegacyUnits(dirs: ReadonlyArray<{ dir: string; scope: M
 }
 
 /** Stop and remove one user-scope unit, touching no other unit. */
-export async function stopUnit(unit: MycoUnit, platform: NodeJS.Platform = process.platform, runner?: LaunchctlRunner, windows: { runner?: SchtasksRunner; stopDaemon?: (home: string) => Promise<DaemonStop>; sleep?: (ms: number) => Promise<void>; backupTask?: (label: string, xml: string) => void } = {}): Promise<void> {
+export async function stopUnit(unit: MycoUnit, platform: NodeJS.Platform = process.platform, runner?: LaunchctlRunner, windows: { runner?: SchtasksRunner; stopDaemon?: (home: string) => Promise<DaemonStop>; sleep?: (ms: number) => Promise<void>; backupTask?: (label: string, xml: string, previouslyDisabled: boolean) => void } = {}): Promise<void> {
   const dir = path.dirname(unit.file);
   if (unit.file.endsWith('.plist')) {
     await new LaunchdServiceManager({ agentsDir: dir, pruneOnUninstall: false, ...(runner ? { runner } : {}) }).uninstall(unit.label);
