@@ -261,7 +261,7 @@ describe('the member server URL rule', () => {
 
   it('discovers member dial expressions without a list of call sites', () => {
     const offenders: string[] = [];
-    for (const tree of [...MEMBER_TREES, 'agent/runtime']) {
+    for (const tree of MEMBER_TREES) {
       for (const file of allFiles(join(SRC, tree)).filter((f) => f.endsWith('.ts'))) {
         const rel = relative(SRC, file);
         if (rel === RULE) continue;

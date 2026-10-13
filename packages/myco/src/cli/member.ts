@@ -20,7 +20,7 @@ import { selectedDeploymentMembership } from '../member/token-pairing.js';
 import { assignLegacyPending, flushPending, listHeldEnds, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS } from '../member/pending.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { DoctorCheck } from './doctor.js';
+import type { DoctorCheck } from './doctor-member.js';
 import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome, type ResolvedMycoHome } from '../paths/home.js';

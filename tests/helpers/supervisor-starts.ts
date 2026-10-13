@@ -23,7 +23,7 @@ export function supervisorStarts(closure: Closure, mutate?: SourceMutation): str
   const methods = new Set<ts.Node>();
   const queue: ts.Node[] = [];
   const classes: ts.ClassLikeDeclaration[] = [];
-  const dangerous = new Set(['start', 'restart', 'reload', 'ensureRunning', 'restartShellCommand']);
+  const dangerous = new Set(['start', 'restart', 'reload', 'ensureRunning', 'restartShellCommand', 'install', 'bootstrap']);
   const legacySupervisor = /\/(?:daemon|service|member\/legacy-service)\//;
   const report = (node: ts.Node, reason: string): void => {
     const source = node.getSourceFile();
@@ -92,7 +92,7 @@ export function supervisorStarts(closure: Closure, mutate?: SourceMutation): str
       const platform = declaration?.getSourceFile().fileName.match(/member\/legacy-service\/(launchd|systemd|windows)\.ts$/)?.[1];
       const executable = platform === 'launchd' ? 'launchctl' : platform === 'systemd' ? 'systemctl' : platform === 'windows' ? 'schtasks' : '';
       const command = [executable, ...node.arguments.flatMap(arg => values(arg))].join(' ');
-      if (/\b(?:launchctl\b.*\bkickstart|systemctl\b.*\b(?:start|restart)|schtasks\b.*\/run)\b/i.test(command)) report(node, 'supervisor exec');
+      if (/\b(?:launchctl\b.*\b(?:kickstart|load|bootstrap|enable)|systemctl\b.*(?:\b(?:start|restart|reenable)\b|\benable\b.*--now\b)|schtasks\b.*(?:\/(?:run|create)\b|\/change\b.*\/enable\b))\b/i.test(command)) report(node, 'supervisor exec');
     }
     ts.forEachChild(node, visit);
   };

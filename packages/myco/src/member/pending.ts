@@ -138,12 +138,6 @@ function readLegacyAssignment(file: string): LegacyAssignment | null {
   return value;
 }
 
-/** A pending obligation remains until its metadata is verifiably absent. */
-export function hasPendingCapture(rootKey: string, mycoHome: string, serverUrl?: string): boolean {
-  const dir = pendingDir(rootKey, mycoHome, serverUrl);
-  return hasPendingCaptureAt(dir, mycoHome);
-}
-
 function hasPendingCaptureAt(dir: string, mycoHome: string): boolean {
   assertMemberPathContained(dir, mycoHome);
   if (!pathIsAbsent(path.join(dir, META_FILE))) return true;

@@ -20,14 +20,3 @@ export function recordCompaction(state: SessionState): void {
   if (!isCompactionOrdinal(next)) throw new Error('session compaction ordinal is invalid');
   state.compactionOrdinal = next;
 }
-
-export function sessionContextRequest(run: HookRun, remote?: string): SessionContextRequest | undefined {
-  const named = remote === undefined || remote.length === 0 ? {} : { remote };
-  if (!compactionStart(run)) return { sessionId: run.sessionId, kind: 'start', ...named };
-  const compaction = readSessionState(run.spool.dir, run.sessionId).compactionOrdinal;
-  if (!isCompactionOrdinal(compaction)) {
-    process.stderr.write('[myco] session-start: recall skipped (no recorded compaction ordinal)\n');
-    return undefined;
-  }
-  return { sessionId: run.sessionId, kind: 'compact', compaction, ...named };
-}

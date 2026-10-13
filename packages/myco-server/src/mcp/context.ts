@@ -269,9 +269,3 @@ export async function scopeOf(ctx: ToolContext, input: ToolInput): Promise<ReadS
   if (named === undefined) return { projectId: ctx.projectId };
   return resolveTenancyArgument(ctx.env.db, { id: ctx.principal.memberId }, named);
 }
-
-/** The arguments without the pivot key, so no handler forwards it as a filter. */
-export function withoutPivot(input: ToolInput): ToolInput {
-  const { [PROJECT_PIVOT]: _pivot, ...rest } = input;
-  return rest;
-}

@@ -261,7 +261,9 @@ export function removeTomlSectionKeys(
     const separator = before && trailing ? '\n\n' : '';
     rebuilt = before + separator + trailing;
   }
-  return rebuilt.trimEnd() + (rebuilt.trim() ? '\n' : '');
+  const after = raw.slice(endIdx).trimStart();
+  const result = [rebuilt.trimEnd(), after].filter(Boolean).join('\n\n');
+  return result.trimEnd() + (result.trim() ? '\n' : '');
 }
 
 function escapeRegExp(s: string): string {

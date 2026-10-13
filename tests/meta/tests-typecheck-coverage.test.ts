@@ -15,32 +15,18 @@ const REPO = fileURLToPath(new URL('../../', import.meta.url));
 const TESTS = path.join(REPO, 'tests');
 const CONFIG = path.join(REPO, 'tsconfig.tests.json');
 
-/**
- * Deferred trees containing the local runtime's agent, capture, CLI, daemon,
- * database, Grove, host and vault suites. Explicit inclusions below
- * identify the typechecked suites within these trees.
- */
-const AWAITING_THE_1_4_SWEEP = [
-  'agent',
-  'canopy',
-  'capture',
-  'cli',
-  'daemon',
-  'db',
-  'grove',
-  'host',
-  'integration',
-  'vault',
-] as const;
+/** CLI suites have explicit inclusions while their existing type migration is completed. */
+const DEFERRED_TEST_TREES = ['cli'] as const;
 
-/**
- * Explicitly typechecked 2.0 suites inside deferred trees: login, import,
- * and import.
- * This gate checks list equality; it does not classify runtime ownership.
- */
+/** Explicitly typechecked CLI suites; this gate checks paths, not runtime ownership. */
 const TYPED_INSIDE_A_DEFERRED_TREE = [
   path.join('cli', 'import.test.ts'),
   path.join('cli', 'login.test.ts'),
+  path.join('cli', 'cutover.test.ts'),
+  path.join('cli', 'doctor-member-mcp.test.ts'),
+  path.join('cli', 'doctor-runtime-pin.test.ts'),
+  path.join('cli', 'doctor-worker-service.test.ts'),
+  path.join('cli', 'member-machine-verbs.test.ts'),
 ] as const;
 
 /**
@@ -76,14 +62,14 @@ describe('tests/ typecheck coverage', () => {
   });
 
   test('the config excludes exactly what is named here, and nothing is named twice', () => {
-    const named = [...AWAITING_THE_1_4_SWEEP, ...TYPED_BY_THE_UI_CONFIGS];
+    const named = [...DEFERRED_TEST_TREES, ...TYPED_BY_THE_UI_CONFIGS];
     expect([...excluded].sort()).toEqual([...named].sort());
     expect(new Set(named).size).toBe(named.length);
   });
 
   test('the config types exactly the survivors named here, each inside a deferred tree', () => {
     expect([...typedByName].sort()).toEqual([...TYPED_INSIDE_A_DEFERRED_TREE].sort());
-    const deferred = new Set<string>(AWAITING_THE_1_4_SWEEP);
+    const deferred = new Set<string>(DEFERRED_TEST_TREES);
     for (const file of TYPED_INSIDE_A_DEFERRED_TREE) {
       const tree = file.split(path.sep)[0]!;
       expect({ file, insideADeferredTree: deferred.has(tree) }).toEqual({ file, insideADeferredTree: true });
@@ -91,7 +77,7 @@ describe('tests/ typecheck coverage', () => {
   });
 
   test('every name still resolves on disk, so a deletion cannot leave a stale one behind', () => {
-    const named = [...AWAITING_THE_1_4_SWEEP, ...TYPED_INSIDE_A_DEFERRED_TREE, ...TYPED_BY_THE_UI_CONFIGS];
+    const named = [...DEFERRED_TEST_TREES, ...TYPED_INSIDE_A_DEFERRED_TREE, ...TYPED_BY_THE_UI_CONFIGS];
     expect(named.filter((name) => !fs.existsSync(path.join(TESTS, name)))).toEqual([]);
   });
 

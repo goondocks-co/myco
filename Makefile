@@ -1,347 +1,86 @@
-.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-refresh dev-link dev-deploy dev-wrapper dev-link-worktree dev-unlink dev-unlink-worktree dev-build-windows dev-link-windows dev-claim-prod dev-claim-dev worktree-sweep daemon-dev
+.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-refresh dev-link dev-deploy dev-wrapper dev-link-worktree dev-unlink dev-unlink-worktree worktree-sweep dev-build-windows
 
-# `make build` runs the fast unit-test profile + build. Integration / smoke
-# tests are deliberately excluded from the inner dev loop — they pair real
-# subprocesses, lsof scans, port binding, and disk I/O, which costs ~100s
-# per run AND flakes under parallel load. The full sweep still runs in CI
-# on every PR; locally, use `make build-all` only when you specifically
-# need pre-release confidence.
-# The Makefile exists for dogfooding — production installs come from the
-# install script — so a build that leaves the running daemon on old bits is
-# not a useful outcome. `build` therefore deploys and restarts. Use
-# `build-only` to compile without touching the running daemon.
-build:
-	$(MAKE) check-fast
-	npm run build
-	@$(MAKE) --no-print-directory dev-refresh
+HOST_TARGET := $(shell node -e "process.stdout.write(process.platform + '-' + (process.arch === 'arm64' ? 'arm64' : 'x64'))")
 
-# Legacy / explicit full sweep: lint + every test bucket including
-# integration + smoke. Use before tagging a release; CI always runs this.
-build-all:
-	$(MAKE) check-all
-	npm run build
-	@$(MAKE) --no-print-directory dev-refresh
-
-# Alias retained for backward compatibility with existing automation.
+build: check-fast build-only
+build-all: check-all build-only
 build-fast: build
-
-# Builds the repo artifacts only (including packages/myco-<target>/bin/myco). It
-# does NOT update the running dev daemon — that runs a standalone COPY in
-# ~/.myco-dev/bin. To rebuild AND refresh the dogfood daemon, use `make dev-deploy`.
 build-only:
 	npm run build
-
-# Force-rebuild native modules (better-sqlite3, esbuild, etc.) before running
-# the full quality gate. Use this after switching branches when `make build`
-# segfaults — the compiled `.node` binaries in `node_modules` go stale across
-# branches with different Node versions or native-dep versions, and the
-# concurrent `-j2 check` step races them into a crash.
 build-rebuild: rebuild build
-
 rebuild:
 	npm rebuild
-
 check-fast: lint test-fast
-
-# Full quality gate — every test bucket. Slow; intended for CI / pre-release.
 check-all: lint test-all
-
-# Backward-compatible alias — `check` historically meant the full sweep.
 check: check-all
-
 lint:
 	npm run lint
-
-# `test` is now the fast unit profile to match the renamed `build` semantics.
-test:
-	npm run test:fast
-
+test: test-fast
 test-fast:
 	npm run test:fast
-
 test-all:
 	npm test
-
 test-integration:
 	npm run test:integration
-
 watch:
 	npm run build:watch
-
 clean:
 	rm -rf packages/myco/dist packages/myco-shared/dist
-
 install:
 	npm install
 
-daemon-dev:
-	@echo "Starting watched daemon (MYCO_HOME=$(HOME)/.myco-dev)"
-	MYCO_HOME=$(HOME)/.myco-dev bun --watch packages/myco/src/entries/cli.ts daemon
-
-HOST_TARGET := $(shell node -e "\
-process.stdout.write(process.platform === 'darwin' ? 'darwin-' + (process.arch === 'arm64' ? 'arm64' : 'x64') : \
-process.platform === 'linux' ? 'linux-' + (process.arch === 'arm64' ? 'arm64' : 'x64') : \
-'windows-x64')")
-
-# Copy the freshly-built host binary into the standalone dev location and
-# refresh the wrapper. This is the part that must run after EVERY build; the
-# one-time setup (runtime pins, subsystem claim, symbiont refresh) lives in
-# `dev-link` and is deliberately not repeated here.
-#
-# The binary is copied beside the old one, run, then renamed over it: a running
-# dev daemon keeps the old inode (cp over it would rewrite live text pages), a
-# hook never finds the path missing or half-written, and a build the kernel
-# will not run (or that hangs past 30 s) never replaces one it will.
-dev-install:
-	@mkdir -p $(HOME)/.myco-dev/bin $(HOME)/.local/bin
-	@cp $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.myco-dev/bin/myco.new
-	@chmod 755 $(HOME)/.myco-dev/bin/myco.new
-	@perl -e 'alarm 30; exec @ARGV or die' $(HOME)/.myco-dev/bin/myco.new --version >/dev/null || { rm -f $(HOME)/.myco-dev/bin/myco.new; echo "the new build does not run here within 30s; ~/.myco-dev/bin/myco is unchanged" >&2; exit 1; }
-	@mv -f $(HOME)/.myco-dev/bin/myco.new $(HOME)/.myco-dev/bin/myco
-	@rm -f $(HOME)/.local/bin/myco-dev
-	@$(MAKE) -s dev-wrapper OUT="$(HOME)/.local/bin/myco-dev" WRAPPED="$(HOME)/.myco-dev/bin/myco"
-
-# The dev wrapper a runtime pin names: run WRAPPED under the dev home, ~/.myco-dev, unless MYCO_HOME is set. An
-# explicitly set MYCO_HOME wins, as it does at every other layer (src/paths/home.ts, myco-run.cjs): a test or a
-# measurement that isolates its home in a pinned repository stays in that home. WRAPPED is the binary's absolute
-# path. tests/meta/dev-wrapper.test.ts runs it.
-dev-wrapper:
-	@printf '#!/bin/sh\nexport MYCO_HOME="$${MYCO_HOME:-$$HOME/.myco-dev}"\nexec "%s" "$$@"\n' "$(WRAPPED)" > "$(OUT)"
-	@chmod +x "$(OUT)"
-
-# Deploy + restart, but only when this machine is already set up for dogfood.
-# A machine that has never run `dev-link` has nothing to deploy into, so this
-# is a silent no-op there rather than an error.
-dev-refresh:
-	@# A worktree build must not replace the dogfood binary. The dogfood daemon
-	@# is pinned to the root checkout, and a worktree's binary disappears when
-	@# the worktree is removed — leaving the daemon pointed at nothing. Worktree
-	@# dogfooding has its own opt-in path (`dev-link-worktree`).
-	@if [ "$$(git rev-parse --git-dir 2>/dev/null)" != "$$(git rev-parse --git-common-dir 2>/dev/null)" ]; then \
-		echo "· worktree build — not replacing the dogfood binary (use 'make dev-link-worktree' to dogfood from here)"; \
-	elif [ -x "$(HOME)/.myco-dev/bin/myco" ]; then \
-		$(MAKE) --no-print-directory dev-install; \
-		if "$(HOME)/.local/bin/myco-dev" restart >/dev/null 2>&1; then \
-			echo "✓ deployed to $(HOME)/.myco-dev/bin/myco → dev daemon restarted"; \
-		else \
-			echo "⚠ deployed to $(HOME)/.myco-dev/bin/myco, but 'myco-dev restart' did not confirm healthy."; \
-			echo "  verify with: myco-dev service status"; \
-		fi; \
-	else \
-		echo "· no dogfood install on this machine — skipping deploy (run 'make dev-link' to set one up)"; \
-	fi
-
+# Build a member/server binary without registering or restarting a service.
 dev-build:
-	@# myco is now a Bun-compiled binary. Steps in order:
-	@#   1. build libsqlite3 for the host target (cached after first run)
-	@#   2. build UI bundle (Vite) — must precede codegen so it can be embedded
-	@#   3. codegen (hook-config + agent defs + static + UI assets, templates)
-	@#   4. bun build --compile the host-target entry (embeds the codegen output)
 	bash packages/myco/scripts/build-libsqlite3-target.sh $(HOST_TARGET)
 	npm run build:ui -w @goondocks/myco
 	cd packages/myco && npm run codegen
 	cd packages/myco && TARGET=$(HOST_TARGET) node scripts/build-single-target.mjs
-	@# After the binary lands in packages/myco-$(HOST_TARGET)/bin/, re-run
-	@# select-binary.mjs so vendor/resolved.json is populated for callers
-	@# that go through bin/myco.cjs directly (postinstall already ran during
-	@# `npm ci` but found no binary then; the source-checkout escape exited
-	@# 0 without writing the resolution).
 	cd packages/myco && node scripts/select-binary.mjs
 
-dev-link: dev-build
-	@mkdir -p $(HOME)/.local/bin
-	@mkdir -p $(HOME)/.myco
-	@# Relocate the freshly-built binary to a STANDALONE location, divorced from
-	@# the repo's node_modules — exactly how production runs (~/.myco/bin/myco).
-	@# Running the dev daemon in-repo (node_modules in its ancestry) made dogfood
-	@# diverge from prod: anything the standalone binary can't resolve without a
-	@# node_modules tree (e.g. the Claude Code CLI the harness shells out to)
-	@# worked in dev and broke only in prod. A standalone dev binary closes that
-	@# blindspot so dogfood exercises the production topology.
-	@# The binary copy + wrapper live in `dev-install` so every build can reuse
-	@# them without repeating the one-time setup below.
-	@$(MAKE) --no-print-directory dev-install
-	@ln -sf $(PWD)/packages/myco/bin/myco-run $(HOME)/.local/bin/myco-run
-	@chmod +x $(HOME)/.local/bin/myco-run
-	@# Write the absolute path of the dev binary to the project-scope
-	@# runtime.command so every launcher (hook guard, MCP, CLI shim,
-	@# daemon respawn) inside this repo dispatches to the same dev binary.
-	@# GUI-launched agents run under launchd's minimal PATH which excludes
-	@# ~/.local/bin; baking the absolute path at link time makes hook
-	@# capture robust under both GUI and shell launches.
-	@#
-	@# Project-scope (not machine-scope) so dev mode applies only when the
-	@# user is working inside this repo. Outside it, `myco` resolves to the
-	@# globally-installed binary as users expect.
+dev-wrapper:
+	@printf '#!/bin/sh\nexport MYCO_HOME="$${MYCO_HOME:-$$HOME/.myco-dev}"\nexec "%s" "$$@"\n' "$(WRAPPED)" > "$(OUT)"
+	@chmod +x "$(OUT)"
+
+dev-install:
+	@mkdir -p $(HOME)/.myco-dev/bin $(HOME)/.local/bin
+	@cp $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.myco-dev/bin/myco.new
+	@chmod 755 $(HOME)/.myco-dev/bin/myco.new
+	@perl -e 'alarm 30; exec @ARGV or die' $(HOME)/.myco-dev/bin/myco.new --version >/dev/null
+	@mv -f $(HOME)/.myco-dev/bin/myco.new $(HOME)/.myco-dev/bin/myco
+	@$(MAKE) -s dev-wrapper OUT="$(HOME)/.local/bin/myco-dev" WRAPPED="$(HOME)/.myco-dev/bin/myco"
+
+dev-refresh:
+	@if [ "$$(git rev-parse --git-dir)" = "$$(git rev-parse --git-common-dir)" ] && [ -x "$(HOME)/.myco-dev/bin/myco" ]; then $(MAKE) --no-print-directory dev-install; fi
+
+dev-link: dev-build dev-install
 	@mkdir -p $(PWD)/.myco
-	@# The pin names the binary itself, never the myco-dev shim: the home comes from the runtime.home pin below,
-	@# and a pin whose realpath is the hook's own binary runs in-process instead of starting a second process.
-	@printf '%s/.myco-dev/bin/myco\n' "$(HOME)" > $(PWD)/.myco/runtime.command
-	@# Set up the dev home directory and pin runtime.home so the daemon reads
-	@# from ~/.myco-dev instead of ~/.myco, keeping dev state isolated.
-	@mkdir -p $(HOME)/.myco-dev
-	@# Create the dev config only if absent so a re-link never clobbers a
-	@# contributor's edits (e.g. a pinned `daemon.port`).
-	@test -f $(HOME)/.myco-dev/config.yaml || printf 'daemon:\n  update_channel: manual\n' > $(HOME)/.myco-dev/config.yaml
+	@printf '%s/.local/bin/myco-dev\n' "$(HOME)" > $(PWD)/.myco/runtime.command
 	@printf '%s/.myco-dev\n' "$(HOME)" > $(PWD)/.myco/runtime.home
-	@chmod 0644 $(PWD)/.myco/runtime.home
-	@echo "✓ $(HOME)/.myco-dev/config.yaml written (update_channel: manual)"
-	@echo "✓ $(PWD)/.myco/runtime.home set to $(HOME)/.myco-dev"
-	@# Operator-driven coexistence: with prod (~/.myco) + dev (~/.myco-dev) daemons
-	@# on one machine, exactly one owns machine-global agent config; the other
-	@# defers. `make dev-link` is the dogfood setup, so claim it for DEV — the
-	@# contributor's most-recent build manages global skills/hooks/MCP while you
-	@# dogfood. Hand ownership back to the released daemon with `make dev-claim-prod`.
-	@# The claim model is deliberately operator-driven (no daemon self-claims); the
-	@# Makefile is the contributor automation that performs the operator step.
-	@# --force takes ownership even if prod currently holds it. MYCO_RUN_REDIRECTED=1
-	@# + MYCO_TRAMPOLINED=1 bypass the repo's runtime.command/runtime.home redirect so
-	@# the claim lands under the dev home regardless of cwd.
-	@if command -v myco >/dev/null 2>&1; then \
-		MYCO_RUN_REDIRECTED=1 MYCO_TRAMPOLINED=1 MYCO_HOME="$(HOME)/.myco-dev" myco subsystem claim symbiont-config --force >/dev/null 2>&1 \
-			&& "$(HOME)/.local/bin/myco-dev" member provision --refresh \
-			&& echo "✓ dev (~/.myco-dev) owns symbiont-config — the dev daemon manages global agent config while you dogfood (use 'make dev-claim-prod' to hand back)" \
-			|| echo "⚠ dev setup did not finish — run: MYCO_HOME=~/.myco-dev myco subsystem claim symbiont-config --force, then myco-dev member provision --refresh"; \
-	else \
-		echo "⚠ myco not on PATH — run 'MYCO_HOME=~/.myco-dev myco subsystem claim symbiont-config --force'"; \
-	fi
-	@# Sweep any machine-scope pin: dev mode uses a PROJECT-scope pin (above), so a
-	@# leftover ~/.myco/runtime.command would shadow it from outside the repo.
-	@if [ -f $(HOME)/.myco/runtime.command ]; then \
-		rm -f $(HOME)/.myco/runtime.command; \
-		echo "✓ removed legacy machine-scope ~/.myco/runtime.command (migrated to project pin)"; \
-	fi
-	@echo "✓ myco-dev → $(HOME)/.myco-dev/bin/myco (standalone, mirrors prod ~/.myco/bin/myco)"
-	@echo "✓ myco-run symlinked to $(PWD)/packages/myco/bin/myco-run"
-	@echo "✓ $(PWD)/.myco/runtime.command set to $(HOME)/.myco-dev/bin/myco"
 
-# Build, deploy, AND restart the dogfood daemon in one step. `dev-link` only
-# COPIES the fresh binary into ~/.myco-dev/bin; a daemon already running keeps
-# the OLD binary until it restarts. Run this (not `build-only`) after changing
-# daemon code so the running dev daemon actually reflects it.
-dev-deploy: dev-link
-	@# Restart only AFTER the deploy. The success line is gated on the restart
-	@# actually confirming healthy — never claim "restarted" when it didn't.
-	@if "$(HOME)/.local/bin/myco-dev" restart; then \
-		echo "✓ rebuilt → deployed to $(HOME)/.myco-dev/bin/myco → dev daemon restarted"; \
-	else \
-		echo "⚠ rebuilt + deployed to $(HOME)/.myco-dev/bin/myco, but 'myco-dev restart' did not confirm healthy."; \
-		echo "  launchd may still be respawning the daemon — verify with: myco-dev service status (or the dashboard)."; \
-		echo "  If it stays down, re-run: myco-dev restart"; \
-	fi
-
-# Windows dogfood — the same shape as `dev-build` / `dev-link`, for a remote
-# Windows host (set WIN_HOST). The binary is cross-built here (the Windows box
-# only runs it). Wiring is NOT Windows-bespoke: pin `~/.myco/runtime.command`
-# to the binary (the launcher-resolution abstraction macOS dev-link also uses)
-# and let the daemon's first-start `runGlobalBootstrap` install launchers +
-# wire symbionts — identical on every platform. BASELINE=1 builds Bun's
-# no-AVX2 variant so it runs under Windows-on-ARM x64 emulation / older CPUs.
-WIN_HOST ?= chris@10.211.55.3
-WIN_SSH := -o ControlMaster=auto -o ControlPath=/tmp/myco-win-ssh -o ControlPersist=3m -o StrictHostKeyChecking=accept-new
-
-dev-build-windows:
-	@# The Deployment dashboard first: codegen embeds its build into the binary.
-	@# Parity with `dev-build`.
-	npm run build:ui -w @goondocks/myco
-	cd packages/myco && npm run codegen
-	@# npm skips foreign-platform optionalDeps; pull the windows-x64 native deps explicitly.
-	npm i --no-save --force sqlite-vec-windows-x64 @vscode/ripgrep-win32-x64
-	bash packages/myco/scripts/build-libsqlite3-target.sh windows-x64
-	cd packages/myco && BASELINE=1 TARGET=windows-x64 node scripts/build-single-target.mjs
-
-dev-link-windows: dev-build-windows
-	scp $(WIN_SSH) packages/myco-windows-x64/bin/myco.exe $(WIN_HOST):myco.exe
-	scp $(WIN_SSH) scripts/win-dev-link.ps1 $(WIN_HOST):win-dev-link.ps1
-	ssh $(WIN_SSH) $(WIN_HOST) 'powershell -NoProfile -ExecutionPolicy Bypass -File win-dev-link.ps1'
-	@echo "✓ wired on $(WIN_HOST) — daemon running (see the printed port)."
+dev-deploy: dev-build dev-install
 
 dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-dev
-	@rm -f $(HOME)/.local/bin/myco-run
-	@rm -f $(PWD)/.myco/runtime.command
-	@rm -f $(PWD)/.myco/runtime.home
-	@# Remove the relocated standalone dev binary (a build-artifact copy; the dev
-	@# home's grove data under ~/.myco-dev is preserved).
-	@rm -f $(HOME)/.myco-dev/bin/myco
-	@# Also sweep any machine-scope pin an older dev-link may have written, so an
-	@# uninstall fully clears dev routing.
-	@rm -f $(HOME)/.myco/runtime.command
-	@echo "✓ myco-dev wrapper + ~/.myco-dev/bin/myco removed"
-	@echo "✓ myco-run symlink removed"
-	@echo "✓ $(PWD)/.myco/runtime.command removed — launchers fall back to default 'myco'"
-	@echo "✓ $(PWD)/.myco/runtime.home removed"
+	@rm -f $(PWD)/.myco/runtime.command $(PWD)/.myco/runtime.home
 
 dev-link-worktree: dev-build
 	@mkdir -p $(PWD)/.myco
-	@mkdir -p $(HOME)/.myco-dev
-	@# Seed the dev home config only if absent so a re-link never clobbers a
-	@# contributor's pinned settings (e.g. daemon.port).
-	@test -f $(HOME)/.myco-dev/config.yaml || printf 'daemon:\n  update_channel: manual\n' > $(HOME)/.myco-dev/config.yaml
-	@# Pin THIS worktree to its own freshly-built binary THROUGH A HOME-SETTING
-	@# WRAPPER — not the raw binary. Pinning the raw binary (the old behavior) ran
-	@# it under the ambient MYCO_HOME (prod ~/.myco): a global-install command from
-	@# the worktree (`myco doctor --fix` / `myco update`) then looked like the prod
-	@# claim owner (daemonIdentity == resolved MYCO_HOME) and wrote machine-global
-	@# agent config from the transient worktree packageRoot — repointing the host's
-	@# real hooks/MCP/skills at a binary that vanishes on worktree deletion. The
-	@# wrapper gives the worktree a distinct MYCO_HOME (~/.myco-dev), mirroring
-	@# full dev-link; claims are machine-global (~/.myco/claims), so the worktree binary
-	@# DEFERS global writes via the operator-asserted prod symbiont-config claim
-	@# (set below) — home-separation + claims, the same mechanism the standalone
-	@# dev daemon uses. The MYCO_TRAMPOLINED loop guard in the launch preamble lets
-	@# the wrapper exec the binary without recursing. The shared
-	@# ~/.local/bin/myco-dev symlink is untouched; the wrapper is worktree-local
-	@# and gitignored. Routing + shared-vault caveat: see the `dogfood-worktree` skill.
-	@rm -f $(PWD)/.myco/runtime-exec
 	@$(MAKE) -s dev-wrapper OUT="$(PWD)/.myco/runtime-exec" WRAPPED="$(PWD)/packages/myco-$(HOST_TARGET)/bin/myco"
 	@printf '%s/.myco/runtime-exec\n' "$(PWD)" > $(PWD)/.myco/runtime.command
 	@printf '%s/.myco-dev\n' "$(HOME)" > $(PWD)/.myco/runtime.home
 	@chmod 0644 $(PWD)/.myco/runtime.home
-	@# Claim symbiont-config for DEV so this worktree's dev daemon
-	@# (MYCO_HOME=~/.myco-dev) owns + manages machine-global agent config while you
-	@# dogfood (same as full dev-link). Hand back with `make dev-claim-prod`.
-	@# --force takes ownership even if prod holds it; MYCO_RUN_REDIRECTED=1 +
-	@# MYCO_TRAMPOLINED=1 bypass the repo's runtime.command/runtime.home redirect.
-	@if command -v myco >/dev/null 2>&1; then \
-		MYCO_RUN_REDIRECTED=1 MYCO_TRAMPOLINED=1 MYCO_HOME="$(HOME)/.myco-dev" myco subsystem claim symbiont-config --force >/dev/null 2>&1 \
-			&& "$(HOME)/.local/bin/myco-dev" member provision --refresh \
-			&& echo "✓ dev (~/.myco-dev) owns symbiont-config — worktree dev daemon manages global agent config while dogfooding (use 'make dev-claim-prod' to hand back)" \
-			|| echo "⚠ dev setup did not finish — run: MYCO_HOME=~/.myco-dev myco subsystem claim symbiont-config --force, then myco-dev member provision --refresh"; \
-	else \
-		echo "⚠ myco not on PATH — run 'MYCO_HOME=~/.myco-dev myco subsystem claim symbiont-config --force'"; \
-	fi
-	@echo "✓ $(PWD)/.myco/runtime.command pinned to worktree wrapper (.myco/runtime-exec → packages/myco-$(HOST_TARGET)/bin/myco)"
-	@echo "✓ worktree runs under MYCO_HOME=~/.myco-dev; claims are read from ~/.myco/claims (shared ~/.local/bin/myco-dev symlink unchanged)"
 
 dev-unlink-worktree:
-	@rm -f $(PWD)/.myco/runtime.command
-	@rm -f $(PWD)/.myco/runtime.home
-	@rm -f $(PWD)/.myco/runtime-exec
-	@echo "✓ $(PWD)/.myco/runtime.command + runtime.home + wrapper removed — worktree falls back to the resolution chain"
+	@rm -f $(PWD)/.myco/runtime.command $(PWD)/.myco/runtime.home $(PWD)/.myco/runtime-exec
 
-# Reassign the machine-global symbiont-config claim between the coexisting prod
-# (~/.myco) and dev (~/.myco-dev) daemons. Exactly one owns global agent config
-# (skills/hooks/MCP); the other defers. `make dev-link` claims it for DEV by
-# default (dogfooding the newest build); these move it explicitly without a
-# re-link. MYCO_RUN_REDIRECTED=1 + MYCO_TRAMPOLINED=1 bypass the repo's
-# runtime.command/runtime.home redirect so the claim lands under the home named.
-dev-claim-prod:
-	@MYCO_RUN_REDIRECTED=1 MYCO_TRAMPOLINED=1 MYCO_HOME="$(HOME)/.myco" myco subsystem claim symbiont-config --force \
-		&& echo "✓ prod (~/.myco) owns symbiont-config — the released daemon manages global agent config; the dev daemon defers" \
-		|| echo "⚠ claim failed — run: MYCO_HOME=~/.myco myco subsystem claim symbiont-config --force"
-
-dev-claim-dev:
-	@MYCO_RUN_REDIRECTED=1 MYCO_TRAMPOLINED=1 MYCO_HOME="$(HOME)/.myco-dev" myco subsystem claim symbiont-config --force \
-		&& "$(HOME)/.local/bin/myco-dev" member provision --refresh \
-			&& echo "✓ dev (~/.myco-dev) owns symbiont-config — the dev daemon manages global agent config; prod defers" \
-		|| echo "⚠ claim failed — run: MYCO_HOME=~/.myco-dev myco subsystem claim symbiont-config --force"
-
-# Retire worktrees and branches whose pull request already merged. Cleanup done
-# as a lane's last step is lost whenever the lane dies mid-flight; this sweep
-# does not depend on that lane still being alive, and is safe to run at any
-# time. It holds anything it cannot prove is finished — uncommitted work, an
-# open or absent pull request — and reads state as it runs, so a worktree
-# another session creates mid-sweep is never retired out from under it.
 worktree-sweep:
 	@node scripts/worktree-sweep.mjs $(ARGS)
+
+
+# Cross-compile the same member/server product for a Windows development machine.
+dev-build-windows:
+	npm run build:ui -w @goondocks/myco
+	cd packages/myco && npm run codegen
+	npm i --no-save --force sqlite-vec-windows-x64 @vscode/ripgrep-win32-x64
+	bash packages/myco/scripts/build-libsqlite3-target.sh windows-x64
+	cd packages/myco && BASELINE=1 TARGET=windows-x64 node scripts/build-single-target.mjs

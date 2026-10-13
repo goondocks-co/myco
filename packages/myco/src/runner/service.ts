@@ -196,12 +196,6 @@ export function workerServiceRefusal(serverUrl: string, pre: WorkerServicePrecon
   return null;
 }
 
-/** Where a worker service writes its output. */
-export function workerServiceLogs(target: WorkerServiceTarget): { outLog: string; errLog: string } {
-  const { outLog, errLog } = servicePaths(workerServiceSpec(target, []), target.platform ?? process.platform);
-  return { outLog, errLog };
-}
-
 /** Install the worker unit. A worker already running under the same unit, give or take its `PATH`, keeps running. */
 export function installWorkerService(target: WorkerServiceTarget, harnessDirs: readonly string[], options: ServiceOptions = {}): ServiceOutcome {
   return installService(workerServiceSpec(target, harnessDirs), { platform: target.platform, ...options, keepRunning: true });

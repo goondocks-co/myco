@@ -86,6 +86,3 @@ export function opOf(tool: ServedTool, input: ToolInput): string {
 export function entryFor(tool: ServedTool, op: string): RegistryEntry | undefined {
   return TOOL_REGISTRY[tool].ops[op];
 }
-
-/** Every tool the registry keys, in catalogue order. */
-export const REGISTERED_TOOLS: readonly ServedTool[] = SERVED_TOOLS.filter((t) => t in TOOL_REGISTRY);

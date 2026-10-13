@@ -1,4 +1,4 @@
-import type { TranscriptParser } from './types.js';
+import type { TranscriptParser } from '../adapter.js';
 import type { TranscriptTurn } from '../adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../../constants.js';
 

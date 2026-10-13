@@ -58,11 +58,12 @@ afterAll(() => {
 
 type TargetField = 'hooks' | 'mcp' | 'skills' | 'settings';
 const TARGET_FIELDS: readonly TargetField[] = ['hooks', 'mcp', 'skills', 'settings'];
-const SCOPES: readonly InstallScope[] = ['project', 'global'];
+const SCOPES: readonly InstallScope[] = ['member-global'];
 
 interface ResolvedTargets {
   hooks: string | null;
   mcp: string | null;
+  mcpTargets: string[];
   skills: string | null;
   settings: string | null;
 }
@@ -103,9 +104,11 @@ function resolveAllTargets(manifest: SymbiontManifest, scope: InstallScope): Res
   // is the standard testing pattern for invariants on private methods.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const resolver = (installer as any).resolveAbsoluteTarget.bind(installer) as (f: TargetField) => string | null;
+  const installerTargets = (Reflect.get(installer, 'resolveAbsoluteMcpTargets').call(installer) as Array<{ path: string }>).map(target => target.path);
   return {
     hooks: resolver('hooks'),
-    mcp: resolver('mcp'),
+    mcp: installerTargets[0] ?? null,
+    mcpTargets: installerTargets,
     skills: resolver('skills'),
     settings: resolver('settings'),
   };
@@ -150,7 +153,7 @@ describe('symbiont installer invariants', () => {
           if (!targets.hooks) return;
           for (const field of TARGET_FIELDS) {
             if (field === 'hooks') continue;
-            if (targets[field] === targets.hooks) {
+            if ((field === 'mcp' ? targets.mcpTargets : [targets[field]]).includes(targets.hooks)) {
               throw new Error(
                 `${manifest.name} (${scope}): plugin-file hooks target ${targets.hooks} ` +
                 `collides with ${field} target. A JSON-merge writer would clobber the plugin source.`,
@@ -175,7 +178,7 @@ describe('symbiont installer invariants', () => {
         const reg = manifest.registration;
         if (!reg) return;
         if (reg.hooksFormat !== 'plugin-file') return;
-        const targets = resolveAllTargets(manifest, 'global');
+        const targets = resolveAllTargets(manifest, 'member-global');
         expect(targets.settings).toBeNull();
       });
 
@@ -183,7 +186,7 @@ describe('symbiont installer invariants', () => {
         const reg = manifest.registration;
         if (!reg) return;
         if ((reg.hooksFormat ?? 'json') !== 'json') return;
-        const targets = resolveAllTargets(manifest, 'global');
+        const targets = resolveAllTargets(manifest, 'member-global');
         if (!targets.hooks) return; // Manifest may decline a global hooks surface.
         // Global hooks for json-format symbionts must NOT point at a TOML
         // file — the JSON writer would corrupt it (this is the Codex bug
@@ -202,7 +205,7 @@ describe('symbiont installer invariants', () => {
         const reg = manifest.registration;
         if (!reg) return;
         if ((reg.settingsFormat ?? 'json') !== 'toml') return;
-        const targets = resolveAllTargets(manifest, 'global');
+        const targets = resolveAllTargets(manifest, 'member-global');
         if (!targets.settings) return; // No global settings surface declared.
         // TOML settings writer must not land on a `.json` file.
         expect(targets.settings.endsWith('.json')).toBe(false);

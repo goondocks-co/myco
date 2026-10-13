@@ -4,32 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { sleep } from '@myco/utils/sleep.js';
-import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
-import { renderSystemdUnit } from './systemd-unit.js';
 import { spawnCombinedOutput, assertRunSucceeded } from './run-command.js';
 import { SERVICE_UNIT_DIR_ENV } from '@myco/paths/service-units.js';
-import { ensureServiceLogDirs } from './log-dirs.js';
-import type {
-  InstallOptions,
-  InstallResult,
-  InstalledServiceCommand,
-  ServiceManager,
-  ServiceSpec,
-  ServiceStatus,
-} from './types.js';
+
 
 export interface SystemctlRunner {
   run(args: string[]): Promise<{ stdout: string; exitCode: number }>;
 }
 
-/**
- * Real systemctl shell-out. Gated on `MYCO_LAUNCH_AGENTS_DIR` (set by every
- * sandboxed install / test harness): same structural concern as launchd —
- * a sandboxed install must never touch the user's real `systemd --user`
- * registry, or `daemon-reload` + `enable` would leave persistent units the
- * test cleanup can't reach. Tests that need to observe systemctl argv inject
- * a `SystemctlRunner` stub via `SystemdManagerOptions.runner`.
- */
 export class RealSystemctlRunner implements SystemctlRunner {
   async run(args: string[]): Promise<{ stdout: string; exitCode: number }> {
     if (process.env[SERVICE_UNIT_DIR_ENV]?.trim()) {
@@ -44,18 +26,14 @@ export class RealSystemctlRunner implements SystemctlRunner {
 
 export interface SystemdManagerOptions {
   runner?: SystemctlRunner;
-  /** `~/.config/systemd/user` by default. */
-  unitDir?: string;
-  /** Wait between systemd teardown observations. */
-  sleep?: (delayMs: number) => Promise<void>;
+    unitDir?: string;
+    sleep?: (delayMs: number) => Promise<void>;
 }
 
 const SYSTEMD_TEARDOWN_TIMEOUT_MS = 10_000;
 const SYSTEMD_TEARDOWN_POLL_INTERVAL_MS = 100;
 
-export class SystemdUserServiceManager implements ServiceManager {
-  readonly supported = true;
-  readonly platformName = 'systemd --user';
+export class SystemdUserServiceManager {
   private readonly runner: SystemctlRunner;
   readonly unitDir: string;
   private readonly sleep: (delayMs: number) => Promise<void>;
@@ -68,57 +46,6 @@ export class SystemdUserServiceManager implements ServiceManager {
 
   private unitPath(label: string): string {
     return path.join(this.unitDir, `${label}.service`);
-  }
-
-  async isInstalled(label: string): Promise<boolean> {
-    return fs.existsSync(this.unitPath(label));
-  }
-
-  async inspect(label: string): Promise<InstalledServiceCommand | null> {
-    const unitPath = this.unitPath(label);
-    const metadata = await this.runner.run([
-      '--user', 'show', `${label}.service`,
-      '--property=FragmentPath',
-      '--property=DropInPaths',
-    ]);
-    if (metadata.exitCode !== 0) return null;
-    const fragmentPath = parseSingleSystemdProperty(metadata.stdout, 'FragmentPath');
-    const dropInPaths = parseSingleSystemdProperty(metadata.stdout, 'DropInPaths');
-    if (fragmentPath !== unitPath || dropInPaths !== '') return null;
-
-    let unit: string;
-    try {
-      unit = fs.readFileSync(unitPath, 'utf-8');
-    } catch {
-      return null;
-    }
-    return parseSystemdCommand(unit);
-  }
-
-  async install(spec: ServiceSpec, _opts: InstallOptions = {}): Promise<InstallResult> {
-    const unitPath = this.unitPath(spec.label);
-    const rendered = renderSystemdUnit(spec);
-    // Before the unchanged-unit early return: an install over an existing unit
-    // whose log directory has since been removed must still repair it, or the
-    // unit starts and immediately dies on its output redirect.
-    ensureServiceLogDirs(spec);
-    let existing: string | null = null;
-    try { existing = fs.readFileSync(unitPath, 'utf-8'); } catch { /* ENOENT */ }
-    if (existing === rendered) {
-      return { changed: false, supervisorReloaded: false };
-    }
-
-    fs.mkdirSync(this.unitDir, { recursive: true });
-    atomicWriteFileSync(unitPath, rendered);
-
-    // `daemon-reload` only re-reads unit files; it doesn't restart
-    // running services. Always safe to call regardless of `opts.force`.
-    assertRunSucceeded(await this.runner.run(['--user', 'daemon-reload']), 'systemctl --user daemon-reload');
-    assertRunSucceeded(
-      await this.runner.run(['--user', 'enable', `${spec.label}.service`]),
-      `systemctl --user enable ${spec.label}.service`,
-    );
-    return { changed: true, supervisorReloaded: true };
   }
 
   async uninstall(label: string): Promise<void> {
@@ -143,58 +70,6 @@ export class SystemdUserServiceManager implements ServiceManager {
       await this.runner.run(['--user', 'daemon-reload']),
       'systemctl --user daemon-reload',
     );
-  }
-
-  async start(label: string): Promise<void> {
-    assertRunSucceeded(
-      await this.runner.run(['--user', 'start', `${label}.service`]),
-      `systemctl --user start ${label}.service`,
-    );
-  }
-
-  async stop(label: string): Promise<void> {
-    await this.runner.run(['--user', 'stop', `${label}.service`]);
-  }
-
-  async restart(label: string): Promise<void> {
-    const unit = `${label}.service`;
-    assertRunSucceeded(await this.runner.run(['--user', 'restart', unit]), `systemctl --user restart ${unit}`);
-  }
-
-  restartShellCommand(label: string): string {
-    // Literal command the detached update / restart script invokes after the
-    // daemon exits. Mirrors restart() above so systemd's Restart=on-failure
-    // cannot race a manually-spawned daemon child for the canonical port.
-    return `systemctl --user restart ${label}.service`;
-  }
-
-  async status(label: string): Promise<ServiceStatus> {
-    const unitPath = this.unitPath(label);
-    const installed = fs.existsSync(unitPath);
-    const { stdout, exitCode } = await this.runner.run([
-      '--user', 'show', `${label}.service`,
-      '--property=MainPID',
-      '--property=ExecMainStatus',
-    ]);
-    if (exitCode !== 0) {
-      return {
-        installed,
-        running: false,
-        pid: null,
-        lastExitCode: null,
-        unitPath: installed ? unitPath : null,
-      };
-    }
-    const pidMatch = stdout.match(/MainPID=(\d+)/);
-    const exitMatch = stdout.match(/ExecMainStatus=(-?\d+)/);
-    const pid = pidMatch ? parseInt(pidMatch[1], 10) : 0;
-    return {
-      installed,
-      running: pid > 0,
-      pid: pid > 0 ? pid : null,
-      lastExitCode: exitMatch ? parseInt(exitMatch[1], 10) : null,
-      unitPath: installed ? unitPath : null,
-    };
   }
 
   private async queryTeardownState(

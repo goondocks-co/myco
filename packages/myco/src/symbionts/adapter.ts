@@ -167,3 +167,8 @@ export interface ParseJsonlOptions {
 export function parseJsonlTurns(content: string, opts: ParseJsonlOptions): TranscriptTurn[] {
   return new StandardJsonlParser(opts).parseTurns(content);
 }
+
+/** Parses a harness transcript into normalized conversation turns. */
+export interface TranscriptParser {
+  parseTurns(content: string): TranscriptTurn[];
+}

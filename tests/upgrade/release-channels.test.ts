@@ -7,8 +7,6 @@ import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { renderReleaseSelector, renderPowerShellReleaseSelector, selectChannelRelease } from '../../packages/myco/scripts/release-policy.mjs';
 import { fetchMycoReleases, resolveMycoBinaryUpdateRefs } from '../../packages/myco/src/upgrade/release-resolver.js';
 import { resolveMycoPackageCheck } from '../../packages/myco/src/upgrade/checker.js';
-import { resolveNewestStagedVersion, checkAndStage } from '../../packages/myco/src/upgrade/auto-check.js';
-import { readProjectReleaseChannel, writeProjectReleaseChannel } from '../../packages/myco/src/daemon/update-checker.js';
 import { writeInstallMarker } from '../../packages/myco/src/install/managed-binary.js';
 import { resolveTargetTriple, type GitHubRelease } from '../../packages/myco/src/upgrade/release-assets.js';
 import type { ReleaseChannel } from '../../packages/myco/src/constants/update.js';
@@ -114,64 +112,6 @@ describe('one channel policy for install and update', () => {
       expect(await resolveMycoBinaryUpdateRefs('stable', deps, current)).toBeNull();
       const check = await resolveMycoPackageCheck(current, 'stable', current, async () => Response.json(await deps.fetchReleases()));
       expect(check).toMatchObject({ latest_version: current, update_available: false, revert_available: false });
-      expect(resolveNewestStagedVersion(root, 'darwin', current, undefined, p => !p.endsWith('.adopt-failed'),
-        () => ['1.4.8', '2.0.0-beta.1'], 'beta')).toBe('2.0.0-beta.1');
-    }
-  });
-  it('staged adoption obeys the selected channel even after switching it', () => {
-    const entries = ['2.0.0', '2.0.1-beta.10', '2.1.0-alpha.10', '9.0.0-rc.1'];
-    for (const [channel, expected] of table) {
-      expect(resolveNewestStagedVersion(root, 'darwin', '2.0.0-alpha.1', undefined, p => !p.endsWith('.adopt-failed'), () => entries, channel)).toBe(expected);
-    }
-    expect(resolveNewestStagedVersion(root, 'darwin', '2.1.0-alpha.10', undefined, p => !p.endsWith('.adopt-failed'), () => entries, 'alpha')).toBeNull();
-  });
-  it('auto-stage reports an older eligible target and performs no download', async () => {
-    let staged = false, reported = false;
-    const result = await checkAndStage('2.1.0-alpha.10', { home: root, platform: 'darwin', channel: 'alpha',
-      logger: { info: () => { reported = true; }, error: () => {} } as never }, {
-      isManualChannel: () => false,
-      resolveRefs: async () => ({ assetName: asset, assetUrl: '', sha256sumsUrl: '', targetVersion: '2.0.0' }),
-      stageBinary: async () => { staged = true; return { version: '', versionDir: '' }; },
-    });
-    expect(result).toEqual({ status: 'noop', reason: 'older-release' });
-    expect(staged).toBe(false); expect(reported).toBe(true);
-  });
-  it('uses the installed channel and records an explicit channel change', () => {
-    const previousHome = process.env.MYCO_HOME;
-    const home = path.join(root, 'channel-home');
-    process.env.MYCO_HOME = home;
-    const config = path.join(home, 'config.yaml'), marker = path.join(home, 'install.json');
-    try {
-      fs.mkdirSync(home, { recursive: true });
-      fs.writeFileSync(config, 'daemon:\n  update_channel: beta\n');
-      writeInstallMarker(home, { channel: 'alpha', source: 'curl', bin: path.join(home, 'bin/myco') });
-      expect(readProjectReleaseChannel()).toBe('alpha');
-      writeProjectReleaseChannel(undefined, 'stable');
-      expect(readProjectReleaseChannel()).toBe('stable');
-      expect(JSON.parse(fs.readFileSync(marker, 'utf8')).channel).toBe('stable');
-      expect(fs.readFileSync(config, 'utf8')).toBe('daemon:\n  update_channel: beta\n');
-      const rename = fs.renameSync;
-      const failedPublish = spyOn(fs, 'renameSync').mockImplementation((from, to) => {
-        if (String(to) === marker) throw new Error('marker publication refused');
-        return rename(from, to);
-      });
-      try { expect(() => writeProjectReleaseChannel(undefined, 'alpha')).toThrow('marker publication refused'); }
-      finally { failedPublish.mockRestore(); }
-      expect(readProjectReleaseChannel()).toBe('stable');
-      expect(fs.readFileSync(config, 'utf8')).toBe('daemon:\n  update_channel: beta\n');
-      expect(JSON.parse(fs.readFileSync(marker, 'utf8')).channel).toBe('stable');
-      const read = fs.readFileSync;
-      const unreadable = spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
-        if (String(file) === marker) throw Object.assign(new Error('marker unreadable'), { code: 'EACCES' });
-        return Reflect.apply(read, fs, [file, ...args]);
-      }) as typeof fs.readFileSync);
-      try { expect(() => readProjectReleaseChannel()).toThrow('marker unreadable'); }
-      finally { unreadable.mockRestore(); }
-      fs.writeFileSync(marker, '{broken');
-      expect(() => readProjectReleaseChannel()).toThrow();
-    } finally {
-      if (previousHome === undefined) delete process.env.MYCO_HOME;
-      else process.env.MYCO_HOME = previousHome;
     }
   });
 });

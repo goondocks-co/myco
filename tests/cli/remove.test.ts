@@ -96,7 +96,7 @@ describe('member-only remove', () => {
     expect(fs.readFileSync(path.join(home, 'member/spool/captured.jsonl'), 'utf8')).toBe('real capture fixture');
     expect(snapshot(legacy.root)).toEqual(before);
     expect(snapshot(repo)).toEqual(repoBefore);
-    expect(fs.readFileSync(path.join(user, '.claude', 'settings.json'), 'utf8')).not.toContain('--credential');
+    expect((fs.existsSync(path.join(user, '.claude', 'settings.json')) ? fs.readFileSync(path.join(user, '.claude', 'settings.json'), 'utf8') : '')).not.toContain('--credential');
     const mcp = path.join(user, '.claude.json');
     expect(fs.existsSync(mcp) ? fs.readFileSync(mcp, 'utf8') : '').not.toContain('mcpServers');
     expect(fs.readdirSync(path.join(user, '.claude', 'skills'))).toEqual([]);
@@ -188,7 +188,7 @@ describe('member-only remove', () => {
     const backups = snapshot(path.join(home, 'backups'));
     await run(['--yes'], deps());
     expect(process.exitCode).toBe(0);
-    expect(fs.readFileSync(path.join(user, '.claude', 'settings.json'), 'utf8')).not.toContain('--credential');
+    expect((fs.existsSync(path.join(user, '.claude', 'settings.json')) ? fs.readFileSync(path.join(user, '.claude', 'settings.json'), 'utf8') : '')).not.toContain('--credential');
     const output = spyOn(console, 'log').mockImplementation(() => {});
     try {
       await run(['--purge', '--yes'], deps());

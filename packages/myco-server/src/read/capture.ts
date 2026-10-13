@@ -57,12 +57,6 @@ export function machineOwnersOf(claims: readonly unknown[], credentials: readonl
 /** The two statements `machineOwnersOf` reads, for a caller to batch beside its own. */
 export const machineOwnerStatements = (db: RelationalStore, nowMs: number): PreparedStatement[] => [machineClaimsStatement(db), machineNamesStatement(db, nowMs)];
 
-/** Every claimed machine's name and member. */
-export async function readMachineOwners(db: RelationalStore, nowMs: number): Promise<Map<string, MachineOwner>> {
-  const [claims, credentials] = await db.batch(machineOwnerStatements(db, nowMs));
-  return machineOwnersOf(claims!.results, credentials!.results);
-}
-
 /** What `viewerId` is shown as a machine's name: the name of a machine that is theirs, and null for anyone else's. */
 export function shownMachineName(owner: MachineOwner | undefined, viewerId: string): string | null {
   return owner !== undefined && owner.memberId === viewerId ? owner.name : null;

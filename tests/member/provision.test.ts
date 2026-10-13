@@ -163,10 +163,6 @@ describe('myco member provision', () => {
       }
       for (const command of emitted()) expect({ command, binary: command.split(' ')[0] }).toEqual({ command, binary: memberBinary });
 
-      // Every other scope keeps the machine's binary.
-      const codex = loadManifests().find((m) => m.name === 'codex')!;
-      const globalMcp = new SymbiontInstaller(codex, '/', resolvePackageRoot(), false, undefined, null, 'global').loadMcpTemplate() as { myco: { command: string } };
-      expect(globalMcp.myco.command).toBe(defaultBinary);
     } finally {
       if (savedMycoHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedMycoHome;
       fs.rmSync(path.join(defaultHome, 'bin'), { recursive: true, force: true });

@@ -1,3 +1,5 @@
+import { deriveSymbiontManifest } from '../helpers/symbiont-manifest.js';
+import { hookCommands } from '@myco/symbionts/member-hooks.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -114,15 +116,6 @@ describe('global member installation', () => {
     expect(fs.existsSync(path.join(home, '.codex', 'config.toml'))).toBe(false);
   });
 
-  it('refuses legacy reconciliation over the global member hooks', () => {
-    installer('codex').install();
-    const target = path.join(home, '.codex', 'hooks.json');
-    const before = fs.readFileSync(target, 'utf8');
-    const manifest = loadManifests().find((m) => m.name === 'codex')!;
-    expect(() => new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'global').install()).toThrow(/require member provisioning/);
-    expect(fs.readFileSync(target, 'utf8')).toBe(before);
-  });
-
   it('installs member plugins globally and leaves the project untouched', () => {
     for (const name of ['opencode', 'pi']) {
       expect(installer(name).install().hooks).toBe(true);
@@ -132,4 +125,82 @@ describe('global member installation', () => {
     expect(fs.existsSync(path.join(home, '.pi', 'agent', 'extensions', 'myco', 'index.ts'))).toBe(true);
     expect(fs.readdirSync(root)).toEqual([]);
   });
+});
+
+
+describe('member-global lifecycle contracts', () => {
+  for (const manifest of loadManifests().filter(manifest => manifest.registration?.memberHooksTarget)) {
+    it(`${manifest.name}: installs, stays current, is idempotent and removes its registration`, () => {
+      const member = installer(manifest.name).forDeployment('https://srv.example');
+      const snapshot = () => Object.fromEntries(member.memberGlobalTargets().all
+        .filter(file => fs.existsSync(file)).map(file => [file, fs.readFileSync(file, 'utf8')]));
+      member.install();
+      expect(member.isConfigured()).toBe(true);
+      expect(member.memberRegistrationCurrent()).toBe(true);
+      const first = snapshot();
+      expect(Object.keys(first).length).toBeGreaterThan(0);
+      member.install();
+      expect(snapshot()).toEqual(first);
+      member.uninstallMemberRegistration();
+      expect(member.memberRegistrationPresent()).toBe(false);
+      expect(Object.values(snapshot()).join('\n')).not.toContain('--credential');
+    });
+  }
+
+  it('forward-slashes a backslash binary path in installed member hooks', () => {
+    fs.writeFileSync(path.join(mycoHome, 'runtime.command'), 'C:\\Program\\myco\\bin\\myco.exe\n');
+    installer('claude-code').install();
+    const commands = hookCommands(JSON.parse(fs.readFileSync(path.join(home, '.claude/settings.json'), 'utf8')));
+    expect(commands.length).toBeGreaterThan(0);
+    for (const command of commands) {
+      expect(command).toContain('C:/Program/myco/bin/myco.exe');
+      expect(command).not.toContain('\\');
+    }
+  });
+
+  it('refuses a whitespace binary path before writing member registration', () => {
+    fs.writeFileSync(path.join(mycoHome, 'runtime.command'), '/Users/My Name/.myco/bin/myco\n');
+    const member = installer('claude-code');
+    expect(() => member.install()).toThrow(/whitespace/);
+    expect(member.memberGlobalTargets().all.filter(file => fs.existsSync(file))).toEqual([]);
+  });
+});
+
+
+it('refuses unreadable settings before removing any member registration', () => {
+  const base = loadManifests().find(manifest => manifest.name === 'codex')!;
+  const manifest = deriveSymbiontManifest(base, { registration: { ...base.registration!,
+    settingsTarget: '.codex/member-settings.json', globalSettingsTarget: '~/.codex/member-settings.json', settingsFormat: 'json',
+  } });
+  const member = new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome);
+  member.install();
+  const settings = path.join(home, '.codex/member-settings.json');
+  fs.writeFileSync(settings, '{broken');
+  const snapshot = () => Object.fromEntries(member.memberGlobalTargets().all.filter(file => fs.existsSync(file))
+    .map(file => [file, fs.readFileSync(file, 'utf8')]));
+  const before = snapshot();
+  expect(() => member.uninstallMemberRegistration()).toThrow(/could not read/);
+  expect(snapshot()).toEqual(before);
+});
+
+it('keeps a user-modified setting and clears its installation audit on removal', () => {
+  const member = installer('codex');
+  member.install();
+  const file = path.join(home, '.codex/config.toml');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('hooks = true', 'hooks = false'));
+  member.uninstallMemberRegistration();
+  expect(parseToml(fs.readFileSync(file, 'utf8')).features).toEqual({ hooks: false });
+  expect(fs.existsSync(path.join(mycoHome, 'installer-audit/codex-global-settings.json'))).toBe(false);
+});
+
+it('clears a JSON audit when every owned setting has already been replaced', () => {
+  const member = installer('claude-code');
+  member.install();
+  const file = path.join(home, '.claude/settings.json');
+  const config = JSON.parse(fs.readFileSync(file, 'utf8'));
+  config.permissions = { allow: ['Bash(custom)'] };
+  fs.writeFileSync(file, JSON.stringify(config));
+  member.uninstallMemberRegistration();
+  expect(JSON.parse(fs.readFileSync(file, 'utf8')).permissions).toEqual({ allow: ['Bash(custom)'] });
+  expect(fs.existsSync(path.join(mycoHome, 'installer-audit/claude-code-global-settings.json'))).toBe(false);
 });

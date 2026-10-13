@@ -27,10 +27,6 @@ export function estimateTokens(text: string): number {
 /** Milliseconds per second. */
 export const MS_PER_SECOND = 1000;
 
-// --- Embedding ---
-/** Max characters of text sent to the embedding model. */
-export const EMBEDDING_INPUT_LIMIT = 8000;
-
 /** Max rows per embedding worker cycle. */
 export const EMBEDDING_BATCH_SIZE = 10;
 
@@ -40,10 +36,6 @@ export const CONTENT_HASH_ALGORITHM = 'sha256';
 // --- Truncation limits (display/preview) ---
 /** Max chars for a user prompt preview in event summaries. */
 export const PROMPT_PREVIEW_CHARS = 300;
-/** Max chars for an AI response preview in event summaries. */
-export const AI_RESPONSE_PREVIEW_CHARS = 500;
-/** Max chars for a command string preview. */
-export const COMMAND_PREVIEW_CHARS = 80;
 /** Max chars for a content snippet in search results. */
 export const CONTENT_SNIPPET_CHARS = 120;
 /** Max chars for a tool output preview in hooks. */
@@ -52,8 +44,6 @@ export const TOOL_OUTPUT_PREVIEW_CHARS = 200;
 export const TOOL_OUTPUT_CAPTURE_CHARS = 4096;
 /** Max chars for a session summary preview in MCP tools. */
 export const SESSION_SUMMARY_PREVIEW_CHARS = 300;
-/** Max chars for a recall summary preview. */
-export const RECALL_SUMMARY_PREVIEW_CHARS = 200;
 /** Max chars for search result and hydrated context previews. */
 export const SEARCH_PREVIEW_CHARS = 300;
 
@@ -62,18 +52,6 @@ export const SEARCH_PREVIEW_CHARS = 300;
 export const LOG_PROMPT_PREVIEW_CHARS = 50;
 /** Max chars for an assistant message preview in log entries. */
 export const LOG_MESSAGE_PREVIEW_CHARS = 80;
-
-// --- Context injection layer budgets (chars, not tokens — used with .slice()) ---
-export const CONTEXT_SESSION_PREVIEW_CHARS = 80;
-export const CONTEXT_SPORE_PREVIEW_CHARS = 80;
-
-// --- Processor maxTokens budgets ---
-/** Response token budget for observation extraction. */
-export const EXTRACTION_MAX_TOKENS = 2048;
-/** Response token budget for session summary. */
-export const SUMMARY_MAX_TOKENS = 512;
-/** Response token budget for session title generation. */
-export const TITLE_MAX_TOKENS = 32;
 
 // --- Timeouts ---
 /** Daemon client HTTP request timeout (ms). */
@@ -84,10 +62,6 @@ export const DAEMON_HEALTH_CHECK_TIMEOUT_MS = 500;
 export const LLM_REQUEST_TIMEOUT_MS = 180_000;
 /** Embedding request timeout (ms). Embeddings run in background batch processing — generous timeout. */
 export const EMBEDDING_REQUEST_TIMEOUT_MS = 60_000;
-/** Digest LLM request timeout (ms). Digest cycles use large context windows and may need model loading time. */
-export const DIGEST_LLM_REQUEST_TIMEOUT_MS = 600_000;
-/** Stdin read timeout for hooks (ms). */
-export const STDIN_TIMEOUT_MS = 100;
 
 // --- Job runner ---
 /**
@@ -304,17 +278,6 @@ export const RECONCILE_POLL_MS = 50;
  *  common case (no in-flight work) costs milliseconds, not the full budget. */
 export const RECONCILE_COOPERATIVE_GRACE_MS = 30_000;
 
-// --- Slug limits ---
-/** Max length for slugified artifact IDs. */
-
-// --- Turn rendering ---
-/** Max file paths displayed per turn in session notes. */
-export const TURN_MAX_FILES_DISPLAYED = 10;
-
-// --- Transcript mining ---
-/** Minimum content length to consider a transcript entry meaningful. */
-export const MIN_TRANSCRIPT_CONTENT_LENGTH = 10;
-
 // --- Graph edge types (lineage — auto-created by daemon) ---
 /** Spore was extracted during this session. */
 export const EDGE_TYPE_FROM_SESSION = 'FROM_SESSION';
@@ -335,18 +298,6 @@ export const QUERY_DEFAULT_LIST_LIMIT = 100;
 export const DEFAULT_LIST_LIMIT = 50;
 /** Default confidence score for graph edges. */
 export const GRAPH_EDGE_DEFAULT_CONFIDENCE = 1.0;
-
-// --- Query limits ---
-/** Max recent sessions to check for lineage heuristics. */
-export const LINEAGE_RECENT_SESSIONS_LIMIT = 5;
-/** Max related spores to query for session notes. */
-export const RELATED_SPORES_LIMIT = 50;
-
-// --- Context injection ---
-/** Max spores to inject per prompt. */
-export const PROMPT_CONTEXT_MAX_SPORES = 3;
-/** Max token budget for session-start context injection. */
-export const SESSION_CONTEXT_MAX_TOKENS = 500;
 /** Max token budget for per-prompt context injection. */
 export const PROMPT_CONTEXT_MAX_TOKENS = 300;
 /** Minimum prompt length to trigger context search. */
@@ -374,8 +325,6 @@ export const USER_AGENT_NAME = 'User (MCP)';
 export const MCP_SEARCH_DEFAULT_LIMIT = 10;
 /** Default result limit for myco_sessions. */
 export const MCP_SESSIONS_DEFAULT_LIMIT = 20;
-/** Default result limit for myco_logs. */
-export const MCP_LOGS_DEFAULT_LIMIT = 50;
 /** Default result limit for myco_skills. */
 export const MCP_SKILLS_DEFAULT_LIMIT = 50;
 
@@ -390,61 +339,11 @@ export type DigestTier = (typeof DIGEST_TIERS)[number];
 /** Smallest tier — used as the fallback when the preferred tier has no extract yet. */
 export const DIGEST_FALLBACK_TIER: DigestTier = DIGEST_TIERS[0];
 
-// --- Digest — Context window minimums per tier ---
-/** Minimum context window (tokens) required to run a digest at a given tier. */
-export const DIGEST_TIER_MIN_CONTEXT: Record<number, number> = {
-  1500: 6500,
-  5000: 18500,
-  10000: 30500,
-};
-
-// --- Digest — Substrate ---
-/** Default minimum substrate notes required before a digest cycle runs. */
-export const DIGEST_MIN_NOTES_FOR_CYCLE = 10;
-
-/** Scoring weights by note type when selecting substrate for synthesis. */
-export const DIGEST_SUBSTRATE_TYPE_WEIGHTS: Record<string, number> = {
-  session: 3,
-  spore: 3,
-  plan: 2,
-  artifact: 1,
-  team: 1,
-};
-
-// --- LLM reasoning control ---
-/** Reasoning mode for all Myco LLM calls. Suppresses chain-of-thought tokens from reasoning models. */
-export const LLM_REASONING_MODE = 'off' as const;
-
-// --- Digest — System prompt overhead estimate ---
-
-// --- Vault intelligence ---
-/** Max candidate spores after post-filtering for supersession check. */
-export const SUPERSESSION_CANDIDATE_LIMIT = 5;
-
-/** Over-fetch from vector index before post-filtering by status/type. */
-export const SUPERSESSION_VECTOR_FETCH_LIMIT = 20;
-
-/** Max output tokens for supersession LLM evaluation. */
-export const SUPERSESSION_MAX_TOKENS = 256;
-
-/** Similarity threshold for clustering related spores in batch agent processing. */
-export const AGENT_CLUSTER_SIMILARITY = 0.75;
-
 // --- Search ---
 /** Default number of results returned by vector search and fullTextSearch. */
 export const SEARCH_RESULTS_DEFAULT_LIMIT = 20;
 /** Minimum cosine similarity score for semantic search results (0-1). */
 export const SEARCH_SIMILARITY_THRESHOLD = 0.3;
-
-// --- Pipeline processing ---
-/** Default page size for pipeline items API listing. */
-export const PIPELINE_ITEMS_DEFAULT_LIMIT = 50;
-
-// --- Pipeline retry ---
-/** Max retries for parse (structural) pipeline failures — fail fast. */
-export const PIPELINE_PARSE_MAX_RETRIES = 1;
-/** Exponential backoff multiplier for successive pipeline retries. */
-export const PIPELINE_BACKOFF_MULTIPLIER = 4;
 
 // --- Pipeline stages (ordered) ---
 export const PIPELINE_STAGES = ['capture', 'extraction', 'embedding', 'consolidation', 'digest'] as const;
@@ -457,31 +356,6 @@ export type PipelineStatus = typeof PIPELINE_STATUSES[number];
 // --- Provider roles for circuit breakers ---
 export const PIPELINE_PROVIDER_ROLES = ['llm', 'embedding', 'digest-llm'] as const;
 export type PipelineProviderRole = typeof PIPELINE_PROVIDER_ROLES[number];
-
-// --- Stage to provider role mapping ---
-export const STAGE_PROVIDER_MAP: Record<PipelineStage, PipelineProviderRole | null> = {
-  capture: null,
-  extraction: 'llm',
-  embedding: 'embedding',
-  consolidation: 'digest-llm',
-  digest: 'digest-llm',
-};
-
-/**
- * Stages processed by the pipeline tick timer.
- * Capture is handled at registration time, digest is gated by the metabolism timer.
- */
-export const PIPELINE_TICK_STAGES: PipelineStage[] = ['extraction', 'embedding', 'consolidation'];
-
-// --- Item type to applicable stages ---
-// Sessions skip consolidation — consolidation applies to the spores
-// extracted FROM sessions, not the session work item itself.
-// Lineage detection stays outside the pipeline (fire-and-forget, non-critical).
-export const ITEM_STAGE_MAP: Record<string, PipelineStage[]> = {
-  session: ['capture', 'extraction', 'embedding', 'digest'],
-  spore: ['capture', 'embedding', 'consolidation', 'digest'],
-  artifact: ['capture', 'embedding', 'digest'],
-};
 
 // --- User task registry ---
 /** Subdirectory within the vault for user-created task YAML files. */
@@ -498,17 +372,6 @@ export const TASK_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
 
 /** Maximum length for task names. */
 export const MAX_TASK_NAME_LENGTH = 50;
-
-// --- Automatic consolidation ---
-/** Minimum cluster size required before asking LLM to consolidate. */
-export const CONSOLIDATION_MIN_CLUSTER_SIZE = 3;
-
-/** Over-fetch from vector index before post-filtering by status/type. */
-export const CONSOLIDATION_VECTOR_FETCH_LIMIT = 20;
-
-/** Max output tokens for consolidation LLM synthesis.
- *  Must be large enough for the full JSON response including content field. */
-export const CONSOLIDATION_MAX_TOKENS = 2048;
 
 // --- Power management ---
 /** PowerManager states valid for task scheduling (excludes deep_sleep which halts all ticks). */
@@ -541,19 +404,6 @@ export const STALE_SESSION_THRESHOLD_MS = 60 * 60 * MS_PER_SECOND;
  * committed code change was auto-deleted within a minute of TUI exit.
  */
 export const DEAD_SESSION_MAX_PROMPTS = 0;
-
-// --- Init wizard ---
-/** Minimum Node.js major version required by Myco. */
-export const MIN_NODE_MAJOR_VERSION = 22;
-
-/** Recommended context window for local intelligence models. */
-export const RECOMMENDED_LOCAL_CONTEXT_WINDOW = 8192;
-
-/** Default Ollama embedding model recommended during init. */
-export const DEFAULT_OLLAMA_EMBEDDING_MODEL = 'bge-m3';
-
-/** Default OpenAI embedding model recommended during init. */
-export const DEFAULT_OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
 
 // --- Sync protocol ---
 /**

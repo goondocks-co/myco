@@ -1,2 +1,3 @@
 # The recall gold set's frozen embeddings (#1154): raw float32 rows, never text.
 tests/fixtures/evals/recall/vectors.bin binary
+tests/fixtures/legacy/daemon-launcher.ps1 whitespace=cr-at-eol

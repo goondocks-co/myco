@@ -1,9 +1,4 @@
-/**
- * The doctor checks and output format both doctors run: the member's
- * (`cli/member-doctor.ts`) and the 1.4 one (`cli/doctor.ts`). Nothing here
- * reaches vault, Grove database or daemon code;
- * `tests/meta/member-read-boundary.test.ts` holds its import closure.
- */
+/** Member doctor checks and output formatting. */
 import fs from 'node:fs';
 import path from 'node:path';
 import { findCorePackageRoot } from '@myco/utils/find-package-root.js';
@@ -38,7 +33,7 @@ export interface DoctorCheck {
   /** The project root a check is about, where its answer holds for that root alone. */
   root?: string;
   fixable: boolean;
-  fixId?: import('./doctor-fixes.js').DoctorFixerId;
+  fixId?: 'runtime-pin-redundant';
   fixData?: Record<string, unknown>;
 }
 

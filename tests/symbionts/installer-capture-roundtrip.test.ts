@@ -199,6 +199,7 @@ describe('symbiont capture round-trip — hook command reaches the runtime with 
 
   for (const manifest of manifests) {
     if (SKIP_PLUGIN_FILE.has(manifest.name)) continue;
+    if (!manifest.registration?.memberHooksTarget) continue;
     if (!manifest.registration?.globalHooksTarget) continue;
     // copilot's globalMcpTarget array includes the macOS-only VS Code
     // Library path; the integration suite skips it on Linux/Windows
@@ -211,7 +212,7 @@ describe('symbiont capture round-trip — hook command reaches the runtime with 
       if (!fake) throw new Error('fake home not set');
       ensureDetectionDir(manifest, fake.tmpHome);
       const installer = new SymbiontInstaller(
-        manifest, fake.tmpHome, PKG_ROOT, false, undefined, null, 'global',
+        manifest, fake.tmpHome, PKG_ROOT, false, undefined, null, 'member-global',
       );
       installer.install();
 

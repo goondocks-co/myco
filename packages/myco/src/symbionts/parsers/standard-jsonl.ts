@@ -1,5 +1,5 @@
 import type { TranscriptTurn, TranscriptImage, ParseJsonlOptions } from '../adapter.js';
-import type { TranscriptParser } from './types.js';
+import type { TranscriptParser } from '../adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../../constants.js';
 
 /** Claude Code injects [Image: source: /path] text alongside base64 image blocks. Strip these since the actual images are captured as attachments. */

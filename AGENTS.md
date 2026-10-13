@@ -7,17 +7,16 @@ Myco captures project memory and serves it back through context injection, MCP t
 - `AGENTS.md` is for stable project rules, not changing project history.
 - Use Myco context, spores, sessions, and plans for recent work, prior decisions, and dynamic guidance.
 - When a rule depends on current initiative state or recent architecture change, prefer Myco over adding more static prose here.
-- Before interpreting runtime ownership, read the [canonical architecture and feature ledger](docs/architecture/myco-2.0.md). The daemon, Grove, local-vault and local-dashboard rules below apply to retained local-runtime code; they do not describe the Deployment server's storage, MCP or UI ownership. Verify the active entry point and its routing before labeling a module as the implementation of a surface. Existing managed skills and module documentation may describe the local runtime.
+- Before interpreting runtime ownership, read the [canonical architecture and feature ledger](docs/architecture/myco-2.0.md). The Deployment owns storage, MCP, event processing and the dashboard; the member owns capture and delivery. Verify the active entry point and its routing before labeling a module as the implementation of a surface. Existing managed skills and module documentation may describe the local runtime.
 
 ## Dogfooding
 
-- We develop Myco using Myco. The project-local vault lives at `.myco/`.
-- Session data from development sessions is real vault data. Avoid destructive vault operations unless you mean it.
-- After changing hook or daemon code, run `make build` and then `myco-dev restart`. Hooks pick up new code on the next invocation; the daemon does not.
-- In git worktrees, prefer not to restart the daemon. Shared vault capture continuity is more valuable than forcing daemon restarts during isolated testing.
-- If a worktree must restart for debugging, run the local CLI entry (`node packages/myco/dist/src/cli.js restart`) from that worktree; avoid global `myco-dev restart` from worktrees.
+- We develop Myco using Myco. The member sends project capture to its Deployment.
+- Development sessions are real Project history. Preserve capture spools and Deployment data.
+- After changing hooks or member code, run `make build` and smoke-test the compiled binary with an isolated home. Hooks load the updated binary on their next invocation.
+- A native Deployment or registered runner keeps its running executable until its own process is restarted. Restart only the isolated process under test; preserve shared capture continuity.
 - Use `make dev-link` only from the main checkout; it rewrites shared `~/.local/bin/myco-*` symlinks.
-- In git worktrees, use `make dev-link-worktree`; it builds the worktree binary and writes a worktree-local `.myco/runtime.command` pointing at it, without changing shared symlinks. Hooks, MCP, and CLI then route to the worktree build; capture still attaches to the main project vault via `git-common-dir`. See the `dogfood-worktree` skill for caveats (shared-vault schema hazard, vendor-asset build gotcha).
+- In git worktrees, use `make dev-link-worktree`; it builds the worktree binary and writes a worktree-local `.myco/runtime.command` pointing at it, without changing shared symlinks. Hooks and CLI route to the worktree build; MCP is served by the Deployment; member routing still resolves the project root via `git-common-dir`. See the `dogfood-worktree` skill for caveats (explicit member home, vendor-asset build requirements).
 - `make dev-unlink` removes shared dev symlinks and `.myco/runtime.command`; `make dev-unlink-worktree` removes only the worktree runtime pin.
 - `make worktree-sweep` retires worktrees and branches whose PR has merged. Run it whenever; it holds anything it cannot prove is finished. To preserve a worktree whose PR merged but whose build output is still evidence, put a `.worktree-keep` file in it.
 
@@ -25,7 +24,7 @@ Myco captures project memory and serves it back through context injection, MCP t
 
 - `AGENTS.md` is the canonical rules file. Agent-specific instruction files should stay thin and point back here.
 - Hooks in `src/hooks/` must stay thin and delegate to the member seam (`src/member/`): build the envelope, append it to the spool, drain under the hook's own budget. Do not put business logic or long-running processing in hook entry points. The hooks+member import closure is gated (`tests/meta/member-seam-boundary.test.ts`): no daemon, grove, vault, db, host, or installer code behind a hook.
-- The server is the authority for event processing, session recording, spores, and digest work in 2.0 member mode; the daemon remains so for 1.4-era local vaults until Plan 6.
+- The Deployment is the authority for event processing, sessions, spores and agent work. Agent work runs only on registered runners.
 - Recurring Deployment work goes through the server wake tick, and every job and scheduled task it runs is declared in one registry (`packages/myco-server/src/core/jobs.ts`); the member binary registers no timers. Do not add ad hoc polling timers on either side. A dispatch limit queues the run; a per-day ceiling refuses it and the next wake decides again.
 - Session ID is the durable key. Do not tie persistent state to hook lifecycle events.
 - Write paths must be additive and idempotent. Do not overwrite or delete accumulated vault history casually.
@@ -58,58 +57,54 @@ Myco captures project memory and serves it back through context injection, MCP t
 - Before finishing a feature, run `make build` (it runs the checks too — no need to run `make check` separately).
 - Before finishing a feature, smoke-test the changed behavior.
 - When changing an installed, generated, or user-facing surface, verify it through the real command or runtime path, not only through unit tests.
-- Use `make build-only` when you need the distributable build or when dogfooding hook or daemon changes.
+- Use `make build-only` when you need the distributable build or when dogfooding member or server changes.
 - For code changes, add or update tests when behavior changes.
 
 ## Global Install Architecture
 
-Myco installs once at the per-user/global level for every symbiont; project-local files are an opt-in override, not the default.
+Myco installs once at the per-user/global level for every symbiont. The member installer leaves project-local configuration alone.
 
 - All symbionts install at the agent's global config location (e.g. `~/.claude/settings.json`, `~/.codex/config.toml`). Per-project `.agents/` folders are no longer required.
 - Hooks invoke the `myco` binary directly by absolute path, written by the installer; `launcher.cjs` and `myco-run.cjs` are gone. A harness the Deployment parses wires only the retained set — session start, turn end (`Stop`/`SessionEnd`), prompt submit for injection, subagent start — and writes no turn row; see `docs/architecture/myco-2.0.md` §3.4. MCP is remote HTTP served by the Deployment; there is no local launcher or bridge process.
 - Settings-merge for shared agent config files is required: Myco's hook/MCP/skills entries are upserted; user-pre-existing keys (e.g. Codex `[features].hooks`) must be preserved across install/uninstall cycles. Use audit-tracked TOML writes for Codex; atomic writes for every other agent.
-- Per-project overrides live in the dashboard's **Symbionts** page, not in CLI flags or hand-edited config.
-- Capture buffer lives under `~/.myco/buffer/<grove>/`. Do not reintroduce `.agents/myco-buffer/`; the migration walker archives any residue.
+- Provisioning manages global agent configuration. Existing project overrides are reported read-only and remain the user's responsibility.
+- Capture spools live under `<MYCO_HOME>/member/spool/d-<deployment-key>/<project-id>/` and belong to `MemberSpool`.
 
 ## Actors and Boundaries
 
 Three actors interact with Myco. Mixing them is the source of architectural drift.
 
 - **Myco agent** — Myco's own intelligence runs, driven on a worker: four outcomes (`extract-curate`, `vault-seed`, `title-summary`, `canopy-map`), each one prompt the Deployment builds with declared close evidence (`packages/myco-server/src/core/task-catalogue.ts`, `run-postconditions.ts`). Does work users don't do. Its tools come from the run-scoped MCP surface: a run-scoped credential whose allowlist is the task's declared tools, enforced at the MCP chokepoint — **not** the member's tool set.
-- **Symbiont** — coding agents like Claude Code, Cursor, opencode, Codex that integrate with Myco via hooks + the MCP bridge + installed skills. Symbionts **use Myco; they do not control it**.
+- **Symbiont** — coding agents like Claude Code, Cursor, opencode, Codex that integrate with Myco via hooks + Deployment MCP + installed skills. Symbionts **use Myco; they do not control it**.
 - **User** — the human. Uses Myco, controls Myco, reviews Myco-agent-generated data, and administers the Myco agent.
 
 The surface each actor touches is fixed:
 
 | Surface | Whose | For |
 |---|---|---|
-| **MCP tools** (`packages/myco/src/tools/` declares; `packages/myco-server/src/mcp/` serves) | Symbionts | Read project intelligence and record spores and plans. No administrative ops. |
+| **MCP tools** (`packages/myco-server/src/mcp/` declares and serves) | Symbionts | Read project intelligence and record spores and plans. No administrative ops. |
 | **Skills** (`packages/myco/skills/` built-in + vault-generated) | Symbionts | Workflows; may instruct the symbiont to invoke the CLI. |
 | **CLI** (`packages/myco/src/cli/`) | Users (primary) and Symbionts (via skills) | Bootstrap + admin. |
 | **UI** (`packages/myco-server/ui/`) | Users | Primary interface for ongoing work. |
-| **Run tools** (`packages/myco-server/src/mcp/run-surface.ts`) | Myco agent | A run's allowlist from `TASK_TOOLS` in the task catalogue; writes attributed to the run. Two sets: the catalogued tools where a run's work is a member's work, and run-only tools (`mcp/run-definitions.ts`) for the run's own bounded reads, state and cursor — never in `SERVED_TOOLS`, never on the member side. A run's prompt and its instructions file are the Deployment's (`core/task-inputs.ts`); `packages/myco/src/agent/` is the 1.4 executor awaiting the sweep and nothing in the server or in `config/` imports it (`tests/meta/agent-tree-import-boundary.test.ts`). |
+| **Run tools** (`packages/myco-server/src/mcp/run-surface.ts`) | Myco agent | A run's allowlist from `TASK_TOOLS` in the task catalogue; writes attributed to the run. Two sets: the catalogued tools where a run's work is a member's work, and run-only tools (`mcp/run-definitions.ts`) for the run's own bounded reads, state and cursor — never in `SERVED_TOOLS`, never on the member side. A run's prompt and its instructions file are the Deployment's (`core/task-inputs.ts`); the retired local executor is absent from the binary; `tests/meta/no-1-4-reach.test.ts` pins that boundary. |
 
 **Non-rules** (these are violations to push back on):
 - Symbionts do **not** drive admin ops (restart, update, restore, backup). Add no MCP tool that does.
 - The Myco agent does **not** share a tool surface with Symbionts. If a run needs a capability, add it to the run-scoped MCP surface and to the task definition's allowlist, not to the member tool set.
 - "Agent-native parity" is scoped to the agent's editorial work — not a license to mirror every UI button as an MCP tool.
-- Seeding writes spores to Myco, never project rules to `AGENTS.md`. The managed block contains settings-driven mechanical guidance, such as plan-directory gitignore behavior. User-requested rule authoring and maintenance go through the `myco-rules` skill.
+- Seeding writes spores to Myco, never project rules to `AGENTS.md`. User-requested rule authoring and maintenance go through the `myco-rules` skill.
 
 Full discussion: [`docs/architecture/actors-and-boundaries.md`](docs/architecture/actors-and-boundaries.md).
 
-## Grove Primitives
+## Deployment and Member State
 
-Myco's data layer is multi-tenant. A **Grove** is a per-machine collection of projects served by a single global daemon, each with its own SQLite database. The following invariants are non-negotiable for new daemon code:
-
-- `GroveProjectId` is a branded string. Never derive a project_id from a filesystem path, the cwd, or string concatenation. Always thread through the branded ID supplied by the request context or migration plan.
-- One global daemon serves many Groves, and each Grove owns its own SQLite DB. Do not assume the daemon is single-project. Code that opens a database must resolve the path through the request context, not from `vaultDir` alone.
-- Reads must pass a `ProjectScope` (the discriminated union over Grove/project tenancy). API handlers, query helpers, and tools take `ProjectScope` so the right database, project_id, and machine_id are bound for the call.
-- Config is a three-tier scoped system: **machine** (`~/.myco/config.yaml`), **grove** (`~/.myco/groves/<id>/config.yaml`), **project** (`<project>/.myco/myco.yaml`), and **personal** (`<project>/.myco/local.yaml`) overlays merge in that order. Use the `safe-config-updates` skill when adding a new configurable field — it covers scope assignment, Zod schema extension, and the `ScopedField` UI wiring.
-- Project registration is automatic on first agent hook. The default Grove for the daemon's variant is ensured by `runGlobalBootstrap()` at first start; hooks fired from a git project then call `ensureProjectRegistered()` which auto-registers the project into the default Grove. New code paths must not silently materialize a project-local vault from cwd — registration goes through `isSafeProjectRoot()` (git-repo gate) and never invents a project from a bare cwd. Project-local commit (writing `<projectRoot>/.myco/project.toml` for portable Grove identity, plus optional launcher/binary overrides) is UI-driven through the dashboard's Symbionts page. The `myco init` CLI command — both bare and `--project` forms — is removed; the CLI is install/diagnostic/uninstall only.
-- Shared state goes through capabilities — see [Capabilities](#capabilities-single-writers-for-shared-state) below. `daemon.json`, `<projectRoot>/.myco/`, `myco.yaml`, and symbiont agent config each have exactly one sanctioned writer; bypassing produces silent drift.
-- Home-ownership is strict. A daemon running under `MYCO_HOME` owns exactly the Groves under `<MYCO_HOME>/groves/`. There is no `served_by` field and no `MYCO_SERVICE_VARIANT`; cross-home access is refused as `foreign_grove` at every seam (request context, tool-call pivot, assertOwnedGrove). No fall-through; do not add a default-Grove escape hatch that bypasses the home-scoped ownership check.
-- Power state is per-project. Scheduled work iterates Grove scopes; do not collapse multiple projects into one power loop or assume a single PowerManager owns all projects.
-- After changing daemon code, run `make build` and then `myco-dev restart`. Restart is per-machine (one daemon serves all Groves), not per-project.
+- The Deployment is multi-tenant. Bind every read and write to the authenticated Project scope; derive no persistent Project identity from cwd or a filesystem path.
+- Native and Cloudflare front doors share the same server core. Native storage is SQLite and local blobs; Cloudflare storage is D1, R2 and Vectorize.
+- The member home holds memberships, routing, capture spools and machine settings. The member binary opens no local vault and runs no daemon or recurring job.
+- Deployment settings use the admitted settings writer in `packages/myco-server/src/core/settings.ts`; machine settings use `packages/myco/src/member/machine-settings.ts`. Use the `myco-settings` skill for settings work.
+- Capture goes through the member seam into an immutable Project destination, then the Deployment processes it. Agent work is dispatched only to registered runners.
+- Cutover and `import --legacy` retain read-only legacy vault readers and the frozen v76 schema fixture. They preserve source history and refuse ambiguous destinations.
+- A 2.0 install manages what 2.0 owns and leaves unmanaged repository files and settings for their owner to review.
 
 ## Capabilities (single writers for shared state)
 
@@ -117,11 +112,10 @@ Every shared resource below has exactly one sanctioned writer. Adding a second e
 
 | Resource | Capability |
 |---|---|
-| `~/.myco/service/daemon.json` | `DaemonStateAuthority` (`packages/myco/src/daemon/daemon-state-authority.ts`) — logs reason, caller PID, before/after PID for every change. |
 | Hosted operator record and deployment staging | `withCloudflareOperation` (`packages/myco/src/server/cloudflare-operation.ts`) — holds one lease across provisioning, restore, deploy and nested record/staging writes. |
-| `<projectRoot>/.myco/` + `<projectRoot>/.agents/myco-*.cjs` | `ProjectVault` (`packages/myco/src/vault/project-vault.ts`) — pairs every manifest write with `project.local.toml` + `.gitignore`; refuses cross-identity overwrites; sweeps retired launchers on remove. |
-| `myco.yaml` (every tier) | `updateConfig()` / `saveConfig()` (`packages/myco/src/config/loader.ts`) — runs Zod validation; see also the `safe-config-updates` skill. |
-| Symbiont agent config (`.claude/`, `.codex/`, etc.) | `SymbiontInstaller` (`packages/myco/src/symbionts/installer.ts`) — manages hooks, MCP entries, and per-agent skill symlinks. |
+| Deployment settings | `packages/myco-server/src/core/settings.ts` — admits each leaf, authorizes, validates, persists with its actor and re-arms affected schedules. |
+| Machine settings | `packages/myco/src/member/machine-settings.ts` — owns validated member settings persistence. |
+| Symbiont agent config (`.claude/`, `.codex/`, etc.) | `SymbiontInstaller` (`packages/myco/src/symbionts/installer.ts`) — manages hooks, MCP entries and audited harness settings; `symbionts/member-skill-links.ts` owns global member skill links. |
 | Worker attempt directories and harness process ownership | `runner/run-directory.ts` — allocates a private attempt manifest before credentials, records process launches, and disposes or recovers only directories with no live owner. |
 | Runner update journal, binary handoff and guardian service | `runner/update.ts` + `runner/update-helper.ts` — serialize checks and replacement, admit verified releases only between runs, and retain rollback ownership until authenticated health. |
 | Native Deployment volume, configuration and credentials | `LocalVolume` (`packages/myco/src/server/local-volume.ts`) — holds an exclusive lease for lifecycle mutations and the entire serving lifetime; native recovery publishes only into a fresh directory. |
@@ -146,12 +140,9 @@ Every shared resource below has exactly one sanctioned writer. Adding a second e
 - **External agents** (Copilot code review, other non-members holding an access key): read with `myco_search`, and record what you found with `myco_spores` `op: "save"` citing the pull request you reviewed as `provenance_kind: "pr"` — see [docs/external-agents.md](docs/external-agents.md).
 - Use `@myco/*` path aliases for imports from `src/*`.
 - Mirror source tests at `tests/<module>.test.ts`.
-- `db/migrations.ts` contains an intentional NUL byte (a collision-safe map-key delimiter); binary-skipping search tools (`grep -I` default, ripgrep default) silently miss matches there — pass `-a`/`--text`, or use the Read tool.
 
 <!-- myco:managed:start -->
 ## Myco Managed Guidance
 
-- When `capture.ignore_plan_dirs_in_git` is enabled, custom directories in `capture.plan_dirs` may be intentionally gitignored after capture into Myco.
-- Do not force-add files from intentionally gitignored custom plan directories unless the user explicitly asks.
 - Myco tools take a `project` argument; pass this repo's git remote (or the project id from session-start context) — writes without it are refused.
 <!-- myco:managed:end -->

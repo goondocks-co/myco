@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { checkWorkerServices } from '@myco/cli/doctor.js';
+import { checkWorkerServices } from '@myco/cli/doctor-member.js';
 import { type WorkerServiceDeps } from '@myco/cli/worker-service.js';
 import { installWorkerService } from '@myco/runner/service.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
