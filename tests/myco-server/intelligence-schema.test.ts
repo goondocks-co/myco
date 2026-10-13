@@ -47,6 +47,9 @@ const PROJECT_SCOPED = [
   ...SEQUENCED,
 ] as const;
 const V7_TABLES = [...DEPLOYMENT_SCOPED, ...PROJECT_SCOPED];
+const RETIRED_V86_TABLES = new Set([
+  'skill_records', 'skill_candidates', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions',
+]);
 
 /** Team Host sync columns. Team Host is retired, and attribution rides the run and the credential. */
 const RETIRED_SYNC_COLUMNS = ['machine_id', 'synced_at', 'received_at'];
@@ -64,7 +67,7 @@ const v7 = SCHEMA_STEPS.find((s) => s.version === 7)!;
 
 function applied(): Database {
   const db = new Database(':memory:');
-  for (const step of SCHEMA_STEPS) for (const s of step.statements) db.exec(s);
+  for (const step of SCHEMA_STEPS.filter((step) => step.version <= 85)) for (const s of step.statements) db.exec(s);
   return db;
 }
 
@@ -93,13 +96,27 @@ describe('v7 intelligence schema', () => {
     expect(owned.filter((t) => !V7_TABLES.includes(t as (typeof V7_TABLES)[number]))).toEqual([]);
   });
 
-  it('keeps every table it creates a KEEP row in the ledger, so a table cannot be added here that the ledger drops', () => {
+  it('keeps every retained table it creates a KEEP row in the ledger', () => {
     const ledger = fs.readFileSync(LEDGER_PATH, 'utf8');
-    const dropped = V7_TABLES.filter((t) => {
+    const dropped = V7_TABLES.filter((t) => !RETIRED_V86_TABLES.has(t)).filter((t) => {
       const row = ledger.split('\n').find((l) => l.startsWith(`| \`${t}\``));
       return !row || !row.split('|')[2]?.trim().startsWith('KEEP');
     });
     expect(dropped).toEqual([]);
+  });
+
+  it('retires the v7 skill and digest tables at v86', () => {
+    const db = new Database(':memory:');
+    try {
+      for (const step of SCHEMA_STEPS) for (const statement of step.statements) db.exec(statement);
+      const present = new Set((db.query(`SELECT name FROM sqlite_master WHERE type='table'`).all() as { name: string }[]).map(({ name }) => name));
+      expect([...RETIRED_V86_TABLES].filter((table) => present.has(table))).toEqual([]);
+      const ledger = fs.readFileSync(LEDGER_PATH, 'utf8');
+      expect([...RETIRED_V86_TABLES].filter((table) => {
+        const row = ledger.split('\n').find((line) => line.startsWith(`| \`${table}\``));
+        return !row || row.split('|')[2]?.trim() !== 'DROP';
+      })).toEqual([]);
+    } finally { db.close(); }
   });
 
   it('declares project_id NOT NULL on every Project-scoped table', () => {

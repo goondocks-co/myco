@@ -50,10 +50,9 @@ export const BACKUP_TABLES: readonly string[] = [
   'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'prompt_batches', 'tool_calls', 'processed_resources', 'responses', 'plans',
   'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
   'agent_tasks', 'agent_runs', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers',
-  'skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage',
-  'digest_extracts', 'cortex_instructions', 'canopy_maps', 'knowledge_release_state', 'external_grants',
+  'cortex_instructions', 'canopy_maps', 'knowledge_release_state', 'external_grants',
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',
-  'digest_extract_revisions', 'knowledge_git_provenance',
+  'knowledge_git_provenance',
 ];
 
 /**
@@ -64,7 +63,7 @@ export const BACKUP_TABLES: readonly string[] = [
  */
 export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',
-  'digest_extract_revisions', 'knowledge_git_provenance',
+  'knowledge_git_provenance',
 ]);
 
 /**
@@ -81,7 +80,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'search_blob_queue', 'search_blob_chunks',
   'session_read_facts', 'project_session_counts',
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
-  ...['prompt_batches', 'responses', 'spores', 'plans', 'skill_records', 'sessions', 'search_blob_chunks']
+  ...['prompt_batches', 'responses', 'spores', 'plans', 'sessions', 'search_blob_chunks']
     .flatMap((table) => ['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `${table}_fts${suffix}`)),
   'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
   'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',

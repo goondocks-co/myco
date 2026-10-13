@@ -19,7 +19,7 @@ export function costWords(usd: number | null, tokens: number): string | null {
   return usd === null ? null : `Estimated cost: ${dollars(usd)}, for about ${formatCount(tokens, 'token')}.`;
 }
 
-const TYPE_WORDS: Readonly<Record<string, string>> = { session: 'Session', spore: 'Spore', plan: 'Plan', skill: 'Skill' };
+const TYPE_WORDS: Readonly<Record<string, string>> = { session: 'Session', spore: 'Spore', plan: 'Plan' };
 
 /** One passed-over source in the reader's words: what it is, where, and why. */
 export const passedOverWords = (source: PassedOverSourceView): string =>

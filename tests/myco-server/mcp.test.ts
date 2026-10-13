@@ -13,7 +13,6 @@ import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { isServedTool, isWriteOp, PROJECT_PIVOT, UNSERVED_OPS } from '@myco-server-worker/core/tool-catalogue.js';
 import { MAX_SPORE_CONTENT_BYTES } from '@myco-server-worker/core/spores.js';
 import { archiveProject } from '@myco-server-worker/read/sessions.js';
-import { upsertDigest } from '@myco-server-worker/core/digests.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { validateInput } from '@myco-server-worker/mcp/validate.js';
@@ -128,6 +127,10 @@ describe('POST /mcp', () => {
     const never = await call(t1.token, 'myco_plans', { op: 'delete', id: 'x' });
     expect({ code: never.error.data.code, offered: /not offered/.test(never.error.message) }).toEqual({ code: 'not_served', offered: true });
     expect((await call(t1.token, 'myco_cortex', { op: 'notifications' })).error.data.code).toBe('not_served');
+    const digest = await call(t1.token, 'myco_cortex', { op: 'digest' });
+    expect(UNSERVED_OPS.myco_cortex?.digest).toBe('never');
+    expect({ code: digest.error.data.code, retired: /not offered/.test(digest.error.message) }).toEqual({ code: 'not_served', retired: true });
+    expect((await call(t1.token, 'myco_search', { query: 'q', type: 'skill' })).error.data.code).toBe('invalid_input');
   });
 
   it('records, reads, lists, supersedes and consolidates spores under the built-in user agent', async () => {
@@ -358,6 +361,7 @@ describe('POST /mcp', () => {
     // Skills are the files the plugin ships, not rows: the answer is the same on
     // a Deployment that has never stored anything, which is the state a fresh
     // install is in when an agent makes its first call.
+    expect(sqlite.query("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('skill_records','skill_candidates','skill_lineage','skill_usage')").all()).toEqual([]);
     const listed = (await call(t1.token, 'myco_skills')).result;
     expect(listed.map((s: any) => s.name)).toEqual(SHIPPED_SKILLS.map((s) => s.name));
     expect(listed.every((s: any) => s.description.length > 0 && s.when_to_use.length > 0 && s.content === undefined)).toBe(true);
@@ -522,7 +526,6 @@ describe('POST /mcp over an External Agent grant', () => {
     const { db, grant, callAs, memberCall, lastUsed, tokenKeys, sourceKeys, executed } = await grantSetup();
     const spore = (await memberCall('myco_spores', { op: 'save', type: 'gotcha', content: 'seed', project: 'proj_1' })).result.id as string;
     const plan = (await memberCall('myco_plans', { op: 'save', content: '# p', session_id: 'sess-seed', plan_key: 'seed', project: 'proj_1' })).result;
-    await upsertDigest(db, { projectId: 'proj_1' }, { id: 'd-seed', agentId: 'user', tier: 5000, content: 'seed digest', substrateHash: null, generatedAt: 10 });
     const from = executed.length;
     const keysFrom = tokenKeys.length;
     await callAs(grant.key, 'myco_plans', { op: 'list' });

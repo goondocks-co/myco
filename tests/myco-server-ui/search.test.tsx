@@ -229,11 +229,10 @@ it('shows a failed request as a failure and supports retry', async () => {
   await screen.findByText('No results match this search.');
 });
 
-it('opens a plan on its own page, a reply at its turn, and gives a skill hit no link at all', () => {
+it('opens a plan on its own page, a reply at its turn', () => {
   expect(searchResultPath('a/b', hit({ type: 'plan', id: 'p&1', session_id: 's' }))).toBe('/p/a%2Fb/plans/p%261');
   expect(searchResultPath('p', hit({ type: 'plan', id: 'k' }))).toBe('/p/p/plans/k');
   expect(searchResultPath('p', hit({ type: 'response', session_id: 's', prompt_id: 'turn' }))).toBe('/p/p/sessions/s?turn=turn');
-  expect(searchResultPath('p', hit({ type: 'skill', id: 'skill' }))).toBeNull();
 });
 
 it('opens on ⌘K and Ctrl K from every page: under a project it searches that project, elsewhere every project with the last one offered', async () => {

@@ -861,8 +861,8 @@ export async function recordRunCall(
  * pass a run whose write did nothing.
  *
  * It is the run key for an artifact whose own row carries none. Where the
- * artifact table names the run itself (`digest_extract_revisions.run_id`,
- * `canopy_maps.source_run_id`) the rule reads that instead.
+ * artifact table names the run itself (`canopy_maps.source_run_id`) the rule
+ * reads that instead.
  */
 export const RUN_WRITE_EVENT = 'run_write';
 

@@ -17,8 +17,6 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { instantParam, notFound, ok, resolveProjectScope } from './scope.js';
 import { countSpores, getSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds } from '../core/spores.js';
-import { getPublishedSkillContent, listLineageForSkill, listSkillRecords } from '../core/skills.js';
-import { listDigestRevisions, listDigests } from '../core/digests.js';
 import { canonicalNamespace, listReleaseStates } from '../core/provenance.js';
 import { listInstructions } from '../read/cortex.js';
 import { getRun } from '../core/runs.js';
@@ -80,52 +78,6 @@ export async function handleProjectSpore(env: ServerEnv, ctx: OwnerContext): Pro
     listSupersededSporeIds(env.db, scope, spore.id),
   ]);
   return ok({ spore, supersededBy, supersedes });
-}
-
-export async function handleProjectSkills(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await scopeOf(env, ctx);
-  if (scope === null) return notFound();
-  return ok({
-    skills: await listSkillRecords(env.db, scope, {
-      status: ctx.url.searchParams.get('status') ?? undefined,
-      limit: clampLimit(ctx.url.searchParams.get('limit')),
-    }),
-  });
-}
-
-/**
- * A skill's published content and its lineage.
- *
- * The content comes from the latest lineage snapshot rather than the record:
- * `skill_records` carries metadata and a path, and the file on disk is a
- * materialization that a server has no copy of.
- */
-export async function handleProjectSkill(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await scopeOf(env, ctx);
-  if (scope === null) return notFound();
-  const skillId = ctx.params.skillId ?? '';
-  const [content, lineage] = await Promise.all([
-    getPublishedSkillContent(env.db, scope, skillId),
-    listLineageForSkill(env.db, scope, skillId, clampLimit(ctx.url.searchParams.get('limit'))),
-  ]);
-  if (content === null && lineage.length === 0) return notFound();
-  return ok({ content, lineage });
-}
-
-export async function handleProjectDigests(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await scopeOf(env, ctx);
-  if (scope === null) return notFound();
-  return ok({ digests: await listDigests(env.db, scope, ctx.url.searchParams.get('agentId') ?? undefined) });
-}
-
-/** The bodies a digest displaced, newest first — the history a replacement preserves rather than overwrites. */
-export async function handleProjectDigestRevisions(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await scopeOf(env, ctx);
-  if (scope === null) return notFound();
-  const agentId = ctx.url.searchParams.get('agentId');
-  const tier = Number(ctx.params.tier);
-  if (agentId === null || !Number.isSafeInteger(tier)) return notFound();
-  return ok({ revisions: await listDigestRevisions(env.db, scope, agentId, tier, clampLimit(ctx.url.searchParams.get('limit'))) });
 }
 
 /** What the material behind one instructions row counted, as the run that wrote it recorded. */

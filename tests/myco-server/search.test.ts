@@ -107,7 +107,6 @@ describe('full-text search', () => {
     f.insert('responses', { ...f.base, response_id: 'r', prompt_id: 'p', text: 'cobalt response' });
     f.plan('plan', 'cobalt body');
     f.insert('spores', { project_id: 'search-a', id: 'sp', agent_id: 'search-agent', content: 'cobalt spore', observation_type: 'decision', created_at: 1000 });
-    f.insert('skill_records', { project_id: 'search-a', id: 'sk', agent_id: 'search-agent', name: 'cobalt', display_name: 'Cobalt skill', description: 'a skill', path: 'skills/cobalt', created_at: 1000, updated_at: 1000 });
     const result = await f.search('cobalt');
     expect(result.results.map((r) => r.type).sort()).toEqual([...SEARCH_TYPES].sort());
     expect(result.results.some((r) => r.id === 'foreign')).toBe(false);
@@ -116,6 +115,7 @@ describe('full-text search', () => {
     expect(result.results.find((r) => r.type === 'prompt')?.retrieve).toBeUndefined();
     expect((await f.search('cobalt', { mode: 'semantic' }))).toMatchObject({ results: [], mode: 'semantic', provider_unavailable: true });
     expect((await f.search('absent')).results).toEqual([]);
+    for (const type of ['skill', 'skills', 'skill_records']) await expect(f.search('cobalt', { type })).rejects.toThrow('unsupported search type');
   });
 
   it('keeps a spore among hundreds of prompts and applies filters before the limit', async () => {

@@ -34,7 +34,11 @@ export const SOURCES_WITH_PRESENTED_SESSION_DATE: readonly Source[] = EMBEDDING_
   : s);
 
 
-/** The current source eligibility and presentation clauses. */
-export const CURRENT_EMBEDDING_SOURCES: readonly Source[] = SOURCES_WITH_PRESENTED_SESSION_DATE.map((source) => source.type === 'plan'
+/** Source eligibility requiring a registered proof for blob-backed plans. */
+export const PROVEN_EMBEDDING_SOURCES: readonly Source[] = SOURCES_WITH_PRESENTED_SESSION_DATE.map((source) => source.type === 'plan'
   ? { ...source, eligible: `content IS NOT NULL OR (blob_key IS NOT NULL AND ${processedResourceProofSql('plans.project_id', 'plan', 'plans.plan_key', 'plans.blob_key')})` }
   : source);
+
+/** The current embedding sources exclude generated skills. */
+export const V86_EMBEDDING_SOURCES: readonly Source[] = PROVEN_EMBEDDING_SOURCES.filter((source) => source.type !== 'skill');
+export const CURRENT_EMBEDDING_SOURCES: readonly Source[] = V86_EMBEDDING_SOURCES;

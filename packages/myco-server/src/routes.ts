@@ -13,7 +13,6 @@ import { handleProjectMap } from './api/canopy.js';
 import { handleMachineSettings, handleSetMachineSetting } from './api/machine-settings.js';
 import { handleMachineActivity, handleMachines, handleRenameMachine, handleStopMachine } from './api/machines.js';
 import { handleConnectUncaptured, handleListUncaptured } from './api/uncaptured.js';
-import { handleSkillCandidates, handleReviewSkillCandidate } from './api/skill-candidates.js';
 import type { ServerEnv } from './core/adapters.js';
 import type { CredentialContext, RunnerContext, UnboundMemberContext } from './context.js';
 import type { AuthContext, DeploymentContext, GrantContext, OwnerContext, RouteContext, RunContext, SessionContext, StreamContext } from './context.js';
@@ -46,8 +45,7 @@ import { handleBlobRead } from './api/blobs.js';
 import { handleGetSpore, handleListSpores, handleResolveSpore, handleSaveSpore } from './api/spores.js';
 import { handlePromptContext, handleSessionContext } from './api/recall.js';
 import {
-  handleProjectDigestRevisions, handleProjectDigests, handleProjectReleaseStates,
-  handleProjectSkill, handleProjectSkills, handleProjectSpore, handleProjectSpores, handleProjectInstructions,
+  handleProjectReleaseStates, handleProjectSpore, handleProjectSpores, handleProjectInstructions,
 } from './api/intelligence.js';
 import {
   handleAgents, handleClaimRun, handleRegisterAgent, handleWriteReport, handleUpdateRun,
@@ -196,7 +194,7 @@ export const ROUTES: readonly Route[] = [
   // `capture: false`: this route answers a read of the Project's own intelligence.
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'POST', path: '/context/prompt', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handlePromptContext },
   // What a starting session or a starting subagent is served: the Project's
-  // instructions, and the preferred digest where a Deployment asks for it.
+  // instructions.
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'POST', path: '/context/session', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleSessionContext },
   // The tool surface: the seven MCP tools over the Deployment for a member, the
   // read-only six for an External Agent grant, answered as JSON-RPC. `answered`
@@ -286,12 +284,6 @@ export const ROUTES: readonly Route[] = [
   { authorization: httpPolicy('plan', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/plans/{planKey}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/plans\/(?<planKey>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/, auth: 'session', authority: 'member', handler: handleProjectPlan },
   { authorization: httpPolicy('spore', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/spores', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores$/, auth: 'session', authority: 'member', handler: handleProjectSpores },
   { authorization: httpPolicy('spore', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/spores/{sporeId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores\/(?<sporeId>[^/]{1,192})$/, auth: 'session', authority: 'member', handler: handleProjectSpore },
-  { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/skills', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skills$/, auth: 'session', authority: 'member', handler: handleProjectSkills },
-  { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/skill-candidates', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skill-candidates$/, auth: 'session', authority: 'member', handler: handleSkillCandidates },
-  { authorization: httpPolicy('settings', 'admin', 'project', ['member']), method: 'PATCH', path: '/api/projects/{projectId}/skill-candidates/{candidateId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skill-candidates\/(?<candidateId>[^/]{1,192})$/, auth: 'session', authority: 'admin', handler: handleReviewSkillCandidate },
-  { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/skills/{skillId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/skills\/(?<skillId>[^/]{1,192})$/, auth: 'session', authority: 'member', handler: handleProjectSkill },
-  { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/digests', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/digests$/, auth: 'session', authority: 'member', handler: handleProjectDigests },
-  { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/digests/{tier}/revisions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/digests\/(?<tier>\d{1,6})\/revisions$/, auth: 'session', authority: 'member', handler: handleProjectDigestRevisions },
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/release-states', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-states$/, auth: 'session', authority: 'member', handler: handleProjectReleaseStates },
   { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/recovery/exports', auth: 'session', authority: 'admin', handler: handleStartRecoveryExport },
   { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/recovery/exports', auth: 'session', authority: 'admin', handler: handleRecoveryExportStatus },
@@ -361,6 +353,12 @@ export interface RetiredRoute {
 }
 
 export const RETIRED_ROUTES: readonly RetiredRoute[] = [
+  { method: 'GET', path: '/api/projects/{projectId}/skills', replacedBy: [], dropped: 'generated skills and candidate review are retired; shipped skills remain on myco_skills (#1170)' },
+  { method: 'GET', path: '/api/projects/{projectId}/skills/{skillId}', replacedBy: [], dropped: 'generated skills and candidate review are retired; shipped skills remain on myco_skills (#1170)' },
+  { method: 'GET', path: '/api/projects/{projectId}/skill-candidates', replacedBy: [], dropped: 'generated skills and candidate review are retired; shipped skills remain on myco_skills (#1170)' },
+  { method: 'PATCH', path: '/api/projects/{projectId}/skill-candidates/{candidateId}', replacedBy: [], dropped: 'generated skills and candidate review are retired; shipped skills remain on myco_skills (#1170)' },
+  { method: 'GET', path: '/api/projects/{projectId}/digests', replacedBy: [], dropped: 'generated digests and their stored history are retired (#1170)' },
+  { method: 'GET', path: '/api/projects/{projectId}/digests/{tier}/revisions', replacedBy: [], dropped: 'generated digests and their stored history are retired (#1170)' },
   { method: 'POST', path: '/sessions/register', replacedBy: ['session.start'] },
   { method: 'POST', path: '/sessions/unregister', replacedBy: ['session.end'] },
   { method: 'POST', path: '/events/stop', replacedBy: ['response'] },
@@ -370,8 +368,8 @@ export const RETIRED_ROUTES: readonly RetiredRoute[] = [
   { method: 'POST', path: '/context/subagent', replacedBy: ['subagent.start'] },
   { method: 'POST', path: '/runs/cortex-instructions', replacedBy: ['PUT /api/settings/{leaf}'] },
   { method: 'POST', path: '/runs/instruction', replacedBy: ['POST /worker/claim'] },
-  { method: 'POST', path: '/runs/digest', replacedBy: ['GET /api/projects/{projectId}/digests'] },
-  { method: 'POST', path: '/runs/digest-write', replacedBy: [], dropped: 'the generated digest goes (plan §3 D2, #1152); stored digests stay readable until #1170 drops the table' },
+  { method: 'POST', path: '/runs/digest', replacedBy: [], dropped: 'generated digests are retired (#1170)' },
+  { method: 'POST', path: '/runs/digest-write', replacedBy: [], dropped: 'generated digests and their stored history are retired (#1170)' },
   { method: 'POST', path: '/runs/get', replacedBy: ['GET /api/projects/{projectId}/runs/{runId}'] },
   { method: 'POST', path: '/runs/failed', replacedBy: ['POST /runs/update', 'POST /worker/end'] },
   { method: 'POST', path: '/runs/resume-admission', replacedBy: [], dropped: 'a failed run is never resumed in 2.0; a fresh run is dispatched' },

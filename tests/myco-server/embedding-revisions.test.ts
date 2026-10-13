@@ -13,8 +13,9 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
 import type { EmbeddingProvider } from '@myco-server-worker/core/embedding/provider.js';
-import { EMBEDDING_SOURCES, embeddingSourcesView, SOURCES_WITH_PRESENTED_SESSION_DATE } from '@myco-server-worker/db/schema-v20.js';
-import { processedResourceProofSql } from '@myco-server-worker/core/processed-resources.js';
+import { EMBEDDING_SOURCES as HISTORICAL_EMBEDDING_SOURCES, embeddingSourcesView, SOURCES_WITH_PRESENTED_SESSION_DATE as HISTORICAL_PRESENTED_SOURCES, CURRENT_EMBEDDING_SOURCES } from '@myco-server-worker/db/embedding-sources.js';
+const EMBEDDING_SOURCES = HISTORICAL_EMBEDDING_SOURCES.filter((source) => source.type !== 'skill');
+const SOURCES_WITH_PRESENTED_SESSION_DATE = HISTORICAL_PRESENTED_SOURCES.filter((source) => source.type !== 'skill');
 import { RELEASE_REVISION_COLUMNS } from '@myco-server-worker/db/schema-v49.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -61,8 +62,6 @@ describe('embedding revisions follow the values a vector is built from', () => {
     f.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_2', 'two', 1)`);
     // A spore under the session's own id, so a release state moved to the spores namespace names a record that exists.
     f.insert('spores', { project_id: P, id: 's_1', agent_id: 'myco', session_id: 's_1', observation_type: 'gotcha', content: 'Keyed like the session', created_at: 3 });
-    f.insert('skill_records', { project_id: P, id: 'sk_1', agent_id: 'myco', name: 'skill-one', display_name: 'Skill one', description: 'Does one thing',
-      status: 'active', generation: 1, path: 'skills/skill-one', created_at: 5, updated_at: 5 });
     f.insert('knowledge_release_state', { project_id: P, id: 'rs_1', identity_key: `${P}:sessions:s_1`, namespace: 'sessions', record_id: 's_1',
       source_session_id: 's_1', state: 'merged_unreleased', confidence: 'medium', basis_kind: 'integration_ref', basis_ref: 'main', basis_sha: B,
       reason: 'On main', evidence_json: '{"source":"session_end:b:0"}', checked_at: 10, created_at: 10 });
@@ -70,7 +69,7 @@ describe('embedding revisions follow the values a vector is built from', () => {
   }
 
   /** The record each source table's seeded row is keyed by. */
-  const RECORDS: Record<string, [string]> = { sessions: ['s_1'], spores: ['sp_s_1'], plans: ['plan_s_1'], skill_records: ['sk_1'] };
+  const RECORDS: Record<string, [string]> = { sessions: ['s_1'], spores: ['sp_s_1'], plans: ['plan_s_1'] };
 
   /** Columns the embedding view reads that a source's revision does not follow, each with what makes that safe. */
   const SOURCE_EXCEPTIONS: Record<string, Record<string, string>> = {
@@ -101,7 +100,7 @@ describe('embedding revisions follow the values a vector is built from', () => {
   function changedValue(table: string, column: string): string {
     const special: Record<string, string> = {
       'spores.session_id': "'s_2'", 'plans.session_id': "'s_2'", 'spores.status': "'superseded'", 'plans.status': "'completed'",
-      'skill_records.status': "'retired'", 'sessions.ended_at': 'NULL',
+      'sessions.ended_at': 'NULL',
       'knowledge_release_state.project_id': "'proj_2'", 'knowledge_release_state.namespace': "'spores'", 'knowledge_release_state.record_id': "'s_2'",
       'knowledge_release_state.state': "'released'", 'knowledge_release_state.confidence': "'high'",
     };
@@ -118,9 +117,9 @@ describe('embedding revisions follow the values a vector is built from', () => {
     const tables = (f.sqlite.query(`SELECT DISTINCT tbl_name AS t FROM sqlite_master WHERE type = 'trigger'
       AND (sql LIKE '%INSERT INTO embedding_versions(%' OR sql LIKE '%UPDATE embedding_versions SET%') AND sql LIKE '%AFTER UPDATE%' ORDER BY tbl_name`).all() as { t: string }[]).map((r) => r.t);
     // A new table whose updates re-revision a record is seeded here before this passes.
-    expect(tables).toEqual(['knowledge_release_state', 'plans', 'sessions', 'skill_records', 'spores']);
+    expect(tables).toEqual(['knowledge_release_state', 'plans', 'sessions', 'spores']);
     const before = f.revisions();
-    expect([...new Set(before.map((r) => r.type))].sort()).toEqual(['plan', 'session', 'skill', 'spore']);
+    expect([...new Set(before.map((r) => r.type))].sort()).toEqual(['plan', 'session', 'spore']);
     for (const table of tables) {
       const columns = (f.sqlite.query(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
       f.sqlite.run(`UPDATE ${table} SET ${columns.map((c) => `${c} = ${c}`).join(', ')}`);
@@ -173,9 +172,7 @@ describe('embedding revisions follow the values a vector is built from', () => {
     const f = fixture();
     const current = f.sqlite.query(`SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'embedding_sources'`).get() as { sql: string };
     // The view a database serves is the one built from the presented session sources.
-    const admittedSources = SOURCES_WITH_PRESENTED_SESSION_DATE.map((source) => source.type === 'plan'
-      ? { ...source, eligible: `content IS NOT NULL OR (blob_key IS NOT NULL AND ${processedResourceProofSql('plans.project_id', 'plan', 'plans.plan_key', 'plans.blob_key')})` }
-      : source);
+    const admittedSources = CURRENT_EMBEDDING_SOURCES;
     expect(current.sql).toBe(embeddingSourcesView(admittedSources).replace('CREATE VIEW IF NOT EXISTS', 'CREATE VIEW'));
     for (const sources of [EMBEDDING_SOURCES, SOURCES_WITH_PRESENTED_SESSION_DATE]) {
       for (const s of sources) {

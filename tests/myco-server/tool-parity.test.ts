@@ -72,10 +72,24 @@ describe('tool parity', () => {
     expect(TOOL_DEFINITIONS.filter((d) => !member.has(d.name)).map((d) => d.name)).toEqual([]);
   });
 
-  it('serves each definition exactly as the frozen contract declares it', () => {
+  it('preserves the frozen contract except for retired generated-intelligence discovery', () => {
     const member = byName(FROZEN_DEFINITIONS);
     for (const server of TOOL_DEFINITIONS) {
-      expect({ tool: String(server.name), definition: server as object }).toEqual({ tool: String(server.name), definition: member.get(server.name)! as object });
+      const frozen = structuredClone(member.get(server.name)!);
+      const current = structuredClone(server);
+      if (['myco_search', 'myco_cortex', 'myco_skills'].includes(server.name)) {
+        frozen.description = current.description;
+        if (frozen.cortex && current.cortex) frozen.cortex.guidance = current.cortex.guidance;
+      }
+      if (server.name === 'myco_search') {
+        const type = frozen.inputSchema.properties.type as { enum: string[] };
+        type.enum = type.enum.filter((value) => value !== 'skill');
+        expect((current.inputSchema.properties.type as { enum: string[] }).enum).toEqual(['session', 'plan', 'spore', 'prompt', 'response', 'all']);
+        expect(current.description).not.toContain('skills');
+      }
+      if (server.name === 'myco_skills') expect(current.description).not.toContain('1.4');
+      if (server.name === 'myco_cortex') expect(current.description).toContain('digest\" is retired');
+      expect({ tool: String(server.name), definition: current as object }).toEqual({ tool: String(server.name), definition: frozen as object });
       expect({ tool: server.name, retired: RETIRED in server.inputSchema.properties }).toEqual({ tool: server.name, retired: false });
     }
   });

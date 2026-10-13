@@ -22,7 +22,7 @@ const sectionPath = (id: SettingsSectionId): string => SETTINGS_SECTIONS.find((s
  */
 export function oldTabTarget(tab: string): string {
   if (tab === 'agent') return sectionPath('models');
-  if (tab === 'skills' || tab === 'learning') return SETTINGS_PATH;
+  if (tab === 'learning') return SETTINGS_PATH;
   if (tab === 'secrets') return `${sectionPath('models')}#${CREDENTIALS_ANCHOR}`;
   if (tab === 'capabilities') return `${sectionPath('access')}#${PROJECTS_ANCHOR}`;
   const group = LEAF_GROUPS.find((g) => g.id === tab);

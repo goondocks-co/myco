@@ -1,4 +1,4 @@
-.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-refresh dev-link dev-deploy dev-wrapper dev-link-worktree dev-unlink dev-unlink-worktree worktree-sweep dev-build-windows
+.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-link dev-deploy dev-wrapper dev-link-worktree dev-unlink dev-unlink-worktree worktree-sweep dev-build-windows
 
 HOST_TARGET := $(shell node -e "process.stdout.write(process.platform + '-' + (process.arch === 'arm64' ? 'arm64' : 'x64'))")
 
@@ -55,9 +55,6 @@ dev-install:
 	@mv -f $(HOME)/.myco-dev/bin/myco.new $(HOME)/.myco-dev/bin/myco
 	@rm -f $(HOME)/.local/bin/myco-dev
 	@$(MAKE) -s dev-wrapper OUT="$(HOME)/.local/bin/myco-dev" WRAPPED="$(HOME)/.myco-dev/bin/myco"
-
-dev-refresh:
-	@if [ "$$(git rev-parse --git-dir)" = "$$(git rev-parse --git-common-dir)" ] && [ -x "$(HOME)/.myco-dev/bin/myco" ]; then $(MAKE) --no-print-directory dev-install; fi
 
 dev-link: dev-build dev-install
 	@mkdir -p $(PWD)/.myco

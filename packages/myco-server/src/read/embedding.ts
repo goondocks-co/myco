@@ -58,8 +58,6 @@ export async function semanticSearch(db: RelationalStore, scope: ReadScope, sema
   const retained = types.filter((t): t is VectorType => (VECTOR_TYPES as readonly string[]).includes(t));
   const branches = await Promise.all(retained.map((type) => semanticHits(db, scope, semantic, values,
     { topK: VECTOR_QUERY_LIMIT, minScore: MIN_SEARCH_SIMILARITY, filters: { ...filters, type } })));
-  // No `skill` entry: `myco_skills` answers from the shipped catalogue, so a
-  // hint naming a generated record's id would send a caller to a refusal.
   const tools: Partial<Record<VectorType, string>> = { session: 'myco_sessions', spore: 'myco_spores', plan: 'myco_plans' };
   return branches.flat().sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, limit).map((row) => {
     const tool = tools[row.type];

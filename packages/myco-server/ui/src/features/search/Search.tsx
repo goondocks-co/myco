@@ -18,7 +18,6 @@ const GROUPS = [
   { type: 'response', one: 'Reply', many: 'Replies' },
 ] as const;
 
-/** Skills are read from the catalogue Myco ships, not from a page here, so the filter never offers them and their hits are left out. */
 const TYPE_OPTIONS: readonly SelectOption[] = [
   { value: 'all', label: 'Everything' },
   ...GROUPS.map((group) => ({ value: group.type, label: group.many })),
@@ -124,7 +123,7 @@ function SearchBody({ scope, projectLabel, onScope, inputRef, onPicked, projectN
     else list[Math.min(next, list.length - 1)]?.focus();
   };
 
-  const shown = (search.data?.results ?? []).filter((hit) => hit.type !== 'skill');
+  const shown = (search.data?.results ?? []).filter((hit) => GROUPS.some((group) => group.type === hit.type));
   const groups = GROUPS.map((group) => ({ ...group, hits: shown.filter((hit) => hit.type === group.type) })).filter((group) => group.hits.length > 0);
 
   return (

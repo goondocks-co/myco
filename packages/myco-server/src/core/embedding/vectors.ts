@@ -2,7 +2,7 @@ import { sha256Hex } from '../../hash.js';
 
 export const VECTOR_DIMENSIONS = 1536;
 export const VECTOR_QUERY_LIMIT = 100;
-export const VECTOR_TYPES = ['session', 'spore', 'plan', 'skill'] as const;
+export const VECTOR_TYPES = ['session', 'spore', 'plan'] as const;
 export type VectorType = typeof VECTOR_TYPES[number];
 export interface VectorScope { projectId: string; modelKey: string }
 export interface VectorMetadata {

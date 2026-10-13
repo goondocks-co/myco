@@ -4,12 +4,14 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
+import { Database } from 'bun:sqlite';
 import {
-  BACKUP_TABLES, backupArtifact, BackupAdmissionError, BackupIntegrityError, BackupLineageError, BackupSchemaError, BackupTooLargeError, MAX_BACKUP_BYTES, createBackup, deploymentId,
+  BACKUP_FORMAT, BACKUP_TABLES, backupArtifact, BackupAdmissionError, BackupIntegrityError, BackupLineageError, BackupSchemaError, BackupTooLargeError, MAX_BACKUP_BYTES, createBackup, deploymentId,
   EMPTY_ONLY_TABLES, EXCLUDED_TABLES, listBackups, previewRestore, pruneBackups,
   restoreBackup, restoreArtifact, retentionVictims, setBackupPinned, type BackupIndexRow,
 } from '@myco-server-worker/core/backup.js';
-import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
+import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { renderMigrationFile } from '@myco-server-worker/db/migrate.js';
 import { journaled, sqliteEnv } from './helpers/fixtures.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { sqliteVectorStore } from '@myco-server-worker/platform/bun/vectors.js';
@@ -24,25 +26,63 @@ const seeded = () => {
 };
 
 describe('table dispositions', () => {
-  it('GATE: every DDL table is named in exactly one disposition', async () => {
+  it('GATE: every current schema table is named in exactly one disposition', async () => {
     const ddlTables = new Set<string>();
-    for (const s of SCHEMA_DDL) {
-      const m = /CREATE (?:VIRTUAL )?TABLE (?:IF NOT EXISTS )?(\w+)/.exec(s);
-      if (m) ddlTables.add(m[1]!);
-    }
     const fixture = sqliteEnv();
     await sqliteVectorStore(fixture.sqlite).query({ projectId: 'proj_1', modelKey: 'fixture' }, { values: [1], topK: 1 });
     for (const row of fixture.sqlite.query<{ name: string }, []>(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all()) ddlTables.add(row.name);
     fixture.sqlite.close();
     const named = new Set<string>([...BACKUP_TABLES, ...EXCLUDED_TABLES]);
+    const droppedHistorically = new Set(SCHEMA_DDL.flatMap((statement) => {
+      const name = /^DROP TABLE (?:IF EXISTS )?(\w+)/.exec(statement)?.[1];
+      return name === undefined ? [] : [name];
+    }));
     expect([...ddlTables].filter((t) => !named.has(t)).sort()).toEqual([]);
-    expect([...named].filter((t) => !ddlTables.has(t)).sort()).toEqual([]);
+    expect([...named].filter((t) => !ddlTables.has(t) && !droppedHistorically.has(t)).sort()).toEqual([]);
     expect(BACKUP_TABLES.filter((t) => EXCLUDED_TABLES.has(t))).toEqual([]);
     for (const t of EMPTY_ONLY_TABLES) expect(BACKUP_TABLES).toContain(t);
   });
 });
 
 describe('portable machine identities', () => {
+  it('restores retained rows twice from a pre-v86 artifact carrying retired skill and digest rows', async () => {
+    const source = new Database(':memory:');
+    const target = sqliteEnv();
+    try {
+      for (const step of SCHEMA_STEPS.filter(({ version }) => version <= 85)) source.exec(renderMigrationFile(step));
+      source.exec(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_bk','Project',1);
+        INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent_old_backup','Agent','built-in',1,1);
+        INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES('proj_bk','sess_1','t',1,1);
+        INSERT INTO skill_candidates(project_id,id,agent_id,topic,rationale,created_at,updated_at)
+          VALUES('proj_bk','c','agent_old_backup','topic','reason',1,1);
+        INSERT INTO skill_records(project_id,id,agent_id,name,display_name,description,candidate_id,path,created_at,updated_at)
+          VALUES('proj_bk','r','agent_old_backup','name','Name','description','c','skills/name',1,1);
+        INSERT INTO skill_lineage(project_id,id,skill_id,generation,action,rationale,content_snapshot,created_at)
+          VALUES('proj_bk','l','r',1,'create','reason','content',1);
+        INSERT INTO skill_usage(project_id,id,skill_id,session_id,detected_at) VALUES('proj_bk','u','r','sess_1',1);
+        INSERT INTO digest_extracts(project_id,id,agent_id,tier,content,generated_at)
+          VALUES('proj_bk','d','agent_old_backup',1,'digest',1);
+        INSERT INTO digest_extract_revisions(project_id,agent_id,tier,content,created_at)
+          VALUES('proj_bk','agent_old_backup',1,'digest',1);`);
+      const retained = ['projects', 'agents', 'sessions'];
+      const retired = ['skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions'];
+      const tables = [...retained, ...retired];
+      const rows = tables.flatMap((table) => source.query(`SELECT * FROM ${table} WHERE ${table === 'agents' ? "id='agent_old_backup'" : "project_id='proj_bk'"}`).all().map((r) => ({ t: table, r })));
+      expect(rows).toHaveLength(tables.length);
+      const header = {
+        format: BACKUP_FORMAT, deploymentId: await deploymentId(target.db), schemaVersion: 85,
+        createdAt: 1, producer: 'pre-v86', counts: Object.fromEntries(tables.map((table) => [table, 1])),
+      };
+      const oldArtifact = [header, ...rows].map((row) => JSON.stringify(row)).join('\n') + '\n';
+      for (let repeat = 0; repeat < 2; repeat++) {
+        await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: oldArtifact, allowForeignLineage: true });
+        expect(target.sqlite.query(`SELECT project_id FROM projects WHERE project_id='proj_bk'`).all()).toEqual([{ project_id: 'proj_bk' }]);
+        expect(target.sqlite.query(`SELECT session_id FROM sessions WHERE project_id='proj_bk'`).all()).toEqual([{ session_id: 'sess_1' }]);
+        expect(target.sqlite.query(`SELECT id FROM agents WHERE id='agent_old_backup'`).all()).toEqual([{ id: 'agent_old_backup' }]);
+      }
+    } finally { source.close(); target.sqlite.close(); }
+  });
+
   it('restores prompt answer outcomes, skips and coded contributor failures', async () => {
     const source = seeded();
     const target = seeded();

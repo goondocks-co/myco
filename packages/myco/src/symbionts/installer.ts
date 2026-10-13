@@ -573,7 +573,7 @@ export class SymbiontInstaller {
     return { ...none, present, member: present && memberCommands.length > 0, memberCommands, readable: true };
   }
 
-  inspectMemberMcp(expectedDeployment?: string): Array<{ scope: 'global' | 'project'; present: boolean; transport: 'http' | 'stdio' | null; carriesCredential: boolean; declaredCwd: string | null; deploymentsAgree: boolean | null; namesExpectedDeployment: boolean | null; readable: boolean }> {
+  inspectMemberMcp(expectedDeployment?: string): Array<{ scope: 'global'; present: boolean; transport: 'http' | 'stdio' | null; carriesCredential: boolean; declaredCwd: string | null; deploymentsAgree: boolean | null; namesExpectedDeployment: boolean | null; readable: boolean }> {
     const toml = this.manifest.registration?.mcpFormat === 'toml';
     const scope = 'global' as const;
     return this.resolveAbsoluteMcpTargets().map(({ path: filePath, serversKey }) => {
@@ -1077,33 +1077,31 @@ export class SymbiontInstaller {
     const audit = emptyJsonAudit();
     audit.file = this.settingsFileAudit();
     const merged = deepMergeSettingsWithAudit(existing, template, audit);
-    {
-      // Merge with any pre-existing audit so re-installs accumulate
-      // ownership claims (different template versions may legitimately
-      // touch different paths over time). Paths are arrays; key on the
-      // JSON-stringified form to avoid false-distinct paths.
-      const existingAudit = this.readJsonSettingsAudit();
-      if (existingAudit) {
-        for (const s of existingAudit.scalars) {
-          const current = audit.scalars.find(entry => JSON.stringify(entry.path) === JSON.stringify(s.path));
-          if (current) {
-            if (s.previous) current.previous = s.previous; else delete current.previous;
-          } else audit.scalars.push(s);
-        }
-        const arrayByPath = new Map(audit.arrayEntries.map((e) => [JSON.stringify(e.path), e]));
-        for (const e of existingAudit.arrayEntries) {
-          const key = JSON.stringify(e.path);
-          const current = arrayByPath.get(key);
-          if (current) {
-            if (e.previous) current.previous = e.previous; else delete current.previous;
-            const seen = new Set(current.values.map((v) => JSON.stringify(v)));
-            for (const v of e.values) {
-              if (!seen.has(JSON.stringify(v))) current.values.push(v);
-            }
-          } else {
-            audit.arrayEntries.push(e);
-            arrayByPath.set(key, e);
+    // Merge with any pre-existing audit so re-installs accumulate
+    // ownership claims (different template versions may legitimately
+    // touch different paths over time). Paths are arrays; key on the
+    // JSON-stringified form to avoid false-distinct paths.
+    const existingAudit = this.readJsonSettingsAudit();
+    if (existingAudit) {
+      for (const s of existingAudit.scalars) {
+        const current = audit.scalars.find(entry => JSON.stringify(entry.path) === JSON.stringify(s.path));
+        if (current) {
+          if (s.previous) current.previous = s.previous; else delete current.previous;
+        } else audit.scalars.push(s);
+      }
+      const arrayByPath = new Map(audit.arrayEntries.map((e) => [JSON.stringify(e.path), e]));
+      for (const e of existingAudit.arrayEntries) {
+        const key = JSON.stringify(e.path);
+        const current = arrayByPath.get(key);
+        if (current) {
+          if (e.previous) current.previous = e.previous; else delete current.previous;
+          const seen = new Set(current.values.map((v) => JSON.stringify(v)));
+          for (const v of e.values) {
+            if (!seen.has(JSON.stringify(v))) current.values.push(v);
           }
+        } else {
+          audit.arrayEntries.push(e);
+          arrayByPath.set(key, e);
         }
       }
     }
@@ -1112,8 +1110,7 @@ export class SymbiontInstaller {
 
   private getSettingsAuditPath(): string {
     const stateRoot = this.memberHomeDir();
-    const scopeTag = 'global';
-    return path.join(stateRoot, 'installer-audit', `${this.manifest.name}-${scopeTag}-settings.json`);
+    return path.join(stateRoot, 'installer-audit', `${this.manifest.name}-global-settings.json`);
   }
 
   private preflightMemberSettings(): void {

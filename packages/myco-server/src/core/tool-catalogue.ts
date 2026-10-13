@@ -87,7 +87,8 @@ export const PROJECT_PIVOT = 'project';
  * declared op enum.
  */
 export const UNSERVED_OPS: Readonly<Partial<Record<ServedTool, Readonly<Record<string, string>>>>> = {
-  myco_cortex: { digest: '#1170', canopy_entry: 'never', notifications: '#922', maintenance_summary: '#923' },
+  // Generated project digests are retired; instructions read retained intelligence directly.
+  myco_cortex: { digest: 'never', canopy_entry: 'never', notifications: '#922', maintenance_summary: '#923' },
   myco_plans: { delete: 'never' },
 };
 
