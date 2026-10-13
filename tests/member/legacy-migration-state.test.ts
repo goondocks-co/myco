@@ -129,6 +129,24 @@ it('reports a partial import and preserves a terminal refusal cause', () => {
   expect(JSON.parse(fs.readFileSync(path.join(home, 'member', 'cutover.json'), 'utf8')).migrations[file].projects.proj_2.vault.failures[0].cause).toBe('refused:403');
 });
 
+it('reports unfinished migration instead of changed before any history was imported', () => {
+  const file = vault();
+  receipts(file, state => {
+    const project = state.migrations![file].projects.proj_1;
+    delete project.vault;
+    delete project.transcripts;
+  });
+  const db = new Database(file);
+  try { db.run("INSERT INTO sessions (body) VALUES ('final capture before stop')"); } finally { db.close(); }
+  stateIs('partial');
+});
+
+it('refuses malformed stopped-source evidence', () => {
+  const file = vault();
+  receipts(file, state => { state.handover!.reconciliation = { before: '{}', after: 'broken', sessionsAdded: 1 }; });
+  stateIs('unavailable');
+});
+
 it('reports changed after capture resumes, including WAL-only writes', () => {
   const file = vault(); receipts(file); stateIs('moved');
   const db = new Database(file);
@@ -136,7 +154,7 @@ it('reports changed after capture resumes, including WAL-only writes', () => {
     db.run('PRAGMA journal_mode=WAL');
     db.run("INSERT INTO sessions (body) VALUES ('later')");
     stateIs('changed');
-    expect(legacyMigrationState(home)).toMatchObject({ warning: expect.stringContaining('Stop Myco 1.4') });
+    expect(legacyMigrationState(home)).toMatchObject({ warning: expect.stringContaining('myco setup --cutover') });
   } finally { db.close(); }
 });
 

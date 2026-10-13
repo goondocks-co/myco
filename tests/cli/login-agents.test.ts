@@ -14,7 +14,7 @@ import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js
 import { run } from '@myco/cli/login.js';
 import { detectedProvisionLines, runProvision } from '@myco/cli/member.js';
 import { isBinaryOnPath } from '@myco/symbionts/detect.js';
-import { writeDeploymentMembership } from '@myco/member/registry.js';
+import { writeDeploymentMembership, deploymentKeyFor } from '@myco/member/registry.js';
 import { unjoinedRig } from '../member/helpers/server.js';
 import { recordingPlatform } from '../member/helpers/service-platform.js';
 import { readProvisionRecord } from '@myco/symbionts/member-provision-record.js';
@@ -172,7 +172,7 @@ describe('myco login sets up the agents on this machine', () => {
     expect(await run([await invite(rig), ...(choice === 'no-agents' ? ['--no-agents'] : [])], deps(rig, { agents: () => ['claude-code'], provision: choice === 'defer' ? 'defer' : 'now' }))).toBe(true);
     expect(out).not.toContain(LEGACY_AGENT_DEFERRAL);
     expect(out.filter(line => line.includes('confirm where each project went'))).toEqual([
-      'Moved by an earlier version; run `myco cutover --dry-run` to confirm where each project went.',
+      'Moved by an earlier version; run `myco setup --cutover` to confirm where each project went, or preview manually with `myco cutover --dry-run`.',
     ]);
     if (choice === 'now') expect(read(path.join(claudeDir, 'settings.json'))).toContain('--credential registry');
     else expect(read(path.join(claudeDir, 'settings.json'))).toBeNull();
@@ -243,17 +243,19 @@ describe('myco login sets up the agents on this machine', () => {
     const vault = path.join(home, 'groves', 'legacy', 'myco.db');
     fs.mkdirSync(path.dirname(vault), { recursive: true });
     const db = new Database(vault);
-    db.run('CREATE TABLE sessions (body TEXT)');
-    db.run("INSERT INTO sessions VALUES ('retained')");
+    db.run("CREATE TABLE sessions (body TEXT, project_id TEXT DEFAULT 'proj_legacy')");
+    db.run("INSERT INTO sessions (body) VALUES ('retained')");
     db.close();
     const digest = readVaultContent(vault).digest;
     const stamp = legacyVaultStamp(vault);
     if (changed) {
       const write = new Database(vault);
-      try { write.run("INSERT INTO sessions VALUES ('new capture')"); } finally { write.close(); }
+      try { write.run("INSERT INTO sessions (body) VALUES ('new capture')"); } finally { write.close(); }
     }
     fs.mkdirSync(path.join(home, 'member'), { recursive: true });
-    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ version: 2, backups: { [vault]: { digest } }, handover: { at: 1, legacyHomes: [home], agents: [] }, migrations: { [vault]: { ...stamp, digest, projects: {} } } }), { mode: 0o600 });
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ version: 2, backups: { [vault]: { digest } }, handover: { at: 1, legacyHomes: [home], agents: [] }, migrations: { [vault]: { ...stamp, digest, projects: {
+      proj_legacy: { destination: { serverUrl: 'https://s', key: deploymentKeyFor('https://s') }, vault: { state: 'complete', at: 1 }, transcripts: { state: 'none', at: 1 } },
+    } } } }), { mode: 0o600 });
     const rig = unjoinedRig();
     expect(await run([await invite(rig)], deps(rig, { agents: () => ['claude-code'] }))).toBe(true);
     expect(out.includes(LEGACY_AGENT_DEFERRAL)).toBe(changed);

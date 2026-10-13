@@ -22,13 +22,13 @@ const shortPath = (value: string): string => {
 const withoutHint = (detail: string): string => detail.split(/\. Run | Run |run \x60/)[0].trim();
 
 const legacySentences: Record<string, string> = {
-  unmoved: 'Myco 1.4 data has not been moved; run myco cutover --dry-run to preview the move.',
-  'needs-destination': 'Moved by an earlier version; run myco cutover --dry-run to confirm where each project went.',
-  'handover-pending': 'Myco 1.4 capture has not handed over; run myco cutover --dry-run to preview the handover.',
-  partial: 'Some Myco 1.4 data has not finished moving; run myco cutover --dry-run to preview what remains.',
-  changed: 'Myco 1.4 wrote more data after migration. Stop Myco 1.4, then run myco cutover --dry-run before retrying.',
+  unmoved: 'Myco 1.4 data has not been moved; run myco setup --cutover to preview and move it.',
+  'needs-destination': 'Run myco setup --cutover to confirm each project destination, or preview manually with myco cutover --dry-run.',
+  'handover-pending': 'Myco 1.4 capture has not handed over; run myco setup --cutover to preview the handover.',
+  partial: 'Some Myco 1.4 data has not finished moving; run myco setup --cutover to preview and resume what remains.',
+  changed: 'Myco 1.4 wrote more data after migration. Keep its files and run myco setup --cutover to review the new data.',
   moved: 'Myco 1.4 data has been moved.',
-  unavailable: 'Myco 1.4 migration records could not be read; run myco cutover --dry-run to inspect them.',
+  unavailable: 'Myco 1.4 migration records could not be read; run myco setup --cutover to inspect them.',
 };
 function legacyState(fact: Observation): string { return fact.detail.match(/^[a-z-]+/)?.[0] ?? 'unavailable'; }
 
@@ -37,8 +37,8 @@ function describe(fact: Observation, url: string | undefined): string {
   const address = url ?? '<address>';
   if (fact.id === 'legacy') {
     const state = legacyState(fact);
-    if (state === 'unavailable') return `Myco 1.4 migration records could not be read: ${sentence(fact.legacyError ?? fact.detail.replace(/^unavailable\s*/, ''))}. Inspect ${shortPath(fact.scope)}, then run myco cutover --dry-run.`;
-    if (state === 'needs-destination' && fact.state === 'incomplete') return 'Some Myco 1.4 projects need a destination and Myco 1.4 still owns capture; run myco cutover --dry-run to preview the handover.';
+    if (state === 'unavailable') return `Myco 1.4 migration records could not be read: ${sentence(fact.legacyError ?? fact.detail.replace(/^unavailable\s*/, ''))}. Inspect ${shortPath(fact.scope)}, then run myco setup --cutover.`;
+    if (state === 'needs-destination' && fact.state === 'incomplete') return 'Some Myco 1.4 projects need a destination; run myco setup --cutover to preview the handover.';
     return legacySentences[state] ?? legacySentences.unavailable;
   }
   if (fact.state === 'unavailable') return `Could not read ${labels[fact.id] ?? 'this observation'}: ${sentence(fact.detail)}. Inspect with ${fact.id.startsWith('runner.') ? 'myco runner status' : 'myco doctor'}.`;
@@ -55,10 +55,11 @@ function describe(fact: Observation, url: string | undefined): string {
   if (fact.id === 'machine.signin') return complete ? 'This machine is signed in (remote authentication not checked).' : `${sentence(fact.detail)}. Run myco login ${address}.`;
   if (fact.id === 'machine.agents') {
     if (complete) return fact.detail === 'current' ? `set up for ${fact.hooksDeployment ?? address}` : fact.detail === 'declined' ? 'Setup declined.' : 'No supported agents installed.';
-    if (fact.detail === 'deferred-legacy') return 'Myco 1.4 still owns agent capture. Preview the handover with myco cutover --dry-run.';
+    if (fact.detail === 'deferred-legacy') return 'Myco 1.4 still owns agent capture. Preview the handover with myco setup --cutover.';
     return fact.state === 'absent' ? 'Agent hooks are not set up; run myco member provision --server <address>.' : 'Agent hooks are out of date; run myco member provision --refresh';
   }
   if (fact.id === 'project') {
+    if (fact.detail.startsWith('bound-cutover: ')) return `${shortPath(fact.scope)}: sends to ${fact.detail.slice('bound-cutover: '.length)} (cutover destination).`;
     if (fact.detail === 'bound-here') return `${shortPath(fact.scope)}: bound here.`;
     if (fact.detail.startsWith('bound-elsewhere:') && fact.informational) return `${shortPath(fact.scope)}: sends to ${fact.detail.slice('bound-elsewhere: '.length)}.`;
     if (fact.detail.startsWith('bound-elsewhere:')) return `${shortPath(fact.scope)}: bound elsewhere (${fact.detail.slice('bound-elsewhere: '.length)}). Run myco member join ${address} --root ${quote(fact.scope)} --project <id> to change it.`;

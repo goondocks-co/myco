@@ -189,18 +189,18 @@ it('summarises bindings from a bare repository instead of treating its parent as
 
 const legacyCases = [
   ['none', 'complete', 'No Myco 1.4 capture blocks setup.', null],
-  ['unmoved', 'incomplete', 'Agent setup deferred until cutover.', 'Myco 1.4 data has not been moved; run myco cutover --dry-run to preview the move.'],
-  ['needs-destination', 'complete', 'Moved by an earlier version; run `myco cutover --dry-run` to confirm where each project went.', 'Moved by an earlier version; run myco cutover --dry-run to confirm where each project went.'],
-  ['handover-pending', 'incomplete', 'Agent setup deferred until cutover.', 'Myco 1.4 capture has not handed over; run myco cutover --dry-run to preview the handover.'],
-  ['partial', 'complete', 'No Myco 1.4 capture blocks setup.', 'Some Myco 1.4 data has not finished moving; run myco cutover --dry-run to preview what remains.'],
-  ['changed', 'incomplete', 'Myco 1.4 wrote more data after migration.', 'Myco 1.4 wrote more data after migration. Stop Myco 1.4, then run myco cutover --dry-run before retrying.'],
+  ['unmoved', 'incomplete', 'Agent setup deferred until cutover.', 'Myco 1.4 data has not been moved; run myco setup --cutover to preview and move it.'],
+  ['needs-destination', 'complete', 'Moved by an earlier version; run `myco cutover --dry-run` to confirm where each project went.', 'Run myco setup --cutover to confirm each project destination, or preview manually with myco cutover --dry-run.'],
+  ['handover-pending', 'incomplete', 'Agent setup deferred until cutover.', 'Myco 1.4 capture has not handed over; run myco setup --cutover to preview the handover.'],
+  ['partial', 'complete', 'No Myco 1.4 capture blocks setup.', 'Some Myco 1.4 data has not finished moving; run myco setup --cutover to preview and resume what remains.'],
+  ['changed', 'incomplete', 'Myco 1.4 wrote more data after migration.', 'Myco 1.4 wrote more data after migration. Keep its files and run myco setup --cutover to review the new data.'],
   ['moved', 'complete', 'No Myco 1.4 capture blocks setup.', 'Myco 1.4 data has been moved.'],
   ['unavailable', 'unavailable', 'Cannot read receipt.', 'unavailable-copy'],
 ] as const;
 for (const [legacy, state, detail, expected] of legacyCases) it(`explains legacy ${legacy} as a whole sentence`, () => {
   const text = renderSetupStatus([{ id: 'legacy', scope: fixture.home, state, detail: `${legacy} ${detail}`,
     ...(legacy === 'needs-destination' ? { hint: detail } : {}) }]).join('\n');
-  expect(text).toBe(expected === null ? '' : `1.4 migration: ${legacy === 'unavailable' ? `Myco 1.4 migration records could not be read: Cannot read receipt. Inspect ${fixture.home}, then run myco cutover --dry-run.` : expected}`);
+  expect(text).toBe(expected === null ? '' : `1.4 migration: ${legacy === 'unavailable' ? `Myco 1.4 migration records could not be read: Cannot read receipt. Inspect ${fixture.home}, then run myco setup --cutover.` : expected}`);
 });
 
 it('separates split repository counts and capture, with home facts above default-first groups', async () => {
@@ -277,7 +277,7 @@ it('uses recorded global hooks even when saved answers declined agents for anoth
 });
 it('explains destination selection when legacy still owns capture', () => {
   expect(renderSetupStatus([{ id: 'legacy', scope: fixture.home, state: 'incomplete', detail: 'needs-destination Agent setup deferred until cutover.' }])).toEqual([
-    '1.4 migration: Some Myco 1.4 projects need a destination and Myco 1.4 still owns capture; run myco cutover --dry-run to preview the handover.',
+    '1.4 migration: Some Myco 1.4 projects need a destination; run myco setup --cutover to preview the handover.',
   ]);
 });
 

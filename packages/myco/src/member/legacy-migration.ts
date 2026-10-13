@@ -27,10 +27,12 @@ export interface MigrationReceipt {
   wal?: LegacySources['vaults'][number]['wal'];
   projects: Record<string, MigrationProjectReceipt>;
 }
+export interface SourceReconciliation { before: string; after: string; sessionsAdded: number }
 export interface CutoverState {
   version?: 1 | 2;
   backups: Record<string, { copy: string; counts: TableCounts; digest: string; at: number }>;
-  handover?: { at: number; legacyHomes: string[]; agents: string[] };
+  pendingSource?: SourceReconciliation;
+  handover?: { at: number; legacyHomes: string[]; agents: string[]; reconciliation?: SourceReconciliation };
   migrations?: Record<string, MigrationReceipt>;
 }
 export type LegacyMigrationState = (
@@ -43,6 +45,16 @@ const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const timestamp = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((v) => typeof v === 'string');
+function validSourcePlan(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  try {
+    const plan: unknown = JSON.parse(value);
+    return record(plan) && typeof plan.home === 'string' && strings(plan.agents)
+      && Array.isArray(plan.vaults) && plan.vaults.every(v => record(v) && typeof v.vault === 'string' && typeof v.digest === 'string')
+      && Array.isArray(plan.destinations) && plan.destinations.every(d => record(d) && typeof d.vault === 'string' && typeof d.projectId === 'string'
+        && (d.root === null || typeof d.root === 'string') && (d.kind === 'skip' || (d.kind === 'destination' && typeof d.serverUrl === 'string')));
+  } catch { return false; }
+}
 const validPass = (value: unknown, transcript: boolean): boolean => value === undefined || (record(value)
   && (transcript ? ['complete', 'partial', 'none'] : ['complete', 'partial', 'refused']).includes(String(value.state))
   && timestamp(value.at) && (value.endedBy === undefined || typeof value.endedBy === 'string')
@@ -69,6 +81,9 @@ export function readCutoverState(home: string): CutoverState {
   if (!record(value) || !record(value.backups) || (value.version !== undefined && value.version !== 1 && value.version !== 2)
     || (value.migrations !== undefined && !record(value.migrations))) throw new LegacyMigrationUnreadable(file, 'invalid cutover record');
   if (value.handover !== undefined && (!record(value.handover) || !timestamp(value.handover.at) || !strings(value.handover.legacyHomes) || !strings(value.handover.agents))) throw new LegacyMigrationUnreadable(file, 'invalid handover receipt');
+  for (const r of [value.pendingSource, record(value.handover) ? value.handover.reconciliation : undefined]) if (r !== undefined) {
+    if (!record(r) || !validSourcePlan(r.before) || !validSourcePlan(r.after) || !timestamp(r.sessionsAdded) || !Number.isInteger(r.sessionsAdded)) throw new LegacyMigrationUnreadable(file, 'invalid quiescent source receipt');
+  }
   if (value.migrations !== undefined) for (const receipt of Object.values(value.migrations)) {
     if (!record(receipt) || typeof receipt.digest !== 'string' || !timestamp(receipt.size) || !timestamp(receipt.mtimeMs)
       || (receipt.wal !== undefined && receipt.wal !== null && (!record(receipt.wal) || !timestamp(receipt.wal.size) || !timestamp(receipt.wal.mtimeMs)))
@@ -80,6 +95,19 @@ export function readCutoverState(home: string): CutoverState {
 export function sameLegacyStamp(vault: LegacySources['vaults'][number], receipt: MigrationReceipt): boolean {
   return vault.size === receipt.size && vault.mtimeMs === receipt.mtimeMs
     && JSON.stringify(vault.wal) === JSON.stringify(receipt.wal ?? null);
+}
+
+/** A completed cutover's repository destination remains authoritative across setup journeys. */
+export function legacyProjectDestination(home: string, root: string, projectId: string): string | null {
+  const state = readCutoverState(home);
+  if (!state.handover) return null;
+  for (const receipt of Object.values(state.migrations ?? {})) {
+    const project = receipt.projects[projectId];
+    if (project?.root !== root || !project.destination || !('serverUrl' in project.destination)) continue;
+    const passes = project.destinations?.[project.destination.key] ?? project;
+    if (passes.vault?.state === 'complete' && ['complete', 'none'].includes(passes.transcripts?.state ?? '')) return project.destination.serverUrl;
+  }
+  return null;
 }
 
 export function legacyMigrationState(home: string): LegacyMigrationState {
@@ -106,7 +134,12 @@ export function legacyMigrationState(home: string): LegacyMigrationState {
       const receipt = entry.receipt;
       const current = sameLegacyStamp(vault, receipt);
       if (!current) {
-        if (readVaultContent(vault.path).digest !== receipt.digest) changed = true;
+        if (readVaultContent(vault.path).digest !== receipt.digest) {
+          const imported = Object.values(receipt.projects).some(p => p.vault !== undefined || p.transcripts !== undefined
+            || Object.values(p.destinations ?? {}).some(d => d.vault !== undefined || d.transcripts !== undefined));
+          if (imported) changed = true;
+          else partial = true;
+        }
         const ids = legacyVaultProjectIds(vault.path);
         if (ids.some((id) => receipt.projects[id]?.destination === undefined)) needsDestination = true;
       }
@@ -123,7 +156,7 @@ export function legacyMigrationState(home: string): LegacyMigrationState {
           || passes.transcripts?.endedBy !== undefined || (passes.transcripts?.failures?.length ?? 0) > 0) partial = true;
       }
     }
-    if (changed) return observed({ state: 'changed', warning: 'Myco 1.4 wrote more data after migration. Stop Myco 1.4, then run myco cutover --dry-run before retrying.' });
+    if (changed) return observed({ state: 'changed', warning: 'Myco 1.4 wrote more data after migration. Keep its files and run myco setup --cutover to review the new data, or preview manually with myco cutover --dry-run.' });
     if (needsDestination) return observed({ state: 'needs-destination' });
     if (!states.some((s) => s.handover !== undefined) || sources.units.length > 0 || sources.registrations.length > 0) return observed({ state: 'handover-pending' });
     return { state: partial ? 'partial' : 'moved' };

@@ -2,8 +2,20 @@ import { expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseSetupOptions } from '@myco/cli/setup.js';
+import { renderSetupStatus } from '@myco/cli/setup-status.js';
+import { legacyCaptureGuidance } from '@myco/cli/legacy-capture.js';
 
 const repo = path.resolve(import.meta.dir, '../..');
+
+it('pending legacy status and capture hints name the guided recovery command', () => {
+  for (const state of ['unmoved', 'needs-destination', 'handover-pending', 'partial', 'changed', 'unavailable'] as const) {
+    const text = renderSetupStatus([{ id: 'legacy', scope: '/fixture/home', state: state === 'unavailable' ? 'unavailable' : 'incomplete', detail: state }]).join('\n');
+    expect(text).toContain('myco setup --cutover');
+    expect(text).not.toContain('Stop Myco 1.4');
+  }
+  expect(legacyCaptureGuidance({ state: 'needs-destination' }).hint).toContain('myco setup --cutover');
+  expect(legacyCaptureGuidance({ state: 'unavailable', file: '/fixture/receipt', detail: 'unreadable' }).deferral).toContain('myco setup --cutover');
+});
 const files = (directory: string): string[] => fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
   const file = path.join(directory, entry.name);
   return entry.isDirectory() ? files(file) : /\.(ts|tsx|md)$/.test(file) ? [file] : [];
@@ -36,7 +48,7 @@ function checkReference(command: string): void {
   const tokens = command.match(/<[^>]+>=[^\s]+|<[^>]+>|\[[^\]]+\]|[^\s]+/g) ?? [];
   const args: string[] = [];
   for (let index = 0; index < tokens.length; index++) {
-    const flag = tokens[index];
+    const flag = tokens[index].replace(/[.!?;,]$/, '');
     if (['again', 'when', 'to', 'with', 'without', 'or', 'from', 'for', 'then', '[options]', ':'].includes(flag.replace(/[.!?;,]$/, ''))) break;
     args.push(flag);
     if (flag in flagValues) {

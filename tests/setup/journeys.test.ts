@@ -11,7 +11,7 @@ import { run as login } from '@myco/cli/login.js';
 import { runRunnerService } from '@myco/cli/runner-service.js';
 import { executorServiceTarget } from '@myco/cli/worker-service.js';
 import { homeReport } from '@myco/cli/member-doctor.js';
-import { consentToPlan, type SetupDeps } from '@myco/setup/steps.js';
+import { consentToPlan, cutoverConsentPlan, type SetupDeps } from '@myco/setup/steps.js';
 import { observeSetup } from '@myco/setup/observe.js';
 import { planFingerprint, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
 import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, deploymentPath, deploymentKeyFor, machineSettingsPath } from '@myco/member/registry.js';
@@ -90,12 +90,54 @@ function snapshot(directory: string): unknown {
 
 describe('legacy journey (e)', () => {
   const flags = ['--join', LEGACY_URLS[0], '--cutover', '--no-agents', '--no-runner', '--yes'];
-  const rig = async (options: { multi?: boolean; missing?: boolean; agents?: string[] } = {}) => {
+  const rig = async (options: { multi?: boolean; missing?: boolean; secondMembership?: boolean; agents?: string[] } = {}) => {
     const fixture = await legacyJourney(path.join(root, 'journey-e'), options);
     closers.push(fixture.close);
     home = fixture.legacy.mycoHome;
     return { ...fixture, deps: { ...fixture.deps, stdout: (line: string) => lines.push(line), stderr: (line: string) => errors.push(line) } };
   };
+
+  it('completes from the repository routed to the other Deployment and reruns cleanly', async () => {
+    const fixture = await rig({ multi: true });
+    const deps = { ...fixture.deps, cwd: fixture.legacy.projects[1]!.root };
+    expect({ code: await run(flags, deps), errors }).toEqual({ code: 0, errors: [] });
+    expect(lines.filter(line => line.startsWith('Moved to 2.0.'))).toHaveLength(1);
+    expect(readRegistryEntry(deps.cwd, home)?.serverUrl).toBe(LEGACY_URLS[1]);
+    expect(await run([], deps)).toBe(0);
+  });
+
+  it('discloses fallback placement before consent and requires choices with two memberships', async () => {
+    const fixture = await rig({ secondMembership: true });
+    const bytes = fs.readFileSync(fixture.legacy.vault);
+    expect(await run(flags, fixture.deps)).toBe(2);
+    expect(lines.join('\n')).toContain('(default Deployment; no repository route)');
+    expect(readSetupFile(home).consented.cutover).toBeUndefined();
+    expect(readCutoverState(home).migrations).toBeUndefined();
+    expect(errors.join('\n')).toContain(`--route ${fixture.legacy.projects[0]!.id}=<url> or --skip`);
+    const [a, b] = fixture.legacy.projects;
+    expect(await run(['--yes', '--route', `${a!.id}=${LEGACY_URLS[0]}`], fixture.deps)).toBe(2);
+    expect(await run(['--yes', '--skip', b!.id], fixture.deps)).toBe(0);
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
+  });
+
+  it('asks about every fallback project with two memberships', async () => {
+    const fixture = await rig({ secondMembership: true });
+    const questions: string[] = [];
+    expect(await run(flags, { ...fixture.deps, ask: async question => {
+      questions.push(question);
+      return question.includes(fixture.legacy.projects[0]!.id) ? LEGACY_URLS[0] : LEGACY_URLS[1];
+    } })).toBe(0);
+    expect(questions).toHaveLength(2);
+    for (const [index, p] of fixture.legacy.projects.entries()) expect(readRegistryEntry(p.root, home)?.serverUrl).toBe(LEGACY_URLS[index]);
+  });
+
+  it('prints the moved summary before a later setup step fails', async () => {
+    const fixture = await rig();
+    expect(await run([...flags, '--project', fixture.legacy.projects[0]!.id], { ...fixture.deps, join: async () => null })).toBe(2);
+    expect(legacyMigrationState(home).state).toBe('moved');
+    expect(lines.filter(line => line.startsWith('Moved to 2.0.'))).toHaveLength(1);
+    expect(errors.join('\n')).toContain('Project connection did not finish');
+  });
 
   for (const multi of [false, true]) it(`moves the coherent 1.4 home to ${multi ? 'two destinations' : 'one destination'} and resumes without duplicates`, async () => {
     const fixture = await rig({ multi });
@@ -120,6 +162,7 @@ describe('legacy journey (e)', () => {
     expect(fs.readFileSync(fixture.legacy.binary)).toEqual(binary);
     expect(fs.readFileSync(path.join(home, 'unmanaged.txt'))).toEqual(userFile);
     expect(lines.join('\n')).toContain('cutover preview (dry run)');
+    if (!multi) expect(lines.join('\n').indexOf('(default Deployment; no repository route)')).toBeLessThan(lines.join('\n').indexOf('Move now?'));
     expect(lines.join('\n')).toContain('1.4 data kept');
     expect(lines.join('\n')).toContain('already-open session');
     const snapshotBefore = snapshot(root);
@@ -262,7 +305,7 @@ describe('legacy journey (e)', () => {
     closers.unshift(owner.close);
     const deps = { ...fixture.deps, ...owner.deps, stdout: (line: string) => lines.push(line), stderr: (line: string) => errors.push(line), sleep: async () => {} };
     const bytes = fs.readFileSync(fixture.legacy.vault);
-    expect({ code: await run(['--create', 'local', '--serve', 'service', '--default', '--cutover', '--no-agents', '--no-runner', '--yes'], deps), errors }).toEqual({ code: 0, errors: [] });
+    expect({ code: await run(['--create', 'local', '--serve', 'service', '--default', '--cutover', ...fixture.legacy.projects.flatMap(p => ['--route', `${p.id}=${address}`]), '--no-agents', '--no-runner', '--yes'], deps), errors }).toEqual({ code: 0, errors: [] });
     expect(legacyMigrationState(home).state).toBe('moved');
     expect(readRegistryEntry(fixture.legacy.projects[0]!.root, home)?.serverUrl).toBe(address);
     expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
@@ -277,7 +320,7 @@ describe('legacy journey (e)', () => {
     expect(legacyMigrationState(home).state).toBe('moved');
   });
 
-  it('refuses source changes between consent and execution and during handover', async () => {
+  it('refuses source changes between consent and execution at the lease', async () => {
     const fixture = await rig();
     const mutate = () => {
       const db = new Database(fixture.legacy.vault);
@@ -286,12 +329,112 @@ describe('legacy journey (e)', () => {
     expect(await run(flags, { ...fixture.deps, runCutover: async (plan, deps) => { mutate(); return runCutover(plan, deps); } })).toBe(2);
     expect(errors.join('\n')).toContain('changed after the preview');
     expect(fixture.calls.filter(call => call.route === '/events')).toEqual([]);
-    errors = [];
+    expect(readCutoverState(home).migrations).toBeUndefined();
+  });
+
+  for (const interrupt of [false, true]) it(`moves final 1.4 capture during handover without reasking${interrupt ? ' across interruption' : ''}`, async () => {
+    const fixture = await rig();
+    let written: ReturnType<typeof fs.readFileSync> | undefined;
+    let interrupted = false;
+    let beforeConsent: string | undefined;
+    const deps = { ...fixture.deps, cutoverDeps: { ...fixture.deps.cutoverDeps,
+      stopDaemon: async () => {
+        if (!written) {
+          beforeConsent = readSetupFile(home).consented.cutover;
+          const db = new Database(fixture.legacy.vault);
+          try { db.run("INSERT INTO sessions (id, agent, project_root, project_id, started_at, ended_at, status, created_at) SELECT 'final_capture', agent, project_root, project_id, started_at, ended_at, status, created_at FROM sessions LIMIT 1"); } finally { db.close(); }
+          written = fs.readFileSync(fixture.legacy.vault);
+          expect(legacyMigrationState(home).state).not.toBe('changed');
+        }
+        return 'none' as const;
+      },
+      onCheckpoint: (boundary: string) => { if (interrupt && !interrupted && boundary.startsWith('stopped-source:') && written) { interrupted = true; throw new Error('interrupted before consent promotion'); } },
+    } };
+    expect({ code: await run(flags, deps), errors }).toMatchObject({ code: interrupt ? 2 : 0 });
+    expect(legacyMigrationState(home).state).toBe(interrupt ? 'handover-pending' : 'moved');
+    expect(await run(['--yes'], { ...deps, ask: async () => { throw new Error('must not ask again'); } })).toBe(0);
+    expect(readSetupFile(home).consented.cutover).not.toBe(beforeConsent);
+    expect(readSetupFile(home).consented.cutover).toBe(planFingerprint(cutoverConsentPlan(planCutover(home, { dryRun: true, requireSourceMatch: true, homeDir: fixture.legacy.home }, { ...fixture.deps.cutoverDeps, agents: () => [] }))));
+    expect(lines.join('\n')).toContain('1.4 captured 1 more session before it stopped; they moved too');
+    expect(readCutoverState(home).migrations![fixture.legacy.vault]!.digest).toBe(readVaultContent(fixture.legacy.vault).digest);
+    expect(fs.readFileSync(fixture.legacy.vault).toString('base64')).toBe(written!.toString('base64'));
+    const accepted = fixture.calls.filter(call => call.route === '/events').length;
+    expect(await run(['--yes'], fixture.deps)).toBe(0);
+    expect(fixture.calls.filter(call => call.route === '/events')).toHaveLength(accepted);
+  });
+
+  it('resumes consent after capture grows across two stop actions', async () => {
+    const fixture = await rig();
+    let captures = 0;
+    let interrupted = false;
+    const capture = () => {
+      const db = new Database(fixture.legacy.vault);
+      try { db.run("INSERT INTO sessions (id, agent, project_root, project_id, started_at, ended_at, status, created_at) SELECT ?, agent, project_root, project_id, started_at, ended_at, status, created_at FROM sessions LIMIT 1", [`final_${++captures}`]); } finally { db.close(); }
+    };
+    const deps = { ...fixture.deps, cutoverDeps: { ...fixture.deps.cutoverDeps,
+      onAction: (outcome: string) => { if (outcome.startsWith('unit ') && captures === 0) capture(); },
+      stopDaemon: async () => { if (captures === 1) capture(); return 'none' as const; },
+      onCheckpoint: (boundary: string) => { if (captures === 2 && !interrupted && boundary.startsWith('stopped-source:')) { interrupted = true; throw new Error('interrupted after second stop'); } },
+    } };
+    expect(await run(flags, deps)).toBe(2);
+    expect(captures).toBe(2);
+    const bytes = fs.readFileSync(fixture.legacy.vault);
+    expect(await run(['--yes'], { ...deps, ask: async () => { throw new Error('must not ask again'); } })).toBe(0);
+    expect(lines.join('\n')).toContain('1.4 captured 2 more sessions before it stopped; they moved too');
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
+  });
+
+  it('pins the stopped source through the copy boundary', async () => {
+    const fixture = await rig();
     let changed = false;
-    expect(await run(['--cutover'], { ...fixture.deps, ask: async () => 'yes', cutoverDeps: { ...fixture.deps.cutoverDeps, stopDaemon: async () => { if (!changed) { changed = true; mutate(); } return 'none'; } } })).toBe(2);
-    expect(errors.join('\n')).toContain('changed after the preview');
-    expect(fixture.calls.filter(call => call.route === '/events')).toEqual([]);
-    expect(await run(['--cutover'], { ...fixture.deps, ask: async () => 'yes' })).toBe(0);
+    const deps = { ...fixture.deps, cutoverDeps: { ...fixture.deps.cutoverDeps, onCheckpoint: (boundary: string) => {
+      if (boundary === 'quiescent' && !changed) {
+        changed = true;
+        const db = new Database(fixture.legacy.vault);
+        try { db.run("UPDATE spores SET content = 'capture after the stopped-source receipt'"); } finally { db.close(); }
+      }
+    } } };
+    expect(await run(flags, deps)).toBe(2);
+    expect(errors.join('\n')).toContain('changed after the stop');
+    expect(fixture.calls.filter(call => call.route === '/events' || call.route === '/spores/save')).toEqual([]);
+    expect(legacyMigrationState(home).state).toBe('partial');
+    const bytes = fs.readFileSync(fixture.legacy.vault);
+    expect(await run(['--yes'], fixture.deps)).toBe(2);
+    expect(errors.join('\n')).toContain('changed plans require fresh consent');
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
+  });
+
+  for (const change of ['project', 'destination'] as const) it(`requires fresh consent for a changed ${change} after the stop`, async () => {
+    const fixture = await rig({ secondMembership: change === 'destination' });
+    const routes = fixture.legacy.projects.flatMap(p => ['--route', `${p.id}=${LEGACY_URLS[0]}`]);
+    let changed = false;
+    const deps = { ...fixture.deps, cutoverDeps: { ...fixture.deps.cutoverDeps, stopDaemon: async () => {
+      if (!changed) {
+        changed = true;
+        if (change === 'project') {
+          const db = new Database(fixture.legacy.vault);
+          try { db.run("INSERT INTO sessions (id, agent, project_root, project_id, started_at, ended_at, status, created_at) SELECT 'new_project_session', agent, NULL, 'proj_new', started_at, ended_at, status, created_at FROM sessions LIMIT 1"); } finally { db.close(); }
+        } else {
+          const project = fixture.legacy.projects[1]!;
+          const membership = readDeploymentMembership(LEGACY_URLS[1], home)!;
+          writeRegistryEntry({ ...membership, version: 2, root: project.root, projectId: project.id }, { mycoHome: home });
+        }
+      }
+      return 'none' as const;
+    } } };
+    expect(await run([...flags, ...routes], deps)).toBe(2);
+    expect(errors.join('\n')).toContain('changed during handover');
+    expect(errors.join('\n')).toContain('myco setup --cutover');
+    expect(errors.join('\n')).not.toContain('Stop Myco 1.4');
+    expect(fixture.calls.filter(call => call.route === '/events' || call.route === '/spores/save')).toEqual([]);
+    expect(legacyMigrationState(home).state).not.toBe('changed');
+    const bytes = fs.readFileSync(fixture.legacy.vault);
+    errors = [];
+    const choice = change === 'project' ? ['--skip', 'proj_new'] : ['--route', `${fixture.legacy.projects[1]!.id}=${LEGACY_URLS[1]}`];
+    expect(await run(['--yes', ...choice], fixture.deps)).toBe(2);
+    expect(errors.join('\n')).toContain('changed plans require fresh consent');
+    expect(await run(['--yes'], { ...fixture.deps, ask: async () => 'yes' })).toBe(0);
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
   });
 
   it('invalidates consent when a route changes, including with --yes', async () => {
@@ -335,6 +478,9 @@ describe('legacy journey (e)', () => {
     const boundaries = ['consent', ...new Set(initial.checkpoints)];
     expect(boundaries).toContain('destinations');
     expect(boundaries).toContain('handover');
+    expect(boundaries).toContain('stopped-source:0');
+    expect(boundaries).toContain('stopped-source:1');
+    expect(boundaries).toContain('stopped-source:final');
     expect(boundaries).toContain('copy');
     expect(boundaries).toContain('action:3:0');
     expect(boundaries).toContain('action:3:1');
@@ -342,10 +488,10 @@ describe('legacy journey (e)', () => {
     expect(boundaries).toContain('transcripts:proj_legacy_b');
     const repo = fileURLToPath(new globalThis.URL('../../', import.meta.url));
     const args = ['test', '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'), '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/legacy_journey_interruption_test.ts')];
-    for (const [index, boundary] of boundaries.entries()) {
-      const childRoot = path.join(root, `kill-${index}`);
+    for (const growth of [false, true]) for (const [index, boundary] of boundaries.entries()) {
+      const childRoot = path.join(root, `kill-${growth}-${index}`);
       fs.mkdirSync(childRoot);
-      const env = sandboxChildEnv(childRoot, { MYCO_SETUP_FIXTURE_ROOT: childRoot });
+      const env = sandboxChildEnv(childRoot, { MYCO_SETUP_FIXTURE_ROOT: childRoot, ...(growth ? { MYCO_SETUP_GROW: '1' } : {}) });
       const child = spawn(process.execPath, args, { env: { ...env, MYCO_SETUP_STOP_AFTER: boundary }, cwd: childRoot, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '';
       const capture = (chunk: Buffer) => { output += chunk.toString(); };
@@ -357,16 +503,15 @@ describe('legacy journey (e)', () => {
         expect({ boundary, reached: fs.existsSync(path.join(childRoot, 'reached')), output }).toMatchObject({ reached: true });
       } finally { if (child.exitCode === null) child.kill('SIGKILL'); await exited; }
       const fixture = JSON.parse(fs.readFileSync(path.join(childRoot, 'legacy-fixture.json'), 'utf8')) as ReturnType<typeof legacyFixtureHome>;
-      const bytes = fs.readFileSync(path.join(childRoot, 'vault-before'));
-      expect(fs.readFileSync(fixture.vault)).toEqual(bytes);
+      expect(fs.readFileSync(fixture.vault)).toEqual(fs.readFileSync(path.join(childRoot, 'vault-before')));
       const result = Bun.spawnSync([process.execPath, ...args], { env: { ...env, MYCO_SETUP_RESUME: '1' }, cwd: childRoot, stdout: 'pipe', stderr: 'pipe' });
       expect({ boundary, code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
-      expect(fs.readFileSync(fixture.vault)).toEqual(bytes);
+      expect(fs.readFileSync(fixture.vault)).toEqual(fs.readFileSync(path.join(childRoot, 'vault-before')));
       expect(fs.readFileSync(path.join(fixture.mycoHome, 'unmanaged.txt'), 'utf8')).toBe('Keep this user file byte for byte.\n');
       const resumed = JSON.parse(fs.readFileSync(path.join(childRoot, 'resumed'), 'utf8')) as { calls: { route: string; url: string }[] };
       if (boundary === 'vault:proj_legacy_b' || boundary.startsWith('settings:')) expect(resumed.calls.filter(call => call.route === '/events' || call.route === '/spores/save')).toEqual([]);
     }
-  }, 120_000);
+  }, 180_000);
 
   it('resumes after an exception at every observed cutover mutation boundary without duplicated imports', async () => {
     const captureFlags = flags.filter(flag => flag !== '--no-agents');

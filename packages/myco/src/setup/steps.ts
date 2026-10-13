@@ -23,11 +23,11 @@ import { carriedNative } from '@myco/server/local-run.js';
 import { runOrThrow, systemRunner } from '@myco/server/runner.js';
 import { readRunnerRecord } from '@myco/runner/runner-registry.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
-import { deploymentUrl, listRegistryEntriesResult } from '@myco/member/registry.js';
+import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult } from '@myco/member/registry.js';
 import { canonicalPlan, planFingerprint, saveSetupFile, setupCloudflareUrl, type SetupFile, type SetupPlan } from '@myco/setup/answers.js';
 import { observeSetup, type Observation, type ObserveDeps } from '@myco/setup/observe.js';
 import { askOnTerminal, askRequired, confirm, type Ask } from '@myco/setup/prompt.js';
-import { planCutover, runCutover, type CutoverDeps, type CutoverPlan } from '@myco/cli/cutover.js';
+import { planCutover, runCutover, cutoverSourcePlan, cutoverReconciliation, type CutoverDeps, type CutoverPlan } from '@myco/cli/cutover.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 
 const OFFER_WAIT_MS = 2 * 60_000;
@@ -152,17 +152,12 @@ const localPlan = (ctx: Context, signIn: RegisterOptions | 'skip'): LocalPrepare
 
 /** Consent names source content and placement, independently of completed handover actions. */
 export function cutoverConsentPlan(plan: CutoverPlan): SetupPlan {
-  return {
-    home: plan.home,
-    agents: [...plan.agents].sort(),
-    vaults: plan.vaults.map(({ vault, digest }) => ({ vault, digest })).sort((a, b) => a.vault.localeCompare(b.vault)),
-    destinations: plan.projects.map(({ vault, projectId, root, destination }) => ({ vault, projectId, root, ...destination })).sort((a, b) => `${a.vault}:${a.projectId}:${a.root}`.localeCompare(`${b.vault}:${b.projectId}:${b.root}`)),
-  };
+  return cutoverSourcePlan(plan);
 }
 
 const LEGACY_COPY = {
   unmoved: 'Myco 1.4 history has not moved. Next, setup previews moving it over.',
-  changed: 'Myco 1.4 wrote more data after migration. Stop Myco 1.4 before retrying. Keep the 1.4 files; setup will preview the new data.',
+  changed: 'Myco 1.4 wrote more data after migration. Keep the 1.4 files; run myco setup --cutover to review the new data.',
   partial: 'Some history or transcripts remain unfinished. Setup resumes accepted imports from their ledger; keep all 1.4 data.',
   'needs-destination': 'Confirm where each project goes. Projects without a destination need --route <projectId>=<url> or --skip <projectId>.',
   'handover-pending': 'The agent and service handover is unfinished. Setup previews the remaining handover and imports.',
@@ -172,7 +167,7 @@ function showCutoverPreview(ctx: Context, plan: CutoverPlan): void {
   ctx.out('Myco 1.4 cutover preview (dry run):');
   ctx.out(`  Capture agents: ${plan.agents.join(', ') || 'declined or none detected'}`);
   for (const vault of plan.vaults) ctx.out(`  Vault ${vault.vault}: ${JSON.stringify(vault.counts)}; digest ${vault.digest}`);
-  for (const project of plan.projects) ctx.out(`  ${project.vault} :: ${project.projectId}: ${project.destination.kind === 'destination' ? project.destination.serverUrl : project.destination.kind}; folder ${project.root ?? '(absent)'}; ${JSON.stringify(project.counts)}`);
+  for (const project of plan.projects) ctx.out(`  ${project.vault} :: ${project.projectId}: ${project.destination.kind === 'destination' ? project.destination.serverUrl : project.destination.kind}${project.fallback ? ` (${project.fallback === 'default' ? 'default Deployment' : '--server'}; no repository route)` : ''}; folder ${project.root ?? '(absent)'}; ${JSON.stringify(project.counts)}`);
   for (const step of plan.handover) for (const action of step.actions) ctx.out(`  ${action.would}`);
   for (const copy of plan.copies) ctx.out(`  ${copy.reused ? 'Reuse verified copy' : 'Copy and verify'} ${copy.vault} at ${copy.copy}`);
   ctx.out(`1.4 vaults and history stay on disk: ${plan.vaults.map(vault => vault.vault).join(', ')}. Verified copies and settings backups are retained.`);
@@ -190,6 +185,10 @@ async function conductLegacy(ctx: Context): Promise<void> {
     agents: ctx.file.answers.noAgents ? () => [] : ctx.deps.agents ?? ctx.deps.cutoverDeps?.agents,
     packageRoot: ctx.deps.packageRoot ?? ctx.deps.cutoverDeps?.packageRoot,
     stdout: ctx.out, stderr: ctx.deps.stderr, now: ctx.deps.now, sleep: ctx.deps.sleep, signal: ctx.deps.signal,
+    onStoppedSource: async stopped => {
+      ctx.file.consented.cutover = planFingerprint(cutoverConsentPlan(stopped));
+      saveSetupFile(ctx.home, ctx.file);
+    },
   };
   const preview = () => (ctx.deps.planCutover ?? planCutover)(ctx.home, {
     routes: new Map(Object.entries(ctx.file.answers.routes ?? {})), skips: new Set(ctx.file.answers.skips ?? []),
@@ -197,8 +196,11 @@ async function conductLegacy(ctx: Context): Promise<void> {
   }, deps);
   let plan = preview();
   showCutoverPreview(ctx, plan);
-  while (plan.projects.some(project => project.destination.kind === 'undecided')) {
-    for (const id of new Set(plan.projects.filter(project => project.destination.kind === 'undecided').map(project => project.projectId))) {
+  const memberships = listDeploymentMembershipsResult(ctx.home);
+  if (!memberships.readable || memberships.unavailableEntries > 0) throw new Error('Deployment memberships could not all be read; restore access before cutover.');
+  const needsChoice = (project: CutoverPlan['projects'][number]) => project.destination.kind === 'undecided' || (memberships.memberships.length > 1 && project.fallback !== undefined);
+  while (plan.projects.some(needsChoice)) {
+    for (const id of new Set(plan.projects.filter(needsChoice).map(project => project.projectId))) {
       const answer = await askRequired(ctx.ask, `${id}: destination URL, or skip to leave its history on disk?`, `--route ${id}=<url> or --skip ${id}`);
       if (answer === 'skip') ctx.file.answers.skips = [...new Set([...(ctx.file.answers.skips ?? []), id])];
       else {
@@ -212,13 +214,21 @@ async function conductLegacy(ctx: Context): Promise<void> {
     showCutoverPreview(ctx, plan);
   }
   if (plan.blockers.length > 0) throw new Error(`${plan.blockers.join('\n')}\nNothing was moved. Resolve these choices, then run myco setup --cutover again.`);
+  const reconciliation = cutoverReconciliation(ctx.home);
+  if (reconciliation && ctx.file.consented.cutover === planFingerprint(JSON.parse(reconciliation.before))
+    && planFingerprint(cutoverConsentPlan(plan)) === planFingerprint(JSON.parse(reconciliation.after))) {
+    ctx.file.consented.cutover = planFingerprint(cutoverConsentPlan(plan));
+    saveSetupFile(ctx.home, ctx.file);
+  }
   await consent(ctx, 'cutover', cutoverConsentPlan(plan), 'Move now? This backs up and changes agent settings, stops 1.4 and imports to the destinations above. Safe to stop and run again.');
   const execution = (ctx.deps.planCutover ?? planCutover)(ctx.home, { ...plan.options, dryRun: false }, deps, plan.plannedAt);
   if (planFingerprint(cutoverConsentPlan(execution)) !== planFingerprint(cutoverConsentPlan(plan))) throw new Error('The cutover plan changed after consent. Run myco setup --cutover again to review it.');
   const result = await (ctx.deps.runCutover ?? runCutover)(execution, deps);
   const after = legacyMigrationState(ctx.home);
   if (!result.ok || after.state !== 'moved') throw new Error(`Myco 1.4 migration remains ${after.state}. Keep the 1.4 data; resolve the reported problems and run myco setup --cutover again to resume.${after.state === 'unavailable' ? ` ${after.detail}` : after.state === 'changed' ? ` ${after.warning}` : ''}`);
-  ctx.legacySummary = `Moved to 2.0. 1.4 data kept at ${plan.vaults.map(vault => vault.vault).join(', ')}. Start a new agent session; an already-open session keeps its earlier Myco connection.`;
+  const added = cutoverReconciliation(ctx.home)?.sessionsAdded ?? 0;
+  ctx.legacySummary = `Moved to 2.0.${added > 0 ? ` 1.4 captured ${added} more session${added === 1 ? '' : 's'} before it stopped; they moved too.` : ''} 1.4 data kept at ${plan.vaults.map(vault => vault.vault).join(', ')}. Start a new agent session; an already-open session keeps its earlier Myco connection.`;
+  ctx.out(ctx.legacySummary);
 }
 const signInTarget = (ctx: Context): SignInTarget => {
   if (!isCloudflare(ctx)) return { kind: 'local', paths: peekLocalPaths(ctx.home) };
@@ -576,17 +586,10 @@ const STEPS: readonly SetupStep[] = [
 const workerServiceSpecForConsent = (target: ReturnType<typeof executorServiceTarget>) => workerServiceUnit(target.serverUrl, target.mycoHome, 'runner').label;
 
 export async function conductSetup(home: string, file: SetupFile, deps: SetupDeps, options: { yes: boolean; explicitJoin: boolean; explicitLegacyPlacement: boolean; explicitDefault: boolean; explicitProject: boolean; newProjectChanged: boolean }): Promise<void> {
-  const shownHints = new Set<string>();
   let capture: Observation[] = [];
   const ctx: Context = {
     home, file, deps, ...options, ask: deps.ask ?? askOnTerminal, facts: [],
-    out: (line) => {
-      if (line === fact(ctx, 'legacy')?.hint) {
-        if (shownHints.has(line)) return;
-        shownHints.add(line);
-      }
-      (deps.stdout ?? console.log)(line);
-    },
+    out: deps.stdout ?? console.log,
   };
   const observe = async (includeCapture = false) => {
     deps.signal?.throwIfAborted();
@@ -595,8 +598,6 @@ export async function conductSetup(home: string, file: SetupFile, deps: SetupDep
     if (failure?.state === 'unavailable') throw new Error(`Legacy migration state unavailable: ${failure.detail}`);
     if (failure && file.answers.role === 'runner') throw new Error('Myco 1.4 migration is pending. Run `myco setup --join <address> --cutover` first, or use `myco cutover --dry-run`. No legacy binary was executed.');
     ctx.facts = legacy;
-    const hint = fact(ctx, 'legacy')?.hint;
-    if (hint !== undefined) ctx.out(hint);
     const observed = await observeSetup(home, file.answers, { ...deps, ...(isCloudflare(ctx) ? { cloudflare: hostedOptions(ctx) } : {}), checkRemote: true, includeCapture });
     if (includeCapture) {
       capture = observed.filter((entry) => entry.id.startsWith('machine.') && entry.informational);
@@ -616,8 +617,8 @@ export async function conductSetup(home: string, file: SetupFile, deps: SetupDep
   if (remaining) throw new Error(`${remaining.id} remains ${remaining.state}: ${remaining.detail}. Run myco setup again to resume.`);
   const answers = chosen(ctx);
   const summary = isMember(ctx)
-    ? answers.root ? `Setup connected ${path.resolve(answers.root)} to ${answers.url}. Start a session in your agent here, then open ${answers.url}.`
+    ? answers.root ? `Setup connected ${path.resolve(answers.root)} to ${fact(ctx, 'project')?.detail.startsWith('bound-cutover: ') ? fact(ctx, 'project')!.detail.slice('bound-cutover: '.length) : answers.url}. Start a session in your agent here, then open ${answers.url}.`
       : `Your Myco is ready at ${answers.url}, and this machine is signed in. Next, run myco setup --join ${answers.url} from a git repository to connect a project.`
     : `Runner setup for ${answers.url}. Review this machine on ${answers.url}/runners.`;
-  ctx.out([ctx.legacySummary, summary].filter(Boolean).join('\n'));
+  ctx.out(summary);
 }

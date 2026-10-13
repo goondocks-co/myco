@@ -66,17 +66,18 @@ myco setup
 
 To choose a release phase explicitly, set `MYCO_CHANNEL=beta` or `MYCO_CHANNEL=alpha` on `sh`. On Windows x64, use the PowerShell installer's `-Replace14` option; the 2.0 Windows path is not yet verified.
 
-Setup detects 1.4 data and registrations by reading files; it never executes a 1.x binary. It helps you sign in to an existing Deployment or create one, previews the cutover, asks you to approve that exact plan and runs the existing cutover operation. Each project has its own destination, so one move can cover several Deployments. Sign in to every destination first. Projects with no route require an explicit destination or skip choice.
+Setup detects 1.4 data and registrations by reading files; it never executes a 1.x binary. It helps you sign in to an existing Deployment or create one, previews the cutover, asks you to approve that exact plan and runs the existing cutover operation. Each project has its own destination, so one move can cover several Deployments. Sign in to every destination first. Projects with no route require an explicit destination or skip choice. With several signed-in Deployments, setup also asks about projects that would otherwise fall back to the default; without a terminal, pass `--route` or `--skip`.
 
 For an existing Deployment:
 
 ```bash
 myco setup --join <address> --cutover
+myco login <other-address>
 myco setup --join <address> --cutover --route <project-id>=<other-address> --skip <other-project-id> --yes --no-runner
 myco setup --status
 ```
 
-Run `myco setup` again to resume. `--yes` accepts a printed first plan; a changed vault digest, destination, skip choice or capture agent set requires fresh interactive approval. `--no-agents` declines installing 2.0 agent integrations during the handover. `--no-cutover` leaves the migration pending. Status is strictly read-only. If 1.4 wrote more data after migration, keep its files, stop 1.4 and review the new plan. Setup names partial imports and remaining handover work, then resumes them through cutover's receipts and import ledger.
+Run `myco setup` again to resume. `--yes` accepts a printed first plan; a changed source, destination, skip choice or capture agent set requires fresh interactive approval. Capture written during this run’s handover moves too when the projects and destinations are unchanged; setup records the stopped source and reports how many sessions were added. `--no-agents` declines installing 2.0 agent integrations during the handover. `--no-cutover` leaves the migration pending and stops setup before the agents, project and runner steps. Status is strictly read-only. If 1.4 wrote more data after migration, keep its files and run `myco setup --cutover` to review the new plan. Setup names partial imports and remaining handover work, then resumes them through cutover's receipts and import ledger.
 
 ### Manual cutover
 

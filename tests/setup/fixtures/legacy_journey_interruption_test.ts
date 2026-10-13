@@ -1,6 +1,7 @@
 import { it, expect } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Database } from 'bun:sqlite';
 import { run } from '@myco/cli/setup.js';
 import { runCutover } from '@myco/cli/cutover.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
@@ -18,7 +19,15 @@ it('resumes the legacy journey after a parent-owned SIGKILL', async () => {
   const deps = { ...fixture.deps,
     ask: async () => { throw new Error('No-TTY resume must not ask again'); },
     runCutover: async (...args: Parameters<typeof runCutover>) => { reached('consent'); return runCutover(...args); },
-    cutoverDeps: { ...fixture.deps.cutoverDeps, onCheckpoint: reached },
+    cutoverDeps: { ...fixture.deps.cutoverDeps, onCheckpoint: reached, stopDaemon: async () => {
+      if (process.env.MYCO_SETUP_GROW && !fs.existsSync(path.join(root, 'grew'))) {
+        const db = new Database(fixture.legacy.vault);
+        try { db.run("INSERT INTO sessions (id, agent, project_root, project_id, started_at, ended_at, status, created_at) SELECT 'final_capture', agent, project_root, project_id, started_at, ended_at, status, created_at FROM sessions LIMIT 1"); } finally { db.close(); }
+        fs.copyFileSync(fixture.legacy.vault, path.join(root, 'vault-before'));
+        fs.writeFileSync(path.join(root, 'grew'), '1');
+      }
+      return 'none' as const;
+    } },
   };
   try {
     expect(await run(process.env.MYCO_SETUP_RESUME ? ['--yes'] : ['--join', LEGACY_URLS[0], '--cutover', '--no-runner', '--yes'], deps)).toBe(0);

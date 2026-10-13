@@ -14,7 +14,7 @@ import { legacyFixtureHome } from './legacy-home.js';
 export const LEGACY_URLS = ['https://legacy-a.invalid', 'https://legacy-b.invalid'] as const;
 
 /** File-backed native front doors retain accepted history across a killed setup process. */
-export async function legacyJourney(root: string, options: { multi?: boolean; missing?: boolean; agents?: string[] } = {}) {
+export async function legacyJourney(root: string, options: { multi?: boolean; missing?: boolean; secondMembership?: boolean; agents?: string[] } = {}) {
   const metadata = path.join(root, 'legacy-fixture.json');
   let legacy: Omit<ReturnType<typeof legacyFixtureHome>, 'env'>;
   if (!fs.existsSync(metadata)) {
@@ -27,10 +27,15 @@ export async function legacyJourney(root: string, options: { multi?: boolean; mi
       const rig = await memberRig();
       fs.writeFileSync(path.join(root, `deployment-${index}.sqlite`), rig.env.sqlite.serialize());
       rig.env.sqlite.close();
-      writeDeploymentMembership({ serverUrl, token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome: legacy.mycoHome });
+      if (index === 0 || options.multi || options.missing || options.secondMembership) writeDeploymentMembership({ serverUrl, token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome: legacy.mycoHome });
     }
     fs.writeFileSync(resolveMachineIdPath(legacy.mycoHome), 'machine_1');
     recordDefaultDeployment(LEGACY_URLS[0], { mycoHome: legacy.mycoHome });
+    if (options.multi || options.missing) {
+      const project = legacy.projects[0]!;
+      const membership = readDeploymentMembership(LEGACY_URLS[0], legacy.mycoHome)!;
+      writeRegistryEntry({ ...membership, version: 2, root: project.root, projectId: project.id }, { mycoHome: legacy.mycoHome });
+    }
     if (options.multi) {
       const project = legacy.projects[1]!;
       const membership = readDeploymentMembership(LEGACY_URLS[1], legacy.mycoHome)!;
