@@ -37,6 +37,7 @@ export function ownerDeployment(root: string, home: string, target: 'cloudflare'
   let storeCreated = saved?.storeCreated ?? false;
   let vectorCreated = saved?.vectorCreated ?? false;
   let signedIn = saved?.signedIn ?? true;
+  let conversions = saved?.conversions ?? 0;
   const buckets = new Set<string>(saved?.buckets ?? []);
   const storeSecrets = new Set<string>(saved?.storeSecrets ?? []);
   const sqlite = new Database(path.join(root, 'fake-cloudflare.sqlite'));
@@ -51,7 +52,7 @@ export function ownerDeployment(root: string, home: string, target: 'cloudflare'
   const spec = defaultSpec(binaryPath, root, 'darwin', home);
   const platform = nativeServicePlatform(paths, spec);
   const answer = (stdout = '', code = 0, stderr = ''): CommandResult => {
-    const body = JSON.stringify({ secrets, databaseCreated, storeCreated, vectorCreated, signedIn, buckets: [...buckets], storeSecrets: [...storeSecrets] });
+    const body = JSON.stringify({ secrets, databaseCreated, storeCreated, vectorCreated, signedIn, conversions, buckets: [...buckets], storeSecrets: [...storeSecrets] });
     if (!fs.existsSync(providerFile) || fs.readFileSync(providerFile, 'utf8') !== body) fs.writeFileSync(providerFile, body, { mode: 0o600 });
     return { stdout, code, stderr };
   };
@@ -70,6 +71,7 @@ export function ownerDeployment(root: string, home: string, target: 'cloudflare'
     if (flat.startsWith('vectorize list-metadata-index ')) return answer(JSON.stringify(VECTOR_METADATA_FIELDS.map(propertyName => ({ propertyName, indexType: propertyName === 'created_at' ? 'Number' : 'String' }))));
     if (flat === 'd1 list --json') return answer(JSON.stringify(databaseCreated ? [{ name: 'myco-server', uuid: DATABASE }] : []));
     if (flat === 'd1 create myco-server') { databaseCreated = true; return answer(`database_id = "${DATABASE}"`); }
+    if (flat.startsWith('d1 time-travel info ')) return answer(JSON.stringify({ bookmark: '00000085-0000024c-00004c6d-8e61117bf38d7adb71b934ebbf891683' }));
     if (flat.startsWith('d1 execute ')) {
       const sql = args[args.indexOf('--command') + 1];
       return answer(JSON.stringify([{ success: true, results: sqlite.query(sql).all() }]));
@@ -92,6 +94,11 @@ export function ownerDeployment(root: string, home: string, target: 'cloudflare'
     if (flat.startsWith('deploy -c ')) return answer(`Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n${HOSTED_URL}\n`);
     throw new Error(`fake Cloudflare: unexpected command ${flat}`);
   } };
+  const registrationFetch = asFetch(async (input, init) => {
+    const result = await github.registrationFetch(input, init);
+    if (new Request(input, init).url.includes('/conversions') && result.ok) { conversions++; answer(); }
+    return result;
+  });
   const operatorFetch: NonNullable<SetupDeps['cloudflare']>['fetch'] = async (address, init) => {
     expect(address).toBe(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/d1/database/${DATABASE}/query`);
     const { sql, params = [] } = JSON.parse(String(init.body));
@@ -147,10 +154,11 @@ export function ownerDeployment(root: string, home: string, target: 'cloudflare'
     expect(callback.status).toBe(200);
   };
   return {
-    github, calls, commands, links, sqlite, platform, runner, operatorFetch, fetchImpl, openUrl,
+    github: { ...github, registrationFetch }, calls, commands, links, sqlite, platform, runner, operatorFetch, fetchImpl, openUrl,
+    get conversions() { return conversions; },
     signOutWrangler: () => { signedIn = false; answer(); },
     deps: {
-      fetch: fetchImpl, openUrl, github: { fetchImpl: asFetch(async (input, init) => new URL(new Request(input, init).url).origin === url ? fetchImpl(input, init) : github.registrationFetch(input, init)) },
+      fetch: fetchImpl, openUrl, github: { fetchImpl: asFetch(async (input, init) => new URL(new Request(input, init).url).origin === url ? fetchImpl(input, init) : registrationFetch(input, init)) },
       cloudflare: { runner, fetch: operatorFetch },
       local: { native, userHome: root, binaryPath, service: { platform: 'darwin' as const, runner: platform.runner } },
     } satisfies SetupDeps,

@@ -28,7 +28,7 @@ export const SIGN_IN_WAIT = 'If nobody approves within 10 minutes, this stops; t
 export const SETUP_CREATE_GUIDANCE = {
   loopbackOnly: 'Guided local setup is loopback only. Keep this Myco’s configuration and use myco server status --target local.',
   addressMissing: 'Cloudflare has not reported your Myco’s address; run myco server status --target cloudflare, then myco setup again.',
-  signInPending: 'GitHub sign-in is not answering yet; check myco server github-app --target cloudflare, then run myco setup again.',
+  signInPending: 'GitHub sign-in is not answering yet; check myco server status --target cloudflare, then run myco setup again.',
   ownerPending: 'Owner linking is pending; run myco setup again when ready.',
   ownerExpired: 'Owner link expired; run myco setup again to make a fresh link.',
   ownerMissing: 'No owner link was issued; run myco server setup-owner, then myco setup again.',

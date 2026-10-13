@@ -35,7 +35,7 @@ myco server destroy  --target cloudflare --yes
 
 Choose the address before registering GitHub sign-in. Use the printed workers.dev address or a custom domain in the same Cloudflare account. Complete GitHub app registration, then open the private, expiring owner link from `setup-owner`, sign in and choose **Connect this account**. Repeating owner setup replaces a pending link; an already connected account is preserved and setup refuses. Hosted owner setup works through the operator's Cloudflare login while the Deployment keeps serving.
 
-Sign this machine in with `myco setup --join <address>`. Invite teammates through **People & machines** → **Invite a teammate** and connect dashboard accounts through **Connect GitHub**. Owner creation uses the manual server commands above.
+Sign this machine in with `myco setup --join <address>`. Invite teammates through **People & machines** → **Invite a teammate** and connect dashboard accounts through **Connect GitHub**. For guided owner creation, use `myco setup --create cloudflare --account-id <id>`; rerun after an interruption to resume creation, sign-in and owner linking. The standalone server commands above remain available.
 
 Enroll a runner explicitly on a machine with a supported coding agent already signed in: `myco runner register <address>`, approve its device code as an owner or administrator, then `myco runner install --server <address>`. Check `myco runner doctor --server <address>` and the dashboard's **Runners** page. Membership and server creation do not enroll a runner; queued work waits until one is ready.
 

@@ -25,6 +25,7 @@ export interface LocalInspection {
 
 export const LOCAL_HEALTH_TIMEOUT_MS = 2_000;
 export const LOCAL_SERVICE_WAIT_MS = 30_000;
+export const LOCAL_SCHEMA_BEHIND = 'native Deployment data needs update; run myco server update --target local before setup';
 const HEALTH_POLL_MS = 500;
 
 export interface LocalLifecycleDeps {
@@ -43,7 +44,7 @@ export interface LocalLifecycleDeps {
   confirmStop?: () => Promise<boolean>;
 }
 
-function specFor(home: string, deps: LocalLifecycleDeps): ServiceSpec {
+export function localServiceSpec(home: string, deps: LocalLifecycleDeps): ServiceSpec {
   return defaultSpec(deps.binaryPath ?? process.execPath, deps.userHome ?? homedir(), deps.service?.platform ?? process.platform, home);
 }
 
@@ -119,7 +120,7 @@ export async function inspectLocal(home: string, deps: LocalLifecycleDeps = {}):
     result.signIn = unavailable;
     result.owner = unavailable;
   }
-  const spec = specFor(home, deps);
+  const spec = localServiceSpec(home, deps);
   try { assertServiceTargetHome(spec, deps.service); }
   catch (error) { result.creation = { unavailable: cause(error) }; return result; }
   const service = statusOfService(spec, { ...deps.service, includePid: true });
@@ -181,7 +182,7 @@ export async function prepareLocal(home: string, plan: LocalPreparePlan, deps: L
   for (const state of [before.creation, before.signIn, before.owner]) {
     if (typeof state === 'object' && 'unavailable' in state) throw new Error(`native Deployment unavailable: ${state.unavailable}`);
   }
-  if (before.creation === 'behind') throw new Error('native Deployment data needs update; run myco server update --target local before setup');
+  if (before.creation === 'behind') throw new Error(LOCAL_SCHEMA_BEHIND);
   const paths = peekLocalPaths(home);
   const record = fs.existsSync(paths.recordFile) ? readLocalRecord(paths) : { ...DEFAULT_LOCAL_RECORD, port: plan.port };
   if (record.port !== plan.port) throw new Error(`native Deployment uses port ${record.port}; keep that port in the setup plan`);
@@ -193,7 +194,7 @@ export async function prepareLocal(home: string, plan: LocalPreparePlan, deps: L
   if ((exclusive || plan.serve === 'service') && before.serving.mode === 'foreground') {
     throw new Error(`Your Myco is running in another terminal (process ${before.serving.pid}). Stop it there with Ctrl-C, then rerun ${plan.retryCommand}.`);
   }
-  const spec = specFor(home, deps);
+  const spec = localServiceSpec(home, deps);
   const service = before.serving.mode === 'service' || plan.serve === 'service';
   const restoreService = before.serving.mode === 'service';
   if (exclusive && before.serving.mode === 'service' && !await deps.confirmStop?.()) {

@@ -11,30 +11,26 @@
  */
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { setupFirstOwner } from '@myco-server-worker/core/first-owner.js';
-import { assertWranglerReady, ensureCommandDir, operatorLogin, readDeploymentRecord, type CloudflareFetch } from './cloudflare.js';
+import { assertWranglerReady, ensureCommandDir, peekCommandDir, operatorLogin, readDeploymentRecord, type CloudflareFetch, type OperatorLogin } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
 import { d1OperatorStore } from './d1-operator-store.js';
 import { signInConfigured } from './github-app.js';
-import path from 'node:path';
-import fs from 'node:fs';
 import { peekDeploymentRecord } from './cloudflare.js';
 import { ownerLinked } from './local-owner.js';
-import { resolveMycoHome } from '@myco/paths/home.js';
 
 /** Read the linked administrator through the operator store without migrating the local layout. */
 export async function cloudflareOwnerLinked(options: CloudflareOwnerOptions): Promise<boolean> {
   const record = peekDeploymentRecord(options.mycoHome);
   if (!record?.databaseId || record.accountId !== options.accountId) throw new Error('Cloudflare owner state unavailable; check myco server status --target cloudflare for the selected account.');
-  const root = path.join(options.mycoHome ?? resolveMycoHome(), 'server');
-  const configDir = fs.existsSync(path.join(root, 'cloudflare', 'record.json')) ? path.join(root, 'cloudflare') : root;
-  const login = operatorLogin({ ...options, configDir });
+  const login = options.login ?? operatorLogin({ ...options, configDir: peekCommandDir(options.mycoHome) });
   return ownerLinked(d1OperatorStore({ accountId: record.accountId, databaseId: record.databaseId, login, fetch: options.fetch, report: options.report }));
 }
 
 export const CLOUDFLARE_SCHEMA_MISMATCH = `the Deployment must run this binary's schema (${SERVER_SCHEMA_VERSION}) before owner setup; run \`myco server update --target cloudflare\``;
 
 export interface CloudflareOwnerOptions extends LifecycleOptions {
+  login?: OperatorLogin;
   /** Reaches the Deployment's sign-in route; the global fetch by default. */
   signInFetch?: typeof fetch;
   /** Reaches the Cloudflare API for the database; the global fetch by default. */
@@ -54,7 +50,7 @@ export const setupCloudflareOwner = cloudflareOperation(async (options: Cloudfla
   await assertWranglerReady({ ...(options.runner === undefined ? {} : { runner: options.runner }), cwd: configDir, ...(options.report === undefined ? {} : { report: options.report }) });
   const signIn = await signInConfigured(origin, options.signInFetch);
   if (!signIn.ok) throw new Error(`${origin} does not sign in with GitHub yet (${signIn.reason}); run \`myco server github-app --target cloudflare --url ${origin}\` first`);
-  const login = operatorLogin({ ...options, configDir });
+  const login = options.login ?? operatorLogin({ ...options, configDir });
   const db = d1OperatorStore({ accountId: record.accountId, databaseId: record.databaseId, login, fetch: options.fetch, report: options.report });
   const link = await setupFirstOwner(db, (options.now ?? Date.now)(), CLOUDFLARE_SCHEMA_MISMATCH);
   return { memberId: link.memberId, url: `${origin}/link#${link.key}`, expiresAt: link.expiresAt };

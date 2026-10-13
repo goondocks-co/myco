@@ -1006,6 +1006,17 @@ export function ensureCommandDir(mycoHome?: string): string {
   return dir;
 }
 
+/** Resolve the operator command directory without creating or migrating it. */
+export function peekCommandDir(mycoHome = resolveMycoHome()): string {
+  return path.dirname(peekDeploymentRecordPath(mycoHome));
+}
+
+function peekDeploymentRecordPath(mycoHome: string): string {
+  const current = path.join(mycoHome, 'server', 'cloudflare', 'record.json');
+  const legacy = path.join(mycoHome, 'server', 'cloudflare.json');
+  return existsSync(current) || !existsSync(legacy) ? current : legacy;
+}
+
 export function deploymentRecordPath(mycoHome = resolveMycoHome()): string {
   ensureServerLayout(mycoHome);
   return path.join(mycoHome, 'server', 'cloudflare', 'record.json');
@@ -1024,8 +1035,8 @@ export function writeDeploymentRecord(record: DeploymentRecord, mycoHome = resol
  * layout's. A plan reads this so it writes nothing under the home.
  */
 export function peekDeploymentRecord(mycoHome = resolveMycoHome()): DeploymentRecord | null {
-  for (const file of [path.join(mycoHome, 'server', 'cloudflare', 'record.json'), path.join(mycoHome, 'server', 'cloudflare.json')]) {
-    if (!existsSync(file)) continue;
+  const file = peekDeploymentRecordPath(mycoHome);
+  if (existsSync(file)) {
     try {
       return JSON.parse(readFileSync(file, 'utf8')) as DeploymentRecord;
     } catch (err) {

@@ -22,7 +22,7 @@ myco setup --create local
 
 Setup asks for the account and address before creating Cloudflare resources. For local hosting, it asks for a port and whether to start at login or wait for you to run `myco server run --target local` in another terminal. It guides GitHub registration, private owner linking and this machine's sign-in, then asks about a project and a runner. A runner is a separate choice; creating a server never starts agent work by itself.
 
-Rerun the same command after an interruption. Progress comes from the Deployment and machine records; `setup.json` holds choices and consent fingerprints. Changed plans require fresh consent. `myco setup --status` reads local state; add `--check-remote` to check the server. Hosted owner linking is checked through your operator login during setup; status leaves that check pending. The standalone operations below remain available.
+Rerun the same command after an interruption, including a partial Cloudflare create. Existing resources are reused; their appearance does not change the consented identity of the plan. Progress comes from the Deployment and machine records; `setup.json` holds choices and consent fingerprints. Changing an account, address or resource name requires fresh consent. Cloudflare login and stopping a local service ask for consent each time. Setup prints the private owner link with its expiry so you can open it yourself when a browser opener is unavailable. `myco setup --status` reads local state; add `--check-remote` to check the server. Hosted owner linking is checked through your operator login during setup; status leaves that check pending. The standalone operations below remain available.
 
 ## On this machine
 

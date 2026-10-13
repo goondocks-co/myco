@@ -151,7 +151,7 @@ async function planIn(options: LifecycleOptions & { url?: string }, configDir: s
     step('d1 database', resources.databaseName, existing?.databaseId !== undefined || held.databases.includes(resources.databaseName)),
     step('r2 bucket', resources.bucketName, held.buckets.includes(resources.bucketName)),
     step('r2 bucket', resources.recoveryBucketName, held.buckets.includes(resources.recoveryBucketName)),
-    step('secrets store', storeId ?? 'myco', storeId !== null),
+    step('secrets store', 'account secrets store', storeId !== null),
     step('store secret', resources.wrapKeySecretName, storeSecrets.includes(resources.wrapKeySecretName)),
     { kind: 'd1 migrations', name: resources.databaseName, action: 'apply' },
     { kind: 'worker', name: resources.workerName, action: 'deploy' },

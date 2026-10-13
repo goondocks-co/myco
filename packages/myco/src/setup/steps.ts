@@ -1,4 +1,4 @@
-import { hostname, homedir } from 'node:os';
+import { hostname } from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -10,14 +10,14 @@ import { defaultRunnerName } from '@myco/cli/runner-deps.js';
 import { legacyWorkerInventory, preflightRunnerService, runnerServiceContact, runRunnerService, type RunnerServiceDeps } from '@myco/cli/runner-service.js';
 import { executorServiceTarget } from '@myco/cli/worker-service.js';
 import { harnessDirectories, workerServiceStatus, workerServiceUnit, workerServiceSpec } from '@myco/runner/service.js';
-import { servicePaths, defaultSpec } from '@myco/server/service.js';
+import { servicePaths } from '@myco/server/service.js';
 import { openBrowser } from '@goondocks/myco-shared';
-import { assertWranglerReady, ensureCommandDir, listAccounts, peekDeploymentRecord, WranglerNotSignedIn } from '@myco/server/cloudflare.js';
+import { assertWranglerReady, ensureCommandDir, peekCommandDir, operatorLogin, listAccounts, peekDeploymentRecord, WranglerNotSignedIn, type OperatorLogin } from '@myco/server/cloudflare.js';
 import { createCloudflareDeployment, planCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
 import { cloudflareOwnerLinked, setupCloudflareOwner } from '@myco/server/cloudflare-owner.js';
 import { registerGitHubApp, defaultAppName, hasPendingSignIn, type RegisterOptions, type SignInTarget } from '@myco/server/github-app.js';
 import { DEFAULT_LOCAL_PORT, peekLocalPaths, readLocalRecord } from '@myco/server/local.js';
-import { prepareLocal, recoverLocalOwnerLink, type LocalPrepareDeps, type LocalPreparePlan } from '@myco/server/local-lifecycle.js';
+import { prepareLocal, recoverLocalOwnerLink, localServiceSpec, LOCAL_SCHEMA_BEHIND, type LocalPrepareDeps, type LocalPreparePlan } from '@myco/server/local-lifecycle.js';
 import { localOwnerLinked, waitForOwnerLink, type LocalOwnerLink } from '@myco/server/local-owner.js';
 import { carriedNative } from '@myco/server/local-run.js';
 import { runOrThrow, systemRunner } from '@myco/server/runner.js';
@@ -71,6 +71,7 @@ interface Context {
   out: (line: string) => void;
   facts: Observation[];
   ownerLink?: LocalOwnerLink | null;
+  ownerLogin?: { accountId: string; login: OperatorLogin };
 }
 interface SetupStep {
   id: string;
@@ -115,13 +116,28 @@ export async function consentToPlan(input: {
 const consent = (ctx: Context, id: string, plan: SetupPlan, question: string, yes = ctx.yes) =>
   consentToPlan({ ...ctx, id, plan, question, yes });
 
-const hostedOptions = (ctx: Context) => ({ ...ctx.deps.cloudflare, mycoHome: ctx.home, accountId: ctx.file.answers.accountId!, report: ctx.out, signInFetch: ctx.deps.fetch });
-const openUrl = (ctx: Context, url: string) => (ctx.deps.openUrl ?? openBrowser)(url);
+const hostedOptions = (ctx: Context) => {
+  const accountId = ctx.file.answers.accountId ?? peekDeploymentRecord(ctx.home)?.accountId ?? '';
+  const options = { ...ctx.deps.cloudflare, mycoHome: ctx.home, accountId, report: ctx.out, signInFetch: ctx.deps.fetch };
+  if (accountId && ctx.ownerLogin?.accountId !== accountId) ctx.ownerLogin = { accountId, login: options.login ?? operatorLogin({ ...options, configDir: peekCommandDir(ctx.home) }) };
+  return { ...options, ...(ctx.ownerLogin ? { login: ctx.ownerLogin.login } : {}) };
+};
+const openUrl = async (ctx: Context, url: string) => {
+  try { await (ctx.deps.openUrl ?? openBrowser)(url); }
+  catch (error) {
+    ctx.deps.signal?.throwIfAborted();
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    ctx.out('The browser could not open. Open the printed link in your browser.');
+  }
+};
+const consentToOccurrence = async (ctx: Context, question: string): Promise<void> => {
+  if (!ctx.yes && !await confirm(ctx.ask, question, '--yes or an interactive terminal')) throw new Error('Plan declined; run myco setup again when ready.');
+};
 const localDeps = (ctx: Context): LocalPrepareDeps => ({
   ...ctx.deps.local, native: ctx.deps.local?.native ?? carriedNative(), fetchImpl: ctx.deps.fetch ?? ctx.deps.local?.fetchImpl,
   now: ctx.deps.now, sleep: ctx.deps.sleep, signal: ctx.deps.signal, log: ctx.out,
   registerSignIn: ctx.deps.registerApp ?? ctx.deps.local?.registerSignIn,
-  confirmStop: async () => { await consent(ctx, 'local.stop', { url: chosen(ctx).url }, 'This stops your Myco for a moment. Continue?'); return true; },
+  confirmStop: async () => { await consentToOccurrence(ctx, 'This stops your Myco for a moment. Continue?'); return true; },
 });
 const localPlan = (ctx: Context, signIn: RegisterOptions | 'skip'): LocalPreparePlan => ({
   retryCommand: 'myco setup', port: ctx.file.answers.port!, signIn, owner: 'mint', serve: ctx.file.answers.serve!,
@@ -169,7 +185,7 @@ const CREATE_STEPS: readonly SetupStep[] = [
       try { await assertWranglerReady(readiness); }
       catch (error) {
         if (!(error instanceof WranglerNotSignedIn)) throw error;
-        await consent(ctx, 'cloudflare.login', { action: 'wrangler login' }, 'Sign in to Cloudflare (opens your browser, runs wrangler login)?');
+        await consentToOccurrence(ctx, 'Sign in to Cloudflare (opens your browser, runs wrangler login)?');
         await runOrThrow(runner, 'npx', ['--no-install', 'wrangler', 'login'], { cwd, stdio: 'inherit', signal: ctx.deps.signal });
         await assertWranglerReady(readiness);
       }
@@ -193,7 +209,12 @@ const CREATE_STEPS: readonly SetupStep[] = [
     act: async ctx => {
       const answers = ctx.file.answers;
       const recorded = peekDeploymentRecord(ctx.home)?.url;
-      if (recorded && answers.customUrl && recorded !== answers.customUrl) throw new Error('This Deployment already has an address. Use myco server github-app --target cloudflare --url <address> to change sign-in, then sign every machine in again.');
+      if (recorded && answers.customUrl && recorded !== answers.customUrl) {
+        delete answers.customUrl;
+        delete answers.addressChoice;
+        saveSetupFile(ctx.home, ctx.file);
+        throw new Error(`This Deployment's address is ${recorded}; rerun myco setup without --url, or move it with myco server create --target cloudflare --account-id ${answers.accountId} --url <new>, then register sign-in again.`);
+      }
       if (!answers.addressChoice) {
         if (recorded || ctx.yes) answers.addressChoice = 'workers.dev';
         else {
@@ -216,7 +237,7 @@ const CREATE_STEPS: readonly SetupStep[] = [
       if (fact(ctx, 'deployment.create')?.state !== 'complete') {
         const options = { ...hostedOptions(ctx), url: ctx.file.answers.customUrl };
         const plan = await (ctx.deps.planCloudflare ?? planCloudflareDeployment)(options);
-        await consent(ctx, 'create', { accountId: plan.accountId, url: plan.url, steps: plan.steps.map(step => ({ ...step })) }, 'Create these Cloudflare resources and deploy your Myco?');
+        await consent(ctx, 'create', { accountId: plan.accountId, url: plan.url, steps: plan.steps.map(({ kind, name }) => ({ kind, name })) }, 'Create these Cloudflare resources and deploy your Myco?');
         await (ctx.deps.createCloudflare ?? createCloudflareDeployment)(options);
       }
       const record = peekDeploymentRecord(ctx.home);
@@ -236,6 +257,7 @@ const CREATE_STEPS: readonly SetupStep[] = [
   {
     id: 'local.plan', requires: ['deployment.create', 'deployment.signin', 'deployment.owner'], applies: isLocal,
     act: async ctx => {
+      if (fact(ctx, 'deployment.create')?.detail === 'behind') throw new Error(LOCAL_SCHEMA_BEHIND);
       const answers = ctx.file.answers;
       const paths = peekLocalPaths(ctx.home);
       const record = fs.existsSync(paths.recordFile) ? readLocalRecord(paths) : null;
@@ -268,7 +290,7 @@ const CREATE_STEPS: readonly SetupStep[] = [
       if (fact(ctx, 'deployment.owner')?.state !== 'complete') await consent(ctx, 'owner', { url: answers.url }, 'Next you become its owner. Open your private owner link? It works once and expires in 15 minutes.');
       if (answers.serve === 'service') {
         const deps = localDeps(ctx);
-        const spec = defaultSpec(deps.binaryPath ?? process.execPath, deps.userHome ?? homedir(), deps.service?.platform ?? process.platform, ctx.home);
+        const spec = localServiceSpec(ctx.home, deps);
         await consent(ctx, 'local.service', { unit: spec.unit.label, binary: spec.binaryPath, home: ctx.home, url: answers.url }, 'Install and start your Myco whenever you log in?');
       }
       const plan = localPlan(ctx, signin);
@@ -293,6 +315,7 @@ const CREATE_STEPS: readonly SetupStep[] = [
           } else ctx.ownerLink = await setupCloudflareOwner(hostedOptions(ctx));
         }
         if (!ctx.ownerLink) throw new Error(SETUP_CREATE_GUIDANCE.ownerMissing);
+        ctx.out(`Owner link: ${ctx.ownerLink.url}\nExpires: ${new Date(ctx.ownerLink.expiresAt).toISOString()}; works once; keep it private.`);
         await openUrl(ctx, ctx.ownerLink.url);
         ctx.out('Waiting for you to confirm in the browser…');
         const state = await waitForOwnerLink(ctx.ownerLink.expiresAt, { linked, now: ctx.deps.now, sleep: ctx.deps.sleep, signal: ctx.deps.signal });
@@ -492,7 +515,7 @@ export async function conductSetup(home: string, file: SetupFile, deps: SetupDep
     ctx.facts = legacy;
     const hint = fact(ctx, 'legacy')?.hint;
     if (hint !== undefined) ctx.out(hint);
-    const observed = await observeSetup(home, file.answers, { ...deps, checkRemote: true, includeCapture });
+    const observed = await observeSetup(home, file.answers, { ...deps, ...(isCloudflare(ctx) ? { cloudflare: hostedOptions(ctx) } : {}), checkRemote: true, includeCapture });
     if (includeCapture) {
       capture = observed.filter((entry) => entry.id.startsWith('machine.') && entry.informational);
       for (const entry of capture.filter((entry) => entry.state !== 'complete')) ctx.out(`Warning: ${entry.id} (${entry.scope}): ${entry.detail}`);

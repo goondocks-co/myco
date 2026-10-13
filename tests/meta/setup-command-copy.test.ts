@@ -19,6 +19,7 @@ const flagValues: Record<string, string> = {
 
 /** Normalize documentation placeholders while retaining actual values and flag combinations. */
 function checkReference(command: string): void {
+  command = command.split(/\bmyco\s+(?!setup\b)[a-z-]+\b/, 1)[0];
   for (const flag of command.match(/--[a-z][a-z0-9-]*|-h\b/g) ?? []) {
     const context = flag === '--json' || flag === '--check-remote' ? ['--status'] : [];
     parseSetupOptions([flag, ...(flag in flagValues ? [flagValues[flag]] : []), ...context]);
@@ -27,7 +28,7 @@ function checkReference(command: string): void {
   const args: string[] = [];
   for (let index = 0; index < tokens.length; index++) {
     const flag = tokens[index];
-    if (['again', 'when', 'to', 'with', 'or', 'from', 'for', 'then', '[options]', ':'].includes(flag.replace(/[.!?;,]$/, ''))) break;
+    if (['again', 'when', 'to', 'with', 'without', 'or', 'from', 'for', 'then', '[options]', ':'].includes(flag.replace(/[.!?;,]$/, ''))) break;
     args.push(flag);
     if (flag in flagValues) {
       const value = tokens[index + 1]?.replace(/[.!?;,]$/, '');
@@ -57,7 +58,7 @@ it('the copy gate rejects unsupported journeys, values and combinations', () => 
     '--join <address> --runner <address>', '--status --change', '--json', '--runner-service disabled', '--runner https://setup.invalid/path', 'create cloudflare', 'migrate', '--yes invented']) {
     expect(() => checkReference(reference)).toThrow();
   }
-  for (const reference of ['--create cloudflare --account-id <id> --url https://setup.invalid --org fixture-org --app-name Fixture --yes', '--create local --port 8787 --serve terminal --yes', '--create cloudflare|local', '--join <address> --no-agents --no-runner', '--runner <address> --runner-name mini --runner-service skip --yes', '--status --json --check-remote', '--help']) {
+  for (const reference of ['--create cloudflare --account-id <id> --url https://setup.invalid --org fixture-org --app-name Fixture --yes', '--create local --port 8787 --serve terminal --yes', '--create cloudflare|local', '--join <address> --no-agents --no-runner', '--runner <address> --runner-name mini --runner-service skip --yes', '--status --json --check-remote', '--help', 'without --url, or move it with myco server create --target cloudflare --account-id <id> --url <new>']) {
     expect(() => checkReference(reference)).not.toThrow();
   }
 });

@@ -25,16 +25,25 @@ it('conducts a create journey across a parent-owned process interruption', async
   };
   const deps: SetupDeps = {
     ...server.deps, mycoHome: home, cwd: path.join(root, 'repo'), agents: () => [],
-    ask: async question => question.startsWith('Choose the address') ? '1' : question.includes('already have') ? 'no' : 'yes',
+    ask: async question => {
+      if (process.env.MYCO_SETUP_RESUME && question.startsWith('Approve this plan?')) throw new Error('resume unexpectedly re-asked plan consent');
+      if (process.env.MYCO_SETUP_RESUME) return null;
+      return question.startsWith('Choose the address') ? '1' : question.includes('already have') ? 'no' : 'yes';
+    },
     sleep: async () => {}, loginDeps: { machineId: `kill-${target}` },
     createCloudflare: async options => { const result = await createCloudflareDeployment(options); if (boundary === 'create') reached(); return result; },
     registerApp: async options => {
       if (boundary === 'create' && target === 'local') reached();
-      if (boundary === 'conversion') {
+      if (boundary === 'conversion' || boundary === 'installed') {
         if (target === 'local') { await writeSignInPending(options.target, await convertManifestCode('setup-conversion', server.github.registrationFetch), options.url); reached(); }
         else {
           const runner = options.runner!;
-          options = { ...options, runner: { run: async (command, args, opts) => { if (args.includes('bulk')) reached(); return runner.run(command, args, opts); } } };
+          options = { ...options, runner: { run: async (command, args, opts) => {
+            if (boundary === 'conversion' && args.includes('bulk')) reached();
+            const result = await runner.run(command, args, opts);
+            if (boundary === 'installed' && args.includes('bulk')) reached();
+            return result;
+          } } };
         }
       }
       const result = await registerGitHubApp(options);
@@ -51,6 +60,11 @@ it('conducts a create journey across a parent-owned process interruption', async
     login: async (args, loginDeps) => { const result = await login(args, loginDeps); if (boundary === 'machine') reached(); return result; },
     join: async (args, joinDeps) => { const result = await runJoin(args, joinDeps); if (boundary === 'project') reached(); return result; },
   };
+  if (boundary === 'partial-create' || boundary === 'before-deploy') deps.cloudflare = { ...server.deps.cloudflare, runner: { run: async (command, args, options) => {
+    if (boundary === 'partial-create' && args[2] === 'vectorize' && args[3] === 'create') reached();
+    if (boundary === 'before-deploy' && args.includes('deploy')) reached();
+    return server.runner.run(command, args, options);
+  } } };
   if (boundary === 'cloudflare-login') deps.cloudflare = { ...server.deps.cloudflare, runner: { run: async (command, args, options) => {
     const result = await server.runner.run(command, args, options);
     if (args.includes('login')) reached();
@@ -63,7 +77,7 @@ it('conducts a create journey across a parent-owned process interruption', async
   } } };
   const first = ['--create', target, ...(target === 'cloudflare' ? ['--account-id', ACCOUNT] : ['--serve', 'service']), '--yes', '--new', 'Kill recovery', '--no-agents', '--no-runner'];
   try {
-    expect(await run(process.env.MYCO_SETUP_RESUME ? [] : first, deps)).toBe(0);
-    fs.writeFileSync(path.join(root, 'resumed'), JSON.stringify({ commands: server.commands, conversions: server.github.calls.filter(call => call.url.includes('/conversions')).length }));
+    expect(await run(process.env.MYCO_SETUP_RESUME ? ['--yes'] : first, deps)).toBe(0);
+    fs.writeFileSync(path.join(root, 'resumed'), JSON.stringify({ commands: server.commands, conversions: server.github.calls.filter(call => call.url.includes('/conversions')).length, totalConversions: server.conversions }));
   } finally { await server.close(); }
 }, 30_000);
