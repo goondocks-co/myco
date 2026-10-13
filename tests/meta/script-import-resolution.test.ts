@@ -15,6 +15,7 @@ function missingImports(mutate: (file: string, text: string) => string = (_file,
         : ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || ts.isIdentifier(node.expression) && node.expression.text === 'require') ? node.arguments[0] : undefined;
       if (specifier && ts.isStringLiteralLike(specifier) && specifier.text.startsWith('.')) {
         const base = path.resolve(path.dirname(file), specifier.text);
+        if (base.split(path.sep).includes('node_modules')) { ts.forEachChild(node, visit); return; }
         const candidates = [base, base.replace(/\.js$/, '.ts'), base.replace(/\.js$/, '.tsx'), base.replace(/\.mjs$/, '.mts'), `${base}.ts`, path.join(base, 'index.ts')];
         if (!candidates.some(candidate => fs.existsSync(candidate) && fs.statSync(candidate).isFile())) missing.push(path.relative(root, file) + ': ' + specifier.text);
       }
