@@ -36,9 +36,6 @@ const STORED_FORMS: Readonly<Record<ReleaseNamespace, readonly [string, string]>
   plan: ['plan', 'plans'],
 };
 
-/** The form the reconciler writes, which the search and embedding reads join on. */
-export const storedNamespace = (namespace: ReleaseNamespace): string => STORED_FORMS[namespace][1];
-
 const PUBLIC_BY_STORED = new Map<string, ReleaseNamespace>(
   RELEASE_NAMESPACES.flatMap((n) => STORED_FORMS[n].map((form) => [form, n] as const)),
 );

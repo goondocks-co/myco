@@ -1,48 +1,10 @@
 import { COMMANDS } from '@myco/cli/command-registry.js';
 /**
- * Meta gate: every 1.4 surface carries an explicit 2.0 disposition AND an owning surface.
- *
- * `docs/architecture/myco-2.0.md` §7 is the feature-preservation ledger for the 2.0
- * release. Its governing rule is that replacing infrastructure is never authority to
- * lose a feature: every capability gets KEEP / REPLACE / DROP and a named owner.
- *
- * A ledger with no gate goes stale the first time someone adds a CLI command — and the
- * failure is silent, because a capability nobody enumerated is dropped by default rather
- * than by decision. That is the exact defect the ledger exists to answer.
- *
- * This gate scans the registries that define the 1.4 surface, and those that define
- * the 2.0 surface, and asserts every token appears in a ledger row with BOTH a
- * disposition and an owning surface, failing by name when either is missing:
- *
- *   - CLI commands   — public and compatibility registrations in `cli/command-registry.ts`
- *   - Dashboard routes — `path="<literal>"` in `packages/myco/ui/src/App.tsx` (retired)
- *   - MCP tools      — `TOOL_* = 'myco_*'` in `packages/myco/src/tools/definitions.ts`
- *   - Agent tasks    — YAML filenames under `src/agent/definitions/tasks/`
- *   - Scheduled jobs — `POWER_JOB_NAMES` values in `src/constants/power-jobs.ts`
- *   - Data classes   — `CREATE TABLE` names under every `packages/<pkg>/src/db/`, the
- *                      member's vault schema and the Deployment's
- *   - Config leaves  — every leaf the `MycoConfigSchema` DECLARES (§7.8)
- *
- * and, of 2.0's own: the dashboard's route table, the retained tasks, the task schedule, the server's tick jobs,
- * the Deployment's settings leaves and a machine's settings leaves.
- *
- * A 1.4 registry is retired by deleting the code that holds it. Its §7 rows stay as
- * the record of what became of each capability, and the registry is named in
- * `RETIRED_REGISTRIES` with the tokens its source held: a registry whose source is gone
- * and is not named there fails, so a move or an accidental deletion cannot pass for a
- * retirement, and each held token keeps its row, disposition and owning surface.
- *
- * Each registry owns a §7 section, and its tokens are looked up there alone, so a token
- * another section also names (`settings` in §7.1 and §7.2) is never answered by the
- * wrong row. The other direction holds too: every KEEP or NEW row in a section a live
- * registry owns must be a token one of its registries produces, so a kept capability
- * whose code is deleted fails by name, not just a new one with no row.
- *
- * The SURFACE half matters most. A row with a disposition but no surface is how a
- * capability ends up owned by nobody — the planning defect of the same class as a
- * property with no gate.
- *
- * Static source scan (node:fs), no daemon boot.
+ * Every frozen 1.4 registry token and live 2.0 capability has an explicit
+ * KEEP, REPLACE or DROP disposition and an owner in the architecture ledger.
+ * CLI tokens come from the dispatch registry, including compatibility entries.
+ * Live KEEP/NEW rows must be produced by a live registry. Retired tokens remain
+ * frozen so deleting an implementation cannot silently delete its capability.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -52,6 +14,8 @@ import { RETAINED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import { SERVER_JOBS, TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
 import { MACHINE_LEAVES } from '@myco-server-worker/core/machine-settings.js';
+
+const { DEFAULT_APPEARANCE: viewerAppearance } = await import(path.join(REPO_ROOT, 'packages/myco-server/ui/src/lib/appearance-values.ts'));
 
 const SRC_ROOT = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 
@@ -151,6 +115,8 @@ function dataClasses(): string[] {
     }
   };
   for (const dir of schemaDirs()) walk(dir);
+  const frozen = read(path.join(REPO_ROOT, 'tests/fixtures/legacy/vault-v76.sql'));
+  for (const m of frozen.matchAll(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${TABLE_NAME}`, 'g'))) created.add(m[1]);
   return [...created].filter((t) => !dropped.has(t)).sort();
 }
 
@@ -229,6 +195,8 @@ const REGISTRIES: readonly Registry[] = [
   { label: 'task schedule', source: 'packages/myco-server/src/core/jobs.ts', section: '7.4', scan: () => Object.keys(TASK_SCHEDULE).sort() },
   { label: 'server jobs', source: 'packages/myco-server/src/core/jobs.ts', section: '7.5', scan: () => SERVER_JOBS.map((job) => job.name).sort() },
   { label: 'Deployment settings leaves', source: 'packages/myco-server/src/core/settings.ts', section: '7.8', scan: () => [...DEPLOYMENT_LEAVES].sort() },
+  { label: 'viewer appearance', source: 'packages/myco-server/ui/src/lib/appearance-values.ts', section: '7.8',
+    scan: () => Object.keys(viewerAppearance).map(leaf => `appearance.${leaf}`).sort() },
   { label: 'machine settings leaves', source: 'packages/myco-server/src/core/machine-settings.ts', section: '7.8', scan: () => [...MACHINE_LEAVES].sort() },
 ];
 
@@ -238,6 +206,150 @@ const REGISTRIES: readonly Registry[] = [
  * change that deletes its source, and only then.
  */
 const RETIRED_REGISTRIES: Readonly<Record<string, readonly string[]>> = {
+  'MCP tools': [
+    "myco_agent",
+    "myco_cortex",
+    "myco_plans",
+    "myco_search",
+    "myco_sessions",
+    "myco_skills",
+    "myco_spores"
+  ],
+  'agent tasks': [
+    "container-smoke",
+    "canopy-describe",
+    "canopy-map",
+    "cortex-instructions",
+    "cortex-prompt-builder",
+    "digest-only",
+    "extract-only",
+    "harness-health",
+    "review-session",
+    "skill-evolve",
+    "skill-generate",
+    "skill-survey",
+    "supersession-sweep",
+    "title-summary",
+    "vault-evolve",
+    "vault-seed"
+  ],
+  'scheduled jobs': [
+    "managed-files-reconcile",
+    "agent-run-retention",
+    "auto-backup",
+    "canopy-background-scan",
+    "capture-buffer-drain",
+    "capture-only-notice-sweep",
+    "content-claim-expiry",
+    "database-integrity-check",
+    "database-optimize",
+    "embedding-reconcile",
+    "log-retention",
+    "notification-retention",
+    "release-provenance-reconcile",
+    "routed-event-dedup-prune",
+    "routed-transcript-cache-gc",
+    "self-reconcile",
+    "service-reconcile",
+    "session-maintenance",
+    "staging-gc",
+    "symbiont-detection",
+    "upgrade-adopt",
+    "upgrade-auto-check"
+  ],
+  'config leaves': [
+    "agent.cold_project_threshold_days",
+    "agent.event_tasks_enabled",
+    "agent.harness",
+    "agent.model",
+    "agent.provider.base_url",
+    "agent.provider.context_length",
+    "agent.provider.effort_map.default.effort",
+    "agent.provider.effort_map.default.verbosity",
+    "agent.provider.effort_map.high.effort",
+    "agent.provider.effort_map.high.verbosity",
+    "agent.provider.effort_map.low.effort",
+    "agent.provider.effort_map.low.verbosity",
+    "agent.provider.local_backend",
+    "agent.provider.model",
+    "agent.provider.reasoning_map.default",
+    "agent.provider.reasoning_map.high",
+    "agent.provider.reasoning_map.low",
+    "agent.provider.thinking_budget_map.default",
+    "agent.provider.thinking_budget_map.high",
+    "agent.provider.thinking_budget_map.low",
+    "agent.provider.type",
+    "agent.reasoningLevel",
+    "agent.run_retention_days",
+    "agent.scheduled_tasks_active_window_days",
+    "agent.scheduled_tasks_enabled",
+    "agent.semantic_write_check_enabled",
+    "agent.summary_batch_interval",
+    "agent.tasks",
+    "appearance.density",
+    "appearance.font",
+    "appearance.mode",
+    "appearance.theme",
+    "backup.auto_interval_hours",
+    "backup.dir",
+    "backup.retention.keep_daily",
+    "backup.retention.keep_weekly",
+    "capture.artifact_extensions",
+    "capture.buffer_max_events",
+    "capture.ignore.paths",
+    "capture.ignore.patterns",
+    "capture.ignore_plan_dirs_in_git",
+    "capture.plan_dirs",
+    "capture.transcript_paths",
+    "config_version",
+    "cortex.canopy.enabled",
+    "cortex.canopy.exclude.default_patterns",
+    "cortex.canopy.exclude.patterns",
+    "cortex.canopy.inject_on_pre_tool_use",
+    "cortex.canopy.min_file_bytes",
+    "cortex.canopy.refresh.background_enabled",
+    "cortex.canopy.refresh.background_period_minutes",
+    "cortex.digest.inject_on_session_start",
+    "cortex.digest.tier",
+    "cortex.enabled",
+    "cortex.instructions.inject_on_session_start",
+    "cortex.instructions.inject_on_subagent_start",
+    "cortex.plans.inject_intent_nudge_on_prompt_submit",
+    "cortex.spores.inject_on_prompt_submit",
+    "cortex.spores.max_per_prompt",
+    "daemon.log_level",
+    "daemon.log_retention_days",
+    "daemon.stale_session_threshold_ms",
+    "embedding.base_url",
+    "embedding.model",
+    "embedding.prevent_deep_sleep",
+    "embedding.provider",
+    "maintenance.auto_integrity_check",
+    "maintenance.auto_integrity_check_interval_hours",
+    "maintenance.auto_optimize",
+    "maintenance.auto_optimize_interval_hours",
+    "notifications.default_mode",
+    "notifications.domains",
+    "notifications.enabled",
+    "notifications.retention_days",
+    "notifications.system_notifications",
+    "release_provenance.enabled",
+    "release_provenance.github.max_lookups_per_run",
+    "release_provenance.github.repo",
+    "release_provenance.github.token_env",
+    "release_provenance.integration_refs",
+    "release_provenance.package_map",
+    "release_provenance.production_debug_include_unknown",
+    "release_provenance.production_refs",
+    "release_provenance.reconcile_interval_minutes",
+    "skills.confidence_threshold",
+    "skills.enabled",
+    "skills.usage_stale_days",
+    "symbionts",
+    "update.channel",
+    "vault_evolution.enabled",
+    "version"
+  ],
   'dashboard routes': [
     '*', '/', '/agent', '/agent/:id', '/cortex', '/g/:groveSlug/dashboard', '/g/:groveSlug/maintenance',
     '/g/:groveSlug/operations', '/g/:groveSlug/p/:projectSlug', '/g/:groveSlug/settings', '/g/:groveSlug/team',

@@ -1,0 +1,35 @@
+{
+  "canopy-map": [
+    "vault_canopy_map",
+    "vault_report"
+  ],
+  "embedding-reconcile": [],
+  "extract-curate": [
+    "vault_unprocessed",
+    "vault_mark_processed",
+    "vault_sessions",
+    "vault_spores",
+    "vault_spore",
+    "vault_state",
+    "vault_set_state",
+    "vault_search_fts",
+    "vault_search_semantic",
+    "vault_create_spore",
+    "vault_resolve_spore",
+    "vault_report"
+  ],
+  "vault-seed": [
+    "vault_spores",
+    "vault_spore",
+    "vault_search_fts",
+    "vault_search_semantic",
+    "vault_create_spore",
+    "vault_report"
+  ],
+  "title-summary": [
+    "vault_report",
+    "vault_session_summary_material",
+    "vault_unprocessed",
+    "vault_update_session"
+  ]
+}

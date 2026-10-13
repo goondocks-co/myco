@@ -7,6 +7,7 @@ import { cliVerbModules, closureOf, codeOf, entryFiles, filesUnder, moduleKey, R
 import { isLegacy } from '../helpers/legacy-boundary.ts';
 
 const SRC = path.join(REPO_ROOT, 'packages/myco/src');
+const MEMBER_INSTALLER_PARAMETER_COUNT = 5;
 const RETIRED = /\b(?:ensureVaultGitignoreCurrent|reconcileManagedProjectFiles|updateGitignore|reconcileAgentsMd|installInstructions|ensureAgentsMd)\b/;
 const UNMANAGED = /(?:^|[/\\])(?:\.gitignore|AGENTS\.md|CLAUDE\.md|myco\.yaml|\.mcp\.json|\.codex[/\\]config\.toml|\.cursor[/\\].+|\.claude[/\\]settings\.local\.json|opencode\.json|\.vscode[/\\]mcp\.json)$/;
 const HARNESS_TARGETS = loadManifests().flatMap(({ registration: reg }) => reg
@@ -93,8 +94,7 @@ function writerViolations(source: string, file: string): string[] {
   };
   const visit = (node: ts.Node): void => {
     if (ts.isNewExpression(node) && installerNames.has(node.expression.getText(tree))) {
-      const scope = node.arguments?.[6];
-      if (!scope || !ts.isStringLiteralLike(scope) || scope.text !== 'member-global') out.push(file + ': installer scope is not member-global');
+      if ((node.arguments?.length ?? 0) > MEMBER_INSTALLER_PARAMETER_COUNT) out.push(file + ': installer has retired scope arguments');
     }
     if (ts.isCallExpression(node)) {
       const name = ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : node.expression.getText(tree);
@@ -144,10 +144,15 @@ it('rejects a restored writer and a project-file write hidden behind a local pat
   }
 }, 120_000);
 
-it('non-legacy modules construct only member-global installers', () => {
+it('non-legacy modules construct installers without retired scope arguments', () => {
   const scopes = filesUnder(SRC).filter(file => !isLegacy(moduleKey(file)))
-    .flatMap(file => writerViolations(fs.readFileSync(file, 'utf8'), file).filter(message => message.endsWith(': installer scope is not member-global')));
+    .flatMap(file => writerViolations(fs.readFileSync(file, 'utf8'), file).filter(message => message.endsWith(': installer has retired scope arguments')));
   expect(scopes).toEqual([]);
+  const file = path.join(SRC, 'symbionts/installer.ts');
+  const tree = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+  const installer = tree.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'SymbiontInstaller');
+  expect(installer && ts.isClassDeclaration(installer) ? installer.members.find(ts.isConstructorDeclaration)?.parameters.length : undefined)
+    .toBe(MEMBER_INSTALLER_PARAMETER_COUNT);
 }, 120_000);
 
 it('copying from an unmanaged file does not classify the read as a write', () => {

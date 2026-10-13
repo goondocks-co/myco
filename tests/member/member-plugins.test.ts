@@ -130,11 +130,11 @@ describe('member plugins for plugin-file agents', () => {
 
   it('JSON-hook agents still render no member plugin and plugin-file agents render no JSON hook block', () => {
     for (const name of ['opencode', 'pi']) {
-      const installer = new SymbiontInstaller(loadManifests().find((m) => m.name === name)!, root, resolvePackageRoot(), false, undefined, null, 'member-global');
+      const installer = new SymbiontInstaller(loadManifests().find((m) => m.name === name)!, root, resolvePackageRoot(), false);
       expect(installer.renderMemberHooks('registry')).toBeNull();
       expect(installer.isMemberPluginFile()).toBe(true);
     }
-    const codex = new SymbiontInstaller(loadManifests().find((m) => m.name === 'codex')!, root, resolvePackageRoot(), false, undefined, null, 'member-global');
+    const codex = new SymbiontInstaller(loadManifests().find((m) => m.name === 'codex')!, root, resolvePackageRoot(), false);
     expect(codex.isMemberPluginFile()).toBe(false);
   });
 });

@@ -32,7 +32,7 @@ import {
   type WorkerServiceDeps,
 } from '@myco/cli/worker-service.js';
 import { run as runWorkerCli } from '@myco/cli/worker.js';
-import { checkWorkerServices } from '@myco/cli/doctor.js';
+import { checkWorkerServices } from '@myco/cli/doctor-member.js';
 import { deploymentPath, removeRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
 import { holdWorkerInstance } from '@myco/runner/instance.js';
 import { recordWorkerRefusal } from '@myco/runner/refusal.js';

@@ -231,25 +231,9 @@ describe('the 2.0 member entry graph', () => {
   });
 });
 
-/**
- * The machine-side survivors, as verbs.
- *
- * Each need the 1.4 JobRunner woke up to do is answered by a command someone
- * runs — a person, the installer, or the setup skill. The verb's OWN edges are
- * read, not its whole closure: a module reachable somewhere under a 230-module
- * CLI graph proves nothing about what the verb does, while the import the verb
- * itself makes and the symbol it names are the work.
- *
- * WHAT THIS HOLDS, exactly: that the verb reaches the work, and that the member
- * schedules none of these verbs. It does NOT hold that the verb performs it — a
- * body replaced by an early return leaves both the edge and the symbol in place.
- * `tests/cli/doctor-agents.test.ts` holds the behaviour for detection, by driving
- * the verb's check surface over a project tree and reading back the agent it
- * found. The other two verbs write to the machine or call the network, so they
- * are held structurally here and behaviourally by whoever owns their rework.
- */
+/** Machine-side work is invoked through commands, with no member timer. */
 const SURVIVOR_VERBS: ReadonlyArray<{ need: string; verb: string; imports: string; names: string }> = [
-  { need: 'symbiont detection', verb: 'cli/doctor.ts', imports: '../symbionts/detect.js', names: 'detectSymbionts' },
+  { need: 'symbiont detection', verb: 'cli/member-doctor.ts', imports: '../symbionts/detect.js', names: 'loadManifests' },
   { need: 'member setup refresh', verb: 'cli/update.ts', imports: '../member/refresh-setup.js', names: 'refreshMemberSetup' },
   { need: 'the release check', verb: 'cli/update.ts', imports: '../upgrade/release-resolver.js', names: 'resolveMycoBinaryUpdateRefs' },
 ];

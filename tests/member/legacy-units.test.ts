@@ -52,7 +52,7 @@ it('surfaces a task inspection error reported only on stderr', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-legacy-query-'));
   const task = legacyWindowsUnit(dir, dir);
   task.runner.run = async () => ({ stdout: '', stderr: 'task provider unavailable', exitCode: 1 });
-  await expect(new WindowsTaskServiceManager({ scriptDir: dir, runner: task.runner }).inspect(task.label))
+  await expect(new WindowsTaskServiceManager({ runner: task.runner }).unregisterAfterDrain(task.label, task.file, async () => 'stopped', () => {}))
     .rejects.toThrow(/task provider unavailable/);
 });
 
@@ -69,7 +69,7 @@ it('deduplicates Windows launchers discovered with different path casing', () =>
 it('accepts an encoded launcher path with different Windows casing and escaped apostrophes', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myco-legacy-O'Brien-"));
   const task = legacyWindowsUnit(dir, dir);
-  await new WindowsTaskServiceManager({ scriptDir: dir, runner: task.runner })
+  await new WindowsTaskServiceManager({ runner: task.runner })
     .unregisterAfterDrain(task.label, task.file.toUpperCase(), async () => { task.exit(); return 'stopped'; }, () => {});
   expect(task.calls).toContainEqual(['/delete', '/tn', task.label, '/f']);
 });
@@ -77,7 +77,7 @@ it('accepts an encoded launcher path with different Windows casing and escaped a
 it('refuses a different encoded launcher or appended PowerShell code', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-legacy-action-'));
   const task = legacyWindowsUnit(dir, dir);
-  const manager = new WindowsTaskServiceManager({ scriptDir: dir, runner: task.runner });
+  const manager = new WindowsTaskServiceManager({ runner: task.runner });
   await expect(manager.unregisterAfterDrain(task.label, task.file + '.other', async () => 'stopped', () => {})).rejects.toThrow(/does not belong/);
   const encoded = Buffer.from(`& '${task.file}'; Write-Output 'extra'`, 'utf16le').toString('base64');
   task.runner.run = async () => ({ stdout: task.xml.replace(/-EncodedCommand [A-Za-z0-9+/=]+/, `-EncodedCommand ${encoded}`), exitCode: 0 });
@@ -96,7 +96,7 @@ it('refuses a drive-root-relative task action for a drive-qualified launcher', a
   const launcher = drive + '\\Myco\\co.goondocks.myco.ps1';
   const encoded = Buffer.from("& '\\Myco\\co.goondocks.myco.ps1'", 'utf16le').toString('base64');
   task.runner.run = async () => ({ stdout: task.xml.replace(/-EncodedCommand [A-Za-z0-9+/=]+/, `-EncodedCommand ${encoded}`), exitCode: 0 });
-  await expect(new WindowsTaskServiceManager({ scriptDir: dir, runner: task.runner })
+  await expect(new WindowsTaskServiceManager({ runner: task.runner })
     .unregisterAfterDrain(task.label, launcher, async () => 'stopped', () => {})).rejects.toThrow(/does not belong/);
 });
 

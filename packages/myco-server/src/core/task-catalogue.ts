@@ -69,10 +69,8 @@ export const RETAINED_TASKS = Object.keys(TASK_ADMISSION) as RetainedTask[];
  *
  * A run's MCP surface is built from this list (`mcp/run-surface.ts`): each name
  * maps onto the `(tool, op)` pairs the run may call, and a task that declares no
- * tools of its own has an empty surface. The names are the 1.4 task files' own
- * vocabulary; `tests/myco-server/task-tools.test.ts` holds a task that still
- * has a file under `packages/myco/src/agent/definitions/tasks/` equal to it,
- * and holds every name here to one `RUN_TOOL_MAP` entry.
+ * tools of its own has an empty surface. The task-tools suite compares these
+ * names with the frozen task contract and holds each to one RUN_TOOL_MAP entry.
  */
 export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
   [MAP_TASK]: ['vault_canopy_map', 'vault_report'],

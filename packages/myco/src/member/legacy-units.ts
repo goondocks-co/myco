@@ -51,12 +51,12 @@ export function attributeLegacyUnits(dirs: ReadonlyArray<{ dir: string; scope: M
 export async function stopUnit(unit: MycoUnit, platform: NodeJS.Platform = process.platform, runner?: LaunchctlRunner, windows: { runner?: SchtasksRunner; stopDaemon?: (home: string) => Promise<DaemonStop>; sleep?: (ms: number) => Promise<void>; backupTask?: (label: string, xml: string, previouslyDisabled: boolean) => void } = {}): Promise<void> {
   const dir = path.dirname(unit.file);
   if (unit.file.endsWith('.plist')) {
-    await new LaunchdServiceManager({ agentsDir: dir, pruneOnUninstall: false, ...(runner ? { runner } : {}) }).uninstall(unit.label);
+    await new LaunchdServiceManager({ agentsDir: dir, ...(runner ? { runner } : {}) }).uninstall(unit.label);
   } else if (platform === 'win32' && unit.file.endsWith('.ps1')) {
     if (unit.home === null) throw new Error(`Cannot stop unattributable Windows daemon unit ${unit.file}`);
     if (windows.backupTask === undefined) throw new Error('Windows daemon removal requires a Task Scheduler backup');
     const home = unit.home;
-    await new WindowsTaskServiceManager({ scriptDir: dir, runner: windows.runner, sleep: windows.sleep })
+    await new WindowsTaskServiceManager({ runner: windows.runner, sleep: windows.sleep })
       .unregisterAfterDrain(unit.label, unit.file, () => (windows.stopDaemon ?? stopHomeDaemon)(home), windows.backupTask);
   } else if (platform === 'linux' && unit.file.endsWith('.service')) {
     await new SystemdUserServiceManager({ unitDir: dir }).uninstall(unit.label);

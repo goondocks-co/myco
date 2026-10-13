@@ -61,7 +61,7 @@ export function run(args: readonly string[], deps: SettingsCliDeps = {}): void {
     process.exitCode = 2;
     return;
   }
-  const installer = new SymbiontInstaller(manifest, deps.cwd ?? process.cwd(), resolvePackageRoot(), false, undefined, null, 'member-global');
+  const installer = new SymbiontInstaller(manifest, deps.cwd ?? process.cwd(), resolvePackageRoot(), false);
   const hooks = installer.renderMemberHooks('env');
   if (hooks !== null) {
     out(JSON.stringify({ hooks }, null, 2));

@@ -8,7 +8,6 @@ import { afterEach, beforeEach, describe, it, expect } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveMycoBinary } from '@myco/daemon/update-checker.js';
 import { resolveManagedBinaryPath } from '@myco/symbionts/installer.js';
 import { managedBinaryPath } from '@myco/install/managed-binary.js';
 
@@ -37,33 +36,6 @@ function writeManaged(home: string, mode = 0o755): string {
   fs.writeFileSync(managed, '#!/bin/sh\nexit 0\n', { mode });
   return managed;
 }
-
-describe('resolveMycoBinary (daemon respawn / job spawn)', () => {
-  it('keeps self-identity when execPath is a myco binary', () => {
-    expect(resolveMycoBinary('/opt/whatever/bin/myco')).toBe('/opt/whatever/bin/myco');
-  });
-
-  it('falls back to the managed binary — not a bare name — when not running as the binary', () => {
-    const home = tmpHome();
-    process.env.MYCO_HOME = home;
-    const managed = writeManaged(home);
-    expect(resolveMycoBinary('/usr/local/bin/bun')).toBe(managed);
-  });
-
-  it('home isolation: a non-default-home process never resolves another home’s binary', () => {
-    const defaultHome = path.join(os.homedir(), '.myco');
-    const defaultManaged = writeManaged(defaultHome);
-    try {
-      const devHome = tmpHome();
-      process.env.MYCO_HOME = devHome;
-      const resolved = resolveMycoBinary('/usr/local/bin/bun');
-      expect(resolved).not.toBe(defaultManaged);
-      expect(resolved).toBe(process.platform === 'win32' ? 'myco.exe' : 'myco');
-    } finally {
-      fs.rmSync(defaultManaged, { force: true });
-    }
-  });
-});
 
 describe('resolveManagedBinaryPath (installer-embedded commands)', () => {
   it('uses the managed binary when runnable, forward-slashed', () => {

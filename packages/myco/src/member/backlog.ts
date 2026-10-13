@@ -93,9 +93,6 @@ export function holdsTranscriptTail(spool: MemberSpool, state: SessionState, now
 /** Whether an event pass offered the session to the Deployment and got the session's own answer, rather than stopping on something every session would meet. */
 export const sessionTried = (events: DrainResult): boolean => events.skipped === undefined && EVENTS_CONTINUE.includes(events.endedBy);
 
-/** Whether an event pass ended holding a record of the session's own, which says nothing about any other session's. */
-export const sessionHeld = (events: DrainResult): boolean => events.skipped === undefined && HOLD_ENDS.includes(events.endedBy);
-
 /** The sessions in walk order: sorted, starting after the one the last walk ended on, so a session that holds a walk up cannot starve the ones after it. */
 function walkOrder(spool: MemberSpool, ids: readonly string[], newestFirst: boolean): string[] {
   const sorted = [...ids].sort();

@@ -30,7 +30,7 @@ import {
   type GitHubRelease,
 } from './release-assets.js';
 import { getPluginVersion } from '../version.js';
-import type { FetchLike } from '../utils/instrumented-fetch.js';
+export type ReleaseFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 import type { ReleaseChannel } from '../constants/update.js';
 
 /** Timeout for the GitHub releases fetch. Mirrors the update-checker probe. */
@@ -47,7 +47,7 @@ export interface MycoReleaseResolverDeps {
 /** Bound release discovery; exhaustion fails instead of choosing from a partial list. */
 export const MAX_RELEASE_PAGES = 100;
 
-export async function fetchMycoReleases(fetchFn: FetchLike = globalThis.fetch): Promise<GitHubRelease[]> {
+export async function fetchMycoReleases(fetchFn: ReleaseFetch = globalThis.fetch): Promise<GitHubRelease[]> {
   const releases: GitHubRelease[] = [];
   for (let page = 1; page <= MAX_RELEASE_PAGES; page++) {
     const url = mycoReleasesApiUrl() + (page === 1 ? '' : `&page=${page}`);

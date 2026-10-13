@@ -17,7 +17,6 @@
 import { describe, expect, it } from 'bun:test';
 
 import { scanForContamination } from '@myco/skills/contamination.js';
-import { validateSkillContent } from '@myco/agent/tools/skill-validator.js';
 
 function skill(body: string, frontmatter = ''): string {
   return `---\nname: myco:test-skill\ndescription: Test skill\nmanaged_by: myco\nuser-invocable: true\nallowed-tools: Read, Grep\n${frontmatter}---\n\n${body}`;
@@ -112,10 +111,6 @@ describe('skill contamination scanner', () => {
       expect.objectContaining({ kind: 'state-id', text: 'session-abc123' }),
       expect.objectContaining({ kind: 'state-id', text: 'spore-gotcha-skill-survey' }),
     ]));
-    expect(validateSkillContent(content, 'test-skill')).toEqual(expect.arrayContaining([
-      expect.stringContaining('branch-name'),
-      expect.stringContaining('state-id'),
-    ]));
   });
 
   it('ignores non-description frontmatter, fenced code, benign inline code, negated semantic commands, and historical sections', () => {
@@ -160,9 +155,6 @@ describe('skill contamination scanner', () => {
         text: '(v0.27.17)',
       }),
     ]);
-    expect(validateSkillContent(content, 'test-skill')).toEqual(expect.arrayContaining([
-      expect.stringContaining('myco-version-parenthetical'),
-    ]));
   });
 
   it('keeps string-slice offsets stable when ignored ranges follow surrogate pairs', () => {
@@ -205,9 +197,6 @@ describe('skill contamination scanner', () => {
         text: 'myco skill lint',
       }),
     ]);
-    expect(validateSkillContent(content, 'test-skill')).toEqual(expect.arrayContaining([
-      expect.stringContaining('invented-myco-skill-lint-command'),
-    ]));
   });
 
   it('does not treat positive invented-command instructions as corrective negation', () => {
@@ -239,11 +228,6 @@ describe('skill contamination scanner', () => {
       expect.objectContaining({ kind: 'invalid-survey-candidate-status', text: 'Skill-survey generates approved candidates' }),
       expect.objectContaining({ kind: 'invalid-skill-candidate-field', text: 'skill_candidates.evidence_metadata' }),
     ]));
-    expect(validateSkillContent(content, 'test-skill')).toEqual(expect.arrayContaining([
-      expect.stringContaining('invalid-session-status'),
-      expect.stringContaining('invalid-survey-candidate-status'),
-      expect.stringContaining('invalid-skill-candidate-field'),
-    ]));
   });
 
   it('allows correct skill lifecycle semantic facts', () => {
@@ -258,6 +242,5 @@ describe('skill contamination scanner', () => {
     ].join('\n'));
 
     expect(scanForContamination(content)).toEqual({ hard: [], warn: [] });
-    expect(validateSkillContent(content, 'test-skill')).toEqual([]);
   });
 });

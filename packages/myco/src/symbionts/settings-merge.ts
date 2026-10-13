@@ -1,51 +1,21 @@
-import { deepMerge, isPlainObject } from '../utils/deep-merge.js';
+import { isPlainObject } from '../utils/deep-merge.js';
 import { getAtPath, setAtPath, unsetAtPath } from '../utils/dot-path.js';
-
-/** Symbiont settings merge uses union semantics: arrays are concatenated and deduped. */
-export function deepMergeSettings(
-  target: Record<string, unknown>,
-  source: Record<string, unknown>,
-): Record<string, unknown> {
-  return deepMerge(target, source, { arrayStrategy: 'union' });
-}
 
 export { isPlainObject };
 
-// =====================================================================
-// Audit-tracked merge for JSON settings (parity with TOML audit-track)
-//
-// The plain `deepMergeSettings` / `deepRemoveSettings` pair is value-
-// match: it removes a key on uninstall only if the on-disk value still
-// equals the template value. That misses the data-loss case where a
-// user-pre-existing value happens to MATCH Myco's template (e.g. user
-// already had `features.hooks = true` and Myco's template sets the
-// same thing — uninstall would happily strip the user's value).
-//
-// These auditing variants record only the (path, value) tuples Myco
-// actually mutated, so uninstall can remove exactly what Myco wrote
-// and nothing else.
-// =====================================================================
+/** File existence and empty-file formatting retained across installation. */
+export interface SettingsFileAudit {
+  existed: boolean;
+  emptyText?: string;
+  trailingWhitespace?: string;
+}
 
-/**
- * Per-symbiont JSON settings audit. Persists alongside the TOML audit
- * but under a distinct schema version so readers can distinguish the
- * two formats.
- *
- * Paths are stored as segment ARRAYS (not dot-joined strings) because
- * VS Code / Cursor settings legitimately use keys with literal dots
- * in them (`"chat.tools.terminal.autoApprove": { ... }`). Joining
- * segments with a dot would corrupt the path lookup.
- *
- * `scalars` — leaf values Myco wrote at the given path.
- * `arrayEntries` — specific values Myco appended to the array at the
- *   given path. Union-merge semantics: an entry already present
- *   pre-install is NOT recorded here (Myco didn't add it).
- */
 export interface JsonSettingsAudit {
   schema: 2;
   format: 'json';
-  scalars: Array<{ path: string[]; value: unknown }>;
-  arrayEntries: Array<{ path: string[]; values: unknown[] }>;
+  scalars: Array<{ path: string[]; value: unknown; previous?: { value: unknown } }>;
+  arrayEntries: Array<{ path: string[]; values: unknown[]; previous?: { value: unknown[] } }>;
+  file?: SettingsFileAudit;
 }
 
 export function emptyJsonAudit(): JsonSettingsAudit {
@@ -53,7 +23,7 @@ export function emptyJsonAudit(): JsonSettingsAudit {
 }
 
 /**
- * Like `deepMergeSettings`, but records exactly which leaves Myco
+ * Records exactly which leaves Myco
  * actually changed on disk. `audit` is mutated in place; the merged
  * object is returned.
  */
@@ -81,7 +51,7 @@ function mergeWithAuditAt(
       addedValues.push(v);
     }
     if (addedValues.length > 0) {
-      audit.arrayEntries.push({ path: [...pathStack], values: addedValues });
+      audit.arrayEntries.push({ path: [...pathStack], values: addedValues, previous: { value: target } });
     }
     return merged;
   }
@@ -101,7 +71,7 @@ function mergeWithAuditAt(
   if (target !== undefined && stableKey(target) === stableKey(source)) {
     return target;
   }
-  audit.scalars.push({ path: [...pathStack], value: source });
+  audit.scalars.push({ path: [...pathStack], value: source, ...(target === undefined ? {} : { previous: { value: target } }) });
   return source;
 }
 
@@ -119,7 +89,10 @@ export function removeAuditedSettings(
     const current = getAtPath(target, entry.path);
     if (current === undefined) continue;
     if (stableKey(current) !== stableKey(entry.value)) continue;
-    if (unsetAtPath(target, entry.path, { pruneEmptyParents: true })) {
+    if (entry.previous) {
+      setAtPath(target, entry.path, entry.previous.value);
+      changed = true;
+    } else if (unsetAtPath(target, entry.path, { pruneEmptyParents: true })) {
       changed = true;
     }
   }
@@ -129,7 +102,10 @@ export function removeAuditedSettings(
     const drop = new Set(entry.values.map(stableKey));
     const remaining = current.filter((v) => !drop.has(stableKey(v)));
     if (remaining.length === current.length) continue;
-    if (remaining.length === 0) {
+    if (remaining.length === 0 && entry.previous) {
+      setAtPath(target, entry.path, remaining);
+      changed = true;
+    } else if (remaining.length === 0) {
       if (unsetAtPath(target, entry.path, { pruneEmptyParents: true })) {
         changed = true;
       }
@@ -148,50 +124,4 @@ export function removeAuditedSettings(
  */
 function stableKey(v: unknown): string {
   return JSON.stringify(v ?? null);
-}
-
-/**
- * Remove values from target that match the template structure.
- * Arrays: filter out values present in the template array.
- * Objects: delete keys present in the template object, recurse into nested objects.
- * Returns true if anything was deleted.
- */
-export function deepRemoveSettings(
-  target: Record<string, unknown>,
-  template: Record<string, unknown>,
-): boolean {
-  let changed = false;
-  for (const [key, templateVal] of Object.entries(template)) {
-    const targetVal = target[key];
-    if (targetVal === undefined) continue;
-
-    if (Array.isArray(templateVal) && Array.isArray(targetVal)) {
-      // Filter out values that appear in the template array
-      const templateSet = new Set(templateVal.map(String));
-      const filtered = targetVal.filter((v) => !templateSet.has(String(v)));
-      if (filtered.length !== targetVal.length) {
-        if (filtered.length > 0) {
-          target[key] = filtered;
-        } else {
-          delete target[key];
-        }
-        changed = true;
-      }
-    } else if (isPlainObject(templateVal) && isPlainObject(targetVal)) {
-      // Recurse into nested objects, then prune if empty
-      if (deepRemoveSettings(targetVal, templateVal)) {
-        if (Object.keys(targetVal).length === 0) {
-          delete target[key];
-        }
-        changed = true;
-      }
-    } else {
-      // Scalar: delete if value matches
-      if (String(targetVal) === String(templateVal)) {
-        delete target[key];
-        changed = true;
-      }
-    }
-  }
-  return changed;
 }

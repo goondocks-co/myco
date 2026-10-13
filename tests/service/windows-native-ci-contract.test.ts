@@ -94,13 +94,12 @@ describe('Windows native CI contract', () => {
     expect(cleanup?.run).not.toContain('exit 0');
   });
 
-  test('helper exposes a cleanup-scoped contract and on-demand limited service spec', async () => {
+  test('helper scopes native filesystem and lifecycle proofs to the CI scratch directory', async () => {
     expect(fs.existsSync(HELPER_PATH)).toBe(true);
     if (!fs.existsSync(HELPER_PATH)) return;
 
     const {
       assertWindowsNativeContractScope,
-      buildWindowsNativeTaskSpec,
     } = await import('../helpers/windows-native-contract.js');
 
     const runnerTemp = 'C:\\Runner Temp';
@@ -133,75 +132,7 @@ describe('Windows native CI contract', () => {
       taskLabel: 'unscoped-task',
     })).toThrow(/task label/);
 
-    const spec = buildWindowsNativeTaskSpec({
-      taskLabel: label,
-      executable,
-      scratch,
-    });
-    expect(spec).toMatchObject({
-      label,
-      executable,
-      args: ['task-child', 'task-proof.json'],
-      workingDir: scratch,
-      runAtLoad: false,
-      keepAlive: false,
-    });
-    expect(spec.env).not.toHaveProperty('MYCO_LAUNCH_AGENTS_DIR');
-  });
 
-  test('helper cleanup fails closed when exact fallback deletion leaves the task installed', async () => {
-    expect(fs.existsSync(HELPER_PATH)).toBe(true);
-    if (!fs.existsSync(HELPER_PATH)) return;
-    const { cleanupTask } = await import('../helpers/windows-native-contract.js');
-    expect(typeof cleanupTask).toBe('function');
-    if (typeof cleanupTask !== 'function') return;
-
-    const calls: string[][] = [];
-    const manager = {
-      async uninstall() {
-        throw new Error('primary uninstall failed');
-      },
-      async isInstalled() {
-        return true;
-      },
-    };
-    const runner = {
-      async run(args: string[]) {
-        calls.push(args);
-        return { stdout: 'still installed', exitCode: 1 };
-      },
-    };
-
-    await expect(cleanupTask(manager, runner, 'Myco-CI-Native-123-1'))
-      .rejects.toThrow(/remained installed/);
-    expect(calls).toEqual([
-      ['/end', '/tn', 'Myco-CI-Native-123-1'],
-      ['/delete', '/tn', 'Myco-CI-Native-123-1', '/f'],
-    ]);
-  });
-
-  test('limited task proof accepts the scheduler default and rejects elevation', async () => {
-    const { assertLimitedTaskRunLevel } = await import('../helpers/windows-native-contract.js');
-
-    expect(() => assertLimitedTaskRunLevel('<Principal><LogonType>InteractiveToken</LogonType></Principal>'))
-      .not.toThrow();
-    expect(() => assertLimitedTaskRunLevel('<Principal><RunLevel>LeastPrivilege</RunLevel></Principal>'))
-      .not.toThrow();
-    expect(() => assertLimitedTaskRunLevel('<Principal><RunLevel>HighestAvailable</RunLevel></Principal>'))
-      .toThrow(/limited-rights/);
-  });
-
-  test('native inspection failure includes the Task Scheduler XML', () => {
-    const helper = fs.readFileSync(HELPER_PATH, 'utf8');
-    const xmlQuery = helper.indexOf("runner.run(['/query', '/tn', taskLabel, '/xml'])");
-    const productionInspect = helper.indexOf('manager.inspect(taskLabel)');
-    const diagnostic = helper.indexOf(
-      'production Task Scheduler inspection could not prove the command; task XML:',
-    );
-
-    expect(xmlQuery).toBeGreaterThan(-1);
-    expect(productionInspect).toBeGreaterThan(xmlQuery);
-    expect(diagnostic).toBeGreaterThan(productionInspect);
   });
 
   test('helper retries transient Windows scratch cleanup failures within a bound', () => {

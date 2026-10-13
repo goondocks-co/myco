@@ -166,23 +166,3 @@ export async function prepareDerivedContent(env: Pick<ContentStore, 'db' | 'blob
     stream: () => new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }) }, now, publicationGuard);
   return { ...content,preparationCalls:measured.usage.statements+measured.usage.blobCalls };
 }
-
-/** Releases a prepared input that no committed logical field adopted. */
-export async function discardDerivedContent(env: Pick<ContentStore, 'db'|'blobs'>, source: DerivedContentSource, key: string, now: number): Promise<number> {
-  const measured=measuredContentEnv(env);
-  const db=measured.env.db;
-  const pairs = [{ projectId: source.projectId, key }];
-  if(source.sourceKind==='tool-input' && await db.prepare(`SELECT 1 AS adopted FROM tool_calls
-    WHERE project_id=? AND tool_call_id=? AND input_blob_key=?`).bind(source.projectId,source.resourceId??source.eventId,key).first()!==null)
-    return measured.usage.statements;
-  await db.batch([
-    db.prepare(`DELETE FROM registered_content_proofs WHERE project_id=? AND source_kind=? AND source_id=?
-      AND event_id=? AND envelope_hash=? AND key=? AND NOT EXISTS (SELECT 1 FROM tool_calls t
-        WHERE t.project_id=registered_content_proofs.project_id AND t.tool_call_id=registered_content_proofs.source_id
-          AND t.input_blob_key=registered_content_proofs.key)`)
-      .bind(source.projectId, source.sourceKind, source.resourceId ?? source.eventId, source.eventId, source.envelopeHash, key),
-    ...recordBlobCandidates(db, pairs, now),
-  ]);
-  await releaseBlobs(db, pairs, now);
-  return measured.usage.statements+measured.usage.blobCalls;
-}

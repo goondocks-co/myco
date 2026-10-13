@@ -23,8 +23,6 @@
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 import { parseSourceRefs, validateSkillCandidateQualityContract, type CandidateSourceRef } from '@goondocks/myco-shared/skill-candidates';
-
-export const SKILL_STATUSES = ['active', 'archived', 'superseded'] as const;
 import { CANDIDATE_STATUSES, CANDIDATE_REVIEW_STATUSES, type CandidateReviewStatus, type SkillCandidate } from './skill-types.js';
 export { CANDIDATE_STATUSES, CANDIDATE_REVIEW_STATUSES, type CandidateReviewStatus, type SkillCandidate };
 
@@ -105,12 +103,6 @@ export async function listSkillRecords(db: RelationalStore, scope: ReadScope, o:
     .prepare(`SELECT ${RECORD_COLUMNS} FROM skill_records WHERE ${conditions.join(' AND ')} ORDER BY name ASC LIMIT ?`)
     .bind(...params, Math.min(o.limit ?? 100, 500)).all();
   return results;
-}
-
-/** One statement: a read-then-write would lose a concurrent increment. */
-export async function incrementSkillUsage(db: RelationalStore, scope: ReadScope, skillId: string, now: number): Promise<void> {
-  await db.prepare(`UPDATE skill_records SET usage_count = usage_count + 1, last_used_at = ?
-     WHERE project_id = ? AND id = ?`).bind(now, scope.projectId, skillId).run();
 }
 
 /**

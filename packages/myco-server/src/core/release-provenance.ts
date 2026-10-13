@@ -52,8 +52,6 @@ import {
   classifyCommit, memoizedCompare, resolveRunRefs, type Classification, type PackageTagMapping,
 } from './release-classify.js';
 import { emit } from '../telemetry.js';
-
-export const RELEASE_PROVENANCE_JOB = 'release-provenance-reconcile';
 export const RECONCILE_INTERVAL_LEAF = 'release_provenance.reconcile_interval_minutes';
 export const DEFAULT_RECONCILE_INTERVAL_MINUTES = 15;
 export const DEFAULT_MAX_LOOKUPS = 50;

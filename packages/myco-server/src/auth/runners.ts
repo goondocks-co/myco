@@ -360,11 +360,6 @@ export async function controlRunner(db: RelationalStore, actorId: string, runner
   return { changed: results[0]!.meta.changes === 1, runner: runner! };
 }
 
-/** Every registered machine, from the same fleet read used by Status and task previews. */
-export async function listRunners(db: RelationalStore, now: number): Promise<RunnerFleetRecord[]> {
-  return (await readWorkerFleet(db, now)).flatMap((row) => row.runnerDetails === undefined ? [] : [row.runnerDetails]);
-}
-
 /** A name change commits with its live actor guard and immutable receipt. */
 export async function renameRunner(db: RelationalStore, actorId: string, runnerId: string, name: string, now: number): Promise<RunnerRecord | null> {
   if (!RUNNER_NAME_PATTERN.test(name)) throw new Error('invalid runner name');

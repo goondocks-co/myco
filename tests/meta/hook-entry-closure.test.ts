@@ -118,7 +118,6 @@ const VERBS_2_0 = [
 ];
 
 /** The one verb module that is the 1.4 daemon. */
-const THE_DAEMON = 'daemon/main.ts';
 const DAEMON_SERVER = 'packages/myco/src/daemon/server.ts';
 
 describe('a verb other than a hook', () => {
@@ -135,10 +134,10 @@ describe('a verb other than a hook', () => {
     }
   });
 
-  it('loads, for every verb but the daemon itself, a module that never reaches the 1.4 daemon\'s server', () => {
+  it('loads every verb without reaching a daemon server', () => {
     // The verb modules are read off the CLI's own imports, then off the lazy imports of each module found, so a verb
     // that a dispatcher (`cli/member-dispatch.ts`) loads with `import('./…')` is held here without being listed.
-    const modules = cliVerbModules(SRC, (file) => path.relative(SRC, file) === THE_DAEMON);
+    const modules = cliVerbModules(SRC);
     expect(modules.size).toBeGreaterThan(20);
     // The member verbs `cli/member-dispatch.ts` loads lazily are among the modules held.
     for (const verb of ['cli/member-reads.ts', 'cli/member-doctor.ts', 'cli/member-logs.ts', 'cli/member-config.ts']) {
@@ -149,7 +148,5 @@ describe('a verb other than a hook', () => {
       const reached = closure.modules.has(DAEMON_SERVER) ? pathToEntry(closure, DAEMON_SERVER).join(' -> ') : null;
       expect({ verb: path.relative(SRC, file), reached }).toEqual({ verb: path.relative(SRC, file), reached: null });
     }
-    // The daemon's own module is the exception because it is the server, and it still is.
-    expect(closureOf([at(THE_DAEMON)], { staticOnly: true }).modules.has(DAEMON_SERVER)).toBe(true);
   }, 120_000);
 });

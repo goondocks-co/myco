@@ -221,8 +221,6 @@ export const MODEL_CATALOG_FRESH_MS = 2 * MODEL_CATALOG_REFRESH_MS;
 export const MAX_CATALOG_MODELS = 1000;
 /** The most a catalog's models take as JSON, so one catalog always fits one report; past it the rest are cut and the catalog marked `truncated`. */
 export const MAX_CATALOG_MODEL_BYTES = 192 * 1024;
-/** The most catalogs one report carries: one per harness. */
-export const MAX_CATALOG_HARNESSES = 16;
 const MAX_CATALOG_ID_CHARS = 256;
 const MAX_CATALOG_LABEL_CHARS = 128;
 const MAX_CATALOG_EFFORTS = 16;

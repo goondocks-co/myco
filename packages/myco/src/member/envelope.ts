@@ -439,10 +439,5 @@ export function transcriptSegmentEvent(ctx: EnvelopeContext, facts: {
   }, facts.blobSource);
 }
 
-/** A blob source for bytes the caller already holds, staged through the context. */
-export function stageBytes(ctx: EnvelopeContext, bytes: Uint8Array, mediaType: string): BlobSource {
-  return ctx.stage(bytes, mediaType);
-}
-
 /** The SHA-256 the blob route keys on. */
 export { sha256Hex as blobKeyOf };

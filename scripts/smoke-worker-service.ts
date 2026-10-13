@@ -1,3 +1,4 @@
+import { defaultSpec, installService, uninstallService, statusOfService, type ServiceSpec } from '../packages/myco/src/server/service.js';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -5,9 +6,6 @@ import { realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { readDeploymentMembership } from '../packages/myco/src/member/registry.js';
-import { LaunchdServiceManager } from '../packages/myco/src/service/launchd.js';
-import { getScopedServiceManager, resolveObservedScope, supportsScope } from '../packages/myco/src/service/scoped.js';
-import type { ServiceSpec } from '../packages/myco/src/service/types.js';
 
 const RESTART_THROTTLE_SECONDS = 10;
 const PREFLIGHT_TIMEOUT_MS = 30_000;
@@ -35,20 +33,20 @@ export function workerRigSpec(config: WorkerRigConfig, userHome = homedir()): Se
   assert(config.pathEnv.length > 0, 'PATH must name the installed harness and its runtime');
   assert(config.startAt === 'login' || config.startAt === 'boot', 'Choose login or boot explicitly');
   const identity = createHash('sha256').update(JSON.stringify([config.root, config.mycoHome, url.href])).digest('hex').slice(0, LABEL_HASH_CHARS);
+  assert(config.startAt === 'login', 'A registered worker uses a per-user login service');
   return {
-    label: `${LABEL_PREFIX}.${identity}`,
-    variant: 'dev',
-    description: 'Myco smoke-rig worker',
-    executable: config.binary,
-    args: ['worker', '--server', config.server, '--harness', config.harness],
-    workingDir: config.root,
-    env: { HOME: userHome, MYCO_HOME: config.mycoHome, MYCO_TRAMPOLINED: '1', PATH: config.pathEnv },
-    stdoutPath: path.join(config.root, 'worker.log'),
-    stderrPath: path.join(config.root, 'worker.error.log'),
-    runAtLoad: true,
-    keepAlive: true,
-    throttleSeconds: RESTART_THROTTLE_SECONDS,
-    scope: { startAt: config.startAt, runAs: 'invoking-user' },
+    ...defaultSpec(config.binary, userHome, process.platform, config.mycoHome),
+    pathEnv: config.pathEnv,
+    logDir: config.root,
+    env: { HOME: userHome, MYCO_HOME: config.mycoHome, MYCO_TRAMPOLINED: '1' },
+    unit: {
+      label: `${LABEL_PREFIX}.${identity}`,
+      unitName: `${LABEL_PREFIX}.${identity}`,
+      description: 'Myco smoke-rig worker',
+      args: ['worker', '--server', config.server, '--harness', config.harness],
+      logName: 'worker',
+      restartDelaySeconds: RESTART_THROTTLE_SECONDS,
+    },
   };
 }
 
@@ -66,16 +64,12 @@ export async function runWorkerRig(action: string, config: WorkerRigConfig): Pro
   assert(process.platform === 'darwin', 'This smoke rig currently supports macOS only');
   assert(['plan', 'install', 'status', 'uninstall'].includes(action), 'Use plan, install, status or uninstall');
   const spec = workerRigSpec(config);
-  const manager = config.startAt === 'login'
-    ? new LaunchdServiceManager({ pruneOnUninstall: false })
-    : getScopedServiceManager({ scope: spec.scope });
   if (action === 'status') {
-    console.log(JSON.stringify(await manager.status(spec.label)));
+    console.log(JSON.stringify(statusOfService(spec)));
     return;
   }
   if (action === 'uninstall') {
-    await manager.uninstall(spec.label);
-    console.log(JSON.stringify(await manager.status(spec.label)));
+    console.log(JSON.stringify(uninstallService(spec)));
     return;
   }
   for (const value of [config.binary, config.mycoHome, config.root]) assertPersistentPath(value);
@@ -87,12 +81,8 @@ export async function runWorkerRig(action: string, config: WorkerRigConfig): Pro
     `Harness is not ready in the service environment: ${detection.trim()}`);
   console.log(JSON.stringify({ version, spec }));
   if (action === 'plan') return;
-  const observed = await resolveObservedScope(spec.label);
-  assert(observed === 'none', `Rig service already exists in ${observed} scope; explicitly uninstall before replacing it`);
-  const capability = await supportsScope({ startAt: config.startAt, runAs: 'invoking-user' });
-  assert(capability.supported, capability.detail);
-  console.log(JSON.stringify(await manager.install(spec)));
-  console.log(JSON.stringify(await manager.status(spec.label)));
+  assert(!statusOfService(spec).installed, 'Rig service already exists; explicitly uninstall before replacing it');
+  console.log(JSON.stringify(installService(spec)));
 }
 
 export function workerRigConfigFromEnv(env: NodeJS.ProcessEnv): WorkerRigConfig {

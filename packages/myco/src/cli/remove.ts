@@ -203,7 +203,7 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
   const memberOwned = isMemberHome(home) || provision !== null;
   const deployment = provision?.serverUrl ?? readDefaultDeployment(home)?.serverUrl ?? null;
   const registrations = loadManifests().map(manifest => {
-    const installer = new SymbiontInstaller(manifest, home, resolvePackageRoot(), false, undefined, null, 'member-global', home).withoutProjectRoot();
+    const installer = new SymbiontInstaller(manifest, home, resolvePackageRoot(), false, home).withoutProjectRoot();
     if (deployment !== null) installer.forDeployment(deployment);
     const hooks = installer.inspectMemberHooks();
     const mcp = installer.inspectMemberMcp();

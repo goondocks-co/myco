@@ -151,12 +151,12 @@ describe('a joined member with no 1.4 vault', () => {
     join(rig);
     const spy = recordingFetch(rig.fetch);
 
-    const get = await verb('config', ['get', 'daemon.log_level'], spy.fetch);
+    const get = await verb('config', ['get', 'update.channel'], spy.fetch);
     expect(get.answered).toBe(false);
-    expect(get.stderr).toContain(`daemon.log_level is a Member setting, and the 2.0 member does not read Member settings yet (${MEMBER_SETTINGS_ISSUE})`);
-    const set = await verb('config', ['set', 'daemon.log_level', 'debug'], spy.fetch);
+    expect(get.stderr).toContain(`update.channel is a Member setting, and the 2.0 member does not read Member settings yet (${MEMBER_SETTINGS_ISSUE})`);
+    const set = await verb('config', ['set', 'update.channel', 'debug'], spy.fetch);
     expect(set.answered).toBe(false);
-    expect(set.stderr).toContain('daemon.log_level is a Member setting');
+    expect(set.stderr).toContain('update.channel is a Member setting');
     expect(spy.requests).toEqual([]);
 
     const deploymentWrite = await verb('config', ['set', 'agent.limits.concurrent_runs', '9'], spy.fetch);
@@ -500,6 +500,7 @@ describe('the Member leaves the config verb names', () => {
   it('are exactly the §7.8 rows whose tier is Member', () => {
     const doc = fs.readFileSync(path.resolve('docs/architecture/myco-2.0.md'), 'utf8');
     const ledger = [...doc.matchAll(/^\| `([^`]+)` \| [A-Z]+ \| Member \|/gm)].map((m) => m[1]).sort();
-    expect([...MEMBER_TIER_LEAVES].sort()).toEqual(ledger);
+    const leaves: string[] = [...MEMBER_TIER_LEAVES];
+    expect(leaves.sort()).toEqual(ledger);
   });
 });

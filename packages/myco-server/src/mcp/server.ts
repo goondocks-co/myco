@@ -236,16 +236,6 @@ function runEntryFor(name: string, op: string): RegistryEntry | undefined {
   return isServedTool(name) ? entryFor(name, op) : undefined;
 }
 
-/** The definitions this principal is served. */
-export function definitionsFor(ctx: Pick<ToolContext, 'principal'>): readonly ToolDefinition[] {
-  const surface = surfaceFor(ctx);
-  return filterDefinitions(surface, (name, op) => {
-    const declaration = surface.entryFor(name, op)?.authorization;
-    return declaration !== undefined && declaration.transport === 'mcp' && declaration.subjects.includes(surface.principalKind)
-      && declaration.action !== 'never' && surface.allows(name, op);
-  });
-}
-
 function filterDefinitions(surface: Surface, allowed: (name: string, op: string) => boolean): ToolDefinition[] {
   return surface.definitions.flatMap((definition) => {
     const property = definition.inputSchema.properties.op;

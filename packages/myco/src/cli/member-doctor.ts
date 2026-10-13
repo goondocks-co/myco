@@ -68,7 +68,7 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string, requ
   let capturing = 0;
   for (const manifest of loadManifests()) {
     if (!manifest.registration?.hooksTarget && !manifest.registration?.memberHooksTarget) continue;
-    const seen = [new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, 'member-global', mycoHome).inspectMemberHooks()];
+    const seen = [new SymbiontInstaller(manifest, root, packageRoot, false, mycoHome).inspectMemberHooks()];
     for (const hooks of seen) {
       if (!hooks.readable) {
         checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) could not be read, so whether it captures is unknown. Run \`myco member provision ${manifest.name}\`.`));
@@ -117,7 +117,7 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
   const missing: string[] = [];
   for (const manifest of loadManifests().filter((m) => record.agents.includes(m.name))) {
     try {
-      const installer = new SymbiontInstaller(manifest, mycoHome, resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome)
+      const installer = new SymbiontInstaller(manifest, mycoHome, resolvePackageRoot(), false, mycoHome)
         .withoutProjectRoot().forDeployment(record.serverUrl);
       if (!installer.memberRegistrationCurrent()) return [row('Setup', 'warn', `${manifest.displayName}'s hooks or MCP entry are missing or stale. The next Myco helper pass repairs them; run \`myco member provision --refresh\` to repair them now.`)];
     } catch (error) {

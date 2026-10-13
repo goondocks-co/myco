@@ -20,7 +20,7 @@ import { selectedDeploymentMembership } from '../member/token-pairing.js';
 import { assignLegacyPending, flushPending, listHeldEnds, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS } from '../member/pending.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { DoctorCheck } from './doctor.js';
+import type { DoctorCheck } from './doctor-member.js';
 import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome, type ResolvedMycoHome } from '../paths/home.js';
@@ -454,7 +454,7 @@ export type ProvisionOutcome =
 function globalInstaller(
   manifest: ReturnType<typeof loadManifests>[number], root: string | null, mycoHome: string, opts: { packageRoot?: string; legacyHomes?: readonly string[] },
 ): SymbiontInstaller {
-  const installer = new SymbiontInstaller(manifest, root ?? mycoHome, opts.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome)
+  const installer = new SymbiontInstaller(manifest, root ?? mycoHome, opts.packageRoot ?? resolvePackageRoot(), false, mycoHome)
     .replacingLegacy(opts.legacyHomes ?? []);
   return root === null ? installer.withoutProjectRoot() : installer;
 }

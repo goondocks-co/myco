@@ -170,8 +170,6 @@ export const promptIdFor = (sessionId: string, shape: string, value: string): Pr
   uuidv5('queued-prompt', sessionId, `${shape}|${value}`);
 /** A plan key a member also derives for a plan-tag envelope at a position in the session. Parts and their order are the member's (`planKeyForTag`, `packages/myco/src/member/envelope.ts:99`). */
 export const planKeyForTag = (sessionId: string, tag: string, position: number): Promise<string> => uuidv5('plan-tag', sessionId, tag, String(position));
-/** An attachment id a member also derives, keyed by the content rather than the position, so a replay names the same row. */
-export const attachmentIdFor = (sessionId: string, sha256: string): Promise<string> => uuidv5('attachment', sessionId, sha256);
 /** An id for a record the member has no derivation for: the transcript and the byte that produced it. */
 export const offsetIdFor = (kind: string, transcriptId: string, offset: number): Promise<string> => uuidv5(kind, transcriptId, String(offset));
 

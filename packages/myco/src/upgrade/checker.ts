@@ -11,7 +11,6 @@
 
 import { isV2Version } from '../../scripts/release-policy.mjs';
 
-import type { FetchLike } from '../utils/instrumented-fetch.js';
 import {
   resolveMycoVersions,
   pickRelease,
@@ -22,7 +21,7 @@ import {
 import type { ReleaseChannel, UpdatePackageId } from '../constants/update.js';
 import { NPM_PACKAGE_NAME } from '../constants/update.js';
 import semver from 'semver';
-import { fetchMycoReleases } from './release-resolver.js';
+import { fetchMycoReleases, type ReleaseFetch } from './release-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Public types (re-exported for consumer convenience)
@@ -93,7 +92,7 @@ export async function resolveMycoPackageCheck(
   currentVersion: string,
   channel: ReleaseChannel,
   installedVersion: string | null,
-  fetchFn: FetchLike = globalThis.fetch,
+  fetchFn: ReleaseFetch = globalThis.fetch,
 ): Promise<PackageCheckResult> {
   const releases = await fetchMycoReleases(fetchFn);
   const isV2 = isV2Version(currentVersion);

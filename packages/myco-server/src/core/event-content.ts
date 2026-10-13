@@ -7,9 +7,6 @@ import { TOOL_INPUT_PREVIEW_BYTES } from './tool-input.js';
 
 
 export { restoreArchivedEvent } from './event-content-restore.js';
-
-export const EVENT_CONTENT_VERSION = 1;
-export const ARCHIVED_PAYLOAD = '{}';
 export const CONTENT_SLICE_BYTES = 1024 * 1024;
 export const CONTENT_SCAN_BYTES_PER_PASS = 1024 * 1024;
 
@@ -203,13 +200,6 @@ export async function prepareArchiveStep(env: Pick<ContentStore,'db'|'blobs'>,ki
     if((await write.run()).meta.changes!==1) throw new Error('content_scan_source_changed');
     return {status:'pending',scanned:next-at};
   } finally {hash.clean();}
-}
-
-/** Clears the scan state in the same transaction that adopts its exact body. */
-export function archiveCheckpointClearStatement(db:RelationalStore,kind:SourceKind,row:ContentRow):PreparedStatement {
-  return db.prepare(`DELETE FROM content_scan_checkpoints WHERE project_id=? AND source_kind=? AND resource_id=?
-    AND content_revision=? AND envelope_hash=? AND scanned_bytes=?`)
-    .bind(row.project_id,kind,row.resource_id,row.content_revision,row.envelope_hash,row.bytes);
 }
 
 /** Installs lifecycle facts and the discriminator together with the exact archived body. */

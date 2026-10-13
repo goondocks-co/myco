@@ -75,12 +75,6 @@ function byName(manifests: SymbiontManifest[]): SymbiontManifest[] {
   return [...manifests].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
-/** Find a loaded manifest by symbiont name, or undefined. */
-export function getManifestByName(name: string | undefined): SymbiontManifest | undefined {
-  if (!name) return undefined;
-  return loadManifests().find((m) => m.name === name);
-}
-
 /**
  * Manifests for agents installed on THIS MACHINE — i.e. whose declared
  * `detectionDir` (a user-level dir like `~/.claude`) exists. This is the same
