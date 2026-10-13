@@ -45,7 +45,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isSafeProjectRoot } from '../project-root.js';
 import { defaultMycoHome, readHomePin, resolveHomeDir, resolveMycoHomeWithSource, RUNTIME_HOME_FILENAME, resolveMachineIdPath, type ResolvedMycoHome } from '../paths/home.js';
-import { claimSubsystem, readClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
+import { claimSubsystem, readClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import { IMPORT_PACE_PER_MINUTE, importUntilSettled, type ImportReport } from '../member/import.js';
 import { legacyProjectImportComplete, legacyProjectRoots, legacySessionSplit, runLegacyImport, LEGACY_MAX_PER_AGENT, LEGACY_WINDOW_DAYS, type LegacyImportReport } from '../member/legacy-import.js';
 import { legacyVaultFiles } from '../member/home-role.js';
@@ -56,9 +56,10 @@ import { ensureMemberDir, ensurePrivateFile, memberRoot, writePrivateFileAtomic 
 import type { FetchLike } from '../member/transport.js';
 
 import { parseDirectoryMapping, canonicalPath, type DirectoryMapping } from '../symbionts/transcript-attribution.js';
-import { stopHomeDaemon, type DaemonStop } from '../service/home-daemon.js';
-import { attributeLegacyUnits, stopUnit, unitDirectories } from '../service/legacy-units.js';
-import type { LaunchctlRunner } from '../service/launchd.js';
+import { stopHomeDaemon, type DaemonStop } from '@myco/member/legacy-daemon-stop.js';
+import { attributeLegacyUnits, stopUnit, unitDirectories } from '@myco/member/legacy-units.js';
+import type { SchtasksRunner } from '@myco/member/legacy-service/windows.js';
+import type { LaunchctlRunner } from '@myco/member/legacy-service/launchd.js';
 import { detectMachineInstalledSymbionts, loadManifests } from '../symbionts/detect.js';
 import { removeLegacyRegistrations, rewriteKeepingMode, scanLegacyRegistrations, type LegacyFinding } from '../symbionts/legacy-registrations.js';
 import { pinMachineHome, previewGlobalProvision, provisionGlobally, type ProvisionOutcome } from './member.js';
@@ -163,6 +164,8 @@ export interface CutoverDeps {
   stopDaemon?: (home: string) => Promise<DaemonStop>;
   /** launchctl, for a caller observing how units are stopped; the real one by default. */
   launchctl?: LaunchctlRunner;
+  /** Task Scheduler runner for attributed Windows launcher removal. */
+  schtasks?: SchtasksRunner;
   platform?: NodeJS.Platform;
   /** The unit folders read for 1.4 daemon units; the platform's user and boot folders by default. */
   unitDirs?: Array<{ dir: string; scope: 'user' | 'boot' }>;
@@ -471,7 +474,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
   if (split.thisMachine === 0 && elsewhere.length > 0) {
     blockers.push(`every session in the 1.4 vaults was captured under another machine id (${elsewhere.map(([m, n]) => `${m}: ${n}`).join(', ')}), not this machine's (${machineId}), so none would be imported. Run the cutover on the machine that captured them.`);
   }
-  const units = attributeLegacyUnits(deps.unitDirs ?? unitDirectories(env, homeDir, platform), legacyHomes);
+  const units = attributeLegacyUnits(deps.unitDirs ?? unitDirectories(env, homeDir, platform).concat(platform === 'win32' && !env.MYCO_LAUNCH_AGENTS_DIR?.trim() ? legacyHomes.map(home => ({ dir: path.join(home, 'service'), scope: 'user' as const })) : []), legacyHomes);
   for (const unit of units.unattributable) blockers.push(`${unit.file} runs \`myco daemon\` but names no home (no MYCO_HOME, no working directory), so it cannot be told apart from another installation's. Remove it if it is 1.4's, then run again.`);
   for (const unit of units.boot) blockers.push(`${unit.file} starts ${unit.home}'s 1.4 daemon at boot; remove it as an administrator (\`sudo launchctl bootout system/${unit.label}\` and delete the file), then run again.`);
 
@@ -524,7 +527,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
   const displayName = (agent: string) => loadManifests().find((m) => m.name === agent)?.displayName ?? agent;
   const regular = (file: string) => { try { return fs.lstatSync(file).isFile(); } catch { return false; } };
   const touched = [...new Set([...provisioned.flatMap((p) => p.targets.all), ...removalFiles])].filter(regular);
-  const backup = new CutoverBackup(cutoverBackupDir(mycoHome, stamp));
+  const backup = new CutoverBackup(cutoverBackupDir(mycoHome, stamp), 'cutover', platform);
   const stillLegacy = (planned: readonly LegacyFinding[]): Set<string> => {
     const current = scanLegacyRegistrations(scanOptions).findings.filter((f) => f.verdict === 'legacy').map(removalOutcome);
     return new Set(planned.map(removalOutcome).filter((o) => current.includes(o)));
@@ -621,7 +624,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
         would: `would stop and remove ${unit.label} (${unit.file}), the 1.4 daemon of ${unit.home}`, outcomes: [`unit ${unit.file}`],
         run: async () => {
           backup.take(unit.file);
-          await stopUnit(unit, platform, deps.launchctl);
+          await stopUnit(unit, platform, deps.launchctl, { runner: deps.schtasks, stopDaemon: deps.stopDaemon, sleep: deps.sleep, backupTask: (label, xml) => { backup.scheduledTask(label, xml); } });
           return { lines: [`stopped and removed ${unit.label} (${unit.file})`], made: fs.existsSync(unit.file) ? [] : [`unit ${unit.file}`] };
         },
       })),
@@ -698,6 +701,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
           } catch (error) {
             problem(error instanceof Error ? error.message : String(error));
             err(n < 6 ? '   The 1.4 service is left running, and nothing was imported; run the cutover again once this is settled.' : '   Nothing was imported; run the cutover again once this is settled.');
+            if (backup.all.length > 0) err(`   Recovery instructions: ${path.join(backup.dir, RESTORE_FILE)}`);
             return false;
           }
         }

@@ -6,6 +6,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./json": { "import": "./dist/json.js", "types": "./dist/json.d.ts" },
     "./prompt-text": { "import": "./dist/prompt-text.js", "types": "./dist/prompt-text.d.ts" },
     "./search-types": {
       "import": "./dist/search-types.js",

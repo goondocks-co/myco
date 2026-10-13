@@ -7,7 +7,7 @@
  */
 
 import { unlink, glob } from 'node:fs/promises';
-import { removeBufferLockCompanion } from '@myco/capture/buffer.js';
+import { removeBufferLockCompanion } from '@myco/member/buffer.js';
 import type { DeleteCascadeResult } from '../../db/queries/sessions.js';
 import type { EmbeddingManager } from '../embedding/manager.js';
 

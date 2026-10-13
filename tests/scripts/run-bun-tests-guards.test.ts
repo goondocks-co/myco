@@ -749,7 +749,7 @@ describe('run-bun-tests temp containment', () => {
       'tests/member/provisioning.test.ts',
       'tests/member/auto-join.test.ts',
       'tests/cli/member-machine-verbs.test.ts',
-      'tests/service/launchd.test.ts',
+      'tests/member/legacy-launchd.test.ts',
     ];
     const { status, output } = await runRunner(leakers[0]!, {
       MYCO_RUNNER_REPORT_DIR: reports,

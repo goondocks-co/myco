@@ -72,6 +72,9 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
   'packages/myco/src/runner/update-helper.ts': {
     calls: 1, form: 'awaited', bound: 'one supervised update waits within finite handoff, contact and probation deadlines',
   },
+  'packages/myco/src/utils/sleep.ts': {
+    calls: 1, form: 'awaited', bound: 'one requested daemon drain or unit teardown waits within its finite polling budget',
+  },
   'packages/myco/src/utils/git.ts': {
     calls: 1, form: 'cleared', bound: 'a one-shot Git child deadline, cleared on exit or spawn failure',
   },
@@ -84,12 +87,13 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
  * A deadline is a timer the runtime keeps. It is allowed only as the deadline of
  * a request or a child: every site must be the signal a call is given, alone or
  * joined to the caller's own (`AbortSignal.any([signal, AbortSignal.timeout(…)])`),
- * so it cannot fire on anything but the call it bounds. Like the list above, this
- * only shrinks. The runner idle-loop release request and its finite handoff
- * watcher are the explicit exception; member updates remain on-demand.
+ * so it cannot fire on anything but the call it bounds. Migration administration
+ * waits only for the requested unit teardown; member updates remain on-demand.
  */
 const REQUEST_DEADLINES: Readonly<Record<string, { calls: number; bound: string }>> = {
   'packages/myco/src/member/join-code.ts': { calls: 1, bound: 'one poll of a join code' },
+  'packages/myco/src/member/legacy-daemon-stop.ts': { calls: 1, bound: 'one health request to the daemon recorded by the selected home' },
+  'packages/myco/src/member/legacy-service/cooperative-shutdown.ts': { calls: 2, bound: 'one shutdown request and the health polls inside its finite drain grace' },
   'packages/myco/src/runner/drivers/acp.ts': { calls: 1, bound: "the listing of the run's own tools" },
   'packages/myco/src/runner/loop.ts': { calls: 1, bound: "one worker request (claim, renewal, end), through the loop's one helper" },
   'packages/myco/src/runner/models.ts': { calls: 1, bound: "one listing of a harness's models" },
@@ -129,6 +133,10 @@ const DEADLINE_BOUND = /AbortSignal\.any\(\s*\[[^\]]*?AbortSignal\.timeout\(|\bs
 
 /** What a machine-side scheduler is made of; none of it may be reachable from a member entry. */
 const SCHEDULER_TOKENS: readonly RegExp[] = [/\bPowerManager\b/, /\bJobRunner\b/, /\bPOWER_JOB_NAMES\b/, /\bregisterJob\s*\(/];
+
+function timerProviders(source: string, file: string): string[] {
+  return runtimeEdges(source, file).specifiers.filter(specifier => /^(?:node:)?timers(?:\/promises)?$/.test(specifier));
+}
 
 const CLOSURE = closureOf(entryFiles(SRC, MEMBER_ENTRIES));
 const SOURCE = new Map([...CLOSURE.modules].map(([key, file]) => [key, fs.readFileSync(file, 'utf-8')]));
@@ -188,6 +196,22 @@ describe('the 2.0 member entry graph', () => {
   it('reaches into the global object for nothing but a plain member, so a name assembled at runtime has nowhere to land', () => {
     const reaching = [...SOURCE].filter(([, source]) => GLOBAL_REACH.test(source)).map(([key]) => key);
     expect(reaching).toEqual([]);
+  });
+
+  it('imports no timer provider that can hide its calls behind an alias', () => {
+    const imported = [...SOURCE].flatMap(([key, source]) => timerProviders(source, CLOSURE.modules.get(key)!).map(specifier => ({ key, specifier })));
+    expect(imported).toEqual([]);
+  });
+
+  it('rejects timer provider imports regardless of the local binding', () => {
+    const file = path.join(SRC, 'member', 'legacy-service', 'windows.ts');
+    for (const source of [
+      "import { setInterval as cadence } from 'node:timers/promises';",
+      "import { setTimeout as sleep } from 'timers/promises';",
+      "import * as clock from 'node:timers';",
+      "const clock = require('timers');",
+      "const clock = await import('node:timers/promises');",
+    ]) expect(timerProviders(source, file)).toHaveLength(1);
   });
 
   it('accounts for every timer call site with a clear or an await, at the count the allowlist declares', () => {

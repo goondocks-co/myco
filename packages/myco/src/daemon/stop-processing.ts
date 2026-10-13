@@ -43,7 +43,7 @@ import { epochSeconds, LOG_MESSAGE_PREVIEW_CHARS } from '@myco/constants.js';
 import { TITLE_PREVIEW_CHARS } from './event-handlers.js';
 import { SessionRegistry } from './lifecycle.js';
 import { ensureSession, ENSURE_SESSION_SOURCE } from './session-lifecycle.js';
-import { EventBuffer } from '@myco/capture/buffer.js';
+import { EventBuffer } from '@myco/member/buffer.js';
 import { DaemonLogger } from './logger.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { resolveTenantConfig } from './request-config.js';

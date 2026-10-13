@@ -8,7 +8,7 @@ import {
   GLOBAL_MCP_LAUNCHER_FILENAME,
   removeRetiredGlobalLaunchers,
 } from '@myco/grove/launcher-cleanup.js';
-import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
+import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/member/subsystem-claim.js';
 import { daemonIdentity } from '@myco/grove/paths.js';
 
 describe('removeRetiredGlobalLaunchers', () => {

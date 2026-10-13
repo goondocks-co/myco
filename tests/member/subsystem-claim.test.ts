@@ -12,7 +12,7 @@ import {
   shouldDeferSubsystem,
   guardBySubsystemClaim,
   SYMBIONT_CONFIG_SUBSYSTEM,
-} from '@myco/grove/subsystem-claim.js';
+} from '@myco/member/subsystem-claim.js';
 import { daemonIdentity } from '@myco/grove/paths.js';
 
 // The subsystem-claim primitive: an operator writes a durable claim into the

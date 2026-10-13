@@ -8,7 +8,7 @@ import {
   scrubEscapedSmokeLaunchers,
   scrubGeminiTrustedHooks,
 } from '@myco/grove/global-config-migration.js';
-import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/grove/subsystem-claim.js';
+import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/member/subsystem-claim.js';
 import { daemonIdentity } from '@myco/grove/paths.js';
 
 function withTmpFile<T>(fn: (filePath: string) => T): T {

@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { managedSkillsDir } from '../install/managed-binary.js';
 import { expandHome } from '../paths/home.js';
-import { isClaimedByPeer, readClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
+import { isClaimedByPeer, readClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import { ensureManagedSkills } from './managed-skills.js';
 import { BUNDLED_SKILLS } from './skills.generated.js';
 

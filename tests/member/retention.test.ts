@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import { setFixturePermissions } from '../helpers/permission-fixture.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BUFFER_QUARANTINE_DIRNAME } from '@myco/capture/buffer.js';
+import { BUFFER_QUARANTINE_DIRNAME } from '@myco/member/buffer.js';
 import { deadlineBudget, longestDeclaredHookTimeoutMs, unboundedBudget } from '@myco/member/budget.js';
 import { MEMBER_PROTOCOL, MEMBER_SESSION_STATE_RETENTION_MS, PROTOCOL_HEADER } from '@myco/member/constants.js';
 import { readCaptureLoss } from '@myco/member/capture-loss.js';

@@ -23,7 +23,7 @@ import { getSession, updateSession } from '../db/queries/sessions.js';
 import { ALL_PROJECTS_SCOPE } from '../grove/ids.js';
 import { LOG_KINDS } from '../constants/log-kinds.js';
 import { TITLE_PREVIEW_CHARS } from './event-handlers.js';
-import { classifyNextPromptOrigin } from '../capture/prompt-kind.js';
+import { classifyNextPromptOrigin } from '../member/prompt-kind.js';
 import { stripPlanTagEnvelopes } from '../plans/tag-envelopes.js';
 
 export interface ReEnrichDeps {

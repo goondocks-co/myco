@@ -2,8 +2,8 @@ import { describe, expect, test, beforeEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SystemdUserServiceManager, type SystemctlRunner } from '../../packages/myco/src/service/systemd';
-import type { ServiceSpec } from '../../packages/myco/src/service/types';
+import { SystemdUserServiceManager, type SystemctlRunner } from '../../packages/myco/src/member/legacy-service/systemd';
+import type { ServiceSpec } from '../../packages/myco/src/member/legacy-service/types';
 
 class FakeRunner implements SystemctlRunner {
   calls: string[][] = [];

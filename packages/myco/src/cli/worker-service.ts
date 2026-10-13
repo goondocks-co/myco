@@ -4,7 +4,7 @@ import { REJOIN_HINT } from '../member/delivery-notice.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveHomeDir, resolveMycoHome } from '../paths/home.js';
-import { isDefaultMycoHome } from '../grove/paths.js';
+import { isDefaultMycoHome } from '@myco/paths/home.js';
 import { deploymentUrl, listDeploymentMemberships, readDeploymentMembership, readDeploymentMembershipResult } from '../member/registry.js';
 import { type DetectedHarness, type locate } from '../runner/detect.js';
 import { type WorkerAdmission } from '../runner/loop.js';
@@ -17,7 +17,7 @@ import {
   type WorkerServiceTarget,
 } from '../runner/service.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
-import { looksLikeDevBuildExecutable } from '../service/spec-builder.js';
+import { looksLikeDevBuildExecutable } from '@myco/server/spec-builder.js';
 import {
   assertInstalledBinary,
   ServicePathUnsupported,

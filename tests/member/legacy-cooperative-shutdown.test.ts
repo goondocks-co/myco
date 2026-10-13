@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   requestCooperativeShutdown,
   requestCooperativeShutdownResult,
-} from '../../packages/myco/src/service/cooperative-shutdown';
+} from '../../packages/myco/src/member/legacy-service/cooperative-shutdown';
 
 const noSleep = async () => {};
 

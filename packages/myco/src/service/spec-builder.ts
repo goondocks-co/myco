@@ -15,37 +15,8 @@ export interface BuildSpecOptions {
   platform?: NodeJS.Platform;
 }
 
-/**
- * Detect a dev-build executable path — anything compiled inside a checkout's
- * per-platform binary package (`packages/myco-<arch>/bin/myco`) or the
- * legacy pre-split `packages/<pkg>/vendor/<arch>/myco` tree.
- *
- * Used as a guard in `buildServiceSpec` (and the default-home callsite
- * fence below) to refuse installing a dev-build binary as the daemon for
- * the DEFAULT home (`~/.myco`) — the production install every released
- * user shares. Live dogfood proof of why this matters: the prod plist was
- * once overwritten with a dev-build path, after which launchd
- * re-spawned the dev binary as the prod service — running unreleased
- * code against the prod Grove with no operator visibility into the
- * substitution. Catching the substitution at build-spec time makes the
- * failure mode unreachable regardless of which caller initiated the
- * install (`myco service install`, `ensureSelfInstalledAsService`, a
- * future auto-update flow, etc.).
- *
- * Detection is intentionally a literal path match — we want to catch
- * the path *as it will be written into the plist*, before any realpath
- * resolution could flatten it. We also realpath the executable below
- * so a symlink pointing into a dev-build tree can't bypass the check.
- *
- * The installed-from-npm path always contains a `node_modules/` segment
- * (the platform package is dropped into `node_modules/@goondocks/myco-<arch>/`
- * by npm), so this regex never matches an installed binary.
- */
-export function looksLikeDevBuildExecutable(executable: string): boolean {
-  const platformPkgPattern = /\/packages\/myco-(?:darwin-arm64|darwin-x64|linux-x64|linux-arm64|windows-x64)\/bin\//;
-  const legacyVendorPattern = /\/packages\/[^/]+\/vendor\//;
-  return platformPkgPattern.test(executable) || legacyVendorPattern.test(executable);
-}
+import { looksLikeDevBuildExecutable } from '@myco/server/spec-builder.js';
+export { looksLikeDevBuildExecutable } from '@myco/server/spec-builder.js';
 
 export function buildServiceSpec(opts: BuildSpecOptions): ServiceSpec {
   const mycoHome = opts.mycoHome ?? resolveMycoHome();

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { renderSystemdUnit } from '../../packages/myco/src/service/systemd-unit';
-import type { ServiceSpec } from '../../packages/myco/src/service/types';
+import { renderSystemdUnit } from '../../packages/myco/src/member/legacy-service/systemd-unit';
+import type { ServiceSpec } from '../../packages/myco/src/member/legacy-service/types';
 
 const baseSpec: ServiceSpec = {
   label: 'co.goondocks.myco',

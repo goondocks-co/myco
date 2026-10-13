@@ -45,7 +45,7 @@ import {
   type GroveRecord,
 } from '../grove/registry.js';
 import { resolveMycoHome } from '../grove/paths.js';
-import { shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../grove/subsystem-claim.js';
+import { shouldDeferSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import { ensureManagedSkills } from '../symbionts/managed-skills.js';
 
 export interface DetectionResult {

@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { expandHome } from '../grove/paths.js';
+import { expandHome } from '@myco/paths/home.js';
 
 export interface DetectedSymbiont {
   manifest: SymbiontManifest;

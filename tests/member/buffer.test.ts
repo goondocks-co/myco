@@ -2,10 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import {
   EventBuffer,
   resolveSessionFromBuffer,
-  cleanStaleBuffers,
-  quarantineBufferFile,
   BUFFER_QUARANTINE_DIRNAME,
-} from '@myco/capture/buffer';
+} from '@myco/member/buffer';
+import { cleanStaleBuffers, quarantineBufferFile } from '@myco/capture/buffer';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';

@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { spawnCombinedOutput } from '@myco/service/run-command.js';
+import { spawnCombinedOutput } from '@myco/member/legacy-service/run-command.js';
 
 describe('spawnCombinedOutput', () => {
   // Regression: the launchd/systemd runners accumulated output via

@@ -55,14 +55,7 @@ const FORBIDDEN: readonly string[] = [
  * The 1.4 leaves the machine verbs reach through shared modules, and the shared
  * module that brings each in. None opens a database or writes a vault on import.
  */
-const SHARED_LEGACY_LEAVES: Readonly<Record<string, string>> = {
-  [`${SRC}/grove/paths.ts`]: 'home-directory path arithmetic, via symbionts/detect.ts and cli/worker-service.ts',
-  [`${SRC}/grove/ids.ts`]: 'branded id types, via grove/paths.ts',
-  [`${SRC}/grove/subsystem-claim.ts`]: 'via symbionts/installer.ts',
-  [`${SRC}/service/spec-builder.ts`]: 'a dev-build check, via cli/worker-service.ts',
-  [`${SRC}/service/labels.ts`]: 'via service/spec-builder.ts',
-  [`${SRC}/service/paths.ts`]: 'via service/spec-builder.ts',
-};
+const SHARED_LEGACY_LEAVES: Readonly<Record<string, string>> = {};
 
 /** The packages the read handler may import: the MCP client that calls the served tools. */
 const READ_EXTERNALS: readonly string[] = ['@modelcontextprotocol/client'];

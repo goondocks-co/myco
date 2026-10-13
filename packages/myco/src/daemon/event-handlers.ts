@@ -9,7 +9,7 @@ import path from 'node:path';
 import { getDatabase } from '@myco/db/client.js';
 import { epochSeconds, DEFAULT_AGENT_ID } from '@myco/constants.js';
 import { closeOpenBatches, insertBatchStateless, incrementActivityCount, findOpenParentBatch, hasAnyBatch, countBatchesBySession, listBatchesBySession, getLatestBatch, replaceRecoveredBatchUserPrompt, liveContentOrdinal, normalizePromptForHash, BATCH_KIND, RECOVERED_BATCH_SENTINEL, PROMPT_BATCH_ORIGIN, type PromptBatchOrigin } from '@myco/db/queries/batches.js';
-import { classifyNextPromptOrigin } from '@myco/capture/prompt-kind.js';
+import { classifyNextPromptOrigin } from '@myco/member/prompt-kind.js';
 import { AntigravityJsonlParser } from '@myco/symbionts/parsers/antigravity-jsonl.js';
 import fs from 'node:fs';
 import type { StatelessActivityInsert, ActivityRow } from '@myco/db/queries/activities.js';

@@ -1,5 +1,5 @@
 /** Pure parsers for installed service commands. */
-import type { InstalledServiceCommand } from '@myco/service/types.js';
+import type { InstalledServiceCommand } from '@myco/member/legacy-service/types.js';
 function decodePlistString(value: string): string | null {
   if (/&(?!(?:amp|lt|gt|quot);)/.test(value)) return null;
   return value
@@ -128,4 +128,41 @@ function parseSystemdQuotedWords(value: string): string[] | null {
     words.push(word);
   }
   return words;
+}
+
+export function parseWindowsLauncherCommand(script: string): InstalledServiceCommand | null {
+  const executableAssignments = script
+    .split(/\r?\n/)
+    .map((line) => line.match(/^\$executable = ('.*')$/))
+    .filter((match): match is RegExpMatchArray => match !== null);
+  const argumentAssignments = script
+    .split(/\r?\n/)
+    .map((line) => line.match(/^\$arguments = @\((.*)\)$/))
+    .filter((match): match is RegExpMatchArray => match !== null);
+  if (executableAssignments.length !== 1 || argumentAssignments.length !== 1) {
+    return null;
+  }
+  const executable = decodePowerShellLiteral(executableAssignments[0][1]);
+  const argumentText = argumentAssignments[0][1];
+  const argumentLiterals = argumentText === ''
+    ? []
+    : argumentText.split(', ');
+  const args = argumentLiterals.map(decodePowerShellLiteral);
+  if (executable === null || args.some((arg) => arg === null)) return null;
+  if (argumentLiterals.join(', ') !== argumentText) return null;
+  return { executable, args: args as string[] };
+}
+
+export function decodePowerShellLiteral(value: string): string | null {
+  if (!/^'(?:[^']|'')*'$/.test(value)) return null;
+  return value.slice(1, -1).replace(/''/g, "'");
+}
+
+/** The home recorded by a PowerShell launcher, with MYCO_HOME taking precedence. */
+export function parseWindowsLauncherHome(script: string): string | null {
+  const environment = [...script.matchAll(/^\s*\$startInfo\.EnvironmentVariables\['MYCO_HOME'\] = ('.*')\r?$/gm)];
+  if (environment.length > 1) return null;
+  if (environment.length === 1) return decodePowerShellLiteral(environment[0][1]);
+  const directories = [...script.matchAll(/^\$workingDirectory = ('.*')\r?$/gm)];
+  return directories.length === 1 ? decodePowerShellLiteral(directories[0][1]) : null;
 }

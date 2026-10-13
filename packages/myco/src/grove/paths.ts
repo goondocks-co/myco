@@ -57,7 +57,7 @@ export function pathsEquivalent(a: string, b: string): boolean {
   }
 }
 
-export const SERVICE_DIRNAME = 'service';
+export { SERVICE_DIRNAME, DAEMON_STATE_FILENAME, resolveServiceDir, resolveServiceDaemonStatePath } from '@myco/paths/service.js';
 export const GROVE_METADATA_FILENAME = 'grove.toml';
 export const GROVE_CONFIG_FILENAME = 'grove.yaml';
 export const GROVE_DB_FILENAME = 'myco.db';
@@ -69,18 +69,8 @@ export const GLOBAL_CONFIG_FILENAME = 'config.yaml';
 export const GROVE_REGISTRY_FILENAME = 'registry.yaml';
 export const PROJECT_MANIFEST_FILENAME = 'project.toml';
 export const PROJECT_LOCAL_MANIFEST_FILENAME = 'project.local.toml';
-export const DAEMON_STATE_FILENAME = 'daemon.json';
 
-
-/**
- * The daemon's identity token — its resolved home path. An opaque,
- * equality-compared owner used for subsystem claims: two independent installs
- * in two homes own subsystems distinctly. Two daemons sharing one home are the
- * same identity (only one should run per home).
- */
-export function daemonIdentity(mycoHome: string = resolveMycoHome()): string {
-  return path.resolve(mycoHome);
-}
+export { daemonIdentity } from '@myco/paths/ids.js';
 
 /**
  * Resolve the root directory for project-scoped backups. Precedence:
@@ -107,14 +97,6 @@ export function resolveGlobalConfigPath(mycoHome = resolveMycoHome()): string {
  */
 export function resolveLastUpdateVersionPath(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, 'last-update-version');
-}
-
-export function resolveServiceDir(mycoHome = resolveMycoHome()): string {
-  return path.join(mycoHome, SERVICE_DIRNAME);
-}
-
-export function resolveServiceDaemonStatePath(mycoHome = resolveMycoHome()): string {
-  return path.join(resolveServiceDir(mycoHome), DAEMON_STATE_FILENAME);
 }
 
 export function resolveGrovesDir(mycoHome = resolveMycoHome()): string {

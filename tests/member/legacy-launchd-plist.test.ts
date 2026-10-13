@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { renderLaunchdPlist } from '../../packages/myco/src/service/launchd-plist';
-import type { ServiceSpec } from '../../packages/myco/src/service/types';
+import { renderLaunchdPlist } from '../../packages/myco/src/member/legacy-service/launchd-plist';
+import type { ServiceSpec } from '../../packages/myco/src/member/legacy-service/types';
 
 const baseSpec: ServiceSpec = {
   label: 'co.goondocks.myco',
