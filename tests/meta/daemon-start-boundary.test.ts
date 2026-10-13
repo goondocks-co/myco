@@ -71,19 +71,17 @@ it('nothing in the 2.0 closure constructs a daemon argv', () => {
   expect(daemonArgvSites()).toEqual([]);
 }, 120_000);
 
-it('rejects literal, bound, concatenated, spread, mutated, conditional and template daemon argv', () => {
-  for (const mutation of [
-    "spawn(binary, ['daemon']);",
-    "const verb = 'daemon'; spawn(binary, [verb]);",
-    "spawn(binary, ['dae' + 'mon']);",
-    "spawn(binary, [cmd === 'daemon' ? cmd : 'worker']);",
-    "const args = []; args.push('daemon'); spawn(binary, args);",
-    "const args = []; args.unshift('daemon'); spawn(binary, args);",
-    "const argv = ['daemon']; spawn(binary, [...argv]);",
-    'spawn(binary, [`daemon`]);',
-    'exec(`${binary} daemon`);',
-  ]) {
-    expect(daemonArgvSites((file, text) => file.endsWith('/cli/daemon-guard.ts')
-      ? `${text}\n${mutation}` : text)).toContain('packages/myco/src/cli/daemon-guard.ts');
-  }
+it.each([
+  "spawn(binary, ['daemon']);",
+  "const verb = 'daemon'; spawn(binary, [verb]);",
+  "spawn(binary, ['dae' + 'mon']);",
+  "spawn(binary, [cmd === 'daemon' ? cmd : 'worker']);",
+  "const args = []; args.push('daemon'); spawn(binary, args);",
+  "const args = []; args.unshift('daemon'); spawn(binary, args);",
+  "const argv = ['daemon']; spawn(binary, [...argv]);",
+  'spawn(binary, [`daemon`]);',
+  'exec(`${binary} daemon`);',
+])('rejects literal, bound, concatenated, spread, mutated, conditional and template daemon argv: %s', mutation => {
+  expect(daemonArgvSites((file, text) => file.endsWith('/cli/daemon-guard.ts')
+    ? `${text}\n${mutation}` : text)).toContain('packages/myco/src/cli/daemon-guard.ts');
 }, 120_000);
