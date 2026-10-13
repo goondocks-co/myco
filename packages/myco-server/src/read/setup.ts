@@ -7,6 +7,8 @@ import { MAX_WORK_WINDOW_MS } from './work.js';
 import { projectsFiltering } from './scope.js';
 import { producedSql } from './run-outcome.js';
 
+const SETUP_CAPTURE_CANDIDATES_PER_HARNESS = 8;
+
 export interface SetupObservations {
   machines: { signedIn: number };
   /** Admins count live projects; a member's own first project is evidenced by live capture (zero or one). */
@@ -24,14 +26,18 @@ export async function readSetupProgress(env: ServerEnv, scope: MachineScope, now
     WHERE c.machine_id = mc.machine_id AND c.member_id = mc.member_id AND ${credentialLive('c')})`;
   const claims = `machine_claims mc INDEXED BY ${scope.all ? 'idx_machine_claims_claimed' : 'idx_machine_claims_member'}`;
   const claimScope = scope.all ? 'mc.claimed_at >= 0' : 'mc.member_id = ?';
+  // Only reported harnesses establish live capture; sessions with a NULL agent do not count.
   const capture = `EXISTS (SELECT 1 FROM ${claims} WHERE ${claimScope} AND ${liveClaim}
-    AND EXISTS (SELECT 1 FROM sessions s INDEXED BY idx_sessions_harness_live
-      WHERE s.machine_id = mc.machine_id AND s.last_live_received_at IS NOT NULL
-        AND s.last_live_received_at >= mc.claimed_at
-        AND EXISTS (SELECT 1 FROM member_credentials source WHERE source.id = s.created_by_token_id
+    AND EXISTS (SELECT 1 FROM machine_harness_reports r JOIN json_each(r.harnesses) h
+      WHERE r.machine_id = mc.machine_id AND EXISTS (SELECT 1 FROM (
+        SELECT s.project_id, s.session_id, s.created_by_token_id FROM sessions s INDEXED BY idx_sessions_harness_live
+        WHERE s.machine_id = mc.machine_id AND s.agent = json_extract(h.value, '$.id')
+          AND s.last_live_received_at IS NOT NULL AND s.last_live_received_at >= mc.claimed_at
+        ORDER BY s.last_live_received_at DESC LIMIT ${SETUP_CAPTURE_CANDIDATES_PER_HARNESS}
+      ) s WHERE EXISTS (SELECT 1 FROM member_credentials source WHERE source.id = s.created_by_token_id
           AND source.member_id = mc.member_id AND source.machine_id = mc.machine_id)
         AND ${projectsFiltering({ all: true }, 's').sql}
-        AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = s.project_id AND t.session_id = s.session_id)))`;
+        AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = s.project_id AND t.session_id = s.session_id))))`;
   const row = await env.db.prepare(`SELECT
     (SELECT COUNT(*) FROM ${claims} WHERE ${claimScope} AND ${liveClaim}) AS signed_in,
     ${scope.all ? `(SELECT COUNT(*) FROM projects p INDEXED BY sqlite_autoindex_projects_1 WHERE p.project_id > '' AND p.archived_at IS NULL)` : '0'} AS projects,
@@ -55,7 +61,7 @@ export async function readSetupProgress(env: ServerEnv, scope: MachineScope, now
   return {
     machines: { signedIn: row.signed_in }, projects: scope.all ? row.projects : Number(row.live_capture === 1), liveCapture: row.live_capture === 1,
     runnersReady, workProduced: produced?.produced === 1,
-    legacyWorkers: scope.all ? fleet.filter(worker => worker.runner === null).length : null,
+    legacyWorkers: scope.all ? fleet.filter(worker => worker.runner === null && worker.eligible && worker.recent).length : null,
     queuedWithoutRunner: row.queued === 1 && row.enabled_runner === 0,
   };
 }

@@ -7,12 +7,19 @@ for (const { viewport, mode } of SHOT_MATRIX) for (const role of ['admin', 'memb
     const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode,
       cookie: screensEnv(role === 'admin' ? 'ownerCookie' : 'memberCookie') });
     try {
+      if (role === 'member') {
+        await page.route('**/api/setup', async (route) => {
+          const response = await route.fetch();
+          await route.fulfill({ json: { ...await response.json(), liveCapture: false, projects: 0 } });
+        });
+        await page.reload();
+      }
       const card = page.locator('[data-get-started]');
       await expect(card.getByRole('heading', { name: 'Get started' })).toBeVisible();
       await expect(card.locator('[data-state="unchecked"]')).toHaveCount(0);
-      await expect(card.locator('[data-setup-item]')).toHaveCount(role === 'admin' ? 7 : 3);
+      await expect(card.locator('[data-setup-item]')).toHaveCount(role === 'admin' ? 7 : 2);
       if (role === 'admin') {
-        await expect(card.locator('[data-setup-item="runner"]')).toContainText('myco setup');
+        await expect(card.locator('[data-setup-item="runner"]')).toContainText(`myco setup --runner ${new URL(page.url()).origin}`);
         await expect(card.locator('[data-setup-item="work"]')).toContainText('last 31 days');
       } else {
         await expect(card).toContainText('Myco’s work runs on machines an admin chooses');

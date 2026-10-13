@@ -97,7 +97,7 @@ describe('the dashboard shell', () => {
     server({ '/auth/me': me(), '/api/projects': () => Response.json(dashboardMe({ projects: [] })) });
     mount('/projects');
     expect(await within(await screen.findByRole('main')).findByText('Get started')).toBeTruthy();
-    expect(screen.getAllByText('myco setup').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^myco setup --(?:join|runner) /).length).toBeGreaterThan(0);
   });
 
   it('shows the sign-in state when the server answers 401', async () => {

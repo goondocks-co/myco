@@ -1,10 +1,10 @@
-import { GetStarted } from '../features/today/GetStarted';
 import { useState, type ReactNode } from 'react';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import {
   Button, ConfirmDialog, ErrorState, focusRing, HealthDot, LoadingState, MoreMenu, type MoreMenuItem, recencyOf, StatusChip,
 } from '../design';
 import { AdminPage, RowCard } from '../features/admin/AdminFrame';
+import { GetStarted } from '../features/today/GetStarted';
 import { RenameProjectDialog } from '../features/admin/project/RenameProjectDialog';
 import { useMemberNames } from '../features/admin/members';
 import { refusalText } from '../hooks/use-access';
@@ -64,8 +64,8 @@ export function Projects() {
       {projects.isPending ? <LoadingState label="Loading projects" count={3} />
         : projects.isError ? <ErrorState error={projects.error} onRetry={() => void projects.refetch()} />
         : live.length === 0 && archived.length === 0 ? (
-<GetStarted />
-      ) : (
+          <GetStarted emptyState />
+        ) : (
         <RowCard>
           <ul aria-label="Projects" className="flex flex-col divide-y divide-line">
             {live.map((p) => (

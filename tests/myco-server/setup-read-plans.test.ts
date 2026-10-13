@@ -29,9 +29,11 @@ describe('setup read budget and query plans', () => {
       for (const [profile, sqlite] of Object.entries(stores)) for (const statement of newReads) {
         const steps = (sqlite.query(`EXPLAIN QUERY PLAN ${statement.sql}`).all(...statement.params as never[]) as Array<{ detail: string }>).map(row => row.detail);
         console.info(`setup EXPLAIN ${profile}: ${steps.join(' | ')}`);
-        expect(steps.filter(step => /^SCAN (?!CONSTANT ROW)/.test(step))).toEqual([]);
+        const candidateScans = steps.includes('CO-ROUTINE s') ? ['SCAN s'] : [];
+        expect(steps.filter(step => /^SCAN (?!CONSTANT ROW|h VIRTUAL TABLE INDEX)/.test(step))).toEqual(candidateScans);
         if (statement.sql.includes('AS signed_in')) {
-          expect(steps.join(' ')).toContain('idx_sessions_harness_live (machine_id=?)');
+          expect(steps.join(' ')).not.toContain('USE TEMP B-TREE FOR ORDER BY');
+          expect(steps.join(' ')).toContain('idx_sessions_harness_live (machine_id=? AND agent=? AND last_live_received_at>?)');
           expect(steps.join(' ')).toContain('idx_member_credentials_machine (machine_id=?)');
           expect(steps.join(' ')).toContain('idx_fleet_queue (status=?)');
         } else if (statement.sql.includes('AS produced')) {
@@ -48,7 +50,8 @@ describe('setup read budget and query plans', () => {
       expect(statements[0]!.sql).toContain('idx_machine_claims_member');
       const steps = (f.sqlite.query(`EXPLAIN QUERY PLAN ${statements[0]!.sql}`).all(...statements[0]!.params as never[]) as Array<{ detail: string }>).map(row => row.detail);
       console.info(`setup EXPLAIN member: ${steps.join(' | ')}`);
-      expect(steps.filter(step => /^SCAN (?!CONSTANT ROW)/.test(step))).toEqual([]);
+      expect(steps.filter(step => /^SCAN (?!CONSTANT ROW|h VIRTUAL TABLE INDEX)/.test(step))).toEqual(['SCAN s']);
+      expect(steps.join(' ')).toContain('idx_sessions_harness_live (machine_id=? AND agent=? AND last_live_received_at>?)');
       expect(statements.every(statement => statement.params.length <= 100)).toBe(true);
     } finally { for (const sqlite of Object.values(stores)) sqlite.close(); }
   });

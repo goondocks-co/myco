@@ -17,11 +17,12 @@ function rig() {
     memberId ? { all: false, memberId } : { all: true }, NOW);
   const claim = (machine = 'machine_1', member = 'mem_machine_1') => {
     sql('INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES (?,?,?)', machine, member, NOW - DAY);
+    sql('INSERT INTO machine_harness_reports(machine_id,harnesses,reported_at) VALUES (?,?,?)', machine, JSON.stringify([{ id: 'claude-code', provisioned: true, state: 'ready', sinceAt: 0 }]), NOW);
     seedCredential(f.sqlite, { id: `mt_${machine}`, machineId: machine, memberId: member, expiresAt: NOW + DAY });
   };
   const capture = (machine = 'machine_1', project = 'proj_1', live: number | null = NOW) => {
-    sql(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,last_live_received_at)
-      VALUES (?,?,?,?,?,?,?)`, project, `session_${machine}_${project}`, machine, `mt_${machine}`, NOW, NOW, live);
+    sql(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,last_live_received_at,agent)
+      VALUES (?,?,?,?,?,?,?,'claude-code')`, project, `session_${machine}_${project}`, machine, `mt_${machine}`, NOW, NOW, live);
   };
   const runner = () => {
     sql("INSERT INTO runners(id,name,created_at) VALUES ('rn_setup','Secret runner label',?)", NOW);
@@ -57,6 +58,8 @@ describe('observed setup progress', () => {
   });
 
   for (const [name, change] of [
+    ['a session with no harness', 'UPDATE sessions SET agent = NULL'],
+    ['a session from an unreported harness', "UPDATE sessions SET agent = 'other-agent'"],
     ['imported history', "UPDATE sessions SET last_live_received_at = NULL"],
     ['a stopped machine', "UPDATE member_credentials SET revoked_at = 1"],
     ['an expired machine', `UPDATE member_credentials SET expires_at = ${NOW}`],
@@ -80,6 +83,19 @@ describe('observed setup progress', () => {
     expect((await read()).liveCapture).toBe(false);
   });
 
+  it('examines only the latest eight post-claim receipts per reported harness', async () => {
+    const { read, claim, capture, sql } = rig(); claim(); capture();
+    sql("UPDATE sessions SET last_live_received_at = ?", NOW - 100);
+    for (let i = 0; i < 8; i++) {
+      sql(`INSERT INTO sessions(project_id,session_id,machine_id,agent,created_by_token_id,first_received_at,last_received_at,last_live_received_at)
+        VALUES ('proj_1',?,'machine_1','claude-code','mt_machine_1',?,?,?)`, `new_${i}`, NOW, NOW, NOW - i);
+      sql("INSERT INTO session_tombstones(project_id,session_id,created_at,created_by) VALUES ('proj_1',?,?,'test')", `new_${i}`, NOW);
+    }
+    expect((await read()).liveCapture).toBe(false);
+    sql("DELETE FROM session_tombstones WHERE session_id = 'new_0'");
+    expect((await read()).liveCapture).toBe(true);
+  });
+
   it('restricts a member’s capture and machines to their own claims', async () => {
     const { read, claim, capture } = rig(); claim('machine_2', 'mem_machine_2'); capture('machine_2');
     expect(await read('mem_machine_1')).toMatchObject({ machines: { signedIn: 0 }, projects: 0, liveCapture: false });
@@ -97,6 +113,19 @@ describe('observed setup progress', () => {
     sql(`INSERT INTO worker_contacts(credential_id,machine_id,offers,capabilities,last_seen_at,updated_at)
       VALUES ('mt_legacy','machine_9','[{"id":"claude-code","authenticated":true}]','[]',?,?)`, NOW, NOW);
     expect(await read()).toMatchObject({ runnersReady: 0, legacyWorkers: 1 });
+  });
+
+  for (const [name, change] of [
+    ['stale', `UPDATE worker_contacts SET last_seen_at = ${NOW - DAY}`],
+    ['revoked', 'UPDATE member_credentials SET revoked_at = 1'],
+    ['expired', `UPDATE member_credentials SET expires_at = ${NOW}`],
+  ]) it(`does not describe a ${name} older worker as running work`, async () => {
+    const { f, read, sql } = rig();
+    seedCredential(f.sqlite, { id: 'mt_legacy', machineId: 'machine_9', expiresAt: NOW + DAY });
+    sql(`INSERT INTO worker_contacts(credential_id,machine_id,offers,capabilities,last_seen_at,updated_at)
+      VALUES ('mt_legacy','machine_9','[{"id":"claude-code","authenticated":true}]','[]',?,?)`, NOW, NOW);
+    sql(change!);
+    expect((await read()).legacyWorkers).toBe(0);
   });
 
   for (const [name, change] of [

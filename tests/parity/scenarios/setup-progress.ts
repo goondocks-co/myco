@@ -33,21 +33,59 @@ export const setupProgress: ParityScenario = {
     const member = await read({ cookie, 'cf-connecting-ip': '1.2.3.4' });
     expect(member).toMatchObject({ machines: { signedIn: 0 }, liveCapture: false, runnersReady: null, legacyWorkers: null, workProduced: false });
     expect(JSON.stringify(member)).not.toMatch(/Private|token|hash|1719001/);
-    if (target.name !== 'cloudflare') return;
-    const measure = async () => await (await fetch(`${target.url}/__setup-read-budget`)).json() as { rowsRead: number };
+    await target.sql(`INSERT INTO machine_claims(machine_id,member_id,claimed_at)
+      VALUES ('reclaimed_setup_machine',${lit(MEMBER_ID)},${now})`);
+    await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,lineage_root,lineage_started_at)
+      VALUES ('mt_setup_current',${lit(MEMBER_ID)},'reclaimed_setup_machine','fixture-current-hash',${now},${now + 86_400_000},'mt_setup_current',${now})`);
+    await target.sql(`INSERT INTO machine_harness_reports(machine_id,harnesses,reported_at)
+      VALUES ('reclaimed_setup_machine','[{"id":"claude-code","provisioned":true,"state":"ready","sinceAt":0}]',${now})`);
+    type Measurement = { rowsRead: number | null; progress: { liveCapture: boolean } };
+    const measure = async (): Promise<Measurement> => {
+      if (target.name !== 'cloudflare') return { rowsRead: null, progress: await read() };
+      const response = await fetch(`${target.url}/__setup-read-budget`);
+      expect(response.status).toBe(200);
+      return await response.json() as Measurement;
+    };
+    const expectFlat = (label: string, before: Measurement, after: Measurement) => {
+      if (target.name !== 'cloudflare') return;
+      if (before.rowsRead === null || after.rowsRead === null) throw new Error('D1 read measurement unavailable');
+      console.info(`setup D1 ${label} rows_read: ${before.rowsRead} -> ${after.rowsRead}`);
+      expect(before.rowsRead).toBeGreaterThan(0);
+      expect(after.rowsRead).toBeLessThan(200);
+      expect(after.rowsRead).toBeLessThanOrEqual(before.rowsRead + 5);
+    };
     const small = await measure();
-    expect(small.rowsRead).toBeGreaterThan(0);
+    expect(small.progress.liveCapture).toBe(false);
     await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
-      INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
-      SELECT 'proj_setup_parity','import_' || i,'removed-machine','t',${old},${old} FROM n`);
+      INSERT INTO sessions(project_id,session_id,machine_id,agent,created_by_token_id,first_received_at,last_received_at,last_live_received_at)
+      SELECT 'proj_setup_parity','preclaim_' || i,'reclaimed_setup_machine','claude-code','mt_setup_current',${old},${old},${now - 1} FROM n`);
+    const reclaimed = await measure();
+    expect(reclaimed.progress.liveCapture).toBe(false);
+    expectFlat('reclaimed-machine', small, reclaimed);
+    await target.sql(`INSERT INTO machine_claims(machine_id,member_id,claimed_at)
+      VALUES ('established_setup_machine',${lit(MEMBER_ID)},${now - 1000})`);
+    await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,lineage_root,lineage_started_at)
+      VALUES ('mt_setup_established',${lit(MEMBER_ID)},'established_setup_machine','fixture-established-hash',${old},${now + 86_400_000},'mt_setup_established',${old})`);
+    await target.sql(`INSERT INTO machine_harness_reports(machine_id,harnesses,reported_at)
+      VALUES ('established_setup_machine','[{"id":"claude-code","provisioned":true,"state":"ready","sinceAt":0}]',${now})`);
+    await target.sql(`INSERT INTO sessions(project_id,session_id,machine_id,agent,created_by_token_id,first_received_at,last_received_at,last_live_received_at)
+      VALUES ('proj_setup_parity','established_live','established_setup_machine','claude-code','mt_setup_established',${now},${now},${now})`);
+    const established = await measure();
+    expect(established.progress.liveCapture).toBe(true);
+    await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+      INSERT INTO sessions(project_id,session_id,machine_id,agent,created_by_token_id,first_received_at,last_received_at,last_live_received_at)
+      SELECT 'proj_setup_parity','preclaim_more_' || i,'reclaimed_setup_machine','claude-code','mt_setup_current',${old},${old},${now - 1} FROM n`);
+    const establishedLarge = await measure();
+    expect(establishedLarge.progress.liveCapture).toBe(true);
+    expectFlat('established Deployment', established, establishedLarge);
+    await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+      INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,last_live_received_at)
+      SELECT 'proj_setup_parity','import_' || i,'removed-machine','t',${old},${old},${now} FROM n`);
     await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
       INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at)
       SELECT 'proj_setup_parity','old_' || i,'agent_setup_parity','extract-curate','completed',${old},${old} FROM n`);
-    await target.sql(`UPDATE sessions SET last_live_received_at = ${now} WHERE machine_id = 'removed-machine'`);
-    const large = await measure();
-    expect((await read()).liveCapture).toBe(false);
-    expect(large.rowsRead).toBeLessThan(200);
-    expect(large.rowsRead).toBeLessThanOrEqual(small.rowsRead + 5);
-    console.info(`setup D1 rows_read: before history ${small.rowsRead}; after 2000 removed-machine live sessions and 2000 expired runs ${large.rowsRead}`);
+    const unrelated = await measure();
+    expect(unrelated.progress.liveCapture).toBe(true);
+    expectFlat('unrelated history', establishedLarge, unrelated);
   },
 };
