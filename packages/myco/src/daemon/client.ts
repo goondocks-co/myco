@@ -46,7 +46,7 @@ import {
   type DaemonTerminationDeps,
 } from '../service/daemon-termination.js';
 import { ensureProjectRegistered } from '../grove/registry.js';
-import { resolveProjectRoot } from '../vault/resolve.js';
+import { resolveProjectRoot } from '../project-root.js';
 import {
   nativePerUserLockNamespace,
   type PerUserLockNamespace,

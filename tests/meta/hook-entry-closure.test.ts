@@ -111,10 +111,10 @@ const CLI_STARTUP_FORBIDDEN: ReadonlyArray<[string, string]> = [
   ['packages/myco-server/', 'the Deployment'],
 ];
 
-/** The modules of the 2.0 verbs and what they load: membership, sign-in, import, settings, the worker, a credential's tool and MCP bridge, and the checks `member export` reads from `doctor`. */
+/** The modules of the 2.0 verbs and their credential-bound reads. */
 const VERBS_2_0 = [
   'cli/member.ts', 'cli/member-dispatch.ts', 'cli/login.ts', 'cli/import.ts', 'cli/settings.ts', 'cli/worker.ts',
-  'cli/join.ts', 'cli/tool.ts', 'mcp/stdio-bridge.ts', 'cli/doctor.ts',
+  'cli/tool.ts', 'mcp/stdio-bridge.ts', 'cli/member-doctor.ts', 'cli/remove.ts', 'cli/runner.ts',
 ];
 
 /** The one verb module that is the 1.4 daemon. */

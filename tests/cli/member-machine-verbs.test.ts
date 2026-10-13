@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.js';
-import { MEMBER_SECTION, MEMBER_USAGE, helpText, runMemberVerb } from '@myco/cli/member-dispatch.js';
+import { MEMBER_USAGE, helpText, runMemberVerb } from '@myco/cli/member-dispatch.js';
 import { runProvision } from '@myco/cli/member.js';
 import { MEMBER_SETTINGS_ISSUE, MEMBER_TIER_LEAVES } from '@myco/cli/member-config.js';
 import type { MemberVerb } from '@myco/cli/member-verbs.js';
@@ -366,20 +366,20 @@ describe('a joined member with no 1.4 vault', () => {
     expect(bad.stderr).toContain('Usage: myco logs');
   });
 
-  it('help lists the member\'s commands for a joined root or a home with no 1.4 install, and the 1.4 list otherwise', async () => {
+  it('help always lists member commands and adds the migration hint while legacy data is unmoved', async () => {
     const rig = await memberRig();
-    const LEGACY = 'Usage: myco <command> [args]\n\nCommands:\n  grove <subcommand>       Manage local Groves\n';
-    const help = (cwd: string) => helpText(LEGACY, { cwd, mycoHome });
+    const help = (cwd: string) => helpText({ cwd, mycoHome });
     expect(help(checkout)).toBe(MEMBER_USAGE);
     fs.mkdirSync(path.join(mycoHome, 'groves'));
     expect(help(checkout)).toBe(MEMBER_USAGE);
     fs.writeFileSync(path.join(mycoHome, 'myco.db'), 'fixture');
-    expect(help(checkout)).toBe(LEGACY);
+    expect(help(checkout).startsWith(MEMBER_USAGE)).toBe(true);
+    expect(help(checkout)).toContain('myco cutover --dry-run');
     join(rig);
-    expect(help(checkout)).toBe(MEMBER_USAGE);
+    expect(help(checkout)).toContain('myco cutover --dry-run');
     const unjoined = help(freshCheckout());
-    expect(unjoined.startsWith(LEGACY)).toBe(true);
-    expect(unjoined).toContain(MEMBER_SECTION);
+    expect(unjoined.startsWith(MEMBER_USAGE)).toBe(true);
+    expect(unjoined).toContain('myco cutover --dry-run');
     for (const retired of [/\bgrove\b/i, /\bdaemon\b/i, /^\s+mcp\b/m, /stdio/i, /^\s+hook\b/m, /^\s+restart\b/m, /^\s+service\b/m]) {
       expect(MEMBER_USAGE).not.toMatch(retired);
     }

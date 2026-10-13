@@ -7,7 +7,7 @@
 
 import fs from 'node:fs';
 import { z } from 'zod';
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
+import { resolveProjectRoot } from '@myco/project-root.js';
 import {
   listRuns,
   countRuns,

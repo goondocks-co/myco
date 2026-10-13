@@ -1,5 +1,5 @@
 /**
- * Tests for the worktree-detection helpers in `@myco/vault/resolve`.
+ * Tests for the worktree-detection helpers in `@myco/project-root`.
  *
  * `isInsideWorktree` gates the worktree-bootstrap path: it only fires
  * when cwd is in a real git worktree, not in the main checkout or
@@ -16,7 +16,7 @@ import {
   isInsideWorktree,
   resolveMainRepoRoot,
   resolveWorktreeRoot,
-} from '@myco/vault/resolve.js';
+} from '@myco/project-root.js';
 
 let tmpDir: string;
 

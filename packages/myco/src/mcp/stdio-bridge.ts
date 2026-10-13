@@ -153,7 +153,7 @@ export async function main(): Promise<void> {
     process.exit(2);
   }
   if (source === null) {
-    logErr(credentialRequiredError().message);
+    logErr(credentialRequiredError('mcp').message);
     process.exit(1);
   }
   const upstreamSource = deploymentUpstreamSource(source);

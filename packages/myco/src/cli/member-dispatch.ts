@@ -1,71 +1,41 @@
-/**
- * Where a retained verb runs as a 2.0 member.
- *
- * `runMemberVerb` answers a member verb (`cli/member-verbs.ts`) for a joined
- * project, or a command line that declares a credential source, and answers
- * null for an unjoined root with unmoved 1.4 capture so the dispatcher runs
- * the retained handler. `helpText` decides which command list `myco --help` prints.
- *
- * Migration classification reads retained vault evidence without starting a
- * local runtime. `tests/meta/member-read-boundary.test.ts` walks the member
- * handler import closure.
- */
-import { listDeploymentMemberships, readRegistryEntryResult } from '../member/registry.js';
+/** Member commands never fall through to a local runtime. */
 import { legacyMigrationState } from '../member/legacy-migration.js';
-import { homeOf, memberSource, rootOf, type MemberVerbDeps } from './deployment-reader.js';
+import { LEGACY_MIGRATION_GUIDANCE } from '../member/migration-guidance.js';
+import { homeOf, memberSource, type MemberVerbDeps } from './deployment-reader.js';
 import { isMemberReadVerb, type MemberVerb } from './member-verbs.js';
 import type { WorkerServiceDeps } from './worker-service.js';
 
 export interface MemberDispatchDeps extends MemberVerbDeps {
-  /** The worker service probe's own dependencies, for `doctor` and `logs`. */
   worker?: WorkerServiceDeps;
-  /** The directory the symbiont templates are read from, for `doctor`. */
   packageRoot?: string;
 }
 
-/** Answer `verb` as a member, or null for an unjoined root with unmoved 1.4 capture. */
-export async function runMemberVerb(verb: MemberVerb, args: readonly string[], deps: MemberDispatchDeps = {}): Promise<boolean | null> {
+export async function runMemberVerb(verb: MemberVerb, args: readonly string[], deps: MemberDispatchDeps = {}): Promise<boolean> {
   const source = memberSource(args, deps);
-  if (verb === 'doctor') {
-    const doctor = await import('./member-doctor.js');
-    if (source === null && !doctor.useHomeDoctor(homeOf(deps))) return null;
-    return doctor.run(args, source ?? 'registry', deps);
+  if (source === null && legacyMigrationState(homeOf(deps)).state === 'unmoved') {
+    (deps.stderr ?? console.error)(LEGACY_MIGRATION_GUIDANCE);
+    return false;
   }
-  if (source === null && legacyMigrationState(homeOf(deps)).state === 'unmoved') return null;
-  const memberCredential = source ?? 'registry';
-  if (isMemberReadVerb(verb)) return (await import('./member-reads.js')).run(verb, args, memberCredential, deps);
+  const credential = source ?? 'registry';
+  if (verb === 'doctor') return (await import('./member-doctor.js')).run(args, credential, deps);
+  if (isMemberReadVerb(verb)) return (await import('./member-reads.js')).run(verb, args, credential, deps);
   switch (verb) {
-    case 'logs': return (await import('./member-logs.js')).run(args, memberCredential, deps);
-    case 'config': return (await import('./member-config.js')).run(args, memberCredential, deps);
+    case 'logs': return (await import('./member-logs.js')).run(args, credential, deps);
+    case 'config': return (await import('./member-config.js')).run(args, credential, deps);
   }
 }
 
-/**
- * The command list `myco --help` prints. The member's when this root is
- * joined, or when the migration state is anything except an unmoved vault.
- * An unmoved vault at a root with no membership gets the 1.4 list, followed
- * by the member section when the home holds a Deployment membership.
- */
-export function helpText(legacyUsage: string, deps: MemberVerbDeps = {}): string {
-  const home = homeOf(deps);
-  if (readRegistryEntryResult(rootOf(deps), home).status !== 'missing') return MEMBER_USAGE;
-  const migration = legacyMigrationState(home);
-  if (migration.state !== 'unmoved') return MEMBER_USAGE;
-  return listDeploymentMemberships(home).length > 0 ? `${legacyUsage}\n${MEMBER_SECTION}` : legacyUsage;
+export function helpText(deps: MemberVerbDeps = {}): string {
+  return legacyMigrationState(homeOf(deps)).state === 'unmoved'
+    ? `${MEMBER_USAGE}\n${LEGACY_MIGRATION_GUIDANCE}\n` : MEMBER_USAGE;
 }
-
-/** The member verbs, as a 1.4 list shows them beside its own on a home that holds both. */
-export const MEMBER_SECTION = `2.0 member (a project joined with \`myco login\`; run \`myco --help\` from it for the full list):
-  login <address>          Sign this machine in through your Myco dashboard
-  member <op>              join | leave | provision | drain | status | export | refresh | link-github | raw-claims | ownership | role
-  runner <verb>            Register, run or update this machine’s runner (register|run|update|status)
-  worker [options]         Run this machine's harnesses for a Deployment (install|uninstall|status)
-  In a joined project, search, vectors, session, stats, doctor, logs and config answer as the member.
-`;
 
 export const MEMBER_USAGE = `Usage: myco <command> [args]
 
 Membership:
+  setup [options]         Guide sign-in and runner enrollment; --status reads only
+  logout <address>        Sign this machine out of a Deployment
+  cutover                 Move Myco 1.4 data to a Deployment (--dry-run first)
   login <address>          Sign this machine in through your Myco dashboard
   member <op>              join | leave | provision | drain | status | export | refresh | link-github | raw-claims | ownership | role
   import                   Bring this machine's existing agent history to its Deployment

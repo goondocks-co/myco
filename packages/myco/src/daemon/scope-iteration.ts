@@ -40,7 +40,7 @@ import {
   resolveGroveDir,
   resolveProjectVaultDir,
 } from '@myco/grove/paths.js';
-import { projectTreeAvailable } from '@myco/vault/resolve.js';
+import { projectTreeAvailable } from '@myco/project-root.js';
 import {
   listGroves,
   listRegisteredProjects,

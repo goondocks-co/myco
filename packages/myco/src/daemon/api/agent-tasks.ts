@@ -14,7 +14,7 @@
 
 import { stringify as stringifyYaml, parse as parseYaml } from 'yaml';
 import { errorMessage as toErrorMessage } from '@myco/utils/error-message.js';
-import { projectTreeAvailable } from '@myco/vault/resolve.js';
+import { projectTreeAvailable } from '@myco/project-root.js';
 import { taskFromParsed } from '@myco/agent/loader.js';
 import { AgentTaskSchema } from '@myco/agent/schemas.js';
 import {

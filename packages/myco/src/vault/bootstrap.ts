@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveVaultDir } from './resolve.js';
+import { resolveVaultDir } from '../project-root.js';
 import {
   resolveMycoHome,
   PROJECT_MANIFEST_FILENAME,

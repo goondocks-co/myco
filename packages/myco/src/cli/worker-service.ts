@@ -112,22 +112,23 @@ export interface WorkerSweep {
  * that home, and so is one whose membership or unit cannot be read: an
  * unreadable file is not an absent one.
  */
-export function sweepWorkerServices(deps: WorkerServiceDeps = {}): WorkerSweep {
+export function sweepWorkerServices(deps: WorkerServiceDeps = {}, options: { onlyThisHome?: boolean } = {}): WorkerSweep {
   const mycoHome = deps.mycoHome ?? resolveMycoHome({ cwd: process.cwd() });
   const home = deps.home ?? resolveHomeDir();
   const platform = deps.platform ?? process.platform;
-  const options = { platform, ...(deps.runner === undefined ? {} : { runner: deps.runner }) };
+  const serviceOptions = { platform, ...(deps.runner === undefined ? {} : { runner: deps.runner }) };
   const sweep: WorkerSweep = { removed: [], kept: [] };
   for (const membership of listDeploymentMemberships(mycoHome)) {
     const outcome = removeWorkerService(membership.serverUrl, { ...deps, mycoHome, home, platform });
     if ('removed' in outcome && outcome.removed) sweep.removed.push(outcome.unitFile);
   }
   for (const record of listRunnerRecords(mycoHome)) {
-    const outcome = uninstallWorkerService(executorServiceTarget(record.serverUrl, { ...deps, mycoHome, home, platform }, 'runner'), options);
+    const outcome = uninstallWorkerService(executorServiceTarget(record.serverUrl, { ...deps, mycoHome, home, platform }, 'runner'), serviceOptions);
     if (outcome.removed) sweep.removed.push(outcome.unitFile);
   }
   for (const found of listWorkerUnits(home, platform, true)) {
     if (found.mycoHome !== mycoHome) {
+      if (options.onlyThisHome) continue;
       if (found.executor === 'runner') {
         sweep.kept.push({ unitFile: found.unitFile, reason: 'the runner belongs to another home' });
         continue;
@@ -143,7 +144,7 @@ export function sweepWorkerServices(deps: WorkerServiceDeps = {}): WorkerSweep {
         continue;
       }
     }
-    if (uninstallService(found.spec, options).removed) sweep.removed.push(found.unitFile);
+    if (uninstallService(found.spec, serviceOptions).removed) sweep.removed.push(found.unitFile);
   }
   return sweep;
 }

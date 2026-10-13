@@ -4,7 +4,7 @@ import { repositoryName } from '@myco/utils/git.js';
  */
 
 import { getDatabase, openDatabase, type Database } from '@myco/db/client.js';
-import { projectTreeAvailable, resolveProjectRoot } from '@myco/vault/resolve.js';
+import { projectTreeAvailable, resolveProjectRoot } from '@myco/project-root.js';
 import { getActiveSessionIds } from '@myco/db/queries/sessions.js';
 import { getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
 import { projectScopeClause, type ProjectScope } from '@myco/db/queries/project-scope.js';

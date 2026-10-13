@@ -1,111 +1,30 @@
 #!/usr/bin/env node
 import { isHelpRequest } from './cli/flags.js';
 import { loadEnv } from './cli/env-file.js';
-import { resolveVaultDir } from './vault/resolve.js';
+import { resolveVaultDir } from './project-root.js';
 import { runLaunchPreamble } from './cli/launch-preamble.js';
 import { isMemberVerb } from './cli/member-verbs.js';
 import { keepLoopbackOffProxy } from './cli/loopback-proxy.js';
-import fs from 'node:fs';
-import path from 'node:path';
+import { isRetiredVerb } from './cli/retired-verbs.js';
+import { LEGACY_MIGRATION_GUIDANCE } from './member/migration-guidance.js';
 
 loadEnv();
 
-const USAGE = `Usage: myco <command> [args]
-
-Commands:
-  grove <subcommand>       Manage local Groves
-  subsystem <subcommand>   Claim/release machine-global subsystem ownership (claim|release|list)
-  update (alias: upgrade)  Update Myco within its recorded channel; refresh member agents
-  remove [--purge] [--yes]   Remove Myco's machine-wide install (prompts unless --yes;
-                             captured data preserved unless --purge)
-  remove --project [<path>] | --symbiont <name> | --remove-vault
-                             Project-scoped removal (any of these flags switches scope;
-                             vault preserved unless --remove-vault)
-  config <get|set> [args]  Get or set vault config values
-  detect-providers         Detect available LLM/embedding providers (JSON)
-  verify                   Test LLM and embedding connectivity
-  stats                    Project stats: the Deployment's for a joined project, else the local vault's
-  search <query>           Search: the Deployment's for a joined project, else the local vault's
-  vectors <query>          Semantic search with scores: the Deployment's for a joined project, else the daemon's
-  session [id|latest]      Show a session: from the Deployment for a joined project, else the local vault
-                           (these four take --credential registry|env to ask a Deployment from anywhere)
-  logs [options]           View daemon logs
-  setup-llm [options]      Configure LLM and embedding providers
-  setup-digest [options]   Configure digest and capture settings
-  agent [options]          Run the intelligence agent
-  worker [options]         Attach this machine's harnesses to a Deployment
-  runner <verb>            Register, run or update an execution machine (register|run|update|status)
-  task <subcommand>        Manage agent task definitions
-  tool <list|call>         List or call Myco tools as JSON
-  doctor [--fix]          Check vault health and repair issues
-  open                     Open the dashboard in your browser
-  restart                  Restart the daemon
-  service <subcommand>     Manage the platform service (install|uninstall|start|stop|restart|status)
-  join <host> --key <k> --host-url <url>   Enroll this machine with a Team Host
-  leave <host>             Detach this machine from a Team Host
-  attach <project> --host <h>   Route a project to a Team Host (going-forward)
-  detach <project>         Clear a project's Team Host mapping (resolves local again)
-  host <subcommand>        Serve your team from this machine (enable|disable|status|rotate-key|members|revoke)
-  login <server-url>       Approve this machine in the dashboard and sign in
-  setup [options]         Guide joining a Myco or registering a runner; --status reads only
-  logout <server-url>      Sign this machine out of one Deployment
-  import                   Bring this machine's existing agent history to its Deployment
-  cutover                  Move this machine from Myco 1.4 to its Deployment (--dry-run first)
-  member <op>              2.0 member: join | leave | drain | status | export | refresh
-  settings                 Print harness settings for a sandboxed agent (--harness <name> --project <id>)
-  version                  Show plugin version
-  mcp                     Start the MCP stdio server
-  hook <name>             Run a hook (session-start, session-end, stop, user-prompt-submit, pre-tool-use, post-tool-use, post-tool-use-failure, subagent-start, subagent-stop, stop-failure, task-completed, pre-compact, post-compact, error-occurred, notification)
-  daemon                   Start the daemon for the current project
-
-Myco installs globally and registers projects automatically on first agent
-hook. There is no \`myco init\` command — project setup is fully automatic.
-To commit per-project Myco config to a repo (portable Grove identity,
-dogfood binary pinning) use the dashboard's Symbionts page.
-`;
-
 const COMMAND_HELP: Record<string, string> = {
-  config: "Usage: myco config get [<dot.path.key>] | set <dot.path.key> <value>\n\nJoined projects read Deployment Settings; use the dashboard to change them.\n",
-  'detect-providers': "Usage: myco detect-providers\n\nPrint available LLM and embedding providers as JSON.\n",
-  verify: "Usage: myco verify\n\nTest configured LLM and embedding connectivity.\n",
+  config: "Usage: myco config get [<dot.path.key>]\n\nJoined projects read Deployment Settings; use the dashboard to change them.\n",
   stats: "Usage: myco stats [--credential registry|env]\n\nShow project sessions, activity and agent runs.\n",
   search: "Usage: myco search <query> [--credential registry|env]\n\nSearch project intelligence.\n",
   vectors: "Usage: myco vectors <query> [--credential registry|env]\n\nSearch project intelligence by similarity.\n",
   session: "Usage: myco session [<id>|latest] [--credential registry|env]\n\nShow a project session and its batches.\n",
-  'setup-digest': "Usage: myco setup-digest\n\nDigest configuration is retired; use the Deployment dashboard.\n",
   tool: "Usage: myco tool list | call <tool-name> --json --input <json|@file> [--credential registry|env]\n\nList or call Myco tools as JSON.\n",
-  logs: "Usage: myco logs [--tail N] [--follow] [--level <level>] [--component <name>] [--since <time>] [--until <time>]\n\nShow member or local daemon diagnostics.\n",
+  logs: "Usage: myco logs [--tail|-n <lines>]\n\nShow worker logs and refused events.\n",
   open: "Usage: myco open\n\nOpen the Deployment dashboard in your browser.\n",
-  restart: "Usage: myco restart [--force]\n\nRestart the retained local daemon; member machines use no daemon.\n",
-  service: "Usage: myco service <install|uninstall|start|stop|restart|status|reconcile>\n\nManage the retained local daemon service.\n",
+  doctor: "Usage: myco doctor [--fix]\n\nCheck member wiring and Deployment reachability.\n",
   version: "Usage: myco version\n\nShow the installed Myco version.\n",
-  mcp: "Usage: myco mcp\n\nServe the configured MCP stdio surface.\n",
+  mcp: "Usage: myco mcp --credential registry\n\nServe the configured MCP stdio surface.\n",
   hook: "Usage: myco hook <name>\n\nRun a harness hook using its JSON input on stdin.\n",
-  daemon: "Usage: myco daemon [kill]\n\nRun or stop the retained local daemon.\n",
+  daemon: "Usage: myco daemon [kill]\n\nAcknowledge a retired daemon launch without starting a runtime.\n",
 
-  attach: `Usage: myco attach <project> --host <hostId>
-
-Records a project's residency mapping so future requests route to the host that
-serves it, instead of staying local-only. Attach-going-forward only: it does NOT
-migrate existing local data (a project that still has local history is refused
-with guidance). Idempotent — re-attaching to the same host converges.
-
-Options:
-  --host <hostId>       The joined host that will serve this project (falls back to the
-                        checkout's project.toml Team Host hint).
-  --project-id <proj_…> Override the project id (default: the checkout's project.toml).
-
-The host's team storage is used automatically — there is no id to supply for it.
-`,
-  detach: `Usage: myco detach <project> [--allow-no-pull]
-
-Brings a project home from its Team Host: pulls the project's knowledge back
-into the local Grove in the background, then clears the residency mapping so
-future requests resolve locally. Requires a host that serves the residency
-protocol; pass --allow-no-pull to detach WITHOUT pulling data back (the
-history stays on the host).
-Idempotent — detaching a project that is not attached is a clean no-op.
-`,
 };
 
 /**
@@ -118,21 +37,11 @@ Idempotent — detaching a project that is not attached is a clean no-op.
  */
 const DELEGATED_HELP: Record<string, () => Promise<string>> = {
   setup: async () => (await import('./cli/setup.js')).SETUP_HELP,
-  agent: async () => (await import('./cli/agent-run.js')).AGENT_USAGE,
-  task: async () => (await import('./cli/agent-tasks.js')).TASK_USAGE,
-  'task run': async () => (await import('./cli/agent-tasks.js')).TASK_RUN_USAGE,
   update: async () => (await import('./cli/update.js')).UPDATE_HELP,
   upgrade: async () => (await import('./cli/update.js')).UPDATE_HELP,
   cutover: async () => (await import('./cli/cutover.js')).CUTOVER_HELP,
-  grove: async () => (await import('./cli/grove.js')).USAGE,
-  subsystem: async () => (await import('./cli/subsystem.js')).USAGE,
   remove: async () => (await import('./cli/remove.js')).USAGE,
-  doctor: async () => (await import('./cli/doctor.js')).USAGE,
-  'setup-llm': async () => (await import('./cli/setup-llm.js')).USAGE,
 
-  join: async () => (await import('./cli/join.js')).JOIN_HELP,
-  leave: async () => (await import('./cli/join.js')).LEAVE_HELP,
-  host: async () => (await import('./cli/host.js')).HOST_HELP,
   member: async () => (await import('./cli/member.js')).MEMBER_HELP,
   login: async () => (await import('./cli/login.js')).LOGIN_HELP,
   logout: async () => (await import('./cli/logout.js')).LOGOUT_HELP,
@@ -152,237 +61,83 @@ async function helpForCommand(command: string, args: readonly string[] = []): Pr
 }
 
 async function main(): Promise<void> {
-  // Before anything dials: a member's loopback Deployment is never reached through a proxy (`member/server-url.ts`).
   keepLoopbackOffProxy();
   const [cmd, ...args] = process.argv.slice(2);
   if (!cmd || cmd === '--help' || cmd === '-h') {
-    process.stdout.write((await import('./cli/member-dispatch.js')).helpText(USAGE));
+    process.stdout.write((await import('./cli/member-dispatch.js')).helpText());
+    return;
+  }
+  if (isRetiredVerb(cmd)) {
+    console.error(`myco ${cmd} is retired in Myco 2.0. ${LEGACY_MIGRATION_GUIDANCE}`);
+    process.exitCode = 1;
     return;
   }
   if (isHelpRequest(args)) {
     process.stdout.write(await helpForCommand(cmd, args));
     return;
   }
-
-  // Retained Grove commands require a checkpoint before an in-process schema migration.
-  // Hooks and MCP use the member transport and never migrate a Grove database.
-  if (cmd !== 'hook' && cmd !== 'mcp') {
-    const { installPreMigrationCheckpoint } = await import('./backup/pre-migration-checkpoint.js');
-    const { resolveMycoHome } = await import('@myco/paths/home.js');
-    installPreMigrationCheckpoint({ mycoHome: resolveMycoHome() });
-  }
-
-  if (cmd === 'init') {
-    console.error(
-      '`myco init` was removed in v0.26. Global install registers projects automatically on first agent hook.\n' +
-      'To commit per-project Myco config to a repo, use the dashboard\'s Symbionts page (`myco open`).',
-    );
-    process.exit(1);
-  }
-  if (cmd === 'grove') return (await import('./cli/grove.js')).run(args);
-  // Declare which daemon variant owns a machine-global subsystem (e.g.
-  // symbiont-config) so a coexisting peer daemon defers — operator-driven,
-  // durable, contributor-only. Belongs above the myco.yaml gate like `grove`
-  // since it manages machine state, not a project vault.
-  if (cmd === 'subsystem') return (await import('./cli/subsystem.js')).run(args);
-  // Internal: spawned by the daemon to run a heavy restore out-of-process
-  // (see backup/restore-runner.ts). Intentionally absent from the help text.
-  if (cmd === '__restore-backup') return (await import('./cli/restore-backup.js')).run(args);
-  // Internal: spawned detached (from a temp-copy binary) by `myco remove --purge`
-  // to delete the managed install dir once this process releases its exe lock.
-  if (cmd === '__finish-uninstall') return (await import('./cli/finish-uninstall.js')).run(args);
-  if (cmd === 'detect-providers') return (await import('./cli/detect-providers.js')).run(args);
   if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
-    const { getPluginVersion } = await import('./version.js');
-    console.log(getPluginVersion());
+    console.log((await import('./version.js')).getPluginVersion());
     return;
   }
   if (cmd === 'mcp') {
     runLaunchPreamble('mcp', args);
     return (await import('./mcp/stdio-bridge.js')).main();
   }
-  // One hook path for compiled binaries and source runs alike: `hooks/entry.ts`.
   if (cmd === 'hook') return (await import('./hooks/entry.js')).runHook(args);
   if (cmd === 'daemon') return (await import('./cli/daemon-guard.js')).main();
-  // Supervisor lifecycle — manages the platform service + daemon binary, never a
-  // project vault. Belongs above the myco.yaml gate alongside daemon/update/remove,
-  // so `myco service <verb>` works from any cwd (e.g. a fresh host with no project).
-  if (cmd === 'service') return (await import('./cli/service.js')).run(args);
-
-  // Team Host member enrollment — machine-global (writes the ~/.myco-team hosts
-  // registry, not a project vault), so it sits above the myco.yaml gate like
-  // `service`/`subsystem`. The command name is load-bearing: the affiliation hint
-  // tells users to run exactly `myco join <host>`. `resolveVaultDir()` is safe to
-  // call unconditionally (falls back to cwd/.myco, never throws) — it's only used
-  // to locate the local daemon (`daemon/client.ts` DaemonClient), a machine-global
-  // singleton these commands are now a thin fallback wrapper over (Task D-2).
-  if (cmd === 'join') return (await import('./cli/join.js')).runJoin(args, resolveVaultDir());
-  if (cmd === 'leave') return (await import('./cli/join.js')).runLeave(args, resolveVaultDir());
-
-  // Team Host residency mapping — attach/detach record which host serves a
-  // project (machine-global attach registry, not a project vault), so like
-  // `join`/`leave` they sit above the myco.yaml gate and work from any cwd.
-  if (cmd === 'attach') return (await import('./cli/attach.js')).runAttach(args, resolveVaultDir());
-  if (cmd === 'detach') return (await import('./cli/attach.js')).runDetach(args, resolveVaultDir());
-
-  // Team Host operator orchestration — enables serving (the daemon binds a
-  // local team listener and publishes it through the operator's Tailscale
-  // Funnel) and writes machine-tier config, not a project vault, so like
-  // `join`/`attach` it sits above the myco.yaml gate and works from any cwd.
-  if (cmd === 'host') return (await import('./cli/host.js')).runHostCommand(args);
-
-  // 2.0 member operations — registry and spool under MYCO_HOME, never a project
-  // vault, so they sit above the myco.yaml gate and work from any cwd.
   if (cmd === 'member') return (await import('./cli/member.js')).run(args);
-
-  // #1148: reads the harness stores on this machine and the member registry,
-  // never a project vault, so it sits above the myco.yaml gate like the rest of
-  // the member family.
-  if (cmd === 'import') {
-    // The verb reports its outcome; the exit status is the dispatcher's to set.
-    if (!await (await import('./cli/import.js')).run(args)) process.exitCode = 2;
-    return;
-  }
-
-  // The cutover reads 1.4 homes and writes the member registry and the
-  // agents' global config, never a project vault, so it sits above the
-  // myco.yaml gate and runs from any cwd.
-  if (cmd === 'cutover') {
-    // The verb reports its outcome; the exit status is the dispatcher's to set.
-    if (!await (await import('./cli/cutover.js')).run(args)) process.exitCode = 2;
-    return;
-  }
-
-  // #1158: redeeming an invite link is the FIRST thing a machine does, before it
-  // has a vault, a config file or a project — so it sits above the myco.yaml gate.
-  if (cmd === 'login') {
-    // The verb reports its outcome; the exit status is the dispatcher's to set.
-    if (!await (await import('./cli/login.js')).run(args)) process.exitCode = 2;
-    return;
-  }
-
-  if (cmd === 'logout') {
-    if (!await (await import('./cli/logout.js')).run(args)) process.exitCode = 2;
-    return;
-  }
-
-  // Deployment lifecycle — native and Cloudflare targets, no
-  // project vault, so it sits above the myco.yaml gate and works from any cwd.
   if (cmd === 'server') return (await import('./cli/server.js')).run(args);
-
   if (cmd === 'setup') {
     process.exitCode = await (await import('./cli/setup.js')).run(args);
     return;
   }
-
-  // #1151: a worker attaches this machine's harnesses to a Deployment. It reads
-  // the membership under MYCO_HOME and no project vault, so it sits above the
-  // myco.yaml gate and runs from any cwd.
+  if (cmd === 'import') {
+    if (!await (await import('./cli/import.js')).run(args)) process.exitCode = 2;
+    return;
+  }
+  if (cmd === 'cutover') {
+    if (!await (await import('./cli/cutover.js')).run(args)) process.exitCode = 2;
+    return;
+  }
+  if (cmd === 'login') {
+    if (!await (await import('./cli/login.js')).run(args)) process.exitCode = 2;
+    return;
+  }
+  if (cmd === 'logout') {
+    if (!await (await import('./cli/logout.js')).run(args)) process.exitCode = 2;
+    return;
+  }
   if (cmd === 'worker') {
-    // The verb reports its outcome; the exit status is the dispatcher's to set.
     if (!await (await import('./cli/worker.js')).run(args)) process.exitCode = 2;
     return;
   }
-
-  // A runner holds its own credential under MYCO_HOME/runner and nothing of the
-  // member registry or a project vault, so it sits above the myco.yaml gate.
   if (cmd === 'runner') {
-    // The verb reports its outcome; the exit status is the dispatcher's to set.
     if (!await (await import('./cli/runner.js')).run(args)) process.exitCode = 2;
     return;
   }
-
-  // The sandbox settings emitter reads no vault and writes nothing.
   if (cmd === 'settings') return (await import('./cli/settings.js')).run(args);
-
-  // Doctor reports the home even outside a joined repository. Other retained
-  // verbs in a joined project — or ones that declare a credential
-  // source — runs as a 2.0 member: its reads are the Deployment's and its
-  // doctor, logs and config are the member's own, and none reads a project
-  // vault, so it sits above the myco.yaml gate. A root with no membership
-  // falls through to the verb's 1.4 handler below.
   if (isMemberVerb(cmd)) {
-    const answered = await (await import('./cli/member-dispatch.js')).runMemberVerb(cmd, args);
-    if (answered !== null) {
-      // The verb reports its outcome; the exit status is the dispatcher's to set.
-      if (!answered) process.exitCode = 1;
-      return;
-    }
+    if (!await (await import('./cli/member-dispatch.js')).runMemberVerb(cmd, args)) process.exitCode = 1;
+    return;
   }
-
-  if (cmd === 'doctor') {
-    const { readUpdateNotice } = await import('./upgrade/check-cache.js');
-    const { resolveMycoHome } = await import('./paths/home.js');
-    const { getPluginVersion } = await import('./version.js');
-    const notice = readUpdateNotice(resolveMycoHome(), getPluginVersion());
-    if (notice !== null) console.log(notice);
-  }
-
-  if (cmd === 'doctor') {
-    const vaultDir = resolveVaultDir();
-    return (await import('./cli/doctor.js')).run(args, vaultDir);
-  }
-
   if (cmd === 'update') return (await import('./cli/update.js')).run(args);
   if (cmd === 'upgrade') return (await import('./cli/upgrade.js')).run(args);
   if (cmd === 'remove') return (await import('./cli/remove.js')).run(args);
-
-  // open reads the member registry, and restart targets the global daemon; neither requires a project myco.yaml.
   if (cmd === 'open') {
     if (!await (await import('./cli/open.js')).run(args)) process.exitCode = 1;
     return;
   }
-  if (cmd === 'restart') {
-    const vaultDir = resolveVaultDir();
-    return (await import('./cli/restart.js')).run(args, vaultDir);
-  }
-
-  // Honor the runtime pin before the myco.yaml gate so a pinned binary is
-  // re-exec'd even on a host with no project vault; the pinned binary owns the
-  // gate decision after re-exec.
-  if (cmd === 'tool') runLaunchPreamble('tool', args);
-  // Tool calls require a declared member credential and no project vault.
   if (cmd === 'tool') {
+    runLaunchPreamble('tool', args);
     return (await import('./cli/tool.js')).run(args, resolveVaultDir());
   }
-
-  const vaultDir = resolveVaultDir();
-  if (!fs.existsSync(path.join(vaultDir, 'myco.yaml'))) {
-    console.error(
-      `No myco.yaml found in ${vaultDir}. ` +
-      `Open the dashboard (\`myco open\`) and commit Myco config to this project from the Symbionts page.`,
-    );
-    process.exit(1);
-  }
-
-  switch (cmd) {
-    case 'config': return (await import('./cli/config.js')).run(args, vaultDir);
-    case 'verify': return (await import('./cli/verify.js')).run(args, vaultDir);
-    case 'stats': return (await import('./cli/stats.js')).run(args, vaultDir);
-    case 'search': return (await import('./cli/search.js')).run(args, vaultDir);
-    case 'vectors': return (await import('./cli/search.js')).runVectors(args, vaultDir);
-    case 'session': return (await import('./cli/session.js')).run(args, vaultDir);
-    case 'setup-llm': return (await import('./cli/setup-llm.js')).run(args, vaultDir);
-    case 'setup-digest': return (await import('./cli/setup-digest.js')).run(args, vaultDir);
-    case 'agent': {
-      if (args[0] === 'eval') {
-        console.error(
-          'The `agent eval` command has been retired. Use the Compare Runs flow in the daemon UI.',
-        );
-        process.exit(2);
-      }
-      return (await import('./cli/agent-run.js')).run(args, vaultDir);
-    }
-    case 'task': return (await import('./cli/agent-tasks.js')).run(args, vaultDir);
-    case 'logs': return (await import('./cli/logs.js')).run(args, vaultDir);
-    default:
-      console.error(`Unknown command: ${cmd}`);
-      process.stdout.write(USAGE);
-      process.exit(1);
-  }
+  console.error(`Unknown command: ${cmd}`);
+  process.stdout.write((await import('./cli/member-dispatch.js')).helpText());
+  process.exitCode = 1;
 }
 
 main().catch((err) => {
   console.error(`myco: ${(err as Error).message}`);
-  process.exit(1);
+  process.exitCode = 1;
 });

@@ -1,407 +1,142 @@
-import { resolveVaultDir, resolveProjectRoot, assertSafeProjectRoot, UnsafeProjectRootError } from '../vault/resolve.js';
-import { isProcessAlive } from './shared.js';
-import { parseStrictFlags, type ParsedFlags } from './args.js';
-import { confirmDestructive } from './confirm.js';
-import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { SymbiontInstaller, removeProjectLaunchers } from '../symbionts/installer.js';
-import { GLOBAL_HOOK_LAUNCHER_FILENAME, GLOBAL_MCP_LAUNCHER_FILENAME } from '../grove/launcher-cleanup.js';
-import { resolveMycoHome } from '../grove/paths.js';
-import { updateConfig, TierConfigUnreadableError } from '../config/loader.js';
-import type { SymbiontManifest } from '../symbionts/manifest-schema.js';
-import { terminateDaemonProcess } from '../service/daemon-termination.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveMycoHome } from '../paths/home.js';
+import { parseStrictFlags } from './args.js';
+import { confirmDestructive } from './confirm.js';
+import { isMemberHome, legacyVaultFiles } from '../member/home-role.js';
+import { LEGACY_MIGRATION_GUIDANCE } from '../member/migration-guidance.js';
+import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
+import { SymbiontInstaller } from '../symbionts/installer.js';
+import { readProvisionRecord } from '../symbionts/member-provision-record.js';
+import { prepareMemberSkillRemoval, skillsFolder } from '../symbionts/member-skill-links.js';
+import { readDefaultDeployment } from '../member/default-deployment.js';
+import { sweepWorkerServices, type WorkerServiceDeps } from './worker-service.js';
+import { withCloudflareOperation } from '../server/cloudflare-operation.js';
+import { LocalVolume } from '../server/local-volume.js';
+import { resolveLocalPaths } from '../server/local.js';
+import { listRunnerRecords } from '../runner/runner-registry.js';
 
-/** Map uninstall result to human-readable component labels. */
-function uninstallLabels(result: ReturnType<SymbiontInstaller['uninstall']>): string[] {
-  return [
-    result.hooks && 'hooks',
-    result.mcp && 'MCP server',
-    result.skills && 'skills',
-    result.settings && 'settings',
-    result.instructions && 'instructions',
-  ].filter(Boolean) as string[];
-}
+export const USAGE = `Usage: myco remove [--purge] [--allow-deployment-loss] [--yes]
 
-export const USAGE = `Usage: myco remove [options]
-
-With no flags, removes Myco's global install: unregisters the OS service,
-deletes the global launchers, strips Myco's blocks from each detected
-agent's user-global config, and unlinks the Myco-shipped skill symlinks.
-Captured data under ~/.myco/ is preserved unless --purge is passed.
-Prompts for confirmation; pass --yes for non-interactive use.
-
-Passing --project, --symbiont, or --remove-vault switches to project scope.
+Remove this home's global member hooks, MCP registrations and skill links,
+and its worker and runner services. Repository files and Myco 1.4 homes
+are preserved. Member credentials and captured data stay unless --purge is passed.
+Shared Windows binaries outside this home stay installed.
 
 Options:
-  --project [<path>]     Remove Myco's project-local install (defaults to cwd)
-  --symbiont <name>      Remove just one symbiont's project-local install
-  --purge                Global scope: also delete ~/.myco/ (Grove DB + captured data)
-                         Project scope: alias for --remove-vault
-  --remove-vault         Project scope: delete the project's .myco/ dir
-  --yes                  Skip the confirmation prompt
-  -h, --help             Show this help
+  --purge                  Delete the 2.0 home, including credentials and buffered capture
+  --allow-deployment-loss  With --purge, also allow loss of Deployment data and operator records
+  --yes                    Skip the confirmation prompt
+  -h, --help               Show this help
 `;
 
-export async function run(args: string[]): Promise<void> {
-  if (args.includes('--help') || args.includes('-h')) {
-    process.stdout.write(USAGE);
-    return;
-  }
-
-  const parsed = parseStrictFlags('myco remove', args, [
-    { name: '--project', value: 'optional' },
-    { name: '--symbiont', value: 'required' },
-    { name: '--purge' },
-    { name: '--remove-vault' },
-    { name: '--yes' },
-    { name: '--help', aliases: ['-h'] },
-  ], USAGE);
-
-  // --symbiont removes one agent's registration; the vault-deletion flags
-  // don't apply to it. Reject the combination outright — silently
-  // dropping a destructive flag is the bug class this command just shed.
-  if (parsed.has('--symbiont') && (parsed.has('--remove-vault') || parsed.has('--purge'))) {
-    process.stderr.write(`myco remove: --remove-vault/--purge cannot be combined with --symbiont\n\n${USAGE}`);
-    process.exit(2);
-  }
-
-  // --remove-vault is a project-scope operation: without this routing it
-  // would fall through to the machine-wide teardown below (and then be
-  // ignored there) — the exact opposite of what the caller asked for.
-  if (parsed.has('--symbiont') || parsed.has('--project') || parsed.has('--remove-vault')) {
-    return await runProjectRemove(parsed);
-  }
-
-  return await runGlobalRemove({
-    purge: parsed.has('--purge'),
-    assumeYes: parsed.has('--yes'),
-  });
+interface RemoveDeps {
+  mycoHome?: string;
+  worker?: WorkerServiceDeps;
+  confirm?: typeof confirmDestructive;
 }
 
-async function runGlobalRemove(opts: { purge: boolean; assumeYes: boolean }): Promise<void> {
-  const { purge, assumeYes } = opts;
-  const mycoHome = resolveMycoHome();
+const LEGACY_HOME_ENTRIES = ['groves', 'myco.db', 'config.yaml', 'myco.yaml', 'service'];
+const DEPLOYMENT_LEASE_FILES = ['cloudflare.lock', 'local.lock'];
 
-  if (!assumeYes) {
-    let projectCount = 0;
-    try {
-      const { listGroves, listRegisteredProjects } = await import('../grove/registry.js');
-      for (const grove of listGroves(mycoHome)) {
-        projectCount += listRegisteredProjects(grove.id, mycoHome).length;
-      }
-    } catch { /* registry unreadable — the summary still describes the rest */ }
-    const summary = [
-      'myco remove will tear down the machine-wide Myco install:',
-      '  - unregister the Myco OS service and the worker login services',
-      "  - strip Myco's blocks from every detected agent's global config",
-      `  - clean project-local artifacts in ${projectCount} registered project${projectCount === 1 ? '' : 's'}`,
-      purge
-        ? `  - DELETE ${mycoHome} (Grove DB + all captured data)`
-        : `  - preserve captured data at ${mycoHome} (pass --purge to delete it)`,
-    ].join('\n');
-    if (!await confirmDestructive(summary)) {
-      console.error('Aborted — nothing was removed.');
-      process.exitCode = 1;
-      return;
-    }
+/** Existing paths whose loss requires separate, explicit consent. */
+export function deploymentLosses(home: string): string[] {
+  const losses: string[] = [];
+  if (fs.existsSync(path.join(home, 'server'))) {
+    losses.push(`Deployment files at ${path.join(home, 'server')} (all retained contents, including any databases, object storage, configuration and credentials). `
+      + 'Back it up outside this home with `myco server backup --target local --to <backup-dir>`, or move the Deployment first.');
   }
-
-  console.log(`Removing Myco global install (${mycoHome})\n`);
-
-  // --- Unregister the OS service (do this first so launchd/systemd
-  //     doesn't relaunch the daemon mid-uninstall). ---
-  try {
-    const { unregisterHomeService } = await import('../service/home-daemon.js');
-    const stopped = await unregisterHomeService(mycoHome);
-    if (stopped.kind !== 'unsupported') console.log('  ✓ Unregistered OS service');
-  } catch (err) {
-    const { ExternalMcpHardKillBlockedError } = await import('../service/windows.js');
-    if (err instanceof ExternalMcpHardKillBlockedError) throw err;
-    console.log(`  ⚠ Service uninstall skipped: ${(err as Error).message}`);
+  for (const record of [path.join(home, 'server', 'cloudflare', 'record.json'), path.join(home, 'server', 'cloudflare.json')]) {
+    if (fs.existsSync(record)) losses.push(`Cloudflare operator record at ${record} (Deployment resource identities and recovery metadata). `
+      + 'Back up the Deployment with `myco server backup --target cloudflare --to <backup-dir>` and move this operator record outside the home first.');
   }
+  return losses;
+}
 
-  // --- Remove the worker login services this home installed, and any whose
-  //     membership is already gone, so none restarts into a home being removed. ---
-  try {
-    const { sweepWorkerServices } = await import('./worker-service.js');
-    const { removed, kept } = sweepWorkerServices({ mycoHome });
-    if (removed.length > 0) console.log(`  ✓ Removed ${removed.length} worker service${removed.length === 1 ? '' : 's'}`);
-    for (const unit of kept) console.log(`  ⚠ Left worker service ${unit.unitFile}: ${unit.reason}`);
-  } catch (err) {
-    console.error(`  ✗ Executor services could not be stopped: ${(err as Error).message}. Removal aborted; the home is preserved.`);
+/** Remove member-owned integrations and an explicitly admitted 2.0 home. */
+export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) { process.stdout.write(USAGE); return; }
+  const parsed = parseStrictFlags('myco remove', args, [
+    { name: '--purge' }, { name: '--allow-deployment-loss' }, { name: '--yes' },
+  ], USAGE);
+  const home = deps.mycoHome ?? resolveMycoHome();
+  const purge = parsed.has('--purge');
+  const allowLoss = parsed.has('--allow-deployment-loss');
+  if (allowLoss && !purge) throw new Error('--allow-deployment-loss requires --purge.');
+  if (purge && [home, path.join(home, 'server')].some(file => fs.lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink())) {
+    throw new Error('Refusing --purge of a symlinked home or Deployment directory; no files were removed.');
+  }
+  if (LEGACY_HOME_ENTRIES.some(entry => fs.existsSync(path.join(home, entry))) || legacyVaultFiles(home).length > 0) {
+    console.error(`Refusing to remove a Myco 1.4 home at ${home}. ${LEGACY_MIGRATION_GUIDANCE}`);
     process.exitCode = 1;
     return;
   }
-
-  // --- Stop the daemon before deleting its files. Unregistering the service
-  //     kills the process on launchd/systemd but not on Windows (schtasks
-  //     /delete leaves the spawned daemon running), where it keeps the home
-  //     locked → EBUSY on purge. A cooperative shutdown releases those handles
-  //     on every platform (no-op once the service stop already killed it). ---
-  const { stopHomeDaemon } = await import('../service/home-daemon.js');
-  if (await stopHomeDaemon(mycoHome) === 'stopped') console.log('  ✓ Stopped running daemon');
-
-  // --- Remove per-symbiont global config blocks. ---
-  const allManifests = loadManifests();
-  const pkgRoot = resolvePackageRoot();
-  for (const manifest of allManifests) {
-    try {
-      const installer = new SymbiontInstaller(
-        manifest, '/', pkgRoot, false, undefined, null, 'global',
-      );
-      if (!installer.isAvailableForScope()) continue;
-      const removed = uninstallLabels(installer.uninstall());
-      if (removed.length > 0) {
-        console.log(`  ✓ Removed from ${manifest.displayName}: ${removed.join(', ')}`);
-      }
-    } catch (err) {
-      console.error(`  ✗ Failed to clean ${manifest.displayName}: ${(err as Error).message}`);
-    }
-  }
-
-  // --- Delete the global launchers. lstat + unlink so we never follow a
-  //     symlink and accidentally clobber an unrelated target. ---
-  for (const filename of [GLOBAL_HOOK_LAUNCHER_FILENAME, GLOBAL_MCP_LAUNCHER_FILENAME]) {
-    const target = path.join(mycoHome, filename);
-    try {
-      fs.lstatSync(target);
-      fs.unlinkSync(target);
-      console.log(`  ✓ Removed ${target}`);
-    } catch { /* not present */ }
-  }
-
-  // --- Clean up project-local artifacts in registered projects. ---
-  try {
-    const { listGroves, listRegisteredProjects } = await import('../grove/registry.js');
-    for (const grove of listGroves(mycoHome)) {
-      for (const project of listRegisteredProjects(grove.id, mycoHome)) {
-        await cleanProjectLocalArtifacts(project.root, pkgRoot);
-      }
-    }
-  } catch (err) {
-    console.error(`  ⚠ Per-project cleanup skipped: ${(err as Error).message}`);
-  }
-
-  // --- Purge (--purge) ---
-  if (purge) {
-    let purgeOk = true;
-    try {
-      fs.rmSync(mycoHome, { recursive: true, force: true });
-      console.log(`  ✓ Purged ${mycoHome}`);
-    } catch (err) {
-      console.error(`  ✗ Failed to purge ${mycoHome}: ${(err as Error).message}`);
-      purgeOk = false;
-    }
-    if (!(await removeManagedInstallDir(mycoHome))) purgeOk = false;
-    // A failed purge must not report success — automation reads the exit code.
-    if (!purgeOk) process.exitCode = 1;
-  } else {
-    console.log(`  – Preserved Grove DB + captured data at ${mycoHome} (use --purge to delete)`);
-  }
-
-  console.log('\nMyco global install removed.');
-}
-
-/**
- * Remove the managed binary's install dir when it lives OUTSIDE the purged home
- * (win32: `%LOCALAPPDATA%\Myco`; on POSIX the bin dir is `<home>/bin`, already
- * gone with the home — detected by path, not by platform name). A process can't
- * delete its own running executable, so when the dir holds the running binary
- * the deletion is finished by a detached temp-copy — the same mechanism the
- * updater uses to mutate a running binary. Returns false only on an unexpected
- * failure, not when the detached finisher was scheduled.
- */
-async function removeManagedInstallDir(mycoHome: string): Promise<boolean> {
-  const { managedBinDir } = await import('../install/managed-binary.js');
-  const binDir = managedBinDir(mycoHome, process.platform, process.env.LOCALAPPDATA);
-  const rel = path.relative(mycoHome, binDir);
-  const underHome = rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-  if (underHome) return true; // removed with the home purge above
-
-  const installRoot = path.dirname(binDir);
-  if (!fs.existsSync(installRoot)) return true;
-  try {
-    fs.rmSync(installRoot, { recursive: true, force: true });
-    console.log(`  ✓ Removed ${installRoot}`);
-    return true;
-  } catch {
-    // The running binary locks its own image — finish after this process exits.
-    try {
-      const { resolveOrchestratorBinary } = await import('../upgrade/spawn.js');
-      const { spawnDetached } = await import('../upgrade/spawn.js');
-      spawnDetached(resolveOrchestratorBinary(), ['__finish-uninstall', installRoot]);
-      console.log(`  ✓ Scheduled removal of ${installRoot} after exit`);
-      return true;
-    } catch (err) {
-      console.error(`  ✗ Failed to remove ${installRoot}: ${(err as Error).message}`);
-      return false;
-    }
-  }
-}
-
-async function cleanProjectLocalArtifacts(projectRoot: string, pkgRoot: string): Promise<void> {
-  if (!fs.existsSync(projectRoot)) return;
-  for (const manifest of loadManifests()) {
-    try {
-      const installer = new SymbiontInstaller(manifest, projectRoot, pkgRoot);
-      const removed = uninstallLabels(installer.uninstall());
-      if (removed.length > 0) {
-        console.log(`    ✓ ${path.basename(projectRoot)}: cleared ${manifest.displayName}`);
-      }
-    } catch { /* per-symbiont failures non-fatal */ }
-  }
-  // `myco remove` is the full project-local teardown — strip every
-  // launcher artifact including the dev pin.
-  removeProjectLaunchers(projectRoot, { legacy: true, active: true, runtimeCommand: true });
-}
-
-async function runProjectRemove(parsed: ParsedFlags): Promise<void> {
-  const projectArg = parsed.value('--project');
-  const explicitRoot = projectArg ? path.resolve(projectArg) : null;
-  const vaultDir = explicitRoot ? path.join(explicitRoot, '.myco') : resolveVaultDir();
-  const projectRoot = explicitRoot ?? resolveProjectRoot(vaultDir);
-  const hasConfig = fs.existsSync(path.join(vaultDir, 'myco.yaml'));
-  const symbiontName = parsed.value('--symbiont');
-  const assumeYes = parsed.has('--yes');
-  const removeVault = parsed.has('--remove-vault') || parsed.has('--purge');
-
-  // Safety gate BEFORE any cleanup. Project-scope uninstall resolves
-  // config dirs relative to the root, so `--project ~` would strip the
-  // user's GLOBAL agent configs (~/.claude, ~/.cursor, …) and
-  // `--remove-vault` would rmSync ~/.myco itself. Same guard class as
-  // the hook hot path: reject /, $HOME, and home-shaped directories.
-  try {
-    assertSafeProjectRoot(projectRoot);
-  } catch (err) {
-    if (err instanceof UnsafeProjectRootError) {
-      console.error(`Refusing project-scope removal at ${err.projectRoot}: ${err.reason}.`);
-      console.error('Pass the project repository root via --project <path>.');
-      process.exit(1);
-    }
-    throw err;
-  }
-
-  if (symbiontName) {
-    if (!hasConfig) {
-      console.error(`No myco.yaml found in ${vaultDir}. Nothing to remove.`);
-      process.exit(1);
-    }
-    const allManifests = loadManifests();
-    const manifest = allManifests.find((m) => m.name === symbiontName);
-    if (!manifest) {
-      console.error(`Unknown symbiont: ${symbiontName}. Available: ${allManifests.map((m) => m.name).join(', ')}`);
-      process.exit(1);
-    }
-
-    const pkgRoot = resolvePackageRoot();
-    const installer = new SymbiontInstaller(manifest, projectRoot, pkgRoot);
-    const removed = uninstallLabels(installer.uninstall());
-
-    if (removed.length > 0) {
-      console.log(`  ✓ Removed ${manifest.displayName}: ${removed.join(', ')}`);
-    } else {
-      console.log(`  – ${manifest.displayName}: nothing to remove`);
-    }
-
-    try {
-      updateConfig(vaultDir, (c) => {
-        if (!c.symbionts?.[symbiontName]) return c;
-        const { [symbiontName]: _, ...rest } = c.symbionts;
-        return { ...c, symbionts: Object.keys(rest).length > 0 ? rest : undefined };
-      });
-      console.log(`  ✓ Removed ${symbiontName} from myco.yaml`);
-    } catch (err) {
-      if (!(err instanceof TierConfigUnreadableError)) throw err;
-      // Teardown proceeds: an unparseable myco.yaml has no reachable
-      // symbionts block to clean, and remove must not clobber a file the
-      // user may still want to repair.
-      console.log(`  !! Skipped myco.yaml cleanup — file is unparseable (${err.filePath})`);
-    }
+  const losses = deploymentLosses(home);
+  if (purge && fs.existsSync(home) && !isMemberHome(home) && listRunnerRecords(home).length === 0 && losses.length === 0) {
+    console.error(`Refusing --purge: ${home} is not a registered Myco 2.0 home. Its files were preserved.`);
+    process.exitCode = 1;
     return;
   }
-
-  const allManifests = loadManifests();
-  const pkgRoot = resolvePackageRoot();
-
-  // Confirm the vault deletion UP FRONT — before any teardown — so a
-  // decline leaves the project fully intact instead of half-removed
-  // (hooks stripped, daemon stopped, vault still present).
-  if (removeVault && !assumeYes && fs.existsSync(vaultDir)) {
-    const confirmed = await confirmDestructive(
-      `This removes Myco's project-local install from ${projectRoot} and permanently deletes the vault at ${vaultDir} (captured sessions, spores, and project config).`,
-    );
-    if (!confirmed) {
-      console.error('Aborted — nothing was removed. Re-run with --yes to skip confirmation.');
-      process.exitCode = 1;
-      return;
-    }
-  }
-
-  // Orphan remedy: launcher artifacts without a myco.yaml — the state
-  // `myco doctor` reports as "orphan project-local launcher stubs" and
-  // routes here. There is no config or daemon to act on, but the
-  // launcher/per-symbiont artifact cleanup still applies.
-  if (!hasConfig) {
-    console.log(`No myco.yaml in ${vaultDir} — cleaning orphan launcher artifacts in ${projectRoot}\n`);
-    await cleanProjectLocalArtifacts(projectRoot, pkgRoot);
-    if (removeVault && fs.existsSync(vaultDir)) {
-      fs.rmSync(vaultDir, { recursive: true, force: true });
-      console.log(`  ✓ Removed vault at ${vaultDir}`);
-    }
-    console.log('\nOrphan project-local artifacts cleaned.');
+  if (purge && losses.length > 0 && !allowLoss) {
+    console.error(`Refusing --purge. It would lose:\n${losses.join('\n')}\n`
+      + 'After backing up or moving it, pass --purge --allow-deployment-loss to proceed anyway.');
+    process.exitCode = 1;
     return;
   }
-
-  console.log(`Removing Myco project-local install from ${projectRoot}\n`);
-
-  const daemonPath = path.join(vaultDir, 'daemon.json');
-  let daemon: { pid?: unknown } | null = null;
-  try {
-    daemon = JSON.parse(fs.readFileSync(daemonPath, 'utf-8')) as { pid?: unknown };
-  } catch { /* no readable daemon state */ }
-  if (typeof daemon?.pid === 'number' && isProcessAlive(daemon.pid)) {
-    await terminateDaemonProcess(daemon.pid, 'SIGTERM');
-    console.log(`  ✓ Stopped daemon (pid ${daemon.pid})`);
+  const summary = `Remove this home's member registrations and worker/runner services. `
+    + (purge ? `DELETE ${home} (credentials and buffered capture).\n${losses.join('\n')}` : `Preserve data at ${home}.`);
+  if (!parsed.has('--yes') && !await (deps.confirm ?? confirmDestructive)(summary)) {
+    console.error('Aborted — nothing was removed.');
+    process.exitCode = 1;
+    return;
   }
-  try {
-    fs.unlinkSync(daemonPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
-
-  const configured = allManifests.filter((m) =>
-    fs.existsSync(path.join(projectRoot, m.configDir)),
-  );
-
-  for (const manifest of configured) {
-    try {
-      const installer = new SymbiontInstaller(manifest, projectRoot, pkgRoot);
-      const removed = uninstallLabels(installer.uninstall());
-
-      if (removed.length > 0) {
-        console.log(`  ✓ Removed from ${manifest.displayName}: ${removed.join(', ')}`);
+  const deployment = readProvisionRecord(home)?.serverUrl ?? readDefaultDeployment(home)?.serverUrl ?? null;
+  const registrations = loadManifests().map(manifest => {
+    const installer = new SymbiontInstaller(manifest, home, resolvePackageRoot(), false, undefined, null, 'member-global', home).withoutProjectRoot();
+    if (deployment !== null) installer.forDeployment(deployment);
+    const hooks = installer.inspectMemberHooks();
+    const mcp = installer.inspectMemberMcp();
+    if (!hooks.readable || mcp.some(entry => !entry.readable)) throw new Error(`Cannot read ${manifest.displayName}'s member registration; removal aborted.`);
+    const registered = hooks.member || mcp.some(entry => entry.carriesCredential);
+    if (registered) installer.assertMemberUninstallable();
+    const target = manifest.registration?.globalSkillsTarget;
+    const removeSkills = target ? prepareMemberSkillRemoval(home, skillsFolder(target)) : () => {};
+    return { installer, registered, removeSkills };
+  });
+  const remove = (): void => {
+    const sweep = sweepWorkerServices({ ...deps.worker, mycoHome: home }, { onlyThisHome: true });
+    for (const unit of sweep.kept) console.log(`Preserved ${unit.unitFile}: ${unit.reason}`);
+    for (const { installer, registered, removeSkills } of registrations) {
+      if (registered) installer.uninstallMemberRegistration();
+      removeSkills();
+    }
+    if (purge && fs.existsSync(home)) {
+      for (const entry of fs.readdirSync(home)) {
+        if (losses.length > 0 && entry === 'server') {
+          const server = path.join(home, entry);
+          for (const file of fs.readdirSync(server)) {
+            if (!DEPLOYMENT_LEASE_FILES.includes(file)) fs.rmSync(path.join(server, file), { recursive: true, force: true });
+          }
+        } else fs.rmSync(path.join(home, entry), { recursive: true, force: true });
       }
-    } catch (err) {
-      console.error(`  ✗ Failed to clean ${manifest.displayName}: ${(err as Error).message}`);
     }
-  }
-
-  const mcpJsonPath = path.join(projectRoot, '.mcp.json');
-  try {
-    const config = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
-    if (!config.mcpServers || Object.keys(config.mcpServers).length === 0) {
-      fs.unlinkSync(mcpJsonPath);
-      console.log('  ✓ Removed empty .mcp.json');
+  };
+  // Serving and provisioning hold these same leases for their entire operation.
+  if (purge && losses.length > 0) {
+    withCloudflareOperation(home, () => {
+      const local = path.join(home, 'server', 'local');
+      if (fs.existsSync(local)) new LocalVolume(resolveLocalPaths(home)).exclusive(remove);
+      else remove();
+    });
+  } else remove();
+  if (purge && fs.existsSync(home)) {
+    const server = path.join(home, 'server');
+    if (losses.length > 0) {
+      for (const file of DEPLOYMENT_LEASE_FILES) fs.rmSync(path.join(server, file), { force: true });
+      fs.rmdirSync(server);
     }
-  } catch { /* doesn't exist or already clean */ }
-
-  if (removeVault) {
-    fs.rmSync(vaultDir, { recursive: true, force: true });
-    console.log(`  ✓ Removed vault at ${vaultDir}`);
-  } else {
-    console.log(`  – Vault preserved at ${vaultDir} (use --remove-vault to delete)`);
+    fs.rmdirSync(home);
   }
-
-  console.log('\nMyco project-local install removed.');
+  console.log(purge ? `Purged member home ${home}.` : `Member install removed; preserved data at ${home}.`);
+  if (purge && process.platform === 'win32') console.log('Preserved the shared Windows managed binary and versions outside this home; other Myco homes may use them.');
 }

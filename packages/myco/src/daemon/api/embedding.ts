@@ -2,7 +2,7 @@ import { getEmbeddingQueueDepth } from '@myco/db/queries/embeddings.js';
 import type { Database } from '@myco/db/client.js';
 import { withDatabase } from '@myco/db/client.js';
 import { loadMergedConfig } from '../../config/loader.js';
-import { projectTreeAvailable } from '../../vault/resolve.js';
+import { projectTreeAvailable } from '../../project-root.js';
 import { EMBEDDING_BATCH_SIZE } from '../../constants.js';
 import type { EmbeddingManager } from '../embedding/index.js';
 import type { RouteHandler, RouteRequest, RouteResponse } from '../router.js';

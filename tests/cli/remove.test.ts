@@ -1,470 +1,266 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { vi } from '../helpers/vi-shim.js';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
-import YAML from 'yaml';
+import path from 'node:path';
+import { run, deploymentLosses } from '@myco/cli/remove.js';
+import { runProvision } from '@myco/cli/member.js';
+import { writeDeploymentMembership } from '@myco/member/registry.js';
+import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
+import { installWorkerService, workerServiceUnit } from '@myco/runner/service.js';
+import { recordingPlatform } from '../helpers/fake-service-manager.js';
+import { legacyFixtureHome } from '../setup/fixtures/legacy-home.ts';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+import { LocalVolume } from '@myco/server/local-volume.js';
+import { resolveLocalPaths } from '@myco/server/local.js';
+import { spyOn } from 'bun:test';
 
-mock.module('@myco/symbionts/detect.js', () => ({
-  loadManifests: vi.fn().mockReturnValue([
-    {
-      name: 'cursor', displayName: 'Cursor', binary: 'cursor',
-      configDir: '.cursor', pluginRootEnvVar: 'CURSOR_PLUGIN_ROOT',
-      registration: { skillsTarget: '.cursor/skills' },
-      hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last_response', prompt: 'prompt', toolName: 'tool_name', toolInput: 'tool_input', toolOutput: 'tool_output' },
-    },
-  ]),
-  resolvePackageRoot: vi.fn().mockReturnValue('/fixture'),
-}));
+const SERVER = 'https://member.example';
+let root: string;
+let home: string;
+let user: string;
+let saved: NodeJS.ProcessEnv;
+let platform: ReturnType<typeof recordingPlatform>;
 
-mock.module('@myco/symbionts/installer.js', () => {
-  const SymbiontInstaller = vi.fn(function () {
-    return {
-      uninstall: vi.fn().mockReturnValue({ hooks: true, mcp: true, skills: true, settings: false, instructions: false }),
-      isAvailableForScope: vi.fn().mockReturnValue(true),
-    };
-  });
-  // The CLI's `cleanProjectLocalArtifacts` now imports
-  // `removeProjectLaunchers` directly — the mock must expose it.
-  const removeProjectLaunchers = vi.fn().mockReturnValue([]);
-  return { SymbiontInstaller, MYCO_MCP_SERVER_NAME: 'myco', removeProjectLaunchers };
-});
-
-// Confirmation gate: tests drive the answer per-scenario. Real prompting
-// (TTY readline) is covered by confirm.test.ts.
-const confirmMock = vi.fn();
-mock.module('@myco/cli/confirm.js', () => ({ confirmDestructive: confirmMock }));
-
-// Global remove unregisters the OS service — that must NEVER hit the real
-// launchctl/systemctl from a test. Route it to the shared fake.
-import { FakeServiceManager } from '../helpers/fake-service-manager.js';
-import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
-let fakeServiceManager = new FakeServiceManager();
-mock.module('@myco/service/manager.js', () => ({
-  getServiceManager: () => fakeServiceManager,
-}));
-
-const sweepWorkerServices = vi.fn((_deps: { mycoHome?: string }) => ({ removed: [] as string[], kept: [] as Array<{ unitFile: string; reason: string }> }));
-mock.module('@myco/cli/worker-service.js', () => ({ sweepWorkerServices }));
-
-let testVaultDir = '';
-class UnsafeProjectRootError extends Error {
-  constructor(public readonly projectRoot: string, public readonly reason: string) {
-    super(`unsafe: ${reason}`);
-  }
-}
-mock.module('@myco/vault/resolve.js', () => ({
-  resolveVaultDir: vi.fn(() => testVaultDir),
-  resolveProjectRoot: vi.fn((vaultDir: string) => path.dirname(vaultDir)),
-  // Faithful-shaped guard: synthetic /tmp roots pass (as they would with
-  // the real predicate), while $HOME and the filesystem root throw —
-  // letting the safe-root refusal tests exercise the CLI's guard without
-  // unmocking the rest of the module.
-  assertSafeProjectRoot: vi.fn((projectRoot: string) => {
-    const resolved = path.resolve(projectRoot);
-    if (resolved === os.homedir() || resolved === path.parse(resolved).root) {
-      throw new UnsafeProjectRootError(resolved, 'unsafe root (test guard)');
+function snapshot(dir: string): Record<string, string> {
+  const files: Record<string, string> = {};
+  const visit = (at: string): void => {
+    for (const entry of fs.readdirSync(at, { withFileTypes: true })) {
+      const file = path.join(at, entry.name);
+      if (entry.isDirectory()) visit(file);
+      else files[path.relative(dir, file)] = entry.isSymbolicLink() ? `link:${fs.readlinkSync(file)}` : fs.readFileSync(file).toString('base64');
     }
-  }),
-  isSafeProjectRoot: vi.fn(() => true),
-  UnsafeProjectRootError,
-}));
+  };
+  visit(dir);
+  return files;
+}
 
-describe('myco remove --symbiont', () => {
-  let testDir: string;
-
-  beforeEach(() => {
-    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-remove-test-'));
-    testVaultDir = path.join(testDir, '.myco');
-    fs.mkdirSync(testVaultDir, { recursive: true });
-  });
-
-  afterEach(() => {
-    fs.rmSync(testDir, { recursive: true, force: true });
-  });
-
-  it('unregisters a single symbiont and removes from config', async () => {
-    const config = {
-      version: 3, config_version: 0,
-      symbionts: {
-        'claude-code': { enabled: true },
-        'cursor': { enabled: true },
-      },
-    };
-    fs.writeFileSync(path.join(testVaultDir, 'myco.yaml'), YAML.stringify(config));
-    fs.mkdirSync(path.join(testDir, '.cursor'), { recursive: true });
-
-    const { SymbiontInstaller } = await import('@myco/symbionts/installer.js');
-    const { run } = await import('@myco/cli/remove.js');
-    await run(['--symbiont', 'cursor']);
-
-    expect(SymbiontInstaller).toHaveBeenCalled();
-    expect(vi.mocked(SymbiontInstaller).mock.calls[0][0].name).toBe('cursor');
-
-    const updated = YAML.parse(fs.readFileSync(path.join(testVaultDir, 'myco.yaml'), 'utf-8'));
-    expect(updated.symbionts['cursor']).toBeUndefined();
-    expect(updated.symbionts['claude-code']).toEqual({ enabled: true });
-  });
-
-  it('exits with error for unknown symbiont name', async () => {
-    const config = { version: 3, config_version: 0, symbionts: {} };
-    fs.writeFileSync(path.join(testVaultDir, 'myco.yaml'), YAML.stringify(config));
-
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    const { run } = await import('@myco/cli/remove.js');
-    await expect(run(['--symbiont', 'nonexistent'])).rejects.toThrow('exit');
-
-    expect(errorSpy.mock.calls.flat().join(' ')).toContain('Unknown symbiont');
-    exitSpy.mockRestore();
-    errorSpy.mockRestore();
-  });
+beforeEach(() => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-remove-'));
+  user = path.join(root, 'user');
+  home = path.join(root, 'member-home');
+  saved = { ...process.env };
+  Object.assign(process.env, sandboxChildEnv(root, { HOME: user, MYCO_HOME: home }));
+  fs.mkdirSync(home, { recursive: true });
+  platform = recordingPlatform();
+  process.exitCode = 0;
 });
-
-describe('myco remove strict argv', () => {
-  let testDir: string;
-
-  beforeEach(() => {
-    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-remove-argv-'));
-    testVaultDir = path.join(testDir, '.myco');
-    fs.mkdirSync(testVaultDir, { recursive: true });
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    fs.rmSync(testDir, { recursive: true, force: true });
-    vi.restoreAllMocks();
-  });
-
-  it('rejects an unknown flag with exit code 2 before touching anything', async () => {
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
-      throw new Error(`process.exit(${code ?? 0})`);
-    }) as never);
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-
-    const { run } = await import('@myco/cli/remove.js');
-    await expect(run(['--frobnicate'])).rejects.toThrow(/process\.exit\(2\)/);
-
-    expect(stderrSpy.mock.calls.flat().join('')).toContain("unknown flag '--frobnicate'");
-    expect(fakeServiceManager.uninstallCalls).toHaveLength(0);
-    exitSpy.mockRestore();
-    stderrSpy.mockRestore();
-  });
-
-  it('rejects --symbiont with a missing value with exit code 2', async () => {
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
-      throw new Error(`process.exit(${code ?? 0})`);
-    }) as never);
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-
-    const { run } = await import('@myco/cli/remove.js');
-    await expect(run(['--symbiont'])).rejects.toThrow(/process\.exit\(2\)/);
-
-    expect(stderrSpy.mock.calls.flat().join('')).toContain('--symbiont requires a value');
-    exitSpy.mockRestore();
-    stderrSpy.mockRestore();
-  });
-
-  it('rejects --symbiont combined with --remove-vault with exit code 2 instead of dropping the flag', async () => {
-    fs.writeFileSync(path.join(testVaultDir, 'myco.yaml'), YAML.stringify({ version: 3, config_version: 0, symbionts: { cursor: { enabled: true } } }));
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
-      throw new Error(`process.exit(${code ?? 0})`);
-    }) as never);
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-
-    const { run } = await import('@myco/cli/remove.js');
-    await expect(run(['--symbiont', 'cursor', '--remove-vault'])).rejects.toThrow(/process\.exit\(2\)/);
-
-    expect(stderrSpy.mock.calls.flat().join('')).toContain('--remove-vault/--purge cannot be combined with --symbiont');
-    expect(fs.existsSync(testVaultDir)).toBe(true);
-    exitSpy.mockRestore();
-    stderrSpy.mockRestore();
-  });
-
-  it('rejects --symbiont combined with --purge with exit code 2', async () => {
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
-      throw new Error(`process.exit(${code ?? 0})`);
-    }) as never);
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-
-    const { run } = await import('@myco/cli/remove.js');
-    await expect(run(['--symbiont', 'cursor', '--purge'])).rejects.toThrow(/process\.exit\(2\)/);
-
-    exitSpy.mockRestore();
-    stderrSpy.mockRestore();
-  });
+afterEach(() => {
+  for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+  Object.assign(process.env, saved);
+  process.exitCode = 0;
+  fs.rmSync(root, { recursive: true, force: true });
 });
+const deps = () => ({ mycoHome: home, worker: { home: user, platform: 'darwin' as const, runner: platform.runner, binaryPath: path.join(home, 'bin', 'myco') } });
+const write = (relative: string, text = 'preserve') => {
+  const file = path.join(home, relative);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text);
+};
 
-describe('myco remove --project safe-root guard', () => {
-  let testDir: string;
+function member(): void {
+  writeDeploymentMembership({ serverUrl: SERVER, token: 'm'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 } as never, { mycoHome: home });
+  recordDefaultDeployment(SERVER, { mycoHome: home });
+  fs.mkdirSync(path.join(user, '.claude'), { recursive: true });
+  expect(runProvision([], { mycoHome: home, cwd: root, agents: () => ['claude-code'], stdout: () => {}, stderr: () => {} })).toBe(true);
+  write('member/spool/captured.jsonl', 'real capture fixture');
+}
 
-  beforeEach(() => {
-    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-remove-guard-'));
-    testVaultDir = path.join(testDir, '.myco');
-    fs.mkdirSync(testVaultDir, { recursive: true });
-    vi.clearAllMocks();
+describe('member-only remove', () => {
+  it('removes member hooks, MCP, skill links and both executor services, preserving capture, legacy files and repository files', async () => {
+    member();
+    const legacy = legacyFixtureHome(path.join(root, 'legacy'));
+    const before = snapshot(legacy.root);
+    const repo = path.join(root, 'repo');
+    fs.mkdirSync(path.join(repo, '.myco'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.myco', 'myco.yaml'), 'legacy config');
+    fs.writeFileSync(path.join(repo, 'AGENTS.md'), 'user rules');
+    const repoBefore = snapshot(repo);
+    write('bin/myco', 'fixture binary presence marker');
+    for (const executor of ['legacy-member', 'runner'] as const) {
+      installWorkerService({ ...deps().worker, mycoHome: home, serverUrl: SERVER, executor }, [], { runner: platform.runner });
+    }
+    await run(['--yes'], deps());
+    expect(process.exitCode).toBe(0);
+    expect(fs.readFileSync(path.join(home, 'member/spool/captured.jsonl'), 'utf8')).toBe('real capture fixture');
+    expect(snapshot(legacy.root)).toEqual(before);
+    expect(snapshot(repo)).toEqual(repoBefore);
+    expect(fs.readFileSync(path.join(user, '.claude', 'settings.json'), 'utf8')).not.toContain('--credential');
+    const mcp = path.join(user, '.claude.json');
+    expect(fs.existsSync(mcp) ? fs.readFileSync(mcp, 'utf8') : '').not.toContain('mcpServers');
+    expect(fs.readdirSync(path.join(user, '.claude', 'skills'))).toEqual([]);
+    expect(platform.running.size).toBe(0);
+    expect(fs.readdirSync(path.join(user, 'Library', 'LaunchAgents'))).toEqual([]);
   });
 
-  afterEach(() => {
-    fs.rmSync(testDir, { recursive: true, force: true });
-    process.exitCode = 0;
-    vi.restoreAllMocks();
+  it('purges a 2.0 home while leaving the 1.4 home byte-identical', async () => {
+    member();
+    const legacy = legacyFixtureHome(path.join(root, 'legacy'));
+    const before = snapshot(legacy.root);
+    await run(['--purge', '--yes'], deps());
+    expect(process.exitCode).toBe(0);
+    expect(fs.existsSync(home)).toBe(false);
+    expect(snapshot(legacy.root)).toEqual(before);
   });
 
-  async function expectRefused(args: string[]): Promise<void> {
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
-      throw new Error(`process.exit(${code ?? 0})`);
-    }) as never);
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const rmSpy = vi.spyOn(fs, 'rmSync').mockImplementation(() => {});
+  it('refuses to remove a 1.4 home even with every purge consent flag', async () => {
+    const legacy = legacyFixtureHome(path.join(root, 'legacy'));
+    const before = snapshot(legacy.root);
+    await run(['--purge', '--allow-deployment-loss', '--yes'], { ...deps(), mycoHome: legacy.mycoHome });
+    expect(process.exitCode).toBe(1);
+    expect(snapshot(legacy.root)).toEqual(before);
+    expect(platform.commands).toEqual([]);
+  });
 
-    const { SymbiontInstaller, removeProjectLaunchers } = await import('@myco/symbionts/installer.js');
-    const { run } = await import('@myco/cli/remove.js');
-    await expect(run(args)).rejects.toThrow(/process\.exit\(1\)/);
+  it('a declined confirmation changes nothing', async () => {
+    member();
+    const before = snapshot(root);
+    await run(['--purge'], { ...deps(), confirm: async () => false });
+    expect(process.exitCode).toBe(1);
+    expect(snapshot(root)).toEqual(before);
+    expect(platform.commands).toEqual([]);
+  });
 
-    expect(errorSpy.mock.calls.flat().join(' ')).toContain('Refusing project-scope removal');
-    // The guard fired before ANY cleanup: no uninstalls, no launcher
-    // removal, no vault rm, no confirmation prompt.
-    expect(SymbiontInstaller).not.toHaveBeenCalled();
-    expect(vi.mocked(removeProjectLaunchers)).not.toHaveBeenCalled();
-    expect(rmSpy).not.toHaveBeenCalled();
-    expect(confirmMock).not.toHaveBeenCalled();
-
-    exitSpy.mockRestore();
-    errorSpy.mockRestore();
-    rmSpy.mockRestore();
+  for (const entry of ['config.yaml', 'myco.yaml', 'service/daemon.json', 'myco.db']) {
+    it(`preserves a legacy-only home containing ${entry} without a nonempty vault`, async () => {
+      write(entry, '');
+      const before = snapshot(root);
+      await run(['--purge', '--allow-deployment-loss', '--yes'], deps());
+      expect(process.exitCode).toBe(1);
+      expect(snapshot(root)).toEqual(before);
+      expect(platform.commands).toEqual([]);
+    });
   }
 
-  it('refuses --project $HOME (would strip the global agent configs)', async () => {
-    await expectRefused(['--project', os.homedir()]);
+  it('preserves an unrecognized home', async () => {
+    write('unrecognized.txt');
+    const before = snapshot(root);
+    await run(['--purge', '--yes'], deps());
+    expect(process.exitCode).toBe(1);
+    expect(snapshot(root)).toEqual(before);
   });
 
-  it('refuses --project / (filesystem root)', async () => {
-    await expectRefused(['--project', '/']);
+  it('preserves legacy state even when the home also holds a member registration', async () => {
+    member();
+    write('config.yaml', 'legacy settings');
+    const before = snapshot(root);
+    await run(['--purge', '--allow-deployment-loss', '--yes'], deps());
+    expect(process.exitCode).toBe(1);
+    expect(snapshot(root)).toEqual(before);
+    expect(platform.commands).toEqual([]);
   });
 
-  it('refuses --project $HOME --remove-vault --yes before any rm (would delete ~/.myco)', async () => {
-    await expectRefused(['--project', os.homedir(), '--remove-vault', '--yes']);
+  it('a repeated purge succeeds after the member home is gone', async () => {
+    member();
+    await run(['--purge', '--yes'], deps());
+    await run(['--purge', '--yes'], deps());
+    expect(process.exitCode).toBe(0);
+    expect(fs.existsSync(home)).toBe(false);
+  });
+
+  for (const directory of ['home', 'server']) {
+    it(`refuses a symlinked ${directory} before changing its external target or registrations`, async () => {
+      member();
+      const external = path.join(root, 'external');
+      if (directory === 'home') {
+        fs.renameSync(home, external);
+        fs.symlinkSync(external, home, 'dir');
+      } else {
+        fs.mkdirSync(external);
+        fs.writeFileSync(path.join(external, 'deployment-data'), 'preserve');
+        fs.symlinkSync(external, path.join(home, 'server'), 'dir');
+      }
+      const before = snapshot(root);
+      await expect(run(['--purge', '--allow-deployment-loss', '--yes'], deps())).rejects.toThrow('symlinked');
+      expect(snapshot(root)).toEqual(before);
+      expect(platform.commands).toEqual([]);
+    });
+  }
+
+  it('preserves an external managed binary and versions shared with another home', async () => {
+    member();
+    const binary = path.join(root, 'shared-windows-install', 'bin', 'myco.exe');
+    fs.mkdirSync(path.dirname(binary), { recursive: true });
+    fs.writeFileSync(binary, 'shared binary');
+    const other = path.join(root, 'other-home');
+    fs.mkdirSync(other);
+    const marker = JSON.stringify({ channel: 'stable', source: 'npm', bin: binary });
+    write('install.json', marker);
+    fs.writeFileSync(path.join(other, 'install.json'), marker);
+    const before = snapshot(other);
+    await run(['--purge', '--yes'], deps());
+    expect(fs.readFileSync(binary, 'utf8')).toBe('shared binary');
+    expect(snapshot(other)).toEqual(before);
+  });
+
+  it('validates every agent config before stopping services or unregistering another agent', async () => {
+    member();
+    write('bin/myco', 'binary marker');
+    installWorkerService({ ...deps().worker, mycoHome: home, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
+    fs.mkdirSync(path.join(user, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(user, '.cursor', 'mcp.json'), '{broken');
+    const before = snapshot(root);
+    platform.commands.length = 0;
+    await expect(run(['--purge', '--yes'], deps())).rejects.toThrow('Cannot read');
+    expect(snapshot(root)).toEqual(before);
+    expect(platform.commands).toEqual([]);
+  });
+
+  it('preserves another home’s orphan executor service', async () => {
+    member();
+    write('bin/myco', 'binary marker');
+    const other = path.join(root, 'other-member-home');
+    for (const executor of ['runner', 'legacy-member'] as const) {
+      installWorkerService({ ...deps().worker, mycoHome: other, serverUrl: SERVER, executor }, [], { runner: platform.runner });
+    }
+    const before = snapshot(path.join(user, 'Library', 'LaunchAgents'));
+    platform.commands.length = 0;
+    await run(['--purge', '--yes'], deps());
+    expect(snapshot(path.join(user, 'Library', 'LaunchAgents'))).toEqual(before);
+    for (const executor of ['runner', 'legacy-member'] as const) {
+      const foreignLabel = workerServiceUnit(SERVER, other, executor).label;
+      expect(platform.commands.some(command => command.includes(foreignLabel))).toBe(false);
+    }
+  });
+
+  it('keeps lease files until the Deployment lease has closed', async () => {
+    write('server/local/myco.sqlite');
+    const original = LocalVolume.prototype.exclusive;
+    const lease = spyOn(LocalVolume.prototype, 'exclusive').mockImplementation(function(this: LocalVolume, callback: () => unknown) {
+      return original.call(this, () => {
+        const result = callback();
+        expect(fs.existsSync(path.join(home, 'server/local.lock'))).toBe(true);
+        expect(fs.existsSync(path.join(home, 'server/cloudflare.lock'))).toBe(true);
+        expect(fs.existsSync(path.join(home, 'server/local'))).toBe(false);
+        return result;
+      });
+    });
+    try { await run(['--purge', '--allow-deployment-loss', '--yes'], deps()); }
+    finally { lease.mockRestore(); }
+    expect(fs.existsSync(home)).toBe(false);
   });
 });
 
-describe('myco remove --remove-vault routing (project scope)', () => {
-  let testDir: string;
-  let sandbox: ReturnType<typeof sandboxMycoHome>;
-
-  beforeEach(() => {
-    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-remove-vault-'));
-    testVaultDir = path.join(testDir, '.myco');
-    fs.mkdirSync(testVaultDir, { recursive: true });
-    fs.writeFileSync(path.join(testVaultDir, 'myco.yaml'), YAML.stringify({ version: 3, config_version: 0 }));
-    sandbox = sandboxMycoHome('myco-remove-vault-home-');
-    // Sentinel: if --remove-vault ever falls through to the global
-    // teardown again, this launcher gets deleted.
-    fs.writeFileSync(path.join(sandbox.mycoHome, 'launcher.cjs'), 'launcher', 'utf-8');
-    fakeServiceManager = new FakeServiceManager();
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    fs.rmSync(testDir, { recursive: true, force: true });
-    sandbox.restore();
-    process.exitCode = 0;
-    vi.restoreAllMocks();
-  });
-
-  it('routes to project scope and deletes the vault with --yes, leaving the global install intact', async () => {
-    const { run } = await import('@myco/cli/remove.js');
-    await run(['--remove-vault', '--yes']);
-
-    expect(fs.existsSync(testVaultDir)).toBe(false);
-    // No machine-wide teardown happened.
-    expect(fakeServiceManager.uninstallCalls).toHaveLength(0);
-    expect(fs.existsSync(path.join(sandbox.mycoHome, 'launcher.cjs'))).toBe(true);
-    // --yes skips the prompt entirely.
-    expect(confirmMock).not.toHaveBeenCalled();
-  });
-
-  it('aborts the whole project remove when confirmation is declined — nothing mutated, exit 1', async () => {
-    confirmMock.mockResolvedValue(false);
-    // Teardown surfaces that must remain untouched on decline: a
-    // configured symbiont dir and the project daemon state.
-    fs.mkdirSync(path.join(testDir, '.cursor'), { recursive: true });
-    fs.writeFileSync(path.join(testVaultDir, 'daemon.json'), JSON.stringify({ pid: 999_999 }), 'utf-8');
-
-    const { SymbiontInstaller } = await import('@myco/symbionts/installer.js');
-    const { run } = await import('@myco/cli/remove.js');
-    await run(['--remove-vault']);
-
-    expect(fs.existsSync(testVaultDir)).toBe(true);
+for (const artifact of ['server/local/myco.sqlite', 'server/cloudflare/record.json', 'server/cloudflare.json']) {
+  it(`refuses purge with ${artifact} before unregistering anything`, async () => {
+    member();
+    write(artifact);
+    expect(deploymentLosses(home).join('\n')).toContain('myco server backup --target');
+    if (artifact.includes('cloudflare')) expect(deploymentLosses(home).join('\n')).toContain('resource identities and recovery metadata');
+    const before = snapshot(root);
+    await run(['--purge', '--yes'], deps());
     expect(process.exitCode).toBe(1);
-    expect(confirmMock.mock.calls[0]![0]).toContain(testVaultDir);
-    // The confirmation came BEFORE any teardown: hooks intact, daemon
-    // state intact — not the half-removed state of the prior shape.
-    expect(SymbiontInstaller).not.toHaveBeenCalled();
-    expect(fs.existsSync(path.join(testVaultDir, 'daemon.json'))).toBe(true);
+    expect(snapshot(root)).toEqual(before);
+    expect(platform.commands).toEqual([]);
   });
-
-  it('deletes the vault when confirmation is accepted', async () => {
-    confirmMock.mockResolvedValue(true);
-
-    const { run } = await import('@myco/cli/remove.js');
-    await run(['--remove-vault']);
-
-    expect(fs.existsSync(testVaultDir)).toBe(false);
-    expect(process.exitCode ?? 0).toBe(0);
+  it(`explicit second flag permits loss of ${artifact}`, async () => {
+    write(artifact);
+    await run(['--purge', '--allow-deployment-loss', '--yes'], deps());
+    expect(process.exitCode).toBe(0);
+    expect(fs.existsSync(home)).toBe(false);
   });
-});
+}
 
-describe('myco remove --project <path>', () => {
-  let cwdDir: string;
-  let targetDir: string;
-
-  beforeEach(() => {
-    cwdDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-remove-cwd-'));
-    targetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-remove-target-'));
-    // resolveVaultDir (the cwd fallback) points at a DIFFERENT project —
-    // if the --project value is dropped, these tests fail loudly.
-    testVaultDir = path.join(cwdDir, '.myco');
-    fs.mkdirSync(testVaultDir, { recursive: true });
-    fs.writeFileSync(path.join(testVaultDir, 'myco.yaml'), YAML.stringify({ version: 3, config_version: 0 }));
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    fs.rmSync(cwdDir, { recursive: true, force: true });
-    fs.rmSync(targetDir, { recursive: true, force: true });
-    process.exitCode = 0;
-    vi.restoreAllMocks();
-  });
-
-  it('honors the --project value instead of defaulting to the cwd project', async () => {
-    const targetVault = path.join(targetDir, '.myco');
-    fs.mkdirSync(targetVault, { recursive: true });
-    fs.writeFileSync(path.join(targetVault, 'myco.yaml'), YAML.stringify({ version: 3, config_version: 0 }));
-    fs.mkdirSync(path.join(targetDir, '.cursor'), { recursive: true });
-
-    const { SymbiontInstaller } = await import('@myco/symbionts/installer.js');
-    const { run } = await import('@myco/cli/remove.js');
-    await run(['--project', targetDir]);
-
-    // Installers operated on the targeted project root, not the cwd one.
-    const roots = vi.mocked(SymbiontInstaller).mock.calls.map((c) => c[1]);
-    expect(roots).toContain(targetDir);
-    expect(roots).not.toContain(cwdDir);
-    // The cwd project's vault was untouched.
-    expect(fs.existsSync(path.join(testVaultDir, 'myco.yaml'))).toBe(true);
-  });
-
-  it('cleans launcher artifacts and exits 0 for an orphan root without myco.yaml', async () => {
-    // The doctor orphan shape: a launcher stub with no .myco/myco.yaml.
-    fs.mkdirSync(path.join(targetDir, '.agents'), { recursive: true });
-    fs.writeFileSync(path.join(targetDir, '.agents', 'myco-run.cjs'), 'stub', 'utf-8');
-
-    const { removeProjectLaunchers } = await import('@myco/symbionts/installer.js');
-    const { run } = await import('@myco/cli/remove.js');
-    await run(['--project', targetDir]);
-
-    expect(vi.mocked(removeProjectLaunchers)).toHaveBeenCalledWith(
-      targetDir,
-      { legacy: true, active: true, runtimeCommand: true },
-    );
-    expect(process.exitCode ?? 0).toBe(0);
-  });
-});
-
-describe('myco remove (global) confirmation gate', () => {
-  let sandbox: ReturnType<typeof sandboxMycoHome>;
-
-  beforeEach(() => {
-    sandbox = sandboxMycoHome('myco-remove-global-home-');
-    fs.writeFileSync(path.join(sandbox.mycoHome, 'launcher.cjs'), 'launcher', 'utf-8');
-    fs.writeFileSync(path.join(sandbox.mycoHome, 'mcp-launcher.cjs'), 'mcp launcher', 'utf-8');
-    fakeServiceManager = new FakeServiceManager();
-    fakeServiceManager.installed.add('co.goondocks.myco');
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    sandbox.restore();
-    process.exitCode = 0;
-    vi.restoreAllMocks();
-  });
-
-  it('aborts with exit code 1 and tears nothing down when confirmation is declined (non-TTY shape)', async () => {
-    confirmMock.mockResolvedValue(false);
-
-    const { run } = await import('@myco/cli/remove.js');
-    await run([]);
-
-    expect(process.exitCode).toBe(1);
-    expect(fakeServiceManager.uninstallCalls).toHaveLength(0);
-    expect(sweepWorkerServices).not.toHaveBeenCalled();
-    expect(fs.existsSync(path.join(sandbox.mycoHome, 'launcher.cjs'))).toBe(true);
-    expect(fs.existsSync(path.join(sandbox.mycoHome, 'mcp-launcher.cjs'))).toBe(true);
-    // The summary names the machine-wide blast radius.
-    expect(confirmMock.mock.calls[0]![0]).toContain('machine-wide');
-  });
-
-  it('proceeds without prompting when --yes is passed', async () => {
-    const { run } = await import('@myco/cli/remove.js');
-    await run(['--yes']);
-
-    expect(confirmMock).not.toHaveBeenCalled();
-    expect(fakeServiceManager.uninstallCalls.length).toBeGreaterThan(0);
-    // The worker login services this home installed go with it.
-    expect(sweepWorkerServices).toHaveBeenCalledWith({ mycoHome: sandbox.mycoHome });
-    expect(fs.existsSync(path.join(sandbox.mycoHome, 'launcher.cjs'))).toBe(false);
-    expect(fs.existsSync(path.join(sandbox.mycoHome, 'mcp-launcher.cjs'))).toBe(false);
-    // No --purge: captured data home is preserved.
-    expect(fs.existsSync(sandbox.mycoHome)).toBe(true);
-  });
-
-  it('preserves the full home on purge when Windows cannot confirm containment', async () => {
-    const { ExternalMcpHardKillBlockedError } = await import('@myco/service/windows.js');
-    const configPath = path.join(sandbox.mycoHome, 'config.yaml');
-    const journalPath = path.join(
-      sandbox.mycoHome,
-      'service',
-      'external-mcp-containment.json',
-    );
-    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
-    fs.writeFileSync(configPath, 'daemon:\n  external_mcp: true\n', 'utf-8');
-    fs.writeFileSync(journalPath, '{"phase":"funnel_disable_pending"}\n', 'utf-8');
-    fakeServiceManager.uninstall = async (label: string) => {
-      fakeServiceManager.uninstallCalls.push(label);
-      throw new ExternalMcpHardKillBlockedError();
-    };
-
-    const { run } = await import('@myco/cli/remove.js');
-    await expect(run(['--purge', '--yes']))
-      .rejects.toBeInstanceOf(ExternalMcpHardKillBlockedError);
-
-    expect(fakeServiceManager.uninstallCalls).toHaveLength(1);
-    expect(fs.existsSync(path.join(sandbox.mycoHome, 'launcher.cjs'))).toBe(true);
-    expect(fs.existsSync(path.join(sandbox.mycoHome, 'mcp-launcher.cjs'))).toBe(true);
-    expect(fs.existsSync(configPath)).toBe(true);
-    expect(fs.existsSync(journalPath)).toBe(true);
-    expect(fs.existsSync(sandbox.mycoHome)).toBe(true);
-  });
-
-  it('preserves the complete home and reports failure when an executor cannot stop', async () => {
-    const { run } = await import('@myco/cli/remove.js');
-    fs.writeFileSync(path.join(sandbox.mycoHome, 'active-run'), 'owned bytes');
-    sweepWorkerServices.mockImplementationOnce(() => { throw new Error('runner could not be stopped'); });
-    await run(['--purge', '--yes']);
-    expect(process.exitCode).toBe(1);
-    expect(fs.readFileSync(path.join(sandbox.mycoHome, 'active-run'), 'utf8')).toBe('owned bytes');
-  });
-
-  it('mentions ~/.myco deletion in the summary and purges it on --purge --yes', async () => {
-    confirmMock.mockResolvedValue(true);
-
-    const { run } = await import('@myco/cli/remove.js');
-    await run(['--purge']);
-
-    expect(confirmMock.mock.calls[0]![0]).toContain('DELETE');
-    expect(confirmMock.mock.calls[0]![0]).toContain(sandbox.mycoHome);
-    expect(fs.existsSync(sandbox.mycoHome)).toBe(false);
-  });
+it('the deployment-loss flag alone is refused', async () => {
+  await expect(run(['--allow-deployment-loss', '--yes'], deps())).rejects.toThrow('requires --purge');
+  expect(fs.existsSync(home)).toBe(true);
 });

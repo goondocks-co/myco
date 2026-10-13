@@ -31,7 +31,7 @@ import {
 import { enumerateLeafPaths } from '../config-reactions/touched-paths.js';
 import { isExternalMcpConfigPath } from '../external-mcp-containment.js';
 import type { RouteRequest, RouteResponse } from '../router.js';
-import { projectTreeAvailable } from '../../vault/resolve.js';
+import { projectTreeAvailable } from '../../project-root.js';
 
 export async function handleGetConfig(
   vaultDir: string,

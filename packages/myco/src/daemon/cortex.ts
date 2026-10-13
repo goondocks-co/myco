@@ -21,7 +21,7 @@
 import { dispatchAgentRun } from '@myco/agent/runner-host.js';
 import { hasConfiguredProvider } from '@myco/agent/config-resolver.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
-import { projectTreeAvailable } from '@myco/vault/resolve.js';
+import { projectTreeAvailable } from '@myco/project-root.js';
 import type { MycoConfig } from '@myco/config/schema.js';
 import { capabilityEnabled } from '@myco/config/capabilities.js';
 import { resolveTenantConfig } from './request-config.js';

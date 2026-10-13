@@ -3,7 +3,7 @@ import { loadMergedConfig } from '@myco/config/loader.js';
 import { loadProjectManifest } from '@myco/config/project-manifest.js';
 import type { CapabilityId } from '@myco/config/scope.js';
 import { resolveMycoHome, resolveProjectVaultDir } from '@myco/grove/paths.js';
-import { projectTreeAvailable } from '@myco/vault/resolve.js';
+import { projectTreeAvailable } from '@myco/project-root.js';
 import {
   createGrove,
   DefaultGroveUndeletableError,

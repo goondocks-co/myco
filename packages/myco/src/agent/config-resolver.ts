@@ -21,7 +21,7 @@ import {
 } from './loader.js';
 import { loadAllTasks } from './registry.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
-import { projectTreeAvailable } from '@myco/vault/resolve.js';
+import { projectTreeAvailable } from '@myco/project-root.js';
 import type { MycoConfig, PhaseOverride, TaskProviderOverride } from '@myco/config/schema.js';
 import type { ProviderConfig, EffectiveConfig, HarnessId, ReasoningLevel } from './types.js';
 import { HARNESS_CLAUDE_SDK } from './types.js';

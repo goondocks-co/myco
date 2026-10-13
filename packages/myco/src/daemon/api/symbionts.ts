@@ -1,6 +1,6 @@
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { loadConfig, loadMergedConfig, getEnabledSymbiontNames, TierConfigUnreadableError } from '../../config/loader.js';
-import { projectTreeAvailable } from '@myco/vault/resolve.js';
+import { projectTreeAvailable } from '@myco/project-root.js';
 import type { RouteHandler, RouteResponse } from '../router.js';
 import { detectSymbiontInjectionSupport } from '@myco/symbionts/injection-support.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';

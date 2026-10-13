@@ -2090,9 +2090,14 @@ export class SymbiontInstaller {
     );
   }
 
+  /** Validate global member ownership before a caller begins teardown. */
+  assertMemberUninstallable(): void {
+    this.assertGlobalMemberOwnership();
+  }
+
   /** Remove this home's global member registration under the ownership guard. */
   uninstallMemberRegistration(): void {
-    this.assertGlobalMemberOwnership();
+    this.assertMemberUninstallable();
     this.uninstallMemberHooks();
     this.uninstallMemberMcp();
   }

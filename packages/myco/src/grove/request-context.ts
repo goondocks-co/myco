@@ -20,7 +20,7 @@ import {
   loadGroveRecord,
   type GroveRecord,
 } from '@myco/grove/registry.js';
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
+import { resolveProjectRoot } from '@myco/project-root.js';
 import { resolveAttach } from '@myco/host/registry.js';
 import type { PerUserLockNamespace } from '@myco/utils/per-user-lock-namespace.js';
 

@@ -1,6 +1,6 @@
 import type { MycoConfig } from '@myco/config/schema.js';
 import { loadMergedConfig } from '@myco/config/loader.js';
-import { projectTreeAvailable } from '@myco/vault/resolve.js';
+import { projectTreeAvailable } from '@myco/project-root.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
 import type { Logger } from './logger.js';
 

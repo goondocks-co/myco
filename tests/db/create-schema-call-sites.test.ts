@@ -70,7 +70,7 @@ describe('production createSchema call-site registry', () => {
     // but INSTALLATION is per-process: a process that never registers the
     // hook migrates without a checkpoint. Every entry point whose commands
     // can reach a production createSchema caller must install it.
-    const REQUIRED_INSTALLERS = ['daemon/main.ts', 'cli.ts'];
+    const REQUIRED_INSTALLERS = ['daemon/main.ts'];
     for (const rel of REQUIRED_INSTALLERS) {
       const content = fs.readFileSync(path.join(SRC_ROOT, rel), 'utf-8');
       const installs = content

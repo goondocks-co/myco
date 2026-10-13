@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import type { RouteRequest, RouteResponse } from '../router.js';
 import type { RequestPrincipal } from '../request-principal.js';
-import { projectTreeAvailable } from '../../vault/resolve.js';
+import { projectTreeAvailable } from '../../project-root.js';
 import {
   listNotifications,
   countNotifications,

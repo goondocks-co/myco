@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { resolveVaultDir } from '@myco/vault/resolve.js';
+import { resolveVaultDir } from '@myco/project-root.js';
 
 let tmpDir: string;
 

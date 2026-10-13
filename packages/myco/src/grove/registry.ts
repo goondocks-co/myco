@@ -14,7 +14,7 @@ import {
   readProjectLease,
   releaseProjectLease,
 } from './project-lease.js';
-import { assertSafeProjectRoot, isSafeProjectRoot } from '../vault/resolve.js';
+import { assertSafeProjectRoot, isSafeProjectRoot } from '../project-root.js';
 import {
   pathsEquivalent,
   resolveGlobalConfigPath,

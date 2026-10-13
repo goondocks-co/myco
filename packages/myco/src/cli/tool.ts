@@ -31,7 +31,7 @@ export async function run(args: string[], _vaultDir: string): Promise<void> {
     return;
   }
   if (source === null) {
-    await writeEnvelope({ ok: false, error: credentialRequiredError() });
+    await writeEnvelope({ ok: false, error: credentialRequiredError('tool') });
     process.exitCode = 1;
     return;
   }

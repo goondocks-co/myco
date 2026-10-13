@@ -6,8 +6,7 @@
  * A leaf: Node built-ins plus `utils/git.ts`, `utils/git-files.ts` and
  * `member/git-verdict.ts` only, so a capture hook (and the member seam) can
  * resolve a project root without pulling vault, Grove, or daemon code into its
- * import closure. `vault/resolve.ts` re-exports everything here for the rest of
- * the binary.
+ * import closure.
  *
  * The repository is read from git's own files, or from git's verdict on them
  * kept under the member home (`repoVerdict`): every hook resolves its project
@@ -227,4 +226,9 @@ export function isInsideWorktree(cwd: string = process.cwd()): boolean {
   if (!worktreeRoot) return false;
   const mainRepoRoot = resolveMainRepoRoot(cwd);
   return path.resolve(worktreeRoot) !== path.resolve(mainRepoRoot);
+}
+
+/** Whether the registered project has a working tree on this machine. */
+export function projectTreeAvailable(vaultDir: string): boolean {
+  return fs.existsSync(resolveProjectRoot(vaultDir));
 }

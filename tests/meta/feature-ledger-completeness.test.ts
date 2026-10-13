@@ -1,3 +1,4 @@
+import { MEMBER_VERBS } from '@myco/cli/member-verbs.js';
 /**
  * Meta gate: every 1.4 surface carries an explicit 2.0 disposition AND an owning surface.
  *
@@ -82,7 +83,7 @@ const rowIn = (section: string, token: string) => BY_SECTION.get(section)?.get(t
 
 function cliCommands(): string[] {
   const src = read(path.join(SRC_ROOT, 'cli.ts'));
-  const found = new Set<string>();
+  const found = new Set<string>(MEMBER_VERBS);
   for (const m of src.matchAll(/cmd === '([^']+)'/g)) found.add(m[1]);
   for (const m of src.matchAll(/case '([^']+)':/g)) found.add(m[1]);
   return [...found].filter((c) => !CLI_FLAG_ALIASES.has(c)).sort();

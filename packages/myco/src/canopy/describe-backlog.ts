@@ -31,7 +31,7 @@ import {
 import { loadMergedConfig } from '@myco/config/loader.js';
 import { capabilityEnabled } from '@myco/config/capabilities.js';
 import type { MycoConfig } from '@myco/config/schema.js';
-import { projectTreeAvailable } from '@myco/vault/resolve.js';
+import { projectTreeAvailable } from '@myco/project-root.js';
 import { projectRuntimeIsForeign } from '@myco/daemon/update-checker.js';
 
 export interface CanopyDescribeBacklogContext {

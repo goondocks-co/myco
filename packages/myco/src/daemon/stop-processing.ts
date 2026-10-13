@@ -61,7 +61,7 @@ import { filesystemRootFromRequestContext, isHostServedRequest, rowProjectIdFrom
 import { hostSubstitutedTranscriptPath } from '@myco/host/routed-transcript.js';
 import { ALL_PROJECTS_SCOPE, assertGroveProjectId } from '@myco/grove/ids.js';
 import type { CanopyJobsRegistry } from './jobs/canopy-scan.js';
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
+import { resolveProjectRoot } from '@myco/project-root.js';
 import { deferGitProvenance } from '@myco/release-provenance/capture.js';
 import { primaryProductionRef } from '@myco/release-provenance/config.js';
 

@@ -8,7 +8,7 @@
 
 import crypto from 'node:crypto';
 import { loadMergedConfig } from '@myco/config/loader.js';
-import { projectTreeAvailable } from '@myco/vault/resolve.js';
+import { projectTreeAvailable } from '@myco/project-root.js';
 import { insertNotification } from '@myco/db/queries/notifications.js';
 import { resolveRequestContextForVault } from '@myco/grove/request-context.js';
 import { getType } from './registry.js';

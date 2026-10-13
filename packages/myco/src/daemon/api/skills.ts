@@ -18,7 +18,7 @@ import type { RequestPrincipal } from '../request-principal.js';
 import type { DaemonLogger } from '../logger.js';
 import { epochSeconds, DEFAULT_LIST_LIMIT } from '@myco/constants.js';
 import { LOG_KINDS } from '@myco/constants/log-kinds.js';
-import { resolveProjectRoot } from '@myco/vault/resolve.js';
+import { resolveProjectRoot } from '@myco/project-root.js';
 import {
   listCandidatesWithCount,
   getCandidate,
