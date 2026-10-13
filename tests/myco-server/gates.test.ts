@@ -15,6 +15,7 @@ import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
+import { RUN_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { CLOCK_NAME, RETIRED_CLOCK_NAMES } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
@@ -200,7 +201,7 @@ describe('gates', () => {
     for (const r of RETIRED_ROUTES) {
       expect(served.has(`${r.method} ${r.path}`)).toBe(false);
       expect({ path: r.path, answered: r.replacedBy.length > 0 || (r.dropped !== undefined && r.dropped.length > 0) }).toEqual({ path: r.path, answered: true });
-      for (const target of r.replacedBy) expect({ target, known: served.has(target) || kindSpec(target) !== null }).toEqual({ target, known: true });
+      for (const target of r.replacedBy) expect({ target, known: served.has(target) || kindSpec(target) !== null || RUN_TOOLS.some(tool => tool === target) }).toEqual({ target, known: true });
       const anonymous = await worker.fetch(withSource(r.path, { method: r.method, body: '{}' }), env());
       expect({ path: r.path, status: anonymous.status }).toEqual({ path: r.path, status: 401 });
       const e = sqliteEnv({ workerLogin: true });
@@ -208,6 +209,22 @@ describe('gates', () => {
       const member = await worker.fetch(new Request(`https://s${r.path}`, { method: r.method, headers: memberHeaders(t.token), body: '{}' }), e.env);
       expect({ path: r.path, status: member.status }).toEqual({ path: r.path, status: 401 });
     }
+  });
+
+  it('pins the replacement or dropped reason for each retired container-path route', () => {
+    expect(RETIRED_ROUTES.filter(route => [
+      '/runs/get', '/runs/failed', '/runs/resume-admission', '/runs/supersede',
+      '/runs/reports', '/runs/events', '/runs/repository', '/runs/canopy-map',
+    ].includes(route.path))).toEqual([
+      { method: 'POST', path: '/runs/get', replacedBy: ['GET /api/projects/{projectId}/runs/{runId}'] },
+      { method: 'POST', path: '/runs/failed', replacedBy: ['POST /runs/update', 'POST /worker/end'] },
+      { method: 'POST', path: '/runs/resume-admission', replacedBy: [], dropped: 'a failed run is never resumed in 2.0; a fresh run is dispatched' },
+      { method: 'POST', path: '/runs/supersede', replacedBy: [], dropped: 'a failed run is never resumed in 2.0, so none is superseded' },
+      { method: 'POST', path: '/runs/reports', replacedBy: ['GET /api/projects/{projectId}/runs/{runId}'] },
+      { method: 'POST', path: '/runs/events', replacedBy: [], dropped: "a run's calls are recorded by the Deployment as the run makes them" },
+      { method: 'POST', path: '/runs/repository', replacedBy: ['POST /worker/repository'] },
+      { method: 'POST', path: '/runs/canopy-map', replacedBy: ['myco_run_map'] },
+    ]);
   });
 
   it('refuses credential-free access to protected routes; public enrollment grants nothing without admitted evidence', async () => {
@@ -608,7 +625,7 @@ describe('gates', () => {
         // One run the write fixtures may report against: a report on an unknown run
     // is refused, and a fixture must be a single accepted request.
     sqlite.query(`INSERT OR IGNORE INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'run_gate', 'user', 'gate', 'running', 1)`).run();
-    sqlite.query(`INSERT OR IGNORE INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'run_gate_report', 'user', 'container-smoke', 'running', 1)`).run();
+    sqlite.query(`INSERT OR IGNORE INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'run_gate_report', 'user', 'embedding-reconcile', 'running', 1)`).run();
 
     const FIXTURES: Record<string, { shape: Shape; malformed: (token: string) => Request; wellFormed: (token: string) => Request }> = {
       'POST /events': {
@@ -643,46 +660,22 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `run_${runSeq++}`, agentId: 'agent_gate', task: `digest_${runSeq}`, capability: 'cortex' }) }),
       },
-      'POST /runs/get': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/get', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/get', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope' }) }),
-      },
+
       'POST /runs/update': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/update', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/runs/update', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope', update: { status: 'failed' } }) }),
       },
-      'POST /runs/failed': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/failed', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/failed', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope', errorClass: 'other', error: 'boom' }) }),
-      },
-      'POST /runs/resume-admission': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/resume-admission', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/resume-admission', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope' }) }),
-      },
-      'POST /runs/supersede': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/supersede', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/supersede', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ excludeRunId: 'nope', agentId: 'agent_gate', taskName: 'digest', dryRun: false }) }),
-      },
-      'POST /runs/reports': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/reports', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/reports', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope' }) }),
-      },
+
+
+
+
       'POST /runs/report': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate_report', agentId: 'user', action: 'container-smoke', summary: 's' }) }),
+        wellFormed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate_report', agentId: 'user', action: 'embedding-reconcile', summary: 's' }) }),
       },
-      'POST /runs/events': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/events', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ events: [{ runId: 'nope', eventType: 'phase_start' }] }) }),
-      },
+
       'POST /runs/embedding-step': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -718,16 +711,8 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
         wellFormed: (token) => new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ sessionId: `s_gate_${runSeq++}`, kind: 'start' }) }),
       },
-      'POST /runs/repository': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/repository', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/repository', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
-      'POST /runs/canopy-map': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/canopy-map', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/canopy-map', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
+
+
       'POST /worker/claim': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/worker/claim', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
@@ -871,14 +856,12 @@ describe('gates', () => {
     expect(machineless).toEqual(ROUTES.filter((r) => r.auth === 'member').map((r) => {
       const route = `${r.method} ${r.path}`;
       const f = FIXTURES[route];
-      const run = route.startsWith('POST /runs/') && !ROUTES.some(r => `${r.method} ${r.path}` === route && 'retired' in r && r.retired === true);
+      const run = route.startsWith('POST /runs/');
       return { route: route.slice(route.indexOf(' ') + 1), status: SHAPES[f.shape].refusedStatus, refused: true,
         code: run ? 'run_scope' : 'no_machine_identity', reason: run ? "a run credential reaches only its run's surface" : 'token has no machine identity' };
     }));
     expect({ events: (sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c, blobs: (sqlite.query(`SELECT COUNT(*) c FROM blobs`).get() as any).c, puts: bucket.puts }).toEqual({ events: 0, blobs: 0, puts: [] });
     expect((sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(anonymous.tokenId) as any).b).toBe(0);
-    // A retired route refuses even a well-formed request, naming that it is retired (`RETIRED_RUN_ROUTES`).
-    const retired = new Set(ROUTES.filter((r) => 'retired' in r && r.retired === true).map((r) => `${r.method} ${r.path}`));
     sqlite.run('UPDATE raw_provenance_backfill SET complete = 1 WHERE id = 1');
     for (const [route, fixture] of Object.entries(FIXTURES)) {
       if (route === 'POST /members/roles' || route === 'GET /members/raw-claims') sqlite.run("UPDATE deployment_ownership SET member_id='mem_machine_1' WHERE id=1");
@@ -886,8 +869,7 @@ describe('gates', () => {
       if (route === 'POST /members/ownership') sqlite.run("UPDATE members SET github_id = 'gate-owner' WHERE id = 'mem_machine_1'");
       const token = route === 'POST /members/credential/revoke' ? revokeOnly.token : t1.token;
       const stored = await (await worker.fetch(fixture.wellFormed(token), e)).json() as Record<string, unknown>;
-      if (route.startsWith('POST /runs/') && !retired.has(route)) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'run_scope', persisted: false });
-      else if (retired.has(route)) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'route_retired', persisted: false });
+      if (route.startsWith('POST /runs/')) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'run_scope', persisted: false });
       else expect({ route, accepted: SHAPES[fixture.shape].accepted(stored) }).toEqual({ route, accepted: true });
     }
   });
@@ -990,7 +972,7 @@ describe('gates', () => {
     expect(callers.sort()).toEqual([join('api', 'release-provenance.ts'), join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'provider-credentials.ts'), join('core', 'release-provenance.ts'), join('core', 'run-repository.ts'), join('core', 'scheduled-tasks.ts')]);
     const credentialCallers = files(SRC).filter((f) => (/\bopenProviderCredential\(/.test(stripComments(readFileSync(f, 'utf8'))) || sourceCalls(readFileSync(f, 'utf8')).some((call) => call.called === 'openProviderCredential')))
       .map((f) => f.slice(SRC.length + 1)).sort();
-    expect(credentialCallers).toEqual([join('core', 'embedding', 'configured-provider.ts'), join('core', 'harness.ts'), join('core', 'provider-credentials.ts')]);
+    expect(credentialCallers).toEqual([join('core', 'embedding', 'configured-provider.ts'), join('core', 'provider-credentials.ts')]);
     const surface = stripComments(readFileSync(join(SRC, 'api', 'settings.ts'), 'utf8'));
     expect(surface).not.toMatch(/\.get\(\s*ctx\.params\.name/);
   });
@@ -1129,13 +1111,21 @@ describe('gates', () => {
       'POST /events/sync-transcript-prompts',
       'POST /routed-capture/plan',
       'POST /routed-capture/transcript',
+      'POST /runs/canopy-map',
+      'POST /runs/events',
+      'POST /runs/failed',
+      'POST /runs/get',
+      'POST /runs/reports',
+      'POST /runs/repository',
+      'POST /runs/resume-admission',
+      'POST /runs/supersede',
       'POST /runs/cortex-instructions',
       'POST /runs/digest',
       'POST /runs/digest-write',
       'POST /runs/instruction',
       'POST /sessions/register',
       'POST /sessions/unregister',
-    ]);
+    ].sort());
   });
 
   it('never rewrites a session\'s identity columns on receipt: a second token of the same machine moves only the last receipt', async () => {
@@ -1384,17 +1374,9 @@ describe('gates', () => {
       'member POST /members/status',
       'member POST /members/uncaptured',
       'member POST /members/uncaptured/state',
-      'member POST /runs/canopy-map',
       'member POST /runs/claim',
       'member POST /runs/embedding-step',
-      'member POST /runs/events',
-      'member POST /runs/failed',
-      'member POST /runs/get',
       'member POST /runs/report',
-      'member POST /runs/reports',
-      'member POST /runs/repository',
-      'member POST /runs/resume-admission',
-      'member POST /runs/supersede',
       'member POST /runs/update',
       'member POST /spores/get',
       'member POST /spores/list',

@@ -50,9 +50,9 @@ function scheduledFixture() {
 }
 
 describe('the schedule envelope', () => {
-  it('catalogues every schedule and its precondition, excluding the retained harness probe', () => {
+  it('catalogues every schedule and its precondition, excluding deterministic embedding work', () => {
     expect(scheduledTasks().map((t) => t.task)).toEqual(['extract-curate']);
-    expect(TASK_SCHEDULE['container-smoke']).toBeNull();
+    expect(TASK_SCHEDULE['embedding-reconcile']).toBeNull();
     expect(SMOKE).toEqual({ intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 });
     for (const task of Object.keys(TASK_SCHEDULE)) expect({ task, catalogued: task in TASK_ADMISSION }).toEqual({ task, catalogued: true });
     for (const task of Object.keys(TASK_ADMISSION)) expect({ task, scheduled: task in TASK_SCHEDULE }).toEqual({ task, scheduled: true });
@@ -66,8 +66,8 @@ describe('the schedule envelope', () => {
     expect(resolveSchedule(SMOKE, { intervalSeconds: 3600, runIn: ['active', 'idle'], maxRunsPerDay: 5, overlap: 'queue', runWhenCold: true })).toEqual({ intervalSeconds: 3600, runIn: ['active', 'idle'], maxRunsPerDay: 5, overlap: 'queue', runWhenCold: true });
     expect(resolveSchedule(SMOKE, { intervalSeconds: -1, runIn: ['awake'], overlap: 'never', accelerator: { name: 'x' } })).toEqual(SMOKE);
     expect(resolveSchedule(SMOKE, { accelerator: { name: 'pending', thresholds: { steady: 10, accelerated: 100 } } }).accelerator).toEqual({ name: 'pending', thresholds: { steady: 10, accelerated: 100 } });
-    expect(scheduleFor('container-smoke', SMOKE, { 'container-smoke': { schedule: { intervalSeconds: 60 } } }).intervalSeconds).toBe(60);
-    expect(scheduleFor('container-smoke', SMOKE, { 'container-smoke': 'nope' })).toEqual(SMOKE);
+    expect(scheduleFor('extract-curate', SMOKE, { 'extract-curate': { schedule: { intervalSeconds: 60 } } }).intervalSeconds).toBe(60);
+    expect(scheduleFor('extract-curate', SMOKE, { 'extract-curate': 'nope' })).toEqual(SMOKE);
   });
 
   it('shortens the interval by tier under backlog', () => {
@@ -88,7 +88,7 @@ describe('a schedule naming something the Deployment never registered', () => {
     const f = fixture();
     for (const name of inherited) {
       const schedule: TaskSchedule = { ...SMOKE, preCondition: name };
-      expect({ name, decided: await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', schedule, 'sleep', leaves, NOW) })
+      expect({ name, decided: await decideTask(f.env, 'proj_1', NOW - DAY, 'extract-curate', schedule, 'sleep', leaves, NOW) })
         .toEqual({ name, decided: 'precondition' });
     }
   });
@@ -97,10 +97,10 @@ describe('a schedule naming something the Deployment never registered', () => {
     const f = fixture();
     f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
     // An entry a day old: inside a day's interval, outside a shortened one.
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'earlier', ?, 'container-smoke', 'completed', ?)`, [HARNESS_AGENT_ID, NOW - 7_200_000]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'earlier', ?, 'extract-curate', 'completed', ?)`, [HARNESS_AGENT_ID, NOW - 7_200_000]);
     for (const name of inherited) {
       const schedule: TaskSchedule = { ...SMOKE, accelerator: { name, thresholds: { steady: 1, accelerated: 2 } } };
-      expect({ name, decided: await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', schedule, 'sleep', leaves, NOW) })
+      expect({ name, decided: await decideTask(f.env, 'proj_1', NOW - DAY, 'extract-curate', schedule, 'sleep', leaves, NOW) })
         .toEqual({ name, decided: 'not_yet' });
     }
   });
@@ -136,16 +136,15 @@ describe('a named precondition reads the Project it is a condition on', () => {
     expect(typeof check).toBe('function');
     expect(await check!({ db: f.env.db, projectId: 'proj_1', now: NOW })).toBe(false);
     const gated: TaskSchedule = { ...SMOKE, preCondition: 'has-unprocessed-prompts' };
-    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', gated, 'sleep', { coldThresholdDays: 14, activeWindowDays: 14 }, NOW)).toBe('precondition');
+    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'extract-curate', gated, 'sleep', { coldThresholdDays: 14, activeWindowDays: 14 }, NOW)).toBe('precondition');
     seedSession(f, 'proj_1', 's_done', NOW);
     seedPrompt(f, 'proj_1', 's_done', 'p_waiting', 0);
-    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'container-smoke', gated, 'sleep', { coldThresholdDays: 14, activeWindowDays: 14 }, NOW)).toBeNull();
+    expect(await decideTask(f.env, 'proj_1', NOW - DAY, 'extract-curate', gated, 'sleep', { coldThresholdDays: 14, activeWindowDays: 14 }, NOW)).toBeNull();
   });
 
   it('queues extraction from its declared schedule only after an ended session has unread prompts', async () => {
     const f = fixture();
     f.capability('proj_1', 'vault_evolution', true);
-    f.setting('agent.tasks', { 'container-smoke': { schedule: { enabled: false } } });
     seedSession(f, 'proj_1', 's_done', NOW);
     expect(await runScheduledTasks(f.env, 'idle', NOW, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
     seedPrompt(f, 'proj_1', 's_done', 'p_waiting', 0);
@@ -164,8 +163,8 @@ describe('the leaves the clock reads', () => {
       mapRefresh: { enabled: false, intervalSeconds: 21_600, overridden: { enabled: false, interval: false } } });
     f.setting('agent.scheduled_tasks_enabled', true);
     f.setting('agent.cold_project_threshold_days', 3);
-    f.setting('agent.tasks', { 'container-smoke': { schedule: { intervalSeconds: 60 } } });
-    expect(await scheduleLeaves(f.env)).toMatchObject({ enabled: true, coldThresholdDays: 3, overrides: { 'container-smoke': { schedule: { intervalSeconds: 60 } } } });
+    f.setting('agent.tasks', { 'extract-curate': { schedule: { intervalSeconds: 60 } } });
+    expect(await scheduleLeaves(f.env)).toMatchObject({ enabled: true, coldThresholdDays: 3, overrides: { 'extract-curate': { schedule: { intervalSeconds: 60 } } } });
     // The map refresh stays off until its own leaf turns it on, whatever the task override says.
     f.setting('agent.tasks', { 'canopy-map': { schedule: { enabled: true } } });
     expect((await scheduleLeaves(f.env)).overrides['canopy-map']).toEqual({ schedule: { enabled: false } });
@@ -181,7 +180,7 @@ describe('the leaves the clock reads', () => {
 describe('each gate, by name, in order', () => {
   const leaves = { enabled: true, coldThresholdDays: 14, activeWindowDays: 14, overrides: {} };
   const decide = (f: ReturnType<typeof fixture>, last: number | null, schedule: TaskSchedule = SMOKE, state: 'active' | 'idle' | 'sleep' = 'sleep', now = NOW, project = 'proj_1') =>
-    decideTask(f.env, project, last, 'container-smoke', schedule, state, leaves, now);
+    decideTask(f.env, project, last, 'extract-curate', schedule, state, leaves, now);
 
   it('leaves a quiet Project, a cold one, and one without the capability alone', async () => {
     const f = fixture();
@@ -190,16 +189,16 @@ describe('each gate, by name, in order', () => {
     expect(await decide(f, NOW - 10 * DAY, SMOKE, 'sleep', NOW, 'proj_1')).toBeNull();
     expect(await decide(f, NOW - 10 * DAY, SMOKE, 'sleep', NOW, 'proj_1')).toBeNull();
     const cold = { ...leaves, coldThresholdDays: 5 };
-    expect(await decideTask(f.env, 'proj_1', NOW - 10 * DAY, 'container-smoke', SMOKE, 'sleep', cold, NOW)).toBe('cold');
-    expect(await decideTask(f.env, 'proj_1', NOW - 10 * DAY, 'container-smoke', { ...SMOKE, runWhenCold: true }, 'sleep', cold, NOW)).toBeNull();
-    f.capability('proj_1', 'cortex', false);
+    expect(await decideTask(f.env, 'proj_1', NOW - 10 * DAY, 'extract-curate', SMOKE, 'sleep', cold, NOW)).toBe('cold');
+    expect(await decideTask(f.env, 'proj_1', NOW - 10 * DAY, 'extract-curate', { ...SMOKE, runWhenCold: true }, 'sleep', cold, NOW)).toBeNull();
+    f.capability('proj_1', 'vault_evolution', false);
     expect(await decide(f, NOW - DAY)).toBe('capability_off');
   });
 
   it('skips a task already live under the skip policy, waits out the interval, keeps to its states, honours a named precondition, and meets its ceiling once a day', async () => {
     const f = fixture();
     f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?)`, [HARNESS_AGENT_ID, NOW]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'live', ?, 'container-smoke', 'running', ?)`, [HARNESS_AGENT_ID, NOW - 60_000]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'live', ?, 'extract-curate', 'running', ?)`, [HARNESS_AGENT_ID, NOW - 60_000]);
     expect(await decide(f, NOW - DAY)).toBe('already_running');
     expect(await decide(f, NOW - DAY, { ...SMOKE, enabled: false })).toBe('disabled');
     expect(await decide(f, NOW - DAY, { ...SMOKE, overlap: 'queue' })).toBe('not_yet');
@@ -208,7 +207,7 @@ describe('each gate, by name, in order', () => {
     expect(await decide(f, NOW - DAY, SMOKE, 'sleep', NOW + DAY)).toBeNull();
     expect(await decide(f, NOW - DAY, SMOKE, 'active', NOW + DAY)).toBe('not_in_state');
     expect(await decide(f, NOW - DAY, { ...SMOKE, preCondition: 'never-registered' }, 'sleep', NOW + DAY)).toBe('precondition');
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'earlier', ?, 'container-smoke', 'completed', ?)`, [HARNESS_AGENT_ID, NOW + DAY - 3_600_000]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'earlier', ?, 'extract-curate', 'completed', ?)`, [HARNESS_AGENT_ID, NOW + DAY - 3_600_000]);
     expect(await decide(f, NOW - DAY, { ...SMOKE, intervalSeconds: 1, maxRunsPerDay: 1 }, 'sleep', NOW + DAY)).toBe('max_runs_per_day');
     expect(await decide(f, NOW - DAY, { ...SMOKE, intervalSeconds: 1, maxRunsPerDay: 3 }, 'sleep', NOW + DAY)).toBeNull();
   });
@@ -428,7 +427,7 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
       f.capability(projectId, 'cortex', true);
       f.capability(projectId, 'vault_evolution', false);
       // A clock-dispatched run of the probe a day old: the interval has passed, so the wake reads it and goes on.
-      f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES (?, ?, 'myco-agent', 'container-smoke', 'completed', ?, ?, ?)`,
+      f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES (?, ?, 'myco-agent', 'embedding-reconcile', 'completed', ?, ?, ?)`,
         [projectId, `run_old_${n}`, NOW - 2 * DAY, NOW - 2 * DAY, JSON.stringify({ actor: CLOCK_ACTOR })]);
     }
     const { env, trips } = counted(f);
@@ -452,30 +451,30 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
     f.receipt('proj_2', NOW - 60_000);
     f.capability('proj_2', 'vault_evolution', true);
     f.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [NOW]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, dispatch_spec) VALUES ('proj_1', 'run_live', 'myco-agent', 'container-smoke', 'running', ?, ?)`, [NOW - 1_000, JSON.stringify({ actor: CLOCK_ACTOR })]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_2', 'run_done', 'myco-agent', 'container-smoke', 'completed', ?, ?, ?)`, [NOW - 2 * DAY, NOW - 2 * DAY, JSON.stringify({ actor: CLOCK_ACTOR })]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_2', 'run_owner', 'myco-agent', 'container-smoke', 'completed', ?, ?, ?)`, [NOW - 1_000, NOW - 500, JSON.stringify({ actor: 'mem_owner' })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, dispatch_spec) VALUES ('proj_1', 'run_live', 'myco-agent', 'embedding-reconcile', 'running', ?, ?)`, [NOW - 1_000, JSON.stringify({ actor: CLOCK_ACTOR })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_2', 'run_done', 'myco-agent', 'embedding-reconcile', 'completed', ?, ?, ?)`, [NOW - 2 * DAY, NOW - 2 * DAY, JSON.stringify({ actor: CLOCK_ACTOR })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_2', 'run_owner', 'myco-agent', 'embedding-reconcile', 'completed', ?, ?, ?)`, [NOW - 1_000, NOW - 500, JSON.stringify({ actor: 'mem_owner' })]);
     // Each live status alone in its Project and task, so a read that misses one answers a different fact.
     f.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_3', 'proj_3', ?)`, [NOW]);
     f.receipt('proj_3', NOW - 60_000);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dispatch_spec) VALUES ('proj_3', 'run_pending', 'myco-agent', 'container-smoke', 'pending', ?)`, [JSON.stringify({ actor: CLOCK_ACTOR })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dispatch_spec) VALUES ('proj_3', 'run_pending', 'myco-agent', 'embedding-reconcile', 'pending', ?)`, [JSON.stringify({ actor: CLOCK_ACTOR })]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, dispatch_spec) VALUES ('proj_1', 'run_queued', 'myco-agent', 'extract-curate', 'queued', ?, ?)`, [NOW - 2_000, JSON.stringify({ actor: CLOCK_ACTOR })]);
     // The clock's entry the platform replaced: the interval reads it, the day's ceiling does not.
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec, run_context) VALUES ('proj_2', 'run_replaced', 'myco-agent', 'container-smoke', 'completed', ?, ?, ?, ?)`, [NOW - 3_000, NOW - 2_500, JSON.stringify({ actor: CLOCK_ACTOR }), JSON.stringify({ replaced: true })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec, run_context) VALUES ('proj_2', 'run_replaced', 'myco-agent', 'embedding-reconcile', 'completed', ?, ?, ?, ?)`, [NOW - 3_000, NOW - 2_500, JSON.stringify({ actor: CLOCK_ACTOR }), JSON.stringify({ replaced: true })]);
     // A skip for unchanged input is the interval's entry; a skip for any other reason is nobody's.
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, run_context) VALUES ('proj_2', 'run_unchanged', 'myco-agent', 'extract-curate', 'skipped', ?, ?, ?)`, [NOW - 500, NOW - 500, skipContext(INPUT_UNCHANGED)]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, run_context) VALUES ('proj_2', 'run_ceiling', 'myco-agent', 'extract-curate', 'skipped', ?, ?, ?)`, [NOW - 100, NOW - 100, skipContext('max_runs_per_day')]);
     // Another actor's entries, newer than the clock's own and inside the day.
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_clock', 'myco-agent', 'extract-curate', 'completed', ?, ?, ?)`, [NOW - 4_000, NOW - 3_500, JSON.stringify({ actor: CLOCK_ACTOR })]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_other', 'myco-agent', 'extract-curate', 'completed', ?, ?, ?)`, [NOW - 1_000, NOW - 900, JSON.stringify({ actor: 'mem_owner' })]);
-    const tasks = ['container-smoke', 'extract-curate'];
+    const tasks = ['embedding-reconcile', 'extract-curate'];
     expect(scheduledTasks().map(({ task }) => task)).toEqual(['extract-curate']);
     const whole = await readScheduleFacts(f.env, tasks, NOW);
     // The fixture holds each case the reads tell apart, so agreeing below is agreeing on each of them.
     expect([
-      whole.runs.get(taskFactsKey('proj_3', 'container-smoke'))?.live,
+      whole.runs.get(taskFactsKey('proj_3', 'embedding-reconcile'))?.live,
       whole.runs.get(taskFactsKey('proj_1', 'extract-curate'))?.live,
-      whole.runs.get(taskFactsKey('proj_2', 'container-smoke')),
+      whole.runs.get(taskFactsKey('proj_2', 'embedding-reconcile')),
       whole.runs.get(taskFactsKey('proj_2', 'extract-curate')),
       whole.runs.get(taskFactsKey('proj_3', 'extract-curate')),
     ]).toEqual([
@@ -498,7 +497,7 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
         expect({ key, facts: whole.runs.get(key) ?? { live: false, lastEntryAt: null, entriesSince: 0 } }).toEqual({ key, facts: perProject });
       }
     }
-    expect([...whole.capabilities].sort()).toEqual(['proj_1', 'proj_2', 'proj_3'].flatMap((id) => ['cortex', 'vault_evolution'].map((capability) => taskFactsKey(id, capability))).sort());
+    expect([...whole.capabilities].sort()).toEqual(['proj_1', 'proj_2', 'proj_3'].flatMap((id) => ['vault_evolution'].map((capability) => taskFactsKey(id, capability))).sort());
   });
 
   it('reads every Project\'s runs through the Project-and-task index, never by scanning the runs', () => {

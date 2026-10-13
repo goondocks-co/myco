@@ -283,7 +283,7 @@ describe('tool parity', () => {
     expect([...dry.get('myco_run_prompts')!]).toEqual(['unprocessed']);
     expect([...dry.get('myco_run')!].sort()).toEqual([ALWAYS_ALLOWED.op, 'state_get']);
     // A task declaring no tools of its own still closes.
-    const bare = runAllowlist(TASK_TOOLS['container-smoke'], { dryRun: false });
+    const bare = runAllowlist(TASK_TOOLS['embedding-reconcile'], { dryRun: false });
     expect([...bare.entries()].map(([tool, ops]) => [tool, [...ops]])).toEqual([['myco_run', ['report']]]);
     expect(runDefinitions(bare).map((d) => [d.name, (d.inputSchema.properties.op as { enum: string[] }).enum])).toEqual([['myco_run', ['report']]]);
   });

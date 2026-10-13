@@ -1,16 +1,4 @@
-/**
- * The seam every Deployment operation runs its commands through.
- *
- * Compose is driven by a subprocess, and a subprocess in a test is either a
- * real container or a mock. Real containers make the suite depend on a Docker
- * daemon and a registry; mocking `child_process` globally leaks across files.
- * A named port keeps the orchestration under test and the container out of it,
- * and it is the same shape the harness ports already use.
- *
- * The real implementation is the only place in the Deployment path that spawns
- * anything, so `tests/server/deployment-*.test.ts` can assert the exact argv a
- * command produces rather than its effect on a machine.
- */
+/** Process execution port for Deployment lifecycle commands. */
 import { existsSync } from 'node:fs';
 
 export interface CommandResult {

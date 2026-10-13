@@ -13,7 +13,7 @@ export { MEMBER_PROTOCOL, PROTOCOL_HEADER, PROJECT_HEADER, memberHeaders, deploy
  * credential's lifetime byte ceiling; the member parks on it, and the parked
  * capture drains once the Deployment is updated.
  */
-export const RETIRED_SERVER_CODES = ['quota'] as const;
+export const RETIRED_SERVER_CODES = ['quota', 'route_retired'] as const;
 
 /**
  * Every stable `code` a server answer can carry: the worker's refusal
@@ -39,8 +39,8 @@ export const MEMBER_CODES = [
   'import_disabled',
   // a field outside its declared shape or bound
   'invalid_field',
-  // #1615 — a run route, or a field of one, no 2.0 path sends
-  'route_retired', 'field_retired',
+  // A run field outside the retained channel.
+  'field_retired',
   'unavailable',
 ] as const;
 export type MemberCode = (typeof MEMBER_CODES)[number];

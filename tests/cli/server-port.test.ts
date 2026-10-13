@@ -1,11 +1,4 @@
-/**
- * `myco server create --port`, through the argv the operator actually types.
- *
- * The port is decided in one place for the flag and for the bundle's `.env`,
- * and a refusal has to name what was typed: a conversion in the CLI turned a
- * bare `--port` into the word "true" and a misspelled one into NaN, and the
- * operator read a value they had never written.
- */
+/** Port validation for a native Deployment through the operator's CLI arguments. */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { run } from '@myco/cli/server';
 import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
@@ -43,37 +36,33 @@ async function refusal(args: string[]): Promise<{ code: number | null; said: str
   return { code: exitCode, said: said.join('\n') };
 }
 
-describe('the port flag reaches its validator as it was typed', () => {
-  it('refuses a port that is not a number, naming what was typed', async () => {
-    const { code, said: message } = await refusal(['create', '--port', 'abc']);
+describe('the native Deployment port flag', () => {
+  it('refuses a port that is not a number', async () => {
+    const { code, said: message } = await refusal(['create', '--target', 'local', '--port', 'abc']);
     expect(code).toBe(1);
-    expect(message).toContain('"abc"');
-    expect(message).toContain('between 1 and 65535');
+    expect(message).toContain('--port needs a whole number');
   });
 
-  it('refuses a bare --port rather than reading the flag\'s own presence as a value', async () => {
-    // `parseFlags` gives a valueless flag the string "true"; a conversion made
-    // that NaN, and the operator read a value they never wrote.
-    const { code, said: message } = await refusal(['create', '--port']);
+  it('refuses a bare --port', async () => {
+    const { code, said: message } = await refusal(['create', '--target', 'local', '--port']);
     expect(code).toBe(1);
-    expect(message).toContain('"true"');
+    expect(message).toContain('--port needs a whole number');
     expect(message).not.toContain('NaN');
   });
 
   it('refuses --port= rather than publishing on an ephemeral pick', async () => {
-    const { code, said: message } = await refusal(['create', '--port=']);
+    const { code, said: message } = await refusal(['create', '--target', 'local', '--port=']);
     expect(code).toBe(1);
-    expect(message).not.toContain('"0"');
-    expect(message).toContain('between 1 and 65535');
+    expect(message).toContain('port must be a whole number from 1 to 65535');
   });
 
-  it('refuses a port outside the range, naming it', async () => {
+  it('refuses a port outside the range', async () => {
     for (const typed of ['0', '-1', '70000', '8787.5']) {
       exitCode = null;
       said = [];
-      const { code, said: message } = await refusal(['create', '--port', typed]);
+      const { code, said: message } = await refusal(['create', '--target', 'local', '--port', typed]);
       expect({ typed, code }).toEqual({ typed, code: 1 });
-      expect({ typed, named: message.includes(`"${typed}"`) }).toEqual({ typed, named: true });
+      expect(message).toMatch(/(?:--port needs a whole number|port must be a whole number from 1 to 65535)/);
     }
   });
 });

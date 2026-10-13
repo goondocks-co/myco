@@ -28,7 +28,7 @@ async function rig() {
   const harness = await issueMemberToken(e.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, now);
   /** A `running` row in proj_1 dispatched under the harness credential. */
   const running = async () => {
-    expect(await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_1', agentId: 'myco-agent', task: 'extract-curate', provider: 'anthropic', model: null, runContext: JSON.stringify({ timeoutSeconds: 300 }), dispatchedBy: harness.tokenId, startedAt: now })).toBe(true);
+    expect(await recordDispatch(e.db, { projectId: 'proj_1' }, { id: 'run_1', agentId: 'myco-agent', task: 'embedding-reconcile', provider: 'embedding', model: null, runContext: JSON.stringify({ timeoutSeconds: 300 }), dispatchedBy: harness.tokenId, startedAt: now })).toBe(true);
     e.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE project_id = 'proj_1' AND id = 'run_1'`);
   };
   const mcp = (token: string, extra: Record<string, string> = {}) => fetch(memberPost(token, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }), '/mcp', extra));
@@ -66,7 +66,6 @@ const bytes = utf8('code-bytes');
 const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   refused: (r) => r.fetch(memberPost(r.t1.token, '[]', '/tokens/refresh')),
   invalid_field: (r) => r.post(r.t1.token, { createdAt: -1 }),
-  route_retired: (r) => r.fetch(memberPost(r.t1.token, { runId: 'run_1' }, '/runs/get')),
   field_retired: async (r) => { await r.running(); return r.fetch(memberPost(r.harness.token, { runId: 'run_1', update: { actions_taken: 'x' } }, '/runs/update')); },
   parse: (r) => r.fetch(memberPost(r.t1.token, 'not json')),
   body_cap: (r) => r.fetch(memberPost(r.t1.token, 'x'.repeat(MAX_BODY_BYTES + 1))),
@@ -143,7 +142,7 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
   },
   // #1151 — worker mode. A member the Deployment holds but does not make an
   // administrator reaches no Deployment-scoped route.
-  not_admin: (r) => r.fetch(memberPost(r.plain.token, '{}', '/worker/claim')),
+  not_admin: (r) => r.fetch(memberPost(r.plain.token, '{}', '/members/ownership')),
   // #1148 — an import-channel write to a Deployment that has import switched
   // off. The check is composed into the shared checks for that channel alone,
   // so the same envelope on `cli` stores.

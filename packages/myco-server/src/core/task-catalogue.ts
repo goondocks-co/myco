@@ -56,7 +56,6 @@ export const UNLANDED_TASKS: readonly string[] = [];
 export const TASK_ADMISSION = {
   [MAP_TASK]: { kind: 'capability', capability: 'canopy' },
   'embedding-reconcile': { kind: 'embedding' },
-  'container-smoke': { kind: 'capability', capability: 'cortex' },
   [EXTRACTION_TASK]: { kind: 'capability', capability: 'vault_evolution' },
   [SEEDING_TASK]: { kind: 'capability', capability: 'vault_evolution' },
   [TITLING_TASK]: { kind: 'capture' },
@@ -78,7 +77,6 @@ export const RETAINED_TASKS = Object.keys(TASK_ADMISSION) as RetainedTask[];
 export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
   [MAP_TASK]: ['vault_canopy_map', 'vault_report'],
   'embedding-reconcile': [],
-  'container-smoke': [],
   [EXTRACTION_TASK]: [
     'vault_unprocessed', 'vault_mark_processed', 'vault_sessions', 'vault_spores', 'vault_spore', 'vault_state', 'vault_set_state',
     'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_resolve_spore', 'vault_report',
@@ -136,5 +134,4 @@ export const TASK_WORDS: Readonly<Record<RetainedTask, { name: string; descripti
   [TITLING_TASK]: { name: 'Title and summarize sessions', description: 'Read a session’s prompts and write a title and summary of what was accomplished.' },
   [MAP_TASK]: { name: 'Keep the code map', description: 'Read the connected code to keep a grounded guide to its directories and key files.' },
   'embedding-reconcile': { name: 'Keep search current', description: 'Update the search index for project memory so similar knowledge can be found.' },
-  'container-smoke': { name: 'Check Myco can run', description: 'Check that Myco can start its work and record a report.' },
 };

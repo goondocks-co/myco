@@ -129,7 +129,7 @@ _Avoid_: Porting 1.4 uninstall logic into 2.0 or using `--purge` during cutover
 ## Supported server targets
 
 **Self-hosted Deployment**:
-A production Deployment composed of a Bun server container and an intelligence-harness container, with embedded SQLite, local blob and vector storage, and persistent mounted storage under Docker Compose.
+A production Deployment served by the native Bun binary or plain server image, with embedded SQLite and local blob and vector storage. Agent work runs on registered runners, including runners on cloud VMs; deterministic embedding work runs in the server process.
 _Avoid_: Requiring a separate database service or using a development server as the production runtime
 
 **Cloudflare Deployment**:

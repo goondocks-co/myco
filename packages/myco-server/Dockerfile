@@ -61,7 +61,7 @@ RUN npx vite build
 # --- runtime ---------------------------------------------------------------
 FROM oven/bun:${BUN_VERSION}-slim AS runtime
 
-# curl backs the Compose healthcheck. Nothing else is added.
+# curl is available for operator health checks.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*

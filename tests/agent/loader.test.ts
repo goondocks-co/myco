@@ -34,7 +34,7 @@ import type { AgentDefinition, AgentTask } from '@myco/agent/types.js';
 // ---------------------------------------------------------------------------
 
 /** Number of built-in task YAML files. */
-const EXPECTED_TASK_COUNT = 16;
+const EXPECTED_TASK_COUNT = 15;
 
 /** Built-in agent name from agent.yaml. */
 const BUILT_IN_AGENT_NAME = 'myco-agent';
@@ -208,6 +208,7 @@ describe('agent loader', () => {
       expect(names).toContain('extract-only');
       expect(names).toContain('supersession-sweep');
       expect(names).toContain('title-summary');
+      expect(names).not.toContain('container-smoke');
     });
 
     it('tasks with toolOverrides have string arrays', () => {

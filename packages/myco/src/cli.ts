@@ -277,7 +277,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Self-hosted Deployment lifecycle — a Compose bundle under MYCO_HOME, no
+  // Deployment lifecycle — native and Cloudflare targets, no
   // project vault, so it sits above the myco.yaml gate and works from any cwd.
   if (cmd === 'server') return (await import('./cli/server.js')).run(args);
 

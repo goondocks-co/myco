@@ -59,7 +59,7 @@ export const recallGold: ParityScenario = {
       expect(seeded).toEqual([{ spores: corpus.spores.length, plans: corpus.plans.length }]);
 
       // The corpus is embedded and calibrated by the shipped embedding step, under runs this scenario holds as the
-      // harness would: each run names the credential that drives it, with a lease well past the scenario. One
+      // harness would: each run names the credential that drives it, with no worker lease. One
       // credential per run spreads the steps under the per-credential request limit a single harness never reaches.
       await target.sql(`INSERT OR IGNORE INTO members (id, label, created_at) VALUES ('mem_harness', 'harness', ${now})`);
       const holders: Array<{ token: string; runId: string }> = [];
@@ -70,7 +70,7 @@ export const recallGold: ParityScenario = {
         await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, bytes_written, lineage_root, lineage_started_at)
           VALUES (${lit(tokenId)}, 'mem_harness', 'harness', ${lit(await sha256Hex(token))}, ${now}, ${now + 3_600_000}, 0, ${lit(tokenId)}, ${now})`);
         await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, dispatched_by, lease_expires_at, run_context)
-          VALUES (${lit(projectId)}, ${lit(runId)}, ${lit(AGENT_ID)}, 'embedding-reconcile', 'running', ${now}, ${lit(tokenId)}, ${now + 3_600_000}, ${lit(JSON.stringify({ timeoutSeconds: 3_600 }))})`);
+          VALUES (${lit(projectId)}, ${lit(runId)}, ${lit(AGENT_ID)}, 'embedding-reconcile', 'running', ${now}, ${lit(tokenId)}, NULL, ${lit(JSON.stringify({ timeoutSeconds: 3_600 }))})`);
         holders.push({ token, runId });
       }
       let settled = false;

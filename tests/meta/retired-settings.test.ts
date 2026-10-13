@@ -5,9 +5,6 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEPLOYMENT_LEAVES, RETIRED_LEAVES, RETIRED_SECRET_SLOTS, executionProfileLeafDefault } from '@myco-server-worker/core/settings.js';
 import { V68_RETIRED_SETTINGS } from '@myco-server-worker/db/schema-v68.js';
-import { runtimeProbeModel } from '@myco-server-worker/core/runtime-probe.js';
-import { OUTCOME_TASKS } from '@myco-server-worker/core/task-catalogue.js';
-import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { SECRET_SLOT_NAMES, harnessesReading } from '@goondocks/myco-shared/secret-slots';
 
 const ROOT = fileURLToPath(new URL('../../packages/', import.meta.url));
@@ -43,15 +40,6 @@ describe('settings retirement', () => {
     expect(unread).toEqual([]);
     expect([...RETIRED_LEAVES]).toEqual([]);
     for (const leaf of V68_RETIRED_SETTINGS) expect(DEPLOYMENT_LEAVES).not.toContain(leaf);
-  });
-
-  it('limits the runtime model to the container probe', async () => {
-    const { db } = sqliteEnv();
-    const probeEnv = { db, harnessCredentialSource: 'deployment' as const };
-    for (const task of OUTCOME_TASKS) {
-      await expect(runtimeProbeModel(probeEnv, task)).rejects.toThrow('only for the retained container probe');
-    }
-    expect(await runtimeProbeModel(probeEnv, 'container-smoke')).toBe('sonnet');
   });
 
   it('marks retired exactly the secret slots no server code and no harness run reads', () => {

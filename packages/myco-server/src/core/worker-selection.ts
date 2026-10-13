@@ -20,18 +20,8 @@ import { PROFILE_SETTING_LEAVES, profileSetting, resolveExecutionProfile, taskOv
 import { enabledCapabilities, settingTexts, type ProjectCapability } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
 
-/**
- * The tasks the launch seam serves, which a worker cannot.
- *
- * One declares no tool: its whole surface is a server-side step loop over a
- * run route — `/runs/embedding-step` — rather than the MCP surface a worker's
- * harness speaks. The other is the containerized runtime's own end-to-end
- * proof, so serving it anywhere else would leave the path it exists to
- * exercise untested.
- *
- * These two are why the seam survives, and both retire with it.
- */
-export const RUNTIME_SERVED_TASKS: readonly string[] = ['embedding-reconcile', 'container-smoke'];
+/** Deterministic embedding work executes inside the Deployment. */
+export const RUNTIME_SERVED_TASKS: readonly string[] = ['embedding-reconcile'];
 
 export { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from './run-deadline.js';
 

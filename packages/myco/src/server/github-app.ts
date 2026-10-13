@@ -9,7 +9,7 @@ import { LOCAL_OWNER_NEXT } from '@goondocks/myco-shared/setup-guidance';
  * in one click: this module serves the manifest form on a loopback listener,
  * receives the temporary code GitHub redirects back with, converts it into the
  * app's credentials, and hands them to the target — the Worker's secrets on
- * Cloudflare, the native volume's secrets, or the Compose bundle's secrets. Nothing here is
+ * Cloudflare, or the native volume's secrets. Nothing here is
  * relayed through a server Myco runs; the app belongs to the operator or the
  * organization they name.
  *
@@ -31,9 +31,9 @@ import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { LocalVolume } from '@myco/server/local-volume.js';
 import { withCloudflareOperation } from '@myco/server/cloudflare-operation.js';
 import { deploymentRecordPath, putWorkerSecrets, readDeploymentRecord, writeDeploymentRecord, type DeploymentRecord } from './cloudflare.js';
-import { assertComposeReadable, recreateDeployment, resolveDeploymentPaths, writeSignInSecrets, type DeploymentPaths } from './deployment.js';
-import { systemRunner, type CommandRunner } from './runner.js';
+import type { CommandRunner } from './runner.js';
 import { configureLocalSignIn, localDeploymentPresent, readLocalSecrets, resolveLocalPaths, type LocalDeploymentPaths } from './local.js';
+import { composeRetiredMessage, retiredComposeBundle } from './targets.js';
 import { localOwnerLinked } from './local-owner.js';
 import { carriedNative } from './local-run.js';
 
@@ -69,8 +69,7 @@ export interface RegisteredApp {
 
 export type SignInTarget =
   | { kind: 'cloudflare'; record: DeploymentRecord; mycoHome?: string }
-  | { kind: 'local'; paths: LocalDeploymentPaths }
-  | { kind: 'compose'; paths: DeploymentPaths };
+  | { kind: 'local'; paths: LocalDeploymentPaths };
 
 export interface RegisterOptions {
   /** The Deployment's public URL; its origin is the callback host. */
@@ -200,12 +199,6 @@ export async function installSignInSecrets(target: SignInTarget, app: Pick<Regis
     await putWorkerSecrets({ accountId: target.record.accountId, workerName: target.record.workerName, runner, mycoHome: target.mycoHome }, { GITHUB_CLIENT_ID: app.clientId, GITHUB_CLIENT_SECRET: app.clientSecret });
     return;
   }
-  // The credential is written only once the recreate that applies it is known
-  // to be possible, and the check reads the same file set that recreate will:
-  // a Deployment must never hold a sign-in secret it is not serving with.
-  await assertComposeReadable({ paths: target.paths, runner: runner ?? systemRunner() });
-  writeSignInSecrets(target.paths, { clientId: app.clientId, clientSecret: app.clientSecret });
-  await recreateDeployment({ paths: target.paths, runner });
 }
 
 export type VerifyResult = { ok: true } | { ok: false; reason: string; pendingStart?: true };
@@ -419,8 +412,8 @@ export async function writeSignInPending(target: SignInTarget, app: RegisteredAp
 /** Multiple recorded Deployments require an explicit target. */
 export function resolveSignInTarget(named: string | undefined, mycoHome?: string): SignInTarget {
   const record = readDeploymentRecord(mycoHome);
-  const paths = resolveDeploymentPaths(mycoHome);
-  const bundle = existsSync(paths.composeFile);
+  const bundle = retiredComposeBundle(mycoHome);
+  if (named === 'compose' || (named === undefined && bundle !== null)) throw new RegistrationRefused(composeRetiredMessage(bundle));
   const localPaths = resolveLocalPaths(mycoHome);
   const local = localDeploymentPresent(localPaths);
   if (named === 'local') {
@@ -431,16 +424,11 @@ export function resolveSignInTarget(named: string | undefined, mycoHome?: string
     if (record === null) throw new RegistrationRefused('no Cloudflare Deployment record on this machine');
     return { kind: 'cloudflare', record, mycoHome };
   }
-  if (named === 'compose') {
-    if (!bundle) throw new RegistrationRefused('no Compose bundle on this machine; `myco server create` writes one');
-    return { kind: 'compose', paths };
-  }
-  if (named !== undefined) throw new RegistrationRefused(`--target must be local, cloudflare or compose, and is ${JSON.stringify(named)}`);
-  if ([record !== null, bundle, local].filter(Boolean).length > 1) throw new RegistrationRefused('this machine holds multiple Deployments; pass --target local, --target cloudflare or --target compose');
+  if (named !== undefined) throw new RegistrationRefused(`--target must be local or cloudflare, and is ${JSON.stringify(named)}`);
+  if (record !== null && local) throw new RegistrationRefused('this machine holds multiple Deployments; pass --target local or --target cloudflare');
   if (local) return { kind: 'local', paths: localPaths };
   if (record !== null) return { kind: 'cloudflare', record, mycoHome };
-  if (bundle) return { kind: 'compose', paths };
-  throw new RegistrationRefused('no Deployment on this machine: no native record, Cloudflare record or Compose bundle');
+  throw new RegistrationRefused('no Deployment on this machine: no native record or Cloudflare record');
 }
 
 /** The whole flow, start to verified. */

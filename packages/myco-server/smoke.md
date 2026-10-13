@@ -475,7 +475,7 @@ The shell is static build output carrying no vault data; every data path is Work
 | D10a | on a fresh Deployment (no admin linked): `myco member link-github`, open the link, confirm | the page names the member; after confirm that account signs in, and a second `myco member link-github` from any machine is refused |
 | D11 | the same link opened again | "expired or was already used" |
 
-Self-hosted: `npm run image:build:native && docker compose up`, then D1–D6 with `-H 'Host: 127.0.0.1:8787'` against `http://127.0.0.1:8787`. D7 is Cloudflare-only until #1009.
+Self-hosted: `npm run image:build:native`, then run the image with durable storage mounted at `/data`, `-e MYCO_BIND=all -e MYCO_SOURCE_FROM=socket -p 127.0.0.1:8787:8787`. Run D1–D6 with `-H 'Host: 127.0.0.1:8787'` against `http://127.0.0.1:8787`. D7 is Cloudflare-only until #1009.
 
 ### Last observed output — self-hosted (image `dev-1008`, 2026-08-28)
 
@@ -494,3 +494,7 @@ Self-hosted: `npm run image:build:native && docker compose up`, then D1–D6 wit
 | `Host: evil.example.com` | 421 ahead of any asset |
 
 Cloudflare: `wrangler deploy --dry-run` on both tomls reads 18 files from `ui/dist` (174 KiB). D1–D7 on the edge await the promotion.
+
+## In-process embedding smoke
+
+Under an isolated home and a fresh volume, run the native server or plain server image, configure an embedding provider, and seed one source. Set `MYCO_ORIGIN` to the Deployment address. Wake it and verify an `embedding-reconcile` run completes, its report is stored, and a ready embedding receipt exists. Start no harness supervisor. Stop the server and verify its embedding work settles before the volume closes. `tests/myco-server/contract/server-bin.test.ts` exercises the process entry with a fixture provider; `tests/server/local-embedding.test.ts` also checks cancellation and provider failure.

@@ -1,3 +1,4 @@
+import { indexFixture } from './helpers/vector-index.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 /**
  * A run a deployment ended, and what the Deployment does about it.
@@ -31,7 +32,7 @@ async function fixture() {
   const launches: Launch[] = [];
   // The entry maps its own deployment, so a launch reaches it only as the
   // recording runtime: the successor is queued and marked, and starts nothing.
-  const bindings = { ...e.env, HARNESS_LAUNCH_MODE: 'record', SECRET_WRAP_KEY: { get: async () => WRAPPING_KEY } };
+  const bindings = { ...e.env, VECTORIZE: indexFixture(), AI: { run: async () => ({ data: [[1, 0]] }) }, HARNESS_LAUNCH_MODE: 'record', SECRET_WRAP_KEY: { get: async () => WRAPPING_KEY } };
   const sealed = serverEnvFromBindings(bindings);
   await deploymentSecretStore(e.db, sealed.wrappingKey).put('anthropic', 'sk-ant-oat-replacement-test', 'test', NOW);
   const base = withHarness(() => sealed, { launch: async (spec) => { launches.push(spec); } });
@@ -63,12 +64,12 @@ async function dispatched(f: Awaited<ReturnType<typeof fixture>>, id: string, ta
 describe('what a replaced run costs the day', () => {
   it('excludes a replaced run from the task\'s count, and counts every other', async () => {
     const f = await fixture();
-    await dispatched(f, 'run_a', 'container-smoke', { timeoutSeconds: 120 });
-    await dispatched(f, 'run_b', 'container-smoke', { timeoutSeconds: 120 });
-    expect(await taskEntriesSince(f.db, SCOPE, 'container-smoke', NOW - DAY)).toBe(2);
+    await dispatched(f, 'run_a', 'embedding-reconcile', { timeoutSeconds: 120 });
+    await dispatched(f, 'run_b', 'embedding-reconcile', { timeoutSeconds: 120 });
+    expect(await taskEntriesSince(f.db, SCOPE, 'embedding-reconcile', NOW - DAY)).toBe(2);
 
     expect(await markRunReplaced(f.db, SCOPE, 'run_a')).toBe(true);
-    expect(await taskEntriesSince(f.db, SCOPE, 'container-smoke', NOW - DAY)).toBe(1);
+    expect(await taskEntriesSince(f.db, SCOPE, 'embedding-reconcile', NOW - DAY)).toBe(1);
     // The mark keeps every other word the context carries.
     expect(f.contextOf('run_a')).toEqual({ timeoutSeconds: 120, replaced: true });
   });
@@ -79,12 +80,12 @@ describe('what a replaced run costs the day', () => {
     // at all; the second is valid JSON whose root is a scalar, which a naive
     // guard admits and a key-set then overwrites whole.
     for (const [id, context] of [['run_a', 'not json at all'], ['run_b', '7'], ['run_c', '"a string"']] as const) {
-      await dispatched(f, id, 'container-smoke', { timeoutSeconds: 120 });
+      await dispatched(f, id, 'embedding-reconcile', { timeoutSeconds: 120 });
       f.sqlite.run(`UPDATE agent_runs SET run_context = ? WHERE id = ?`, [context, id]);
       expect({ id, marked: await markRunReplaced(f.db, SCOPE, id) }).toEqual({ id, marked: false });
       expect({ id, kept: (f.sqlite.query(`SELECT run_context c FROM agent_runs WHERE id = ?`).get(id) as { c: string }).c }).toEqual({ id, kept: context });
     }
-    expect(await taskEntriesSince(f.db, SCOPE, 'container-smoke', NOW - DAY)).toBe(3);
+    expect(await taskEntriesSince(f.db, SCOPE, 'embedding-reconcile', NOW - DAY)).toBe(3);
   });
 });
 
@@ -143,7 +144,7 @@ describe('the run that stands in for a replaced one', () => {
     const replaced: string[] = [];
     for (let i = 0; i < REPLACED_REQUEUES_PER_DAY + 1; i += 1) {
       const id = `run_r${i}`;
-      await dispatched(f, id, 'container-smoke', { timeoutSeconds: 120 }, NOW + i);
+      await dispatched(f, id, 'embedding-reconcile', { timeoutSeconds: 120 }, NOW + i);
       await markRunReplaced(f.db, SCOPE, id);
       replaced.push(id);
     }
@@ -169,7 +170,7 @@ describe('what a runtime may add to a run it did not dispatch', () => {
     await ensureMember(f.db, HARNESS_MEMBER_ID, NOW, 'member', 'harness runtime');
     const minted = await issueMemberToken(f.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, Date.now());
     await recordDispatch(f.db, SCOPE, {
-      id: 'run_live', agentId: 'myco-agent', task: 'container-smoke', provider: 'openai-compatible', model: 'm',
+      id: 'run_live', agentId: 'myco-agent', task: 'embedding-reconcile', provider: 'openai-compatible', model: 'm',
       runContext: JSON.stringify({ timeoutSeconds: 120, input_hash: 'h' }), dispatchedBy: minted.tokenId, startedAt: Date.now(),
     });
     f.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE id = 'run_live'`);
@@ -186,7 +187,7 @@ describe('what a runtime may add to a run it did not dispatch', () => {
     })).toEqual({ persisted: true, changed: 1, applied: true });
     expect(contextOf('run_live')).toEqual({ timeoutSeconds: 120, input_hash: 'h', replaced: true });
     const successor = rows().find((r) => r.id !== 'run_live');
-    expect(successor?.task).toBe('container-smoke');
+    expect(successor?.task).toBe('embedding-reconcile');
     expect(JSON.parse(successor!.runContext!) as Record<string, unknown>).toMatchObject({ replaces: 'run_live' });
   });
 

@@ -47,7 +47,7 @@ async function fixture(opts: { bound?: boolean; refuse?: () => Error | undefined
   const secrets = deploymentSecretStore(env.db, env.wrappingKey);
   await secrets.put('anthropic', PROBE_KEY, 'test', NOW);
   const run = (id: string) => e.sqlite.query(`SELECT status, task, started_at AS startedAt, queued_at AS queuedAt, held_by AS heldBy, dispatched_by AS dispatchedBy, run_context AS runContext, dispatch_spec AS dispatchSpec, error FROM agent_runs WHERE id = ?`).get(id) as Record<string, unknown> | null;
-  const dispatch = (task = 'container-smoke', now = NOW) => dispatchTask(env, task, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, now);
+  const dispatch = (task = 'embedding-reconcile', now = NOW) => dispatchTask(env, task, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, now);
   const complete = (id: string, at = NOW) => e.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = ?`, [at, id]);
   return { ...e, env, launches, wakes, setting, clear, secrets, run, dispatch, complete };
 }
@@ -59,42 +59,6 @@ describe('what holds a dispatch', () => {
     expect(f.launches).toEqual([]);
     f.sqlite.close();
   });
-  it('refuses runtime probes when cortex is off, including an opt-out after preparation', async () => {
-    const f = await fixture();
-    try {
-      const prepared = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
-      expect(prepared.ok).toBe(true);
-      await settingsWriter(f.env.db).setCapability('proj_1', 'cortex', false, 'test', NOW);
-      expect(await f.dispatch()).toMatchObject({ dispatched: false, refusal: 'capability_off' });
-      if (!prepared.ok) throw new Error('fixture did not prepare');
-      await expect(launchDispatch(f.env, prepared.prepared, { serverUrl: ORIGIN, actor: 'test' }, NOW)).rejects.toThrow('capability');
-      expect(f.launches).toEqual([]);
-      expect(f.sqlite.query('SELECT count(*) AS n FROM agent_runs').get()).toEqual({ n: 0 });
-    } finally { f.sqlite.close(); }
-  });
-
-  it('settles a runtime queue opt-out at launch and continues draining', async () => {
-    const f = await fixture();
-    try {
-      f.setting('agent.limits.concurrent_runs', 1);
-      const first = await f.dispatch() as { runId: string };
-      const queued = await f.dispatch('container-smoke', NOW + 1) as { runId: string };
-      f.complete(first.runId);
-      const db: ServerEnv['db'] = {
-        ...f.env.db,
-        prepare: (sql) => {
-          if (sql.includes("UPDATE agent_runs") && sql.includes("status = 'pending'")) {
-            f.sqlite.run("UPDATE project_capabilities SET enabled=0 WHERE project_id='proj_1' AND capability='cortex'");
-          }
-          return f.env.db.prepare(sql);
-        },
-      };
-      expect(await drainQueue({ ...f.env, db }, NOW + 2)).toBe(0);
-      expect(f.run(queued.runId)).toMatchObject({ status: 'skipped', runContext: JSON.stringify({ reason: 'capability_off' }) });
-      expect(f.launches).toHaveLength(1);
-    } finally { f.sqlite.close(); }
-  });
-
   it('is null with no limit set, and names the first limit the load is at, the fleet first', () => {
     const none = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
     expect(heldBy({ liveRuns: 100, liveTaskRuns: 100, taskRunsLastHour: 100 }, none)).toBeNull();
@@ -119,13 +83,13 @@ describe('what holds a dispatch', () => {
   it('holds a dispatch at the fleet the operator deployed, by name', async () => {
     const f = await fixture();
     const env: ServerEnv = { ...f.env, fleet: 1 };
-    expect(await dispatchTask(env, 'container-smoke', 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, NOW)).toMatchObject({ dispatched: true, queued: false });
+    expect(await dispatchTask(env, 'embedding-reconcile', 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, NOW)).toMatchObject({ dispatched: true, queued: false });
     expect(await dispatchTask(env, 'extract-curate', 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, NOW + 1)).toMatchObject({ dispatched: true, queued: true, heldBy: 'fleet' });
   });
 });
 
 describe('the credential a launch mints for its run (#1420)', () => {
-  it('does not rotate: the container reads it from MYCO_MEMBER_TOKEN, so its issuer marks it so at mint', async () => {
+  it('mints a nonrotating credential for the in-process run', async () => {
     const f = await fixture();
     const launched = (await f.dispatch()) as { runId: string };
     const dispatchedBy = f.run(launched.runId)!.dispatchedBy as string;
@@ -140,8 +104,8 @@ describe('a dispatch past a limit', () => {
     f.setting('agent.limits.concurrent_runs', 1);
     const first = await f.dispatch();
     expect(first).toMatchObject({ dispatched: true, queued: false });
-    const second = await f.dispatch('container-smoke', NOW + 1);
-    expect(second).toMatchObject({ dispatched: true, queued: true, heldBy: 'concurrent_runs', task: 'container-smoke', projectId: 'proj_1' });
+    const second = await f.dispatch('embedding-reconcile', NOW + 1);
+    expect(second).toMatchObject({ dispatched: true, queued: true, heldBy: 'concurrent_runs', task: 'embedding-reconcile', projectId: 'proj_1' });
     const runId = (second as { runId: string }).runId;
     expect(f.run(runId)).toMatchObject({ status: 'queued', startedAt: null, queuedAt: NOW + 1, heldBy: 'concurrent_runs', dispatchedBy: null });
     // A run that waits carries what the dispatch decided, written with the row.
@@ -153,15 +117,15 @@ describe('a dispatch past a limit', () => {
     expect(f.launches).toHaveLength(1);
     expect(f.wakes).toHaveLength(2);
     expect((f.sqlite.query(`SELECT COUNT(*) c FROM member_credentials`).get() as { c: number }).c).toBe(1);
-    expect(await dispatchLoad(f.env.db, 'container-smoke', NOW)).toEqual({ liveRuns: 1, liveTaskRuns: 1, taskRunsLastHour: 1 });
+    expect(await dispatchLoad(f.env.db, 'embedding-reconcile', NOW)).toEqual({ liveRuns: 1, liveTaskRuns: 1, taskRunsLastHour: 1 });
   });
 
   it('is refused a claim, from any credential: nothing has been dispatched to it', async () => {
     const f = await fixture();
     f.setting('agent.limits.concurrent_runs', 1);
     await f.dispatch();
-    const queued = (await f.dispatch('container-smoke', NOW + 1)) as { runId: string };
-    const claim = await claimRun(f.env.db, { projectId: 'proj_1' }, { id: queued.runId, agentId: 'myco-agent', task: 'container-smoke', instruction: null, harness: 'h', provider: null, model: null, dryRun: false, startedAt: NOW, runContext: null, dispatchedBy: 'cred_x' }, { taskName: 'container-smoke', admission: { kind: 'capability', capability: 'cortex' }, dispatchedOnly: true }, NOW);
+    const queued = (await f.dispatch('embedding-reconcile', NOW + 1)) as { runId: string };
+    const claim = await claimRun(f.env.db, { projectId: 'proj_1' }, { id: queued.runId, agentId: 'myco-agent', task: 'embedding-reconcile', instruction: null, harness: 'h', provider: null, model: null, dryRun: false, startedAt: NOW, runContext: null, dispatchedBy: 'cred_x' }, { taskName: 'embedding-reconcile', admission: { kind: 'capability', capability: 'cortex' }, dispatchedOnly: true }, NOW);
     expect(claim.claimed).toBe(false);
     expect(f.run(queued.runId)?.status).toBe('queued');
   });
@@ -172,8 +136,8 @@ describe('the drain', () => {
     const f = await fixture();
     f.setting('agent.limits.concurrent_runs', 1);
     const first = (await f.dispatch()) as { runId: string };
-    const second = (await f.dispatch('container-smoke', NOW + 1)) as { runId: string };
-    const third = (await f.dispatch('container-smoke', NOW + 2)) as { runId: string };
+    const second = (await f.dispatch('embedding-reconcile', NOW + 1)) as { runId: string };
+    const third = (await f.dispatch('embedding-reconcile', NOW + 2)) as { runId: string };
     expect(await drainQueue(f.env, NOW + 3)).toBe(0);
     f.complete(first.runId);
     expect(await drainQueue(f.env, NOW + 4)).toBe(1);
@@ -195,34 +159,16 @@ describe('the drain', () => {
     const f = await fixture();
     f.setting('agent.limits.concurrent_runs', 1);
     await f.dispatch();
-    await f.dispatch('container-smoke', NOW + 1);
+    await f.dispatch('embedding-reconcile', NOW + 1);
     const later = NOW + 120 * 60_000;
     expect(await runTick(f.env, later)).toMatchObject({ state: 'active', heldBy: 'queue:pending' });
-  });
-
-  it('ends queued probes when the current Anthropic key is removed, and admits new probes after repair', async () => {
-    const f = await fixture();
-    f.setting('agent.limits.concurrent_runs', 1);
-    const first = (await f.dispatch()) as { runId: string };
-    const second = (await f.dispatch('container-smoke', NOW + 1)) as { runId: string };
-    const third = (await f.dispatch('container-smoke', NOW + 2)) as { runId: string };
-    f.complete(first.runId);
-    await f.secrets.delete('anthropic', 'test', NOW + 3);
-    expect(await drainQueue(f.env, NOW + 3)).toBe(0);
-    expect(f.run(second.runId)).toMatchObject({ status: 'failed', error: expect.any(String) });
-    expect(f.run(third.runId)).toMatchObject({ status: 'failed', error: expect.any(String) });
-    await f.secrets.put('anthropic', PROBE_KEY, 'test', NOW + 4);
-    f.clear('agent.limits.concurrent_runs');
-    const a = (await f.dispatch('container-smoke', NOW + 10)) as { runId: string };
-    const b = (await f.dispatch('container-smoke', NOW + 11)) as { runId: string };
-    expect([f.run(a.runId)?.status, f.run(b.runId)?.status]).toEqual(['pending', 'pending']);
   });
 
   it('skips past a per-task holder, and passes over a run no front door launches', async () => {
     const f = await fixture();
     f.setting('agent.limits.task_concurrent_runs', 1);
     const smoke = (await f.dispatch()) as { runId: string };
-    const smokeQueued = (await f.dispatch('container-smoke', NOW + 1)) as { runId: string };
+    const smokeQueued = (await f.dispatch('embedding-reconcile', NOW + 1)) as { runId: string };
     // A worker-served task never reaches a launch: it waits in the claim queue
     // whatever the limits say, and the drain passes over it rather than
     // stopping, so the runtime-served run behind it still launches.
@@ -239,8 +185,8 @@ describe('the drain', () => {
     const f = await fixture();
     const running = (await f.dispatch()) as { runId: string };
     f.setting('agent.limits.concurrent_runs', 1);
-    const behind = (await f.dispatch('container-smoke', NOW + 1)) as { runId: string };
-    const further = (await f.dispatch('container-smoke', NOW + 2)) as { runId: string };
+    const behind = (await f.dispatch('embedding-reconcile', NOW + 1)) as { runId: string };
+    const further = (await f.dispatch('embedding-reconcile', NOW + 2)) as { runId: string };
     expect([f.run(behind.runId)?.status, f.run(further.runId)?.status]).toEqual(['queued', 'queued']);
     // The fleet and the run limit describe the Deployment, so the drain stops
     // at the first rather than walking the queue to no purpose.
@@ -256,7 +202,7 @@ describe('the drain', () => {
     const f = await fixture({ bound: false });
     expect(await f.dispatch()).toMatchObject({ dispatched: false, refusal: 'harness_unavailable' });
     f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec) VALUES ('proj_1', 'q1', 'myco-agent', 'container-smoke', 'queued', ?, 'fleet', ?)`, [NOW, JSON.stringify({ serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 })]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec) VALUES ('proj_1', 'q1', 'myco-agent', 'embedding-reconcile', 'queued', ?, 'fleet', ?)`, [NOW, JSON.stringify({ serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 })]);
     expect(await drainQueue(f.env, NOW + 1)).toBe(0);
     expect(f.run('q1')?.status).toBe('queued');
   });
@@ -292,7 +238,7 @@ describe('a titling past a limit', () => {
 
 describe('the write is the admission', () => {
   const none = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
-  const record = (id: string) => ({ id, agentId: 'myco-agent', task: 'container-smoke', provider: null, model: null, runContext: null, dispatchedBy: null, startedAt: NOW });
+  const record = (id: string) => ({ id, agentId: 'myco-agent', task: 'embedding-reconcile', provider: null, model: null, runContext: null, dispatchedBy: null, startedAt: NOW });
 
   it('refuses a launch write at a limit in the same statement that would have written it, and admits under it', async () => {
     const f = await fixture();
@@ -304,8 +250,8 @@ describe('the write is the admission', () => {
     expect(await recordDispatch(f.env.db, scope, record('b'), { limits: { ...none, concurrent_runs: 2 }, now: NOW })).toBe(true);
     expect(await recordDispatch(f.env.db, scope, record('c'), { limits: { ...none, task_runs_per_hour: 2 }, now: NOW })).toBe(false);
     expect(await recordDispatch(f.env.db, scope, record('c'), { limits: { ...none, task_runs_per_hour: 2 }, now: NOW + 3_600_001 })).toBe(true);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec) VALUES ('proj_1', 'q', 'myco-agent', 'container-smoke', 'queued', ?, 'fleet', '{}')`, [NOW]);
-    const launch = { task: 'container-smoke', dispatchedBy: 'cred_q', startedAt: NOW, runContext: null, provider: null, model: null };
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec) VALUES ('proj_1', 'q', 'myco-agent', 'embedding-reconcile', 'queued', ?, 'fleet', '{}')`, [NOW]);
+    const launch = { task: 'embedding-reconcile', dispatchedBy: 'cred_q', startedAt: NOW, runContext: null, provider: null, model: null };
     seedCredential(f.sqlite, { id: 'cred_q', memberId: 'mem_harness', machineId: 'harness' });
     expect(await launchQueued(f.env.db, scope, 'q', launch, { limits: { ...none, fleet: 3 }, now: NOW })).toBe(false);
     expect(f.run('q')?.status).toBe('queued');
@@ -315,7 +261,7 @@ describe('the write is the admission', () => {
 
   it('revokes the credential a refused launch minted, and the dispatch lands in the queue instead', async () => {
     const f = await fixture();
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     expect(preparedOutcome.ok).toBe(true);
     f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'live', 'myco-agent', 'extract-curate', 'running', ?)`, [NOW]);
@@ -343,7 +289,7 @@ describe('the write is the admission', () => {
 
   it('revokes the credential a run whose runtime refused to start minted, and fails its row in the runtime\'s own words', async () => {
     const f = await fixture({ refuse: () => new Error('the harness runtime refused to launch run_refused: duplicate') });
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     expect(preparedOutcome.ok).toBe(true);
     const spec = { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120, runId: 'run_refused' };
 
@@ -359,7 +305,7 @@ describe('the write is the admission', () => {
 
   it('bounds the refusal it writes on the row', async () => {
     const f = await fixture({ refuse: () => new Error('x'.repeat(5_000)) });
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     await expect(launchDispatch(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_long' }, NOW)).rejects.toThrow();
     expect((f.run('run_long')?.error as string).length).toBe(MAX_RUN_ERROR_CHARS);
   });
@@ -391,12 +337,12 @@ describe('a runtime that is not taking runs', () => {
   it('leaves the dispatch queued under the fleet, with its launch intact and no credential of its own', async () => {
     let stopping = true;
     const f = await fixture({ refuse: () => (stopping ? draining() : undefined) });
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     expect(preparedOutcome.ok).toBe(true);
     const spec = { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120, runId: 'run_held' };
 
     const outcome = await dispatchPrepared(f.env, prepared(preparedOutcome), spec, NOW);
-    expect(outcome).toEqual({ queued: true, runId: 'run_held', task: 'container-smoke', projectId: 'proj_1', heldBy: 'runtime' });
+    expect(outcome).toEqual({ queued: true, runId: 'run_held', task: 'embedding-reconcile', projectId: 'proj_1', heldBy: 'runtime' });
     expect(f.launches).toHaveLength(0);
 
     const row = f.run('run_held')!;
@@ -432,7 +378,7 @@ describe('a runtime that is not taking runs', () => {
         return undefined;
       },
     });
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     await dispatchPrepared(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120, runId: 'run_late' }, NOW);
     const started = f.run('run_late')!.dispatchedBy as string;
 
@@ -452,7 +398,7 @@ describe('a runtime that is not taking runs', () => {
 
   it('ends this wake\'s drain rather than walking the queue, leaving every row behind it queued', async () => {
     const f = await fixture({ refuse: () => draining() });
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     for (const id of ['q1', 'q2', 'q3']) {
       await enqueueDispatch(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120, runId: id }, 'fleet', NOW);
     }
@@ -466,7 +412,7 @@ describe('a runtime that is not taking runs', () => {
 
   it('leaves no credential when the atomic launch write throws', async () => {
     const f = await fixture();
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     await enqueueDispatch(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'q_throws' }, 'fleet', NOW);
 
     // The store fails the write that would have named the credential.
@@ -487,7 +433,7 @@ describe('a runtime that is not taking runs', () => {
 
   it('says the row carries the refusal when the launch itself ended the run', async () => {
     const f = await fixture({ refuse: () => new Error('the harness runtime refused to launch: spawn') });
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     await enqueueDispatch(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'q_refused' }, 'fleet', NOW);
 
     const lines = await emitted(async () => { expect(await drainQueue(f.env, NOW + 1)).toBe(0); });
@@ -498,7 +444,7 @@ describe('a runtime that is not taking runs', () => {
 
   it('leaves a row another drain took to that drain, and carries on with the rest', async () => {
     const f = await fixture();
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     for (const id of ['q_taken', 'q_next']) {
       await enqueueDispatch(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: id }, 'fleet', NOW);
     }
@@ -516,7 +462,7 @@ describe('a runtime that is not taking runs', () => {
 
     const lines = await emitted(async () => { expect(await drainQueue(racing, NOW + 1)).toBe(1); });
     expect(lines.filter((l) => l.kind === 'harness_drain_raced'))
-      .toEqual([{ kind: 'harness_drain_raced', runId: 'q_taken', task: 'container-smoke', projectId: 'proj_1' }]);
+      .toEqual([{ kind: 'harness_drain_raced', runId: 'q_taken', task: 'embedding-reconcile', projectId: 'proj_1' }]);
     // The row the other drain took is left as it took it, and the next row ran.
     expect(f.run('q_taken')?.status).toBe('pending');
     expect(f.run('q_next')?.status).toBe('pending');
@@ -529,7 +475,7 @@ describe('a runtime that is not taking runs', () => {
     let stopping = true;
     const f = await fixture({ refuse: () => (stopping ? draining() : undefined) });
     f.setting('agent.limits.task_runs_per_hour', 1);
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     await dispatchPrepared(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_hourly' }, NOW);
     expect(f.run('run_hourly')).toMatchObject({ status: 'queued', heldBy: 'runtime' });
     expect((f.sqlite.query(`SELECT started_at AS s FROM agent_runs WHERE id = 'run_hourly'`).get() as { s: number }).s).toBe(NOW);
@@ -547,7 +493,7 @@ describe('a runtime that is not taking runs', () => {
 
   it('is a hold of its own, worded as itself rather than as the size of the fleet', async () => {
     const f = await fixture({ refuse: () => draining() });
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     await dispatchPrepared(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_worded' }, NOW);
     expect(f.run('run_worded')?.heldBy).toBe('runtime');
     // A reader is told the runtime is not taking a run, never that a bound is full.
@@ -557,14 +503,14 @@ describe('a runtime that is not taking runs', () => {
 
   it('names a runtime that answered nothing at all apart from one that is stopping', async () => {
     const gone = await fixture({ refuse: () => unreachable() });
-    const preparedGone = await prepareDispatch(gone.env, 'container-smoke', 'proj_1');
+    const preparedGone = await prepareDispatch(gone.env, 'embedding-reconcile', 'proj_1');
     const goneLines = await emitted(() => dispatchPrepared(gone.env, prepared(preparedGone), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_gone' }, NOW));
     expect(goneLines.filter((l) => l.kind === 'harness_unreachable'))
-      .toEqual([{ kind: 'harness_unreachable', runId: 'run_gone', task: 'container-smoke', projectId: 'proj_1', error: expect.stringContaining('could not be reached') as never }]);
+      .toEqual([{ kind: 'harness_unreachable', runId: 'run_gone', task: 'embedding-reconcile', projectId: 'proj_1', error: expect.stringContaining('could not be reached') as never }]);
     expect(goneLines.some((l) => l.kind === 'harness_draining')).toBe(false);
 
     const stopping = await fixture({ refuse: () => draining() });
-    const preparedStopping = await prepareDispatch(stopping.env, 'container-smoke', 'proj_1');
+    const preparedStopping = await prepareDispatch(stopping.env, 'embedding-reconcile', 'proj_1');
     const stoppingLines = await emitted(() => dispatchPrepared(stopping.env, prepared(preparedStopping), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_stopping' }, NOW));
     expect(stoppingLines.map((l) => l.kind)).toContain('harness_draining');
     expect(stoppingLines.some((l) => l.kind === 'harness_unreachable')).toBe(false);
@@ -582,7 +528,7 @@ describe('a runtime that is not taking runs', () => {
         return draining();
       },
     });
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     const original = f.env.harnessLaunch!;
     const env = {
       ...f.env,
@@ -607,7 +553,7 @@ describe('a runtime that is not taking runs', () => {
   it('writes the row a fresh queued dispatch writes, and keeps a re-queued run\'s place in line', async () => {
     const columns = `project_id, agent_id, task, instruction, status, harness, provider, model, started_at, queued_at, held_by, dispatch_spec, completed_at, tokens_used, error, dry_run, run_context, dispatched_by`;
     const held = await fixture({ refuse: () => draining() });
-    const preparedOutcome = await prepareDispatch(held.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(held.env, 'embedding-reconcile', 'proj_1');
     const spec = { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120, runId: 'run_returned' };
     await dispatchPrepared(held.env, prepared(preparedOutcome), spec, NOW);
     await enqueueDispatch(held.env, prepared(preparedOutcome), { ...spec, runId: 'run_fresh' }, 'runtime', NOW);
@@ -630,7 +576,7 @@ describe('a runtime that is not taking runs', () => {
 
     // A row that already holds a place in line keeps it, rather than moving to the back.
     const drained = await fixture({ refuse: () => draining() });
-    const preparedAgain = await prepareDispatch(drained.env, 'container-smoke', 'proj_1');
+    const preparedAgain = await prepareDispatch(drained.env, 'embedding-reconcile', 'proj_1');
     await enqueueDispatch(drained.env, prepared(preparedAgain), { ...spec, runId: 'run_waiting' }, 'runtime', NOW);
     expect(await drainQueue(drained.env, NOW + 60_000)).toBe(0);
     expect(drained.run('run_waiting')).toMatchObject({ status: 'queued', queuedAt: NOW, heldBy: 'runtime' });
@@ -638,7 +584,7 @@ describe('a runtime that is not taking runs', () => {
 
   it('names the capability a run waited for when no worker reporting it took the run within the bound (#1481)', async () => {
     const f = await fixture({ refuse: () => draining() });
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     await enqueueDispatch(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_held' }, 'runtime', NOW);
     f.sqlite.run(`UPDATE agent_runs SET held_by = 'repository-digests' WHERE id = 'run_held'`);
     await emitted(async () => { expect(await runStaleSweep(f.env, NOW + QUEUE_MAX_AGE_MS)).toBe(1); });
@@ -655,7 +601,7 @@ describe('a runtime that is not taking runs', () => {
 
   it('gives up on a run nothing launched within the bound, and says so in those words', async () => {
     const f = await fixture({ refuse: () => draining() });
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     await enqueueDispatch(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_waited' }, 'runtime', NOW);
     await enqueueDispatch(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_recent' }, 'runtime', NOW + QUEUE_MAX_AGE_MS);
 
@@ -665,13 +611,13 @@ describe('a runtime that is not taking runs', () => {
 
     const lines = await emitted(async () => { expect(await runStaleSweep(f.env, NOW + QUEUE_MAX_AGE_MS)).toBe(1); });
     expect(lines.filter((l) => l.kind === 'harness_queue_expired'))
-      .toEqual([{ kind: 'harness_queue_expired', runId: 'run_waited', task: 'container-smoke', projectId: 'proj_1' }]);
+      .toEqual([{ kind: 'harness_queue_expired', runId: 'run_waited', task: 'embedding-reconcile', projectId: 'proj_1' }]);
     expect(f.run('run_waited')).toMatchObject({ status: 'failed', error: QUEUE_EXPIRED_ERROR });
     expect(f.run('run_recent')?.status).toBe('queued');
     // A run that never ran has no start, so a day of expiries does not spend
     // the recovered runtime's hour under the per-hour limit.
     expect((f.sqlite.query(`SELECT started_at AS s FROM agent_runs WHERE id = 'run_waited'`).get() as { s: number | null }).s).toBeNull();
-    expect(await dispatchLoad(f.env.db, 'container-smoke', NOW + QUEUE_MAX_AGE_MS))
+    expect(await dispatchLoad(f.env.db, 'embedding-reconcile', NOW + QUEUE_MAX_AGE_MS))
       .toEqual({ liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 });
   });
 
@@ -681,7 +627,7 @@ describe('a runtime that is not taking runs', () => {
     // belongs to an attempt that is over.
     let attempts = 0;
     const f = await fixture({ refuse: () => (attempts += 1) === 1 ? draining() : undefined });
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     await dispatchPrepared(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_raced' }, NOW);
     const carried = f.run('run_raced')!.dispatchedBy as string;
 
@@ -715,7 +661,7 @@ describe('a runtime that is not taking runs', () => {
     // goes on naming the first — the one whose child a late answer may have
     // started — so exactly one is live and the rest are retired.
     const stopping = await fixture({ refuse: () => draining() });
-    const preparedOutcome = await prepareDispatch(stopping.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(stopping.env, 'embedding-reconcile', 'proj_1');
     await dispatchPrepared(stopping.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_thrice' }, NOW);
     const first = stopping.run('run_thrice')!.dispatchedBy as string;
     for (const at of [NOW + 1, NOW + 2]) expect(await drainQueue(stopping.env, at)).toBe(0);
@@ -727,7 +673,7 @@ describe('a runtime that is not taking runs', () => {
     // neither of the two credentials in play.
     let attempts = 0;
     const refusing = await fixture({ refuse: () => (attempts += 1) === 1 ? draining() : new Error('the harness runtime refused to launch: spawn') });
-    const preparedRefusing = await prepareDispatch(refusing.env, 'container-smoke', 'proj_1');
+    const preparedRefusing = await prepareDispatch(refusing.env, 'embedding-reconcile', 'proj_1');
     await dispatchPrepared(refusing.env, prepared(preparedRefusing), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_spawn' }, NOW);
     expect(await drainQueue(refusing.env, NOW + 1)).toBe(0);
     expect(refusing.run('run_spawn')?.status).toBe('failed');
@@ -740,7 +686,7 @@ describe('a runtime that is not taking runs', () => {
     // reaches the credential store directly: the row still names it, and the
     // run it names is closed the way any run whose runtime went away is.
     const f = await fixture();
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     await dispatchPrepared(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 60, runId: 'run_operator' }, NOW);
     const credential = f.run('run_operator')!.dispatchedBy as string;
     f.sqlite.run(`UPDATE member_credentials SET revoked_at = ?, revoked_by = 'mem_1' WHERE id = ?`, [NOW, credential]);
@@ -755,7 +701,7 @@ describe('a runtime that is not taking runs', () => {
     // A drain that relaunched and re-queued the row between the sweep's read
     // and its write leaves the row naming a credential the sweep never saw.
     const f = await fixture({ refuse: () => draining() });
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     await dispatchPrepared(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_moved' }, NOW);
     const stale = f.run('run_moved')!.dispatchedBy as string;
 
@@ -777,7 +723,7 @@ describe('a runtime that is not taking runs', () => {
 
     // The drain gives up on a row whose Project lost the capability its task needs.
     const refused = await fixture({ refuse: () => draining() });
-    const preparedRefused = await prepareDispatch(refused.env, 'container-smoke', 'proj_1');
+    const preparedRefused = await prepareDispatch(refused.env, 'embedding-reconcile', 'proj_1');
     await dispatchPrepared(refused.env, prepared(preparedRefused), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_refused_later' }, NOW);
     const refusedCredential = credentialOf(refused, 'run_refused_later');
     refused.sqlite.run(`UPDATE agent_runs SET dispatch_spec = NULL WHERE id = 'run_refused_later'`);
@@ -787,7 +733,7 @@ describe('a runtime that is not taking runs', () => {
 
     // The drain gives up on a row whose launch spec it cannot read.
     const unreadable = await fixture({ refuse: () => draining() });
-    const preparedUnreadable = await prepareDispatch(unreadable.env, 'container-smoke', 'proj_1');
+    const preparedUnreadable = await prepareDispatch(unreadable.env, 'embedding-reconcile', 'proj_1');
     await dispatchPrepared(unreadable.env, prepared(preparedUnreadable), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_unreadable' }, NOW);
     const unreadableCredential = credentialOf(unreadable, 'run_unreadable');
     unreadable.sqlite.run(`UPDATE agent_runs SET dispatch_spec = 'not json' WHERE id = 'run_unreadable'`);
@@ -798,7 +744,7 @@ describe('a runtime that is not taking runs', () => {
 
   it('revokes the credential a run kept for a child that never claimed, when it gives up on the run', async () => {
     const f = await fixture({ refuse: () => draining() });
-    const preparedOutcome = await prepareDispatch(f.env, 'container-smoke', 'proj_1');
+    const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     await dispatchPrepared(f.env, prepared(preparedOutcome), { serverUrl: ORIGIN, actor: 'mem_1', runId: 'run_forgotten' }, NOW);
     const held = f.run('run_forgotten')!.dispatchedBy as string;
     expect(f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE id = ?`).get(held)).toEqual({ revoked_at: null });
@@ -822,7 +768,7 @@ describe('a runtime that is not taking runs', () => {
     seedCredential(f.sqlite, { id: 'cred_named', memberId: 'mem_harness', machineId: 'harness' });
     f.sqlite.run(`UPDATE member_credentials SET revoked_at = ? WHERE id = 'cred_named'`, [old]);
     f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, dispatched_by) VALUES ('proj_1', 'r_named', 'myco-agent', 'container-smoke', 'running', ?, 'cred_named')`, [NOW]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, dispatched_by) VALUES ('proj_1', 'r_named', 'myco-agent', 'embedding-reconcile', 'running', ?, 'cred_named')`, [NOW]);
 
     await agentRunRetention(f.env, NOW);
     expect((f.sqlite.query(`SELECT id FROM member_credentials ORDER BY id`).all() as Array<{ id: string }>).map((r) => r.id))
@@ -831,26 +777,17 @@ describe('a runtime that is not taking runs', () => {
 });
 
 
-describe('unavailable container probe', () => {
-  it.each([
-    { condition: 'key absent', embeddingOnly: false },
-    { condition: 'invalid model', embeddingOnly: false },
-    { condition: 'runtime lacks task', embeddingOnly: true },
-  ] as const)('ends an unusable probe %j without blocking embedding work behind it', async ({ condition, embeddingOnly }) => {
+describe('retired queued tasks', () => {
+  it('ends a retired task without blocking embedding work behind it', async () => {
     const f = await fixture();
     try {
-      await f.dispatch();
-      f.sqlite.run(`UPDATE agent_runs SET status='completed', completed_at=?`, [NOW]);
-      if (condition === 'key absent') await f.secrets.delete('anthropic', 'test', NOW + 1);
-      if (condition === 'invalid model') f.setting('agent.reasoning_map.claude-code.default', '!! invalid');
-      const env: ServerEnv = { ...f.env, ...(embeddingOnly ? { harnessTasks: ['embedding-reconcile'] } : {}), vectors: cloudflareVectorStore(indexFixture()),
-        embeddingProvider: async () => cloudflareEmbeddingProvider({ run: async () => ({ data: [[1, 0]] }) }, { model: EMBEDDING_MODEL, modelKey: JSON.stringify(['cloudflare', EMBEDDING_MODEL]) }) };
-      for (const [id, task, at] of [['bad-probe', 'container-smoke', NOW], ['vectors-behind', 'embedding-reconcile', NOW + 1]] as const) {
+      f.sqlite.run("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Myco','built-in',1,0)");
+      for (const [id, task, at] of [['retired', 'container-smoke', NOW], ['vectors-behind', 'embedding-reconcile', NOW + 1]] as const) {
         f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec)
           VALUES ('proj_1',?,'myco-agent',?,'queued',?,'runtime',?)`, [id, task, at, JSON.stringify({ serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 })]);
       }
-      expect(await drainQueue(env, NOW + 2)).toBe(1);
-      expect(f.run('bad-probe')).toMatchObject({ status: 'failed', error: expect.any(String) });
+      expect(await drainQueue(f.env, NOW + 2)).toBe(1);
+      expect(f.run('retired')).toMatchObject({ status: 'failed', error: expect.any(String) });
       expect(f.run('vectors-behind')?.status).toBe('pending');
       expect(f.launches.at(-1)?.envVars.MYCO_TASK).toBe('embedding-reconcile');
     } finally { f.sqlite.close(); }

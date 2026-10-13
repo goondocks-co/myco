@@ -1,9 +1,7 @@
 /**
  * Cloudflare Deployment lifecycle, as operator code.
  *
- * The self-hosted target's counterpart is `deployment.ts`, and both run through
- * the same {@link CommandRunner} so a lifecycle is tested by the argv it
- * produces rather than by provisioning real infrastructure.
+ * Lifecycle commands run through {@link CommandRunner}.
  *
  * Cloudflare management credentials are never handed to the deployed
  * application: everything here runs `wrangler` on the operator's machine

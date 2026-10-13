@@ -89,7 +89,7 @@ export function bunPlatform(config: BunServerConfig): PlatformDescriptor {
         present: true,
         operatorNames: [],
       },
-      { capability: 'harness-runtime', label: 'Harness runtime', present: config.harnessLaunch !== undefined, operatorNames: ['MYCO_HARNESS', 'MYCO_HARNESS_TOKEN_FILE'] },
+      { capability: 'harness-runtime', label: 'Harness runtime', present: config.harnessLaunch !== undefined, operatorNames: [] },
     ],
     classifyError: classifySqliteError,
     classifyBlobFailure: classifyBlobFailureOf,

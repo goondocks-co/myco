@@ -1,25 +1,5 @@
 import { runtimeCaller } from './run-admission.js';
-/**
- * The run control plane over HTTP.
- *
- * The agent runs as a process inside a container, which is not a Worker and
- * holds no bindings, so this is how it reaches the store at all. The atomicity
- * stays in `core/runs.ts`: these handlers decide only how a request is asked for
- * and answered.
- *
- * `mutateState` cannot cross this boundary as one call — its argument is a
- * JavaScript callback. What crosses is the compare-and-swap it is built from:
- * the caller reads, computes, and offers the value it computed against as
- * `expected`. A write whose `expected` no longer matches is answered
- * `applied: false`, and the caller retries FROM THE READ. The decision still
- * happens in one statement here; only the loop is the caller's.
- *
- * Every response keys on `persisted`, the route's declared shape, which answers
- * whether the server accepted and acted on the request. The domain outcome —
- * `claimed`, `applied` — sits inside it. Collapsing the two would make
- * `claimed: false` mean both "another run holds this task" and "your request was
- * refused", which a caller cannot tell apart.
- */
+/** The authenticated in-process embedding channel; store mutations stay in core/runs.ts. */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
 import { RUN_UPDATE_COLUMNS, applyRunUpdate, claimRun, getRun, isTerminalRunStatus, listAgents, markRunReplaced, type RunInsert, type RunUpdate, upsertAgent } from '../core/runs.js';
@@ -138,13 +118,7 @@ export async function handleAgents(env: ServerEnv, _ctx: OwnerContext): Promise<
   return ok({ agents: await listAgents(env.db) });
 }
 
-/**
- * Release what a dispatched run holds once it lands terminal: the container
- * hold ends so the instance drains, and the dispatch-minted credential is
- * revoked — it exists only for its run. Keyed on the run's own `dispatched_by`,
- * so a runtime writing a sibling run's status keeps its credential, and only
- * the credential that launched a container can end that container's hold.
- */
+/** Terminal in-process work releases its clock hold and revokes only its own dispatch credential. */
 async function releaseDispatchedRun(env: ServerEnv, ctx: RouteContext, runId: string, status: unknown): Promise<void> {
   if (ctx.memberId !== HARNESS_MEMBER_ID) return;
   if (!isTerminalRunStatus(status)) return;
@@ -182,18 +156,7 @@ async function recordReplacedRun(env: ServerEnv, ctx: RouteContext, runId: strin
 const asksReplaced = (body: Record<string, unknown>, status: unknown): boolean => body.replaced === true && status === 'failed';
 
 
-/**
- * What a write answers when the caller is not the credential the run
- * is running under, or nothing when it is.
- *
- * Ending a run requires holding the credential its row names, exactly as
- * claiming it does. A launch answered too late is re-queued and offered again
- * under a fresh credential, so an earlier attempt's runtime — or the supervisor
- * closing for it — reaches this surface holding one the row has moved past; the
- * work its successor is doing is what the refusal protects. Every route that
- * writes a terminal status funnels through here, which
- * `tests/meta/queued-run-release-chokepoint.test.ts` holds.
- */
+/** Terminal writes require the credential currently named by the run. */
 function foreignCredentialAnswer(ctx: RouteContext, before: RunRow | null): Response | null {
   if (ctx.memberId === HARNESS_MEMBER_ID && before?.dispatchedBy === ctx.tokenId) return null;
   return Response.json(refused(ctx, refusal(STALE_CREDENTIAL_REFUSAL, 'refused')));
@@ -228,12 +191,7 @@ async function endRunAsCaller(
   return { changed };
 }
 
-/**
- * The columns a run's own update may set: those the in-process runtime writes when a run ends
- * (`packages/myco/src/agent/runtime/server-runner.ts`, its terminal status with `buildRunUsageUpdate`'s accounting, and
- * `recordRunFailure`) and the embedding run writes (`core/embedding/run.ts`). Every other column of the store is retired
- * on this route and refused by name.
- */
+/** Columns admitted by the in-process run update channel. Other store columns are refused. */
 export const ROUTE_UPDATE_COLUMNS = Object.keys(RUN_UPDATE_FIELDS);
 
 
@@ -251,7 +209,7 @@ export const ROUTE_UPDATE_COLUMNS = Object.keys(RUN_UPDATE_FIELDS);
  *
  * A run that has already ended keeps the ending it has. The store refuses the
  * status change in its own WHERE clause; this route reads the row back on a
- * write that moved nothing and answers `terminal`, so a container posting a
+ * write that moved nothing and answers `terminal`, so a runtime posting a
  * second ending learns the row is closed rather than reading the refusal as a
  * run in another Project. Posting the ending the row already carries is applied
  * rather than refused — a retry must be safe. An update carrying no status still
@@ -329,24 +287,4 @@ export async function handleWriteReport(env: ServerEnv, ctx: RouteContext): Prom
     return Response.json(refused(ctx, refusal(recorded.reason === 'unaccepted' ? recorded.error : 'report names a run this Project does not hold, or an agent this Deployment does not know', 'parse')));
   }
   return Response.json({ persisted: true, recorded: true, ...(recorded.auditError === null ? {} : { auditError: recorded.auditError }) });
-}
-
-/**
- * The run routes no 2.0 path sends, each refused with `route_retired` and what replaced it. The in-process runtime
- * claims, ends and reports a run (`server-runner.ts`: `/runs/claim`, `/runs/update`, `/runs/report`) and nothing else
- * over these; the routes below served the 1.4 executor's own store.
- */
-export const RETIRED_RUN_ROUTES: Readonly<Record<string, string>> = {
-  '/runs/get': 'a run is read on the dashboard and by `myco_agent`',
-  '/runs/failed': 'a run ends through /runs/update',
-  '/runs/resume-admission': 'a failed run is never resumed in 2.0; a fresh run is dispatched',
-  '/runs/supersede': 'a failed run is never resumed in 2.0, so none is superseded',
-  '/runs/reports': 'a run\'s reports are read on the dashboard and by `myco_agent`',
-  '/runs/events': 'a run\'s calls are recorded by the Deployment as the run makes them',
-};
-
-/** A run route no 2.0 path sends, refused with what replaced it. */
-export function retiredRunRoute(path: keyof typeof RETIRED_RUN_ROUTES & string): (env: ServerEnv, ctx: RouteContext) => Promise<Response> {
-  const why = RETIRED_RUN_ROUTES[path]!;
-  return async (_env, ctx) => Response.json(refused(ctx, refusal(`${path} is retired: ${why}`, 'route_retired')));
 }

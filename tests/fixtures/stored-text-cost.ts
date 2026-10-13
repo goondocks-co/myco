@@ -20,10 +20,10 @@ if (mode === 'shared') {
   const { runRouteFixture } = await import('../myco-server/helpers/run-routes.js');
   const r = await runRouteFixture('agent_1');
   try {
-    await r.post('/runs/claim', { id: 'r1', agentId: 'agent_1', task: 'container-smoke', capability: 'cortex' });
+    await r.post('/runs/claim', { id: 'r1', agentId: 'agent_1', task: 'embedding-reconcile', captureDriven: true });
     for (const chars of [1024, 4096, 16_384, 65_536]) {
       const at = performance.now();
-      const reply = await r.post('/runs/report', { runId: 'r1', agentId: 'agent_1', action: 'container-smoke', summary: 'Measured report.', details: 'a-'.repeat(chars / 2) });
+      const reply = await r.post('/runs/report', { runId: 'r1', agentId: 'agent_1', action: 'embedding', summary: 'Measured report.', details: 'a-'.repeat(chars / 2) });
       if (reply.recorded !== true) throw new Error('the measured report was not recorded');
       timings.push(performance.now() - at);
     }

@@ -1,3 +1,4 @@
+import { indexFixture } from './helpers/vector-index.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
@@ -29,7 +30,7 @@ const operations: Operation[] = [
   { name: 'secret', method: 'PUT', path: '/api/secrets/openai', body: { value: 'fixture-value' }, sql: /INSERT INTO deployment_secrets/ },
   { name: 'backup', method: 'POST', path: '/api/backups', body: {}, sql: /INSERT INTO backups/ },
   { name: 'recovery forget', method: 'POST', path: '/api/recovery/exports/forget-unsettled', body: {}, sql: /INSERT INTO recovery_forget_commands/ },
-  { name: 'runtime dispatch', method: 'POST', path: '/api/harness/dispatch', body: { task: 'container-smoke', projectId: 'proj_1', fresh: true, timeoutSeconds: 123 }, sql: /INSERT INTO agent_runs/ },
+  { name: 'runtime dispatch', method: 'POST', path: '/api/harness/dispatch', body: { task: 'embedding-reconcile', projectId: 'proj_1', fresh: true, timeoutSeconds: 123 }, sql: /INSERT INTO agent_runs/ },
   { name: 'dispatch', method: 'POST', path: '/api/harness/dispatch', body: { task: TASK, projectId: 'proj_1', fresh: true, timeoutSeconds: 123 }, sql: /INSERT INTO agent_runs/ },
 ];
 
@@ -54,7 +55,7 @@ async function send(f: ReturnType<typeof sqliteEnv>, operation: Operation, sub =
     method: operation.method,
     headers: { cookie: await ownerCookie(f.db, Date.now(), sub), origin: 'https://s', 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json' },
     ...(operation.body === undefined ? {} : { body: JSON.stringify(operation.body) }),
-  }), { ...f.env, ...OWNER_ENV, HARNESS_LAUNCH_MODE: 'record', SECRET_WRAP_KEY: { get: async () => WRAP_KEY },
+  }), { ...f.env, ...OWNER_ENV, VECTORIZE: indexFixture(), AI: { run: async () => ({ data: [[1, 0]] }) }, HARNESS_LAUNCH_MODE: 'record', SECRET_WRAP_KEY: { get: async () => WRAP_KEY },
     RECOVERY_BUCKET: f.env.BUCKET,
     RECOVERY: { idFromName: () => 'fixture', get: () => ({ status: async () => ({ unsettledExport: null }), forgetUnsettledExport: async (id: string) => {
       expect(f.sqlite.query('SELECT id FROM recovery_forget_commands WHERE id=?').get(id)).not.toBeNull();

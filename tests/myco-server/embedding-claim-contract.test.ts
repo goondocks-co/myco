@@ -92,7 +92,7 @@ test('embedding configuration excludes controls its claim cannot carry', () => {
 
 test('the Bun entry passes the dispatched claim label through its environment', async () => {
   const model = 'custom model, ' + 'm'.repeat(200);
-  const f = await embeddingRuntimeContract(model, 'bun-entry', undefined, { endpoint: 'http://models.internal/' + 'a'.repeat(1100) });
+  const f = await embeddingRuntimeContract(model, 'bun', undefined, { endpoint: 'http://models.internal/' + 'a'.repeat(1100) });
   try {
     expect(f.requests.get('/runs/claim')?.[0]?.model).toBe(model);
     expect((await f.server.env.db.prepare('SELECT status, model FROM agent_runs').first())).toMatchObject({ status: 'completed', model: f.selection.modelKey });

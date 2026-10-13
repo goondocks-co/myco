@@ -344,7 +344,7 @@ describe('a map run a worker claimed', () => {
     }
   });
 
-  it('is refused the launch seam\'s map route while a worker leases it', async () => {
+  it('finds the retired container map route absent even while a worker leases its run', async () => {
     const r = await rig();
     await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
     const run = await r.claimMap();
@@ -353,7 +353,7 @@ describe('a map run a worker claimed', () => {
       const res = await worker.fetch(new Request(`${ORIGIN}/runs/canopy-map`, {
         method: 'POST', headers: memberHeaders(run.runToken, { [PROJECT_HEADER]: 'proj_1' }), body: JSON.stringify({ runId: run.id, ...body }),
       }), r.e.env);
-      expect({ op: body.op, answer: await res.json() }).toEqual({ op: body.op, answer: { persisted: false, code: 'no_run', reason: 'credential holds no live run', refusalId: expect.any(String) } });
+      expect({ op: body.op, status: res.status, answer: await res.json() }).toEqual({ op: body.op, status: 401, answer: { error: 'unauthorized' } });
     }
     expect(r.e.sqlite.query(`SELECT COUNT(*) AS n FROM canopy_maps`).get()).toEqual({ n: 0 });
     expect(mapSourcePinOfRun((await getRun(r.e.db, scope, run.id))!)?.inputHash).not.toBe('e'.repeat(64));

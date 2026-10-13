@@ -1,3 +1,5 @@
+import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
+import { indexFixture } from './vector-index.js';
 import { registeredObjectKeySql } from '@myco-server-worker/core/blob-objects.js';
 import type { Database } from 'bun:sqlite';
 import type { BlobStore, OutboundFetch, ServerEnv, StoredObject } from '@myco-server-worker/core/adapters.js';
@@ -191,6 +193,7 @@ export function withHarness(
   resolve: () => ServerEnv,
   options: { sink?: LaunchSpec[]; launch?: (spec: LaunchSpec) => Promise<void> } = {},
 ): ServerEnv {
+  const embedding = { vectors: cloudflareVectorStore(indexFixture()), embeddingProvider: async () => ({ modelKey: 'fixture-model', embed: async () => [1, 0] }) };
   const sink = options.sink ?? [];
   const launch = options.launch ?? (async (spec: LaunchSpec) => { sink.push(spec); });
   // A thunk, not a deployment: `sqliteEnv` re-maps on every access so a test can
@@ -199,9 +202,9 @@ export function withHarness(
   // tsconfig covers this directory, so passing one fails when the fixture runs
   // rather than when it is compiled.
   return new Proxy({} as ServerEnv, {
-    get: (_t, key) => (key === 'harnessLaunch' ? launch : resolve()[key as keyof ServerEnv]),
-    has: (_t, key) => key === 'harnessLaunch' || key in resolve(),
-    ownKeys: () => [...new Set([...Reflect.ownKeys(resolve()), 'harnessLaunch'])],
+    get: (_t, key) => (key === 'harnessLaunch' ? launch : key === 'embeddingProvider' ? async () => await resolve().embeddingProvider?.() ?? await embedding.embeddingProvider() : key in embedding ? resolve()[key as keyof ServerEnv] ?? embedding[key as keyof typeof embedding] : resolve()[key as keyof ServerEnv]),
+    has: (_t, key) => key === 'harnessLaunch' || key in embedding || key in resolve(),
+    ownKeys: () => [...new Set([...Reflect.ownKeys(resolve()), ...Reflect.ownKeys(embedding), 'harnessLaunch'])],
     getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true }),
   });
 }

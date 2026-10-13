@@ -65,7 +65,7 @@ export const embeddingSwitch: ParityScenario = {
         await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, bytes_written, lineage_root, lineage_started_at)
           VALUES (${lit(tokenId)}, 'mem_harness', 'harness', ${lit(await sha256Hex(token))}, ${now}, ${now + 3_600_000}, 0, ${lit(tokenId)}, ${now})`);
         await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, dispatched_by, lease_expires_at, run_context)
-          VALUES (${lit(projectId)}, ${lit(runId)}, ${lit(AGENT_ID)}, 'embedding-reconcile', 'running', ${now}, ${lit(tokenId)}, ${now + 3_600_000}, ${lit(JSON.stringify({ timeoutSeconds: 3_600 }))})`);
+          VALUES (${lit(projectId)}, ${lit(runId)}, ${lit(AGENT_ID)}, 'embedding-reconcile', 'running', ${now}, ${lit(tokenId)}, NULL, ${lit(JSON.stringify({ timeoutSeconds: 3_600 }))})`);
         holders.push({ token, runId });
       }
       let steps = 0;

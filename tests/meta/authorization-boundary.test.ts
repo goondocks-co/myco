@@ -173,13 +173,9 @@ describe('authorization registry and bypass boundary', () => {
     const names = [...ROUTES, ...RETIRED_ROUTES].map((route) => `${route.method} ${route.path}`);
     expect(new Set(names).size).toBe(names.length);
     for (const route of ROUTES) validDeclaration(`${route.method} ${route.path}`, route.authorization, 'http');
-    for (const route of RETIRED_ROUTES) {
-      validDeclaration(`retired ${route.method} ${route.path}`, route.authorization, 'http');
-      expect(route.authorization.resource).toBe('protocol');
-      expect(route.authorization.action).toBe('never');
-    }
+    for (const route of RETIRED_ROUTES) expect('authorization' in route).toBe(false);
     expect(ROUTES.length).toBeGreaterThan(150);
-    expect(RETIRED_ROUTES.length).toBe(11);
+    expect(RETIRED_ROUTES.length).toBe(19);
   });
 
   it('covers both MCP registries and every operation enum, including unserved operations', () => {

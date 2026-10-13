@@ -113,6 +113,6 @@ assert.equal((await sessionPost('/api/machines/machine_1/stop', {}, '583231')).s
 assert.equal((fixture.sqlite.query('SELECT revoked_by FROM member_credentials WHERE id = ?').get(ownerCredential.tokenId) as { revoked_by: string }).revoked_by, 'mem_machine_1');
 const coverage = { routes: ROUTES.length, retired: RETIRED_ROUTES.length, memberOps: Object.values(TOOL_REGISTRY).reduce((n, t) => n + Object.keys(t.ops).length, 0), runOps: Object.values(RUN_TOOL_REGISTRY).reduce((n, t) => n + Object.keys(t.ops).length, 0) };
 assert.ok(ROUTES.every((r) => r.authorization !== undefined));
-assert.ok(RETIRED_ROUTES.every((r) => r.authorization.action === 'never'));
+assert.ok(RETIRED_ROUTES.every((r) => !('authorization' in r)));
 console.log(JSON.stringify({ smoke: 'passed', coverage }));
 fixture.sqlite.close();

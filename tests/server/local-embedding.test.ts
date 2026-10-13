@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LocalEmbeddingRuntime } from '@myco/server/local-embedding.js';
+import { EmbeddingRuntime } from '@myco-server-worker/platform/bun/embedding-runtime.js';
 import { startDeployment } from '@myco-server-worker/platform/bun/server-main.js';
 import { prepareDispatch, dispatchPrepared } from '@myco-server-worker/core/harness.js';
 import { dispatchEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
@@ -11,7 +11,7 @@ import { searchProject } from '@myco-server-worker/read/search.js';
 import { resolveSemanticSearch } from '@myco-server-worker/core/search.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
-async function fixture() {
+async function fixture(options: { sourceFrom?: 'socket' | 'proxy'; rejectControl?: boolean; failPersistence?: boolean } = {}) {
   const source = sqliteEnv();
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-native-embedding-'));
   const databasePath = path.join(home, 'myco.sqlite');
@@ -19,9 +19,14 @@ async function fixture() {
   source.sqlite.query('VACUUM INTO ?').run(databasePath);
   source.sqlite.close();
   const failures: string[] = [];
-  const runtime = new LocalEmbeddingRuntime((message) => { failures.push(message); });
+  const runtime = new EmbeddingRuntime(() => {
+    if (options.failPersistence) throw new Error('fixture persistence offline');
+    return server.env;
+  },
+    (input, init) => options.rejectControl ? Promise.resolve(new Response(null, { status: 503 })) : server.handleInProcess(new Request(input, init)),
+    (message) => { failures.push(message); });
   const server = await startDeployment({ databasePath, blobDir: path.join(home, 'blobs'), port: 0,
-    sourceFrom: 'socket', transport: 'loopback', harnessTasks: runtime.tasks,
+    sourceFrom: options.sourceFrom ?? 'socket', header: 'x-forwarded-for', transport: 'loopback', harnessTasks: runtime.tasks,
     harnessLaunchFor: (origin) => runtime.launchFor(origin),
     beforeStop: () => runtime.stop(),
   });
@@ -37,14 +42,14 @@ async function fixture() {
     throw new Error('native embedding did not settle');
   };
   return { server, runtime, failures, waitForRun,
-    close: async () => { await server.stop(); fs.rmSync(home, { recursive: true, force: true }); },
+    close: async () => { try { await server.stop(); } finally { fs.rmSync(home, { recursive: true, force: true }); } },
   };
 }
 
 test('native runtime indexes clock-dispatched work and serves semantic results with a persisted report', async () => {
   const f = await fixture();
   try {
-    expect(await prepareDispatch(f.server.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'not_landed' });
+    expect(await prepareDispatch(f.server.env, 'container-smoke', 'proj_1')).toEqual({ ok: false, refusal: 'unknown_task' });
     expect(await dispatchEmbeddingWork(f.server.env, Date.now())).toBe(1);
     const run = await f.waitForRun();
     expect(run.status).toBe('completed');
@@ -137,4 +142,41 @@ test('a process signal runs attached-runtime shutdown while run control is still
     expect(await child.exited).toBe(0);
     expect(JSON.parse(fs.readFileSync(receipt, 'utf8'))).toEqual({ status: 200 });
   } finally { clearTimeout(timeout); reader.releaseLock(); child.kill(); fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('native proxy source completes embedding without granting external requests a source identity', async () => {
+  const f = await fixture({ sourceFrom: 'proxy' });
+  try {
+    expect(await dispatchEmbeddingWork(f.server.env, Date.now())).toBe(1);
+    expect((await fetch(f.server.env.origin + '/runs/claim', { method: 'POST', body: '{}' })).status).toBe(503);
+    expect((await f.waitForRun()).status).toBe('completed');
+    expect(f.failures).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test('native control and terminal-update failure persists a failed ending and releases the dispatch', async () => {
+  const f = await fixture({ rejectControl: true });
+  try {
+    expect(await dispatchEmbeddingWork(f.server.env, Date.now())).toBe(1);
+    await f.runtime.waitForIdle();
+    const run = await f.waitForRun();
+    expect(run.status).toBe('failed');
+    expect(await f.server.env.db.prepare('SELECT error,error_code FROM agent_runs WHERE id=?').bind(run.id).first<{ error: string; error_code: string }>())
+      .toEqual({ error: 'embedding failed and its terminal update was not accepted', error_code: 'run_failed' });
+    expect(await f.server.env.db.prepare('SELECT revoked_at FROM member_credentials WHERE id=(SELECT dispatched_by FROM agent_runs WHERE id=?)').bind(run.id).first<{ revoked_at: number | null }>())
+      .toEqual({ revoked_at: expect.any(Number) });
+    expect(f.failures).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
+test('native failure persistence errors are reported and surfaced by drain', async () => {
+  const f = await fixture({ rejectControl: true, failPersistence: true });
+  try {
+    expect(await dispatchEmbeddingWork(f.server.env, Date.now())).toBe(1);
+    await expect(f.runtime.waitForIdle()).rejects.toThrow('embedding failures could not be persisted');
+    expect(f.failures).toEqual([
+      expect.stringContaining('embedding failed and its terminal update was not accepted'),
+      expect.stringContaining('failure could not be persisted: fixture persistence offline'),
+    ]);
+  } finally { await expect(f.close()).rejects.toThrow('embedding failures could not be persisted'); }
 });

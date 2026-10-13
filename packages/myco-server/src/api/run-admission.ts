@@ -5,8 +5,6 @@ import { HARNESS_MEMBER_ID } from '../core/harness.js';
 import { runDeadline } from '../core/run-deadline.js';
 export { runDeadline } from '../core/run-deadline.js';
 import { getRun, isTerminalRunStatus, liveRunsOfCredential, runsOfCredential, type HeldRun, type RunRow, type RunCaller } from '../core/runs.js';
-import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
-import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { projectWorkEnabled, taskWorkEnabled } from '../core/settings.js';
 import { strictName } from '@goondocks/myco-shared/run-text';
 import { decodeRunUpdate, endedAnswer, RUN_UPDATE_FIELDS } from './run-fields.js';
@@ -17,11 +15,17 @@ export const CONTROL_CAPABILITIES: Readonly<Record<string, { tasks: readonly str
   '/runs/update': { tasks: null, unleased: false, writeGuard: 'row' },
   '/runs/report': { tasks: null, unleased: false, writeGuard: 'row' },
   '/runs/embedding-step': { tasks: ['embedding-reconcile'], unleased: false, writeGuard: 'batch' },
-  '/runs/repository': { tasks: REPOSITORY_TASKS, unleased: true, writeGuard: 'batch' },
-  '/runs/canopy-map': { tasks: [MAP_TASK], unleased: true, writeGuard: 'batch' },
 };
 
-const WORK_CONTROL_PATHS = new Set(['/runs/embedding-step', '/runs/repository', '/runs/canopy-map']);
+/** A run credential on the in-process channel must name embedding work alone. */
+export const IN_PROCESS_SCOPE = 'this run credential is not for in-process embedding work';
+
+export async function inProcessCredential(env: ServerEnv, tokenId: string): Promise<boolean> {
+  const rows = await runsOfCredential(env.db, tokenId);
+  return rows.every(run => run.task === 'embedding-reconcile' && run.leaseExpiresAt === null);
+}
+
+const WORK_CONTROL_PATHS = new Set(['/runs/embedding-step']);
 
 export type RunControlAdmission = { held: true; run: HeldRun; settled?: Response } | { held: false };
 
