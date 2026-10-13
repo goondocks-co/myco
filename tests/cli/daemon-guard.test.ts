@@ -50,6 +50,7 @@ it('an empty home exits normally saying 2.0 has no daemon and creates no state',
   expect(fs.existsSync(home)).toBe(false);
   main();
   expect(lines.join('\n')).toContain('Myco 2.0 has no local daemon');
+  expect(lines.join('\n')).toMatch(/myco login <invite link>.*myco member provision <agent>/);
   expect(fs.existsSync(home)).toBe(false);
 });
 

@@ -375,10 +375,10 @@ Dispositions: **KEEP** — exists in 2.0 in recognisable form. **REPLACE** — t
 | `runner` | NEW | M, Core | Blk | New in 2.0: a runner is a Deployment-owned execution identity with no membership. `myco runner register <host>` prints the device approval link and code (an owner or administrator approves "Register a runner named …" on `/device`), `run` claims and drives the four outcomes in the foreground on the runner's own credential, and `rotate` rotates that credential. `install` explicitly starts its per-user service, `status` and `doctor` report registration, contact, service, harness offers and release state. Installed services update within their channel between runs; `/runners` offers owner/admin **Update now**, and `runner update [--check]` uses the same updater. Verified staging, a supervised restart and authenticated contact gate adoption with rollback. `uninstall` removes only the local service. Login, join, provision and native server startup install no executor. Existing member-credential worker units remain legacy until explicitly removed; worker verbs alias runner operations when no legacy unit is installed | #1594 |
 | `task` | REPLACE | Core | Blk | The four run outcomes, defined server-side; no phased executor, no per-task turn budget (plan §2.5) | B2 |
 | `upgrade` | REPLACE | M | Blk | Folds into `update` | #922 |
-| `__apply-update` | REPLACE | M | Blk | Internal update orchestration retained under the 2.0 installer | #922 |
+| `__apply-update` | REPLACE | M | Blk | Replaced by `runner __apply-update` for the runner's verified binary handoff | #922 |
 | `__restore-backup` | REPLACE | W, C | Blk | Restore becomes the `myco server restore` Operator path | #923 |
 | `__finish-uninstall` | REPLACE | M | Blk | Internal teardown retained for member-only removal | #917 |
-| `daemon` | DROP | — | Blk | There is no daemon and no resident member service: no vault, no UI, never on capture's path | #925 |
+| `daemon` | DROP | — | Blk | The verb survives only as the adopt guard (`cli/daemon-guard.ts`); no runtime starts and it is never on capture's path | #925 |
 | `restart` | DROP | — | Blk | Nothing to restart on a member machine; the self-hosted server's user-service lifecycle is the installer's | #925 |
 | `service` | DROP | — | Blk | 1.4's platform service exists to manage the daemon that retires with it | #925 |
 | `subsystem` | DROP | — | Blk | Machine-global daemon ownership arbitration; no daemon to arbitrate | #925 |

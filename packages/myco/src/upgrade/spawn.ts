@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-import { UPDATE_ERROR_PATH, RESTART_REASON_FILENAME } from '../constants/update.js';
+import { RESTART_REASON_FILENAME } from '../constants/update.js';
 export interface ApplyRestartParams {
   kind: 'restart';
   projectRoot: string;
@@ -41,10 +41,14 @@ export interface RestartParams {
   projectRoot: string;
   vaultDir: string;
   runLocalUpdate: boolean;
+  /** The version currently running. */
   fromVersion: string;
   toVersion: string;
+  /** Literal myco binary named by the request. */
   mycoBinary: string;
+  /** Service label named by the request, or null when not service-managed. */
   serviceManagedLabel?: string | null;
+  /** Canonical daemon port named by the request. */
   daemonPort: number;
 }
 
@@ -63,25 +67,9 @@ export function resolveOrchestratorBinary(): string {
   return copyPath;
 }
 
-export function spawnApplyUpgrade(namePrefix: string, params: ApplyRestartParams | ApplyAdoptParams): string {
-  const paramsFile = path.join(os.tmpdir(), `${namePrefix}-${Date.now()}.json`);
-  fs.writeFileSync(paramsFile, JSON.stringify(params), 'utf-8');
-  const binToRun = resolveOrchestratorBinary();
-  const child = spawn(binToRun, ['__apply-update', paramsFile], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  child.on('error', (err) => {
-    try {
-      fs.writeFileSync(UPDATE_ERROR_PATH, `update orchestrator spawn failed: ${err.message}\n`, 'utf-8');
-    } catch { /* best-effort */ }
-    try {
-      process.stderr.write(`[myco] update orchestrator spawn failed: ${err.message}\n`);
-    } catch { /* best-effort */ }
-  });
-  child.unref();
-  return paramsFile;
+/** Refuse the retired local-runtime updater before writing parameters or starting a process. */
+export function spawnApplyUpgrade(_namePrefix: string, _params: ApplyRestartParams | ApplyAdoptParams): never {
+  throw new Error('Myco 2.0 cannot run the retired __apply-update command. Use myco update for this machine or myco runner update for a registered runner.');
 }
 
 export function spawnRestartScript(params: RestartParams): string {

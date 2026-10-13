@@ -6,14 +6,19 @@ import { DEPLOYMENT_HEARTBEAT_INTERVAL_MS, DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS, de
 import type { CredentialSource } from '../member/constants.js';
 const STDIO_BRIDGE_TAG = '[myco stdio-bridge]';
 
+/** Parent-death watchdog cadence. */
 export const PARENT_WATCHDOG_INTERVAL_MS = 10_000;
 
+/** Consecutive failed health probes that trigger an upstream reconnect. */
 export const UPSTREAM_HEARTBEAT_FAILURE_THRESHOLD = 2;
 
+/** Deadline for accepting a forwarded POST; tool responses stream separately. */
 export const UPSTREAM_SEND_TIMEOUT_MS = 30_000;
 
+/** Maximum resends of one JSON-RPC message after reconnecting. */
 export const REQUEST_RESEND_MAX_ATTEMPTS = 2;
 
+/** Delays between reconnect probes, capped at the last value within the attempt limit. */
 export const SELF_HEAL_PROBE_BACKOFFS_MS: readonly number[] = [200, 500, 1_000, 2_000, 5_000];
 
 function logErr(msg: string): void {
@@ -108,7 +113,7 @@ interface UpstreamSource {
 
   heartbeatMs: number;
 
-  maxHealAttempts: number | null;
+  maxHealAttempts: number;
 }
 
 function deploymentUpstreamSource(source: CredentialSource): UpstreamSource {
@@ -167,7 +172,6 @@ export async function main(): Promise<void> {
 
   let reconnectInFlight: Promise<boolean> | null = null;
 
-
   function wireUpstream(t: StreamableHTTPClientTransport): void {
     t.onmessage = (msg) => {
       downstream.send(msg).catch((err: Error) => logErr(`downstream send failed: ${err.message}`));
@@ -181,13 +185,12 @@ export async function main(): Promise<void> {
     t.onerror = (err) => logErr(`upstream: ${err.message}`);
   }
 
-
   async function reconnectUpstream(): Promise<boolean> {
     if (reconnectInFlight) return reconnectInFlight;
     reconnectInFlight = (async () => {
       logErr('self-heal: probing Deployment and rebuilding upstream');
       for (let attempt = 0; ; attempt++) {
-        if (upstreamSource.maxHealAttempts !== null && attempt >= upstreamSource.maxHealAttempts) {
+        if (attempt >= upstreamSource.maxHealAttempts) {
           logErr(`self-heal: ${upstreamSource.describe} did not answer in ${attempt} attempts; the waiting request is answered with an error`);
           return false;
         }
@@ -228,7 +231,6 @@ export async function main(): Promise<void> {
           return true;
         } catch (err) {
           logErr(`self-heal: new upstream start() failed: ${(err as Error).message} — continuing to retry`);
-
         }
       }
     })();
@@ -238,7 +240,6 @@ export async function main(): Promise<void> {
   }
 
   downstream.onmessage = (msg) => {
-
     const send = async (attempt = 0): Promise<void> => {
       if (reconnectInFlight) await reconnectInFlight;
       try {
@@ -258,7 +259,6 @@ export async function main(): Promise<void> {
     };
     send().catch((err: Error) => logErr(`downstream pump error: ${err.message}`));
   };
-
 
   function respondWithError(originalMsg: unknown, reason: string): void {
     if (!isJsonRpcRequest(originalMsg)) return; // notifications get no response

@@ -25,7 +25,10 @@ for (const command of ['mcp', 'tool']) for (const kind of ['empty', 'member', 'l
     expect(output).toContain('--credential registry');
     expect(output).toContain('myco member provision');
     if (kind === 'empty') expect(fs.existsSync(path.join(env.MYCO_HOME!, 'groves'))).toBe(false);
-    if (kind === 'legacy') expect(output).toContain('myco cutover --dry-run');
+    if (kind === 'legacy') {
+      expect(output).toMatch(/myco login <invite link>.*myco cutover --dry-run.*After the move.*--credential registry/s);
+      expect(output).not.toMatch(/daemon|Keep Myco 1\.4 serving/);
+    }
     expect(fs.existsSync(path.join(env.MYCO_HOME!, 'service', 'daemon.json'))).toBe(false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -15,5 +15,5 @@ export function main(platform: NodeJS.Platform = process.platform): void {
     markAdoptFailed(home, platform, getPluginVersion(), process.env.LOCALAPPDATA);
     return;
   }
-  console.error('Myco 2.0 has no local daemon. Use a Deployment and `myco member provision`.');
+  console.error('Myco 2.0 has no local daemon. Run `myco login <invite link>`, then `myco member provision <agent>` to set up your agent.');
 }

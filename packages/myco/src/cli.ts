@@ -164,16 +164,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Commands below can open and MIGRATE a Grove DB in-process (grove
-  // activation, provisioning via
-  // ensureGroveDatabase) — so the pre-migration checkpoint must be
-  // registered in THIS process too, not only in the daemon, or a CLI-run
-  // migration is exactly the unprotected schema jump the checkpoint
-  // exists to close (the rollback refusal would then point at a backup
-  // that was never taken). `hook`/`mcp` are excluded deliberately: they
-  // reach the vault only through the daemon's HTTP surface (never an
-  // in-process createSchema) and are latency-sensitive per agent event,
-  // so they skip the import cost.
+  // Retained Grove commands require a checkpoint before an in-process schema migration.
+  // Hooks and MCP use the member transport and never migrate a Grove database.
   if (cmd !== 'hook' && cmd !== 'mcp') {
     const { installPreMigrationCheckpoint } = await import('./backup/pre-migration-checkpoint.js');
     const { resolveMycoHome } = await import('./grove/paths.js');

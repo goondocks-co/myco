@@ -1,7 +1,7 @@
 import { expect, it } from 'bun:test';
 import fs from 'node:fs';
 import ts from 'typescript-v6';
-import { codeOf } from '../helpers/import-closure.ts';
+import { codeOf, runtimeImportNames } from '../helpers/import-closure.ts';
 import { walk } from '../helpers/2-0-closure.ts';
 import { isLegacy } from '../helpers/legacy-boundary.ts';
 
@@ -85,5 +85,92 @@ it('rejects literal, bound, concatenated, spread, mutated, conditional and templ
   ]) {
     expect(daemonArgvSites((file, text) => file.endsWith('/cli/daemon-guard.ts')
       ? `${text}\n${mutation}` : text)).toContain('packages/myco/src/cli/daemon-guard.ts');
+  }
+}, 120_000);
+
+/** The runtime names each 2.0 caller may use across the retained 1.4 boundary. */
+const LEGACY_IMPORT_NAMES: Readonly<Record<string, readonly string[]>> = {
+  'cli.ts -> vault/resolve.ts': ['resolveVaultDir'],
+  'cli.ts -> cli/agent-run.ts': ['AGENT_USAGE','run'],
+  'cli.ts -> cli/agent-tasks.ts': ['TASK_RUN_USAGE','TASK_USAGE','run'],
+  'cli.ts -> cli/grove.ts': ['USAGE','run'],
+  'cli.ts -> cli/subsystem.ts': ['USAGE','run'],
+  'cli.ts -> cli/remove.ts': ['USAGE','run'],
+  'cli.ts -> cli/doctor.ts': ['USAGE','run'],
+  'cli.ts -> cli/setup-llm.ts': ['USAGE','run'],
+  'cli.ts -> cli/join.ts': ['JOIN_HELP','LEAVE_HELP','runJoin','runLeave'],
+  'cli.ts -> cli/host.ts': ['HOST_HELP','runHostCommand'],
+  'cli.ts -> backup/pre-migration-checkpoint.ts': ['installPreMigrationCheckpoint'],
+  'cli.ts -> grove/paths.ts': ['resolveMycoHome'],
+  'cli.ts -> cli/restore-backup.ts': ['run'],
+  'cli.ts -> cli/detect-providers.ts': ['run'],
+  'cli.ts -> cli/service.ts': ['run'],
+  'cli.ts -> cli/attach.ts': ['runAttach','runDetach'],
+  'cli.ts -> cli/restart.ts': ['run'],
+  'cli.ts -> cli/config.ts': ['run'],
+  'cli.ts -> cli/verify.ts': ['run'],
+  'cli.ts -> cli/stats.ts': ['run'],
+  'cli.ts -> cli/search.ts': ['run','runVectors'],
+  'cli.ts -> cli/session.ts': ['run'],
+  'cli.ts -> cli/setup-digest.ts': ['run'],
+  'cli.ts -> cli/logs.ts': ['run'],
+  'member/spool.ts -> capture/buffer.ts': ['BUFFER_QUARANTINE_DIRNAME','EventBuffer','listBufferSessionIds'],
+  'member/transcript.ts -> capture/prompt-kind.ts': ['extractUserPromptRecordsWithDrops'],
+  'member/transcript.ts -> capture/session-continuation.ts': ['eventsOwnedBySession','findSessionContinuation'],
+  'member/transcript.ts -> capture/transcript-id.ts': ['deriveTranscriptId'],
+  'cli/cutover.ts -> grove/subsystem-claim.ts': ['SYMBIONT_CONFIG_SUBSYSTEM','claimSubsystem','readClaim','resolveClaimsHome'],
+  'cli/cutover.ts -> service/home-daemon.ts': ['stopHomeDaemon'],
+  'cli/cutover.ts -> service/legacy-units.ts': ['attributeLegacyUnits','stopUnit','unitDirectories'],
+  'cli/worker-service.ts -> grove/paths.ts': ['isDefaultMycoHome'],
+  'cli/worker-service.ts -> service/spec-builder.ts': ['looksLikeDevBuildExecutable'],
+  'symbionts/detect.ts -> grove/paths.ts': ['expandHome'],
+  'symbionts/installer.ts -> grove/paths.ts': ['expandHome','resolveMycoHome'],
+  'symbionts/installer.ts -> grove/subsystem-claim.ts': ['SYMBIONT_CONFIG_SUBSYSTEM','isClaimedByPeer','readClaim','resolveClaimsHome','shouldDeferSubsystem'],
+  'symbionts/member-skill-links.ts -> grove/subsystem-claim.ts': ['SYMBIONT_CONFIG_SUBSYSTEM','isClaimedByPeer','readClaim','resolveClaimsHome'],
+};
+
+function unapprovedLegacyImports(mutate?: (file: string, text: string) => string): string[] {
+  const short = (key: string): string => key.replace(/^packages\/myco\/src\//, '');
+  const violations: string[] = [];
+  const seen = new Set<string>();
+  for (const closure of Object.values(walk(mutate))) {
+    for (const [from, targets] of closure.edges) {
+      if (isLegacy(from) || ![...targets].some(isLegacy)) continue;
+      const absolute = closure.modules.get(from)!;
+      const raw = fs.readFileSync(absolute, 'utf8');
+      const names = runtimeImportNames(mutate ? mutate(absolute, raw) : raw, absolute);
+      for (const to of targets) {
+        if (!isLegacy(to)) continue;
+        const edge = short(from) + ' -> ' + short(to);
+        seen.add(edge);
+        const imported = [...(names.get(to) ?? [])].sort();
+        if (JSON.stringify(imported) !== JSON.stringify(LEGACY_IMPORT_NAMES[edge])) {
+          violations.push(edge + ': ' + imported.join(', '));
+        }
+      }
+    }
+  }
+  for (const edge of Object.keys(LEGACY_IMPORT_NAMES)) {
+    if (!seen.has(edge)) violations.push('retired edge: delete ' + edge);
+  }
+  return violations;
+}
+
+it('every 2.0 import into a retained 1.4 helper names only the allowed exports', () => {
+  expect(unapprovedLegacyImports()).toEqual([]);
+}, 120_000);
+
+it('rejects a daemon service builder added over an existing helper edge', () => {
+  for (const addition of [
+    "import { buildServiceSpec } from '../service/spec-builder.js';",
+    "import { buildServiceSpec as buildUnit } from '../service/spec-builder.js';",
+    "import * as specs from '../service/spec-builder.js';",
+    "export { buildServiceSpec } from '../service/spec-builder.js';",
+    "const { buildServiceSpec } = await import('../service/spec-builder.js');",
+    "const buildUnit = (await import('../service/spec-builder.js')).buildServiceSpec;",
+    "const specs = require('../service/spec-builder.js');",
+  ]) {
+    expect(unapprovedLegacyImports((file, text) => file.endsWith('/cli/worker-service.ts')
+      ? text + '\n' + addition : text).some(edge => edge.startsWith('cli/worker-service.ts -> service/spec-builder.ts:'))).toBe(true);
   }
 }, 120_000);

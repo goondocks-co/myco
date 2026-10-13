@@ -10,14 +10,19 @@ export type { ApplyAdoptParams };
 interface AdoptBaseOpts {
   targetVersion: string;
   prevVersion: string;
+  /** Myco home directory. */
   home: string;
   platform: NodeJS.Platform;
+  /** On win32, the real `%LOCALAPPDATA%` value. Ignored on POSIX. */
   localAppData?: string;
+  /** Canonical daemon port. */
   daemonPort: number;
+  /** Service label or null when not service-managed. */
   serviceManagedLabel?: string | null;
   mycoBinary: string;
   projectRoot: string;
   maxHealthAttempts?: number;
+  /** Delay between /health polls (ms). Default 2000. */
   healthIntervalMs?: number;
   inProgressSentinelPath?: string | null;
   keepVersions?: number;
