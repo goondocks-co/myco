@@ -1,99 +1,176 @@
-/**
- * Every path that starts, spawns or installs the Myco 1.4 daemon, or rewrites
- * the agents' global config the way it does, reads the member-home predicate
- * (`member/home-role.ts`), so a 2.0 member home never runs 1.4 behaviour.
- *
- * The places a `daemon` argv is built are a closed set: a new one fails here
- * until it is gated or shown to lead to a gated start.
- */
-import { describe, expect, it } from 'bun:test';
+import { expect, it } from 'bun:test';
 import fs from 'node:fs';
-import path from 'node:path';
+import ts from 'typescript-v6';
+import { codeOf, runtimeImportNames } from '../helpers/import-closure.ts';
+import { walk } from '../helpers/2-0-closure.ts';
+import { isLegacy } from '../helpers/legacy-boundary.ts';
 
-const SRC = path.join(import.meta.dir, '..', '..', 'packages', 'myco', 'src');
-const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
-
-/** The body of the function or method whose declaration starts with `signature`. */
-function body(source: string, signature: string): string {
-  const start = source.indexOf(signature);
-  if (start === -1) throw new Error(`no ${signature}`);
-  let depth = 0;
-  for (let i = source.indexOf('{', source.indexOf(')', start)); i < source.length; i++) {
-    if (source[i] === '{') depth++;
-    if (source[i] === '}' && --depth === 0) return source.slice(start, i + 1);
-  }
-  throw new Error(`unterminated ${signature}`);
+/** Resolve local argv bindings conservatively, including every assignment to a name. */
+function buildsDaemonArgv(file: string, text: string): boolean {
+  const tree = ts.createSourceFile(file, codeOf(text, file), ts.ScriptTarget.Latest, true);
+  const bindings = new Map<string, ts.Expression[]>();
+  const bind = (name: string, value: ts.Expression): void => {
+    bindings.set(name, [...(bindings.get(name) ?? []), value]);
+  };
+  const collect = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) bind(node.name.text, node.initializer);
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left)) bind(node.left.text, node.right);
+    ts.forEachChild(node, collect);
+  };
+  collect(tree);
+  const values = (node: ts.Expression, seen = new Set<ts.Node>()): string[] => {
+    if (seen.has(node)) return [];
+    const next = new Set([...seen, node]);
+    if (ts.isStringLiteralLike(node)) return [node.text];
+    if (ts.isIdentifier(node)) return (bindings.get(node.text) ?? []).flatMap(value => values(value, next));
+    if (ts.isParenthesizedExpression(node) || ts.isSpreadElement(node)) return values(node.expression, next);
+    if (ts.isArrayLiteralExpression(node)) return node.elements.flatMap(element => values(element, next));
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      return values(node.left, next).flatMap(left => values(node.right, next).map(right => left + right));
+    }
+    if (ts.isTemplateExpression(node)) {
+      return node.templateSpans.reduce((parts, span) => parts.flatMap(part =>
+        (values(span.expression, next).length ? values(span.expression, next) : ['?']).map(value => part + value + span.literal.text)), [node.head.text]);
+    }
+    return [];
+  };
+  const comparisons = new Set([
+    ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken,
+    ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken,
+  ]);
+  let found = false;
+  let daemonComparison = false;
+  let processLaunch = false;
+  const visit = (node: ts.Node): void => {
+    // Command and retained-unit readers may compare a daemon token.
+    if (ts.isStringLiteralLike(node) && node.text === 'daemon') {
+      if (ts.isBinaryExpression(node.parent) && comparisons.has(node.parent.operatorToken.kind)) daemonComparison = true;
+      else found = true;
+    }
+    if (ts.isCallExpression(node) && !(ts.isPropertyAccessExpression(node.expression)
+      && node.expression.expression.kind === ts.SyntaxKind.RegularExpressionLiteral)
+      && /(?:^|\.)(?:spawn\w*|exec(?:File|Sync)?)(?:Sync)?$/.test(node.expression.getText(tree))) processLaunch = true;
+    if (ts.isArrayLiteralExpression(node) && values(node).includes('daemon')) found = true;
+    if (ts.isCallExpression(node) && /(?:spawn|exec)/i.test(node.expression.getText(tree))
+      && node.arguments.some(arg => values(arg).some(value => /(?:^|\s)daemon(?:\s|$)/.test(value)))) found = true;
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  return found || (daemonComparison && processLaunch);
 }
 
-/** Every source file under `dir`, relative to it. */
-const sources = (dir: string): string[] => (fs.readdirSync(dir, { recursive: true }) as string[]).filter((f) => f.endsWith('.ts')).sort();
-
-describe('the 1.4 daemon paths read the member-home predicate', () => {
-  it('in the client that spawns it or asks a supervisor to start it', () => {
-    const client = read('daemon/client.ts');
-    expect(body(client, 'async ensureRunning(')).toContain('this.memberHomeRefusal() !== null');
-    expect(body(client, 'async spawnDaemon(')).toContain('this.memberHomeRefusal() !== null');
-    expect(body(client, '  memberHomeRefusal(): string | null')).toContain('isMemberHome(');
+function daemonArgvSites(mutate?: (file: string, text: string) => string): string[] {
+  const { myco, server } = walk(mutate);
+  return [...myco.modules, ...server.modules].filter(([file]) => !isLegacy(file)).flatMap(([file, absolute]) => {
+    const text = fs.readFileSync(absolute, 'utf8');
+    return buildsDaemonArgv(file, mutate ? mutate(absolute, text) : text) ? [file] : [];
   });
+}
 
-  it('in the daemon itself, before it installs its service or does any work', () => {
-    const main = read('daemon/main.ts');
-    const entry = body(main, 'export async function main(');
-    const gate = entry.indexOf('if (isMemberHome(mycoHome))');
-    expect(gate).toBeGreaterThan(-1);
-    expect(gate).toBeLessThan(entry.indexOf('ensureSelfInstalledAsService'));
-    expect(gate).toBeLessThan(entry.indexOf('stampHarnessRedirectEpoch(mycoHome)'));
-    const legacy = entry.indexOf('if (unmovedLegacyVaults(mycoHome).length > 0)');
-    expect(legacy).toBeGreaterThan(gate);
-    expect(legacy).toBeLessThan(entry.indexOf('stampHarnessRedirectEpoch(mycoHome)'));
-    expect(legacy).toBeLessThan(entry.indexOf('resolveDaemonServiceState('));
-    const refusal = entry.slice(legacy, entry.indexOf('}', entry.indexOf('process.exit(', legacy)));
-    expect(refusal).toContain('markAdoptFailed(mycoHome, process.platform, getPluginVersion()');
-    expect(refusal).toContain('process.exit(0)');
-    expect(body(read('service/self-install.ts'), 'export async function ensureSelfInstalledAsService(')).toContain('isMemberHome(mycoHome)');
-  });
+it('nothing in the 2.0 closure constructs a daemon argv', () => {
+  expect(daemonArgvSites()).toEqual([]);
+}, 120_000);
 
-  it('in the global agent install every 1.4 entry point funnels through', () => {
-    expect(body(read('cli/bootstrap.ts'), 'export function runSymbiontDetection(')).toContain('isMemberHome(');
-  });
+it('rejects literal, bound, concatenated, spread, mutated, conditional and template daemon argv', () => {
+  for (const mutation of [
+    "spawn(binary, ['daemon']);",
+    "const verb = 'daemon'; spawn(binary, [verb]);",
+    "spawn(binary, ['dae' + 'mon']);",
+    "spawn(binary, [cmd === 'daemon' ? cmd : 'worker']);",
+    "const args = []; args.push('daemon'); spawn(binary, args);",
+    "const args = []; args.unshift('daemon'); spawn(binary, args);",
+    "const argv = ['daemon']; spawn(binary, [...argv]);",
+    'spawn(binary, [`daemon`]);',
+    'exec(`${binary} daemon`);',
+  ]) {
+    expect(daemonArgvSites((file, text) => file.endsWith('/cli/daemon-guard.ts')
+      ? `${text}\n${mutation}` : text)).toContain('packages/myco/src/cli/daemon-guard.ts');
+  }
+}, 120_000);
 
-  it('in the credential-less entry points, which say what to use instead', () => {
-    expect(read('cli/tool.ts')).toContain('daemonClient.memberHomeRefusal()');
-    expect(read('mcp/stdio-bridge.ts')).toContain('client.memberHomeRefusal()');
-    const shared = read('cli/shared.ts');
-    expect(body(shared, 'export async function connectToDaemon(')).toContain('refuseForMemberHome()');
-    expect(body(shared, 'export async function connectToGlobalDaemon(')).toContain('refuseForMemberHome()');
-    expect(body(shared, 'function refuseForMemberHome(')).toContain('isMemberHome(mycoHome)');
-  });
+/** The runtime names each 2.0 caller may use across the retained 1.4 boundary. */
+const LEGACY_IMPORT_NAMES: Readonly<Record<string, readonly string[]>> = {
+  'cli.ts -> vault/resolve.ts': ['resolveVaultDir'],
+  'cli.ts -> cli/agent-run.ts': ['AGENT_USAGE','run'],
+  'cli.ts -> cli/agent-tasks.ts': ['TASK_RUN_USAGE','TASK_USAGE','run'],
+  'cli.ts -> cli/grove.ts': ['USAGE','run'],
+  'cli.ts -> cli/subsystem.ts': ['USAGE','run'],
+  'cli.ts -> cli/remove.ts': ['USAGE','run'],
+  'cli.ts -> cli/doctor.ts': ['USAGE','run'],
+  'cli.ts -> cli/setup-llm.ts': ['USAGE','run'],
+  'cli.ts -> cli/join.ts': ['JOIN_HELP','LEAVE_HELP','runJoin','runLeave'],
+  'cli.ts -> cli/host.ts': ['HOST_HELP','runHostCommand'],
+  'cli.ts -> backup/pre-migration-checkpoint.ts': ['installPreMigrationCheckpoint'],
+  'cli.ts -> grove/paths.ts': ['resolveMycoHome'],
+  'cli.ts -> cli/restore-backup.ts': ['run'],
+  'cli.ts -> cli/detect-providers.ts': ['run'],
+  'cli.ts -> cli/service.ts': ['run'],
+  'cli.ts -> cli/attach.ts': ['runAttach','runDetach'],
+  'cli.ts -> cli/restart.ts': ['run'],
+  'cli.ts -> cli/config.ts': ['run'],
+  'cli.ts -> cli/verify.ts': ['run'],
+  'cli.ts -> cli/stats.ts': ['run'],
+  'cli.ts -> cli/search.ts': ['run','runVectors'],
+  'cli.ts -> cli/session.ts': ['run'],
+  'cli.ts -> cli/setup-digest.ts': ['run'],
+  'cli.ts -> cli/logs.ts': ['run'],
+  'member/spool.ts -> capture/buffer.ts': ['BUFFER_QUARANTINE_DIRNAME','EventBuffer','listBufferSessionIds'],
+  'member/transcript.ts -> capture/prompt-kind.ts': ['extractUserPromptRecordsWithDrops'],
+  'member/transcript.ts -> capture/session-continuation.ts': ['eventsOwnedBySession','findSessionContinuation'],
+  'member/transcript.ts -> capture/transcript-id.ts': ['deriveTranscriptId'],
+  'cli/cutover.ts -> grove/subsystem-claim.ts': ['SYMBIONT_CONFIG_SUBSYSTEM','claimSubsystem','readClaim','resolveClaimsHome'],
+  'cli/cutover.ts -> service/home-daemon.ts': ['stopHomeDaemon'],
+  'cli/cutover.ts -> service/legacy-units.ts': ['attributeLegacyUnits','stopUnit','unitDirectories'],
+  'cli/worker-service.ts -> grove/paths.ts': ['isDefaultMycoHome'],
+  'cli/worker-service.ts -> service/spec-builder.ts': ['looksLikeDevBuildExecutable'],
+  'symbionts/detect.ts -> grove/paths.ts': ['expandHome'],
+  'symbionts/installer.ts -> grove/paths.ts': ['expandHome','resolveMycoHome'],
+  'symbionts/installer.ts -> grove/subsystem-claim.ts': ['SYMBIONT_CONFIG_SUBSYSTEM','isClaimedByPeer','readClaim','resolveClaimsHome','shouldDeferSubsystem'],
+  'symbionts/member-skill-links.ts -> grove/subsystem-claim.ts': ['SYMBIONT_CONFIG_SUBSYSTEM','isClaimedByPeer','readClaim','resolveClaimsHome'],
+};
 
-  it('in the service verbs, doctor\'s service reinstall and restart, none of which installs or starts the unit', () => {
-    const service = read('cli/service.ts');
-    const guard = body(service, 'export function assertSafeServiceMutation(');
-    expect(guard).toContain("new Set(['install', 'start', 'restart', 'reconcile'])");
-    expect(guard).toContain('isMemberHome(mycoHome)');
-    const run = body(service, 'export async function run(');
-    expect(run.indexOf('assertSafeServiceMutation(parsed')).toBeLessThan(run.indexOf("case 'install':"));
-    const reinstall = read('cli/doctor-fixes.ts');
-    const fix = reinstall.slice(reinstall.indexOf("'service-reinstall': async () => {"));
-    expect(fix.indexOf("assertSafeServiceMutation({ action: 'install' }")).toBeGreaterThan(-1);
-    expect(fix.indexOf("assertSafeServiceMutation({ action: 'install' }")).toBeLessThan(fix.indexOf('mgr.install('));
-    const restart = body(read('cli/restart.ts'), 'export async function run(');
-    expect(restart.indexOf('isMemberHome(mycoHome)')).toBeGreaterThan(-1);
-    expect(restart.indexOf('isMemberHome(mycoHome)')).toBeLessThan(restart.indexOf("client.post('/api/restart'"));
-    // Every place the service unit is built is one of the gated installs.
-    const building = sources(SRC).filter((rel) => read(rel).includes('buildServiceSpec(') && rel !== 'service/spec-builder.ts');
-    expect(building).toEqual(['cli/doctor-fixes.ts', 'cli/service.ts', 'service/self-install.ts']);
-  });
+function unapprovedLegacyImports(mutate?: (file: string, text: string) => string): string[] {
+  const short = (key: string): string => key.replace(/^packages\/myco\/src\//, '');
+  const violations: string[] = [];
+  const seen = new Set<string>();
+  for (const closure of Object.values(walk(mutate))) {
+    for (const [from, targets] of closure.edges) {
+      if (isLegacy(from) || ![...targets].some(isLegacy)) continue;
+      const absolute = closure.modules.get(from)!;
+      const raw = fs.readFileSync(absolute, 'utf8');
+      const names = runtimeImportNames(mutate ? mutate(absolute, raw) : raw, absolute);
+      for (const to of targets) {
+        if (!isLegacy(to)) continue;
+        const edge = short(from) + ' -> ' + short(to);
+        seen.add(edge);
+        const imported = [...(names.get(to) ?? [])].sort();
+        if (JSON.stringify(imported) !== JSON.stringify(LEGACY_IMPORT_NAMES[edge])) {
+          violations.push(edge + ': ' + imported.join(', '));
+        }
+      }
+    }
+  }
+  for (const edge of Object.keys(LEGACY_IMPORT_NAMES)) {
+    if (!seen.has(edge)) violations.push('retired edge: delete ' + edge);
+  }
+  return violations;
+}
 
-  it('with every place a `daemon` argv is built accounted for', () => {
-    const building = sources(SRC).filter((rel) => /'daemon'\]/.test(read(rel)));
-    expect(building).toEqual([
-      'config/loader.ts', // a config path, not a process
-      'daemon/api/restart.ts', // a running daemon re-executing itself; a member home's daemon never gets this far
-      'daemon/client.ts', // spawnDaemon, gated above
-      'service/spec-builder.ts', // the unit's argv; every caller that installs it is gated (see 'in the service verbs')
-      'upgrade/in-progress.ts', // a name for who started an update, not a process
-      'upgrade/orchestrator.ts', // starts `myco daemon`, which exits at start for a member home
-    ]);
-  });
-});
+it('every 2.0 import into a retained 1.4 helper names only the allowed exports', () => {
+  expect(unapprovedLegacyImports()).toEqual([]);
+}, 120_000);
+
+it('rejects a daemon service builder added over an existing helper edge', () => {
+  for (const addition of [
+    "import { buildServiceSpec } from '../service/spec-builder.js';",
+    "import { buildServiceSpec as buildUnit } from '../service/spec-builder.js';",
+    "import * as specs from '../service/spec-builder.js';",
+    "export { buildServiceSpec } from '../service/spec-builder.js';",
+    "const { buildServiceSpec } = await import('../service/spec-builder.js');",
+    "const buildUnit = (await import('../service/spec-builder.js')).buildServiceSpec;",
+    "const specs = require('../service/spec-builder.js');",
+  ]) {
+    expect(unapprovedLegacyImports((file, text) => file.endsWith('/cli/worker-service.ts')
+      ? text + '\n' + addition : text).some(edge => edge.startsWith('cli/worker-service.ts -> service/spec-builder.ts:'))).toBe(true);
+  }
+}, 120_000);

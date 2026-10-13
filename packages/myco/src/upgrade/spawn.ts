@@ -1,138 +1,77 @@
-/**
- * Update installer — writes the orchestration parameters to a temp JSON file
- * and spawns the self-contained binary's `__apply-update` subcommand DETACHED.
- *
- * The orchestration itself (sleep → npm install → project fan-out → readiness
- * guard → restart) lives in cross-platform TypeScript (`apply-update.ts`), NOT
- * in a generated `#!/bin/sh` script, a shape that ENOENTs on Windows
- * (no `/bin/sh`), so after the daemon SIGTERM'd itself nothing brought it back.
- * Running the binary directly works identically on macOS, Linux, and Windows.
- */
-
+/** Serialized parameters and process helpers for retained local-runtime callers. */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-import { UPDATE_ERROR_PATH, RESTART_REASON_FILENAME } from '../constants/update.js';
-import type { ApplyRestartParams, ApplyAdoptParams } from './orchestrator.js';
-
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
-/** Parameters for a restart-only orchestration (no global npm install). */
-export interface RestartParams {
-  /** Absolute path to the project root the daemon was running from (used as cwd for the respawn). */
+import { RESTART_REASON_FILENAME } from '../constants/update.js';
+export interface ApplyRestartParams {
+  kind: 'restart';
   projectRoot: string;
-  /** Absolute path to the vault directory (used to write restart-reason.json). */
   vaultDir: string;
-  /** Whether to run `myco update --all-projects` before restarting. */
+  runLocalUpdate: boolean;
+  fromVersion: string;
+  toVersion: string;
+  mycoBinary: string;
+  serviceManagedLabel?: string | null;
+  daemonPort: number;
+  restartReasonPath: string;
+}
+
+export interface ApplyAdoptParams {
+  kind: 'adopt';
+  targetVersion: string;
+  prevVersion: string;
+  home: string;
+  platform: NodeJS.Platform;
+  localAppData?: string;
+  daemonPort: number;
+  serviceManagedLabel?: string | null;
+  mycoBinary: string;
+  projectRoot: string;
+  maxHealthAttempts: number;
+  healthIntervalMs: number;
+  errorPath?: string;
+  updateEventsPath?: string;
+  inProgressSentinelPath?: string | null;
+  keepVersions?: number;
+}
+
+export interface RestartParams {
+  projectRoot: string;
+  vaultDir: string;
   runLocalUpdate: boolean;
   /** The version currently running. */
   fromVersion: string;
-  /** The version that will be running after restart. */
   toVersion: string;
-  /**
-   * Literal myco binary the orchestrator should invoke for the optional
-   * project sync step and the final direct daemon respawn.
-   */
+  /** Literal myco binary named by the request. */
   mycoBinary: string;
-  /**
-   * Service label to restart through, when this process is the
-   * service-managed daemon (launchctl kickstart / systemctl restart /
-   * schtasks). When set, the orchestrator restarts via the platform
-   * ServiceManager instead of spawning `<mycoBinary> daemon` directly —
-   * preventing the thundering-herd race between a manually-spawned daemon
-   * child and the supervisor's KeepAlive/Restart policy.
-   *
-   * Null (or absent) means no supervisor owns this home — the orchestrator
-   * respawns the daemon directly. Callers derive this from
-   * `resolveRestartServiceLabel()` (keyed on the installed unit, not pid).
-   */
+  /** Service label named by the request, or null when not service-managed. */
   serviceManagedLabel?: string | null;
-  /**
-   * Canonical daemon port for the variant this restart is running against
-   * (e.g. 20915 prod, 19344 dev). Used by the readiness guard to skip the
-   * restart when the supervisor's KeepAlive has already brought the daemon
-   * back at the target version.
-   */
+  /** Canonical daemon port named by the request. */
   daemonPort: number;
 }
 
-// ---------------------------------------------------------------------------
-// Detached spawn of the `__apply-update` subcommand
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the binary to spawn the orchestrator with.
- *
- * On Windows, `npm install -g` cannot overwrite a *running* `.exe`, so spawning
- * `process.execPath` directly would lock the global binary the update is trying
- * to replace. We copy the running exe to a temp path (reading a running exe for
- * copy IS allowed on Windows) and spawn the COPY, freeing the global binary.
- *
- * On POSIX, replacing a running binary's file is fine — the process keeps the
- * old inode — so we spawn `process.execPath` directly. This is the ONE
- * legitimate platform branch in the update flow.
- */
 export function resolveOrchestratorBinary(): string {
   if (process.platform !== 'win32') return process.execPath;
-  // Sweep leaked copies from prior updates first: a running .exe can't delete
-  // itself, so the orchestrator can never clean up its own copy — the NEXT
-  // update does. Best-effort; a copy still in use stays locked and is skipped.
   try {
     for (const name of fs.readdirSync(os.tmpdir())) {
       if (name.startsWith('myco-apply-') && name.endsWith('.exe')) {
-        try { fs.rmSync(path.join(os.tmpdir(), name), { force: true }); } catch { /* in use / gone */ }
+        try { fs.rmSync(path.join(os.tmpdir(), name), { force: true }); } catch { /* best-effort */ }
       }
     }
   } catch { /* best-effort */ }
-  // Windows binary-lock workaround: copy the running exe to a temp path so the
-  // global install is free to be replaced while the orchestrator runs.
+
   const copyPath = path.join(os.tmpdir(), `myco-apply-${Date.now()}.exe`);
   fs.copyFileSync(process.execPath, copyPath);
   return copyPath;
 }
 
-/**
- * Writes the orchestration params to a temp JSON file and spawns
- * `<binary> __apply-update <paramsFile>` detached + unreffed so the daemon can
- * exit immediately. Returns the params file path.
- */
-export function spawnApplyUpgrade(namePrefix: string, params: ApplyRestartParams | ApplyAdoptParams): string {
-  const paramsFile = path.join(os.tmpdir(), `${namePrefix}-${Date.now()}.json`);
-  fs.writeFileSync(paramsFile, JSON.stringify(params), 'utf-8');
-
-  const binToRun = resolveOrchestratorBinary();
-  const child = spawn(binToRun, ['__apply-update', paramsFile], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  // A spawn-class failure (EAGAIN/EMFILE under fork pressure, ENOENT) emits
-  // 'error' asynchronously; with no listener that's an uncaught exception —
-  // process exit. Leave the trace where the update UI already looks for it.
-  child.on('error', (err) => {
-    try {
-      fs.writeFileSync(UPDATE_ERROR_PATH, `update orchestrator spawn failed: ${err.message}\n`, 'utf-8');
-    } catch { /* best-effort */ }
-    try {
-      process.stderr.write(`[myco] update orchestrator spawn failed: ${err.message}\n`);
-    } catch { /* best-effort */ }
-  });
-  child.unref();
-
-  return paramsFile;
+/** Refuse the retired local-runtime updater before writing parameters or starting a process. */
+export function spawnApplyUpgrade(_namePrefix: string, _params: ApplyRestartParams | ApplyAdoptParams): never {
+  throw new Error('Myco 2.0 cannot run the retired __apply-update command. Use myco update for this machine or myco runner update for a registered runner.');
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Spawns the restart-only orchestrator. Returns the params file path.
- */
 export function spawnRestartScript(params: RestartParams): string {
   const applyParams: ApplyRestartParams = {
     kind: 'restart',
@@ -147,4 +86,25 @@ export function spawnRestartScript(params: RestartParams): string {
     restartReasonPath: path.join(params.vaultDir, RESTART_REASON_FILENAME),
   };
   return spawnApplyUpgrade('myco-restart', applyParams);
+}
+
+function spawnShellSafe(
+  bin: string,
+  args: string[],
+  opts: { detached?: boolean; stdio?: 'ignore' | 'pipe'; cwd?: string },
+): ReturnType<typeof spawn> {
+  const base = { ...opts, windowsHide: true } as const;
+  return process.platform === 'win32'
+    ? spawn(`"${bin}" ${args.join(' ')}`, { ...base, shell: true })
+    : spawn(bin, args, base);
+}
+
+export function spawnDetached(bin: string, args: string[], cwd?: string): void {
+  const child = spawnShellSafe(bin, args, { detached: true, stdio: 'ignore', ...(cwd ? { cwd } : {}) });
+  child.on('error', (err) => {
+    try {
+      process.stderr.write(`[myco] apply-update spawn failed (${bin}): ${err.message}\n`);
+    } catch { /* best-effort */ }
+  });
+  child.unref();
 }

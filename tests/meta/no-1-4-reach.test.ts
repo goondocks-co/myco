@@ -18,46 +18,28 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  cliVerbModules, closureOf, entryFiles, filesUnder, moduleKey, REPO_ROOT, withoutShebang, type Closure,
+  filesUnder, moduleKey, REPO_ROOT, pathToEntry, type Closure,
 } from '../helpers/import-closure.ts';
 
+import { walk, walkMemberRuntime, isLegacyVerb } from '../helpers/2-0-closure.ts';
 import { LEGACY_DIRS, LEGACY_FILES, isLegacy } from '../helpers/legacy-boundary.ts';
 
 const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const MYCO = 'packages/myco/src/';
-
-/** A 1.4 verb module the CLI dispatches to: an edge from `cli.ts` to one is the dispatch, allowed until its verb goes. */
-const isLegacyVerb = (key: string): boolean => key.startsWith(`${MYCO}cli/`) && LEGACY_FILES.includes(key.slice(MYCO.length));
-
-/**
- * The 2.0 entry points under `packages/myco/src` (`/**` = every file under), walked with every import they make, beside
- * the CLI itself and every verb module it dispatches to that is not a 1.4 verb (`cliVerbModules`).
- */
-const ENTRIES: readonly string[] = [
-  'cli.ts', 'entries/**', 'hooks/**', 'member/**', 'runner/**', 'server/**',
-  'mcp/stdio-bridge.ts', 'mcp/deployment-upstream.ts', 'mcp/client-call.ts',
-];
 
 /**
  * Every edge from 2.0 code into the 1.4 tree, `importer -> imported` (paths under `packages/myco/src`), with the #1170
  * phase that removes it. An edge from `cli.ts` to a 1.4 verb module is the verb's dispatch and is allowed by rule.
  */
 const ALLOWED_EDGES: Readonly<Record<string, string>> = {
-  'cli.ts -> backup/pre-migration-checkpoint.ts': '#1170 P4: the pre-migration checkpoint leaves the 2.0 verbs',
-  'cli.ts -> daemon/main.ts': '#1170 P8: the daemon verb becomes the legacy adopt guard',
+  'cli.ts -> backup/pre-migration-checkpoint.ts': '#1170 P4: PR 3 removes the pre-migration checkpoint from the 2.0 verbs',
   'cli.ts -> grove/paths.ts': '#1170 P4: the pre-migration checkpoint leaves the 2.0 verbs',
-  'cli.ts -> upgrade/orchestrator.ts': '#1170 P6a: one myco update replaces the 1.4 orchestrator',
   'cli.ts -> vault/resolve.ts': '#1170 P3: vault/resolve moves into project-root.ts',
   'cli/cutover.ts -> grove/subsystem-claim.ts': '#1170 P8: cutover is deleted',
   'cli/cutover.ts -> service/home-daemon.ts': '#1170 P8: cutover is deleted',
   'cli/cutover.ts -> service/legacy-units.ts': '#1170 P8: cutover is deleted',
-  'cli/member.ts -> cli/doctor.ts': "#1170 P4: member export's checks move into doctor-member",
-  'cli/tool.ts -> daemon/client.ts': '#1170 P4: the daemon upstream is deleted',
   'cli/worker-service.ts -> grove/paths.ts': '#1170 P3: the 2.0 path helpers move to paths/',
   'cli/worker-service.ts -> service/spec-builder.ts': '#1170 P3: the service spec builder moves beside server/service.ts',
-  'mcp/stdio-bridge.ts -> daemon/client.ts': '#1170 P4: the daemon upstream is deleted',
-  'mcp/stdio-bridge.ts -> grove/request-context.ts': '#1170 P4: the daemon upstream is deleted',
-  'mcp/stdio-bridge.ts -> vault/resolve.ts': '#1170 P3: vault/resolve moves into project-root.ts',
   'member/spool.ts -> capture/buffer.ts': '#1170 P3: the capture leaves move to member/',
   'member/transcript.ts -> capture/prompt-kind.ts': '#1170 P3: the capture leaves move to member/',
   'member/transcript.ts -> capture/session-continuation.ts': '#1170 P3: the capture leaves move to member/',
@@ -75,7 +57,6 @@ const UNREACHED_2_0: Readonly<Record<string, string>> = {
   'symbionts/templates/cline/plugin.ts': 'a member plugin, embedded as text by `symbionts/templates.generated.ts`',
   'symbionts/templates/opencode/plugin.ts': 'a member plugin, embedded as text by `symbionts/templates.generated.ts`',
   'symbionts/templates/pi/plugin.ts': 'a member plugin, embedded as text by `symbionts/templates.generated.ts`',
-  'upgrade/release-resolver.ts': "reached only through the 1.4 upgrade verb until #1170 P6a's myco update reads it",
 };
 
 /**
@@ -95,21 +76,6 @@ const ALLOWED_TEXT_REACH: Readonly<Record<string, string>> = {
 };
 
 const short = (key: string): string => (key.startsWith(MYCO) ? key.slice(MYCO.length) : key);
-
-/** A per-target entry with its embedded-file imports (`with { type: 'file' }`) taken out: those embed bytes, not code. */
-const withoutEmbeds = (_file: string, text: string): string =>
-  text.replace(/^import\s+\w+\s+from\s+['"][^'"]+['"]\s+with\s*\{\s*type:\s*['"]file['"]\s*\};?\s*$/gm, '');
-
-/** The whole 2.0 closure, stopped at the 1.4 boundary: the CLI and every verb it dispatches, the other entry points, and the Deployment. */
-function walk(): { myco: Closure; server: Closure } {
-  const entries = [
-    ...entryFiles(SRC, ENTRIES),
-    ...cliVerbModules(SRC, (file) => isLegacy(moduleKey(file))),
-  ];
-  const myco = closureOf(entries, { stopAt: isLegacy, source: (file, text) => withoutEmbeds(file, withoutShebang(file, text)) });
-  const server = closureOf(entryFiles(path.join(REPO_ROOT, 'packages', 'myco-server'), ['src/**']), { stopAt: isLegacy });
-  return { myco, server };
-}
 
 /** Every edge a closure crossed from code outside the 1.4 tree into it, but the CLI's dispatch to a 1.4 verb. */
 function crossings(closure: Closure): string[] {
@@ -163,7 +129,7 @@ function legacyPathsIn(file: string): string[] {
 }
 
 describe('the 2.0 code', () => {
-  it('reaches the 1.4 tree through the named edges alone, and every named edge still exists', () => {
+  it('imports the 1.4 tree through the named direct edges alone, and every named edge still exists', () => {
     const { myco, server } = walk();
     // An `import(expr)` names no module the walk can follow, so each one in the 2.0 closure is named here: none of them is code.
     expect(Object.fromEntries([...myco.unknowable, ...server.unknowable])).toEqual(UNFOLLOWABLE);
@@ -196,3 +162,64 @@ describe('the 2.0 code', () => {
     }
   });
 });
+
+const forbiddenRuntime = (key: string): boolean => key.startsWith(`${MYCO}daemon/`)
+  || key.startsWith(`${MYCO}db/`) || key === `${MYCO}grove/request-context.ts`;
+
+it('no 2.0 module directly imports a daemon, database or Grove request-context module', () => {
+  const { myco, server } = walk();
+  for (const closure of [myco, server]) {
+    expect([...closure.modules.keys()].filter(forbiddenRuntime).map(key => pathToEntry(closure, key))).toEqual([]);
+  }
+}, 120_000);
+
+/** The retained carriers of forbidden runtime modules, with the PR that removes each edge. */
+const RUNTIME_CARRIERS: Readonly<Record<string, string>> = {
+  'cli.ts -> backup/pre-migration-checkpoint.ts': 'PR 3',
+  'cli/cutover.ts -> service/home-daemon.ts': 'PR 4',
+};
+
+/** All paths reachable without a named carrier, including alternate paths into shared leaves. */
+function uncarriedRuntime(closure: Closure, carriers: Readonly<Record<string, string>> = {}): string[][] {
+  const via = new Map<string, string | null>([...closure.via].filter(([, importer]) => importer === null));
+  const queue = [...via.keys()];
+  for (const from of queue) {
+    for (const to of closure.edges.get(from) ?? []) {
+      if (`${short(from)} -> ${short(to)}` in carriers || via.has(to)) continue;
+      via.set(to, from);
+      queue.push(to);
+    }
+  }
+  return [...via.keys()].filter(forbiddenRuntime).map(key => pathToEntry({ ...closure, via }, key));
+}
+
+it('transitive runtime reach requires a named carrier and its retiring PR', () => {
+  const { myco, server } = walk(undefined, isLegacyVerb);
+  for (const edge of Object.keys(RUNTIME_CARRIERS)) {
+    const [from, to] = edge.split(' -> ');
+    expect(myco.edges.get(MYCO + from)?.has(MYCO + to), `retired carrier: delete ${edge}`).toBe(true);
+  }
+  expect(uncarriedRuntime(myco, RUNTIME_CARRIERS)).toEqual([]);
+  expect(uncarriedRuntime(server)).toEqual([]);
+}, 120_000);
+
+it('hooks, member code and MCP have no transitive daemon, database or Grove request-context dependency', () => {
+  expect(uncarriedRuntime(walkMemberRuntime())).toEqual([]);
+}, 120_000);
+
+it('rejects a forbidden runtime import hidden behind the shared capture boundary', () => {
+  const mutate = (file: string, text: string): string => file.endsWith('/capture/buffer.ts')
+    ? `import '@myco/daemon/client.js';\n${text}` : text;
+  expect(uncarriedRuntime(walk(mutate, isLegacyVerb).myco, RUNTIME_CARRIERS)
+    .some(chain => chain.at(-1) === MYCO + 'daemon/client.ts')).toBe(true);
+  expect(uncarriedRuntime(walkMemberRuntime(mutate))
+    .some(chain => chain.at(-1) === MYCO + 'daemon/client.ts')).toBe(true);
+}, 120_000);
+
+it('rejects restored runtime imports at the 1.4 boundary', () => {
+  for (const target of ['daemon/client.ts', 'db/schema.ts', 'grove/request-context.ts']) {
+    const { myco } = walk((file, text) => file.endsWith('/mcp/stdio-bridge.ts')
+      ? `import '@myco/${target}';\n${text}` : text);
+    expect([...myco.modules.keys()].filter(forbiddenRuntime)).toContain(`${MYCO}${target}`);
+  }
+}, 120_000);

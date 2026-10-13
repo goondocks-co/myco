@@ -413,57 +413,6 @@ describe('resolveObservedScope — file existence across both domains + the Linu
   });
 });
 
-describe('GATE (round-2 B1): upgrade restart routes through the OWNING manager', () => {
-  function stubManager(name: string, calls: string[]): import('@myco/service/types.js').ServiceManager {
-    return {
-      supported: true,
-      platformName: name,
-      async isInstalled() { return false; },
-      async inspect() { return null; },
-      async install() { return { changed: false, supervisorReloaded: false }; },
-      async uninstall() { calls.push(`${name}:uninstall`); },
-      async start() { calls.push(`${name}:start`); },
-      async stop() { calls.push(`${name}:stop`); },
-      async restart() { calls.push(`${name}:restart`); },
-      restartShellCommand() { return 'true'; },
-      async status() {
-        return { installed: false, running: false as const, pid: null, lastExitCode: null, unitPath: null };
-      },
-    };
-  }
-
-  it('a boot-owned label restarts via the BOOT manager, never the login manager — the reverted-chokepoint mutant goes red here', async () => {
-    const { restart } = await import('@myco/upgrade/orchestrator.js');
-    const calls: string[] = [];
-    const loginMgr = stubManager('login', calls);
-    const bootMgr = stubManager('boot', calls);
-    let spawned: string[][] = [];
-
-    await restart(
-      {
-        getServiceManager: () => loginMgr,
-        runNpm: async () => ({ ok: true, output: '' }),
-        spawnDetached: (bin: string, args: string[]) => { spawned.push([bin, ...args]); },
-        probeHealth: async () => null,
-        probeDaemonState: () => null,
-        sleep: async () => {},
-        // The spec R-B1 seam: the boot domain owns this label.
-        findInstalledService: async () => ({
-          label: 'co.goondocks.myco',
-          status: { installed: true, running: 'unknown' as const, pid: null, lastExitCode: null, unitPath: null },
-          manager: bootMgr,
-        }),
-      },
-      'co.goondocks.myco',
-      '/usr/local/bin/myco',
-      '/fixture',
-    );
-
-    expect(calls).toEqual(['boot:restart']);
-    expect(spawned).toEqual([]);
-  });
-});
-
 describe('round-3 follow-ups', () => {
   it('the CLI refuses a root boot install BEFORE any manager or preflight call (source-order pin)', () => {
     const source = fs.readFileSync(

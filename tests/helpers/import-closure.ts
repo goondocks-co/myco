@@ -20,6 +20,7 @@
  * guessed at.
  */
 import fs from 'node:fs';
+import ts from 'typescript-v6';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -137,6 +138,50 @@ function resolveSpecifier(fromFile: string, specifier: string): Resolved {
     return { kind: 'module', file };
   }
   return { kind: 'external', specifier };
+}
+
+/** Runtime import names by resolved module; opaque namespace or module access is named `*`. */
+export function runtimeImportNames(source: string, file: string): Map<string, Set<string>> {
+  const tree = ts.createSourceFile(file, codeOf(source, file), ts.ScriptTarget.Latest, true);
+  const names = new Map<string, Set<string>>();
+  const add = (specifier: string, imported: string[]): void => {
+    const resolved = resolveSpecifier(file, specifier);
+    if (resolved.kind !== 'module') return;
+    const key = moduleKey(resolved.file);
+    names.set(key, new Set([...(names.get(key) ?? []), ...imported]));
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      const clause = node.importClause;
+      const imported: string[] = [];
+      if (clause?.name) imported.push('default');
+      if (clause?.namedBindings) {
+        if (ts.isNamespaceImport(clause.namedBindings)) imported.push('*');
+        else imported.push(...clause.namedBindings.elements.map(element => (element.propertyName ?? element.name).text));
+      }
+      add(node.moduleSpecifier.text, imported.length ? imported : ['<side-effect>']);
+    }
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      add(node.moduleSpecifier.text, node.exportClause && ts.isNamedExports(node.exportClause)
+        ? node.exportClause.elements.map(element => (element.propertyName ?? element.name).text) : ['*']);
+    }
+    if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+      || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
+      && node.arguments[0] && ts.isStringLiteral(node.arguments[0])) {
+      let access: ts.Node = node;
+      while (ts.isAwaitExpression(access.parent) || ts.isParenthesizedExpression(access.parent)) access = access.parent;
+      const parent = access.parent;
+      const imported = ts.isPropertyAccessExpression(parent) ? [parent.name.text]
+        : ts.isElementAccessExpression(parent) && ts.isStringLiteral(parent.argumentExpression) ? [parent.argumentExpression.text]
+        : ts.isVariableDeclaration(parent) && ts.isObjectBindingPattern(parent.name)
+          ? parent.name.elements.map(element => element.dotDotDotToken ? '*' : (element.propertyName ?? element.name).getText(tree))
+          : ['*'];
+      add(node.arguments[0].text, imported);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  return names;
 }
 
 export interface Closure {

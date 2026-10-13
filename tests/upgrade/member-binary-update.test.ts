@@ -44,7 +44,6 @@ int main(int argc, char **argv) {
         download: async (url, dest) => { if (url === 'binary') fs.copyFileSync(source, dest); else fs.writeFileSync(dest, `${sum}  ${asset}\n`); },
         computeSha256: async file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'),
       },
-      initiateAdopt: async () => { throw new Error('A member update must not start the daemon orchestrator'); },
     });
     expect(spawnSync(binary, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('2.1.0-alpha.1');
     expect(fs.readFileSync(path.join(home, 'refresh.log'), 'utf8')).toBe('member provision --refresh\n');

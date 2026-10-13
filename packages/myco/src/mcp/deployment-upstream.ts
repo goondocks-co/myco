@@ -94,9 +94,7 @@ export const credentialFlagPresent = (argv: readonly string[]): boolean => argv.
 
 /**
  * The credential source a command line declares: a known source; null when
- * the flag is absent (the caller takes the local daemon path); a thrown error
- * when the flag is present with a value that is not a source — a mistyped
- * flag must never fall through to the daemon in silence.
+ * the flag is absent; a thrown error when the flag is present with an invalid source.
  */
 export function declaredCredentialSource(argv: readonly string[]): CredentialSource | null {
   const source = parseCredentialFlag(argv);
@@ -106,7 +104,7 @@ export function declaredCredentialSource(argv: readonly string[]): CredentialSou
   return source;
 }
 
-/** Bridge and Deployment liveness: how often the bridge asks the Deployment for its health while idle. Far looser than the daemon's cadence — every probe is a metered request to a remote. */
+/** Bridge and Deployment liveness: how often the bridge asks the Deployment for its health while idle. Every probe is a metered request to a remote. */
 export const DEPLOYMENT_HEARTBEAT_INTERVAL_MS = 60_000;
 /** How many rebuild attempts the bridge makes against a Deployment that stopped answering before it answers the agent's waiting request with an error and keeps serving. */
 export const DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS = 8;

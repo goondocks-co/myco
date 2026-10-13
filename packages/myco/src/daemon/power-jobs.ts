@@ -1183,7 +1183,7 @@ export function registerPowerJobs(runner: JobRunner, deps: PowerJobDeps): PowerJ
       logger.warn(LOG_KINDS.DAEMON_START, 'Detached from supervisor job — spawning `service reconcile`', {
         tracked_pid: found!.status.pid, my_pid: process.pid, label: found!.label,
       });
-      const { spawnDetached } = await import('../upgrade/orchestrator.js');
+      const { spawnDetached } = await import('../upgrade/spawn.js');
       spawnDetached(resolveMycoBinary(), ['service', 'reconcile'], mycoHome);
     },
   });

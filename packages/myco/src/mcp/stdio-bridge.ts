@@ -1,167 +1,39 @@
-/**
- * Stdio MCP entry point.
- *
- * This subprocess does NOT run an MCP server. It is a transparent JSON-RPC
- * pump between two MCP-SDK transports: a `StdioServerTransport` facing the
- * agent (claude-code, cursor, copilot, antigravity, etc.) and a
- * `StreamableHTTPClientTransport` facing the daemon's in-process MCP server
- * at `/mcp`. Tool execution happens in the daemon — the same path that codex
- * already uses over native HTTP. There is one tool runtime, regardless of
- * what wire format an agent speaks.
- *
- * Each MCP-SDK transport exposes `start`, `send(message)`, `close`,
- * `onmessage`, `onclose`, `onerror`. Wiring `downstream.onmessage` to
- * `upstream.send` (and vice versa) gives us a transparent JSON-RPC proxy: the
- * agent's `initialize`, `tools/list`, `tools/call`, progress notifications,
- * and SSE-delivered responses all flow through unmodified.
- *
- * # Liveness
- *
- * The bridge can outlive both sides — the agent dies hard (kill -9, terminal
- * close, force-quit) without closing stdin cleanly, OR the daemon restarts
- * (npm upgrade, service reload, manual `myco daemon restart`, `make build`
- * + dogfood restart, etc.). Either case produced 21-hour stale bridges on
- * 2026-05-15 because no liveness gate ran after the initial bridge wiring.
- *
- * The bridge now covers both failure shapes:
- *
- *   1. **Parent-death watchdog** — periodically check `process.ppid`. When
- *      the parent dies, the OS reparents the orphan to PID 1 (init/launchd).
- *      The bridge sees this and exits cleanly. Doesn't depend on stdin EOF
- *      detection, which the MCP SDK only triggers on its next read attempt
- *      and so misses indefinite idle.
- *   2. **Daemon-health heartbeat** — periodic `/health` probe. Tight enough
- *      that an idle bridge catches a daemon restart within ~10 s without an
- *      active request to surface it.
- *   3. **Active-send self-heal (Bucket J)** — when a forwarded JSON-RPC
- *      message can't reach the daemon (the user's `make build` just replaced
- *      the daemon binary; the held http handle points at a dead socket), the
- *      bridge re-resolves daemon.json, rebuilds the upstream transport, and
- *      keeps serving. The failed message is lost (the agent's retry covers
- *      it); the bridge itself doesn't have to die so the agent doesn't have
- *      to round-trip a respawn. If the daemon stays unreachable through the
- *      probe budget, the bridge gives up and exits so the agent does respawn.
- *   4. **Lifecycle stderr log** — every state transition writes a tagged
- *      line so a "tool call hangs" investigation can read the agent's MCP
- *      stderr capture and see immediately whether the bridge has been
- *      sitting wedged, freshly spawned, or mid-reconnect.
- *
- * Heartbeat / watchdog cadence is conservative: a few seconds of latency
- * after parent/daemon death is acceptable when the alternative is a
- * day-long zombie.
- */
-
+/** Stdio JSON-RPC pump for the credential's Deployment, with bounded reconnect and parent-death detection. */
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { resolveVaultDir } from '../vault/resolve.js';
+import { credentialRequiredError } from './credential-refusal.js';
 import { DEPLOYMENT_HEARTBEAT_INTERVAL_MS, DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS, declaredCredentialSource, deploymentTransport, probeDeploymentHealth, resolveDeploymentUpstream } from './deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
-import type { DaemonClient as DaemonClientClass } from '../daemon/client.js';
-import {
-  REQUEST_CONTEXT_AUTH_HEADER,
-  requestContextFromEnvironment,
-  requestContextHeaders,
-} from '../grove/request-context.js';
-
 const STDIO_BRIDGE_TAG = '[myco stdio-bridge]';
 
-/** Parent-death watchdog cadence. Tight enough to release zombies within
- *  ~10 s of agent death, loose enough that the polling cost is negligible. */
+/** Parent-death watchdog cadence. */
 export const PARENT_WATCHDOG_INTERVAL_MS = 10_000;
 
-/**
- * Daemon-health probe cadence. The probe is a single HEAD-equivalent fetch;
- * 5 s is cheap and gives us idle-bridge recovery within ~10 s of a daemon
- * restart even when no agent message is in flight to surface the failure
- * actively. The active-send self-heal path (Bucket J) is what handles the
- * "user just ran make build and triggered an MCP call" case in well under
- * a second; the heartbeat is a background safety net.
- */
-export const DAEMON_HEARTBEAT_INTERVAL_MS = 5_000;
+/** Consecutive failed health probes that trigger an upstream reconnect. */
+export const UPSTREAM_HEARTBEAT_FAILURE_THRESHOLD = 2;
 
-/** Consecutive heartbeat failures before the bridge exits. A single missed
- *  probe can happen during a daemon restart window; two in a row means the
- *  bridge's current HTTP target is stale and it should die so the agent
- *  respawns a fresh one. */
-export const DAEMON_HEARTBEAT_FAILURE_THRESHOLD = 2;
-
-/**
- * Per-message upstream-send deadline. StreamableHTTPClientTransport's
- * `send()` returns as soon as the POST is accepted (the response — long
- * tool calls included — streams back via the SSE channel, NOT via
- * send()'s return value), so this only needs to be long enough for the
- * loopback POST to complete and short enough that a hung half-open
- * socket on a dead daemon doesn't sit waiting for OS TCP keepalive
- * (often minutes by default). 30 s is generous for a loopback POST.
- */
+/** Deadline for accepting a forwarded POST; tool responses stream separately. */
 export const UPSTREAM_SEND_TIMEOUT_MS = 30_000;
 
-/**
- * Max re-send attempts for a single forwarded JSON-RPC request when
- * the original send trips the self-heal path. Re-sending preserves the
- * agent's contract (it sees a response, not a dropped request) without
- * requiring Claude Code's MCP client to implement its own retry layer.
- * The hard cap stops a persistent-failure scenario from looping forever.
- */
+/** Maximum resends of one JSON-RPC message after reconnecting. */
 export const REQUEST_RESEND_MAX_ATTEMPTS = 2;
 
-/**
- * Self-heal probe backoff schedule. The bridge probes `/health` on every
- * miss with the next interval in this list; once past the end, it stays
- * at the last interval forever. The bridge does NOT exit on daemon-down
- * (live verification showed Claude Code's MCP supervisor doesn't auto-
- * respawn — `MCP server "myco" is not connected` until manual /mcp
- * reconnect). Indefinite retry with a 5 s steady-state ceiling means
- * a `make build` rebuild that takes 30 s of launchd throttle still
- * recovers without operator intervention, while a permanently-dead
- * daemon doesn't burn battery harder than one probe per 5 s.
- *
- * Parent-death watchdog remains the only path that terminates the
- * bridge: if the agent is gone, there's no one for the bridge to serve.
- */
+/** Delays between reconnect probes, capped at the last value within the attempt limit. */
 export const SELF_HEAL_PROBE_BACKOFFS_MS: readonly number[] = [200, 500, 1_000, 2_000, 5_000];
 
 function logErr(msg: string): void {
-  // stderr only — stdout is the JSON-RPC channel and must stay clean.
   process.stderr.write(`${STDIO_BRIDGE_TAG} ${msg}\n`);
 }
 
-/**
- * Exit the bridge cleanly with a tagged reason. Centralized so every
- * lifecycle path leaves the same stderr trace shape — that's the signal
- * agents capture into their MCP logs.
- */
 function exitWithReason(reason: string, code = 0): never {
   logErr(`exiting (${reason})`);
   process.exit(code);
 }
 
-/**
- * Pure predicate: has the parent process gone away since the bridge started?
- *
- * Two signals indicate parent death:
- *
- *   1. Current ppid is **1** (init/launchd) — the kernel reparented our
- *      orphan, meaning the original parent definitely died.
- *   2. Current ppid differs from the **initial** ppid — the agent's process
- *      tree shifted out from under us. (Rare in practice, but cheap to check.)
- *
- * Lifted into a pure function so unit tests can verify the predicate without
- * standing up actual parent processes.
- */
 export function isParentGone(initialPpid: number, currentPpid: number): boolean {
   return currentPpid === 1 || currentPpid !== initialPpid;
 }
 
-/**
- * Start a periodic check that the bridge's parent is still alive. When the
- * parent (Claude Code, Cursor, etc.) dies without closing stdin cleanly —
- * `kill -9`, terminal force-close, OS panic — the bridge's stdin pipe stays
- * "open" from the kernel's perspective but no reader on the other end will
- * ever consume bytes. The MCP SDK doesn't push messages without a peer
- * request, so without this watchdog the bridge sits idle forever (this is
- * exactly the 21-hour zombie observed on 2026-05-15).
- */
 function startParentWatchdog(): void {
   const initialPpid = process.ppid;
   const timer = setInterval(() => {
@@ -170,49 +42,14 @@ function startParentWatchdog(): void {
       exitWithReason(`parent gone (initial_ppid=${initialPpid}, current_ppid=${process.ppid})`);
     }
   }, PARENT_WATCHDOG_INTERVAL_MS);
-  // Don't keep the event loop alive solely for the watchdog — if every
-  // other handle releases, let the process exit naturally.
+
   timer.unref();
 }
 
-/**
- * Probe `/health` once with a tight timeout. Used by both the background
- * heartbeat and the active-send self-heal path. Reads the port via the
- * `portRef` closure so the function picks up post-self-heal port changes
- * automatically. Exported so the heal-primitive integration test can
- * exercise it against a real fake daemon without standing up the full
- * bridge subprocess (which would need Grove fixtures).
- */
-export async function probeDaemonHealth(portRef: { port: number }): Promise<boolean> {
-  try {
-    const res = await fetch(`http://127.0.0.1:${portRef.port}/health`, {
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!res.ok) return false;
-    const body = await res.json() as { myco?: boolean };
-    return body.myco === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Periodically probe the daemon's /health endpoint. On
- * DAEMON_HEARTBEAT_FAILURE_THRESHOLD consecutive failures, hand off to
- * the supplied `triggerSelfHeal` callback — which routes through the
- * same single-flight reconnect path as the send-error and onclose
- * paths. This handles the idle-bridge case where the user hasn't sent
- * a message in a while; without the heartbeat-triggered heal, the
- * stale upstream would only be discovered on the NEXT tool call.
- *
- * The bridge never exits from heartbeat failure (used to, but Claude
- * Code's MCP supervisor doesn't auto-respawn on exit, which left the
- * agent's MCP surface dead until manual /mcp reconnect).
- */
-function startDaemonHeartbeat(
+function startUpstreamHeartbeat(
   probe: () => Promise<boolean>,
   triggerSelfHeal: () => void,
-  intervalMs: number = DAEMON_HEARTBEAT_INTERVAL_MS,
+  intervalMs: number = DEPLOYMENT_HEARTBEAT_INTERVAL_MS,
 ): void {
   let consecutiveFailures = 0;
   const timer = setInterval(async () => {
@@ -222,8 +59,8 @@ function startDaemonHeartbeat(
       return;
     }
     consecutiveFailures++;
-    logErr(`daemon heartbeat failure ${consecutiveFailures}/${DAEMON_HEARTBEAT_FAILURE_THRESHOLD}`);
-    if (consecutiveFailures >= DAEMON_HEARTBEAT_FAILURE_THRESHOLD) {
+    logErr(`Deployment heartbeat failure ${consecutiveFailures}/${UPSTREAM_HEARTBEAT_FAILURE_THRESHOLD}`);
+    if (consecutiveFailures >= UPSTREAM_HEARTBEAT_FAILURE_THRESHOLD) {
       consecutiveFailures = 0; // reset so we don't double-fire
       logErr('heartbeat threshold reached — triggering self-heal');
       triggerSelfHeal();
@@ -236,12 +73,6 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/**
- * Narrow predicate: is `msg` a JSON-RPC request (i.e., expecting a
- * response)? Notifications have no `id`; requests have `id` as a
- * non-null number or string. The pump uses this to decide whether a
- * dropped message owes the agent a synthetic error response.
- */
 function isJsonRpcRequest(
   msg: unknown,
 ): msg is { jsonrpc: '2.0'; id: number | string; method: string } {
@@ -253,11 +84,6 @@ function isJsonRpcRequest(
   return (typeof id === 'number' || typeof id === 'string') && id !== '';
 }
 
-/**
- * Race a promise against a timeout. Used to bound upstream.send so a hung
- * half-open socket from a dead daemon can't sit forever waiting for the
- * OS TCP keepalive to fire (often minutes by default).
- */
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -272,78 +98,22 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
   }
 }
 
-/**
- * Build a fresh `StreamableHTTPClientTransport` against the daemon's
- * current state. Re-reads daemon.json (via DaemonClient.getInfo) so a
- * port or auth_token change since the bridge started is picked up.
- *
- * Caller is responsible for closing the prior upstream and wiring
- * onmessage / onclose / onerror on the returned transport.
- */
-function buildUpstreamForCurrentDaemon(
-  DaemonClient: typeof DaemonClientClass,
-  vaultDir: string,
-): { transport: StreamableHTTPClientTransport; port: number } | null {
-  const client = new DaemonClient(vaultDir);
-  const info = client.getInfo();
-  if (!info) return null;
-  const headers = buildBridgeRequestHeaders(vaultDir, process.env, info.auth_token);
-  const transport = new StreamableHTTPClientTransport(
-    new URL(`http://127.0.0.1:${info.port}/mcp`),
-    { requestInit: { headers } },
-  );
-  return { transport, port: info.port };
-}
-
-/** A resolved upstream: the transport to pump into, how to ask whether it is alive, and a label for the stderr trace. */
 interface Upstream {
   transport: StreamableHTTPClientTransport;
   probe: () => Promise<boolean>;
   label: string;
 }
 
-/**
- * Where the bridge's upstream comes from. The local daemon, resolved from
- * daemon.json on every rebuild, or the Deployment, resolved from the member
- * credential the command line declares. One self-heal loop serves both: a
- * source is re-read on every rebuild, so a daemon that moved ports or a
- * credential the hooks refreshed is picked up without the bridge knowing why.
- */
 interface UpstreamSource {
   describe: string;
-  /** The first upstream, taking whatever startup the source needs (the daemon is started if it is not running; the Deployment is probed once). */
-  first(): Promise<Upstream | null>;
-  /** The current upstream, freshly resolved, or null when the source has none right now. */
-  resolve(): Upstream | null;
-  /** How often the idle bridge probes this source's health. */
-  heartbeatMs: number;
-  /** How many rebuild attempts a self-heal makes before answering the waiting request with an error; null retries without end. */
-  maxHealAttempts: number | null;
-}
 
-async function daemonUpstreamSource(vaultDir: string): Promise<UpstreamSource> {
-  // The 1.4 daemon's client loads only when the bridge serves the local daemon, never for a credential's Deployment.
-  const { DaemonClient } = await import('../daemon/client.js');
-  const resolve = (): Upstream | null => {
-    const built = buildUpstreamForCurrentDaemon(DaemonClient, vaultDir);
-    if (!built) return null;
-    const portRef = { port: built.port };
-    return { transport: built.transport, probe: () => probeDaemonHealth(portRef), label: `daemon port ${built.port}` };
-  };
-  return {
-    describe: 'local daemon',
-    async first() {
-      const client = new DaemonClient(vaultDir);
-      const refusal = client.memberHomeRefusal();
-      if (refusal !== null) { logErr(refusal); return null; }
-      const ready = await client.ensureRunning();
-      if (!ready) return null;
-      return resolve();
-    },
-    resolve,
-    heartbeatMs: DAEMON_HEARTBEAT_INTERVAL_MS,
-    maxHealAttempts: null,
-  };
+  first(): Promise<Upstream | null>;
+
+  resolve(): Upstream | null;
+
+  heartbeatMs: number;
+
+  maxHealAttempts: number;
 }
 
 function deploymentUpstreamSource(source: CredentialSource): UpstreamSource {
@@ -358,8 +128,7 @@ function deploymentUpstreamSource(source: CredentialSource): UpstreamSource {
   };
   return {
     describe: `deployment (credential: ${source})`,
-    // A Deployment that does not answer at startup is a configuration error the
-    // agent should see at once, not a request left waiting.
+
     async first() {
       const upstream = resolve();
       if (!upstream) return null;
@@ -375,17 +144,6 @@ function deploymentUpstreamSource(source: CredentialSource): UpstreamSource {
   };
 }
 
-export function buildBridgeRequestHeaders(
-  vaultDir: string,
-  env: Record<string, string | undefined>,
-  authToken?: string | null,
-): Record<string, string> {
-  return {
-    ...requestContextHeaders(requestContextFromEnvironment(env, vaultDir, { launchContextTenancy: true })),
-    ...(authToken ? { [REQUEST_CONTEXT_AUTH_HEADER]: authToken } : {}),
-  };
-}
-
 export async function main(): Promise<void> {
   let source: CredentialSource | null;
   try {
@@ -394,7 +152,11 @@ export async function main(): Promise<void> {
     logErr((err as Error).message);
     process.exit(2);
   }
-  const upstreamSource = source === null ? await daemonUpstreamSource(resolveVaultDir()) : deploymentUpstreamSource(source);
+  if (source === null) {
+    logErr(credentialRequiredError().message);
+    process.exit(1);
+  }
+  const upstreamSource = deploymentUpstreamSource(source);
   const initial = await upstreamSource.first();
   if (!initial) {
     logErr(`${upstreamSource.describe}: no upstream to bridge stdio MCP to`);
@@ -404,31 +166,12 @@ export async function main(): Promise<void> {
   logErr(`bridge starting (pid=${process.pid}, ppid=${process.ppid}, upstream=${initial.label})`);
 
   let upstream = initial.transport;
-  // The probe of the CURRENT upstream, swapped with it on every self-heal so
-  // the heartbeat follows a rebuild without re-registering.
+
   let probe = initial.probe;
   const downstream = new StdioServerTransport();
 
-  // Single-flight reconnect mutex. While a reconnect is in progress, new
-  // downstream messages wait for it to settle before being sent.
   let reconnectInFlight: Promise<boolean> | null = null;
 
-  /**
-   * Wire all upstream handlers. Called on initial setup AND on every
-   * post-self-heal rebuild so the new transport routes messages back to
-   * the same downstream and we don't leak the previous instance's events.
-   *
-   * `onclose` fires on EVERY upstream death — daemon SIGTERM, network
-   * reset, planned teardown by our own reconnect path. Conflating these
-   * killed the bridge the moment a `make build` cycle restarted the
-   * daemon, leaving Claude Code holding a dead bridge that it doesn't
-   * auto-respawn (the next tool call hangs indefinitely). The reconnect
-   * path nulls out `onclose` before tearing down the superseded transport, so
-   * any fire we see here is daemon-driven — try the same self-heal
-   * sequence the send-error path uses, and only exit if it can't
-   * recover. Same single-flight (`reconnectInFlight`) prevents double-
-   * firing when send-error AND onclose both observe the same death.
-   */
   function wireUpstream(t: StreamableHTTPClientTransport): void {
     t.onmessage = (msg) => {
       downstream.send(msg).catch((err: Error) => logErr(`downstream send failed: ${err.message}`));
@@ -442,27 +185,12 @@ export async function main(): Promise<void> {
     t.onerror = (err) => logErr(`upstream: ${err.message}`);
   }
 
-  /**
-   * Re-resolve the daemon (re-read daemon.json) and swap upstream to a
-   * fresh transport. Indefinitely retries with the SELF_HEAL_PROBE_BACKOFFS_MS
-   * schedule (settling at the final interval), because the bridge never
-   * exits on daemon-down — Claude Code's MCP supervisor doesn't auto-
-   * respawn the bridge after exit, so giving up would leave the agent's
-   * MCP surface dead until manual /mcp reconnect. The only way out of
-   * this loop is success (returns true) or the parent-death watchdog
-   * firing (process.exit).
-   *
-   * Single-flight via `reconnectInFlight`: concurrent message sends and
-   * onclose handlers that trip the failure path while a reconnect is
-   * already underway await the same promise instead of each spawning
-   * their own rebuild.
-   */
   async function reconnectUpstream(): Promise<boolean> {
     if (reconnectInFlight) return reconnectInFlight;
     reconnectInFlight = (async () => {
-      logErr('self-heal: probing daemon and rebuilding upstream');
+      logErr('self-heal: probing Deployment and rebuilding upstream');
       for (let attempt = 0; ; attempt++) {
-        if (upstreamSource.maxHealAttempts !== null && attempt >= upstreamSource.maxHealAttempts) {
+        if (attempt >= upstreamSource.maxHealAttempts) {
           logErr(`self-heal: ${upstreamSource.describe} did not answer in ${attempt} attempts; the waiting request is answered with an error`);
           return false;
         }
@@ -477,8 +205,7 @@ export async function main(): Promise<void> {
           }
           continue;
         }
-        // Health-check the freshly-resolved upstream BEFORE swapping, so we
-        // don't tear down a working transport in favor of one not yet listening.
+
         const ok = await rebuilt.probe();
         if (!ok) {
           if (attempt === 0 || attempt % 5 === 0) {
@@ -487,9 +214,7 @@ export async function main(): Promise<void> {
           void rebuilt.transport.close().catch(() => undefined);
           continue;
         }
-        // Daemon is up at `rebuilt.port`. Tear down the superseded upstream
-        // (suppress its onclose so it doesn't drag the bridge down),
-        // swap, and wire the new one.
+
         const old = upstream;
         old.onclose = undefined;
         old.onerror = undefined;
@@ -506,7 +231,6 @@ export async function main(): Promise<void> {
           return true;
         } catch (err) {
           logErr(`self-heal: new upstream start() failed: ${(err as Error).message} — continuing to retry`);
-          // Drop through to the next attempt.
         }
       }
     })();
@@ -515,26 +239,7 @@ export async function main(): Promise<void> {
     return result;
   }
 
-  // Transparent JSON-RPC pump. The agent and the daemon's MCP server
-  // negotiate `initialize`, capabilities, and protocol version directly
-  // through this pipe; the bridge never interprets payloads.
-  //
-  // When upstream.send fails (synchronous network error) OR hangs past
-  // UPSTREAM_SEND_TIMEOUT_MS (half-open socket on a dead daemon), the
-  // self-heal path fires: re-resolve daemon, rebuild upstream, and
-  // RE-SEND the original message through the new transport. Claude
-  // Code's MCP client doesn't implement its own request retry, so a
-  // dropped JSON-RPC request would leave the agent waiting forever for
-  // a response that never comes — which is the exact "tool call hangs
-  // after make build" symptom Bucket J was supposed to fix.
-  //
-  // If re-send still fails after REQUEST_RESEND_MAX_ATTEMPTS, and the
-  // message was a request (has an `id`), we synthesize a JSON-RPC error
-  // response so the agent gets closure instead of a silent hang.
   downstream.onmessage = (msg) => {
-    // Wait for any in-flight reconnect to settle before forwarding, so a
-    // burst of messages during a daemon restart doesn't each try to
-    // independently rebuild upstream.
     const send = async (attempt = 0): Promise<void> => {
       if (reconnectInFlight) await reconnectInFlight;
       try {
@@ -547,7 +252,7 @@ export async function main(): Promise<void> {
           logErr(`self-heal succeeded; re-sending message through rebuilt upstream`);
           return send(attempt + 1);
         }
-        // Out of retries. Don't leave a JSON-RPC request unanswered.
+
         logErr(`upstream send still failing after ${attempt + 1} attempts; surfacing error to agent`);
         respondWithError(msg, `bridge could not deliver request after ${attempt + 1} attempts: ${errMsg}`);
       }
@@ -555,13 +260,6 @@ export async function main(): Promise<void> {
     send().catch((err: Error) => logErr(`downstream pump error: ${err.message}`));
   };
 
-  /**
-   * Synthesize a JSON-RPC error response for a dropped request so the
-   * agent gets closure. Notifications (no `id`) are dropped silently —
-   * that's the JSON-RPC contract: no response is expected, no response
-   * is owed. Best-effort: if downstream.send rejects, just log it; we
-   * tried.
-   */
   function respondWithError(originalMsg: unknown, reason: string): void {
     if (!isJsonRpcRequest(originalMsg)) return; // notifications get no response
     const errorResponse = {
@@ -577,7 +275,6 @@ export async function main(): Promise<void> {
     );
   }
 
-  // When downstream closes, tear down upstream and exit.
   downstream.onclose = () => {
     void upstream.close().finally(() => exitWithReason('downstream (agent) closed'));
   };
@@ -588,11 +285,8 @@ export async function main(): Promise<void> {
   await upstream.start();
   await downstream.start();
 
-  // Start liveness watchdogs only after the pipes are wired — if anything
-  // fails before this point, we'll have already exited via the catch path
-  // and the timers would never have fired.
   startParentWatchdog();
-  startDaemonHeartbeat(() => probe(), () => {
+  startUpstreamHeartbeat(() => probe(), () => {
     void reconnectUpstream().catch((err: Error) =>
       logErr(`heartbeat-triggered self-heal failed unexpectedly: ${err.message}`),
     );
