@@ -82,7 +82,7 @@ export const authSetupRefusals: ParityScenario = {
       for (const path of ['/auth/me', '/auth/login']) {
         const response = await fetch(url + path, { headers: { 'cf-connecting-ip': '1.2.3.4', 'x-test-sign-in-unconfigured': '1' }, redirect: 'manual' });
         expect(response.status).toBe(401);
-        expect(await response.json()).toMatchObject({ error: 'sign_in_unconfigured', reason: expect.stringContaining(`myco setup for ${url}`) });
+        expect(await response.json()).toMatchObject({ error: 'sign_in_unconfigured', reason: `GitHub sign-in is not set up for this Myco (${url}). On the machine that created it, run myco setup to finish sign-in, then reload this page. Manual path: myco server github-app --target local --url ${url} for self-hosting, or myco server github-app --target cloudflare --url ${url} for Cloudflare.` });
         expect(response.headers.get('location')).toBeNull();
       }
     } finally { await native?.stop(); }

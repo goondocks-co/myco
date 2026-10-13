@@ -249,7 +249,7 @@ if ($tag -eq 'stay-put') { Write-Host "Newest eligible release is older than ins
 if (-not $tag) { throw "No eligible Myco release found on channel $Channel; nothing was installed. For published alpha builds, retry with MYCO_CHANNEL=alpha. Check https://github.com/$Repo/releases" }
 Write-Host "Found: $tag" -ForegroundColor Cyan
 if ($Legacy -and -not $Replace14 -and -not $LegacyInstall) {
-    throw "Myco 1.4 is on this machine. Nothing was installed. To move to 2.0: $ReplaceCommand (equivalent to --replace-1.4, or -Replace14 when invoking the script), then run myco setup. Manual preview: myco cutover --dry-run. Guide: https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14"
+    throw "Myco 1.4 is on this machine. Nothing was installed. To move to 2.0: $ReplaceCommand (equivalent to --replace-1.4, or -Replace14 when invoking the script), then run myco setup --cutover. Manual path: myco login <your-myco-address>, then myco cutover --dry-run (changes nothing). Guide: https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14"
 }
 
 # ---------------------------------------------------------------------------
@@ -421,12 +421,14 @@ if ($LegacyInstall) {
     Write-Host "  Myco 1.4 was updated; its existing service and capture configuration were preserved."
     Write-Host "  To move to 2.0: $ReplaceCommand (equivalent to --replace-1.4)."
     Write-Host "  To install its managed service explicitly: myco service install"
-    Write-Host '  After installing 2.0, run `myco setup` to guide the move.'
+    Write-Host "  After installing 2.0, guide the move with:"
+    Write-Host '    myco setup --cutover'
 } elseif ($Legacy) {
     Write-Host "  2.0 took 1.4's place. Nothing was moved or deleted."
-    Write-Host '  Run `myco setup` to guide the move to 2.0.'
+    Write-Host "  To guide the move to 2.0, run:"
+    Write-Host '    myco setup --cutover'
     Write-Host "  Setup can also run Myco's work on an always-on machine (a runner)."
-    Write-Host "  For the manual path, preview with myco cutover --dry-run, then review before myco cutover."
+    Write-Host "  Manual path: myco login <your-myco-address>, then myco cutover --dry-run (changes nothing)."
 } elseif ($MemberHome) {
     Write-Host "  Refreshing this joined machine's agents: myco member provision --refresh"
     try {
@@ -438,7 +440,8 @@ if ($LegacyInstall) {
         Write-Warning "Refresh failed: $_ Run: myco member provision --refresh"
     }
 } else {
-    Write-Host '  Run `myco setup`.'
+    Write-Host "  Run:"
+    Write-Host '    myco setup'
     Write-Host "  Choose to start your own Myco, join one, or run Myco's work"
     Write-Host "  on an always-on machine (a runner)."
 }

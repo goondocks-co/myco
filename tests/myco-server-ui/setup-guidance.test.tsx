@@ -19,7 +19,7 @@ it('sends the unclaimed owner back to setup on the creating machine', () => {
 
 it('sends unconfigured GitHub sign-in back to setup for this address', () => {
   render(<SignedOut unconfigured />);
-  expect(screen.getByText(`GitHub sign-in is not set up for this Myco. Whoever created it must run myco setup for ${window.location.origin} on the machine that created it, then reload this page.`)).toBeTruthy();
+  expect(screen.getByText(`GitHub sign-in is not set up for this Myco (${window.location.origin}). On the machine that created it, run myco setup to finish sign-in, then reload this page. Manual path: myco server github-app --target local --url ${window.location.origin} for self-hosting, or myco server github-app --target cloudflare --url ${window.location.origin} for Cloudflare.`)).toBeTruthy();
 });
 
 it('explains how to replace an expired owner link through setup', async () => {

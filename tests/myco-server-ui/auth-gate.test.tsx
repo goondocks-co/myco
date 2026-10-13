@@ -57,7 +57,7 @@ describe('the auth gate', () => {
     const { asked } = server({ '/auth/me': () => Response.json({ error: 'sign_in_unconfigured' }, { status: 401 }) });
     mount('/projects');
     expect(await screen.findByRole('heading', { name: 'Set up GitHub sign-in' })).toBeTruthy();
-    expect(screen.getByText(new RegExp(`myco setup for ${window.location.origin}`))).toBeTruthy();
+    expect(screen.getByText(`GitHub sign-in is not set up for this Myco (${window.location.origin}). On the machine that created it, run myco setup to finish sign-in, then reload this page. Manual path: myco server github-app --target local --url ${window.location.origin} for self-hosting, or myco server github-app --target cloudflare --url ${window.location.origin} for Cloudflare.`)).toBeTruthy();
     expect(screen.queryByText('Sign in with GitHub')).toBeNull();
     expect(asked).toEqual(['/auth/me']);
   });

@@ -45,6 +45,7 @@ function checkReference(command: string): void {
     const context = flag === '--json' || flag === '--check-remote' ? ['--status'] : [];
     parseSetupOptions([flag, ...(flag in flagValues ? [flagValues[flag]] : []), ...context]);
   }
+  command = command.split(/[.!?;)](?=\s|$)/, 1)[0];
   const tokens = command.match(/<[^>]+>=[^\s]+|<[^>]+>|\[[^\]]+\]|[^\s]+/g) ?? [];
   const args: string[] = [];
   for (let index = 0; index < tokens.length; index++) {
@@ -66,7 +67,7 @@ it('shipped guided-setup references name only accepted, available flags', () => 
   const candidates = ['packages/myco/src', 'packages/myco-shared/src', 'packages/myco-server/ui/src', 'packages/myco/skills', 'plugins/myco/skills']
     .flatMap(directory => files(path.join(repo, directory)));
   candidates.push(...fs.readdirSync(path.join(repo, 'docs')).filter(file => file.endsWith('.md')).map(file => path.join(repo, 'docs', file)));
-  candidates.push(path.join(repo, 'README.md'));
+  candidates.push(...['README.md', 'docs/install.sh', 'docs/install.ps1'].map(file => path.join(repo, file)));
   for (const file of candidates) for (const [index, line] of fs.readFileSync(file, 'utf8').split('\n').entries()) {
     for (const reference of line.matchAll(/\bmyco setup\b(?!-)(.*?)(?=\bmyco setup\b|[`"'\n]|$)/g)) {
       expect(() => checkReference(reference[1]), `${path.relative(repo, file)}:${index + 1}: ${reference[0]}`).not.toThrow();
@@ -115,4 +116,11 @@ it('front doors lead with invitations and admin-linked dashboard access before a
     expect(text, file).toContain('https://myco.sh/install.sh');
     expect(text, file).toContain('https://myco.sh/install.ps1');
   }
+});
+
+it('installer command boundaries keep following prose outside the setup arguments', () => {
+  for (const reference of [')', '--cutover. Manual path: myco login <address>', '--cutover. Nothing of 1.4 would be moved']) {
+    expect(() => checkReference(reference)).not.toThrow();
+  }
+  expect(() => checkReference('--invented. Manual path: myco login <address>')).toThrow();
 });

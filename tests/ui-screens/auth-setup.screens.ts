@@ -51,7 +51,7 @@ for (const mode of ['light', 'dark'] as const) {
         }
         if (scenario.state === 'unconfigured') {
           await expect(page.getByText('Sign in with GitHub')).toHaveCount(0);
-          await expect(page.getByText(`myco setup for ${origin}`, { exact: false })).toBeVisible();
+          await expect(page.getByText(`myco server github-app --target local --url ${origin} for self-hosting, or myco server github-app --target cloudflare --url ${origin} for Cloudflare.`, { exact: false })).toBeVisible();
         }
         if (scenario.name === 'owner-link-missing') await expect(page.getByText('Ask an admin of this server', { exact: false })).toHaveCount(0);
         if (['projects-empty', 'device-unclaimed', 'owner-link-expired', 'owner-link-missing', 'owner-unclaimed', 'sign-in-unconfigured', 'link-unconfigured'].includes(scenario.name)) await expect(page.locator('body')).toContainText('myco setup');

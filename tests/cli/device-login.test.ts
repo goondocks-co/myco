@@ -39,7 +39,7 @@ describe('terminal device sign-in', () => {
           stderr: line => errors.push(line), stdout: line => lines.push(line),
           fetch: async () => Response.json({ error }, { status }),
         })).toBe(false);
-        expect(errors).toEqual(['myco login: https://s has no owner yet, so nobody can approve this machine. Whoever created it finishes with myco setup on the machine that created it, then run myco setup --join https://s again. (no_owner)']);
+        expect(errors).toEqual(['myco login: https://s has no owner yet, so nobody can approve this machine. Whoever created it finishes with myco setup on the machine that created it, then run myco setup --join https://s. (no_owner)']);
       }
     });
   }

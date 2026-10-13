@@ -74,17 +74,19 @@ Choose a Deployment and keep a backup of the old home before replacing its binar
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh -s -- --dry-run --replace-1.4
 curl -fsSL https://myco.sh/install.sh | sh -s -- --replace-1.4
-myco setup
+myco setup --cutover
 ```
 
-Setup guides the move, previews changes and resumes after interruption. For the manual path, sign in to the chosen Deployment and preview:
+Setup guides the move, previews changes and resumes after interruption. Use `--no-cutover` to leave the move pending. Repeat `--route <projectId>=<url>` to choose project destinations and `--skip <projectId>` to leave chosen history and spools in place.
+
+For the manual path, sign in to the chosen Deployment and preview:
 
 ```bash
 myco login <address>
 myco cutover --dry-run
 ```
 
-Review every destination and proposed agent and service change before `myco cutover`. For several Deployments, sign in to each first. Use `--route <id>=<url>` for an explicit project destination, `--skip <id>` to leave history and spool in place, and `--map <old-dir>=<repo-root>` for transcripts from old directories. Preview with the same options you will apply. An unresolved or conflicting route needs a decision, not a guessed default.
+Review every destination and proposed agent and service change before `myco cutover`. For several Deployments, sign in to each first. Use `--route <id>=<url>` for an explicit project destination, `--skip <id>` to leave history and spool in place, and, on the manual cutover command, `--map <old-dir>=<repo-root>` for transcripts from old directories. Preview with the same options you will apply. An unresolved or conflicting route needs a decision, not a guessed default.
 
 Cutover preserves original vaults, verifies copies and records history and transcript progress separately in `~/.myco/member/cutover.json`. A partial import remains unfinished; fix the named problem and rerun. It reports old extra plan folders; add wanted folders under **My machines** → **Extra plan folders**. Verify imported history and a new captured session before retiring old data. See [Moving from 1.4](https://myco.sh/upgrade#upgrading-from-myco-14) for fallback routing and additional homes.
 

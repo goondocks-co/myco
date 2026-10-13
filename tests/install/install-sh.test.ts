@@ -256,7 +256,7 @@ describe('the Myco 2.0 installer', () => {
     expect(spawnSync(path.join(home, '.myco', 'bin', 'myco'), ['--version'], { cwd: home, env: sandboxChildEnv(home), encoding: 'utf8' }).stdout.trim()).toBe('2.0.0-beta.1');
     expect(fs.readFileSync(path.join(home, '.zshenv'), 'utf8')).toContain(`export PATH="${path.join(home, '.myco', 'bin')}:$PATH"`);
     expect(run.out).toContain('Myco 2.0.0-beta.1 installed to');
-    expect(run.out).toContain("  Run `myco setup`.\n  It guides you through starting your own Myco, joining one, or running\n  Myco's work on an always-on machine (a runner).");
+    expect(run.out).toContain("  Run:\n    myco setup\n  It guides you through starting your own Myco, joining one, or running\n  Myco's work on an always-on machine (a runner).");
     expect(run.out).not.toContain('cutover');
     expect(run.out).not.toContain('service install');
     // A second run changes nothing it already set up.
@@ -317,7 +317,7 @@ exec '${mv}' "$@"
       expect(fs.existsSync(path.join(mycoHome, 'commands.log'))).toBe(false);
       expect(run.out).toContain('myco host enable --hostname fixture-host --designate-default --emit-join');
       expect(run.out).not.toContain('myco login');
-      expect(run.out).toContain('After installing 2.0, run `myco setup` to guide the move.');
+      expect(run.out).toContain('After installing 2.0, guide the move with:\n    myco setup --cutover');
       expect(run.out).not.toContain('invite link');
       expect(run.out).not.toContain('myco server create');
     }
@@ -392,7 +392,7 @@ exec '${mv}' "$@"
       const run = install(home, from(sources.recording));
       expect(run.status).toBe(0);
       expect(fs.existsSync(path.join(home, '.myco', 'commands.log'))).toBe(false);
-      expect(run.out).toContain('Run `myco setup`.');
+      expect(run.out).toContain('Run:\n    myco setup');
     });
   });
 
@@ -474,7 +474,7 @@ exec '${mv}' "$@"
         expect(run.out).toContain("curl --proto '=https' --tlsv1.2 -fsSL https://myco.sh/install.sh | sh -s -- --replace-1.4");
         expect(run.out).toContain('myco cutover --dry-run');
         expect(run.out).toContain("moment until the machine is moved to 2.0. To move it, run:");
-        expect(run.out).toContain("    myco setup\n  Setup guides the move. Manual preview: myco cutover --dry-run");
+        expect(run.out).toContain("    myco setup --cutover\n  Setup guides the move.\n  Manual path: myco login <your-myco-address>, then myco cutover --dry-run (changes nothing).");
         expect(run.out).not.toContain('invite link');
         expect(run.out).toContain('docs/upgrade.md#upgrading-from-myco-14');
         expect(files(legacy.home)).toEqual(before);
@@ -489,7 +489,7 @@ exec '${mv}' "$@"
         expect(run.status).toBe(0);
         expect(spawnSync(legacy.binary, ['--version'], { cwd: legacy.home, env: sandboxChildEnv(legacy.home), encoding: 'utf8' }).stdout.trim()).toBe('2.0.0-beta.1');
         expect(run.out).toContain('2.0 took its place, so 1.4 captures nothing until you move over.');
-        expect(run.out).toContain("  Nothing was moved over. Run `myco setup` to guide the move to 2.0.\n  It also offers running Myco's work on an always-on machine (a runner).\n  Manual path: myco cutover --dry-run previews every change; changes nothing.\n  Review the preview before running myco cutover.\n  The 1.4 vaults stay where they are; the cutover copies and imports them.");
+        expect(run.out).toContain("  Nothing was moved over. To guide the move to 2.0, run:\n    myco setup --cutover\n  It also offers running Myco's work on an always-on machine (a runner).\n  Manual path: myco login <your-myco-address>, then myco cutover --dry-run (changes nothing).\n  Review the preview before running myco cutover.\n  The 1.4 vaults stay where they are; the cutover copies and imports them.");
 
         expect(run.out).toContain('myco cutover --dry-run');
         expect(fs.readFileSync(legacy.vault, 'utf8')).toBe('a 1.4 vault');
@@ -538,10 +538,12 @@ exec '${mv}' "$@"
       expect(refused.status).toBe(0);
       expect(refused.out).toContain('Myco 1.4 is on this machine');
       expect(refused.out).toContain('so it would install nothing.');
+      expect(refused.out).toContain('until you run myco setup --cutover.');
       expect(refused.out).not.toContain('Would install');
       const replaced = install(legacy.home, FROM(), ['--dry-run', '--replace-1.4']);
       expect(replaced.out).toContain('Would install');
       expect(replaced.out).toContain('--replace-1.4 was given, so 2.0 would take its place');
+      expect(replaced.out).toContain('until you run myco setup --cutover.');
       expect(files(legacy.home)).toEqual(before);
     });
   });
@@ -795,4 +797,8 @@ exec '${mv}' "$@"
     expect(result.stdout).toBe('');
     expect(result.status).toBe(0);
   });
+});
+
+it('installer help hands a 1.4 replacement to guided setup', () => {
+  expect(install(freshHome(), FROM(), ['--help']).out).toContain('--replace-1.4   install over Myco 1.4 (then run myco setup)');
 });
