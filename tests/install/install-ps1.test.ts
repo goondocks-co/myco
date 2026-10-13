@@ -89,7 +89,7 @@ int main(int argc, char **argv) {
   & ${quote(file)} ${opts.install ? '' : '-DryRun'} ${opts.replace ? '-Replace14' : ''}
   `;
   const run = spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', program], {
-    cwd: home, env: sandboxChildEnv(home, { PROCESSOR_ARCHITECTURE: 'AMD64', PROCESSOR_ARCHITEW6432: '', LOCALAPPDATA: home,
+    cwd: home, env: sandboxChildEnv(home, { NO_COLOR: '1', PROCESSOR_ARCHITECTURE: 'AMD64', PROCESSOR_ARCHITEW6432: '', LOCALAPPDATA: home,
       MYCO_BIN_DIR: bin, ...(opts.probe ? { MYCO_PROBE_LOG: path.join(home, 'probe-env.log') } : {}), ...(opts.channel ? { MYCO_CHANNEL: opts.channel } : {}) }),
     encoding: 'utf8', timeout: 60_000,
   });
