@@ -68,8 +68,8 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
       id: 'legacy',
       ...(migration.state === 'unavailable' ? { legacyError: migration.detail } : {}),
       scope: migration.state === 'unavailable' ? migration.file : home,
-      state: guidance.status === 'unavailable' ? 'unavailable' : guidance.status === 'deferred' ? 'incomplete' : 'complete',
-      detail: [migration.state, guidance.deferral ?? guidance.hint ?? 'No Myco 1.4 capture blocks setup.', guidance.warning].filter(Boolean).join(' '),
+      state: migration.state === 'unavailable' ? 'unavailable' : migration.state === 'none' || migration.state === 'moved' ? 'complete' : 'incomplete',
+      detail: [migration.state, guidance.deferral ?? guidance.hint ?? (migration.state === 'none' || migration.state === 'moved' ? 'No Myco 1.4 migration remains.' : 'Migration is unfinished; keep the 1.4 data and run myco setup --cutover to preview and resume.'), guidance.warning].filter(Boolean).join(' '),
       ...(guidance.hint === null ? {} : { hint: guidance.hint }),
     });
   });

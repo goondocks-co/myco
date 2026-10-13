@@ -13,12 +13,14 @@ import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { conductSetup, type SetupDeps } from '@myco/setup/steps.js';
 import { askOnTerminal, askRequired } from '@myco/setup/prompt.js';
 import { APP_NAME_MAX } from '@myco/server/github-app.js';
+import { parseArgs as parseCutoverArgs } from '@myco/cli/cutover.js';
+import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 
 export const SETUP_HELP = `Usage: myco setup [options]
 
 Guide this machine through starting or joining a Myco, or becoming a runner.
-Run again to resume from observed state. For legacy migration, use
-myco cutover --dry-run.
+Run again to resume from observed state, including moving Myco 1.4.
+Use myco cutover --dry-run for the manual migration path.
 
   --create cloudflare|local     Start a Deployment (local is loopback only)
   --account-id <id>             Cloudflare account (32 hexadecimal characters)
@@ -32,6 +34,9 @@ myco cutover --dry-run.
   --root <dir>                  Repository to connect (default: current repository)
   --default | --keep-default    Choose the default for new repositories
   --no-agents                   Leave agent setup declined
+  --cutover | --no-cutover       Move 1.4 after preview, or leave it pending
+  --route <projectId>=<url>      Choose a legacy project's destination; repeat
+  --skip <projectId>            Leave a legacy project's history on disk; repeat
   --run-work | --no-runner       Choose whether a joining machine also runs work
   --runner <host>               Register an always-on runner (no membership needed)
   --runner-name <name>          Name for a new runner
@@ -61,7 +66,7 @@ export function parseSetupOptions(args: readonly string[]): Options {
   const exclusive = (a: string, b: string) => { if (seen.has(a) && seen.has(b)) throw new Error(`${a} and ${b} cannot be combined`); };
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
-    if (seen.has(arg)) throw new Error(`duplicate option ${arg}`);
+    if (seen.has(arg) && arg !== '--route' && arg !== '--skip') throw new Error(`duplicate option ${arg}`);
     seen.add(arg);
     const value = (): string => {
       const next = args[++index];
@@ -139,12 +144,29 @@ export function parseSetupOptions(args: readonly string[]): Options {
         if (serve !== 'service' && serve !== 'terminal') throw new Error('--serve needs service or terminal');
         options.answers.serve = serve; break;
       }
-      case '--cutover': case '--no-cutover': case '--route': case '--skip': throw new Error('Guided migration is not available here yet; use myco cutover --dry-run.');
+      case '--cutover': options.answers.cutover = true; break;
+      case '--no-cutover': options.answers.cutover = false; break;
+      case '--route': case '--skip': {
+        const parsed = parseCutoverArgs([arg, value()]);
+        if (parsed.error) throw new Error(parsed.error);
+        if (arg === '--route') {
+          options.answers.routes ??= {};
+          for (const [id, url] of parsed.routes) {
+            const origin = runnerServerUrl(url);
+            if (origin === null) throw new Error('--route needs <projectId>=<Deployment origin>, with no account, password, path or query');
+            if (options.answers.routes[id] !== undefined && options.answers.routes[id] !== origin) throw new Error(`${id} has conflicting --route values`);
+            options.answers.routes[id] = origin;
+          }
+        } else options.answers.skips = [...new Set([...(options.answers.skips ?? []), ...parsed.skips])];
+        break;
+      }
       default: throw new Error('unknown setup option; run myco setup --help');
     }
   }
   for (const [a, b] of [['--join', '--runner'], ['--create', '--join'], ['--create', '--runner'], ['--project', '--new'], ['--default', '--keep-default'], ['--run-work', '--no-runner'], ['--status', '--change']]) exclusive(a, b);
   validateCreationOptions(options.answers);
+  exclusive('--cutover', '--no-cutover');
+  for (const id of options.answers.skips ?? []) if (options.answers.routes?.[id] !== undefined) throw new Error(`${id}: choose exactly one of --route or --skip`);
   if ((options.json || options.checkRemote) && !options.status) throw new Error('--json and --check-remote require --status');
   return options;
 }
@@ -167,10 +189,20 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
       || (options.answers.role === 'create' && (file.answers.role !== 'create' || options.answers.target !== file.answers.target));
     const newProjectChanged = options.answers.newProject !== undefined && (options.answers.newProject !== file.answers.newProject
       || changedTarget || (options.answers.root !== undefined && options.answers.root !== file.answers.root));
-    file.answers = { ...(options.change || changedTarget ? {} : file.answers), ...options.answers };
+    const previousAnswers = options.change || changedTarget ? {} : file.answers;
+    file.answers = { ...previousAnswers, ...options.answers };
     validateCreationOptions(file.answers);
     if (options.answers.project !== undefined) delete file.answers.newProject;
     if (options.answers.newProject !== undefined) delete file.answers.project;
+    if (options.answers.routes) {
+      file.answers.routes = { ...previousAnswers.routes, ...options.answers.routes };
+      file.answers.skips = previousAnswers.skips?.filter(id => options.answers.routes![id] === undefined);
+    }
+    if (options.answers.skips) {
+      file.answers.skips = [...new Set([...(file.answers.skips ?? previousAnswers.skips ?? []), ...options.answers.skips])];
+      file.answers.routes = { ...previousAnswers.routes, ...file.answers.routes };
+      for (const id of options.answers.skips) delete file.answers.routes?.[id];
+    }
     if (options.status) {
       file.answers.root = options.answers.root ?? statusRepository(deps.cwd ?? process.cwd());
       const observations = await observeSetupStatus(home, file.answers, { ...deps, checkRemote: options.checkRemote }, options.answers.role !== undefined);
@@ -179,6 +211,9 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
       return setupExitCode(observations);
     }
     const ask = deps.ask ?? askOnTerminal;
+    const migration = legacyMigrationState(home);
+    if (migration.state === 'unavailable') throw new Error(`Legacy migration state unavailable: ${migration.detail}. Restore access, then run myco setup again.`);
+    if (migration.state !== 'none' && migration.state !== 'moved') out(`Myco 1.4 sources found (${migration.state}). Setup will preview moving them after sign-in. No legacy binary is executed.`);
     if (!file.answers.role) {
       const role = await askRequired(ask, 'What should this machine do? 1) Start a new Myco 2) Join a Myco 3) Run Myco’s work', '--create cloudflare|local, --join <address> or --runner <address>');
       if (!['1', '2', '3'].includes(role)) throw new Error('Choose 1, 2 or 3; run myco setup --help for the available choices.');
@@ -197,7 +232,7 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     if (file.answers.role === 'join') file.answers.root ??= resolveMemberProjectRoot(deps.cwd);
     if (file.answers.role === 'create') file.answers.root ??= statusRepository(deps.cwd ?? process.cwd());
     saveSetupFile(home, file);
-    await conductSetup(home, file, { ...deps, loginAddress: options.address }, { yes: options.yes, explicitJoin: options.answers.role === 'join', explicitDefault: args.includes('--default'), explicitProject: args.includes('--project'), newProjectChanged });
+    await conductSetup(home, file, { ...deps, loginAddress: options.address }, { yes: options.yes, explicitJoin: options.answers.role === 'join', explicitLegacyPlacement: args.includes('--route') || args.includes('--skip'), explicitDefault: args.includes('--default'), explicitProject: args.includes('--project'), newProjectChanged });
     return 0;
   } catch (error) {
     err(`myco setup: ${error instanceof Error ? error.message : String(error)}`);

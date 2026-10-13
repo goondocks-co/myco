@@ -13,6 +13,25 @@ afterEach(() => { for (const root of roots.splice(0)) {
   fs.rmSync(root, { recursive: true, force: true });
 } });
 const repo = fileURLToPath(new URL('../../', import.meta.url));
+for (const stub of [true, false]) {
+  it(`legacy setup ${stub ? 'uses its injected runner' : 'refuses before real platform execution'}`, () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-setup-service-'));
+    roots.push(root);
+    const env = sandboxChildEnv(root, { MYCO_TEST_RUN_ROOT: root, MYCO_SETUP_FIXTURE_ROOT: root,
+      ...(stub ? { MYCO_NATIVE_SERVICE_STUB: '1' } : {}) });
+    const child = spawnSync(process.execPath, ['test', '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'),
+      '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/legacy_service_boundary_test.ts')],
+    { env, cwd: root, encoding: 'utf8', timeout: 30_000 });
+    if (stub) {
+      expect({ status: child.status, stderr: child.stderr }).toMatchObject({ status: 0 });
+      expect(() => assertNoServiceExecutions(env.MYCO_TEST_SERVICE_GUARD_DIR!)).not.toThrow();
+    } else {
+      expect(child.status).not.toBe(0);
+      expect(child.stderr).toContain('TEST SAFETY');
+      expect(() => assertNoServiceExecutions(env.MYCO_TEST_SERVICE_GUARD_DIR!)).toThrow('TEST SAFETY');
+    }
+  });
+}
 for (const operation of ['inspect', 'prepare', 'recover', 'setup-status', 'setup-create']) for (const stub of [true, false]) {
   it(`native setup ${operation} ${stub ? 'uses its injected runner' : 'refuses before real platform execution'}`, () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-setup-service-'));

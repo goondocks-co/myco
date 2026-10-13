@@ -46,6 +46,9 @@ import { peekLocalPaths, readLocalSecrets, createLocalDeployment, DEFAULT_LOCAL_
 import { runJoin } from '@myco/cli/member.js';
 import { cloudflareOwnerLinked } from '@myco/server/cloudflare-owner.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { legacyJourney, LEGACY_URLS } from './fixtures/legacy-journey.js';
+import { planCutover, runCutover } from '@myco/cli/cutover.js';
+import { readCutoverState } from '@myco/member/legacy-migration.js';
 
 const URL = 'https://setup.invalid';
 const fakeFetch = (fn: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>): typeof fetch => Object.assign(fn, { preconnect: () => {} });
@@ -84,6 +87,310 @@ function snapshot(directory: string): unknown {
     return [name, stat.mode, stat.mtimeMs, stat.isDirectory() ? snapshot(file) : stat.isSymbolicLink() ? fs.readlinkSync(file) : fs.readFileSync(file).toString('base64')];
   });
 }
+
+describe('legacy journey (e)', () => {
+  const flags = ['--join', LEGACY_URLS[0], '--cutover', '--no-agents', '--no-runner', '--yes'];
+  const rig = async (options: { multi?: boolean; missing?: boolean; agents?: string[] } = {}) => {
+    const fixture = await legacyJourney(path.join(root, 'journey-e'), options);
+    closers.push(fixture.close);
+    home = fixture.legacy.mycoHome;
+    return { ...fixture, deps: { ...fixture.deps, stdout: (line: string) => lines.push(line), stderr: (line: string) => errors.push(line) } };
+  };
+
+  for (const multi of [false, true]) it(`moves the coherent 1.4 home to ${multi ? 'two destinations' : 'one destination'} and resumes without duplicates`, async () => {
+    const fixture = await rig({ multi });
+    expect(JSON.parse(fs.readFileSync(path.join(root, 'journey-e', 'legacy-fixture.json'), 'utf8'))).not.toHaveProperty('env');
+    const before = fs.readFileSync(fixture.legacy.vault);
+    const userFile = fs.readFileSync(path.join(home, 'unmanaged.txt'));
+    const binary = fs.readFileSync(fixture.legacy.binary);
+    expect({ code: await run(flags, fixture.deps), errors }).toEqual({ code: 0, errors: [] });
+    expect(errors).toEqual([]);
+    expect(legacyMigrationState(home).state).toBe('moved');
+    const receipts = readCutoverState(home).migrations![fixture.legacy.vault]!;
+    for (const [index, project] of fixture.legacy.projects.entries()) {
+      const destination = multi ? LEGACY_URLS[index]! : LEGACY_URLS[0];
+      expect(receipts.projects[project.id]!.destination).toMatchObject({ serverUrl: destination });
+      expect(readRegistryEntry(project.root, home)?.serverUrl).toBe(destination);
+    }
+    const posts = fixture.calls.filter(call => call.route === '/events' || call.route === '/spores/save').length;
+    expect(posts).toBeGreaterThan(0);
+    expect(await run(['--yes'], fixture.deps)).toBe(0);
+    expect(fixture.calls.filter(call => call.route === '/events' || call.route === '/spores/save')).toHaveLength(posts);
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(before);
+    expect(fs.readFileSync(fixture.legacy.binary)).toEqual(binary);
+    expect(fs.readFileSync(path.join(home, 'unmanaged.txt'))).toEqual(userFile);
+    expect(lines.join('\n')).toContain('cutover preview (dry run)');
+    expect(lines.join('\n')).toContain('1.4 data kept');
+    expect(lines.join('\n')).toContain('already-open session');
+    const snapshotBefore = snapshot(root);
+    expect(await run(['--status', '--json'], fixture.deps)).toBe(0);
+    expect(snapshot(root)).toEqual(snapshotBefore);
+  });
+
+  for (const choice of ['route', 'skip', 'interactive'] as const) it(`requires an explicit destination for an absent project, then accepts ${choice}`, async () => {
+    const fixture = await rig({ missing: true });
+    const pending = fixture.legacy.projects[1]!;
+    const vault = fs.readFileSync(fixture.legacy.vault);
+    const skippedSpool = new MemberSpool({ serverUrl: LEGACY_URLS[0], projectId: pending.id }, { mycoHome: home });
+    skippedSpool.append('retained-skip', { envelope: { eventId: mintId(), sessionId: 'retained-skip', kind: 'prompt', createdAt: 1, channel: 'cli', producer: { adapter: 'claude-code', version: 'fixture' }, payload: { promptId: mintId(), text: 'Keep skipped capture', origin: 'user' } } });
+    const spoolBytes = snapshot(skippedSpool.dir);
+    expect(await run(flags, fixture.deps)).toBe(2);
+    expect(errors.join('\n')).toContain(`--route ${pending.id}=<url> or --skip ${pending.id}`);
+    expect(lines.join('\n')).toContain(`${pending.id}: undecided`);
+    expect(readCutoverState(home).migrations).toBeUndefined();
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(vault);
+    const extra = choice === 'route' ? ['--route', `${pending.id}=${LEGACY_URLS[1]}`] : choice === 'skip' ? ['--skip', pending.id] : [];
+    expect(await run(['--yes', ...extra], { ...fixture.deps, ...(choice === 'interactive' ? { ask: async () => LEGACY_URLS[1] } : {}) })).toBe(0);
+    const destination = readCutoverState(home).migrations![fixture.legacy.vault]!.projects[pending.id]!.destination;
+    expect(destination).toMatchObject(choice === 'skip' ? { skip: true } : { serverUrl: LEGACY_URLS[1] });
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(vault);
+    expect(snapshot(skippedSpool.dir)).toEqual(spoolBytes);
+  });
+
+  it('a saved cutover choice grants no consent, and a declined preview changes no legacy data', async () => {
+    const fixture = await rig();
+    const args = flags.filter(flag => flag !== '--yes');
+    const bytes = fs.readFileSync(fixture.legacy.vault);
+    expect(await run(args, fixture.deps)).toBe(2);
+    expect(errors.join('\n')).toContain('--yes or an interactive terminal');
+    expect(readSetupFile(home).consented.cutover).toBeUndefined();
+    expect(await run([], { ...fixture.deps, ask: async () => 'no' })).toBe(2);
+    expect(readCutoverState(home).migrations).toBeUndefined();
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
+    expect(await run(['--yes'], fixture.deps)).toBe(0);
+  });
+
+  it('keeps a terminal refusal partial and resumes without uploading the completed destination again', async () => {
+    const fixture = await rig({ multi: true });
+    const bytes = fs.readFileSync(fixture.legacy.vault);
+    const refusing = fakeFetch(async (input, init) => {
+      const request = new Request(input, init);
+      const url = new globalThis.URL(request.url);
+      if (url.origin === LEGACY_URLS[1] && url.pathname === '/events') return Response.json({ error: 'forbidden' }, { status: 403 });
+      return fixture.deps.fetch!(input, init);
+    });
+    expect(await run(flags, { ...fixture.deps, fetch: refusing })).toBe(2);
+    expect(legacyMigrationState(home).state).toBe('partial');
+    expect(errors.join('\n')).toContain('migration remains partial');
+    fixture.calls.length = 0;
+    expect(await run(['--yes'], fixture.deps)).toBe(0);
+    expect(fixture.calls.filter(call => call.url === LEGACY_URLS[0] && (call.route === '/events' || call.route === '/spores/save'))).toEqual([]);
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
+  });
+
+  for (const state of ['unmoved', 'needs-destination', 'handover-pending', 'partial', 'changed', 'moved'] as const) it(`handles coherent migration state ${state} and keeps source bytes`, async () => {
+    const fixture = await rig();
+    if (state !== 'unmoved') {
+      expect(await run(flags, fixture.deps)).toBe(0);
+      const record = readCutoverState(home);
+      if (state === 'needs-destination') delete record.migrations;
+      if (state === 'handover-pending') delete record.handover;
+      if (state === 'partial') record.migrations![fixture.legacy.vault]!.projects[fixture.legacy.projects[0]!.id]!.transcripts!.state = 'partial';
+      fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify(record), { mode: 0o600 });
+      if (state === 'partial') {
+        const receipt = record.migrations![fixture.legacy.vault]!.projects[fixture.legacy.projects[0]!.id]!;
+        receipt.destinations![deploymentKeyFor(LEGACY_URLS[0])]!.transcripts!.state = 'partial';
+        fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify(record));
+      }
+      if (state === 'changed') {
+        const db = new Database(fixture.legacy.vault);
+        try { db.run("UPDATE spores SET content = 'Changed 1.4 capture'"); } finally { db.close(); }
+        const stat = fs.statSync(fixture.legacy.vault);
+        fs.utimesSync(fixture.legacy.vault, stat.atime, new Date(stat.mtimeMs + 1000));
+      }
+    }
+    expect(legacyMigrationState(home).state).toBe(state);
+    const before = fs.readFileSync(fixture.legacy.vault);
+    const snapshotBefore = snapshot(root);
+    expect(await run(['--status', '--json'], fixture.deps)).toBe(state === 'moved' ? 0 : 3);
+    expect(snapshot(root)).toEqual(snapshotBefore);
+    lines = []; errors = [];
+    const result = await run(flags, fixture.deps);
+    expect({ result, errors }).toEqual({ result: state === 'changed' ? 2 : 0, errors: expect.any(Array) });
+    if (state === 'changed') {
+      expect(lines.join('\n')).toContain('Keep the 1.4 files');
+      expect(errors.join('\n')).toContain('changed plans require fresh consent');
+      expect(await run(['--cutover'], { ...fixture.deps, ask: async () => 'yes' })).toBe(0);
+    }
+    expect(legacyMigrationState(home).state).toBe('moved');
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(before);
+  });
+
+  it('declining leaves migration pending and an unreadable receipt stops before a remote flow', async () => {
+    const fixture = await rig();
+    const before = snapshot(home);
+    expect(await run(['--status', '--json'], fixture.deps)).toBe(3);
+    expect(snapshot(home)).toEqual(before);
+    expect(await run([...flags.filter(flag => flag !== '--cutover'), '--no-cutover'], fixture.deps)).toBe(2);
+    expect(readCutoverState(home).migrations).toBeUndefined();
+    expect(errors.join('\n')).toContain('myco setup --cutover');
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), '{', { mode: 0o600 });
+    fixture.calls.length = 0;
+    const unavailable = snapshot(home);
+    expect(await run(flags, fixture.deps)).toBe(2);
+    expect(fixture.calls).toEqual([]);
+    expect(snapshot(home)).toEqual(unavailable);
+  });
+
+  it('signs in with agent provisioning deferred before previewing cutover, without executing 1.x', async () => {
+    const fixture = await rig();
+    const membership = readDeploymentMembership(LEGACY_URLS[0], home)!;
+    fs.unlinkSync(deploymentPath(LEGACY_URLS[0], home));
+    const sentinel = path.join(root, 'executed-legacy');
+    fs.writeFileSync(fixture.legacy.binary, `#!/bin/sh\ntouch '${sentinel}'\n`, { mode: 0o755 });
+    fs.chmodSync(fixture.legacy.binary, 0o755);
+    let signedIn = false;
+    const deps = { ...fixture.deps, login: async (_args: readonly string[], loginDeps?: Parameters<typeof login>[1]) => {
+      expect(loginDeps?.provision).toBe('defer');
+      writeDeploymentMembership(membership, { mycoHome: home });
+      signedIn = true;
+      throw new DOMException('interrupted after sign-in', 'AbortError');
+    }, planCutover: (...args: Parameters<typeof planCutover>) => { expect(signedIn).toBe(true); return planCutover(...args); } };
+    const bytes = fs.readFileSync(fixture.legacy.vault);
+    expect(await run(flags, deps)).toBe(2);
+    expect(signedIn).toBe(true);
+    expect(readCutoverState(home).migrations).toBeUndefined();
+    expect(await run(['--yes'], deps)).toBe(0);
+    expect(fs.existsSync(sentinel)).toBe(false);
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
+  });
+
+  it('creates a native Deployment with G before conducting the legacy move', async () => {
+    const fixture = await rig();
+    const address = 'http://127.0.0.1:8787';
+    const owner = ownerDeployment(root, home, 'local', address);
+    closers.unshift(owner.close);
+    const deps = { ...fixture.deps, ...owner.deps, stdout: (line: string) => lines.push(line), stderr: (line: string) => errors.push(line), sleep: async () => {} };
+    const bytes = fs.readFileSync(fixture.legacy.vault);
+    expect({ code: await run(['--create', 'local', '--serve', 'service', '--default', '--cutover', '--no-agents', '--no-runner', '--yes'], deps), errors }).toEqual({ code: 0, errors: [] });
+    expect(legacyMigrationState(home).state).toBe('moved');
+    expect(readRegistryEntry(fixture.legacy.projects[0]!.root, home)?.serverUrl).toBe(address);
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
+  });
+
+  for (const noAgents of [true, false]) it(`${noAgents ? 'respects declined' : 'conducts retained'} agent provisioning during legacy handover`, async () => {
+    const fixture = await rig({ agents: ['claude-code', 'codex'] });
+    let provisioned = 0;
+    const deps = { ...fixture.deps, cutoverDeps: { ...fixture.deps.cutoverDeps, onCheckpoint: (boundary: string) => { if (boundary.startsWith('action:3:')) provisioned++; } } };
+    expect({ code: await run(noAgents ? flags : flags.filter(flag => flag !== '--no-agents'), deps), errors }).toEqual({ code: 0, errors: [] });
+    expect(provisioned).toBe(noAgents ? 0 : 2);
+    expect(legacyMigrationState(home).state).toBe('moved');
+  });
+
+  it('refuses source changes between consent and execution and during handover', async () => {
+    const fixture = await rig();
+    const mutate = () => {
+      const db = new Database(fixture.legacy.vault);
+      try { db.run("UPDATE spores SET content = content || ' changed'"); } finally { db.close(); }
+    };
+    expect(await run(flags, { ...fixture.deps, runCutover: async (plan, deps) => { mutate(); return runCutover(plan, deps); } })).toBe(2);
+    expect(errors.join('\n')).toContain('changed after the preview');
+    expect(fixture.calls.filter(call => call.route === '/events')).toEqual([]);
+    errors = [];
+    let changed = false;
+    expect(await run(['--cutover'], { ...fixture.deps, ask: async () => 'yes', cutoverDeps: { ...fixture.deps.cutoverDeps, stopDaemon: async () => { if (!changed) { changed = true; mutate(); } return 'none'; } } })).toBe(2);
+    expect(errors.join('\n')).toContain('changed after the preview');
+    expect(fixture.calls.filter(call => call.route === '/events')).toEqual([]);
+    expect(await run(['--cutover'], { ...fixture.deps, ask: async () => 'yes' })).toBe(0);
+  });
+
+  it('invalidates consent when a route changes, including with --yes', async () => {
+    const fixture = await rig({ missing: true });
+    const id = fixture.legacy.projects[1]!.id;
+    let calls = 0;
+    const deps = { ...fixture.deps, runCutover: async () => { calls++; return { ok: false }; } };
+    expect(await run([...flags, '--route', `${id}=${LEGACY_URLS[0]}`], deps)).toBe(2);
+    expect(calls).toBe(1);
+    expect(await run(['--yes', '--route', `${id}=${LEGACY_URLS[1]}`], deps)).toBe(2);
+    expect(calls).toBe(1);
+    expect(errors.join('\n')).toContain('changed plans require fresh consent');
+    expect(await run(['--yes'], { ...deps, ask: async () => 'yes' })).toBe(2);
+    expect(calls).toBe(2);
+  });
+
+  it('requires fresh consent when the capture agent set changes before handover', async () => {
+    const fixture = await rig({ agents: ['claude-code'] });
+    let executions = 0;
+    const deps = { ...fixture.deps, runCutover: async () => { executions++; return { ok: false }; } };
+    expect(await run(flags.filter(flag => flag !== '--no-agents'), deps)).toBe(2);
+    expect(executions).toBe(1);
+    expect(await run(['--yes'], { ...deps, agents: () => ['claude-code', 'codex'] })).toBe(2);
+    expect(executions).toBe(1);
+    expect(errors.join('\n')).toContain('changed plans require fresh consent');
+  });
+
+  it('merges repeated routing choices and refuses conflicting or invalid flags', () => {
+    const choices = parseSetupOptions(['--cutover', '--route', 'one=https://a.invalid/', '--route', 'two=https://b.invalid', '--skip', 'three', '--skip', 'four']);
+    expect(choices.answers).toMatchObject({ cutover: true, routes: { one: 'https://a.invalid', two: 'https://b.invalid' }, skips: ['three', 'four'] });
+    for (const args of [
+      ['--cutover', '--no-cutover'], ['--route', 'one=https://a.invalid', '--skip', 'one'],
+      ['--route', 'one=https://a.invalid', '--route', 'one=https://b.invalid'],
+      ['--route', 'one=https://a.invalid/path'], ['--route', 'one=https://name:password@a.invalid'],
+    ]) expect(() => parseSetupOptions(args)).toThrow();
+  });
+
+  it('resumes across SIGKILL at every observed cutover mutation boundary and preserves 1.4 data', async () => {
+    const initial = await rig({ multi: true, agents: ['claude-code', 'codex'] });
+    expect(await run(flags.filter(flag => flag !== '--no-agents'), initial.deps)).toBe(0);
+    const boundaries = ['consent', ...new Set(initial.checkpoints)];
+    expect(boundaries).toContain('destinations');
+    expect(boundaries).toContain('handover');
+    expect(boundaries).toContain('copy');
+    expect(boundaries).toContain('action:3:0');
+    expect(boundaries).toContain('action:3:1');
+    expect(boundaries).toContain('vault:proj_legacy_a');
+    expect(boundaries).toContain('transcripts:proj_legacy_b');
+    const repo = fileURLToPath(new globalThis.URL('../../', import.meta.url));
+    const args = ['test', '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'), '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/legacy_journey_interruption_test.ts')];
+    for (const [index, boundary] of boundaries.entries()) {
+      const childRoot = path.join(root, `kill-${index}`);
+      fs.mkdirSync(childRoot);
+      const env = sandboxChildEnv(childRoot, { MYCO_SETUP_FIXTURE_ROOT: childRoot });
+      const child = spawn(process.execPath, args, { env: { ...env, MYCO_SETUP_STOP_AFTER: boundary }, cwd: childRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = '';
+      const capture = (chunk: Buffer) => { output += chunk.toString(); };
+      child.stdout.on('data', capture); child.stderr.on('data', capture);
+      const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+      try {
+        const deadline = Date.now() + 15_000;
+        while (!fs.existsSync(path.join(childRoot, 'reached')) && child.exitCode === null && Date.now() < deadline) await Bun.sleep(20);
+        expect({ boundary, reached: fs.existsSync(path.join(childRoot, 'reached')), output }).toMatchObject({ reached: true });
+      } finally { if (child.exitCode === null) child.kill('SIGKILL'); await exited; }
+      const fixture = JSON.parse(fs.readFileSync(path.join(childRoot, 'legacy-fixture.json'), 'utf8')) as ReturnType<typeof legacyFixtureHome>;
+      const bytes = fs.readFileSync(path.join(childRoot, 'vault-before'));
+      expect(fs.readFileSync(fixture.vault)).toEqual(bytes);
+      const result = Bun.spawnSync([process.execPath, ...args], { env: { ...env, MYCO_SETUP_RESUME: '1' }, cwd: childRoot, stdout: 'pipe', stderr: 'pipe' });
+      expect({ boundary, code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
+      expect(fs.readFileSync(fixture.vault)).toEqual(bytes);
+      expect(fs.readFileSync(path.join(fixture.mycoHome, 'unmanaged.txt'), 'utf8')).toBe('Keep this user file byte for byte.\n');
+      const resumed = JSON.parse(fs.readFileSync(path.join(childRoot, 'resumed'), 'utf8')) as { calls: { route: string; url: string }[] };
+      if (boundary === 'vault:proj_legacy_b' || boundary.startsWith('settings:')) expect(resumed.calls.filter(call => call.route === '/events' || call.route === '/spores/save')).toEqual([]);
+    }
+  }, 120_000);
+
+  it('resumes after an exception at every observed cutover mutation boundary without duplicated imports', async () => {
+    const captureFlags = flags.filter(flag => flag !== '--no-agents');
+    const initial = await rig({ multi: true, agents: ['claude-code', 'codex'] });
+    expect(await run(captureFlags, initial.deps)).toBe(0);
+    const accepted = initial.calls.filter(call => call.route === '/events' || call.route === '/spores/save').length;
+    for (const [index, boundary] of [...new Set(initial.checkpoints)].entries()) {
+      const fixture = await legacyJourney(path.join(root, `exception-${index}`), { multi: true, agents: ['claude-code', 'codex'] });
+      const bytes = fs.readFileSync(fixture.legacy.vault);
+      let interrupted = false;
+      const deps = { ...fixture.deps, stdout: () => {}, stderr: () => {}, cutoverDeps: { ...fixture.deps.cutoverDeps, onCheckpoint: (at: string) => {
+        if (!interrupted && at === boundary) { interrupted = true; throw new DOMException(`interrupted at ${at}`, 'AbortError'); }
+      } } };
+      try {
+        expect({ boundary, code: await run(captureFlags, deps), interrupted }).toMatchObject({ code: 2, interrupted: true });
+        expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
+        expect({ boundary, code: await run(['--yes'], deps) }).toMatchObject({ code: 0 });
+        expect(legacyMigrationState(fixture.legacy.mycoHome).state).toBe('moved');
+        expect(fixture.calls.filter(call => call.route === '/events' || call.route === '/spores/save')).toHaveLength(accepted);
+        expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
+      } finally { await fixture.close(); }
+    }
+  }, 60_000);
+});
 
 describe('new owner journeys (a) and (b)', () => {
   const affirmative = async (question: string) => question.includes('already have') ? 'no' : 'yes';
@@ -1236,9 +1543,9 @@ describe('observation and consent contracts', () => {
 
   for (const [state, owner, deferred] of [
     ['none', undefined, false], ['unmoved', undefined, true], ['changed', undefined, true],
-    ['needs-destination', undefined, false], ['needs-destination', 'unit', true], ['needs-destination', 'registration', true],
-    ['handover-pending', undefined, false], ['handover-pending', 'unit', true], ['handover-pending', 'registration', true],
-    ['partial', undefined, false], ['moved', undefined, false], ['unavailable', undefined, false],
+    ['needs-destination', undefined, true], ['needs-destination', 'unit', true], ['needs-destination', 'registration', true],
+    ['handover-pending', undefined, true], ['handover-pending', 'unit', true], ['handover-pending', 'registration', true],
+    ['partial', undefined, true], ['moved', undefined, false], ['unavailable', undefined, false],
   ] as const) it(`typed migration ${state} ${owner ?? 'without legacy capture'} is observed read-only and ${deferred ? 'defers' : 'admits'} setup`, async () => {
     const fixture = migrationFixture(state, owner);
     const observed = legacyMigrationState(home);
@@ -1246,7 +1553,7 @@ describe('observation and consent contracts', () => {
     expect(observed.legacyOwnsCapture === true).toBe(owner !== undefined);
     const entry = { version: 2, serverUrl: URL, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1, root: project, projectId: 'proj_capture' };
     writeRegistryEntry(entry, { mycoHome: home });
-    const args = ['--join', URL, '--root', project, '--no-agents', '--no-runner'];
+    const args = ['--join', URL, '--root', project, '--no-agents', '--no-runner', '--no-cutover'];
     const before = snapshot(root);
     expect(await run(['--status', '--json', ...args], base())).toBe(state === 'unavailable' ? 4 : deferred ? 3 : 0);
     const facts = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
@@ -1266,22 +1573,22 @@ describe('observation and consent contracts', () => {
       return configuredFetch(input, init);
     }) })).toBe(deferred || state === 'unavailable' ? 2 : 0);
     if (deferred || state === 'unavailable') {
-      expect(calls).toEqual([]);
-      expect(errors.join('\n')).toContain(state === 'unavailable' ? fixture.record : 'migration is pending');
-      if (state === 'changed' && observed.state === 'changed') expect(errors.join('\n')).toContain(observed.warning);
+      if (state === 'unavailable') expect(calls).toEqual([]);
+      expect(errors.join('\n')).toContain(state === 'unavailable' ? fixture.record : 'migration remains pending');
+      if (state === 'changed') expect(lines.join('\n')).toContain('Keep the 1.4 files');
     } else {
       expect(calls.length).toBeGreaterThan(0);
-      expect(lines.filter(line => line.includes('confirm where each project went'))).toHaveLength(state === 'needs-destination' ? 1 : 0);
+      expect(lines.filter(line => line.includes('confirm where each project went'))).toHaveLength(0);
     }
   });
 
-  it('legacy deferral never executes a binary or starts a remote flow', async () => {
+  it('legacy detection never executes a binary when remote observation fails', async () => {
     const legacy = legacyFixtureHome(path.join(root, 'legacy'));
     const sentinel = path.join(root, 'executed-legacy');
     fs.writeFileSync(legacy.binary, `#!/bin/sh\ntouch '${sentinel}'\n`, { mode: 0o755 });
     fs.chmodSync(legacy.binary, 0o755);
     expect(await run(['--join', URL, '--no-agents', '--no-runner'], { ...base(), mycoHome: legacy.mycoHome, fetch: fakeFetch(async () => { throw new Error('must defer before remote flow'); }) })).toBe(2);
-    expect(errors.join('\n')).toContain('migration is pending');
+    expect(lines.join('\n')).toContain('Myco 1.4 sources found');
     expect(fs.existsSync(sentinel)).toBe(false);
   });
 
