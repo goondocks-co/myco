@@ -111,6 +111,7 @@ describe('Deployment authorization policy', () => {
       ['POST', '/auth/runner/poll', 'protocol', 'protocol', 'protocol', ['runner-registration'], ['runner-registration']],
       ['POST', '/api/device/approve-runner', 'runner', 'admin', 'deployment', ['member'], ['owner', 'admin']],
       ['GET', '/api/workers/legacy', 'legacy-worker', 'read', 'deployment', ['member'], ['owner', 'admin']],
+      ['GET', '/api/setup', 'processed', 'read', 'deployment', ['member'], ['owner', 'admin', 'member']],
       ['GET', '/api/runners', 'runner', 'read', 'deployment', ['member'], ['owner', 'admin', 'member']],
       ['POST', '/api/runners/{runnerId}/rename', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],
       ['POST', '/api/runners/{runnerId}/recredential', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],

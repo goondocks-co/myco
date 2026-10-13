@@ -155,6 +155,7 @@ function server(routes: Routes): URL[] {
 
 const day = (over: Partial<Record<'sessions' | 'spores' | 'work' | 'attention' | 'status' | 'uncaptured', unknown>> = {}, who: unknown = ADMIN): Routes => ({
   '/auth/me': () => Response.json(dashboardMe(who)),
+  '/api/setup': () => Response.json({ ownerLinked: true, viewerIsOwner: true, signInWorking: true, machines: { signedIn: 1 }, projects: 2, liveCapture: true, runnersReady: 1, workProduced: true, legacyWorkers: 0, queuedWithoutRunner: false }),
   '/api/projects': () => Response.json({ projects: PROJECTS }),
   '/api/sessions': () => Response.json(over.sessions ?? { rows: SESSIONS, cursor: null }),
   '/api/spores': () => Response.json(over.spores ?? { spores: SPORES, total: SPORES.length, maxPage: 200 }),
@@ -206,6 +207,20 @@ const items = (list: HTMLElement) => [...list.querySelectorAll<HTMLElement>(':sc
 const lede = () => document.querySelector('[data-lede]')!.textContent!;
 
 describe('Today', () => {
+  it('keeps a fresh dashboard on Today with Get started first in the rail', async () => {
+    server({ ...day({ sessions: { rows: [], cursor: null }, spores: { spores: [], total: 0 }, work: { ...WORK, runs: [], outcomes: [] } }),
+      '/api/projects': () => Response.json({ projects: [] }),
+      '/api/setup': () => Response.json({ ownerLinked: true, viewerIsOwner: true, signInWorking: true,
+        machines: { signedIn: 0 }, projects: 0, liveCapture: false, runnersReady: 0, workProduced: false,
+        legacyWorkers: 0, queuedWithoutRunner: false }),
+    });
+    mount('/');
+    const card = await present('[data-get-started]');
+    await waitFor(() => expect(card.querySelector('[data-setup-item="machine"]')?.getAttribute('data-state')).toBe('next'));
+    expect(screen.getByTestId('location').textContent).toBe('/');
+    expect(card.parentElement?.firstElementChild).toBe(card);
+  });
+
   it('lands on / and merges the day\'s sessions with Myco\'s work, live first and then newest first', async () => {
     screenWidth(1280);
     const asked = server(day());

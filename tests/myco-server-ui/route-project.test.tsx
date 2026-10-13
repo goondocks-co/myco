@@ -5,8 +5,8 @@
  * `routes/route-project.tsx` holds a project page back until the list answers,
  * so it never asks the server about a project that does not exist, never shows
  * an archived project without its notice, and never names the project with a
- * stand-in before its real name. `/` with no project at all goes to Projects
- * without Today ever showing. Each check watches the document from the first
+ * stand-in before its real name. `/` with no project shows Today and the
+ * Get started checklist. Each check watches the document from the first
  * render, so a flash of the wrong page fails it, not only the settled one.
  */
 import { dashboardMe } from '../helpers/dashboard-permissions';
@@ -38,7 +38,7 @@ afterEach(() => {
 
 /**
  * The server: the projects' read answers only when `release` is called, and
- * every other read answers empty. Each request is recorded.
+ * each request is recorded.
  */
 function server(projects: unknown[]): { asked: string[]; release: () => void } {
   const asked: string[] = [];
@@ -49,6 +49,7 @@ function server(projects: unknown[]): { asked: string[]; release: () => void } {
     const url = new URL(href, 'https://s');
     asked.push(`${url.pathname}${url.search}`);
     if (url.pathname === '/auth/me') return Response.json(dashboardMe(ADMIN));
+    if (url.pathname === '/api/setup') return Response.json({ ownerLinked: true, viewerIsOwner: true, signInWorking: true, machines: { signedIn: 0 }, projects: 0, liveCapture: false, runnersReady: 0, workProduced: false, legacyWorkers: 0, queuedWithoutRunner: false });
     if (url.pathname === '/api/projects') { await listed; return Response.json({ projects }); }
     return new Response(null, { status: 404 });
   }) as typeof fetch;
@@ -108,13 +109,14 @@ describe('a page under one project', () => {
 });
 
 describe('the start', () => {
-  it('goes to Projects when the server holds none, without Today ever showing', async () => {
+  it('keeps Today and Get started visible when the server holds no projects', async () => {
     const { release } = server([]);
     const noticed = mount('/', (doc) => (doc.querySelector('[data-today]') !== null ? 'Today' : null));
     expect(await screen.findByRole('status', { name: 'Loading today' })).toBeTruthy();
     release();
-    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/projects'));
-    expect(noticed).toEqual([]);
+    expect(await screen.findByRole('heading', { name: 'Get started' })).toBeTruthy();
+    await waitFor(() => expect(noticed).toEqual(['Today']));
+    expect(screen.getByTestId('location').textContent).toBe('/');
   });
 
   it('starts the day\'s reads beside the projects\' read, before the list answers', async () => {

@@ -751,6 +751,7 @@
   },
   "parity": {
     "retired schema: generated skills and digests have no tables, FTS objects or embedding source": 15000,
+    "setup progress: scoped observations and bounded D1 reads with misleading history": 30000,
     "auth setup: no owner, unclaimed, expired owner link and unconfigured sign-in": 15000,
     "project naming: first linked-worktree capture and 1.4 import use the repository name": 25000,
     "device login: start, pending, approval, single redemption, denial, expiry, slowdown and authority cap": 79000,

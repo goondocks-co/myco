@@ -15,7 +15,7 @@ const scenarios = [
   { name: 'signed-out', url: '/projects', state: 'signed-out', words: 'Sign in with GitHub' },
   { name: 'sign-in-unconfigured', url: '/projects', state: 'unconfigured', words: 'myco server github-app' },
   { name: 'link-unconfigured', url: '/link#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', state: 'unconfigured', words: 'myco server github-app' },
-  { name: 'projects-empty', url: '/projects', state: 'active', words: 'myco login' },
+  { name: 'projects-empty', url: '/projects', state: 'active', words: 'Get started' },
   { name: 'device-prefill', url: '/device?code=BCDF-2345', state: 'active', words: 'Check machine' },
 ] as const;
 
@@ -39,6 +39,7 @@ for (const mode of ['light', 'dark'] as const) {
             }) });
           }
           if (url.pathname === '/auth/link') return route.fulfill({ status: 400, json: { error: 'owner_link_denied' } });
+          if (url.pathname === '/api/setup') return route.fulfill({ json: { ownerLinked: true, viewerIsOwner: true, signInWorking: true, machines: { signedIn: 0 }, projects: 0, liveCapture: false, runnersReady: 0, workProduced: false, legacyWorkers: 0, queuedWithoutRunner: false } });
           if (url.pathname === '/api/projects') return route.fulfill({ json: { projects: [] } });
           return route.continue();
         });
@@ -53,7 +54,8 @@ for (const mode of ['light', 'dark'] as const) {
           await expect(page.getByText(`myco server github-app --url ${origin}`, { exact: false })).toBeVisible();
         }
         if (scenario.name === 'owner-link-missing') await expect(page.getByText('Ask an admin of this server', { exact: false })).toHaveCount(0);
-        await expect(page.locator('body')).not.toContainText('myco setup');
+        if (scenario.name === 'projects-empty') await expect(page.locator('body')).toContainText('myco setup');
+        else await expect(page.locator('body')).not.toContainText('myco setup');
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
         const out = path.resolve('tests/ui-screens/evidence/auth-setup');
         fs.mkdirSync(out, { recursive: true });

@@ -5,7 +5,7 @@ import { serverEnvFromBindings, type CloudflareBindings, type DeferredWork } fro
 
 export { DeploymentClock, RecoveryProducer };
 
-function measured(db: RelationalStore): { store: RelationalStore; rowsRead: () => number } {
+export function measured(db: RelationalStore): { store: RelationalStore; rowsRead: () => number } {
   let rows = 0;
   const wrap = (statement: PreparedStatement): PreparedStatement => ({
     bind: (...values: unknown[]) => wrap(statement.bind(...values)),

@@ -1,3 +1,4 @@
+import { handleSetup } from './api/setup.js';
 import { handleDeviceStart, handleDevicePoll, handleDevicePreview, handleDeviceApprove, handleDeviceDeny, handleRunnerDeviceStart, handleRunnerDevicePoll, handleRunnerDeviceApprove } from './auth/device.js';
 import { handleForgetLegacyWorker, handleRenameRunner, handleRecredentialRunner, handleRequestRunnerUpdate, handleControlRunner, handleListRunners, handleLegacyWorkers, handleRunnerContact, handleRunnerRotate } from './api/runners.js';
 import { handleCredentialRoles, handleOwnershipTransfer, handleMemberOwnershipTransfer, handleMemberRole, handleCredentialMemberRole } from './api/ownership.js';
@@ -303,6 +304,7 @@ export const ROUTES: readonly Route[] = [
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/tasks/names', auth: 'session', authority: 'member', handler: handleTaskNames },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/tasks/start', auth: 'session', authority: 'member', handler: handleTaskStartPreview },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/tasks', auth: 'session', authority: 'member', handler: handleTaskDescriptions },
+  { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/setup', auth: 'session', authority: 'member', handler: handleSetup },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/work', auth: 'session', authority: 'member', handler: handleWork },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/attention', auth: 'session', authority: 'admin', handler: handleAttention },
   { authorization: httpPolicy('settings', 'read', 'deployment', ['member']), method: 'GET', path: '/api/settings', auth: 'session', authority: 'member', handler: handleSettings },

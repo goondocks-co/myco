@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from 'react';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import {
-  Button, CommandBlock, ConfirmDialog, EmptyState, ErrorState, focusRing, HealthDot, LoadingState, MoreMenu, type MoreMenuItem, recencyOf, StatusChip,
+  Button, ConfirmDialog, ErrorState, focusRing, HealthDot, LoadingState, MoreMenu, type MoreMenuItem, recencyOf, StatusChip,
 } from '../design';
 import { AdminPage, RowCard } from '../features/admin/AdminFrame';
+import { GetStarted } from '../features/today/GetStarted';
 import { RenameProjectDialog } from '../features/admin/project/RenameProjectDialog';
 import { useMemberNames } from '../features/admin/members';
 import { refusalText } from '../hooks/use-access';
@@ -63,11 +64,8 @@ export function Projects() {
       {projects.isPending ? <LoadingState label="Loading projects" count={3} />
         : projects.isError ? <ErrorState error={projects.error} onRetry={() => void projects.refetch()} />
         : live.length === 0 && archived.length === 0 ? (
-        <div className="flex flex-col gap-s3">
-          <EmptyState title="No projects yet." className="py-0" />
-          <CommandBlock caption="Sign this machine in, then start your coding agent in a repository to capture its sessions. You can also use People & machines → Add a machine:" command={`myco login ${window.location.origin}`} className="max-w-measure" />
-        </div>
-      ) : (
+          <GetStarted emptyState />
+        ) : (
         <RowCard>
           <ul aria-label="Projects" className="flex flex-col divide-y divide-line">
             {live.map((p) => (
