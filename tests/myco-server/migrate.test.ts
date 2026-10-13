@@ -93,7 +93,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0083_v83.sql': '50efde38ad19781214aa8b025343660bfc00e39de4aa11994604571ad30d70d0',
   '0084_v84.sql': '92c26cabc06b55c58df38111d8ac4f325763105221aa8ae8a455987cc35b2e5a',
   '0085_v85.sql': 'c534f3ed2471b58db2cfd6cb60e4d624f2e2db052a9d424341f923d64a67e403',
-  '0086_v86.sql': '6a4ebfeb2df95e714a8800b46a7a15b3027b911a29c7bbd896ad000ee3e8830e',
+  '0086_v86.sql': 'adb34a77e0dbb775b05406a6472572d0ce6e3559cd5a0dbf7fab26adf6a6919b',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -482,10 +482,10 @@ describe('versioned schema steps', () => {
     expect(await readSchemaVersion(sqliteD1(fresh()))).toBe(0);
   });
 
-  it('retires populated v85 skill and digest data through the native and D1 migration paths', async () => {
+  it('retires populated v85 skill, digest, instruction and derived data through the native and D1 migration paths', async () => {
     const retired = [
       'skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage',
-      'digest_extracts', 'digest_extract_revisions',
+      'digest_extracts', 'digest_extract_revisions', 'cortex_instructions',
     ];
     for (const mode of ['native', 'd1'] as const) {
       const sqlite = fresh();
@@ -501,16 +501,35 @@ describe('versioned schema steps', () => {
             VALUES('p','l','r',1,'create','reason','content',1);
           INSERT INTO skill_usage(project_id,id,skill_id,session_id,detected_at) VALUES('p','u','r','s',1);
           INSERT INTO digest_extracts(project_id,id,agent_id,tier,content,generated_at) VALUES('p','d','a',1,'digest',1);
-          INSERT INTO digest_extract_revisions(project_id,agent_id,tier,content,created_at) VALUES('p','a',1,'digest',1);`);
+          INSERT INTO digest_extract_revisions(project_id,agent_id,tier,content,created_at) VALUES('p','a',1,'digest',1);
+          INSERT INTO cortex_instructions(project_id,id,agent_id,content,input_hash,generated_at) VALUES('p','i','a','instructions','hash',1);
+          INSERT INTO embedding_versions(project_id,type,record_id,revision)
+            VALUES('p','skill','r','v1'),('p','digest','d','v1'),('p','digest_extracts','d','v1');
+          INSERT INTO embedding_source_failures(project_id,type,record_id,model_key,revision,reason,recorded_at)
+            VALUES('p','skill','r','model','v1','source',1),('p','digest','d','model','v1','source',1),
+                  ('p','digest_extracts','d','model','v1','source',1);
+          INSERT INTO knowledge_release_state(project_id,id,identity_key,namespace,record_id,state,confidence,checked_at,created_at)
+            VALUES('p','rs','p:skill_records:r','skill_records','r','draft','high',1,1),
+                  ('p','rskill','p:skill:r','skill','r','draft','high',1,1),
+                  ('p','rdigest','p:digest:d','digest','d','draft','high',1,1),
+                  ('p','rd','p:digest_extracts:d','digest_extracts','d','draft','high',1,1),
+                  ('p','rk','p:sessions:s','sessions','s','draft','high',1,1);`);
         const before = sqlite.query('SELECT * FROM sessions').all();
+        const retainedRelease = sqlite.query("SELECT * FROM knowledge_release_state WHERE namespace='sessions'").all();
         for (const table of retired) expect((sqlite.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(1);
         if (mode === 'native') sqlite.exec(renderMigrationFile(SCHEMA_STEPS[85]!));
         else expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([86]);
         expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
+        sqlite.exec(renderMigrationFile(SCHEMA_STEPS[85]!));
         expect(version(sqlite)).toBe('86');
         expect(sqlite.query('SELECT * FROM sessions').all()).toEqual(before);
-        const retiredObjects = sqlite.query(`SELECT name FROM sqlite_master WHERE name LIKE 'skill_%' OR name LIKE 'digest_extract%'`).all() as { name: string }[];
+        const retiredObjects = sqlite.query(`SELECT name FROM sqlite_master
+          WHERE name LIKE 'skill_%' OR name LIKE 'digest_extract%' OR tbl_name = 'cortex_instructions'`).all() as { name: string }[];
         expect(retiredObjects).toEqual([]);
+        expect(sqlite.query("SELECT type FROM embedding_versions WHERE type IN ('skill','digest','digest_extracts')").all()).toEqual([]);
+        expect(sqlite.query("SELECT type FROM embedding_source_failures WHERE type IN ('skill','digest','digest_extracts')").all()).toEqual([]);
+        expect(sqlite.query("SELECT namespace FROM knowledge_release_state WHERE namespace IN ('skill','skill_records','digest','digest_extracts')").all()).toEqual([]);
+        expect(sqlite.query("SELECT * FROM knowledge_release_state WHERE namespace='sessions'").all()).toEqual(retainedRelease);
         const view = (sqlite.query(`SELECT sql FROM sqlite_master WHERE type='view' AND name='embedding_sources'`).get() as { sql: string }).sql;
         expect(view).not.toContain('skill_records');
         expect(sqlite.query('PRAGMA foreign_key_check').all()).toEqual([]);
@@ -530,9 +549,9 @@ describe('versioned schema steps', () => {
     ]);
   });
 
-  it('keeps earlier tables and columns except the exact v86 skill and digest retirement', () => {
+  it('keeps earlier tables and columns except the exact v86 retirement', () => {
     const retiredAt86 = new Set([
-      'skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions',
+      'skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions', 'cortex_instructions',
       ...['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `skill_records_fts${suffix}`),
     ]);
     const retiredTriggersAt86 = new Set([
@@ -725,7 +744,7 @@ describe('versioned schema steps', () => {
     }
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
-      'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'cortex_instructions', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
+      'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
       'prompt_batches', 'prompt_context_answers', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'run_reads', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'session_read_facts', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags', 'tool_calls', 'transcript_parser_state_chunks', 'transcript_segments', 'transcripts',

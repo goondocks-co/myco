@@ -10,7 +10,7 @@ export function asSchema41(file: string): void {
       for (const step of SCHEMA_STEPS.filter(({ version }) => version <= 41)) {
         for (const statement of step.statements) historical.run(statement);
       }
-      const retired = ['skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions', 'skill_records_fts'];
+      const retired = ['skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions', 'cortex_instructions', 'skill_records_fts'];
       const objects = historical.query<{ name: string; sql: string }, [string]>(`SELECT name, sql FROM sqlite_master
         WHERE sql IS NOT NULL AND (name IN (SELECT value FROM json_each(?1)) OR tbl_name IN (SELECT value FROM json_each(?1)))
         ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END, name`).all(JSON.stringify(retired));

@@ -342,7 +342,7 @@ describe('POST /mcp', () => {
 
     // The Project id it answers is the one the call addressed, which is what a write must name.
     expect((await call(t1.token, 'myco_cortex', { project: 'proj_2' })).result)
-      .toMatchObject({ project_id: 'proj_2' });
+      .toEqual({ content: '# Keep the plan current.', project_id: 'proj_2', configured: true });
 
     const activity = (await call(t1.token, 'myco_cortex', { op: 'projects_activity' })).result;
     expect(activity.projects.map((p: any) => p.id).sort()).toEqual(['proj_1', 'proj_2']);

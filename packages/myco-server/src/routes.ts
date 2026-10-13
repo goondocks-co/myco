@@ -45,7 +45,7 @@ import { handleBlobRead } from './api/blobs.js';
 import { handleGetSpore, handleListSpores, handleResolveSpore, handleSaveSpore } from './api/spores.js';
 import { handlePromptContext, handleSessionContext } from './api/recall.js';
 import {
-  handleProjectReleaseStates, handleProjectSpore, handleProjectSpores, handleProjectInstructions,
+  handleProjectReleaseStates, handleProjectSpore, handleProjectSpores,
 } from './api/intelligence.js';
 import {
   handleAgents, handleClaimRun, handleRegisterAgent, handleWriteReport, handleUpdateRun,
@@ -279,7 +279,6 @@ export const ROUTES: readonly Route[] = [
   { authorization: httpPolicy('run', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/runs/{runId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs\/(?<runId>[^/]{1,384})$/, auth: 'session', authority: 'member', handler: handleProjectRun },
   { authorization: httpPolicy('run', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/runs/{runId}/calls', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs\/(?<runId>[^/]{1,384})\/calls$/, auth: 'session', authority: 'member', handler: handleProjectRunCalls },
   { authorization: httpPolicy('run', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/runs/{runId}/steps', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs\/(?<runId>[^/]{1,384})\/steps$/, auth: 'session', authority: 'member', handler: handleProjectRunSteps },
-  { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/cortex/instructions', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/cortex\/instructions$/, auth: 'session', authority: 'member', handler: handleProjectInstructions },
   { authorization: httpPolicy('plan', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/plans', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/plans$/, auth: 'session', authority: 'member', handler: handleProjectPlans },
   { authorization: httpPolicy('plan', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/plans/{planKey}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/plans\/(?<planKey>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/, auth: 'session', authority: 'member', handler: handleProjectPlan },
   { authorization: httpPolicy('spore', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/spores', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores$/, auth: 'session', authority: 'member', handler: handleProjectSpores },
@@ -353,6 +352,7 @@ export interface RetiredRoute {
 }
 
 export const RETIRED_ROUTES: readonly RetiredRoute[] = [
+  { method: 'GET', path: '/api/projects/{projectId}/cortex/instructions', replacedBy: [], dropped: 'instructions are instance-level settings injected for every Project; generated instruction rows are retired (#1170)' },
   { method: 'GET', path: '/api/projects/{projectId}/skills', replacedBy: [], dropped: 'generated skills and candidate review are retired; shipped skills remain on myco_skills (#1170)' },
   { method: 'GET', path: '/api/projects/{projectId}/skills/{skillId}', replacedBy: [], dropped: 'generated skills and candidate review are retired; shipped skills remain on myco_skills (#1170)' },
   { method: 'GET', path: '/api/projects/{projectId}/skill-candidates', replacedBy: [], dropped: 'generated skills and candidate review are retired; shipped skills remain on myco_skills (#1170)' },

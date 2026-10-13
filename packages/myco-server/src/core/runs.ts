@@ -968,39 +968,6 @@ export async function recordRunEvents(db: RelationalStore, scope: ReadScope, eve
   return results.reduce((landed, result) => landed + result.meta.changes, 0);
 }
 
-export interface CortexInstructionsUpsert {
-  agentId: string;
-  content: string;
-  inputHash: string;
-  generatedAt: number;
-  sourceRunId: string | null;
-  id?: string;
-}
-
-/**
- * Write the current Cortex instructions for an agent within a Project.
- *
- * The conflict resolves on `(project_id, id)`, and those two are exactly the
- * columns the update leaves alone — rewriting either would move the row rather
- * than update it.
- */
-export async function upsertCortexInstructions(
-  db: RelationalStore,
-  scope: ReadScope,
-  row: CortexInstructionsUpsert,
-): Promise<void> {
-  const id = row.id ?? `${row.agentId}:instructions`;
-  await db.prepare(`INSERT INTO cortex_instructions
-      (project_id, id, agent_id, content, input_hash, source_run_id, generated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (project_id, id) DO UPDATE SET
-        agent_id = excluded.agent_id, content = excluded.content,
-        input_hash = excluded.input_hash, source_run_id = excluded.source_run_id,
-        generated_at = excluded.generated_at`)
-    .bind(scope.projectId, id, row.agentId, row.content, row.inputHash, row.sourceRunId, row.generatedAt)
-    .run();
-}
-
 // ---------------------------------------------------------------------------
 // Deployment-scoped reads and writes for the tick's jobs
 // ---------------------------------------------------------------------------

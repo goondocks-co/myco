@@ -11,7 +11,6 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { insertSpore, resolveSpore } from '@myco-server-worker/core/spores.js';
-import { upsertCortexInstructions } from '@myco-server-worker/core/runs.js';
 
 const AGENT = 'agent_1';
 const NOW = 1_700_000_000_000;
@@ -40,7 +39,6 @@ describe('an empty answer is not a missing one', () => {
     for (const [path, key] of [
       ['/api/projects/proj_1/spores', 'spores'],
       ['/api/projects/proj_1/release-states', 'releaseStates'],
-      ['/api/projects/proj_1/cortex/instructions', 'instructions'],
     ] as const) {
       const { status, body } = await get(path);
       expect({ path, status, empty: (body[key] as unknown[]).length }).toEqual({ path, status: 200, empty: 0 });
@@ -49,7 +47,7 @@ describe('an empty answer is not a missing one', () => {
 
   it('answers 404 for a Project this caller cannot see, never an empty list', async () => {
     const { get } = await harness();
-    for (const path of ['/api/projects/absent/spores', '/api/projects/absent/cortex/instructions']) {
+    for (const path of ['/api/projects/absent/spores']) {
       expect((await get(path)).status).toBe(404);
     }
   });
@@ -107,22 +105,9 @@ describe('spores through the product surface', () => {
 describe('retired generated intelligence', () => {
   it('does not serve skills, candidates or digests after their tables retire', async () => {
     const { get } = await harness();
-    for (const suffix of ['skills', 'skills/absent', 'skill-candidates', 'digests', 'digests/5000/revisions']) {
+    for (const suffix of ['skills', 'skills/absent', 'skill-candidates', 'digests', 'digests/5000/revisions', 'cortex/instructions']) {
       expect((await get(`/api/projects/proj_1/${suffix}`)).status).toBe(401);
     }
-  });
-});
-
-describe('cortex instructions through the product surface', () => {
-  it('serves each agent\'s current instructions newest first, naming the run that produced them', async () => {
-    const { get, db, scope } = await harness();
-    await upsertCortexInstructions(db, scope, { agentId: AGENT, content: '# old', inputHash: 'h1', sourceRunId: 'run_1', generatedAt: NOW });
-    await upsertCortexInstructions(db, scope, { agentId: AGENT, content: '# current', inputHash: 'h2', sourceRunId: 'run_2', generatedAt: NOW + 1 });
-    await upsertCortexInstructions(db, scope, { id: 'other:instructions', agentId: 'agent_2', content: '# other', inputHash: 'h3', sourceRunId: null, generatedAt: NOW + 2 });
-
-    const { body } = await get('/api/projects/proj_1/cortex/instructions');
-    expect((body.instructions as { agentId: string; content: string; sourceRunId: string | null }[]).map((r) => [r.agentId, r.content, r.sourceRunId]))
-      .toEqual([['agent_2', '# other', null], [AGENT, '# current', 'run_2']]);
   });
 });
 

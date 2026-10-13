@@ -82,18 +82,16 @@ describe('release state', () => {
   it('lists by namespace and state within the Project', async () => {
     const { db, sqlite } = store();
     seed(sqlite, SCOPE.projectId, 'rs1', 'spore', 'sp1', 'released');
-    seed(sqlite, SCOPE.projectId, 'rs2', 'skill', 'sk1', 'released');
+    seed(sqlite, SCOPE.projectId, 'rs2', 'plan', 'pl1', 'released');
     seed(sqlite, OTHER.projectId, 'rs3', 'spore', 'sp9', 'released');
     expect((await listReleaseStates(db, SCOPE, { namespace: 'spore' })).map((r) => r.recordId)).toEqual(['sp1']);
-    expect((await listReleaseStates(db, SCOPE)).map((row) => row.recordId)).toEqual(['sp1']);
-    expect(sqlite.query("SELECT count(*) AS n FROM knowledge_release_state WHERE namespace='skill'").get()).toEqual({ n: 1 });
+    expect((await listReleaseStates(db, SCOPE)).map((row) => row.recordId)).toEqual(['pl1', 'sp1']);
   });
 
   it('answers the public singular namespaces for rows stored under the table names the reconciler and search write', async () => {
     const { db, sqlite } = store();
     seed(sqlite, SCOPE.projectId, 'rs1', 'spores', 'sp1', 'merged_unreleased');
     seed(sqlite, SCOPE.projectId, 'rs2', 'sessions', 'se1');
-    seed(sqlite, SCOPE.projectId, 'rs3', 'skill_records', 'sk1');
     seed(sqlite, SCOPE.projectId, 'rs4', 'plans', 'pl1');
     expect(await getReleaseState(db, SCOPE, 'spore', 'sp1')).toMatchObject({ namespace: 'spore', state: 'merged_unreleased' });
     expect(Object.keys(await getReleaseStatesForRecords(db, SCOPE, 'session', ['se1']))).toEqual(['se1']);

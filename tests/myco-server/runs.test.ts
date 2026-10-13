@@ -19,7 +19,7 @@ import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.j
 import {
   applyRunUpdate, claimRun, getRun, getRunningRunForTask, getState, mutateState, MUTATE_ATTEMPTS, recordDispatch, recordQueued, launchQueued, workerClaimPredicate, NO_LIMITS,
   RUN_IMMUTABLE_COLUMNS, RUN_UPDATE_COLUMNS,
-  upsertCortexInstructions, type RunInsert,
+  type RunInsert,
 } from '@myco-server-worker/core/runs.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -462,23 +462,5 @@ describe('run lifecycle', () => {
     await claimRun(db, SCOPE, run('r1', 'digest'), guardFor('digest'), NOW);
     expect((await getRun(db, SCOPE, 'r1'))?.task).toBe('digest');
     expect(await getRun(db, OTHER, 'r1')).toBeNull();
-  });
-});
-
-describe('cortex instructions', () => {
-  it('replaces content and provenance on conflict, and moves neither the row nor its Project', async () => {
-    const { db, sqlite } = store();
-    await upsertCortexInstructions(db, SCOPE, { agentId: AGENT, content: 'first', inputHash: 'h1', generatedAt: NOW, sourceRunId: null });
-    await upsertCortexInstructions(db, SCOPE, { agentId: AGENT, content: 'second', inputHash: 'h2', generatedAt: NOW + 1, sourceRunId: 'r1' });
-    const rows = sqlite.query(`SELECT project_id AS p, id, content, input_hash AS h, source_run_id AS r FROM cortex_instructions`).all();
-    expect(rows).toEqual([{ p: SCOPE.projectId, id: `${AGENT}:instructions`, content: 'second', h: 'h2', r: 'r1' }]);
-  });
-
-  it('keeps one row per Project, so the other Project instructions are untouched', async () => {
-    const { db, sqlite } = store();
-    await upsertCortexInstructions(db, SCOPE, { agentId: AGENT, content: 'one', inputHash: 'h', generatedAt: NOW, sourceRunId: null });
-    await upsertCortexInstructions(db, OTHER, { agentId: AGENT, content: 'two', inputHash: 'h', generatedAt: NOW, sourceRunId: null });
-    const rows = sqlite.query(`SELECT project_id AS p, content FROM cortex_instructions ORDER BY project_id`).all();
-    expect(rows).toEqual([{ p: SCOPE.projectId, content: 'one' }, { p: OTHER.projectId, content: 'two' }]);
   });
 });

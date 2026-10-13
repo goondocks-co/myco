@@ -28,6 +28,14 @@ DROP TABLE IF EXISTS digest_extract_revisions;
 
 DROP TABLE IF EXISTS digest_extracts;
 
+DROP TABLE IF EXISTS cortex_instructions;
+
+DELETE FROM knowledge_release_state WHERE namespace IN ('skill', 'skill_records', 'digest', 'digest_extracts');
+
+DELETE FROM embedding_source_failures WHERE type IN ('skill', 'digest', 'digest_extracts');
+
+DELETE FROM embedding_versions WHERE type IN ('skill', 'digest', 'digest_extracts');
+
 CREATE VIEW IF NOT EXISTS embedding_sources AS SELECT s.*, v.revision,
     COALESCE((SELECT k.state FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_state,
     COALESCE((SELECT k.confidence FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_confidence

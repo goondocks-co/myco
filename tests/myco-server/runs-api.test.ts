@@ -216,7 +216,7 @@ describe('run lifecycle over HTTP', () => {
     const { env, token, sqlite } = await harness();
     const res = await worker.fetch(memberPost(token.token, { agentId: AGENT, content: 'first', inputHash: 'h1' }, '/runs/cortex-instructions'), env);
     expect(res.status).toBe(401);
-    expect((sqlite.query(`SELECT COUNT(*) c FROM cortex_instructions`).get() as { c: number }).c).toBe(0);
+    expect(sqlite.query("SELECT name FROM sqlite_master WHERE type='table' AND name='cortex_instructions'").all()).toEqual([]);
   });
 });
 

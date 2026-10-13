@@ -48,7 +48,7 @@ const PROJECT_SCOPED = [
 ] as const;
 const V7_TABLES = [...DEPLOYMENT_SCOPED, ...PROJECT_SCOPED];
 const RETIRED_V86_TABLES = new Set([
-  'skill_records', 'skill_candidates', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions',
+  'skill_records', 'skill_candidates', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions', 'cortex_instructions',
 ]);
 
 /** Team Host sync columns. Team Host is retired, and attribution rides the run and the credential. */
@@ -105,7 +105,7 @@ describe('v7 intelligence schema', () => {
     expect(dropped).toEqual([]);
   });
 
-  it('retires the v7 skill and digest tables at v86', () => {
+  it('retires the v7 skill, digest and instruction tables at v86', () => {
     const db = new Database(':memory:');
     try {
       for (const step of SCHEMA_STEPS) for (const statement of step.statements) db.exec(statement);

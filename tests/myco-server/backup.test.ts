@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import {
   BACKUP_FORMAT, BACKUP_TABLES, backupArtifact, BackupAdmissionError, BackupIntegrityError, BackupLineageError, BackupSchemaError, BackupTooLargeError, MAX_BACKUP_BYTES, createBackup, deploymentId,
-  EMPTY_ONLY_TABLES, EXCLUDED_TABLES, listBackups, previewRestore, pruneBackups,
+  EMPTY_ONLY_TABLES, EXCLUDED_TABLES, RETIRED_TABLES, listBackups, previewRestore, pruneBackups,
   restoreBackup, restoreArtifact, retentionVictims, setBackupPinned, type BackupIndexRow,
 } from '@myco-server-worker/core/backup.js';
 import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
@@ -32,7 +32,9 @@ describe('table dispositions', () => {
     await sqliteVectorStore(fixture.sqlite).query({ projectId: 'proj_1', modelKey: 'fixture' }, { values: [1], topK: 1 });
     for (const row of fixture.sqlite.query<{ name: string }, []>(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all()) ddlTables.add(row.name);
     fixture.sqlite.close();
-    const named = new Set<string>([...BACKUP_TABLES, ...EXCLUDED_TABLES]);
+    const dispositions = [...BACKUP_TABLES, ...EXCLUDED_TABLES, ...RETIRED_TABLES.keys()];
+    const named = new Set<string>(dispositions);
+    expect(dispositions.length).toBe(named.size);
     const droppedHistorically = new Set(SCHEMA_DDL.flatMap((statement) => {
       const name = /^DROP TABLE (?:IF EXISTS )?(\w+)/.exec(statement)?.[1];
       return name === undefined ? [] : [name];
@@ -40,11 +42,37 @@ describe('table dispositions', () => {
     expect([...ddlTables].filter((t) => !named.has(t)).sort()).toEqual([]);
     expect([...named].filter((t) => !ddlTables.has(t) && !droppedHistorically.has(t)).sort()).toEqual([]);
     expect(BACKUP_TABLES.filter((t) => EXCLUDED_TABLES.has(t))).toEqual([]);
+    for (const [table, version] of RETIRED_TABLES) {
+      expect(ddlTables.has(table)).toBe(false);
+      expect(SCHEMA_STEPS.find(step => step.version === version)?.statements)
+        .toContain(`DROP TABLE IF EXISTS ${table}`);
+    }
     for (const t of EMPTY_ONLY_TABLES) expect(BACKUP_TABLES).toContain(t);
   });
 });
 
 describe('portable machine identities', () => {
+  it('refuses unknown artifact tables in rows and header counts before restoring retained rows', async () => {
+    const target = sqliteEnv();
+    try {
+      for (const headerOnly of [false, true]) {
+        const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(target.db), schemaVersion: 85,
+          createdAt: 1, producer: 'test', counts: { projects: 1, ...(headerOnly ? { proejcts: 1 } : {}) } };
+        const rows = [{ t: 'projects', r: { project_id: 'unknown_backup', name: 'kept out', created_at: 1 } },
+          ...(headerOnly ? [] : [{ t: 'proejcts', r: {} }])];
+        const text = [header, ...rows].map(row => JSON.stringify(row)).join('\n') + '\n';
+        await expect(restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text }))
+          .rejects.toThrow('unknown artifact table');
+        const key = `backups/unknown-${headerOnly}.jsonl`;
+        await target.bucket.put(key, new Response(text).body);
+        target.sqlite.run(`INSERT INTO backups(id,key,created_at,size_bytes,counts_json,schema_version,producer,pinned)
+          VALUES(?,?,1,?,'{}',85,'test',0)`, [key, key, new TextEncoder().encode(text).byteLength]);
+        await expect(previewRestore(target.db, target.bucket, key)).rejects.toThrow('unknown artifact table');
+        expect(target.sqlite.query("SELECT project_id FROM projects WHERE project_id='unknown_backup'").all()).toEqual([]);
+      }
+    } finally { target.sqlite.close(); }
+  });
+
   it('restores retained rows twice from a pre-v86 artifact carrying retired skill and digest rows', async () => {
     const source = new Database(':memory:');
     const target = sqliteEnv();
@@ -63,19 +91,37 @@ describe('portable machine identities', () => {
         INSERT INTO digest_extracts(project_id,id,agent_id,tier,content,generated_at)
           VALUES('proj_bk','d','agent_old_backup',1,'digest',1);
         INSERT INTO digest_extract_revisions(project_id,agent_id,tier,content,created_at)
-          VALUES('proj_bk','agent_old_backup',1,'digest',1);`);
-      const retained = ['projects', 'agents', 'sessions'];
-      const retired = ['skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions'];
+          VALUES('proj_bk','agent_old_backup',1,'digest',1);
+        INSERT INTO cortex_instructions(project_id,id,agent_id,content,input_hash,generated_at)
+          VALUES('proj_bk','instructions','agent_old_backup','old instructions','hash',1);`);
+      source.exec(`INSERT INTO knowledge_release_state(project_id,id,identity_key,namespace,record_id,state,confidence,checked_at,created_at)
+        VALUES('proj_bk','old_skill_release','old_skill_release','skill_records','r','released','high',1,1),
+              ('proj_bk','old_digest_release','old_digest_release','digest_extracts','d','released','high',1,1),
+              ('proj_bk','kept_release','kept_release','sessions','sess_1','released','high',1,1);`);
+      const retained = ['projects', 'agents', 'sessions', 'knowledge_release_state'];
+      const retired = ['skill_candidates', 'skill_records', 'skill_lineage', 'skill_usage', 'digest_extracts', 'digest_extract_revisions', 'cortex_instructions'];
       const tables = [...retained, ...retired];
       const rows = tables.flatMap((table) => source.query(`SELECT * FROM ${table} WHERE ${table === 'agents' ? "id='agent_old_backup'" : "project_id='proj_bk'"}`).all().map((r) => ({ t: table, r })));
-      expect(rows).toHaveLength(tables.length);
+      expect(rows).toHaveLength(tables.length + 2);
       const header = {
         format: BACKUP_FORMAT, deploymentId: await deploymentId(target.db), schemaVersion: 85,
-        createdAt: 1, producer: 'pre-v86', counts: Object.fromEntries(tables.map((table) => [table, 1])),
+        createdAt: 1, producer: 'pre-v86', counts: Object.fromEntries(tables.map((table) => [table, table === 'knowledge_release_state' ? 3 : 1])),
       };
       const oldArtifact = [header, ...rows].map((row) => JSON.stringify(row)).join('\n') + '\n';
+      const expectedSkips = Object.fromEntries(retired.map((table) => [table, { rows: 1, inserted: 0, skipped: 'retired by schema step 86 (#1170)' }]));
+      const key = 'backups/pre-v86.jsonl';
+      await target.bucket.put(key, new Response(oldArtifact).body);
+      target.sqlite.run(`INSERT INTO backups(id,key,created_at,size_bytes,counts_json,schema_version,producer,pinned)
+        VALUES('pre-v86',?,1,?,? ,85,'pre-v86',0)`, [key, new TextEncoder().encode(oldArtifact).byteLength, JSON.stringify(header.counts)]);
+      expect((await previewRestore(target.db, target.bucket, 'pre-v86'))).toMatchObject({
+        tables: { ...expectedSkips, knowledge_release_state: { rows: 2, inserted: 0, skipped: 'retired by schema step 86 (#1170)' } },
+      });
       for (let repeat = 0; repeat < 2; repeat++) {
-        await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: oldArtifact, allowForeignLineage: true });
+        const outcome = await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: oldArtifact, allowForeignLineage: true });
+        expect(outcome.tables).toMatchObject({
+          ...expectedSkips, knowledge_release_state: { rows: 3, inserted: repeat === 0 ? 1 : 0, skipped: 'retired by schema step 86 (#1170)' },
+        });
+        expect(target.sqlite.query("SELECT namespace FROM knowledge_release_state WHERE project_id='proj_bk'").all()).toEqual([{ namespace: 'sessions' }]);
         expect(target.sqlite.query(`SELECT project_id FROM projects WHERE project_id='proj_bk'`).all()).toEqual([{ project_id: 'proj_bk' }]);
         expect(target.sqlite.query(`SELECT session_id FROM sessions WHERE project_id='proj_bk'`).all()).toEqual([{ session_id: 'sess_1' }]);
         expect(target.sqlite.query(`SELECT id FROM agents WHERE id='agent_old_backup'`).all()).toEqual([{ id: 'agent_old_backup' }]);

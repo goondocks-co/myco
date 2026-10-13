@@ -11,6 +11,19 @@ import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 
 const EXCEPTED = PROJECT_PIVOT;
 const RETIRED = 'grove';
+const RETIRED_INTELLIGENCE_WORDING: Partial<Record<ServedTool, { description: string; guidance?: string }>> = {
+  myco_search: {
+    description: `Search project sessions, spores, plans, prompts and responses. Results include stable IDs and entity retrieval hints where available. Use before making design decisions or debugging non-obvious issues.`,
+    guidance: `Use to find prior decisions, bugs, plans, sessions and captured conversation text. Follow each result's retrieve hint to fetch its entity; prompt and response hits identify the session and prompt.`,
+  },
+  myco_cortex: {
+    description: `Retrieve project intelligence. op: "instructions" (default) returns the project's session-start instructions and its project id. op: "notifications" returns notifications for the request scope (use unread_only and limit to filter). op: "maintenance_summary" returns the per-Grove maintenance summary (db sizes, last backup/optimize, integrity status, and overdue flags). op: "projects_activity" returns the cross-project activity feed (last activity, scheduled runs, active flag). op: "canopy_map" returns the project's repository map as markdown, with the commit it was read from. op: "digest" is retired; op: "canopy_entry" is not served by a Deployment.`,
+    guidance: `Use op: "instructions" to read the project's standing guidance and learn its project id, op: "notifications" to read pending operator notifications, op: "maintenance_summary" to answer "are any Groves overdue for backup/optimize/integrity?", and op: "projects_activity" to see which projects are still active. Search with myco_search rather than pulling a project summary; there is no digest.`,
+  },
+  myco_skills: {
+    description: `List and inspect skills. op: "list" (default) lists them; op: "get" returns one with where its body ships. A Deployment serves the skills that ship with Myco.`,
+  },
+};
 
 const byName = <T extends { name: string }>(defs: readonly T[]): Map<string, T> => new Map(defs.map((d) => [d.name, d]));
 
@@ -77,9 +90,12 @@ describe('tool parity', () => {
     for (const server of TOOL_DEFINITIONS) {
       const frozen = structuredClone(member.get(server.name)!);
       const current = structuredClone(server);
-      if (['myco_search', 'myco_cortex', 'myco_skills'].includes(server.name)) {
-        frozen.description = current.description;
-        if (frozen.cortex && current.cortex) frozen.cortex.guidance = current.cortex.guidance;
+      const wording = RETIRED_INTELLIGENCE_WORDING[server.name];
+      if (wording !== undefined) {
+        expect(current.description).toBe(wording.description);
+        expect(current.cortex?.guidance).toBe(wording.guidance);
+        frozen.description = wording.description;
+        if (frozen.cortex && wording.guidance !== undefined) frozen.cortex.guidance = wording.guidance;
       }
       if (server.name === 'myco_search') {
         const type = frozen.inputSchema.properties.type as { enum: string[] };

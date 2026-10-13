@@ -1106,6 +1106,7 @@ describe('gates', () => {
 
   it('pins the retired 1.4.x wire routes, so the retirement cannot be forgotten by emptying the list', () => {
     expect(RETIRED_ROUTES.map((r) => `${r.method} ${r.path}`).sort()).toEqual([
+      'GET /api/projects/{projectId}/cortex/instructions',
       'GET /api/projects/{projectId}/digests',
       'GET /api/projects/{projectId}/digests/{tier}/revisions',
       'GET /api/projects/{projectId}/skills',
@@ -1475,7 +1476,6 @@ describe('gates', () => {
       'session:member GET /api/projects/{projectId}/blobs/{key}',
       'session:member GET /api/projects/{projectId}/canopy-map',
       'session:member GET /api/projects/{projectId}/capabilities',
-      'session:member GET /api/projects/{projectId}/cortex/instructions',
       'session:member GET /api/projects/{projectId}/plans',
       'session:member GET /api/projects/{projectId}/plans/{planKey}',
       'session:member GET /api/projects/{projectId}/processed/{kind}/{id}',

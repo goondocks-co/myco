@@ -50,10 +50,16 @@ export const BACKUP_TABLES: readonly string[] = [
   'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'prompt_batches', 'tool_calls', 'processed_resources', 'responses', 'plans',
   'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
   'agent_tasks', 'agent_runs', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers',
-  'cortex_instructions', 'canopy_maps', 'knowledge_release_state', 'external_grants',
+  'canopy_maps', 'knowledge_release_state', 'external_grants',
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',
   'knowledge_git_provenance',
 ];
+
+/** Artifact tables whose data class is retired by a numbered schema step. */
+export const RETIRED_TABLES: ReadonlyMap<string, number> = new Map([
+  ['skill_candidates', 86], ['skill_records', 86], ['skill_lineage', 86], ['skill_usage', 86],
+  ['digest_extracts', 86], ['digest_extract_revisions', 86], ['cortex_instructions', 86],
+]);
 
 /**
  * Append-only tables whose integer id IS the insertion order. Their ids are
@@ -309,31 +315,54 @@ const readArtifact = async (db: RelationalStore, blobs: BlobStore, id: string): 
   return { row, text: decoder.decode(stored.bytes) };
 };
 
-/** Recognized row envelopes in an artifact, for both preview and apply. */
-function* restoreRows(lines: Iterable<string>): IterableIterator<{ t: string; r: Record<string, unknown> }> {
+/** Admit every table named by the artifact before any restore write. */
+function artifactTable(table: string): void {
+  if (!BACKUP_TABLES.includes(table) && !EXCLUDED_TABLES.has(table) && !RETIRED_TABLES.has(table)) {
+    throw new BackupApplyError(table, 'unknown artifact table');
+  }
+}
+
+/** Rows admitted for restore, and explicit retirement outcomes shared by preview and apply. */
+function restoreRows(lines: Iterable<string>, header: BackupHeader): {
+  rows: Array<{ t: string; r: Record<string, unknown> }>;
+  tables: RestoreOutcome['tables'];
+} {
+  for (const table of Object.keys(header.counts ?? {})) artifactTable(table);
+  const rows: Array<{ t: string; r: Record<string, unknown> }> = [];
+  const tables: RestoreOutcome['tables'] = {};
   for (const line of lines) {
     if (line.length === 0) continue;
     const row = JSON.parse(line) as { t: string; r: Record<string, unknown> };
-    if (BACKUP_TABLES.includes(row.t)) yield row;
+    artifactTable(row.t);
+    if (EXCLUDED_TABLES.has(row.t)) continue;
+    const namespace = row.t === 'knowledge_release_state' ? row.r.namespace : undefined;
+    const retiredSource = namespace === 'skill' ? 'skill_records' : namespace === 'digest' ? 'digest_extracts' : namespace;
+    const step = RETIRED_TABLES.get(row.t) ?? (typeof retiredSource === 'string' ? RETIRED_TABLES.get(retiredSource) : undefined);
+    if (step !== undefined) {
+      const previous = tables[row.t]?.rows ?? 0;
+      tables[row.t] = { rows: previous + 1, inserted: 0, skipped: `retired by schema step ${step} (#1170)` };
+    } else rows.push(row);
   }
+  return { rows, tables };
 }
 
 /** What a restore would touch, answered from a verified artifact without executing its rows. */
 export async function previewRestore(
   db: RelationalStore, blobs: BlobStore, id: string,
-): Promise<{ header: BackupHeader; foreignLineage: boolean; authorityExcluded: ForeignAuthorityExclusion | null; tableKeys: string[] } | null> {
+): Promise<{ header: BackupHeader; foreignLineage: boolean; authorityExcluded: ForeignAuthorityExclusion | null; tableKeys: string[]; tables: RestoreOutcome['tables'] } | null> {
   const artifact = await readArtifact(db, blobs, id);
   if (artifact === null) return null;
   const newline = artifact.text.indexOf('\n');
   if (newline === -1) return null;
   const header = JSON.parse(artifact.text.slice(0, newline)) as BackupHeader;
   const tableKeys = new Set<string>();
-  for (const row of restoreRows(artifact.text.slice(newline + 1).split('\n'))) tableKeys.add(row.t);
+  const admitted = restoreRows(artifact.text.slice(newline + 1).split('\n'), header);
+  for (const row of admitted.rows) tableKeys.add(row.t);
   const foreignLineage = header.deploymentId !== (await deploymentId(db));
   const authorityExcluded = foreignLineage
     ? { tables: FOREIGN_AUTHORITY_TABLES.filter((table) => tableKeys.has(table)), notice: FOREIGN_AUTHORITY_NOTICE }
     : null;
-  return { header, foreignLineage, authorityExcluded, tableKeys: [...tableKeys] };
+  return { header, foreignLineage, authorityExcluded, tableKeys: [...tableKeys], tables: admitted.tables };
 }
 
 /**
@@ -494,7 +523,8 @@ export async function restoreArtifact(
 
   const restoredAt = opts.now ?? Date.now();
   const byTable = new Map<string, Record<string, unknown>[]>();
-  for (const parsed of restoreRows(lines.slice(1))) {
+  const admitted = restoreRows(lines.slice(1), header);
+  for (const parsed of admitted.rows) {
     const rows = byTable.get(parsed.t) ?? [];
     rows.push(parsed.t === 'device_requests' ? expireCarriedDeviceRequest(portableRow(parsed.t, parsed.r), restoredAt) : portableRow(parsed.t, parsed.r));
     byTable.set(parsed.t, rows);
@@ -546,7 +576,7 @@ export async function restoreArtifact(
     throw new BackupApplyError('deployment_ownership', 'ownership requires its matching audit receipt');
   }
 
-  const outcome: RestoreOutcome = { tables: {} };
+  const outcome: RestoreOutcome = { tables: { ...admitted.tables } };
   const transcriptParents = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row]));
   const hash = await sha256Hex(opts.text);
   const provenance = ['raw_provenance_state', 'raw_resources', 'raw_archive_refs', 'raw_claims', 'events', 'blobs', 'transcripts', 'attachments', 'prompt_batches', 'responses', 'plans', 'tool_calls'].flatMap((table) => byTable.get(table) ?? []);
@@ -850,6 +880,12 @@ export async function restoreArtifact(
     if (results[1]!.meta.changes > 0) {
       await releaseBlobs(db,pairs,header.createdAt);
       if (outcome.tables.archive_bundles) outcome.tables.archive_bundles.inserted--;
+    }
+  }
+  for (const [table, skipped] of Object.entries(admitted.tables)) {
+    const applied = outcome.tables[table];
+    if (applied !== undefined && byTable.has(table)) {
+      outcome.tables[table] = { ...applied, rows: applied.rows + skipped.rows, skipped: skipped.skipped };
     }
   }
   return outcome;

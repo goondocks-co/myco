@@ -112,8 +112,8 @@ export async function getReleaseStatesAcross(
 export async function listReleaseStates(
   db: RelationalStore, scope: ReadScope, o: { namespace?: ReleaseNamespace; state?: string; limit?: number } = {},
 ): Promise<ReleaseStateRow[]> {
-  const conditions = ['project_id = ?', 'namespace IN (SELECT value FROM json_each(?))'];
-  const params: unknown[] = [scope.projectId, JSON.stringify(Object.values(STORED_FORMS).flat())];
+  const conditions = ['project_id = ?'];
+  const params: unknown[] = [scope.projectId];
   if (o.namespace !== undefined) { conditions.push('namespace IN (?, ?)'); params.push(...STORED_FORMS[o.namespace]); }
   if (o.state !== undefined) { conditions.push('state = ?'); params.push(o.state); }
   const { results } = await db
