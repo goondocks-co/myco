@@ -173,6 +173,10 @@ export interface CutoverDeps {
   onPlan?: (outcomes: string[]) => void;
   /** Each planned change as the run makes it. */
   onAction?: (outcome: string) => void;
+  /** Completed durable boundaries, including receipts and actions with no outcome. */
+  onCheckpoint?: (boundary: string) => void;
+  /** Guided setup records the source observed after each stop, before any import. */
+  onStoppedSource?: (plan: CutoverPlan) => Promise<void>;
   /** How one agent is provisioned globally; `provisionGlobally` by default. */
   provision?: typeof provisionGlobally;
   packageRoot?: string;
@@ -286,6 +290,8 @@ export interface CutoverOptions {
   serverUrl?: string;
   mappings?: DirectoryMapping[];
   dryRun?: boolean;
+  /** Guided consent pins source contents at the lease and identity after stopping 1.4. */
+  requireSourceMatch?: boolean;
   homeDir?: string;
 }
 type CutoverDestination = { kind: 'destination'; serverUrl: string } | { kind: 'skip' | 'undecided' };
@@ -299,12 +305,31 @@ export interface CutoverPlan {
   blockers: string[];
   plannedAt: number;
   machineId: string | null;
+  agents: string[];
   handover: { step: number; title: string; actions: { would: string; outcomes: string[] }[] }[];
   copies: { vault: string; copy: string; reused: boolean }[];
 }
 export interface CutoverResult { ok: boolean }
 
 const preparedCutovers = new WeakMap<CutoverPlan, ReturnType<typeof prepareCutover>>();
+
+/** Stable source and destination identity, independent of remaining handover actions. */
+export function cutoverSourcePlan(plan: CutoverPlan, includeDigests = true) {
+  return {
+    home: plan.home,
+    agents: [...plan.agents].sort(),
+    vaults: plan.vaults.map(({ vault, digest }) => ({ vault, ...(includeDigests ? { digest } : {}) })).sort((a, b) => a.vault.localeCompare(b.vault)),
+    destinations: plan.projects.map(({ vault, projectId, root, destination }) => ({ vault, projectId, root, ...destination })).sort((a, b) => `${a.vault}:${a.projectId}:${a.root}`.localeCompare(`${b.vault}:${b.projectId}:${b.root}`)),
+  };
+}
+
+/** Read the stopped-source reconciliation recorded by cutover. */
+export function cutoverReconciliation(home: string) {
+  const state = readCutoverState(home);
+  return state.pendingSource ?? state.handover?.reconciliation;
+}
+
+const retryCutover = (plan: CutoverPlan) => plan.options.requireSourceMatch ? 'myco setup --cutover' : 'myco cutover --dry-run';
 
 /** Resolve every project's destination before any handover or upload. */
 export function planCutover(home: string, options: CutoverOptions = {}, deps: CutoverDeps = {}, plannedAt = (deps.now ?? Date.now)()): CutoverPlan {
@@ -358,10 +383,11 @@ export function planCutover(home: string, options: CutoverOptions = {}, deps: Cu
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     if (machineId === null) blockers.push('this home has no machine identity; run myco login before cutover');
   }
-  const plan: CutoverPlan = { home, options, vaults, projects, memberships: [...destinations].flatMap((url) => memberships.find((m) => deploymentUrl(m.serverUrl) === url) ?? []), blockers, plannedAt, machineId, handover: [], copies: [] };
+  const plan: CutoverPlan = { home, options, vaults, projects, memberships: [...destinations].flatMap((url) => memberships.find((m) => deploymentUrl(m.serverUrl) === url) ?? []), blockers, plannedAt, machineId, agents: [], handover: [], copies: [] };
   if (blockers.length === 0) {
     const prepared = prepareCutover(plan, deps);
     plan.blockers.push(...prepared.blockers);
+    plan.agents = prepared.agents;
     plan.handover = prepared.handover;
     plan.copies = prepared.copies;
     preparedCutovers.set(plan, prepared);
@@ -389,11 +415,12 @@ export async function runCutover(plan: CutoverPlan, deps: CutoverDeps = {}): Pro
     }
     const fresh = planCutover(plan.home, plan.options, deps, plan.plannedAt);
     const identity = (p: CutoverPlan) => JSON.stringify({
+      ...(plan.options.requireSourceMatch ? { source: cutoverSourcePlan(p) } : {}),
       projects: p.projects.map(({ projectId, root, vault, destination }) => ({ projectId, root, vault, destination })),
       machineId: p.machineId,
       handover: p.handover.map(({ step, actions }) => ({ step, outcomes: actions.flatMap(action => action.outcomes) })),
     });
-    if (fresh.blockers.length > 0 || identity(fresh) !== identity(plan)) { err('myco cutover: the vaults, routes or handover actions changed after the preview; run myco cutover --dry-run again'); return { ok: false }; }
+    if (fresh.blockers.length > 0 || identity(fresh) !== identity(plan)) { err(`myco cutover: the vaults, routes or handover actions changed after the preview; run ${retryCutover(plan)} again`); return { ok: false }; }
     fresh.selection = plan.selection;
     return { ok: await preparedCutovers.get(fresh)!.execute() };
   } catch (error) { err(`myco cutover: ${error instanceof Error ? error.message : String(error)}`); return { ok: false }; }
@@ -649,6 +676,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
   });
   return {
     blockers,
+    agents,
     handover: plan.map(({ step, title, actions }) => ({ step, title, actions: actions.map(({ would, outcomes }) => ({ would, outcomes })) })),
     copies,
     execute: async (): Promise<boolean> => {
@@ -666,6 +694,31 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       }
       deps.onPlan?.(plan.flatMap((s) => s.actions.flatMap((a) => a.outcomes)));
       const state = readCutoverState(mycoHome);
+      let stoppedSources = vaults;
+      const consentedSource = JSON.stringify(cutoverSourcePlan(cutover));
+      let acknowledgedSource = consentedSource;
+      const startingSource = state.pendingSource ?? state.handover?.reconciliation;
+      const earlierSessions = startingSource?.after === consentedSource ? startingSource.sessionsAdded : 0;
+      const reconcileStoppedSource = async (boundary: string) => {
+        const stopped = planCutover(mycoHome, cutover.options, deps, cutover.plannedAt);
+        if (stopped.blockers.length > 0 || JSON.stringify(cutoverSourcePlan(stopped, false)) !== JSON.stringify(cutoverSourcePlan(cutover, false))) {
+          throw new Error(`the projects, destinations or agents changed during handover; keep the 1.4 data and run ${retryCutover(cutover)} again to review the plan`);
+        }
+        const before = acknowledgedSource;
+        const after = JSON.stringify(cutoverSourcePlan(stopped));
+        if (consentedSource !== after && plan.find(s => s.step === 6)!.actions.length === 0) {
+          throw new Error(`the stopped source changed after consent; keep the 1.4 data and run ${retryCutover(cutover)} again`);
+        }
+        const previous = state.pendingSource ?? state.handover?.reconciliation;
+        const sessionsAdded = Math.max(0, stopped.vaults.reduce((sum, v) => sum + (v.counts.sessions ?? 0), 0) - vaults.reduce((sum, v) => sum + (v.counts.sessions ?? 0), 0))
+          + earlierSessions;
+        stoppedSources = stopped.vaults;
+        state.pendingSource = before === after && previous?.after === after ? previous : { before, after, sessionsAdded };
+        writeState(mycoHome, state);
+        deps.onCheckpoint?.(boundary);
+        await deps.onStoppedSource?.(stopped);
+        acknowledgedSource = after;
+      };
       if (!dry) {
         state.version = 2;
         state.migrations ??= {};
@@ -686,11 +739,12 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
           }
         }
         writeState(mycoHome, state);
+        deps.onCheckpoint?.('destinations');
       }
       for (const { step: n, title, actions } of plan) {
         step(n, title);
         if (actions.length === 0) out('   nothing to do');
-        for (const action of actions) {
+        for (const [index, action] of actions.entries()) {
           if (dry) { out(`   ${action.would}`); continue; }
           try {
             const { lines, made } = await action.run();
@@ -698,6 +752,8 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
             for (const outcome of made) deps.onAction?.(outcome);
             const missed = action.outcomes.filter((o) => !made.includes(o));
             if (missed.length > 0) throw new Error(`the cutover planned changes it did not make: ${missed.join('; ')}`);
+            if (n === 6 && cutover.options.requireSourceMatch) await reconcileStoppedSource(`stopped-source:${index}`);
+            deps.onCheckpoint?.(`action:${n}:${index}`);
           } catch (error) {
             problem(error instanceof Error ? error.message : String(error));
             err(n < 6 ? '   The 1.4 service is left running, and nothing was imported; run the cutover again once this is settled.' : '   Nothing was imported; run the cutover again once this is settled.');
@@ -719,7 +775,21 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
           }
         }
       }
-      if (!dry) { state.handover = { at: now(), legacyHomes, agents }; writeState(mycoHome, state); }
+      if (!dry) {
+        if (cutover.options.requireSourceMatch) {
+          await reconcileStoppedSource('stopped-source:final');
+          for (const source of stoppedSources) {
+            const receipt = state.migrations![source.vault]!;
+            if (receipt.digest !== source.digest) for (const project of Object.values(receipt.projects)) { delete project.vault; delete project.transcripts; }
+            state.migrations![source.vault] = { ...source.stamp, digest: source.digest, projects: receipt.projects };
+          }
+        }
+        state.handover = { at: now(), legacyHomes, agents, ...(state.pendingSource ? { reconciliation: state.pendingSource } : {}) };
+        delete state.pendingSource;
+        writeState(mycoHome, state);
+        if (cutover.options.requireSourceMatch) deps.onCheckpoint?.('quiescent');
+        deps.onCheckpoint?.('handover');
+      }
       if (!dry && backup.all.length > 0) {
         out(`   To undo these changes by hand, run the commands in ${path.join(backup.dir, RESTORE_FILE)}; ${MANIFEST_FILE} beside it lists every file, entry and link.`);
       }
@@ -727,10 +797,11 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       // 7. The copies, reused only while they hold what the vault holds now.
       step(7, 'Copy every 1.4 vault and check the copy');
       const copies = new Map<string, string>();
-      for (const { home, vault } of vaults) {
+      for (const { home, vault, digest } of stoppedSources) {
         try {
           const before = legacyVaultStamp(vault);
           const content = readVaultContent(vault);
+          if (cutover.options.requireSourceMatch && content.digest !== digest) throw new Error(`${vault} changed after the stop; keep its data and run ${retryCutover(cutover)} again`);
           const held = Object.entries(state.backups).find(([file]) => legacyRealpath(file) === vault)?.[1];
           const reused = held !== undefined && held.digest === content.digest && copyProblem(held.copy, content) === null;
           const copy = reused ? held.copy : copyPathFor(home, vault, stamp);
@@ -738,15 +809,16 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
           if (dry) { out(`   ${reused ? 'would reuse' : 'would copy'} ${vault} (${JSON.stringify(content.counts)}) to ${copy}${changed}`); copies.set(vault, vault); continue; }
           const verified = reused ? content : backupVault(vault, copy);
           const after = legacyVaultStamp(vault);
-          if (JSON.stringify(before) !== JSON.stringify(after) || verified.digest !== content.digest) throw new Error(`${vault} changed while it was copied; stop Myco 1.4 and run myco cutover --dry-run again`);
+          if (JSON.stringify(before) !== JSON.stringify(after) || verified.digest !== content.digest) throw new Error(`${vault} changed while it was copied; keep its data and run ${retryCutover(cutover)} again`);
           const plannedProjects = cutover.projects.filter((p) => p.vault === vault).map(({ projectId, root }) => ({ projectId, root }));
           const copiedProjects = legacyProjectRoots([copy]).map(({ projectId, root }) => ({ projectId, root }));
-          if (JSON.stringify(plannedProjects) !== JSON.stringify(copiedProjects)) throw new Error(`${vault}: its projects or folders changed during handover; run myco cutover --dry-run again to confirm their destinations`);
+          if (JSON.stringify(plannedProjects) !== JSON.stringify(copiedProjects)) throw new Error(`${vault}: its projects or folders changed during handover; run ${retryCutover(cutover)} again to confirm their destinations`);
           const receipt = state.migrations![vault];
           if (receipt.digest !== verified.digest) for (const project of Object.values(receipt.projects)) { delete project.vault; delete project.transcripts; }
           state.migrations![vault] = { ...after, digest: verified.digest, projects: receipt.projects };
           state.backups[vault] = { copy, counts: verified.counts, digest: verified.digest, at: reused ? held.at : now() };
           writeState(mycoHome, state);
+          deps.onCheckpoint?.('copy');
           copies.set(vault, copy);
           out(reused ? `   ${vault}: copied earlier to ${copy}, and the copy still holds what the vault holds`
             : `   ${vault}: copied to ${copy}${changed}, and the copy matches (${JSON.stringify(verified.counts)})`);
@@ -773,6 +845,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
             if (legacy.refused !== undefined) failures.push({ what: legacy.refused, cause: 'refused' });
             receipt.vault = { state: complete ? 'complete' : legacy.refused === undefined ? 'partial' : 'refused', at: now(), failures, endedBy: legacy.projects.find((p) => p.endedBy !== undefined)?.endedBy };
             writeState(mycoHome, state);
+            deps.onCheckpoint?.(`vault:${project.projectId}`);
           }
           if (legacy.refused !== undefined) { problem(legacy.refused); out(`   ${stoppedByLine(legacy.refused)}`); }
           if (signal.aborted) return false;
@@ -780,7 +853,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
           if (dry) { out(`   would then import agent transcripts for ${project.projectId} on ${dest.serverUrl}`); continue; }
           const hasTranscriptBinding = listRegistryEntries(mycoHome).some((b) => b.projectId === project.projectId && deploymentUrl(b.serverUrl) === dest.serverUrl);
           if (!hasTranscriptBinding) {
-            if (receipt !== undefined) { receipt.transcripts = { state: 'none', at: now() }; writeState(mycoHome, state); }
+            if (receipt !== undefined) { receipt.transcripts = { state: 'none', at: now() }; writeState(mycoHome, state); deps.onCheckpoint?.(`transcripts:${project.projectId}`); }
             continue;
           }
           const transcripts: ImportReport = await importUntilSettled(
@@ -791,6 +864,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
           if (receipt !== undefined) {
             receipt.transcripts = { state: transcriptsComplete ? 'complete' : 'partial', at: now(), endedBy: transcripts.stoppedBy ?? transcripts.refused ?? transcripts.projects.find((p) => p.endedBy !== undefined)?.endedBy };
             writeState(mycoHome, state);
+            deps.onCheckpoint?.(`transcripts:${project.projectId}`);
           }
           if (transcripts.refused !== undefined) problem(transcripts.refused);
           for (const line of reportLines(transcripts, false)) out(`   ${line}`);
@@ -805,7 +879,10 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       // 9. This machine's settings: the Deployment's are cached for the hooks, and 1.4's plan folders are named, never
       // carried: they are set on the dashboard, where each machine's settings are kept.
       step(9, 'Name the plan folders 1.4 watched, which this machine sets on the dashboard');
-      for (const destination of cutover.memberships) await seedMachineSettings({ serverUrl: destination.serverUrl, token: destination.token }, { mycoHome, fetch: deps.fetch });
+      for (const destination of cutover.memberships) {
+        await seedMachineSettings({ serverUrl: destination.serverUrl, token: destination.token }, { mycoHome, fetch: deps.fetch });
+        deps.onCheckpoint?.(`settings:${destination.serverUrl}`);
+      }
       const legacyPlanDirs = [...new Set(legacyHomes.flatMap(legacyPlanDirsOf))];
       if (legacyPlanDirs.length === 0) out('   1.4 watched no extra plan folders on this machine');
       else {

@@ -54,18 +54,39 @@ Take a verified full backup before a local storage-format change. Cloudflare sav
 
 Myco 1.4 retains its local service and background updater. Moving to 2.0 hands capture to member hooks; Myco's own work needs a registered runner.
 
-Choose or [create a Deployment](self-hosting.md) and obtain its address first. Keep a backup of the 1.4 home. Installing 2.0 replaces the binary immediately; old hooks stop capturing until sign-in and cutover finish. The installer preserves a recognized 1.4 installation unless you explicitly pass `--replace-1.4`. It keeps and refuses an unrecognized binary rather than guessing.
+Keep a backup of the 1.4 home. Installing 2.0 replaces the binary immediately; old hooks stop capturing until sign-in and cutover finish. The installer preserves a recognized 1.4 installation unless you explicitly pass `--replace-1.4`. It keeps and refuses an unrecognized binary rather than guessing.
 
-Preview the replacement, then install and sign in:
+Preview the replacement, then install and start guided setup:
 
 ```bash
 curl -fsSL https://myco.sh/install.sh | sh -s -- --dry-run --replace-1.4
 curl -fsSL https://myco.sh/install.sh | sh -s -- --replace-1.4
-myco login <address>
-myco cutover --dry-run
+myco setup
 ```
 
 To choose a release phase explicitly, set `MYCO_CHANNEL=beta` or `MYCO_CHANNEL=alpha` on `sh`. On Windows x64, use the PowerShell installer's `-Replace14` option; the 2.0 Windows path is not yet verified.
+
+Setup detects 1.4 data and registrations by reading files; it never executes a 1.x binary. It helps you sign in to an existing Deployment or create one, previews the cutover, asks you to approve that exact plan and runs the existing cutover operation. Each project has its own destination, so one move can cover several Deployments. Sign in to every destination first. Projects with no route require an explicit destination or skip choice. With several signed-in Deployments, setup also asks about projects that would otherwise fall back to the default; without a terminal, pass `--route` or `--skip`.
+
+For an existing Deployment:
+
+```bash
+myco setup --join <address> --cutover
+myco login <other-address>
+myco setup --join <address> --cutover --route <project-id>=<other-address> --skip <other-project-id> --yes --no-runner
+myco setup --status
+```
+
+Run `myco setup` again to resume. `--yes` accepts a printed first plan; a changed source, destination, skip choice or capture agent set requires fresh interactive approval. Capture written during this run’s handover moves too when the projects and destinations are unchanged; setup records the stopped source and reports how many sessions were added. `--no-agents` declines installing 2.0 agent integrations during the handover. `--no-cutover` leaves the migration pending and stops setup before the agents, project and runner steps. Status is strictly read-only. If 1.4 wrote more data after migration, keep its files and run `myco setup --cutover` to review the new plan. Setup names partial imports and remaining handover work, then resumes them through cutover's receipts and import ledger.
+
+### Manual cutover
+
+For direct control over the move, choose or [create a Deployment](self-hosting.md), then run:
+
+```bash
+myco login <address>
+myco cutover --dry-run
+```
 
 The cutover preview names the old homes, projects, destination for each project, agent settings changes, service handover and copies it would make. Review all of them. Cutover uses a repository's existing connection or a saved destination receipt first. An existing Git repository without a connection or saved route goes to the default Deployment, labelled `(default Deployment; no repository route)` in the plan. Only absent or rootless repositories with no route are refused, unless you give `--route`, `--skip` or `--server`. Sign in to each destination before continuing.
 
@@ -81,7 +102,7 @@ Use the project ids printed by the preview:
 | `--map <old-dir>=<repo-root>` | Attributing agent transcripts from an old or deleted worktree directory to the project connected at the current repository root |
 | `--legacy-home <dir>` | Including another 1.4 home |
 
-These options can be repeated for multiple projects, folders or homes, except `--server`, which names one fallback. Quote a mapping containing a trailing `*` to match sibling transcript directories. `--map` attributes transcripts; it does not choose a vault project's Deployment. A project without a usable repository needs `--route` or `--skip`, or an explicit `--server` fallback. A route that conflicts with an existing repository connection is refused; review the connection first.
+Guided setup accepts repeated `--route` and `--skip` choices. Use manual cutover for `--server`, `--map` and `--legacy-home`. These manual options can be repeated for multiple projects, folders or homes, except `--server`, which names one fallback. Quote a mapping containing a trailing `*` to match sibling transcript directories. `--map` attributes transcripts; it does not choose a vault project's Deployment. A project without a usable repository needs `--route` or `--skip`, or an explicit `--server` fallback. A route that conflicts with an existing repository connection is refused; review the connection first.
 
 For example, preview an explicit route and skip before applying them:
 
@@ -106,4 +127,4 @@ Old extra plan folders are reported, not silently copied into machine settings. 
 
 Run `myco doctor` and `myco member status`. In the dashboard, check each destination's projects, sessions, spores and plans, then start a new coding session and confirm it appears on **Today**. Keep 1.4 data and the cutover copies until you have verified both history and new capture.
 
-The 1.4 move currently uses these manual cutover commands. For maintaining an installation that stays on 1.4, use the [1.4 documentation](https://github.com/goondocks-co/myco/tree/release/1.4/docs).
+Start a new coding-agent session after moving; an already-open session keeps its earlier Myco connection. For maintaining an installation that stays on 1.4, use the [1.4 documentation](https://github.com/goondocks-co/myco/tree/release/1.4/docs).

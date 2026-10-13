@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readDefaultDeployment } from '@myco/member/default-deployment.js';
-import { legacyMigrationState } from '@myco/member/legacy-migration.js';
+import { legacyMigrationState, legacyProjectDestination } from '@myco/member/legacy-migration.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readDeploymentMembershipResult, readRegistryEntryResult } from '@myco/member/registry.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { postRoute } from '@myco/cli/deployment-reader.js';
@@ -68,8 +68,8 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
       id: 'legacy',
       ...(migration.state === 'unavailable' ? { legacyError: migration.detail } : {}),
       scope: migration.state === 'unavailable' ? migration.file : home,
-      state: guidance.status === 'unavailable' ? 'unavailable' : guidance.status === 'deferred' ? 'incomplete' : 'complete',
-      detail: [migration.state, guidance.deferral ?? guidance.hint ?? 'No Myco 1.4 capture blocks setup.', guidance.warning].filter(Boolean).join(' '),
+      state: migration.state === 'unavailable' ? 'unavailable' : migration.state === 'none' || migration.state === 'moved' ? 'complete' : 'incomplete',
+      detail: [migration.state, guidance.deferral ?? guidance.hint ?? (migration.state === 'none' || migration.state === 'moved' ? 'No Myco 1.4 migration remains.' : 'Migration is unfinished; keep the 1.4 data and run myco setup --cutover to preview and resume.'), guidance.warning].filter(Boolean).join(' '),
       ...(guidance.hint === null ? {} : { hint: guidance.hint }),
     });
   });
@@ -156,9 +156,12 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
         return;
       }
       const binding = readRegistryEntryResult(root, home);
+      const cutoverDestination = binding.status === 'present' && facts.some(f => f.id === 'legacy' && f.detail.startsWith('moved'))
+        ? legacyProjectDestination(home, binding.entry.root, binding.entry.projectId) : null;
+      const receiptBound = binding.status === 'present' && cutoverDestination === deploymentUrl(binding.entry.serverUrl);
       add('project', binding.status === 'unavailable' ? 'unavailable' : binding.status === 'missing' ? 'absent'
-        : deploymentUrl(binding.entry.serverUrl) === url ? 'complete' : 'incomplete',
-      binding.status !== 'present' ? binding.status : deploymentUrl(binding.entry.serverUrl) === url ? 'bound-here' : `bound-elsewhere: ${binding.entry.serverUrl}`, root);
+        : deploymentUrl(binding.entry.serverUrl) === url || receiptBound ? 'complete' : 'incomplete',
+      binding.status !== 'present' ? binding.status : deploymentUrl(binding.entry.serverUrl) === url ? 'bound-here' : receiptBound ? `bound-cutover: ${cutoverDestination}` : `bound-elsewhere: ${binding.entry.serverUrl}`, root);
     });
     if (deps.includeCapture !== false) await read('machine.backlog', () => {
       const listing = listRegistryEntriesResult(home);

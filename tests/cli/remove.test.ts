@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { run, deploymentLosses, unsafePurgePath } from '@myco/cli/remove.js';
 import { runProvision } from '@myco/cli/member.js';
-import { writeDeploymentMembership } from '@myco/member/registry.js';
+import { writeDeploymentMembership, deploymentKeyFor } from '@myco/member/registry.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { installWorkerService, workerServiceUnit } from '@myco/runner/service.js';
 import { recordingPlatform } from '../helpers/fake-service-manager.js';
@@ -230,7 +230,9 @@ describe('member-only remove', () => {
       const receipt = {
         version: 2, backups: { [vault]: { copy: path.join(home, 'backups', 'cutover-fixture'), counts: {}, digest: readVaultContent(vault).digest, at: 1 } },
         handover: { at: 1, legacyHomes: [home], agents: [] },
-        ...(state === 'changed' ? { migrations: { [vault]: { digest: readVaultContent(vault).digest, size: stamp.size, mtimeMs: stamp.mtimeMs, projects: Object.fromEntries(fixture.projects.map(p => [p.id, { destination: { skip: true, at: 1 } }])) } } } : {}),
+        ...(state === 'changed' ? { migrations: { [vault]: { digest: readVaultContent(vault).digest, size: stamp.size, mtimeMs: stamp.mtimeMs, projects: Object.fromEntries(fixture.projects.map(p => [p.id, {
+          destination: { serverUrl: SERVER, key: deploymentKeyFor(SERVER) }, vault: { state: 'complete', at: 1 }, transcripts: { state: 'none', at: 1 },
+        }])) } } } : {}),
       };
       write('member/cutover.json', JSON.stringify(receipt));
       fs.chmodSync(path.join(home, 'member', 'cutover.json'), 0o600);
