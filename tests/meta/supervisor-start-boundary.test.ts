@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import { expect, it } from 'bun:test';
 import path from 'node:path';
-import { supervisorStarts } from '../helpers/supervisor-starts.ts';
+import os from 'node:os';
+import { createSupervisorStartScanner } from '../helpers/supervisor-starts.ts';
 import { closureOf, filesUnder, REPO_ROOT, pathToEntry, withoutShebang, type Closure } from '../helpers/import-closure.ts';
 import { walk, walkMemberRuntime } from '../helpers/2-0-closure.ts';
 import { isLegacy } from '../helpers/legacy-boundary.ts';
@@ -9,6 +10,7 @@ import { isLegacy } from '../helpers/legacy-boundary.ts';
 const SRC = path.join(REPO_ROOT, 'packages/myco/src');
 const MYCO = 'packages/myco/src/';
 const short = (key: string): string => key.startsWith(MYCO) ? key.slice(MYCO.length) : key;
+const supervisorStarts = createSupervisorStartScanner(Object.values(walk(undefined, () => false)));
 
 it.each([
   ['launchctl start', 'member/legacy-units.ts', "execFileSync('launchctl', ['start', 'com.myco.daemon']);"],
@@ -16,15 +18,54 @@ it.each([
   ['PowerShell scheduled task', 'member/legacy-units.ts', "execFileSync('powershell.exe', ['-Command', 'Start-ScheduledTask -TaskName Myco']);"],
   ['concrete spawn', 'member/legacy-service/launchd.ts', "(new RealLaunchctlRunner() as any).spawn(['kickstart', '-k', label]);"],
   ['conditional verb', 'member/legacy-service/launchd.ts', "const verb = cond ? 'kickstart' : 'print'; this.runner.run([verb, label]);"],
+  ['let verb', 'member/legacy-units.ts', "let verb = 'kickstart'; execFileSync('launchctl', [verb, label]);"],
+  ['joined shell command', 'member/legacy-units.ts', "execSync(['launchctl', 'kickstart', '-k', label].join(' '));"],
+  ['wrapper function', 'member/legacy-units.ts', "const kick = (verb: string) => execFileSync('launchctl', [verb, label]); kick('kickstart');"],
+  ['PowerShell queryState join', 'member/legacy-service/windows.ts', "      'Start-ScheduledTask -TaskPath \\\\ -TaskName Myco',"],
 ] as const)('rejects review mutation: %s', (_name, module, injected) => {
   const mutate = (file: string, text: string): string => {
-    if (!file.endsWith('/' + module)) return text;
-    return module.endsWith('launchd.ts')
-      ? text.replace('const plistPath = this.plistPath(label);', injected + '\nconst plistPath = this.plistPath(label);')
-      : text + '\n' + injected;
+  if (!file.endsWith('/' + module)) return text;
+  if (module.endsWith('windows.ts')) return text.replace('    const command = [', '    const command = [\n' + injected);
+  return module.endsWith('launchd.ts')
+    ? text.replace('const plistPath = this.plistPath(label);', injected + '\nconst plistPath = this.plistPath(label);')
+    : text + '\n' + injected;
   };
   expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length).toBeGreaterThan(0);
 }, 120_000);
+
+it.each([
+  "let verb = 'print'; verb = 'kickstart'; execFileSync('launchctl', [verb, label]); verb = 'print';",
+  "let verb = 'kickstart'; { let verb = 'print'; } execFileSync('launchctl', [verb, label]);",
+  "const kick = (verb: string) => execFileSync('launchctl', [verb, label]); const forward = (verb: string) => kick(verb); forward('kickstart');",
+])('follows every assignment by symbol, including wrapper parameters: %s', injected => {
+  const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-units.ts') ? text + '\n' + injected : text;
+  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(hit => hit.endsWith('supervisor exec')), injected).toBe(true);
+}, 120_000);
+
+it('resolves a renamed PowerShell host from its initializer', () => {
+  const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-service/windows.ts')
+    ? text.replaceAll('WINDOWS_TASK_HOST', 'RENAMED_TASK_HOST')
+      .replace('    const command = [', "    const command = [\n      'Start-ScheduledTask -TaskName Myco',") : text;
+  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
+});
+
+it.each(['outside', 'inside'])('rejects starts %s the owned native service reload command', location => {
+  const mutate = (file: string, text: string): string => file.endsWith('/server/service.ts')
+    ? location === 'inside'
+      ? text.replace("  '  launchctl load -w \"$unit\"',", "  'launchctl kickstart com.myco.daemon',\n  '  launchctl load -w \"$unit\"',")
+      : text.replace('export function reloadServiceDetached(', "execFileSync('launchctl', ['kickstart', '-k', 'com.myco.daemon']);\nexport function reloadServiceDetached(") : text;
+  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
+});
+
+it('admits read-only joined commands and wrappers without mixing shadowed bindings', () => {
+  const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-units.ts') ? text + `
+    let verb = 'print'; { let verb = 'kickstart'; }
+    execFileSync('launchctl', [verb, label]);
+    execSync(['launchctl', 'kickstart'].join(''));
+    const query = (verb: string) => execFileSync('launchctl', [verb, label]); query('print');
+  ` : text;
+  expect(supervisorStarts(walk(mutate, () => false).myco, mutate)).toEqual([]);
+});
 
 it('maps a protected PowerShell runner method to its platform executable', () => {
   const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-service/windows.ts')
@@ -79,15 +120,13 @@ it('no 2.0 path can reach DaemonClient.ensureRunning or a 1.4 supervisor start',
   for (const closure of Object.values(walk(undefined, () => false))) expect(supervisorStarts(closure)).toEqual([]);
 }, 120_000);
 
-it('rejects direct, computed and bound starts anywhere cutover reaches', () => {
-  for (const call of [
-    'manager.start(label);', "manager['start'](label);", "manager['sta' + 'rt'](label);",
-    "const verb = 'start'; manager[verb](label);", 'const { start: launch } = manager; launch(label);',
-    'client.ensureRunning();', 'manager.install(spec);', 'manager.bootstrap(label);',
-  ]) {
-    const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-units.ts') ? text + '\n' + call : text;
-    expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length, call).toBeGreaterThan(0);
-  }
+it.each([
+  'manager.start(label);', "manager['start'](label);", "manager['sta' + 'rt'](label);",
+  "const verb = 'start'; manager[verb](label);", 'const { start: launch } = manager; launch(label);',
+  'client.ensureRunning();', 'manager.install(spec);', 'manager.bootstrap(label);',
+])('rejects direct, computed and bound starts anywhere cutover reaches: %s', call => {
+  const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-units.ts') ? text + '\n' + call : text;
+  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length, call).toBeGreaterThan(0);
 }, 120_000);
 
 function startupModules(mutate?: (file: string, text: string) => string): string[] {
@@ -119,50 +158,44 @@ it('cutover and every member legacy helper are retained and reach no 1.4 module'
 }, 120_000);
 
 
-it('rejects raw platform starts including const-spread arguments', () => {
-  for (const call of [
-    "execFileSync('launchctl', ['kickstart', '-k', label]);",
-    "execFileSync('launchctl', ['submit', '-l', label]);",
-    "execFileSync('launchctl', ['bootstrap', 'gui/501', file]);",
-    "execFileSync('launchctl', ['load', '-w', file]);",
-    "execFileSync('launchctl', ['enable', label]);",
-    "execFileSync('systemctl', ['--user', 'enable', label, '--now']);",
-    "execFileSync('powershell.exe', ['-Command', 'Enable-ScheduledTask -TaskName Myco']);",
-    "execFileSync('pwsh', ['-Command', 'Register-ScheduledTask -TaskName Myco']);",
-    "execFileSync('systemctl', ['--user', 'reenable', label]);",
-    "execFileSync('schtasks', ['/create', '/tn', label]);",
-    "execFileSync('schtasks', ['/change', '/tn', label, '/enable']);",
-    "execFileSync('systemctl', ['--user', 'start', label]);",
-    "execFileSync('schtasks', ['/Run', '/TN', label]);",
-    "execSync('launchctl kickstart ' + label);",
-    "const argv = ['kickstart', '-k']; execFileSync('launchctl', [...argv, label]);",
-  ]) {
-    const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-units.ts') ? text + '\n' + call : text;
-    expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(found => found.endsWith('supervisor exec')), call).toBe(true);
-  }
+it.each([
+  "execFileSync('launchctl', ['kickstart', '-k', label]);",
+  "execFileSync('launchctl', ['submit', '-l', label]);",
+  "execFileSync('launchctl', ['bootstrap', 'gui/501', file]);",
+  "execFileSync('launchctl', ['load', '-w', file]);",
+  "execFileSync('launchctl', ['enable', label]);",
+  "execFileSync('systemctl', ['--user', 'enable', label, '--now']);",
+  "execFileSync('powershell.exe', ['-Command', 'Enable-ScheduledTask -TaskName Myco']);",
+  "execFileSync('pwsh', ['-Command', 'Register-ScheduledTask -TaskName Myco']);",
+  "execFileSync('systemctl', ['--user', 'reenable', label]);",
+  "execFileSync('schtasks', ['/create', '/tn', label]);",
+  "execFileSync('schtasks', ['/change', '/tn', label, '/enable']);",
+  "execFileSync('systemctl', ['--user', 'start', label]);",
+  "execFileSync('schtasks', ['/Run', '/TN', label]);",
+  "execSync('launchctl kickstart ' + label);",
+  "const argv = ['kickstart', '-k']; execFileSync('launchctl', [...argv, label]);",
+])('rejects raw platform starts including const-spread arguments: %s', call => {
+  const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-units.ts') ? text + '\n' + call : text;
+  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(found => found.endsWith('supervisor exec')), call).toBe(true);
 }, 120_000);
 
-it('follows cutover through concrete methods and interface implementations', () => {
-  for (const [needle, injected] of [
-    ['private async isLoaded(label: string): Promise<boolean> {', 'await this.start(label);'],
-    ["return spawnCombinedOutput('launchctl', args);", "execFileSync('launchctl', ['kickstart', '-k', 'unit']);"],
-    ['private async isLoaded(label: string): Promise<boolean> {', "await this.runner.run(['kickstart', '-k', label]);"],
-  ]) {
-    const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-service/launchd.ts')
-      ? text.replace(needle, needle.startsWith('return ') ? injected + needle : needle + injected) : text;
-    expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length, injected).toBeGreaterThan(0);
-  }
+it.each([
+  ['private async isLoaded(label: string): Promise<boolean> {', 'await this.start(label);'],
+  ["return spawnCombinedOutput('launchctl', args);", "execFileSync('launchctl', ['kickstart', '-k', 'unit']);"],
+  ['private async isLoaded(label: string): Promise<boolean> {', "await this.runner.run(['kickstart', '-k', label]);"],
+])('follows cutover through concrete methods and interface implementations: %s / %s', (needle, injected) => {
+  const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-service/launchd.ts')
+    ? text.replace(needle, needle.startsWith('return ') ? injected + needle : needle + injected) : text;
+  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length, injected).toBeGreaterThan(0);
 }, 120_000);
 
-it('follows object and class-expression runner implementations', () => {
-  for (const implementation of [
-    "const runner: LaunchctlRunner = { async run(args: string[]) { return spawnCombinedOutput('launchctl', ['kickstart', '-k', 'unit']); } }; return runner.run(args);",
-    "const Runner = class implements LaunchctlRunner { async run(args: string[]) { return spawnCombinedOutput('launchctl', ['kickstart', '-k', 'unit']); } }; return new Runner().run(args);",
-  ]) {
-    const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-service/launchd.ts')
-      ? text.replace("return spawnCombinedOutput('launchctl', args);", implementation) : text;
-    expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length, implementation).toBeGreaterThan(0);
-  }
+it.each([
+  "const runner: LaunchctlRunner = { async run(args: string[]) { return spawnCombinedOutput('launchctl', ['kickstart', '-k', 'unit']); } }; return runner.run(args);",
+  "const Runner = class implements LaunchctlRunner { async run(args: string[]) { return spawnCombinedOutput('launchctl', ['kickstart', '-k', 'unit']); } }; return new Runner().run(args);",
+])('follows object and class-expression runner implementations: %s', implementation => {
+  const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-service/launchd.ts')
+    ? text.replace("return spawnCombinedOutput('launchctl', args);", implementation) : text;
+  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length, implementation).toBeGreaterThan(0);
 }, 120_000);
 
 it('rejects a raw supervisor start in the Deployment closure', () => {
@@ -170,3 +203,63 @@ it('rejects a raw supervisor start in the Deployment closure', () => {
     ? text + "\nexecFileSync('launchctl', ['kickstart', '-k', 'unit']);" : text;
   expect(supervisorStarts(walk(mutate, () => false).server, mutate).some(found => found.endsWith('supervisor exec'))).toBe(true);
 }, 120_000);
+
+it('rechecks interface callers for a structural implementation outside their import graph', () => {
+  const mutate = (file: string, text: string): string => file.endsWith('/runner/loop.ts') ? text + `
+    class HiddenRunner {
+      async run(args: string[]) {
+        execFileSync('launchctl', ['kickstart', '-k', 'unit']);
+        return { stdout: '', exitCode: 0 };
+      }
+    }
+  ` : text;
+  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(hit => hit.includes('runner/loop.ts:') && hit.endsWith('supervisor exec'))).toBe(true);
+}, 120_000);
+
+it('rechecks a wrapper reached by a new import in an overlay', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-supervisor-gate-'));
+  try {
+    const entry = path.join(directory, 'entry.ts');
+    const wrapper = path.join(directory, 'wrapper.ts');
+    fs.writeFileSync(entry, 'export {};');
+    fs.writeFileSync(wrapper, "export const kick = (verb: string) => execFileSync('launchctl', [verb]);");
+    const roots = [entry, wrapper];
+    const scan = createSupervisorStartScanner([closureOf(roots)]);
+    const mutate = (file: string, text: string): string => file === entry
+      ? "import { kick } from './wrapper.js'; kick('kickstart');" : text;
+    expect(scan(closureOf(roots, { source: mutate }), mutate).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
+    expect(scan(closureOf(roots))).toEqual([]);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+it('drops a removed structural implementation without changing the base scan', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-supervisor-gate-'));
+  try {
+    const caller = path.join(directory, 'caller.ts');
+    const implementation = path.join(directory, 'implementation.ts');
+    fs.writeFileSync(caller, `
+      interface Runner { run(args: string[]): Promise<{ stdout: string; exitCode: number }> }
+      declare const runner: Runner;
+      runner.run([]);
+      export {};
+    `);
+    fs.writeFileSync(implementation, `
+      export class BadRunner {
+        async run(args: string[]) {
+          execFileSync('launchctl', ['kickstart']);
+          return { stdout: '', exitCode: 0 };
+        }
+      }
+    `);
+    const roots = [caller, implementation];
+    const scan = createSupervisorStartScanner([closureOf(roots)]);
+    expect(scan(closureOf(roots)).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
+    const mutate = (file: string, text: string): string => file === implementation ? 'export {};' : text;
+    expect(scan(closureOf(roots, { source: mutate }), mutate)).toEqual([]);
+    expect(scan(closureOf(roots)).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
