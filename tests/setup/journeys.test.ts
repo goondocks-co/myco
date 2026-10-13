@@ -38,7 +38,7 @@ import { SESSION_SECRET } from '../myco-server/helpers/owner.js';
 import { OAUTH_STATE_COOKIE } from '@myco-server-worker/auth/owner/github.js';
 import { SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { ownerDeployment, ACCOUNT, HOSTED_URL } from './fixtures/owner-deployment.js';
-import { createCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
+import { createCloudflareDeployment, planCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
 import { prepareLocal } from '@myco/server/local-lifecycle.js';
 import { registerGitHubApp, convertManifestCode, writeSignInPending, signInPendingPath } from '@myco/server/github-app.js';
 import { peekDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudflare.js';
@@ -359,6 +359,49 @@ describe('new owner journeys (a) and (b)', () => {
     expect(await run(['--create', target, ...(target === 'local' ? ['--port', '8787', '--serve', 'service'] : ['--account-id', ACCOUNT, '--url', HOSTED_URL]), '--no-agents', '--no-runner'], deps)).toBe(2);
     expect(errors.at(-1)).toBe(`myco setup: ${target === 'local' ? 'Run myco server create --target local first. ' : ''}Use myco server github-app --target ${target} --url ${address} --existing --client-id <id> --client-secret-stdin with its regenerated secret, then run myco setup again.`);
     expect(server.github.calls).toHaveLength(0);
+  });
+
+  it('requires fresh consent for a changed URL after partial creation with --yes and no TTY', async () => {
+    const server = ownerDeployment(root, home, 'cloudflare');
+    closers.push(server.close);
+    let interrupted = false;
+    const runner = { run: async (...args: Parameters<typeof server.runner.run>) => {
+      if (!interrupted && args[1].includes('deploy')) { interrupted = true; throw new Error('interrupted before deploy'); }
+      return server.runner.run(...args);
+    } };
+    const deps = { ...base(), ...server.deps, cloudflare: { ...server.deps.cloudflare, runner } };
+    expect(await run(['--create', 'cloudflare', '--account-id', ACCOUNT, '--yes'], deps)).toBe(2);
+    expect(peekDeploymentRecord(home)).toMatchObject({ databaseId: expect.any(String), versionId: null });
+    expect(readSetupFile(home).consented.create).toBeTruthy();
+    server.commands.splice(0);
+    expect(await run(['--url', 'https://changed.invalid', '--yes'], deps)).toBe(2);
+    expect(errors.at(-1)).toContain('changed plans require fresh consent');
+    expect(server.commands.filter(command => /\b(create|deploy)\b/.test(command))).toEqual([]);
+  });
+
+  for (const identity of ['account', 'step name'] as const) it(`requires fresh consent for a changed ${identity} before any record with --yes and no TTY`, async () => {
+    const server = ownerDeployment(root, home, 'cloudflare');
+    closers.push(server.close);
+    let createCalls = 0;
+    let changeName = false;
+    const deps: SetupDeps = { ...base(), ...server.deps,
+      planCloudflare: async options => {
+        const plan = await planCloudflareDeployment(options);
+        if (changeName) plan.steps[0].name += '-changed';
+        return plan;
+      },
+      createCloudflare: async () => { createCalls++; throw new Error('interrupted after consent, before record'); },
+    };
+    expect(await run(['--create', 'cloudflare', '--account-id', ACCOUNT, '--yes'], deps)).toBe(2);
+    expect(peekDeploymentRecord(home)).toBeNull();
+    expect(readSetupFile(home).consented.create).toBeTruthy();
+    server.commands.splice(0);
+    changeName = identity === 'step name';
+    expect(await run(identity === 'account' ? ['--account-id', 'b'.repeat(32), '--yes'] : ['--yes'], deps)).toBe(2);
+    expect(errors.at(-1)).toContain('changed plans require fresh consent');
+    expect(createCalls).toBe(1);
+    expect(server.commands.filter(command => /\b(create|deploy)\b/.test(command))).toEqual([]);
+    expect(peekDeploymentRecord(home)).toBeNull();
   });
 
   for (const boundary of ['vectorize create', 'deploy'] as const) for (const interactive of [false, true]) it(`resumes partial Cloudflare creation at ${boundary} with ${interactive ? 'interactive' : 'no-TTY'} consent`, async () => {

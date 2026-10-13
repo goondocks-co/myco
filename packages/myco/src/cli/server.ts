@@ -200,7 +200,7 @@ export function createPlanLines(plan: CreatePlan): string[] {
   const width = Math.max(...plan.steps.map((s) => s.action.length));
   return [
     `\nCloudflare Deployment plan for account ${plan.accountId}. Nothing was created or changed.`,
-    ...plan.steps.map((s) => `  ${s.action.padEnd(width)}  ${s.kind} ${s.name}`),
+    ...plan.steps.map((s) => `  ${s.action.padEnd(width)}  ${s.kind} ${s.displayName ?? s.name}`),
     `  Bindings:  ${plan.bindings.join(', ')}`,
     `  URL:       ${plan.url}`,
     '\nRun the same command without --dry-run to carry it out.',
