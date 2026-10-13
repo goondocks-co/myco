@@ -61,7 +61,7 @@ afterEach(() => {
 /** The member extension as provisioned, importable beside a stub of the one package Pi supplies. */
 async function loadExtension(instance = ''): Promise<(pi: unknown) => void> {
   const manifest = loadManifests().find((m) => m.name === 'pi')!;
-  const rendered = new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-global', home).renderMemberPlugin('registry')!;
+  const rendered = new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, home).renderMemberPlugin('registry')!;
   const extensionDir = path.join(root, '.pi', 'extensions', 'myco');
   const typebox = path.join(extensionDir, 'node_modules', '@sinclair', 'typebox');
   fs.mkdirSync(typebox, { recursive: true });

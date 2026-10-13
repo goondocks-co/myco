@@ -5,7 +5,6 @@ import path from 'node:path';
 import { requireOwnedFixtureAllocation } from '../support/owned-fixtures.js';
 import { assertUnfencedFixtureMutationAllowed } from '../setup/filesystem-fence.js';
 
-type PermissionFixture = 'secret-file' | 'secret-directory';
 const FIXTURE_PERMISSION_MODES = new Set([0o000, 0o600, 0o700]);
 
 function withAuthorizedFixture(target: string, runtime: 'bun' | 'node', body: string): void {
@@ -44,27 +43,6 @@ function withAuthorizedFixture(target: string, runtime: 'bun' | 'node', body: st
   expect({ error: result.error?.message, status: result.status, stderr: result.stderr })
     .toEqual({ error: undefined, status: 0, stderr: '' });
   expect(result.stdout.trim()).toBe('permission fixture passed');
-}
-
-// Permission recovery runs through production code in an authorized fixture child.
-export function runPermissionFixture(fixture: PermissionFixture, directory: string): void {
-  withAuthorizedFixture(directory, 'bun', `
-    const directory = fixtureTarget;
-    const fixture = ${JSON.stringify(fixture)};
-    assert.deepEqual(fs.readdirSync(directory), []);
-    const { createSecretsOperations, readSecrets } = await import(${JSON.stringify(path.resolve('packages/myco/src/config/secrets.ts'))});
-    const { createPerUserLockNamespace } = await import(${JSON.stringify(path.resolve('packages/myco/src/utils/per-user-lock-namespace.ts'))});
-    const { tightenSecretsPermissions } = createSecretsOperations(createPerUserLockNamespace(() => process.env.MYCO_TEST_PER_USER_LOCKS_ROOT));
-    const file = path.join(directory, 'secrets.env');
-    const target = fixture === 'secret-file' ? file : directory;
-    fs.writeFileSync(file, 'REPAIRED=value\\n', { mode: 0o600 });
-    fs.chmodSync(target, 0o000);
-    try {
-      tightenSecretsPermissions(directory);
-      assert.equal(fs.statSync(target).mode & 0o777, fixture === 'secret-file' ? 0o600 : 0o700);
-      assert.deepEqual(readSecrets(directory), Object.assign(Object.create(null), { REPAIRED: 'value' }));
-    } finally { fs.chmodSync(target, fixture === 'secret-file' ? 0o600 : 0o700); }
-  `);
 }
 
 export function setFixturePermissions(target: string, mode: 0o000 | 0o600 | 0o700): void {

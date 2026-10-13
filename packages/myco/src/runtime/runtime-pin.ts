@@ -6,9 +6,9 @@
  * module stays a leaf: it reads files, and loads no configuration, no daemon and no store.
  */
 import path from 'node:path';
-import { MACHINE_RUNTIME_COMMAND_FILENAME, MACHINE_RUNTIME_HOME_FILENAME } from '../constants/update.js';
-import { readHomePin, readMachineHomePin, resolveMycoHome } from '../paths/home.js';
-import { readLayeredPin, readTrustedPin } from './binary-resolution.js';
+import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
+import { resolveMycoHome } from '../paths/home.js';
+import { readLayeredPin } from './binary-resolution.js';
 
 /**
  * `~/.myco/runtime.command` — single source of truth for which `myco`
@@ -21,45 +21,6 @@ import { readLayeredPin, readTrustedPin } from './binary-resolution.js';
  */
 export function resolveMachineRuntimeCommandPath(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, MACHINE_RUNTIME_COMMAND_FILENAME);
-}
-
-/**
- * Read the layered `runtime.command` pin and return the trimmed binary
- * path the launcher should exec, or null when no pin applies (the global
- * PATH-resolved `myco` is the implicit default).
- *
- * When `vaultDir` is supplied, `<vaultDir>/runtime.command` is checked
- * first (project-scope pin written by `make dev-link`); the machine-scope
- * `~/.myco/runtime.command` is the fallback (written by the beta-channel
- * installer). The CJS entry points implement the same layering via the
- * shared `bin/binary-resolution.cjs` module.
- */
-export function resolveRuntimeCommand(vaultDir?: string): string | null {
-  if (vaultDir) {
-    const projectPin = readTrustedPin(path.join(vaultDir, 'runtime.command'));
-    if (projectPin) return projectPin;
-  }
-  return readTrustedPin(resolveMachineRuntimeCommandPath());
-}
-
-/**
- * Read the layered `runtime.home` pin — the sibling of `runtime.command` —
- * and return the absolute home it redirects MYCO_HOME to, or null when no pin
- * applies (the prod `~/.myco` is the implicit default).
- *
- * Mirrors `resolveRuntimeCommand`'s layering: when `vaultDir` is supplied,
- * `<vaultDir>/runtime.home` (the project-scope dogfood pin) is checked first,
- * then the machine-scope `~/.myco/runtime.home`. Both are the home resolver's
- * own readers (`paths/home.ts`), so a daemon asking whether a project is
- * pinned elsewhere applies the rule that resolves the home in the first place —
- * same trust check, same `~` expansion.
- */
-export function resolveRuntimeHome(vaultDir?: string): string | null {
-  if (vaultDir) {
-    const project = readHomePin(path.join(vaultDir, MACHINE_RUNTIME_HOME_FILENAME));
-    if (project) return project;
-  }
-  return readMachineHomePin()?.home ?? null;
 }
 
 /**

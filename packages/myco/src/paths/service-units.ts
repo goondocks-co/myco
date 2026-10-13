@@ -27,8 +27,3 @@ export function resolveBootServiceUnitDirs(options: Pick<ServiceUnitDirOptions, 
   if (platform === 'win32') return [];
   return ['/etc/systemd/system'];
 }
-
-export function isSandboxedServiceUnitDir(options: ServiceUnitDirOptions = {}): boolean {
-  const env = options.env ?? process.env;
-  return Boolean(env[SERVICE_UNIT_DIR_ENV]?.trim());
-}

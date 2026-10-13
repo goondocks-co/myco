@@ -110,7 +110,7 @@ it.skipIf(!fs.existsSync(BINARY) && !process.env.CI)('routes one machine and ide
   for (const [index, root] of roots.entries()) {
     const deployment = deployments[index];
     const codex = loadManifests().find((manifest) => manifest.name === 'codex')!;
-    const rendered = new SymbiontInstaller(codex, root, resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome).renderMemberMcp('registry');
+    const rendered = new SymbiontInstaller(codex, root, resolvePackageRoot(), false, mycoHome).renderMemberMcp('registry');
     const entry = rendered!.myco as { url: string; http_headers_helper: string };
     expect(entry.url).toBe(`${deployment.url}/mcp`);
     const [binary, ...args] = entry.http_headers_helper.split(' ');

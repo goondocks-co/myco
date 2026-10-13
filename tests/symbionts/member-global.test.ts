@@ -1,6 +1,6 @@
 import { deriveSymbiontManifest } from '../helpers/symbiont-manifest.js';
 import { hookCommands } from '@myco/symbionts/member-hooks.js';
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,7 +28,180 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
   fs.rmSync(home, { recursive: true, force: true });
 });
-const installer = (name: string) => new SymbiontInstaller(loadManifests().find((m) => m.name === name)!, root, resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome);
+const installer = (name: string) => new SymbiontInstaller(loadManifests().find((m) => m.name === name)!, root, resolvePackageRoot(), false, mycoHome);
+
+describe('settings ownership recovery and restoration', () => {
+  it.each(['codex', 'claude-code'])('rolls back %s ownership when writing user settings fails', (name) => {
+    const member = installer(name);
+    const target = path.join(home, name === 'codex' ? '.codex/config.toml' : '.claude/settings.json');
+    const audit = path.join(mycoHome, 'installer-audit', `${name}-global-settings.json`);
+    const open = fs.openSync;
+    const failing = spyOn(fs, 'openSync').mockImplementation((file, flags, mode) => {
+      if (String(file).startsWith(target + '.tmp-')) throw Object.assign(new Error('settings write denied'), { code: 'EACCES' });
+      return open(file, flags, mode);
+    });
+    try { expect(() => member.installSettings()).toThrow(/settings write denied/); }
+    finally { failing.mockRestore(); }
+    expect(fs.existsSync(audit)).toBe(false);
+    const user = name === 'codex' ? '[features]\nhooks = true\n' : JSON.stringify(member.loadTemplate('settings'));
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, user);
+    expect(member.uninstallSettings()).toBe(false);
+    expect(fs.readFileSync(target, 'utf8')).toBe(user);
+  });
+  it('captures new user settings when an installer is reused after uninstall', () => {
+    const member = installer('claude-code');
+    member.install();
+    member.uninstallMemberRegistration();
+    const target = path.join(home, '.claude/settings.json');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, '{}');
+    member.install();
+    member.uninstallMemberRegistration();
+    expect(fs.readFileSync(target, 'utf8')).toBe('{}');
+  });
+  it('preserves the first scalar value through a changed-value reinstall', () => {
+    const target = path.join(home, '.claude/settings.json');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, '{"features":{"hooks":false}}');
+    const member = installer('claude-code');
+    const load = spyOn(member, 'loadTemplate').mockReturnValue({ features: { hooks: true } });
+    try {
+      member.installSettings();
+      fs.writeFileSync(target, '{"features":{"hooks":"user edit"}}');
+      member.installSettings();
+      member.uninstallSettings();
+      expect(JSON.parse(fs.readFileSync(target, 'utf8'))).toEqual({ features: { hooks: false } });
+    } finally { load.mockRestore(); }
+  });
+  it('does not restore array entries the user removed after install', () => {
+    const target = path.join(home, '.claude/settings.json');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, '{"permissions":{"allow":["user"]}}');
+    const member = installer('claude-code');
+    const load = spyOn(member, 'loadTemplate').mockReturnValue({ permissions: { allow: ['myco'] } });
+    try {
+      member.installSettings();
+      fs.writeFileSync(target, '{"permissions":{"allow":["myco"]}}');
+      member.uninstallSettings();
+      expect(JSON.parse(fs.readFileSync(target, 'utf8'))).toEqual({ permissions: { allow: [] } });
+    } finally { load.mockRestore(); }
+  });
+  it('does not recreate a settings file the user removed after install', () => {
+    const target = path.join(home, '.claude/settings.json');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, '{}');
+    const member = installer('claude-code');
+    member.installSettings();
+    fs.unlinkSync(target);
+    member.uninstallSettings();
+    expect(fs.existsSync(target)).toBe(false);
+  });
+  it.each(['codex', 'claude-code'])('refuses %s installation before user writes if ownership cannot be persisted', (name) => {
+    const member = installer(name);
+    const audit = path.join(mycoHome, 'installer-audit', `${name}-global-settings.json`);
+    const open = fs.openSync;
+    const failing = spyOn(fs, 'openSync').mockImplementation((file, flags, mode) => {
+      if (String(file).startsWith(audit + '.tmp-')) throw Object.assign(new Error('audit write denied'), { code: 'EACCES' });
+      return open(file, flags, mode);
+    });
+    try {
+      expect(() => member.install()).toThrow(/audit write denied/);
+      expect(member.memberGlobalTargets().all.filter(file => fs.existsSync(file))).toEqual([]);
+    } finally { failing.mockRestore(); }
+  });
+  it('retires ownership durably when the audit cannot be unlinked', () => {
+    const member = installer('codex');
+    member.install();
+    const audit = path.join(mycoHome, 'installer-audit/codex-global-settings.json');
+    const unlink = fs.unlinkSync;
+    const failing = spyOn(fs, 'unlinkSync').mockImplementation(file => {
+      if (String(file) === audit) throw Object.assign(new Error('audit unlink denied'), { code: 'EACCES' });
+      return unlink(file);
+    });
+    try {
+      member.uninstallSettings();
+      expect(JSON.parse(fs.readFileSync(audit, 'utf8'))).toMatchObject({ schema: 1, wroteKeys: [] });
+    } finally { failing.mockRestore(); }
+  });
+  it('treats an unreadable internal audit as owning nothing and names the recovery', () => {
+    const member = installer('codex');
+    member.install();
+    const audit = path.join(mycoHome, 'installer-audit/codex-global-settings.json');
+    const read = fs.readFileSync;
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    const failing = spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+      if (String(file) === audit) throw Object.assign(new Error('unreadable fixture'), { code: 'EACCES' });
+      return Reflect.apply(read, fs, [file, ...args]);
+    }) as typeof fs.readFileSync);
+    try {
+      expect(() => member.uninstallMemberRegistration()).not.toThrow();
+      expect(fs.existsSync(audit)).toBe(false);
+      expect(warn.mock.calls.flat().join(' ')).toContain(audit);
+      expect(warn.mock.calls.flat().join(' ')).toContain('owns no settings');
+      expect(fs.readFileSync(path.join(home, '.codex/config.toml'), 'utf8')).toContain('hooks = true');
+    } finally { failing.mockRestore(); warn.mockRestore(); }
+  });
+  it.each([
+    { schema: 2, format: 'json', scalars: [null], arrayEntries: [] },
+    { schema: 2, format: 'json', scalars: [{ path: ['permissions'], value: {}, previous: null }], arrayEntries: [] },
+    { schema: 2, format: 'json', scalars: [], arrayEntries: [], file: { existed: true, emptyText: '{"user": "value"}' } },
+  ])('recovers a structurally corrupt JSON audit without deleting settings: %j', (audit) => {
+    const member = installer('claude-code');
+    member.install();
+    const target = path.join(home, '.claude/settings.json');
+    const permissions = JSON.parse(fs.readFileSync(target, 'utf8')).permissions;
+    fs.writeFileSync(path.join(mycoHome, 'installer-audit/claude-code-global-settings.json'), JSON.stringify(audit));
+    expect(() => member.uninstallMemberRegistration()).not.toThrow();
+    expect(JSON.parse(fs.readFileSync(target, 'utf8')).permissions).toEqual(permissions);
+  });
+  it.each([{ features: { hooks: false } }, { permissions: { allow: [] } }])('restores JSON prior values byte-identically: %j', (user) => {
+    const target = path.join(home, '.claude/settings.json');
+    const original = JSON.stringify(user, null, 2) + '\n';
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, original);
+    const member = installer('claude-code');
+    const template = 'features' in user ? { features: { hooks: true } } : { permissions: { allow: ['Bash(myco *)'] } };
+    const load = spyOn(member, 'loadTemplate').mockReturnValue(template);
+    try { member.installSettings(); member.installSettings(); member.uninstallSettings(); }
+    finally { load.mockRestore(); }
+    expect(fs.readFileSync(target, 'utf8')).toBe(original);
+  });
+  it.each(['codex', 'claude-code'])('recovers a truncated %s audit without removing unowned settings', (name) => {
+    const member = installer(name);
+    member.install();
+    const audit = path.join(mycoHome, 'installer-audit', `${name}-global-settings.json`);
+    fs.writeFileSync(audit, '{');
+    expect(() => member.uninstallMemberRegistration()).not.toThrow();
+    expect(fs.existsSync(audit)).toBe(false);
+    expect(() => member.install()).not.toThrow();
+    fs.writeFileSync(audit, '{');
+    expect(() => member.install()).not.toThrow();
+    expect(() => JSON.parse(fs.readFileSync(audit, 'utf8'))).not.toThrow();
+  });
+  it.each(['codex', 'claude-code'])('restores the prior %s settings bytes after reinstall and uninstall', (name) => {
+    const target = path.join(home, name === 'codex' ? '.codex/config.toml' : '.claude/settings.json');
+    const original = name === 'codex' ? '# user preference\n[features]\n hooks=false # user choice\n\n[projects.personal]\ntrust_level = "trusted"\n' : '{}';
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, original);
+    const member = installer(name);
+    member.install();
+    member.install();
+    member.uninstallMemberRegistration();
+    expect(fs.readFileSync(target, 'utf8')).toBe(original);
+  });
+  it('restores the prior settings when the last Deployment logs out', () => {
+    const target = path.join(home, '.codex/config.toml');
+    const original = '[features]\nhooks = false\n';
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, original);
+    const member = installer('codex');
+    member.install();
+    member.reconcileDeploymentLogout('https://myco.example', null, false);
+    expect(fs.readFileSync(target, 'utf8')).toBe(original);
+    expect(fs.existsSync(path.join(mycoHome, 'installer-audit', 'codex-global-settings.json'))).toBe(false);
+  });
+});
 
 describe('global member installation', () => {
   it('checks the selected member home claim when the ambient home differs', () => {
@@ -172,7 +345,7 @@ it('refuses unreadable settings before removing any member registration', () => 
   const manifest = deriveSymbiontManifest(base, { registration: { ...base.registration!,
     settingsTarget: '.codex/member-settings.json', globalSettingsTarget: '~/.codex/member-settings.json', settingsFormat: 'json',
   } });
-  const member = new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome);
+  const member = new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, mycoHome);
   member.install();
   const settings = path.join(home, '.codex/member-settings.json');
   fs.writeFileSync(settings, '{broken');

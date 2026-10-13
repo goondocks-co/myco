@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { SymbiontInstaller, type InstallScope } from '@myco/symbionts/installer.js';
+import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 
@@ -58,7 +58,7 @@ afterAll(() => {
 
 type TargetField = 'hooks' | 'mcp' | 'skills' | 'settings';
 const TARGET_FIELDS: readonly TargetField[] = ['hooks', 'mcp', 'skills', 'settings'];
-const SCOPES: readonly InstallScope[] = ['member-global'];
+const SCOPES = ['member-global'] as const;
 
 interface ResolvedTargets {
   hooks: string | null;
@@ -89,16 +89,8 @@ function collectHookCommands(value: unknown, acc: string[] = []): string[] {
   return acc;
 }
 
-function resolveAllTargets(manifest: SymbiontManifest, scope: InstallScope): ResolvedTargets {
-  const installer = new SymbiontInstaller(
-    manifest,
-    FAKE_PROJECT_ROOT,
-    PKG_ROOT,
-    false,
-    undefined,
-    null,
-    scope,
-  );
+function resolveAllTargets(manifest: SymbiontManifest, _scope: 'member-global'): ResolvedTargets {
+  const installer = new SymbiontInstaller(manifest, FAKE_PROJECT_ROOT, PKG_ROOT, false);
   // `resolveAbsoluteTarget` is private in the public API but is the source
   // of truth for the path math we're asserting against. Reflective access
   // is the standard testing pattern for invariants on private methods.

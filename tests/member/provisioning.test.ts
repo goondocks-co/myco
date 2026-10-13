@@ -35,7 +35,7 @@ let fixtureRoot: string;
 let restoreHome: () => void;
 
 const claudeCode = () => loadManifests().find((m) => m.name === 'claude-code')!;
-const memberInstaller = (root = projectRoot) => new SymbiontInstaller(claudeCode(), root, PKG_ROOT, false, undefined, null, 'member-global');
+const memberInstaller = (root = projectRoot) => new SymbiontInstaller(claudeCode(), root, PKG_ROOT, false);
 const readTarget = (): Record<string, unknown> => JSON.parse(fs.readFileSync(path.join(home, MEMBER_TARGET), 'utf-8'));
 
 /**

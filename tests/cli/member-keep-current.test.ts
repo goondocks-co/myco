@@ -304,7 +304,7 @@ it('hook currency ignores group order and preserves another tools index after My
   keepCurrent(home, { binaryFound: () => true });
   expect(fs.readFileSync(hooks(), 'utf8')).toBe(JSON.stringify(data));
   expect(fs.statSync(hooks()).ino).toBe(before.ino);
-  const installer = new SymbiontInstaller(loadManifests().find((m) => m.name === 'codex')!, home, path.resolve('packages/myco'), false, undefined, null, 'member-global', home).withoutProjectRoot().forDeployment(SERVER);
+  const installer = new SymbiontInstaller(loadManifests().find((m) => m.name === 'codex')!, home, path.resolve('packages/myco'), false, home).withoutProjectRoot().forDeployment(SERVER);
   installer.installMemberHooks();
   expect(JSON.parse(fs.readFileSync(hooks(), 'utf8')).hooks[event]).toEqual(data.hooks[event]);
 });

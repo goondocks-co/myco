@@ -159,7 +159,7 @@ describe('myco member provision', () => {
       fs.writeFileSync(path.join(root, '.myco', 'runtime.home'), `${mycoHome}\n`, { mode: 0o644 });
       for (const name of ['codex', 'claude-code']) {
         const manifest = loadManifests().find((m) => m.name === name)!;
-        new SymbiontInstaller(manifest, root, resolvePackageRoot(), false, undefined, null, 'member-global').install();
+        new SymbiontInstaller(manifest, root, resolvePackageRoot(), false).install();
       }
       for (const command of emitted()) expect({ command, binary: command.split(' ')[0] }).toEqual({ command, binary: memberBinary });
 

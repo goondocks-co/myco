@@ -2,8 +2,10 @@
 
 HOST_TARGET := $(shell node -e "process.stdout.write(process.platform + '-' + (process.arch === 'arm64' ? 'arm64' : 'x64'))")
 
-build: check-fast build-only
-build-all: check-all build-only
+build: check-fast
+	$(MAKE) build-only
+build-all: check-all
+	$(MAKE) build-only
 build-fast: build
 build-only:
 	npm run build
@@ -45,8 +47,13 @@ dev-install:
 	@mkdir -p $(HOME)/.myco-dev/bin $(HOME)/.local/bin
 	@cp $(PWD)/packages/myco-$(HOST_TARGET)/bin/myco $(HOME)/.myco-dev/bin/myco.new
 	@chmod 755 $(HOME)/.myco-dev/bin/myco.new
-	@perl -e 'alarm 30; exec @ARGV or die' $(HOME)/.myco-dev/bin/myco.new --version >/dev/null
+	@if ! perl -e 'alarm 30; exec @ARGV or die' $(HOME)/.myco-dev/bin/myco.new --version >/dev/null; then \
+		rm -f $(HOME)/.myco-dev/bin/myco.new; \
+		echo 'The dogfood binary failed its --version probe; the installed binary was kept.' >&2; \
+		exit 1; \
+	fi
 	@mv -f $(HOME)/.myco-dev/bin/myco.new $(HOME)/.myco-dev/bin/myco
+	@rm -f $(HOME)/.local/bin/myco-dev
 	@$(MAKE) -s dev-wrapper OUT="$(HOME)/.local/bin/myco-dev" WRAPPED="$(HOME)/.myco-dev/bin/myco"
 
 dev-refresh:

@@ -144,6 +144,6 @@ describe('SymbiontInstaller — global skill cleanup', () => {
   function codexGlobal() {
     const m = loadManifests().find((x) => x.name === 'codex');
     if (!m) throw new Error('codex manifest not found');
-    return new SymbiontInstaller(m, tmpHome, PKG_ROOT, false, undefined, null, 'member-global');
+    return new SymbiontInstaller(m, tmpHome, PKG_ROOT, false);
   }
 });

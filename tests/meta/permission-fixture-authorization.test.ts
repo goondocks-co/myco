@@ -4,14 +4,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { allocateOwnedFixture } from '../support/owned-fixtures.js';
-import { runPermissionFixture, setFixturePermissions } from '../helpers/permission-fixture.js';
+import { setFixturePermissions } from '../helpers/permission-fixture.js';
 import { installFilesystemFence } from '../setup/filesystem-fence.js';
 
-type Helper = 'chmod' | 'secret-file' | 'secret-directory';
-const helpers: Helper[] = ['chmod', 'secret-file', 'secret-directory'];
+type Helper = 'chmod';
+const helpers: Helper[] = ['chmod'];
 function invoke(helper: Helper, directory: string): void {
   if (helper === 'chmod') setFixturePermissions(path.join(directory, 'config.toml'), 0o600);
-  else runPermissionFixture(helper, directory);
 }
 function snapshot(directory: string): unknown[] {
   return fs.readdirSync(directory).sort().flatMap((name) => {
@@ -112,7 +111,7 @@ describe('permission fixture authorization', () => {
         const supplied = `${root}${path.sep}.${path.sep}storage`;
         refusesBeforeSpawn(() => helper === 'chmod'
           ? setFixturePermissions(`${supplied}${path.sep}config.toml`, 0o600)
-          : runPermissionFixture(helper, supplied), /normalized absolute path/);
+          : setFixturePermissions(`${supplied}${path.sep}config.toml`, 0o600), /normalized absolute path/);
         expect(snapshot(root)).toEqual(before);
       } finally { fs.rmSync(root, { recursive: true, force: true }); }
     });
@@ -123,7 +122,7 @@ describe('permission fixture authorization', () => {
       const before = { mode: fs.statSync(root).mode, tree: snapshot(root) };
       const fence = installFilesystemFence(root);
       try {
-        refusesBeforeSpawn(() => helper === 'chmod' ? setFixturePermissions(root, 0o700) : runPermissionFixture(helper, root), /TEST SAFETY:.*live config/);
+        refusesBeforeSpawn(() => helper === 'chmod' ? setFixturePermissions(root, 0o700) : setFixturePermissions(root, 0o700), /TEST SAFETY:.*live config/);
         expect({ mode: fs.statSync(root).mode, tree: snapshot(root) }).toEqual(before);
       } finally {
         fence.dispose();

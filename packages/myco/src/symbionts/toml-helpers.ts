@@ -99,6 +99,7 @@ export function upsertTomlSectionKeys(
   raw: string,
   sectionName: string,
   values: Record<string, unknown>,
+  originalLines: Record<string, string> = {},
 ): string {
   const sectionHeader = `[${sectionName}]`;
   const writeEntries = Object.entries(values)
@@ -133,7 +134,7 @@ export function upsertTomlSectionKeys(
     }
     const m = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/);
     if (m && writeMap.has(m[1])) {
-      updatedLines.push(writeMap.get(m[1])!);
+      updatedLines.push(originalLines[m[1]] ?? writeMap.get(m[1])!);
       written.add(m[1]);
       continue;
     }
@@ -155,6 +156,10 @@ export function upsertTomlSectionKeys(
   }
   const subtablePart = subtableLines.length > 0 ? '\n\n' + subtableLines.join('\n').replace(/^\s+/, '') : '';
 
+  if (trailing.length === 0 && subtableLines.length === 0) {
+    return raw.slice(0, startIdx) + sectionHeader + mergedBody + raw.slice(endIdx);
+  }
+
   const before = raw.slice(0, startIdx).trimEnd();
   const after = raw.slice(endIdx).replace(/^\s+/, '');
   const beforeSeparator = before ? '\n\n' : '';
@@ -175,6 +180,19 @@ export function readTomlSectionKey(
   sectionName: string,
   key: string,
 ): string | boolean | number | undefined {
+  const line = readTomlSectionKeyLine(raw, sectionName, key);
+  if (line === undefined) return undefined;
+  const rhs = line.slice(line.indexOf('=') + 1).replace(/\s*#.*$/, '').trim();
+  if (rhs === 'true') return true;
+  if (rhs === 'false') return false;
+  if (/^-?\d+$/.test(rhs)) return Number(rhs);
+  if (/^-?\d*\.\d+$/.test(rhs)) return Number(rhs);
+  if ((rhs.startsWith('"') && rhs.endsWith('"')) || (rhs.startsWith("'") && rhs.endsWith("'"))) return rhs.slice(1, -1);
+  return rhs;
+}
+
+/** The original scalar line, including its whitespace and inline comment. */
+export function readTomlSectionKeyLine(raw: string, sectionName: string, key: string): string | undefined {
   const sectionHeader = `[${sectionName}]`;
   if (!raw.includes(sectionHeader)) return undefined;
 
@@ -188,15 +206,7 @@ export function readTomlSectionKey(
     if (TOML_SECTION_RE.test(line.trim())) break; // entered a subtable
     const m = line.match(keyRe);
     if (!m) continue;
-    const rhs = m[1].replace(/\s*#.*$/, '').trim();
-    if (rhs === 'true') return true;
-    if (rhs === 'false') return false;
-    if (/^-?\d+$/.test(rhs)) return Number(rhs);
-    if (/^-?\d*\.\d+$/.test(rhs)) return Number(rhs);
-    if ((rhs.startsWith('"') && rhs.endsWith('"')) || (rhs.startsWith("'") && rhs.endsWith("'"))) {
-      return rhs.slice(1, -1);
-    }
-    return rhs;
+    return line;
   }
   return undefined;
 }

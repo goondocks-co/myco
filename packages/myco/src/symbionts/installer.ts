@@ -14,8 +14,8 @@ import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { getPluginVersion } from '@myco/version.js';
 import { assertSafeProjectRoot } from '../project-root.js';
-import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey } from './toml-helpers.js';
-import { deepMergeSettingsWithAudit, emptyJsonAudit, removeAuditedSettings, type JsonSettingsAudit } from './settings-merge.js';
+import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey, readTomlSectionKeyLine } from './toml-helpers.js';
+import { deepMergeSettingsWithAudit, emptyJsonAudit, removeAuditedSettings, type JsonSettingsAudit, type SettingsFileAudit } from './settings-merge.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { isMycoHookCommand, isMycoHookGroup, withoutMycoHooks, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
@@ -31,7 +31,6 @@ import { managedBinaryPath } from '../install/managed-binary.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 
-
 function managedHookGroup(group: Record<string, unknown>): Record<string, unknown> {
   if (!Array.isArray(group.hooks)) return group;
   return { ...group, hooks: group.hooks.filter((hook: { command?: string }) => typeof hook.command === 'string' && isMycoHookCommand(hook.command)) };
@@ -39,10 +38,9 @@ function managedHookGroup(group: Record<string, unknown>): Record<string, unknow
 
 const TEMPLATES_SUBDIR = 'src/symbionts/templates';
 
-
 const REMOTE_MCP_TYPE = 'http';
 
-export class MemberProvisionConflictError extends Error {}
+export class MemberProvisionConflictError extends Error { }
 
 export class MemberMcpConflictError extends MemberProvisionConflictError {
   constructor(message: string, readonly problem: string = message, cause?: unknown) {
@@ -50,7 +48,7 @@ export class MemberMcpConflictError extends MemberProvisionConflictError {
   }
 }
 
-export class MemberPluginConflictError extends MemberProvisionConflictError {}
+export class MemberPluginConflictError extends MemberProvisionConflictError { }
 
 const TOML_MCP_SERVERS_KEY = 'mcp_servers';
 
@@ -111,7 +109,6 @@ function assertSafeBinaryPathForUnquoted(binaryPath: string): void {
   throw new Error(`Refusing to install symbiont hooks: binary path "${binaryPath}" ${WHITESPACE_PATH_REFUSAL}`);
 }
 
-
 function hookCommandsIn(raw: string): string[] {
   try {
     return hookCommands((JSON.parse(raw) as { hooks?: unknown }).hooks);
@@ -126,8 +123,8 @@ export interface InstallResult {
   skills: boolean;
   settings: boolean;
   instructions: boolean;
-    pluginPackage: boolean;
-    pluginManifest: boolean;
+  pluginPackage: boolean;
+  pluginManifest: boolean;
 }
 
 function emptyInstallResult(): InstallResult {
@@ -141,8 +138,6 @@ function emptyInstallResult(): InstallResult {
     pluginManifest: false,
   };
 }
-
-export type InstallScope = 'member-global';
 
 const JSON_ONLY_MCP_KEYS: readonly string[] = ['type', ...Object.keys(MEMBER_MCP_LEVERS)];
 
@@ -178,35 +173,31 @@ function captureHolderNext(verdict: ReturnType<typeof commandVerdict> | null): s
 export class SymbiontInstaller {
 
   constructor(
-  private manifest: SymbiontManifest,
-  private projectRoot: string,
-  private packageRoot: string,
+    private manifest: SymbiontManifest,
+    private projectRoot: string,
+    private packageRoot: string,
     // When true, the bundled-templates fallback is suppressed. Tests use
     // this to exercise scenarios where a specific template file is absent
     // from the packageRoot without inheriting the baked-in copy.
-  private suppressBundledTemplates: boolean = false,
-    _vaultDir?: string,
-    _groveId?: string | null,
-    installScope: InstallScope = 'member-global',
+    private suppressBundledTemplates: boolean = false,
     // The member home used for registry and provisioning reads.
-  private memberHome?: string,
+    private memberHome?: string,
   ) {
-    if (installScope !== 'member-global') throw new Error('Only member-global installation is supported');
   }
 
-  private resolveAbsoluteTarget(field: 'hooks' | 'skills' | 'settings'): string | null{
- const reg = this.manifest.registration;
- if (!reg) return null;
- const target = field === 'hooks' ? reg.globalHooksTarget : field === 'skills' ? reg.globalSkillsTarget : reg.globalSettingsTarget;
- return target ? throughLink(expandHome(target)) : null;
-}
+  private resolveAbsoluteTarget(field: 'hooks' | 'skills' | 'settings'): string | null {
+    const reg = this.manifest.registration;
+    if (!reg) return null;
+    const target = field === 'hooks' ? reg.globalHooksTarget : field === 'skills' ? reg.globalSkillsTarget : reg.globalSettingsTarget;
+    return target ? throughLink(expandHome(target)) : null;
+  }
 
-  private resolveAbsoluteMcpTargets(): Array<{ path: string; serversKey: string }>{
- const reg = this.manifest.registration;
- return (reg?.globalMcpTarget ?? []).map(entry => ({
-   path: expandHome(entry.path), serversKey: entry.serversKey ?? reg?.mcpServersKey ?? 'mcpServers',
- }));
-}
+  private resolveAbsoluteMcpTargets(): Array<{ path: string; serversKey: string }> {
+    const reg = this.manifest.registration;
+    return (reg?.globalMcpTarget ?? []).map(entry => ({
+      path: expandHome(entry.path), serversKey: entry.serversKey ?? reg?.mcpServersKey ?? 'mcpServers',
+    }));
+  }
 
   isConfigured(): boolean {
     const reg = this.manifest.registration;
@@ -281,7 +272,7 @@ export class SymbiontInstaller {
     return true;
   }
 
-    loadMcpTemplate(): Record<string, unknown> | null {
+  loadMcpTemplate(): Record<string, unknown> | null {
     const template = this.loadTemplate('mcp');
     if (!template) return null;
     const binaryPath = this.binaryPath();
@@ -301,30 +292,31 @@ export class SymbiontInstaller {
     return resolved;
   }
 
-    loadTemplate(name: string): Record<string, unknown> | null {
+  loadTemplate(name: string): Record<string, unknown> | null {
     const raw = this.readTemplateFile(path.join(this.manifest.name, `${name}.json`));
     if (raw === null) return null;
     try { return JSON.parse(raw); } catch { return null; }
   }
 
-    loadTemplateRaw(filename: string): string | null {
+  loadTemplateRaw(filename: string): string | null {
     return this.readTemplateFile(path.join(this.manifest.name, filename));
   }
 
-    install(): InstallResult{
-      // Every refusal runs before the first write: a member is provisioned
-      // with both surfaces or with neither, never with a plugin whose tools
-      // the host would then refuse to serve.
-      if (this.isMemberPluginFile()) {
-        this.assertMemberMcpWritable();
-        const hooks = this.writeMemberPlugin();
-        return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp() });
-      }
-      if (this.renderMemberHooks('registry') === null) return emptyInstallResult();
+  install(): InstallResult {
+    // Every refusal runs before the first write: a member is provisioned
+    // with both surfaces or with neither, never with a plugin whose tools
+    // the host would then refuse to serve.
+    if (this.isMemberPluginFile()) {
       this.assertMemberMcpWritable();
-      const hooks = this.installMemberHooks();
-      return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp(), settings: this.installSettings() });
+      const hooks = this.writeMemberPlugin();
+      return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp() });
     }
+    if (this.renderMemberHooks('registry') === null) return emptyInstallResult();
+    this.assertMemberMcpWritable();
+    const settings = this.installSettings();
+    const hooks = this.installMemberHooks();
+    return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp(), settings });
+  }
 
   renderMemberHooks(source: CredentialSource): Record<string, unknown> | null {
     const reg = this.manifest.registration;
@@ -458,11 +450,8 @@ export class SymbiontInstaller {
       if (Object.keys(bag).length === 0) delete data[key];
     }
     if (!removed) return false;
-    if (Object.keys(data).length === 0) {
-      fs.rmSync(targetPath, { force: true });
-      return true;
-    }
-    return writeJsonFile(targetPath, data);
+    this.writeMemberJson(targetPath, data, this.readOwnedSettingsAudit()?.file as SettingsFileAudit | undefined);
+    return true;
   }
 
   private isMemberMcpServer(def: unknown): boolean {
@@ -564,7 +553,7 @@ export class SymbiontInstaller {
     return this.deploymentNamed(url.slice(0, -MCP_PATH.length));
   }
 
-  inspectMemberHooks(): { scope: 'global' | 'project'; target: string | null; present: boolean; member: boolean; memberCommands: string[]; readable: boolean } {
+  inspectMemberHooks(): { scope: 'global'; target: string | null; present: boolean; member: boolean; memberCommands: string[]; readable: boolean } {
     const scope = 'global' as const;
     const target = this.resolveAbsoluteTarget('hooks');
     const none = { scope, target, present: false, member: false, memberCommands: [] as string[] };
@@ -583,7 +572,6 @@ export class SymbiontInstaller {
       .filter((command) => isMycoHookCommand(command) && parseCredentialFlag(command.split(/\s+/)) !== null);
     return { ...none, present, member: present && memberCommands.length > 0, memberCommands, readable: true };
   }
-
 
   inspectMemberMcp(expectedDeployment?: string): Array<{ scope: 'global' | 'project'; present: boolean; transport: 'http' | 'stdio' | null; carriesCredential: boolean; declaredCwd: string | null; deploymentsAgree: boolean | null; namesExpectedDeployment: boolean | null; readable: boolean }> {
     const toml = this.manifest.registration?.mcpFormat === 'toml';
@@ -633,8 +621,10 @@ export class SymbiontInstaller {
       const namesExpectedDeployment = !declares || expected === undefined
         ? null
         : expected !== null && both && dialled === expected && minted === expected;
-      return { scope, present: true, transport, carriesCredential: this.declaresUsableCredential(entry), declaredCwd,
-        deploymentsAgree, namesExpectedDeployment, readable: true };
+      return {
+        scope, present: true, transport, carriesCredential: this.declaresUsableCredential(entry), declaredCwd,
+        deploymentsAgree, namesExpectedDeployment, readable: true
+      };
     });
   }
 
@@ -677,11 +667,13 @@ export class SymbiontInstaller {
   }
 
   reconcileDeploymentLogout(leavingUrl: string, nextDefault: string | null, keepHooks: boolean): void {
+    if (!keepHooks) this.preflightMemberSettings();
     this.forDeployment(nextDefault ?? leavingUrl).replacingDeployment(leavingUrl);
     this.reconcileDeploymentMcp(leavingUrl, nextDefault, !keepHooks);
     if (!keepHooks) {
       this.assertGlobalMemberOwnership('hooks');
       this.uninstallMemberHooks();
+      this.uninstallSettings();
     }
   }
 
@@ -732,8 +724,7 @@ export class SymbiontInstaller {
             file[primaryKey] = servers;
           }
         }
-        if (Object.keys(file).length === 0) fs.rmSync(target.path, { force: true });
-        else writeJsonFile(target.path, file);
+        this.writeMemberJson(target.path, file, this.readOwnedSettingsAudit()?.file as SettingsFileAudit | undefined);
       }
     }
   }
@@ -952,11 +943,8 @@ export class SymbiontInstaller {
     } else {
       delete settings.hooks;
     }
-    if (Object.keys(settings).length === 0) {
-      fs.rmSync(targetPath, { force: true });
-      return true;
-    }
-    return writeJsonFile(targetPath, settings);
+    this.writeMemberJson(targetPath, settings, this.readOwnedSettingsAudit()?.file as SettingsFileAudit | undefined);
+    return true;
   }
 
   private substituteMycoLauncher(content: string): string {
@@ -1004,7 +992,7 @@ export class SymbiontInstaller {
     return substitute(template) as Record<string, unknown>;
   }
 
-      renderMemberPlugin(source: CredentialSource): string | null {
+  renderMemberPlugin(source: CredentialSource): string | null {
     const reg = this.manifest.registration;
     if (reg?.hooksFormat !== HOOKS_FORMAT_PLUGIN_FILE) return null;
     const templateFile = reg.hooksTemplateFile ?? 'plugin.ts';
@@ -1062,7 +1050,7 @@ export class SymbiontInstaller {
     return true;
   }
 
-    installSettings(): boolean {
+  installSettings(): boolean {
     this.preflightMemberSettings();
     const reg = this.manifest.registration;
     if (!reg?.settingsTarget) return false;
@@ -1087,24 +1075,27 @@ export class SymbiontInstaller {
     // that happened to overlap with the template. Parity with the TOML
     // `installSettingsToml` audit.
     const audit = emptyJsonAudit();
+    audit.file = this.settingsFileAudit();
     const merged = deepMergeSettingsWithAudit(existing, template, audit);
-    const wrote = writeJsonFile(targetPath, merged);
-    if (audit.scalars.length > 0 || audit.arrayEntries.length > 0) {
+    {
       // Merge with any pre-existing audit so re-installs accumulate
       // ownership claims (different template versions may legitimately
       // touch different paths over time). Paths are arrays; key on the
       // JSON-stringified form to avoid false-distinct paths.
       const existingAudit = this.readJsonSettingsAudit();
       if (existingAudit) {
-        const seenScalarPaths = new Set(audit.scalars.map((s) => JSON.stringify(s.path)));
         for (const s of existingAudit.scalars) {
-          if (!seenScalarPaths.has(JSON.stringify(s.path))) audit.scalars.push(s);
+          const current = audit.scalars.find(entry => JSON.stringify(entry.path) === JSON.stringify(s.path));
+          if (current) {
+            if (s.previous) current.previous = s.previous; else delete current.previous;
+          } else audit.scalars.push(s);
         }
         const arrayByPath = new Map(audit.arrayEntries.map((e) => [JSON.stringify(e.path), e]));
         for (const e of existingAudit.arrayEntries) {
           const key = JSON.stringify(e.path);
           const current = arrayByPath.get(key);
           if (current) {
+            if (e.previous) current.previous = e.previous; else delete current.previous;
             const seen = new Set(current.values.map((v) => JSON.stringify(v)));
             for (const v of e.values) {
               if (!seen.has(JSON.stringify(v))) current.values.push(v);
@@ -1115,9 +1106,8 @@ export class SymbiontInstaller {
           }
         }
       }
-      this.writeJsonSettingsAudit(audit);
     }
-    return wrote;
+    return this.writeAuditedSettings(audit, () => writeJsonFile(targetPath, merged));
   }
 
   private getSettingsAuditPath(): string {
@@ -1130,51 +1120,126 @@ export class SymbiontInstaller {
     const target = this.resolveAbsoluteTarget('settings');
     if (target === null) return;
     this.readMcpFile(target, this.manifest.registration?.settingsFormat === 'toml');
-    this.readMcpFile(this.getSettingsAuditPath(), false);
   }
 
-  private readSettingsAudit(): string[] {
-    const parsed = this.readMcpFile(this.getSettingsAuditPath(), false);
-    return parsed?.schema === 1 && Array.isArray(parsed.wroteKeys)
-      ? parsed.wroteKeys.filter((key): key is string => typeof key === 'string') : [];
+  private readonly reportedAuditProblems = new Set<string>();
+
+  private readOwnedSettingsAudit(): Record<string, unknown> | null {
+    const file = this.getSettingsAuditPath();
+    try {
+      const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const object = (item: unknown): item is Record<string, unknown> => item !== null && typeof item === 'object' && !Array.isArray(item);
+      const segments = (item: unknown): boolean => Array.isArray(item) && item.length > 0
+        && item.every(part => typeof part === 'string' && !['__proto__', 'constructor', 'prototype'].includes(part));
+      const previous = (item: Record<string, unknown>, array = false): boolean => !Object.hasOwn(item, 'previous')
+        || object(item.previous) && Object.hasOwn(item.previous, 'value') && (!array || Array.isArray(item.previous.value));
+      if (!value || typeof value !== 'object' || Array.isArray(value)
+        || !(value.schema === 1 && Array.isArray(value.wroteKeys) && value.wroteKeys.every((key: unknown) => typeof key === 'string')
+          && (value.previousValues === undefined || object(value.previousValues))
+          || value.schema === 2 && value.format === 'json'
+          && Array.isArray(value.scalars) && value.scalars.every((entry: unknown) => object(entry) && segments(entry.path) && Object.hasOwn(entry, 'value') && previous(entry))
+          && Array.isArray(value.arrayEntries) && value.arrayEntries.every((entry: unknown) => object(entry) && segments(entry.path) && Array.isArray(entry.values) && previous(entry, true)))) {
+        throw new Error('Invalid settings audit');
+      }
+      if (value.schema === 1) {
+        const prior = value.previousValues ?? {};
+        if (Object.values(prior).some(item => !['boolean', 'string', 'number'].includes(typeof item))) throw new Error('Invalid prior settings');
+        if (value.previousLines !== undefined) {
+          if (!object(value.previousLines)) throw new Error('Invalid original settings lines');
+          for (const [key, line] of Object.entries(value.previousLines)) {
+            const dot = key.indexOf('.');
+            if (typeof line !== 'string' || /[\r\n]/.test(line) || dot < 0 || !Object.hasOwn(prior, key)
+              || !isDeepStrictEqual(readTomlSectionKey(`[${key.slice(0, dot)}]\n${line}\n`, key.slice(0, dot), key.slice(dot + 1)), prior[key])) {
+              throw new Error('Invalid original settings line');
+            }
+          }
+        }
+      }
+      if (value.file !== undefined) {
+        if (!object(value.file) || typeof value.file.existed !== 'boolean'
+          || value.file.trailingWhitespace !== undefined && (typeof value.file.trailingWhitespace !== 'string' || !/^\s*$/.test(value.file.trailingWhitespace))) throw new Error('Invalid file audit');
+        if (value.file.emptyText !== undefined) {
+          if (typeof value.file.emptyText !== 'string') throw new Error('Invalid empty-file audit');
+          const empty = this.manifest.registration?.settingsFormat === 'toml' ? parseToml(value.file.emptyText) : JSON.parse(value.file.emptyText);
+          if (!object(empty) || Object.keys(empty).length !== 0) throw new Error('Invalid empty-file audit');
+        }
+      }
+      return value;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      if (!this.reportedAuditProblems.has(file)) {
+        console.warn(`Myco settings audit ${file} is unreadable or corrupt and owns no settings; install replaces it and uninstall deletes it.`);
+        this.reportedAuditProblems.add(file);
+      }
+      return null;
+    }
   }
 
-  private writeSettingsAudit(wroteKeys: string[]): void {
-    const auditPath = this.getSettingsAuditPath();
-    fs.mkdirSync(path.dirname(auditPath), { recursive: true });
-    writeJsonFile(auditPath, { schema: 1, wroteKeys });
+  private settingsFileAudit(): SettingsFileAudit | undefined {
+    const saved = this.readOwnedSettingsAudit()?.file as SettingsFileAudit | undefined;
+    if (saved && typeof saved.existed === 'boolean') return saved;
+    const target = this.resolveAbsoluteTarget('settings');
+    if (target === null) return undefined;
+    try {
+      const raw = fs.readFileSync(target, 'utf8');
+      const toml = this.manifest.registration?.settingsFormat === 'toml';
+      const data = toml ? parseToml(raw) : JSON.parse(raw);
+      return {
+        existed: true,
+        ...(Object.keys(data).length === 0 ? { emptyText: raw } : {}),
+        ...(toml ? { trailingWhitespace: raw.match(/\s*$/)?.[0] ?? '' } : {}),
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return { existed: false };
+    }
+  }
+
+  private writeSettingsAuditRecord(audit: object): void {
+    const file = this.getSettingsAuditPath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    atomicWriteFileSync(file, JSON.stringify(audit, null, 2) + '\n');
   }
 
   private readJsonSettingsAudit(): JsonSettingsAudit | null {
-    const parsed = this.readMcpFile(this.getSettingsAuditPath(), false) as Partial<JsonSettingsAudit> | null;
-    if (parsed === null) return null;
-    if (parsed.schema !== 2) return null;
-    if (parsed.format !== 'json') return null;
+    const parsed = this.readOwnedSettingsAudit() as Partial<JsonSettingsAudit> | null;
+    if (parsed?.schema !== 2 || parsed.format !== 'json') return null;
     return {
-      schema: 2,
-      format: 'json',
-      scalars: Array.isArray(parsed.scalars)
-        ? parsed.scalars.filter((s): s is { path: string[]; value: unknown } =>
-          !!s && Array.isArray(s.path) && s.path.every((seg) => typeof seg === 'string'))
-        : [],
-      arrayEntries: Array.isArray(parsed.arrayEntries)
-        ? parsed.arrayEntries.filter((s): s is { path: string[]; values: unknown[] } =>
-          !!s && Array.isArray(s.path) && s.path.every((seg) => typeof seg === 'string')
-          && Array.isArray(s.values))
-        : [],
+      schema: 2, format: 'json', file: parsed.file,
+      scalars: (parsed.scalars ?? []).filter(entry => Array.isArray(entry.path) && entry.path.every(part => typeof part === 'string')),
+      arrayEntries: (parsed.arrayEntries ?? []).filter(entry => Array.isArray(entry.path) && entry.path.every(part => typeof part === 'string') && Array.isArray(entry.values)),
     };
   }
 
-  private writeJsonSettingsAudit(audit: JsonSettingsAudit): void {
-    const auditPath = this.getSettingsAuditPath();
-    fs.mkdirSync(path.dirname(auditPath), { recursive: true });
-    atomicWriteFileSync(auditPath, JSON.stringify(audit, null, 2) + '\n');
+  private writeAuditedSettings(audit: object, write: () => boolean): boolean {
+    const previous = this.readOwnedSettingsAudit();
+    this.writeSettingsAuditRecord(audit);
+    try { return write(); } catch (error) {
+      try {
+        if (previous) this.writeSettingsAuditRecord(previous);
+        else this.deleteSettingsAudit();
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], `Settings write and audit recovery failed for ${this.getSettingsAuditPath()}`);
+      }
+      throw error;
+    }
   }
 
   private deleteSettingsAudit(): void {
-    try { fs.unlinkSync(this.getSettingsAuditPath()); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    const file = this.getSettingsAuditPath();
+    try { fs.unlinkSync(file); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      this.writeSettingsAuditRecord(this.manifest.registration?.settingsFormat === 'toml'
+        ? { schema: 1, wroteKeys: [] } : emptyJsonAudit());
+      console.warn(`Could not delete Myco settings audit ${file}; replaced it with an empty audit that owns no settings.`);
     }
+  }
+
+  private writeMemberJson(target: string, data: Record<string, unknown>, file?: SettingsFileAudit): void {
+    const settingsTarget = target === this.resolveAbsoluteTarget('settings');
+    if (Object.keys(data).length === 0 && settingsTarget && file?.existed !== false) {
+      atomicWriteFileSync(target, file?.emptyText ?? '{}\n');
+    } else writeOrDeleteJsonFile(target, data);
   }
 
   private installSettingsToml(targetPath: string, template: Record<string, unknown>): boolean {
@@ -1182,7 +1247,11 @@ export class SymbiontInstaller {
     try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     const original = raw;
 
-    const audit = new Set(this.readSettingsAudit());
+    const saved = this.readOwnedSettingsAudit();
+    const audit = new Set(saved?.schema === 1 ? saved.wroteKeys as string[] : []);
+    const previousValues = { ...(saved?.previousValues as Record<string, unknown> ?? {}) };
+    const previousLines = { ...(saved?.previousLines as Record<string, string> ?? {}) };
+    const file = this.settingsFileAudit();
     const templateKeys = new Set<string>();
 
     for (const [sectionName, values] of Object.entries(template)) {
@@ -1197,6 +1266,11 @@ export class SymbiontInstaller {
         const equal = currentVal !== undefined && String(currentVal) === String(templateVal);
         if (!equal) {
           mutate[key] = templateVal;
+          if (!audit.has(auditKey) && currentVal !== undefined) {
+            previousValues[auditKey] = currentVal;
+            const line = readTomlSectionKeyLine(raw, sectionName, key);
+            if (line !== undefined) previousLines[auditKey] = line;
+          }
           audit.add(auditKey);
         }
         // If the value already matches but we previously recorded ownership,
@@ -1211,12 +1285,13 @@ export class SymbiontInstaller {
     for (const entry of audit) if (!templateKeys.has(entry)) audit.delete(entry);
 
     const changed = !isDeepStrictEqual(parseToml(original), parseToml(raw));
-    if (changed) {
-      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-      atomicWriteFileSync(targetPath, raw);
-    }
-    this.writeSettingsAudit(Array.from(audit).sort());
-    return changed;
+    return this.writeAuditedSettings({ schema: 1, wroteKeys: Array.from(audit).sort(), previousValues, previousLines, file }, () => {
+      if (changed) {
+        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        atomicWriteFileSync(targetPath, raw);
+      }
+      return changed;
+    });
   }
 
   uninstallSettings(): boolean {
@@ -1238,20 +1313,25 @@ export class SymbiontInstaller {
     const settings = this.readMcpFile(targetPath, false) ?? {};
 
     const audit = this.readJsonSettingsAudit();
-    if (audit === null) return false;
+    if (audit === null) { this.deleteSettingsAudit(); return false; }
     const declared = (segments: readonly string[]): boolean => segments.reduce<unknown>((value, key) =>
-      value !== null && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined, template) !== undefined;
-    const changed = removeAuditedSettings(settings, { ...audit,
+      value !== null && typeof value === 'object' && Object.hasOwn(value, key) ? (value as Record<string, unknown>)[key] : undefined, template) !== undefined;
+    const changed = removeAuditedSettings(settings, {
+      ...audit,
       scalars: audit.scalars.filter(entry => declared(entry.path)),
       arrayEntries: audit.arrayEntries.filter(entry => declared(entry.path)),
     });
-    if (changed) writeOrDeleteJsonFile(targetPath, settings);
+    if (changed) this.writeMemberJson(targetPath, settings, audit.file);
     this.deleteSettingsAudit();
     return changed;
   }
 
   private uninstallSettingsToml(targetPath: string, template: Record<string, unknown>): boolean {
-    const audit = this.readSettingsAudit();
+    const saved = this.readOwnedSettingsAudit();
+    const audit = saved?.schema === 1 ? saved.wroteKeys as string[] : [];
+    const previousValues = saved?.previousValues as Record<string, unknown> ?? {};
+    const previousLines = saved?.previousLines as Record<string, string> ?? {};
+    const file = saved?.file as SettingsFileAudit | undefined;
     if (audit.length === 0) {
       this.deleteSettingsAudit();
       return false;
@@ -1269,6 +1349,7 @@ export class SymbiontInstaller {
     }
 
     const bySection = new Map<string, string[]>();
+    let restored = false;
     for (const entry of audit) {
       const dot = entry.indexOf('.');
       if (dot < 0) continue;
@@ -1278,11 +1359,15 @@ export class SymbiontInstaller {
       const values = template[section] as Record<string, unknown>;
       if (!Object.hasOwn(values, key) || !isDeepStrictEqual(readTomlSectionKey(raw, section, key), values[key])) continue;
       const bucket = bySection.get(section) ?? [];
-      bucket.push(key);
+      if (Object.hasOwn(previousValues, entry)) {
+        const next = upsertTomlSectionKeys(raw, section, { [key]: previousValues[entry] }, { [key]: previousLines[entry] });
+        restored ||= next !== raw;
+        raw = next;
+      } else bucket.push(key);
       bySection.set(section, bucket);
     }
 
-    let changed = false;
+    let changed = restored;
     for (const [sectionName, keys] of bySection) {
       const next = removeTomlSectionKeys(raw, sectionName, keys);
       if (next !== raw) {
@@ -1292,11 +1377,9 @@ export class SymbiontInstaller {
     }
 
     if (changed) {
-      if (!raw.trim()) {
-        try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
-      } else {
-        atomicWriteFileSync(targetPath, raw);
-      }
+      if (file?.trailingWhitespace !== undefined) raw = raw.replace(/\s*$/, file.trailingWhitespace);
+      if (!raw.trim() && file?.existed === false) fs.unlinkSync(targetPath);
+      else atomicWriteFileSync(targetPath, !raw.trim() && file?.emptyText !== undefined ? file.emptyText : raw);
     }
 
     this.deleteSettingsAudit();

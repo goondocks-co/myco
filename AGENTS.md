@@ -13,7 +13,7 @@ Myco captures project memory and serves it back through context injection, MCP t
 
 - We develop Myco using Myco. The member sends project capture to its Deployment.
 - Development sessions are real Project history. Preserve capture spools and Deployment data.
-- After changing hooks or member code, run `make build` and smoke-test the compiled binary with an isolated home. Hooks load the updated binary on their next invocation.
+- After changing hooks or member code, run `make build` and smoke-test the compiled binary with an isolated home. From the main checkout, `make dev-deploy` refreshes the shared dogfood binary; its hooks load that binary on their next invocation. In a worktree, use the isolated runtime pin described below.
 - A native Deployment or registered runner keeps its running executable until its own process is restarted. Restart only the isolated process under test; preserve shared capture continuity.
 - Use `make dev-link` only from the main checkout; it rewrites shared `~/.local/bin/myco-*` symlinks.
 - In git worktrees, use `make dev-link-worktree`; it builds the worktree binary and writes a worktree-local `.myco/runtime.command` pointing at it, without changing shared symlinks. Hooks and CLI route to the worktree build; MCP is served by the Deployment; member routing still resolves the project root via `git-common-dir`. See the `dogfood-worktree` skill for caveats (explicit member home, vendor-asset build requirements).

@@ -72,7 +72,7 @@ describe('tool parity', () => {
     expect(TOOL_DEFINITIONS.filter((d) => !member.has(d.name)).map((d) => d.name)).toEqual([]);
   });
 
-  it('serves each definition as the frozen contract declares it, minus the Grove pivot, with the tenancy description as the only worded difference', () => {
+  it('serves each definition exactly as the frozen contract declares it', () => {
     const member = byName(FROZEN_DEFINITIONS);
     for (const server of TOOL_DEFINITIONS) {
       expect({ tool: String(server.name), definition: server as object }).toEqual({ tool: String(server.name), definition: member.get(server.name)! as object });

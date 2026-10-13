@@ -78,6 +78,18 @@ function member(): void {
 }
 
 describe('member-only remove', () => {
+  it('removes registrations despite a truncated internal audit and preserves unowned settings', async () => {
+    member();
+    const target = path.join(user, '.claude/settings.json');
+    const installed = JSON.parse(fs.readFileSync(target, 'utf8'));
+    fs.writeFileSync(path.join(home, 'installer-audit', 'claude-code-global-settings.json'), '{');
+    await run(['--yes'], deps());
+    expect(process.exitCode).toBe(0);
+    const kept = JSON.parse(fs.readFileSync(target, 'utf8'));
+    expect(kept.permissions).toEqual(installed.permissions);
+    expect(kept.hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(home, 'installer-audit', 'claude-code-global-settings.json'))).toBe(false);
+  });
   it('removes member hooks, MCP, skill links and both executor services, preserving capture, legacy files and repository files', async () => {
     member();
     const legacy = legacyFixtureHome(path.join(root, 'legacy'));

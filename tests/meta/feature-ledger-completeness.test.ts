@@ -1,48 +1,10 @@
 import { COMMANDS } from '@myco/cli/command-registry.js';
 /**
- * Meta gate: every 1.4 surface carries an explicit 2.0 disposition AND an owning surface.
- *
- * `docs/architecture/myco-2.0.md` §7 is the feature-preservation ledger for the 2.0
- * release. Its governing rule is that replacing infrastructure is never authority to
- * lose a feature: every capability gets KEEP / REPLACE / DROP and a named owner.
- *
- * A ledger with no gate goes stale the first time someone adds a CLI command — and the
- * failure is silent, because a capability nobody enumerated is dropped by default rather
- * than by decision. That is the exact defect the ledger exists to answer.
- *
- * This gate scans the registries that define the 1.4 surface, and those that define
- * the 2.0 surface, and asserts every token appears in a ledger row with BOTH a
- * disposition and an owning surface, failing by name when either is missing:
- *
- *   - CLI commands   — public and compatibility registrations in `cli/command-registry.ts`
- *   - Dashboard routes — `path="<literal>"` in `packages/myco/ui/src/App.tsx` (retired)
- *   - MCP tools      — `TOOL_* = 'myco_*'` in `packages/myco/src/tools/definitions.ts`
- *   - Agent tasks    — YAML filenames under `src/agent/definitions/tasks/`
- *   - Scheduled jobs — `POWER_JOB_NAMES` values in `src/constants/power-jobs.ts`
- *   - Data classes   — `CREATE TABLE` names under every `packages/<pkg>/src/db/`, the
- *                      member's vault schema and the Deployment's
- *   - Config leaves  — every leaf the `MycoConfigSchema` DECLARES (§7.8)
- *
- * and, of 2.0's own: the dashboard's route table, the retained tasks, the task schedule, the server's tick jobs,
- * the Deployment's settings leaves and a machine's settings leaves.
- *
- * A 1.4 registry is retired by deleting the code that holds it. Its §7 rows stay as
- * the record of what became of each capability, and the registry is named in
- * `RETIRED_REGISTRIES` with the tokens its source held: a registry whose source is gone
- * and is not named there fails, so a move or an accidental deletion cannot pass for a
- * retirement, and each held token keeps its row, disposition and owning surface.
- *
- * Each registry owns a §7 section, and its tokens are looked up there alone, so a token
- * another section also names (`settings` in §7.1 and §7.2) is never answered by the
- * wrong row. The other direction holds too: every KEEP or NEW row in a section a live
- * registry owns must be a token one of its registries produces, so a kept capability
- * whose code is deleted fails by name, not just a new one with no row.
- *
- * The SURFACE half matters most. A row with a disposition but no surface is how a
- * capability ends up owned by nobody — the planning defect of the same class as a
- * property with no gate.
- *
- * Static source scan (node:fs), no daemon boot.
+ * Every frozen 1.4 registry token and live 2.0 capability has an explicit
+ * KEEP, REPLACE or DROP disposition and an owner in the architecture ledger.
+ * CLI tokens come from the dispatch registry, including compatibility entries.
+ * Live KEEP/NEW rows must be produced by a live registry. Retired tokens remain
+ * frozen so deleting an implementation cannot silently delete its capability.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';

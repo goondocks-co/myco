@@ -38,9 +38,6 @@ export function unknownCandidateQualityFailureCodes(values: readonly string[]): 
 
 export const IDENTIFIED_CANDIDATE_MIN_QUALITY_SCORE = 0.7;
 export const IDENTIFIED_CANDIDATE_MIN_SOURCE_REFS = 3;
-export const SKILL_SURVEY_RECONCILIATION_STATE_KEY = 'skill-survey-reconciliation-decisions';
-export const SKILL_SURVEY_BUNDLE_DECISIONS_STATE_KEY = 'skill-survey-bundle-decisions';
-export const SKILL_SURVEY_RECONCILIATION_POLICY_MARKER = 'skill-survey-reconciliation-policy:v2';
 
 export interface CandidateQualityContractRow {
   id?: string;

@@ -4,7 +4,6 @@ import { SERVICE_UNIT_DIR_ENV } from '@myco/paths/service-units.js';
 import { spawnCombinedOutput, spawnRawOutput, assertRunSucceeded, type RawCommandOutput } from './run-command.js';
 
 
-
 export interface SchtasksRunner {
   run(args: string[]): Promise<{ stdout: string; stderr?: string; exitCode: number }>;
   queryState(label: string): Promise<TaskSchedulerState>;

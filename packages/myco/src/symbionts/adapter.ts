@@ -103,25 +103,6 @@ export function findJsonlInSubdirs(baseDir: string, sessionId: string): string |
   return null;
 }
 
-/**
- * Factory for creating simple per-project adapters from a base directory.
- * Used for user-configured transcript_paths and testing.
- */
-export function createPerProjectAdapter(
-  baseDir: string,
-  parseTurns: SymbiontAdapter['parseTurns'],
-  name?: string,
-): SymbiontAdapter {
-  return {
-    name: name ?? `custom:${path.basename(baseDir)}`,
-    displayName: `Custom (${baseDir})`,
-    pluginRootEnvVar: '',
-    hookFields: { sessionId: 'session_id', transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', prompt: 'prompt', toolName: 'tool_name', toolInput: 'tool_input', toolOutput: ['tool_output', 'tool_response'] },
-    findTranscript: (sessionId) => findJsonlInSubdirs(baseDir, sessionId),
-    parseTurns,
-  };
-}
-
 /** Map MIME type to file extension */
 const MIME_TO_EXT: Record<string, string> = {
   'image/jpeg': 'jpg',
@@ -129,10 +110,6 @@ const MIME_TO_EXT: Record<string, string> = {
   'image/webp': 'webp',
   'image/png': 'png',
 };
-
-export function extensionForMimeType(mimeType: string): string {
-  return MIME_TO_EXT[mimeType] ?? 'png';
-}
 
 /** Map file extension to MIME type */
 const EXT_TO_MIME: Record<string, string> = {

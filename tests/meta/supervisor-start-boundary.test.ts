@@ -10,6 +10,28 @@ const SRC = path.join(REPO_ROOT, 'packages/myco/src');
 const MYCO = 'packages/myco/src/';
 const short = (key: string): string => key.startsWith(MYCO) ? key.slice(MYCO.length) : key;
 
+it.each([
+  ['launchctl start', 'member/legacy-units.ts', "execFileSync('launchctl', ['start', 'com.myco.daemon']);"],
+  ['systemctl now before enable', 'member/legacy-units.ts', "execFileSync('systemctl', ['--user', '--now', 'enable', 'myco.service']);"],
+  ['PowerShell scheduled task', 'member/legacy-units.ts', "execFileSync('powershell.exe', ['-Command', 'Start-ScheduledTask -TaskName Myco']);"],
+  ['concrete spawn', 'member/legacy-service/launchd.ts', "(new RealLaunchctlRunner() as any).spawn(['kickstart', '-k', label]);"],
+  ['conditional verb', 'member/legacy-service/launchd.ts', "const verb = cond ? 'kickstart' : 'print'; this.runner.run([verb, label]);"],
+] as const)('rejects review mutation: %s', (_name, module, injected) => {
+  const mutate = (file: string, text: string): string => {
+    if (!file.endsWith('/' + module)) return text;
+    return module.endsWith('launchd.ts')
+      ? text.replace('const plistPath = this.plistPath(label);', injected + '\nconst plistPath = this.plistPath(label);')
+      : text + '\n' + injected;
+  };
+  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length).toBeGreaterThan(0);
+}, 120_000);
+
+it('maps a protected PowerShell runner method to its platform executable', () => {
+  const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-service/windows.ts')
+    ? text.replace('const escapedLabel = label.replace', "await this.runPowerShell(['-Command', 'Enable-ScheduledTask -TaskName Myco']);\nconst escapedLabel = label.replace") : text;
+  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
+}, 120_000);
+
 const forbiddenRuntime = (key: string): boolean => key.startsWith(`${MYCO}daemon/`)
   || key.startsWith(`${MYCO}db/`) || key === `${MYCO}grove/request-context.ts`;
 
@@ -100,10 +122,13 @@ it('cutover and every member legacy helper are retained and reach no 1.4 module'
 it('rejects raw platform starts including const-spread arguments', () => {
   for (const call of [
     "execFileSync('launchctl', ['kickstart', '-k', label]);",
+    "execFileSync('launchctl', ['submit', '-l', label]);",
     "execFileSync('launchctl', ['bootstrap', 'gui/501', file]);",
     "execFileSync('launchctl', ['load', '-w', file]);",
     "execFileSync('launchctl', ['enable', label]);",
     "execFileSync('systemctl', ['--user', 'enable', label, '--now']);",
+    "execFileSync('powershell.exe', ['-Command', 'Enable-ScheduledTask -TaskName Myco']);",
+    "execFileSync('pwsh', ['-Command', 'Register-ScheduledTask -TaskName Myco']);",
     "execFileSync('systemctl', ['--user', 'reenable', label]);",
     "execFileSync('schtasks', ['/create', '/tn', label]);",
     "execFileSync('schtasks', ['/change', '/tn', label, '/enable']);",

@@ -211,9 +211,7 @@ describe('symbiont capture round-trip — hook command reaches the runtime with 
     test(`${manifest.name}: SessionStart hook reaches the runtime with --symbiont ${manifest.name} and stdin payload`, () => {
       if (!fake) throw new Error('fake home not set');
       ensureDetectionDir(manifest, fake.tmpHome);
-      const installer = new SymbiontInstaller(
-        manifest, fake.tmpHome, PKG_ROOT, false, undefined, null, 'member-global',
-      );
+      const installer = new SymbiontInstaller(manifest, fake.tmpHome, PKG_ROOT, false);
       installer.install();
 
       // Read the installed hooks file and find a SessionStart hook command.

@@ -48,6 +48,7 @@ export function supervisorStarts(closure: Closure, mutate?: SourceMutation): str
     if (ts.isIdentifier(node)) { const value = initializer(node); return value ? values(value, next) : []; }
     if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSpreadElement(node)) return values(node.expression, next);
     if (ts.isArrayLiteralExpression(node)) return node.elements.flatMap(element => values(element, next));
+    if (ts.isConditionalExpression(node)) return [...values(node.whenTrue, next), ...values(node.whenFalse, next)];
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
       return [values(node.left, next).join('') + values(node.right, next).join('')];
     }
@@ -65,6 +66,35 @@ export function supervisorStarts(closure: Closure, mutate?: SourceMutation): str
     return [declaration, ...classes.filter(node => checker.isTypeAssignableTo(checker.getTypeAtLocation(node), contract))
       .flatMap(node => checker.getTypeAtLocation(node).getProperty(name)?.declarations ?? [])];
   };
+  const declarationsOf = (expression: ts.Expression): ts.Declaration[] => {
+    if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
+      let receiver: ts.Expression = expression.expression;
+      while (ts.isParenthesizedExpression(receiver) || ts.isAsExpression(receiver) || ts.isTypeAssertionExpression(receiver)) receiver = receiver.expression;
+      const name = ts.isPropertyAccessExpression(expression) ? expression.name.text : values(expression.argumentExpression).join('');
+      return checker.getTypeAtLocation(receiver).getProperty(name)?.declarations?.flatMap(implementations) ?? [];
+    }
+    return symbolOf(expression)?.declarations?.flatMap(implementations) ?? [];
+  };
+  const executables = (declaration: ts.Declaration, seen = new Set<ts.Node>()): string[] => {
+    if (seen.has(declaration) || !/member\/legacy-service\//.test(declaration.getSourceFile().fileName)) return [];
+    const next = new Set(seen).add(declaration);
+    const found: string[] = [];
+    const inspect = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        if (ts.isIdentifier(node.expression) && ['spawnCombinedOutput', 'spawnRawOutput'].includes(node.expression.text)) {
+          found.push(...values(node.arguments[0]));
+          // Platform host paths may be assembled through path.win32.join.
+          const file = node.getSourceFile().fileName;
+          if (file.endsWith('/windows.ts') && node.arguments[0].getText() === 'WINDOWS_TASK_HOST') found.push('powershell.exe');
+        } else {
+          for (const called of declarationsOf(node.expression)) found.push(...executables(called, next));
+        }
+      }
+      ts.forEachChild(node, inspect);
+    };
+    ts.forEachChild(declaration, inspect);
+    return [...new Set(found)];
+  };
   const visit = (node: ts.Node): void => {
     if ((ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node))
       && ts.isClassDeclaration(node.parent)) return;
@@ -72,7 +102,7 @@ export function supervisorStarts(closure: Closure, mutate?: SourceMutation): str
       const name = ts.isPropertyAccessExpression(node) ? node.name.text : values(node.argumentExpression).join('');
       const symbol = ts.isPropertyAccessExpression(node) ? symbolOf(node.name)
         : checker.getTypeAtLocation(node.expression).getProperty(name);
-      const declarations = symbol?.declarations?.flatMap(implementations) ?? [];
+      const declarations = symbol?.declarations?.flatMap(implementations) ?? declarationsOf(node);
       const callable = ts.isCallExpression(node.parent) && node.parent.expression === node
         || declarations.some(declaration => ts.isMethodDeclaration(declaration) || ts.isMethodSignature(declaration));
       if (callable && dangerous.has(name) && (declarations.length === 0 || declarations.some(declaration => legacySupervisor.test(declaration.getSourceFile().fileName)))) report(node, name);
@@ -87,12 +117,9 @@ export function supervisorStarts(closure: Closure, mutate?: SourceMutation): str
     }
     if (ts.isCallExpression(node)) {
       const expression = node.expression;
-      const declaration = ts.isPropertyAccessExpression(expression) && expression.name.text === 'run'
-        ? symbolOf(expression.name)?.declarations?.[0] : undefined;
-      const platform = declaration?.getSourceFile().fileName.match(/member\/legacy-service\/(launchd|systemd|windows)\.ts$/)?.[1];
-      const executable = platform === 'launchd' ? 'launchctl' : platform === 'systemd' ? 'systemctl' : platform === 'windows' ? 'schtasks' : '';
-      const command = [executable, ...node.arguments.flatMap(arg => values(arg))].join(' ');
-      if (/\b(?:launchctl\b.*\b(?:kickstart|load|bootstrap|enable)|systemctl\b.*(?:\b(?:start|restart|reenable)\b|\benable\b.*--now\b)|schtasks\b.*(?:\/(?:run|create)\b|\/change\b.*\/enable\b))\b/i.test(command)) report(node, 'supervisor exec');
+      const hosts = declarationsOf(expression).flatMap(declaration => executables(declaration));
+      const command = [...hosts, ...node.arguments.flatMap(arg => values(arg))].join(' ');
+      if (/\b(?:launchctl\b.*\b(?:start|submit|kickstart|load|bootstrap|enable)|systemctl\b.*(?:\b(?:start|restart|reenable)\b|\benable\b.*--now\b|--now\b.*\benable\b)|schtasks\b.*(?:\/(?:run|create)\b|\/change\b.*\/enable\b)|(?:powershell|pwsh)(?:\.exe)?\b.*\b(?:Start|Enable|Register)-ScheduledTask)\b/i.test(command)) report(node, 'supervisor exec');
     }
     ts.forEachChild(node, visit);
   };

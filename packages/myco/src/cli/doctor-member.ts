@@ -120,7 +120,7 @@ export async function checkMemberMcpResolution(
   const TRANSPORT_REASON = { http: 'mcp_entry_http', stdio: 'mcp_entry_stdio' } as const;
   for (const manifest of loadManifests()) {
     if (!manifest.registration) continue;
-    const global = new SymbiontInstaller(manifest, root, packageRoot, false, undefined, null, 'member-global', home);
+    const global = new SymbiontInstaller(manifest, root, packageRoot, false, home);
     const seen = global.inspectMemberMcp(selectedDeployment);
     if (seen.length === 0) continue;
 

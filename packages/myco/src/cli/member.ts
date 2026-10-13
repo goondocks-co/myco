@@ -454,7 +454,7 @@ export type ProvisionOutcome =
 function globalInstaller(
   manifest: ReturnType<typeof loadManifests>[number], root: string | null, mycoHome: string, opts: { packageRoot?: string; legacyHomes?: readonly string[] },
 ): SymbiontInstaller {
-  const installer = new SymbiontInstaller(manifest, root ?? mycoHome, opts.packageRoot ?? resolvePackageRoot(), false, undefined, null, 'member-global', mycoHome)
+  const installer = new SymbiontInstaller(manifest, root ?? mycoHome, opts.packageRoot ?? resolvePackageRoot(), false, mycoHome)
     .replacingLegacy(opts.legacyHomes ?? []);
   return root === null ? installer.withoutProjectRoot() : installer;
 }

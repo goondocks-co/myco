@@ -151,12 +151,12 @@ describe('a joined member with no 1.4 vault', () => {
     join(rig);
     const spy = recordingFetch(rig.fetch);
 
-    const get = await verb('config', ['get', 'capture.transcript_paths'], spy.fetch);
+    const get = await verb('config', ['get', 'update.channel'], spy.fetch);
     expect(get.answered).toBe(false);
-    expect(get.stderr).toContain(`capture.transcript_paths is a Member setting, and the 2.0 member does not read Member settings yet (${MEMBER_SETTINGS_ISSUE})`);
-    const set = await verb('config', ['set', 'capture.transcript_paths', 'debug'], spy.fetch);
+    expect(get.stderr).toContain(`update.channel is a Member setting, and the 2.0 member does not read Member settings yet (${MEMBER_SETTINGS_ISSUE})`);
+    const set = await verb('config', ['set', 'update.channel', 'debug'], spy.fetch);
     expect(set.answered).toBe(false);
-    expect(set.stderr).toContain('capture.transcript_paths is a Member setting');
+    expect(set.stderr).toContain('update.channel is a Member setting');
     expect(spy.requests).toEqual([]);
 
     const deploymentWrite = await verb('config', ['set', 'agent.limits.concurrent_runs', '9'], spy.fetch);

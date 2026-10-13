@@ -1,4 +1,3 @@
-import { parsePlistDocument } from '@myco/member/unit-parsers.js';
 export { parsePlistDocument, type PlistValue } from '@myco/member/unit-parsers.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -6,7 +5,6 @@ import path from 'node:path';
 import { sleep } from '@myco/utils/sleep.js';
 import { spawnCombinedOutput, assertRunSucceeded } from './run-command.js';
 import { SERVICE_UNIT_DIR_ENV } from '@myco/paths/service-units.js';
-import type { InstalledServiceCommand } from './types.js';
 
 export interface LaunchctlRunner {
   run(args: string[]): Promise<{ stdout: string; exitCode: number }>;
@@ -89,17 +87,6 @@ export class LaunchdServiceManager {
     );
     await this.waitUntilUnloaded(label);
   }
-}
-
-export function parsePlistCommand(plist: string, expectedLabel?: string): InstalledServiceCommand | null {
-  const parsed = parsePlistDocument(plist);
-  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') return null;
-  if (expectedLabel !== undefined && parsed.Label !== expectedLabel) return null;
-  if (Object.hasOwn(parsed, 'Program')) return null;
-  if (!Array.isArray(parsed.ProgramArguments) || parsed.ProgramArguments.length === 0) return null;
-  if (!parsed.ProgramArguments.every((value) => typeof value === 'string')) return null;
-  const [executable, ...args] = parsed.ProgramArguments;
-  return { executable, args };
 }
 
 function isLaunchdJobAbsent(stdout: string): boolean {

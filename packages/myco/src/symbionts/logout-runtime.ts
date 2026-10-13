@@ -47,7 +47,7 @@ export function logoutDeployment(
     reconcile: (serverUrl, nextDefault, keepHooks) => {
       const packageRoot = deps.packageRoot ?? resolvePackageRoot();
       for (const manifest of loadManifests()) {
-        const installer = new SymbiontInstaller(manifest, mycoHome, packageRoot, false, undefined, null, 'member-global', mycoHome).withoutProjectRoot();
+        const installer = new SymbiontInstaller(manifest, mycoHome, packageRoot, false, mycoHome).withoutProjectRoot();
         installer.reconcileDeploymentLogout(serverUrl, nextDefault, keepHooks);
       }
       reconcileProvisionDeployment(mycoHome, serverUrl, nextDefault);
