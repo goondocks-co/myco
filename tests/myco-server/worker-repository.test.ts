@@ -13,6 +13,7 @@ import { withLeasedRun } from '@myco-server-worker/core/worker-run.js';
 import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { jsonBody } from '../helpers/json-body.js';
+import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 
 const SOURCE = { url: 'https://example.test/team/source', branch: 'main' };
 const CREDENTIAL = { username: 'reader', token: 'synthetic-source-read-credential' };
@@ -111,5 +112,60 @@ describe('a worker preparing its claimed source', () => {
     expect(reclaimed.claimed).toBe(true);
     expect(await r.prepare({ ...SOURCE, commit: 'c'.repeat(40) })).toEqual({ held: false, reason: 'the lease is no longer held' });
     expect(await r.prepare({}, r.other.tokenId, r.now + 2)).toMatchObject({ held: true, repository: SOURCE });
+  });
+});
+
+describe('a worker reporting repository preparation failure', () => {
+  const end = async (r: Awaited<ReturnType<typeof rig>>, body: Record<string, unknown>, token = r.owner.token) =>
+    jsonBody(await worker.fetch(new Request('https://s/worker/end', {
+      method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_seed', status: 'failed', error: 'the worker failed while driving the run (repository_unprepared)', ...body }),
+    }), r.e.env));
+
+  it('persists a closed reason with sanitized summary under the lease and projects it to runs and work', async () => {
+    const r = await rig();
+    const claimed = await r.claim();
+    expect(claimed.claimed).toBe(true);
+    const secret = 'synthetic-repository-secret-999';
+    const summary = `fatal: could not fetch https://reader:${secret}@github.com/example/source.git token=${secret}`;
+    const body = { repositoryFailure: { code: 'fetch_failed', summary } };
+    expect(await end(r, body, r.other.token)).toMatchObject({ persisted: true, ended: false });
+    r.e.sqlite.run("UPDATE agent_runs SET lease_expires_at=? WHERE id='run_seed'", [r.now - 1]);
+    expect(await end(r, body)).toMatchObject({ persisted: true, ended: false });
+    r.e.sqlite.run("UPDATE agent_runs SET lease_expires_at=? WHERE id='run_seed'", [Date.now() + WORKER_LEASE_MS]);
+    expect(await end(r, body)).toMatchObject({ persisted: true, ended: true });
+    const record = r.e.sqlite.query("SELECT status, error_code, run_context FROM agent_runs WHERE id='run_seed'").get() as { status: string; error_code: string; run_context: string };
+    expect(record.status).toBe('failed');
+    expect(record.error_code).toBe('repository_unprepared');
+    expect(record.run_context).toContain('fetch_failed');
+    expect(record.run_context).not.toContain(secret);
+    expect(record.run_context).not.toContain('reader:');
+    const env = { ...r.e.env, ...OWNER_ENV };
+    const headers = { cookie: await ownerCookie(r.e.db), 'cf-connecting-ip': '1.2.3.4' };
+    const detail = await jsonBody(await worker.fetch(new Request('https://s/api/projects/proj_1/runs/run_seed', { headers }), env)) as any;
+    expect(detail.run.repositoryFailure).toMatchObject({ code: 'fetch_failed', summary: expect.stringContaining('fatal:') });
+    expect(JSON.stringify(detail)).not.toContain(secret);
+    const work = await jsonBody(await worker.fetch(new Request(`https://s/api/work?since=${r.now - 1000}&until=${r.now + 10_000}`, { headers }), env)) as any;
+    expect(work.runs.find((run: any) => run.id === 'run_seed').failure.repositoryFailure).toEqual(detail.run.repositoryFailure);
+    expect(JSON.stringify(work)).not.toContain(secret);
+  });
+
+  it('accepts an older end without metadata and ignores unknown reasons', async () => {
+    for (const repositoryFailure of [undefined, { code: 'unknown_reason', summary: 'private detail' }]) {
+      const r = await rig();
+      expect((await r.claim()).claimed).toBe(true);
+      expect(await end(r, repositoryFailure === undefined ? {} : { repositoryFailure })).toMatchObject({ persisted: true, ended: true });
+      const row = r.e.sqlite.query("SELECT run_context FROM agent_runs WHERE id='run_seed'").get() as { run_context: string };
+      expect(row.run_context).not.toContain('repositoryFailureCode');
+      if (repositoryFailure === undefined) {
+        r.e.sqlite.run("UPDATE agent_runs SET error_code='run_failed' WHERE id='run_seed'");
+        const env = { ...r.e.env, ...OWNER_ENV };
+        const headers = { cookie: await ownerCookie(r.e.db), 'cf-connecting-ip': '1.2.3.4' };
+        const detail = await jsonBody(await worker.fetch(new Request('https://s/api/projects/proj_1/runs/run_seed', { headers }), env)) as any;
+        expect(detail.run.errorCode).toBe('repository_unprepared');
+        expect(detail.run.repositoryFailure).toBeUndefined();
+        const work = await jsonBody(await worker.fetch(new Request(`https://s/api/work?since=${r.now - 1000}&until=${r.now + 10_000}`, { headers }), env)) as any;
+        expect(work.runs.find((run: any) => run.id === 'run_seed').failure).toMatchObject({ code: 'repository_unprepared' });
+      }
+    }
   });
 });

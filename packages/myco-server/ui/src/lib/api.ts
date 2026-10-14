@@ -4,9 +4,7 @@ import type { CaptureRow } from '../features/today/wire';
 /**
  * A refusal or failure answered by the server, carrying the status, the
  * server's error code when it sent one, and the parsed body. The dashboard
- * words a refusal from its status and code; the server's own sentences are
- * never shown, since they are written for an operator, not in the reader's
- * words.
+ * words known refusals by code and can show the server’s message for an unknown code.
  */
 export class ApiError extends Error {
   readonly code: string | undefined;

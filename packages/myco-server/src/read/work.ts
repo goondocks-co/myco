@@ -1,7 +1,9 @@
+import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
+import { type RepositoryFailure } from '@goondocks/myco-shared/repository';
 import { heldPartition } from '../core/embedding/policy.js';
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { requestedProfileValue } from '../db/run-profile.js';
-import { contextValue, FAILURE_REASON_KEY } from '../db/run-context.js';
+import { contextValue, FAILURE_REASON_KEY, REPOSITORY_FAILURE_CODE_KEY, REPOSITORY_FAILURE_SUMMARY_KEY } from '../db/run-context.js';
 import { producedSql, runResultSql, type RunResult } from './run-outcome.js';
 export { producedSql, type RunResult } from './run-outcome.js';
 import { costProvenanceValue } from '../db/run-accounting.js';
@@ -105,7 +107,7 @@ export interface WorkRun {
   /** The session a title run titled; null for every other run. */
   sessionId: string | null;
   /** The terminal failure classifier and stored reason, separate from the agent's report. */
-  failure: { cause: string; code?: string | null; reason?: string | null; error?: string | null; source: 'report' | 'error' } | null;
+  failure: { repositoryFailure?: RepositoryFailure | null; cause: string; code?: string | null; reason?: string | null; error?: string | null; source: 'report' | 'error' } | null;
   tokens: number | null;
   costUsd: number | null;
 }
@@ -251,7 +253,9 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
               CASE WHEN r.task = ? THEN ${TITLED_SESSION} END AS titled_session,
               CASE WHEN r.status = 'failed' THEN r.error END AS error,
               CASE WHEN r.status = 'failed' THEN r.error_code END AS error_code,
-              CASE WHEN r.status = 'failed' THEN ${contextValue(FAILURE_REASON_KEY)} END AS error_reason
+              CASE WHEN r.status = 'failed' THEN ${contextValue(FAILURE_REASON_KEY)} END AS error_reason,
+              CASE WHEN r.status = 'failed' THEN ${contextValue(REPOSITORY_FAILURE_CODE_KEY)} END AS repository_failure_code,
+              CASE WHEN r.status = 'failed' THEN ${contextValue(REPOSITORY_FAILURE_SUMMARY_KEY)} END AS repository_failure_summary
          FROM ${RUNS_BY_TASK}
         WHERE ${all.sql} AND r.status IN ('completed', 'failed') AND (r.status = 'failed' OR ${PRODUCED_SQL})
           ${cursor === undefined ? '' : `AND (${RUN_AT} < ? OR (${RUN_AT} = ? AND (r.project_id < ? OR (r.project_id = ? AND r.id < ?))))`}
@@ -339,6 +343,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
     const titled = row.titled_session === null || row.titled_session === undefined ? null : String(row.titled_session);
     const error = typeof row.error === 'string' && row.error.trim() !== '' ? row.error : null;
     const code = runErrorCode(error, typeof row.error_code === 'string' ? row.error_code : null);
+    const repositoryFailure = parseRepositoryFailure({ code: row.repository_failure_code, summary: row.repository_failure_summary });
     return {
       ...runAccounting(row.usage_data, row.cost_provenance),
       requested: requestedProfile(row.requested_profile),
@@ -359,7 +364,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
         maps: kind === 'map' && produced ? 1 : 0,
       },
       sessionId: kind === 'title' ? titled : null,
-      failure: !failed ? null : { code: code ?? 'run_failed', cause: error ?? 'the run failed without saying why', ...(row.error_reason == null ? {} : { reason: String(row.error_reason) }), error, source: 'error' },
+      failure: !failed ? null : { ...(repositoryFailure === null ? {} : { repositoryFailure }), code: code ?? 'run_failed', cause: error ?? 'the run failed without saying why', ...(row.error_reason == null ? {} : { reason: String(row.error_reason) }), error, source: 'error' },
       tokens: orNull(row.tokens_used),
       costUsd: orNull(row.cost_usd),
     };

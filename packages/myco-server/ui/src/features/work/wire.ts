@@ -1,6 +1,7 @@
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 import type { StepKind, StepOutcome, UnrecognizedCount } from '@goondocks/myco-shared/worker-steps';
+import type { RepositoryFailure } from '@goondocks/myco-shared/repository';
 
 export type RunCallPage = RunDetailAnswer['toolCallCoverage'] & { rows: RunDetailAnswer['toolCalls'] };
 
@@ -42,6 +43,7 @@ export interface RunFields {
   identity: RecordedIdentity;
   costProvenance: CostProvenance | null;
   provider: string | null;
+  repositoryFailure?: RepositoryFailure | null;
 
   id: string;
   agentId: string;

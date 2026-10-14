@@ -1,3 +1,4 @@
+import { RepositoryNotice } from '../today/RepositoryNotice';
 import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { Fragment, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
@@ -119,6 +120,7 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
         onFilterChange={filters.setFilter}
         onClear={() => { draft.reset(); filters.clear(); }}
       />
+      <RepositoryNotice projectId={projectId} projectName={projectName} now={now} />
       <ReadState data={work.data} pending={work.isPending} error={work.error} onRetry={() => { void work.refetch(); }} label="Myco’s work">{() => null}</ReadState>
       {projectId !== null && <Disclosure key={historyParams.get('runs') === 'all' ? 'all' : 'window'} summary="All-time run history" defaultOpen={historyParams.get('runs') === 'all'}>
         <div className="flex flex-col gap-s3">

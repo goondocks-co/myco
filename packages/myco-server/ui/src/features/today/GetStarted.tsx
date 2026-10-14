@@ -3,6 +3,8 @@ import { useLocation } from 'react-router-dom';
 import { ActionLink, Button, Card, EmptyState, HealthDot } from '../../design';
 import { useSetupProgress } from '../../hooks/use-setup-progress';
 import { setupChecks } from '../../lib/setup-progress';
+import { useProjects } from '../../hooks/use-projects';
+import { repositoryNeededWords } from './words';
 import { PEOPLE_PATH, RUNNERS_PATH } from '../../routes/nav';
 import type { SetupProgress } from './wire';
 
@@ -10,7 +12,7 @@ const SETUP_COMMAND = 'myco setup';
 const STATE_LABELS = { unchecked: 'Unchecked', done: 'Done', next: 'Next', later: 'Later' };
 type Item = { id: string; title: string; done: boolean; nextAction?: ReactNode; to?: string; link?: string; warn?: boolean };
 
-export function setupItems(progress: SetupProgress | undefined, admin: boolean): Item[] {
+export function setupItems(progress: SetupProgress | undefined, admin: boolean, projectName: (id: string) => string | null = () => null): Item[] {
   const checks = setupChecks(progress, admin);
   const origin = window.location.origin;
   const joinCommand = `${SETUP_COMMAND} --join ${origin}`;
@@ -34,6 +36,10 @@ export function setupItems(progress: SetupProgress | undefined, admin: boolean):
       nextAction: <>On an always-on machine, run <code>{runnerCommand}</code>.
         {(progress?.legacyWorkers ?? 0) > 0 && <> A machine runs Myco’s work with an older setup; register a runner to replace it.</>}</>,
       to: RUNNERS_PATH, link: 'Runners', warn: progress?.queuedWithoutRunner },
+    ...(progress?.repositoriesNeeded ?? []).map(({ projectId, codeMap }) => {
+      const words = repositoryNeededWords(projectId, projectName(projectId), codeMap);
+      return { id: `repository:${projectId}`, title: words.title, nextAction: words.detail, to: words.action!.to, link: words.action!.label };
+    }),
     { id: 'work', title: 'See Myco’s work in the last 31 days',
       nextAction: <>Myco’s work starts after a live session and a ready runner.</>, to: '/work', link: 'Myco’s work' },
   ] : [items[0]!, { id: 'project-capture', title: 'Connect a project and capture a session',
@@ -44,6 +50,7 @@ export function setupItems(progress: SetupProgress | undefined, admin: boolean):
 /** One observed checklist, shared by Today and the Projects empty state. */
 export function GetStarted({ emptyState = false }: { emptyState?: boolean }) {
   const progress = useSetupProgress();
+  const projects = useProjects();
   const { admin } = progress;
   const location = useLocation();
   if (progress.hidden) return emptyState
@@ -51,7 +58,7 @@ export function GetStarted({ emptyState = false }: { emptyState?: boolean }) {
     : null;
   if (progress.complete) return null;
   const facts = progress.error ? undefined : progress.data;
-  const items = setupItems(facts, admin);
+  const items = setupItems(facts, admin, id => projects.data?.projects.find(project => project.projectId === id)?.name ?? null);
   const next = items.find(item => !item.done)?.id;
   const unchecked = facts === undefined;
   const rows = items.map(item => {

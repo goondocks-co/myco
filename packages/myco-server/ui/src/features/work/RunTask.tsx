@@ -9,7 +9,7 @@ import { useProjects } from '../../hooks/use-projects';
 import { runIsLive, useDispatchTask, useRunDetail, useWorkWhileRunning } from '../../hooks/use-work';
 import { ApiError } from '../../lib/api';
 import { harnessLabel } from '../../lib/harness';
-import { PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, runPath } from '../../routes/nav';
+import { PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, projectRepositoryPath, runPath } from '../../routes/nav';
 import { ProjectPick } from '../../routes/scope';
 import type { WorkOutcome } from '../today/wire';
 import type { TaskStartPreview } from '../tasks/wire';
@@ -216,7 +216,11 @@ function Confirm({ projectId, task, onOpenChange, admin, now, onStarted }: RunTa
                 <Switch checked={fresh} onCheckedChange={setFresh} aria-label="Start fresh" />
               </div>
             )}
-            {refusal !== null && <p role="alert" className="t-small text-bad" data-refusal="">{refusal.words}</p>}
+            {refusal !== null && <p role="alert" className="flex flex-col gap-s1 t-small text-bad" data-refusal=""><span>{refusal.words}</span>{dispatch.error instanceof ApiError && dispatch.error.code === 'repository_missing' && (
+              admin && chosen !== null
+                ? <ActionLink to={projectRepositoryPath(chosen, true)}>Connect repository →</ActionLink>
+                : <span> An admin can connect it in the project’s settings.</span>
+            )}</p>}
           </>
         )}
         <DialogFooter>
@@ -331,12 +335,31 @@ function StartedRunLine({ started, runId, queued, className }: { started: Starte
 }
 
 /** A dispatch's refusal in the reader's words, the capability it names when it names one, and whether trying again now can help. */
-function refusalOf(error: Error, now: number): { words: string; capability: string | null; final: boolean } {
+export function refusalOf(error: Error, now: number): { words: string; capability: string | null; final: boolean } {
   if (error instanceof ApiError) {
     if (error.status === 429 && isDailyLimit(error.body)) return { words: dailyLimitWords(error.body, now), capability: null, final: true };
+    if (error.status === 429 || error.status === 408) return { words: 'The server is busy. Try again in a moment.', capability: null, final: false };
     if (error.status === 409 && isCapabilityOff(error.body)) return { words: capabilityOffWords(error.body.capability), capability: error.body.capability, final: true };
     if (error.status === 403 && isFreshNeedsAdmin(error.body)) return { words: 'Only an admin can start a task fresh.', capability: null, final: false };
-    return { words: `The server couldn’t start it (${error.status}). Try again in a moment.`, capability: null, final: false };
+    const known = error.code !== undefined && Object.hasOwn(DISPATCH_REFUSAL_WORDS, error.code) ? DISPATCH_REFUSAL_WORDS[error.code] : undefined;
+    if (known !== undefined) return { words: known, capability: null, final: true };
+    const message = typeof error.body === 'object' && error.body !== null ? Reflect.get(error.body, 'message') : null;
+    if (typeof message === 'string' && message.trim() !== '') return { words: message, capability: null, final: error.status < 500 };
+    return error.status >= 500
+      ? { words: 'The server couldn’t start it. Try again in a moment.', capability: null, final: false }
+      : { words: 'Myco couldn’t start this task. Check the project’s settings before trying again.', capability: null, final: true };
   }
   return { words: 'Couldn’t reach the server. Try again in a moment.', capability: null, final: false };
 }
+
+/** Settled dispatch refusals in the reader’s words. */
+export const DISPATCH_REFUSAL_WORDS: Readonly<Record<string, string>> = {
+  repository_missing: 'The code map and other code tasks need this project’s repository before they can run.',
+  harness_unavailable: 'Myco can’t run this task here. An admin can check its setup.',
+  unknown_task: 'This task isn’t available here. Refresh the page to see the available tasks.',
+  unknown_project: 'This project is no longer available here. Choose another project.',
+  no_instruction: 'This task has no instructions yet. An admin can check its setup.',
+  not_landed: 'This task is not available yet.',
+  no_provider: 'Search needs to be set up before this task can run. An admin can do that in Settings.',
+  capability_off: 'This task is turned off for the project. An admin can turn it on in Project settings.',
+};

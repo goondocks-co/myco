@@ -1,9 +1,13 @@
 import { useState } from 'react';
+import { allTasksReadRepository, REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { useProjects } from '../../../hooks/use-projects';
-import { Disclosure, ErrorState, LoadingState, Switch } from '../../../design';
-import { settingsRefusalText, useCapabilities, useSettingsActions } from '../../../hooks/use-settings';
-import { PROJECT_SETTINGS_ANCHORS } from '../../../routes/nav';
+import { useTaskDescriptions } from '../../../hooks/use-tasks';
+import { ActionLink, Disclosure, ErrorState, LoadingState, Switch } from '../../../design';
+import { settingsRefusalText, useCapabilities, useRepository, useSettingsActions } from '../../../hooks/use-settings';
+import { PROJECT_SETTINGS_ANCHORS, projectRepositoryPath } from '../../../routes/nav';
 import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
+import type { RepositoryRow } from './wire';
+import type { TaskDescription } from '../../tasks/wire';
 
 /** What each capability does in a project, in the reader's words. */
 const CAPABILITY_WORDS: Readonly<Record<string, { label: string; note: string }>> = {
@@ -12,21 +16,54 @@ const CAPABILITY_WORDS: Readonly<Record<string, { label: string; note: string }>
   vault_evolution: { label: 'Learning', note: 'Myco learns spores from this project’s sessions and keeps them current.' },
 };
 
+function repositoryName(connection: RepositoryRow): string {
+  const parts = new URL(connection.url).pathname.replace(/\/$/, '').replace(/\.git$/, '').split('/').filter(Boolean);
+  return parts.slice(-2).join('/');
+}
+
 /** One capability's switch, saving as it is flipped and saying why when the server refuses. */
-function CapabilityRow({ projectId, capability, enabled }: { projectId: string; capability: string; enabled: boolean }) {
+function CapabilityRow({ projectId, capability, enabled, repository, repositoryState, tasks, taskState }: {
+  projectId: string; capability: string; enabled: boolean;
+  repository: RepositoryRow | null | undefined; repositoryState: 'ready' | 'loading' | 'error';
+  tasks: readonly TaskDescription[] | undefined; taskState: 'ready' | 'loading' | 'error';
+}) {
   const actions = useSettingsActions();
   const [error, setError] = useState<string | null>(null);
   const words = CAPABILITY_WORDS[capability] ?? { label: capability, note: undefined };
   const id = `capability-${capability}`;
+  const capabilityTasks = tasks?.filter((task) => task.capability === capability) ?? [];
+  const repositoryTasks = capabilityTasks.filter((task) => REPOSITORY_TASKS.includes(task.task));
+  const independentTasks = capabilityTasks.filter((task) => !REPOSITORY_TASKS.includes(task.task));
+  const readsRepository = repositoryTasks.length > 0;
+  const allNeedRepository = allTasksReadRepository(capabilityTasks.map((task) => task.task));
+  const missingNote = allNeedRepository ? 'Needs this project’s repository to read its code.'
+    : `Can run ${independentTasks.map((task) => task.name).join(', ')} ${enabled ? 'now' : 'when enabled'}; connect the repository to also run ${repositoryTasks.map((task) => task.name).join(', ')}.`;
+  const missingStatus = allNeedRepository ? 'On · Code tasks cannot run until a repository is connected'
+    : 'On · Some tasks need a repository';
+  const missingRepository = taskState === 'ready' && readsRepository && repositoryState === 'ready' && repository === null;
+  const repositoryNote = taskState === 'loading' ? 'Checking task requirements.'
+    : taskState === 'error' ? 'Couldn’t check task requirements.'
+      : !readsRepository ? null
+    : repositoryState === 'loading' ? 'Checking this project’s repository.'
+      : repositoryState === 'error' ? 'Couldn’t check this project’s repository.'
+        : repository === null ? missingNote
+          : repository === undefined ? 'Couldn’t check this project’s repository.'
+            : `Reads ${repositoryName(repository)} @ ${repository.branch}`;
+  const enabledStatus = taskState === 'loading' ? 'On · Checking task requirements'
+    : taskState === 'error' ? 'On · Task requirements unavailable'
+      : readsRepository && repositoryState === 'loading' ? 'On · Checking repository'
+    : readsRepository && repositoryState === 'error' ? 'On · Repository status unavailable'
+      : missingRepository ? missingStatus : 'On';
   return (
     <SettingRow
       inline
       setting={`capability.${capability}`}
       label={words.label}
       htmlFor={id}
-      note={words.note}
-      status={error ?? (enabled ? 'On' : 'Off')}
+      note={<>{words.note}{repositoryNote !== null && <span className="block">{repositoryNote}</span>}</>}
+      status={error ?? (enabled ? enabledStatus : 'Off')}
       refused={error !== null}
+      details={enabled && missingRepository && <ActionLink to={projectRepositoryPath(projectId, true)}>Connect repository</ActionLink>}
       control={(
         <Switch
           id={id}
@@ -46,6 +83,8 @@ function CapabilityRow({ projectId, capability, enabled }: { projectId: string; 
 /** What Myco does in a project: a switch per capability. */
 export function Capabilities({ projectId }: { projectId: string }) {
   const caps = useCapabilities(projectId);
+  const tasks = useTaskDescriptions(projectId);
+  const repository = useRepository(projectId);
   const projects = useProjects();
   const archived = projects.data?.projects.find((project) => project.projectId === projectId)?.archivedAt != null;
   return (
@@ -57,7 +96,13 @@ export function Capabilities({ projectId }: { projectId: string }) {
           <>
             <RowCard label="What Myco does here">
               {Object.entries(caps.data.capabilities).filter(([capability]) => Object.hasOwn(CAPABILITY_WORDS, capability)).map(([capability, enabled]) => (
-                <CapabilityRow key={capability} projectId={projectId} capability={capability} enabled={enabled} />
+                <CapabilityRow
+                  key={capability} projectId={projectId} capability={capability} enabled={enabled}
+                  repository={repository.isSuccess ? repository.data.repository : undefined}
+                  repositoryState={repository.isSuccess ? 'ready' : repository.isError ? 'error' : 'loading'}
+                  tasks={tasks.data?.tasks}
+                  taskState={tasks.isSuccess ? 'ready' : tasks.isError ? 'error' : 'loading'}
+                />
               ))}
             </RowCard>
 

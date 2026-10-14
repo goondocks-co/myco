@@ -200,7 +200,7 @@ describe('observed setup progress', () => {
       signInWorking: true, machines: { signedIn: 0 }, projects: 0, liveCapture: false, runnersReady: null, legacyWorkers: null, workProduced: false,
     } });
     for (const result of [owner, admin, member]) {
-      expect(Object.keys(result.body).sort()).toEqual(['ownerLinked','viewerIsOwner','signInWorking','machines','projects','liveCapture','runnersReady','workProduced','legacyWorkers','queuedWithoutRunner'].sort());
+      expect(Object.keys(result.body).sort()).toEqual(['repositoriesNeeded','ownerLinked','viewerIsOwner','signInWorking','machines','projects','liveCapture','runnersReady','workProduced','legacyWorkers','queuedWithoutRunner'].sort());
       expect(JSON.stringify(result.body)).not.toMatch(/secret|token|hash|email|583231|private output|machine_1|runner label/i);
     }
     expect((await get('770004')).status).toBe(401);
@@ -212,4 +212,28 @@ describe('observed setup progress', () => {
     fixtures.splice(fixtures.indexOf(f), 1);
     await expect(read()).rejects.toThrow();
   });
+});
+
+it('includes missing code repositories for admins and redacts them for members', async () => {
+  const { read, sql } = rig();
+  expect((await read()).repositoriesNeeded).toEqual([]);
+  sql("INSERT INTO project_capabilities VALUES ('proj_1','canopy',1,1,'fixture')");
+  expect((await read()).repositoriesNeeded).toEqual([{ projectId: 'proj_1' }]);
+  expect((await read('mem_machine_1')).repositoriesNeeded).toEqual([]);
+  sql("UPDATE projects SET archived_at=1 WHERE project_id='proj_2'");
+  sql(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
+    VALUES ('proj_1','r1','https://example.test/code.git','main',1,'fixture')`);
+  expect((await read()).repositoriesNeeded).toEqual([]);
+});
+
+it('keeps setup available with bounded repository facts for 101 explicit projects', async () => {
+  const { read, sql } = rig();
+  for (let index = 0; index < 101; index++) {
+    sql("INSERT INTO projects(project_id,name,created_at) VALUES (?, 'Code', 1)", `code_${String(index).padStart(3, '0')}`);
+    sql("INSERT INTO project_capabilities VALUES (?, 'canopy', 1, 1, 'fixture')", `code_${String(index).padStart(3, '0')}`);
+  }
+  const result = await read();
+  expect(result.repositoriesNeeded).toHaveLength(100);
+  expect(result.repositoriesOverflow).toBe(true);
+  expect(result.machines).toBeDefined();
 });

@@ -991,3 +991,17 @@ describe('dashboard honesty gates', () => {
     expect(document.querySelector('[data-capture]')?.textContent).toContain('14 min ago');
   });
 });
+
+it('names the missing repository and opens its connection form', () => {
+  expect(attentionWords({ kind: 'repository_missing', tone: 'warn', projectId: P_MYCO }, NOW, () => 'Myco')).toEqual({
+    title: 'Connect Myco’s repository so Myco can map its code',
+    detail: 'Code map is turned on, but it cannot run until a repository is connected.',
+    action: { label: 'Connect repository', to: `/p/${P_MYCO}/settings?connect=repository#repository` },
+  });
+});
+
+it('names code work without claiming a code map for a non-map repository requirement', () => {
+  const words = attentionWords({ kind: 'repository_missing', tone: 'warn', projectId: P_MYCO, codeMap: false }, NOW, () => 'Myco');
+  expect(words.title).toBe('Connect Myco’s repository so Myco can run its code tasks');
+  expect(words.detail).toBe('Code tasks are turned on, but they cannot run until a repository is connected.');
+});

@@ -17,11 +17,12 @@ for (const { viewport, mode } of SHOT_MATRIX) for (const role of ['admin', 'memb
       const card = page.locator('[data-get-started]');
       await expect(card.getByRole('heading', { name: 'Get started' })).toBeVisible();
       await expect(card.locator('[data-state="unchecked"]')).toHaveCount(0);
-      await expect(card.locator('[data-setup-item]')).toHaveCount(role === 'admin' ? 7 : 2);
+      await expect(card.locator('[data-setup-item]')).toHaveCount(role === 'admin' ? 8 : 2);
       if (role === 'admin') {
         await expect(card.locator('[data-setup-item="capture"]')).toHaveAttribute('data-state', 'done');
         await expect(card.locator('[data-setup-item="runner"]')).toContainText(`myco setup --runner ${new URL(page.url()).origin}`);
         await expect(card.locator('[data-setup-item="work"]')).toContainText('last 31 days');
+        await expect(card.locator('[data-setup-item^="repository:"]')).toContainText('Connect Myco’s repository so Myco can map its code');
       } else {
         await expect(card).toContainText('Myco’s work runs on machines an admin chooses');
         await expect(card.locator('[data-setup-item="runner"]')).toHaveCount(0);

@@ -7,6 +7,7 @@ import { fleetReadBudget } from './scenarios/fleet-read-budget.ts';
 import { workerWriteCompletion } from './scenarios/worker-write-completion.ts';
 import { liveActorWrites } from './scenarios/live-actor-writes.ts';
 import { repositories } from './scenarios/repositories.ts';
+import { repositoryFailure } from './scenarios/repository-failure.ts';
 import { canopy } from './scenarios/canopy.ts';
 import { afterAll, beforeAll, describe, it, test } from 'bun:test';
 import { runScenario, type ParityScenario, type ParityTarget } from './harness.ts';
@@ -72,7 +73,7 @@ import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-
 import { PARITY_PLAN_PREFIX, parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import durations from '../../scripts/test-durations.json';
 
-const scenarios = [setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, repositories, canopy, sessionsTitling, sessionTurns, plans, plansAtScale, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, transcriptBacklog, transcriptRepairPriority, transcriptLiveService, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
+const scenarios = [setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, repositories, repositoryFailure, canopy, sessionsTitling, sessionTurns, plans, plansAtScale, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, transcriptBacklog, transcriptRepairPriority, transcriptLiveService, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {

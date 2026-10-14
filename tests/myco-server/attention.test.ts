@@ -205,3 +205,62 @@ describe('Needs you', () => {
     expect(unreadable).toEqual({ items: [], unavailable: ['backup_overdue'] });
   });
 });
+
+it('surfaces enabled code work with no repository and clears as soon as source is connected', async () => {
+  const { sqlite, read } = harness();
+  expect((await read()).items).toEqual([]);
+  sqlite.run("INSERT INTO project_capabilities VALUES ('proj_1','canopy',1,1,'fixture')");
+  expect((await read()).items).toEqual([{ kind: 'repository_missing', tone: 'warn', projectId: 'proj_1' }]);
+  sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
+    VALUES ('proj_1','r1','https://example.test/source.git','main',1,'fixture')`);
+  expect((await read()).items).toEqual([]);
+  sqlite.run("DELETE FROM project_repositories WHERE project_id = 'proj_1'");
+  sqlite.run("INSERT INTO project_capabilities VALUES ('proj_2','vault_evolution',1,1,'fixture')");
+  sqlite.run("UPDATE projects SET archived_at=1 WHERE project_id='proj_1'");
+  expect((await read()).items).toEqual([]);
+  sqlite.close();
+});
+
+it('bounds repository notices and names an overflowing read as unavailable', async () => {
+  const { sqlite, read } = harness();
+  for (let i = 0; i <= 100; i++) {
+    sqlite.run('INSERT INTO projects(project_id,name,created_at) VALUES (?,?,1)', [`notice_${i}`, 'Code project']);
+    sqlite.run("INSERT INTO project_capabilities VALUES (?, 'canopy', 1, 1, 'fixture')", [`notice_${i}`]);
+  }
+  const answer = await read();
+  expect(answer.unavailable).toContain('repository_missing');
+  expect(answer.items.filter(item => item.kind === 'repository_missing')).toEqual([]);
+  sqlite.close();
+});
+
+it('observes only an effective code-map schedule and honors an explicit capability off', async () => {
+  const { sqlite, read } = harness();
+  const set = (leaf: string, value: unknown) => sqlite.run("INSERT OR REPLACE INTO deployment_settings VALUES (?,?,1,'fixture')", [leaf, JSON.stringify(value)]);
+  set('cortex.canopy.refresh.background_enabled', true);
+  expect((await read()).items).toEqual([]);
+  set('agent.scheduled_tasks_enabled', true);
+  expect((await read()).items.filter(item => item.kind === 'repository_missing')).toHaveLength(2);
+  sqlite.run("INSERT INTO project_capabilities VALUES ('proj_1','canopy',0,1,'fixture')");
+  expect((await read()).items.filter(item => item.kind === 'repository_missing')).toEqual([{ kind: 'repository_missing', tone: 'warn', projectId: 'proj_2' }]);
+  set('agent.tasks', { 'canopy-map': { schedule: { enabled: false } } });
+  expect((await read()).items).toEqual([]);
+  sqlite.close();
+});
+
+it('serves one project independently of global overflow and protects the scoped query', async () => {
+  const { sqlite, fixture, env } = harness();
+  seedMemberRoleAccount(sqlite);
+  for (let index = 0; index < 101; index++) {
+    sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES (?, 'Code', 1)", [`code_${index}`]);
+    sqlite.run("INSERT INTO project_capabilities VALUES (?, 'canopy', 1, 1, 'fixture')", [`code_${index}`]);
+  }
+  const get = async (path: string, sub?: string) => worker.fetch(new Request('https://s/api/attention' + path, {
+    headers: { cookie: await ownerCookie(fixture.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' },
+  }), env);
+  expect(await (await get('?project=code_100')).json() as Record<string, unknown>).toEqual({ items: [{ kind: 'repository_missing', tone: 'warn', projectId: 'code_100' }], unavailable: [] });
+  sqlite.run("INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by) VALUES ('code_100','r','https://example.test/source','main',1,'fixture')");
+  expect(await (await get('?project=code_100')).json() as Record<string, unknown>).toEqual({ items: [], unavailable: [] });
+  expect((await get('?project=absent')).status).toBe(404);
+  expect((await get('?project=code_100', MEMBER_SUB)).status).toBe(403);
+  sqlite.close();
+});

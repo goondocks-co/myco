@@ -12,7 +12,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import { MAX_WORKER_RUN_SECONDS } from '@goondocks/myco-shared/harness-health';
 import type { OwnerContext } from '../context.js';
-import { CeilingReached, DEFAULT_DISPATCH_TIMEOUT_SECONDS, DISPATCH_REFUSAL_MESSAGE, dispatchTask, RUNTIME_SERVED_TASKS } from '../core/harness.js';
+import { CeilingReached, DEFAULT_DISPATCH_TIMEOUT_SECONDS, DISPATCH_REFUSAL_MESSAGE, dispatchTask, RUNTIME_SERVED_TASKS, type DispatchRefusal } from '../core/harness.js';
 import { deploymentTaskCeilingWindow, type ActorCeiling } from '../core/runs.js';
 import { memberRunsPerDay } from '../core/scheduled-tasks.js';
 import { isAdmin } from '../auth/roles.js';
@@ -21,7 +21,8 @@ import { runTimeoutForTask } from '../core/task-catalogue.js';
 import { buildTaskInput } from '../core/task-inputs.js';
 import { badRequest, ok, readJsonObject } from './scope.js';
 
-const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
+/** The project identifier admitted by a dispatch request. */
+export const isDispatchProjectId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(value);
 const DAY_MS = 86_400_000;
 
 /**
@@ -61,7 +62,7 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   const body = await readJsonObject(ctx.request);
   if (body === null) return badRequest('body must be a JSON object');
   const task = typeof body.task === 'string' && body.task.length > 0 && body.task.length <= 128 ? body.task : null;
-  const projectId = typeof body.projectId === 'string' && PROJECT_ID_SHAPE.test(body.projectId) ? body.projectId : null;
+  const projectId = isDispatchProjectId(body.projectId) ? body.projectId : null;
   if (task === null || projectId === null) return badRequest('dispatch requires task and projectId');
   // An admin's bound, else the task's own budget, else the flat default. A member runs a task on its own budget.
   const timeoutSeconds = isAdmin(ctx.member.role) && typeof body.timeoutSeconds === 'number' && body.timeoutSeconds > 0 && body.timeoutSeconds <= MAX_WORKER_RUN_SECONDS
@@ -75,7 +76,7 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   // operator reads that as the Deployment lacking a capability rather than as a
   // bad ask. A worker-served task is never refused here: it queues.
   if (env.harnessLaunch === undefined && RUNTIME_SERVED_TASKS.includes(task)) {
-    return Response.json({ error: 'harness_unavailable', message: DISPATCH_REFUSAL_MESSAGE.harness_unavailable }, { status: 409 });
+    return dispatchRefusal('harness_unavailable', 409);
   }
   const dryRun = body.dryRun === true;
   const fresh = body.fresh === true;
@@ -103,8 +104,13 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
     if (outcome.refusal === 'capability_off') {
       return Response.json({ error: 'capability_off', capability: outcome.capability, message: DISPATCH_REFUSAL_MESSAGE.capability_off }, { status: 409 });
     }
-    return badRequest(DISPATCH_REFUSAL_MESSAGE[outcome.refusal]);
+    return dispatchRefusal(outcome.refusal);
   }
   const { dispatched: _dispatched, ...answer } = outcome;
   return ok(answer);
+}
+
+/** Named dispatch refusals keep their code and words across admission and execution. */
+export function dispatchRefusal(error: DispatchRefusal, status = 400): Response {
+  return Response.json({ error, message: DISPATCH_REFUSAL_MESSAGE[error] }, { status });
 }

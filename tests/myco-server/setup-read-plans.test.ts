@@ -5,7 +5,7 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
 
 describe('setup read budget and query plans', () => {
-  it('uses five reads for admins and two for members; new reads seek existing indexes on every planner profile', async () => {
+  it('uses eight reads for admins and two for members; new reads seek existing indexes on every planner profile', async () => {
     const f = sqliteEnv();
     const statements: Array<{ sql: string; params: unknown[] }> = [];
     const db: RelationalStore = {
@@ -23,7 +23,7 @@ describe('setup read budget and query plans', () => {
     try {
       await readSetupProgress({ ...f.serverEnv, db }, { all: true }, 1_790_000_000_000);
       await readSetupIdentity(db, 'mem_machine_1');
-      expect(statements).toHaveLength(5);
+      expect(statements).toHaveLength(8);
       const newReads = statements.filter(statement => /AS signed_in|AS owner_linked|AS produced$/.test(statement.sql));
       expect(newReads).toHaveLength(3);
       for (const [profile, sqlite] of Object.entries(stores)) for (const statement of newReads) {
@@ -42,6 +42,18 @@ describe('setup read budget and query plans', () => {
         } else {
           expect(steps.join(' ')).toContain('idx_members_github_id (github_id>?)');
         }
+      }
+      const repositoryReads = statements.filter(statement => statement.sql.includes('FROM project_repositories r'));
+      expect(repositoryReads).toHaveLength(1);
+      for (const [profile, sqlite] of Object.entries(stores)) {
+        const statement = repositoryReads[0]!;
+        const steps = (sqlite.query(`EXPLAIN QUERY PLAN ${statement.sql}`).all(...statement.params as never[]) as Array<{ detail: string }>).map(row => row.detail);
+        console.info(`repository EXPLAIN ${profile}: ${steps.join(' | ')}`);
+        expect(steps.join(' ')).toContain('SEARCH r USING COVERING INDEX sqlite_autoindex_project_repositories_1 (project_id=?)');
+        expect(steps.join(' ')).toContain('SEARCH pc USING INDEX sqlite_autoindex_project_capabilities_1 (project_id=? AND capability=?)');
+        expect(steps.join(' ')).toMatch(/SEARCH capability_project(?: EXISTS)? USING INDEX sqlite_autoindex_projects_1 \(project_id=\?\)/);
+        expect(statement.params.at(-1)).toBe(101);
+        expect(steps.join(' ')).not.toMatch(/SCAN (?:sessions|agent_runs|project_repositories|pc)\b/);
       }
       statements.length = 0;
       await readSetupProgress({ ...f.serverEnv, db }, { all: false, memberId: 'mem_machine_2' }, 1_790_000_000_000);

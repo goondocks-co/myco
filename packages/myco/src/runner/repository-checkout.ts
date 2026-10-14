@@ -1,10 +1,11 @@
+import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { repositoryUrl, repositoryBranch, REPOSITORY_COMMIT_PATTERN as SHA_PATTERN, MAX_REPOSITORY_HISTORY_DEPTH } from '@goondocks/myco-shared/repository';
+import { repositoryUrl, repositoryBranch, REPOSITORY_COMMIT_PATTERN as SHA_PATTERN, MAX_REPOSITORY_HISTORY_DEPTH, type RepositoryFailure, type RepositoryFailureCode } from '@goondocks/myco-shared/repository';
 
 export { repositoryUrl } from '@goondocks/myco-shared/repository';
 
@@ -12,6 +13,16 @@ const MAX_GIT_OUTPUT_BYTES = 1_000_000;
 export const MAX_REPOSITORY_BYTES = 256 * 1024 * 1024;
 export const CHECKOUT_TIMEOUT_MS = 120_000;
 const LFS_POINTER_PREFIX = 'version https://git-lfs.github.com/spec/v1';
+
+/** A checkout refusal carries only a closed reason and a sanitized Git summary. */
+export class RepositoryCheckoutError extends Error {
+  readonly failure: RepositoryFailure;
+  constructor(code: RepositoryFailureCode, message: string, summary?: string, secrets: readonly string[] = []) {
+    super(message);
+    this.name = 'RepositoryCheckoutError';
+    this.failure = parseRepositoryFailure({ code, summary }, secrets)!;
+  }
+}
 
 export interface RepositoryCheckoutRequest {
   url: string;
@@ -69,7 +80,7 @@ export async function hashCommittedFiles(root: string, paths: readonly string[],
 
 /** One bounded Git process group; cancellation stops its transport children too. */
 async function git(
-  executable: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal,
+  executable: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal, operation: 'fetch_failed' | 'checkout_failed',
 ): Promise<string> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -77,6 +88,9 @@ async function git(
     const child = spawn(command[0], command.slice(1), { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
     const chunks: Buffer[] = [];
     let bytes = 0;
+    const stderr: Buffer[] = [];
+    let stderrBytes = 0;
+    let stderrTruncated = false;
     let failure: Error | undefined;
     const stop = () => {
       if (child.pid === undefined) return;
@@ -93,16 +107,27 @@ async function git(
     child.stdout.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
       if (bytes > MAX_GIT_OUTPUT_BYTES) {
-        failure = new Error('Repository checkout exceeded its Git output limit.');
+        failure = new RepositoryCheckoutError('too_large', 'Repository checkout exceeded its Git output limit.');
         stop();
       } else chunks.push(chunk);
     });
-    child.stderr.resume();
+    child.stderr.on('data', (chunk: Buffer) => {
+      const room = MAX_GIT_OUTPUT_BYTES - stderrBytes;
+      if (room > 0) { stderr.push(chunk.subarray(0, room)); stderrBytes += Math.min(chunk.length, room); }
+      if (chunk.length > room) stderrTruncated = true;
+    });
     child.once('error', (error) => { failure = error; });
     child.once('close', (code) => {
       signal.removeEventListener('abort', abort);
       if (failure !== undefined) reject(failure);
-      else if (code !== 0) reject(new Error(`Repository Git operation failed (exit ${code ?? 'signal'}). Check the repository, branch, and read credential.`));
+      else if (code !== 0) {
+        const captured = Buffer.concat(stderr).toString('utf8');
+        const summary = stderrTruncated ? captured.slice(0, Math.max(0, captured.lastIndexOf('\n'))) : captured;
+        const token = env.MYCO_GIT_TOKEN ?? '';
+        const username = env.MYCO_GIT_USERNAME ?? '';
+        const secrets = [token, username, ...(token && username ? [username + ':' + token] : [])];
+        reject(new RepositoryCheckoutError(operation, `Repository Git operation failed (exit ${code ?? 'signal'}). Check the repository, branch, and read credential.`, summary, secrets));
+      }
       else resolve(Buffer.concat(chunks).toString('utf8'));
     });
   });
@@ -113,8 +138,8 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
   const signal = AbortSignal.any([request.signal, AbortSignal.timeout(CHECKOUT_TIMEOUT_MS)]);
   const url = repositoryUrl(request.url);
   repositoryBranch(request.branch);
-  if (request.commit !== undefined && !SHA_PATTERN.test(request.commit)) throw new Error('Invalid repository commit.');
-  if (request.compareCommit !== undefined && !SHA_PATTERN.test(request.compareCommit)) throw new Error('Invalid comparison commit.');
+  if (request.commit !== undefined && !SHA_PATTERN.test(request.commit)) throw new RepositoryCheckoutError('commit_mismatch', 'Invalid repository commit.');
+  if (request.compareCommit !== undefined && !SHA_PATTERN.test(request.compareCommit)) throw new RepositoryCheckoutError('commit_mismatch', 'Invalid comparison commit.');
   const depth = request.historyDepth ?? 1;
   if (!Number.isInteger(depth) || depth < 1 || depth > MAX_REPOSITORY_HISTORY_DEPTH) throw new Error('Invalid repository history depth.');
   const directory = await mkdtemp(join(tmpdir(), 'myco-repository-'));
@@ -135,7 +160,9 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
     await writeFile(askpass, '#!/bin/sh\ncase "$1" in\n  *Username*) printf "%s\\n" "$MYCO_GIT_USERNAME" ;;\n  *Password*) printf "%s\\n" "$MYCO_GIT_TOKEN" ;;\n  *) exit 1 ;;\nesac\n', { mode: 0o700 });
     const env: NodeJS.ProcessEnv = {
       PATH: process.env.PATH,
-      HOME: directory,
+      HOME: directory, TMPDIR: directory,
+      CODEX_HOME: directory, CLAUDE_CONFIG_DIR: directory,
+      XDG_CONFIG_HOME: directory, MYCO_HOME: directory,
       LANG: 'C', LC_ALL: 'C',
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
       GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: askpass,
@@ -149,15 +176,15 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
       '-c', 'credential.helper=', '-c', 'core.hooksPath=/dev/null',
       '-c', 'http.followRedirects=false', '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always',
       ...args,
-    ], root, env, signal);
+    ], root, env, signal, args[0] === 'fetch' ? 'fetch_failed' : 'checkout_failed');
     await run('check-ref-format', `refs/heads/${request.branch}`);
     await run('init', '--quiet', '--template=');
     await run('remote', 'add', 'origin', url);
     await run('fetch', '--quiet', `--depth=${depth}`, '--no-tags', 'origin', request.commit ?? `refs/heads/${request.branch}`);
     const resolved = (await run('rev-parse', '--verify', 'FETCH_HEAD^{commit}')).trim();
-    if (!SHA_PATTERN.test(resolved)) throw new Error('Repository returned an invalid commit.');
+    if (!SHA_PATTERN.test(resolved)) throw new RepositoryCheckoutError('commit_mismatch', 'Repository returned an invalid commit.');
     const pinned = await request.pin(resolved);
-    if (!SHA_PATTERN.test(pinned)) throw new Error('Repository pin returned an invalid commit.');
+    if (!SHA_PATTERN.test(pinned)) throw new RepositoryCheckoutError('commit_mismatch', 'Repository pin returned an invalid commit.');
     if (pinned !== resolved) await run('fetch', '--quiet', `--depth=${depth}`, '--no-tags', 'origin', pinned);
     let changedPaths: string[] | undefined;
     if (request.compareCommit !== undefined) {
@@ -167,14 +194,14 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
     const files = (await run('ls-tree', '-r', '-l', '-z', pinned)).split('\0').filter(Boolean).map((entry) => {
       const tab = entry.indexOf('\t');
       const [mode, , , size] = entry.slice(0, tab).trim().split(/\s+/);
-      if (mode === '160000') throw new Error('Repository contains submodules; submodule source is not supported yet.');
+      if (mode === '160000') throw new RepositoryCheckoutError('submodules', 'Repository contains submodules; submodule source is not supported yet.');
       return { mode, size: Number(size), path: entry.slice(tab + 1) };
     });
     const bytes = files.reduce((total, file) => total + file.size, 0);
-    if (!Number.isSafeInteger(bytes) || bytes > MAX_REPOSITORY_BYTES) throw new Error('Repository committed files exceed the 256 MiB checkout limit.');
+    if (!Number.isSafeInteger(bytes) || bytes > MAX_REPOSITORY_BYTES) throw new RepositoryCheckoutError('too_large', 'Repository committed files exceed the 256 MiB checkout limit.');
     await run('checkout', '--quiet', '--detach', pinned);
     const actual = (await run('rev-parse', 'HEAD')).trim();
-    if (actual !== pinned) throw new Error('Repository checkout does not match its pinned commit.');
+    if (actual !== pinned) throw new RepositoryCheckoutError('commit_mismatch', 'Repository checkout does not match its pinned commit.');
     const regular = files.filter((entry) => entry.mode === '100644' || entry.mode === '100755').map((entry) => entry.path);
     for (const path of regular) {
       signal.throwIfAborted();
@@ -182,7 +209,7 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
       try {
         const bytes = Buffer.alloc(LFS_POINTER_PREFIX.length);
         await file.read(bytes, 0, bytes.length, 0);
-        if (bytes.toString('utf8') === LFS_POINTER_PREFIX) throw new Error('Repository contains Git LFS pointers; LFS source is not supported yet.');
+        if (bytes.toString('utf8') === LFS_POINTER_PREFIX) throw new RepositoryCheckoutError('lfs', 'Repository contains Git LFS pointers; LFS source is not supported yet.');
       } finally { await file.close(); }
     }
     const digests = request.digests === true ? await hashCommittedFiles(root, regular, signal) : undefined;

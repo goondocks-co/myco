@@ -16,6 +16,7 @@ import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { keyWords } from '../../packages/myco-server/ui/src/features/admin/project/access-keys';
+import { TASK_DESCRIPTIONS } from './task-fixture';
 import { rawIdsIn } from '../helpers/raw-ids';
 
 const ADA = 'mem_q3Vb8xRk2LmT7wYz';
@@ -68,6 +69,7 @@ const base = (extra: Record<string, (init?: RequestInit) => Response | Promise<R
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
   '/api/status': () => Response.json({ target: 'bun' }),
+  '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS }),
   [`${api}/capabilities`]: () => Response.json({ capabilities: { cortex: true, canopy: false, skills: false, vault_evolution: true } }),
   [`${api}/repository`]: () => Response.json({ repository: REPOSITORY }),
   [`${api}/grants`]: () => Response.json({ grants: [grant(), grant({ id: 'eg_old', label: 'old bot', revokedAt: NOW - HOUR, revokedBy: ADA, rotatedTo: 'eg_live1' })] }),
@@ -77,7 +79,7 @@ const base = (extra: Record<string, (init?: RequestInit) => Response | Promise<R
 
 function Where() {
   const location = useLocation();
-  return <span data-testid="location">{`${location.pathname}${location.hash}`}</span>;
+  return <span data-testid="location">{`${location.pathname}${location.search}${location.hash}`}</span>;
 }
 
 function mount(path: string) {
@@ -211,6 +213,124 @@ describe('a project\'s settings', () => {
     expect((await within(sectionOf('capabilities')).findByRole('alert')).textContent).toBe('The server refused (503).');
   });
 
+  it('explains repository requirements on each code capability, allows enabling, and opens the connection form', async () => {
+    let canopy = false;
+    const { sent } = server(base({
+      [`${api}/capabilities`]: () => Response.json({ capabilities: { cortex: true, canopy, vault_evolution: true } }),
+      [`${api}/repository`]: () => Response.json({ repository: null }),
+      [`PUT ${api}/capabilities/canopy`]: () => { canopy = true; return Response.json({ applied: true }); },
+    }));
+    mount(`/p/${P}/settings`);
+    for (const [capability, requirement] of [
+      ['canopy', 'Needs this project’s repository to read its code.'],
+      ['vault_evolution', 'Can run Learn from sessions now; connect the repository to also run Seed project memory.'],
+    ]) {
+      const row = await waitFor(() => {
+        const found = document.querySelector(`[data-setting="capability.${capability}"]`) as HTMLElement | null;
+        expect(found?.textContent).toContain(requirement!);
+        return found!;
+      });
+      if (capability === 'canopy') expect(within(row).queryByRole('link', { name: 'Connect repository' })).toBeNull();
+      else expect(within(row).getByRole('link', { name: 'Connect repository' }).getAttribute('href')).toBe(`/p/${P}/settings?connect=repository#repository`);
+    }
+    const learningRow = document.querySelector('[data-setting="capability.vault_evolution"]') as HTMLElement;
+    expect(learningRow.textContent).toContain('On · Some tasks need a repository');
+    expect(learningRow.textContent).not.toContain('Code tasks cannot run');
+    const map = screen.getByRole('switch', { name: 'Code map' });
+    fireEvent.click(map);
+    await waitFor(() => expect(sent).toEqual([{ method: 'PUT', path: `${api}/capabilities/canopy`, body: { enabled: true } }]));
+    const mapRow = document.querySelector('[data-setting="capability.canopy"]') as HTMLElement;
+    await waitFor(() => expect(mapRow.textContent).toContain('On · Code tasks cannot run until a repository is connected'));
+    expect(within(mapRow).getByRole('link', { name: 'Connect repository' })).toBeTruthy();
+    fireEvent.click(within(mapRow).getByRole('link', { name: 'Connect repository' }));
+    expect(await screen.findByRole('dialog', { name: 'Connect a repository' })).toBeTruthy();
+    expect(screen.getByTestId('location').textContent).toBe(`/p/${P}/settings?connect=repository#repository`);
+  });
+
+  it('keeps session learning conditional when Learning is off without a repository', async () => {
+    server(base({
+      [`${api}/capabilities`]: () => Response.json({ capabilities: { cortex: true, canopy: false, vault_evolution: false } }),
+      [`${api}/repository`]: () => Response.json({ repository: null }),
+    }));
+    mount(`/p/${P}/settings`);
+    const row = (await screen.findByRole('switch', { name: 'Learning' })).closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
+    await waitFor(() => expect(row.textContent).toContain('Can run Learn from sessions when enabled; connect the repository to also run Seed project memory.'));
+    expect(within(row).queryByRole('link', { name: 'Connect repository' })).toBeNull();
+    expect(row.textContent).toContain('Off');
+  });
+
+  it('derives fully blocked copy from the capability’s own task subset', async () => {
+    server(base({
+      '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS.map((task) => task.task === 'extract-curate' ? { ...task, capability: null } : task) }),
+      [`${api}/repository`]: () => Response.json({ repository: null }),
+    }));
+    mount(`/p/${P}/settings`);
+    const row = (await screen.findByRole('switch', { name: 'Learning' })).closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
+    await waitFor(() => expect(row.textContent).toContain('Needs this project’s repository to read its code.'));
+    expect(row.textContent).toContain('On · Code tasks cannot run until a repository is connected');
+    expect(row.textContent).not.toContain('Can run Learn from sessions now');
+  });
+
+  it('names the available work and every repository-dependent task for another mixed subset', async () => {
+    server(base({
+      '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS.map((task) => task.task === 'canopy-map' ? { ...task, capability: 'vault_evolution' } : task) }),
+      [`${api}/repository`]: () => Response.json({ repository: null }),
+    }));
+    mount(`/p/${P}/settings`);
+    const row = (await screen.findByRole('switch', { name: 'Learning' })).closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
+    await waitFor(() => expect(row.textContent).toContain('Can run Learn from sessions now; connect the repository to also run Keep the code map, Seed project memory.'));
+    expect(row.textContent).toContain('On · Some tasks need a repository');
+    expect(row.textContent).not.toContain('Code tasks cannot run');
+  });
+
+  it('names the connected repository and branch on every code capability', async () => {
+    server(base());
+    mount(`/p/${P}/settings`);
+    for (const capability of ['canopy', 'vault_evolution']) {
+      const row = await waitFor(() => {
+        const found = document.querySelector(`[data-setting="capability.${capability}"]`) as HTMLElement | null;
+        expect(found?.textContent).toContain('Reads goondocks-co/myco @ main');
+        return found!;
+      });
+      expect(within(row).queryByRole('link', { name: 'Connect repository' })).toBeNull();
+    }
+  });
+
+  it('uses the server task descriptions to decide which capability needs the repository', async () => {
+    server(base({
+      '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS.map((task) => task.task === 'canopy-map'
+        ? { ...task, capability: 'cortex' }
+        : task.task === 'vault-seed' ? { ...task, capability: null } : task) }),
+      [`${api}/repository`]: () => Response.json({ repository: null }),
+    }));
+    mount(`/p/${P}/settings`);
+    const context = (await screen.findByRole('switch', { name: 'Context for sessions' })).closest('[data-setting="capability.cortex"]') as HTMLElement;
+    await waitFor(() => expect(context.textContent).toContain('Needs this project’s repository to read its code.'));
+    const map = (screen.getByRole('switch', { name: 'Code map' })).closest('[data-setting="capability.canopy"]') as HTMLElement;
+    const learning = (screen.getByRole('switch', { name: 'Learning' })).closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
+    expect(map.textContent).not.toContain('Needs this project’s repository');
+    expect(learning.textContent).not.toContain('Needs this project’s repository');
+  });
+
+  it('shows an unavailable task catalogue before claiming an enabled capability is ready', async () => {
+    server(base({ '/api/tasks': () => Response.json({ error: 'unavailable' }, { status: 503 }) }));
+    mount(`/p/${P}/settings`);
+    const learning = await screen.findByRole('switch', { name: 'Learning' });
+    const row = learning.closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
+    await waitFor(() => expect(row.textContent).toContain('On · Task requirements unavailable'));
+    expect(row.textContent).toContain('Couldn’t check task requirements.');
+  });
+
+  it('shows an unreadable repository state on enabled code capabilities', async () => {
+    server(base({ [`${api}/repository`]: () => Response.json({ error: 'unavailable' }, { status: 503 }) }));
+    mount(`/p/${P}/settings`);
+    const learning = await screen.findByRole('switch', { name: 'Learning' });
+    const row = learning.closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
+    await waitFor(() => expect(row.textContent).toContain('On · Repository status unavailable'));
+    expect(row.textContent).toContain('Couldn’t check this project’s repository.');
+    expect(within(row).queryByRole('link', { name: 'Connect repository' })).toBeNull();
+  });
+
   it('a member is told the page is for an admin, and nothing an admin reads is asked', async () => {
     const { asked } = server(base({ '/auth/me': () => Response.json(dashboardMe(MEMBER)) }));
     mount(`/p/${P}/settings`);
@@ -237,6 +357,7 @@ describe('the repository', () => {
     fireEvent.click(within(section).getByRole('button', { name: 'Edit repository' }));
     const dialog = await screen.findByRole('dialog');
     expect((within(dialog).getByLabelText('Read token') as HTMLInputElement).placeholder).toBe('Leave blank to keep the current token');
+    expect(within(dialog).getByText('For a private GitHub repository, use a fine-grained token limited to this repository with Contents: Read-only')).toBeTruthy();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save repository' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toEqual({ method: 'PUT', path: `${api}/repository`, body: { url: REPOSITORY.url, branch: 'main', revision: 'rev_7' } });
@@ -256,6 +377,15 @@ describe('the repository', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save repository' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]!.body).toEqual({ url: 'https://github.com/example/app.git', branch: 'main', revision: null, credential: null });
+  });
+
+  it('opens the connection form from a repository deep link and closes it without leaving the request in the URL', async () => {
+    server(base({ [`${api}/repository`]: () => Response.json({ repository: null }) }));
+    mount(`/p/${P}/settings?connect=repository#repository`);
+    const dialog = await screen.findByRole('dialog', { name: 'Connect a repository' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByTestId('location').textContent).toBe(`/p/${P}/settings#repository`);
   });
 
   it('disconnects only from its menu, behind a confirm that keeps a refusal in view', async () => {
@@ -352,4 +482,27 @@ describe('access keys', () => {
     expect(keyWords(grant({ revokedAt: NOW - HOUR, revokedBy: 'expiry' }) as never, names, NOW)).toBe('Added 3 days ago by Ada · expired 1 h ago');
     expect(keyWords(grant({ revokedAt: NOW - HOUR, revokedBy: ADA }) as never, names, NOW)).toBe('Added 3 days ago by Ada · revoked 1 h ago by Ada');
   });
+});
+
+for (const [endpoint, loadingNote, loadingStatus, failedNote, failedStatus] of [
+  ['/api/tasks', 'Checking task requirements.', 'On · Checking task requirements', 'Couldn’t check task requirements.', 'On · Task requirements unavailable'],
+  [`${api}/repository`, 'Checking this project’s repository.', 'On · Checking repository', 'Couldn’t check this project’s repository.', 'On · Repository status unavailable'],
+]) it(`keeps repository readiness unknown while ${endpoint} is pending or fails`, async () => {
+  let answer!: (response: Response) => void;
+  const pending = new Promise<Response>(resolve => { answer = resolve; });
+  server(base({
+    [endpoint!]: () => pending,
+    [`${api}/capabilities`]: () => Response.json({ capabilities: { canopy: true } }),
+  }));
+  mount(`/p/${P}/settings`);
+  const row = await waitFor(() => {
+    const row = document.querySelector('[data-setting="capability.canopy"]') as HTMLElement;
+    expect(row?.textContent).toContain(loadingNote!);
+    return row;
+  });
+  expect(row.textContent).toContain(loadingStatus!);
+  answer(Response.json({ error: 'unavailable' }, { status: 503 }));
+  await waitFor(() => expect(row.textContent).toContain(failedNote!));
+  expect(row.textContent).toContain(failedStatus!);
+  expect(within(row).queryByRole('link', { name: 'Connect repository' })).toBeNull();
 });

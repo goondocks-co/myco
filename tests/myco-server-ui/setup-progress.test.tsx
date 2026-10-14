@@ -1,3 +1,4 @@
+import { setupComplete } from '../../packages/myco-server/ui/src/lib/setup-progress';
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -148,4 +149,19 @@ describe('Get started checklist', () => {
     } finally { write.mockRestore(); }
   });
 
+});
+
+it('keeps optional code work visible without gating setup completion', async () => {
+  mount('admin', () => Response.json({ ...empty, machines: { signedIn: 1 }, projects: 1, liveCapture: true,
+    runnersReady: 0, workProduced: true, repositoriesNeeded: [{ projectId: 'proj_code' }] }));
+  await waitFor(() => expect(item('repository:proj_code')).not.toBeNull());
+  expect(item('repository:proj_code').textContent).toContain('Connect this project’s repository so Myco can map its code');
+  expect(item('repository:proj_code').textContent).toContain('Code map is turned on, but it cannot run until a repository is connected.');
+  expect(within(item('repository:proj_code') as HTMLElement).getByRole('link', { name: 'Connect repository' }).getAttribute('href'))
+    .toBe('/p/proj_code/settings?connect=repository#repository');
+});
+
+it('does not reopen completed setup for optional code work or repository overflow', () => {
+  expect(setupComplete({ ...empty, machines: { signedIn: 1 }, projects: 1, liveCapture: true,
+    runnersReady: 1, workProduced: true, repositoriesNeeded: [{ projectId: 'proj_code' }], repositoriesOverflow: true }, true)).toBe(true);
 });

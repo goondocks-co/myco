@@ -765,9 +765,15 @@ export async function taskWorkEnabled(db: RelationalStore, projectId: string, ta
 }
 
 /** A live Project's missing capability row enables it; only an explicit zero opts it out. */
-function capabilityOnSql(project: string, capability: string): string {
+export function capabilityOnSql(project: string, capability: string): string {
   return projectWorkSql(project, `AND NOT EXISTS (SELECT 1 FROM project_capabilities pc
         WHERE pc.project_id = capability_project.project_id AND pc.capability = ${capability} AND pc.enabled = 0)`);
+}
+
+/** An owner has explicitly enabled this Project capability. */
+export function capabilityExplicitlyOnSql(project: string, capability: string): string {
+  return `EXISTS (SELECT 1 FROM project_capabilities pc WHERE pc.project_id = ${project}
+    AND pc.capability = ${capability} AND pc.enabled = 1)`;
 }
 
 /** A capability's admission condition, bound as: Project, capability. */

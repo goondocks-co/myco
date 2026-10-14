@@ -8,7 +8,7 @@ import { HELD_CAPTURE_TTL_DAYS } from '@goondocks/myco-shared/member-protocol';
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@goondocks/myco-shared/repository';
 import { harnessLabel } from '../../lib/harness';
 import { memberLabel } from '../../lib/member-name';
-import { HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, runPath } from '../../routes/nav';
+import { HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, projectRepositoryPath, runPath } from '../../routes/nav';
 import { hasRunOutput } from './timeline';
 import type { AttentionItem, AttentionKind, CaptureRow, HeldState, OutcomeKind, TodaySession, TodaySpore, UncapturedReason, UncapturedRootItem, WorkRun } from './wire';
 
@@ -235,6 +235,9 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
     return name === null ? 'In a project you can’t see here.' : `In ${name}.`;
   };
   switch (item.kind) {
+    case 'repository_missing':
+      return repositoryNeededWords(item.projectId, projectName(item.projectId), item.codeMap);
+
     case 'backup_overdue':
       return {
         title: item.lastBackupAt === null ? 'No backup has completed yet' : `Last backup was ${ago(item.lastBackupAt, now)}`,
@@ -364,6 +367,7 @@ export function repositoryWords(item: UncapturedRootItem, now: number, viewerId:
 
 /** What each attention check reads, for the line naming the checks that could not be read. */
 export const ATTENTION_CHECKS: Readonly<Record<AttentionKind, string>> = {
+  repository_missing: 'project repositories',
   backup_overdue: 'backups',
   outcome_failed: 'Myco’s work',
   runs_without_audit: 'agents’ accounts of their work',
@@ -436,4 +440,13 @@ export function transcriptStopWords(item: Extract<AttentionItem, { kind: 'transc
   };
   const kind = kinds[diagnostic.lineKind];
   return `${causes[diagnostic.branch] ?? 'The transcript could not be read'}${kind === undefined ? '' : ` (${kind})`}. The stored transcript is kept. ${nextStep}`;
+}
+
+/** The same repository requirement in Needs you and Get started. */
+export function repositoryNeededWords(projectId: string, name: string | null, codeMap = true): NeedsYouWords {
+  return {
+    title: codeMap ? `Connect ${name ?? 'this project'}’s repository so Myco can map its code` : `Connect ${name ?? 'this project'}’s repository so Myco can run its code tasks`,
+    detail: codeMap ? 'Code map is turned on, but it cannot run until a repository is connected.' : 'Code tasks are turned on, but they cannot run until a repository is connected.',
+    action: { label: 'Connect repository', to: projectRepositoryPath(projectId, true) },
+  };
 }

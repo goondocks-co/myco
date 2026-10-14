@@ -68,13 +68,17 @@ if (process.argv.includes('status')) process.exit(0);
 `;
 
 describe('worker repository checkout over the Deployment wire', () => {
-  for (const access of ['public', 'private', 'invalid'] as const) {
-    it(access === 'invalid' ? 'refuses invalid repository credentials before launching a harness and removes scratch files' : `prepares ${access} source, saves spores under the run and removes its credentials and files`, async () => {
+  for (const access of ['public', 'private', 'invalid', 'invalid-older-server'] as const) {
+    it(access.startsWith('invalid') ? 'refuses invalid repository credentials before launching a harness and removes scratch files (' + access + ')' : `prepares ${access} source, saves spores under the run and removes its credentials and files`, async () => {
       const source = await gitRepositoryFixture(access === 'public' ? 'public' : 'private');
       const e = sqliteEnv({ workerLogin: true });
       e.env.SECRET_WRAP_KEY = { get: async () => btoa('r'.repeat(32)) };
       const pipeline = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: fetch });
-      const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: (request) => pipeline.handleRequest(request, e.serverEnv) });
+      const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: async (request) => {
+        const response = await pipeline.handleRequest(request, e.serverEnv);
+        if (access === 'invalid-older-server') response.headers.set('x-myco-features', response.headers.get('x-myco-features')!.split(',').filter(feature => feature !== 'repository-failure-v1').join(','));
+        return response;
+      } });
       const previousPath = process.env.PATH;
       const origin = `http://127.0.0.1:${server.port}`;
       try {
@@ -82,7 +86,7 @@ describe('worker repository checkout over the Deployment wire', () => {
         await ensureMember(e.db, 'mem_worker', now, 'admin', 'worker');
         const owner = await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm1' }, now);
         await projectRepositories(e.db, deploymentSecretStore(e.db, e.serverEnv.wrappingKey)).save('proj_1', {
-          url: source.url, branch: 'main', revision: null, credential: access === 'public' ? null : { ...GIT_READ_CREDENTIAL, ...(access === 'invalid' ? { token: 'revoked-fixture-read-token' } : {}) },
+          url: source.url, branch: 'main', revision: null, credential: access === 'public' ? null : { ...GIT_READ_CREDENTIAL, ...(access.startsWith('invalid') ? { token: 'revoked-fixture-read-token' } : {}) },
         }, 'mem_worker', now);
         e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id,capability,enabled,updated_at,updated_by) VALUES ('proj_1','vault_evolution',1,?,'test')`, [now]);
         e.sqlite.run(`INSERT OR IGNORE INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,?)`, [now]);
@@ -100,7 +104,7 @@ describe('worker repository checkout over the Deployment wire', () => {
           repositoryGitPath: source.gitPath, pollIdleMs: 10, signal: AbortSignal.timeout(20_000), log: (line) => { lines.push(line); } });
         expect(outcome).toEqual({ driven: 1, refused: null });
         const row = e.sqlite.query(`SELECT status,error,run_context AS context FROM agent_runs WHERE id='run_seed'`).get() as { status: string; error: string | null; context: string };
-        if (access !== 'invalid') {
+        if (!access.startsWith('invalid')) {
           const accounting = e.sqlite.query(`SELECT tokens_used, cost_usd, actual_cost_usd, estimated_cost_usd, cost_source, usage_data FROM agent_runs WHERE id='run_seed'`).get() as Record<string, unknown>;
           expect(accounting).toMatchObject({ tokens_used: 38, cost_usd: 0.125, actual_cost_usd: null, estimated_cost_usd: 0.125, cost_source: 'estimated' });
           expect(JSON.parse(String(accounting.usage_data))).toEqual({
@@ -113,9 +117,18 @@ describe('worker repository checkout over the Deployment wire', () => {
             },
           });
         }
-        if (access === 'invalid') {
+        if (access.startsWith('invalid')) {
           expect(row.status).toBe('failed');
           expect(row.error).toBe('the worker failed while driving the run (repository_unprepared)');
+          const context = JSON.parse(row.context);
+          if (access === 'invalid-older-server') {
+            expect(context.repositoryFailureCode).toBeUndefined();
+            expect(context.repositoryFailureSummary).toBeUndefined();
+          } else {
+            expect(context.repositoryFailureCode).toBe('fetch_failed');
+            expect(context.repositoryFailureSummary).toContain('fatal:');
+          }
+          expect(row.context).not.toContain('revoked-fixture-read-token');
           expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM spores`).get()).toEqual({ n: 0 });
           expect(await readdir(runRoot)).toEqual([]);
           expect(await readdir(source.home)).not.toContain('observed.json');

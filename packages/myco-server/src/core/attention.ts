@@ -20,6 +20,7 @@
  * A rule whose read fails is named in `unavailable` and the others still answer, so one unreadable fact never hides
  * the rest, and an empty list with nothing unavailable means nothing needs anyone.
  */
+import { repositoriesNeeded } from '../read/repository-requirements.js';
 import type { ServerEnv } from './adapters.js';
 import { CAPABILITY_HOLDS } from '@goondocks/myco-shared/run-holds';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
@@ -60,6 +61,7 @@ const AUDITED_TASKS: readonly string[] = Object.entries(RUN_CLOSE_RULES).filter(
 export const WATCHED_OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, MAP_TASK];
 
 export type AttentionItem =
+  | { kind: 'repository_missing'; tone: 'warn'; projectId: string; codeMap?: boolean }
   | { kind: 'backup_overdue'; tone: 'warn'; lastBackupAt: number | null; intervalHours: number }
   | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string }
   | { kind: 'runs_without_audit'; tone: 'warn'; projectId: string; runs: number; closed: number; since: number; latestAt: number; runId: string }
@@ -93,6 +95,14 @@ async function lastBackup(env: ServerEnv): Promise<number | null> {
 }
 
 const RULES: readonly Rule[] = [
+  {
+    kind: 'repository_missing',
+    read: async (env) => {
+      const result = await repositoriesNeeded(env, { all: true });
+      if (result.overflow) throw new Error('Repository notices exceed the dashboard read limit');
+      return result.projects.map(requirement => ({ kind: 'repository_missing' as const, tone: 'warn' as const, ...requirement }));
+    },
+  },
   {
     kind: 'schema_mismatch',
     read: async (env) => {

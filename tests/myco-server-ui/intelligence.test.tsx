@@ -1,3 +1,7 @@
+import { REPOSITORY_FAILURE_CODES } from '@goondocks/myco-shared/repository';
+import { DISPATCH_REFUSAL_MESSAGE, type DispatchRefusal } from '@myco-server-worker/core/harness';
+import { DISPATCH_REFUSAL_WORDS, refusalOf } from '../../packages/myco-server/ui/src/features/work/RunTask';
+import { ApiError } from '../../packages/myco-server/ui/src/lib/api';
 import { dashboardMe } from '../helpers/dashboard-permissions';
 import { TASK_DESCRIPTIONS } from './task-fixture';
 /**
@@ -18,7 +22,7 @@ import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
-import { dailyLimitWords, failureWords, fullErrorWords } from '../../packages/myco-server/ui/src/features/work/words';
+import { dailyLimitWords, failureDetail, failureWords, fullErrorWords, runErrorWords } from '../../packages/myco-server/ui/src/features/work/words';
 import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 import { EFFORT_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
 import { rawIdsIn } from '../helpers/raw-ids';
@@ -404,7 +408,7 @@ describe('running a task by hand', () => {
     expect(sent).toEqual([]);
   });
 
-  it('words a fresh start refused to a member, and any other refusal by its status, never the server\'s sentence', async () => {
+  it('words fresh-start refusals and retries only temporary failures', async () => {
     let answer: Response = Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
     server(routes({ who: MEMBER, dispatch: () => answer }));
     mount(`/p/${P}/work`);
@@ -412,12 +416,12 @@ describe('running a task by hand', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
     expect((await within(dialog).findByRole('alert')).textContent).toBe('Only an admin can start a task fresh.');
     // A 403 that is not about starting fresh is not worded as one.
-    answer = Response.json({ error: 'forbidden', reason: 'this account can’t start tasks here' }, { status: 403 });
+    answer = Response.json({ error: 'unavailable' }, { status: 503 });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
-    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('The server couldn’t start it (403). Try again in a moment.'));
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('The server couldn’t start it. Try again in a moment.'));
     answer = Response.json({ error: 'bad_request', reason: 'no agent is configured for this task' }, { status: 400 });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
-    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('The server couldn’t start it (400). Try again in a moment.'));
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('Myco couldn’t start this task. Check the project’s settings before trying again.'));
     // No run this week spent anything on it, so the confirmation says there is nothing to go by.
     expect(dialog.querySelector('[data-spend]')!.textContent).toBe('This spends model tokens. No runs over the code finished this week, so there’s no recent spend to go by.');
   });
@@ -609,6 +613,68 @@ it('words a run whose agent could not use the chosen model from the reason it re
   expect(failureWords({ source: 'error', code: 'model_not_applied', reason, cause: raw, error: raw })).toBe(sentence);
   // With no recorded reason, the sentence stands alone: the error's text is never read for one.
   expect(failureWords({ source: 'error', code: 'model_not_applied', cause: raw, error: raw })).toBe('The agent couldn’t use the chosen model.');
+});
+
+const REPOSITORY_FAILURE_CASES = [
+  ['fetch_failed', 'Myco couldn’t read the repository. Check the repository and branch. If it uses a token, check the token can read this repository: for an organization repository, its resource owner must be the organization, and the organization may need to approve it.'],
+  ['submodules', 'Myco can’t use a repository with Git submodules. Choose a repository without submodules.'],
+  ['lfs', 'Myco can’t use Git LFS files in this repository. Choose a repository without Git LFS files.'],
+  ['too_large', 'The repository is too large for Myco to prepare. Choose a smaller source.'],
+  ['commit_mismatch', 'Myco couldn’t verify the expected commit. Retry the task to prepare it from a known commit.'],
+  ['checkout_failed', 'Myco couldn’t prepare the repository. Check its connection and try again.'],
+] as const;
+
+it('pins user copy for every repository failure code', () => {
+  expect(REPOSITORY_FAILURE_CASES.map(([code]) => code).sort()).toEqual([...REPOSITORY_FAILURE_CODES].sort());
+});
+
+for (const [code, words] of REPOSITORY_FAILURE_CASES) {
+  it(`words repository preparation ${code} from the structured reason`, () => {
+    const repositoryFailure = { code, summary: 'Sanitized checkout summary' };
+    expect(runErrorWords('repository_unprepared', 'worker stderr is not user copy', repositoryFailure)).toBe(words);
+    expect(failureWords({ source: 'error', code: 'repository_unprepared', cause: 'raw worker cause', error: 'raw worker error', repositoryFailure })).toBe(words);
+    expect(failureDetail({ source: 'error', code: 'repository_unprepared', cause: 'raw worker cause', error: 'raw worker error', repositoryFailure })).toBe('Sanitized checkout summary');
+  });
+}
+
+it('keeps the legacy repository preparation failure actionable without exposing worker text', async () => {
+  const raw = 'worker stderr with an untrusted repository URL';
+  server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
+    reports: [], run: { errorCode: 'repository_unprepared', error: raw },
+  })) } }));
+  mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
+  const open = await panel();
+  const failure = await waitFor(() => {
+    const found = open.querySelector('[data-run-failure]') as HTMLElement | null;
+    expect(found?.textContent).toContain('Myco couldn’t prepare the repository. Check its connection and branch, then try again.');
+    return found!;
+  });
+  expect(within(failure).getByRole('link', { name: 'Check repository settings' }).getAttribute('href')).toBe(`/p/${P}/settings?connect=repository#repository`);
+  expect(failure.textContent).not.toContain(raw);
+  fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
+  expect(open.querySelector('[data-run-technical]')!.textContent).not.toContain(raw);
+});
+
+it('shows only the repository failure summary in technical details and gives members an admin next step', async () => {
+  const raw = 'worker stderr with a credential';
+  const summary = 'Git returned 403 while reading the branch';
+  server(routes({ who: MEMBER, detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
+    reports: [], run: { errorCode: 'repository_unprepared', error: raw, repositoryFailure: { code: 'fetch_failed', summary } },
+  })) } }));
+  mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
+  const open = await panel();
+  const failure = await waitFor(() => {
+    const found = open.querySelector('[data-run-failure]') as HTMLElement | null;
+    expect(found?.textContent).toContain('Myco couldn’t read the repository.');
+    return found!;
+  });
+  expect(failure.textContent).toContain('Ask an admin to check the repository in Project settings.');
+  expect(within(failure).queryByRole('link', { name: 'Check repository settings' })).toBeNull();
+  expect(failure.textContent).not.toContain(summary);
+  expect(failure.textContent).not.toContain(raw);
+  fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
+  expect(open.querySelector('[data-run-technical]')!.textContent).toContain(summary);
+  expect(open.querySelector('[data-run-technical]')!.textContent).not.toContain(raw);
 });
 
 it('words a free-text skip from its fallback code', async () => {
@@ -893,4 +959,59 @@ it('uses the registry description when confirming a task', async () => {
   mount(`/p/${P}/work`);
   const dialog = await startFromMenu(/Learn from the project’s code/);
   await waitFor(() => expect(dialog.textContent).toContain(`${description.replace(/\.$/, '')} in the Myco project.`));
+});
+
+it('words every dispatch refusal and makes settled refusals final', () => {
+  const expected: Record<DispatchRefusal, string> = {
+    repository_missing: 'The code map and other code tasks need this project’s repository before they can run.',
+    harness_unavailable: 'Myco can’t run this task here. An admin can check its setup.',
+    unknown_task: 'This task isn’t available here. Refresh the page to see the available tasks.',
+    unknown_project: 'This project is no longer available here. Choose another project.',
+    no_instruction: 'This task has no instructions yet. An admin can check its setup.',
+    not_landed: 'This task is not available yet.',
+    no_provider: 'Search needs to be set up before this task can run. An admin can do that in Settings.',
+    capability_off: 'This task is turned off for the project. An admin can turn it on in Project settings.',
+  };
+  expect(Object.keys(DISPATCH_REFUSAL_WORDS).sort()).toEqual(Object.keys(DISPATCH_REFUSAL_MESSAGE).sort());
+  expect(DISPATCH_REFUSAL_WORDS).toEqual(expected);
+  for (const [code, words] of Object.entries(expected)) {
+    expect(refusalOf(new ApiError(400, { error: code }), NOW)).toEqual({ words, capability: null, final: true });
+  }
+  expect(refusalOf(new ApiError(400, { error: 'constructor', message: 'Connect the source first.' }), NOW)).toEqual({
+    words: 'Connect the source first.', capability: null, final: true,
+  });
+  expect(refusalOf(new ApiError(500, {}), NOW).words).toBe('The server couldn’t start it. Try again in a moment.');
+  for (const status of [408, 429]) {
+    expect(refusalOf(new ApiError(status, { error: 'rate limited' }), NOW)).toEqual({ words: 'The server is busy. Try again in a moment.', capability: null, final: false });
+  }
+  expect(refusalOf(new Error('offline'), NOW).words).toBe('Couldn’t reach the server. Try again in a moment.');
+});
+
+it('links a missing repository to its connection form and prevents unchanged retry', async () => {
+  server(routes({ dispatch: () => Response.json({ error: 'repository_missing', message: 'operator words' }, { status: 400 }) }));
+  mount(`/p/${P}/work`);
+  const dialog = await startFromMenu(/Update the code map now/);
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Update the code map' }));
+  const alert = await within(dialog).findByRole('alert');
+  expect(alert.textContent).toBe('The code map and other code tasks need this project’s repository before they can run.Connect repository →');
+  expect(within(alert).getByRole('link').getAttribute('href')).toBe(`/p/${P}/settings?connect=repository#repository`);
+  expect(within(dialog).getByRole('button', { name: 'Update the code map' }).hasAttribute('disabled')).toBe(true);
+});
+
+it('checks only the Work page project and ignores deployment-wide repository overflow', async () => {
+  const observed = server({ ...routes(), '/api/attention': (url) => Response.json(url.searchParams.get('project') === P
+    ? { items: [], unavailable: [] }
+    : { items: [], unavailable: ['repository_missing'] }) });
+  mount(`/p/${P}/work`);
+  await waitFor(() => expect(observed.asked.some(url => url.pathname === '/api/attention' && url.searchParams.get('project') === P)).toBe(true));
+  expect(document.querySelector('[data-repository-notice]')).toBeNull();
+  expect(document.body.textContent).not.toContain('Couldn’t check project repositories');
+});
+
+it('keeps repository check failures off the project Work page', async () => {
+  server({ ...routes(), '/api/attention': () => Response.json({ error: 'unavailable' }, { status: 503 }) });
+  mount(`/p/${P}/work`);
+  await screen.findByRole('heading', { name: /Myco’s work/ });
+  expect(document.querySelector('[data-repository-notice]')).toBeNull();
+  expect(document.body.textContent).not.toContain('Couldn’t check project repositories');
 });

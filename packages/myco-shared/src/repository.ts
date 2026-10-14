@@ -1,7 +1,11 @@
 import { MAP_TASK } from './canopy.js';
 export class RepositoryInputError extends Error {}
 export const REPOSITORY_COMMIT_PATTERN = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
-export const REPOSITORY_TASKS: readonly string[] = ['canopy-map', 'skill-generate', 'skill-evolve', 'vault-seed'];
+export const REPOSITORY_TASKS: readonly string[] = ['canopy-map', 'vault-seed'];
+
+/** A capability requires source only when all of its tasks read the repository. */
+export const allTasksReadRepository = (tasks: readonly string[]): boolean =>
+  tasks.length > 0 && tasks.every(task => REPOSITORY_TASKS.includes(task));
 
 /** HTTPS source with credentials supplied independently of the remote URL. */
 export function repositoryUrl(raw: string): string {
@@ -87,3 +91,10 @@ export function parseRepositoryCheckoutSpec(value: unknown): RepositoryCheckoutS
   }
   return { url: repositoryUrl(url), branch: repositoryBranch(branch), historyDepth };
 }
+
+/** Structured repository checkout reasons supported by a Deployment's worker end reports. */
+export const REPOSITORY_FAILURE_FEATURE = 'repository-failure-v1';
+export const REPOSITORY_FAILURE_CODES = ['fetch_failed', 'submodules', 'lfs', 'too_large', 'commit_mismatch', 'checkout_failed'] as const;
+export type RepositoryFailureCode = typeof REPOSITORY_FAILURE_CODES[number];
+export interface RepositoryFailure { code: RepositoryFailureCode; summary?: string }
+export const MAX_REPOSITORY_FAILURE_SUMMARY_CHARS = 512;
