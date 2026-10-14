@@ -13,7 +13,7 @@ for (const [viewport, mode] of [['desktop', 'light'], ['phone', 'dark']] as cons
     });
     await fs.mkdir(evidence, { recursive: true });
     try {
-      await page.route('**/api/attention', route => route.fulfill({ json: {
+      await page.route('**/api/attention*', route => route.fulfill({ json: {
         items: [{ kind: 'repository_missing', tone: 'warn', projectId: project.projectId }], unavailable: [],
       } }));
       await page.reload();

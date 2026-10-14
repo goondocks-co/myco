@@ -36,8 +36,8 @@ export function setupItems(progress: SetupProgress | undefined, admin: boolean, 
       nextAction: <>On an always-on machine, run <code>{runnerCommand}</code>.
         {(progress?.legacyWorkers ?? 0) > 0 && <> A machine runs Myco’s work with an older setup; register a runner to replace it.</>}</>,
       to: RUNNERS_PATH, link: 'Runners', warn: progress?.queuedWithoutRunner },
-    ...(progress?.repositoriesNeeded ?? []).map(({ projectId }) => {
-      const words = repositoryNeededWords(projectId, projectName(projectId));
+    ...(progress?.repositoriesNeeded ?? []).map(({ projectId, codeMap }) => {
+      const words = repositoryNeededWords(projectId, projectName(projectId), codeMap);
       return { id: `repository:${projectId}`, title: words.title, nextAction: words.detail, to: words.action!.to, link: words.action!.label };
     }),
     { id: 'work', title: 'See Myco’s work in the last 31 days',

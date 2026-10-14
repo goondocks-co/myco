@@ -61,7 +61,7 @@ const AUDITED_TASKS: readonly string[] = Object.entries(RUN_CLOSE_RULES).filter(
 export const WATCHED_OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, MAP_TASK];
 
 export type AttentionItem =
-  | { kind: 'repository_missing'; tone: 'warn'; projectId: string }
+  | { kind: 'repository_missing'; tone: 'warn'; projectId: string; codeMap?: boolean }
   | { kind: 'backup_overdue'; tone: 'warn'; lastBackupAt: number | null; intervalHours: number }
   | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string }
   | { kind: 'runs_without_audit'; tone: 'warn'; projectId: string; runs: number; closed: number; since: number; latestAt: number; runId: string }
@@ -97,9 +97,11 @@ async function lastBackup(env: ServerEnv): Promise<number | null> {
 const RULES: readonly Rule[] = [
   {
     kind: 'repository_missing',
-    read: async (env) => (await repositoriesNeeded(env.db, { all: true })).map(({ projectId }) => ({
-      kind: 'repository_missing', tone: 'warn', projectId,
-    })),
+    read: async (env) => {
+      const result = await repositoriesNeeded(env, { all: true });
+      if (result.overflow) throw new Error('Repository notices exceed the dashboard read limit');
+      return result.projects.map(requirement => ({ kind: 'repository_missing' as const, tone: 'warn' as const, ...requirement }));
+    },
   },
   {
     kind: 'schema_mismatch',

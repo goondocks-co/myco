@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
+import { allTasksReadRepository, REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { useProjects } from '../../../hooks/use-projects';
 import { useTaskDescriptions } from '../../../hooks/use-tasks';
 import { ActionLink, Disclosure, ErrorState, LoadingState, Switch } from '../../../design';
@@ -35,17 +35,11 @@ function CapabilityRow({ projectId, capability, enabled, repository, repositoryS
   const repositoryTasks = capabilityTasks.filter((task) => REPOSITORY_TASKS.includes(task.task));
   const independentTasks = capabilityTasks.filter((task) => !REPOSITORY_TASKS.includes(task.task));
   const readsRepository = repositoryTasks.length > 0;
-  const allNeedRepository = readsRepository && independentTasks.length === 0;
-  const sessionLearningWithSeeding = repositoryTasks.length === 1 && repositoryTasks[0]?.task === 'vault-seed'
-    && independentTasks.length === 1 && independentTasks[0]?.task === 'extract-curate';
+  const allNeedRepository = allTasksReadRepository(capabilityTasks.map((task) => task.task));
   const missingNote = allNeedRepository ? 'Needs this project’s repository to read its code.'
-    : sessionLearningWithSeeding
-      ? enabled ? 'Learns from sessions now; connect the repository to also seed knowledge from its code.'
-        : 'Learns from sessions when enabled; connect the repository to also seed knowledge from its code.'
-      : `Can run ${independentTasks.map((task) => task.name).join(', ')} ${enabled ? 'now' : 'when enabled'}; connect the repository to also run ${repositoryTasks.map((task) => task.name).join(', ')}.`;
+    : `Can run ${independentTasks.map((task) => task.name).join(', ')} ${enabled ? 'now' : 'when enabled'}; connect the repository to also run ${repositoryTasks.map((task) => task.name).join(', ')}.`;
   const missingStatus = allNeedRepository ? 'On · Code tasks cannot run until a repository is connected'
-    : sessionLearningWithSeeding ? 'On · Learns from sessions; code seeding needs a repository'
-      : 'On · Some tasks need a repository';
+    : 'On · Some tasks need a repository';
   const missingRepository = taskState === 'ready' && readsRepository && repositoryState === 'ready' && repository === null;
   const repositoryNote = taskState === 'loading' ? 'Checking task requirements.'
     : taskState === 'error' ? 'Couldn’t check task requirements.'
@@ -69,7 +63,7 @@ function CapabilityRow({ projectId, capability, enabled, repository, repositoryS
       note={<>{words.note}{repositoryNote !== null && <span className="block">{repositoryNote}</span>}</>}
       status={error ?? (enabled ? enabledStatus : 'Off')}
       refused={error !== null}
-      details={missingRepository && <ActionLink to={projectRepositoryPath(projectId, true)}>Connect repository</ActionLink>}
+      details={enabled && missingRepository && <ActionLink to={projectRepositoryPath(projectId, true)}>Connect repository</ActionLink>}
       control={(
         <Switch
           id={id}

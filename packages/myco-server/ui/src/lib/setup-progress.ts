@@ -26,7 +26,6 @@ export function setupChecks(progress: SetupProgress | undefined, admin: boolean)
     capture: progress?.liveCapture === true,
     runner: (progress?.runnersReady ?? 0) > 0,
     work: progress?.workProduced === true,
-    repository: (progress?.repositoriesNeeded?.length ?? 0) === 0,
   } : { machine, 'project-capture': progress?.liveCapture === true };
 }
 

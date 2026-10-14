@@ -1,5 +1,7 @@
 import { expect } from 'bun:test';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
+import { projectRepositoryNeeded } from '@myco-server-worker/read/repository-requirements.js';
+import type { ServerEnv, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { MEMBER_ID, SESSION_SECRET, lit, type ParityScenario } from '../harness.ts';
 
 export const setupProgress: ParityScenario = {
@@ -84,5 +86,63 @@ export const setupProgress: ParityScenario = {
     const unrelated = await measure();
     expect(unrelated.progress.liveCapture).toBe(true);
     expectFlat('unrelated history', establishedLarge, unrelated);
+
+    // A project's notice stays a primary-key read even when the Deployment-wide list overflows.
+    await target.sql(`INSERT INTO project_capabilities(project_id,capability,enabled,updated_at,updated_by)
+      VALUES ('proj_setup_parity','canopy',1,${now},${lit(MEMBER_ID)})`);
+    await target.sql(`INSERT INTO project_repositories(project_id,revision,url,branch,username,secret_slot,updated_at,updated_by)
+      VALUES ('proj_setup_parity','budget-fixture','https://github.com/example/healthy.git','main',NULL,NULL,${now},${lit(MEMBER_ID)})`);
+    const scopedBudget = async () => {
+      if (target.name !== 'cloudflare') return null;
+      const response = await fetch(`${target.url}/__repository-read-budget?project=proj_setup_parity`);
+      expect(response.status).toBe(200);
+      return response.json() as Promise<{ rowsRead: number; needed: { projectId: string } | null }>;
+    };
+    const beforeOverflow = await scopedBudget();
+    expect(beforeOverflow?.needed ?? null).toBeNull();
+    await target.sql(`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 100)
+      INSERT INTO projects(project_id,name,created_at)
+      SELECT 'proj_repo_overflow_' || printf('%03d',i),'Repository overflow',${now} FROM n`);
+    await target.sql(`INSERT INTO project_capabilities(project_id,capability,enabled,updated_at,updated_by)
+      SELECT project_id,'canopy',1,${now},${lit(MEMBER_ID)} FROM projects WHERE project_id LIKE 'proj_repo_overflow_%'`);
+    const overflow = await read();
+    expect((overflow as typeof overflow & { repositoriesNeeded: Array<{ projectId: string }>; repositoriesOverflow: boolean }).repositoriesNeeded).toHaveLength(100);
+    expect((overflow as typeof overflow & { repositoriesOverflow: boolean }).repositoriesOverflow).toBe(true);
+    const attention = async (project?: string) => {
+      const response = await fetch(`${target.url}/api/attention${project === undefined ? '' : `?project=${project}`}`, { headers: target.ownerHeaders() });
+      expect(response.status).toBe(200);
+      return response.json() as Promise<{ items: Array<{ kind: string; tone?: string; projectId?: string }>; unavailable: string[] }>;
+    };
+    expect((await attention()).unavailable).toContain('repository_missing');
+    const healthy = await attention('proj_setup_parity');
+    expect(healthy.unavailable).not.toContain('repository_missing');
+    expect(healthy.items.filter(item => item.kind === 'repository_missing')).toEqual([]);
+    const excess = await attention('proj_repo_overflow_100');
+    expect(excess.unavailable).not.toContain('repository_missing');
+    expect(excess.items.filter(item => item.kind === 'repository_missing')).toEqual([{ kind: 'repository_missing', projectId: 'proj_repo_overflow_100', tone: 'warn' }]);
+    const afterOverflow = await scopedBudget();
+    expect(afterOverflow?.needed ?? null).toBeNull();
+    if (beforeOverflow !== null && afterOverflow !== null) {
+      console.info(`repository scoped D1 rows_read: ${beforeOverflow.rowsRead} -> ${afterOverflow.rowsRead}`);
+      expect(afterOverflow.rowsRead).toBeLessThan(50);
+      expect(afterOverflow.rowsRead).toBeLessThanOrEqual(beforeOverflow.rowsRead + 5);
+    }
+
+    const statements: Array<{ sql: string; binds: unknown[] }> = [];
+    const recorder = { prepare: (sql: string) => ({ bind: (...binds: unknown[]) => ({
+      all: async () => { statements.push({ sql, binds }); return { results: [] }; },
+    }) }) } as unknown as RelationalStore;
+    await projectRepositoryNeeded({ db: recorder } as ServerEnv, { projectId: 'proj_setup_parity' });
+    const scoped = statements.find(({ sql }) => sql.includes('SELECT p.project_id AS projectId FROM projects p'));
+    if (scoped === undefined) throw new Error('single-project repository query was not issued');
+    expect(scoped.sql).toContain('p.project_id IN (?)');
+    let next = 0;
+    const inlined = scoped.sql.replace(/\?/g, () => {
+      const value = scoped.binds[next++];
+      return typeof value === 'number' ? String(value) : lit(String(value));
+    });
+    const plan = (await target.sql(`EXPLAIN QUERY PLAN ${inlined}`)).map((row) => String(row.detail)).join('\n');
+    expect(plan).toMatch(/SEARCH p USING INDEX sqlite_autoindex_projects_1/);
+    expect(plan).not.toMatch(/SCAN p\b/);
   },
 };

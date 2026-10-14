@@ -37,6 +37,15 @@ export const repositories: ParityScenario = {
       return (await response.json() as { repositoriesNeeded: Array<{ projectId: string }> }).repositoriesNeeded
         .filter(item => item.projectId === target.projectId);
     };
+    await target.sql(`DELETE FROM project_capabilities WHERE project_id=${lit(target.projectId)} AND capability IN ('canopy','vault_evolution')`);
+    expect(await needed()).toEqual([]);
+    expect(await setupNeeded()).toEqual([]);
+    await target.sql(`INSERT INTO project_capabilities(project_id,capability,enabled,updated_at,updated_by)
+      VALUES (${lit(target.projectId)},'vault_evolution',1,${Date.now()},${lit(MEMBER_ID)})`);
+    expect(await needed()).toEqual([]);
+    expect(await setupNeeded()).toEqual([]);
+    await target.sql(`INSERT INTO project_capabilities(project_id,capability,enabled,updated_at,updated_by)
+      VALUES (${lit(target.projectId)},'canopy',1,${Date.now()},${lit(MEMBER_ID)})`);
     expect(await needed()).toEqual([{ kind: 'repository_missing', tone: 'warn', projectId: target.projectId }]);
     expect(await setupNeeded()).toEqual([{ projectId: target.projectId }]);
     const prior = await owner('GET');

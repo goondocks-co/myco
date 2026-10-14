@@ -216,10 +216,24 @@ describe('observed setup progress', () => {
 
 it('includes missing code repositories for admins and redacts them for members', async () => {
   const { read, sql } = rig();
-  expect((await read()).repositoriesNeeded).toEqual([{ projectId: 'proj_1' }, { projectId: 'proj_2' }]);
+  expect((await read()).repositoriesNeeded).toEqual([]);
+  sql("INSERT INTO project_capabilities VALUES ('proj_1','canopy',1,1,'fixture')");
+  expect((await read()).repositoriesNeeded).toEqual([{ projectId: 'proj_1' }]);
   expect((await read('mem_machine_1')).repositoriesNeeded).toEqual([]);
   sql("UPDATE projects SET archived_at=1 WHERE project_id='proj_2'");
   sql(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
     VALUES ('proj_1','r1','https://example.test/code.git','main',1,'fixture')`);
   expect((await read()).repositoriesNeeded).toEqual([]);
+});
+
+it('keeps setup available with bounded repository facts for 101 explicit projects', async () => {
+  const { read, sql } = rig();
+  for (let index = 0; index < 101; index++) {
+    sql("INSERT INTO projects(project_id,name,created_at) VALUES (?, 'Code', 1)", `code_${String(index).padStart(3, '0')}`);
+    sql("INSERT INTO project_capabilities VALUES (?, 'canopy', 1, 1, 'fixture')", `code_${String(index).padStart(3, '0')}`);
+  }
+  const result = await read();
+  expect(result.repositoriesNeeded).toHaveLength(100);
+  expect(result.repositoriesOverflow).toBe(true);
+  expect(result.machines).toBeDefined();
 });

@@ -153,19 +153,21 @@ test.describe('Today', () => {
             if (onFixture()) {
               await expect(panel.getByRole('heading', { name: 'Needs you' })).toBeVisible();
               await expect(panel.locator('[data-needs-you-item="bad"]').first()).toContainText('A code map update failed');
-              await expect(panel.locator('[data-needs-you-item="warn"]').first()).toContainText('Access key “CI deploys” expires');
+              await expect(panel.locator('[data-needs-you-item="warn"]').filter({ hasText: 'Access key' })).toContainText('Access key “CI deploys” expires');
+              await expect(panel).toContainText('Connect Myco’s repository so Myco can map its code');
               await expectWaitingRepositories(panel, role);
             }
           } else {
             const summary = page.locator('[data-needs-you]');
             await expect(summary).toBeInViewport();
             if (onFixture()) {
-              await expect(summary.getByRole('button', { name: /3 things need you/ })).toBeVisible();
-              await summary.getByRole('button', { name: /3 things need you/ }).click();
-              await expect(summary.locator('[data-needs-you-item]')).toHaveCount(3);
+              await expect(summary.getByRole('button', { name: /4 things need you/ })).toBeVisible();
+              await summary.getByRole('button', { name: /4 things need you/ }).click();
+              await expect(summary.locator('[data-needs-you-item]')).toHaveCount(4);
+              await expect(summary).toContainText('Connect Myco’s repository so Myco can map its code');
               await expectWaitingRepositories(summary, role);
               await expectAxeClean(page, ['[data-needs-you]']);
-              await summary.getByRole('button', { name: /3 things need you/ }).click();
+              await summary.getByRole('button', { name: /4 things need you/ }).click();
               await expect(summary.locator('[data-needs-you-item]')).toHaveCount(0);
             }
           }

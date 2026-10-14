@@ -223,23 +223,25 @@ describe('a project\'s settings', () => {
     mount(`/p/${P}/settings`);
     for (const [capability, requirement] of [
       ['canopy', 'Needs this project’s repository to read its code.'],
-      ['vault_evolution', 'Learns from sessions now; connect the repository to also seed knowledge from its code.'],
+      ['vault_evolution', 'Can run Learn from sessions now; connect the repository to also run Seed project memory.'],
     ]) {
       const row = await waitFor(() => {
         const found = document.querySelector(`[data-setting="capability.${capability}"]`) as HTMLElement | null;
         expect(found?.textContent).toContain(requirement!);
         return found!;
       });
-      expect(within(row).getByRole('link', { name: 'Connect repository' }).getAttribute('href')).toBe(`/p/${P}/settings?connect=repository#repository`);
+      if (capability === 'canopy') expect(within(row).queryByRole('link', { name: 'Connect repository' })).toBeNull();
+      else expect(within(row).getByRole('link', { name: 'Connect repository' }).getAttribute('href')).toBe(`/p/${P}/settings?connect=repository#repository`);
     }
     const learningRow = document.querySelector('[data-setting="capability.vault_evolution"]') as HTMLElement;
-    expect(learningRow.textContent).toContain('On · Learns from sessions; code seeding needs a repository');
+    expect(learningRow.textContent).toContain('On · Some tasks need a repository');
     expect(learningRow.textContent).not.toContain('Code tasks cannot run');
     const map = screen.getByRole('switch', { name: 'Code map' });
     fireEvent.click(map);
     await waitFor(() => expect(sent).toEqual([{ method: 'PUT', path: `${api}/capabilities/canopy`, body: { enabled: true } }]));
     const mapRow = document.querySelector('[data-setting="capability.canopy"]') as HTMLElement;
     await waitFor(() => expect(mapRow.textContent).toContain('On · Code tasks cannot run until a repository is connected'));
+    expect(within(mapRow).getByRole('link', { name: 'Connect repository' })).toBeTruthy();
     fireEvent.click(within(mapRow).getByRole('link', { name: 'Connect repository' }));
     expect(await screen.findByRole('dialog', { name: 'Connect a repository' })).toBeTruthy();
     expect(screen.getByTestId('location').textContent).toBe(`/p/${P}/settings?connect=repository#repository`);
@@ -252,8 +254,8 @@ describe('a project\'s settings', () => {
     }));
     mount(`/p/${P}/settings`);
     const row = (await screen.findByRole('switch', { name: 'Learning' })).closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
-    await waitFor(() => expect(row.textContent).toContain('Learns from sessions when enabled; connect the repository to also seed knowledge from its code.'));
-    expect(row.textContent).not.toContain('Learns from sessions now');
+    await waitFor(() => expect(row.textContent).toContain('Can run Learn from sessions when enabled; connect the repository to also run Seed project memory.'));
+    expect(within(row).queryByRole('link', { name: 'Connect repository' })).toBeNull();
     expect(row.textContent).toContain('Off');
   });
 
@@ -266,7 +268,7 @@ describe('a project\'s settings', () => {
     const row = (await screen.findByRole('switch', { name: 'Learning' })).closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
     await waitFor(() => expect(row.textContent).toContain('Needs this project’s repository to read its code.'));
     expect(row.textContent).toContain('On · Code tasks cannot run until a repository is connected');
-    expect(row.textContent).not.toContain('Learns from sessions now');
+    expect(row.textContent).not.toContain('Can run Learn from sessions now');
   });
 
   it('names the available work and every repository-dependent task for another mixed subset', async () => {

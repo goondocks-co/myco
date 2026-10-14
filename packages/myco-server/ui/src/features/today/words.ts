@@ -236,7 +236,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
   };
   switch (item.kind) {
     case 'repository_missing':
-      return repositoryNeededWords(item.projectId, projectName(item.projectId));
+      return repositoryNeededWords(item.projectId, projectName(item.projectId), item.codeMap);
 
     case 'backup_overdue':
       return {
@@ -443,10 +443,10 @@ export function transcriptStopWords(item: Extract<AttentionItem, { kind: 'transc
 }
 
 /** The same repository requirement in Needs you and Get started. */
-export function repositoryNeededWords(projectId: string, name: string | null): NeedsYouWords {
+export function repositoryNeededWords(projectId: string, name: string | null, codeMap = true): NeedsYouWords {
   return {
-    title: `Connect ${name ?? 'this project'}’s repository so Myco can map its code`,
-    detail: 'Code tasks are turned on, but they cannot run until a repository is connected.',
+    title: codeMap ? `Connect ${name ?? 'this project'}’s repository so Myco can map its code` : `Connect ${name ?? 'this project'}’s repository so Myco can run its code tasks`,
+    detail: codeMap ? 'Code map is turned on, but it cannot run until a repository is connected.' : 'Code tasks are turned on, but they cannot run until a repository is connected.',
     action: { label: 'Connect repository', to: projectRepositoryPath(projectId, true) },
   };
 }

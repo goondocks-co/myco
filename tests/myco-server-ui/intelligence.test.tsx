@@ -964,8 +964,8 @@ it('uses the registry description when confirming a task', async () => {
 it('words every dispatch refusal and makes settled refusals final', () => {
   const expected: Record<DispatchRefusal, string> = {
     repository_missing: 'The code map and other code tasks need this project’s repository before they can run.',
-    harness_unavailable: 'This Myco cannot run this task. An admin can check its setup.',
-    unknown_task: 'This Myco does not have that task. Refresh the page to see the available tasks.',
+    harness_unavailable: 'Myco can’t run this task here. An admin can check its setup.',
+    unknown_task: 'This task isn’t available here. Refresh the page to see the available tasks.',
     unknown_project: 'This project is no longer available here. Choose another project.',
     no_instruction: 'This task has no instructions yet. An admin can check its setup.',
     not_landed: 'This task is not available yet.',
@@ -981,6 +981,9 @@ it('words every dispatch refusal and makes settled refusals final', () => {
     words: 'Connect the source first.', capability: null, final: true,
   });
   expect(refusalOf(new ApiError(500, {}), NOW).words).toBe('The server couldn’t start it. Try again in a moment.');
+  for (const status of [408, 429]) {
+    expect(refusalOf(new ApiError(status, { error: 'rate limited' }), NOW)).toEqual({ words: 'The server is busy. Try again in a moment.', capability: null, final: false });
+  }
   expect(refusalOf(new Error('offline'), NOW).words).toBe('Couldn’t reach the server. Try again in a moment.');
 });
 
@@ -993,4 +996,22 @@ it('links a missing repository to its connection form and prevents unchanged ret
   expect(alert.textContent).toBe('The code map and other code tasks need this project’s repository before they can run.Connect repository →');
   expect(within(alert).getByRole('link').getAttribute('href')).toBe(`/p/${P}/settings?connect=repository#repository`);
   expect(within(dialog).getByRole('button', { name: 'Update the code map' }).hasAttribute('disabled')).toBe(true);
+});
+
+it('checks only the Work page project and ignores deployment-wide repository overflow', async () => {
+  const observed = server({ ...routes(), '/api/attention': (url) => Response.json(url.searchParams.get('project') === P
+    ? { items: [], unavailable: [] }
+    : { items: [], unavailable: ['repository_missing'] }) });
+  mount(`/p/${P}/work`);
+  await waitFor(() => expect(observed.asked.some(url => url.pathname === '/api/attention' && url.searchParams.get('project') === P)).toBe(true));
+  expect(document.querySelector('[data-repository-notice]')).toBeNull();
+  expect(document.body.textContent).not.toContain('Couldn’t check project repositories');
+});
+
+it('keeps repository check failures off the project Work page', async () => {
+  server({ ...routes(), '/api/attention': () => Response.json({ error: 'unavailable' }, { status: 503 }) });
+  mount(`/p/${P}/work`);
+  await screen.findByRole('heading', { name: /Myco’s work/ });
+  expect(document.querySelector('[data-repository-notice]')).toBeNull();
+  expect(document.body.textContent).not.toContain('Couldn’t check project repositories');
 });

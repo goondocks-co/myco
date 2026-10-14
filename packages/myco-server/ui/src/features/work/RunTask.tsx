@@ -338,6 +338,7 @@ function StartedRunLine({ started, runId, queued, className }: { started: Starte
 export function refusalOf(error: Error, now: number): { words: string; capability: string | null; final: boolean } {
   if (error instanceof ApiError) {
     if (error.status === 429 && isDailyLimit(error.body)) return { words: dailyLimitWords(error.body, now), capability: null, final: true };
+    if (error.status === 429 || error.status === 408) return { words: 'The server is busy. Try again in a moment.', capability: null, final: false };
     if (error.status === 409 && isCapabilityOff(error.body)) return { words: capabilityOffWords(error.body.capability), capability: error.body.capability, final: true };
     if (error.status === 403 && isFreshNeedsAdmin(error.body)) return { words: 'Only an admin can start a task fresh.', capability: null, final: false };
     const known = error.code !== undefined && Object.hasOwn(DISPATCH_REFUSAL_WORDS, error.code) ? DISPATCH_REFUSAL_WORDS[error.code] : undefined;
@@ -354,8 +355,8 @@ export function refusalOf(error: Error, now: number): { words: string; capabilit
 /** Settled dispatch refusals in the reader’s words. */
 export const DISPATCH_REFUSAL_WORDS: Readonly<Record<string, string>> = {
   repository_missing: 'The code map and other code tasks need this project’s repository before they can run.',
-  harness_unavailable: 'This Myco cannot run this task. An admin can check its setup.',
-  unknown_task: 'This Myco does not have that task. Refresh the page to see the available tasks.',
+  harness_unavailable: 'Myco can’t run this task here. An admin can check its setup.',
+  unknown_task: 'This task isn’t available here. Refresh the page to see the available tasks.',
   unknown_project: 'This project is no longer available here. Choose another project.',
   no_instruction: 'This task has no instructions yet. An admin can check its setup.',
   not_landed: 'This task is not available yet.',

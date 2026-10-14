@@ -5,7 +5,7 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
 
 describe('setup read budget and query plans', () => {
-  it('uses six reads for admins and two for members; new reads seek existing indexes on every planner profile', async () => {
+  it('uses eight reads for admins and two for members; new reads seek existing indexes on every planner profile', async () => {
     const f = sqliteEnv();
     const statements: Array<{ sql: string; params: unknown[] }> = [];
     const db: RelationalStore = {
@@ -23,7 +23,7 @@ describe('setup read budget and query plans', () => {
     try {
       await readSetupProgress({ ...f.serverEnv, db }, { all: true }, 1_790_000_000_000);
       await readSetupIdentity(db, 'mem_machine_1');
-      expect(statements).toHaveLength(6);
+      expect(statements).toHaveLength(8);
       const newReads = statements.filter(statement => /AS signed_in|AS owner_linked|AS produced$/.test(statement.sql));
       expect(newReads).toHaveLength(3);
       for (const [profile, sqlite] of Object.entries(stores)) for (const statement of newReads) {
