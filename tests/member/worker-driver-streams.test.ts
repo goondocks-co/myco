@@ -407,6 +407,22 @@ describe('the Claude Code driver', () => {
     expect(events.at(-1)).toMatchObject({ kind: 'ended', stop: 'error', fields: { subtype, terminal_reason: 'api_error', stop_reason: 'end_turn' } });
   });
 
+  for (const terminalReason of [undefined, 'completed']) it(`keeps an explicit error flag independently of the ending reason: ${terminalReason}`, async () => {
+    const result = { ...JSON.parse(RESULT_SUCCESS), is_error: true, terminal_reason: terminalReason };
+    const dir = stubStream('claude', [JSON.stringify(result)]);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.at(-1)).toMatchObject({ kind: 'ended', stop: 'error', fields: { subtype: 'success' } });
+  });
+
+  it('keeps an error ending reason independently of the error flag', async () => {
+    const result = { ...JSON.parse(RESULT_SUCCESS), is_error: false, terminal_reason: 'prompt_too_long' };
+    const dir = stubStream('claude', [JSON.stringify(result)]);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.at(-1)).toMatchObject({ kind: 'ended', stop: 'error', fields: { subtype: 'success', terminal_reason: 'prompt_too_long' } });
+  });
+
   it('keeps a recovered assistant error as diagnostic context rather than a terminal failure', async () => {
     const dir = stubStream('claude', [
       JSON.stringify({ type: 'assistant', error: 'rate_limit', message: { content: [] } }),

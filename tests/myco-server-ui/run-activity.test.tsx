@@ -524,17 +524,20 @@ it('shows completed work with a late session error as a note, with its diagnosti
   const detail = codeMapRun();
   detail.run = { ...detail.run, status: 'completed', result: 'produced', error: null, errorCode: null,
     endedNote: 'the agent session ended with an error after the work was done',
-    harnessStop: { code: 'harness_error', exitCode: 3, signal: 'SIGTERM' } };
+    harnessStop: { code: 'harness_error', exitCode: 3, signal: 'SIGTERM', fields: { subtype: 'error_during_execution', terminal_reason: 'api_error', stop_reason: 'tool_use' } } };
   const { panel } = await open(detail);
   expect(panel.querySelector('[data-run-headline]')!.textContent).toBe('Updated the code map');
-  expect(panel.querySelector('[data-run-ended-note]')!.textContent).toBe('The agent session ended with an error after the work was done. The work is complete.');
-  expect(panel.querySelector('[data-run-harness-stop]')!.textContent).toBe('The agent reported an error and stopped.');
+  expect(panel.querySelector('[data-run-ended-note]')!.textContent).toBe('The work is complete. Afterwards the agent session ended with an error; nothing was lost.');
+  expect(panel.querySelector('[data-run-harness-stop]')).toBeNull();
   expect(panel.textContent).not.toContain('Couldn’t update');
   expect(panel.querySelector('header')!.textContent).not.toContain('Exit code');
   expect(panel.querySelector('header')!.textContent).not.toContain('SIGTERM');
   fireEvent.click(within(panel.querySelector('[data-run-technical]')!).getByRole('button', { name: /^Technical details/ }));
   expect(panel.querySelector('[data-run-technical]')!.textContent).toContain('Agent exit code3');
   expect(panel.querySelector('[data-run-technical]')!.textContent).toContain('Agent exit signalSIGTERM');
+  expect(panel.querySelector('[data-run-technical]')!.textContent).toContain('Session resulterror_during_execution');
+  expect(panel.querySelector('[data-run-technical]')!.textContent).toContain('Ending reasonapi_error');
+  expect(panel.querySelector('[data-run-technical]')!.textContent).toContain('Last stop reasontool_use');
   expect(panel.textContent).not.toContain('harness_error');
   expect(within(panel).queryByRole('button', { name: /try again/i })).toBeNull();
 });
@@ -553,4 +556,16 @@ for (const status of ['failed', 'completed'] as const) it(`keeps the late sessio
     expect(panel.querySelector('[data-run-failure]')!.textContent).toContain('The agent quit unexpectedly before it finished.');
     expect(panel.querySelector('[data-run-headline]')!.textContent).toBe('This run failed');
   } else expect(panel.querySelector('[data-run-failure]')).toBeNull();
+});
+
+for (const [code, ending] of [['crashed', 'quit unexpectedly'], ['timed_out', 'ran out of time'], ['session_unasked', 'ended with an error']] as const) it(`describes a ${code} stop after completed work without contradicting completion`, async () => {
+  const detail = codeMapRun();
+  detail.run = { ...detail.run, status: 'completed', result: 'produced', error: null, errorCode: null,
+    endedNote: 'the agent session ended with an error after the work was done', harnessStop: { code } };
+  const { panel } = await open(detail);
+  expect(panel.querySelector('[data-run-headline]')!.textContent).toBe('Updated the code map');
+  expect(panel.querySelector('[data-run-ended-note]')!.textContent).toBe(`The work is complete. Afterwards the agent session ${ending}; nothing was lost.`);
+  expect(panel.querySelector('[data-run-harness-stop]')).toBeNull();
+  expect(panel.querySelector('header')!.textContent).not.toContain('before it');
+  expect(panel.querySelector('[data-run-failure]')).toBeNull();
 });

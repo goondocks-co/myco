@@ -362,15 +362,15 @@ for (const viewport of ['desktop', 'phone'] as const) test(`completed work retai
       if (detail.run) Object.assign(detail.run, {
         status: 'completed', result: 'produced', error: null, errorCode: null,
         endedNote: 'the agent session ended with an error after the work was done',
-        harnessStop: { code: 'harness_error', fields: { subtype: 'error_during_execution', terminal_reason: 'api_error' } },
+        harnessStop: { code: viewport === 'desktop' ? 'crashed' : 'session_unasked', fields: { subtype: 'error_during_execution', terminal_reason: 'api_error' } },
       });
       await route.fulfill({ response, json: detail });
     });
     await card(page, 'map').getByRole('link', { name: 'Open the latest attempt →' }).click();
     const panel = page.locator('[data-slide-over]');
     await expect(panel.locator('[data-run-headline]')).toHaveText('Updated the code map');
-    await expect(panel.locator('[data-run-ended-note]')).toHaveText('The agent session ended with an error after the work was done. The work is complete.');
-    await expect(panel.locator('[data-run-harness-stop]')).toContainText('The agent reported an error and stopped.');
+    await expect(panel.locator('[data-run-ended-note]')).toHaveText(`The work is complete. Afterwards the agent session ${viewport === 'desktop' ? 'quit unexpectedly' : 'ended with an error'}; nothing was lost.`);
+    await expect(panel.locator('[data-run-harness-stop]')).toHaveCount(0);
     await expect(panel.locator('[data-run-failure]')).toHaveCount(0);
     await expectFits(page, viewport);
     await expectAxeClean(page);
