@@ -25,7 +25,7 @@ import { writeRegistryEntry, readRegistryEntry } from '@myco/member/registry.js'
  *     exist. The projections refuse quietly, the event log doubles, and the
  *     conflict signal a live parse would raise never fires.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -136,6 +136,39 @@ async function rig(cwds: readonly string[], perCwd = 2, prebuilt?: { home: strin
 }
 
 describe('an import with a deadline', () => {
+  it('stops recursive discovery at its deadline, reports pending history, and preserves it for a later pass', async () => {
+    const cwd = path.join(os.tmpdir(), 'myco-import-discovery-deadline');
+    const r = await rig([cwd], 3);
+    const contents = r.files.map(file => fs.readFileSync(file, 'utf8'));
+    const until = Date.now() + 60_000;
+    let late = false;
+    let reads = 0;
+    const readdir = fs.readdirSync.bind(fs);
+    const probe = spyOn(fs, 'readdirSync').mockImplementation(((...args: Parameters<typeof fs.readdirSync>) => {
+      if (String(args[0]).startsWith(path.join(r.home, '.claude', 'projects'))) {
+        reads++;
+        late = true;
+      }
+      return readdir(...args);
+    }) as typeof fs.readdirSync);
+    try {
+      const report = await runImport({ serverUrl: 'https://member-test.invalid', until }, {
+        fetch: async () => { throw new Error('expired discovery must not send'); },
+        mycoHome: r.mycoHome, machineId: TEST_MACHINE_ID, now: () => late ? until + 1 : Date.now(),
+      });
+      expect(reads).toBe(1);
+      expect(report.stoppedBy).toBe(IMPORT_DEADLINE);
+      expect(report.projects.map(project => project.endedBy)).toEqual([IMPORT_DEADLINE]);
+      expect(r.files.map(file => fs.readFileSync(file, 'utf8'))).toEqual(contents);
+      probe.mockRestore();
+      const resumed = await r.run();
+      expect(resumed.projects.flatMap(project => project.agents).reduce((sum, agent) => sum + agent.imported, 0)).toBe(3);
+    } finally {
+      probe.mockRestore();
+      r.restore();
+    }
+  });
+
   it('ships no session past it, says so, and the next import brings the rest without sending any twice', async () => {
     const cwd = path.join(os.tmpdir(), 'myco-import-deadline');
     const r = await rig([cwd], 3);

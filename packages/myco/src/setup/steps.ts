@@ -493,13 +493,11 @@ const STEPS: readonly SetupStep[] = [
       if (!entries.readable || entries.unavailableEntries > 0) {
         ctx.out('Warning: some repository bindings could not be read. Inspect them and run myco member drain to retry capture delivery.');
       }
-      for (const entry of entries.entries.filter((entry) => deploymentUrl(entry.serverUrl) === chosen(ctx).url)) {
-        try {
-          const results = await runDrain([], { ...ctx.deps.memberDeps, mycoHome: ctx.home, cwd: entry.root, fetch: ctx.deps.fetch, stdout: ctx.out, stderr: ctx.deps.stderr });
-          if (results.some((result) => result.endedBy !== 'drained')) ctx.out('Some capture is still waiting; myco member drain retries it.');
-        } catch (error) {
-          ctx.out(`Warning: capture delivery for ${entry.root} could not finish: ${error instanceof Error ? error.message : String(error)}. Run myco member drain from that repository to retry.`);
-        }
+      try {
+        await runDrain(['--all'], { ...ctx.deps.memberDeps, mycoHome: ctx.home, fetch: ctx.deps.fetch, now: ctx.deps.now,
+          stdout: ctx.out, stderr: ctx.deps.stderr, signInCapture: { serverUrl: chosen(ctx).url } });
+      } catch (error) {
+        ctx.out(`Warning: capture delivery could not finish: ${error instanceof Error ? error.message : String(error)}. Run myco member drain to retry.`);
       }
     },
   },

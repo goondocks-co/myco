@@ -10,9 +10,9 @@ import { hostname, platform } from 'node:os';
 import { memberHomeFor, pinnedHomeLine } from '../member/home-for-folder.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { resolveMemberProjectRoot } from '../member/credential.js';
-import { runImport } from '../member/import.js';
 import { exchangeJoinCode, parseJoinCode, recordJoinAnswer, runtimeLabelOf, JOIN_CODE_REFUSALS } from '../member/join-code.js';
 import type { WorkerServiceDeps } from './worker-service.js';
+import { importSignInHistory, withSignInCapture } from './signin-capture.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import { deploymentUrl, listRegistryEntries } from '../member/registry.js';
 import { detectedProvisionLines, provisionDetectedAgents, recordNoAgents } from './member.js';
@@ -205,31 +205,35 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
     }
   }
 
-  // What this machine captured while it could not deliver reaches the
-  // Deployment now, for every project bound to it: the new credential is the
-  // one every binding on this Deployment reads.
-  for (const entry of listRegistryEntries(mycoHome).filter((e) => deploymentUrl(e.serverUrl) === deploymentUrl(code.serverUrl))) {
-    try {
-      const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now: deps.now, machineId });
-      const delivered = backlog.sessions.filter((s) => (s.events?.acked ?? 0) > 0 || (typeof s.transcripts === 'object' && s.transcripts.shipped > 0)).length;
-      if (delivered > 0) out(`  Delivered ${delivered} session(s) captured in ${entry.root} while this machine could not reach the deployment.`);
-      if (backlog.endedBy !== 'done') err(`  Some capture in ${entry.root} is still waiting (${backlog.endedBy}); \`myco member drain\` retries it.`);
-    } catch (error) {
-      err(`  Could not deliver waiting capture in ${entry.root} (${(error as Error).message}); \`myco member drain\` retries it.`);
+  const entries = listRegistryEntries(mycoHome).filter((entry) => deploymentUrl(entry.serverUrl) === deploymentUrl(code.serverUrl));
+  if (entries.length === 0 && root === undefined) return true;
+  const now = deps.now ?? Date.now;
+  await withSignInCapture({ fetch: deps.fetch, now, stdout: out }, async capture => {
+    const { fetch: fetchImpl, budget, signal } = capture;
+    const deadline = budget.deadline;
+    for (const entry of entries) {
+      if (now() >= deadline || signal.aborted) {
+        err('  Some capture is still waiting; `myco member drain` retries it.');
+        break;
+      }
+      try {
+        const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: fetchImpl, now, machineId, budget });
+        const delivered = backlog.sessions.filter((s) => (s.events?.acked ?? 0) > 0 || (typeof s.transcripts === 'object' && s.transcripts.shipped > 0)).length;
+        if (delivered > 0) out(`  Delivered ${delivered} session(s) captured in ${entry.root} while this machine could not reach the deployment.`);
+        if (backlog.endedBy !== 'done') err(`  Some capture in ${entry.root} is still waiting (${backlog.endedBy}); \`myco member drain\` retries it.`);
+      } catch (error) {
+        err(`  Could not deliver waiting capture in ${entry.root} (${(error as Error).message}); \`myco member drain\` retries it.`);
+      }
     }
-  }
-
-  // A machine arrives with history, and the bounded pass over what is already
-  // on its disk runs once, here. Only where the invitation named a Project:
-  // without one there is nothing to import into. A failed import never fails
-  // the sign-in — the machine is signed in, and `myco import` fetches the
-  // history whenever the person wants it.
-  if (root !== undefined) {
-    const report = await runImport({ serverUrl: code.serverUrl }, {
-      fetch: deps.fetch, now: deps.now, cwd: deps.cwd, mycoHome, machineId,
-    }).catch(() => null);
-    const imported = report?.projects.reduce((n, p) => n + p.agents.reduce((m, a) => m + a.imported, 0), 0) ?? 0;
-    if (imported > 0) out(`  Imported ${imported} past sessions. Run \`myco import\` to reach further back.`);
-  }
+    if (root !== undefined) {
+      if (now() >= deadline || signal.aborted) {
+        err('  Past sessions are still waiting; `myco import` retries them.');
+      } else {
+        await importSignInHistory({ serverUrl: code.serverUrl }, {
+          now, cwd: deps.cwd, mycoHome, machineId, stdout: out, stderr: err,
+        }, capture);
+      }
+    }
+  });
   return true;
 }

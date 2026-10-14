@@ -164,8 +164,9 @@ function walk(
   out: DiscoveredTranscript[],
   limit: number,
   strictErrors = false,
+  shouldStop: () => boolean = () => false,
 ): void {
-  if (out.length >= limit) return;
+  if (shouldStop() || out.length >= limit) return;
 
   const matcher = segments[index];
   if (!matcher) return;
@@ -180,7 +181,7 @@ function walk(
   }
 
   for (const entry of entries) {
-    if (out.length >= limit) return;
+    if (shouldStop() || out.length >= limit) return;
     if (!matcher.test(entry.name)) continue;
 
     const captured = matcher.capturesSessionId ? matcher.extractSessionId(entry.name) : sessionIdSoFar;
@@ -193,7 +194,7 @@ function walk(
     }
 
     if (!entry.isDirectory()) continue;
-    walk(path.join(dir, entry.name), segments, index + 1, captured, out, limit, strictErrors);
+    walk(path.join(dir, entry.name), segments, index + 1, captured, out, limit, strictErrors, shouldStop);
   }
 }
 
@@ -245,6 +246,7 @@ export function enumerateTranscripts(
   discovery: TranscriptDiscovery | undefined,
   limit = 5000,
   mycoHome?: string,
+  shouldStop: () => boolean = () => false,
 ): DiscoveredTranscript[] {
   if (!discovery) return [];
 
@@ -255,11 +257,11 @@ export function enumerateTranscripts(
       // One budget shared across every (pattern, root) pair, so the returned
       // count never exceeds `limit` and `length >= limit` means truncation.
       const remaining = limit - seen.size;
-      if (remaining <= 0) return [...seen.values()];
+      if (shouldStop() || remaining <= 0) return [...seen.values()];
 
       const expanded = expandRoot(root, process.env, mycoHome);
       const found: DiscoveredTranscript[] = [];
-      walk(expanded, patternSegments(pattern, null, idPattern), 0, null, found, remaining);
+      walk(expanded, patternSegments(pattern, null, idPattern), 0, null, found, remaining, false, shouldStop);
       // Earlier patterns win, matching resolveTranscriptPath's precedence.
       for (const item of found) {
         const key = enumerationKey(discovery, expanded, item);

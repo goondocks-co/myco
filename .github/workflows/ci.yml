@@ -115,6 +115,11 @@ jobs:
       - run: npm run build:ui -w @goondocks/myco
       - run: npm run codegen -w @goondocks/myco
       - run: TARGET="${{ matrix.target }}" npm run build:binary -w @goondocks/myco
+      - name: Check compiled sign-in exits
+        if: ${{ !matrix.measure_elsewhere && runner.os == 'Linux' }}
+        env:
+          MYCO_LOGIN_TEST_BINARY: ${{ github.workspace }}/packages/myco-${{ matrix.target }}/bin/myco
+        run: npm test -- tests/cli/login-exit.test.ts
       - name: Verify macOS distributions
         if: matrix.target == 'darwin-arm64'
         shell: bash

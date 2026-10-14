@@ -292,7 +292,7 @@ export interface ShipResult {
    * reaches the Deployment ahead of the session it belongs to. `held`: the bytes left belong to a turn that has not
    * ended, against a Deployment told of turn ends by the transcript (`holdTail`); they ship once it ends.
    */
-  endedBy: 'done' | 'budget' | 'retry' | 'slow' | 'parked' | 'refused' | 'rejected' | 'unauthorized' | 'route_missing' | 'protocol' | 'absent' | 'ordered' | 'held';
+  endedBy: 'done' | 'budget' | 'retry' | 'slow' | 'deferred' | 'parked' | 'refused' | 'rejected' | 'unauthorized' | 'route_missing' | 'protocol' | 'absent' | 'ordered' | 'held';
 }
 
 const readSlice = (file: string, offset: number, length: number): Buffer => {

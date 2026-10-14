@@ -29,6 +29,7 @@ export interface ClientRecord extends DeploymentRecord {
 export type RawAnswer =
   | { kind: 'response'; status: number; protocolHeader: boolean; retryAfterMs?: number; json: Record<string, unknown> | null }
   | { kind: 'transport'; detail: string }
+  | { kind: 'deferred'; detail: string }
   | { kind: 'timeout'; phase: TimeoutPhase; elapsedMs: number; capped: boolean };
 
 /**
@@ -43,6 +44,7 @@ export type Outcome =
   | { class: 'parked'; code: typeof PARKED_CODE; reason: string }
   | { class: 'refused'; code: MemberCode; serverCode?: string; reason: string }
   | { class: 'retry'; status?: number; detail: string; retryAfterMs?: number; anonymousLimited?: boolean }
+  | { class: 'deferred'; detail: string }
   /** A capped share ran out before the answer did: the server is slow, not gone. Nothing latches on it. */
   | { class: 'slow'; phase: TimeoutPhase; elapsedMs: number; detail: string }
   | { class: 'route_missing'; status: 401 }
@@ -104,7 +106,7 @@ function statusLineAnswer(res: Response): RawAnswer {
   };
 }
 
-export async function rawAnswerOf(res: Response, signal?: AbortSignal): Promise<RawAnswer> {
+export async function rawAnswerOf(res: Response, signal?: AbortSignal): Promise<Extract<RawAnswer, { kind: 'response' }>> {
   const text = await res.text();
   // A request aborted after its status line arrived and before its body did —
   // its deadline firing as the answer lands — reads under Bun as a body that
@@ -182,6 +184,7 @@ export class ServerClient {
   async request(method: string, path: string, init: { body?: BodyInit; headers?: Record<string, string>; budget: RequestBudget; scope?: 'project' | 'deployment' }): Promise<RawAnswer> {
     const headers = { ...this.headersFor(init.scope ?? 'project'), ...init.headers };
     const controller = new AbortController();
+    const signal = init.budget.signal === undefined ? controller.signal : AbortSignal.any([controller.signal, init.budget.signal]);
     let timedOut = false;
     let phase: TimeoutPhase = 'headers';
     let head: Response | null = null;
@@ -198,15 +201,16 @@ export class ServerClient {
         // delete the durable copy. `error` surfaces as a transport failure,
         // which classifies `retry`, so the events stay spooled.
         redirect: 'error',
-        signal: controller.signal,
+        signal,
       });
       phase = 'body';
       head = res;
-      return await rawAnswerOf(res, controller.signal);
+      return await rawAnswerOf(res, signal);
     } catch (err) {
       // A status line that already says busy or failing is the answer, whatever became of its body: a stalled 5xx or
       // 429 classifies as the retry its status is, never as a slow answer that latches nothing.
-      if (timedOut && head !== null && (head.status >= 500 || head.status === 429)) return statusLineAnswer(head);
+      if ((timedOut || init.budget.signal?.aborted) && head !== null && (head.status >= 500 || head.status === 429)) return statusLineAnswer(head);
+      if (init.budget.signal?.aborted || (timedOut && init.budget.deferOnTimeout)) return { kind: 'deferred', detail: 'delivery deferred by the caller' };
       if (timedOut) return { kind: 'timeout', phase, elapsedMs: Date.now() - started, capped: init.budget.capped === true };
       return { kind: 'transport', detail: err instanceof Error ? err.message : String(err) };
     } finally {
@@ -282,6 +286,7 @@ export const timeoutWords = (raw: Extract<RawAnswer, { kind: 'timeout' }>): stri
  * answer is a 200 the route classifies itself.
  */
 function classifyCommon(raw: RawAnswer): Outcome | null {
+  if (raw.kind === 'deferred') return { class: 'deferred', detail: raw.detail };
   if (raw.kind === 'transport') return { class: 'retry', detail: raw.detail };
   if (raw.kind === 'timeout') {
     return raw.capped
@@ -330,6 +335,8 @@ function classifyShape(raw: Extract<RawAnswer, { kind: 'response' }>, shape: 'pe
   return { class: 'refused', code, reason: reasonOf(body) };
 }
 
+export function classifyEventAnswer(raw: Exclude<RawAnswer, { kind: 'deferred' }>): Exclude<Outcome, { class: 'deferred' }>;
+export function classifyEventAnswer(raw: RawAnswer): Outcome;
 export function classifyEventAnswer(raw: RawAnswer): Outcome {
   return classifyCommon(raw) ?? classifyShape(raw as Extract<RawAnswer, { kind: 'response' }>, 'persisted');
 }

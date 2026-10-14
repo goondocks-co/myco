@@ -1,3 +1,4 @@
+import { importSignInHistory, withSignInCapture } from './signin-capture.js';
 import { repositoryName } from '@myco/utils/git.js';
 import { askOnTerminal } from '@myco/setup/prompt.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
@@ -25,13 +26,12 @@ import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome, type ResolvedMycoHome } from '../paths/home.js';
 import { memberHomeFor, pinnedElsewhere, pinnedElsewhereRefusal, pinnedHomeLine, pinnedHomeRefusal } from '../member/home-for-folder.js';
-import { unboundedBudget } from '../member/budget.js';
+import { unboundedBudget, type HookBudget } from '../member/budget.js';
 import { CONNECT_TIMEOUT_CAP_MS, CREDENTIAL_FLAG, CREDENTIAL_SOURCES, deploymentScopedHeaders, isProjectId, memberHeaders, MEMBER_TOKEN_REFRESH_WINDOW_MS, SERVER_FLAG } from '../member/constants.js';
 import { isMemberTokenShape, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '../member/credential.js';
 import { admitMemberServerUrl, memberServerDialUrl, MEMBER_SERVER_URL_RULE } from '../member/server-url.js';
 import { clearJoinRefusals } from '../member/join-code.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
-import { runImport } from '../member/import.js';
 import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member/refused-hooks.js';
 import { clearMissingMembership, listMissingMembershipsResult, pruneMissingMemberships, readMissingMembership, readMissingMembershipResult, type MissingMembershipRecord } from '../member/no-membership.js';
 import { deploymentUrl, listDeploymentMemberships, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
@@ -58,6 +58,8 @@ import { describeWorkerService, workerServiceWords, type WorkerServiceDeps } fro
 
 
 export interface MemberCliDeps {
+  /** Bound setup's capture follow-up to the Deployment it just joined. */
+  signInCapture?: { serverUrl: string };
   fetch?: FetchLike;
   now?: () => number;
   cwd?: string;
@@ -278,14 +280,7 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
   await seedMachineSettings({ serverUrl: parsed.serverUrl, token }, { mycoHome, fetch: deps.fetch });
   if (parsed.provision && !provisionAgent(parsed.provision, root, mycoHome, deps, out, fail)) return null;
 
-  // #1148: the machine's existing history for this project, once, bounded by
-  // what the Deployment allows. A failure never fails the join — the membership
-  // is recorded, and `myco import` fetches the history whenever it is wanted.
-  const report = await runImport({ project: parsed.project, serverUrl: parsed.serverUrl }, {
-    fetch: deps.fetch, now: deps.now, cwd: root, mycoHome, machineId: entry.machineId,
-  }).catch(() => null);
-  const imported = report?.projects.reduce((n, project) => n + project.agents.reduce((m, a) => m + a.imported, 0), 0) ?? 0;
-  if (imported > 0) out(`imported ${imported} past sessions; run \`myco import\` to reach further back`);
+  await importJoinedHistory(entry, mycoHome, deps, out, err);
   return entry;
 }
 
@@ -395,12 +390,17 @@ async function connectFolder(
   if (!parsed.noAgents) {
     for (const line of detectedProvisionLines(provisionDetectedAgents(mycoHome, serverUrl, root, { packageRoot: deps.packageRoot, agents: deps.agents }))) out(line);
   } else recordNoAgents(mycoHome, serverUrl);
-  const report = await runImport({ project: project.projectId, serverUrl }, {
-    fetch: deps.fetch, now: deps.now, cwd: root, mycoHome, machineId: entry.machineId,
-  }).catch(() => null);
-  const imported = report?.projects.reduce((n, p) => n + p.agents.reduce((m, a) => m + a.imported, 0), 0) ?? 0;
-  if (imported > 0) out(`Imported ${imported} past sessions; run \`myco import\` to reach further back.`);
+  await importJoinedHistory(entry, mycoHome, deps, out, err);
   return entry;
+}
+
+async function importJoinedHistory(
+  entry: RegistryEntry, mycoHome: string, deps: MemberCliDeps,
+  stdout: (line: string) => void, stderr: (line: string) => void,
+): Promise<void> {
+  await withSignInCapture({ fetch: deps.fetch, now: deps.now, stdout }, capture => importSignInHistory({ serverUrl: entry.serverUrl, project: entry.projectId }, {
+    now: deps.now, cwd: entry.root, mycoHome, machineId: entry.machineId, stdout, stderr,
+  }, capture));
 }
 
 /**
@@ -787,6 +787,7 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
   const now = deps.now ?? Date.now;
   const mycoHome = homeFor(deps);
   const results: DrainResult[] = [];
+  const signIn = deps.signInCapture;
   let entries: RegistryEntry[];
   const serverAt = args.indexOf('--server');
   const projectAt = args.indexOf('--project');
@@ -822,16 +823,26 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
       out(`legacy pending ${rootKey}: assigned to ${deploymentUrl(serverUrl)}/${projectId} — ${copied} record(s) moved`);
     }
     entries = [entry];
-  } else entries = entriesFor(args, deps);
-  for (const entry of entries) {
-    const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now });
-    for (const line of backlogLines(entry.projectId, backlog)) out(line);
-    // Retention follows the drain so acknowledged archive copies can be removed.
-    const retention = applySpoolRetention(new MemberSpool(entry, { mycoHome }), now());
-    if (retention.releasedBlobs > 0) out(`${entry.projectId}: released ${retention.releasedBlobs} staged file(s)`);
-    results.push(...backlog.sessions.flatMap((s) => (s.events ? [s.events] : [])));
-  }
-  return results;
+  } else entries = signIn === undefined ? entriesFor(args, deps)
+    : listRoutingEntries(mycoHome, undefined, signIn);
+  const drain = async (fetch: FetchLike | undefined, budget?: HookBudget): Promise<DrainResult[]> => {
+    for (const entry of entries) {
+      if (budget !== undefined && now() >= budget.deadline) {
+        out('Some capture is still waiting; myco member drain retries it.');
+        break;
+      }
+      const backlog = await drainEntryBacklog(entry, { mycoHome, fetch, now, budget });
+      for (const line of backlogLines(entry.projectId, backlog)) out(line);
+      if (deps.signInCapture !== undefined && backlog.endedBy !== 'done') out('Some capture is still waiting; myco member drain retries it.');
+      // Retention follows the drain so acknowledged archive copies can be removed.
+      const retention = applySpoolRetention(new MemberSpool(entry, { mycoHome }), now());
+      if (retention.releasedBlobs > 0) out(`${entry.projectId}: released ${retention.releasedBlobs} staged file(s)`);
+      results.push(...backlog.sessions.flatMap((s) => (s.events ? [s.events] : [])));
+    }
+    return results;
+  };
+  return deps.signInCapture === undefined || entries.length === 0 ? drain(deps.fetch)
+    : withSignInCapture({ fetch: deps.fetch, now, stdout: out }, ({ fetch, budget }) => drain(fetch, budget));
 }
 
 /** One line per session a backlog walk reached, and one for a walk that reached none. */

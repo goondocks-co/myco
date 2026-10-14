@@ -177,6 +177,7 @@ async function requestRoute(client: ServerClient, budget: RequestBudget, method:
   const raw = await client.request(method, path, { ...(body === undefined ? {} : { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } }), budget, scope: 'deployment' });
   if (raw.kind === 'timeout') return { ok: false, error: { code: 'timeout', message: `no answer within ${budget.requestTimeoutMs} ms` } };
   if (raw.kind === 'transport') return { ok: false, error: { code: 'unreachable', message: raw.detail } };
+  if (raw.kind === 'deferred') return { ok: false, error: { code: 'deferred', message: raw.detail } };
   if (routeMissing(raw)) return { ok: false, error: { code: ROUTE_MISSING, message: `the Deployment does not serve ${path}; update it` } };
   if (raw.status === 401) return { ok: false, error: { code: 'unauthorized', message: 'The Deployment refused the credential (HTTP 401).' } };
   const answer = raw.json;

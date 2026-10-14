@@ -20,6 +20,35 @@ const stager = tempStager();
 const ctx = (sessionId: string): EnvelopeContext => ({ agent: 'claude-code', sessionId, stage: stager.stage, version: '2.0.0-test' });
 
 describe('ServerClient classification', () => {
+  it('defers when the request timer reaches the caller window before its cancellation signal fires', async () => {
+    const controller = new AbortController();
+    const fetch: FetchLike = async (_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+    });
+    const outcome = await new ServerClient({ serverUrl: 'https://s', token: 'fixture', projectId: 'proj_1' }, fetch)
+      .postEvent(promptEvent(ctx('timer-first'), { promptId: mintId(), text: 'waiting' }).envelope, { connectTimeoutMs: 20, requestTimeoutMs: 20, signal: controller.signal, deferOnTimeout: true });
+    expect(controller.signal.aborted).toBe(false);
+    expect(outcome.class).toBe('deferred');
+  });
+
+  for (const status of [null, 200, 503] as const) it(`defers caller cancellation while preserving a received failure (status ${status})`, async () => {
+    const controller = new AbortController();
+    const fetch: FetchLike = async (_input, init) => {
+      if (status === null) return new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true }));
+      return new Response(new ReadableStream({ start(body) {
+        init?.signal?.addEventListener('abort', () => body.error(init.signal?.reason), { once: true });
+      } }), { status });
+    };
+    const timer = setTimeout(() => controller.abort(), 20);
+    try {
+      const outcome = await new ServerClient({ serverUrl: 'https://s', token: 'fixture', projectId: 'proj_1' }, fetch)
+        .postEvent(promptEvent(ctx('cancelled'), { promptId: mintId(), text: 'waiting' }).envelope, { ...budget, signal: controller.signal });
+      expect(outcome).toMatchObject(status === 503 ? { class: 'retry', status: 503 } : { class: 'deferred' });
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
   it('acked on persisted:true and on a duplicate replay; the duplicate flag is carried', async () => {
     const rig = await memberRig();
     const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);

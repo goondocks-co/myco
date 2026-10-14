@@ -177,9 +177,11 @@ describe('legacy journey (e)', () => {
     const pending = fixture.legacy.projects[1]!;
     const vault = fs.readFileSync(fixture.legacy.vault);
     const skippedSpool = new MemberSpool({ serverUrl: LEGACY_URLS[0], projectId: pending.id }, { mycoHome: home });
-    skippedSpool.append('retained-skip', { envelope: { eventId: mintId(), sessionId: 'retained-skip', kind: 'prompt', createdAt: 1, channel: 'cli', producer: { adapter: 'claude-code', version: 'fixture' }, payload: { promptId: mintId(), text: 'Keep skipped capture', origin: 'user' } } });
+    const retainedId = mintId();
+    skippedSpool.append('retained-skip', { envelope: { eventId: retainedId, sessionId: 'retained-skip', kind: 'prompt', createdAt: 1, channel: 'cli', producer: { adapter: 'claude-code', version: 'fixture' }, payload: { promptId: mintId(), text: 'Keep skipped capture', origin: 'user' } } });
     const spoolBytes = snapshot(skippedSpool.dir);
     expect(await run(flags, fixture.deps)).toBe(2);
+    expect(snapshot(skippedSpool.dir)).toEqual(spoolBytes);
     expect(errors.join('\n')).toContain(`--route ${pending.id}=<url> or --skip ${pending.id}`);
     expect(lines.join('\n')).toContain(`${pending.id}: undecided`);
     expect(readCutoverState(home).migrations).toBeUndefined();
@@ -189,7 +191,15 @@ describe('legacy journey (e)', () => {
     const destination = readCutoverState(home).migrations![fixture.legacy.vault]!.projects[pending.id]!.destination;
     expect(destination).toMatchObject(choice === 'skip' ? { skip: true } : { serverUrl: LEGACY_URLS[1] });
     expect(fs.readFileSync(fixture.legacy.vault)).toEqual(vault);
-    expect(snapshot(skippedSpool.dir)).toEqual(spoolBytes);
+    expect(skippedSpool.readRecords('retained-skip')).toHaveLength(0);
+    const deployment = new Database(path.join(root, 'journey-e', 'deployment-0.sqlite'), { readonly: true });
+    try {
+      const retained = deployment.query('SELECT project_id, session_id, payload FROM events WHERE event_id = ?').get(retainedId) as { project_id: string; session_id: string; payload: string };
+      expect(retained).toMatchObject({ project_id: pending.id, session_id: 'retained-skip' });
+      expect(JSON.parse(retained.payload)).toMatchObject({ text: 'Keep skipped capture' });
+    } finally {
+      deployment.close();
+    }
   });
 
   it('a saved cutover choice grants no consent, and a declined preview changes no legacy data', async () => {

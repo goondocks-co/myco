@@ -1197,6 +1197,8 @@ export class MemberSpool {
         // A capped share ran out before the answer did. The server answered nothing wrong and may simply be busy,
         // so nothing latches: the next hook asks again.
         return outcome.class;
+      case 'deferred':
+        return outcome.class;
       case 'route_missing':
         stderr('server answered 401 with the protocol header on a capture route — contract bug; events stay spooled');
         this.markOffline(now);

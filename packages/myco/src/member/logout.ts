@@ -102,31 +102,38 @@ async function revoke(j: LogoutJournal, mode: 'revoke' | 'local-only', deps: Log
     throw new Error('The credential changed or is unavailable; logout cannot revoke the snapshotted credential');
   }
   const client = new ServerClient(held.membership, deps.fetch);
+  const answer = await confirmRevocation(client, j.serverUrl);
+  if (answer.revoked) return 'revoked';
+  if (mode === 'local-only') return 'still-valid';
+  throw new Error(answer.reason);
+}
+
+type RevocationAnswer = { revoked: true } | { revoked: false; reason: string };
+
+async function confirmRevocation(client: ServerClient, serverUrl: string): Promise<RevocationAnswer> {
+  const refused = (reason: string): RevocationAnswer => ({ revoked: false, reason });
   const budget = { connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS, requestTimeoutMs: CONNECT_TIMEOUT_CAP_MS };
   const response = await client.request('POST', '/members/credential/revoke', {
-    body: '{}', headers: { 'content-type': 'application/json' }, scope: 'deployment',
-    budget,
+    body: '{}', headers: { 'content-type': 'application/json' }, scope: 'deployment', budget,
   });
   if (response.kind !== 'response') {
-    if (mode === 'local-only') return 'still-valid';
-    throw new Error('The Deployment could not be reached; retry logout, or use --local-only to leave its credential valid');
+    return refused('The Deployment could not be reached; retry logout, or use --local-only to leave its credential valid');
   }
   if (routeMissing(response)) {
-    if (mode === 'local-only') return 'still-valid';
-    throw new Error('This Deployment does not serve credential revocation; run `myco server update` for it, then retry logout');
+    return refused('This Deployment does not serve credential revocation; run `myco server update` for it, then retry logout');
   }
   if (response.status === 401) {
     const refresh = await client.refresh(budget);
-    if (refresh.class === 'unauthorized' || (refresh.class === 'refused' && refresh.code === 'lineage_expired')) return 'revoked';
-    if (mode === 'local-only') return 'still-valid';
-    throw new Error('Credential revocation could not be confirmed; run `myco server update` for this Deployment, then retry logout');
+    if (refresh.class === 'unauthorized' || (refresh.class === 'refused' && refresh.code === 'lineage_expired')) return { revoked: true };
+    return refused('Credential revocation could not be confirmed; run `myco server update` for this Deployment, then retry logout');
   }
   if (response.status >= 200 && response.status < 300) {
-    if (response.json?.persisted === true) return 'revoked';
-    throw new Error('The Deployment did not acknowledge revocation; local state was kept');
+    return response.json?.persisted === true ? { revoked: true } : refused('The Deployment did not acknowledge revocation; local state was kept');
   }
-  if (response.status >= 500 && mode === 'local-only') return 'still-valid';
-  throw new Error(`The Deployment refused credential revocation (HTTP ${response.status}); local state was kept`);
+  if (response.status === 404) {
+    return refused(`This address no longer answers Myco's revoke route (HTTP 404). If the Deployment moved or is gone, run myco logout ${serverUrl} --local-only to remove it from this machine (its credential stays valid on the server until it expires).`);
+  }
+  return refused(`The Deployment refused credential revocation (HTTP ${response.status}); local state was kept`);
 }
 
 function spoolReport(serverUrl: string, mycoHome: string): LogoutReport['keptSpool'] {

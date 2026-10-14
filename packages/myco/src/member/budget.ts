@@ -11,6 +11,10 @@ import {
 } from './constants.js';
 
 export interface RequestBudget {
+  /** Caller cancellation defers delivery without declaring the Deployment offline. */
+  signal?: AbortSignal;
+  /** Expiring this delivery window defers capture instead of declaring the Deployment offline. */
+  deferOnTimeout?: true;
   /** Minimum headroom to admit another request; fetch uses the request deadline. */
   connectTimeoutMs: number;
   requestTimeoutMs: number;
@@ -140,13 +144,15 @@ export function canStartRequest(budget: HookBudget, now: number = Date.now()): b
  */
 export function subRequestBudget(budget: HookBudget, capMs: number, now: number = Date.now()): RequestBudget {
   const ms = Math.max(1, Math.min(capMs, Math.floor(remainingMs(budget, now) / 3)));
-  return { connectTimeoutMs: ms, requestTimeoutMs: ms, capped: true };
+  return { connectTimeoutMs: ms, requestTimeoutMs: ms, capped: true, signal: budget.signal };
 }
 
 /** The request budget clipped to what remains before the deadline. */
 export function clippedRequestBudget(budget: HookBudget, now: number = Date.now()): RequestBudget {
   const remaining = remainingMs(budget, now);
   return {
+    signal: budget.signal,
+    deferOnTimeout: budget.deferOnTimeout,
     connectTimeoutMs: Math.max(1, Math.min(budget.connectTimeoutMs, remaining)),
     requestTimeoutMs: Math.max(1, Math.min(budget.requestTimeoutMs, remaining)),
   };

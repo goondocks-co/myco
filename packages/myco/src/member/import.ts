@@ -43,7 +43,7 @@ import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { evaluateSessionCaptureRules } from '../hooks/capture-rules.js';
 import { readTranscriptMeta } from '../hooks/transcript-meta.js';
 import { resolveMycoHome } from '../paths/home.js';
-import { unboundedBudget } from './budget.js';
+import { unboundedBudget, type HookBudget } from './budget.js';
 import { resolveMemberProjectRoot } from './credential.js';
 import { sessionEndEvent, sessionStartEvent, type EnvelopeContext } from './envelope.js';
 import { deploymentUrl, listRegistryEntries, readRegistryEntryResult, type RegistryEntry } from './registry.js';
@@ -221,6 +221,7 @@ function bindingsFor(serverUrl: string, mycoHome: string): Map<string, RegistryE
 
 /** What the walk found, placed and counted. */
 export interface CollectedCandidates {
+  incomplete?: true;
   candidates: Candidate[];
   found: Record<string, number>;
   unattributable: number;
@@ -270,6 +271,7 @@ export function droppedByCaptureRules(agent: string, filePath: string): boolean 
 export function collectCandidates(
   agents: readonly string[], roots: Iterable<string>, machineId: string, mycoHome: string,
   now: number = Date.now(), opts: {
+    shouldStop?: () => boolean;
     mappings?: readonly DirectoryMapping[];
     exclude?: ReadonlySet<string>;
     destinationForRoot?: (root: string) => RegistryEntry | undefined;
@@ -279,14 +281,21 @@ export function collectCandidates(
   const place = transcriptPlacer(roots, { mappings: opts.mappings, repositoryRoots: opts.repositoryRoots });
   const out: CollectedCandidates = { candidates: [], found: {}, unattributable: 0, unbound: 0, unboundDirectories: {}, mappable: 0, active: 0, dropped: 0, excluded: 0 };
 
-  for (const agent of agents) {
+  const shouldStop = () => {
+    if (opts.shouldStop?.()) out.incomplete = true;
+    return out.incomplete === true;
+  };
+
+  scan: for (const agent of agents) {
+    if (shouldStop()) break;
     const discovery = manifestTranscriptDiscovery(agent);
     if (discovery === undefined) continue;
     // Enumerated WHOLE, and trimmed only after the sort. A walk answers in
     // directory order, so a cap applied during it keeps whatever the
     // filesystem listed first — which on a real store is neither the newest
     // nor anything a person could predict.
-    for (const discovered of enumerateTranscripts(discovery, ENUMERATION_CEILING, mycoHome)) {
+    for (const discovered of enumerateTranscripts(discovery, ENUMERATION_CEILING, mycoHome, shouldStop)) {
+      if (shouldStop()) break scan;
       if (isMemberStatePath(discovered.filePath, mycoHome)) continue;
       const placed = place(agent, discovered.filePath);
       // Three outcomes, three counts. A transcript naming a directory this
@@ -359,6 +368,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   const agents = agentsWithStores(opts.agent);
   const exclude = new Set([...(opts.exclude ?? []), ...legacySessionsToLeaveOut(mycoHome, named)]);
   const collected = collectCandidates(agents, bound.keys(), deps.machineId, mycoHome, now(), {
+    shouldStop: () => deps.signal?.aborted === true || (opts.until !== undefined && now() >= opts.until),
     mappings: opts.mappings, exclude, repositoryRoots: entries.flatMap((entry) => entry.root === undefined ? [] : [entry.root]), destinationForRoot: (root) => bound.get(root),
   });
   const { candidates, unattributable, active } = collected;
@@ -382,9 +392,13 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   }
 
   const report: ImportReport = {
+    ...(collected.incomplete ? { stoppedBy: deps.signal?.aborted ? 'interrupted' : IMPORT_DEADLINE } : {}),
     projects: [], unbound, unattributable, active, dropped: collected.dropped, excluded: collected.excluded,
     unboundDirectories: collected.unboundDirectories, mappable: collected.mappable, ...(narrowed.size > 0 ? { narrowed: [...narrowed].sort() } : {}),
   };
+  if (collected.incomplete) {
+    for (const entry of bound.values()) if (!byProject.has(entry.projectId)) byProject.set(entry.projectId, []);
+  }
   for (const [projectId, forProject] of byProject) {
     if (deps.signal?.aborted) {
       report.projects.push({ projectId, root: '', agents: [], endedBy: 'interrupted', causes: { [importCause('interrupted')]: 1 } });
@@ -453,7 +467,10 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
       if (opts.dryRun === true) { held.imported += 1; continue; }
       if (opts.until !== undefined && now() >= opts.until) { endedBy = IMPORT_DEADLINE; break; }
 
-      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now, { repositoryNames, onRefusal: (code, reason) => countImportCause(causes, importCause(code, reason)) });
+      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now, {
+        budget: { ...unboundedBudget(), signal: deps.signal },
+        repositoryNames, onRefusal: (code, reason) => countImportCause(causes, importCause(code, reason)),
+      });
       if (shipped === 'done') { held.imported += 1; continue; }
       // Gone from the disk between the plan that admitted it and the ship that
       // would have read it. Nothing was sent, so it is not imported — and it is
@@ -486,7 +503,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
  */
 export async function shipSession(
   candidate: Candidate, fromOffset: number, client: ServerClient, spool: MemberSpool, machineId: string, now: () => number,
-  opts: { facts?: boolean; repositoryNames?: Map<string, string>; onRefusal?: (code: string, reason?: string) => void } = {},
+  opts: { facts?: boolean; repositoryNames?: Map<string, string>; onRefusal?: (code: string, reason?: string) => void; budget?: HookBudget } = {},
 ): Promise<string> {
   spool.assertClientDestination(client);
   const { sessionId, filePath } = candidate;
@@ -518,13 +535,14 @@ export async function shipSession(
   }, now());
 
   const seen = spool.readRefused().entries.length;
-  const drained = await spool.drainSession(sessionId, client, unboundedBudget(), { now, force: true });
+  const budget = opts.budget ?? unboundedBudget();
+  const drained = await spool.drainSession(sessionId, client, budget, { now, force: true });
   const refusals = importRefusals(spool.readRefused().entries, seen, sessionId, drained.endedBy);
   for (const refusal of refusals) opts.onRefusal?.(refusal.serverCode ?? refusal.code, refusal.reason);
   if (refusals.length > 0) return 'refused';
   if (drained.endedBy !== 'drained') return drained.endedBy;
 
-  const result = await shipTranscriptSegments(ctx, spool, client, unboundedBudget(), { now, headHash: candidate.headHash ?? undefined });
+  const result = await shipTranscriptSegments(ctx, spool, client, budget, { now, headHash: candidate.headHash ?? undefined });
   for (const refusal of importRefusals(spool.readRefused().entries, seen, sessionId, result.endedBy)) opts.onRefusal?.(refusal.serverCode ?? refusal.code, refusal.reason);
   return result.endedBy;
 }

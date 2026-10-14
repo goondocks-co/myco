@@ -35,7 +35,7 @@ export async function run(args: readonly string[], deps: LogoutCliDeps = {}): Pr
     const pinned = chosen === null ? null : pinnedHomeLine(chosen, folder);
     if (pinned !== null) out(pinned);
     out(`Signed out of ${report.serverUrl}.`);
-    if (!report.revoked) out(`Credential still valid on the Deployment; stop it on the dashboard: People & machines › ${report.machineId} › Stop.`);
+    if (!report.revoked) out(`Credential may stay valid on the server until it expires; stop it on the dashboard: People & machines › ${report.machineId} › Stop.`);
     out(`${report.keptSpool.sessions} undelivered sessions kept at ${report.keptSpool.paths.join(', ')}; \`myco member drain\` after signing in again.`);
     out(`${report.leftRoots.length} repositories won't be captured until you connect them again:`);
     for (const root of report.leftRoots) out(`  ${root}`);
