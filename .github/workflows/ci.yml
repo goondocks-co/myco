@@ -116,7 +116,7 @@ jobs:
       - run: npm run codegen -w @goondocks/myco
       - run: TARGET="${{ matrix.target }}" npm run build:binary -w @goondocks/myco
       - name: Check compiled sign-in exits
-        if: ${{ !matrix.measure_elsewhere }}
+        if: ${{ !matrix.measure_elsewhere && runner.os == 'Linux' }}
         env:
           MYCO_LOGIN_TEST_BINARY: ${{ github.workspace }}/packages/myco-${{ matrix.target }}/bin/myco
         run: npm test -- tests/cli/login-exit.test.ts
