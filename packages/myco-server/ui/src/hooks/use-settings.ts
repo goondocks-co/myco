@@ -152,7 +152,7 @@ export function useSettingsActions() {
     setCapability: useMutation({
       mutationFn: (v: { projectId: string; capability: string; enabled: boolean }) =>
         putJson<{ applied: true }>(`/api/projects/${encodeURIComponent(v.projectId)}/capabilities/${encodeURIComponent(v.capability)}`, { enabled: v.enabled }),
-      onSuccess: () => refresh('capabilities'),
+      onSuccess: () => refresh('capabilities', 'tasks', 'attention', 'setup-progress'),
     }),
   };
 }
@@ -167,7 +167,10 @@ export function useRepository(projectId: string) {
 export function useRepositoryActions(projectId: string) {
   const client = useQueryClient();
   const path = `/api/projects/${encodeURIComponent(projectId)}/repository`;
-  const refresh = () => client.invalidateQueries({ queryKey: ['repository', projectId] });
+  const refresh = () => Promise.all([
+    client.invalidateQueries({ queryKey: ['repository', projectId] }),
+    ...['attention', 'setup-progress', 'task-start'].map(key => client.invalidateQueries({ queryKey: [key] })),
+  ]);
   return {
     save: useMutation({
       gcTime: 0,

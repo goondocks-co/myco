@@ -23,6 +23,11 @@ function harness() {
   const fixture = sqliteEnv();
   const env = { ...fixture.env, ...OWNER_ENV };
   const { sqlite } = fixture;
+  for (const project of ['proj_1', 'proj_2']) {
+    for (const capability of ['canopy', 'vault_evolution']) sqlite.run(
+      'INSERT INTO project_capabilities(project_id, capability, enabled, updated_at, updated_by) VALUES (?, ?, 0, 1, ?)',
+      [project, capability, 'fixture']);
+  }
   sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_1', 'a', 'built-in', 1, ?)`, [NOW]);
   const run = (project: string, id: string, task: string, status: string, at: number, over: { heldBy?: string; queuedAt?: number } = {}) =>
     sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, queued_at, held_by, error)
@@ -204,4 +209,27 @@ describe('Needs you', () => {
     const unreadable = await read(NOW, { recovery: { status: async () => { throw new Error('paused'); } } });
     expect(unreadable).toEqual({ items: [], unavailable: ['backup_overdue'] });
   });
+});
+
+it('surfaces enabled code work with no repository and clears as soon as source is connected', async () => {
+  const { sqlite, read } = harness();
+  sqlite.run("DELETE FROM project_capabilities WHERE project_id = 'proj_1' AND capability = 'canopy'");
+  expect((await read()).items).toEqual([{ kind: 'repository_missing', tone: 'warn', projectId: 'proj_1' }]);
+  sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
+    VALUES ('proj_1','r1','https://example.test/source.git','main',1,'fixture')`);
+  expect((await read()).items).toEqual([]);
+  sqlite.run("DELETE FROM project_repositories WHERE project_id = 'proj_1'");
+  sqlite.run("UPDATE project_capabilities SET enabled=1 WHERE project_id='proj_2' AND capability='vault_evolution'");
+  sqlite.run("UPDATE projects SET archived_at=1 WHERE project_id='proj_1'");
+  expect((await read()).items).toEqual([{ kind: 'repository_missing', tone: 'warn', projectId: 'proj_2' }]);
+  sqlite.close();
+});
+
+it('bounds repository notices and names an overflowing read as unavailable', async () => {
+  const { sqlite, read } = harness();
+  for (let i = 0; i <= 100; i++) sqlite.run('INSERT INTO projects(project_id,name,created_at) VALUES (?,?,1)', [`notice_${i}`, 'Code project']);
+  const answer = await read();
+  expect(answer.unavailable).toContain('repository_missing');
+  expect(answer.items.filter(item => item.kind === 'repository_missing')).toEqual([]);
+  sqlite.close();
 });

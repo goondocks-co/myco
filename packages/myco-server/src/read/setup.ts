@@ -1,3 +1,4 @@
+import { repositoriesNeeded } from './repository-requirements.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { deploymentOwnerSql, linkedHumanAdminSql } from '../core/ownership.js';
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
@@ -12,6 +13,7 @@ const SETUP_CAPTURE_CANDIDATES_PER_HARNESS = 8;
 const SETUP_CAPTURE_HARNESS_IDS = JSON.stringify(CAPTURE_RULE_BUNDLES.map(bundle => bundle.name));
 
 export interface SetupObservations {
+  repositoriesNeeded?: Array<{ projectId: string }>;
   machines: { signedIn: number };
   /** Admins count live projects; a member's own first project is evidenced by live capture (zero or one). */
   projects: number;
@@ -60,6 +62,7 @@ export async function readSetupProgress(env: ServerEnv, scope: MachineScope, now
       AND ${producedSql('a')}) AS produced`).bind(now - MAX_WORK_WINDOW_MS, now).first<{ produced: number }>() : null;
   if (scope.all && produced === null) throw new Error('Setup work observation unavailable');
   return {
+    repositoriesNeeded: scope.all ? await repositoriesNeeded(env.db, { all: true }) : [],
     machines: { signedIn: row.signed_in }, projects: scope.all ? row.projects : Number(row.live_capture === 1), liveCapture: row.live_capture === 1,
     runnersReady, workProduced: produced?.produced === 1,
     legacyWorkers: scope.all ? fleet.filter(worker => worker.runner === null && worker.eligible && worker.recent).length : null,

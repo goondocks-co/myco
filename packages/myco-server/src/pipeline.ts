@@ -16,6 +16,7 @@ import { activateSuccessor, authenticateServerMemberToken, releasedRunCredential
 import { admitRunControl, inProcessCredential, IN_PROCESS_SCOPE, CONTROL_CAPABILITIES, heldRunOfCredential, runDeadline, runtimeCaller } from './api/run-admission.js';
 import { runWriteStore, RunWriteExpired } from './core/run-write-store.js';
 import { recordRunCall, recordRunControlRefusal, type HeldRun } from './core/runs.js';
+import { dispatchRefusal, isDispatchProjectId } from './api/harness.js';
 import { HARNESS_MEMBER_ID } from './core/harness.js';
 import { forbiddenToMember } from './auth/roles.js';
 import { authenticateGrant, GRANT_KEY_PATTERN, touchGrant } from './auth/grants.js';
@@ -400,7 +401,10 @@ export function createServer(deps: ServerDeps) {
           if (authorization.resource?.kind === 'enrollment' && authorization.resource.targetRevoked === true) return Response.json({ error: 'member_revoked' }, { status: 409 });
           if (matched.route.path === '/api/harness/dispatch') {
             if (authorization.action === 'admin' && subject.role === 'member') return Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
-            return badRequest('the project is not on this server');
+            const projectId = parseJsonObject(body)?.projectId;
+            return isDispatchProjectId(projectId)
+              ? dispatchRefusal('unknown_project')
+              : badRequest('the project is not on this server');
           }
           if (authorization.resource?.exists === false && (matched.route.authorization?.resource !== 'credential' || matched.route.authorization.resolver === 'machine')) return Response.json({ error: 'not_found' }, { status: 404 });
           if (matched.route.path.endsWith('/connect')) return Response.json({ error: 'not_found' }, { status: 404 });

@@ -200,7 +200,7 @@ describe('observed setup progress', () => {
       signInWorking: true, machines: { signedIn: 0 }, projects: 0, liveCapture: false, runnersReady: null, legacyWorkers: null, workProduced: false,
     } });
     for (const result of [owner, admin, member]) {
-      expect(Object.keys(result.body).sort()).toEqual(['ownerLinked','viewerIsOwner','signInWorking','machines','projects','liveCapture','runnersReady','workProduced','legacyWorkers','queuedWithoutRunner'].sort());
+      expect(Object.keys(result.body).sort()).toEqual(['repositoriesNeeded','ownerLinked','viewerIsOwner','signInWorking','machines','projects','liveCapture','runnersReady','workProduced','legacyWorkers','queuedWithoutRunner'].sort());
       expect(JSON.stringify(result.body)).not.toMatch(/secret|token|hash|email|583231|private output|machine_1|runner label/i);
     }
     expect((await get('770004')).status).toBe(401);
@@ -212,4 +212,14 @@ describe('observed setup progress', () => {
     fixtures.splice(fixtures.indexOf(f), 1);
     await expect(read()).rejects.toThrow();
   });
+});
+
+it('includes missing code repositories for admins and redacts them for members', async () => {
+  const { read, sql } = rig();
+  expect((await read()).repositoriesNeeded).toEqual([{ projectId: 'proj_1' }, { projectId: 'proj_2' }]);
+  expect((await read('mem_machine_1')).repositoriesNeeded).toEqual([]);
+  sql("UPDATE projects SET archived_at=1 WHERE project_id='proj_2'");
+  sql(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
+    VALUES ('proj_1','r1','https://example.test/code.git','main',1,'fixture')`);
+  expect((await read()).repositoriesNeeded).toEqual([]);
 });

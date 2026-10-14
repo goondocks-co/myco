@@ -271,3 +271,8 @@ export function titleOf(pathname: string): string {
   }
   return SERVER_TITLES[pathname.replace(/\/+$/, '')] ?? 'Not found';
 }
+
+/** The repository section, optionally opening its connection form. */
+export function projectRepositoryPath(projectId: string, connect = false): string {
+  return `${projectPath(projectId, PROJECT_SETTINGS_SUFFIX)}${connect ? '?connect=repository' : ''}#${PROJECT_SETTINGS_ANCHORS.repository}`;
+}

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Button, Card, ConfirmDialog, Dialog, DialogContent, DialogFooter, ErrorState, FactRow, Input, LoadingState, MoreMenu, Switch,
 } from '../../../design';
@@ -24,9 +25,21 @@ export function Repository({ projectId }: { projectId: string }) {
   const query = useRepository(projectId);
   const actions = useRepositoryActions(projectId);
   const nameOf = useMemberNames();
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
   const [removing, setRemoving] = useState(false);
   const connection = query.data?.repository ?? null;
+  const connectRequested = searchParams.get('connect') === 'repository';
+  const closeEditing = () => {
+    setEditing(false);
+    if (connectRequested) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('connect');
+      navigate({ pathname: location.pathname, search: next.toString(), hash: location.hash }, { replace: true });
+    }
+  };
   const closeRemove = () => { setRemoving(false); actions.remove.reset(); };
 
   const sectionActions = query.isSuccess ? (
@@ -59,12 +72,12 @@ export function Repository({ projectId }: { projectId: string }) {
           </Card>
         )}
 
-      <Dialog open={editing} onOpenChange={setEditing}>
+      <Dialog open={editing || (connectRequested && query.isSuccess && connection === null)} onOpenChange={(open) => { if (open) setEditing(true); else closeEditing(); }}>
         <DialogContent
           title={connection === null ? 'Connect a repository' : 'Edit the repository'}
           description="Choose the repository and branch code tasks should read. For a private repository, give a token that can only read it."
         >
-          {editing && <RepositoryForm projectId={projectId} connection={connection} onClose={() => setEditing(false)} />}
+          {(editing || (connectRequested && query.isSuccess && connection === null)) && <RepositoryForm projectId={projectId} connection={connection} onClose={closeEditing} />}
         </DialogContent>
       </Dialog>
 
@@ -113,6 +126,7 @@ function RepositoryForm({ projectId, connection, onClose }: { projectId: string;
       </div>
       {!publicAccess && (
         <>
+          <p className="t-small text-muted">For a private GitHub repository, use a fine-grained token limited to this repository with Contents: Read-only</p>
           <label htmlFor="repository-username" className="t-small text-muted">Git username</label>
           <Input id="repository-username" required autoComplete="off" value={username} onChange={(e) => setUsername(e.target.value)} />
           <label htmlFor="repository-token" className="t-small text-muted">Read token</label>

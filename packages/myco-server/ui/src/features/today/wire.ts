@@ -87,6 +87,7 @@ export interface WorkAnswer {
 
 /** One thing an administrator should act on: a kind, a tone and the numbers its words need. */
 export type AttentionItem =
+  | { kind: 'repository_missing'; tone: 'warn'; projectId: string }
   | { kind: 'backup_overdue'; tone: 'warn'; lastBackupAt: number | null; intervalHours: number }
   | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string }
   | { kind: 'runs_without_audit'; tone: 'warn'; projectId: string; runs: number; closed: number; since: number; latestAt: number; runId: string }
@@ -215,6 +216,7 @@ export interface TodaySporePage {
 
 /** Observed setup facts; a member's runner counts are redacted. */
 export interface SetupProgress {
+  repositoriesNeeded?: Array<{ projectId: string }>;
   ownerLinked: boolean;
   viewerIsOwner: boolean;
   signInWorking: boolean;

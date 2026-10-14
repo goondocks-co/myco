@@ -1,3 +1,6 @@
+import { DISPATCH_REFUSAL_MESSAGE, type DispatchRefusal } from '@myco-server-worker/core/harness';
+import { DISPATCH_REFUSAL_WORDS, refusalOf } from '../../packages/myco-server/ui/src/features/work/RunTask';
+import { ApiError } from '../../packages/myco-server/ui/src/lib/api';
 import { dashboardMe } from '../helpers/dashboard-permissions';
 import { TASK_DESCRIPTIONS } from './task-fixture';
 /**
@@ -404,7 +407,7 @@ describe('running a task by hand', () => {
     expect(sent).toEqual([]);
   });
 
-  it('words a fresh start refused to a member, and any other refusal by its status, never the server\'s sentence', async () => {
+  it('words fresh-start refusals and retries only temporary failures', async () => {
     let answer: Response = Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
     server(routes({ who: MEMBER, dispatch: () => answer }));
     mount(`/p/${P}/work`);
@@ -412,12 +415,12 @@ describe('running a task by hand', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
     expect((await within(dialog).findByRole('alert')).textContent).toBe('Only an admin can start a task fresh.');
     // A 403 that is not about starting fresh is not worded as one.
-    answer = Response.json({ error: 'forbidden', reason: 'this account can’t start tasks here' }, { status: 403 });
+    answer = Response.json({ error: 'unavailable' }, { status: 503 });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
-    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('The server couldn’t start it (403). Try again in a moment.'));
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('The server couldn’t start it. Try again in a moment.'));
     answer = Response.json({ error: 'bad_request', reason: 'no agent is configured for this task' }, { status: 400 });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Learn from the code' }));
-    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('The server couldn’t start it (400). Try again in a moment.'));
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe('Myco couldn’t start this task. Check the project’s settings before trying again.'));
     // No run this week spent anything on it, so the confirmation says there is nothing to go by.
     expect(dialog.querySelector('[data-spend]')!.textContent).toBe('This spends model tokens. No runs over the code finished this week, so there’s no recent spend to go by.');
   });
@@ -893,4 +896,38 @@ it('uses the registry description when confirming a task', async () => {
   mount(`/p/${P}/work`);
   const dialog = await startFromMenu(/Learn from the project’s code/);
   await waitFor(() => expect(dialog.textContent).toContain(`${description.replace(/\.$/, '')} in the Myco project.`));
+});
+
+it('words every dispatch refusal and makes settled refusals final', () => {
+  const expected: Record<DispatchRefusal, string> = {
+    repository_missing: 'The code map and other code tasks need this project’s repository before they can run.',
+    harness_unavailable: 'This Myco cannot run this task. An admin can check its setup.',
+    unknown_task: 'This Myco does not have that task. Refresh the page to see the available tasks.',
+    unknown_project: 'This project is no longer available here. Choose another project.',
+    no_instruction: 'This task has no instructions yet. An admin can check its setup.',
+    not_landed: 'This task is not available yet.',
+    no_provider: 'Search needs to be set up before this task can run. An admin can do that in Settings.',
+    capability_off: 'This task is turned off for the project. An admin can turn it on in Project settings.',
+  };
+  expect(Object.keys(DISPATCH_REFUSAL_WORDS).sort()).toEqual(Object.keys(DISPATCH_REFUSAL_MESSAGE).sort());
+  expect(DISPATCH_REFUSAL_WORDS).toEqual(expected);
+  for (const [code, words] of Object.entries(expected)) {
+    expect(refusalOf(new ApiError(400, { error: code }), NOW)).toEqual({ words, capability: null, final: true });
+  }
+  expect(refusalOf(new ApiError(400, { error: 'constructor', message: 'Connect the source first.' }), NOW)).toEqual({
+    words: 'Connect the source first.', capability: null, final: true,
+  });
+  expect(refusalOf(new ApiError(500, {}), NOW).words).toBe('The server couldn’t start it. Try again in a moment.');
+  expect(refusalOf(new Error('offline'), NOW).words).toBe('Couldn’t reach the server. Try again in a moment.');
+});
+
+it('links a missing repository to its connection form and prevents unchanged retry', async () => {
+  server(routes({ dispatch: () => Response.json({ error: 'repository_missing', message: 'operator words' }, { status: 400 }) }));
+  mount(`/p/${P}/work`);
+  const dialog = await startFromMenu(/Update the code map now/);
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Update the code map' }));
+  const alert = await within(dialog).findByRole('alert');
+  expect(alert.textContent).toBe('The code map and other code tasks need this project’s repository before they can run.Connect repository →');
+  expect(within(alert).getByRole('link').getAttribute('href')).toBe(`/p/${P}/settings?connect=repository#repository`);
+  expect(within(dialog).getByRole('button', { name: 'Update the code map' }).hasAttribute('disabled')).toBe(true);
 });

@@ -149,3 +149,13 @@ describe('Get started checklist', () => {
   });
 
 });
+
+it('keeps the checklist actionable when enabled code work still needs source', async () => {
+  mount('admin', () => Response.json({ ...empty, machines: { signedIn: 1 }, projects: 1, liveCapture: true,
+    runnersReady: 1, workProduced: true, repositoriesNeeded: [{ projectId: 'proj_code' }] }));
+  await waitFor(() => expect(item('repository:proj_code')).not.toBeNull());
+  expect(item('repository:proj_code').textContent).toContain('Connect this project’s repository so Myco can map its code');
+  expect(item('repository:proj_code').textContent).toContain('Code tasks are turned on, but they cannot run until a repository is connected.');
+  expect(within(item('repository:proj_code') as HTMLElement).getByRole('link', { name: 'Connect repository' }).getAttribute('href'))
+    .toBe('/p/proj_code/settings?connect=repository#repository');
+});

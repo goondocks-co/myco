@@ -36,10 +36,23 @@ describe('POST /api/harness/dispatch', () => {
 
     const bound = { ...env, HARNESS_LAUNCH_MODE: 'record' };
     const ghost = await worker.fetch(await asOwnerPost(db, '/api/harness/dispatch', { task: 'embedding-reconcile', projectId: 'proj_ghost' }), bound);
-    expect({ status: ghost.status, reason: ((await ghost.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'the project is not on this server' });
+    expect({ status: ghost.status, body: await ghost.json() }).toEqual({ status: 400, body: { error: 'unknown_project', message: 'the project is not on this server' } });
 
     const unknown = await worker.fetch(await asOwnerPost(db, '/api/harness/dispatch', { task: 'no-such-task', projectId: 'proj_1' }), bound);
-    expect({ status: unknown.status, reason: ((await unknown.json()) as { reason: string }).reason }).toEqual({ status: 400, reason: 'this server cannot run that task' });
+    expect({ status: unknown.status, body: await unknown.json() }).toEqual({ status: 400, body: { error: 'unknown_task', message: 'this server cannot run that task' } });
+  });
+
+  it('names a missing repository and preserves request validation shapes', async () => {
+    const { env, db, sqlite } = setup();
+    const response = await worker.fetch(await asOwnerPost(db, '/api/harness/dispatch', { task: 'canopy-map', projectId: 'proj_1' }), env);
+    expect({ status: response.status, body: await response.json() }).toEqual({ status: 400, body: {
+      error: 'repository_missing', message: 'Connect the project repository in Settings before running a code task.',
+    } });
+    const invalid = await worker.fetch(await asOwnerPost(db, '/api/harness/dispatch', {}), env);
+    expect({ status: invalid.status, body: await invalid.json() }).toEqual({ status: 400, body: {
+      error: 'bad_request', reasonCode: 'invalid_request', reason: 'the project is not on this server',
+    } });
+    expect(sqlite.query('SELECT COUNT(*) AS n FROM agent_runs').get()).toEqual({ n: 0 });
   });
 
   it('admits ad-hoc work with no automatic budget and keeps normal concurrency limits', async () => {

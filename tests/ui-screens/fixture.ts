@@ -271,6 +271,11 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   for (const project of PROJECTS) {
     await expectOk(await fetch(`${url}/api/projects`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ projectId: project.projectId, name: project.projectId }) }), `create ${project.projectId}`);
     await expectOk(await fetch(`${url}/api/projects/${project.projectId}`, { method: 'PATCH', headers: ownerHeaders, body: JSON.stringify({ name: project.name }) }), `rename ${project.projectId}`);
+    await expectOk(await fetch(`${url}/api/projects/${project.projectId}/repository`, {
+      method: 'PUT', headers: ownerHeaders, body: JSON.stringify({
+        url: `https://example.test/screens/${project.key}.git`, branch: 'main', revision: null, credential: null,
+      }),
+    }), `connect ${project.name} source`);
   }
 
   const post = async (machine: string, project: ProjectKey, sessionId: string, kind: string, payload: Record<string, unknown>, createdAt: number) => {
