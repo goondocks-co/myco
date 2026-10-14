@@ -10,7 +10,7 @@
  *   alone (`RunDiagnosticCode`), with the exit code and signal where the process gave them and, for a refused call,
  *   the tool identifiers it named. The code is read from structured fields first, then from the harness's own words
  *   by the patterns its manifest declares (`runner.diagnostics`), then from its exit status. The words themselves are
- *   projected to bounded masked detail in local diagnostics and structured harness stop reports. The Deployment keeps a run
+ *   omitted from stored diagnostics; only declared structured fields reach harness stop reports. The Deployment keeps a run
  *   error only where it parses as a sentence this module writes (`shapeRunError`), and codes anything else again from its words.
  * - **Agent prose** — a report's summary and details, and an audit's steps, reasoning and failures — is the agent's
  *   own account of its work, the point of the audit, so it cannot be allow-listed. It is stored bounded and masked
@@ -21,8 +21,8 @@
  *   stored with the run and kept as long as the run is.
  */
 
-import { RUN_DIAGNOSTIC_CODES, type RunDiagnosticCode, type PatternedDiagnosticCode, type RunDiagnostic, type HarnessStop } from './run-diagnostic.js';
-export { PATTERNED_DIAGNOSTIC_CODES, RUN_DIAGNOSTIC_CODES, LATE_HARNESS_ERROR_NOTE, type RunDiagnosticCode, type PatternedDiagnosticCode, type RunDiagnostic, type HarnessStop } from './run-diagnostic.js';
+import { RUN_DIAGNOSTIC_CODES, type RunDiagnosticCode, type PatternedDiagnosticCode, type RunDiagnostic, type HarnessStop, HARNESS_STOP_FIELD_VALUES, type HarnessStopFields } from './run-diagnostic.js';
+export { PATTERNED_DIAGNOSTIC_CODES, RUN_DIAGNOSTIC_CODES, LATE_HARNESS_ERROR_NOTE, type RunDiagnosticCode, type PatternedDiagnosticCode, type RunDiagnostic, type HarnessStop, type HarnessStopFields } from './run-diagnostic.js';
 
 import { REPOSITORY_FAILURE_CODES, MAX_REPOSITORY_FAILURE_SUMMARY_CHARS, type RepositoryFailure, type RepositoryFailureCode } from './repository.js';
 import { commandShape, identifierShape, keyLike, urlShape, ZERO_WIDTH } from './command-shape.js';
@@ -50,10 +50,10 @@ export type RunStopReason = (typeof RUN_STOP_REASONS)[number];
 
 /** Structured harness diagnostics supported by a Deployment's worker end reports. */
 export const HARNESS_STOP_FEATURE = 'harness-stop-v1';
-export const MAX_HARNESS_STOP_DETAIL_CHARS = 512;
 
 /** What a driver knows of how a harness ended: a code where its stream's structure says one, its words, and its exit status. */
 export interface HarnessEnding {
+  fields?: HarnessStopFields;
   code?: RunDiagnosticCode;
   names?: readonly string[];
   /** The harness's own words, read for a code and projected before logging or reporting. */
@@ -557,8 +557,21 @@ function maskDiagnosticSecrets(detail: string, secrets: readonly string[]): stri
   return detail;
 }
 
-/** Closed diagnostic classes and short sanitized detail, admitted again at the Deployment. */
-export function parseHarnessStop(value: unknown, secrets: readonly string[] = []): HarnessStop | null {
+/** Harness-declared identifier values; unknown keys and values carry no diagnostic data. */
+export function harnessStopFields(value: unknown): HarnessStopFields | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const fields: HarnessStopFields = {};
+  for (const [key, allowed] of Object.entries(HARNESS_STOP_FIELD_VALUES)) {
+    const offered = Reflect.get(value, key);
+    if (typeof offered === 'string' && identifierShape(offered, 64) === offered && (allowed as readonly string[]).includes(offered)) {
+      fields[key as keyof HarnessStopFields] = offered;
+    }
+  }
+  return Object.keys(fields).length === 0 ? undefined : fields;
+}
+
+/** Closed diagnostic classes and structured fields, admitted again at the Deployment. */
+export function parseHarnessStop(value: unknown): HarnessStop | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const code = Reflect.get(value, 'code');
   if (typeof code !== 'string' || !isCode(RUN_DIAGNOSTIC_CODES, code)) return null;
@@ -566,7 +579,6 @@ export function parseHarnessStop(value: unknown, secrets: readonly string[] = []
     code, exitCode: Reflect.get(value, 'exitCode'), signal: Reflect.get(value, 'signal'),
     names: Array.isArray(Reflect.get(value, 'names')) ? Reflect.get(value, 'names').filter((name: unknown) => typeof name === 'string') : undefined,
   });
-  const raw = Reflect.get(value, 'detail');
-  const detail = typeof raw === 'string' ? agentProse(maskDiagnosticSecrets(raw, secrets), MAX_HARNESS_STOP_DETAIL_CHARS, { singleLine: true }) : null;
-  return { ...diagnostic, ...(detail === null ? {} : { detail }) };
+  const fields = harnessStopFields(Reflect.get(value, 'fields'));
+  return { ...diagnostic, ...(fields === undefined ? {} : { fields }) };
 }

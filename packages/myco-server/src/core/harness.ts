@@ -1,3 +1,4 @@
+import { emitLateHarnessError } from './run-postconditions.js';
 import type { HarnessStop } from '@goondocks/myco-shared/run-text';
 import type { MemberWriteActor } from '../auth/member-write-store.js';
 import { heldPartition } from './embedding/policy.js';
@@ -1083,6 +1084,7 @@ export async function endLeasedRun(
   if (unmet !== null) {
     emit({ kind: 'run_postcondition_unmet', runId: run.runId, projectId: run.projectId, task: row.task, reported: run.status, unmet, ...workerTelemetry(worker.principal) });
   }
+  emitLateHarnessError(run.projectId, row, context);
   emit({ kind: 'worker_ended', runId: run.runId, projectId: run.projectId, status, ...workerTelemetry(worker.principal) });
   return { ended: true, status };
 }

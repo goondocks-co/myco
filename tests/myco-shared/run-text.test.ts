@@ -1,4 +1,4 @@
-import { harnessStopFromError, parseHarnessStop, MAX_HARNESS_STOP_DETAIL_CHARS } from '@goondocks/myco-shared/run-text';
+import { harnessStopFromError, parseHarnessStop } from '@goondocks/myco-shared/run-text';
 import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
 import { MAX_REPOSITORY_FAILURE_SUMMARY_CHARS } from '@goondocks/myco-shared/repository';
 /**
@@ -338,18 +338,16 @@ it('removes known credentials after invisible-character normalization', () => {
 });
 
 
-it('bounds and redacts structured harness stop detail before storage, including known credentials', () => {
-  const secret = 'syntheticRunCredential';
-  const stop = parseHarnessStop({ code: 'harness_error', detail: `Provider disconnected ${secret}; token: sk-test-${'z'.repeat(40)}
-${'detail '.repeat(200)}`, exitCode: 3 }, [secret]);
-  expect(stop).toMatchObject({ code: 'harness_error', exitCode: 3 });
-  expect(stop!.detail!.length).toBeLessThanOrEqual(MAX_HARNESS_STOP_DETAIL_CHARS);
-  expect(stop!.detail).toContain('Provider disconnected');
-  expect(stop!.detail).not.toContain(secret);
-  expect(stop!.detail).not.toContain('sk-test-');
-  expect(stop!.detail).not.toContain('\n');
-  expect(parseHarnessStop(stop)?.detail).toContain('Provider disconnected');
-  expect(parseHarnessStop(stop)?.detail).not.toContain(secret);
+it('keeps only declared structured harness stop fields and never free text', () => {
+  const probes = ['using plainCredentialValue1 and more', 'hello hunter22 world', 'Error reading /Users/chris/Repos/secret-project/notes.md', 'Customer ACME Corp invoice 4411 for Jane Doe'];
+  for (const detail of probes) {
+    const stop = parseHarnessStop({ code: 'harness_error', detail, exitCode: 3,
+      fields: { subtype: 'error_during_execution', terminal_reason: 'api_error', stop_reason: 'tool_use', private: detail } });
+    expect(stop).toEqual({ code: 'harness_error', exitCode: 3, fields: { subtype: 'error_during_execution', terminal_reason: 'api_error', stop_reason: 'tool_use' } });
+    expect(JSON.stringify(stop)).not.toContain(detail);
+    expect(parseHarnessStop(stop)).toEqual(stop);
+    expect(parseHarnessStop({ code: 'harness_error', fields: { subtype: detail, terminal_reason: 'plainCredentialValue1', stop_reason: 'private_reason', private: 'success' } })).toEqual({ code: 'harness_error' });
+  }
   expect(parseHarnessStop({ code: 'arbitrary', detail: 'private' })).toBeNull();
 });
 

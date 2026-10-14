@@ -1,4 +1,4 @@
-import { LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-diagnostic';
+import { diagnosticReaderCode, LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-diagnostic';
 import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { formatRelative } from '../../lib/format';
 import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
@@ -17,7 +17,7 @@ import { ActivitySection, AgentAccount, FilesReadPart, summaryOf, useAttemptEvid
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { InkLink, OnwardLink, PartLabel } from './OutcomeCard';
 import {
-  harnessStopWords, atWords, runErrorWords, deployWords, fullErrorWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
+  atWords, runErrorWords, deployWords, fullErrorWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
 } from './words';
 
 export interface RunPanelProps {
@@ -93,13 +93,10 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
           {startedBy !== null && <><span aria-hidden>·</span><span data-started-by="">{startedKicker(startedBy)}</span></>}
           {deploy !== null && <><span aria-hidden>·</span><span>{deploy}</span></>}
         </p>
-        {run.endedNote === LATE_HARNESS_ERROR_NOTE && <p className="t-small text-muted" data-run-ended-note="">The agent session ended with an error after the work was done. The work is complete.</p>}
-        {run.harnessStop != null && <div className="t-small text-muted" data-run-harness-stop="">
-          <p>{harnessStopWords(run.harnessStop.code)}</p>
-          {run.harnessStop.exitCode !== undefined && <p>Exit code {run.harnessStop.exitCode}.</p>}
-          {run.harnessStop.signal !== undefined && <p>Stopped by signal {run.harnessStop.signal}.</p>}
-          {run.harnessStop.detail && <p>{redactSecrets(run.harnessStop.detail)}</p>}
-        </div>}
+        {run.status === 'completed' && run.endedNote === LATE_HARNESS_ERROR_NOTE && <>
+          <p data-run-ended-note="" className="t-small text-muted">The agent session ended with an error after the work was done. The work is complete.</p>
+          {run.harnessStop != null && <p data-run-harness-stop="" className="t-small text-muted">{runErrorWords(diagnosticReaderCode(run.harnessStop.code))}</p>}
+        </>}
         {ran && summary !== null && <p className="t-body text-ink-2" data-run-summary="">{summary}</p>}
         {run.task !== null && <TaskName projectId={projectId} task={run.task} />}
         <ModelSummary run={run} />
@@ -296,6 +293,9 @@ function TechnicalDetails({ answer, startedBy, took }: {
           <FactsPanel actions={<CopyButton value={run.id} label="Copy run id" variant="secondary" />}>
             {machine !== null && <FactRow term="Ran on">{machine}</FactRow>}
             <FactRow term="Agent">{agent ?? 'Not recorded'}</FactRow>
+            {run.harnessStop?.exitCode !== undefined && <FactRow term="Agent exit code">{run.harnessStop.exitCode}</FactRow>}
+            {run.harnessStop?.signal !== undefined && <FactRow term="Agent exit signal">{run.harnessStop.signal}</FactRow>}
+            {Object.entries(run.harnessStop?.fields ?? {}).map(([field, value]) => <FactRow key={field} term={field}>{value}</FactRow>)}
             <FactRow term="Model"><ModelSummary run={run} variant="details" /></FactRow>
             <FactRow term="Started by">{startedBy === null ? 'Not recorded' : startedBy === 'On its schedule' ? 'Myco’s schedule' : capitalize(startedBy.replace(/^By /, ''))}</FactRow>
             {run.queuedAt !== null && <FactRow term="Queued">{dateWords(run.queuedAt)}</FactRow>}

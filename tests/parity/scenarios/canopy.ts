@@ -69,11 +69,11 @@ export const canopy: ParityScenario = {
       ] };
       expect(await tool(first.token, 'myco_run_map', { op: 'write', artifact })).toMatchObject({ written: true, commit });
       await tool(first.token, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: MAP_ACTION, summary: 'mapped' });
-      const lateError = { status: 'failed', error: 'the harness stopped: error (harness_error)', harnessStop: { code: 'harness_error', detail: 'Provider disconnected; token: sk-test-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz' } };
+      const lateError = { status: 'failed', error: 'the harness stopped: error (harness_error)', harnessStop: { code: 'harness_error', detail: 'hello hunter22 world /Users/chris/Repos/secret-project/notes.md', fields: { subtype: 'error_during_execution', terminal_reason: 'api_error', stop_reason: 'tool_use', private: 'hunter22' } } };
       expect(await end(first.runId, lateError)).toMatchObject({ ended: true, status: 'completed' });
       const detail = await owner(`${endpoint}/runs/${first.runId}`);
-      expect(detail.run).toMatchObject({ status: 'completed', error: null, endedNote: LATE_HARNESS_ERROR_NOTE, harnessStop: { code: 'harness_error', detail: expect.stringContaining('Provider disconnected') } });
-      expect(JSON.stringify(detail)).not.toContain('sk-test-');
+      expect(detail.run).toMatchObject({ status: 'completed', error: null, endedNote: LATE_HARNESS_ERROR_NOTE, harnessStop: { code: 'harness_error', fields: { subtype: 'error_during_execution', terminal_reason: 'api_error', stop_reason: 'tool_use' } } });
+      for (const privateText of ['hunter22', '/Users/chris', 'private']) expect(JSON.stringify(detail.run.harnessStop)).not.toContain(privateText);
       const work = await owner(`/api/work?project=${target.projectId}&since=${now - 1000}&until=${Date.now() + 10_000}`);
       expect(work.runs.find((run: { id: string }) => run.id === first.runId)).toMatchObject({ status: 'completed', failure: null });
       expect(await end(first.runId, lateError)).toMatchObject({ ended: false });

@@ -705,7 +705,7 @@ async function drive(
   const error = harnessStoppedError(last.stop, diagnostic);
   if (last.detail !== null) keepRunDiagnostic(options, run, error, last.detail);
   const refusal = last.refusal === undefined ? null : parseProfileRefusal(last.refusal);
-  const harnessStop = last.stop === 'error' ? parseHarnessStop({ ...diagnostic, detail: last.detail }, runDiagnosticSecrets(options, run)) : null;
+  const harnessStop = last.stop === 'error' ? parseHarnessStop({ ...diagnostic, fields: last.fields }) : null;
   return { status: 'failed', identity, usage, error, ...(refusal === null ? {} : { refusal }), ...(harnessStop === null ? {} : { harnessStop }) };
 }
 

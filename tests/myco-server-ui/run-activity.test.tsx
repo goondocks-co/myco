@@ -524,12 +524,33 @@ it('shows completed work with a late session error as a note, with its diagnosti
   const detail = codeMapRun();
   detail.run = { ...detail.run, status: 'completed', result: 'produced', error: null, errorCode: null,
     endedNote: 'the agent session ended with an error after the work was done',
-    harnessStop: { code: 'harness_error', exitCode: 3, signal: 'SIGTERM', detail: 'The provider disconnected.' } };
+    harnessStop: { code: 'harness_error', exitCode: 3, signal: 'SIGTERM' } };
   const { panel } = await open(detail);
   expect(panel.querySelector('[data-run-headline]')!.textContent).toBe('Updated the code map');
   expect(panel.querySelector('[data-run-ended-note]')!.textContent).toBe('The agent session ended with an error after the work was done. The work is complete.');
-  expect(panel.querySelector('[data-run-harness-stop]')!.textContent).toBe('The agent session reported an error and stopped.Exit code 3.Stopped by signal SIGTERM.The provider disconnected.');
+  expect(panel.querySelector('[data-run-harness-stop]')!.textContent).toBe('The agent reported an error and stopped.');
   expect(panel.textContent).not.toContain('Couldn’t update');
+  expect(panel.querySelector('header')!.textContent).not.toContain('Exit code');
+  expect(panel.querySelector('header')!.textContent).not.toContain('SIGTERM');
+  fireEvent.click(within(panel.querySelector('[data-run-technical]')!).getByRole('button', { name: /^Technical details/ }));
+  expect(panel.querySelector('[data-run-technical]')!.textContent).toContain('Agent exit code3');
+  expect(panel.querySelector('[data-run-technical]')!.textContent).toContain('Agent exit signalSIGTERM');
   expect(panel.textContent).not.toContain('harness_error');
   expect(within(panel).queryByRole('button', { name: /try again/i })).toBeNull();
+});
+
+for (const status of ['failed', 'completed'] as const) it(`keeps the late session note absent for ordinary ${status} work`, async () => {
+  const detail = codeMapRun();
+  detail.run = { ...detail.run, status, result: status === 'completed' ? 'produced' : 'failed',
+    error: status === 'failed' ? 'the harness stopped: error (crashed; exit code 3)' : null,
+    errorCode: status === 'failed' ? 'agent_crashed' : null,
+    ...(status === 'failed' ? { endedNote: 'the agent session ended with an error after the work was done' } : {}),
+    harnessStop: { code: 'crashed', exitCode: 3 } };
+  const { panel } = await open(detail);
+  expect(panel.querySelector('[data-run-ended-note]')).toBeNull();
+  expect(panel.querySelector('[data-run-harness-stop]')).toBeNull();
+  if (status === 'failed') {
+    expect(panel.querySelector('[data-run-failure]')!.textContent).toContain('The agent quit unexpectedly before it finished.');
+    expect(panel.querySelector('[data-run-headline]')!.textContent).toBe('This run failed');
+  } else expect(panel.querySelector('[data-run-failure]')).toBeNull();
 });

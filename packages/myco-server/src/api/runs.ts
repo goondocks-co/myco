@@ -6,7 +6,7 @@ import { RUN_UPDATE_COLUMNS, applyRunUpdate, claimRun, getRun, isTerminalRunStat
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
 import type { RunAdmissionGate, RunRow } from '../core/runs.js';
 import { releaseRun } from '../core/release.js';
-import { recordReport, decideRunEnd, runEndingContext } from '../core/run-postconditions.js';
+import { recordReport, decideRunEnd, runEndingContext, emitLateHarnessError } from '../core/run-postconditions.js';
 import { closeErrorCode, diagnosticErrorCode, type RunErrorCode } from '../core/reader-codes.js';
 import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
 import { refusal } from '../telemetry.js';
@@ -185,6 +185,7 @@ async function endRunAsCaller(
     options.errorCode ?? diagnosticErrorCode(typeof update.error === 'string' ? update.error : null), options.context,
     { ...runtimeCaller(ctx), ...(options.errorCode === undefined && options.refusalId != null ? { refusalId: options.refusalId } : {}) });
   if (changed === 1) {
+    if (before !== null) emitLateHarnessError(ctx.projectId, before, options.context);
     await releaseDispatchedRun(env, ctx, runId, update.status);
     if (options.replaced === true) await recordReplacedRun(env, ctx, runId);
   }
@@ -252,7 +253,7 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
     const ending = await decideRunEnd(env.db, scope, before, runUpdate.status, reportedError);
     context = runEndingContext(ending.endedNote, reportedError);
     if (ending.unmet !== null) {
-      const written = await endRunAsCaller(env, ctx, runId, before, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: ending.unmet } as RunUpdate, { errorCode: closeErrorCode(ending.unmet), context });
+      const written = await endRunAsCaller(env, ctx, runId, before, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: ending.unmet } as RunUpdate, { replaced: asksReplaced(body, 'failed'), errorCode: closeErrorCode(ending.unmet), context });
       if ('refused' in written) return written.refused;
       const raced = written.changed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
       if (raced !== null) return raced;

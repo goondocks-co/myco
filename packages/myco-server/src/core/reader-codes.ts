@@ -1,3 +1,4 @@
+import { diagnosticReaderCode } from '@goondocks/myco-shared/run-diagnostic';
 import { parseRunError, runErrorDiagnostic } from '@goondocks/myco-shared/run-text';
 import { type RunControlRefusalCode } from '@goondocks/myco-shared/run-control';
 export const STALE_RUN_ERROR = 'the machine running it stopped responding';
@@ -11,24 +12,9 @@ export type RunErrorCode = RunControlRefusalCode | 'machine_did_not_start' | 'ma
   | 'agent_not_signed_in' | 'agent_rate_limited' | 'agent_model_refused' | 'agent_timed_out' | 'agent_crashed'
   | 'repository_unprepared' | 'agent_failed' | 'agent_launch_failed' | 'agent_protocol_error' | 'agent_permission_refused' | 'agent_tools_unlisted' | 'agent_tools_unused' | 'run_failed';
 
-/** The reader code each harness diagnostic a reader can act on is recorded under; any other reads as `run_failed`. */
-const DIAGNOSTIC_ERROR_CODES: Readonly<Record<string, RunErrorCode>> = {
-  login_missing: 'agent_not_signed_in',
-  rate_limited: 'agent_rate_limited',
-  model_refused: 'agent_model_refused',
-  timed_out: 'agent_timed_out',
-  crashed: 'agent_crashed',
-  harness_error: 'agent_failed',
-  launch_failed: 'agent_launch_failed',
-  protocol_error: 'agent_protocol_error',
-  permission_refused: 'agent_permission_refused',
-  tools_unlisted: 'agent_tools_unlisted',
-  tools_unused: 'agent_tools_unused',
-};
-
 /** The code a run whose worker reported this error is recorded under: its diagnostic's reader code, or `run_failed`. */
 export const diagnosticErrorCode = (error: string | null): RunErrorCode =>
-  parseRunError(error ?? '')?.code === 'repository_unprepared' ? 'repository_unprepared' : DIAGNOSTIC_ERROR_CODES[runErrorDiagnostic(error) ?? ''] ?? 'run_failed';
+  parseRunError(error ?? '')?.code === 'repository_unprepared' ? 'repository_unprepared' : diagnosticReaderCode(runErrorDiagnostic(error));
 
 /** The code a run that closed short of its task's rule is recorded under. */
 export const closeErrorCode = (unmet: string): RunErrorCode => (unmet === RUN_CLOSE_AUDIT_ERROR ? 'report_without_audit' : 'run_failed');

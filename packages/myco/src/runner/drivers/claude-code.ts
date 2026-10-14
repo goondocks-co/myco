@@ -1,3 +1,4 @@
+import { harnessStopFields } from '@goondocks/myco-shared/run-text';
 import { sourceToolAllows } from './source-access.js';
 import { startClaudeSource } from './claude-source-permission.js';
 import { ClaudeAccounting } from './claude-accounting.js';
@@ -28,7 +29,16 @@ const STOP: Readonly<Record<string, StopReason>> = {
   max_turns: 'max_turn_requests',
   refusal: 'refusal',
   cancelled: 'cancelled',
+  pause_turn: 'end_turn',
+  stop_sequence: 'end_turn',
+  tool_use: 'end_turn',
 };
+
+const ERROR_TERMINAL_REASONS = new Set([
+  'blocking_limit', 'rapid_refill_breaker', 'prompt_too_long', 'image_error', 'model_error', 'api_error',
+  'malformed_tool_use_exhausted', 'aborted_streaming', 'aborted_tools', 'max_turns', 'budget_exhausted',
+  'structured_output_retry_exhausted', 'tool_deferred_unavailable', 'turn_setup_failed',
+]);
 
 /**
  * The permissions a run holds, pinned rather than inherited.
@@ -142,7 +152,7 @@ export const claudeCodeDriver: Driver = {
       const accountingEnv = launchEnvironment({ ...launch.env, ...env }, omitInherited);
       const accounting = new ClaudeAccounting(harness, accountingEnv);
       let ended = false;
-      let failure: string | null = null;
+      let assistantError: string | null = null;
       /** The error code of the last request the harness retried, which is what its exit says nothing else about. */
       let retried: string | null = null;
       /** The tool each call id named, so a result can be read back as that call's outcome. */
@@ -167,7 +177,7 @@ export const claudeCodeDriver: Driver = {
         } else if (type === 'assistant') {
           // An in-band error carries its code, and on a request the harness gave up on, the harness's own words for it.
           const failed = stringOf(line.error);
-          if (failed !== null) failure ??= line.is_api_error_message === true ? [failed, ...blocksOf(recordOf(line.message)).map((block) => stringOf(block.text)).filter((text): text is string => text !== null)].join(': ') : failed;
+          if (failed !== null) assistantError ??= line.is_api_error_message === true ? [failed, ...blocksOf(recordOf(line.message)).map((block) => stringOf(block.text)).filter((text): text is string => text !== null)].join(': ') : failed;
           yield* accounting.events(line);
           for (const block of blocksOf(recordOf(line.message))) {
             const kind = stringOf(block.type);
@@ -210,8 +220,13 @@ export const claudeCodeDriver: Driver = {
             yield { kind: 'ended', stop: 'error', detail: `permission refused for ${names.join(', ')}`, code: 'permission_refused', names };
             break;
           }
-          const stop = failure !== null || line.is_error === true ? 'error' : STOP[stringOf(line.stop_reason) ?? ''] ?? 'error';
-          yield { kind: 'ended', stop, detail: stop === 'error' ? failure ?? stringOf(line.terminal_reason) ?? stringOf(line.subtype) : null };
+          const subtype = stringOf(line.subtype);
+          const terminal = stringOf(line.terminal_reason);
+          const stop = line.is_error === true || subtype?.startsWith('error_') === true || (terminal !== null && ERROR_TERMINAL_REASONS.has(terminal)) ? 'error'
+            : subtype === 'success' ? 'end_turn'
+              : terminal === 'completed' ? 'end_turn' : STOP[stringOf(line.stop_reason) ?? ''] ?? 'error';
+          const fields = harnessStopFields(line);
+          yield { kind: 'ended', stop, detail: assistantError ?? (stop === 'error' ? terminal ?? subtype : null), ...(stop === 'error' && fields !== undefined ? { fields } : {}) };
         } else {
           if (type === 'system' && stringOf(line.subtype) === 'api_retry') retried = stringOf(line.error) ?? retried;
           yield { kind: 'unrecognized', shape: shapeOf(line) };
@@ -222,7 +237,7 @@ export const claudeCodeDriver: Driver = {
       if (!ended) {
         const retrying = retried === null ? '' : ` after retrying on ${retried}`;
         const exitSignal = started.signal();
-        yield { kind: 'ended', stop: 'error', detail: failure ?? `the harness wrote no result and exited ${code}${retrying}: ${started.errorText()}`, exitCode: code, ...(exitSignal === null ? {} : { signal: exitSignal }) };
+        yield { kind: 'ended', stop: 'error', detail: assistantError ?? `the harness wrote no result and exited ${code}${retrying}: ${started.errorText()}`, exitCode: code, ...(exitSignal === null ? {} : { signal: exitSignal }) };
       }
     } finally { await started.dispose(); }
   },

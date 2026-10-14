@@ -392,15 +392,42 @@ describe('the Claude Code driver', () => {
     expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'authentication_failed', exitCode: 1 });
   });
 
-  it('keeps terminal usage after an in-band failure', async () => {
+  for (const stopReason of [undefined, null, 'tool_use', 'pause_turn', 'stop_sequence', 'end_turn']) it(`reads a successful result as normal completion: ${stopReason}`, async () => {
+    const result = { ...JSON.parse(RESULT_SUCCESS), stop_reason: stopReason };
+    const dir = stubStream('claude', [JSON.stringify(result)]);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.at(-1)).toMatchObject({ kind: 'ended', stop: 'end_turn', detail: null });
+  });
+
+  for (const subtype of ['error_during_execution', 'error_max_turns', 'error_max_budget_usd', 'error_max_structured_output_retries']) it(`keeps a genuine error result failed: ${subtype}`, async () => {
+    const dir = stubStream('claude', [JSON.stringify({ ...JSON.parse(RESULT_SUCCESS), subtype, terminal_reason: 'api_error', is_error: true })]);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.at(-1)).toMatchObject({ kind: 'ended', stop: 'error', fields: { subtype, terminal_reason: 'api_error', stop_reason: 'end_turn' } });
+  });
+
+  it('keeps a recovered assistant error as diagnostic context rather than a terminal failure', async () => {
+    const dir = stubStream('claude', [
+      JSON.stringify({ type: 'assistant', error: 'rate_limit', message: { content: [] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Recovered and finished.' }] } }),
+      RESULT_SUCCESS,
+    ]);
+    process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
+    const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
+    expect(events.at(-1)).toMatchObject({ kind: 'ended', stop: 'end_turn', detail: 'rate_limit' });
+    expect(events.find((event) => event.kind === 'usage')).toMatchObject({ estimatedCostUsd: 0.5 });
+  });
+
+  it('keeps terminal usage after an unrecovered in-band failure', async () => {
     const dir = stubHarness('claude', [
       '{"type":"assistant","error":"rate_limit","message":{"content":[]}}',
-      RESULT_SUCCESS,
+      JSON.stringify({ ...JSON.parse(RESULT_SUCCESS), subtype: 'error_during_execution', is_error: true, terminal_reason: 'api_error' }),
     ], 1);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(claudeCodeDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
     expect(events.find((event) => event.kind === 'usage')).toMatchObject({ estimatedCostUsd: 0.5 });
-    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'rate_limit' });
+    expect(events.at(-1)).toMatchObject({ kind: 'ended', stop: 'error', detail: 'rate_limit' });
   });
 
   it('reads a harness that wrote no result at all as a failure, never as a success', async () => {
@@ -571,7 +598,7 @@ describe('the Codex driver', () => {
     ]);
     process.env.PATH = `${dir}:${process.env.PATH ?? ''}`;
     const events = await collect(codexDriver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal));
-    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'the model refused' });
+    expect(events.at(-1)).toEqual({ kind: 'ended', stop: 'error', detail: 'the model refused', fields: { status: 'failed' } });
   });
 
   it('writes the run\'s server into a configuration home of its own, so a host\'s own servers are out of reach', async () => {

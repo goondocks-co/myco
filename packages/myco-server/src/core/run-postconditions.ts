@@ -1,3 +1,4 @@
+import { emit } from '../telemetry.js';
 /**
  * What a run must have recorded before it may close as completed.
  *
@@ -296,4 +297,11 @@ export function runEndingContext(endedNote: string | null, error: string | null,
     ...(endedNote === null ? {} : { [ENDED_NOTE_KEY]: endedNote }),
     ...(stop === null ? {} : { [HARNESS_STOP_KEY]: JSON.stringify(stop) }),
   };
+}
+
+/** Emit the retained diagnostic only after a terminal write lands. */
+export function emitLateHarnessError(projectId: string, run: Pick<RunRow, 'id' | 'task'>, context?: Readonly<Record<string, string>>): void {
+  if (context?.[ENDED_NOTE_KEY] !== LATE_HARNESS_ERROR_NOTE) return;
+  const stop = parseHarnessStop(JSON.parse(context[HARNESS_STOP_KEY]!));
+  emit({ kind: 'run_late_harness_error', runId: run.id, projectId, task: run.task, code: stop!.code });
 }
