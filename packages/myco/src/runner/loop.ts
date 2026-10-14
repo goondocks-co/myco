@@ -2,7 +2,7 @@ import { memberServerDialUrl } from '@myco/member/server-url.js';
 import { runnerCheckIn } from '@goondocks/myco-shared/setup-guidance';
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, parseProfileRefusal, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
-import { parseRepositoryFailure, budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
+import { parseHarnessStop, HARNESS_STOP_FEATURE, type HarnessStop, parseRepositoryFailure, budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
 import { sumAttemptUsage, ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
@@ -158,7 +158,7 @@ type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'fetchImp
  * single "no answer" for both makes a refusal indistinguishable from silence.
  */
 export type WorkerAnswer =
-  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean; profileOutcome: boolean; modelCatalog: boolean; steps: boolean; repositoryFailure?: boolean }
+  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean; profileOutcome: boolean; modelCatalog: boolean; steps: boolean; repositoryFailure?: boolean; harnessStop?: boolean }
   | { kind: 'refused'; code: string; detail: string }
   | { kind: 'unreachable'; detail: string };
 
@@ -250,6 +250,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   let modelCatalog = false;
   let steps = false;
   let repositoryFailure = false;
+  let harnessStop = false;
   try {
     const res = await send(memberServerDialUrl(new URL(path, options.serverUrl).toString()), {
       method: 'POST',
@@ -261,6 +262,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
     executionProfile = featureAdvertised(res.headers.get(FEATURES_HEADER), EXECUTION_PROFILE_FEATURE);
     profileOutcome = featureAdvertised(res.headers.get(FEATURES_HEADER), PROFILE_OUTCOME_FEATURE);
     modelCatalog = featureAdvertised(res.headers.get(FEATURES_HEADER), MODEL_CATALOG_FEATURE);
+    harnessStop = featureAdvertised(res.headers.get(FEATURES_HEADER), HARNESS_STOP_FEATURE);
     repositoryFailure = featureAdvertised(res.headers.get(FEATURES_HEADER), REPOSITORY_FAILURE_FEATURE);
     steps = featureAdvertised(res.headers.get(FEATURES_HEADER), WORKER_STEPS_FEATURE);
     raw = await rawAnswerOf(res, options.signal);
@@ -270,7 +272,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   const outcome = classifyEventAnswer(raw);
   switch (outcome.class) {
     case 'acked':
-      return { kind: 'answered', body: outcome.body, accounting, executionProfile, profileOutcome, modelCatalog, steps, ...(repositoryFailure ? { repositoryFailure: true } : {}) };
+      return { kind: 'answered', body: outcome.body, accounting, executionProfile, profileOutcome, modelCatalog, steps, ...(repositoryFailure ? { repositoryFailure: true } : {}), ...(harnessStop ? { harnessStop: true } : {}) };
     case 'protocol':
       return {
         kind: 'refused',
@@ -462,7 +464,7 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
  */
 async function drive(
   options: WorkerOptions, run: ClaimedRun, lease: AttemptLease, wake: WakeWatch, keepsSteps: boolean, recheckLogin?: () => Promise<boolean>,
-): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity; refusal?: ProfileRefusal; repositoryFailure?: RepositoryFailure } | { status: 'lost'; error: null }> {
+): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity; refusal?: ProfileRefusal; repositoryFailure?: RepositoryFailure; harnessStop?: HarnessStop } | { status: 'lost'; error: null }> {
   const clock = options.clock ?? Date.now;
   // A claim answered after its own lease ran out — its answer held up by a
   // machine that slept, or a network that stalled — is another worker's run
@@ -532,7 +534,7 @@ async function drive(
   const stepLog = keepsSteps && run.attemptId !== undefined ? new StepLog(named, clock) : null;
   let stream: AsyncIterator<RunEvent> | undefined;
   let checkout: RepositoryCheckout | undefined;
-  let failure: { code: WorkerFailureCode; words: string; repositoryFailure?: RepositoryFailure } | null = null;
+  let failure: { code: WorkerFailureCode; words: string; repositoryFailure?: RepositoryFailure; harnessStop?: HarnessStop } | null = null;
   let preparing = false;
   const prepare = async (): Promise<void> => {
     if (run.repository !== undefined) {
@@ -699,11 +701,16 @@ async function drive(
   const last = events.at(-1);
   if (last === undefined || last.kind !== 'ended') return { status: 'failed', error: HARNESS_NO_ENDING_ERROR, identity, usage };
   if (last.stop === 'end_turn') return { status: 'completed', error: failedCallsNote(events), identity, usage };
-  // The record carries the coded reason; the harness's own words stay in this machine's diagnostics log.
-  const error = harnessStoppedError(last.stop, last.stop === 'error' ? classifyDiagnostic(run.harness, last) : undefined);
+  const diagnostic = last.stop === 'error' ? classifyDiagnostic(run.harness, last) : undefined;
+  const error = harnessStoppedError(last.stop, diagnostic);
   if (last.detail !== null) keepRunDiagnostic(options, run, error, last.detail);
   const refusal = last.refusal === undefined ? null : parseProfileRefusal(last.refusal);
-  return { status: 'failed', identity, usage, error, ...(refusal === null ? {} : { refusal }) };
+  const harnessStop = last.stop === 'error' ? parseHarnessStop({ ...diagnostic, detail: last.detail }, runDiagnosticSecrets(options, run)) : null;
+  return { status: 'failed', identity, usage, error, ...(refusal === null ? {} : { refusal }), ...(harnessStop === null ? {} : { harnessStop }) };
+}
+
+function runDiagnosticSecrets(options: WorkerOptions, run: ClaimedRun): string[] {
+  return [run.runToken, ...(typeof options.token === 'string' ? [options.token] : []), ...Object.values(run.credentialEnv)];
 }
 
 /** Keep what a harness or this worker said about a failed run on this machine; a log that cannot be written is said in the worker's log. */
@@ -712,7 +719,7 @@ function keepRunDiagnostic(options: WorkerOptions, run: ClaimedRun, error: strin
   options.log(`run ${run.id} failed: ${error}${root === undefined ? '' : `; what was said is kept in ${root}`}`);
   if (root === undefined) return;
   try {
-    keepDiagnostic(root, { runId: run.id, harness: run.harness, error, detail }, (options.clock ?? Date.now)(), { secrets: [run.runToken, ...(typeof options.token === 'string' ? [options.token] : []), ...Object.values(run.credentialEnv)] });
+    keepDiagnostic(root, { runId: run.id, harness: run.harness, error, detail }, (options.clock ?? Date.now)(), { secrets: runDiagnosticSecrets(options, run) });
   } catch (error) {
     options.log(`could not keep the diagnostics of ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -1059,6 +1066,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
           } : { attemptId: run.attemptId, usage: outcome.usage == null ? null : legacyUsage as WorkerUsage };
           const ended = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error,
             ...accounting,
+            ...(answer.harnessStop && outcome.harnessStop !== undefined ? { harnessStop: parseHarnessStop(outcome.harnessStop) } : {}),
             ...(answer.repositoryFailure && outcome.repositoryFailure !== undefined ? { repositoryFailure: parseRepositoryFailure(outcome.repositoryFailure) } : {}),
             ...(answer.profileOutcome && outcome.refusal !== undefined ? { refusal: outcome.refusal } : {}),
           }));

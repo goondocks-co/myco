@@ -1,3 +1,4 @@
+import { harnessStopFromError, parseHarnessStop, MAX_HARNESS_STOP_DETAIL_CHARS } from '@goondocks/myco-shared/run-text';
 import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
 import { MAX_REPOSITORY_FAILURE_SUMMARY_CHARS } from '@goondocks/myco-shared/repository';
 /**
@@ -334,4 +335,27 @@ it('removes known credentials after invisible-character normalization', () => {
   const reason = parseRepositoryFailure({ code: 'fetch_failed', summary: 'fatal: a\u200B!b https://user:a\u200B!b@example.test/repo' }, [token])!;
   expect(JSON.stringify(reason)).not.toContain(token);
   expect(reason.summary).toContain('fatal:');
+});
+
+
+it('bounds and redacts structured harness stop detail before storage, including known credentials', () => {
+  const secret = 'syntheticRunCredential';
+  const stop = parseHarnessStop({ code: 'harness_error', detail: `Provider disconnected ${secret}; token: sk-test-${'z'.repeat(40)}
+${'detail '.repeat(200)}`, exitCode: 3 }, [secret]);
+  expect(stop).toMatchObject({ code: 'harness_error', exitCode: 3 });
+  expect(stop!.detail!.length).toBeLessThanOrEqual(MAX_HARNESS_STOP_DETAIL_CHARS);
+  expect(stop!.detail).toContain('Provider disconnected');
+  expect(stop!.detail).not.toContain(secret);
+  expect(stop!.detail).not.toContain('sk-test-');
+  expect(stop!.detail).not.toContain('\n');
+  expect(parseHarnessStop(stop)?.detail).toContain('Provider disconnected');
+  expect(parseHarnessStop(stop)?.detail).not.toContain(secret);
+  expect(parseHarnessStop({ code: 'arbitrary', detail: 'private' })).toBeNull();
+});
+
+
+it('retains all safe diagnostic fields from an older runner coded ending', () => {
+  expect(harnessStopFromError('the harness stopped: error (permission_refused: myco_run; exit code 3; signal SIGTERM)'))
+    .toEqual({ code: 'permission_refused', names: ['myco_run'], exitCode: 3, signal: 'SIGTERM' });
+  expect(harnessStopFromError('the harness stopped: error (unknown; token: private)')).toBeNull();
 });

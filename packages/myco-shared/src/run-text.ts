@@ -10,7 +10,7 @@
  *   alone (`RunDiagnosticCode`), with the exit code and signal where the process gave them and, for a refused call,
  *   the tool identifiers it named. The code is read from structured fields first, then from the harness's own words
  *   by the patterns its manifest declares (`runner.diagnostics`), then from its exit status. The words themselves are
- *   projected to bounded masked detail in the worker's local diagnostics log, never sent. The Deployment keeps a run
+ *   projected to bounded masked detail in local diagnostics and structured harness stop reports. The Deployment keeps a run
  *   error only where it parses as a sentence this module writes (`shapeRunError`), and codes anything else again from its words.
  * - **Agent prose** — a report's summary and details, and an audit's steps, reasoning and failures — is the agent's
  *   own account of its work, the point of the audit, so it cannot be allow-listed. It is stored bounded and masked
@@ -21,6 +21,9 @@
  *   stored with the run and kept as long as the run is.
  */
 
+import { RUN_DIAGNOSTIC_CODES, type RunDiagnosticCode, type PatternedDiagnosticCode, type RunDiagnostic, type HarnessStop } from './run-diagnostic.js';
+export { PATTERNED_DIAGNOSTIC_CODES, RUN_DIAGNOSTIC_CODES, LATE_HARNESS_ERROR_NOTE, type RunDiagnosticCode, type PatternedDiagnosticCode, type RunDiagnostic, type HarnessStop } from './run-diagnostic.js';
+
 import { REPOSITORY_FAILURE_CODES, MAX_REPOSITORY_FAILURE_SUMMARY_CHARS, type RepositoryFailure, type RepositoryFailureCode } from './repository.js';
 import { commandShape, identifierShape, keyLike, urlShape, ZERO_WIDTH } from './command-shape.js';
 import { redactSecrets } from './redact-secrets.js';
@@ -30,25 +33,8 @@ import { RUNNER_HARNESSES } from './runner-harnesses.generated.js';
 const ELIDED = '…';
 
 // ---------------------------------------------------------------------------------------------------------------
-// Diagnostics: a coded reason, never the words.
+// Diagnostics: a coded reason with bounded, sanitized detail.
 // ---------------------------------------------------------------------------------------------------------------
-
-/** The reasons a harness's own words can be read as, by the patterns its manifest declares. */
-export const PATTERNED_DIAGNOSTIC_CODES = ['login_missing', 'rate_limited', 'model_refused', 'timed_out'] as const;
-
-/**
- * Why a harness stopped with an error, as a code: one its words are read as (`PATTERNED_DIAGNOSTIC_CODES`); a process
- * that exited non-zero or on a signal with no other reason (`crashed`); one its driver knows from the stream's
- * structure (a granted call refused, the claimed profile unapplied, the run's tools unlisted, a session opened outside
- * the run's agent, a reply the protocol does not name, a launch that could not be prepared); or none of these
- * (`harness_error`).
- */
-export const RUN_DIAGNOSTIC_CODES = [
-  ...PATTERNED_DIAGNOSTIC_CODES,
-  'crashed', 'permission_refused', 'profile_unapplied', 'tools_unlisted', 'tools_unused', 'session_unasked', 'protocol_error', 'launch_failed', 'harness_error',
-] as const;
-export type RunDiagnosticCode = (typeof RUN_DIAGNOSTIC_CODES)[number];
-export type PatternedDiagnosticCode = (typeof PATTERNED_DIAGNOSTIC_CODES)[number];
 
 /** Why a worker did not start a run's harness. */
 export const WORKER_START_CODES = ['harness_not_offered', 'no_driver', 'profile_unapplied', 'no_instruction'] as const;
@@ -62,19 +48,15 @@ export type WorkerFailureCode = (typeof WORKER_FAILURE_CODES)[number];
 export const RUN_STOP_REASONS = ['end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled', 'error'] as const;
 export type RunStopReason = (typeof RUN_STOP_REASONS)[number];
 
-/** A harness's error, coded: the reason, the exit code and signal where its process gave them, and the tools a refusal named. */
-export interface RunDiagnostic {
-  code: RunDiagnosticCode;
-  exitCode?: number;
-  signal?: string;
-  names?: readonly string[];
-}
+/** Structured harness diagnostics supported by a Deployment's worker end reports. */
+export const HARNESS_STOP_FEATURE = 'harness-stop-v1';
+export const MAX_HARNESS_STOP_DETAIL_CHARS = 512;
 
 /** What a driver knows of how a harness ended: a code where its stream's structure says one, its words, and its exit status. */
 export interface HarnessEnding {
   code?: RunDiagnosticCode;
   names?: readonly string[];
-  /** The harness's own words, read for a code and projected before local logging. */
+  /** The harness's own words, read for a code and projected before logging or reporting. */
   detail?: string | null;
   exitCode?: number | null;
   signal?: string | null;
@@ -221,7 +203,7 @@ export type ParsedRunError = { code: RunDiagnosticCode | WorkerStartCode | Worke
 const DIAGNOSTIC = new RegExp(`^(${RUN_DIAGNOSTIC_CODES.join('|')})(?:: ([^;]+))?(?:; exit code (-?\\d{1,6}))?(?:; signal (SIG[A-Z0-9]{1,12}))?$`);
 
 /** A diagnostic's words as `diagnosticWords` writes them, or null. */
-function parseDiagnostic(words: string): RunDiagnosticCode | null {
+function parseDiagnostic(words: string): RunDiagnostic | null {
   const parsed = DIAGNOSTIC.exec(words);
   if (parsed === null) return null;
   const code = parsed[1] as RunDiagnosticCode;
@@ -229,7 +211,18 @@ function parseDiagnostic(words: string): RunDiagnosticCode | null {
     const names = parsed[2].split(', ');
     if (code !== 'permission_refused' || names.length > MAX_NAMES || names.some((name) => identifierShape(name, 64) !== name)) return null;
   }
-  return code;
+  return {
+    code,
+    ...(parsed[2] === undefined ? {} : { names: parsed[2].split(', ') }),
+    ...(parsed[3] === undefined ? {} : { exitCode: Number(parsed[3]) }),
+    ...(parsed[4] === undefined ? {} : { signal: parsed[4] }),
+  };
+}
+
+/** Structured diagnostics from a coded harness error, including older runner endings. */
+export function harnessStopFromError(text: string): HarnessStop | null {
+  const stopped = /^the harness stopped: error \((.+)\)$/.exec(text);
+  return stopped === null ? null : parseDiagnostic(stopped[1]!);
 }
 
 /** Whether every kind of call a failed-calls note names is an identifier with a coded outcome. */
@@ -250,7 +243,7 @@ export function parseRunError(text: string): ParsedRunError {
     if (!isCode(RUN_STOP_REASONS, stop)) return null;
     if (stop !== 'error') return stopped[2] === undefined ? { code: null, stop } : null;
     const code = stopped[2] === undefined ? null : parseDiagnostic(stopped[2]);
-    return code === null ? null : { code, stop };
+    return code === null ? null : { code: code.code, stop };
   }
   const worker = /^(the worker could not start the run|the worker failed while driving the run|the worker reported a failure) \(([a-z_]+)(?:: (\S+))?\)$/.exec(text);
   if (worker !== null) {
@@ -547,13 +540,33 @@ export function parseRepositoryFailure(value: unknown, secrets: readonly string[
   const code = Reflect.get(value, 'code');
   if (typeof code !== 'string' || !(REPOSITORY_FAILURE_CODES as readonly string[]).includes(code)) return null;
   let summary = code === 'fetch_failed' && typeof Reflect.get(value, 'summary') === 'string' ? String(Reflect.get(value, 'summary')) : '';
-  summary = summary.replace(ZERO_WIDTH, '');
+  summary = maskDiagnosticSecrets(summary, secrets);
+  const safe = agentProse(summary, MAX_REPOSITORY_FAILURE_SUMMARY_CHARS, { singleLine: true });
+  return { code: code as RepositoryFailureCode, ...(safe === null ? {} : { summary: safe }) };
+}
+
+/** Remove the caller's known credentials before prose projection or truncation. */
+function maskDiagnosticSecrets(detail: string, secrets: readonly string[]): string {
+  detail = detail.replace(ZERO_WIDTH, '');
   for (const secret of secrets.map(value => value.replace(ZERO_WIDTH, '')).filter(value => value !== '').sort((a, b) => b.length - a.length)) {
     const bytes = new TextEncoder().encode(secret);
     for (const encoded of [secret, encodeURIComponent(new TextDecoder().decode(bytes)), btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(''))]) {
-      summary = summary.split(encoded).join('[REDACTED]');
+      detail = detail.split(encoded).join('[REDACTED]');
     }
   }
-  const safe = agentProse(summary, MAX_REPOSITORY_FAILURE_SUMMARY_CHARS, { singleLine: true });
-  return { code: code as RepositoryFailureCode, ...(safe === null ? {} : { summary: safe }) };
+  return detail;
+}
+
+/** Closed diagnostic classes and short sanitized detail, admitted again at the Deployment. */
+export function parseHarnessStop(value: unknown, secrets: readonly string[] = []): HarnessStop | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const code = Reflect.get(value, 'code');
+  if (typeof code !== 'string' || !isCode(RUN_DIAGNOSTIC_CODES, code)) return null;
+  const diagnostic = classifyDiagnostic(null, {
+    code, exitCode: Reflect.get(value, 'exitCode'), signal: Reflect.get(value, 'signal'),
+    names: Array.isArray(Reflect.get(value, 'names')) ? Reflect.get(value, 'names').filter((name: unknown) => typeof name === 'string') : undefined,
+  });
+  const raw = Reflect.get(value, 'detail');
+  const detail = typeof raw === 'string' ? agentProse(maskDiagnosticSecrets(raw, secrets), MAX_HARNESS_STOP_DETAIL_CHARS, { singleLine: true }) : null;
+  return { ...diagnostic, ...(detail === null ? {} : { detail }) };
 }

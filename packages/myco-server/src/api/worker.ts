@@ -1,4 +1,4 @@
-import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
+import { parseRepositoryFailure, parseHarnessStop } from '@goondocks/myco-shared/run-text';
 
 import { parseWorkerAccounting, WorkerUsageError } from '@goondocks/myco-shared/worker-usage';
 /**
@@ -147,6 +147,7 @@ export async function handleWorkerEnd(env: ServerEnv, ctx: DeploymentContext): P
       ...run, status, ...parseWorkerAccounting(asked), error: typeof asked.error === 'string' ? asked.error : null,
       refusal: parseProfileRefusal(asked.refusal),
       repositoryFailure: parseRepositoryFailure(asked.repositoryFailure),
+      harnessStop: parseHarnessStop(asked.harnessStop),
     });
     return ok({ persisted: true, ...outcome });
   } catch (error) {

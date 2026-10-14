@@ -464,3 +464,24 @@ export function allowanceWords(allowance: { perDay: number; used: number }): str
   if (allowance.perDay <= 0 || left <= 0) return null;
   return `You can start it ${times(left)} more today.`;
 }
+
+
+/** The harness session's diagnostic, independent of whether its task finished. */
+export function harnessStopWords(code: string): string {
+  const words: Readonly<Record<string, string>> = {
+    login_missing: 'The agent session stopped because it was not signed in.',
+    rate_limited: 'The agent session stopped because its provider limited requests.',
+    model_refused: 'The agent session stopped because its provider refused the model.',
+    timed_out: 'The agent session ran out of time.',
+    crashed: 'The agent session quit unexpectedly.',
+    permission_refused: 'The agent session was refused a tool.',
+    profile_unapplied: 'The agent session could not use its requested settings.',
+    tools_unlisted: 'The agent session could not list its tools.',
+    tools_unused: 'The agent session did not use Myco’s tools.',
+    session_unasked: 'The agent session started outside its assigned task.',
+    protocol_error: 'The agent session answered in a way the runner could not read.',
+    launch_failed: 'The agent session could not start.',
+    harness_error: 'The agent session reported an error and stopped.',
+  };
+  return words[code] ?? words.harness_error!;
+}

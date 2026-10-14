@@ -518,3 +518,18 @@ describe('evidence Myco can’t place or load', () => {
     expect(within(panel).getByRole('region', { name: 'What it did' }).querySelector('[data-coverage="unavailable"]')!.textContent).toContain('couldn’t be loaded');
   });
 });
+
+
+it('shows completed work with a late session error as a note, with its diagnostic in user words', async () => {
+  const detail = codeMapRun();
+  detail.run = { ...detail.run, status: 'completed', result: 'produced', error: null, errorCode: null,
+    endedNote: 'the agent session ended with an error after the work was done',
+    harnessStop: { code: 'harness_error', exitCode: 3, signal: 'SIGTERM', detail: 'The provider disconnected.' } };
+  const { panel } = await open(detail);
+  expect(panel.querySelector('[data-run-headline]')!.textContent).toBe('Updated the code map');
+  expect(panel.querySelector('[data-run-ended-note]')!.textContent).toBe('The agent session ended with an error after the work was done. The work is complete.');
+  expect(panel.querySelector('[data-run-harness-stop]')!.textContent).toBe('The agent session reported an error and stopped.Exit code 3.Stopped by signal SIGTERM.The provider disconnected.');
+  expect(panel.textContent).not.toContain('Couldn’t update');
+  expect(panel.textContent).not.toContain('harness_error');
+  expect(within(panel).queryByRole('button', { name: /try again/i })).toBeNull();
+});

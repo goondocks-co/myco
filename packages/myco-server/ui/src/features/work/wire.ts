@@ -1,3 +1,4 @@
+import type { HarnessStop } from '@goondocks/myco-shared/run-diagnostic';
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 import type { StepKind, StepOutcome, UnrecognizedCount } from '@goondocks/myco-shared/worker-steps';
@@ -44,6 +45,8 @@ export interface RunFields {
   costProvenance: CostProvenance | null;
   provider: string | null;
   repositoryFailure?: RepositoryFailure | null;
+  harnessStop?: HarnessStop | null;
+  endedNote?: string | null;
 
   id: string;
   agentId: string;

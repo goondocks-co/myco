@@ -6,7 +6,7 @@ import { RUN_UPDATE_COLUMNS, applyRunUpdate, claimRun, getRun, isTerminalRunStat
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
 import type { RunAdmissionGate, RunRow } from '../core/runs.js';
 import { releaseRun } from '../core/release.js';
-import { recordReport, runCloseRefusal } from '../core/run-postconditions.js';
+import { recordReport, decideRunEnd, runEndingContext } from '../core/run-postconditions.js';
 import { closeErrorCode, diagnosticErrorCode, type RunErrorCode } from '../core/reader-codes.js';
 import { HARNESS_MEMBER_ID, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
 import { refusal } from '../telemetry.js';
@@ -176,13 +176,13 @@ type RunWrite = { refused: Response } | { changed: number };
  */
 async function endRunAsCaller(
   env: ServerEnv, ctx: RouteContext, runId: string, before: RunRow | null,
-  update: RunUpdate, options: { replaced?: boolean; errorCode?: RunErrorCode; refusalId?: string | null } = {},
+  update: RunUpdate, options: { replaced?: boolean; errorCode?: RunErrorCode; refusalId?: string | null; context?: Readonly<Record<string, string>> } = {},
 ): Promise<RunWrite> {
   const foreign = foreignCredentialAnswer(ctx, before);
   if (foreign !== null) return { refused: foreign };
   const scope = { projectId: ctx.projectId };
   const changed = await applyRunUpdate(env.db, scope, runId, update, undefined,
-    options.errorCode ?? diagnosticErrorCode(typeof update.error === 'string' ? update.error : null), undefined,
+    options.errorCode ?? diagnosticErrorCode(typeof update.error === 'string' ? update.error : null), options.context,
     { ...runtimeCaller(ctx), ...(options.errorCode === undefined && options.refusalId != null ? { refusalId: options.refusalId } : {}) });
   if (changed === 1) {
     await releaseDispatchedRun(env, ctx, runId, update.status);
@@ -236,7 +236,7 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   const guarded = 'status' in update;
   const row = await getRun(env.db, scope, runId);
   const before = row;
-  const runUpdate = decodeRunUpdate(update as Record<string, unknown>, row?.harness ?? null);
+  let runUpdate = decodeRunUpdate(update as Record<string, unknown>, row?.harness ?? null);
   if (runUpdate === null) {
     return Response.json(refused(ctx, refusal('update holds a value outside its column\'s shape: an error is text, usage and cost data are JSON objects, a cost source an identifier, and the rest numbers', 'invalid_field')));
   }
@@ -246,17 +246,21 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   if (foreign !== null) return foreign;
   const settled = guarded ? endedAnswer(before?.status, runUpdate.status) : null;
   if (settled !== null) return settled;
-  if (runUpdate.status === 'completed') {
-    const missing = before === null ? null : await runCloseRefusal(env.db, scope, before);
-    if (missing !== null) {
-      const written = await endRunAsCaller(env, ctx, runId, before, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: missing } as RunUpdate, { errorCode: closeErrorCode(missing) });
+  let context: Record<string, string> | undefined;
+  if (before !== null && (runUpdate.status === 'completed' || runUpdate.status === 'failed')) {
+    const reportedError = typeof runUpdate.error === 'string' ? runUpdate.error : null;
+    const ending = await decideRunEnd(env.db, scope, before, runUpdate.status, reportedError);
+    context = runEndingContext(ending.endedNote, reportedError);
+    if (ending.unmet !== null) {
+      const written = await endRunAsCaller(env, ctx, runId, before, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: ending.unmet } as RunUpdate, { errorCode: closeErrorCode(ending.unmet), context });
       if ('refused' in written) return written.refused;
       const raced = written.changed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
       if (raced !== null) return raced;
       return Response.json({ persisted: true, changed: written.changed, applied: false, reason: 'postcondition' });
     }
+    runUpdate = { ...runUpdate, status: ending.status, ...(ending.endedNote === null ? {} : { error: null }) };
   }
-  const written = await endRunAsCaller(env, ctx, runId, before, runUpdate, { replaced: asksReplaced(body, runUpdate.status), refusalId: body.refusalId });
+  const written = await endRunAsCaller(env, ctx, runId, before, runUpdate, { replaced: asksReplaced(body, runUpdate.status), refusalId: body.refusalId, context });
   if ('refused' in written) return written.refused;
   const changed = written.changed;
   if (changed === 1) return Response.json({ persisted: true, changed, applied: true });

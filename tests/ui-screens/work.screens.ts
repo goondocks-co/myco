@@ -350,3 +350,31 @@ for (const viewport of ['desktop', 'phone'] as const) for (const mode of ['light
     } finally { await context.close(); }
   });
 }
+
+
+for (const viewport of ['desktop', 'phone'] as const) test(`completed work retains a late session error: ${viewport}`, async ({ browser }) => {
+  test.skip(!onFixture(), 'Requires the screen fixture.');
+  const { context, page, watch } = await openPage(browser, { path: workPath(), viewport, mode: 'light', cookie: screensEnv('ownerCookie') });
+  try {
+    await page.route('**/api/projects/*/runs/*', async route => {
+      const response = await route.fetch();
+      const detail = await response.json();
+      if (detail.run) Object.assign(detail.run, {
+        status: 'completed', result: 'produced', error: null, errorCode: null,
+        endedNote: 'the agent session ended with an error after the work was done',
+        harnessStop: { code: 'harness_error', detail: 'The provider disconnected.' },
+      });
+      await route.fulfill({ response, json: detail });
+    });
+    await card(page, 'map').getByRole('link', { name: 'Open the latest attempt →' }).click();
+    const panel = page.locator('[data-slide-over]');
+    await expect(panel.locator('[data-run-headline]')).toHaveText('Updated the code map');
+    await expect(panel.locator('[data-run-ended-note]')).toHaveText('The agent session ended with an error after the work was done. The work is complete.');
+    await expect(panel.locator('[data-run-harness-stop]')).toContainText('The agent session reported an error and stopped.');
+    await expect(panel.locator('[data-run-harness-stop]')).toContainText('The provider disconnected.');
+    await expect(panel.locator('[data-run-failure]')).toHaveCount(0);
+    await expectFits(page, viewport);
+    await expectAxeClean(page);
+    await expectQuiet(watch);
+  } finally { await context.close(); }
+});

@@ -1,3 +1,4 @@
+import { LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-diagnostic';
 import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { formatRelative } from '../../lib/format';
 import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
@@ -16,7 +17,7 @@ import { ActivitySection, AgentAccount, FilesReadPart, summaryOf, useAttemptEvid
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { InkLink, OnwardLink, PartLabel } from './OutcomeCard';
 import {
-  atWords, runErrorWords, deployWords, fullErrorWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
+  harnessStopWords, atWords, runErrorWords, deployWords, fullErrorWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
 } from './words';
 
 export interface RunPanelProps {
@@ -92,6 +93,13 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
           {startedBy !== null && <><span aria-hidden>·</span><span data-started-by="">{startedKicker(startedBy)}</span></>}
           {deploy !== null && <><span aria-hidden>·</span><span>{deploy}</span></>}
         </p>
+        {run.endedNote === LATE_HARNESS_ERROR_NOTE && <p className="t-small text-muted" data-run-ended-note="">The agent session ended with an error after the work was done. The work is complete.</p>}
+        {run.harnessStop != null && <div className="t-small text-muted" data-run-harness-stop="">
+          <p>{harnessStopWords(run.harnessStop.code)}</p>
+          {run.harnessStop.exitCode !== undefined && <p>Exit code {run.harnessStop.exitCode}.</p>}
+          {run.harnessStop.signal !== undefined && <p>Stopped by signal {run.harnessStop.signal}.</p>}
+          {run.harnessStop.detail && <p>{redactSecrets(run.harnessStop.detail)}</p>}
+        </div>}
         {ran && summary !== null && <p className="t-body text-ink-2" data-run-summary="">{summary}</p>}
         {run.task !== null && <TaskName projectId={projectId} task={run.task} />}
         <ModelSummary run={run} />

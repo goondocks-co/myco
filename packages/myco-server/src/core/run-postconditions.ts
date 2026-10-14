@@ -34,7 +34,8 @@
  * catalogue's own. A task with no entry would close on the runtime's word while
  * reading as governed, so there is no entry that means "no rule".
  */
-import { agentProse, strictName } from '@goondocks/myco-shared/run-text';
+import { agentProse, strictName, parseRunError, LATE_HARNESS_ERROR_NOTE, parseHarnessStop, harnessStopFromError, type HarnessStop } from '@goondocks/myco-shared/run-text';
+import { HARNESS_STOP_KEY, ENDED_NOTE_KEY } from '../db/run-context.js';
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 import { listReports, runRecordedWrite, sessionNamedByRun, type RunRow, getRun, insertReport, type ReportInsert, type RunCaller } from './runs.js';
@@ -273,4 +274,26 @@ export async function recordReport(db: RelationalStore, scope: ReadScope, report
   const summary = agentProse(report.summary, MAX_REPORT_SUMMARY_CHARS) ?? '…';
   const details = report.details === null ? null : agentProse(report.details, MAX_REPORT_DETAILS_CHARS);
   return (await insertReport(db, scope, { ...report, summary, details, audit }, caller)) ? { recorded: true, auditError, auditRepairs } : { recorded: false, reason: 'unheld' };
+}
+
+
+/** Resolve a runtime ending against the task's persisted evidence. */
+export async function decideRunEnd(
+  db: RelationalStore, scope: ReadScope, run: RunRow, reportedStatus: 'completed' | 'failed', error: string | null,
+): Promise<{ status: 'completed' | 'failed'; unmet: string | null; endedNote: string | null }> {
+  const harnessError = reportedStatus === 'failed' && parseRunError(error ?? '')?.stop === 'error' && closeRuleFor(run.task) !== undefined;
+  if (reportedStatus !== 'completed' && !harnessError) return { status: reportedStatus, unmet: null, endedNote: null };
+  const unmet = await runCloseRefusal(db, scope, run);
+  if (harnessError && unmet === RUN_CLOSE_ERROR) return { status: 'failed', unmet: null, endedNote: null };
+  return { status: unmet === null ? 'completed' : 'failed', unmet, endedNote: harnessError && unmet === null ? LATE_HARNESS_ERROR_NOTE : null };
+}
+
+/** Preserve the harness ending separately from the task's status and error. */
+export function runEndingContext(endedNote: string | null, error: string | null, offered?: HarnessStop | null): Record<string, string> {
+  const parsed = parseRunError(error ?? '');
+  const stop = parsed?.stop === 'error' ? parseHarnessStop(offered) ?? harnessStopFromError(error!) : null;
+  return {
+    ...(endedNote === null ? {} : { [ENDED_NOTE_KEY]: endedNote }),
+    ...(stop === null ? {} : { [HARNESS_STOP_KEY]: JSON.stringify(stop) }),
+  };
 }
