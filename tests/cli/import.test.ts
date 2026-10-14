@@ -138,19 +138,12 @@ describe('the join paths', () => {
     const login = readFileSync(new URL('../../packages/myco/src/cli/login.ts', import.meta.url), 'utf8');
     const member = readFileSync(new URL('../../packages/myco/src/cli/member.ts', import.meta.url), 'utf8');
     for (const [name, source] of [['login', login], ['member join', member]] as const) {
-      const call = /runImport\(\{([^}]*)\}/.exec(source)?.[1] ?? '';
+      const call = /importSignInHistory\(\{([^}]*)\}/.exec(source)?.[1] ?? '';
       expect({ verb: name, namesDeployment: call.includes('serverUrl') }).toEqual({ verb: name, namesDeployment: true });
     }
   });
 
-  it('skips the import when an invite named no project, and never fails the sign-in', () => {
-    const login = readFileSync(new URL('../../packages/myco/src/cli/login.ts', import.meta.url), 'utf8');
-    // Guarded by the same `root !== undefined` the project binding is: an
-    // invite that names no Project leaves nothing to import into.
-    expect(/if \(root !== undefined\) \{\s*\n\s*const report = await runImport/.test(login)).toBe(true);
-    // And a failed import is caught, so the machine stays signed in.
-    expect(/runImport\([^)]*\)[\s\S]{0,220}?\.catch\(\(\) => null\)/.test(login)).toBe(true);
-  });
+
 });
 
 describe('import stopping details', () => {

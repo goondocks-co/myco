@@ -7,7 +7,7 @@ import { logoutJournalPath } from '@myco/member/logout.js';
 import { logoutDeployment, type LogoutRuntimeDeps } from '@myco/symbionts/logout-runtime.js';
 import { run as logoutCli } from '@myco/cli/logout.js';
 import {
-  deploymentPath, deploymentFeaturesPath, machineSettingsPath, registryEntryPath, readDeploymentMembership,
+  deploymentPath, deploymentFeaturesPath, machineSettingsPath, registryEntryPath, readDeploymentMembership, readRegistryEntry,
   writeDeploymentMembership, writeRegistryEntry,
 } from '@myco/member/registry.js';
 import { defaultDeploymentPath, readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
@@ -89,7 +89,7 @@ describe('Deployment-scoped logout', () => {
       expect(bytes(deploymentPath(A, mycoHome))).toEqual(held);
       const out: string[] = [];
       expect(await logoutCli([A, '--local-only'], { ...deps, fetch: rig.fetch, stdout: (s) => out.push(s) })).toBe(true);
-      expect(out.join('\n')).toContain('Credential still valid on the Deployment');
+      expect(out.join('\n')).toContain('Credential may stay valid on the server until it expires');
       expect(out.join('\n')).toContain('› machine_1 › Stop');
       expect((await rig.fetch(`${A}/members/status`, { method: 'POST', headers: rig.headers(), body: '{}' })).status).toBe(200);
     } finally { Array.prototype.splice.call(ROUTES, index, 0, route); rig.env.sqlite.close(); }
@@ -454,15 +454,36 @@ describe('Deployment-scoped logout', () => {
     expect(readDeploymentMembership(A, mycoHome)).not.toBeNull();
     const lines: string[] = [];
     expect(await logoutCli([A, '--local-only'], { ...deps, stdout: (s) => lines.push(s) })).toBe(true);
-    expect(lines.join('\n')).toContain('still valid on the Deployment');
+    expect(lines.join('\n')).toContain('may stay valid on the server until it expires');
     expect(lines.join('\n')).toContain('People & machines');
   });
 
-  it('local-only does not override an explicit forbidden answer', async () => {
+  for (const status of [200, 403, 404, 410]) it(`local-only removes local state after unconfirmed revocation HTTP ${status}`, async () => {
+    const folder = join(A, 'proj_a')!;
+    const capture = spool(A, 'proj_a');
+    const before = tree(capture);
+    deps.fetch = async () => new Response('<html>This address is unavailable</html>', { status, headers: { 'content-type': 'text/html' } });
+    const lines: string[] = [];
+    expect(await logoutCli([A, '--local-only'], { ...deps, stdout: line => lines.push(line), stderr: line => lines.push(line) })).toBe(true);
+    expect(readDeploymentMembership(A, mycoHome)).toBeNull();
+    expect(readRegistryEntry(folder, mycoHome)).toBeNull();
+    expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(false);
+    expect(tree(capture)).toEqual(before);
+    expect(lines.join('\n')).toContain('Credential may stay valid on the server until it expires');
+  });
+
+  it('names local-only recovery for a missing address while keeping ordinary refusals unchanged', async () => {
     join(A);
-    deps.fetch = async () => new Response('', { status: 403 });
-    await expect(logoutDeployment(A, { mode: 'local-only' }, deps)).rejects.toThrow('HTTP 403');
+    deps.fetch = async () => new Response('<html>Not Found</html>', { status: 404 });
+    await expect(logoutDeployment(A, { mode: 'revoke' }, deps)).rejects.toThrow(
+      `This address no longer answers Myco's revoke route (HTTP 404). If the Deployment moved or is gone, run myco logout ${A} --local-only to remove it from this machine (its credential stays valid on the server until it expires).`,
+    );
     expect(readDeploymentMembership(A, mycoHome)).not.toBeNull();
+    for (const status of [403, 410, 500]) {
+      deps.fetch = async () => new Response('', { status });
+      await expect(logoutDeployment(A, { mode: 'revoke' }, deps)).rejects.toThrow(`The Deployment refused credential revocation (HTTP ${status}); local state was kept`);
+      expect(readDeploymentMembership(A, mycoHome)).not.toBeNull();
+    }
   });
 
   it('permits explicit local-only on a server failure', async () => {
