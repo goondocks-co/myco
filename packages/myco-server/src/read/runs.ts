@@ -1,3 +1,5 @@
+import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
+import { type RepositoryFailure } from '@goondocks/myco-shared/repository';
 import { heldPartition } from '../core/embedding/policy.js';
 import { costProvenanceValue } from '../db/run-accounting.js';
 import { runAccounting } from './accounting.js';
@@ -10,7 +12,7 @@ import { HARNESS_MEMBER_ID } from '../constants.js';
 import { runOutcomeCounts, type RunOutcomeCounts } from './run-reads.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
 import { runErrorCode, skipReasonCode } from '../core/reader-codes.js';
-import { contextValue, FAILURE_REASON_KEY } from '../db/run-context.js';
+import { contextValue, FAILURE_REASON_KEY, REPOSITORY_FAILURE_CODE_KEY, REPOSITORY_FAILURE_SUMMARY_KEY } from '../db/run-context.js';
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { requestedProfileValue } from '../db/run-profile.js';
 import { runResultSql, type RunResult } from './run-outcome.js';
@@ -105,6 +107,7 @@ export interface RunDetailRow extends RunListRow {
   errorCode: string | null;
   /** Why a failed run failed, in the reader's words, where the worker that ran it gave a reason; null where it gave none. */
   errorReason: string | null;
+  repositoryFailure?: RepositoryFailure | null;
   error: string | null;
   dispatchedBy: string | null;
   usageData: string | null;
@@ -228,6 +231,8 @@ const DETAIL_COLUMNS = `${LIST_COLUMNS},
   ${contextValue('repository.branch')} AS source_branch, ${contextValue('repository.commit')} AS source_commit,
   instruction, session_ref, actual_cost_usd, estimated_cost_usd, reasoning_level,
   resume_mode, resume_attempts, error, error_code, CASE WHEN status = 'failed' THEN ${contextValue(FAILURE_REASON_KEY)} END AS error_reason,
+  CASE WHEN status = 'failed' THEN ${contextValue(REPOSITORY_FAILURE_CODE_KEY)} END AS repository_failure_code,
+  CASE WHEN status = 'failed' THEN ${contextValue(REPOSITORY_FAILURE_SUMMARY_KEY)} END AS repository_failure_summary,
   dispatched_by, actions_taken, checkpoints`;
 
 const text = (value: unknown): string | null => (value as string | null) ?? null;
@@ -292,6 +297,7 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
 }
 
 function toDetailRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, string>): RunDetailRow {
+  const repositoryFailure = parseRepositoryFailure({ code: row.repository_failure_code, summary: row.repository_failure_summary });
   return {
     ...toListRow(row, ownNames),
     instruction: typeof row.instruction === 'string' ? redactSecrets(row.instruction) : null,
@@ -304,6 +310,7 @@ function toDetailRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string,
     resumeAttempts: (row.resume_attempts as number | null) ?? 0,
     errorCode: runErrorCode(text(row.error), text(row.error_code)),
     errorReason: text(row.error_reason),
+    ...(repositoryFailure === null ? {} : { repositoryFailure }),
     error: text(row.error),
     dispatchedBy: text(row.dispatched_by),
     usageData: text(row.usage_data),

@@ -1,7 +1,8 @@
 /**
  * What a run's record keeps of text a harness, a worker or an agent wrote.
  *
- * Nothing stored with a run may hold file contents, command output, a secret, a token or an environment value. Free
+ * Run records exclude file contents, secrets, tokens and environment values.
+ * Repository checkout failures carry a closed reason and sanitized Git summary through structured worker end reports. Other free
  * text reaches a run from two kinds of writer, and each is held to one rule here, applied by the worker that writes it
  * and again by the Deployment that stores it:
  *
@@ -20,6 +21,7 @@
  *   stored with the run and kept as long as the run is.
  */
 
+import { REPOSITORY_FAILURE_CODES, MAX_REPOSITORY_FAILURE_SUMMARY_CHARS, type RepositoryFailure, type RepositoryFailureCode } from './repository.js';
 import { commandShape, identifierShape, keyLike, urlShape, ZERO_WIDTH } from './command-shape.js';
 import { redactSecrets } from './redact-secrets.js';
 import { isSecretFlag, isSecretLabel, maskSecretLabels } from './secret-labels.js';
@@ -537,4 +539,21 @@ export function agentProse(value: string, max: number, options: { singleLine?: b
 /** Arbitrary diagnostic words are omitted; the caller's structured code, status and retry fields carry the reason. */
 export function diagnosticDetail(value: string, max: number): string {
   return value.trim() === '' || max <= 0 ? '' : ELIDED;
+}
+
+/** Closed reasons and bounded Git summaries; credentials are removed before any display projection or truncation. */
+export function parseRepositoryFailure(value: unknown, secrets: readonly string[] = []): RepositoryFailure | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const code = Reflect.get(value, 'code');
+  if (typeof code !== 'string' || !(REPOSITORY_FAILURE_CODES as readonly string[]).includes(code)) return null;
+  let summary = code === 'fetch_failed' && typeof Reflect.get(value, 'summary') === 'string' ? String(Reflect.get(value, 'summary')) : '';
+  summary = summary.replace(ZERO_WIDTH, '');
+  for (const secret of secrets.map(value => value.replace(ZERO_WIDTH, '')).filter(value => value !== '').sort((a, b) => b.length - a.length)) {
+    const bytes = new TextEncoder().encode(secret);
+    for (const encoded of [secret, encodeURIComponent(new TextDecoder().decode(bytes)), btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(''))]) {
+      summary = summary.split(encoded).join('[REDACTED]');
+    }
+  }
+  const safe = agentProse(summary, MAX_REPOSITORY_FAILURE_SUMMARY_CHARS, { singleLine: true });
+  return { code: code as RepositoryFailureCode, ...(safe === null ? {} : { summary: safe }) };
 }

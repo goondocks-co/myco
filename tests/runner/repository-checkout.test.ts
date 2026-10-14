@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hashCommittedFiles, prepareRepositoryCheckout, repositoryUrl } from '@myco/runner/repository-checkout.js';
+import { hashCommittedFiles, prepareRepositoryCheckout, RepositoryCheckoutError, repositoryUrl } from '@myco/runner/repository-checkout.js';
 import { prepareWorkerCheckout } from '@myco/runner/repository.js';
 import { writeRunDir, discardRunDir } from '@myco/runner/mcp-config.js';
 import { beginRunProcess, retryPendingRunDirectoryDiscards } from '@myco/runner/run-directory.js';
@@ -172,7 +172,7 @@ describe('a checkout a task is given', () => {
     await writeFile(join(repo, 'large.bin'), 'version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 3\n');
     git('add', 'large.bin'); git('commit', '--quiet', '-m', 'lfs pointer');
     try {
-      await expect(prepareRepositoryCheckout({ ...request(), pin: async (commit) => commit })).rejects.toThrow('Git LFS');
+      await expect(prepareRepositoryCheckout({ ...request(), pin: async (commit) => commit })).rejects.toMatchObject({ failure: { code: 'lfs' } });
     } finally { git('reset', '--hard', second); }
   });
 
@@ -180,7 +180,63 @@ describe('a checkout a task is given', () => {
     git('update-index', '--add', '--cacheinfo', `160000,${first},dependency`);
     git('commit', '--quiet', '-m', 'submodule');
     try {
-      await expect(prepareRepositoryCheckout({ ...request(), pin: async (commit) => commit })).rejects.toThrow('submodule');
+      await expect(prepareRepositoryCheckout({ ...request(), pin: async (commit) => commit })).rejects.toMatchObject({ failure: { code: 'submodules' } });
     } finally { git('reset', '--hard', second); }
   });
+});
+
+it('carries a bounded fetch reason with exact credentials and URL userinfo removed from stderr', async () => {
+  const executable = join(home, 'git-stderr-fixture');
+  const credential = { username: 'fixture-user', token: 'a!b' };
+  await writeFile(executable, '#!/usr/bin/env node\n' + `
+const cp = require('node:child_process');
+if (process.argv.includes('fetch')) {
+  const token = process.env.MYCO_GIT_TOKEN;
+  process.stderr.write('fatal: Could not read source ' + token + ' https://' + process.env.MYCO_GIT_USERNAME + ':' + encodeURIComponent(token) + '@example.test/source.git\\n');
+  process.exit(128);
+}
+cp.execFileSync('git', process.argv.slice(2), { stdio: 'inherit' });
+`, { mode: 0o700 });
+  let failure: RepositoryCheckoutError | undefined;
+  try { await prepareRepositoryCheckout({ ...request(), credential, gitPath: executable, pin: async commit => commit }); }
+  catch (error) { expect(error).toBeInstanceOf(RepositoryCheckoutError); failure = error as RepositoryCheckoutError; }
+  expect(failure?.failure.code).toBe('fetch_failed');
+  expect(failure?.failure.summary).toContain('fatal: Could not read source');
+  expect(failure?.failure.summary!.length).toBeLessThanOrEqual(512);
+  expect(JSON.stringify(failure?.failure)).not.toContain(credential.token);
+  expect(JSON.stringify(failure?.failure)).not.toContain(encodeURIComponent(credential.token));
+  expect(JSON.stringify(failure?.failure)).not.toContain(credential.username);
+});
+
+for (const [operation, output, reason] of [
+  ['ls-tree', '100644 blob ' + 'a'.repeat(40) + ' 268435457\tlarge.bin\0', 'too_large'],
+  ['rev-parse', 'b'.repeat(40) + '\n', 'commit_mismatch'],
+] as const) it(`reports ${reason} as a closed repository reason`, async () => {
+  const executable = join(home, 'git-' + reason);
+  await writeFile(executable, '#!/usr/bin/env node\n' + `
+const cp = require('node:child_process');
+const args = process.argv.slice(2);
+if (args.includes(${JSON.stringify(operation)}) && (${JSON.stringify(operation)} !== 'rev-parse' || args.at(-1) === 'HEAD')) {
+  process.stdout.write(${JSON.stringify(output)});
+} else cp.execFileSync(${JSON.stringify(gitPath)}, args, { stdio: 'inherit' });
+`, { mode: 0o700 });
+  await expect(prepareRepositoryCheckout({ ...request(), gitPath: executable, pin: async commit => commit })).rejects.toMatchObject({ failure: { code: reason } });
+});
+
+it('keeps public fetch diagnostics readable and redacts unexpected URL userinfo', async () => {
+  const executable = join(home, 'git-public-stderr-fixture');
+  await writeFile(executable, '#!/usr/bin/env node\n' + `
+const cp = require('node:child_process');
+if (process.argv.includes('fetch')) {
+  process.stderr.write('fatal: cannot read https://reader:shortpw@example.test/source.git');
+  process.exit(128);
+}
+cp.execFileSync(${JSON.stringify(gitPath)}, process.argv.slice(2), { stdio: 'inherit' });
+`, { mode: 0o700 });
+  let failure: RepositoryCheckoutError | undefined;
+  try { await prepareRepositoryCheckout({ ...request(), credential: undefined, gitPath: executable, pin: async commit => commit }); }
+  catch (error) { expect(error).toBeInstanceOf(RepositoryCheckoutError); failure = error as RepositoryCheckoutError; }
+  expect(failure?.failure.summary).toContain('fatal: cannot read https://example.test');
+  expect(JSON.stringify(failure?.failure)).not.toContain('shortpw');
+  expect(JSON.stringify(failure?.failure)).not.toContain('reader:');
 });

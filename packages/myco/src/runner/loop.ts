@@ -2,7 +2,7 @@ import { memberServerDialUrl } from '@myco/member/server-url.js';
 import { runnerCheckIn } from '@goondocks/myco-shared/setup-guidance';
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, parseProfileRefusal, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
-import { budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
+import { parseRepositoryFailure, budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
 import { sumAttemptUsage, ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
@@ -40,10 +40,10 @@ import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js
 import type { RefreshStatus } from '../member/refresh.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import { callOutcome, failedCallsNote, type RunEvent } from './events.js';
-import { parseRepositoryCheckoutSpec, REPOSITORY_DIGEST_TASKS, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { prepareWorkerCheckout } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
-import type { RepositoryCheckout } from './repository-checkout.js';
+import { RepositoryCheckoutError, type RepositoryCheckout } from './repository-checkout.js';
 import { watchWake, type WakeSettle, type WakeWatch } from './wake.js';
 import { modelCatalogs, type ListModels } from './catalogs.js';
 import { listModels } from './models.js';
@@ -158,7 +158,7 @@ type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'fetchImp
  * single "no answer" for both makes a refusal indistinguishable from silence.
  */
 export type WorkerAnswer =
-  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean; profileOutcome: boolean; modelCatalog: boolean; steps: boolean }
+  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean; profileOutcome: boolean; modelCatalog: boolean; steps: boolean; repositoryFailure?: boolean }
   | { kind: 'refused'; code: string; detail: string }
   | { kind: 'unreachable'; detail: string };
 
@@ -249,6 +249,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   let profileOutcome = false;
   let modelCatalog = false;
   let steps = false;
+  let repositoryFailure = false;
   try {
     const res = await send(memberServerDialUrl(new URL(path, options.serverUrl).toString()), {
       method: 'POST',
@@ -260,6 +261,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
     executionProfile = featureAdvertised(res.headers.get(FEATURES_HEADER), EXECUTION_PROFILE_FEATURE);
     profileOutcome = featureAdvertised(res.headers.get(FEATURES_HEADER), PROFILE_OUTCOME_FEATURE);
     modelCatalog = featureAdvertised(res.headers.get(FEATURES_HEADER), MODEL_CATALOG_FEATURE);
+    repositoryFailure = featureAdvertised(res.headers.get(FEATURES_HEADER), REPOSITORY_FAILURE_FEATURE);
     steps = featureAdvertised(res.headers.get(FEATURES_HEADER), WORKER_STEPS_FEATURE);
     raw = await rawAnswerOf(res, options.signal);
   } catch (error) {
@@ -268,7 +270,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   const outcome = classifyEventAnswer(raw);
   switch (outcome.class) {
     case 'acked':
-      return { kind: 'answered', body: outcome.body, accounting, executionProfile, profileOutcome, modelCatalog, steps };
+      return { kind: 'answered', body: outcome.body, accounting, executionProfile, profileOutcome, modelCatalog, steps, ...(repositoryFailure ? { repositoryFailure: true } : {}) };
     case 'protocol':
       return {
         kind: 'refused',
@@ -460,7 +462,7 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
  */
 async function drive(
   options: WorkerOptions, run: ClaimedRun, lease: AttemptLease, wake: WakeWatch, keepsSteps: boolean, recheckLogin?: () => Promise<boolean>,
-): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity; refusal?: ProfileRefusal } | { status: 'lost'; error: null }> {
+): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity; refusal?: ProfileRefusal; repositoryFailure?: RepositoryFailure } | { status: 'lost'; error: null }> {
   const clock = options.clock ?? Date.now;
   // A claim answered after its own lease ran out — its answer held up by a
   // machine that slept, or a network that stalled — is another worker's run
@@ -530,7 +532,7 @@ async function drive(
   const stepLog = keepsSteps && run.attemptId !== undefined ? new StepLog(named, clock) : null;
   let stream: AsyncIterator<RunEvent> | undefined;
   let checkout: RepositoryCheckout | undefined;
-  let failure: { code: WorkerFailureCode; words: string } | null = null;
+  let failure: { code: WorkerFailureCode; words: string; repositoryFailure?: RepositoryFailure } | null = null;
   let preparing = false;
   const prepare = async (): Promise<void> => {
     if (run.repository !== undefined) {
@@ -611,7 +613,9 @@ async function drive(
       }
     }
   } catch (error) {
-    failure = { code: preparing ? 'repository_unprepared' : 'worker_error', words: error instanceof Error ? error.message : String(error) };
+    failure = { code: preparing ? 'repository_unprepared' : 'worker_error', words: error instanceof Error ? error.message : String(error),
+      ...(preparing ? { repositoryFailure: error instanceof RepositoryCheckoutError ? error.failure : { code: 'checkout_failed' } } : {}),
+    };
   } finally {
     clearTimeout(budget);
     options.signal.removeEventListener('abort', onAbort);
@@ -690,7 +694,7 @@ async function drive(
   if (failure !== null) {
     const error = workerFailedError(failure.code);
     keepRunDiagnostic(options, run, error, failure.words);
-    return { status: 'failed', error, identity, usage };
+    return { status: 'failed', error, identity, usage, ...(failure.repositoryFailure === undefined ? {} : { repositoryFailure: failure.repositoryFailure }) };
   }
   const last = events.at(-1);
   if (last === undefined || last.kind !== 'ended') return { status: 'failed', error: HARNESS_NO_ENDING_ERROR, identity, usage };
@@ -1055,6 +1059,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
           } : { attemptId: run.attemptId, usage: outcome.usage == null ? null : legacyUsage as WorkerUsage };
           const ended = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error,
             ...accounting,
+            ...(answer.repositoryFailure && outcome.repositoryFailure !== undefined ? { repositoryFailure: parseRepositoryFailure(outcome.repositoryFailure) } : {}),
             ...(answer.profileOutcome && outcome.refusal !== undefined ? { refusal: outcome.refusal } : {}),
           }));
           if (ended.kind === 'refused') {

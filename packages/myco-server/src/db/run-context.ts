@@ -8,6 +8,9 @@
  */
 /** The key under which a failed run's context holds its worker's words on why it failed, for the run's page (`ProfileRefusal.reason`). */
 export const FAILURE_REASON_KEY = 'failureReason';
+/** A repository preparation failure's closed reason and sanitized Git summary. */
+export const REPOSITORY_FAILURE_CODE_KEY = 'repositoryFailureCode';
+export const REPOSITORY_FAILURE_SUMMARY_KEY = 'repositoryFailureSummary';
 
 export const contextValue = (key: string): string => `CASE WHEN json_valid(run_context) THEN json_extract(run_context, '$.${key}') END`;
 

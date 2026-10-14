@@ -1,3 +1,4 @@
+import { REPOSITORY_FAILURE_CODES } from '@goondocks/myco-shared/repository';
 import { DISPATCH_REFUSAL_MESSAGE, type DispatchRefusal } from '@myco-server-worker/core/harness';
 import { DISPATCH_REFUSAL_WORDS, refusalOf } from '../../packages/myco-server/ui/src/features/work/RunTask';
 import { ApiError } from '../../packages/myco-server/ui/src/lib/api';
@@ -21,7 +22,7 @@ import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { LIVE_REFRESH_MS } from '../../packages/myco-server/ui/src/hooks/use-work';
-import { dailyLimitWords, failureWords, fullErrorWords } from '../../packages/myco-server/ui/src/features/work/words';
+import { dailyLimitWords, failureDetail, failureWords, fullErrorWords, runErrorWords } from '../../packages/myco-server/ui/src/features/work/words';
 import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 import { EFFORT_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
 import { rawIdsIn } from '../helpers/raw-ids';
@@ -612,6 +613,68 @@ it('words a run whose agent could not use the chosen model from the reason it re
   expect(failureWords({ source: 'error', code: 'model_not_applied', reason, cause: raw, error: raw })).toBe(sentence);
   // With no recorded reason, the sentence stands alone: the error's text is never read for one.
   expect(failureWords({ source: 'error', code: 'model_not_applied', cause: raw, error: raw })).toBe('The agent couldn’t use the chosen model.');
+});
+
+const REPOSITORY_FAILURE_CASES = [
+  ['fetch_failed', 'Myco couldn’t read the repository. Check the repository and branch. If it uses a token, check the token can read this repository: for an organization repository, its resource owner must be the organization, and the organization may need to approve it.'],
+  ['submodules', 'Myco can’t use a repository with Git submodules. Choose a repository without submodules.'],
+  ['lfs', 'Myco can’t use Git LFS files in this repository. Choose a repository without Git LFS files.'],
+  ['too_large', 'The repository is too large for Myco to prepare. Choose a smaller source.'],
+  ['commit_mismatch', 'Myco couldn’t verify the expected commit. Retry the task to prepare it from a known commit.'],
+  ['checkout_failed', 'Myco couldn’t prepare the repository. Check its connection and try again.'],
+] as const;
+
+it('pins user copy for every repository failure code', () => {
+  expect(REPOSITORY_FAILURE_CASES.map(([code]) => code).sort()).toEqual([...REPOSITORY_FAILURE_CODES].sort());
+});
+
+for (const [code, words] of REPOSITORY_FAILURE_CASES) {
+  it(`words repository preparation ${code} from the structured reason`, () => {
+    const repositoryFailure = { code, summary: 'Sanitized checkout summary' };
+    expect(runErrorWords('repository_unprepared', 'worker stderr is not user copy', repositoryFailure)).toBe(words);
+    expect(failureWords({ source: 'error', code: 'repository_unprepared', cause: 'raw worker cause', error: 'raw worker error', repositoryFailure })).toBe(words);
+    expect(failureDetail({ source: 'error', code: 'repository_unprepared', cause: 'raw worker cause', error: 'raw worker error', repositoryFailure })).toBe('Sanitized checkout summary');
+  });
+}
+
+it('keeps the legacy repository preparation failure actionable without exposing worker text', async () => {
+  const raw = 'worker stderr with an untrusted repository URL';
+  server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
+    reports: [], run: { errorCode: 'repository_unprepared', error: raw },
+  })) } }));
+  mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
+  const open = await panel();
+  const failure = await waitFor(() => {
+    const found = open.querySelector('[data-run-failure]') as HTMLElement | null;
+    expect(found?.textContent).toContain('Myco couldn’t prepare the repository. Check its connection and branch, then try again.');
+    return found!;
+  });
+  expect(within(failure).getByRole('link', { name: 'Check repository settings' }).getAttribute('href')).toBe(`/p/${P}/settings?connect=repository#repository`);
+  expect(failure.textContent).not.toContain(raw);
+  fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
+  expect(open.querySelector('[data-run-technical]')!.textContent).not.toContain(raw);
+});
+
+it('shows only the repository failure summary in technical details and gives members an admin next step', async () => {
+  const raw = 'worker stderr with a credential';
+  const summary = 'Git returned 403 while reading the branch';
+  server(routes({ who: MEMBER, detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
+    reports: [], run: { errorCode: 'repository_unprepared', error: raw, repositoryFailure: { code: 'fetch_failed', summary } },
+  })) } }));
+  mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
+  const open = await panel();
+  const failure = await waitFor(() => {
+    const found = open.querySelector('[data-run-failure]') as HTMLElement | null;
+    expect(found?.textContent).toContain('Myco couldn’t read the repository.');
+    return found!;
+  });
+  expect(failure.textContent).toContain('Ask an admin to check the repository in Project settings.');
+  expect(within(failure).queryByRole('link', { name: 'Check repository settings' })).toBeNull();
+  expect(failure.textContent).not.toContain(summary);
+  expect(failure.textContent).not.toContain(raw);
+  fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
+  expect(open.querySelector('[data-run-technical]')!.textContent).toContain(summary);
+  expect(open.querySelector('[data-run-technical]')!.textContent).not.toContain(raw);
 });
 
 it('words a free-text skip from its fallback code', async () => {

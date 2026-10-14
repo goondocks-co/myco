@@ -1,13 +1,14 @@
 import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { formatRelative } from '../../lib/format';
-import { Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
+import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
 import { useState } from 'react';
 import { useTaskNames } from '../../hooks/use-tasks';
+import { useIsAdmin } from '../../hooks/use-me';
 import { useStarterNames } from './names';
 import { runIsLive, useCancelRun, useRunDetail } from '../../hooks/use-work';
 import { ApiError } from '../../lib/api';
 import { cn } from '../../lib/cn';
-import { CODE_MAP_SUFFIX, projectPath, TASKS_SUFFIX } from '../../routes/nav';
+import { CODE_MAP_SUFFIX, projectPath, projectRepositoryPath, TASKS_SUFFIX } from '../../routes/nav';
 import { agentName, count, failureNextStep, sporeLine, sporeTypeWord } from '../today/words';
 import type { RunDetailAnswer } from './wire';
 import { ModelSummary, costProvenanceWords } from './ModelSummary';
@@ -64,6 +65,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const canCancel = run.canCancel === true;
   const kind = kindOf(run.task);
   const name = useStarterNames();
+  const admin = useIsAdmin();
   const failed = run.status === 'failed';
   const finished = run.status === 'completed' || failed;
   const live = runIsLive(run.status);
@@ -72,6 +74,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const startedBy = startedByWords(run.startedBy, name);
   const spores = produced.spores;
   const cause = failed ? causeOf(answer) : null;
+  const repositoryFailure = failed && run.errorCode === 'repository_unprepared';
   const fullError = failed ? fullErrorWords(run.errorCode, ranOn(run.worker, name)?.machine ?? null) : null;
   const deploy = deployWords(run);
   const kept = run.result === 'failed_with_output';
@@ -117,7 +120,10 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         <div className="flex flex-col gap-s1 rounded-control border border-line bg-bad-bg px-s3 py-s2 t-small text-ink-2" data-run-failure="">
           <p><span className="font-medium text-bad">Run failure: </span>{cause}</p>
           {fullError !== null && <p className="break-words" data-run-full-error="">{fullError}</p>}
-          <p>{kept ? 'What it saved is kept.' : kind === null ? 'Open the technical details below to see where it stopped.' : failureNextStep(kind, false)}</p>
+          {repositoryFailure ? <p>{admin
+            ? <ActionLink to={projectRepositoryPath(projectId, true)}>Check repository settings</ActionLink>
+            : 'Ask an admin to check the repository in Project settings.'}</p>
+            : <p>{kept ? 'What it saved is kept.' : kind === null ? 'Open the technical details below to see where it stopped.' : failureNextStep(kind, false)}</p>}
         </div>
       )}
 
@@ -210,7 +216,7 @@ function headlineOf({ run, read, produced }: RunDetailAnswer): string {
 }
 
 function causeOf({ run }: RunDetailAnswer): string {
-  return runErrorWords(run.errorCode, run.errorReason ?? null);
+  return runErrorWords(run.errorCode, run.errorReason ?? null, run.repositoryFailure ?? null);
 }
 
 function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: string }) {
@@ -293,11 +299,13 @@ function TechnicalDetails({ answer, startedBy, took }: {
             <FactRow term="Cost">{cost === null ? 'Unknown' : <>{dollars(cost)}<span className="block t-meta text-muted">{costProvenanceWords(run.costProvenance)}</span></>}</FactRow>
           </FactsPanel>
           {answer.source !== null ? <p className="break-words t-small text-ink-2">Pinned source: {answer.source.branch} @ {answer.source.commit}</p> : (kindOf(run.task) === 'map' || kindOf(run.task) === 'seed') && <p className="t-small text-muted">Source commit was not recorded for this run.</p>}
-          {run.status === 'failed' && run.error !== null && (
+          {run.status === 'failed' && (run.error !== null || run.errorCode === 'repository_unprepared') && (
             <div className="flex flex-col gap-s1">
               <PartLabel>What the run recorded</PartLabel>
-              <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{runErrorWords(run.errorCode, run.errorReason ?? null)}</p>
-              <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{run.error}</p>
+              <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{runErrorWords(run.errorCode, run.errorReason ?? null, run.repositoryFailure ?? null)}</p>
+              {run.errorCode === 'repository_unprepared'
+                ? run.repositoryFailure?.summary?.trim() && <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{redactSecrets(run.repositoryFailure.summary)}</p>
+                : <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{run.error}</p>}
             </div>
           )}
         </div>

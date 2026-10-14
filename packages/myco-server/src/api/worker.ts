@@ -1,3 +1,5 @@
+import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
+
 import { parseWorkerAccounting, WorkerUsageError } from '@goondocks/myco-shared/worker-usage';
 /**
  * The worker control plane: claim, lease, end, and the step log a worker observed.
@@ -144,6 +146,7 @@ export async function handleWorkerEnd(env: ServerEnv, ctx: DeploymentContext): P
     const outcome = await endLeasedRun(env, { principal: ctx.worker, now: ctx.now, clock: ctx.clock }, {
       ...run, status, ...parseWorkerAccounting(asked), error: typeof asked.error === 'string' ? asked.error : null,
       refusal: parseProfileRefusal(asked.refusal),
+      repositoryFailure: parseRepositoryFailure(asked.repositoryFailure),
     });
     return ok({ persisted: true, ...outcome });
   } catch (error) {

@@ -1,5 +1,6 @@
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
+import type { RepositoryFailure } from '@goondocks/myco-shared/repository';
 
 /**
  * The shapes Today reads off the wire: `/api/work`, `/api/attention`,
@@ -62,7 +63,7 @@ export interface WorkRun {
   outcome: { spores: number; sessions: number; maps: number };
   sessionId: string | null;
   /** `reason` is why the run failed in the reader's words, where the worker that ran it gave one. */
-  failure: { cause: string; code?: string | null; reason?: string | null; error?: string | null; source: 'report' | 'error' } | null;
+  failure: { cause: string; code?: string | null; reason?: string | null; error?: string | null; repositoryFailure?: RepositoryFailure | null; source: 'report' | 'error' } | null;
   tokens: number | null;
   costUsd: number | null;
 }

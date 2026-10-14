@@ -1,3 +1,5 @@
+import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
+import { MAX_REPOSITORY_FAILURE_SUMMARY_CHARS } from '@goondocks/myco-shared/repository';
 /**
  * What a run's record keeps of free text a harness, a worker or an agent wrote (`run-text.ts`).
  *
@@ -307,4 +309,29 @@ describe('agent prose, bounded and masked', () => {
     expect(agentProse('word '.repeat(100), 20)!.endsWith('…')).toBe(true);
     expect(agentProse(' \n\t ', 20)).toBeNull();
   });
+});
+
+it('admits only closed repository reasons and masks summaries before bounding them', () => {
+  const token = 'a!b';
+  const summary = `fatal: Read failed ${token} https://${encodeURIComponent(token)}@example.test/repo?key=another-secret Basic ${btoa('user:' + token)} ${'x'.repeat(1000)}`;
+  const reason = parseRepositoryFailure({ code: 'fetch_failed', summary }, [token, 'user:' + token])!;
+  expect(reason.code).toBe('fetch_failed');
+  expect(reason.summary).toContain('fatal:');
+  expect(reason.summary!.length).toBeLessThanOrEqual(MAX_REPOSITORY_FAILURE_SUMMARY_CHARS);
+  expect(JSON.stringify(reason)).not.toContain(token);
+  expect(JSON.stringify(reason)).not.toContain(encodeURIComponent(token));
+  expect(JSON.stringify(reason)).not.toContain(btoa('user:' + token));
+  expect(JSON.stringify(reason)).not.toContain('another-secret');
+  expect(parseRepositoryFailure(reason)).toEqual(reason);
+  expect(parseRepositoryFailure({ code: 'submodules', summary: token })).toEqual({ code: 'submodules' });
+  expect(parseRepositoryFailure({ code: 'unrecognized', summary: token })).toBeNull();
+  expect(parseRepositoryFailure(null)).toBeNull();
+  expect(parseRepositoryFailure({ code: 'fetch_failed' })).toEqual({ code: 'fetch_failed' });
+});
+
+it('removes known credentials after invisible-character normalization', () => {
+  const token = 'a!b';
+  const reason = parseRepositoryFailure({ code: 'fetch_failed', summary: 'fatal: a\u200B!b https://user:a\u200B!b@example.test/repo' }, [token])!;
+  expect(JSON.stringify(reason)).not.toContain(token);
+  expect(reason.summary).toContain('fatal:');
 });

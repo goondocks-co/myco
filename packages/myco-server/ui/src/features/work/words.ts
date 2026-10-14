@@ -7,6 +7,8 @@ import { RUN_CONTROL_REFUSAL_WORDS } from '@goondocks/myco-shared/run-control';
  */
 import { holdSentence } from '@goondocks/myco-shared/run-holds';
 import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
+import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
+import type { RepositoryFailure } from '@goondocks/myco-shared/repository';
 import type { OutcomeKind, Range, WorkRun } from '../today/wire';
 import { causeSentence, clockTime, count, when } from '../today/words';
 import { memberLabel } from '../../lib/member-name';
@@ -346,11 +348,22 @@ export function ranOn(worker: RunWorker | null, name: (id: string) => string | n
 }
 
 /**
- * The dashboard's sentence for a stored run failure, including unknown and older codes. A run whose agent could not
- * use the chosen model says why where the worker that ran it gave a reason (`reason`); the run's own record of the
- * failure is left to its technical details.
+ * The dashboard's sentence for a stored run failure, including unknown and older codes. Model failures may carry a
+ * reader-facing reason; repository preparation failures use their structured code. The run's own record stays in
+ * technical details.
  */
-export function runErrorWords(code: string | null | undefined, reason: string | null = null): string {
+const REPOSITORY_PREPARATION_WORDS = 'Myco couldn’t prepare the repository. Check its connection and branch, then try again.';
+
+const REPOSITORY_FAILURE_WORDS = {
+  fetch_failed: 'Myco couldn’t read the repository. Check the repository and branch. If it uses a token, check the token can read this repository: for an organization repository, its resource owner must be the organization, and the organization may need to approve it.',
+  submodules: 'Myco can’t use a repository with Git submodules. Choose a repository without submodules.',
+  lfs: 'Myco can’t use Git LFS files in this repository. Choose a repository without Git LFS files.',
+  too_large: 'The repository is too large for Myco to prepare. Choose a smaller source.',
+  commit_mismatch: 'Myco couldn’t verify the expected commit. Retry the task to prepare it from a known commit.',
+  checkout_failed: 'Myco couldn’t prepare the repository. Check its connection and try again.',
+} satisfies Readonly<Record<RepositoryFailure['code'], string>>;
+
+export function runErrorWords(code: string | null | undefined, reason: string | null = null, repositoryFailure: RepositoryFailure | null = null): string {
   const words: Readonly<Record<string, string>> = {
     ...RUN_CONTROL_REFUSAL_WORDS,
     machine_did_not_start: 'No machine started the task within a day.',
@@ -373,6 +386,9 @@ export function runErrorWords(code: string | null | undefined, reason: string | 
     run_failed: 'The task stopped before it could finish.',
   };
   if (code === 'model_not_applied' && reason !== null) return `The agent couldn’t use the chosen model: ${reason}.`;
+  if (code === 'repository_unprepared') return repositoryFailure === null
+    ? REPOSITORY_PREPARATION_WORDS
+    : REPOSITORY_FAILURE_WORDS[repositoryFailure.code] ?? REPOSITORY_PREPARATION_WORDS;
   return words[code ?? ''] ?? words.run_failed!;
 }
 
@@ -394,12 +410,13 @@ export function fullErrorWords(code: string | null | undefined, machine: string 
 
 /** A coded failure uses the dashboard's sentence; an uncoded report retains its own words. */
 export function failureWords(failure: WorkRun['failure'] | undefined): string {
-  return failure?.source === 'report' && failure.code == null ? causeSentence(failure.cause ?? '') : runErrorWords(failure?.code, failure?.reason ?? null);
+  return failure?.source === 'report' && failure.code == null ? causeSentence(failure.cause ?? '') : runErrorWords(failure?.code, failure?.reason ?? null, failure?.repositoryFailure ?? null);
 }
 
 /** Machine-reported reasons are available inside the failure's details disclosure. */
 export function failureDetail(failure: WorkRun['failure'] | undefined): string | null {
   if (failure == null || (failure.source === 'report' && failure.code == null)) return null;
+  if (failure.code === 'repository_unprepared') return failure.repositoryFailure?.summary?.trim() ? redactSecrets(failure.repositoryFailure.summary) : null;
   return [failure.error, failure.cause].filter((text): text is string => typeof text === 'string' && text.trim() !== '').join('\n') || null;
 }
 

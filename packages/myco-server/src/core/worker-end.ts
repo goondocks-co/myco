@@ -5,9 +5,10 @@ import { runCloseRefusal } from './run-postconditions.js';
 import { getRequestedWorkerProfile, type RunUpdate } from './runs.js';
 import { withLeasedRun, type WorkerRunIdentity } from './worker-run.js';
 import { profileModelVerdict, MODEL_MISMATCH, MODEL_UNCONFIRMED, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
-import { FAILURE_REASON_KEY } from '../db/run-context.js';
+import { FAILURE_REASON_KEY, REPOSITORY_FAILURE_CODE_KEY, REPOSITORY_FAILURE_SUMMARY_KEY } from '../db/run-context.js';
 import { closeErrorCode, diagnosticErrorCode, type RunErrorCode } from './reader-codes.js';
-import { shapeRunError } from '@goondocks/myco-shared/run-text';
+import { REPOSITORY_TASKS, type RepositoryFailure } from '@goondocks/myco-shared/repository';
+import { parseRepositoryFailure, parseRunError, shapeRunError } from '@goondocks/myco-shared/run-text';
 
 interface WorkerEnd extends WorkerRunIdentity {
   status: 'completed' | 'failed';
@@ -17,6 +18,7 @@ interface WorkerEnd extends WorkerRunIdentity {
   accountingVersion?: number;
   /** Set where the worker ended the run on its agent's refusal of the claimed profile. */
   refusal?: ProfileRefusal | null;
+  repositoryFailure?: RepositoryFailure | null;
 }
 
 /**
@@ -64,6 +66,14 @@ export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEn
   // A worker's profile refusal is a failure the Deployment did not overrule: its code, and its reason for the run's page.
   const refused = run.refusal != null && run.status === 'failed' && unmet === null;
   const errorCode: RunErrorCode = refused ? 'model_not_applied' : unmet === null ? diagnosticErrorCode(reported) : closeErrorCode(unmet);
-  const context = refused && run.refusal!.reason !== null ? { [FAILURE_REASON_KEY]: run.refusal!.reason } : undefined;
-  return { row, unmet, status, update, errorCode, context };
+  const repositoryFailure = status === 'failed' && REPOSITORY_TASKS.includes(row.task ?? '')
+    && parseRunError(reported ?? '')?.code === 'repository_unprepared' ? parseRepositoryFailure(run.repositoryFailure) : null;
+  const context: Record<string, string> = {
+    ...(refused && run.refusal!.reason !== null ? { [FAILURE_REASON_KEY]: run.refusal!.reason } : {}),
+    ...(repositoryFailure === null ? {} : {
+      [REPOSITORY_FAILURE_CODE_KEY]: repositoryFailure.code,
+      ...(repositoryFailure.summary === undefined ? {} : { [REPOSITORY_FAILURE_SUMMARY_KEY]: repositoryFailure.summary }),
+    }),
+  };
+  return { row, unmet, status, update, errorCode, context: Object.keys(context).length === 0 ? undefined : context };
 });

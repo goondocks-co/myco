@@ -87,3 +87,10 @@ export function parseRepositoryCheckoutSpec(value: unknown): RepositoryCheckoutS
   }
   return { url: repositoryUrl(url), branch: repositoryBranch(branch), historyDepth };
 }
+
+/** Structured repository checkout reasons supported by a Deployment's worker end reports. */
+export const REPOSITORY_FAILURE_FEATURE = 'repository-failure-v1';
+export const REPOSITORY_FAILURE_CODES = ['fetch_failed', 'submodules', 'lfs', 'too_large', 'commit_mismatch', 'checkout_failed'] as const;
+export type RepositoryFailureCode = typeof REPOSITORY_FAILURE_CODES[number];
+export interface RepositoryFailure { code: RepositoryFailureCode; summary?: string }
+export const MAX_REPOSITORY_FAILURE_SUMMARY_CHARS = 512;
