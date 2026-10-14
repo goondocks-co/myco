@@ -97,6 +97,19 @@ export function sameLegacyStamp(vault: LegacySources['vaults'][number], receipt:
     && JSON.stringify(vault.wal) === JSON.stringify(receipt.wal ?? null);
 }
 
+/** Completion belongs to the recorded source and destination, independently of live Project state. */
+export function completedLegacyDestination(receipt: MigrationReceipt, project: MigrationProjectReceipt): string | null {
+  const destination = project.destination;
+  if (destination === undefined || !('serverUrl' in destination)) return null;
+  const delivered = project.destinations?.[destination.key];
+  const passes = delivered ?? project;
+  if ((delivered !== undefined && (delivered.serverUrl !== destination.serverUrl || delivered.digest !== receipt.digest))
+    || passes.vault?.state !== 'complete' || !['complete', 'none'].includes(passes.transcripts?.state ?? '')
+    || passes.vault.endedBy !== undefined || (passes.vault.failures?.length ?? 0) > 0
+    || passes.transcripts?.endedBy !== undefined || (passes.transcripts?.failures?.length ?? 0) > 0) return null;
+  return destination.serverUrl;
+}
+
 /** A completed cutover's repository destination remains authoritative across setup journeys. */
 export function legacyProjectDestination(home: string, root: string, projectId: string): string | null {
   const state = readCutoverState(home);
@@ -104,8 +117,8 @@ export function legacyProjectDestination(home: string, root: string, projectId: 
   for (const receipt of Object.values(state.migrations ?? {})) {
     const project = receipt.projects[projectId];
     if (project?.root !== root || !project.destination || !('serverUrl' in project.destination)) continue;
-    const passes = project.destinations?.[project.destination.key] ?? project;
-    if (passes.vault?.state === 'complete' && ['complete', 'none'].includes(passes.transcripts?.state ?? '')) return project.destination.serverUrl;
+    const completed = completedLegacyDestination(receipt, project);
+    if (completed !== null) return completed;
   }
   return null;
 }
@@ -148,12 +161,7 @@ export function legacyMigrationState(home: string): LegacyMigrationState {
         if (destination === undefined) { needsDestination = true; continue; }
         if ('skip' in destination && destination.skip === true) continue;
         if (!('serverUrl' in destination) || destination.key !== deploymentKeyFor(deploymentUrl(destination.serverUrl))) { needsDestination = true; continue; }
-        const delivered = project.destinations?.[destination.key];
-        const passes = delivered ?? project;
-        if ((delivered !== undefined && (delivered.serverUrl !== destination.serverUrl || delivered.digest !== receipt.digest))
-          || passes.vault?.state !== 'complete' || !['complete', 'none'].includes(passes.transcripts?.state ?? '')
-          || passes.vault.endedBy !== undefined || (passes.vault.failures?.length ?? 0) > 0
-          || passes.transcripts?.endedBy !== undefined || (passes.transcripts?.failures?.length ?? 0) > 0) partial = true;
+        if (completedLegacyDestination(receipt, project) === null) partial = true;
       }
     }
     if (changed) return observed({ state: 'changed', warning: 'Myco 1.4 wrote more data after migration. Keep its files and run myco setup --cutover to review the new data, or preview manually with myco cutover --dry-run.' });

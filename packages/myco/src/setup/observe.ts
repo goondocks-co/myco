@@ -29,6 +29,7 @@ export interface Observation {
   hint?: string;
   deployment?: string;
   hooksDeployment?: string;
+  memberCapture?: true;
   joinedDeployments?: string[];
   legacyError?: string;
   capture?: { waiting?: number | null; nextProbeAt?: number; recentRefusals?: number; unreadableLines?: number };
@@ -54,8 +55,10 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
   answers = { ...answers };
   const facts: Observation[] = [];
   let observedUrl = answers.url;
-  const add = (id: string, state: Observation['state'], detail: string, scope = observedUrl ?? home, informational = false, capture?: Observation['capture']): void => {
-    facts.push({ id, scope, state, detail, ...(answers.role === 'create' && answers.target ? { target: answers.target } : {}), ...(informational ? { informational } : {}), ...(capture ? { capture } : {}) });
+  const add = (id: string, state: Observation['state'], detail: string, scope = observedUrl ?? home, informational = false, capture?: Observation['capture']): Observation => {
+    const fact: Observation = { id, scope, state, detail, ...(answers.role === 'create' && answers.target ? { target: answers.target } : {}), ...(informational ? { informational } : {}), ...(capture ? { capture } : {}) };
+    facts.push(fact);
+    return fact;
   };
   const read = async (id: string, fn: () => void | Promise<void>, informational = false): Promise<void> => {
     try { await fn(); }
@@ -118,19 +121,21 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
   }
   if (((answers.role === 'join' || answers.role === 'create') && url) || (deps.status && fs.existsSync(provisionRecordPath(home)))) {
     await read('machine.agents', () => {
-      if (facts.some((fact) => fact.id === 'legacy' && fact.state === 'incomplete')) { add('machine.agents', 'incomplete', 'deferred-legacy'); return; }
       const record = readProvisionRecord(home);
       if (record === null && fs.existsSync(provisionRecordPath(home))) throw new Error(`${provisionRecordPath(home)}: cannot read provision record`);
       const hooksUrl = deps.status && record !== null ? deploymentUrl(record.serverUrl) : url;
       if (hooksUrl === undefined) throw new Error('No Deployment address is available for agent hooks.');
       const same = record !== null && deploymentUrl(record.serverUrl) === hooksUrl;
-      if ((answers.noAgents && (!deps.status || record === null)) || (same && record.agents.length === 0)) { add('machine.agents', 'complete', 'declined'); return; }
+      if (answers.noAgents && !deps.status) { add('machine.agents', 'complete', 'declined'); return; }
       const agents = (deps.agents ?? (() => detectMachineInstalledSymbionts().map((manifest) => manifest.name)))();
+      const installed = agents.length > 0 && agents.every((agent) => memberHarnessCurrent(agent, home, hooksUrl, deps));
+      if (!installed && ((answers.noAgents && record === null) || (same && record.agents.length === 0))) { add('machine.agents', 'complete', 'declined'); return; }
       if (agents.length === 0) { add('machine.agents', 'complete', 'none-installed'); return; }
       const current = same && record.version === getPluginVersion()
-        && agents.every((agent) => record.agents.includes(agent) && memberHarnessCurrent(agent, home, hooksUrl, deps));
-      add('machine.agents', current ? 'complete' : record === null ? 'absent' : 'incomplete', current ? 'current' : 'stale');
-      if (deps.status && record !== null) facts[facts.length - 1].hooksDeployment = record.serverUrl;
+        && agents.every((agent) => record.agents.includes(agent)) && installed;
+      const fact = add('machine.agents', current ? 'complete' : record === null ? 'absent' : 'incomplete', current ? 'current' : 'stale');
+      if (installed) fact.memberCapture = true;
+      if (deps.status && record !== null) fact.hooksDeployment = record.serverUrl;
     });
   }
   if (!url || !answers.role) return facts;

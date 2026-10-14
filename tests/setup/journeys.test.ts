@@ -141,6 +141,44 @@ describe('legacy journey (e)', () => {
     expect(errors.join('\n')).toContain('Project connection did not finish');
   });
 
+  for (const version of [2, 1, undefined] as const) for (const disposition of ['archived', 'deleted'] as const) {
+    it(`keeps ${disposition} destinations moved with ${version ?? 'unversioned'} completion receipts`, async () => {
+      const fixture = await rig();
+      const before = fs.readFileSync(fixture.legacy.vault);
+      expect(await run(flags, fixture.deps)).toBe(0);
+      const state = readCutoverState(home);
+      if (version !== 2) {
+        state.version = version;
+        for (const receipt of Object.values(state.migrations!)) for (const project of Object.values(receipt.projects)) delete project.destinations;
+        fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify(state));
+      }
+      const destination = new Database(path.join(root, 'journey-e', 'deployment-0.sqlite'));
+      try {
+        destination.run('PRAGMA foreign_keys = OFF');
+        for (const project of fixture.legacy.projects) {
+          destination.query(disposition === 'archived'
+            ? 'UPDATE projects SET archived_at = 1 WHERE project_id = ?'
+            : 'DELETE FROM projects WHERE project_id = ?').run(project.id);
+        }
+      } finally { destination.close(); }
+      const requests = fixture.calls.length;
+      expect(legacyMigrationState(home).state).toBe('moved');
+      const plan = planCutover(home, { homeDir: fixture.legacy.home, dryRun: true }, fixture.deps.cutoverDeps);
+      expect(plan.blockers).toEqual([]);
+      expect(plan.projects.map(project => project.destination.kind)).toEqual(fixture.legacy.projects.map(() => 'moved'));
+      lines = [];
+      expect((await runCutover(plan, { ...fixture.deps.cutoverDeps, stdout: line => lines.push(line), fetch: fixture.deps.fetch })).ok).toBe(true);
+      expect(lines.join('\n')).not.toContain('would then import');
+      expect(fixture.calls).toHaveLength(requests);
+      lines = [];
+      expect(await run(flags, { ...fixture.deps, ask: async question => { throw new Error(`Unexpected cutover prompt: ${question}`); } })).toBe(0);
+      expect(lines.join('\n')).not.toContain('cutover preview');
+      expect(fixture.calls.slice(requests).filter(call => ['/events', '/spores/save', '/members/projects/resolve'].includes(call.route))).toEqual([]);
+      expect(legacyMigrationState(home).state).toBe('moved');
+      expect(fs.readFileSync(fixture.legacy.vault)).toEqual(before);
+    });
+  }
+
   for (const multi of [false, true]) it(`moves the coherent 1.4 home to ${multi ? 'two destinations' : 'one destination'} and resumes without duplicates`, async () => {
     const fixture = await rig({ multi });
     expect(JSON.parse(fs.readFileSync(path.join(root, 'journey-e', 'legacy-fixture.json'), 'utf8'))).not.toHaveProperty('env');
@@ -216,7 +254,7 @@ describe('legacy journey (e)', () => {
   });
 
   it('keeps a terminal refusal partial and resumes without uploading the completed destination again', async () => {
-    const fixture = await rig({ multi: true });
+    const fixture = await rig({ multi: true, agents: ['claude-code', 'codex'] });
     const bytes = fs.readFileSync(fixture.legacy.vault);
     const refusing = fakeFetch(async (input, init) => {
       const request = new Request(input, init);
@@ -224,7 +262,7 @@ describe('legacy journey (e)', () => {
       if (url.origin === LEGACY_URLS[1] && url.pathname === '/events') return Response.json({ error: 'forbidden' }, { status: 403 });
       return fixture.deps.fetch!(input, init);
     });
-    expect(await run(flags, { ...fixture.deps, fetch: refusing })).toBe(2);
+    expect(await run(flags.filter(flag => flag !== '--no-agents'), { ...fixture.deps, fetch: refusing })).toBe(2);
     expect(legacyMigrationState(home).state).toBe('partial');
     expect(errors.join('\n')).toContain('migration remains partial');
     fixture.calls.length = 0;

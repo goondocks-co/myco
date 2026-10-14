@@ -66,7 +66,7 @@ import { pinMachineHome, previewGlobalProvision, provisionGlobally, type Provisi
 import { legacyReportLines, reportLines, STOPPED_WORDS, transcriptImportComplete } from './import.js';
 import { resolveManagedBinaryPath } from '../symbionts/installer.js';
 import { defaultMembership } from '@myco/member/default-deployment.js';
-import { readCutoverState, type CutoverState } from '@myco/member/legacy-migration.js';
+import { completedLegacyDestination, readCutoverState, type CutoverState } from '@myco/member/legacy-migration.js';
 import { legacyRealpath, legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { cutoverAbsentFolder, cutoverForeignBinding } from '@goondocks/myco-shared/setup-guidance';
@@ -294,7 +294,7 @@ export interface CutoverOptions {
   requireSourceMatch?: boolean;
   homeDir?: string;
 }
-type CutoverDestination = { kind: 'destination'; serverUrl: string } | { kind: 'skip' | 'undecided' };
+type CutoverDestination = { kind: 'destination' | 'moved'; serverUrl: string } | { kind: 'skip' | 'undecided' };
 export interface CutoverPlan {
   home: string;
   selection?: ResolvedMycoHome;
@@ -319,7 +319,9 @@ export function cutoverSourcePlan(plan: CutoverPlan, includeDigests = true) {
     home: plan.home,
     agents: [...plan.agents].sort(),
     vaults: plan.vaults.map(({ vault, digest }) => ({ vault, ...(includeDigests ? { digest } : {}) })).sort((a, b) => a.vault.localeCompare(b.vault)),
-    destinations: plan.projects.map(({ vault, projectId, root, destination }) => ({ vault, projectId, root, ...destination })).sort((a, b) => `${a.vault}:${a.projectId}:${a.root}`.localeCompare(`${b.vault}:${b.projectId}:${b.root}`)),
+    destinations: plan.projects.map(({ vault, projectId, root, destination }) => ({ vault, projectId, root, ...destination,
+      ...(destination.kind === 'moved' ? { kind: 'destination' } : {}),
+    })).sort((a, b) => `${a.vault}:${a.projectId}:${a.root}`.localeCompare(`${b.vault}:${b.projectId}:${b.root}`)),
   };
 }
 
@@ -343,13 +345,19 @@ export function planCutover(home: string, options: CutoverOptions = {}, deps: Cu
   }));
   const memberships = listDeploymentMemberships(home);
   const fallback = membershipFor(home, options.serverUrl);
+  const vaultDigests = new Map(vaults.map(source => [source.vault, source.digest]));
   const projects = legacyProjectRoots(vaults.map((v) => v.vault)).map((project) => {
     const { projectId, root, vault } = project;
-    const held = Object.entries(state.migrations ?? {}).find(([file]) => legacyRealpath(file) === vault)?.[1].projects[projectId]?.destination;
+    const receipt = Object.entries(state.migrations ?? {}).find(([file]) => legacyRealpath(file) === vault)?.[1];
+    const previous = receipt?.projects[projectId];
+    const held = previous?.destination;
     const route = options.routes?.get(projectId);
     const skip = options.skips?.has(projectId) || (route === undefined && held !== undefined && 'skip' in held);
     if (skip && route !== undefined) blockers.push(`${projectId}: choose exactly one of --route or --skip`);
     if (skip) return { ...project, destination: { kind: 'skip' } as CutoverDestination };
+    const completed = receipt !== undefined && previous !== undefined && receipt.digest === vaultDigests.get(vault)
+      ? completedLegacyDestination(receipt, previous) : null;
+    if (completed !== null && (route === undefined || deploymentUrl(route) === completed)) return { ...project, destination: { kind: 'moved', serverUrl: completed } as CutoverDestination };
     const binding = root === null ? null : readRegistryEntryResult(root, home);
     if (binding?.status === 'unavailable') blockers.push(`${projectId}: the binding at ${root} is unreadable; restore it before cutover`);
     const foreignProject = binding?.status === 'present' && binding.entry.projectId !== projectId;
@@ -456,8 +464,8 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
   const dry = parsed.dryRun;
   const step = (n: number, title: string) => out(`${n}. ${title}${dry ? ' (dry run)' : ''}`);
 
-  const membership = cutover.memberships[0];
-  const serverUrl = membership?.serverUrl ?? '(all projects skipped)';
+  const primary = cutover.projects.find(project => project.destination.kind === 'destination' || project.destination.kind === 'moved')?.destination;
+  const serverUrl = primary !== undefined && 'serverUrl' in primary ? primary.serverUrl : '(all projects skipped)';
   const legacyHomes = legacyHomesFor(parsed.legacyHomes, mycoHome, homeDir);
   const vaults = cutover.vaults;
 
@@ -485,7 +493,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
     const dest = p.destination;
     const fallback = p.fallback === 'server' ? ' (no repository route; sent to --server)'
       : p.fallback === 'default' ? ' (default Deployment; no repository route)' : '';
-    out(`   ${p.projectId} from ${p.vault}: ${dest.kind === 'destination' ? `to ${dest.serverUrl}${fallback}` : dest.kind} (${JSON.stringify(p.counts)})`);
+    out(`   ${p.projectId} from ${p.vault}: ${dest.kind === 'destination' ? `to ${dest.serverUrl}${fallback}` : dest.kind === 'moved' ? `moved to ${dest.serverUrl}; completion recorded` : dest.kind} (${JSON.stringify(p.counts)})`);
   }
   for (const b of bindings) {
     if (b.kind === 'absent') out(`   ${cutoverAbsentFolder(b.projectId, b.root)}`);
@@ -506,7 +514,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
   for (const unit of units.boot) blockers.push(`${unit.file} starts ${unit.home}'s 1.4 daemon at boot; remove it as an administrator (\`sudo launchctl bootout system/${unit.label}\` and delete the file), then run again.`);
 
   const agents = (deps.agents ?? (() => detectMachineInstalledSymbionts().map((m) => m.name)))();
-  const previews = roots.length === 0 ? [] : agents.map((agent) => ({ agent, preview: previewGlobalProvision(agent, roots[0], mycoHome, serverUrl, { packageRoot: deps.packageRoot, legacyHomes }) }));
+  const previews = roots.length === 0 ? [] : agents.map((agent) => ({ agent, preview: previewGlobalProvision(agent, null, mycoHome, serverUrl, { packageRoot: deps.packageRoot, legacyHomes }) }));
   for (const { agent, preview } of previews) {
     if (preview.kind === 'unknown') blockers.push(`${agent}: no such agent`);
     else if (preview.kind === 'refused') blockers.push(`${agent}: ${preview.detail}${suggestion(preview.detail)}`);
@@ -575,7 +583,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       would: `would point ${p.displayName} at ${mycoHome}${p.replaces.length > 0 ? `, replacing the 1.4 hooks and MCP entry of ${p.replaces.join(', ')}` : ''}`,
       outcomes: [`provision ${p.agent}`],
       run: async () => {
-        const outcome: ProvisionOutcome = (deps.provision ?? provisionGlobally)(p.agent, roots[0], mycoHome, { packageRoot: deps.packageRoot, legacyHomes });
+        const outcome: ProvisionOutcome = (deps.provision ?? provisionGlobally)(p.agent, null, mycoHome, { packageRoot: deps.packageRoot, legacyHomes, serverUrl });
         if (outcome.kind === 'refused') throw new Error(`${p.agent}: ${outcome.detail}`);
         if (outcome.kind === 'unknown') throw new Error(`${p.agent}: no such agent`);
         return { lines: [outcome.detail], made: [`provision ${p.agent}`] };

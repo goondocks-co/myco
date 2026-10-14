@@ -55,9 +55,11 @@ function describe(fact: Observation, url: string | undefined): string {
   if (fact.id === 'default' && complete) return `${fact.detail} — new repositories join it.`;
   if (fact.id === 'machine.signin') return complete ? 'This machine is signed in (remote authentication not checked).' : `${sentence(fact.detail)}. Run myco login ${address}.`;
   if (fact.id === 'machine.agents') {
-    if (complete) return fact.detail === 'current' ? `set up for ${fact.hooksDeployment ?? address}` : fact.detail === 'declined' ? 'Setup declined.' : 'No supported agents installed.';
-    if (fact.detail === 'deferred-legacy') return 'Myco 1.4 still owns agent capture. Preview the handover with myco setup --cutover.';
-    return fact.state === 'absent' ? `Not set up; run myco member provision --server ${address}.` : 'Out of date; run myco member provision --refresh.';
+    const capture = fact.memberCapture ? 'Myco 2.0 capture is installed. ' : '';
+    if (complete) return fact.detail === 'current'
+      ? fact.memberCapture ? `Myco 2.0 capture is installed for ${fact.hooksDeployment ?? address}.` : `set up for ${fact.hooksDeployment ?? address}`
+      : fact.detail === 'declined' ? 'Setup declined.' : 'No supported agents installed.';
+    return capture + (fact.state === 'absent' ? `Not set up; run myco member provision --server ${address}.` : 'Out of date; run myco member provision --refresh.');
   }
   if (fact.id === 'project') {
     if (fact.detail.startsWith('bound-cutover: ')) return `${shortPath(fact.scope)}: sends to ${fact.detail.slice('bound-cutover: '.length)} (cutover destination).`;
