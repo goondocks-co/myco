@@ -305,11 +305,34 @@ export function locateTranscript(agent: string, sessionId: string, recordedPath:
 /** The ids one vault row's derived events and rows take, all under this Project. */
 const legacyId = (projectId: string, ...parts: string[]): string => deriveId('legacy', projectId, ...parts);
 
+const legacySessionCompletionIds = (projectId: string, sessionId: string) =>
+  ['session.end', 'session.title'].map(kind => legacyId(projectId, kind, sessionId));
+
 /** Source event identities use the same machine eligibility and session identities as the importer. */
 export function legacyHistoryCompletionGroups(project: LegacyProject, machineId: string, mycoHome: string): string[][] {
+  return legacySourceGrouping(project, machineId, mycoHome).groups.map(group =>
+    legacySessionCompletionIds(project.projectId, group.sessionId));
+}
+function legacySourceGrouping(project: LegacyProject, machineId: string, mycoHome: string) {
   const { aliases } = aliasByTranscriptTime(project, rootOf(project), mycoHome);
-  return groupLegacySessions(project, aliases, machineId).groups.map(group =>
-    ['session.end', 'session.title'].map(kind => legacyId(project.projectId, kind, group.sessionId)));
+  return groupLegacySessions(project, aliases, machineId);
+}
+export function legacyDeletedSessionIds(project: LegacyProject, machineId: string, mycoHome: string): string[] {
+  return [...legacySourceGrouping(project, machineId, mycoHome).deleted];
+}
+export function legacyVaultCompletionIdentities(project: LegacyProject, machineId: string, mycoHome: string) {
+  const grouping = legacySourceGrouping(project, machineId, mycoHome);
+  const eligible = new Set(grouping.groups.map(group => group.sessionId));
+  const recordIds = grouping.groups.flatMap(group => [
+    ...(group.title === null ? [] : [legacyId(project.projectId, 'session.title', group.sessionId)]),
+    ...project.prompts.filter(prompt => prompt.sessionId === group.promptsFrom).flatMap(prompt => [
+      ...(prompt.text === null ? [] : [legacyId(project.projectId, 'prompt', prompt.id)]),
+      ...(prompt.response === null ? [] : [legacyId(project.projectId, 'response', prompt.id)]),
+    ]),
+  ]).concat(project.plans.filter(plan => plan.content !== null && plan.sessionId !== null
+    && eligible.has(grouping.idOf.get(plan.sessionId) ?? plan.sessionId)).map(plan => legacyId(project.projectId, 'plan', plan.id)));
+  return { eventGroups: grouping.groups.map(group => legacySessionCompletionIds(project.projectId, group.sessionId)), recordIds,
+    sporeIds: project.spores.map(spore => spore.id), lineageIds: project.resolutions.map(event => event.id) };
 }
 export const legacyPromptId = (projectId: string, promptId: string): string => legacyId(projectId, 'prompt', promptId);
 

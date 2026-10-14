@@ -5,7 +5,16 @@ import { LegacyMigrationUnreadable, legacyRealpath, legacySources, legacyVaultPr
 export { LegacyMigrationUnreadable } from '@myco/member/legacy-sources.js';
 import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from '@myco/member/store.js';
 import { deploymentKeyFor, deploymentUrl, withRegistryLock } from '@myco/member/registry.js';
-import { defaultMycoHome } from '@myco/paths/home.js';
+import { defaultMycoHome, resolveHomeDir } from '@myco/paths/home.js';
+
+import { scanLegacyRegistrations } from './legacy-registration-files.js';
+
+export function installedLegacyHooks(home: string, opts: { homeDir?: string; homes?: readonly string[] } = {}): boolean {
+  const homeDir = opts.homeDir ?? resolveHomeDir();
+  const scan = scanLegacyRegistrations({ homeDir, ownHome: home, legacyHomes: opts.homes ?? [home, defaultMycoHome(homeDir)] });
+  if (scan.unreadable.length > 0) throw new LegacyMigrationUnreadable(scan.unreadable[0].file, scan.unreadable[0].reason);
+  return scan.findings.some(finding => finding.verdict === 'legacy' && ['hooks', 'plugin-file'].includes(finding.location.kind));
+}
 
 export interface MigrationPass {
   state: 'complete' | 'partial' | 'refused' | 'none';
@@ -14,7 +23,7 @@ export interface MigrationPass {
   endedBy?: string;
 }
 export interface MigrationProjectReceipt {
-  evidence?: { kind: 'deployment'; at: number; machineId: string; eventIds: string[] };
+  evidence?: { kind: 'deployment'; at: number; machineId: string; eventIds: string[]; sporeIds?: string[]; lineageIds?: string[] };
   root?: string | null;
   destination?: { serverUrl: string; key: string } | { skip: true; at: number };
   vault?: MigrationPass;
@@ -40,7 +49,7 @@ export type LegacyMigrationState = (
   | { state: 'unavailable'; file: string; detail: string }
   | { state: 'changed'; warning: string }
   | { state: 'none' | 'unmoved' | 'needs-destination' | 'handover-pending' | 'partial' | 'moved' }
-) & { legacyOwnsCapture?: true; confirmation?: 'unavailable' | 'not-found' };
+) & { legacyOwnsCapture?: true; confirmation?: 'unavailable' | 'not-found' | 'update-required' | 'project-missing' | 'busy' };
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -63,7 +72,8 @@ const validPass = (value: unknown, transcript: boolean): boolean => value === un
 function validProject(value: unknown): boolean {
   if (!record(value) || !validPass(value.vault, false) || !validPass(value.transcripts, true)) return false;
   if (value.evidence !== undefined && (!record(value.evidence) || value.evidence.kind !== 'deployment' || !timestamp(value.evidence.at)
-    || typeof value.evidence.machineId !== 'string' || !strings(value.evidence.eventIds) || value.evidence.eventIds.length === 0)) return false;
+    || typeof value.evidence.machineId !== 'string' || !strings(value.evidence.eventIds) || (value.evidence.sporeIds !== undefined && !strings(value.evidence.sporeIds)) || (value.evidence.lineageIds !== undefined && !strings(value.evidence.lineageIds))
+    || ![value.evidence.eventIds, value.evidence.sporeIds, value.evidence.lineageIds].some(ids => Array.isArray(ids) && ids.length > 0))) return false;
   if (value.root !== undefined && value.root !== null && typeof value.root !== 'string') return false;
   const dest = value.destination;
   if (dest !== undefined && (!record(dest) || ('skip' in dest
@@ -150,13 +160,13 @@ export function legacyProjectDestination(home: string, root: string, projectId: 
   return null;
 }
 
-export function legacyMigrationState(home: string): LegacyMigrationState {
+export function legacyMigrationState(home: string, opts: { homeDir?: string; homes?: readonly string[] } = {}): LegacyMigrationState {
   try {
-    const initialHomes = [...new Set([home, defaultMycoHome()].map(legacyRealpath))];
+    const initialHomes = [...new Set([home, ...(opts.homes ?? [defaultMycoHome(opts.homeDir)])].map(legacyRealpath))];
     const initialStates = initialHomes.map(readCutoverState);
     const homes = [...new Set([...initialHomes, ...initialStates.flatMap((s) => s.handover?.legacyHomes ?? [])].map(legacyRealpath))];
     const folders = initialStates.flatMap((s) => Object.values(s.migrations ?? {}).flatMap((v) => Object.values(v.projects).flatMap((p) => typeof p.root === 'string' ? [p.root] : [])));
-    const sources = legacySources(home, { homes, folders });
+    const sources = legacySources(home, { homes, folders, homeDir: opts.homeDir });
     const observed = (state: LegacyMigrationState): LegacyMigrationState => sources.units.length > 0 || sources.registrations.length > 0
       ? { ...state, legacyOwnsCapture: true } : state;
     const states = sources.homes.map(readCutoverState);

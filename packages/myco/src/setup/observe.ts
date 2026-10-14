@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readDefaultDeployment } from '@myco/member/default-deployment.js';
-import { legacyProjectDestination } from '@myco/member/legacy-migration.js';
-import { observeLegacyMigration } from '@myco/cli/cutover.js';
+import { legacyProjectDestination, installedLegacyHooks } from '@myco/member/legacy-migration.js';
+import { observeLegacyMigration, legacyConfirmationObserver } from '@myco/cli/cutover.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readDeploymentMembershipResult, readRegistryEntryResult } from '@myco/member/registry.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { postRoute } from '@myco/cli/deployment-reader.js';
@@ -33,11 +33,14 @@ export interface Observation {
   memberCapture?: true;
   joinedDeployments?: string[];
   legacyError?: string;
-  legacyConfirmation?: 'unavailable' | 'not-found';
+  legacyConfirmation?: import('@myco/member/legacy-migration.js').LegacyMigrationState['confirmation'];
   capture?: { waiting?: number | null; nextProbeAt?: number; recentRefusals?: number; unreadableLines?: number };
   target?: 'cloudflare' | 'local';
 }
 export interface ObserveDeps {
+  legacyHomeDir?: string;
+  legacyHomes?: readonly string[];
+  legacyObserver?: ReturnType<typeof legacyConfirmationObserver>;
   checkRemote?: boolean;
   fetch?: typeof fetch;
   agents?: () => string[];
@@ -67,7 +70,7 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
     catch (error) { add(id, 'unavailable', error instanceof Error ? error.message : String(error), observedUrl ?? home, informational); }
   };
   await read('legacy', async () => {
-    const migration = await observeLegacyMigration(home, { fetch: deps.fetch, now: deps.now });
+    const migration = await (deps.legacyObserver ?? observeLegacyMigration)(home, { fetch: deps.fetch, now: deps.now, homeDir: deps.legacyHomeDir, homes: deps.legacyHomes });
     const guidance = legacyCaptureGuidance(migration);
     facts.push({
       id: 'legacy',
@@ -122,14 +125,16 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
         signin.kind === 'configured' ? 'GitHub sign-in configured.' : signin.reason);
     });
   }
-  if (((answers.role === 'join' || answers.role === 'create') && url) || (deps.status && fs.existsSync(provisionRecordPath(home)))) {
+  if (((answers.role === 'join' || answers.role === 'create') && url) || deps.status) {
     await read('machine.agents', () => {
+      if (answers.noAgents && !deps.status) { add('machine.agents', 'complete', 'declined'); return; }
+      if (installedLegacyHooks(home, { homeDir: deps.legacyHomeDir, homes: deps.legacyHomes })) { add('machine.agents', 'incomplete', 'legacy-hooks'); return; }
       const record = readProvisionRecord(home);
       if (record === null && fs.existsSync(provisionRecordPath(home))) throw new Error(`${provisionRecordPath(home)}: cannot read provision record`);
+      if (record === null && answers.role !== 'join' && answers.role !== 'create') return;
       const hooksUrl = deps.status && record !== null ? deploymentUrl(record.serverUrl) : url;
-      if (hooksUrl === undefined) throw new Error('No Deployment address is available for agent hooks.');
+      if (hooksUrl === undefined) return;
       const same = record !== null && deploymentUrl(record.serverUrl) === hooksUrl;
-      if (answers.noAgents && !deps.status) { add('machine.agents', 'complete', 'declined'); return; }
       const agents = (deps.agents ?? (() => detectMachineInstalledSymbionts().map((manifest) => manifest.name)))();
       const installed = agents.length > 0 && agents.every((agent) => memberHarnessCurrent(agent, home, hooksUrl, deps));
       if (!installed && ((answers.noAgents && record === null) || (same && record.agents.length === 0))) { add('machine.agents', 'complete', 'declined'); return; }
@@ -215,6 +220,7 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
 
 /** Status derives journeys from membership and runner records, independent of saved progress. */
 export async function observeSetupStatus(home: string, answers: SetupAnswers, deps: ObserveDeps = {}, selected = false): Promise<Observation[]> {
+  deps = { ...deps, legacyObserver: deps.legacyObserver ?? legacyConfirmationObserver() };
   const journeys: SetupAnswers[] = [];
   const failures: Observation[] = [];
   const unavailable = (id: string, detail: string): void => {

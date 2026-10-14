@@ -205,7 +205,7 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     }
     if (options.status) {
       file.answers.root = options.answers.root ?? statusRepository(deps.cwd ?? process.cwd());
-      const observations = await observeSetupStatus(home, file.answers, { ...deps, checkRemote: options.checkRemote }, options.answers.role !== undefined);
+      const observations = await observeSetupStatus(home, file.answers, { ...deps, legacyHomeDir: deps.legacyHomeDir ?? deps.cutoverDeps?.env?.HOME, checkRemote: options.checkRemote }, options.answers.role !== undefined);
       if (options.json) out(JSON.stringify({ observations }, null, 2));
       else for (const line of renderSetupStatus(observations)) out(line);
       return setupExitCode(observations);

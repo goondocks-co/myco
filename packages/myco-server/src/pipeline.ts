@@ -1,3 +1,4 @@
+import { projectExists } from './read/sessions.js';
 import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
 import { SIGN_IN_UNCONFIGURED } from '@goondocks/myco-shared/setup-guidance';
 import { memberWriteStore, MemberWriteRefused } from './auth/member-write-store.js';
@@ -662,6 +663,7 @@ export function createServer(deps: ServerDeps) {
         const malformed = emptyBodyRefusal(body.text);
         if (malformed !== null) return refuse(auth, shapeOf(route), malformed.reason, malformed.classifier);
       }
+      if ('createProject' in route && route.createProject === false && !await projectExists(env.db, projectId)) return refuse(auth, shapeOf(route), 'Project is no longer on this Deployment', 'no_project');
       if (!await authorizeHttp(env, route.authorization, await memberSubject(env.db, auth.memberId, 'http'), { projectId, machineId: auth.machineId, tokenId: auth.tokenId, body: body.text, params })) return route.authorization.action === 'bootstrap' ? refuse(auth, shapeOf(route), LINK_REQUIRES_ADMIN, 'link_requires_admin') : refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
       const limit = await resolved();
       if (limit !== null) return limit;

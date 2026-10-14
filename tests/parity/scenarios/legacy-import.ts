@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { LEGACY_HISTORY_PATH, LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';
-import { LEGACY_HISTORY_SQL } from '@myco-server-worker/read/legacy-history.js';
+import { LEGACY_HISTORY_SQL, LEGACY_RECORDS_SQL, LEGACY_SPORES_SQL, LEGACY_LINEAGE_SQL } from '@myco-server-worker/read/legacy-history.js';
 
 /**
  * A Myco 1.4 vault import, identical on both front doors (#1161): what the
@@ -85,7 +85,10 @@ export const legacyImportParity: ParityScenario = {
     expect(at.get(plain)).toBeGreaterThan(1_000);
 
     await expectPersisted(await event(vaultSession, 'session.end', 'import', { title: 'Retained legacy session' }, stamp), 'legacy completion');
-    const [sourceEvent] = await target.sql(`SELECT event_id FROM events WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(vaultSession)} AND kind = 'session.end'`);
+    const [titleEvent] = await target.sql(`SELECT event_id FROM events WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(vaultSession)} AND kind = 'session.end'`);
+    expect((await (await post(LEGACY_HISTORY_PATH, { eventGroups: [[String(titleEvent.event_id)]] })).json() as { confirmed: boolean }).confirmed).toBe(false);
+    await expectPersisted(await event(vaultSession, 'session.end', 'import', { endedAt: stamp }, stamp + 1), 'legacy lifecycle completion');
+    const [sourceEvent] = await target.sql(`SELECT event_id FROM events WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(vaultSession)} AND kind = 'session.end' AND json_type(payload, '$.endedAt') IS NOT NULL`);
     const eventId = String(sourceEvent.event_id);
     const confirmation = async (eventGroups = [[eventId]]) => (await post(LEGACY_HISTORY_PATH, { eventGroups })).json();
     expect(await confirmation()).toEqual({ persisted: true, confirmed: true, eventIds: [eventId] });
@@ -102,7 +105,29 @@ export const legacyImportParity: ParityScenario = {
     const proof = LEGACY_HISTORY_SQL.replace(/\?/g, () => lit(binds[bind++]!));
     const queryPlan = (await target.sql(`EXPLAIN QUERY PLAN ${proof}`)).map(row => row.detail).join('\n');
     expect(queryPlan).toContain('SEARCH e USING INDEX sqlite_autoindex_events_1 (project_id=? AND event_id=?)');
+    expect(queryPlan).toContain('SEARCH f USING INDEX sqlite_autoindex_events_1');
     expect(queryPlan).toMatch(/SEARCH s (?:EXISTS )?USING INDEX sqlite_autoindex_sessions_1 \(project_id=\? AND session_id=\?\)/);
+    const sourceIds = { eventGroups: [[eventId]], recordIds: [String(titleEvent.event_id)], sporeIds: [spore], lineageIds: [imported] };
+    const fullProof = async (extra = {}) => (await post(LEGACY_HISTORY_PATH, { ...sourceIds, ...extra })).json() as Promise<{ confirmed: boolean }>;
+    expect((await fullProof()).confirmed).toBe(true);
+    expect((await fullProof({ sporeIds: [spore, 'absent-spore'] })).confirmed).toBe(false);
+    expect((await fullProof({ lineageIds: ['absent-lineage'] })).confirmed).toBe(false);
+    const [author] = await target.sql(`SELECT author FROM spores WHERE project_id = ${lit(target.projectId)} AND id = ${lit(spore)}`);
+    for (const table of ['spores', 'resolution_events']) {
+      await target.sql(`UPDATE ${table} SET author = 'other-member' WHERE project_id = ${lit(target.projectId)}`);
+      expect((await fullProof()).confirmed).toBe(false);
+      await target.sql(`UPDATE ${table} SET author = ${lit(String(author.author))} WHERE project_id = ${lit(target.projectId)}`);
+    }
+    for (const [sql, table] of [[LEGACY_SPORES_SQL, 'spores'], [LEGACY_LINEAGE_SQL, 'resolution_events']] as const) {
+      const values = [target.projectId, JSON.stringify([spore]), String(author.author), String(owner.machine_id)];
+      let index = 0;
+      const plan = (await target.sql(`EXPLAIN QUERY PLAN ${sql.replace(/\?/g, () => lit(values[index++]!))}`)).map(row => row.detail).join('\n');
+      expect(plan).toContain(`SEARCH r USING INDEX sqlite_autoindex_${table}_1 (project_id=? AND id=?)`);
+      expect(plan).toMatch(/SEARCH s (?:EXISTS )?USING INDEX sqlite_autoindex_sessions_1/);
+    }
+    let recordBind = 0;
+    const recordPlan = (await target.sql(`EXPLAIN QUERY PLAN ${LEGACY_RECORDS_SQL.replace(/\?/g, () => lit(binds[recordBind++]!))}`)).map(row => row.detail).join('\n');
+    expect(recordPlan).toContain('SEARCH e USING INDEX sqlite_autoindex_events_1 (project_id=? AND event_id=?)');
     const projectsBefore = await target.sql('SELECT project_id FROM projects ORDER BY project_id');
     const missing = await fetch(`${target.url}${LEGACY_HISTORY_PATH}`, { method: 'POST', headers: { ...target.memberHeaders(), 'x-myco-project': `proj_missing_${stamp}`, 'content-type': 'application/json' }, body: JSON.stringify({ eventGroups: [[eventId]] }) });
     expect((await missing.json() as { confirmed?: boolean }).confirmed).not.toBe(true);

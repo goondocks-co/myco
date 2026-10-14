@@ -144,6 +144,10 @@ describe('legacy journey (e)', () => {
 
   for (const evidence of ['confirmed', 'archived', 'title-only', 'confirmed-dry-run', 'confirmed-setup', 'absent', 'growth', 'deleted', 'denied', 'unreachable'] as const) it(`recovers alpha backup-only moves only with Deployment evidence: ${evidence}`, async () => {
     const fixture = await rig();
+    if (evidence === 'title-only') {
+      const source = new Database(fixture.legacy.vault);
+      try { source.run('DELETE FROM prompt_batches'); } finally { source.close(); }
+    }
     const before = fs.readFileSync(fixture.legacy.vault);
     expect(await run(flags, fixture.deps)).toBe(0);
     const state = readCutoverState(home);
@@ -162,7 +166,7 @@ describe('legacy journey (e)', () => {
       if (evidence === 'denied') destination.run("UPDATE events SET producer_adapter = 'claude-code'");
       if (evidence === 'title-only') for (const source of readLegacyVault(fixture.legacy.vault)) {
         const titleId = legacyHistoryCompletionGroups(source, 'machine_1', home)[0]![1]!;
-        destination.run("UPDATE events SET producer_adapter = 'claude-code' WHERE project_id = ? AND event_id <> ?", [source.projectId, titleId]);
+        destination.run("UPDATE events SET producer_adapter = 'claude-code', channel = 'cli' WHERE project_id = ? AND event_id <> ?", [source.projectId, titleId]);
       }
       if (evidence === 'deleted') {
         destination.run('PRAGMA foreign_keys = OFF');
@@ -175,12 +179,12 @@ describe('legacy journey (e)', () => {
     if (evidence === 'confirmed-setup') expect(await run(flags, { ...fixture.deps, ask: async question => { throw new Error(`Unexpected prompt: ${question}`); } })).toBe(0);
     const observations = await observeSetup(home, {}, { fetch: deps.fetch, agents: () => [], status: true });
     if (['confirmed', 'archived', 'title-only', 'confirmed-dry-run', 'confirmed-setup', 'absent'].includes(evidence)) {
-      expect(legacyMigrationState(home).state).toBe('moved');
+      expect(legacyMigrationState(home).state).toBe(evidence === 'confirmed-setup' ? 'moved' : 'partial');
       expect(readCutoverState(home)).toMatchObject({ version: 2, migrations: { [fixture.legacy.vault]: { projects: {
         [fixture.legacy.projects[0]!.id]: { evidence: { kind: 'deployment', machineId: 'machine_1' } },
       } } } });
       const plan = planCutover(home, { homeDir: fixture.legacy.home, dryRun: true }, fixture.deps.cutoverDeps);
-      expect(plan.projects.map(project => project.destination.kind)).toEqual(['moved', 'moved']);
+      expect(plan.projects.map(project => project.destination.kind)).toEqual(evidence === 'confirmed-setup' ? ['moved', 'moved'] : ['destination', 'destination']);
       expect(await run(flags, { ...fixture.deps, ask: async question => { throw new Error(`Unexpected prompt: ${question}`); } })).toBe(0);
       expect(fixture.calls.slice(requests).filter(call => ['/events', '/spores/save', '/members/projects/resolve'].includes(call.route))).toEqual([]);
       const receipt = fs.readFileSync(file);
@@ -190,10 +194,46 @@ describe('legacy journey (e)', () => {
       expect(legacyMigrationState(home).state).toBe('needs-destination');
       if (evidence === 'growth') expect(readCutoverState(home).migrations?.[fixture.legacy.vault]?.projects[fixture.legacy.projects[0]!.id]?.destination).toBeUndefined();
       else expect(readCutoverState(home).migrations).toBeUndefined();
-      if (evidence !== 'growth') expect(observations.find(fact => fact.id === 'legacy')?.hint).toContain(evidence === 'unreachable' || evidence === 'deleted' ? 'online' : 'destination');
+      if (evidence !== 'growth') expect(observations.find(fact => fact.id === 'legacy')?.hint).toContain(evidence === 'unreachable' ? 'online' : evidence === 'deleted' ? 'no longer on' : 'destination');
     }
     expect(fs.readFileSync(fixture.legacy.vault)).toEqual(sourceBytes);
     if (evidence !== 'growth') expect(sourceBytes).toEqual(before);
+  });
+
+  it('confirms each candidate once across an entire setup run and retries only transcripts after vault evidence', async () => {
+    const fixture = await rig();
+    expect(await run(flags, fixture.deps)).toBe(0);
+    const state = readCutoverState(home);
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: state.backups }));
+    const requests = fixture.calls.length;
+    expect(await run(flags, fixture.deps)).toBe(0);
+    const calls = fixture.calls.slice(requests);
+    for (const project of fixture.legacy.projects) {
+      expect(calls.filter(call => call.route === '/import/legacy-history' && call.project === project.id)).toHaveLength(1);
+      expect(readCutoverState(home).migrations?.[fixture.legacy.vault]?.projects[project.id]).toMatchObject({ vault: { state: 'complete' }, transcripts: { state: 'complete' } });
+    }
+    expect(lines.join('\n')).toContain('only the transcript pass remains');
+    expect(calls.filter(call => ['/events', '/spores/save', '/spores/resolve'].includes(call.route))).toEqual([]);
+  });
+
+  it('sends one denied confirmation pass per candidate across setup observations and conductLegacy', async () => {
+    const fixture = await rig();
+    expect(await run(flags, fixture.deps)).toBe(0);
+    const state = readCutoverState(home);
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: state.backups }));
+    const counts = new Map<string, number>();
+    const fetch = fakeFetch(async (input, init) => {
+      const request = new Request(input, init);
+      if (new globalThis.URL(request.url).pathname === '/import/legacy-history') {
+        const project = request.headers.get('x-myco-project')!;
+        counts.set(project, (counts.get(project) ?? 0) + 1);
+        return Response.json({ persisted: true, confirmed: false });
+      }
+      return fixture.deps.fetch!(input, init);
+    });
+    expect({ code: await run(flags, { ...fixture.deps, fetch }), errors }).toEqual({ code: 0, errors: [] });
+    expect([...counts.values()]).toEqual([1, 1]);
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(fs.readFileSync(path.join(root, 'journey-e', 'vault-before')));
   });
 
   for (const version of [2, 1, undefined] as const) for (const disposition of ['archived', 'deleted'] as const) {
@@ -350,8 +390,8 @@ describe('legacy journey (e)', () => {
     expect(legacyMigrationState(home).state).toBe(state);
     const before = fs.readFileSync(fixture.legacy.vault);
     const snapshotBefore = snapshot(root);
-    expect(await run(['--status', '--json'], fixture.deps)).toBe(state === 'moved' || state === 'needs-destination' ? 0 : 3);
-    if (state === 'needs-destination') expect(legacyMigrationState(home).state).toBe('moved');
+    expect(await run(['--status', '--json'], fixture.deps)).toBe(state === 'moved' ? 0 : 3);
+    if (state === 'needs-destination') expect(legacyMigrationState(home).state).toBe('partial');
     else expect(snapshot(root)).toEqual(snapshotBefore);
     lines = []; errors = [];
     const result = await run(flags, fixture.deps);

@@ -47,7 +47,7 @@ import { isSafeProjectRoot } from '../project-root.js';
 import { defaultMycoHome, readHomePin, resolveHomeDir, resolveMycoHomeWithSource, RUNTIME_HOME_FILENAME, resolveMachineIdPath, type ResolvedMycoHome } from '../paths/home.js';
 import { claimSubsystem, readClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import { IMPORT_PACE_PER_MINUTE, importUntilSettled, type ImportReport } from '../member/import.js';
-import { legacyProjectImportComplete, legacyProjectRoots, legacySessionSplit, runLegacyImport, LEGACY_MAX_PER_AGENT, LEGACY_WINDOW_DAYS, type LegacyImportReport } from '../member/legacy-import.js';
+import { legacyDeletedSessionIds, readLegacyVault, legacyProjectImportComplete, legacyProjectRoots, legacySessionSplit, runLegacyImport, LEGACY_MAX_PER_AGENT, LEGACY_WINDOW_DAYS, type LegacyImportReport } from '../member/legacy-import.js';
 import { legacyVaultFiles } from '../member/home-role.js';
 import { backupVault, copyProblem, readVaultContent, type TableCounts } from '../member/legacy-backup.js';
 import { CutoverBackup, cutoverBackupDir, earlierCopyHolds, MANIFEST_FILE, RESTORE_FILE } from '../member/cutover-backup.js';
@@ -68,7 +68,7 @@ import { resolveManagedBinaryPath } from '../symbionts/installer.js';
 import { defaultMembership } from '@myco/member/default-deployment.js';
 import { completedLegacyDestination, readCutoverState, writeCutoverState as writeState } from '@myco/member/legacy-migration.js';
 import { observeLegacyMigration } from '@myco/member/legacy-confirmation.js';
-export { observeLegacyMigration } from '@myco/member/legacy-confirmation.js';
+export { observeLegacyMigration, legacyConfirmationObserver } from '@myco/member/legacy-confirmation.js';
 import { legacyRealpath, legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { cutoverAbsentFolder, cutoverForeignBinding } from '@goondocks/myco-shared/setup-guidance';
@@ -835,19 +835,26 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
           if (dest.kind !== 'destination') continue;
           if (signal.aborted) return false;
           const receipt = state.migrations?.[project.vault]?.projects[project.projectId];
-          const legacy: LegacyImportReport = await runLegacyImport({ sources: [copies.get(project.vault)!], project: project.projectId, serverUrl: dest.serverUrl, dryRun: dry }, { ...importDeps, progress: (l) => out(`   ${l}`) });
-          for (const line of legacyReportLines(legacy, dry)) out(`   ${line}`);
-          const complete = legacy.refused === undefined && legacy.projects.length > 0 && legacy.projects.every(legacyProjectImportComplete);
-          if (!dry && receipt !== undefined) {
-            const failures = legacy.projects.flatMap((p) => [...p.failures, ...p.refusals].map((what) => ({ what, cause: p.stoppedBy ?? Object.keys(p.causes ?? {})[0] ?? p.endedBy ?? 'fault' })));
-            if (legacy.refused !== undefined) failures.push({ what: legacy.refused, cause: 'refused' });
-            receipt.vault = { state: complete ? 'complete' : legacy.refused === undefined ? 'partial' : 'refused', at: now(), failures, endedBy: legacy.projects.find((p) => p.endedBy !== undefined)?.endedBy };
-            writeState(mycoHome, state);
-            deps.onCheckpoint?.(`vault:${project.projectId}`);
+          let deleted: string[] = [];
+          if (receipt?.evidence?.kind !== 'deployment' || receipt.vault?.state !== 'complete') {
+            const legacy: LegacyImportReport = await runLegacyImport({ sources: [copies.get(project.vault)!], project: project.projectId, serverUrl: dest.serverUrl, dryRun: dry }, { ...importDeps, progress: (l) => out(`   ${l}`) });
+            for (const line of legacyReportLines(legacy, dry)) out(`   ${line}`);
+            const complete = legacy.refused === undefined && legacy.projects.length > 0 && legacy.projects.every(legacyProjectImportComplete);
+            if (!dry && receipt !== undefined) {
+              const failures = legacy.projects.flatMap((p) => [...p.failures, ...p.refusals].map((what) => ({ what, cause: p.stoppedBy ?? Object.keys(p.causes ?? {})[0] ?? p.endedBy ?? 'fault' })));
+              if (legacy.refused !== undefined) failures.push({ what: legacy.refused, cause: 'refused' });
+              receipt.vault = { state: complete ? 'complete' : legacy.refused === undefined ? 'partial' : 'refused', at: now(), failures, endedBy: legacy.projects.find((p) => p.endedBy !== undefined)?.endedBy };
+              writeState(mycoHome, state);
+              deps.onCheckpoint?.(`vault:${project.projectId}`);
+            }
+            if (legacy.refused !== undefined) { problem(legacy.refused); out(`   ${stoppedByLine(legacy.refused)}`); }
+            if (signal.aborted) return false;
+            if (!complete && !dry) problem(`${project.projectId}: the Deployment refused or failed part of the 1.4 history (above); run the cutover again to retry it`);
+            deleted = legacy.deleted;
+          } else {
+            deleted = readLegacyVault(copies.get(project.vault)!).filter(source => source.projectId === project.projectId).flatMap(source => legacyDeletedSessionIds(source, machineId, mycoHome));
+            out(`   vault history for ${project.projectId} is confirmed; only the transcript pass remains`);
           }
-          if (legacy.refused !== undefined) { problem(legacy.refused); out(`   ${stoppedByLine(legacy.refused)}`); }
-          if (signal.aborted) return false;
-          if (!complete && !dry) problem(`${project.projectId}: the Deployment refused or failed part of the 1.4 history (above); run the cutover again to retry it`);
           if (dry) { out(`   would then import agent transcripts for ${project.projectId} on ${dest.serverUrl}`); continue; }
           const hasTranscriptBinding = listRegistryEntries(mycoHome).some((b) => b.projectId === project.projectId && deploymentUrl(b.serverUrl) === dest.serverUrl);
           if (!hasTranscriptBinding) {
@@ -855,7 +862,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
             continue;
           }
           const transcripts: ImportReport = await importUntilSettled(
-            { serverUrl: dest.serverUrl, project: project.projectId, mappings: parsed.mappings, windowDays: LEGACY_WINDOW_DAYS, maxPerAgent: LEGACY_MAX_PER_AGENT, exclude: new Set(legacy.deleted) },
+            { serverUrl: dest.serverUrl, project: project.projectId, mappings: parsed.mappings, windowDays: LEGACY_WINDOW_DAYS, maxPerAgent: LEGACY_MAX_PER_AGENT, exclude: new Set(deleted) },
             { ...importDeps, progress: (l) => out(`   ${l}`) },
           );
           const transcriptsComplete = transcriptImportComplete(transcripts) && transcripts.projects.every((p) => !p.notAttempted);
