@@ -1,6 +1,7 @@
 import { expect } from 'bun:test';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
-import { LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';
+import { LEGACY_HISTORY_PATH, LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';
+import { LEGACY_HISTORY_SQL } from '@myco-server-worker/read/legacy-history.js';
 
 /**
  * A Myco 1.4 vault import, identical on both front doors (#1161): what the
@@ -82,5 +83,29 @@ export const legacyImportParity: ParityScenario = {
     const at = new Map(history.map((h) => [String(h.id), Number(h.created_at)]));
     expect(at.get(imported)).toBe(1_000);
     expect(at.get(plain)).toBeGreaterThan(1_000);
+
+    await expectPersisted(await event(vaultSession, 'session.end', 'import', { title: 'Retained legacy session' }, stamp), 'legacy completion');
+    const [sourceEvent] = await target.sql(`SELECT event_id FROM events WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(vaultSession)} AND kind = 'session.end'`);
+    const eventId = String(sourceEvent.event_id);
+    const confirmation = async (eventGroups = [[eventId]]) => (await post(LEGACY_HISTORY_PATH, { eventGroups })).json();
+    expect(await confirmation()).toEqual({ persisted: true, confirmed: true, eventIds: [eventId] });
+    expect(await confirmation([[eventId], [crypto.randomUUID()]])).toEqual({ persisted: true, confirmed: false });
+    const [owner] = await target.sql(`SELECT machine_id FROM sessions WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(vaultSession)}`);
+    await target.sql(`UPDATE sessions SET machine_id = 'machine_2' WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(vaultSession)}`);
+    expect(await confirmation()).toEqual({ persisted: true, confirmed: false });
+    await target.sql(`UPDATE sessions SET machine_id = ${lit(String(owner.machine_id))} WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(vaultSession)}`);
+    await target.sql(`UPDATE projects SET archived_at = 1 WHERE project_id = ${lit(target.projectId)}`);
+    try { expect(await confirmation()).toEqual({ persisted: true, confirmed: true, eventIds: [eventId] }); }
+    finally { await target.sql(`UPDATE projects SET archived_at = NULL WHERE project_id = ${lit(target.projectId)}`); }
+    const binds = [target.projectId, JSON.stringify([eventId]), LEGACY_IMPORT_ADAPTER, String(owner.machine_id)];
+    let bind = 0;
+    const proof = LEGACY_HISTORY_SQL.replace(/\?/g, () => lit(binds[bind++]!));
+    const queryPlan = (await target.sql(`EXPLAIN QUERY PLAN ${proof}`)).map(row => row.detail).join('\n');
+    expect(queryPlan).toContain('SEARCH e USING INDEX sqlite_autoindex_events_1 (project_id=? AND event_id=?)');
+    expect(queryPlan).toMatch(/SEARCH s (?:EXISTS )?USING INDEX sqlite_autoindex_sessions_1 \(project_id=\? AND session_id=\?\)/);
+    const projectsBefore = await target.sql('SELECT project_id FROM projects ORDER BY project_id');
+    const missing = await fetch(`${target.url}${LEGACY_HISTORY_PATH}`, { method: 'POST', headers: { ...target.memberHeaders(), 'x-myco-project': `proj_missing_${stamp}`, 'content-type': 'application/json' }, body: JSON.stringify({ eventGroups: [[eventId]] }) });
+    expect((await missing.json() as { confirmed?: boolean }).confirmed).not.toBe(true);
+    expect(await target.sql('SELECT project_id FROM projects ORDER BY project_id')).toEqual(projectsBefore);
   },
 };

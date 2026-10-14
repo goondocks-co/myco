@@ -1,10 +1,10 @@
-/** Read-only migration receipts; the cutover capability is their only writer. */
+/** The local cutover receipt capability. */
 import path from 'node:path';
 import { readVaultContent, type TableCounts } from '@myco/member/legacy-backup.js';
 import { LegacyMigrationUnreadable, legacyRealpath, legacySources, legacyVaultProjectIds, type LegacySources } from '@myco/member/legacy-sources.js';
 export { LegacyMigrationUnreadable } from '@myco/member/legacy-sources.js';
-import { readPrivateJson } from '@myco/member/store.js';
-import { deploymentKeyFor, deploymentUrl } from '@myco/member/registry.js';
+import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from '@myco/member/store.js';
+import { deploymentKeyFor, deploymentUrl, withRegistryLock } from '@myco/member/registry.js';
 import { defaultMycoHome } from '@myco/paths/home.js';
 
 export interface MigrationPass {
@@ -14,11 +14,12 @@ export interface MigrationPass {
   endedBy?: string;
 }
 export interface MigrationProjectReceipt {
+  evidence?: { kind: 'deployment'; at: number; machineId: string; eventIds: string[] };
   root?: string | null;
   destination?: { serverUrl: string; key: string } | { skip: true; at: number };
   vault?: MigrationPass;
   transcripts?: MigrationPass;
-  destinations?: Record<string, { serverUrl: string; digest: string; size: number; mtimeMs: number; vault?: MigrationPass; transcripts?: MigrationPass }>;
+  destinations?: Record<string, { serverUrl: string; digest: string; size: number; mtimeMs: number; vault?: MigrationPass; transcripts?: MigrationPass; evidence?: MigrationProjectReceipt['evidence'] }>;
 }
 export interface MigrationReceipt {
   digest: string;
@@ -39,7 +40,7 @@ export type LegacyMigrationState = (
   | { state: 'unavailable'; file: string; detail: string }
   | { state: 'changed'; warning: string }
   | { state: 'none' | 'unmoved' | 'needs-destination' | 'handover-pending' | 'partial' | 'moved' }
-) & { legacyOwnsCapture?: true };
+) & { legacyOwnsCapture?: true; confirmation?: 'unavailable' | 'not-found' };
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -61,6 +62,8 @@ const validPass = (value: unknown, transcript: boolean): boolean => value === un
   && (value.failures === undefined || (Array.isArray(value.failures) && value.failures.every((f) => record(f) && typeof f.what === 'string' && typeof f.cause === 'string'))));
 function validProject(value: unknown): boolean {
   if (!record(value) || !validPass(value.vault, false) || !validPass(value.transcripts, true)) return false;
+  if (value.evidence !== undefined && (!record(value.evidence) || value.evidence.kind !== 'deployment' || !timestamp(value.evidence.at)
+    || typeof value.evidence.machineId !== 'string' || !strings(value.evidence.eventIds) || value.evidence.eventIds.length === 0)) return false;
   if (value.root !== undefined && value.root !== null && typeof value.root !== 'string') return false;
   const dest = value.destination;
   if (dest !== undefined && (!record(dest) || ('skip' in dest
@@ -90,6 +93,30 @@ export function readCutoverState(home: string): CutoverState {
       || !record(receipt.projects) || !Object.values(receipt.projects).every(validProject)) throw new LegacyMigrationUnreadable(file, 'invalid migration receipt');
   }
   return value as unknown as CutoverState;
+}
+
+/** Atomically publish the receipt journal and its per-destination completion records under the registry lock. */
+export function writeCutoverState(home: string, state: CutoverState): void {
+  withRegistryLock(() => publishCutoverState(home, state), home);
+}
+
+/** Read, admit and publish a backfill while registry routes and the receipt stay locked. */
+export function updateCutoverState(home: string, update: (state: CutoverState) => boolean): void {
+  withRegistryLock(() => {
+    const state = readCutoverState(home);
+    if (update(state)) publishCutoverState(home, state);
+  }, home);
+}
+
+function publishCutoverState(home: string, state: CutoverState): void {
+  for (const receipt of Object.values(state.migrations ?? {})) for (const project of Object.values(receipt.projects)) {
+    if (project.destination !== undefined && 'key' in project.destination) {
+      project.destinations ??= {};
+      project.destinations[project.destination.key] = { serverUrl: project.destination.serverUrl, digest: receipt.digest, size: receipt.size, mtimeMs: receipt.mtimeMs, vault: project.vault, transcripts: project.transcripts, evidence: project.evidence };
+    }
+  }
+  ensureMemberDir(memberRoot(home), home);
+  writePrivateFileAtomic(path.join(memberRoot(home), 'cutover.json'), `${JSON.stringify(state, null, 2)}\n`);
 }
 
 export function sameLegacyStamp(vault: LegacySources['vaults'][number], receipt: MigrationReceipt): boolean {
@@ -166,7 +193,9 @@ export function legacyMigrationState(home: string): LegacyMigrationState {
     }
     if (changed) return observed({ state: 'changed', warning: 'Myco 1.4 wrote more data after migration. Keep its files and run myco setup --cutover to review the new data, or preview manually with myco cutover --dry-run.' });
     if (needsDestination) return observed({ state: 'needs-destination' });
-    if (!states.some((s) => s.handover !== undefined) || sources.units.length > 0 || sources.registrations.length > 0) return observed({ state: 'handover-pending' });
+    const confirmed = held.every(({ entries }) => entries.some(({ receipt }) => Object.values(receipt.projects).length > 0
+      && Object.values(receipt.projects).every(project => project.evidence?.kind === 'deployment')));
+    if ((!states.some((s) => s.handover !== undefined) && !confirmed) || sources.units.length > 0 || sources.registrations.length > 0) return observed({ state: 'handover-pending' });
     return { state: partial ? 'partial' : 'moved' };
   } catch (error) {
     const file = error instanceof LegacyMigrationUnreadable ? error.file : error instanceof Error && 'path' in error ? String(error.path) : home;

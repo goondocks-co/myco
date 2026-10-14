@@ -29,6 +29,7 @@ import { observeSetup, type Observation, type ObserveDeps } from '@myco/setup/ob
 import { askOnTerminal, askRequired, confirm, type Ask } from '@myco/setup/prompt.js';
 import { planCutover, runCutover, cutoverSourcePlan, cutoverReconciliation, type CutoverDeps, type CutoverPlan } from '@myco/cli/cutover.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
+import { observeLegacyMigration } from '@myco/cli/cutover.js';
 
 const OFFER_WAIT_MS = 2 * 60_000;
 const OFFER_POLL_MS = 1000;
@@ -174,7 +175,7 @@ function showCutoverPreview(ctx: Context, plan: CutoverPlan): void {
 }
 
 async function conductLegacy(ctx: Context): Promise<void> {
-  const migration = legacyMigrationState(ctx.home);
+  const migration = await observeLegacyMigration(ctx.home, { fetch: ctx.deps.fetch ?? ctx.deps.cutoverDeps?.fetch, now: ctx.deps.now, homeDir: ctx.deps.cutoverDeps?.env?.HOME });
   if (migration.state === 'unavailable') throw new Error(`Legacy migration state unavailable: ${migration.detail}. Restore access, then run myco setup again.`);
   if (migration.state === 'none' || (migration.state === 'moved' && !ctx.explicitLegacyPlacement)) return;
   if (migration.state !== 'moved') ctx.out(migration.state === 'unmoved' && migration.legacyOwnsCapture === true

@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readDefaultDeployment } from '@myco/member/default-deployment.js';
-import { legacyMigrationState, legacyProjectDestination } from '@myco/member/legacy-migration.js';
+import { legacyProjectDestination } from '@myco/member/legacy-migration.js';
+import { observeLegacyMigration } from '@myco/cli/cutover.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readDeploymentMembershipResult, readRegistryEntryResult } from '@myco/member/registry.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { postRoute } from '@myco/cli/deployment-reader.js';
@@ -32,6 +33,7 @@ export interface Observation {
   memberCapture?: true;
   joinedDeployments?: string[];
   legacyError?: string;
+  legacyConfirmation?: 'unavailable' | 'not-found';
   capture?: { waiting?: number | null; nextProbeAt?: number; recentRefusals?: number; unreadableLines?: number };
   target?: 'cloudflare' | 'local';
 }
@@ -64,12 +66,13 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
     try { await fn(); }
     catch (error) { add(id, 'unavailable', error instanceof Error ? error.message : String(error), observedUrl ?? home, informational); }
   };
-  await read('legacy', () => {
-    const migration = legacyMigrationState(home);
+  await read('legacy', async () => {
+    const migration = await observeLegacyMigration(home, { fetch: deps.fetch, now: deps.now });
     const guidance = legacyCaptureGuidance(migration);
     facts.push({
       id: 'legacy',
       ...(migration.state === 'unavailable' ? { legacyError: migration.detail } : {}),
+      ...(migration.confirmation === undefined ? {} : { legacyConfirmation: migration.confirmation }),
       scope: migration.state === 'unavailable' ? migration.file : home,
       state: migration.state === 'unavailable' ? 'unavailable' : migration.state === 'none' || migration.state === 'moved' ? 'complete' : 'incomplete',
       detail: [migration.state, guidance.deferral ?? guidance.hint ?? (migration.state === 'none' || migration.state === 'moved' ? 'No Myco 1.4 migration remains.' : 'Migration is unfinished; keep the 1.4 data and run myco setup --cutover to preview and resume.'), guidance.warning].filter(Boolean).join(' '),

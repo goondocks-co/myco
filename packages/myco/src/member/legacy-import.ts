@@ -304,6 +304,13 @@ export function locateTranscript(agent: string, sessionId: string, recordedPath:
 
 /** The ids one vault row's derived events and rows take, all under this Project. */
 const legacyId = (projectId: string, ...parts: string[]): string => deriveId('legacy', projectId, ...parts);
+
+/** Source event identities use the same machine eligibility and session identities as the importer. */
+export function legacyHistoryCompletionGroups(project: LegacyProject, machineId: string, mycoHome: string): string[][] {
+  const { aliases } = aliasByTranscriptTime(project, rootOf(project), mycoHome);
+  return groupLegacySessions(project, aliases, machineId).groups.map(group =>
+    ['session.end', 'session.title'].map(kind => legacyId(project.projectId, kind, group.sessionId)));
+}
 export const legacyPromptId = (projectId: string, promptId: string): string => legacyId(projectId, 'prompt', promptId);
 
 /** The key a vault plan takes: the member's key for its file, the tool's key for its logical key, else one derived from its row. */

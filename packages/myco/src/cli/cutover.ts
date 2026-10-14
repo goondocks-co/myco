@@ -2,7 +2,7 @@ import { machineSettingsLocation } from '@goondocks/myco-shared/setup-guidance';
 /**
  * `myco cutover` — move retained 1.4 projects to their routed Deployments.
  *
- * A dry run reads everything and prints the plan without changing state.
+ * A dry run confirms earlier moves and prints the plan without importing or changing agent settings.
  * Step 0 checks handover ownership before any settings or data changes. It refuses when another installation holds anything the run would
  * take: the `symbiont-config` claim in any home's claims folder, the machine
  * pin, a Myco hook, plugin or MCP entry at any place 1.4.8 registered one
@@ -52,7 +52,7 @@ import { legacyVaultFiles } from '../member/home-role.js';
 import { backupVault, copyProblem, readVaultContent, type TableCounts } from '../member/legacy-backup.js';
 import { CutoverBackup, cutoverBackupDir, earlierCopyHolds, MANIFEST_FILE, RESTORE_FILE } from '../member/cutover-backup.js';
 import { deploymentKeyFor, deploymentUrl, listDeploymentMemberships, listRegistryEntries, readRegistryEntryResult, readRegistryEntry, registryEntryPath, writeRegistryEntry, REGISTRY_VERSION, type DeploymentMembership } from '../member/registry.js';
-import { ensureMemberDir, ensurePrivateFile, memberRoot, writePrivateFileAtomic } from '../member/store.js';
+import { ensureMemberDir, ensurePrivateFile, memberRoot } from '../member/store.js';
 import type { FetchLike } from '../member/transport.js';
 
 import { parseDirectoryMapping, canonicalPath, type DirectoryMapping } from '../symbionts/transcript-attribution.js';
@@ -66,7 +66,9 @@ import { pinMachineHome, previewGlobalProvision, provisionGlobally, type Provisi
 import { legacyReportLines, reportLines, STOPPED_WORDS, transcriptImportComplete } from './import.js';
 import { resolveManagedBinaryPath } from '../symbionts/installer.js';
 import { defaultMembership } from '@myco/member/default-deployment.js';
-import { completedLegacyDestination, readCutoverState, type CutoverState } from '@myco/member/legacy-migration.js';
+import { completedLegacyDestination, readCutoverState, writeCutoverState as writeState } from '@myco/member/legacy-migration.js';
+import { observeLegacyMigration } from '@myco/member/legacy-confirmation.js';
+export { observeLegacyMigration } from '@myco/member/legacy-confirmation.js';
 import { legacyRealpath, legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { cutoverAbsentFolder, cutoverForeignBinding } from '@goondocks/myco-shared/setup-guidance';
@@ -182,19 +184,6 @@ export interface CutoverDeps {
   packageRoot?: string;
   /** Requests a minute the imports stay under. */
   pace?: number;
-}
-
-const statePath = (mycoHome: string): string => path.join(memberRoot(mycoHome), 'cutover.json');
-
-function writeState(mycoHome: string, state: CutoverState): void {
-  for (const receipt of Object.values(state.migrations ?? {})) for (const project of Object.values(receipt.projects)) {
-    if (project.destination !== undefined && 'key' in project.destination) {
-      project.destinations ??= {};
-      project.destinations[project.destination.key] = { serverUrl: project.destination.serverUrl, digest: receipt.digest, size: receipt.size, mtimeMs: receipt.mtimeMs, vault: project.vault, transcripts: project.transcripts };
-    }
-  }
-  ensureMemberDir(memberRoot(mycoHome), mycoHome);
-  writePrivateFileAtomic(statePath(mycoHome), `${JSON.stringify(state, null, 2)}\n`);
 }
 
 /** The 1.4 homes a run cuts over: those named, else the default home and this one, where each holds a vault. */
@@ -444,6 +433,7 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
     const env = deps.env ?? process.env;
     const homeDir = env.HOME || resolveHomeDir();
     const home = deps.mycoHome ?? resolveMycoHomeWithSource({ env, homeDir }).home;
+    await observeLegacyMigration(home, { fetch: deps.fetch, now: deps.now, homeDir, ...(parsed.legacyHomes.length > 0 ? { homes: parsed.legacyHomes } : {}) });
     const plan = planCutover(home, { ...parsed, homeDir }, deps);
     if (deps.mycoHome === undefined) plan.selection = resolveMycoHomeWithSource({ env, homeDir });
     return (await runCutover(plan, deps)).ok;

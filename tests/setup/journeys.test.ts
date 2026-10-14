@@ -47,8 +47,9 @@ import { runJoin } from '@myco/cli/member.js';
 import { cloudflareOwnerLinked } from '@myco/server/cloudflare-owner.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { legacyJourney, LEGACY_URLS } from './fixtures/legacy-journey.js';
-import { planCutover, runCutover } from '@myco/cli/cutover.js';
+import { planCutover, runCutover, run as cutoverRun } from '@myco/cli/cutover.js';
 import { readCutoverState } from '@myco/member/legacy-migration.js';
+import { legacyHistoryCompletionGroups, readLegacyVault } from '@myco/member/legacy-import.js';
 
 const URL = 'https://setup.invalid';
 const fakeFetch = (fn: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>): typeof fetch => Object.assign(fn, { preconnect: () => {} });
@@ -139,6 +140,60 @@ describe('legacy journey (e)', () => {
     expect(legacyMigrationState(home).state).toBe('moved');
     expect(lines.filter(line => line.startsWith('Moved to 2.0.'))).toHaveLength(1);
     expect(errors.join('\n')).toContain('Project connection did not finish');
+  });
+
+  for (const evidence of ['confirmed', 'archived', 'title-only', 'confirmed-dry-run', 'confirmed-setup', 'absent', 'growth', 'deleted', 'denied', 'unreachable'] as const) it(`recovers alpha backup-only moves only with Deployment evidence: ${evidence}`, async () => {
+    const fixture = await rig();
+    const before = fs.readFileSync(fixture.legacy.vault);
+    expect(await run(flags, fixture.deps)).toBe(0);
+    const state = readCutoverState(home);
+    const file = path.join(home, 'member', 'cutover.json');
+    if (evidence === 'absent' || evidence === 'growth') fs.unlinkSync(file);
+    else fs.writeFileSync(file, JSON.stringify({ backups: state.backups }));
+    if (evidence === 'growth') {
+      const source = new Database(fixture.legacy.vault);
+      try { source.run("INSERT INTO sessions (id, project_id, agent, started_at, ended_at, status, created_at) VALUES ('new-unmoved', ?, 'claude-code', 1700000100, 1700000200, 'completed', 1700000100)", [fixture.legacy.projects[0]!.id]); }
+      finally { source.close(); }
+    }
+    const sourceBytes = fs.readFileSync(fixture.legacy.vault);
+    const destination = new Database(path.join(root, 'journey-e', 'deployment-0.sqlite'));
+    try {
+      if (evidence === 'archived') destination.run('UPDATE projects SET archived_at = 1');
+      if (evidence === 'denied') destination.run("UPDATE events SET producer_adapter = 'claude-code'");
+      if (evidence === 'title-only') for (const source of readLegacyVault(fixture.legacy.vault)) {
+        const titleId = legacyHistoryCompletionGroups(source, 'machine_1', home)[0]![1]!;
+        destination.run("UPDATE events SET producer_adapter = 'claude-code' WHERE project_id = ? AND event_id <> ?", [source.projectId, titleId]);
+      }
+      if (evidence === 'deleted') {
+        destination.run('PRAGMA foreign_keys = OFF');
+        for (const project of fixture.legacy.projects) destination.run('DELETE FROM projects WHERE project_id = ?', [project.id]);
+      }
+    } finally { destination.close(); }
+    const deps = evidence === 'unreachable' ? { ...fixture.deps, fetch: fakeFetch(async () => { throw new Error('offline'); }) } : fixture.deps;
+    const requests = fixture.calls.length;
+    if (evidence === 'confirmed-dry-run') expect(await cutoverRun(['--dry-run'], { ...fixture.deps.cutoverDeps, mycoHome: home, fetch: deps.fetch, stdout: line => lines.push(line), stderr: line => errors.push(line) })).toBe(true);
+    if (evidence === 'confirmed-setup') expect(await run(flags, { ...fixture.deps, ask: async question => { throw new Error(`Unexpected prompt: ${question}`); } })).toBe(0);
+    const observations = await observeSetup(home, {}, { fetch: deps.fetch, agents: () => [], status: true });
+    if (['confirmed', 'archived', 'title-only', 'confirmed-dry-run', 'confirmed-setup', 'absent'].includes(evidence)) {
+      expect(legacyMigrationState(home).state).toBe('moved');
+      expect(readCutoverState(home)).toMatchObject({ version: 2, migrations: { [fixture.legacy.vault]: { projects: {
+        [fixture.legacy.projects[0]!.id]: { evidence: { kind: 'deployment', machineId: 'machine_1' } },
+      } } } });
+      const plan = planCutover(home, { homeDir: fixture.legacy.home, dryRun: true }, fixture.deps.cutoverDeps);
+      expect(plan.projects.map(project => project.destination.kind)).toEqual(['moved', 'moved']);
+      expect(await run(flags, { ...fixture.deps, ask: async question => { throw new Error(`Unexpected prompt: ${question}`); } })).toBe(0);
+      expect(fixture.calls.slice(requests).filter(call => ['/events', '/spores/save', '/members/projects/resolve'].includes(call.route))).toEqual([]);
+      const receipt = fs.readFileSync(file);
+      await observeSetup(home, {}, { fetch: fakeFetch(async () => { throw new Error('terminal receipts must stay offline'); }), agents: () => [], status: true });
+      expect(fs.readFileSync(file)).toEqual(receipt);
+    } else {
+      expect(legacyMigrationState(home).state).toBe('needs-destination');
+      if (evidence === 'growth') expect(readCutoverState(home).migrations?.[fixture.legacy.vault]?.projects[fixture.legacy.projects[0]!.id]?.destination).toBeUndefined();
+      else expect(readCutoverState(home).migrations).toBeUndefined();
+      if (evidence !== 'growth') expect(observations.find(fact => fact.id === 'legacy')?.hint).toContain(evidence === 'unreachable' || evidence === 'deleted' ? 'online' : 'destination');
+    }
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(sourceBytes);
+    if (evidence !== 'growth') expect(sourceBytes).toEqual(before);
   });
 
   for (const version of [2, 1, undefined] as const) for (const disposition of ['archived', 'deleted'] as const) {
@@ -295,8 +350,9 @@ describe('legacy journey (e)', () => {
     expect(legacyMigrationState(home).state).toBe(state);
     const before = fs.readFileSync(fixture.legacy.vault);
     const snapshotBefore = snapshot(root);
-    expect(await run(['--status', '--json'], fixture.deps)).toBe(state === 'moved' ? 0 : 3);
-    expect(snapshot(root)).toEqual(snapshotBefore);
+    expect(await run(['--status', '--json'], fixture.deps)).toBe(state === 'moved' || state === 'needs-destination' ? 0 : 3);
+    if (state === 'needs-destination') expect(legacyMigrationState(home).state).toBe('moved');
+    else expect(snapshot(root)).toEqual(snapshotBefore);
     lines = []; errors = [];
     const result = await run(flags, fixture.deps);
     expect({ result, errors }).toEqual({ result: state === 'changed' ? 2 : 0, errors: expect.any(Array) });

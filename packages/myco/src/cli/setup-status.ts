@@ -39,6 +39,7 @@ function describe(fact: Observation, url: string | undefined): string {
   if (fact.id === 'legacy') {
     const state = legacyState(fact);
     if (state === 'unavailable') return `Myco 1.4 migration records could not be read: ${sentence(fact.legacyError ?? fact.detail.replace(/^unavailable\s*/, ''))}. Inspect ${shortPath(fact.scope)}, then run myco setup --cutover.`;
+    if (fact.legacyConfirmation === 'unavailable') return "Myco couldn't confirm earlier moves; it will check again when online. Keep the 1.4 data and run myco setup --cutover when connected.";
     if (state === 'needs-destination' && fact.state === 'incomplete') return 'Some Myco 1.4 projects need a destination; run myco setup --cutover to preview the handover.';
     return legacySentences[state] ?? legacySentences.unavailable;
   }

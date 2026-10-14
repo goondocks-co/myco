@@ -624,6 +624,7 @@ export function createServer(deps: ServerDeps) {
      * seat on a request that is never going to be admitted.
      */
     const resolved = async (): Promise<Response | null> => {
+      if ('createProject' in route && route.createProject === false) return null;
       const resolution = await resolveProject(env.db, projectId, now);
       if (resolution.resolved) {
         if (captureRoute(route) && resolution.archived) return refuse(auth, shapeOf(route), PROJECT_ARCHIVED, 'project_archived');

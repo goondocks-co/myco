@@ -13,7 +13,7 @@ const moduleOf = (file: string, specifier: string): string => (specifier.startsW
 /** Setup imports operations through their CLI owners and imports only observation leaves below them. */
 const seams: Record<string, readonly string[]> = {
   'cli/login': ['run'],
-  'cli/cutover': ['planCutover', 'runCutover', 'cutoverSourcePlan', 'cutoverReconciliation'],
+  'cli/cutover': ['planCutover', 'runCutover', 'cutoverSourcePlan', 'cutoverReconciliation', 'observeLegacyMigration'],
   'cli/member': ['runJoin', 'runDrain', 'provisionDetectedAgents', 'detectedProvisionLines', 'recordNoAgents', 'memberHarnessCurrent'],
   'cli/runner-register': ['registerRunner'],
   'cli/runner-service': ['legacyWorkerInventory', 'preflightRunnerService', 'runnerServiceContact', 'runRunnerService'],
@@ -74,5 +74,5 @@ it('setup conducts the existing login, cutover, runner and registry seams', () =
     visit(source);
   }
   expect(violations).toEqual([]);
-  for (const operation of ['cli/login:run', 'cli/cutover:planCutover', 'cli/cutover:runCutover', 'cli/runner-register:registerRunner', 'cli/runner-service:runRunnerService']) expect(operations.has(operation)).toBe(true);
+  for (const operation of ['cli/login:run', 'cli/cutover:planCutover', 'cli/cutover:runCutover', 'cli/cutover:observeLegacyMigration', 'cli/runner-register:registerRunner', 'cli/runner-service:runRunnerService']) expect(operations.has(operation)).toBe(true);
 });
