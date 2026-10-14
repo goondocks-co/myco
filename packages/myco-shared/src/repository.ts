@@ -1,7 +1,7 @@
 import { MAP_TASK } from './canopy.js';
 export class RepositoryInputError extends Error {}
 export const REPOSITORY_COMMIT_PATTERN = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
-export const REPOSITORY_TASKS: readonly string[] = ['canopy-map', 'skill-generate', 'skill-evolve', 'vault-seed'];
+export const REPOSITORY_TASKS: readonly string[] = ['canopy-map', 'vault-seed'];
 
 /** HTTPS source with credentials supplied independently of the remote URL. */
 export function repositoryUrl(raw: string): string {

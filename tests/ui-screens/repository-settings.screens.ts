@@ -28,7 +28,9 @@ test.describe('repository requirements in Project settings', () => {
         const map = page.locator('[data-setting="capability.canopy"]');
         const learning = page.locator('[data-setting="capability.vault_evolution"]');
         await expect(map).toContainText('Needs this project’s repository to read its code.');
-        await expect(learning).toContainText('Needs this project’s repository to read its code.');
+        await expect(learning).toContainText('Learns from sessions now; connect the repository to also seed knowledge from its code.');
+        await expect(learning).toContainText('On · Learns from sessions; code seeding needs a repository');
+        await expect(learning).not.toContainText('Code tasks cannot run');
         await expect(map.getByRole('link', { name: 'Connect repository' })).toHaveAttribute('href', `${route}?connect=repository#repository`);
         await expectFits(page, viewport);
         await expectNoRawIds(page);

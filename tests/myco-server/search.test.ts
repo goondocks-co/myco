@@ -138,7 +138,7 @@ describe('full-text search', () => {
     // The quoting 1.4's sanitizer gives each query, which the server's keeps.
     const AS_1_4: ReadonlyArray<[string, string]> = [
       ['one two', 'one two'],
-      ['skill-evolve', '"skill-evolve"'],
+      ['canopy-map', '"canopy-map"'],
       ['a/b.ts', '"a/b.ts"'],
       ['quote"value', '"quote""value"'],
       ['ümlaut x', '"ümlaut" x'],

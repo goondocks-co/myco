@@ -31,21 +31,35 @@ function CapabilityRow({ projectId, capability, enabled, repository, repositoryS
   const [error, setError] = useState<string | null>(null);
   const words = CAPABILITY_WORDS[capability] ?? { label: capability, note: undefined };
   const id = `capability-${capability}`;
-  const readsRepository = tasks?.some((task) => task.capability === capability && REPOSITORY_TASKS.includes(task.task)) ?? false;
+  const capabilityTasks = tasks?.filter((task) => task.capability === capability) ?? [];
+  const repositoryTasks = capabilityTasks.filter((task) => REPOSITORY_TASKS.includes(task.task));
+  const independentTasks = capabilityTasks.filter((task) => !REPOSITORY_TASKS.includes(task.task));
+  const readsRepository = repositoryTasks.length > 0;
+  const allNeedRepository = readsRepository && independentTasks.length === 0;
+  const sessionLearningWithSeeding = repositoryTasks.length === 1 && repositoryTasks[0]?.task === 'vault-seed'
+    && independentTasks.length === 1 && independentTasks[0]?.task === 'extract-curate';
+  const missingNote = allNeedRepository ? 'Needs this project’s repository to read its code.'
+    : sessionLearningWithSeeding
+      ? enabled ? 'Learns from sessions now; connect the repository to also seed knowledge from its code.'
+        : 'Learns from sessions when enabled; connect the repository to also seed knowledge from its code.'
+      : `Can run ${independentTasks.map((task) => task.name).join(', ')} ${enabled ? 'now' : 'when enabled'}; connect the repository to also run ${repositoryTasks.map((task) => task.name).join(', ')}.`;
+  const missingStatus = allNeedRepository ? 'On · Code tasks cannot run until a repository is connected'
+    : sessionLearningWithSeeding ? 'On · Learns from sessions; code seeding needs a repository'
+      : 'On · Some tasks need a repository';
   const missingRepository = taskState === 'ready' && readsRepository && repositoryState === 'ready' && repository === null;
   const repositoryNote = taskState === 'loading' ? 'Checking task requirements.'
     : taskState === 'error' ? 'Couldn’t check task requirements.'
       : !readsRepository ? null
     : repositoryState === 'loading' ? 'Checking this project’s repository.'
       : repositoryState === 'error' ? 'Couldn’t check this project’s repository.'
-        : repository === null ? 'Needs this project’s repository to read its code.'
+        : repository === null ? missingNote
           : repository === undefined ? 'Couldn’t check this project’s repository.'
             : `Reads ${repositoryName(repository)} @ ${repository.branch}`;
   const enabledStatus = taskState === 'loading' ? 'On · Checking task requirements'
     : taskState === 'error' ? 'On · Task requirements unavailable'
       : readsRepository && repositoryState === 'loading' ? 'On · Checking repository'
     : readsRepository && repositoryState === 'error' ? 'On · Repository status unavailable'
-      : missingRepository ? 'On · Code tasks cannot run until a repository is connected' : 'On';
+      : missingRepository ? missingStatus : 'On';
   return (
     <SettingRow
       inline
