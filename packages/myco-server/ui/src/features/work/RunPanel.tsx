@@ -1,3 +1,4 @@
+import { diagnosticReaderCode, LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-diagnostic';
 import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { formatRelative } from '../../lib/format';
 import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
@@ -16,7 +17,7 @@ import { ActivitySection, AgentAccount, FilesReadPart, summaryOf, useAttemptEvid
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { InkLink, OnwardLink, PartLabel } from './OutcomeCard';
 import {
-  atWords, runErrorWords, deployWords, fullErrorWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
+  atWords, runErrorWords, lateSessionWords, SESSION_ENDING_FIELD_LABELS, deployWords, fullErrorWords, dollars, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
 } from './words';
 
 export interface RunPanelProps {
@@ -92,6 +93,8 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
           {startedBy !== null && <><span aria-hidden>·</span><span data-started-by="">{startedKicker(startedBy)}</span></>}
           {deploy !== null && <><span aria-hidden>·</span><span>{deploy}</span></>}
         </p>
+        {run.status === 'completed' && run.endedNote === LATE_HARNESS_ERROR_NOTE &&
+          <p data-run-ended-note="" className="t-small text-muted">{lateSessionWords(diagnosticReaderCode(run.harnessStop?.code ?? null))}</p>}
         {ran && summary !== null && <p className="t-body text-ink-2" data-run-summary="">{summary}</p>}
         {run.task !== null && <TaskName projectId={projectId} task={run.task} />}
         <ModelSummary run={run} />
@@ -288,6 +291,9 @@ function TechnicalDetails({ answer, startedBy, took }: {
           <FactsPanel actions={<CopyButton value={run.id} label="Copy run id" variant="secondary" />}>
             {machine !== null && <FactRow term="Ran on">{machine}</FactRow>}
             <FactRow term="Agent">{agent ?? 'Not recorded'}</FactRow>
+            {run.harnessStop?.exitCode !== undefined && <FactRow term="Agent exit code">{run.harnessStop.exitCode}</FactRow>}
+            {run.harnessStop?.signal !== undefined && <FactRow term="Agent exit signal">{run.harnessStop.signal}</FactRow>}
+            {Object.entries(run.harnessStop?.fields ?? {}).map(([field, value]) => <FactRow key={field} term={SESSION_ENDING_FIELD_LABELS[field] ?? 'Session detail'}>{value}</FactRow>)}
             <FactRow term="Model"><ModelSummary run={run} variant="details" /></FactRow>
             <FactRow term="Started by">{startedBy === null ? 'Not recorded' : startedBy === 'On its schedule' ? 'Myco’s schedule' : capitalize(startedBy.replace(/^By /, ''))}</FactRow>
             {run.queuedAt !== null && <FactRow term="Queued">{dateWords(run.queuedAt)}</FactRow>}

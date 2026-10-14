@@ -538,7 +538,7 @@ async function* runCodex(spec: RunSpec, signal: AbortSignal, probe: DeveloperDir
         };
         terminal = { kind: 'ended', stop: 'end_turn', detail: null };
       } else if (type === 'turn.failed') {
-        terminal = { kind: 'ended', stop: 'error', detail: stringOf(recordOf(line.error)?.message) };
+        terminal = { kind: 'ended', stop: 'error', detail: stringOf(recordOf(line.error)?.message), fields: { status: 'failed' } };
       }
     }
     const code = await started.exit;

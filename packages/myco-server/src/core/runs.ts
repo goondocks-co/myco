@@ -46,6 +46,12 @@ import { leaseOwnerColumns, renewingLeaseAuthority, workerLeaseAuthority, type W
 import { runParentLive } from '../auth/runners.js';
 import { runDeadlineSql, SQL_NOW_MS } from './run-deadline.js';
 
+/** An object context with any non-object source retained verbatim. */
+export const RUN_CONTEXT_OBJECT_SQL = `CASE
+  WHEN run_context IS NULL THEN '{}'
+  WHEN json_valid(run_context) THEN CASE WHEN json_type(run_context) = 'object' THEN run_context ELSE json_object('unparsedRunContext', run_context) END
+  ELSE json_object('unparsedRunContext', run_context) END`;
+
 /** The name a dispatch is left alone under when the Project has not moved past the artifact its task already wrote. */
 export const INPUT_UNCHANGED = 'input_unchanged';
 
@@ -639,10 +645,7 @@ export async function recordRunControlRefusal(db: RelationalStore, tokenId: stri
   const key = `runControlRefusals.${code}`;
   // A non-object context is retained verbatim under unparsedRunContext.
   // One receipt per code bounds the record; repeated refusals of that code share it.
-  const row = await db.prepare(`UPDATE agent_runs SET run_context = json_set(CASE
-    WHEN run_context IS NULL THEN '{}'
-    WHEN json_valid(run_context) THEN CASE WHEN json_type(run_context) = 'object' THEN run_context ELSE json_object('unparsedRunContext', run_context) END
-    ELSE json_object('unparsedRunContext', run_context) END, '$.${key}',
+  const row = await db.prepare(`UPDATE agent_runs SET run_context = json_set(${RUN_CONTEXT_OBJECT_SQL}, '$.${key}',
       CASE WHEN ${contextValue(`${key}.tokenId`)} = ? THEN ${contextValue(key)} ELSE json(?) END)
     WHERE project_id = ? AND id = ? AND dispatched_by = ? AND ${LIVE_RUN_STATUSES}${guard.sql}
       AND (SELECT COUNT(*) FROM agent_runs WHERE dispatched_by = ? AND ${LIVE_RUN_STATUSES}) = 1
@@ -736,11 +739,12 @@ export function runUpdateStatement(
       AND CASE WHEN type = 'object' THEN json_extract(value, '$.code') END IN (${Object.keys(RUN_CONTROL_REFUSAL_WORDS).map((code) => `'${code}'`).join(', ')}) LIMIT 1), ?)`;
   const codeSet = coded ? `, error_code = ${issuedCode}` : '';
   const callerGuard = runCallerGuard(caller);
-  // Keys merged into the run's context; a context the store did not write as JSON is left as it is.
-  const contextSet = context === undefined ? '' : `, run_context = CASE WHEN run_context IS NULL OR json_valid(run_context) THEN json_patch(COALESCE(run_context, '{}'), ?) ELSE run_context END`;
+  // Context additions retain any non-object source verbatim under unparsedRunContext.
+  const contextJson = context === undefined || Object.keys(context).length === 0 ? null : JSON.stringify(context);
+  const contextSet = contextJson === null ? '' : `, run_context = json_patch(${RUN_CONTEXT_OBJECT_SQL}, ?)`;
   return db
     .prepare(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}${callerGuard.sql}`)
-    .bind(...columns.map((c) => update[c] ?? null), ...(coded ? [...(usesReceipt ? [caller!.tokenId, caller!.refusalId] : []), update.error == null ? null : errorCode] : []), ...(context === undefined ? [] : [JSON.stringify(context)]), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []),
+    .bind(...columns.map((c) => update[c] ?? null), ...(coded ? [...(usesReceipt ? [caller!.tokenId, caller!.refusalId] : []), update.error == null ? null : errorCode] : []), ...(contextJson === null ? [] : [contextJson]), scope.projectId, runId, ...(guarded ? TERMINAL_RUN_STATUSES : []),
       ...(authority?.params ?? []), ...callerGuard.params);
 }
 

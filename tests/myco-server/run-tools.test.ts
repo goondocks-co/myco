@@ -1,3 +1,4 @@
+import { runDefinitionOf } from '@myco-server-worker/mcp/run-definitions.js';
 /**
  * The run-only tool surface: what a run calls that a member and a grant cannot.
  *
@@ -685,4 +686,12 @@ describe('the run map', () => {
       expect({ task, listed }).toEqual({ task, listed: expected });
     }
   });
+});
+
+
+it('requires an explicit report op and directs the agent to finish after the accepted report', () => {
+  expect(runDefinitionOf('myco_run')?.inputSchema.required).toContain('op');
+  expect(runDefinitionOf('myco_run')?.description).toContain('Every call requires an explicit op');
+  expect(runInstructionsFor(['report'])).toContain('After the report is accepted, end your response.');
+  expect(runInstructionsFor(['report'])).toContain('there is no separate close call');
 });

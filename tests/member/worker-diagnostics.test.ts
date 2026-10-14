@@ -1,3 +1,5 @@
+import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-text';
+import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 /**
  * A harness that stops on a missing login, a rate limit, a timeout or a crash is recorded by its coded reason, read
  * by each driver from that harness's own stream (`tests/fixtures/runner/diagnostics/`): Claude Code and Codex from a
@@ -137,12 +139,12 @@ describe('the agent-protocol driver\'s stops, read as coded reasons', () => {
 });
 
 describe('a worker driving a harness that fails', () => {
-  it('reports the coded reason alone, and projects local diagnostic detail before writing it', async () => {
+  for (const supported of [false, true]) it(`reports only structured diagnostics to a supporting server: ${supported}`, async () => {
     const scratch = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-worker-diagnostics-')));
     const ends: Array<Record<string, unknown>> = [];
-    // The run's credential, which a harness may echo, is masked wherever it appears.
+    // A harness may echo run and provider credentials before any other diagnostic text.
     const credential = 'plainCredentialValue1';
-    const said = [...CORPUS.map((leak) => leak.command), `using ${credential} and ${OPENAI_KEY}`].join('\n');
+    const said = [`${credential} tok_run tok hello hunter22 world /Users/chris/Repos/secret-project/notes.md Customer ACME Corp invoice 4411 for Jane Doe`, ...CORPUS.map((leak) => leak.command)].join('\n');
     const dir = stub('claude', { recorded: false, stdout: ['{"type":"system","subtype":"init","session_id":"s"}'], stderr: said, exit: 3 });
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
@@ -159,8 +161,17 @@ describe('a worker driving a harness that fails', () => {
     await withPath(dir, () => runWorker({
       serverUrl: 'https://deployment.example', token: 'tok', lockDir: null, only: ['claude-code'],
       runRoot: join(scratch, 'runs'), diagnosticRoot: join(scratch, 'diagnostics'),
-      once: true, pollIdleMs: 3_000, log: (line) => { logged.push(line); }, fetchImpl: profileWorkerServer(fetchImpl), signal: new AbortController().signal,
+      once: true, pollIdleMs: 3_000, log: (line) => { logged.push(line); }, fetchImpl: (async (input, init) => {
+        const response = await profileWorkerServer(fetchImpl)(input, init);
+        if (supported) response.headers.set(FEATURES_HEADER, [response.headers.get(FEATURES_HEADER), HARNESS_STOP_FEATURE].filter(Boolean).join(','));
+        return response;
+      }) as typeof fetch, signal: new AbortController().signal,
     }));
+    if (supported) expect(ends[0]?.harnessStop).toMatchObject({ code: 'crashed', exitCode: 3 });
+    else expect(ends[0]?.harnessStop).toBeUndefined();
+    expect(JSON.stringify(ends)).not.toContain(credential);
+    for (const privateText of ['tok_run', 'hunter22', '/Users/chris/Repos/secret-project', 'ACME Corp']) expect(JSON.stringify(ends)).not.toContain(privateText);
+    expect(ends[0]?.harnessStop).not.toHaveProperty('detail');
     expect(ends.map(({ status, error }) => ({ status, error }))).toEqual([{ status: 'failed', error: 'the harness stopped: error (crashed; exit code 3)' }]);
     const leaked = CORPUS.flatMap((leak) => leak.secrets.filter((secret) => [JSON.stringify(ends), ...logged].some((text) => text.includes(secret))).map((secret) => `${leak.name}: ${secret}`));
     expect(leaked).toEqual([]);

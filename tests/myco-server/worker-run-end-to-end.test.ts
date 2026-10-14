@@ -452,3 +452,56 @@ describe('whose title a titling run is held to', () => {
     expect(r.outcome(run.id)).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
   });
 });
+
+
+describe('a harness error after the task evidence', () => {
+  for (const evidence of ['complete', 'missing artifact', 'missing report', 'missing audit', 'error before report'] as const) {
+    it(`keeps the outcome honest: ${evidence}`, async () => {
+      const r = await rig();
+      try {
+        const run = await r.claimedTitling(NOW + 1);
+        if (evidence !== 'missing artifact') {
+          expect(await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'The work is done', summary: 'Recorded.' })).toMatchObject({ written: true });
+        }
+        if (evidence !== 'missing report' && evidence !== 'error before report') {
+          expect(await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'Done', ...(evidence === 'missing audit' ? {} : { audit: RUN_AUDIT }) })).toMatchObject(evidence === 'missing audit' ? { ok: false } : { recorded: true });
+        }
+        if (evidence === 'complete') {
+          expect(await r.asRun(run.runToken, 'myco_run', {})).not.toMatchObject({ recorded: true });
+          expect(await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'Done', audit: RUN_AUDIT })).toMatchObject({ recorded: true });
+        }
+        const logged: string[] = [];
+        const originalLog = console.log;
+        let ended;
+        console.log = (line: string) => { logged.push(line); };
+        try { ended = await r.workerEnds(run.id, 'failed', NOW + 3, 'the harness stopped: error (crashed; exit code 3; signal SIGTERM)'); }
+        finally { console.log = originalLog; }
+        const lateEvents = logged.map(line => JSON.parse(line)).filter(event => event.kind === 'run_late_harness_error');
+        expect(lateEvents).toEqual(evidence === 'complete' ? [{ kind: 'run_late_harness_error', runId: run.id, projectId: 'proj_1', task: 'title-summary', code: 'crashed' }] : []);
+        expect(ended).toEqual({ ended: true, status: evidence === 'complete' ? 'completed' : 'failed' });
+        expect(r.outcome(run.id).status).toBe(evidence === 'complete' ? 'completed' : 'failed');
+        if (evidence === 'complete') {
+          const detail = await getRunDetail(r.e.db, { projectId: 'proj_1' }, run.id, NOW + 4, 'mem_worker');
+          expect(detail?.run).toMatchObject({ error: null, endedNote: 'the agent session ended with an error after the work was done', harnessStop: { code: 'crashed', exitCode: 3, signal: 'SIGTERM' } });
+        }
+        if (evidence === 'missing artifact') expect(r.outcome(run.id).error).toContain(RUN_CLOSE_ARTIFACT_ERROR);
+        if (evidence === 'error before report') {
+          expect(await r.asRun(run.runToken, 'myco_run', { op: 'report', action: 'summary', summary: 'Too late', audit: RUN_AUDIT })).not.toMatchObject({ recorded: true });
+          expect(r.outcome(run.id).status).toBe('failed');
+        }
+      } finally { r.e.sqlite.close(); }
+    });
+  }
+});
+
+it('keeps an unruled leased task failed after a harness error, without a completion note', async () => {
+  const r = await rig();
+  try {
+    const run = await r.claimedTitling(NOW + 1);
+    r.e.sqlite.run("UPDATE agent_runs SET task='legacy-unknown' WHERE id=?", [run.id]);
+    expect(await r.workerEnds(run.id, 'failed', NOW + 3, 'the harness stopped: error (harness_error)')).toEqual({ ended: true, status: 'failed' });
+    const detail = await getRunDetail(r.e.db, { projectId: 'proj_1' }, run.id, NOW + 4, 'mem_worker');
+    expect(detail?.run.status).toBe('failed');
+    expect(detail?.run.endedNote).toBeUndefined();
+  } finally { r.e.sqlite.close(); }
+});

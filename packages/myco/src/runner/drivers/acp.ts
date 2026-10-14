@@ -1,3 +1,4 @@
+import { harnessStopFields } from '@goondocks/myco-shared/run-text';
 import { accountingEvents } from '../accounting.js';
 /**
  * OpenCode, Cursor and Antigravity, over the agent protocol.
@@ -322,7 +323,7 @@ export async function* turnOver(
     const known = STOP.find((s) => s === reason) ?? null;
     const answeredError = recordOf(answered.error);
     yield known !== null
-      ? { kind: 'ended', stop: known, detail: null }
+      ? { kind: 'ended', stop: known, detail: null, ...(known === 'error' ? { fields: harnessStopFields({ stop_reason: reason }) } : {}) }
       : answeredError !== null
         ? { kind: 'ended', stop: 'error', detail: `the harness answered an error: ${stringOf(answeredError.message) ?? 'no reason given'} ${detailOnFailure()}`.trim() }
         : { kind: 'ended', stop: 'error', detail: `the harness answered no stop reason: ${detailOnFailure()}`, code: 'protocol_error' };

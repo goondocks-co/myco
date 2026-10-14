@@ -85,6 +85,7 @@ export function runInstructionsFor(accepted: readonly string[] | null): string {
     'Survey by previews and read a body in full only where you mean to act on it: full reads are counted against this run\'s budget.',
     '',
     close,
+    'Every myco_run call requires an explicit op. After the report is accepted, end your response. The runner ends the session; there is no separate close call.',
   ].join('\n');
 }
 

@@ -27,7 +27,7 @@ const project = { type: 'string', description: RUN_PROJECT_DESCRIPTION } as cons
 export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
   {
     name: 'myco_run',
-    description: 'This run\'s own record: file the report that closes it, and read or move the state it carries between passes.',
+    description: 'This run\'s own record: file its report with op "report", action, summary and audit, or read or move its state. Every call requires an explicit op. After an accepted report, end your response; no further closing call is needed.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     inputSchema: {
       type: 'object',

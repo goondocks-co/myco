@@ -354,6 +354,20 @@ export function ranOn(worker: RunWorker | null, name: (id: string) => string | n
  */
 const REPOSITORY_PREPARATION_WORDS = 'Myco couldn’t prepare the repository. Check its connection and branch, then try again.';
 
+/** A session ending after the task's work is complete. */
+export function lateSessionWords(code: string): string {
+  const ending = code === 'agent_crashed' ? 'quit unexpectedly'
+    : code === 'agent_timed_out' ? 'ran out of time' : 'ended with an error';
+  return `The work is complete. Afterwards the agent session ${ending}; nothing was lost.`;
+}
+
+export const SESSION_ENDING_FIELD_LABELS: Readonly<Record<string, string>> = {
+  subtype: 'Session result',
+  terminal_reason: 'Ending reason',
+  stop_reason: 'Last stop reason',
+  status: 'Session status',
+};
+
 const REPOSITORY_FAILURE_WORDS = {
   fetch_failed: 'Myco couldn’t read the repository. Check the repository and branch. If it uses a token, check the token can read this repository: for an organization repository, its resource owner must be the organization, and the organization may need to approve it.',
   submodules: 'Myco can’t use a repository with Git submodules. Choose a repository without submodules.',
