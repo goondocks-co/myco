@@ -1,4 +1,4 @@
-import { runExport, runStatus } from '@myco/cli/member.js';
+import { runDrain, runExport, runStatus } from '@myco/cli/member.js';
 import { warmProjectContext } from '@myco/member/prefetch.js';
 import { cacheMachineSettings } from '@myco/member/machine-settings.js';
 import { joinPass } from '@myco/cli/member-auto-join.js';
@@ -73,6 +73,40 @@ async function pair(now: number = Date.now()) {
 }
 
 describe('Deployment and Project member routing', () => {
+  it('the next hook dials after a sign-in deadline defers a drain', async () => {
+    const rig = await pair();
+    const entry = rig.entries[0];
+    const spool = new MemberSpool(entry, { mycoHome });
+    spool.append(SESSION, promptEvent({ sessionId: SESSION, agent: 'claude-code', stage: spool.stagerFor(SESSION) }, { promptId: mintId(), text: 'waiting for sign-in' }));
+    const fetch: FetchLike = (input, init) => new URL(new Request(input, init).url).pathname === '/events'
+      ? new Promise((_resolve, reject) => {
+        const abort = () => reject(init?.signal?.reason);
+        if (init?.signal?.aborted) abort();
+        else init?.signal?.addEventListener('abort', abort, { once: true });
+      }) : rig.fetch(input, init);
+    const result = await runDrain(['--all'], { mycoHome, fetch, signInCapture: { serverUrl: A }, stdout: () => {}, stderr: () => {} });
+    expect(result[0]?.endedBy).toBe('deferred');
+    expect(spool.readLatch()).toBeNull();
+    expect(spool.readRecords(SESSION)).toHaveLength(1);
+    rig.calls.length = 0;
+    await runHook('session-end', { session_id: SESSION, hook_event_name: 'SessionEnd', cwd: entry.root }, { fetch: rig.fetch, symbiont: 'claude-code', argv: ['--ship', 'inline'] });
+    expect(rig.calls.some(call => new URL(call.url).pathname === '/events')).toBe(true);
+  });
+
+  it('the setup sign-in drain delivers routing-only destinations after rebinding', async () => {
+    const rig = await pair();
+    const old = rig.entries[0];
+    const spool = new MemberSpool(old, { mycoHome });
+    spool.append(SESSION, promptEvent({ sessionId: SESSION, agent: 'claude-code', stage: spool.stagerFor(SESSION) }, { promptId: mintId(), text: 'held for original destination' }));
+    writeRegistryEntry({ ...rig.entries[1], root: old.root }, { mycoHome });
+    const result = await runDrain(['--all'], { mycoHome, fetch: rig.fetch, signInCapture: { serverUrl: A }, stdout: () => {}, stderr: () => {} });
+    expect(result.some(pass => pass.acked === 1)).toBe(true);
+    expect(spool.readRecords(SESSION)).toHaveLength(0);
+    expect(rig.a.rows('events')).toBe(1);
+    expect(rig.b.rows('events')).toBe(0);
+    expect(rig.calls.every(call => call.destination === A)).toBe(true);
+  });
+
   it('isolates real hooks, offline backlog, helper restart, caches and session cursors with identical IDs', async () => {
     const rig = await pair();
     for (const entry of rig.entries) {

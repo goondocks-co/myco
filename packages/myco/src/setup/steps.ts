@@ -493,8 +493,6 @@ const STEPS: readonly SetupStep[] = [
       if (!entries.readable || entries.unavailableEntries > 0) {
         ctx.out('Warning: some repository bindings could not be read. Inspect them and run myco member drain to retry capture delivery.');
       }
-      const waiting = entries.entries.filter((entry) => deploymentUrl(entry.serverUrl) === chosen(ctx).url);
-      if (waiting.length === 0) return;
       try {
         await runDrain(['--all'], { ...ctx.deps.memberDeps, mycoHome: ctx.home, fetch: ctx.deps.fetch, now: ctx.deps.now,
           stdout: ctx.out, stderr: ctx.deps.stderr, signInCapture: { serverUrl: chosen(ctx).url } });

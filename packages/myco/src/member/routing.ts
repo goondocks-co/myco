@@ -100,21 +100,23 @@ export function listSpoolDestinations(mycoHome: string): MemberRoutingIdentity[]
 }
 
 /** A diagnostic walk reports unavailable destinations alongside readable bindings. */
-export function listRoutingEntriesResult(mycoHome: string, bindings: readonly RegistryEntry[]): { entries: RegistryEntry[]; heldDestinations: BufferedDestinationIssue[] } {
-  const entries = new Map(bindings.map((entry) => [routingKey(entry), entry]));
+export function listRoutingEntriesResult(mycoHome: string, bindings: readonly RegistryEntry[], scope?: { serverUrl: string }): { entries: RegistryEntry[]; heldDestinations: BufferedDestinationIssue[] } {
+  const selected = (route: MemberRoutingIdentity) => scope === undefined || deploymentUrl(route.serverUrl) === deploymentUrl(scope.serverUrl);
+  const entries = new Map(bindings.filter(selected).map((entry) => [routingKey(entry), entry]));
   const { destinations, issues } = listSpoolDestinationsResult(mycoHome);
   for (const route of destinations) {
+    if (!selected(route)) continue;
     if (entries.has(routingKey(route))) continue;
     const entry = routingEntry(route, mycoHome, bindings);
     if (entry !== null) entries.set(routingKey(route), entry);
     else issues.push({ key: routingKey(route), reason: 'membership-unavailable' });
   }
-  return { entries: [...entries.values()], heldDestinations: issues };
+  return { entries: [...entries.values()], heldDestinations: scope === undefined ? issues : issues.filter(issue => issue.key.startsWith(`${deploymentKeyFor(scope.serverUrl)}/`) || issue.key === deploymentKeyFor(scope.serverUrl) || issue.key === 'spool') };
 }
 
 /** Buffered destinations survive repository rebindings and remain eligible for helper delivery. */
-export function listRoutingEntries(mycoHome: string, bindings: readonly RegistryEntry[] = listRegistryEntries(mycoHome)): RegistryEntry[] {
-  const result = listRoutingEntriesResult(mycoHome, bindings);
+export function listRoutingEntries(mycoHome: string, bindings: readonly RegistryEntry[] = listRegistryEntries(mycoHome), scope?: { serverUrl: string }): RegistryEntry[] {
+  const result = listRoutingEntriesResult(mycoHome, bindings, scope);
   assertCompleteDestinations(result.heldDestinations);
   return result.entries;
 }

@@ -21,7 +21,7 @@ export async function withSignInCapture<T>(
   try {
     return await work({
       fetch: observedFetch(deps.fetch ?? globalThis.fetch, { signal: controller.signal }).fetch,
-      budget: deadlineBudget((deps.now ?? Date.now)() + SIGNIN_CAPTURE_TIMEOUT_MS),
+      budget: { ...deadlineBudget((deps.now ?? Date.now)() + SIGNIN_CAPTURE_TIMEOUT_MS), signal: controller.signal, deferOnTimeout: true },
       signal: controller.signal,
     });
   } finally {

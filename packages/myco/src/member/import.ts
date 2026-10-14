@@ -43,7 +43,7 @@ import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { evaluateSessionCaptureRules } from '../hooks/capture-rules.js';
 import { readTranscriptMeta } from '../hooks/transcript-meta.js';
 import { resolveMycoHome } from '../paths/home.js';
-import { unboundedBudget } from './budget.js';
+import { unboundedBudget, type HookBudget } from './budget.js';
 import { resolveMemberProjectRoot } from './credential.js';
 import { sessionEndEvent, sessionStartEvent, type EnvelopeContext } from './envelope.js';
 import { deploymentUrl, listRegistryEntries, readRegistryEntryResult, type RegistryEntry } from './registry.js';
@@ -467,7 +467,10 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
       if (opts.dryRun === true) { held.imported += 1; continue; }
       if (opts.until !== undefined && now() >= opts.until) { endedBy = IMPORT_DEADLINE; break; }
 
-      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now, { repositoryNames, onRefusal: (code, reason) => countImportCause(causes, importCause(code, reason)) });
+      const shipped = await shipSession(candidate, Number(decision.fromOffset ?? 0), client, spool, deps.machineId, now, {
+        budget: { ...unboundedBudget(), signal: deps.signal },
+        repositoryNames, onRefusal: (code, reason) => countImportCause(causes, importCause(code, reason)),
+      });
       if (shipped === 'done') { held.imported += 1; continue; }
       // Gone from the disk between the plan that admitted it and the ship that
       // would have read it. Nothing was sent, so it is not imported — and it is
@@ -500,7 +503,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
  */
 export async function shipSession(
   candidate: Candidate, fromOffset: number, client: ServerClient, spool: MemberSpool, machineId: string, now: () => number,
-  opts: { facts?: boolean; repositoryNames?: Map<string, string>; onRefusal?: (code: string, reason?: string) => void } = {},
+  opts: { facts?: boolean; repositoryNames?: Map<string, string>; onRefusal?: (code: string, reason?: string) => void; budget?: HookBudget } = {},
 ): Promise<string> {
   spool.assertClientDestination(client);
   const { sessionId, filePath } = candidate;
@@ -532,13 +535,14 @@ export async function shipSession(
   }, now());
 
   const seen = spool.readRefused().entries.length;
-  const drained = await spool.drainSession(sessionId, client, unboundedBudget(), { now, force: true });
+  const budget = opts.budget ?? unboundedBudget();
+  const drained = await spool.drainSession(sessionId, client, budget, { now, force: true });
   const refusals = importRefusals(spool.readRefused().entries, seen, sessionId, drained.endedBy);
   for (const refusal of refusals) opts.onRefusal?.(refusal.serverCode ?? refusal.code, refusal.reason);
   if (refusals.length > 0) return 'refused';
   if (drained.endedBy !== 'drained') return drained.endedBy;
 
-  const result = await shipTranscriptSegments(ctx, spool, client, unboundedBudget(), { now, headHash: candidate.headHash ?? undefined });
+  const result = await shipTranscriptSegments(ctx, spool, client, budget, { now, headHash: candidate.headHash ?? undefined });
   for (const refusal of importRefusals(spool.readRefused().entries, seen, sessionId, result.endedBy)) opts.onRefusal?.(refusal.serverCode ?? refusal.code, refusal.reason);
   return result.endedBy;
 }

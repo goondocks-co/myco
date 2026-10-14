@@ -824,7 +824,7 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
     }
     entries = [entry];
   } else entries = signIn === undefined ? entriesFor(args, deps)
-    : listRegistryEntries(mycoHome).filter(entry => deploymentUrl(entry.serverUrl) === deploymentUrl(signIn.serverUrl));
+    : listRoutingEntries(mycoHome, undefined, signIn);
   const drain = async (fetch: FetchLike | undefined, budget?: HookBudget): Promise<DrainResult[]> => {
     for (const entry of entries) {
       if (budget !== undefined && now() >= budget.deadline) {

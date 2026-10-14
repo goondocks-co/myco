@@ -7,8 +7,17 @@
  * purpose. And `--dry-run` reports without writing, which is the only way to
  * ask "what would this bring?" of a machine whose archive you have not seen.
  */
-import { describe, expect, it } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { describe, expect, it, spyOn } from 'bun:test';
+import fs, { readFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import * as history from '@myco/member/import.js';
+import { run as login } from '@myco/cli/login.js';
+import { runJoin } from '@myco/cli/member.js';
+import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
+import { readDeploymentMembership, readRegistryEntry } from '@myco/member/registry.js';
+import { unjoinedRig } from '../member/helpers/server.js';
 import { IMPORT_HELP, parseArgs, reportLines, run } from '@myco/cli/import.js';
 import type { ImportReport } from '@myco/member/import.js';
 import { SKIP_REASONS } from '@myco-server-worker/api/import.js';
@@ -130,6 +139,31 @@ describe('the import verb', () => {
 });
 
 describe('the join paths', () => {
+  for (const verb of ['login', 'member join'] as const) it(`a failed import never fails ${verb}`, async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-import-signin-'));
+    const root = path.join(home, 'repo');
+    fs.mkdirSync(root);
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    const rig = unjoinedRig();
+    const lines: string[] = [];
+    const deps = { fetch: rig.fetch as typeof fetch, mycoHome: home, cwd: root, machineId: 'machine_person', stdout: (line: string) => lines.push(line), stderr: (line: string) => lines.push(line) };
+    const imported = spyOn(history, 'runImport').mockRejectedValue(new Error('history fixture failed'));
+    try {
+      const invitation = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', ...(verb === 'login' ? { projectId: 'proj_1' } : {}) });
+      expect(await login([`https://s/join#${invitation.key}`, '--no-agents', ...(verb === 'login' ? ['--root', root] : [])], deps)).toBe(true);
+      if (verb === 'member join') expect(await runJoin(['--new', '--no-agents', '--no-worker'], deps)).not.toBeNull();
+      expect(imported).toHaveBeenCalledTimes(1);
+      expect(readDeploymentMembership('https://s', home)).not.toBeNull();
+      expect(readRegistryEntry(root, home)).not.toBeNull();
+      expect(lines.join('\n')).toContain('Could not import past sessions (history fixture failed)');
+      expect(lines.join('\n')).toContain('`myco import` retries them');
+    } finally {
+      imported.mockRestore();
+      rig.env.sqlite.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('names the Deployment it just joined rather than letting the import choose', async () => {
     // A machine may hold several memberships, and the registry answers them in
     // the order its filenames hash. The join paths know which Deployment they
@@ -142,8 +176,6 @@ describe('the join paths', () => {
       expect({ verb: name, namesDeployment: call.includes('serverUrl') }).toEqual({ verb: name, namesDeployment: true });
     }
   });
-
-
 });
 
 describe('import stopping details', () => {
