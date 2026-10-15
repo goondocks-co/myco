@@ -19,17 +19,18 @@ import fs from 'node:fs';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 import path from 'node:path';
 import { featuresNamed, featureAdvertised as headerAdvertises, type MemberFeature } from '@goondocks/myco-shared/member-protocol';
-import { HARNESS_HEALTH_FEATURE } from '@goondocks/myco-shared/harness-health';
+import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
 import { BLOCK_JOIN, projectLine, withoutProjectLine } from '@goondocks/myco-shared/recall';
 import { deploymentFeaturesPath, deploymentsDir, deploymentUrl, listRegistryEntriesResult, type RegistryEntry } from './registry.js';
 import { spoolDirFor } from './spool.js';
 import { ensureMemberDir, ensurePrivateFile, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
 
-type CachedFeature = MemberFeature | typeof HARNESS_HEALTH_FEATURE;
+const HARNESS_FEATURES = [HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE] as const;
+type CachedFeature = MemberFeature | (typeof HARNESS_FEATURES)[number];
 
 /** Capture kinds and helper services this member knows how to use. */
 export function cachedDeploymentFeatures(header: string | null): CachedFeature[] {
-  return [...featuresNamed(header), ...(headerAdvertises(header, HARNESS_HEALTH_FEATURE) ? [HARNESS_HEALTH_FEATURE] as const : [])];
+  return [...featuresNamed(header), ...HARNESS_FEATURES.filter((feature) => headerAdvertises(header, feature))];
 }
 
 export const CONTEXT_DIRNAME = 'context';

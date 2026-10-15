@@ -15,6 +15,7 @@ import { captureRecency } from '../read/capture.js';
 import { machinesOf } from '../read/machines.js';
 import { isAdmin } from '../auth/roles.js';
 import { deploymentIdentity } from '../auth/authorization.js';
+import { provisionedHarnessHealth } from '../core/harness-health.js';
 
 /**
  * What this Deployment can do, in the product's vocabulary.
@@ -56,12 +57,13 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     try { return await read(); }
     catch { unavailable.push(name); return undefined; }
   };
-  const own = isAdmin(ctx.member.role) ? null : await readFact('machines', () => machinesOf(env.db, ctx.member.id));
+  const ownedMachines = await readFact('machines', () => machinesOf(env.db, ctx.member.id));
+  const own = isAdmin(ctx.member.role) ? null : ownedMachines;
   const visibleMachines = <T extends { machineId: string | null }>(rows: T[]): T[] => {
     if (own === undefined) throw new Error('Machine ownership is unavailable');
     return own === null ? rows : rows.filter((row) => row.machineId !== null && own.has(row.machineId));
   };
-  const [found, transcriptBacklog, projects, workerFacts, capture] = await Promise.all([
+  const [found, transcriptBacklog, projects, workerFacts, capture, harnesses] = await Promise.all([
     readFact('schema', () => schemaVersion(env.db)),
     readFact('transcriptBacklog', () => pendingTranscripts(env.db)),
     readFact('projects', () => listVisibleProjects(env.db, ctx.member, { includeArchived: true })),
@@ -70,13 +72,17 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
       return { available: true, workersBusy: projection.fleet.filter(row => row.busy !== null).length, runsQueued: projection.queue.count, recentWithinMs: CONTACT_RECENT_MS, ...projection, fleet: projection.fleet.filter(row => row.runner !== null || visibleMachines([row]).length > 0), legacyWorkers: visibleMachines(projection.legacyWorkers) };
     }),
     readFact('capture', async () => visibleMachines(await captureRecency(env.db, ctx.now, ctx.member.id))),
+    readFact('installedAgents', async () => visibleMachines(await provisionedHarnessHealth(env.db)).map((fact) => {
+      const { toolsDeployment, ...rest } = fact;
+      return toolsDeployment !== undefined && ownedMachines?.has(fact.machineId) ? fact : rest;
+    })),
   ]);
   return ok({
     schema: schemaCheck(found ?? null), target, capabilities,
     workers: workerFacts ?? { available: false, observedAt: ctx.now, workersBusy: null, runsQueued: null, recentWithinMs: CONTACT_RECENT_MS, fleet: null },
     transcriptBacklog: transcriptBacklog ?? null,
     projects: (projects ?? []).map((p) => ({ projectId: p.projectId, lastActivityAt: p.lastActivityAt, sessionCount: p.sessionCount, archivedAt: p.archivedAt })),
-    capture: capture ?? [], unavailable,
+    capture: capture ?? [], harnesses: harnesses ?? [], unavailable,
   });
 }
 

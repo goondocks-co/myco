@@ -94,7 +94,7 @@ describe('a member\'s agent setup', () => {
     recordProvision(home, { version: '2.0.0-beta.0', serverUrl: SERVER, agents: ['claude-code', 'codex'] }, { replace: true });
     fs.rmSync(path.join(agentHome, '.claude', 'settings.json'));
     fs.unlinkSync(path.join(agentHome, '.agents', 'skills', SKILLS[0]));
-    expect(setupChecks(home)[0]).toMatchObject({ status: 'warn', detail: expect.stringContaining('myco member provision --refresh') });
+    expect(setupChecks(home)[0]).toMatchObject({ status: 'warn', detail: expect.stringContaining('set up by Myco 2.0.0-beta.0; this is') });
     out = [];
     expect(runProvision(['--refresh'], { mycoHome: home, cwd: agentHome, agents: () => [], stdout: (l) => out.push(l), stderr: (l) => err.push(l) })).toBe(true);
     expect(fs.readFileSync(path.join(agentHome, '.claude', 'settings.json'), 'utf8')).toContain('--credential registry');
@@ -115,8 +115,8 @@ describe('a member\'s agent setup', () => {
     const foreign = foreignCodexHooks();
     expect(refresh()).toBe(true);
     expect(fs.readFileSync(path.join(agentHome, '.codex', 'hooks.json'), 'utf8')).toBe(foreign);
-    expect(out.join('\n')).toContain('Run myco member provision codex to see what needs fixing');
-    expect(readProvisionRecord(home)).toMatchObject({ version: getPluginVersion(), agents: ['claude-code', 'codex'] });
+    expect(out.join('\n')).toContain("Run myco doctor to check Codex's capture configuration");
+    expect(readProvisionRecord(home)).toMatchObject({ version: '2.0.0-beta.0', agents: ['claude-code', 'codex'] });
   });
 
   it('keeps an entirely failed refresh recorded for its next repair', () => {
@@ -200,6 +200,6 @@ describe('a member\'s agent setup', () => {
     expect(setupChecks(home)[0].status).toBe('ok');
     expect(setupChecks(home, '9.9.9')[0]).toMatchObject({ status: 'warn', detail: expect.stringContaining(`set up by Myco ${getPluginVersion()}; this is 9.9.9`) });
     fs.unlinkSync(path.join(agentHome, '.claude', 'skills', SKILLS[0]));
-    expect(setupChecks(home)[0]).toMatchObject({ status: 'warn', detail: expect.stringContaining(`Claude Code (${SKILLS[0]})`) });
+    expect(setupChecks(home)).toContainEqual(expect.objectContaining({ status: 'warn', detail: expect.stringContaining(`Claude Code (${SKILLS[0]})`) }));
   });
 });

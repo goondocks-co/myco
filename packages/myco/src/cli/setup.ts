@@ -10,6 +10,7 @@ import { runnerServerUrl, RUNNER_NAME_PATTERN } from '@myco/cli/runner-deps.js';
 import { readSetupFile, saveSetupFile, setupCloudflareUrl, type SetupAnswers } from '@myco/setup/answers.js';
 import { observeSetupStatus, setupExitCode } from '@myco/setup/observe.js';
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
+import { setupChecks } from '@myco/cli/member-doctor.js';
 import { conductSetup, type SetupDeps } from '@myco/setup/steps.js';
 import { askOnTerminal, askRequired } from '@myco/setup/prompt.js';
 import { APP_NAME_MAX } from '@myco/server/github-app.js';
@@ -206,6 +207,16 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     if (options.status) {
       file.answers.root = options.answers.root ?? statusRepository(deps.cwd ?? process.cwd());
       const observations = await observeSetupStatus(home, file.answers, { ...deps, legacyHomeDir: deps.legacyHomeDir ?? deps.cutoverDeps?.env?.HOME, checkRemote: options.checkRemote }, options.answers.role !== undefined);
+      const agents = observations.find((fact) => fact.id === 'machine.agents');
+      if (agents !== undefined) {
+        const checks = setupChecks(home);
+        if (checks.some((check) => check.toolsDeployment !== undefined)) {
+          agents.informational = checks.every((check) => check.status === 'ok');
+          Object.assign(agents, { agentHealth: true });
+          agents.state = checks.every((check) => check.status === 'ok') ? 'complete' : 'incomplete';
+          agents.detail = checks.map((check) => check.detail).join('\n');
+        }
+      }
       if (options.json) out(JSON.stringify({ observations }, null, 2));
       else for (const line of renderSetupStatus(observations)) out(line);
       return setupExitCode(observations);

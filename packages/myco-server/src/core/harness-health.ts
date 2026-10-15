@@ -1,6 +1,6 @@
 import type { RelationalStore } from './adapters.js';
 import {
-  HARNESS_HEALTH_STATES, MAX_HARNESS_ACTION_CHARS, MAX_HARNESS_ID_CHARS, MAX_PROVISIONED_HARNESSES,
+  HARNESS_HEALTH_STATES, MAX_HARNESS_ACTION_CHARS, MAX_HARNESS_ID_CHARS, MAX_PROVISIONED_HARNESSES, MAX_HARNESS_DEPLOYMENT_CHARS,
   type ProvisionedHarnessFact, type ProvisionedHarnessReport,
   HARNESS_SILENT_MS, HARNESS_RUN_CAPTURE_MARGIN_MS,
 } from '@goondocks/myco-shared/harness-health';
@@ -22,17 +22,19 @@ export function parseProvisionedHarnessReport(value: unknown): ProvisionedHarnes
   const harnesses: ProvisionedHarnessFact[] = [];
   const ids = new Set<string>();
   for (const item of value.harnesses) {
-    if (!isObject(item) || !knownFields(item, ['id', 'provisioned', 'state', 'action', 'ranAt', 'hookRepairAt'])
+    if (!isObject(item) || !knownFields(item, ['id', 'provisioned', 'state', 'action', 'ranAt', 'hookRepairAt', 'toolsDeployment'])
       || typeof item.id !== 'string' || item.id.length === 0 || item.id.length > MAX_HARNESS_ID_CHARS
       || !/^[A-Za-z0-9._-]+$/.test(item.id) || ids.has(item.id)
       || item.provisioned !== true || !HARNESS_HEALTH_STATES.includes(item.state as typeof HARNESS_HEALTH_STATES[number])
       || (item.ranAt !== undefined && (!Number.isSafeInteger(item.ranAt) || (item.ranAt as number) < 0))
       || (item.hookRepairAt !== undefined && (item.state !== 'trust_required' || !Number.isSafeInteger(item.hookRepairAt) || (item.hookRepairAt as number) < 0))) return null;
     const action = item.action;
-    if (item.state === 'ready' ? action !== undefined : typeof action !== 'string' || action.length === 0 || action.length > MAX_HARNESS_ACTION_CHARS || /[\x00-\x1f\x7f]/.test(action) || action.trim() !== action) return null;
+    if (item.state === 'ready' || item.state === 'held_elsewhere' ? action !== undefined : typeof action !== 'string' || action.length === 0 || action.length > MAX_HARNESS_ACTION_CHARS || /[\x00-\x1f\x7f]/.test(action) || action.trim() !== action) return null;
+    const toolsDeployment = item.toolsDeployment;
+    if (item.state === 'held_elsewhere' ? typeof toolsDeployment !== 'string' || toolsDeployment.length === 0 || toolsDeployment.length > MAX_HARNESS_DEPLOYMENT_CHARS || /[\x00-\x20\x7f]/.test(toolsDeployment) : toolsDeployment !== undefined) return null;
     ids.add(item.id);
     harnesses.push({ id: item.id, provisioned: true, state: item.state as ProvisionedHarnessFact['state'],
-      ...(typeof item.ranAt === 'number' ? { ranAt: item.ranAt } : {}), ...(typeof item.hookRepairAt === 'number' ? { hookRepairAt: item.hookRepairAt } : {}), ...(typeof action === 'string' ? { action } : {}) });
+      ...(typeof toolsDeployment === 'string' ? { toolsDeployment } : {}), ...(typeof item.ranAt === 'number' ? { ranAt: item.ranAt } : {}), ...(typeof item.hookRepairAt === 'number' ? { hookRepairAt: item.hookRepairAt } : {}), ...(typeof action === 'string' ? { action } : {}) });
   }
   return { harnesses };
 }
@@ -49,13 +51,15 @@ function storedFacts(raw: string): StoredHarnessFact[] {
   return report.harnesses.map((fact, i) => ({ ...fact, sinceAt: (parsed[i] as { sinceAt: number }).sinceAt }));
 }
 
+const captureConfigured = (state: ProvisionedHarnessFact['state']): state is 'ready' | 'held_elsewhere' => state === 'ready' || state === 'held_elsewhere';
+
 /** One writer for current machine harness facts; a repeated state retains the instant it first needed attention. */
 export async function recordProvisionedHarnessReport(db: RelationalStore, machineId: string, report: ProvisionedHarnessReport, now: number): Promise<void> {
   const raw = await machineHarnessReport(db, machineId);
   const prior = new Map((raw === null ? [] : storedFacts(raw)).map((fact) => [fact.id, fact]));
   const trustSince = report.harnesses.flatMap((fact) => {
     const previous = prior.get(fact.id);
-    return previous?.state === 'trust_required' && (fact.state === 'ready' || fact.state === 'trust_required') ? [previous.sinceAt] : [];
+    return previous?.state === 'trust_required' && (captureConfigured(fact.state) || fact.state === 'trust_required') ? [previous.sinceAt] : [];
   });
   const lastCapture = new Map<string, number>();
   if (trustSince.length > 0) {
@@ -65,7 +69,7 @@ export async function recordProvisionedHarnessReport(db: RelationalStore, machin
   const harnesses = report.harnesses.map((fact): StoredHarnessFact => {
     const previous = prior.get(fact.id);
     if (fact.state === 'trust_required' && fact.hookRepairAt !== undefined && fact.hookRepairAt !== previous?.hookRepairAt) return { ...fact, sinceAt: now };
-    if (previous?.state === 'trust_required' && fact.state === 'ready' && (lastCapture.get(fact.id) ?? 0) <= previous.sinceAt) {
+    if (previous?.state === 'trust_required' && captureConfigured(fact.state) && (lastCapture.get(fact.id) ?? 0) <= previous.sinceAt) {
       return { ...previous, ranAt: fact.ranAt };
     }
     if (previous?.state === 'trust_required' && fact.state === 'trust_required' && (lastCapture.get(fact.id) ?? 0) > previous.sinceAt) return { ...fact, sinceAt: now };
@@ -87,7 +91,7 @@ const HOUR_MS = 60 * 60_000;
 export const MACHINE_ACTIVE_MS = HOUR_MS;
 
 export type HarnessAttentionFact =
-  | { kind: 'harness_needs_repair'; machineId: string; machineName: string | null; harness: string; state: Exclude<ProvisionedHarnessFact['state'], 'ready'>; action: string; since: number }
+  | { kind: 'harness_needs_repair'; machineId: string; machineName: string | null; harness: string; state: Exclude<ProvisionedHarnessFact['state'], 'ready' | 'held_elsewhere'>; action: string; since: number }
   | { kind: 'harness_capture_silent'; machineId: string; machineName: string | null; harness: string; lastCapturedAt: number; lastMachineActivityAt: number };
 
 /** Combine the member's current provisioned state with Deployment-owned capture and contact times. */
@@ -119,7 +123,7 @@ export async function provisionedHarnessAttention(db: RelationalStore, now: numb
       const base = { machineId: report.machineId, machineName: machineNames.get(report.machineId) ?? null, harness: harness.id };
       const lastCapturedAt = captured.get(`${report.machineId}\0${harness.id}`) ?? null;
       const trustConfirmed = harness.state === 'trust_required' && (confirmedTrust.get(`${report.machineId}\0${harness.id}`) ?? 0) > harness.sinceAt;
-      if (harness.state !== 'ready' && !trustConfirmed) {
+      if (!captureConfigured(harness.state) && !trustConfirmed) {
         facts.push({ ...base, kind: 'harness_needs_repair', state: harness.state, action: harness.action!, since: harness.sinceAt });
         continue;
       }
@@ -132,4 +136,11 @@ export async function provisionedHarnessAttention(db: RelationalStore, now: numb
     }
   }
   return facts;
+}
+
+/** Current harness wiring, named by its claimed machine, including informational tool destinations. */
+export async function provisionedHarnessHealth(db: RelationalStore): Promise<Array<ProvisionedHarnessFact & { machineId: string; machineName: string | null }>> {
+  const [reports, claims] = await Promise.all([readProvisionedHarnessReports(db), claimedMachineNames(db)]);
+  const names = new Map(claims.map((claim) => [claim.machine_id, claim.label]));
+  return reports.flatMap((report) => report.harnesses.map(({ sinceAt: _sinceAt, ...fact }) => ({ ...fact, machineId: report.machineId, machineName: names.get(report.machineId) ?? null })));
 }

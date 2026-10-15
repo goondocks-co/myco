@@ -48,9 +48,9 @@ import { WORKER_ACCOUNTING_FEATURE } from '@goondocks/myco-shared/worker-usage';
 import { EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE } from '@goondocks/myco-shared/execution-profile';
 import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
 import { REPOSITORY_FAILURE_FEATURE } from '@goondocks/myco-shared/repository';
-import { HARNESS_HEALTH_FEATURE } from '@goondocks/myco-shared/harness-health';
+import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-text';
-export const SERVER_FEATURES = [...MEMBER_FEATURES, MACHINE_SETTINGS_FEATURE, WORKER_ACCOUNTING_FEATURE, EXECUTION_PROFILE_FEATURE, PROFILE_OUTCOME_FEATURE, MODEL_CATALOG_FEATURE, WORKER_STEPS_FEATURE, HARNESS_HEALTH_FEATURE, REPOSITORY_FAILURE_FEATURE, HARNESS_STOP_FEATURE] as const;
+export const SERVER_FEATURES = [...MEMBER_FEATURES, MACHINE_SETTINGS_FEATURE, WORKER_ACCOUNTING_FEATURE, EXECUTION_PROFILE_FEATURE, PROFILE_OUTCOME_FEATURE, MODEL_CATALOG_FEATURE, WORKER_STEPS_FEATURE, HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE, REPOSITORY_FAILURE_FEATURE, HARNESS_STOP_FEATURE] as const;
 /** The Project a member request acts on. A credential is Deployment-wide, so the Project travels per request. It rides a header rather than the envelope: an envelope field is a protocol bump, and a member whose spool holds records of the older protocol stops draining them entirely. */
 export const PROJECT_HEADER = 'x-myco-project';
 /**

@@ -2,6 +2,19 @@ import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile'
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 import type { RepositoryFailure } from '@goondocks/myco-shared/repository';
 
+/** A machine's reported harness wiring on Health. */
+export interface MachineHarnessHealth {
+  id: string;
+  provisioned: true;
+  state: 'ready' | 'held_elsewhere' | 'binary_missing' | 'unwritable' | 'trust_required' | 'repair_failed';
+  ranAt?: number;
+  hookRepairAt?: number;
+  action?: string;
+  toolsDeployment?: string;
+  machineId: string;
+  machineName: string | null;
+}
+
 /**
  * The shapes Today reads off the wire: `/api/work`, `/api/attention`,
  * `/api/uncaptured` and its connect, the `capture` rows of `/api/status`, and

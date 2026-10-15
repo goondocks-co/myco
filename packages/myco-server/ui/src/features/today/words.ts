@@ -4,13 +4,14 @@
  * as what it produced, a machine by its name, and the account Myco's own work
  * signs in as reads "Myco".
  */
+import { harnessToolsElsewhere } from '@goondocks/myco-shared/setup-guidance';
 import { HELD_CAPTURE_TTL_DAYS } from '@goondocks/myco-shared/member-protocol';
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@goondocks/myco-shared/repository';
 import { harnessLabel } from '../../lib/harness';
 import { memberLabel } from '../../lib/member-name';
 import { HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, projectRepositoryPath, runPath } from '../../routes/nav';
 import { hasRunOutput } from './timeline';
-import type { AttentionItem, AttentionKind, CaptureRow, HeldState, OutcomeKind, TodaySession, TodaySpore, UncapturedReason, UncapturedRootItem, WorkRun } from './wire';
+import type { MachineHarnessHealth, AttentionItem, AttentionKind, CaptureRow, HeldState, OutcomeKind, TodaySession, TodaySpore, UncapturedReason, UncapturedRootItem, WorkRun } from './wire';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -449,4 +450,13 @@ export function repositoryNeededWords(projectId: string, name: string | null, co
     detail: codeMap ? 'Code map is turned on, but it cannot run until a repository is connected.' : 'Code tasks are turned on, but they cannot run until a repository is connected.',
     action: { label: 'Connect repository', to: projectRepositoryPath(projectId, true) },
   };
+}
+
+/** A machine's own report of its installed tools. */
+export function harnessHealthWords(fact: MachineHarnessHealth): string {
+  const harness = harnessLabel(fact.id);
+  const machine = fact.machineName ?? 'a machine';
+  if (fact.state === 'held_elsewhere') return harnessToolsElsewhere(harness, machine, fact.toolsDeployment);
+  if (fact.state === 'ready') return `${harness}'s Myco tools on ${machine} are set up`;
+  return `${harness} on ${machine}: ${fact.action!}`;
 }
