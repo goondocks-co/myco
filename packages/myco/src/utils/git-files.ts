@@ -192,6 +192,10 @@ const pathCaseCache = new Map<string, { stamp: string; insensitive: boolean }>()
 
 /** Native realpath expands aliases; case is folded only after an identity probe on the existing path. */
 export function canonicalRootIdentity(p: string, deps: CanonicalRootIdentityDeps = {}): string {
+  return canonicalRootDetails(p, deps).identity;
+}
+
+function canonicalRootDetails(p: string, deps: CanonicalRootIdentityDeps): { identity: string; insensitive: boolean } {
   const paths = deps.paths ?? path;
   const absolute = paths.resolve(p);
   let physical: string;
@@ -199,12 +203,17 @@ export function canonicalRootIdentity(p: string, deps: CanonicalRootIdentityDeps
   catch (error) {
     if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
     const parent = paths.dirname(absolute);
-    return parent === absolute ? absolute : paths.join(canonicalRootIdentity(parent, deps), paths.basename(absolute));
+    if (parent === absolute) return { identity: absolute, insensitive: false };
+    const found = canonicalRootDetails(parent, deps);
+    const name = paths.basename(absolute);
+    return { identity: paths.join(found.identity, found.insensitive ? name.toLowerCase() : name), insensitive: found.insensitive };
   }
   const cache = deps.caseCache ?? pathCaseCache;
   const stat = deps.stat ?? fs.statSync;
   const actual = stat(physical);
-  const stamp = [actual.dev, actual.ino, actual.ctimeMs].join(':');
+  const parent = paths.dirname(physical);
+  const parentStat = parent === physical ? actual : stat(parent);
+  const stamp = [actual.dev, actual.ino, actual.ctimeMs, parentStat.dev, parentStat.ino, parentStat.ctimeMs].join(':');
   const cached = cache.get(physical);
   let insensitive = cached?.stamp === stamp ? cached.insensitive : undefined;
   if (insensitive === undefined) {
@@ -215,7 +224,8 @@ export function canonicalRootIdentity(p: string, deps: CanonicalRootIdentityDeps
       if (flipped === name) continue;
       try {
         const original = at === physical ? actual : stat(at);
-        if (original.dev !== actual.dev) break;
+        const containing = at === physical ? parentStat : stat(paths.dirname(at));
+        if (original.dev !== actual.dev || containing.dev !== actual.dev) break;
         const alternate = stat(paths.join(paths.dirname(at), flipped));
         insensitive = original.dev === alternate.dev && original.ino === alternate.ino;
       } catch (error) {
@@ -225,7 +235,7 @@ export function canonicalRootIdentity(p: string, deps: CanonicalRootIdentityDeps
     }
     cache.set(physical, { stamp, insensitive });
   }
-  return insensitive ? physical.toLowerCase() : physical;
+  return { identity: insensitive ? physical.toLowerCase() : physical, insensitive };
 }
 
 /**

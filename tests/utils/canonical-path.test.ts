@@ -45,7 +45,7 @@ it('case probes are cached while native realpath stays live for retargeted alias
   expect(canonicalRootIdentity('/alias', deps)).toBe('/volume/one');
   const first = probes;
   expect(canonicalRootIdentity('/alias', deps)).toBe('/volume/one');
-  expect(probes).toBe(first + 1);
+  expect(probes).toBe(first + 2);
   target = '/volume/Two';
   expect(canonicalRootIdentity('/alias', deps)).toBe('/volume/two');
 });
@@ -69,5 +69,40 @@ it('case probes refresh when the same physical name changes volume or directory 
   };
   expect(canonicalRootIdentity('/alias', deps)).toBe('/volume/repo');
   replacement = true;
+  expect(canonicalRootIdentity('/alias', deps)).toBe('/volume/Repo');
+});
+
+it('missing descendants inherit the existing volume case rule without folding sensitive volumes', () => {
+  for (const insensitive of [true, false]) {
+    const deps = {
+      paths: path.posix as typeof path,
+      realpath: (p: string) => p === '/Volume' ? p : absent(),
+      stat: (p: string) => ({ dev: 7, ino: insensitive || p === '/Volume' ? 42 : 43 }),
+      caseCache: new Map(),
+    };
+    expect(canonicalRootIdentity('/Volume/Missing/Repo', deps)).toBe(insensitive ? '/volume/missing/repo' : '/Volume/Missing/Repo');
+  }
+});
+
+it('a numeric directory does not inherit the containing filesystem case rule across a mount boundary', () => {
+  const deps = {
+    paths: path.posix as typeof path,
+    realpath: (p: string) => p,
+    stat: (p: string) => ({ dev: p === '/Host' ? 1 : 2, ino: /\/123$/.test(p) ? 42 : 43 }),
+    caseCache: new Map(),
+  };
+  expect(canonicalRootIdentity('/Host/Mount/123', deps)).toBe('/Host/Mount/123');
+});
+
+it('case probes refresh when the containing directory case rule changes', () => {
+  let insensitive = true;
+  const deps = {
+    paths: path.posix as typeof path,
+    realpath: () => '/volume/Repo',
+    stat: (p: string) => ({ dev: 7, ino: p === '/volume' ? 1 : insensitive || p === '/volume/Repo' ? 42 : 43, ctimeMs: p === '/volume' && !insensitive ? 2 : 1 }),
+    caseCache: new Map(),
+  };
+  expect(canonicalRootIdentity('/alias', deps)).toBe('/volume/repo');
+  insensitive = false;
   expect(canonicalRootIdentity('/alias', deps)).toBe('/volume/Repo');
 });

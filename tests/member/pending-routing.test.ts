@@ -127,6 +127,7 @@ describe('auto-join destination state', () => {
 
   it('retains separate join requests, import receipts, and attempt state after a default change', () => {
     const mycoHome = home();
+    const repo = { root: '/checkout/widget', rootKey: rootKeyFor('/checkout/widget', mycoHome) };
     requestJoin(repo.root, repo.rootKey, FIRST, mycoHome, 1);
     requestJoin(repo.root, repo.rootKey, SECOND, mycoHome, 2);
     expect(listJoinRequests(mycoHome).map((request) => request.serverUrl)).toEqual([FIRST, SECOND]);
@@ -150,6 +151,7 @@ describe('auto-join destination state', () => {
 
   it('keeps an older join request with no recorded Deployment separate from a new request', () => {
     const mycoHome = home();
+    const repo = { root: '/checkout/widget', rootKey: rootKeyFor('/checkout/widget', mycoHome) };
     const dir = path.join(autoJoinDir(mycoHome), 'requests');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, `${repo.rootKey}.json`), JSON.stringify({ ...repo, at: 1 }), { mode: 0o600 });

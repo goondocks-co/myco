@@ -5,21 +5,28 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  acquireRegistryLock, listRegistryEntriesResult, projectsDir, readRegistryEntry, readRegistryEntryResult,
+  acquireRegistryLock, deploymentKeyFor, listRegistryEntriesResult, projectsDir, readRegistryEntry, readRegistryEntryResult,
   registryEntryPath, registryKeyFor, REGISTRY_VERSION, writeDeploymentMembership, writeRegistryEntry, type RegistryEntry,
 } from '@myco/member/registry.js';
 import { canonicalRootIdentity } from '@myco/utils/git-files.js';
 import { resolveMemberProjectRoot, resolveCredential } from '@myco/member/credential.js';
-import { rootKeyFor, listJoinRequests } from '@myco/member/auto-join.js';
-import { autoJoinHold } from '@myco/member/auto-join-hook.js';
+import { rootKeyFor, machineSalt, listJoinRequests, markLeft, isLeft, clearLeft, joinStanding, writeAutoJoinState, autoJoinDir, markSweepDone, requestJoin, queueImport, listPendingImports } from '@myco/member/auto-join.js';
+import { autoJoinHold, LEFT_ALONE } from '@myco/member/auto-join-hook.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
-import { listPending, pendingSpool } from '@myco/member/pending.js';
+import { appendPending, listPending, pendingSpool, pendingDir, withPendingLock } from '@myco/member/pending.js';
 import { runStatus, runMcpHeaders } from '@myco/cli/member.js';
 import { homeReport } from '@myco/cli/member-doctor.js';
-import { runAutoJoin } from '@myco/cli/member-auto-join.js';
+import { joinPass, optOut, runAutoJoin, settleConnection } from '@myco/cli/member-auto-join.js';
 import { runHook } from './helpers/hooks.js';
 import { ensureMemberDir } from '@myco/member/store.js';
 import { attributeTranscript } from '@myco/symbionts/transcript-attribution.js';
+import { promptEvent } from '@myco/member/envelope.js';
+import { MemberSpool } from '@myco/member/spool.js';
+import { readSessionState } from '@myco/member/session-state.js';
+import { flushHeldCapture, restoreHeldReceiptsForHook } from '@myco/member/held.js';
+import { cacheMachineSettings } from '@myco/member/machine-settings.js';
+import { memberRig, TEST_MACHINE_ID, TEST_PROJECT_ID } from './helpers/server.js';
+import { resetMachineIdCache } from '@myco/machine-id.js';
 
 
 function supportsCaseAliases(): boolean {
@@ -75,6 +82,7 @@ beforeEach(() => {
   process.env.MYCO_TEMPORARY_FOLDERS = path.join(base, 'excluded');
 });
 afterEach(() => {
+  resetMachineIdCache();
   fs.rmSync(base, { recursive: true, force: true });
   if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome;
   if (savedTemporary === undefined) delete process.env.MYCO_TEMPORARY_FOLDERS; else process.env.MYCO_TEMPORARY_FOLDERS = savedTemporary;
@@ -95,6 +103,217 @@ function defaultWork(): void {
   writeDeploymentMembership({ serverUrl: 'https://work.invalid', token: 'F'.repeat(43), machineId: 'machine', joinedAt: 1, updatedAt: 1 }, { mycoHome });
   recordDefaultDeployment('https://work.invalid', { mycoHome });
 }
+
+const legacyRootKey = (at: string): string => crypto.createHash('sha256').update(machineSalt(mycoHome) + '\0' + fs.realpathSync(at)).digest('hex').slice(0, 32);
+
+function heldAlias(serverUrl = 'https://personal.invalid', at = alias) {
+  const repo = { root: at, rootKey: legacyRootKey(at), serverUrl };
+  const opts = { mycoHome, now: Date.now() };
+  const spool = pendingSpool(repo, opts)!;
+  const event = promptEvent({ agent: 'claude-code', sessionId: 'held-alias', stage: spool.stagerFor('held-alias'), now: () => opts.now },
+    { promptId: 'prompt-old-key', text: 'retained capture' });
+  appendPending(repo, 'held-alias', [event], state => { state.prompts.receipt = 'prompt-old-key'; }, opts);
+  return { repo, opts, event };
+}
+
+it.skipIf(!caseAliases)('restores held receipts from an old key through every repository spelling (host volume must be case-insensitive)', () => {
+  const held = heldAlias();
+  const live = new MemberSpool(entry(root), { mycoHome });
+  withPendingLock(held.repo.rootKey, mycoHome, () => restoreHeldReceiptsForHook(root, 'held-alias', live, held.opts));
+  expect(readSessionState(live.dir, 'held-alias').prompts.receipt).toBe('prompt-old-key');
+});
+
+it.skipIf(!caseAliases)('settling a canonical connection replays old-key held capture only from its own Deployment, idempotently (host volume must be case-insensitive)', async () => {
+  const held = heldAlias();
+  heldAlias('https://work.invalid');
+  const workFile = path.join(pendingDir(held.repo.rootKey, mycoHome, 'https://work.invalid'), 'held-alias.jsonl');
+  const workBytes = fs.readFileSync(workFile);
+  writeRegistryEntry(entry(root), { mycoHome });
+  const connected = readRegistryEntry(root, mycoHome)!;
+  expect(await settleConnection(connected, { mycoHome, now: () => held.opts.now, tell: false })).toBe(1);
+  const live = new MemberSpool(connected, { mycoHome });
+  expect(live.readRecords('held-alias').map(record => record?.eventId)).toEqual([held.event.envelope.eventId]);
+  expect(readSessionState(live.dir, 'held-alias').prompts.receipt).toBe('prompt-old-key');
+  expect(await settleConnection(connected, { mycoHome, now: () => held.opts.now, tell: false })).toBe(0);
+  expect(fs.readFileSync(workFile)).toEqual(workBytes);
+});
+
+it.skipIf(!caseAliases)('old-key opt-outs keep the strongest restriction across aliases until an explicit local connection (host volume must be case-insensitive)', () => {
+  defaultWork();
+  const oldKey = legacyRootKey(alias);
+  markLeft(oldKey, mycoHome, 1, { explicitJoinOnly: true, repository: { root: alias } });
+  const key = rootKeyFor(root, mycoHome);
+  expect(isLeft(key, mycoHome)).toBe(true);
+  markLeft(key, mycoHome, 2, { repository: { root } });
+  fs.unlinkSync(path.join(mycoHome, 'member/auto-join/left', `${oldKey}.json`));
+  cacheMachineSettings('https://work.invalid', { leaves: { 'capture.auto_join_roots': [base], 'capture.connect_roots': { [key]: 'proj_choice' } } }, mycoHome);
+  let later = 0;
+  expect(autoJoinHold({ root, hookName: 'session-start', agent: 'claude-code', sessionId: 'old-left', mycoHome, now: 3, env: { MYCO_TEMPORARY_FOLDERS: path.join(base, 'excluded') }, later: () => { later++; } })).toBe(LEFT_ALONE);
+  expect(later).toBe(0);
+  expect(listPending({ mycoHome, now: 3 })).toEqual([]);
+  clearLeft(key, mycoHome);
+  expect(isLeft(key, mycoHome)).toBe(false);
+});
+
+it('an unattributed old opt-out blocks automatic connection and is preserved by another root clear', () => {
+  defaultWork();
+  markLeft('e'.repeat(32), mycoHome, 1, { explicitJoinOnly: true });
+  const key = rootKeyFor(root, mycoHome);
+  clearLeft(key, mycoHome);
+  expect(isLeft(key, mycoHome)).toBe(true);
+  expect(autoJoinHold({ root: alias, hookName: 'session-start', agent: 'claude-code', sessionId: 'anonymous-left', mycoHome, now: 3, env: { MYCO_TEMPORARY_FOLDERS: path.join(base, 'excluded') }, later: () => { throw new Error('automatic join'); } })).toBe(LEFT_ALONE);
+});
+
+it('native-expanded roots find opt-outs and choices recorded under a generic short spelling', () => {
+  const generic = fs.realpathSync.bind(fs);
+  const native = fs.realpathSync.native;
+  const legacy = spyOn(fs, 'realpathSync').mockImplementation(((...args: Parameters<typeof fs.realpathSync>) =>
+    String(args[0]) === alias ? alias : Reflect.apply(generic, fs, args)) as typeof fs.realpathSync);
+  Object.assign(fs.realpathSync, { native });
+  try {
+    const oldKey = legacyRootKey(alias);
+    const key = rootKeyFor(root, mycoHome);
+    expect(key).not.toBe(oldKey);
+    markLeft(oldKey, mycoHome, 1, { explicitJoinOnly: true, repository: { root: alias } });
+    writeAutoJoinState({ root: alias, rootKey: oldKey, label: 'Repo', serverUrl: 'https://work.invalid', outcome: 'unreachable', attemptAt: 1 }, mycoHome);
+    expect(isLeft(key, mycoHome)).toBe(true);
+    cacheMachineSettings('https://work.invalid', { leaves: { 'capture.connect_roots': { [oldKey]: 'proj_choice' } } }, mycoHome);
+    const standing = joinStanding(root, key, 'https://work.invalid', mycoHome, 2);
+    expect(standing.state?.rootKey).toBe(oldKey);
+    expect(standing.leaves.connectRoots[key]).toBe('proj_choice');
+    clearLeft(key, mycoHome);
+    expect(fs.existsSync(path.join(mycoHome, 'member/auto-join/left', `${oldKey}.json`))).toBe(false);
+  } finally { legacy.mockRestore(); }
+});
+
+it.skipIf(!caseAliases)('saved dashboard connection choices and backoff follow old keys through canonical aliases (host volume must be case-insensitive)', () => {
+  const oldKey = legacyRootKey(alias);
+  writeAutoJoinState({ root: alias, rootKey: oldKey, label: 'Repo', serverUrl: 'https://work.invalid', outcome: 'unreachable', attemptAt: 1 }, mycoHome);
+  const key = rootKeyFor(root, mycoHome);
+  cacheMachineSettings('https://work.invalid', { leaves: { 'capture.auto_join_roots': [base], 'capture.connect_roots': { [oldKey]: 'proj_choice' } } }, mycoHome);
+  const standing = joinStanding(root, key, 'https://work.invalid', mycoHome, 2);
+  expect(standing.leaves.connectRoots[key]).toBe('proj_choice');
+  expect(standing.state?.rootKey).toBe(oldKey);
+});
+
+it.skipIf(!caseAliases)('a saved old-key dashboard choice reaches that Project through the real resolver (host volume must be case-insensitive)', async () => {
+  const rig = await memberRig();
+  const serverUrl = 'https://work.invalid';
+  writeDeploymentMembership({ serverUrl, token: rig.token, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome });
+  recordDefaultDeployment(serverUrl, { mycoHome });
+  fs.writeFileSync(path.join(mycoHome, 'machine_id'), TEST_MACHINE_ID, { mode: 0o600 });
+  resetMachineIdCache();
+  rig.env.sqlite.run('INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)', [TEST_MACHINE_ID, `mem_${TEST_MACHINE_ID}`, Date.now()]);
+  const oldKey = legacyRootKey(alias);
+  writeAutoJoinState({ root: alias, rootKey: oldKey, label: 'Repo', serverUrl, outcome: 'outside_folders', attemptAt: 1 }, mycoHome);
+  rig.env.sqlite.run("INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES (?, 'capture.connect_roots', ?, 1, ?)",
+    [TEST_MACHINE_ID, JSON.stringify({ [oldKey]: TEST_PROJECT_ID }), `mem_${TEST_MACHINE_ID}`]);
+  const result = await runAutoJoin(['--root', root], { mycoHome, fetch: rig.fetch, stdout: () => {}, stderr: () => {} });
+  expect(result[0]?.result).toBe('joined');
+  expect(readRegistryEntry(root, mycoHome)?.projectId).toBe(TEST_PROJECT_ID);
+});
+
+it('an unknown saved choice blocks automatic connection even beside a known choice', () => {
+  const key = rootKeyFor(root, mycoHome);
+  cacheMachineSettings('https://work.invalid', { leaves: { 'capture.auto_join_roots': [base], 'capture.connect_roots': { [key]: 'proj_known', ['e'.repeat(32)]: 'proj_unknown' } } }, mycoHome);
+  expect(() => joinStanding(root, key, 'https://work.invalid', mycoHome, 2)).toThrow('unknown folder');
+});
+
+it('missing metadata with held bytes is surfaced by receipt recovery and automatic replay', () => {
+  const held = heldAlias();
+  const dir = pendingDir(held.repo.rootKey, mycoHome, held.repo.serverUrl);
+  const bytes = fs.readFileSync(path.join(dir, 'held-alias.jsonl'));
+  fs.unlinkSync(path.join(dir, 'pending.json'));
+  const live = new MemberSpool(entry(root), { mycoHome });
+  expect(() => restoreHeldReceiptsForHook(root, 'held-alias', live, held.opts)).toThrow('metadata missing');
+  expect(() => flushHeldCapture(root, entry(root), held.opts)).toThrow('metadata missing');
+  expect(fs.readFileSync(path.join(dir, 'held-alias.jsonl'))).toEqual(bytes);
+});
+
+it('expired capture budgets leave held keys intact without enumerating them', () => {
+  const held = heldAlias();
+  const scan = spyOn(fs, 'readdirSync');
+  try {
+    expect(flushHeldCapture(root, entry(root), { ...held.opts, deadline: 0 })).toBe(0);
+    expect(scan).not.toHaveBeenCalled();
+  } finally { scan.mockRestore(); }
+  expect(fs.existsSync(path.join(pendingDir(held.repo.rootKey, mycoHome, held.repo.serverUrl), 'held-alias.jsonl'))).toBe(true);
+});
+
+it('a retargeted recorded alias cannot transfer capture, opt-outs, or a saved choice to another repository', () => {
+  const held = heldAlias();
+  markLeft(held.repo.rootKey, mycoHome, 1, { explicitJoinOnly: true, repository: { root: alias } });
+  const otherParent = path.join(base, 'Other');
+  const other = path.join(otherParent, 'Repo');
+  fs.mkdirSync(other, { recursive: true });
+  fs.unlinkSync(path.join(base, 'alias'));
+  fs.symlinkSync(otherParent, path.join(base, 'alias'), 'junction');
+  const key = rootKeyFor(other, mycoHome);
+  const live = new MemberSpool(entry(other), { mycoHome });
+  expect(() => flushHeldCapture(other, entry(other), held.opts)).toThrow('identity unavailable');
+  expect(() => restoreHeldReceiptsForHook(other, 'held-alias', live, held.opts)).toThrow('identity unavailable');
+  clearLeft(key, mycoHome);
+  expect(fs.existsSync(path.join(mycoHome, 'member/auto-join/left', `${held.repo.rootKey}.json`))).toBe(true);
+  cacheMachineSettings('https://work.invalid', { leaves: { 'capture.auto_join_roots': [base], 'capture.connect_roots': { [held.repo.rootKey]: 'proj_original' } } }, mycoHome);
+  expect(() => joinStanding(other, key, 'https://work.invalid', mycoHome, 2)).toThrow('unknown folder');
+  expect(isLeft(rootKeyFor(root, mycoHome), mycoHome)).toBe(true);
+});
+
+it('queued legacy joins and imports retain stale aliases without executing their new target', async () => {
+  defaultWork();
+  markSweepDone(mycoHome, 1);
+  const key = legacyRootKey(alias);
+  const serverUrl = 'https://work.invalid';
+  const request = path.join(autoJoinDir(mycoHome), 'requests', deploymentKeyFor(serverUrl), `${key}.json`);
+  const pendingImport = path.join(autoJoinDir(mycoHome), 'imports', deploymentKeyFor(serverUrl), 'proj_work', `${key}.json`);
+  for (const [file, value] of [[request, { root: alias, rootKey: key, serverUrl, at: 1 }], [pendingImport, { root: alias, rootKey: key, serverUrl, projectId: 'proj_work', at: 1 }]] as const) {
+    ensureMemberDir(path.dirname(file), mycoHome);
+    fs.writeFileSync(file, JSON.stringify(value), { mode: 0o600 });
+  }
+  const bytes = [request, pendingImport].map(file => fs.readFileSync(file));
+  const otherParent = path.join(base, 'Other');
+  const other = path.join(otherParent, 'Repo');
+  fs.mkdirSync(other, { recursive: true });
+  execFileSync('git', ['init', '-q'], { cwd: other });
+  fs.unlinkSync(path.join(base, 'alias'));
+  fs.symlinkSync(otherParent, path.join(base, 'alias'), 'junction');
+  const calls: string[] = [];
+  await joinPass(mycoHome, { fetch: (async input => { calls.push(String(input)); throw new Error('unexpected connection'); }) as import('@myco/member/transport.js').FetchLike })(Date.now() + 10_000, { force: false });
+  expect(calls).toEqual([]);
+  expect(listJoinRequests(mycoHome)).toEqual([]);
+  expect(listPendingImports(mycoHome)).toEqual([]);
+  expect(readRegistryEntry(other, mycoHome)).toBeNull();
+  expect([request, pendingImport].map(file => fs.readFileSync(file))).toEqual(bytes);
+});
+
+it('new join and import queues pin the physical repository before a display alias retargets', () => {
+  const serverUrl = 'https://work.invalid';
+  const key = rootKeyFor(alias, mycoHome);
+  requestJoin(alias, key, serverUrl, mycoHome, 1);
+  queueImport({ root: alias, rootKey: key, serverUrl, projectId: 'proj_work', at: 1 }, mycoHome);
+  const otherParent = path.join(base, 'Other');
+  fs.mkdirSync(path.join(otherParent, 'Repo'), { recursive: true });
+  fs.unlinkSync(path.join(base, 'alias'));
+  fs.symlinkSync(otherParent, path.join(base, 'alias'), 'junction');
+  expect(listJoinRequests(mycoHome).map(row => canonicalRootIdentity(row.root))).toEqual([canonicalRootIdentity(root)]);
+  expect(listPendingImports(mycoHome).map(row => canonicalRootIdentity(row.root))).toEqual([canonicalRootIdentity(root)]);
+});
+
+it.skipIf(!caseAliases)('leave discards old-key held capture across Deployments and preserves another repository (host volume must be case-insensitive)', async () => {
+  const held = heldAlias();
+  heldAlias('https://work.invalid');
+  const other = path.join(base, 'Other');
+  fs.mkdirSync(other);
+  const kept = heldAlias('https://personal.invalid', other);
+  const keptFile = path.join(pendingDir(kept.repo.rootKey, mycoHome, kept.repo.serverUrl), 'held-alias.jsonl');
+  const keptBytes = fs.readFileSync(keptFile);
+  await optOut(root, null, { mycoHome, now: held.opts.now });
+  expect(fs.existsSync(pendingDir(held.repo.rootKey, mycoHome, held.repo.serverUrl))).toBe(false);
+  expect(fs.existsSync(pendingDir(held.repo.rootKey, mycoHome, 'https://work.invalid'))).toBe(false);
+  expect(fs.readFileSync(keptFile)).toEqual(keptBytes);
+  writeRegistryEntry(entry(root), { mycoHome });
+  expect(await settleConnection(readRegistryEntry(root, mycoHome)!, { mycoHome, now: () => held.opts.now, tell: false })).toBe(0);
+});
 
 async function aliasGate(spellings: string[]): Promise<void> {
   defaultWork();
