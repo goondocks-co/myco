@@ -58,7 +58,10 @@ function membershipFailure(answer: Outcome): Confirmation | null {
 function evidenceReader(client: ServerClient, failed?: (state: Confirmation) => void): EvidenceReader {
   return async body => {
     const answer = await client.postPersisted(LEGACY_HISTORY_PATH, body, { connectTimeoutMs: CONFIRMATION_BUDGET_MS, requestTimeoutMs: CONFIRMATION_BUDGET_MS, capped: true });
-    const failure = membershipFailure(answer);
+    const probe = body.projectState === true && body.eventGroups.length === 0
+      && body.recordIds === undefined && body.sporeIds === undefined
+      && body.lineageIds === undefined && body.sessions === undefined;
+    const failure = answer.class === 'slow' && probe ? 'pending' : membershipFailure(answer);
     if (failure !== null) failed?.(failure);
     return answer;
   };

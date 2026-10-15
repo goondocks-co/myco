@@ -314,3 +314,26 @@ for (const failure of ['transport', 'protocol', 'route-missing'] as const) it('m
   expect(observed.state).toBe('moved');
   expect(fs.readFileSync(f.vault)).toEqual(f.bytes);
 });
+
+it('C1: memoizes a hanging project-state probe across three route-free projects', async () => {
+  const projects = ['proj_a', 'proj_b', 'proj_c'];
+  const f = fixture(projects);
+  let hungReads = 0;
+  let missingReads = 0;
+  const observed = await observeLegacyMigration(f.home, { fetch: async (input, init) => {
+    const request = new Request(input, init);
+    expect(JSON.parse(String(init?.body))).toEqual({ eventGroups: [], projectState: true });
+    if (new URL(request.url).hostname === 'a.invalid') {
+      missingReads++;
+      return Response.json({ persisted: false, code: 'no_project' });
+    }
+    hungReads++;
+    return new Promise<Response>((_resolve, reject) => request.signal.addEventListener('abort', () => reject(new Error('fixture timed out')), { once: true }));
+  } });
+  expect(observed.confirmation).toBe('pending');
+  expect(observed.confirmationProjects).toEqual(projects.map(name => ({ name, confirmation: 'pending' })));
+  expect(hungReads).toBe(1);
+  expect(missingReads).toBe(3);
+  expect(readCutoverState(f.home).migrations![f.vault]!.projects).toEqual(Object.fromEntries(projects.map(id => [id, {}])));
+  expect(fs.readFileSync(f.vault)).toEqual(f.bytes);
+});
