@@ -121,10 +121,9 @@ export function scanLegacyRegistrations(opts: ScanOptions): LegacyScan {
     const add = (verdict: Verdict, subject: string, serversPath?: string[], keyPath?: string, missingBinary?: string) => scan.findings.push({ location, file, verdict, subject, ...(serversPath ? { serversPath } : {}), ...(keyPath ? { keyPath } : {}), ...(missingBinary ? { missingBinary } : {}) });
     try {
       if (location.kind === 'plugin-file') {
+        const entries = location.path.endsWith('.json') ? collectCommandEntries(JSON.parse(raw)) : [];
         const verdict = pluginVerdict(raw, homes, opts.ownHome);
         if (verdict === null) continue;
-        let entries: ReturnType<typeof collectCommandEntries> = [];
-        try { entries = collectCommandEntries(JSON.parse(raw)); } catch { /* a module, not JSON */ }
         pluginVerdicts.set(path.dirname(file), entries.some(({ command }) => hookVerdict(command, homes) === 'stale') ? 'stale' : verdict);
         if (entries.length > 0) {
           for (const { command, keyPath } of entries) {

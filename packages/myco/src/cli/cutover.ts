@@ -520,10 +520,16 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
     if (p.destination.kind === 'skip') blockers.push(`${p.projectId}: skipped folder ${p.root} is unsafe to inspect for 1.4 registrations; restore its git checkout before handover`);
     return [];
   }))];
-  const scanOptions = { homeDir, legacyHomes, ownHome: mycoHome, folders: handoverRoots };
-  const scan = scanLegacyRegistrations(scanOptions);
+  const scanOptions = { homeDir, legacyHomes, ownHome: mycoHome, folders: handoverRoots, allClaudeProjects: true };
+  const scanRegistrations = () => {
+    const current = scanLegacyRegistrations(scanOptions);
+    current.findings = current.findings.filter((finding) => finding.verdict === 'stale' || finding.serversPath?.[0] !== 'projects' || handoverRoots.includes(finding.serversPath[1]));
+    return current;
+  };
+  const scan = scanRegistrations();
   for (const { file, reason } of scan.unreadable) blockers.push(`${file} holds a Myco entry but could not be read (${reason}); fix or move it, then run again.`);
   const displayName = (agent: string) => loadManifests().find((m) => m.name === agent)?.displayName ?? agent;
+  const staleAgents = new Set(scan.findings.filter((finding) => finding.verdict === 'stale' && finding.location.scope === 'global').map((finding) => finding.location.agent));
   for (const finding of scan.findings.filter((f) => f.verdict === 'stale')) {
     out(`   ${staleRegistrationWords(finding, displayName(finding.location.agent))}`);
   }
@@ -561,7 +567,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
   const touched = [...new Set([...provisioned.flatMap((p) => p.targets.all), ...removalFiles])].filter(regular);
   const backup = new CutoverBackup(cutoverBackupDir(mycoHome, stamp), 'cutover', platform);
   const stillLegacy = (planned: readonly LegacyFinding[]): Set<string> => {
-    const current = scanLegacyRegistrations(scanOptions).findings.filter((f) => f.verdict === 'legacy').map(removalOutcome);
+    const current = scanRegistrations().findings.filter((f) => f.verdict === 'legacy').map(removalOutcome);
     return new Set(planned.map(removalOutcome).filter((o) => current.includes(o)));
   };
   const claimFile = (claimsHome: string) => path.join(claimsHome, 'claims', `${SYMBIONT_CONFIG_SUBSYSTEM}.json`);
@@ -577,7 +583,9 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       },
     }])) },
     { step: 3, title: 'Point the agents 2.0 captures at 2.0', actions: provisioned.map((p): Action => ({
-      would: `would point ${p.displayName} at ${mycoHome}${p.replaces.length > 0 ? `, replacing the 1.4 hooks and MCP entry of ${p.replaces.join(', ')}` : ''}`,
+      would: staleAgents.has(p.agent)
+        ? `would set up ${p.displayName}'s ${[...(p.targets.hooks === null ? [] : ['hooks']), ...(p.targets.mcp.length === 0 ? [] : ['tools']), 'skills'].join(', ')} for ${mycoHome}; stale entries are left alone`
+        : `would point ${p.displayName} at ${mycoHome}${p.replaces.length > 0 ? `, replacing the 1.4 hooks and MCP entry of ${p.replaces.join(', ')}` : ''}`,
       outcomes: [`provision ${p.agent}`],
       run: async () => {
         const outcome: ProvisionOutcome = (deps.provision ?? provisionGlobally)(p.agent, null, mycoHome, { packageRoot: deps.packageRoot, legacyHomes, serverUrl });
@@ -772,7 +780,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
             out(`   backed up ${kept.length} settings file${kept.length === 1 ? '' : 's'} the cutover changed to ${backup.dir} (${MANIFEST_FILE} lists each original and its copy):`);
             for (const entry of kept) out(`     ${entry.original}`);
           }
-          const left = scanLegacyRegistrations(scanOptions).findings.filter((f) => f.verdict === 'legacy');
+          const left = scanRegistrations().findings.filter((f) => f.verdict === 'legacy');
           if (left.length > 0) {
             for (const f of left) problem(`${f.file} still holds a 1.4 registration (\`${f.subject}\`)`);
             err('   The 1.4 service is left running, and nothing was imported; run the cutover again once this is settled.');

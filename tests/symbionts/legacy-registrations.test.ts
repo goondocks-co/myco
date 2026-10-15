@@ -134,3 +134,13 @@ it('lists each stale plugin hook and preserves it when handing over a live legac
   expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ hooks: { Stop: [{ hooks: [stale] }] } });
   expect(scanLegacyRegistrations({ homeDir: home, legacyHomes: [legacy] }).findings.map(finding => finding.verdict)).toEqual(['stale']);
 });
+
+it('reports malformed JSON plugin hooks as unreadable instead of treating them as a stale module', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-malformed-plugin-'));
+  const file = path.join(home, '.gemini', 'config', 'plugins', 'myco', 'hooks.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `{"command":"${home}/missing/bin/myco hook stop --myco-managed"`);
+  const scan = scanLegacyRegistrations({ homeDir: home, legacyHomes: [] });
+  expect(scan.unreadable).toMatchObject([{ file }]);
+  expect(scan.findings).toEqual([]);
+});

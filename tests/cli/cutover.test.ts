@@ -838,6 +838,28 @@ describe('myco cutover', () => {
     });
   }
 
+  it('lists a stale Claude project entry outside the migration roots while preserving that shared file and unrelated legacy entries', async () => {
+    const file = path.join(m.home, '.claude.json');
+    const folder = path.join(m.home, 'unrelated-project');
+    const binary = path.join(m.home, 'deleted-install', 'bin', 'myco');
+    writeJson(file, { projects: {
+      [folder]: { mcpServers: { myco: { command: binary, args: ['mcp'] } } },
+      [path.join(m.home, 'unrelated-legacy')]: { mcpServers: { myco: { command: `${m.legacyHome}/bin/myco`, args: ['mcp'] } } },
+    } });
+    const before = fs.readFileSync(file);
+    for (const args of [['--dry-run'], []]) {
+      const result = await m.run(args);
+      expect(result.err).toEqual([]);
+      expect(result.ok).toBe(true);
+      expect(result.out.filter(line => line.includes(`stale Myco entry in ${file} at projects.${folder}.mcpServers.myco;`))).toHaveLength(1);
+      if (args.length > 0) {
+        expect(result.out.join('\n')).toContain(`would set up Claude Code's hooks, skills for ${m.mycoHome}; stale entries are left alone`);
+        expect(result.out.join('\n')).not.toContain(`would point Claude Code at ${m.mycoHome}`);
+      }
+      expect(fs.readFileSync(file)).toEqual(before);
+    }
+  });
+
   for (const state of ['home-present', 'binary-present', 'bare'] as const) {
     it(`keeps the existing foreign MCP refusal for ${state}`, async () => {
       const other = path.join(m.home, 'other-install');
