@@ -792,13 +792,13 @@ export class SymbiontInstaller {
     return { hooks, mcp, all: [...new Set(all.filter((file): file is string => file !== null && !stale.has(file)))] };
   }
 
-  private staleRegistrations(): LegacyFinding[] {
+  private staleRegistrations(): Array<LegacyFinding & { target: string }> {
     return scanLegacyRegistrations({ homeDir: process.env.HOME ?? os.homedir(), legacyHomes: this.legacyHomes, ownHome: this.memberHomeDir(), allClaudeProjects: true })
-      .findings.filter((finding) => finding.verdict === 'stale');
+      .findings.filter((finding) => finding.verdict === 'stale').map((finding) => ({ ...finding, target: throughLink(finding.file) }));
   }
 
   private staleRegistrationFiles(): Set<string> {
-    return new Set(this.staleRegistrations().map((finding) => finding.file));
+    return new Set(this.staleRegistrations().map((finding) => finding.target));
   }
 
   private writeRegistrationTarget(target: string | null, write: (target: string) => boolean): boolean {
@@ -880,7 +880,7 @@ export class SymbiontInstaller {
   private assertGlobalMemberOwnership(targetOverride?: { path: string; serversKey: string } | 'hooks'): string | undefined {
     if (this.legacyHomes.length === 0) {
       const targets = [this.resolveAbsoluteTarget('hooks'), this.memberMcpTargetPath()];
-      const stale = this.staleRegistrations().find((finding) => targets.includes(finding.file));
+      const stale = this.staleRegistrations().find((finding) => targets.includes(finding.target));
       if (stale !== undefined) throw new MemberStaleRegistrationError(stale, this.manifest.displayName);
     }
     const memberHome = this.memberHomeDir();

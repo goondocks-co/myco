@@ -775,7 +775,7 @@ it('repairs a moved runtime pin without taking held tools or losing their owners
   expect(harnessFiles().map(file => [file, fs.readFileSync(file, 'utf8'), fs.statSync(file).mtimeMs])).toEqual(before);
 });
 
-for (const agent of ['claude-code', 'codex']) for (const surface of ['hooks', 'mcp', 'helper']) it(`does not hold ${agent}'s stale ${surface} elsewhere or overwrite them during repair`, async () => {
+for (const agent of ['claude-code', 'codex']) for (const surface of ['hooks', 'mcp', 'helper']) for (const linked of surface === 'helper' ? [false] : [false, true]) it(`does not hold ${agent}'s stale ${surface} elsewhere or overwrite them during repair${linked ? ' through a linked config' : ''}`, async () => {
   const tools = toolsHeldElsewhere(agent);
   const target = surface !== 'hooks' ? tools : agent === 'codex' ? hooks() : path.join(agentHome, '.claude', 'settings.json');
   const binary = path.join(agentHome, 'deleted', 'bin', 'myco');
@@ -788,6 +788,12 @@ for (const agent of ['claude-code', 'codex']) for (const surface of ['hooks', 'm
   if (surface === 'helper') expect(replacedHelper).not.toBe(original);
   fs.writeFileSync(target, surface === 'helper' ? replacedHelper : surface === 'hooks' ? JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: `${binary} hook stop --credential registry --myco-managed` }] }] } })
     : agent === 'codex' ? `[mcp_servers.myco]\ncommand = ${JSON.stringify(binary)}\nargs = ["mcp"]\n` : JSON.stringify({ mcpServers: { myco: entry } }));
+  if (linked) {
+    const destination = path.join(agentHome, 'dotfiles', `${agent}-${surface}`);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.renameSync(target, destination);
+    fs.symlinkSync(destination, target);
+  }
   const before = fs.readFileSync(target);
   expect(setupChecks(home).some(check => check.toolsDeployment !== undefined)).toBe(false);
   const result = keepCurrent(home, { binaryFound: () => true });

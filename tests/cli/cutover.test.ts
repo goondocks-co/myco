@@ -840,6 +840,25 @@ describe('myco cutover', () => {
     });
   }
 
+  for (const kind of ['hooks', 'mcp']) it(`preserves stale ${kind} in a linked global config`, async () => {
+    const file = kind === 'hooks' ? settingsFile() : path.join(m.home, '.claude.json');
+    const target = path.join(m.home, 'dotfiles', `${kind}.json`);
+    const binary = path.join(m.home, 'deleted-install', 'bin', 'myco');
+    writeJson(target, kind === 'hooks' ? { hooks: { Stop: [{ hooks: [{ command: `${binary} hook stop --myco-managed` }] }] } }
+      : { mcpServers: { myco: { command: binary, args: ['mcp'] } } });
+    fs.unlinkSync(file);
+    fs.symlinkSync(target, file);
+    const before = fs.readFileSync(target);
+    for (const args of [['--dry-run'], []]) {
+      const result = await m.run(args);
+      expect(result.err).toEqual([]);
+      expect(result.ok).toBe(true);
+      expect(result.out.join('\n')).toContain(`stale Myco entry in ${file}`);
+      expect(fs.lstatSync(file).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(target)).toEqual(before);
+    }
+  });
+
   it('lists a stale Claude project entry outside the migration roots while preserving that shared file and unrelated legacy entries', async () => {
     const file = path.join(m.home, '.claude.json');
     const folder = path.join(m.home, 'unrelated-project');
