@@ -54,7 +54,7 @@ import { REPAIR_LOCK, keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, ty
 import { getPluginVersion } from '../version.js';
 import { postRoute } from './deployment-reader.js';
 import { detectMachineInstalledSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { MemberMcpConflictError, MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
+import { MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
 import { ensureGitIgnored } from '@myco/utils/git-exclude.js';
 import { describeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
 
@@ -762,7 +762,7 @@ function relinquish(remove: () => boolean, removed: string, subject: string, out
     if (remove()) out(removed);
   } catch (error) {
     if (!(error instanceof MemberProvisionConflictError)) throw error;
-    const problem = error instanceof MemberMcpConflictError ? error.problem : error.message;
+    const problem = error.problem;
     err(`myco member leave: ${problem}, so ${subject} was left in place. Fix the file, then remove its \`myco\` entry.`);
     process.exitCode = 2;
   }

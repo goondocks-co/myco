@@ -49,8 +49,14 @@ export const noOwnerSignIn = (url: string): string => `${url} has no owner yet, 
 export const ownerLinkNext = (url: string, target: 'local' | 'cloudflare'): string =>
   `It expires in 15 minutes; run myco server setup-owner --target ${target} again for a fresh one.${target === 'local' ? ' Stop it first with Ctrl-C in its terminal, or myco server uninstall --target local; then start it with myco server install --target local.' : ''} Then on each machine you use: myco login ${new URL(url).origin}.`;
 export const LOCAL_OWNER_NEXT = "While it's stopped: myco server setup-owner --target local. Then start it: myco server install --target local.";
-export const toolsStayOnDeployment = (agent: string, url: string): string =>
-  `${agent}'s Myco tools stay on ${url}; one machine can't point them at two Mycos yet. Capture goes to the right one. Run myco doctor from this repository to check capture.`;
+export const toolsStayOnDeploymentGuidance = (agent: string, url: string): { problem: string; remedy: string } => ({
+  problem: `${agent}'s Myco tools stay on ${url}; one machine can't point them at two Mycos yet. Capture goes to the right one.`,
+  remedy: 'Run myco doctor from this repository to check capture.',
+});
+export const toolsStayOnDeployment = (agent: string, url: string): string => {
+  const { problem, remedy } = toolsStayOnDeploymentGuidance(agent, url);
+  return `${problem} ${remedy}`;
+};
 export const runnerCheckIn = (offered: readonly string[], withheld: readonly string[], at: number): string =>
   `Checked in: offering ${offered.join(', ') || 'none'}; unavailable: ${withheld.join(', ') || 'none'} (checked ${new Date(at).toISOString()}).${offered.length === 0 ? ' Run myco runner doctor to check which coding agents can run.' : ''}`;
 

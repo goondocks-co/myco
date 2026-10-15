@@ -1,4 +1,5 @@
-import { toolsStayOnDeployment } from '@goondocks/myco-shared/setup-guidance';
+import { toolsStayOnDeploymentGuidance } from '@goondocks/myco-shared/setup-guidance';
+import { joinSentences } from '@myco/utils/sentences.js';
 import { MYCO_MCP_SERVER_NAME, rawHasMycoOwnershipSignal } from '@myco/member/registration-ownership.js';
 export { MYCO_MCP_SERVER_NAME, rawHasMycoOwnershipSignal } from '@myco/member/registration-ownership.js';
 import type { SymbiontManifest } from './manifest-schema.js';
@@ -40,11 +41,32 @@ const TEMPLATES_SUBDIR = 'src/symbionts/templates';
 
 const REMOTE_MCP_TYPE = 'http';
 
-export class MemberProvisionConflictError extends Error { }
+export class MemberProvisionConflictError extends Error {
+  constructor(readonly problem: string, readonly remedy: string, options?: ErrorOptions) {
+    super(joinSentences(problem, remedy), options);
+  }
+}
+
+interface MemberToolsRecovery { address: string; file: string; entry: string }
+
+function toolsRecoveryRemedy({ address, file, entry }: MemberToolsRecovery): string {
+  return `Run \`myco login ${address}\`, or remove \`${entry}\` in \`${file}\` and run \`myco member provision --refresh\`.`;
+}
 
 export class MemberMcpConflictError extends MemberProvisionConflictError {
-  constructor(message: string, readonly problem: string = message, cause?: unknown, readonly toolsDeployment?: string, readonly repairAction?: string) {
-    super(message, { cause });
+  readonly toolsDeployment?: string;
+  readonly repairAction?: string;
+  private readonly toolsRecovery?: MemberToolsRecovery;
+
+  constructor(problem: string, remedy: string, options: ErrorOptions & { toolsDeployment?: string; repairAction?: string; toolsRecovery?: MemberToolsRecovery } = {}) {
+    super(problem, remedy, options);
+    this.toolsDeployment = options.toolsDeployment;
+    this.repairAction = options.repairAction;
+    this.toolsRecovery = options.toolsRecovery;
+  }
+
+  get localRemedy(): string | undefined {
+    return this.toolsRecovery === undefined ? undefined : toolsRecoveryRemedy(this.toolsRecovery);
   }
 }
 
@@ -390,9 +412,9 @@ export class SymbiontInstaller {
 
   private memberMcpConflict(problem: string, remedy: string, cause?: unknown): MemberMcpConflictError {
     return new MemberMcpConflictError(
-      `${problem}, so nothing was written. ${remedy}, then run \`myco member provision ${this.manifest.name}\`.`,
-      problem,
-      cause,
+      `${problem}, so nothing was written`,
+      `${remedy}, then run \`myco member provision ${this.manifest.name}\`.`,
+      { cause },
     );
   }
 
@@ -837,7 +859,7 @@ export class SymbiontInstaller {
     const record = readProvisionRecord(memberHome);
     const ownBinaries = [this.binaryPath(), managedBinaryPath(memberHome, process.platform), ...(record?.binaries?.[this.manifest.name] ? [record.binaries[this.manifest.name]] : [])];
     if (isClaimedByPeer(SYMBIONT_CONFIG_SUBSYSTEM, memberHome, { claimsHome: resolveClaimsHome() }) && !this.claimHeldByLegacyHome()) {
-      throw new MemberProvisionConflictError('Global symbiont configuration is claimed by another installation. Release its symbiont-config claim before provisioning globally.');
+      throw new MemberProvisionConflictError('Global symbiont configuration is claimed by another installation.', 'Release its symbiont-config claim before provisioning globally.');
     }
     if (!this.noProjectRoot) {
       assertSafeProjectRoot(this.projectRoot);
@@ -847,12 +869,12 @@ export class SymbiontInstaller {
       if (this.isMemberPluginFile()) {
         let content: string;
         try { content = fs.readFileSync(target, 'utf8'); } catch (error) {
-          throw new MemberProvisionConflictError(`could not read ${target} (${firstLine(error)}), so nothing was written.`);
+          throw new MemberProvisionConflictError(`could not read ${target} (${firstLine(error)}), so nothing was written.`, 'Restore read access to this file.');
         }
         const verdict = pluginFileVerdict(content, this.legacyHomes, memberHome);
         const replaceable = verdict === 'member' || (verdict === 'legacy' && this.legacyHomes.length > 0);
         if (!replaceable) {
-          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation. ${captureHolderNext(content.includes(MEMBER_PLUGIN_MARKER) || content.includes(CREDENTIAL_FLAG) ? 'member' : verdict)}`);
+          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation.`, captureHolderNext(content.includes(MEMBER_PLUGIN_MARKER) || content.includes(CREDENTIAL_FLAG) ? 'member' : verdict));
         }
       } else {
         const settings = this.readMcpFile(target, false);
@@ -860,7 +882,7 @@ export class SymbiontInstaller {
           .filter((command) => rawHasMycoOwnershipSignal(command) && !(this.legacyHomes.length > 0 && commandVerdict(command, this.legacyHomes) === 'legacy'));
         const foreign = commands.find((command) => parseCredentialFlag(command.split(/\s+/)) !== 'registry' || !ownBinaries.some((binary) => command.startsWith(`${binary} `)));
         if (foreign !== undefined) {
-          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation (\`${foreign}\`). ${captureHolderNext(commandVerdict(foreign, this.legacyHomes))}`);
+          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation (\`${foreign}\`).`, captureHolderNext(commandVerdict(foreign, this.legacyHomes)));
         }
       }
     }
@@ -891,16 +913,16 @@ export class SymbiontInstaller {
           const file = mcpTarget.startsWith(home + path.sep) ? '~' + mcpTarget.slice(home.length) : mcpTarget;
           const serversKey = targetOverride?.serversKey ?? (reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : (reg?.mcpServersKey ?? 'mcpServers'));
           const problem = `${this.manifest.displayName}'s Myco tools point at ${other}; this machine is no longer connected there.`;
-          const message = `${problem} Run \`myco login ${other}\`, or remove \`${serversKey}.${MYCO_MCP_SERVER_NAME}\` in \`${file}\` and run \`myco member provision --refresh\`.`;
+          const toolsRecovery = { address: other, file, entry: `${serversKey}.${MYCO_MCP_SERVER_NAME}` };
           const repairAction = `${this.manifest.displayName}'s Myco tools point at a Myco this machine is no longer connected to. Open myco doctor on that machine for its address and reconnection steps.`;
-          throw new MemberMcpConflictError(message, message, undefined, undefined, repairAction);
+          throw new MemberMcpConflictError(problem, toolsRecoveryRemedy(toolsRecovery), { repairAction, toolsRecovery });
         }
         const heldElsewhere = other !== this.entryDeployment(desired ?? {}) && sameCredentialSource && this.helperDeployment(existing) === other
           && readable && connected;
         if (heldElsewhere && this.preserveOtherMemberTools) return other;
-        const message = readable && connected ? toolsStayOnDeployment(this.manifest.displayName, other)
-          : `${this.manifest.displayName}'s Myco tools point at ${other}, but this machine's Myco connections could not all be read. Restore access to this machine's Myco connection files.`;
-        throw new MemberMcpConflictError(message, message, undefined, heldElsewhere ? other : undefined);
+        const { problem, remedy } = readable && connected ? toolsStayOnDeploymentGuidance(this.manifest.displayName, other)
+          : { problem: `${this.manifest.displayName}'s Myco tools point at ${other}, but this machine's Myco connections could not all be read.`, remedy: "Restore access to this machine's Myco connection files." };
+        throw new MemberMcpConflictError(problem, remedy, { toolsDeployment: heldElsewhere ? other : undefined });
       }
       throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, 'Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover');
     }
@@ -928,11 +950,13 @@ export class SymbiontInstaller {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
       throw new MemberPluginConflictError(
         `could not read ${targetPath} (${error instanceof Error ? error.message : String(error)}), so nothing was written.`,
+        'Restore read access to this file.',
       );
     }
     if (content.includes(MYCO_PLUGIN_FILE_MARKER) || rawHasMycoOwnershipSignal(content)) return;
     throw new MemberPluginConflictError(
-      `${targetPath} is not a Myco plugin, so nothing was written and it was left as it is. Move it elsewhere if ${this.manifest.displayName} should load Myco's plugin here, then run \`myco member provision ${this.manifest.name}\`.`,
+      `${targetPath} is not a Myco plugin, so nothing was written and it was left as it is.`,
+      `Move it elsewhere if ${this.manifest.displayName} should load Myco's plugin here, then run \`myco member provision ${this.manifest.name}\`.`,
     );
   }
 

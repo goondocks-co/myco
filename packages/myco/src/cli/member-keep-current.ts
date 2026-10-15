@@ -1,4 +1,5 @@
-import { MemberMcpConflictError } from '@myco/symbionts/installer.js';
+import { MemberProvisionConflictError, MemberMcpConflictError } from '@myco/symbionts/installer.js';
+import { joinSentences } from '@myco/utils/sentences.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
@@ -102,7 +103,6 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
           action = `Install ${manifest.displayName} again`;
         }
       } catch (error) {
-        if (error instanceof MemberMcpConflictError && error.repairAction !== undefined) (result.localActions ??= {})[id] = error.message;
         toolsDeployment = undefined;
         const code = (error as NodeJS.ErrnoException).code ?? ((error as Error).cause as NodeJS.ErrnoException | undefined)?.code;
         state = code === 'EACCES' || code === 'EPERM' || code === 'EROFS' ? 'unwritable' : 'repair_failed';
@@ -110,6 +110,10 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
           ? `Allow Myco to write ${manifest?.displayName ?? id}'s configuration`
           : error instanceof MemberMcpConflictError && error.repairAction !== undefined ? error.repairAction
           : `Run myco doctor to check ${manifest?.displayName ?? id}'s capture configuration`;
+        if (error instanceof MemberProvisionConflictError) {
+          const remedy = state !== 'unwritable' && error instanceof MemberMcpConflictError ? error.localRemedy ?? action : action;
+          (result.localActions ??= {})[id] = joinSentences(error.problem, remedy);
+        }
       }
       let ranAt: number | undefined;
       try { if (manifest !== undefined) ranAt = harnessRanAt(manifest, mycoHome); } catch {

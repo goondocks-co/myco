@@ -5,7 +5,7 @@ import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { expandHome } from '@myco/paths/home.js';
-import { SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { MemberProvisionConflictError, MemberMcpConflictError, MemberPluginConflictError, SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { provisionGlobally, runProvision, provisionBackup } from '@myco/cli/member.js';
 import { runHelperVerb } from '@myco/cli/member-helper.js';
 import { keepCurrent, reportHarnesses, harnessRanAt } from '@myco/cli/member-keep-current.js';
@@ -61,6 +61,28 @@ it('records every harness at the shared provisioning operation, including unchan
   expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
   provisionGlobally('codex', null, home, { serverUrl: SERVER });
   expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
+});
+
+it.each([MemberProvisionConflictError, MemberMcpConflictError, MemberPluginConflictError])('doctor chooses its remedy independently of reworded installer advice (%p)', (Conflict) => {
+  recordProvision(home, { version: getPluginVersion(), serverUrl: SERVER, agents: ['codex'] });
+  const problem = 'the global capture file cannot be read.';
+  const remedy = 'Troubleshooting next: please run myco doctor --verbose before continuing.';
+  const error = new Conflict(problem, remedy);
+  const inspect = spyOn(SymbiontInstaller.prototype, 'memberToolsDeployment').mockImplementation(() => { throw error; });
+  try {
+    expect(error.problem).toBe(problem);
+    expect(error.remedy).toBe(remedy);
+    expect(error.message).toContain(remedy);
+    const checks = setupChecks(home);
+    expect(checks).toContainEqual(expect.objectContaining({ detail: "Codex's configuration could not be checked: the global capture file cannot be read. Review this configuration before changing global hooks or tools." }));
+    for (const check of checks) {
+      expect(check.detail).not.toMatch(/run `?myco doctor/i);
+      expect(check.detail).not.toContain('..');
+    }
+    const result = keepCurrent(home, { binaryFound: () => true });
+    expect(result?.localActions?.codex).toBe("the global capture file cannot be read. Run myco doctor to check Codex's capture configuration.");
+    expect(result?.harnesses[0].state).toBe('repair_failed');
+  } finally { inspect.mockRestore(); }
 });
 
 it('the next CLI helper pass restores deleted hooks and MCP byte for byte and preserves unrelated config', async () => {
