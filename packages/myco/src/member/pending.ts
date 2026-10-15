@@ -13,6 +13,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { canonicalRootIdentity } from '../utils/git-files.js';
 import { resolveMycoHome } from '../paths/home.js';
 import type { OutboundEvent } from './envelope.js';
 import { BLOBS_DIRNAME, MemberSpool, REFUSED_LOG_FILE, SPOOL_DIRNAME, toWire, type TurnEndMark } from './spool.js';
@@ -286,7 +287,7 @@ function ensurePendingMeta(repo: { root: string; rootKey: string; serverUrl?: st
   const held = readPrivateJson<PendingMeta>(path.join(dir, META_FILE));
   if (held.ok) {
     const meta = readMeta(dir);
-    if (meta === null || meta.root !== repo.root || meta.rootKey !== repo.rootKey || meta.serverUrl !== (repo.serverUrl === undefined ? undefined : normalizedServerUrl(repo.serverUrl))) {
+    if (meta === null || canonicalRootIdentity(meta.root) !== canonicalRootIdentity(repo.root) || meta.rootKey !== repo.rootKey || meta.serverUrl !== (repo.serverUrl === undefined ? undefined : normalizedServerUrl(repo.serverUrl))) {
       throw new Error('Pending capture destination mismatch');
     }
     return dir;

@@ -14,7 +14,7 @@ import type { DetachedSpawn } from '../runtime/spawn-detached.js';
 import type { CredentialRecord } from './credential.js';
 import { defaultMembership } from './default-deployment.js';
 import { pendingSpool, readHeldEnd } from './pending.js';
-import { deploymentUrl } from './registry.js';
+import { deploymentUrl, readRegistryEntryResult } from './registry.js';
 import type { MemberSpool } from './spool.js';
 
 /** What a hook holds in a repository with no connection: the pending spool and the credential it is built under, and what to tell the person. */
@@ -49,6 +49,7 @@ export function autoJoinHold(opts: {
   root: string; hookName: string; agent: string; sessionId: string; mycoHome: string; now: number; env?: NodeJS.ProcessEnv; spawn?: DetachedSpawn;
   later: (step: () => void) => void;
 }): AutoJoinHold | typeof LEFT_ALONE | null {
+  if (readRegistryEntryResult(opts.root, opts.mycoHome).status !== 'missing') return null;
   const membership = defaultMembership(opts.mycoHome);
   if (membership === null) return null;
   const serverUrl = deploymentUrl(membership.serverUrl);

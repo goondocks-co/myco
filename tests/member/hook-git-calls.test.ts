@@ -18,10 +18,11 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { REPO_ROOT } from '../helpers/import-closure.ts';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.ts';
 import { resolveCredential } from '@myco/member/credential.js';
-import { readRegistryEntry } from '@myco/member/registry.js';
+import { readRegistryEntry, registryEntryPath, projectsDir } from '@myco/member/registry.js';
 import { transcriptPlacer } from '@myco/symbionts/transcript-attribution.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { registerTestMember, runHook } from './helpers/hooks.js';
@@ -241,18 +242,26 @@ describe.skipIf(realGit === '')('the git a second hook in a repository starts', 
     expect(calls('stop', 'Stop')).toEqual([]);
   }, 120_000);
 
-  it('captures under the existing key when native realpath changes a checkout spelling', async () => {
+  it('migrates a literal binding and captures when native realpath expands a checkout spelling', async () => {
     const fixture = joinedRepo('native-expanded', [['extensions.worktreeConfig', 'true']]);
     const alias = path.join(dir, 'expanded-name');
     fs.symlinkSync(fixture.repo, alias, 'junction');
+    const current = registryEntryPath(fixture.repo, fixture.mycoHome);
+    const binding = JSON.parse(fs.readFileSync(current, 'utf8'));
+    binding.root = fixture.repo;
+    delete binding.displayRoot;
+    const legacyKey = crypto.createHash('sha256').update(path.resolve(fixture.repo)).digest('hex').slice(0, 16);
+    const legacy = path.join(projectsDir(fixture.mycoHome), legacyKey + '.json');
+    fs.writeFileSync(legacy, JSON.stringify(binding), { mode: 0o600 });
+    if (current !== legacy) fs.unlinkSync(current);
     const native = fs.realpathSync.native;
     const savedHome = process.env.MYCO_HOME;
-    // Native Windows realpath expands 8.3 names; ordinary realpath retains that registry spelling.
+    // Native realpath expands the literal root to an idempotent long-name spelling.
     Object.defineProperty(fs.realpathSync, 'native', { value: (file: fs.PathLike, ...options: unknown[]) => {
-      if (typeof file === 'string' && (file === fixture.repo || file.startsWith(`${fixture.repo}${path.sep}`))) {
+      if (typeof file === 'string' && (file.toLowerCase() === fixture.repo.toLowerCase() || file.toLowerCase().startsWith(`${fixture.repo.toLowerCase()}${path.sep}`))) {
         return alias + file.slice(fixture.repo.length);
       }
-      if (typeof file === 'string' && (file === alias || file.startsWith(`${alias}${path.sep}`))) return file;
+      if (typeof file === 'string' && (file.toLowerCase() === alias.toLowerCase() || file.toLowerCase().startsWith(`${alias.toLowerCase()}${path.sep}`))) return file;
       return Reflect.apply(native, fs.realpathSync, [file, ...options]);
     } });
     process.env.MYCO_HOME = fixture.mycoHome;

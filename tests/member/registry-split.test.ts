@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { canonicalRootIdentity } from '@myco/utils/git-files.js';
 import {
   deploymentPath, deploymentsDir, listRegistryEntries, migrateRegistry, projectsDir, readDeploymentMembership,
   readRegistryEntry, registryEntryPath, registryKeyFor, removeRegistryEntry, writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION, TOKEN_SCOPED_FIELDS, type RegistryEntry,
@@ -63,7 +64,7 @@ describe('registry v1 → v2', () => {
 
     // On disk it is now two files: the project file holds no credential at all.
     const binding = read(registryEntryPath(root, mycoHome));
-    expect(binding).toEqual({ version: REGISTRY_VERSION, root, projectId: 'proj_1', serverUrl: 'https://s.example', joinedAt: 1, updatedAt: 1 });
+    expect(binding).toEqual({ version: REGISTRY_VERSION, root: canonicalRootIdentity(root), ...(canonicalRootIdentity(root) !== root ? { displayRoot: root } : {}), projectId: 'proj_1', serverUrl: 'https://s.example', joinedAt: 1, updatedAt: 1 });
     expect(Object.keys(binding)).not.toContain('token');
     expect(read(deploymentPath('https://s.example', mycoHome))).toMatchObject({ version: REGISTRY_VERSION, serverUrl: 'https://s.example', token: v1.token, machineId: 'm1' });
   });

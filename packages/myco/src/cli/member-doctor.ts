@@ -12,7 +12,7 @@ import type { CredentialSource } from '../member/constants.js';
 import { REJOIN_HINT } from '../member/delivery-notice.js';
 import { observationInstant as iso, observeProjectCapture, observeRunnerService } from '@myco/cli/home-observations.js';
 import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member/refused-hooks.js';
-import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult } from '../member/registry.js';
+import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult, registryConflictWords } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { repositoryMycoEntries } from '@myco/symbionts/repository-entries.js';
 import { SymbiontInstaller, MemberProvisionConflictError, MemberMcpConflictError } from '../symbionts/installer.js';
@@ -252,6 +252,7 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
       : `${membership.serverUrl} is unreachable or did not answer its health route. Check the address and connection.${membership.expiresAt !== undefined && membership.expiresAt <= now - STALE_CREDENTIAL_MS ? ` If this address was abandoned, run myco logout ${membership.serverUrl} --local-only to remove its local membership.` : ''}`));
   }
   const projects = listRegistryEntriesResult(home);
+  for (const conflict of projects.conflicts ?? []) checks.push(row('Repository connection', 'fail', registryConflictWords(conflict)));
   if (!projects.readable || projects.unavailableEntries > 0) checks.push(row('Repositories', 'fail', 'repository routes could not all be read; routing is unknown for those entries. Run `myco member join` from each affected repository.'));
   const leftoverRoots = [rootOf(deps), ...projects.entries.map(entry => entry.root)];
   try {
@@ -265,7 +266,7 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
       : `${leftover.root}: ${leftover.file} — ${leftover.entry}. Myco 2.0 does not manage repository harness config; review and remove these entries by hand.`));
   }
   for (const entry of projects.entries) {
-    checks.push(row('Repository', 'ok', `${entry.root} → ${entry.serverUrl} / ${entry.projectId}.`));
+    checks.push(row('Repository', 'ok', `${entry.displayRoot ?? entry.root} → ${entry.serverUrl} / ${entry.projectId}.`));
     const facts = observeProjectCapture(entry, home, now);
     checks.push(row('Capture backlog', facts.spool.readable && facts.spool.unacknowledgedTotal === 0 ? 'ok' : 'warn',
       `${entry.root}: ${facts.spool.readable ? `${facts.spool.unacknowledgedTotal ?? 'unknown'} event(s) waiting to deliver` : 'spool unreadable'}; last delivery ${iso(facts.spool.lastDeliveryAt)}.${facts.spool.readable && facts.spool.unacknowledgedTotal === 0 ? '' : ' Run `myco member drain` from that repository.'}`));

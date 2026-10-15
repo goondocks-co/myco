@@ -25,6 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { HELD_CAPTURE_TTL_DAYS, type HeldState, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 import { resolveRepositoryProjectRoot, isSafeProjectRoot } from '../project-root.js';
+import { canonicalRootIdentity } from '../utils/git-files.js';
 import { temporaryFolders, isAgentScratchDirectory } from '../utils/temporary-folders.js';
 export { temporaryFolders } from '../utils/temporary-folders.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
@@ -234,9 +235,9 @@ export function machineSalt(mycoHome: string): string {
   return placed;
 }
 
-/** Machine capture settings deduplicate aliases by physical root; registry bindings retain their literal root spelling. */
+/** Machine capture settings and registry bindings share one canonical root identity. */
 export function rootKeyFor(root: string, mycoHome: string): string {
-  return crypto.createHash('sha256').update(`${machineSalt(mycoHome)}\0${real(root)}`).digest('hex').slice(0, 32);
+  return crypto.createHash('sha256').update(`${machineSalt(mycoHome)}\0${canonicalRootIdentity(root)}`).digest('hex').slice(0, 32);
 }
 
 export function autoJoinDir(mycoHome: string): string {

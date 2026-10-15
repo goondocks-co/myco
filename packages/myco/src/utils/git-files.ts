@@ -80,7 +80,7 @@ export function readRepoLayout(cwd: string, env: NodeJS.ProcessEnv = process.env
   return found.unverified === null ? found.layout : UNUSUAL;
 }
 
-/** The registry root: a checkout keeps its spelling; linked worktrees share a non-bare main checkout. */
+/** Linked worktrees share their non-bare main checkout; identity comparisons use canonicalRootIdentity. */
 export function repositoryRootOf(layout: RepoLayout, opts: { discoveredByGit?: boolean } = {}): string {
   const bare = repositoryIsBare(layout.commonDir);
   // GIT_DIR alone makes Git report cwd as top; a non-bare .git still names the main checkout.
@@ -135,10 +135,10 @@ export function resolveRepositoryRoot(
   if (found !== null && found !== UNUSUAL) return repositoryRootOf(found.layout);
   // Existing directories require their own repository identity, even when an old record names the same path.
   if (fs.existsSync(cwd)) return found === UNUSUAL ? opts.unusual?.(cwd) ?? null : null;
-  const recorded = canonicalPath(cwd);
+  const recorded = canonicalRootIdentity(cwd);
   const matches = new Set<string>();
   for (const { worktree, root } of opts.retained?.() ?? retainedWorktreeRecords(retainedRoots, env)) {
-    const relative = path.relative(worktree, recorded);
+    const relative = path.relative(canonicalRootIdentity(worktree), recorded);
     if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) matches.add(root);
   }
   return matches.size === 1 ? [...matches][0] : null;
@@ -161,12 +161,12 @@ function retainedWorktreeRecords(roots: Iterable<string>, env: NodeJS.ProcessEnv
       const pointer = readText(path.join(dir, 'gitdir'))?.trim();
       const common = readText(path.join(dir, 'commondir'))?.trim();
       if (!pointer || !common || path.basename(pointer) !== '.git') continue;
-      if (canonicalPath(path.resolve(dir, common)) !== canonicalPath(commonDir)) continue;
+      if (canonicalRootIdentity(path.resolve(dir, common)) !== canonicalRootIdentity(commonDir)) continue;
       const worktree = canonicalPath(path.dirname(path.resolve(dir, pointer)));
       if (fs.existsSync(worktree)) {
         const current = locateRepo(worktree, env, { layoutOnly: true });
-        if (current === null || current === UNUSUAL || canonicalPath(current.layout.top) !== worktree
-          || canonicalPath(current.layout.gitDir) !== canonicalPath(dir)) continue;
+        if (current === null || current === UNUSUAL || canonicalRootIdentity(current.layout.top) !== canonicalRootIdentity(worktree)
+          || canonicalRootIdentity(current.layout.gitDir) !== canonicalRootIdentity(dir)) continue;
       }
       out.push({ worktree, root: canonicalPath(root) });
     }
@@ -174,11 +174,58 @@ function retainedWorktreeRecords(roots: Iterable<string>, env: NodeJS.ProcessEnv
   return out;
 }
 
-/** Resolve existing paths through realpath; missing paths retain their absolute spelling. */
+/** Existing paths use native realpath; missing paths retain their absolute spelling. */
 export function canonicalPath(p: string): string {
   const absolute = path.resolve(p);
   if (!fs.existsSync(absolute)) return absolute;
   try { return fs.realpathSync.native(absolute); } catch { return absolute; }
+}
+
+export interface CanonicalRootIdentityDeps {
+  realpath?: (p: string) => string;
+  stat?: (p: string) => Pick<fs.Stats, 'dev' | 'ino'> & Partial<Pick<fs.Stats, 'ctimeMs'>>;
+  paths?: typeof path;
+  caseCache?: Map<string, { stamp: string; insensitive: boolean }>;
+}
+
+const pathCaseCache = new Map<string, { stamp: string; insensitive: boolean }>();
+
+/** Native realpath expands aliases; case is folded only after an identity probe on the existing path. */
+export function canonicalRootIdentity(p: string, deps: CanonicalRootIdentityDeps = {}): string {
+  const paths = deps.paths ?? path;
+  const absolute = paths.resolve(p);
+  let physical: string;
+  try { physical = (deps.realpath ?? fs.realpathSync.native)(absolute); }
+  catch (error) {
+    if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    const parent = paths.dirname(absolute);
+    return parent === absolute ? absolute : paths.join(canonicalRootIdentity(parent, deps), paths.basename(absolute));
+  }
+  const cache = deps.caseCache ?? pathCaseCache;
+  const stat = deps.stat ?? fs.statSync;
+  const actual = stat(physical);
+  const stamp = [actual.dev, actual.ino, actual.ctimeMs].join(':');
+  const cached = cache.get(physical);
+  let insensitive = cached?.stamp === stamp ? cached.insensitive : undefined;
+  if (insensitive === undefined) {
+    insensitive = false;
+    for (let at = physical; paths.dirname(at) !== at; at = paths.dirname(at)) {
+      const name = paths.basename(at);
+      const flipped = name.replace(/[a-zA-Z]/, (c) => c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase());
+      if (flipped === name) continue;
+      try {
+        const original = at === physical ? actual : stat(at);
+        if (original.dev !== actual.dev) break;
+        const alternate = stat(paths.join(paths.dirname(at), flipped));
+        insensitive = original.dev === alternate.dev && original.ino === alternate.ino;
+      } catch (error) {
+        if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      }
+      break;
+    }
+    cache.set(physical, { stamp, insensitive });
+  }
+  return insensitive ? physical.toLowerCase() : physical;
 }
 
 /**
@@ -216,7 +263,7 @@ export function locateRepo(cwd: string, env: NodeJS.ProcessEnv = process.env, de
     } catch {
       if (path.dirname(dir) === dir) return null;
       const ceilings = (env.GIT_CEILING_DIRECTORIES ?? '').split(path.delimiter).filter(path.isAbsolute);
-      if (ceilings.some((ceiling) => canonicalPath(ceiling) === canonicalPath(path.dirname(dir)))) return null;
+      if (ceilings.some((ceiling) => canonicalRootIdentity(ceiling) === canonicalRootIdentity(path.dirname(dir)))) return null;
       continue;
     }
     let gitDir: string;

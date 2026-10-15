@@ -49,6 +49,8 @@ describe('member registry', () => {
   it('reads fail closed: a 0644 entry is skipped by name, malformed JSON is skipped, a foreign root is skipped', () => {
     const root = path.join(mycoHome, 'repo');
     writeRegistryEntry(entryFor(root), { mycoHome });
+    const other = path.join(mycoHome, 'other');
+    writeRegistryEntry(entryFor(other), { mycoHome });
     fs.chmodSync(registryEntryPath(root, mycoHome), 0o644);
     expect(readRegistryEntry(root, mycoHome)).toBeNull();
     expect(stderrLines.join('')).toContain('registry entry skipped (loose-mode: 644)');
@@ -56,12 +58,20 @@ describe('member registry', () => {
     fs.writeFileSync(registryEntryPath(root, mycoHome), '{not json', { mode: 0o600 });
     expect(readRegistryEntry(root, mycoHome)).toBeNull();
     expect(stderrLines.join('')).toContain('malformed');
-    const other = path.join(mycoHome, 'other');
-    writeRegistryEntry(entryFor(other), { mycoHome });
     fs.copyFileSync(registryEntryPath(other, mycoHome), registryEntryPath(root, mycoHome));
     expect(readRegistryEntry(root, mycoHome)).toBeNull();
     expect(stderrLines.join('')).toContain('root mismatch');
     expect(listRegistryEntries(mycoHome).map((e) => e.root)).toEqual([other]);
+  });
+
+  it('finds a symlink-bound repository from its physical root', () => {
+    const root = path.join(mycoHome, 'Physical', 'Repo');
+    fs.mkdirSync(root, { recursive: true });
+    const alias = path.join(mycoHome, 'alias');
+    fs.symlinkSync(path.dirname(root), alias, 'junction');
+    writeRegistryEntry(entryFor(path.join(alias, 'Repo')), { mycoHome });
+    expect(readRegistryEntry(root, mycoHome)?.projectId).toBe('proj_1');
+    expect(readRegistryEntry(root, mycoHome)?.serverUrl).toBe('https://s.example');
   });
 
   it('removes an entry and lists the rest', () => {

@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { runGitAnswer } from './utils/git.js';
-import { canonicalPath, locateRepo, resolveRepositoryRoot, repositoryRootOf, UNUSUAL } from './utils/git-files.js';
+import { canonicalRootIdentity, locateRepo, resolveRepositoryRoot, repositoryRootOf, UNUSUAL } from './utils/git-files.js';
 import { repoVerdict, type GitVerdictDeps } from './member/git-verdict.js';
 
 /**
@@ -175,7 +175,7 @@ function gitRepositoryRoot(cwd: string, env: NodeJS.ProcessEnv): string | null {
     const layout = { top: path.resolve(lines[0]), gitDir: path.resolve(cwd, lines[1]), commonDir: path.resolve(cwd, lines[2]) };
     const files = locateRepo(cwd, {}, { layoutOnly: true });
     if (files !== null && files !== UNUSUAL && (['top', 'gitDir', 'commonDir'] as const).every(
-      (key) => canonicalPath(files.layout[key]) === canonicalPath(layout[key]),
+      (key) => canonicalRootIdentity(files.layout[key]) === canonicalRootIdentity(layout[key]),
     )) return repositoryRootOf(files.layout);
     return repositoryRootOf(layout, { discoveredByGit: true });
   } catch {
