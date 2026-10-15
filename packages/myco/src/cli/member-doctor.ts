@@ -17,7 +17,7 @@ import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { repositoryMycoEntries } from '@myco/symbionts/repository-entries.js';
 import { SymbiontInstaller, MemberProvisionConflictError, MemberMcpConflictError } from '../symbionts/installer.js';
 import { joinSentences } from '@myco/utils/sentences.js';
-import { readProvisionRecord } from '../symbionts/member-provision-record.js';
+import { readProvisionRecord, UnreadableProvisionRecordError } from '../symbionts/member-provision-record.js';
 import { missingMemberSkills } from '../symbionts/member-skill-links.js';
 import { getPluginVersion } from '../version.js';
 import { checkMemberMcpResolution, checkWorkerServices, formatCheck, type DoctorCheck } from './doctor-member.js';
@@ -122,7 +122,11 @@ function setupRefusalWords(agent: string, error: unknown): string {
 /** The build and registration recorded by agent provisioning, with current wiring checked. */
 export function setupChecks(mycoHome: string, version: string = getPluginVersion()): Array<DoctorCheck & { toolsDeployment?: string }> {
   const record = readProvisionRecord(mycoHome);
-  const serverUrl = memberProvisionTarget(mycoHome);
+  let serverUrl: string | undefined;
+  try { serverUrl = memberProvisionTarget(mycoHome); } catch (error) {
+    if (!(error instanceof UnreadableProvisionRecordError)) throw error;
+    return [row('Setup', 'warn', error.message)];
+  }
   const agents = serverUrl === undefined ? [] : managedMemberHarnesses(mycoHome, serverUrl);
   if (serverUrl === undefined || (record === null && agents.length === 0)) return [row('Setup', 'warn', 'nothing records which agents Myco set up on this machine. Run `myco member provision`.')];
   const missing: string[] = [];

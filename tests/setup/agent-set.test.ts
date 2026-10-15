@@ -4,13 +4,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import * as member from '@myco/cli/member.js';
+import * as recordModule from '@myco/symbionts/member-provision-record.js';
+import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
+import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { setupChecks } from '@myco/cli/member-doctor.js';
 import { keepCurrent } from '@myco/cli/member-keep-current.js';
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { observeSetup, observeSetupStatus } from '@myco/setup/observe.js';
 import { run as setup } from '@myco/cli/setup.js';
 import { recordProvision, readProvisionRecord, provisionRecordPath } from '@myco/symbionts/member-provision-record.js';
-import { writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
+import { deploymentPath, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { getPluginVersion } from '@myco/version.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { ownerDeployment, ACCOUNT } from './fixtures/owner-deployment.js';
@@ -50,9 +53,7 @@ it('keeps chosen current agents complete and offers each installed agent never s
   expect(facts.find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'complete', detail: 'current' });
   const lines = renderSetupStatus(facts);
   expect(lines).toContain("Codex is installed; Myco doesn't capture it yet. Run myco member provision codex to add it.");
-  for (const name of ['Windsurf', 'GitHub Copilot']) {
-    expect(lines).toContain(`${name} is installed; Myco doesn't capture it yet. Capture support is not available in this build.`);
-  }
+  expect(lines).toContain("Myco can't capture Windsurf or GitHub Copilot in this build.");
   expect(lines.join('\n')).not.toContain('Out of date');
   expect(refresh()).toBe(true);
   expect(readProvisionRecord(home)?.agents).toEqual(['claude-code']);
@@ -79,10 +80,184 @@ it('an empty Windsurf hooks file is no Myco registration and is never enrolled b
   expect(member.managedMemberHarnesses(home, SERVER)).toEqual(['claude-code', 'codex']);
   const facts = await status();
   expect(facts.find(fact => fact.id === 'machine.agents')?.state).toBe('complete');
-  expect(renderSetupStatus(facts)).toContain("Windsurf is installed; Myco doesn't capture it yet. Capture support is not available in this build.");
+  expect(renderSetupStatus(facts)).toContain("Myco can't capture Windsurf or GitHub Copilot in this build.");
   expect(refresh()).toBe(true);
   expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
   expect(fs.readFileSync(file, 'utf8')).toBe('{}');
+});
+
+it('doctor and setup status warn once about a torn agent setup record with a recovery action', async () => {
+  provision('claude-code');
+  const file = provisionRecordPath(home);
+  fs.writeFileSync(file, '{not json');
+  const checks = setupChecks(home);
+  expect(checks).toHaveLength(1);
+  expect(checks[0]?.status).toBe('warn');
+  expect(checks[0]?.detail).toContain(file);
+  expect(checks[0]?.detail).toContain('Fix or restore the file, then run myco member provision --refresh.');
+  const lines: string[] = [];
+  const errors: string[] = [];
+  const code = await setup(['--status'], { mycoHome: home, cwd: scratch, agents: detected, stdout: line => lines.push(line), stderr: line => errors.push(line) });
+  expect(errors).toEqual([]);
+  expect(code).toBe(3);
+  expect(lines.filter(line => line.includes(file))).toHaveLength(1);
+  expect(lines.join('\n')).toContain('Fix or restore the file, then run myco member provision --refresh.');
+  expect(fs.readFileSync(file, 'utf8')).toBe('{not json');
+});
+
+it('keep-current leaves a torn record alone and logs once until its readable state changes', () => {
+  provision('claude-code');
+  const file = provisionRecordPath(home);
+  fs.writeFileSync(file, '{not json');
+  const errors: string[] = [];
+  const log = spyOn(process.stderr, 'write').mockImplementation(chunk => { errors.push(String(chunk)); return true; });
+  try {
+    expect(keepCurrent(home)).toBeNull();
+    expect(keepCurrent(home)).toBeNull();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain(file);
+    recordProvision(home, { version: getPluginVersion(), serverUrl: SERVER, agents: ['claude-code'] });
+    expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code']);
+    fs.writeFileSync(file, '{not json');
+    expect(keepCurrent(home)).toBeNull();
+    expect(errors).toHaveLength(2);
+    expect(fs.readFileSync(file, 'utf8')).toBe('{not json');
+  } finally { log.mockRestore(); }
+});
+
+for (const repair of ['refresh', 'provision', 'keep-current'] as const) it(`${repair} drops recorded uncapturable agents without judging or repairing them`, async () => {
+  provision('claude-code');
+  recordProvision(home, { version: getPluginVersion(), serverUrl: SERVER, agents: ['claude-code', 'windsurf', 'copilot', 'antigravity'] });
+  const facts = await observeSetupStatus(home, { role: 'join', url: SERVER }, { agents: () => ['claude-code', 'antigravity', 'copilot', 'windsurf'], includeCapture: false });
+  expect(facts.find(fact => fact.id === 'machine.agents')?.state).toBe('complete');
+  const lines = renderSetupStatus(facts);
+  expect(lines).toContain("Myco can't capture Google Antigravity, GitHub Copilot or Windsurf in this build.");
+  expect(lines.filter(line => /Antigravity|GitHub Copilot|Windsurf/.test(line))).toHaveLength(1);
+  expect(lines.join('\n')).not.toContain('Out of date');
+  expect(setupChecks(home).every(check => check.status === 'ok')).toBe(true);
+  expect(setupChecks(home).map(check => check.detail).join('\n')).not.toMatch(/Windsurf|Copilot|Antigravity/);
+  if (repair === 'refresh') {
+    let ids: string[] | undefined;
+    expect(member.runProvision(['--refresh'], { mycoHome: home, cwd: scratch, stdout: () => {} }, result => { ids = result?.harnesses.map(fact => fact.id); })).toBe(true);
+    expect(ids).toEqual(['claude-code']);
+  } else if (repair === 'provision') expect(member.runProvision(['claude-code', '--server', SERVER], { mycoHome: home, cwd: scratch, stdout: () => {} })).toBe(true);
+  else expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code']);
+  expect(readProvisionRecord(home)?.agents).toEqual(['claude-code']);
+});
+
+it('read paths stay quiet and an installed agent offer respects a left Deployment conflict', async () => {
+  const second = 'https://second.example';
+  writeDeploymentMembership({ serverUrl: second, token: 'B'.repeat(43), machineId: 'second', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+  provision('claude-code');
+  member.provisionGlobally('codex', null, home, { serverUrl: second });
+  omitCodex();
+  fs.unlinkSync(deploymentPath(second, home));
+  const errors: string[] = [];
+  const log = spyOn(process.stderr, 'write').mockImplementation(chunk => { errors.push(String(chunk)); return true; });
+  try {
+    const facts = await status();
+    setupChecks(home);
+    expect(errors).toEqual([]);
+    expect(facts.find(fact => fact.id === 'machine.agents')?.state).toBe('complete');
+    const lines = renderSetupStatus(facts).join('\n');
+    expect(lines).toContain('second.example');
+    expect(lines).toContain('myco login');
+    expect(lines).not.toContain('Run myco member provision codex to add it');
+  } finally { log.mockRestore(); }
+});
+
+it('healing holds the repair lock while writing, so remove waits and then stays removed', () => {
+  provision('claude-code');
+  provision('codex');
+  const original = recordModule.recordProvision;
+  let attempted = false;
+  const write = spyOn(recordModule, 'recordProvision').mockImplementation((h, record, opts) => {
+    if (!attempted && record.agents.includes('codex') && record.agents.length > 1) {
+      attempted = true;
+      expect(member.runProvision(['codex', '--remove'], { mycoHome: home, cwd: scratch, stdout: () => {}, stderr: () => {} })).toBe(false);
+    }
+    return original(h, record, opts);
+  });
+  try {
+    expect(member.runProvision(['claude-code', '--server', SERVER], { mycoHome: home, cwd: scratch, stdout: () => {} })).toBe(true);
+    expect(attempted).toBe(true);
+  } finally { write.mockRestore(); }
+  expect(member.runProvision(['codex', '--remove'], { mycoHome: home, cwd: scratch, stdout: () => {} })).toBe(true);
+  expect(readProvisionRecord(home)?.agents).toEqual(['claude-code']);
+  expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code']);
+  expect(fs.existsSync(path.join(process.env.CODEX_HOME!, 'hooks.json'))).toBe(false);
+});
+
+it('healing re-reads choices and owned registrations after acquiring the repair lock', () => {
+  provision('claude-code');
+  provision('codex');
+  const original = LifecycleLock.acquire;
+  let removed = false;
+  const acquire = spyOn(LifecycleLock, 'acquire').mockImplementation((file, opts) => {
+    if (!removed && opts?.command === 'myco member reconcile') {
+      removed = true;
+      expect(member.runProvision(['codex', '--remove'], { mycoHome: home, cwd: scratch, stdout: () => {} })).toBe(true);
+      expect(readProvisionRecord(home)?.agents).toEqual(['claude-code']);
+    }
+    return original(file, opts);
+  });
+  try {
+    expect(member.runProvision(['claude-code', '--server', SERVER], { mycoHome: home, cwd: scratch, stdout: () => {} })).toBe(true);
+    expect(removed).toBe(true);
+  } finally { acquire.mockRestore(); }
+  expect(readProvisionRecord(home)?.agents).toEqual(['claude-code']);
+  expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code']);
+  expect(fs.existsSync(path.join(process.env.CODEX_HOME!, 'hooks.json'))).toBe(false);
+});
+
+for (const operation of ['named', 'batch', 'join'] as const) it(`${operation} provision holds the removal lock while installing`, async () => {
+  provision('claude-code');
+  provision('codex');
+  const original = recordModule.recordProvision;
+  let attempted = false;
+  const write = spyOn(recordModule, 'recordProvision').mockImplementation((h, record, opts) => {
+    if (!attempted && record.agents.length === 1 && record.agents[0] === 'claude-code') {
+      attempted = true;
+      expect(member.runProvision(['codex', '--remove'], { mycoHome: home, cwd: scratch, stdout: () => {}, stderr: () => {} })).toBe(false);
+    }
+    return original(h, record, opts);
+  });
+  try {
+    if (operation === 'join') {
+      const root = path.join(scratch, 'repo');
+      fs.mkdirSync(root);
+      execFileSync('git', ['init', '-q', root]);
+      expect(await member.runJoin([SERVER, '--project', 'proj_fixture', '--token-env', 'JOIN_TOKEN', '--provision', 'claude-code', '--no-worker'], {
+        mycoHome: home, cwd: root, env: { JOIN_TOKEN: 'A'.repeat(43) },
+        fetch: async () => Response.json({ ok: true, blocks: [], settings: {} }), stdout: () => {}, stderr: () => {},
+      })).not.toBeNull();
+    } else expect(member.runProvision([...(operation === 'batch' ? [] : ['claude-code']), '--server', SERVER], { mycoHome: home, cwd: scratch, agents: () => ['claude-code'], stdout: () => {} })).toBe(true);
+    expect(attempted).toBe(true);
+  } finally { write.mockRestore(); }
+  expect(member.runProvision(['codex', '--remove'], { mycoHome: home, cwd: scratch, stdout: () => {} })).toBe(true);
+  expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code']);
+  expect(fs.existsSync(path.join(process.env.CODEX_HOME!, 'hooks.json'))).toBe(false);
+});
+
+it('unexpected registration inspection errors remain observable', async () => {
+  provision('claude-code');
+  const inspect = spyOn(SymbiontInstaller.prototype, 'memberRegistrationPresent').mockImplementation(() => { throw new Error('fixture inspection failure'); });
+  try {
+    expect(() => member.managedMemberHarnesses(home, SERVER)).toThrow('fixture inspection failure');
+    expect((await status()).find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'unavailable', detail: 'fixture inspection failure' });
+  } finally { inspect.mockRestore(); }
+});
+
+it('refresh names the --server remedy for ambiguous joined Deployments without guessing', () => {
+  provision('claude-code');
+  fs.unlinkSync(provisionRecordPath(home));
+  writeDeploymentMembership({ serverUrl: 'https://second.example', token: 'B'.repeat(43), machineId: 'second', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+  const errors: string[] = [];
+  expect(member.runProvision(['--refresh'], { mycoHome: home, cwd: scratch, stdout: () => {}, stderr: line => errors.push(line) })).toBe(false);
+  expect(errors.join('\n')).toContain('name one with --server');
+  expect(errors.join('\n')).not.toContain('has not set up');
+  expect(readProvisionRecord(home)).toBeNull();
+  expect(keepCurrent(home)).toBeNull();
 });
 
 for (const repair of ['refresh', 'keep-current'] as const) it(`${repair} recovers owned registrations without a provision record or Default Deployment`, async () => {

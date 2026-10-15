@@ -14,7 +14,7 @@ const moduleOf = (file: string, specifier: string): string => (specifier.startsW
 const seams: Record<string, readonly string[]> = {
   'cli/login': ['run'],
   'cli/cutover': ['planCutover', 'runCutover', 'cutoverSourcePlan', 'cutoverReconciliation', 'observeLegacyMigration', 'legacyConfirmationObserver'],
-  'cli/member': ['runJoin', 'runDrain', 'provisionDetectedAgents', 'detectedProvisionLines', 'recordNoAgents', 'managedMemberHarnesses', 'memberHarnessStatus'],
+  'cli/member': ['runJoin', 'runDrain', 'provisionDetectedAgents', 'detectedProvisionLines', 'recordNoAgents', 'managedMemberHarnesses', 'memberHarnessStatus', 'previewGlobalProvision'],
   'cli/runner-register': ['registerRunner'],
   'cli/runner-service': ['legacyWorkerInventory', 'preflightRunnerService', 'runnerServiceContact', 'runRunnerService'],
   'cli/runner-deps': ['defaultRunnerName', 'runnerServerUrl'],

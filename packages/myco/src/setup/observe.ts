@@ -6,13 +6,13 @@ import { observeLegacyMigration, legacyConfirmationObserver } from '@myco/cli/cu
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readDeploymentMembershipResult, readRegistryEntryResult } from '@myco/member/registry.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { postRoute } from '@myco/cli/deployment-reader.js';
-import { managedMemberHarnesses, memberHarnessStatus } from '@myco/cli/member.js';
+import { managedMemberHarnesses, memberHarnessStatus, previewGlobalProvision } from '@myco/cli/member.js';
 import type { WorkerServiceDeps } from '@myco/cli/worker-service.js';
 import { observationInstant, observeProjectCapture, observeRunnerService } from '@myco/cli/home-observations.js';
 import { isLiveRunner, listRunnerRecordsResult, readRunnerRecord } from '@myco/runner/runner-registry.js';
 import { signInState } from '@myco/server/github-app.js';
-import { detectMachineInstalledSymbionts, loadManifests } from '@myco/symbionts/detect.js';
-import { provisionRecordPath, readProvisionRecord } from '@myco/symbionts/member-provision-record.js';
+import { detectMachineInstalledSymbionts } from '@myco/symbionts/detect.js';
+import { readProvisionRecordStrict, UnreadableProvisionRecordError } from '@myco/symbionts/member-provision-record.js';
 import { getPluginVersion } from '@myco/version.js';
 import { legacyCaptureGuidance } from '@myco/cli/legacy-capture.js';
 import type { SetupAnswers } from '@myco/setup/answers.js';
@@ -33,6 +33,7 @@ export interface Observation {
   memberCapture?: true;
   staleTools?: string[];
   agentOffers?: string[];
+  agentHealth?: boolean;
   joinedDeployments?: string[];
   legacyError?: string;
   legacyNotice?: string;
@@ -71,7 +72,10 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
   };
   const read = async (id: string, fn: () => void | Promise<void>, informational = false): Promise<void> => {
     try { await fn(); }
-    catch (error) { add(id, 'unavailable', error instanceof Error ? error.message : String(error), observedUrl ?? home, informational); }
+    catch (error) {
+      const fact = add(id, error instanceof UnreadableProvisionRecordError ? 'incomplete' : 'unavailable', error instanceof Error ? error.message : String(error), observedUrl ?? home, informational);
+      if (error instanceof UnreadableProvisionRecordError) fact.agentHealth = true;
+    }
   };
   await read('legacy', async () => {
     const migration = await (deps.legacyObserver ?? observeLegacyMigration)(home, { fetch: deps.fetch, now: deps.now, homeDir: deps.legacyHomeDir, homes: deps.legacyHomes });
@@ -135,21 +139,25 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
     await read('machine.agents', () => {
       if (answers.noAgents && !deps.status) { add('machine.agents', 'complete', 'declined'); return; }
       if (installedLegacyHooks(home, { homeDir: deps.legacyHomeDir, homes: deps.legacyHomes })) { add('machine.agents', 'incomplete', 'legacy-hooks'); return; }
-      const record = readProvisionRecord(home);
-      if (record === null && fs.existsSync(provisionRecordPath(home))) throw new Error(`${provisionRecordPath(home)}: cannot read provision record`);
+      const record = readProvisionRecordStrict(home);
       if (record === null && answers.role !== 'join' && answers.role !== 'create') return;
       const hooksUrl = deps.status && record !== null ? deploymentUrl(record.serverUrl) : url;
       if (hooksUrl === undefined) return;
       const same = record === null || deploymentUrl(record.serverUrl) === hooksUrl;
       const detected = (deps.agents ?? (() => detectMachineInstalledSymbionts().map((manifest) => manifest.name)))();
       const agents = deps.status ? managedMemberHarnesses(home, hooksUrl, deps) : detected;
-      const offers = deps.status ? detected.filter(agent => !agents.includes(agent)).map(agent => {
-        const manifest = loadManifests().find(manifest => manifest.name === agent);
-        const name = manifest?.displayName ?? agent;
-        return manifest?.registration?.memberHooksTarget
-          ? `${name} is installed; Myco doesn't capture it yet. Run myco member provision ${agent} to add it.`
-          : `${name} is installed; Myco doesn't capture it yet. Capture support is not available in this build.`;
+      const uncaptured: string[] = [];
+      const offers = deps.status ? detected.filter(agent => !agents.includes(agent)).flatMap(agent => {
+        const preview = previewGlobalProvision(agent, null, home, hooksUrl, deps);
+        if (preview.kind === 'unknown') return [];
+        if (preview.kind === 'uncaptured') { uncaptured.push(preview.displayName); return []; }
+        return [preview.kind === 'refused' ? preview.detail
+          : `${preview.displayName} is installed; Myco doesn't capture it yet. Run myco member provision ${agent} to add it.`];
       }) : [];
+      if (uncaptured.length > 0) {
+        const names = uncaptured.length === 1 ? uncaptured[0] : `${uncaptured.slice(0, -1).join(', ')} or ${uncaptured.at(-1)}`;
+        offers.push(`Myco can't capture ${names} in this build.`);
+      }
       const agentFact = (state: Observation['state'], detail: string): Observation => {
         const fact = add('machine.agents', state, detail);
         if (offers.length > 0) fact.agentOffers = offers;
@@ -158,7 +166,7 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
       const statuses = agents.map(agent => memberHarnessStatus(agent, home, hooksUrl, deps));
       const installed = agents.length > 0 && statuses.every(status => status.current);
       if (!installed && ((answers.noAgents && record === null) || (same && record?.agents.length === 0 && (!deps.status || agents.length === 0)))) { agentFact('complete', 'declined'); return; }
-      if (agents.length === 0) { agentFact(detected.length > 0 ? 'absent' : 'complete', detected.length > 0 ? 'stale' : 'none-installed'); return; }
+      if (agents.length === 0) { agentFact(!deps.status && detected.length > 0 ? 'absent' : 'complete', !deps.status && detected.length > 0 ? 'stale' : 'none-installed'); return; }
       const current = same && (record === null || record.version === getPluginVersion())
         && installed;
       const fact = agentFact(current ? 'complete' : record === null ? 'absent' : 'incomplete', current ? 'current' : 'stale');

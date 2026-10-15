@@ -30,6 +30,19 @@ export function provisionRecordPath(mycoHome: string): string {
   return path.join(mycoHome, PROVISION_RECORD);
 }
 
+export class UnreadableProvisionRecordError extends Error {
+  constructor(mycoHome: string) {
+    super(`Myco's agent setup record at ${provisionRecordPath(mycoHome)} could not be read. Fix or restore the file, then run myco member provision --refresh.`);
+  }
+}
+
+/** Missing records are distinct from existing records that cannot be read. */
+export function readProvisionRecordStrict(mycoHome: string): ProvisionRecord | null {
+  const record = readProvisionRecord(mycoHome);
+  if (record === null && fs.existsSync(provisionRecordPath(mycoHome))) throw new UnreadableProvisionRecordError(mycoHome);
+  return record;
+}
+
 /** The record, or null where none is written or it cannot be read as one. */
 export function readProvisionRecord(mycoHome: string): ProvisionRecord | null {
   try {
