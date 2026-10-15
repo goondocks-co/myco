@@ -44,12 +44,40 @@ function confirmationFailure(answer: Exclude<Outcome, { class: 'acked' }>): Conf
   return ['route_missing', 'protocol'].includes(answer.class) ? 'update-required' : 'unavailable';
 }
 
-/** Each bounded batch has its own budget, including on large vaults. */
-const readEvidence = (client: ServerClient, body: LegacyHistoryIdentities) =>
-  client.postPersisted(LEGACY_HISTORY_PATH, body, { connectTimeoutMs: CONFIRMATION_BUDGET_MS, requestTimeoutMs: CONFIRMATION_BUDGET_MS, capped: true });
+type EvidenceReader = (body: LegacyHistoryIdentities) => Promise<Outcome>;
+type DeploymentIdentity = { state: 'known'; id: string } | { state: 'pending' | 'update-required' };
 
-export async function legacyDestinationEnd(client: ServerClient): Promise<'active' | 'project_archived' | 'project_deleted' | Confirmation> {
-  const answer = await readEvidence(client, { eventGroups: [], projectState: true });
+function membershipFailure(answer: Outcome): Confirmation | null {
+  if (answer.class === 'unauthorized') return 'sign-in-required';
+  if (answer.class === 'route_missing' || answer.class === 'protocol') return 'update-required';
+  if (answer.class === 'retry' && answer.status === undefined) return 'unavailable';
+  return null;
+}
+
+/** Each bounded batch has its own budget, including on large vaults. */
+function evidenceReader(client: ServerClient, failed?: (state: Confirmation) => void): EvidenceReader {
+  return async body => {
+    const answer = await client.postPersisted(LEGACY_HISTORY_PATH, body, { connectTimeoutMs: CONFIRMATION_BUDGET_MS, requestTimeoutMs: CONFIRMATION_BUDGET_MS, capped: true });
+    const failure = membershipFailure(answer);
+    if (failure !== null) failed?.(failure);
+    return answer;
+  };
+}
+
+async function readDeploymentIdentity(client: ServerClient): Promise<DeploymentIdentity> {
+  const answer = classifyEventAnswer(await client.request('POST', DEPLOYMENT_IDENTITY_PATH, { scope: 'deployment', body: '{}',
+    budget: { connectTimeoutMs: CONFIRMATION_BUDGET_MS, requestTimeoutMs: CONFIRMATION_BUDGET_MS, capped: true } }));
+  if (answer.class !== 'acked') return { state: 'pending' };
+  return typeof answer.body.deploymentId === 'string' && answer.body.deploymentId.length > 0
+    ? { state: 'known', id: answer.body.deploymentId } : { state: 'update-required' };
+}
+
+export function legacyDestinationEnd(client: ServerClient): Promise<'active' | 'project_archived' | 'project_deleted' | Confirmation> {
+  return destinationEnd(evidenceReader(client));
+}
+
+async function destinationEnd(read: EvidenceReader): Promise<'active' | 'project_archived' | 'project_deleted' | Confirmation> {
+  const answer = await read({ eventGroups: [], projectState: true });
   if (answer.class !== 'acked') {
     if (confirmationFailure(answer) === 'project-missing') return 'project_deleted';
     return confirmationFailure(answer);
@@ -58,11 +86,11 @@ export async function legacyDestinationEnd(client: ServerClient): Promise<'activ
     : answer.body.projectState === 'active' ? 'active' : 'update-required';
 }
 
-async function transcriptSources(client: ServerClient, sessions: string[]): Promise<Set<string> | Confirmation> {
+async function transcriptSources(read: EvidenceReader, sessions: string[]): Promise<Set<string> | Confirmation> {
   const transcripts = new Set<string>();
   for (let start = 0; start < sessions.length; start += LEGACY_HISTORY_MAX_EVENTS) {
     const offered = sessions.slice(start, start + LEGACY_HISTORY_MAX_EVENTS);
-    const answer = await readEvidence(client, { eventGroups: [], sessions: offered });
+    const answer = await read({ eventGroups: [], sessions: offered });
     if (answer.class !== 'acked') return confirmationFailure(answer);
     if (answer.body.confirmed === false) return 'not-found';
     const sources = answer.body.sources as { withTranscript?: unknown; vaultSourced?: unknown } | undefined;
@@ -72,13 +100,13 @@ async function transcriptSources(client: ServerClient, sessions: string[]): Prom
   return transcripts;
 }
 
-async function confirmHistory(client: ServerClient, source: LegacyHistoryIdentities): Promise<Proof> {
+async function confirmHistory(read: EvidenceReader, source: LegacyHistoryIdentities): Promise<Proof> {
   const batches = proofBatches(source);
   if (batches.length === 0) return { state: 'not-found' };
   const confirmed = { eventIds: new Set<string>(), sporeIds: new Set<string>(), lineageIds: new Set<string>() };
   let projectState: 'active' | 'archived' | 'deleted' | undefined;
   for (const batch of batches) {
-    const answer = await readEvidence(client, { ...batch, projectState: true });
+    const answer = await read({ ...batch, projectState: true });
     if (answer.class !== 'acked') return { state: confirmationFailure(answer) };
     const eventIds = answer.body.eventIds;
     const recordIds = answer.body.recordIds ?? [];
@@ -127,7 +155,7 @@ export async function observeLegacyMigration(home: string, deps: LegacyConfirmat
   const sources = legacySources(home, { homeDir: deps.homeDir, homes: deps.homes });
   const results = new Map<string, { projectId: string; confirmation: Confirmation }>();
   const failures = new Map<string, Confirmation>();
-  const identities = new Map<string, string>();
+  const identities = new Map<string, DeploymentIdentity>();
   const names = legacyProjectNames(sources.vaults.flatMap(source => legacyVaultProjectIds(source.path).map(projectId => ({
     vault: source.path, projectId, root: state.migrations?.[source.path]?.projects[projectId]?.root,
   }))));
@@ -162,22 +190,23 @@ export async function observeLegacyMigration(home: string, deps: LegacyConfirmat
     for (const choice of candidates) {
       const confirmed: Array<{ deploymentId: string; membership: typeof memberships[number]; proof: Extract<Proof, { eventIds: string[] }>; endedBy: 'project_archived' | 'project_deleted' | null; ignoredLineage: number }> = [];
       let failure: Confirmation | undefined;
-      const recordFailure = (state: Confirmation, membership: typeof memberships[number]) => {
+      const recordFailure = (state: Confirmation) => {
         failure = preferredConfirmation(failure ?? 'not-found', state);
-        if (state !== 'not-found') failures.set(deploymentUrl(membership.serverUrl), state);
       };
+      let identityFailure: Confirmation | undefined;
       let asked = false;
       for (const membership of choice.eligible) {
         const url = deploymentUrl(membership.serverUrl);
         const cachedFailure = failures.get(url);
-        if (cachedFailure !== undefined) { recordFailure(cachedFailure, membership); continue; }
+        if (cachedFailure !== undefined) { recordFailure(cachedFailure); continue; }
         const previous = prior?.projects[choice.projectId];
         const candidate = { projectId: choice.projectId, membership };
         const client = new ServerClient({ ...candidate.membership, projectId: candidate.projectId }, deps.fetch);
+        const read = evidenceReader(client, state => failures.set(url, state));
         if (choice.fallback) {
-          const destination = await legacyDestinationEnd(client);
+          const destination = await destinationEnd(read);
           if (destination === 'project_deleted' || destination === 'project-missing') continue;
-          if (destination !== 'active' && destination !== 'project_archived') { recordFailure(destination, membership); continue; }
+          if (destination !== 'active' && destination !== 'project_archived') { recordFailure(destination); continue; }
         }
         const project = (projects ??= readLegacyVault(source.path)).find(project => project.projectId === candidate.projectId);
         if (project === undefined) continue;
@@ -186,38 +215,35 @@ export async function observeLegacyMigration(home: string, deps: LegacyConfirmat
         let proof: Proof;
         let ignoredLineage = previous?.evidence?.ignoredLineage ?? 0;
         if (completedLegacyVault(previous?.vault) && !choice.fallback) {
-          const destination = await legacyDestinationEnd(client);
+          const destination = await destinationEnd(read);
           if (destination === 'active') continue;
-          if (destination !== 'project_archived' && destination !== 'project_deleted') { recordFailure(destination, membership); continue; }
+          if (destination !== 'project_archived' && destination !== 'project_deleted') { recordFailure(destination); continue; }
           endedBy = destination;
           proof = { state: 'confirmed', eventIds: [], sporeIds: [], lineageIds: [] };
         } else {
-          const transcripts = await transcriptSources(client, legacyContentSessionIds(project, candidate.membership.machineId, home));
-          if (typeof transcripts === 'string') { recordFailure(transcripts, membership); continue; }
+          const transcripts = await transcriptSources(read, legacyContentSessionIds(project, candidate.membership.machineId, home));
+          if (typeof transcripts === 'string') { recordFailure(transcripts); continue; }
           const identities = legacyVaultCompletionIdentities(project, candidate.membership.machineId, home, transcripts);
           ignoredLineage = identities.ignoredLineage;
-          proof = await confirmHistory(client, identities);
+          proof = await confirmHistory(read, identities);
           if (proof.state === 'confirmed') endedBy = proof.projectState === 'archived' ? 'project_archived' : proof.projectState === 'deleted' ? 'project_deleted' : null;
         }
-        if (proof.state !== 'confirmed') { recordFailure(proof.state, membership); continue; }
+        if (proof.state !== 'confirmed') { recordFailure(proof.state); continue; }
         let deploymentId = url;
         if (choice.fallback) {
-          const known = identities.get(url);
-          if (known !== undefined) deploymentId = known;
-          else {
-            const answer = classifyEventAnswer(await client.request('POST', DEPLOYMENT_IDENTITY_PATH, { scope: 'deployment', body: '{}',
-              budget: { connectTimeoutMs: CONFIRMATION_BUDGET_MS, requestTimeoutMs: CONFIRMATION_BUDGET_MS, capped: true } }));
-            if (answer.class !== 'acked') { recordFailure(confirmationFailure(answer), membership); continue; }
-            if (typeof answer.body.deploymentId !== 'string' || answer.body.deploymentId.length === 0) { recordFailure('update-required', membership); continue; }
-            deploymentId = answer.body.deploymentId;
-            identities.set(url, deploymentId);
+          const identity = identities.get(url) ?? await readDeploymentIdentity(client);
+          identities.set(url, identity);
+          if (identity.state !== 'known') {
+            identityFailure = preferredConfirmation(identityFailure ?? 'not-found', identity.state);
+            continue;
           }
+          deploymentId = identity.id;
         }
         confirmed.push({ deploymentId, membership, proof, endedBy, ignoredLineage });
       }
       const destinations = [...new Map([...confirmed].reverse().map(candidate => [candidate.deploymentId, candidate])).values()];
-      if (destinations.length !== 1) {
-        report(source.path, choice.projectId, destinations.length > 1 ? 'ambiguous' : failure ?? (asked || prior?.projects[choice.projectId] === undefined ? 'not-found' : 'no-destination'));
+      if (destinations.length !== 1 || identityFailure !== undefined) {
+        report(source.path, choice.projectId, destinations.length > 1 ? 'ambiguous' : identityFailure ?? failure ?? (asked || prior?.projects[choice.projectId] === undefined ? 'not-found' : 'no-destination'));
         continue;
       }
       const { membership: provenMembership, proof, endedBy, ignoredLineage } = destinations[0]!;

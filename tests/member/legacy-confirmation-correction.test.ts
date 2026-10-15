@@ -8,7 +8,7 @@ import { readVaultContent } from '@myco/member/legacy-backup.js';
 import { readCutoverState, writeCutoverState } from '@myco/member/legacy-migration.js';
 import { registryKeyFor, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { legacyCaptureGuidance, legacyMovedNotice } from '@myco/cli/legacy-capture.js';
-import { LEGACY_HISTORY_PATH } from '@goondocks/myco-shared/member-protocol';
+import { LEGACY_HISTORY_PATH, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 
 let root: string;
@@ -191,4 +191,126 @@ it('keeps never-moved multi-route projects at not-found when no Deployment holds
   expect(observed).toMatchObject({ state: 'unmoved', confirmation: 'not-found' });
   expect(legacyCaptureGuidance(observed).hint).toBeNull();
   expect(readCutoverState(f.home).migrations).toBeUndefined();
+});
+
+function routedProject(home: string, projectId: string, address: string) {
+  writeRegistryEntry({ version: 2, root: path.join(root, projectId + '-' + address), projectId,
+    serverUrl: 'https://' + address + '.invalid', token: 'F'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+}
+
+it('B1: a deleted sibling does not block a routed held project', async () => {
+  const f = fixture(['proj_a', 'proj_b']);
+  for (const id of ['proj_a', 'proj_b']) routedProject(f.home, id, 'a');
+  const asked: string[] = [];
+  const observed = await observeLegacyMigration(f.home, { fetch: async (input, init) => {
+    const request = new Request(input, init);
+    expect(new URL(request.url).pathname).toBe(LEGACY_HISTORY_PATH);
+    const id = request.headers.get('x-myco-project')!;
+    asked.push(id);
+    return id === 'proj_a' ? Response.json({ persisted: false, code: 'no_project' }) : evidence(JSON.parse(String(init?.body)));
+  } });
+  expect(asked).toContain('proj_b');
+  expect(observed.confirmation).toBe('project-missing');
+  const receipt = readCutoverState(f.home).migrations![f.vault]!.projects;
+  expect(receipt.proj_a).toEqual({});
+  expect(receipt.proj_b).toMatchObject({ destination: { serverUrl: 'https://a.invalid' }, vault: { state: 'complete' } });
+  expect(fs.readFileSync(f.vault)).toEqual(f.bytes);
+});
+
+it('B2: a fallback identity missing on an older Deployment does not block a route-bound sibling', async () => {
+  const f = fixture(['proj_a', 'proj_b']);
+  routedProject(f.home, 'proj_b', 'a');
+  let routedReads = 0;
+  let identityReads = 0;
+  const observed = await observeLegacyMigration(f.home, { fetch: async (input, init) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (url.pathname === '/members/status') { identityReads++; return Response.json({ persisted: true }); }
+    if (url.hostname === 'b.invalid') return Response.json({ persisted: false, code: 'no_project' });
+    if (request.headers.get('x-myco-project') === 'proj_b') routedReads++;
+    return evidence(JSON.parse(String(init?.body)));
+  } });
+  expect(routedReads).toBe(1);
+  expect(identityReads).toBe(1);
+  expect(observed.confirmation).toBe('update-required');
+  const receipt = readCutoverState(f.home).migrations![f.vault]!.projects;
+  expect(receipt.proj_a).toEqual({});
+  expect(receipt.proj_b).toMatchObject({ destination: { serverUrl: 'https://a.invalid' }, vault: { state: 'complete' } });
+  expect(fs.readFileSync(f.vault)).toEqual(f.bytes);
+});
+
+it('B3: a sibling project-missing refusal does not remove a competing confirmer', async () => {
+  const f = fixture(['proj_a', 'proj_b']);
+  routedProject(f.home, 'proj_a', 'b');
+  let competingProofs = 0;
+  const observed = await observeLegacyMigration(f.home, { fetch: async (input, init) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (url.pathname === '/members/status') return Response.json({ persisted: true, deploymentId: url.hostname });
+    if (request.headers.get('x-myco-project') === 'proj_a') return Response.json({ persisted: false, code: 'no_project' });
+    const body = JSON.parse(String(init?.body));
+    if (url.hostname === 'b.invalid' && body.eventGroups.length > 0) competingProofs++;
+    return evidence(body);
+  } });
+  expect(competingProofs).toBe(1);
+  expect(observed.confirmation).toBe('ambiguous');
+  expect(readCutoverState(f.home).migrations![f.vault]!.projects).toEqual({ proj_a: {}, proj_b: {} });
+  expect(fs.readFileSync(f.vault)).toEqual(f.bytes);
+});
+
+for (const identity of ['missing', 'unreachable'] as const) it('A1: a proven confirmer with ' + identity + ' identity prevents a fallback write', async () => {
+  const f = fixture(['proj_a']);
+  const proven: string[] = [];
+  const observed = await observeLegacyMigration(f.home, { fetch: async (input, init) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (url.pathname === '/members/status') {
+      if (url.hostname === 'a.invalid') return Response.json({ persisted: true, deploymentId: 'known-a' });
+      if (identity === 'missing') return Response.json({ persisted: true });
+      throw new Error('identity offline');
+    }
+    const body = JSON.parse(String(init?.body));
+    if (body.eventGroups.length > 0) proven.push(url.hostname);
+    return evidence(body);
+  } });
+  expect(proven.sort()).toEqual(['a.invalid', 'b.invalid']);
+  expect(observed.confirmation).toBe(identity === 'missing' ? 'update-required' : 'pending');
+  expect(readCutoverState(f.home).migrations![f.vault]!.projects.proj_a).toEqual({});
+  expect(fs.readFileSync(f.vault)).toEqual(f.bytes);
+});
+
+for (const firstFailure of ['refused', 'refused-route-missing', 'busy', 'not-found', 'pending'] as const) it('does not memoize a sibling proof outcome: ' + firstFailure, async () => {
+  const f = fixture(['proj_a', 'proj_b']);
+  for (const id of ['proj_a', 'proj_b']) routedProject(f.home, id, 'a');
+  let heldReads = 0;
+  await observeLegacyMigration(f.home, { fetch: async (input, init) => {
+    const request = new Request(input, init);
+    if (request.headers.get('x-myco-project') === 'proj_b') { heldReads++; return evidence(JSON.parse(String(init?.body))); }
+    if (firstFailure === 'refused' || firstFailure === 'refused-route-missing') return Response.json({ persisted: false, code: firstFailure === 'refused' ? 'parse' : 'route_missing' });
+    if (firstFailure === 'busy') return new Response(null, { status: 503 });
+    if (firstFailure === 'not-found') return Response.json({ persisted: true, confirmed: false });
+    return new Promise<Response>((_resolve, reject) => request.signal.addEventListener('abort', () => reject(new Error('fixture timed out')), { once: true }));
+  } });
+  expect(heldReads).toBe(1);
+  expect(readCutoverState(f.home).migrations![f.vault]!.projects.proj_b).toMatchObject({ destination: { serverUrl: 'https://a.invalid' }, vault: { state: 'complete' } });
+  expect(fs.readFileSync(f.vault)).toEqual(f.bytes);
+});
+
+for (const failure of ['transport', 'protocol', 'route-missing'] as const) it('memoizes a membership-wide history failure: ' + failure, async () => {
+  const f = fixture(['proj_a', 'proj_b', 'proj_c']);
+  let failedReads = 0;
+  const observed = await observeLegacyMigration(f.home, { fetch: async (input, init) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (url.hostname === 'b.invalid') {
+      failedReads++;
+      if (failure === 'transport') throw new Error('offline');
+      return new Response(null, { status: failure === 'protocol' ? 409 : 401, headers: { [PROTOCOL_HEADER]: '2' } });
+    }
+    if (url.pathname === '/members/status') return Response.json({ persisted: true, deploymentId: 'known-a' });
+    return evidence(JSON.parse(String(init?.body)));
+  } });
+  expect(failedReads).toBe(1);
+  expect(observed.state).toBe('moved');
+  expect(fs.readFileSync(f.vault)).toEqual(f.bytes);
 });
