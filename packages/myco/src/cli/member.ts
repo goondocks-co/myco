@@ -465,7 +465,7 @@ function globalInstaller(
 export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string; exclude?: string[] } = {}): string[] {
   return loadManifests().filter((manifest) => !opts.exclude?.includes(manifest.name)).flatMap((manifest) => {
     try {
-      return globalInstaller(manifest, null, mycoHome, opts).forDeployment(serverUrl).memberRegistrationPresent() ? [manifest.name] : [];
+      return globalInstaller(manifest, null, mycoHome, opts).forDeployment(serverUrl).preservingOtherMemberTools().memberRegistrationPresent() ? [manifest.name] : [];
     } catch (error) {
       process.stderr.write(`[myco] keep-current: could not inspect ${manifest.displayName}: ${error instanceof Error ? error.message : String(error)}\n`);
       return [];
