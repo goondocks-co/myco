@@ -155,6 +155,10 @@
     "./setup-guidance": {
       "import": "./dist/setup-guidance.js",
       "types": "./dist/setup-guidance.d.ts"
+    },
+    "./backup-words": {
+      "import": "./dist/backup-words.js",
+      "types": "./dist/backup-words.d.ts"
     }
   },
   "files": [

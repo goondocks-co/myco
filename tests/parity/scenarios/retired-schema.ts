@@ -82,9 +82,9 @@ export const retiredSchema: ParityScenario = {
         expect({ status: response.status, applied: body.applied, inserted: body.tables?.projects?.inserted })
           .toEqual({ status: 200, applied: true, inserted });
         for (const table of retired) expect(body.tables?.[table])
-          .toEqual({ rows: 1, inserted: 0, skipped: 'retired by schema step 86 (#1170)' });
+          .toEqual({ rows: 1, inserted: 0, skipped: 'retired' });
         expect(body.tables?.knowledge_release_state)
-          .toEqual({ rows: retiredReleaseRows.length, inserted: 0, skipped: 'retired by schema step 86 (#1170)' });
+          .toEqual({ rows: retiredReleaseRows.length, inserted: 0, skipped: 'retired' });
         expect(await target.sql(`SELECT project_id FROM projects WHERE project_id = '${project}'`))
           .toEqual([{ project_id: project }]);
         expect(await target.sql(`SELECT namespace FROM knowledge_release_state WHERE project_id = ${lit(project)}`)).toEqual([]);

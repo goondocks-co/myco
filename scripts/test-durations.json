@@ -623,6 +623,7 @@
     "tests/myco-shared/runner-update.test.ts": 4,
     "tests/parity/locked-retry.test.ts": 113,
     "tests/parity/parity.test.ts": 463,
+    "tests/parity/schema-upgrade.test.ts": 750,
     "tests/parity/transport-load.test.ts": 134,
     "tests/plugins/marketplace.test.ts": 157,
     "tests/project-root/resolve.test.ts": 114,
@@ -771,6 +772,7 @@
     "tests/utils/windows-atomic-replace.test.ts": 2
   },
   "parity": {
+    "D1: latest migration upgrades seeded previous schema to expected state": 45000,
     "repository preparation failure: leased worker metadata reaches runs and work on both targets": 18000,
     "retired schema: generated skills and digests have no tables, FTS objects or embedding source": 15000,
     "setup progress: scoped observations and bounded D1 reads with misleading history": 30000,

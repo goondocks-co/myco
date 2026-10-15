@@ -56,7 +56,14 @@ async function fixture(failVectorRead = false, { legacy = false, authority = fal
     source: { target: 'cloudflare', locator: 'original' },
     snapshot: async (file) => {
       data.query('VACUUM INTO ?').run(file);
-      if (legacy) asSchema41(file);
+      if (legacy) {
+        asSchema41(file);
+        const snapshot = new Database(file);
+        try {
+          snapshot.run(`INSERT INTO cortex_instructions(project_id,id,agent_id,content,input_hash,generated_at)
+            VALUES('proj_1','retired_instructions','user','old instructions','hash',1)`);
+        } finally { snapshot.close(); }
+      }
       return { configuration: recoveryConfigurationOf(sourceRecord), credentialsRequired: [] };
     },
     blob: async (object) => {
@@ -179,8 +186,14 @@ it('restores a schema-41 artifact through the one migration applier, and copies 
   const f = await fixture(false, { legacy: true });
   try {
     const original = fs.readFileSync(path.join(f.source, 'myco.sqlite'));
+    const notice = "This backup includes older data this version no longer keeps (old instructions). It won't be restored.";
     await expect(f.restore()).rejects.toThrow('Cloudflare recovery import did not finish');
+    expect(f.reports.filter((line) => line === notice)).toEqual([notice]);
+    f.reports.length = 0;
     await f.restore();
+    expect(f.reports.filter((line) => line === notice)).toEqual([notice]);
+    expect(f.reports.join('\n')).not.toContain('schema step');
+    expect(f.reports.join('\n')).not.toContain('#');
     assertRestoredObjects(f);
     expect(fs.readFileSync(path.join(f.source, 'myco.sqlite'))).toEqual(original);
   } finally { f.cleanup(); }

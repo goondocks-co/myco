@@ -1,3 +1,4 @@
+import { RETIRED_BACKUP_TABLES, retiredBackupNotice } from '@goondocks/myco-shared/backup-words';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1051,7 +1052,7 @@ export async function verifyRecoveryBundle(directory: string, report: (line: str
 }
 
 /** Copy or resume a verified snapshot through the same owner that captures Deployment artifacts. */
-async function completeRecoverySource(source: string, report: (line: string) => void): Promise<RecoveryManifest> {
+async function completeRecoverySource(source: string, report: (line: string) => void): Promise<{ manifest: RecoveryManifest; retiredNotice: string | null }> {
   const manifest = await verifyRecoveryBundle(source, report);
   const database = path.join(source, DATABASE_FILE);
   const db = openSnapshot(database);
@@ -1059,13 +1060,23 @@ async function completeRecoverySource(source: string, report: (line: string) => 
     if (manifest.format === 'myco-recovery/1' && db.query('SELECT 1 FROM backups LIMIT 1').get() !== null) {
       throw new Error('legacy artifact lacks catalogued backup coverage; capture a new recovery artifact');
     }
+    const releaseStatePresent = db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_release_state'").get() !== null;
+    const counts = Object.fromEntries([...RETIRED_BACKUP_TABLES].map(([table, kind]) => {
+      const present = db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
+      const held = present !== null && db.query<{ n: number }, []>(`SELECT EXISTS(SELECT 1 FROM "${table}") AS n`).get()!.n !== 0;
+      if (held || !releaseStatePresent) return [table, held ? 1 : 0];
+      const namespaces = [table, ...(kind.namespaces ?? [])];
+      const released = db.query<{ n: number }, string[]>(`SELECT EXISTS(SELECT 1 FROM knowledge_release_state WHERE namespace IN (${namespaces.map(() => '?').join(', ')})) AS n`).get(...namespaces)!.n;
+      return [table, released];
+    }));
+    return { manifest, retiredNotice: retiredBackupNotice(counts) };
   } finally { db.close(); }
-  return manifest;
 }
 
 /** Copy or resume a verified snapshot through the same owner that captures Deployment artifacts. */
 export async function copyRecoveryBundle(source: string, destination: string, report: (line: string) => void = () => {}): Promise<RecoveryManifest> {
-  const manifest = await completeRecoverySource(source, report);
+  const { manifest, retiredNotice } = await completeRecoverySource(source, report);
+  if (retiredNotice !== null) report(retiredNotice);
   const database = path.join(source, DATABASE_FILE);
   const blobs = diskBlobStore(path.join(source, 'blobs'));
   return writeRecoveryBundle(destination, {
@@ -1110,7 +1121,7 @@ export async function copyRecoveryObjects(
   source: string, destination: RecoveryObjectDestination, objectKeys: ReadonlyMap<string, { objectKey: string; bytes: number }>,
   report: (line: string) => void = () => {},
 ): Promise<{ copied: number; reused: number }> {
-  const manifest = await completeRecoverySource(source, report);
+  const { manifest } = await completeRecoverySource(source, report);
   const result = { copied: 0, reused: 0 };
   const matches = async (body: ReadableStream<Uint8Array>, object: RecoveryBlob): Promise<boolean> => {
     const hash = createHash('sha256');
