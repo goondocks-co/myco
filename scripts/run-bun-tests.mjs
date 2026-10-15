@@ -10,7 +10,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 import { SaxesParser } from 'saxes';
-import { parseShard, selectGroup, selectShard } from './test-shards.mjs';
+import { parse as parseYaml } from 'yaml';
+import { groupByDuration, parseShard, selectGroup, selectShard } from './test-shards.mjs';
+import { nodeGroupBudget } from './node-test-durations.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
 import { createTestTempRun, finishTestTempRun } from './test-temp-root.mjs';
@@ -232,12 +234,7 @@ const INTEGRATION_INCLUDES = [
 
 const profile = process.env.MYCO_TEST_PROFILE ?? '';
 const forwardedArgs = process.argv.slice(2);
-// Isolated files are bundled into chunks to amortize bun's `--isolate`
-// startup cost. Capped at 4 (was 8): the bun 1.3.14 `--isolate` runtime spin
-// emerges from the multi-file isolate/SQLite-teardown churn, and an 8-file
-// chunk of SQLite-heavy tests triggers it reliably under load. Three-file
-// groups are the verified-clean default; the phase-kill + wedge-retry above
-// remain the safety net for any chunk that still spins. Env-tunable for CI.
+// Bound the isolate workers started by one node phase.
 const ISOLATED_NODE_CHUNK_SIZE = Number(process.env.MYCO_RUNNER_ISOLATED_CHUNK_SIZE ?? 3);
 
 // Bun's `--isolate` mode pays a large per-file startup cost. These groups
@@ -506,7 +503,7 @@ function writeNodeBundleTargets(files) {
   let bundledFileCount = 0;
 
   for (const [key, groupFiles] of [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    if (groupFiles.length < 2) {
+    if (groupFiles.length < 2 || estimate(groupFiles) > isolatedNodeBudgetMs) {
       isolated.push(...groupFiles);
       continue;
     }
@@ -712,18 +709,11 @@ function buildNoIsolatePhases(targets, groups, sharedFiles, options) {
   ];
 }
 
-function chunkItems(items, size) {
-  const chunks = [];
-  for (let i = 0; i < items.length; i += size) {
-    chunks.push(items.slice(i, i + size));
-  }
-  return chunks;
-}
-
 function buildIsolatedNodePhases(targets, options) {
   if (targets.length === 0) return [];
 
-  const chunks = chunkItems(targets, ISOLATED_NODE_CHUNK_SIZE);
+  const chunks = groupByDuration(targets, isolatedNodeBudgetMs,
+    (target) => estimate(bundledFiles(target)), ISOLATED_NODE_CHUNK_SIZE);
   if (chunks.length > 1) {
     console.log(
       `[run-bun-tests] isolated node env: ${targets.length} targets across ${chunks.length} chunks`,
@@ -1558,7 +1548,8 @@ const groupLabel = process.env.MYCO_TEST_GROUP;
 delete process.env.MYCO_TEST_GROUP;
 const durations = JSON.parse(fs.readFileSync(path.join(REPO, 'scripts/test-durations.json'), 'utf8'));
 const DEFAULT_FILE_DURATION_MS = 100;
-const built = buildArgs();
+const workflow = parseYaml(fs.readFileSync(path.join(REPO, '.github/workflows/ci.yml'), 'utf8'));
+const isolatedNodeBudgetMs = nodeGroupBudget(workflow.jobs.tests['timeout-minutes'] * 60_000);
 const testFiles = (args) => args.filter((arg) => !arg.startsWith('-') && /[._]test\.tsx?$/.test(arg));
 const bundledFiles = (file) => (file.startsWith('target/test-bundles/')
   ? [...fs.readFileSync(path.join(REPO, file), 'utf8').matchAll(/import '\.\.\/\.\.\/\.\.\/(.*?)';/g)].map((match) => match[1])
@@ -1570,6 +1561,7 @@ const groupFiles = (args) => args
   .filter((arg) => !arg.startsWith('-') && fs.statSync(path.resolve(REPO, arg), { throwIfNoEntry: false })?.isFile())
   .flatMap(bundledFiles);
 const estimate = (files) => Math.max(1, files.reduce((sum, file) => sum + (durations.files[file] ?? DEFAULT_FILE_DURATION_MS), 0));
+const built = buildArgs();
 const candidates = [
   ...(testKind === 'dom' ? [] : built.nonDomPhases.map((phase) => ({ ...phase, kind: 'node' }))),
   ...(testKind === 'node' || built.dom === null ? [] : testFiles(built.dom).map((file) => ({

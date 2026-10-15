@@ -5,6 +5,10 @@ import { fileURLToPath } from 'node:url';
 
 const MAX_GROUP_JOB_SHARE = 1 / 4;
 
+export function nodeGroupBudget(timeoutMs) {
+  return timeoutMs * MAX_GROUP_JOB_SHARE;
+}
+
 /** Allocate each recorded process's wall time to its files, including startup. */
 export function nodeDurationSamples(workload) {
   return workload.runs.map(({ source, shards }) => {
@@ -38,7 +42,7 @@ export function recordedNodeDurations(workload) {
 
 /** Reserve one equal share of the job budget for runner and setup variance. */
 export function assertNodeShardHeadroom(plans, timeoutMs, weights, workload) {
-  const groupBudget = timeoutMs * MAX_GROUP_JOB_SHARE;
+  const groupBudget = nodeGroupBudget(timeoutMs);
   const shardBudget = timeoutMs - timeoutMs / plans.length;
   for (const run of workload.runs) assert.equal(run.shards.length, plans.length, `${run.source}: incomplete node workload`);
   const recorded = recordedNodeDurations(workload);
@@ -47,12 +51,16 @@ export function assertNodeShardHeadroom(plans, timeoutMs, weights, workload) {
     if (recorded[file] !== undefined) assert.ok(weights[file] >= recorded[file], `Stale node duration: ${file}; recorded ${recorded[file]}ms, configured ${weights[file]}ms`);
   }
   for (const [index, plan] of plans.entries()) {
+    for (const group of plan) {
+      const milliseconds = group.files.reduce((total, file) => total + weights[file], 0);
+      assert.ok(milliseconds <= groupBudget, `Node group ${group.label}: ${milliseconds}ms exceeds ${groupBudget}ms; split the group: ${group.files.join(', ')}`);
+    }
     const estimated = plan.reduce((sum, group) => sum + group.estimatedMs, 0);
     assert.ok(estimated <= shardBudget, `Node shard ${index + 1}: ${estimated}ms exceeds ${shardBudget}ms with headroom`);
     for (const sample of nodeDurationSamples(workload)) {
       const groupTimes = plan.map(group => {
         const milliseconds = group.files.reduce((total, file) => total + (sample.files[file] ?? weights[file]), 0);
-        assert.ok(milliseconds <= groupBudget, `${sample.source}: node group ${group.label}: ${Math.ceil(milliseconds)}ms exceeds ${groupBudget}ms; split the group`);
+        assert.ok(milliseconds <= groupBudget, `${sample.source}: node group ${group.label}: ${Math.ceil(milliseconds)}ms exceeds ${groupBudget}ms; split the group: ${group.files.join(', ')}`);
         return milliseconds;
       });
       const replayed = groupTimes.reduce((sum, milliseconds) => sum + milliseconds, 0);
