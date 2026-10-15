@@ -2,7 +2,11 @@ import { describe, expect, it, spyOn } from 'bun:test';
 import { cloudflareBlobReader, cloudflareObjectStore, type CloudflareFetch, OPERATOR_NETWORK_RETRY_BUDGET_MS } from '@myco/server/cloudflare.js';
 import { refusedAccountCode, transientReadFailure } from '@myco/server/object-read.js';
 import { CommandFailed, CommandTimedOut, type CommandRunner } from '@myco/server/runner.js';
-import { brotliCompressSync, gzipSync, zstdCompressSync } from 'node:zlib';
+import { brotliCompressSync, deflateSync, gzipSync, zstdCompressSync, constants } from 'node:zlib';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { exportD1, D1_EXPORT_DOWNLOAD_ATTEMPTS } from '@myco/server/cloudflare-d1-export.js';
 
 const options = { accountId: 'fixture-account', bucketName: 'fixture-bucket', configDir: '/operator' };
 
@@ -266,19 +270,47 @@ describe('the failures a read may try again', () => {
     expect(transientReadFailure(await settled(read('project/key')))).toBe(false);
   });
 
-  it('tries again after a compressed body cut short, as the runtime reports it for each encoding', async () => {
-    const whole = new Uint8Array(64 * 1024).map((_, index) => (index * 7919) % 251);
-    for (const [encoding, compressed] of [['gzip', gzipSync(whole)], ['br', brotliCompressSync(whole)], ['zstd', zstdCompressSync(whole)]] as const) {
-      const server = Bun.serve({ port: 0, fetch: () => new Response(new ReadableStream<Uint8Array>({ start(controller) {
-        controller.enqueue(compressed.subarray(0, Math.floor(compressed.length / 2)));
-        controller.close();
-      } }), { headers: { 'content-encoding': encoding } }) });
+  let state = 1837;
+  const payload = new Uint8Array(64 * 1024).map(() => {
+    state ^= state << 13; state ^= state >>> 17; state ^= state << 5;
+    return state & 255;
+  });
+  const encodedBodies = [
+    ['gzip', gzipSync(payload, { level: 0 })],
+    ['deflate', deflateSync(payload, { level: 0 })],
+    ['br', brotliCompressSync(payload, { params: { [constants.BROTLI_PARAM_QUALITY]: 0 } })],
+    ['zstd', zstdCompressSync(payload)],
+  ] as const;
+  for (const [encoding, compressed] of encodedBodies) {
+    it(`rejects a ${encoding} body cut inside its first data block even when the HTTP read completes`, async () => {
+      const cut = compressed.subarray(0, 1024);
+      const server = Bun.serve({ port: 0, fetch: () => new Response(cut,
+        { headers: { 'content-encoding': encoding, 'content-length': String(cut.length) } }) });
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-encoded-reader-'));
+      const output = path.join(dir, 'd1.sql');
+      const login = { current: async () => new Headers(), headers: async () => new Headers(), refused() {} };
+      let reads = 0;
       try {
-        const failure = await settled(fetch(`http://127.0.0.1:${server.port}/`).then((response) => response.arrayBuffer()));
-        expect(failure).not.toBeNull();
+        const failure = await settled(exportD1({ accountId: 'fixture', databaseId: 'fixture', recordDir: dir,
+          output, schema: 'fixture', tables: ['sessions'], login, pollMs: 0, sleep: async () => {},
+          fetch: async (url, init) => {
+            if (url.startsWith('https://api.cloudflare.com/')) return Response.json({ success: true,
+              result: { status: 'complete', result: { signed_url: String(server.url) } } });
+            reads++;
+            return fetch(url, init);
+          },
+        }));
         expect(transientReadFailure(failure)).toBe(true);
-      } finally { server.stop(true); }
-    }
+        expect(String(failure)).toContain('could not be decoded whole');
+        expect(reads).toBe(D1_EXPORT_DOWNLOAD_ATTEMPTS);
+        expect(fs.existsSync(output)).toBe(false);
+        expect(fs.existsSync(`${output}.part`)).toBe(false);
+        expect(fs.existsSync(`${output}.part.decoded`)).toBe(false);
+      } finally { server.stop(true); fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
+
+  it('tries again after decoder failures carried by the runtime', () => {
     const zlib = (code: string) => new TypeError('terminated', { cause: Object.assign(new Error('unexpected end of file'), { code }) });
     expect(transientReadFailure(zlib('Z_BUF_ERROR'))).toBe(true);
     expect(transientReadFailure(zlib('Z_DATA_ERROR'))).toBe(true);
