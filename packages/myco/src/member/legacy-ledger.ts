@@ -93,6 +93,35 @@ export class LegacyLedger {
   }
 }
 
+/** Accepted history by Project and Deployment key, independently of current membership. */
+export type LegacyHistory = Map<string, Map<string, Set<string>>>;
+export function legacyHistoryByProject(mycoHome: string): LegacyHistory {
+  const history: LegacyHistory = new Map();
+  const dir = path.join(memberRoot(mycoHome), LEGACY_DIRNAME);
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return history;
+    throw error;
+  }
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory() || !/^[a-f0-9]{16}$/.test(entry.name)) continue;
+    for (const file of fs.readdirSync(path.join(dir, entry.name), { withFileTypes: true })) {
+      if (!file.isFile() || !file.name.endsWith(LEDGER_EXTENSION)) continue;
+      const text = fs.readFileSync(path.join(dir, entry.name, file.name), 'utf8');
+      const accepted = new Set(text.split('\n').flatMap(raw => {
+        const line = parseLine(raw);
+        return line?.k === 'session' ? [`session:${line.session}`] : line?.k === 'spore' || line?.k === 'lineage' ? [`${line.k}:${line.id}`] : [];
+      }));
+      if (accepted.size === 0) continue;
+      const projectId = file.name.slice(0, -LEDGER_EXTENSION.length);
+      const project = history.get(projectId) ?? new Map<string, Set<string>>();
+      project.set(entry.name, accepted);
+      history.set(projectId, project);
+    }
+  }
+  return history;
+}
+
 /**
  * Every session a transcript import on this Deployment leaves out: its content
  * came from a 1.4 vault, or 1.4 deleted it. Read from every Project's ledger,

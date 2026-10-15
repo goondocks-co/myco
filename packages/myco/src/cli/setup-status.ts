@@ -41,7 +41,7 @@ function describe(fact: StatusObservation, url: string | undefined): string {
   const address = url ?? '<address>';
   if (fact.id === 'legacy') {
     const state = legacyState(fact);
-    if (state === 'unavailable') return `Myco 1.4 migration records could not be read: ${sentence(fact.legacyError ?? fact.detail.replace(/^unavailable\s*/, ''))}. Inspect ${shortPath(fact.scope)}, then run myco setup --cutover.`;
+    if (fact.state === 'unavailable') return `Myco 1.4 migration records could not be read: ${sentence(fact.legacyError ?? fact.detail.replace(/^unavailable\s*/, ''))}. Inspect ${shortPath(fact.scope)}, then run myco setup --cutover.`;
     const confirmationHint = legacyConfirmationHint(fact.legacyConfirmation, fact.legacyConfirmationProjects);
     if (confirmationHint !== null) return confirmationHint;
     if (state === 'needs-destination' && fact.state === 'incomplete') return LEGACY_DESTINATION_HINT;
@@ -103,6 +103,10 @@ export function renderSetupStatus(facts: readonly StatusObservation[]): string[]
   const defaultUrl = homeFacts.find(fact => fact.id === 'default' && fact.state === 'complete')?.detail;
   const addresses = [...new Set(homeFacts.find(fact => fact.id === 'default')?.joinedDeployments ?? facts.filter(fact => fact.id === 'journey' && fact.detail === 'join').map(fact => fact.deployment).filter((url): url is string => url !== undefined))].sort();
   for (const fact of homeFacts) {
+    if (fact.id === 'legacy') {
+      lines.push(...(fact.legacyStrayHistory ?? []));
+      if (fact.legacyStrayHistoryError) lines.push(`Earlier moves could not be checked: ${fact.legacyStrayHistoryError}`);
+    }
     if (fact.id === 'legacy' && legacyState(fact) === 'none') continue;
     const detail = fact.id === 'default' && fact.state === 'absent'
       ? `Not selected. New repositories will not automatically join a Deployment.${addresses.length ? ` Joined: ${addresses.join(', ')}.` : ''} Choose one with myco login --default <address> (approves this machine again).`

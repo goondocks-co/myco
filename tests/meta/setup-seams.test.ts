@@ -26,6 +26,7 @@ const seams: Record<string, readonly string[]> = {
   'member/default-deployment': ['readDefaultDeployment', 'recordDefaultDeployment'],
   'member/transport': ['ServerClient'],
   'member/legacy-migration': ['legacyMigrationState', 'legacyProjectDestination', 'installedLegacyHooks'],
+  'member/legacy-strays': ['observeLegacyStrayHistory'],
   'member/store': ['readPrivateJson', 'writePrivateFileAtomic'],
   'runner/runner-registry': ['isLiveRunner', 'listRunnerRecordsResult', 'readRunnerRecord'],
   'runner/service': ['harnessDirectories', 'workerServiceStatus', 'workerServiceUnit', 'workerServiceSpec'],

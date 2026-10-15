@@ -29,6 +29,7 @@ import { pathIsAbsent } from '../member/store.js';
 import { listRunnerRecords, isLiveRunner } from '../runner/runner-registry.js';
 import { ServerClient } from '../member/transport.js';
 import { legacyMigrationState } from '../member/legacy-migration.js';
+import { observeLegacyStrayHistory } from '../member/legacy-strays.js';
 import { legacyVaultFiles } from '../member/home-role.js';
 import { defaultMycoHome } from '../paths/home.js';
 
@@ -292,6 +293,8 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
     checks.push(row('Runner offer', record.lastOffer ? 'ok' : 'not-checked', `${record.serverUrl}: ${record.lastOffer ? `offered ${record.lastOffer.offered.join(', ') || 'none'}; withheld ${record.lastOffer.withheld.join(', ') || 'none'}; observed ${iso(record.lastOffer.observedAt)}` : 'unknown (no acknowledged service offer); run `myco runner status` after starting the runner'}.`));
   }
   const migration = legacyMigrationState(home);
+  try { checks.push(...observeLegacyStrayHistory(home).map(line => row('Migration', 'info', line))); }
+  catch (error) { checks.push(row('Migration', 'warn', `Earlier moves could not be checked: ${error instanceof Error ? error.message : String(error)}`)); }
   if (migration.state === 'unavailable') {
     checks.push(row('Myco 1.4', 'fail', `migration state unavailable: ${migration.detail}. Inspect ${migration.file}, then run \`myco cutover --dry-run\`.`));
   } else if (migration.state === 'needs-destination') {
@@ -339,7 +342,7 @@ export async function run(args: readonly string[], source: CredentialSource, dep
   out('');
   const unchecked = checks.filter(check => check.status === 'not-checked');
   out(failed.length + warned.length + unchecked.length === 0 ? '  All checks passed.' : `  ${failed.length} failed, ${warned.length} warning(s), ${unchecked.length} not checked.`);
-  if (flags.includes('--fix') && failed.length + warned.length > 0) out('  Nothing here repairs automatically; each row names the command that does.');
+  if (flags.includes('--fix') && failed.length + warned.length > 0) out('  Nothing here repairs automatically; review the commands in warning and failed rows.');
   out('');
   return failed.length === 0;
 }
