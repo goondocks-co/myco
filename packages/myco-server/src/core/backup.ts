@@ -1,4 +1,4 @@
-import { RETIRED_BACKUP_TABLES, retiredBackupNotice } from '@goondocks/myco-shared/backup-words';
+import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
 import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
 import { restoreAuthorityAuditStatement, restoreMembershipBatch } from './ownership.js';
@@ -338,10 +338,8 @@ function restoreRows(lines: Iterable<string>, header: BackupHeader): {
     artifactTable(row.t);
     if (EXCLUDED_TABLES.has(row.t)) continue;
     const namespace = row.t === 'knowledge_release_state' ? row.r.namespace : undefined;
-    const retiredSource = namespace === 'skill' ? 'skill_records' : namespace === 'digest' ? 'digest_extracts' : namespace;
-    const step = RETIRED_TABLES.get(row.t) ?? (typeof retiredSource === 'string' ? RETIRED_TABLES.get(retiredSource) : undefined);
-    if (step !== undefined) {
-      const retiredTable = RETIRED_TABLES.has(row.t) ? row.t : typeof retiredSource === 'string' ? retiredSource : row.t;
+    const retiredTable = retiredBackupTable(row.t) ?? retiredBackupTable(namespace);
+    if (retiredTable !== undefined) {
       retiredCounts[retiredTable] = (retiredCounts[retiredTable] ?? 0) + 1;
       const previous = tables[row.t]?.rows ?? 0;
       tables[row.t] = { rows: previous + 1, inserted: 0, skipped: 'retired' };

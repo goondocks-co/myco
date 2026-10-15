@@ -111,7 +111,10 @@ export function BackupsSection() {
       >
         {confirming !== null && (
           <>
-            <p className="t-small text-muted" data-restore-counts="">It holds {countsWords(Object.fromEntries(Object.entries(confirming.preview.header.counts).filter(([table]) => confirming.preview.tables?.[table]?.skipped !== 'retired')))}</p>
+            <p className="t-small text-muted" data-restore-counts="">It holds {countsWords(Object.fromEntries(Object.entries(confirming.preview.header.counts).map(([table, count]) => {
+              const outcome = confirming.preview.tables?.[table];
+              return [table, count - (outcome?.skipped === 'retired' ? outcome.rows : 0)];
+            })))}</p>
             {confirming.preview.retiredNotice !== undefined && <p className="t-small text-warn" data-restore-retired="">{confirming.preview.retiredNotice}</p>}
             {Object.entries(confirming.preview.tables ?? {}).filter(([, table]) => table.skipped !== undefined && table.skipped !== 'retired').map(([name, table]) => (
               <p key={name} className="t-small text-warn" data-restore-skipped="">

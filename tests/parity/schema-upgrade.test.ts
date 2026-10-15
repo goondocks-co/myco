@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
-import { assertMigrationMutationDetected, assertUpgradeState, isLocalMigrationSqlFailure, referencedExistingTables, schemaObjects, seedReferencedTables } from './schema-upgrade.ts';
+import { UpgradeStateMismatchError, assertMigrationMutationDetected, assertUpgradeState, firstObservableOmission, isLocalMigrationSqlFailure, referencedExistingTables, schemaObjects, seedReferencedTables } from './schema-upgrade.ts';
 
 const trigger = `CREATE TRIGGER "next trigger" AFTER UPDATE ON "upgrade parent"
   BEGIN UPDATE "upgrade parent" SET label = 'migrated' WHERE id = NEW.id; END`;
@@ -108,4 +108,43 @@ it('requires an observed state mismatch after a local SQL rejection', async () =
     db.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+it('tries later statements when an earlier omission is invisible to seeded rows', async () => {
+  const attempt = async (statements: readonly string[], tried: number[]): Promise<number> => {
+    const seeded = (): Database => {
+      const db = previousSchema();
+      db.exec(`INSERT INTO "upgrade parent" (id, label) VALUES ('present', 'original')`);
+      return db;
+    };
+    const expected = seeded();
+    try {
+      for (const statement of statements) expected.exec(statement);
+      const expectedState = JSON.stringify({ schema: schemaObjects(expected), rows: expected.query('SELECT * FROM "upgrade parent"').all() });
+      return await firstObservableOmission(statements, async (omitted, index) => {
+        tried.push(index);
+        const candidate = seeded();
+        try {
+          await assertMigrationMutationDetected(
+            omitted,
+            async () => { for (const [statementIndex, statement] of statements.entries()) if (statementIndex !== index) candidate.exec(statement); },
+            () => {
+              const actualState = JSON.stringify({ schema: schemaObjects(candidate), rows: candidate.query('SELECT * FROM "upgrade parent"').all() });
+              if (actualState !== expectedState) throw new UpgradeStateMismatchError('seeded fixture changed');
+            },
+          );
+        } finally { candidate.close(); }
+      });
+    } finally { expected.close(); }
+  };
+
+  const noop = `UPDATE "upgrade parent" SET label = 'unused' WHERE id = 'absent'`;
+  const triedObservable: number[] = [];
+  expect(await attempt([noop, 'CREATE INDEX "next index" ON "upgrade parent"(label)'], triedObservable)).toBe(1);
+  expect(triedObservable).toEqual([0, 1]);
+
+  const triedNoops: number[] = [];
+  await expect(attempt([noop, `UPDATE "upgrade parent" SET label = 'still unused' WHERE id = 'missing'`], triedNoops))
+    .rejects.toThrow('no statement of the latest step changes the seeded fixture; seed data it touches');
+  expect(triedNoops).toEqual([0, 1]);
 });

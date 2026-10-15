@@ -11,6 +11,7 @@ export function schemaObjects(db: Database): Array<{ type: string; name: string;
 const sqlIdentifier = (name: string): string => `"${name.replaceAll('"', '""')}"`;
 
 export class UpgradeStateMismatchError extends Error {}
+export class UnobservableMigrationMutationError extends Error {}
 
 export function expectedSchema(files: ReturnType<typeof renderMigrationFiles>): ReturnType<typeof schemaObjects> {
   const db = new Database(':memory:');
@@ -147,7 +148,19 @@ export async function assertMigrationMutationDetected(omittedStatement: string, 
     throw error;
   }
   if (migrationError !== undefined) throw migrationError;
-  throw new Error('dropped latest migration statement escaped the D1 upgrade gate');
+  throw new UnobservableMigrationMutationError('omitted migration statement did not change the seeded fixture');
+}
+
+export async function firstObservableOmission(statements: readonly string[], attempt: (omittedStatement: string, index: number) => Promise<void>): Promise<number> {
+  for (const [index, statement] of statements.entries()) {
+    try {
+      await attempt(statement, index);
+      return index;
+    } catch (error) {
+      if (!(error instanceof UnobservableMigrationMutationError)) throw error;
+    }
+  }
+  throw new Error('no statement of the latest step changes the seeded fixture; seed data it touches');
 }
 
 export function seedReferencedTables(db: Database, statements: readonly string[]): string[] {

@@ -306,7 +306,7 @@ describe('Health', () => {
   it('restores a backup only through its confirm, and one from another Deployment only once the switch is on', async () => {
     const { posts } = server(routes({
       '/auth/me': () => Response.json(dashboardMe({ ...ADMIN, owner: true })),
-      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_other', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4, spores: 12, members: 1, skill_records: 40, digest_extracts: 2, cortex_instructions: 1 } }, foreignLineage: true, restore: { allowed: true, reason: null }, tables: { skill_records: { rows: 40, inserted: 0, skipped: 'retired' }, digest_extracts: { rows: 2, inserted: 0, skipped: 'retired' }, cortex_instructions: { rows: 1, inserted: 0, skipped: 'retired' } }, retiredNotice: retiredBackupNotice({ skill_records: 40, digest_extracts: 2, cortex_instructions: 1 }),
+      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_other', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4, spores: 12, members: 1, skill_records: 40, digest_extracts: 2, cortex_instructions: 1, knowledge_release_state: 3 } }, foreignLineage: true, restore: { allowed: true, reason: null }, tables: { skill_records: { rows: 40, inserted: 0, skipped: 'retired' }, digest_extracts: { rows: 2, inserted: 0, skipped: 'retired' }, cortex_instructions: { rows: 1, inserted: 0, skipped: 'retired' }, knowledge_release_state: { rows: 2, inserted: 0, skipped: 'retired' } }, retiredNotice: retiredBackupNotice({ skill_records: 40, digest_extracts: 2, cortex_instructions: 1 }),
         authorityExcluded: { tables: ['members', 'member_credentials'], notice: 'People from the other server are listed here but cannot sign in until the owner re-admits them.' } }),
       '/api/backups/bk_7f3a9c0e21/restore': () => Response.json({ applied: true, tables: { sessions: { rows: 4, inserted: 4 }, spores: { rows: 12, inserted: 1, skipped: 'newer rows are kept' } } }),
     }));
@@ -318,6 +318,8 @@ describe('Health', () => {
     expect(dialog.querySelectorAll('[data-restore-retired]')).toHaveLength(1);
     for (const internal of ['schema step', '#', 'skill records', 'digest extracts', 'cortex instructions']) expect(dialog.textContent).not.toContain(internal);
     expect(dialog.textContent).toContain('It holds sessions 4 · spores 12');
+    expect(dialog.querySelector('[data-restore-counts]')?.textContent).toContain('knowledge release state 1');
+    expect(dialog.querySelector('[data-restore-counts]')?.textContent).not.toContain('knowledge release state 3');
     expect(dialog.textContent).toContain('comes from another server');
     expect(dialog.textContent).toContain('People from the other server are listed here but cannot sign in until the owner re-admits them.');
     expect(dialog.textContent).not.toContain('their sign-ins, live here');

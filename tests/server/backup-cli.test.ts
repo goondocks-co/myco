@@ -76,42 +76,54 @@ it('routes backup and restore flags to the selected retained target without invo
   } finally { fixture.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-it('the restore command reports retired backup data in the same plain words as the dashboard', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-backup-cli-'));
-  const source = new Database(path.join(root, 'source.sqlite'));
-  try {
-    for (const step of SCHEMA_STEPS.filter(({ version }) => version <= 85)) source.exec(renderMigrationFile(step));
-    source.exec(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_copy','Copy',1);
-      INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent_copy','Agent','built-in',1,1);
-      INSERT INTO skill_candidates(project_id,id,agent_id,topic,rationale,created_at,updated_at)
-        VALUES('proj_copy','candidate','agent_copy','topic','reason',1,1);
-      INSERT INTO digest_extracts(project_id,id,agent_id,tier,content,generated_at)
-        VALUES('proj_copy','digest','agent_copy',1,'digest',1);
-      INSERT INTO cortex_instructions(project_id,id,agent_id,content,input_hash,generated_at)
-        VALUES('proj_copy','instructions','agent_copy','old instructions','hash',1);`);
-    const destination = path.join(root, 'backup');
-    await createRecoveryBundle(destination, {
-      source: { target: 'local', locator: 'copy-fixture' },
-      snapshot: async (file) => {
-        source.query('VACUUM INTO ?').run(file);
-        return { configuration: { port: 8787 }, credentialsRequired: ['SECRET_WRAP_KEY'] };
-      },
-      blob: async () => { throw new Error('copy fixture holds no blobs'); },
-    });
-    const secrets = path.join(root, 'recovery.env');
-    fs.writeFileSync(secrets, 'SECRET_WRAP_KEY=' + Buffer.alloc(32, 7).toString('base64') + '\n', { mode: 0o600 });
-    const result = await invokeServer(root, ['restore', '--target', 'local', '--from', destination,
-      '--secrets-from', secrets, '--source-retired', '--new-signin', '--yes']);
-    expect(result.code).toBe(0);
-    const notice = "This backup includes older data this version no longer keeps (generated skills, digests, old instructions). It won't be restored.";
-    expect(result.text).toContain(notice);
-    expect(result.text.split(notice)).toHaveLength(2);
-    expect(result.text).not.toContain('schema step');
-    expect(result.text).not.toContain('#');
-    const restored = new Database(resolveLocalPaths(path.join(root, 'home')).databasePath, { readonly: true });
+for (const retiredKind of ['table data', 'release aliases', 'table namespaces']) {
+  it(`the restore command reports retired ${retiredKind} in the same plain words as the dashboard`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-backup-cli-'));
+    const source = new Database(path.join(root, 'source.sqlite'));
     try {
-      expect(restored.query("SELECT name FROM sqlite_master WHERE name IN ('skill_candidates','digest_extracts','cortex_instructions')").all()).toEqual([]);
-      expect(restored.query("SELECT name FROM projects WHERE project_id='proj_copy'").get()).toEqual({ name: 'Copy' });
-    } finally { restored.close(); }
-  } finally { source.close(); fs.rmSync(root, { recursive: true, force: true }); }
-});
+      for (const step of SCHEMA_STEPS.filter(({ version }) => version <= 85)) source.exec(renderMigrationFile(step));
+      source.exec(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_copy','Copy',1);
+        INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent_copy','Agent','built-in',1,1);`);
+      if (retiredKind !== 'table data') {
+        const namespaces = retiredKind === 'release aliases' ? ['skill', 'digest']
+          : ['skill_records', 'digest_extracts'];
+        for (const namespace of [...namespaces, 'sessions']) {
+          source.query(`INSERT INTO knowledge_release_state(project_id,id,identity_key,namespace,record_id,state,confidence,checked_at,created_at)
+            VALUES('proj_copy',?,?,?,'record','released','high',1,1)`).run(namespace, namespace, namespace);
+        }
+      } else source.exec(`INSERT INTO skill_candidates(project_id,id,agent_id,topic,rationale,created_at,updated_at)
+          VALUES('proj_copy','candidate','agent_copy','topic','reason',1,1);
+        INSERT INTO digest_extracts(project_id,id,agent_id,tier,content,generated_at)
+          VALUES('proj_copy','digest','agent_copy',1,'digest',1);
+        INSERT INTO cortex_instructions(project_id,id,agent_id,content,input_hash,generated_at)
+          VALUES('proj_copy','instructions','agent_copy','old instructions','hash',1);`);
+      const destination = path.join(root, 'backup');
+      await createRecoveryBundle(destination, {
+        source: { target: 'local', locator: 'copy-fixture' },
+        snapshot: async (file) => {
+          source.query('VACUUM INTO ?').run(file);
+          return { configuration: { port: 8787 }, credentialsRequired: ['SECRET_WRAP_KEY'] };
+        },
+        blob: async () => { throw new Error('copy fixture holds no blobs'); },
+      });
+      const secrets = path.join(root, 'recovery.env');
+      fs.writeFileSync(secrets, 'SECRET_WRAP_KEY=' + Buffer.alloc(32, 7).toString('base64') + '\n', { mode: 0o600 });
+      const result = await invokeServer(root, ['restore', '--target', 'local', '--from', destination,
+        '--secrets-from', secrets, '--source-retired', '--new-signin', '--yes']);
+      expect(result.code).toBe(0);
+      const notice = retiredKind !== 'table data'
+        ? "This backup includes older data this version no longer keeps (generated skills, digests). It won't be restored."
+        : "This backup includes older data this version no longer keeps (generated skills, digests, old instructions). It won't be restored.";
+      expect(result.text).toContain(notice);
+      expect(result.text.split(notice)).toHaveLength(2);
+      expect(result.text).not.toContain('schema step');
+      expect(result.text).not.toContain('#');
+      const restored = new Database(resolveLocalPaths(path.join(root, 'home')).databasePath, { readonly: true });
+      try {
+        expect(restored.query("SELECT name FROM sqlite_master WHERE name IN ('skill_candidates','digest_extracts','cortex_instructions')").all()).toEqual([]);
+        expect(restored.query("SELECT name FROM projects WHERE project_id='proj_copy'").get()).toEqual({ name: 'Copy' });
+        if (retiredKind !== 'table data') expect(restored.query("SELECT namespace FROM knowledge_release_state WHERE project_id='proj_copy'").all()).toEqual([{ namespace: 'sessions' }]);
+      } finally { restored.close(); }
+    } finally { source.close(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+}

@@ -6,7 +6,7 @@ import { Database } from 'bun:sqlite';
 import { renderMigrationFile, renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { devSession } from './dev-session.ts';
-import { assertMigrationMutationDetected, assertUpgradeState, expectedSchema, localD1File, probeForeignKeyAssertion, schemaObjects, seedPreviousSchema, tableRows } from '../schema-upgrade.ts';
+import { assertMigrationMutationDetected, assertUpgradeState, expectedSchema, firstObservableOmission, localD1File, probeForeignKeyAssertion, schemaObjects, seedPreviousSchema, tableRows } from '../schema-upgrade.ts';
 import { parityWranglerConfig } from '@myco/server/deploy-config.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHeadersFor, memberHeadersFor, type ParityTarget } from '../harness.ts';
@@ -152,7 +152,7 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
   const runtime = session ??= devSession(SERVER_DIR);
   try {
     await wrangler(['secrets-store', 'secret', 'create', storeId, '--name', 'parity-wrap-key', '--scopes', 'workers', '--value', btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))), '-c', configName, '--persist-to', persistDir]);
-    let upgrade: { version: number; expected: ReturnType<typeof schemaObjects>; expectedRows: Record<string, string>; mutatedConfig: string; mutatedPersist: string; omittedStatement: string } | undefined;
+    let upgrade: { version: number; expected: ReturnType<typeof schemaObjects>; expectedRows: Record<string, string>; previousPersist: string; priorFiles: ReturnType<typeof renderMigrationFiles>; latestName: string; step: (typeof SCHEMA_STEPS)[number] } | undefined;
     if (options.latestSchemaUpgrade) {
       const files = renderMigrationFiles();
       const latest = files.at(-1);
@@ -181,15 +181,9 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
         for (const statement of step.statements) expectedDb.exec(statement);
         expectedRows = tableRows(expectedDb, touched);
       } finally { expectedDb.close(); }
-      const mutatedPersist = path.join(root, 'mutated-state');
-      fs.cpSync(persistDir, mutatedPersist, { recursive: true });
-      const mutatedDir = path.join(root, 'mutated-migrations');
-      fs.mkdirSync(mutatedDir);
-      for (const file of files.slice(0, -1)) fs.writeFileSync(path.join(mutatedDir, file.name), file.sql);
-      fs.writeFileSync(path.join(mutatedDir, latest.name), renderMigrationFile({ ...step, statements: step.statements.slice(1) }));
-      const mutatedConfig = path.join(root, 'mutated-wrangler.toml');
-      fs.writeFileSync(mutatedConfig, config.replace(/^migrations_dir = .*$/m, `migrations_dir = ${JSON.stringify(mutatedDir)}`) + configTail);
-      upgrade = { version: latestVersion, expected: expectedSchema(files), expectedRows, mutatedConfig, mutatedPersist, omittedStatement: step.statements[0]! };
+      const previousPersist = path.join(root, 'previous-state');
+      fs.cpSync(persistDir, previousPersist, { recursive: true });
+      upgrade = { version: latestVersion, expected: expectedSchema(files), expectedRows, previousPersist, priorFiles: files.slice(0, -1), latestName: latest.name, step };
       fs.writeFileSync(configPath, config + configTail);
     }
     await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir]);
@@ -201,11 +195,23 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       if (JSON.stringify(quickCheck) !== JSON.stringify([{ quick_check: 'ok' }])) throw new Error(`upgraded workerd D1 failed quick_check: ${JSON.stringify(quickCheck)}`);
       await probeForeignKeyAssertion(databaseFile, workerdSql);
       assertUpgradeState(databaseFile, upgrade.version, upgrade.expected, upgrade.expectedRows);
-      await assertMigrationMutationDetected(
-        upgrade.omittedStatement,
-        async () => { await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', upgrade.mutatedConfig, '--persist-to', upgrade.mutatedPersist]); },
-        () => assertUpgradeState(localD1File(upgrade.mutatedPersist), upgrade.version, upgrade.expected, upgrade.expectedRows),
-      );
+      // The last statement stamps the version; omission probes cover the step's data and schema work.
+      await firstObservableOmission(upgrade.step.statements.slice(0, -1), async (omittedStatement, index) => {
+        const candidateRoot = path.join(root, `mutated-${index}`);
+        const mutatedPersist = path.join(candidateRoot, 'state');
+        const mutatedDir = path.join(candidateRoot, 'migrations');
+        fs.mkdirSync(mutatedDir, { recursive: true });
+        fs.cpSync(upgrade.previousPersist, mutatedPersist, { recursive: true });
+        for (const file of upgrade.priorFiles) fs.writeFileSync(path.join(mutatedDir, file.name), file.sql);
+        fs.writeFileSync(path.join(mutatedDir, upgrade.latestName), renderMigrationFile({ ...upgrade.step, statements: upgrade.step.statements.filter((_, statementIndex) => statementIndex !== index) }));
+        const mutatedConfig = path.join(candidateRoot, 'wrangler.toml');
+        fs.writeFileSync(mutatedConfig, config.replace(/^migrations_dir = .*$/m, `migrations_dir = ${JSON.stringify(mutatedDir)}`) + configTail);
+        await assertMigrationMutationDetected(
+          omittedStatement,
+          async () => { await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', mutatedConfig, '--persist-to', mutatedPersist]); },
+          () => assertUpgradeState(localD1File(mutatedPersist), upgrade.version, upgrade.expected, upgrade.expectedRows),
+        );
+      });
     }
 
     const mint = Bun.spawn(['bun', path.join(SERVER_DIR, 'scripts', 'mint-local.ts'), MEMBER_ID, MACHINE_ID, '--rotating', '--print-token'], { cwd: root, stdout: 'pipe', stderr: 'pipe' });
