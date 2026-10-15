@@ -60,10 +60,8 @@ function rememberState(mycoHome: string, result: KeepCurrentResult): void {
 function rememberProvisionProblem(mycoHome: string, problem: string | null): void {
   const target = path.join(mycoHome, 'member', 'provision-problem.json');
   withFileLockSync(`${target}.lock`, () => {
-    let before: string | null = null;
-    try { before = JSON.parse(fs.readFileSync(target, 'utf8')); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
+    let before: unknown;
+    try { before = JSON.parse(fs.readFileSync(target, 'utf8')); } catch { /* Unreadable diagnostic state is replaced below. */ }
     if (before === problem) return;
     atomicWriteFileSync(target, JSON.stringify(problem));
     if (problem !== null) process.stderr.write(`[myco] keep-current: ${problem}\n`);
@@ -71,7 +69,7 @@ function rememberProvisionProblem(mycoHome: string, problem: string | null): voi
 }
 
 /** Repair the managed harnesses through provisioning, serialized across this home's project helpers. */
-export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: string) => boolean; packageRoot?: string; serverUrl?: string } = {}): KeepCurrentResult | null {
+export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: string) => boolean; packageRoot?: string; serverUrl?: string; wait?: boolean } = {}): KeepCurrentResult | null {
   try {
     return withManagedMemberHarnesses(mycoHome, { ...deps, onInspectionError: message => process.stderr.write(`[myco] keep-current: ${message}\n`) }, (record, discovered) => {
       rememberProvisionProblem(mycoHome, null);

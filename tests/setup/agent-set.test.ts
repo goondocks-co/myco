@@ -2,12 +2,15 @@ import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import * as member from '@myco/cli/member.js';
 import * as recordModule from '@myco/symbionts/member-provision-record.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { setupChecks } from '@myco/cli/member-doctor.js';
+import { run as login } from '@myco/cli/login.js';
+import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
+import { unjoinedRig } from '../member/helpers/server.js';
 import { keepCurrent } from '@myco/cli/member-keep-current.js';
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { observeSetup, observeSetupStatus } from '@myco/setup/observe.js';
@@ -34,7 +37,11 @@ beforeEach(() => {
   process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
   writeDeploymentMembership({ serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
 });
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all([...children].map(child => new Promise<void>(resolve => {
+    child.once('exit', () => resolve());
+    child.kill('SIGKILL');
+  })));
   restore();
   if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
   fs.rmSync(scratch, { recursive: true, force: true });
@@ -94,14 +101,14 @@ it('doctor and setup status warn once about a torn agent setup record with a rec
   expect(checks).toHaveLength(1);
   expect(checks[0]?.status).toBe('warn');
   expect(checks[0]?.detail).toContain(file);
-  expect(checks[0]?.detail).toContain('Fix or restore the file, then run myco member provision --refresh.');
+  expect(checks[0]?.detail).toContain('Restore it from a backup or delete it, then run myco member provision --refresh.');
   const lines: string[] = [];
   const errors: string[] = [];
   const code = await setup(['--status'], { mycoHome: home, cwd: scratch, agents: detected, stdout: line => lines.push(line), stderr: line => errors.push(line) });
   expect(errors).toEqual([]);
   expect(code).toBe(3);
   expect(lines.filter(line => line.includes(file))).toHaveLength(1);
-  expect(lines.join('\n')).toContain('Fix or restore the file, then run myco member provision --refresh.');
+  expect(lines.join('\n')).toContain('Restore it from a backup or delete it, then run myco member provision --refresh.');
   expect(fs.readFileSync(file, 'utf8')).toBe('{not json');
 });
 
@@ -166,28 +173,6 @@ it('read paths stay quiet and an installed agent offer respects a left Deploymen
   } finally { log.mockRestore(); }
 });
 
-it('healing holds the repair lock while writing, so remove waits and then stays removed', () => {
-  provision('claude-code');
-  provision('codex');
-  const original = recordModule.recordProvision;
-  let attempted = false;
-  const write = spyOn(recordModule, 'recordProvision').mockImplementation((h, record, opts) => {
-    if (!attempted && record.agents.includes('codex') && record.agents.length > 1) {
-      attempted = true;
-      expect(member.runProvision(['codex', '--remove'], { mycoHome: home, cwd: scratch, stdout: () => {}, stderr: () => {} })).toBe(false);
-    }
-    return original(h, record, opts);
-  });
-  try {
-    expect(member.runProvision(['claude-code', '--server', SERVER], { mycoHome: home, cwd: scratch, stdout: () => {} })).toBe(true);
-    expect(attempted).toBe(true);
-  } finally { write.mockRestore(); }
-  expect(member.runProvision(['codex', '--remove'], { mycoHome: home, cwd: scratch, stdout: () => {} })).toBe(true);
-  expect(readProvisionRecord(home)?.agents).toEqual(['claude-code']);
-  expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code']);
-  expect(fs.existsSync(path.join(process.env.CODEX_HOME!, 'hooks.json'))).toBe(false);
-});
-
 it('healing re-reads choices and owned registrations after acquiring the repair lock', () => {
   provision('claude-code');
   provision('codex');
@@ -210,18 +195,62 @@ it('healing re-reads choices and owned registrations after acquiring the repair 
   expect(fs.existsSync(path.join(process.env.CODEX_HOME!, 'hooks.json'))).toBe(false);
 });
 
-for (const operation of ['named', 'batch', 'join'] as const) it(`${operation} provision holds the removal lock while installing`, async () => {
+const children = new Set<ChildProcess>();
+const fixture = path.join(import.meta.dir, 'fixtures/repair-lease.ts');
+function repairChild(mode: string, signal: string) {
+  const child = spawn(process.execPath, ['--tsconfig-override', path.resolve('tsconfig.json'), fixture, mode, home, signal], {
+    cwd: scratch, env: process.env, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  children.add(child);
+  let output = '';
+  child.stdout!.on('data', data => { output += String(data); });
+  child.stderr!.on('data', data => { output += String(data); });
+  const exited = new Promise<number | null>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', code => { children.delete(child); resolve(code); });
+  });
+  return { child, exited, output: () => output };
+}
+async function helperLease() {
+  const signal = path.join(scratch, 'release-helper');
+  const holder = repairChild('hold', signal);
+  await new Promise<void>((resolve, reject) => {
+    holder.child.stdout!.on('data', data => { if (String(data).includes('READY')) resolve(); });
+    holder.exited.then(() => reject(new Error('fixture helper exited before readiness')), reject);
+  });
+  const acquire = LifecycleLock.acquire;
+  const watch = spyOn(LifecycleLock, 'acquire').mockImplementation((file, opts) => {
+    if (opts?.command === 'myco member provision') fs.writeFileSync(signal, 'release');
+    return acquire(file, opts);
+  });
+  return { ...holder, signal, watch };
+}
+
+for (const operation of ['named', 'batch', 'join', 'healing'] as const) it(operation + ' provision completes before a concurrent remove, which stays removed', async () => {
   provision('claude-code');
   provision('codex');
-  const original = recordModule.recordProvision;
-  let attempted = false;
-  const write = spyOn(recordModule, 'recordProvision').mockImplementation((h, record, opts) => {
-    if (!attempted && record.agents.length === 1 && record.agents[0] === 'claude-code') {
-      attempted = true;
-      expect(member.runProvision(['codex', '--remove'], { mycoHome: home, cwd: scratch, stdout: () => {}, stderr: () => {} })).toBe(false);
-    }
-    return original(h, record, opts);
-  });
+  let removal: ReturnType<typeof repairChild> | undefined;
+  const signal = path.join(scratch, 'remove-requested');
+  const beginRemoval = () => {
+    if (removal) return;
+    removal = repairChild('remove', signal);
+    const deadline = Date.now() + 5_000;
+    while (!fs.existsSync(signal) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    expect(fs.existsSync(signal)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(signal, 'utf8'))).toEqual({ wait: true });
+    expect(readProvisionRecord(home)?.agents).toContain('codex');
+  };
+  const originalWrite = recordModule.recordProvision;
+  const originalReconcile = recordModule.reconcileProvisionAgents;
+  const write = operation === 'healing'
+    ? spyOn(recordModule, 'reconcileProvisionAgents').mockImplementation((h, record) => {
+      beginRemoval();
+      return originalReconcile(h, record);
+    })
+    : spyOn(recordModule, 'recordProvision').mockImplementation((h, record, opts) => {
+      if (record.agents.length === 1 && record.agents[0] === 'claude-code') beginRemoval();
+      return originalWrite(h, record, opts);
+    });
   try {
     if (operation === 'join') {
       const root = path.join(scratch, 'repo');
@@ -232,11 +261,134 @@ for (const operation of ['named', 'batch', 'join'] as const) it(`${operation} pr
         fetch: async () => Response.json({ ok: true, blocks: [], settings: {} }), stdout: () => {}, stderr: () => {},
       })).not.toBeNull();
     } else expect(member.runProvision([...(operation === 'batch' ? [] : ['claude-code']), '--server', SERVER], { mycoHome: home, cwd: scratch, agents: () => ['claude-code'], stdout: () => {} })).toBe(true);
-    expect(attempted).toBe(true);
   } finally { write.mockRestore(); }
-  expect(member.runProvision(['codex', '--remove'], { mycoHome: home, cwd: scratch, stdout: () => {} })).toBe(true);
+  expect(removal).toBeDefined();
+  expect(await removal!.exited, removal!.output()).toBe(0);
+  expect(readProvisionRecord(home)?.agents).toEqual(['claude-code']);
   expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code']);
   expect(fs.existsSync(path.join(process.env.CODEX_HOME!, 'hooks.json'))).toBe(false);
+});
+
+for (const operation of ['guided setup', 'login'] as const) it(operation + ' waits for a helper lease and sets up the detected agents', async () => {
+  const root = path.join(scratch, 'repo');
+  fs.mkdirSync(root);
+  execFileSync('git', ['init', '-q', root]);
+  writeRegistryEntry({ version: 2, root, projectId: 'proj_fixture', serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+  const holder = await helperLease();
+  const lines: string[] = [];
+  const errors: string[] = [];
+  try {
+    if (operation === 'guided setup') {
+      const fetchImpl = Object.assign(async (input: Parameters<typeof fetch>[0]) => {
+        const route = new URL(input instanceof Request ? input.url : String(input)).pathname;
+        if (route === '/health') return Response.json({ ok: true });
+        if (route === '/auth/login') return new Response(null, { status: 302, headers: { location: 'https://github.com/login/oauth/authorize?client_id=fixture&redirect_uri=' + encodeURIComponent(SERVER + '/auth/callback') } });
+        if (route === '/members/status') return Response.json({ target: 'fixture' });
+        throw new Error('unexpected route ' + route);
+      }, { preconnect: () => {} });
+      expect(await setup(['--join', SERVER, '--yes', '--no-runner'], {
+        mycoHome: home, cwd: root, ask: async () => null, fetch: fetchImpl, agents: () => ['claude-code', 'codex'],
+        stdout: line => lines.push(line), stderr: line => errors.push(line),
+      }), errors.join('\n')).toBe(0);
+    } else {
+      const rig = unjoinedRig();
+      const authority = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' });
+      expect(await login(['https://s/join#' + authority.key], {
+        mycoHome: home, cwd: scratch, machineId: 'fixture', fetch: Object.assign(rig.fetch, { preconnect: () => {} }), agents: () => ['claude-code', 'codex'],
+        stdout: line => lines.push(line), stderr: line => errors.push(line),
+      })).toBe(true);
+    }
+    expect(errors).toEqual([]);
+    expect(lines.join('\n')).toContain('Capture is set up for Claude Code, Codex.');
+    expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
+  } finally {
+    holder.watch.mockRestore();
+    fs.writeFileSync(holder.signal, 'release');
+    expect(await holder.exited, holder.output()).toBe(0);
+  }
+});
+
+it('healing keeps a hook-trust prompt settled during its registration scan settled', () => {
+  provision('claude-code');
+  provision('codex');
+  recordModule.holdHookTrust(home, 'codex', 'Restart Codex and trust its hooks');
+  const pending = readProvisionRecord(home)?.pendingTrust;
+  const original = SymbiontInstaller.prototype.memberRegistrationPresent;
+  let settled = false;
+  const scan = spyOn(SymbiontInstaller.prototype, 'memberRegistrationPresent').mockImplementation(function (this: SymbiontInstaller, ...args) {
+    if (!settled) {
+      settled = true;
+      recordModule.settleHookTrust(home, pending);
+      expect(readProvisionRecord(home)?.pendingTrust?.codex).toBeUndefined();
+    }
+    return original.apply(this, args);
+  });
+  try {
+    const result = keepCurrent(home, { binaryFound: () => true });
+    expect(settled).toBe(true);
+    expect(readProvisionRecord(home)?.pendingTrust?.codex).toBeUndefined();
+    expect(result?.harnesses.find(fact => fact.id === 'codex')?.state).toBe('ready');
+  } finally { scan.mockRestore(); }
+});
+
+it('keep-current replaces an unreadable diagnostic state without failing or repeating its warning', () => {
+  provision('claude-code');
+  const file = path.join(home, 'member', 'provision-problem.json');
+  fs.writeFileSync(file, '{not json');
+  expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code']);
+  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toBeNull();
+  fs.writeFileSync(file, '{not json');
+  fs.writeFileSync(provisionRecordPath(home), '{not json');
+  const errors: string[] = [];
+  const log = spyOn(process.stderr, 'write').mockImplementation(chunk => { errors.push(String(chunk)); return true; });
+  try {
+    expect(keepCurrent(home)).toBeNull();
+    expect(keepCurrent(home)).toBeNull();
+    expect(errors).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toContain('Restore it from a backup or delete it');
+  } finally { log.mockRestore(); }
+});
+
+it('keep-current stays non-blocking while a helper holds the lease', async () => {
+  provision('claude-code');
+  const holder = await helperLease();
+  try {
+    expect(keepCurrent(home, { binaryFound: () => true })).toBeNull();
+    expect(holder.watch.mock.calls.at(-1)?.[1]?.wait).not.toBe(true);
+    expect(holder.child.exitCode).toBeNull();
+  } finally {
+    holder.watch.mockRestore();
+    fs.writeFileSync(holder.signal, 'release');
+    expect(await holder.exited, holder.output()).toBe(0);
+  }
+});
+
+it('person-run lease timeouts name the busy operation and retry without an ownership refusal', () => {
+  provision('claude-code');
+  const acquire = spyOn(LifecycleLock, 'acquire').mockReturnValue({ acquired: false, holder: null, holderPid: null });
+  try {
+    for (const args of [['claude-code', '--server', SERVER], ['--server', SERVER], ['--refresh']]) {
+      expect(() => member.runProvision(args, { mycoHome: home, cwd: scratch, agents: () => ['claude-code'] })).toThrow("Myco is updating this machine's agents. Retry this command");
+      expect(acquire.mock.calls.at(-1)?.[1]).toMatchObject({ wait: true, timeoutMs: 15_000 });
+    }
+    const errors: string[] = [];
+    expect(member.runProvision(['claude-code', '--remove'], { mycoHome: home, cwd: scratch, stderr: line => errors.push(line) })).toBe(false);
+    expect(errors.join('\n')).toContain('Retry this command');
+    expect(errors.join('\n')).not.toContain('ownership');
+    expect(keepCurrent(home)).toBeNull();
+  } finally { acquire.mockRestore(); }
+});
+
+it('a later reconciliation timeout asks the person to retry their command', () => {
+  provision('claude-code');
+  const original = LifecycleLock.acquire;
+  const acquire = spyOn(LifecycleLock, 'acquire').mockImplementation((file, opts) => opts?.command === 'myco member reconcile'
+    ? { acquired: false, holder: null, holderPid: null } : original(file, opts));
+  try {
+    for (const args of [['claude-code', '--server', SERVER], ['--server', SERVER], ['--refresh']]) {
+      expect(() => member.runProvision(args, { mycoHome: home, cwd: scratch, agents: () => ['claude-code'] })).toThrow("Myco is updating this machine's agents. Retry this command after the current update finishes.");
+    }
+  } finally { acquire.mockRestore(); }
 });
 
 it('unexpected registration inspection errors remain observable', async () => {

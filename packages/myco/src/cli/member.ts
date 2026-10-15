@@ -49,7 +49,7 @@ import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
 import { CutoverBackup } from '../member/cutover-backup.js';
 import { linkMemberSkills, missingMemberSkills, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
-import { readProvisionRecord, readProvisionRecordStrict, recordProvision, forgetProvision, holdHookTrust, type ProvisionRecord } from '../symbionts/member-provision-record.js';
+import { readProvisionRecord, readProvisionRecordStrict, recordProvision, reconcileProvisionAgents, forgetProvision, holdHookTrust, type ProvisionRecord } from '../symbionts/member-provision-record.js';
 import { REPAIR_LOCK, keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
 import { getPluginVersion } from '../version.js';
 import { postRoute } from './deployment-reader.js';
@@ -492,9 +492,14 @@ export function memberProvisionTarget(mycoHome: string, serverUrl?: string): str
   return memberships.length === 1 ? memberships[0].serverUrl : undefined;
 }
 
-function withMemberRepair<T>(mycoHome: string, command: string, fn: () => T): T | null {
-  const acquired = LifecycleLock.acquire(path.join(mycoHome, 'member', REPAIR_LOCK), { command });
-  if (!acquired.acquired) return null;
+const MEMBER_REPAIR_WAIT_MS = 15_000;
+
+function withMemberRepair<T>(mycoHome: string, command: string, fn: () => T, opts: { wait?: boolean } = {}): T | null {
+  const acquired = LifecycleLock.acquire(path.join(mycoHome, 'member', REPAIR_LOCK), { command, ...opts, ...(opts.wait ? { timeoutMs: MEMBER_REPAIR_WAIT_MS } : {}) });
+  if (!acquired.acquired) {
+    if (opts.wait) throw new Error("Myco is updating this machine's agents. Retry this command after the current update finishes.");
+    return null;
+  }
   try { return fn(); } finally { acquired.lock.release(); }
 }
 
@@ -503,27 +508,22 @@ function provisionChosenAgent(agent: string, root: string | null, mycoHome: stri
     const backup = provisionBackup(mycoHome);
     try { return provisionGlobally(agent, root, mycoHome, { ...opts, backup }); }
     finally { backup.pruneUnchanged(); }
-  });
-  if (outcome?.kind === 'provisioned' || outcome?.kind === 'unchanged') withManagedMemberHarnesses(mycoHome, opts, () => {});
+  }, { wait: true });
+  if (outcome?.kind === 'provisioned' || outcome?.kind === 'unchanged') withManagedMemberHarnesses(mycoHome, { ...opts, wait: true }, () => {});
   return outcome;
 }
 
 /** Reconcile fresh choices and owned registrations, and hold the repair lease through the operation. */
-export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageRoot?: string; serverUrl?: string; onInspectionError?: (message: string) => void }, fn: (record: ProvisionRecord, agents: string[]) => T): T | null {
+export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageRoot?: string; serverUrl?: string; onInspectionError?: (message: string) => void; wait?: boolean }, fn: (record: ProvisionRecord, agents: string[]) => T): T | null {
   return withMemberRepair(mycoHome, 'myco member reconcile', () => {
     const serverUrl = memberProvisionTarget(mycoHome, opts.serverUrl);
     if (serverUrl === undefined) return null;
     const before = readProvisionRecordStrict(mycoHome);
     const agents = managedMemberHarnesses(mycoHome, serverUrl, opts);
     if (before === null && agents.length === 0) return null;
-    const retain = <V>(entries: Record<string, V> | undefined): Record<string, V> | undefined => entries === undefined ? undefined
-      : Object.fromEntries(Object.entries(entries).filter(([id]) => agents.includes(id)));
-    const record = recordProvision(mycoHome, {
-      version: before?.version ?? getPluginVersion(), serverUrl, agents,
-      binaries: retain(before?.binaries), pendingTrust: retain(before?.pendingTrust),
-    }, { replace: true });
+    const record = reconcileProvisionAgents(mycoHome, { version: getPluginVersion(), serverUrl, agents });
     return fn(record, agents);
-  });
+  }, { wait: opts.wait });
 }
 
 /** Read-only registration and settings currency through the installer. */
@@ -648,13 +648,13 @@ export function provisionDetectedAgents(
 export function provisionAgents(
   agents: readonly string[], mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; preserveOtherMemberTools?: boolean } = {},
 ): DetectedProvision {
-  const found = withMemberRepair(mycoHome, 'myco member provision', () => installMemberAgents(agents, mycoHome, serverUrl, root, opts));
+  const found = withMemberRepair(mycoHome, 'myco member provision', () => installMemberAgents(agents, mycoHome, serverUrl, root, opts), { wait: true });
   if (found === null) return {
     provisioned: [], unchanged: [], heldSkills: [],
     skipped: loadManifests().filter(manifest => agents.includes(manifest.name)).map(manifest => ({ agent: manifest.name, displayName: manifest.displayName, reason: 'a helper is provisioning agents; retry when it finishes' })),
   };
-  withManagedMemberHarnesses(mycoHome, opts, () => {});
-  if (opts.preserveOtherMemberTools && found.skipped.length === 0) keepCurrent(mycoHome, { packageRoot: opts.packageRoot });
+  withManagedMemberHarnesses(mycoHome, { ...opts, wait: true }, () => {});
+  if (opts.preserveOtherMemberTools && found.skipped.length === 0) keepCurrent(mycoHome, { packageRoot: opts.packageRoot, wait: true });
   return found;
 }
 
@@ -761,21 +761,25 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
   if (refresh) {
     if (remove) return fail('--refresh and --remove cannot be combined');
     if (agent !== undefined) return fail('--refresh sets up again the agents set up before; it takes no agent');
-    const record = readProvisionRecord(mycoHome);
-    if (record === null) {
-      const serverUrl = memberProvisionTarget(mycoHome, serverArg);
-      if (serverUrl === undefined && serverArg === undefined) {
-        const memberships = listDeploymentMemberships(mycoHome);
-        if (memberships.length > 1) return fail(`this machine is a member of ${memberships.length} Deployments; name one with --server (${memberships.map(m => deploymentUrl(m.serverUrl)).join(', ')})`);
+    const checked = withMemberRepair(mycoHome, 'myco member provision --refresh', () => {
+      const record = readProvisionRecord(mycoHome);
+      if (record === null) {
+        const serverUrl = memberProvisionTarget(mycoHome, serverArg);
+        if (serverUrl === undefined && serverArg === undefined) {
+          const memberships = listDeploymentMemberships(mycoHome);
+          if (memberships.length > 1) return fail(`this machine is a member of ${memberships.length} Deployments; name one with --server (${memberships.map(m => deploymentUrl(m.serverUrl)).join(', ')})`);
+        }
+        const agents = serverUrl === undefined ? [] : managedMemberHarnesses(mycoHome, serverUrl, deps);
+        if (agents.length === 0) {
+          out('Myco has not set up your agents on this machine; run `myco member provision` to set them up.');
+          if (serverUrl !== undefined) recordNoAgents(mycoHome, serverUrl);
+          return 'finished' as const;
+        }
       }
-      const agents = serverUrl === undefined ? [] : managedMemberHarnesses(mycoHome, serverUrl, deps);
-      if (agents.length === 0) {
-        out('Myco has not set up your agents on this machine; run `myco member provision` to set them up.');
-        if (serverUrl !== undefined) recordNoAgents(mycoHome, serverUrl);
-        return true;
-      }
-    }
-    const repaired = keepCurrent(mycoHome, { packageRoot: deps.packageRoot, serverUrl: serverArg });
+      return 'repair' as const;
+    }, { wait: true });
+    if (checked !== 'repair') return checked === 'finished';
+    const repaired = keepCurrent(mycoHome, { packageRoot: deps.packageRoot, serverUrl: serverArg, wait: true });
     refreshed?.(repaired, mycoHome);
     if (repaired !== null) {
       if (repaired.harnesses.length === 0) out('No agent is set up for Myco on this machine; `myco member provision` sets them up.');
@@ -796,7 +800,7 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
         installer.uninstallMemberRegistration();
         forgetProvision(mycoHome, agent);
         return true;
-      });
+      }, { wait: true });
       if (removed === null) return fail('a helper is provisioning agents; retry when it finishes');
     } catch (error) { return fail(error instanceof Error ? error.message : String(error)); }
     out(`Removed Myco's hooks and MCP entry for ${manifest.displayName}.`);

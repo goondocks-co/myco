@@ -32,7 +32,7 @@ export function provisionRecordPath(mycoHome: string): string {
 
 export class UnreadableProvisionRecordError extends Error {
   constructor(mycoHome: string) {
-    super(`Myco's agent setup record at ${provisionRecordPath(mycoHome)} could not be read. Fix or restore the file, then run myco member provision --refresh.`);
+    super(`Myco's agent setup record at ${provisionRecordPath(mycoHome)} could not be read. Restore it from a backup or delete it, then run myco member provision --refresh.`);
   }
 }
 
@@ -96,6 +96,19 @@ export function settleHookTrust(mycoHome: string, reported: ProvisionRecord['pen
     if (record === null || reported === undefined || record.pendingTrust === undefined) return;
     const pendingTrust = Object.fromEntries(Object.entries(record.pendingTrust).filter(([id, trust]) => reported[id]?.at !== trust.at));
     if (Object.keys(pendingTrust).length !== Object.keys(record.pendingTrust).length) writeProvisionRecord(mycoHome, { ...record, pendingTrust });
+  });
+}
+
+/** Replace the managed agent set and prune metadata from the record held by the file lease. */
+export function reconcileProvisionAgents(mycoHome: string, provision: Pick<ProvisionRecord, 'version' | 'serverUrl' | 'agents'>): ProvisionRecord {
+  return withProvisionLock(mycoHome, () => {
+    const before = readProvisionRecordStrict(mycoHome);
+    const retain = <V>(entries: Record<string, V> | undefined): Record<string, V> | undefined => entries === undefined ? undefined
+      : Object.fromEntries(Object.entries(entries).filter(([id]) => provision.agents.includes(id)));
+    return writeProvisionRecord(mycoHome, {
+      ...provision, version: before?.version ?? provision.version, serverUrl: before?.serverUrl ?? provision.serverUrl,
+      binaries: retain(before?.binaries), pendingTrust: retain(before?.pendingTrust),
+    }, { replace: true });
   });
 }
 

@@ -697,7 +697,7 @@
     "tests/server/wrangler-template-drift.test.ts": 167,
     "tests/service/task-proof.test.ts": 229,
     "tests/service/windows-native-ci-contract.test.ts": 26,
-    "tests/setup/agent-set.test.ts": 3783,
+    "tests/setup/agent-set.test.ts": 5853,
     "tests/setup/fixtures.test.ts": 2581,
     "tests/setup/github-signin.test.ts": 5502,
     "tests/setup/journeys.test.ts": 152629,
@@ -767,7 +767,7 @@
     "tests/utils/git.test.ts": 5,
     "tests/utils/lifecycle-lock-read.test.ts": 154,
     "tests/utils/lifecycle-lock-shared.test.ts": 30,
-    "tests/utils/lifecycle-lock.test.ts": 63,
+    "tests/utils/lifecycle-lock.test.ts": 930,
     "tests/utils/lock-file-identity.test.ts": 4776,
     "tests/utils/repository-name.test.ts": 476,
     "tests/utils/windows-atomic-replace.test.ts": 2
