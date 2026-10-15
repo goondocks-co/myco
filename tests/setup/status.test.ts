@@ -20,7 +20,6 @@ import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { resolveManagedBinaryPath } from '@myco/symbionts/installer.js';
 import { readVaultContent } from '@myco/member/legacy-backup.js';
-import { LEGACY_HISTORY_PATH } from '@goondocks/myco-shared/member-protocol';
 
 let scratch: string;
 let fixture: ReturnType<typeof statusHome>;
@@ -303,18 +302,14 @@ for (const backupOnly of [false, true]) it(`reports installed 2.0 capture separa
     expect(provisionGlobally('claude-code', null, fixture.home, { serverUrl: STATUS_URL }).kind).toBe('provisioned');
     const bytes = fs.readFileSync(vault);
     expect(legacyMigrationState(fixture.home).state).toBe(backupOnly ? 'needs-destination' : 'unmoved');
-    const facts = await observeSetupStatus(fixture.home, { role: 'join', url: STATUS_URL }, { ...deps(), fetch: Object.assign(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-      expect(new URL(new Request(input, init).url).pathname).toBe(LEGACY_HISTORY_PATH);
-      expect(JSON.parse(String(init?.body))).toEqual({ eventGroups: [], projectState: true });
-      return Response.json({ persisted: false, code: 'no_project' });
-    }, { preconnect: () => {} }) });
+    const facts = await observeSetupStatus(fixture.home, { role: 'join', url: STATUS_URL }, deps());
     expect(facts.find(fact => fact.id === 'machine.agents')?.detail).not.toBe('deferred-legacy');
     const text = renderSetupStatus(facts).join('\n');
     expect(text).toContain('Agent hooks: Myco 2.0 capture is installed');
     expect(text).not.toContain('1.4 still owns agent capture');
-    expect(facts.find(fact => fact.id === 'legacy')?.legacyConfirmation).toBe('no-destination');
-    expect(text).toContain("Myco couldn't find a Deployment for this project's earlier move.");
-    expect(text).toContain('myco setup --cutover to choose a destination, or skip the project. Keep the 1.4 data.');
+    expect(facts.find(fact => fact.id === 'legacy')?.legacyConfirmation).toBe('not-found');
+    expect(text).toContain(backupOnly ? 'Some Myco 1.4 projects need a destination' : 'Myco 1.4 data has not been moved');
+    expect(text).not.toContain('earlier move');
     const doctor = (await homeReport(fixture.home, { ...deps(), worker: { runner: () => { throw new Error('No service calls'); } } })).map(check => check.detail).join('\n');
     expect(doctor).toContain('hooks (');
     expect(doctor).toContain('are installed; capture execution not checked');

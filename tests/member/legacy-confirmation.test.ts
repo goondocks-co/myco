@@ -52,10 +52,12 @@ for (const scenario of ['unauthorized', 'unreachable', 'stale-root', 'ambiguous'
       writeCutoverState(home, state);
     }
     const before = readCutoverState(home).migrations![vault]!.projects.proj_old;
-    const firstHost = new URL(listDeploymentMemberships(home)[0]?.serverUrl ?? 'https://none.invalid').hostname;
+    const firstHost = new URL(listDeploymentMemberships(home).sort((a, b) => a.serverUrl.localeCompare(b.serverUrl))[0]?.serverUrl ?? 'https://none.invalid').hostname;
     const calls: { host: string; body: Record<string, unknown> }[] = [];
     const observed = await observeLegacyMigration(home, { fetch: async (input, init) => {
-      const host = new URL(new Request(input, init).url).hostname;
+      const url = new URL(new Request(input, init).url);
+      const host = url.hostname;
+      if (url.pathname === '/members/status') return Response.json({ persisted: true, deploymentId: host });
       const body = JSON.parse(String(init?.body));
       calls.push({ host, body });
       if (scenario === 'failure-priority' && host === firstHost) return new Response(null, { status: 401 });

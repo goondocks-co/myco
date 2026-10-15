@@ -34,6 +34,7 @@ export interface Observation {
   joinedDeployments?: string[];
   legacyError?: string;
   legacyNotice?: string;
+  legacyConfirmationProjects?: import('@myco/member/legacy-migration.js').LegacyMigrationState['confirmationProjects'];
   legacyConfirmation?: import('@myco/member/legacy-migration.js').LegacyMigrationState['confirmation'];
   capture?: { waiting?: number | null; nextProbeAt?: number; recentRefusals?: number; unreadableLines?: number };
   target?: 'cloudflare' | 'local';
@@ -75,10 +76,10 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
     const guidance = legacyCaptureGuidance(migration);
     facts.push({
       id: 'legacy',
-      legacyNotice: [migration.terminalProjects?.map(project => `${project.name} has been moved. Its project is ${project.state} on the Deployment.`).join(' '),
+      legacyNotice: [guidance.notice,
         migration.ignoredLineage ? `Skipped ${migration.ignoredLineage} malformed 1.4 lineage event(s) during confirmation.` : null].filter(Boolean).join(' '),
       ...(migration.state === 'unavailable' ? { legacyError: migration.detail } : {}),
-      ...(migration.confirmation === undefined ? {} : { legacyConfirmation: migration.confirmation }),
+      ...(migration.confirmation === undefined ? {} : { legacyConfirmation: migration.confirmation, legacyConfirmationProjects: migration.confirmationProjects }),
       scope: migration.state === 'unavailable' ? migration.file : home,
       state: migration.state === 'unavailable' ? 'unavailable' : migration.state === 'none' || migration.state === 'moved' ? 'complete' : 'incomplete',
       detail: [migration.state, guidance.deferral ?? guidance.hint ?? (migration.state === 'none' || migration.state === 'moved' ? 'No Myco 1.4 migration remains.' : 'Migration is unfinished; keep the 1.4 data and run myco setup --cutover to preview and resume.'), guidance.warning].filter(Boolean).join(' '),

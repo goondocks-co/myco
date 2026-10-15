@@ -2,16 +2,21 @@ import path from 'node:path';
 import { LEGACY_HISTORY_MAX_EVENTS, LEGACY_HISTORY_PATH, type LegacyHistoryIdentities } from '@goondocks/myco-shared/member-protocol';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { completedLegacyDestination, completedLegacyVault, legacyMigrationState, readCutoverState, updateCutoverState, type LegacyMigrationState } from './legacy-migration.js';
-import { LegacyMigrationUnreadable, legacyRealpath, legacySources, legacyVaultProjectIds, legacyVaultStamp } from './legacy-sources.js';
+import { LegacyMigrationUnreadable, legacyProjectNames, legacyRealpath, legacySources, legacyVaultProjectIds, legacyVaultStamp } from './legacy-sources.js';
 import { readVaultContent } from './legacy-backup.js';
 import { legacyContentSessionIds, legacyVaultCompletionIdentities, readLegacyVault } from './legacy-import.js';
 import { deploymentKeyFor, deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult } from './registry.js';
 import { ensureMemberDir, ensurePrivateFile, memberRoot } from './store.js';
-import { ServerClient, type FetchLike, type Outcome } from './transport.js';
+import { classifyEventAnswer, ServerClient, type FetchLike, type Outcome } from './transport.js';
 
 const CONFIRMATION_BUDGET_MS = 5000;
+const DEPLOYMENT_IDENTITY_PATH = '/members/status';
 export interface LegacyConfirmationDeps { fetch?: FetchLike; now?: () => number; homeDir?: string; homes?: readonly string[] }
 type Confirmation = NonNullable<LegacyMigrationState['confirmation']>;
+const CONFIRMATION_PRIORITY: readonly Confirmation[] = ['not-found', 'no-destination', 'project-missing', 'busy', 'pending', 'unavailable', 'update-required', 'sign-in-required', 'ambiguous'];
+const preferredConfirmation = (left: Confirmation, right: Confirmation): Confirmation =>
+  CONFIRMATION_PRIORITY.indexOf(left) >= CONFIRMATION_PRIORITY.indexOf(right) ? left : right;
+
 type Proof = { state: 'confirmed'; eventIds: string[]; sporeIds: string[]; lineageIds: string[]; projectState?: 'active' | 'archived' | 'deleted' } | { state: Confirmation };
 
 function proofBatches(source: LegacyHistoryIdentities): LegacyHistoryIdentities[] {
@@ -100,7 +105,7 @@ export function legacyConfirmationObserver() {
     if (attempt === undefined) { attempt = observeLegacyMigration(home, deps); attempts.set(key, attempt); }
     const result = await attempt;
     const fresh = legacyMigrationState(home, deps);
-    return ['unmoved', 'needs-destination', 'partial', 'handover-pending'].includes(fresh.state) ? { ...fresh, confirmation: result.confirmation } : fresh;
+    return ['unmoved', 'needs-destination', 'partial', 'handover-pending'].includes(fresh.state) ? { ...fresh, confirmation: result.confirmation, confirmationProjects: result.confirmationProjects } : fresh;
   };
 }
 
@@ -120,7 +125,16 @@ export async function observeLegacyMigration(home: string, deps: LegacyConfirmat
   const state = readCutoverState(home);
   const { memberships, bindings } = confirmationRegistry(home);
   const sources = legacySources(home, { homeDir: deps.homeDir, homes: deps.homes });
-  let confirmation: Confirmation = 'not-found';
+  const results = new Map<string, { projectId: string; confirmation: Confirmation }>();
+  const failures = new Map<string, Confirmation>();
+  const identities = new Map<string, string>();
+  const names = legacyProjectNames(sources.vaults.flatMap(source => legacyVaultProjectIds(source.path).map(projectId => ({
+    vault: source.path, projectId, root: state.migrations?.[source.path]?.projects[projectId]?.root,
+  }))));
+  const report = (vault: string, projectId: string, confirmation: Confirmation) => {
+    const key = JSON.stringify([vault, projectId]);
+    results.set(key, { projectId, confirmation: preferredConfirmation(results.get(key)?.confirmation ?? 'not-found', confirmation) });
+  };
   for (const source of sources.vaults) {
     const prior = Object.entries(state.migrations ?? {}).find(([file]) => legacyRealpath(file) === source.path)?.[1];
     const ids = legacyVaultProjectIds(source.path);
@@ -132,8 +146,12 @@ export async function observeLegacyMigration(home: string, deps: LegacyConfirmat
       const urls = new Set(previous?.destination && 'serverUrl' in previous.destination
         ? [deploymentUrl(previous.destination.serverUrl)] : routes.map(binding => deploymentUrl(binding.serverUrl)));
       const fallback = urls.size !== 1;
-      const eligible = memberships.filter(member => urls.size === 0 || urls.has(deploymentUrl(member.serverUrl)));
-      if (eligible.length === 0) { confirmation = fallback ? 'no-destination' : 'sign-in-required'; return []; }
+      if (previous === undefined && urls.size === 0) return [];
+      const eligible = memberships.filter(member => urls.size === 0 || urls.has(deploymentUrl(member.serverUrl)))
+        .sort((left, right) => Number(routes.some(route => deploymentUrl(route.serverUrl) === deploymentUrl(right.serverUrl)))
+          - Number(routes.some(route => deploymentUrl(route.serverUrl) === deploymentUrl(left.serverUrl)))
+          || deploymentUrl(left.serverUrl).localeCompare(deploymentUrl(right.serverUrl)));
+      if (eligible.length === 0) { report(source.path, projectId, urls.size > 0 ? 'sign-in-required' : 'no-destination'); return []; }
       return [{ projectId, routes, fallback, eligible }];
     });
     if (candidates.length === 0) continue;
@@ -142,18 +160,24 @@ export async function observeLegacyMigration(home: string, deps: LegacyConfirmat
     if (backup !== undefined && backup.digest !== content.digest) continue;
     let projects: ReturnType<typeof readLegacyVault> | undefined;
     for (const choice of candidates) {
-      const confirmed: Array<{ membership: typeof memberships[number]; proof: Extract<Proof, { eventIds: string[] }>; endedBy: 'project_archived' | 'project_deleted' | null; ignoredLineage: number }> = [];
+      const confirmed: Array<{ deploymentId: string; membership: typeof memberships[number]; proof: Extract<Proof, { eventIds: string[] }>; endedBy: 'project_archived' | 'project_deleted' | null; ignoredLineage: number }> = [];
       let failure: Confirmation | undefined;
-      const recordFailure = (state: Confirmation) => { if (state !== 'not-found') failure = state; };
+      const recordFailure = (state: Confirmation, membership: typeof memberships[number]) => {
+        failure = preferredConfirmation(failure ?? 'not-found', state);
+        if (state !== 'not-found') failures.set(deploymentUrl(membership.serverUrl), state);
+      };
       let asked = false;
       for (const membership of choice.eligible) {
+        const url = deploymentUrl(membership.serverUrl);
+        const cachedFailure = failures.get(url);
+        if (cachedFailure !== undefined) { recordFailure(cachedFailure, membership); continue; }
         const previous = prior?.projects[choice.projectId];
         const candidate = { projectId: choice.projectId, membership };
         const client = new ServerClient({ ...candidate.membership, projectId: candidate.projectId }, deps.fetch);
         if (choice.fallback) {
           const destination = await legacyDestinationEnd(client);
           if (destination === 'project_deleted' || destination === 'project-missing') continue;
-          if (destination !== 'active' && destination !== 'project_archived') { recordFailure(destination); continue; }
+          if (destination !== 'active' && destination !== 'project_archived') { recordFailure(destination, membership); continue; }
         }
         const project = (projects ??= readLegacyVault(source.path)).find(project => project.projectId === candidate.projectId);
         if (project === undefined) continue;
@@ -164,32 +188,46 @@ export async function observeLegacyMigration(home: string, deps: LegacyConfirmat
         if (completedLegacyVault(previous?.vault) && !choice.fallback) {
           const destination = await legacyDestinationEnd(client);
           if (destination === 'active') continue;
-          if (destination !== 'project_archived' && destination !== 'project_deleted') { recordFailure(destination); continue; }
+          if (destination !== 'project_archived' && destination !== 'project_deleted') { recordFailure(destination, membership); continue; }
           endedBy = destination;
           proof = { state: 'confirmed', eventIds: [], sporeIds: [], lineageIds: [] };
         } else {
           const transcripts = await transcriptSources(client, legacyContentSessionIds(project, candidate.membership.machineId, home));
-          if (typeof transcripts === 'string') { recordFailure(transcripts); continue; }
+          if (typeof transcripts === 'string') { recordFailure(transcripts, membership); continue; }
           const identities = legacyVaultCompletionIdentities(project, candidate.membership.machineId, home, transcripts);
           ignoredLineage = identities.ignoredLineage;
           proof = await confirmHistory(client, identities);
           if (proof.state === 'confirmed') endedBy = proof.projectState === 'archived' ? 'project_archived' : proof.projectState === 'deleted' ? 'project_deleted' : null;
         }
-        if (proof.state !== 'confirmed') { recordFailure(proof.state); continue; }
-        confirmed.push({ membership, proof, endedBy, ignoredLineage });
+        if (proof.state !== 'confirmed') { recordFailure(proof.state, membership); continue; }
+        let deploymentId = url;
+        if (choice.fallback) {
+          const known = identities.get(url);
+          if (known !== undefined) deploymentId = known;
+          else {
+            const answer = classifyEventAnswer(await client.request('POST', DEPLOYMENT_IDENTITY_PATH, { scope: 'deployment', body: '{}',
+              budget: { connectTimeoutMs: CONFIRMATION_BUDGET_MS, requestTimeoutMs: CONFIRMATION_BUDGET_MS, capped: true } }));
+            if (answer.class !== 'acked') { recordFailure(confirmationFailure(answer), membership); continue; }
+            if (typeof answer.body.deploymentId !== 'string' || answer.body.deploymentId.length === 0) { recordFailure('update-required', membership); continue; }
+            deploymentId = answer.body.deploymentId;
+            identities.set(url, deploymentId);
+          }
+        }
+        confirmed.push({ deploymentId, membership, proof, endedBy, ignoredLineage });
       }
-      if (confirmed.length !== 1) {
-        confirmation = confirmed.length > 1 ? 'ambiguous' : failure ?? (asked ? 'not-found' : 'no-destination');
+      const destinations = [...new Map([...confirmed].reverse().map(candidate => [candidate.deploymentId, candidate])).values()];
+      if (destinations.length !== 1) {
+        report(source.path, choice.projectId, destinations.length > 1 ? 'ambiguous' : failure ?? (asked || prior?.projects[choice.projectId] === undefined ? 'not-found' : 'no-destination'));
         continue;
       }
-      const { membership: provenMembership, proof, endedBy, ignoredLineage } = confirmed[0]!;
+      const { membership: provenMembership, proof, endedBy, ignoredLineage } = destinations[0]!;
       const candidate = { projectId: choice.projectId, membership: provenMembership };
       const previous = prior?.projects[candidate.projectId];
       ensureMemberDir(memberRoot(home), home);
       const lockFile = path.join(memberRoot(home), 'cutover.lock');
       ensurePrivateFile(lockFile);
       const lease = LifecycleLock.acquire(lockFile);
-      if (!lease.acquired) { confirmation = 'busy'; continue; }
+      if (!lease.acquired) { report(source.path, candidate.projectId, 'busy'); continue; }
       try {
         updateCutoverState(home, fresh => {
           const registry = confirmationRegistry(home);
@@ -204,9 +242,9 @@ export async function observeLegacyMigration(home: string, deps: LegacyConfirmat
             && !choice.eligible.some(priorMember => deploymentUrl(priorMember.serverUrl) === deploymentUrl(member.serverUrl) && priorMember.machineId === member.machineId));
           if (membership?.machineId !== candidate.membership.machineId || differentRoute || newMembership || (recorded === null
             ? !choice.fallback && routes.length === 0
-            : deploymentUrl(recorded) !== deploymentUrl(candidate.membership.serverUrl))) { confirmation = 'pending'; return false; }
+            : deploymentUrl(recorded) !== deploymentUrl(candidate.membership.serverUrl))) { report(source.path, candidate.projectId, 'pending'); return false; }
           const stamp = legacyVaultStamp(source.path);
-          if (readVaultContent(source.path).digest !== content.digest) { confirmation = 'unavailable'; return false; }
+          if (readVaultContent(source.path).digest !== content.digest) { report(source.path, candidate.projectId, 'unavailable'); return false; }
           fresh.version = 2;
           fresh.migrations ??= {};
           const receipt = fresh.migrations[source.path] ?? { digest: content.digest, size: stamp.size, mtimeMs: stamp.mtimeMs, wal: stamp.wal, projects: Object.fromEntries(ids.map(id => [id, {}])) };
@@ -226,5 +264,6 @@ export async function observeLegacyMigration(home: string, deps: LegacyConfirmat
   }
   const observed = legacyMigrationState(home, deps);
   return ['unmoved', 'needs-destination', 'partial', 'handover-pending'].includes(observed.state)
-    ? { ...observed, confirmation } : observed;
+    ? { ...observed, confirmation: [...results.values()].reduce((result, project) => preferredConfirmation(result, project.confirmation), 'not-found' as Confirmation),
+      confirmationProjects: [...results.values()].map(project => ({ name: names.get(project.projectId)!, confirmation: project.confirmation })) } : observed;
 }

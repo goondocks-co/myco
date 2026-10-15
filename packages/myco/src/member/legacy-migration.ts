@@ -2,7 +2,7 @@ import { isLegacyMycoHook } from './legacy-verdict.js';
 /** The local cutover receipt capability. */
 import path from 'node:path';
 import { readVaultContent, type TableCounts } from '@myco/member/legacy-backup.js';
-import { LegacyMigrationUnreadable, legacyRealpath, legacySources, legacyVaultProjectIds, legacyVaultProjectName, type LegacySources } from '@myco/member/legacy-sources.js';
+import { LegacyMigrationUnreadable, legacyRealpath, legacySources, legacyVaultProjectIds, legacyProjectNames, type LegacySources } from '@myco/member/legacy-sources.js';
 export { LegacyMigrationUnreadable } from '@myco/member/legacy-sources.js';
 import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from '@myco/member/store.js';
 import { deploymentKeyFor, deploymentUrl, withRegistryLock } from '@myco/member/registry.js';
@@ -47,11 +47,12 @@ export interface CutoverState {
   handover?: { at: number; legacyHomes: string[]; agents: string[]; reconciliation?: SourceReconciliation };
   migrations?: Record<string, MigrationReceipt>;
 }
+export type LegacyConfirmation = 'unavailable' | 'not-found' | 'no-destination' | 'ambiguous' | 'update-required' | 'project-missing' | 'busy' | 'sign-in-required' | 'pending';
 export type LegacyMigrationState = (
   | { state: 'unavailable'; file: string; detail: string }
   | { state: 'changed'; warning: string }
   | { state: 'none' | 'unmoved' | 'needs-destination' | 'handover-pending' | 'partial' | 'moved' }
-) & { legacyOwnsCapture?: true; confirmation?: 'unavailable' | 'not-found' | 'no-destination' | 'ambiguous' | 'update-required' | 'project-missing' | 'busy' | 'sign-in-required' | 'pending'; ignoredLineage?: number; terminalProjects?: { name: string; state: 'archived' | 'deleted' }[] };
+) & { legacyOwnsCapture?: true; confirmation?: LegacyConfirmation; confirmationProjects?: { name: string; confirmation: LegacyConfirmation }[]; ignoredLineage?: number; terminalProjects?: { name: string; state: 'archived' | 'deleted' }[] };
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -220,11 +221,12 @@ export function legacyMigrationState(home: string, opts: { homeDir?: string; hom
     if ((!states.some((s) => s.handover !== undefined) && !confirmed) || sources.units.length > 0 || sources.registrations.length > 0) return observed({ state: 'handover-pending' });
     const projects = held.flatMap(({ selected }) => Object.values(selected?.receipt.projects ?? {}));
     const ignoredLineage = projects.reduce((sum, project) => sum + (project.evidence?.ignoredLineage ?? 0), 0);
-    const terminalProjects = held.flatMap(({ vault, selected }) => {
+    const names = projects.some(project => terminalLegacyTranscript(project.transcripts)) ? legacyProjectNames(held.flatMap(({ vault, selected }) => Object.entries(selected?.receipt.projects ?? {}).map(([projectId, project]) => ({ vault: vault.path, projectId, root: project.root })))) : new Map<string, string>();
+    const terminalProjects = held.flatMap(({ selected }) => {
       const terminal = Object.entries(selected?.receipt.projects ?? {}).filter(([, project]) => terminalLegacyTranscript(project.transcripts));
       if (terminal.length === 0) return [];
       return terminal.map(([projectId, project]) => ({
-        name: project.root ? path.posix.basename(project.root.replaceAll('\\', '/')) : legacyVaultProjectName(vault.path, projectId),
+        name: names.get(projectId)!,
         state: project.transcripts!.endedBy === 'project_archived' ? 'archived' as const : 'deleted' as const,
       }));
     });

@@ -1,4 +1,4 @@
-import { legacyConfirmationHint } from './legacy-capture.js';
+import { legacyConfirmationHint, legacyMovedNotice } from './legacy-capture.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { machineSettingsLocation } from '@goondocks/myco-shared/setup-guidance';
 /**
@@ -71,7 +71,7 @@ import { defaultMembership } from '@myco/member/default-deployment.js';
 import { completedLegacyDestination, completedLegacyVault, readCutoverState, writeCutoverState as writeState } from '@myco/member/legacy-migration.js';
 import { observeLegacyMigration, legacyDestinationEnd } from '@myco/member/legacy-confirmation.js';
 export { observeLegacyMigration, legacyConfirmationObserver } from '@myco/member/legacy-confirmation.js';
-import { legacyRealpath, legacyVaultStamp } from '@myco/member/legacy-sources.js';
+import { legacyProjectNames, legacyRealpath, legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { cutoverAbsentFolder, cutoverForeignBinding } from '@goondocks/myco-shared/setup-guidance';
 
@@ -453,6 +453,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
   const mycoHome = cutover.home;
   const now = deps.now ?? Date.now;
   const machineId = cutover.machineId ?? '';
+  const projectNames = legacyProjectNames(cutover.projects);
   const dry = parsed.dryRun;
   const step = (n: number, title: string) => out(`${n}. ${title}${dry ? ' (dry run)' : ''}`);
 
@@ -845,7 +846,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
               writeState(mycoHome, state);
               deps.onCheckpoint?.(`transcripts:${project.projectId}`);
             }
-            out(`   moved; its project is ${endedBy === 'project_archived' ? 'archived' : 'deleted'} (${project.projectId})`);
+            out(`   ${legacyMovedNotice(projectNames.get(project.projectId)!, endedBy === 'project_archived' ? 'archived' : 'deleted')}`);
           };
           const destinationEnd = async () => {
             const membership = listDeploymentMemberships(mycoHome).find(member => deploymentUrl(member.serverUrl) === dest.serverUrl);

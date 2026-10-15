@@ -58,6 +58,15 @@ export function legacyVaultProjectIds(file: string): string[] {
   } finally { db.close(); }
 }
 
+/** Repository names are disambiguated by Project identity. */
+export function legacyProjectNames(projects: readonly { vault: string; projectId: string; root?: string | null }[]): Map<string, string> {
+  const names = new Map(projects.map(project => [project.projectId, project.root
+    ? path.posix.basename(project.root.replaceAll('\\', '/')) : legacyVaultProjectName(project.vault, project.projectId)]));
+  const counts = new Map<string, number>();
+  for (const name of names.values()) counts.set(name, (counts.get(name) ?? 0) + 1);
+  return new Map([...names].map(([id, name]) => [id, counts.get(name)! > 1 ? `${name} (${id})` : name]));
+}
+
 /** A Project's display name from its newest recorded repository root. */
 export function legacyVaultProjectName(file: string, projectId: string): string {
   const db = new Database(file, { readonly: true });
