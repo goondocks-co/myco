@@ -241,7 +241,7 @@ describe('legacy journey (e)', () => {
       expect(fixture.calls.slice(requests).filter(call => ['/events', '/spores/save', '/members/projects/resolve'].includes(call.route))).toEqual([]);
       if (terminal && evidence !== 'confirmed-setup') {
         expect(lines.join('\n') + errors.join('\n')).not.toContain('unarchive');
-        expect(renderSetupStatus(observations).join('\n')).toContain(`moved; its project is ${evidence === 'deleted-transcript' ? 'deleted' : 'archived'}`);
+        for (const project of fixture.legacy.projects) expect(renderSetupStatus(observations).join('\n')).toContain(`${path.basename(project.root)} has been moved. Its project is ${evidence === 'deleted-transcript' ? 'deleted' : 'archived'} on the Deployment.`);
         expect(readCutoverState(home).migrations![fixture.legacy.vault]!.projects[fixture.legacy.projects[0]!.id]!.transcripts).toMatchObject({ state: 'none', endedBy: evidence === 'deleted-transcript' ? 'project_deleted' : 'project_archived' });
       }
       const receipt = fs.readFileSync(file);

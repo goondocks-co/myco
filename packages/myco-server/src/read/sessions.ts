@@ -826,13 +826,16 @@ export async function sessionsOwnedByImporter(db: RelationalStore, scope: ReadSc
 }
 
 /** Which of these sessions hold a prompt `producer` sent on the import channel. */
+export const IMPORTED_PROMPT_SESSIONS_SQL = `SELECT offered.value AS session_id FROM json_each(?) offered
+  WHERE EXISTS (SELECT 1 FROM events e WHERE e.project_id = ? AND e.session_id = offered.value
+    AND e.kind = 'prompt' AND e.channel = 'import' AND e.producer_adapter = ?)`;
+
 export async function sessionsWithImportedPrompts(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[], producer: string): Promise<Set<string>> {
   const out = new Set<string>();
   for (const run of inListChunks(sessionIds)) {
     const { results } = await db
-      .prepare(`SELECT DISTINCT session_id FROM events
-                 WHERE project_id = ? AND session_id IN (${run.map(() => '?').join(', ')}) AND kind = 'prompt' AND channel = 'import' AND producer_adapter = ?`)
-      .bind(scope.projectId, ...run, producer)
+      .prepare(IMPORTED_PROMPT_SESSIONS_SQL)
+      .bind(JSON.stringify(run), scope.projectId, producer)
       .all<{ session_id: string }>();
     for (const r of results) out.add(r.session_id);
   }

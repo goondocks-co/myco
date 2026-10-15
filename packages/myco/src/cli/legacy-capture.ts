@@ -4,6 +4,8 @@ import { LEGACY_AGENT_DEFERRAL } from '@goondocks/myco-shared/setup-guidance';
 
 export function legacyConfirmationHint(confirmation: LegacyMigrationState['confirmation']): string | null {
   switch (confirmation) {
+    case 'no-destination': return "Myco couldn't find a Deployment for this project's earlier move. Run myco setup --cutover to choose a destination, or skip the project. Keep the 1.4 data.";
+    case 'ambiguous': return "More than one Deployment holds this project's earlier move. Run myco setup --cutover to choose its destination, or skip the project. Keep the 1.4 data.";
     case 'sign-in-required': return `Myco couldn't confirm earlier moves; ${REJOIN_HINT}. Then run myco setup --cutover. Keep the 1.4 data.`;
     case 'pending': return "Earlier moves are unconfirmed; Myco will check again. Keep the 1.4 data.";
     case 'unavailable': return "Myco couldn't confirm earlier moves; it will check again when online. Keep the 1.4 data.";

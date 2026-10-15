@@ -75,7 +75,7 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
     const guidance = legacyCaptureGuidance(migration);
     facts.push({
       id: 'legacy',
-      legacyNotice: [migration.terminalProjects?.map(state => `moved; its project is ${state}`).join('; '),
+      legacyNotice: [migration.terminalProjects?.map(project => `${project.name} has been moved. Its project is ${project.state} on the Deployment.`).join(' '),
         migration.ignoredLineage ? `Skipped ${migration.ignoredLineage} malformed 1.4 lineage event(s) during confirmation.` : null].filter(Boolean).join(' '),
       ...(migration.state === 'unavailable' ? { legacyError: migration.detail } : {}),
       ...(migration.confirmation === undefined ? {} : { legacyConfirmation: migration.confirmation }),

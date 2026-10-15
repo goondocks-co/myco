@@ -94,6 +94,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0084_v84.sql': '92c26cabc06b55c58df38111d8ac4f325763105221aa8ae8a455987cc35b2e5a',
   '0085_v85.sql': 'c534f3ed2471b58db2cfd6cb60e4d624f2e2db052a9d424341f923d64a67e403',
   '0086_v86.sql': 'adb34a77e0dbb775b05406a6472572d0ce6e3559cd5a0dbf7fab26adf6a6919b',
+  '0087_v87.sql': 'b6d34853a1bfb8fd1ee45da16f1405cc806b0549f1753443956e27964d892cf6',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -517,8 +518,8 @@ describe('versioned schema steps', () => {
         const before = sqlite.query('SELECT * FROM sessions').all();
         const retainedRelease = sqlite.query("SELECT * FROM knowledge_release_state WHERE namespace='sessions'").all();
         for (const table of retired) expect((sqlite.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(1);
-        if (mode === 'native') sqlite.exec(renderMigrationFile(SCHEMA_STEPS[85]!));
-        else expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([86]);
+        if (mode === 'native') for (const migration of SCHEMA_STEPS.filter(({ version }) => version >= 86)) sqlite.exec(renderMigrationFile(migration));
+        else expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(86));
         expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
         sqlite.exec(renderMigrationFile(SCHEMA_STEPS[85]!));
         expect(version(sqlite)).toBe('86');
