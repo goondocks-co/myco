@@ -1,3 +1,4 @@
+import { RETIRED_BACKUP_TABLES, retiredBackupNotice } from '@goondocks/myco-shared/backup-words';
 import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
 import { restoreAuthorityAuditStatement, restoreMembershipBatch } from './ownership.js';
@@ -56,10 +57,9 @@ export const BACKUP_TABLES: readonly string[] = [
 ];
 
 /** Artifact tables whose data class is retired by a numbered schema step. */
-export const RETIRED_TABLES: ReadonlyMap<string, number> = new Map([
-  ['skill_candidates', 86], ['skill_records', 86], ['skill_lineage', 86], ['skill_usage', 86],
-  ['digest_extracts', 86], ['digest_extract_revisions', 86], ['cortex_instructions', 86],
-]);
+export const RETIRED_TABLES: ReadonlyMap<string, number> = new Map(
+  [...RETIRED_BACKUP_TABLES].map(([table, kind]) => [table, kind.version]),
+);
 
 /**
  * Append-only tables whose integer id IS the insertion order. Their ids are
@@ -326,10 +326,12 @@ function artifactTable(table: string): void {
 function restoreRows(lines: Iterable<string>, header: BackupHeader): {
   rows: Array<{ t: string; r: Record<string, unknown> }>;
   tables: RestoreOutcome['tables'];
+  retiredNotice?: string;
 } {
   for (const table of Object.keys(header.counts ?? {})) artifactTable(table);
   const rows: Array<{ t: string; r: Record<string, unknown> }> = [];
   const tables: RestoreOutcome['tables'] = {};
+  const retiredCounts: Record<string, number> = {};
   for (const line of lines) {
     if (line.length === 0) continue;
     const row = JSON.parse(line) as { t: string; r: Record<string, unknown> };
@@ -339,17 +341,20 @@ function restoreRows(lines: Iterable<string>, header: BackupHeader): {
     const retiredSource = namespace === 'skill' ? 'skill_records' : namespace === 'digest' ? 'digest_extracts' : namespace;
     const step = RETIRED_TABLES.get(row.t) ?? (typeof retiredSource === 'string' ? RETIRED_TABLES.get(retiredSource) : undefined);
     if (step !== undefined) {
+      const retiredTable = RETIRED_TABLES.has(row.t) ? row.t : typeof retiredSource === 'string' ? retiredSource : row.t;
+      retiredCounts[retiredTable] = (retiredCounts[retiredTable] ?? 0) + 1;
       const previous = tables[row.t]?.rows ?? 0;
-      tables[row.t] = { rows: previous + 1, inserted: 0, skipped: `retired by schema step ${step} (#1170)` };
+      tables[row.t] = { rows: previous + 1, inserted: 0, skipped: 'retired' };
     } else rows.push(row);
   }
-  return { rows, tables };
+  const notice = retiredBackupNotice(retiredCounts);
+  return { rows, tables, ...(notice === null ? {} : { retiredNotice: notice }) };
 }
 
 /** What a restore would touch, answered from a verified artifact without executing its rows. */
 export async function previewRestore(
   db: RelationalStore, blobs: BlobStore, id: string,
-): Promise<{ header: BackupHeader; foreignLineage: boolean; authorityExcluded: ForeignAuthorityExclusion | null; tableKeys: string[]; tables: RestoreOutcome['tables'] } | null> {
+): Promise<{ header: BackupHeader; foreignLineage: boolean; authorityExcluded: ForeignAuthorityExclusion | null; tableKeys: string[]; tables: RestoreOutcome['tables']; retiredNotice?: string } | null> {
   const artifact = await readArtifact(db, blobs, id);
   if (artifact === null) return null;
   const newline = artifact.text.indexOf('\n');
@@ -362,7 +367,7 @@ export async function previewRestore(
   const authorityExcluded = foreignLineage
     ? { tables: FOREIGN_AUTHORITY_TABLES.filter((table) => tableKeys.has(table)), notice: FOREIGN_AUTHORITY_NOTICE }
     : null;
-  return { header, foreignLineage, authorityExcluded, tableKeys: [...tableKeys], tables: admitted.tables };
+  return { header, foreignLineage, authorityExcluded, tableKeys: [...tableKeys], tables: admitted.tables, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }) };
 }
 
 /**
@@ -385,6 +390,7 @@ function revokeForeignAuthority(byTable: ReadonlyMap<string, Record<string, unkn
 }
 
 export interface RestoreOutcome {
+  retiredNotice?: string;
   /** `reused` counts `blobs` rows this Deployment already registers, kept as they stand. */
   tables: Record<string, { rows: number; inserted: number; skipped?: string; reused?: number }>;
 }
@@ -576,7 +582,7 @@ export async function restoreArtifact(
     throw new BackupApplyError('deployment_ownership', 'ownership requires its matching audit receipt');
   }
 
-  const outcome: RestoreOutcome = { tables: { ...admitted.tables } };
+  const outcome: RestoreOutcome = { tables: { ...admitted.tables }, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }) };
   const transcriptParents = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row]));
   const hash = await sha256Hex(opts.text);
   const provenance = ['raw_provenance_state', 'raw_resources', 'raw_archive_refs', 'raw_claims', 'events', 'blobs', 'transcripts', 'attachments', 'prompt_batches', 'responses', 'plans', 'tool_calls'].flatMap((table) => byTable.get(table) ?? []);

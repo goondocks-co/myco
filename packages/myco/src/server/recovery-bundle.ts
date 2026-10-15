@@ -1,3 +1,4 @@
+import { RETIRED_BACKUP_TABLES, retiredBackupNotice } from '@goondocks/myco-shared/backup-words';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1059,6 +1060,12 @@ async function completeRecoverySource(source: string, report: (line: string) => 
     if (manifest.format === 'myco-recovery/1' && db.query('SELECT 1 FROM backups LIMIT 1').get() !== null) {
       throw new Error('legacy artifact lacks catalogued backup coverage; capture a new recovery artifact');
     }
+    const counts = Object.fromEntries([...RETIRED_BACKUP_TABLES.keys()].map((table) => {
+      const present = db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
+      return [table, present === null ? 0 : db.query<{ n: number }, []>(`SELECT COUNT(*) AS n FROM "${table}"`).get()!.n];
+    }));
+    const notice = retiredBackupNotice(counts);
+    if (notice !== null) report(notice);
   } finally { db.close(); }
   return manifest;
 }

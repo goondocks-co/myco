@@ -38,7 +38,7 @@ export function BackupsSection() {
     backups.preview.mutate(row.id, { onSuccess: (preview) => { setAdopt(false); setAdoptAsked(false); setConfirming({ row, preview }); } });
   };
   const actionError = backups.create.error ?? backups.pin.error ?? backups.preview.error;
-  const skips = outcome === null ? [] : Object.entries(outcome.tables).filter(([, t]) => t.skipped !== undefined);
+  const skips = outcome === null ? [] : Object.entries(outcome.tables).filter(([, t]) => t.skipped !== undefined && t.skipped !== 'retired');
 
   return (
     <AdminSection
@@ -87,6 +87,7 @@ export function BackupsSection() {
       {outcome !== null && (
         <Card className="flex flex-col gap-s1" data-health-restored="">
           <p className="t-body text-ink">Restored: {Object.values(outcome.tables).reduce((sum, t) => sum + t.inserted, 0).toLocaleString()} records added.</p>
+          {outcome.retiredNotice !== undefined && <p className="t-small text-warn" data-restore-retired="">{outcome.retiredNotice}</p>}
           {skips.map(([table, t]) => <p key={table} className="t-small text-warn">{table.replace(/_/g, ' ')}: {t.skipped}</p>)}
         </Card>
       )}
@@ -110,8 +111,9 @@ export function BackupsSection() {
       >
         {confirming !== null && (
           <>
-            <p className="t-small text-muted" data-restore-counts="">It holds {countsWords(confirming.preview.header.counts)}</p>
-            {Object.entries(confirming.preview.tables ?? {}).filter(([, table]) => table.skipped !== undefined).map(([name, table]) => (
+            <p className="t-small text-muted" data-restore-counts="">It holds {countsWords(Object.fromEntries(Object.entries(confirming.preview.header.counts).filter(([table]) => confirming.preview.tables?.[table]?.skipped !== 'retired')))}</p>
+            {confirming.preview.retiredNotice !== undefined && <p className="t-small text-warn" data-restore-retired="">{confirming.preview.retiredNotice}</p>}
+            {Object.entries(confirming.preview.tables ?? {}).filter(([, table]) => table.skipped !== undefined && table.skipped !== 'retired').map(([name, table]) => (
               <p key={name} className="t-small text-warn" data-restore-skipped="">
                 Will skip {table.rows.toLocaleString()} {name.replace(/_/g, ' ')}: {table.skipped}
               </p>

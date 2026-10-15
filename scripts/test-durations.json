@@ -771,6 +771,7 @@
     "tests/utils/windows-atomic-replace.test.ts": 2
   },
   "parity": {
+    "D1: latest migration upgrades seeded previous schema to expected state": 45000,
     "repository preparation failure: leased worker metadata reaches runs and work on both targets": 18000,
     "retired schema: generated skills and digests have no tables, FTS objects or embedding source": 15000,
     "setup progress: scoped observations and bounded D1 reads with misleading history": 30000,

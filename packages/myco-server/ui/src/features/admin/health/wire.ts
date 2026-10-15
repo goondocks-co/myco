@@ -52,6 +52,7 @@ export interface BackupsAnswer {
 
 /** `POST /api/backups/{id}/restore-preview`: what a restore would add and whether this member may apply it. */
 export interface RestorePreview {
+  retiredNotice?: string;
   tables?: RestoreOutcome['tables'];
   header: { deploymentId: string; schemaVersion: number; createdAt: number; counts: Record<string, number> };
   /** The backup names another Deployment: restoring it lists that Deployment's people here without access. */
@@ -63,6 +64,7 @@ export interface RestorePreview {
 
 /** `POST /api/backups/{id}/restore`: what each table took. */
 export interface RestoreOutcome {
+  retiredNotice?: string;
   tables: Record<string, { rows: number; inserted: number; skipped?: string }>;
 }
 

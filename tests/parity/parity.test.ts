@@ -64,6 +64,7 @@ import { retiredSchema } from './scenarios/retired-schema.ts';
 import { recallGold } from './scenarios/recall-gold.ts';
 import { embeddingSwitch } from './scenarios/embedding-switch.ts';
 import { modelCatalogs } from './scenarios/model-catalogs.ts';
+import { latestD1Upgrade } from './scenarios/latest-d1-upgrade.ts';
 import { twoDeploymentIsolation } from './scenarios/two-deployment-isolation.ts';
 import { rawPrivacy } from './scenarios/raw-privacy.ts';
 import { rawBackfillParity } from './scenarios/raw-backfill.ts';
@@ -73,7 +74,7 @@ import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-
 import { PARITY_PLAN_PREFIX, parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import durations from '../../scripts/test-durations.json';
 
-const scenarios = [setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, repositories, repositoryFailure, canopy, sessionsTitling, sessionTurns, plans, plansAtScale, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, transcriptBacklog, transcriptRepairPriority, transcriptLiveService, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
+const scenarios = [latestD1Upgrade, setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, repositories, repositoryFailure, canopy, sessionsTitling, sessionTurns, plans, plansAtScale, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, transcriptBacklog, transcriptRepairPriority, transcriptLiveService, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {
@@ -98,7 +99,9 @@ if (!process.env.MYCO_PARITY) {
     const shared = selected.filter((scenario) => scenario.dedicated === undefined);
     const dedicated = selected.filter((scenario) => scenario.dedicated !== undefined);
     for (const { name, boot } of boots) {
-      if (shared.length > 0) {
+      const targetShared = shared.filter((scenario) => scenario.only === undefined || scenario.only === name);
+      const targetDedicated = dedicated.filter((scenario) => scenario.only === undefined || scenario.only === name);
+      if (targetShared.length > 0) {
         describe(`[${name}]`, () => {
           let target: ParityTarget | null = null;
           beforeAll(async () => {
@@ -107,7 +110,7 @@ if (!process.env.MYCO_PARITY) {
           afterAll(async () => {
             await target?.stop();
           });
-          for (const scenario of shared) {
+          for (const scenario of targetShared) {
             it(scenario.name, async () => {
               if (target === null) throw new Error(`${name} target never booted`);
               await runScenario(target, scenario);
@@ -116,7 +119,7 @@ if (!process.env.MYCO_PARITY) {
         });
       }
       // Each dedicated scenario boots its own target, so whatever it binds or configures reaches no other scenario.
-      for (const scenario of dedicated) {
+      for (const scenario of targetDedicated) {
         describe(`[${name}] ${scenario.name}`, () => {
           let target: ParityTarget | null = null;
           let peer: ParityTarget | null = null;

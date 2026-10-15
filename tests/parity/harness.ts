@@ -73,6 +73,8 @@ export async function runScenario(target: ParityTarget, scenario: ParityScenario
 export interface ParityScenario {
   name: string;
   run(target: ParityTarget, peer?: ParityTarget): Promise<void>;
+  /** A target-specific lifecycle check runs only on that target. */
+  only?: 'cloudflare';
   /** The scenario needs two independently booted Deployments on this target runtime. */
   paired?: true;
   /**
@@ -80,7 +82,7 @@ export interface ParityScenario {
    * alone. On Cloudflare, `main` names the Worker entry that boot serves, relative to `packages/myco-server`;
    * `sqliteVec` marks a scenario whose self-hosted run queries vectors, which needs an extension-enabled SQLite.
    */
-  dedicated?: { cloudflare?: { main: string }; stopRace?: boolean; sqliteVec?: boolean; timeoutMs: number };
+  dedicated?: { cloudflare?: { main?: string; latestSchemaUpgrade?: boolean }; stopRace?: boolean; sqliteVec?: boolean; timeoutMs: number };
 }
 
 export const MEMBER_ID = 'mem_parity';

@@ -5,6 +5,7 @@
  * that asks before it adds a foreign Deployment's members, and no raw id
  * anywhere a reader sees.
  */
+import { retiredBackupNotice } from '@goondocks/myco-shared/backup-words';
 import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -305,7 +306,7 @@ describe('Health', () => {
   it('restores a backup only through its confirm, and one from another Deployment only once the switch is on', async () => {
     const { posts } = server(routes({
       '/auth/me': () => Response.json(dashboardMe({ ...ADMIN, owner: true })),
-      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_other', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4, spores: 12, members: 1 } }, foreignLineage: true, restore: { allowed: true, reason: null }, tables: { skill_records: { rows: 40, inserted: 0, skipped: 'retired by schema step 86 (#1170)' } },
+      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_other', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4, spores: 12, members: 1, skill_records: 40, digest_extracts: 2, cortex_instructions: 1 } }, foreignLineage: true, restore: { allowed: true, reason: null }, tables: { skill_records: { rows: 40, inserted: 0, skipped: 'retired' }, digest_extracts: { rows: 2, inserted: 0, skipped: 'retired' }, cortex_instructions: { rows: 1, inserted: 0, skipped: 'retired' } }, retiredNotice: retiredBackupNotice({ skill_records: 40, digest_extracts: 2, cortex_instructions: 1 }),
         authorityExcluded: { tables: ['members', 'member_credentials'], notice: 'People from the other server are listed here but cannot sign in until the owner re-admits them.' } }),
       '/api/backups/bk_7f3a9c0e21/restore': () => Response.json({ applied: true, tables: { sessions: { rows: 4, inserted: 4 }, spores: { rows: 12, inserted: 1, skipped: 'newer rows are kept' } } }),
     }));
@@ -313,7 +314,9 @@ describe('Health', () => {
     const list = await screen.findByRole('group', { name: 'Backups' });
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     const dialog = await screen.findByRole('dialog', { name: /^Restore the backup from / });
-    expect(within(dialog).getByText('Will skip 40 skill records: retired by schema step 86 (#1170)')).toBeTruthy();
+    expect(within(dialog).getByText("This backup includes older data this version no longer keeps (generated skills, digests, old instructions). It won't be restored.")).toBeTruthy();
+    expect(dialog.querySelectorAll('[data-restore-retired]')).toHaveLength(1);
+    for (const internal of ['schema step', '#', 'skill records', 'digest extracts', 'cortex instructions']) expect(dialog.textContent).not.toContain(internal);
     expect(dialog.textContent).toContain('It holds sessions 4 · spores 12');
     expect(dialog.textContent).toContain('comes from another server');
     expect(dialog.textContent).toContain('People from the other server are listed here but cannot sign in until the owner re-admits them.');

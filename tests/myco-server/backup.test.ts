@@ -108,18 +108,19 @@ describe('portable machine identities', () => {
         createdAt: 1, producer: 'pre-v86', counts: Object.fromEntries(tables.map((table) => [table, table === 'knowledge_release_state' ? 3 : 1])),
       };
       const oldArtifact = [header, ...rows].map((row) => JSON.stringify(row)).join('\n') + '\n';
-      const expectedSkips = Object.fromEntries(retired.map((table) => [table, { rows: 1, inserted: 0, skipped: 'retired by schema step 86 (#1170)' }]));
+      const expectedSkips = Object.fromEntries(retired.map((table) => [table, { rows: 1, inserted: 0, skipped: 'retired' }]));
       const key = 'backups/pre-v86.jsonl';
       await target.bucket.put(key, new Response(oldArtifact).body);
       target.sqlite.run(`INSERT INTO backups(id,key,created_at,size_bytes,counts_json,schema_version,producer,pinned)
         VALUES('pre-v86',?,1,?,? ,85,'pre-v86',0)`, [key, new TextEncoder().encode(oldArtifact).byteLength, JSON.stringify(header.counts)]);
       expect((await previewRestore(target.db, target.bucket, 'pre-v86'))).toMatchObject({
-        tables: { ...expectedSkips, knowledge_release_state: { rows: 2, inserted: 0, skipped: 'retired by schema step 86 (#1170)' } },
+        tables: { ...expectedSkips, knowledge_release_state: { rows: 2, inserted: 0, skipped: 'retired' } },
+        retiredNotice: "This backup includes older data this version no longer keeps (generated skills, digests, old instructions). It won't be restored.",
       });
       for (let repeat = 0; repeat < 2; repeat++) {
         const outcome = await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: oldArtifact, allowForeignLineage: true });
         expect(outcome.tables).toMatchObject({
-          ...expectedSkips, knowledge_release_state: { rows: 3, inserted: repeat === 0 ? 1 : 0, skipped: 'retired by schema step 86 (#1170)' },
+          ...expectedSkips, knowledge_release_state: { rows: 3, inserted: repeat === 0 ? 1 : 0, skipped: 'retired' },
         });
         expect(target.sqlite.query("SELECT namespace FROM knowledge_release_state WHERE project_id='proj_bk'").all()).toEqual([{ namespace: 'sessions' }]);
         expect(target.sqlite.query(`SELECT project_id FROM projects WHERE project_id='proj_bk'`).all()).toEqual([{ project_id: 'proj_bk' }]);
