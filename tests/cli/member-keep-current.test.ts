@@ -43,8 +43,16 @@ beforeEach(() => {
   writeDeploymentMembership({ serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
 });
 afterEach(() => {
-  for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-  fs.rmSync(agentHome, { recursive: true, force: true });
+  try {
+    for (const check of setupChecks(home)) {
+      expect(check.detail.toLowerCase()).not.toMatch(/run `?myco doctor/);
+      expect(check.detail).not.toContain('..');
+      expect(check.detail).not.toMatch(/myco member provision (?:claude-code|codex)/);
+    }
+  } finally {
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(agentHome, { recursive: true, force: true });
+  }
 });
 
 it('records every harness at the shared provisioning operation, including unchanged installs', () => {
@@ -641,17 +649,54 @@ it('doctor and status check missing skills and old versions even when tools use 
   expect(fs.existsSync(path.join(folder, skill))).toBe(true);
 });
 
-it('refuses to settle tools pointing at a Deployment this home no longer has a membership for', () => {
+it('refuses to settle tools pointing at a Deployment this home no longer has a membership for', async () => {
   const target = toolsHeldElsewhere();
   const before = fs.readFileSync(target, 'utf8');
   fs.unlinkSync(deploymentPath(OTHER_SERVER, home));
-  const fact = keepCurrent(home, { binaryFound: () => true })?.harnesses[0];
+  const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  let result;
+  let logged: unknown[][] = [];
+  try {
+    result = keepCurrent(home, { binaryFound: () => true });
+    logged = stderr.mock.calls.map(args => [...args]);
+  } finally { stderr.mockRestore(); }
+  const fact = result?.harnesses[0];
   expect(fact?.state).toBe('repair_failed');
   expect(fact?.toolsDeployment).toBeUndefined();
-  expect(fact?.action).toContain('myco doctor');
-  expect(fact?.action).not.toContain('member provision');
+  const copy = "Claude Code's Myco tools point at https://other.myco.example; this machine is no longer connected there. Run `myco login https://other.myco.example`, or remove `mcpServers.myco` in `~/.claude.json` and run `myco member provision --refresh`.";
+  expect(result?.localActions?.['claude-code']).toBe(copy);
+  expect(logged).toEqual([[`[myco] keep-current: ${copy}\n`]]);
+  expect(fact?.action).toBe("Claude Code's Myco tools point at a Myco this machine is no longer connected to. Open myco doctor on that machine for its address and reconnection steps.");
+  const lines: string[] = [];
+  runProvision(['--refresh'], { mycoHome: home, cwd: agentHome, stdout: line => lines.push(line) });
+  expect(lines).toEqual([copy]);
+  const entry = { version: REGISTRY_VERSION, projectId: 'proj_1', root: agentHome, serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 };
+  const dir = new MemberSpool(entry, { mycoHome: home }).dir;
+  updateProjectContext(dir, home, cache => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  let report = '';
+  await reportHarnesses(result ?? null, home, Date.now() + 10_000, { entry, fetch: async (_input, init) => {
+    report = String(init?.body);
+    return Response.json({ persisted: true }, { headers: { [PROTOCOL_HEADER]: String(MEMBER_PROTOCOL) } });
+  } });
+  expect(report).toContain('repair_failed');
+  expect(report).not.toContain(OTHER_SERVER);
+  expect(report).not.toContain('localActions');
+  const checks = setupChecks(home);
+  expect(checks).toContainEqual(expect.objectContaining({ status: 'warn', detail: copy }));
+  for (const check of checks) {
+    expect(check.detail.toLowerCase()).not.toContain('run myco doctor');
+    expect(check.detail).not.toContain('..');
+    expect(check.detail).not.toContain('member provision claude-code');
+    expect(check.detail).not.toContain("stay on");
+  }
+  expect(parseProvisionedHarnessReport({ harnesses: [fact] })).not.toBeNull();
   expect(readProvisionRecord(home)?.version).toBe('old');
   expect(fs.readFileSync(target, 'utf8')).toBe(before);
+  const file = JSON.parse(before);
+  delete file.mcpServers.myco;
+  fs.writeFileSync(target, JSON.stringify(file));
+  expect(runProvision(['--refresh'], { mycoHome: home, cwd: agentHome, stdout: () => {} })).toBe(true);
+  expect(JSON.parse(fs.readFileSync(target, 'utf8')).mcpServers.myco.url).toBe(SERVER + '/mcp');
 });
 
 it('keeps the machine.agents JSON contract and settles held tools in guided setup', async () => {

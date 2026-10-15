@@ -443,17 +443,22 @@ describe('a joined member with no 1.4 vault', () => {
     writeClaudeSettings({ hooks: { SessionStart: [member('session-start')], Stop: [member('stop')] } });
 
     const missing = await verb('doctor', [], rig.fetch);
-    expect(missing.stdout).toContain(`run ${program}, which is missing, so they capture nothing. Run \`myco member provision claude-code\` from this project.`);
+    expect(missing.stdout).toContain(`run ${program}, which is missing, so they capture nothing. Check this executable and its access permissions.`);
     expect(missing.stdout).toMatch(/Capture\s+.*FAIL.*no harness on this machine captures for the member/);
 
     fs.mkdirSync(path.dirname(program), { recursive: true });
     fs.writeFileSync(program, '#!/bin/sh\n', { mode: 0o644 });
     const inert = await verb('doctor', [], rig.fetch);
-    expect(inert.stdout).toContain(`run ${program}, which is not executable`);
+    expect(inert.stdout).toContain(`run ${program}, which is not executable, so they capture nothing. Check this executable and its access permissions.`);
 
     fs.chmodSync(program, 0o755);
     const runnable = await verb('doctor', [], rig.fetch);
     expect(runnable.stdout).toMatch(/Capture\s+.*not checked.*Claude Code's global hooks .* are installed/);
+    for (const report of [missing, inert, runnable]) {
+      expect(report.stdout).not.toMatch(/run `?myco doctor/i);
+      expect(report.stdout).not.toContain('..');
+      expect(report.stdout).not.toContain('myco member provision claude-code');
+    }
   });
 
   it('config get answers before a Deployment that stops answering holds it past the request deadline', async () => {

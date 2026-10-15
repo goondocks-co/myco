@@ -631,8 +631,8 @@ describe('myco cutover', () => {
     for (const args of [['--dry-run'], []]) {
       const result = await m.run(args);
       expect(result.ok).toBe(false);
-      expect(result.err.join('\n')).toContain("Claude Code's Myco tools stay on https://other.invalid");
-      expect(result.err.join('\n')).toContain('myco doctor');
+      expect(result.err.join('\n')).toContain("Claude Code's Myco tools point at https://other.invalid; this machine is no longer connected there. Run `myco login https://other.invalid`, or remove `mcpServers.myco` in `~/.claude.json` and run `myco member provision --refresh`.");
+      expect(result.err.join('\n')).not.toContain('myco doctor');
       expect(result.err.join('\n')).toContain('Nothing was changed.');
       unchanged();
     }

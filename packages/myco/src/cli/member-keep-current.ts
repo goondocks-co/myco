@@ -1,3 +1,4 @@
+import { MemberMcpConflictError } from '@myco/symbionts/installer.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
@@ -27,6 +28,7 @@ export interface KeepCurrentResult {
   serverUrl: string;
   harnesses: ProvisionedHarnessFact[];
   ready: string[];
+  localActions?: Record<string, string>;
   pendingTrust?: ProvisionRecord['pendingTrust'];
 }
 
@@ -39,15 +41,16 @@ function installEvidence(manifest: SymbiontManifest, binaryFound: (binary: strin
   return binaryFound(manifest.binary) || (manifest.health?.installLocations ?? []).some((location) => fs.existsSync(expandHome(location)));
 }
 
-function rememberState(mycoHome: string, harnesses: ProvisionedHarnessFact[]): void {
+function rememberState(mycoHome: string, result: KeepCurrentResult): void {
+  const { harnesses, localActions } = result;
   const target = path.join(mycoHome, 'member', 'harness-states.json');
   let before: Record<string, unknown> = {};
   try { before = JSON.parse(fs.readFileSync(target, 'utf8')); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  const next = Object.fromEntries(harnesses.map(({ id, state, action, toolsDeployment }) => [id, { state, action, toolsDeployment }]));
+  const next = Object.fromEntries(harnesses.map(({ id, state, action, toolsDeployment }) => [id, { state, action, toolsDeployment, ...(localActions?.[id] === undefined ? {} : { localAction: localActions[id] }) }]));
   for (const fact of harnesses) {
-    const words = fact.state === 'held_elsewhere' ? harnessToolsElsewhere(loadManifests().find((m) => m.name === fact.id)?.displayName ?? fact.id, os.hostname(), fact.toolsDeployment!) : fact.action;
+    const words = localActions?.[fact.id] ?? (fact.state === 'held_elsewhere' ? harnessToolsElsewhere(loadManifests().find((m) => m.name === fact.id)?.displayName ?? fact.id, os.hostname(), fact.toolsDeployment!) : fact.action);
     if (words !== undefined && JSON.stringify(before[fact.id]) !== JSON.stringify(next[fact.id])) process.stderr.write(`[myco] keep-current: ${words}\n`);
   }
   if (JSON.stringify(before) !== JSON.stringify(next)) atomicWriteFileSync(target, JSON.stringify(next));
@@ -99,23 +102,26 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
           action = `Install ${manifest.displayName} again`;
         }
       } catch (error) {
+        if (error instanceof MemberMcpConflictError && error.repairAction !== undefined) (result.localActions ??= {})[id] = error.message;
         toolsDeployment = undefined;
         const code = (error as NodeJS.ErrnoException).code ?? ((error as Error).cause as NodeJS.ErrnoException | undefined)?.code;
         state = code === 'EACCES' || code === 'EPERM' || code === 'EROFS' ? 'unwritable' : 'repair_failed';
         action = state === 'unwritable'
           ? `Allow Myco to write ${manifest?.displayName ?? id}'s configuration`
+          : error instanceof MemberMcpConflictError && error.repairAction !== undefined ? error.repairAction
           : `Run myco doctor to check ${manifest?.displayName ?? id}'s capture configuration`;
       }
       let ranAt: number | undefined;
       try { if (manifest !== undefined) ranAt = harnessRanAt(manifest, mycoHome); } catch {
         state = 'repair_failed';
+        delete result.localActions?.[id];
         toolsDeployment = undefined;
         action = `Can't tell whether ${manifest?.displayName ?? id} ran; open it and check access to its session store`;
       }
       result.harnesses.push({ id, provisioned: true, state, ...(toolsDeployment === undefined ? {} : { toolsDeployment }), ...(ranAt === undefined ? {} : { ranAt }), ...(result.pendingTrust?.[id] === undefined ? {} : { hookRepairAt: result.pendingTrust[id].at }), ...(action === undefined ? {} : { action }) });
     }
     if (result.harnesses.every((fact) => fact.state === 'ready' || fact.state === 'trust_required' || fact.state === 'held_elsewhere')) recordProvision(mycoHome, { serverUrl: record.serverUrl, agents: [], version: getPluginVersion() });
-    rememberState(mycoHome, result.harnesses);
+    rememberState(mycoHome, result);
     return result;
   } finally { acquired.lock.release(); }
 }

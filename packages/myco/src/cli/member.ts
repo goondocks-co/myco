@@ -689,7 +689,7 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     if (repaired !== null) {
       if (repaired.harnesses.length === 0) out('No agent is set up for Myco on this machine; `myco member provision` sets them up.');
       if (repaired.ready.length > 0) out(`Capture is set up for ${repaired.ready.join(', ')}.`);
-      for (const harness of repaired.harnesses) if (harness.action !== undefined) out(harness.action);
+      for (const harness of repaired.harnesses) if (harness.action !== undefined) out(repaired.localActions?.[harness.id] ?? harness.action);
     }
     return true;
   }

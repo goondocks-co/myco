@@ -43,7 +43,7 @@ const REMOTE_MCP_TYPE = 'http';
 export class MemberProvisionConflictError extends Error { }
 
 export class MemberMcpConflictError extends MemberProvisionConflictError {
-  constructor(message: string, readonly problem: string = message, cause?: unknown, readonly toolsDeployment?: string) {
+  constructor(message: string, readonly problem: string = message, cause?: unknown, readonly toolsDeployment?: string, readonly repairAction?: string) {
     super(message, { cause });
   }
 }
@@ -883,12 +883,23 @@ export class SymbiontInstaller {
     if (!legacy && (!this.isMemberMcpServer(existing) || (existing.url !== desired?.url && !replacing) || !sameCredentialSource)) {
       const other = this.entryDeployment(existing);
       if (this.isMemberMcpServer(existing) && other !== null) {
-        const message = toolsStayOnDeployment(this.manifest.displayName, other);
         const memberships = listDeploymentMembershipsResult(memberHome);
+        const readable = memberships.readable && memberships.unavailableEntries === 0;
+        const connected = memberships.memberships.some((membership) => deploymentUrl(membership.serverUrl) === other && !membership.refreshTerminal);
+        if (readable && !connected) {
+          const home = process.env.HOME ?? os.homedir();
+          const file = mcpTarget.startsWith(home + path.sep) ? '~' + mcpTarget.slice(home.length) : mcpTarget;
+          const serversKey = targetOverride?.serversKey ?? (reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : (reg?.mcpServersKey ?? 'mcpServers'));
+          const problem = `${this.manifest.displayName}'s Myco tools point at ${other}; this machine is no longer connected there.`;
+          const message = `${problem} Run \`myco login ${other}\`, or remove \`${serversKey}.${MYCO_MCP_SERVER_NAME}\` in \`${file}\` and run \`myco member provision --refresh\`.`;
+          const repairAction = `${this.manifest.displayName}'s Myco tools point at a Myco this machine is no longer connected to. Open myco doctor on that machine for its address and reconnection steps.`;
+          throw new MemberMcpConflictError(message, message, undefined, undefined, repairAction);
+        }
         const heldElsewhere = other !== this.entryDeployment(desired ?? {}) && sameCredentialSource && this.helperDeployment(existing) === other
-          && memberships.readable && memberships.unavailableEntries === 0
-          && memberships.memberships.some((membership) => deploymentUrl(membership.serverUrl) === other && !membership.refreshTerminal);
+          && readable && connected;
         if (heldElsewhere && this.preserveOtherMemberTools) return other;
+        const message = readable && connected ? toolsStayOnDeployment(this.manifest.displayName, other)
+          : `${this.manifest.displayName}'s Myco tools point at ${other}, but this machine's Myco connections could not all be read. Restore access to this machine's Myco connection files.`;
         throw new MemberMcpConflictError(message, message, undefined, heldElsewhere ? other : undefined);
       }
       throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, 'Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover');

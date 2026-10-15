@@ -15,7 +15,7 @@ import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { repositoryMycoEntries } from '@myco/symbionts/repository-entries.js';
-import { SymbiontInstaller } from '../symbionts/installer.js';
+import { SymbiontInstaller, MemberMcpConflictError } from '../symbionts/installer.js';
 import { readProvisionRecord } from '../symbionts/member-provision-record.js';
 import { missingMemberSkills } from '../symbionts/member-skill-links.js';
 import { getPluginVersion } from '../version.js';
@@ -74,25 +74,25 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string, requ
     const seen = [new SymbiontInstaller(manifest, root, packageRoot, false, mycoHome).inspectMemberHooks()];
     for (const hooks of seen) {
       if (!hooks.readable) {
-        checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) could not be read, so whether it captures is unknown. Run \`myco member provision ${manifest.name}\`.`));
+        checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) could not be read, so whether it captures is unknown. Restore read access to this file.`));
       } else if (hooks.member) {
         const broken = [...new Set(hooks.memberCommands.map(hookExecutable).filter((p): p is string => p !== null))]
           .map((program) => ({ program, problem: programProblem(program) }))
           .filter((entry): entry is { program: string; problem: string } => entry.problem !== null);
         if (broken.length > 0) {
           const { program, problem } = broken[0];
-          checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) run ${program}, which ${problem}, so they capture nothing. Run \`myco member provision ${manifest.name}\` from this project.`));
+          checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) run ${program}, which ${problem}, so they capture nothing. Check this executable and its access permissions.`));
         } else {
           capturing += 1;
-          checks.push(row('Capture', 'not-checked', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are installed; capture execution not checked. Start a new agent session, then run \`myco doctor\`.`));
+          checks.push(row('Capture', 'not-checked', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are installed; capture execution not checked. Start a new agent session to check capture.`));
         }
       } else if (hooks.present) {
-        checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are Myco's 1.4 capture, not the member's. Run \`myco member provision ${manifest.name}\`.`));
+        checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are Myco's 1.4 capture, not the member's. Review capture handover with \`myco cutover --dry-run\`.`));
       }
     }
   }
   if (capturing === 0 && required) {
-    checks.push(row('Capture', 'fail', 'no harness on this machine captures for the member. Run `myco member provision <agent>` from this project.'));
+    checks.push(row('Capture', 'fail', 'no harness on this machine captures for the member. Review the agent setup checks in this report before starting another session.'));
   }
   return checks;
 }
@@ -110,6 +110,14 @@ export function refusedHookChecks(mycoHome: string, now: number): DoctorCheck[] 
   });
 }
 
+function setupRefusalWords(agent: string, error: unknown): string {
+  const problem = error instanceof MemberMcpConflictError ? error.problem : error instanceof Error ? error.message : String(error);
+  const detail = problem.replace(/(?:^|[,.]?\s+)(?:then\s+)?run\s+`?myco\s+(?:doctor\b|member\s+provision\s+(?!-)[\w<])[\s\S]*$/i, '').replace(/[.,;:\s]+$/, '');
+  const message = error instanceof MemberMcpConflictError && error.repairAction !== undefined ? detail
+    : `${agent}'s configuration could not be checked: ${detail || 'restore access to its configuration'}`;
+  return `${message}.`;
+}
+
 /** The build and registration recorded by agent provisioning, with current wiring checked. */
 export function setupChecks(mycoHome: string, version: string = getPluginVersion()): Array<DoctorCheck & { toolsDeployment?: string }> {
   const record = readProvisionRecord(mycoHome);
@@ -121,13 +129,13 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
   for (const manifest of loadManifests().filter((m) => record.agents.includes(m.name))) {
     try {
       const status = memberHarnessStatus(manifest.name, mycoHome, record.serverUrl);
-      if (!status.current) issues.push(row('Setup', 'warn', `${manifest.displayName}'s capture configuration is missing or stale. The next Myco helper pass repairs it; run myco doctor after that pass to check it.`));
+      if (!status.current) issues.push(row('Setup', 'warn', `${manifest.displayName}'s capture configuration is missing or stale. The next Myco helper pass repairs it.`));
       if (status.toolsDeployment !== undefined) {
         heldAgents.add(manifest.name);
         held.push({ ...row('Setup', status.current ? 'ok' : 'warn', harnessToolsElsewhere(manifest.displayName, os.hostname(), status.toolsDeployment)), toolsDeployment: status.toolsDeployment });
       }
     } catch (error) {
-      issues.push(row('Setup', 'warn', `${manifest.displayName}'s configuration could not be checked: ${error instanceof Error ? error.message : String(error)}. Run myco doctor after restoring access.`));
+      issues.push(row('Setup', 'warn', setupRefusalWords(manifest.displayName, error)));
     }
     const target = manifest.registration?.globalSkillsTarget;
     if (!target) continue;
@@ -154,13 +162,13 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
   let authenticated = false;
   const deployment = problem === null ? await openDeployment(source, deps) : null;
   if (deployment === null && problem === null) {
-    checks.push(row('Deployment', 'fail', `no member credential resolves for this project (--credential ${source}). Run \`myco login <address>\`, then \`myco doctor --credential registry\`.`));
+    checks.push(row('Deployment', 'fail', `no member credential resolves for this project (--credential ${source}). Run \`myco login <address>\` to connect this machine.`));
   } else if (deployment !== null) {
     const tools = await deployment.listTools();
     authenticated = tools.ok;
     checks.push(tools.ok
       ? row('Project access', 'ok', `${deployment.serverUrl} answers, and serves this machine's credential ${tools.value.length} tools.`)
-      : row('Project access', 'fail', `${deployment.serverUrl} ${tools.error.code === 'unauthorized' ? 'refused' : 'could not serve'} this machine's tool list (${terminalText(tools.error.code)}): ${terminalText(tools.error.message)}. Run \`myco doctor\` from this repository after restoring access.`));
+      : row('Project access', 'fail', `${deployment.serverUrl} ${tools.error.code === 'unauthorized' ? 'refused' : 'could not serve'} this machine's tool list (${terminalText(tools.error.code)}): ${terminalText(tools.error.message)}. Restore access to this repository's Myco connection.`));
   }
 
   // Read after the Deployment was asked: its read renews a credential whose window is open.
@@ -170,7 +178,7 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
     const expired = membership.expiresAt !== undefined && membership.expiresAt <= (deps.now ?? Date.now)();
     checks.push(membership.refreshTerminal === true
       ? row('Credential', 'fail', `the Deployment will not renew this credential — ${REJOIN_HINT}.`)
-      : row('Credential', authenticated ? 'ok' : expired ? 'warn' : 'not-checked', `${membership.serverUrl}: ${authenticated ? 'authenticated' : 'authentication not checked'}; expires ${iso(membership.expiresAt)}${expired ? ' (expired)' : ''}. Run \`myco doctor\` from this repository to check again.`));
+      : row('Credential', authenticated ? 'ok' : expired ? 'warn' : 'not-checked', `${membership.serverUrl}: ${authenticated ? 'authenticated' : 'authentication not checked'}; expires ${iso(membership.expiresAt)}${expired ? ' (expired)' : ''}. Start a new agent session after restoring access.`));
   }
 
   const packageRoot = deps.packageRoot ?? resolvePackageRoot();
@@ -233,7 +241,7 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
     });
     checks.push(row('Deployment', healthy ? 'ok' : 'fail', healthy
       ? `${membership.serverUrl} answers its health route.`
-      : `${membership.serverUrl} is unreachable or did not answer its health route. Check the address and connection, then run \`myco doctor\` again.${membership.expiresAt !== undefined && membership.expiresAt <= now - STALE_CREDENTIAL_MS ? ` If this address was abandoned, run myco logout ${membership.serverUrl} --local-only to remove its local membership.` : ''}`));
+      : `${membership.serverUrl} is unreachable or did not answer its health route. Check the address and connection.${membership.expiresAt !== undefined && membership.expiresAt <= now - STALE_CREDENTIAL_MS ? ` If this address was abandoned, run myco logout ${membership.serverUrl} --local-only to remove its local membership.` : ''}`));
   }
   const projects = listRegistryEntriesResult(home);
   if (!projects.readable || projects.unavailableEntries > 0) checks.push(row('Repositories', 'fail', 'repository routes could not all be read; routing is unknown for those entries. Run `myco member join` from each affected repository.'));
