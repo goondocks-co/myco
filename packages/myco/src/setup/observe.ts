@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readDefaultDeployment } from '@myco/member/default-deployment.js';
-import { legacyMigrationState, legacyProjectDestination } from '@myco/member/legacy-migration.js';
+import { legacyProjectDestination, installedLegacyHooks } from '@myco/member/legacy-migration.js';
+import { observeLegacyMigration, legacyConfirmationObserver } from '@myco/cli/cutover.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readDeploymentMembershipResult, readRegistryEntryResult } from '@myco/member/registry.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { postRoute } from '@myco/cli/deployment-reader.js';
@@ -29,12 +30,18 @@ export interface Observation {
   hint?: string;
   deployment?: string;
   hooksDeployment?: string;
+  memberCapture?: true;
   joinedDeployments?: string[];
   legacyError?: string;
+  legacyNotice?: string;
+  legacyConfirmation?: import('@myco/member/legacy-migration.js').LegacyMigrationState['confirmation'];
   capture?: { waiting?: number | null; nextProbeAt?: number; recentRefusals?: number; unreadableLines?: number };
   target?: 'cloudflare' | 'local';
 }
 export interface ObserveDeps {
+  legacyHomeDir?: string;
+  legacyHomes?: readonly string[];
+  legacyObserver?: ReturnType<typeof legacyConfirmationObserver>;
   checkRemote?: boolean;
   fetch?: typeof fetch;
   agents?: () => string[];
@@ -54,19 +61,24 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
   answers = { ...answers };
   const facts: Observation[] = [];
   let observedUrl = answers.url;
-  const add = (id: string, state: Observation['state'], detail: string, scope = observedUrl ?? home, informational = false, capture?: Observation['capture']): void => {
-    facts.push({ id, scope, state, detail, ...(answers.role === 'create' && answers.target ? { target: answers.target } : {}), ...(informational ? { informational } : {}), ...(capture ? { capture } : {}) });
+  const add = (id: string, state: Observation['state'], detail: string, scope = observedUrl ?? home, informational = false, capture?: Observation['capture']): Observation => {
+    const fact: Observation = { id, scope, state, detail, ...(answers.role === 'create' && answers.target ? { target: answers.target } : {}), ...(informational ? { informational } : {}), ...(capture ? { capture } : {}) };
+    facts.push(fact);
+    return fact;
   };
   const read = async (id: string, fn: () => void | Promise<void>, informational = false): Promise<void> => {
     try { await fn(); }
     catch (error) { add(id, 'unavailable', error instanceof Error ? error.message : String(error), observedUrl ?? home, informational); }
   };
-  await read('legacy', () => {
-    const migration = legacyMigrationState(home);
+  await read('legacy', async () => {
+    const migration = await (deps.legacyObserver ?? observeLegacyMigration)(home, { fetch: deps.fetch, now: deps.now, homeDir: deps.legacyHomeDir, homes: deps.legacyHomes });
     const guidance = legacyCaptureGuidance(migration);
     facts.push({
       id: 'legacy',
+      legacyNotice: [migration.terminalProjects?.map(state => `moved; its project is ${state}`).join('; '),
+        migration.ignoredLineage ? `Skipped ${migration.ignoredLineage} malformed 1.4 lineage event(s) during confirmation.` : null].filter(Boolean).join(' '),
       ...(migration.state === 'unavailable' ? { legacyError: migration.detail } : {}),
+      ...(migration.confirmation === undefined ? {} : { legacyConfirmation: migration.confirmation }),
       scope: migration.state === 'unavailable' ? migration.file : home,
       state: migration.state === 'unavailable' ? 'unavailable' : migration.state === 'none' || migration.state === 'moved' ? 'complete' : 'incomplete',
       detail: [migration.state, guidance.deferral ?? guidance.hint ?? (migration.state === 'none' || migration.state === 'moved' ? 'No Myco 1.4 migration remains.' : 'Migration is unfinished; keep the 1.4 data and run myco setup --cutover to preview and resume.'), guidance.warning].filter(Boolean).join(' '),
@@ -116,21 +128,25 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
         signin.kind === 'configured' ? 'GitHub sign-in configured.' : signin.reason);
     });
   }
-  if (((answers.role === 'join' || answers.role === 'create') && url) || (deps.status && fs.existsSync(provisionRecordPath(home)))) {
+  if (((answers.role === 'join' || answers.role === 'create') && url) || deps.status) {
     await read('machine.agents', () => {
-      if (facts.some((fact) => fact.id === 'legacy' && fact.state === 'incomplete')) { add('machine.agents', 'incomplete', 'deferred-legacy'); return; }
+      if (answers.noAgents && !deps.status) { add('machine.agents', 'complete', 'declined'); return; }
+      if (installedLegacyHooks(home, { homeDir: deps.legacyHomeDir, homes: deps.legacyHomes })) { add('machine.agents', 'incomplete', 'legacy-hooks'); return; }
       const record = readProvisionRecord(home);
       if (record === null && fs.existsSync(provisionRecordPath(home))) throw new Error(`${provisionRecordPath(home)}: cannot read provision record`);
+      if (record === null && answers.role !== 'join' && answers.role !== 'create') return;
       const hooksUrl = deps.status && record !== null ? deploymentUrl(record.serverUrl) : url;
-      if (hooksUrl === undefined) throw new Error('No Deployment address is available for agent hooks.');
+      if (hooksUrl === undefined) return;
       const same = record !== null && deploymentUrl(record.serverUrl) === hooksUrl;
-      if ((answers.noAgents && (!deps.status || record === null)) || (same && record.agents.length === 0)) { add('machine.agents', 'complete', 'declined'); return; }
       const agents = (deps.agents ?? (() => detectMachineInstalledSymbionts().map((manifest) => manifest.name)))();
+      const installed = agents.length > 0 && agents.every((agent) => memberHarnessCurrent(agent, home, hooksUrl, deps));
+      if (!installed && ((answers.noAgents && record === null) || (same && record.agents.length === 0))) { add('machine.agents', 'complete', 'declined'); return; }
       if (agents.length === 0) { add('machine.agents', 'complete', 'none-installed'); return; }
       const current = same && record.version === getPluginVersion()
-        && agents.every((agent) => record.agents.includes(agent) && memberHarnessCurrent(agent, home, hooksUrl, deps));
-      add('machine.agents', current ? 'complete' : record === null ? 'absent' : 'incomplete', current ? 'current' : 'stale');
-      if (deps.status && record !== null) facts[facts.length - 1].hooksDeployment = record.serverUrl;
+        && agents.every((agent) => record.agents.includes(agent)) && installed;
+      const fact = add('machine.agents', current ? 'complete' : record === null ? 'absent' : 'incomplete', current ? 'current' : 'stale');
+      if (installed) fact.memberCapture = true;
+      if (deps.status && record !== null) fact.hooksDeployment = record.serverUrl;
     });
   }
   if (!url || !answers.role) return facts;
@@ -207,6 +223,7 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
 
 /** Status derives journeys from membership and runner records, independent of saved progress. */
 export async function observeSetupStatus(home: string, answers: SetupAnswers, deps: ObserveDeps = {}, selected = false): Promise<Observation[]> {
+  deps = { ...deps, legacyObserver: deps.legacyObserver ?? legacyConfirmationObserver() };
   const journeys: SetupAnswers[] = [];
   const failures: Observation[] = [];
   const unavailable = (id: string, detail: string): void => {

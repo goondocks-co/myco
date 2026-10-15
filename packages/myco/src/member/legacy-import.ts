@@ -304,6 +304,42 @@ export function locateTranscript(agent: string, sessionId: string, recordedPath:
 
 /** The ids one vault row's derived events and rows take, all under this Project. */
 const legacyId = (projectId: string, ...parts: string[]): string => deriveId('legacy', projectId, ...parts);
+
+const legacySessionCompletionIds = (projectId: string, sessionId: string) =>
+  ['session.end', 'session.title'].map(kind => legacyId(projectId, kind, sessionId));
+
+/** Source event identities use the same machine eligibility and session identities as the importer. */
+export function legacyHistoryCompletionGroups(project: LegacyProject, machineId: string, mycoHome: string): string[][] {
+  return legacySourceGrouping(project, machineId, mycoHome).groups.map(group =>
+    legacySessionCompletionIds(project.projectId, group.sessionId));
+}
+function legacySourceGrouping(project: LegacyProject, machineId: string, mycoHome: string) {
+  const { aliases } = aliasByTranscriptTime(project, rootOf(project), mycoHome);
+  return groupLegacySessions(project, aliases, machineId);
+}
+export function legacyDeletedSessionIds(project: LegacyProject, machineId: string, mycoHome: string): string[] {
+  return [...legacySourceGrouping(project, machineId, mycoHome).deleted];
+}
+export function legacyVaultCompletionIdentities(project: LegacyProject, machineId: string, mycoHome: string, transcriptSessions: ReadonlySet<string> = new Set()) {
+  const grouping = legacySourceGrouping(project, machineId, mycoHome);
+  const eligible = new Set(grouping.groups.map(group => group.sessionId));
+  const recordIds = grouping.groups.flatMap(group => [
+    ...(group.title === null ? [] : [legacyId(project.projectId, 'session.title', group.sessionId)]),
+    ...project.prompts.filter(prompt => !transcriptSessions.has(group.sessionId) && prompt.sessionId === group.promptsFrom).flatMap(prompt => [
+      ...(prompt.text === null ? [] : [legacyId(project.projectId, 'prompt', prompt.id)]),
+      ...(prompt.response === null ? [] : [legacyId(project.projectId, 'response', prompt.id)]),
+    ]),
+  ]).concat(project.plans.filter(plan => plan.content !== null && plan.sessionId !== null
+    && eligible.has(grouping.idOf.get(plan.sessionId) ?? plan.sessionId)).map(plan => legacyId(project.projectId, 'plan', plan.id)));
+  const lineage = project.resolutions.filter(event => malformedResolution(event) === null);
+  return { eventGroups: grouping.groups.map(group => legacySessionCompletionIds(project.projectId, group.sessionId)), recordIds,
+    sporeIds: project.spores.map(spore => spore.id), lineageIds: lineage.map(event => event.id),
+    ignoredLineage: project.resolutions.length - lineage.length };
+}
+export function legacyContentSessionIds(project: LegacyProject, machineId: string, mycoHome: string): string[] {
+  return legacySourceGrouping(project, machineId, mycoHome).groups.filter(group =>
+    project.prompts.some(prompt => prompt.sessionId === group.promptsFrom && (prompt.text !== null || prompt.response !== null))).map(group => group.sessionId);
+}
 export const legacyPromptId = (projectId: string, promptId: string): string => legacyId(projectId, 'prompt', promptId);
 
 /** The key a vault plan takes: the member's key for its file, the tool's key for its logical key, else one derived from its row. */

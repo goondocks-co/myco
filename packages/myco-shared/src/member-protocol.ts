@@ -147,6 +147,16 @@ export const PLAN_STATUSES = ['active', 'in_progress', 'completed', 'abandoned']
  * transcript for.
  */
 export const LEGACY_IMPORT_ADAPTER = 'legacy-import';
+export const LEGACY_HISTORY_PATH = '/import/legacy-history';
+export const LEGACY_HISTORY_MAX_EVENTS = 1000;
+export interface LegacyHistoryIdentities {
+  eventGroups: string[][];
+  recordIds?: string[];
+  sporeIds?: string[];
+  lineageIds?: string[];
+  sessions?: string[];
+  projectState?: true;
+}
 export type PlanStatus = (typeof PLAN_STATUSES)[number];
 
 /** The channel a plan version arrived through. A row written before the column, or by a member that names none, reads NULL — which means "inferred from the key shape", the honest value rather than a guessed default. */

@@ -29,6 +29,7 @@ import { observeSetup, type Observation, type ObserveDeps } from '@myco/setup/ob
 import { askOnTerminal, askRequired, confirm, type Ask } from '@myco/setup/prompt.js';
 import { planCutover, runCutover, cutoverSourcePlan, cutoverReconciliation, type CutoverDeps, type CutoverPlan } from '@myco/cli/cutover.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
+import { observeLegacyMigration, legacyConfirmationObserver } from '@myco/cli/cutover.js';
 
 const OFFER_WAIT_MS = 2 * 60_000;
 const OFFER_POLL_MS = 1000;
@@ -174,7 +175,7 @@ function showCutoverPreview(ctx: Context, plan: CutoverPlan): void {
 }
 
 async function conductLegacy(ctx: Context): Promise<void> {
-  const migration = legacyMigrationState(ctx.home);
+  const migration = await (ctx.deps.legacyObserver ?? observeLegacyMigration)(ctx.home, { fetch: ctx.deps.fetch ?? ctx.deps.cutoverDeps?.fetch, now: ctx.deps.now, homeDir: ctx.deps.legacyHomeDir, homes: ctx.deps.legacyHomes });
   if (migration.state === 'unavailable') throw new Error(`Legacy migration state unavailable: ${migration.detail}. Restore access, then run myco setup again.`);
   if (migration.state === 'none' || (migration.state === 'moved' && !ctx.explicitLegacyPlacement)) return;
   if (migration.state !== 'moved') ctx.out(migration.state === 'unmoved' && migration.legacyOwnsCapture === true
@@ -192,7 +193,7 @@ async function conductLegacy(ctx: Context): Promise<void> {
   };
   const preview = () => (ctx.deps.planCutover ?? planCutover)(ctx.home, {
     routes: new Map(Object.entries(ctx.file.answers.routes ?? {})), skips: new Set(ctx.file.answers.skips ?? []),
-    dryRun: true, requireSourceMatch: true, homeDir: deps.env?.HOME,
+    dryRun: true, requireSourceMatch: true, homeDir: ctx.deps.legacyHomeDir ?? deps.env?.HOME, legacyHomes: ctx.deps.legacyHomes,
   }, deps);
   let plan = preview();
   showCutoverPreview(ctx, plan);
@@ -224,7 +225,7 @@ async function conductLegacy(ctx: Context): Promise<void> {
   const execution = (ctx.deps.planCutover ?? planCutover)(ctx.home, { ...plan.options, dryRun: false }, deps, plan.plannedAt);
   if (planFingerprint(cutoverConsentPlan(execution)) !== planFingerprint(cutoverConsentPlan(plan))) throw new Error('The cutover plan changed after consent. Run myco setup --cutover again to review it.');
   const result = await (ctx.deps.runCutover ?? runCutover)(execution, deps);
-  const after = legacyMigrationState(ctx.home);
+  const after = legacyMigrationState(ctx.home, { homeDir: ctx.deps.legacyHomeDir, homes: ctx.deps.legacyHomes });
   if (!result.ok || after.state !== 'moved') throw new Error(`Myco 1.4 migration remains ${after.state}. Keep the 1.4 data; resolve the reported problems and run myco setup --cutover again to resume.${after.state === 'unavailable' ? ` ${after.detail}` : after.state === 'changed' ? ` ${after.warning}` : ''}`);
   const added = cutoverReconciliation(ctx.home)?.sessionsAdded ?? 0;
   ctx.legacySummary = `Moved to 2.0.${added > 0 ? ` 1.4 captured ${added} more session${added === 1 ? '' : 's'} before it stopped; they moved too.` : ''} 1.4 data kept at ${plan.vaults.map(vault => vault.vault).join(', ')}. Start a new agent session; an already-open session keeps its earlier Myco connection.`;
@@ -584,6 +585,7 @@ const STEPS: readonly SetupStep[] = [
 const workerServiceSpecForConsent = (target: ReturnType<typeof executorServiceTarget>) => workerServiceUnit(target.serverUrl, target.mycoHome, 'runner').label;
 
 export async function conductSetup(home: string, file: SetupFile, deps: SetupDeps, options: { yes: boolean; explicitJoin: boolean; explicitLegacyPlacement: boolean; explicitDefault: boolean; explicitProject: boolean; newProjectChanged: boolean }): Promise<void> {
+  deps = { ...deps, legacyHomeDir: deps.legacyHomeDir ?? deps.cutoverDeps?.env?.HOME, legacyObserver: deps.legacyObserver ?? legacyConfirmationObserver() };
   let capture: Observation[] = [];
   const ctx: Context = {
     home, file, deps, ...options, ask: deps.ask ?? askOnTerminal, facts: [],

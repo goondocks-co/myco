@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { legacyMigrationState, type CutoverState } from '@myco/member/legacy-migration.js';
+import { completedLegacyDestination, legacyMigrationState, type CutoverState } from '@myco/member/legacy-migration.js';
 import { isMemberHome } from '@myco/member/home-role.js';
 import { legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { deploymentKeyFor } from '@myco/member/registry.js';
@@ -183,6 +183,22 @@ it('uses completion for the current destination instead of a project-wide comple
     } };
   });
   stateIs('partial');
+});
+
+for (const version of [2, 1, undefined] as const) it(`reads ${version ?? 'unversioned'} completion independently of live routes and memberships`, () => {
+  const file = vault();
+  const state = receipts(file, state => { state.version = version; });
+  const receipt = state.migrations![file];
+  const project = receipt.projects.proj_1;
+  expect(completedLegacyDestination(receipt, project)).toBe('https://work.invalid');
+  stateIs('moved');
+  for (const change of [
+    () => { project.vault!.endedBy = 'refused'; },
+    () => { delete project.vault!.endedBy; project.transcripts!.failures = [{ what: 'transcript', cause: 'fault' }]; },
+  ]) {
+    change();
+    expect(completedLegacyDestination(receipt, project)).toBeNull();
+  }
 });
 
 it.skipIf(process.platform === 'win32')('names loose record permissions', () => {

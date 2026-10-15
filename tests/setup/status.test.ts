@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { run } from '@myco/cli/setup.js';
+import { run as dryCutover } from '@myco/cli/cutover.js';
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { observeSetupStatus, type Observation } from '@myco/setup/observe.js';
 import { saveSetupFile } from '@myco/setup/answers.js';
@@ -12,6 +13,13 @@ import { writeDeploymentMembership, writeRegistryEntry, deploymentPath } from '@
 import { recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { newRunnerBearer, runnerRecordPath } from '@myco/runner/runner-registry.js';
 import { statusHome, STATUS_URL, STATUS_NOW } from './fixtures/status-home.js';
+import { Database } from 'bun:sqlite';
+import { provisionGlobally } from '@myco/cli/member.js';
+import { homeReport } from '@myco/cli/member-doctor.js';
+import { legacyMigrationState } from '@myco/member/legacy-migration.js';
+import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
+import { resolveManagedBinaryPath } from '@myco/symbionts/installer.js';
+import { readVaultContent } from '@myco/member/legacy-backup.js';
 
 let scratch: string;
 let fixture: ReturnType<typeof statusHome>;
@@ -276,6 +284,50 @@ it('uses recorded global hooks even when saved answers declined agents for anoth
   expect(facts.find(fact => fact.id === 'machine.agents')).toMatchObject({ detail: 'stale', state: 'incomplete', hooksDeployment: other });
   expect(renderSetupStatus(facts).join('\n')).toContain('Agent hooks: Out of date; run myco member provision --refresh.');
 });
+
+for (const backupOnly of [false, true]) it(`reports installed 2.0 capture separately from ${backupOnly ? 'alpha backup-only' : 'unmoved'} history`, async () => {
+  const restore = bindSandboxChildHome(scratch, { MYCO_HOME: fixture.home });
+  try {
+    const vault = path.join(fixture.home, 'groves', 'retained', 'myco.db');
+    fs.mkdirSync(path.dirname(vault), { recursive: true });
+    const db = new Database(vault);
+    db.run("CREATE TABLE sessions (body TEXT, project_id TEXT DEFAULT 'proj_old')");
+    db.run("INSERT INTO sessions (body) VALUES ('retained history')");
+    db.close();
+    if (backupOnly) {
+      const copy = path.join(scratch, 'alpha-backup.db');
+      fs.copyFileSync(vault, copy);
+      fs.writeFileSync(path.join(fixture.home, 'member', 'cutover.json'), JSON.stringify({ backups: { [vault]: { copy, ...readVaultContent(copy), at: 1 } } }), { mode: 0o600 });
+    }
+    expect(provisionGlobally('claude-code', null, fixture.home, { serverUrl: STATUS_URL }).kind).toBe('provisioned');
+    const bytes = fs.readFileSync(vault);
+    expect(legacyMigrationState(fixture.home).state).toBe(backupOnly ? 'needs-destination' : 'unmoved');
+    const facts = await observeSetupStatus(fixture.home, { role: 'join', url: STATUS_URL }, deps());
+    expect(facts.find(fact => fact.id === 'machine.agents')?.detail).not.toBe('deferred-legacy');
+    const text = renderSetupStatus(facts).join('\n');
+    expect(text).toContain('Agent hooks: Myco 2.0 capture is installed');
+    expect(text).not.toContain('1.4 still owns agent capture');
+    expect(text).toContain(backupOnly ? 'Some Myco 1.4 projects need a destination' : 'Myco 1.4 data has not been moved');
+    const doctor = (await homeReport(fixture.home, { ...deps(), worker: { runner: () => { throw new Error('No service calls'); } } })).map(check => check.detail).join('\n');
+    expect(doctor).toContain('hooks (');
+    expect(doctor).toContain('are installed; capture execution not checked');
+    expect(doctor).not.toContain('still own capture');
+    recordProvision(fixture.home, { serverUrl: STATUS_URL, agents: [], version: 'earlier-build', at: 1 }, { replace: true });
+    const stale = await observeSetupStatus(fixture.home, { role: 'join', url: STATUS_URL, noAgents: true }, deps());
+    expect(stale.find(fact => fact.id === 'machine.agents')).toMatchObject({ memberCapture: true, state: 'incomplete' });
+    expect(renderSetupStatus(stale).join('\n')).toContain('Myco 2.0 capture is installed. Out of date');
+    const settings = path.join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+    const installed = fs.readFileSync(settings, 'utf8');
+    for (const mismatch of [installed.replaceAll('--credential registry', '--credential env'), installed.replaceAll(resolveManagedBinaryPath(fixture.home), '/foreign/bin/myco')]) {
+      expect(mismatch).not.toBe(installed);
+      fs.writeFileSync(settings, mismatch);
+      const changed = await observeSetupStatus(fixture.home, { role: 'join', url: STATUS_URL }, deps());
+      expect(changed.find(fact => fact.id === 'machine.agents')?.memberCapture).toBeUndefined();
+      expect(renderSetupStatus(changed).join('\n')).not.toContain('Myco 2.0 capture is installed');
+    }
+    expect(fs.readFileSync(vault)).toEqual(bytes);
+  } finally { restore(); }
+});
 it('explains destination selection when legacy still owns capture', () => {
   expect(renderSetupStatus([{ id: 'legacy', scope: fixture.home, state: 'incomplete', detail: 'needs-destination Agent setup deferred until cutover.' }])).toEqual([
     '1.4 migration: Some Myco 1.4 projects need a destination; run myco setup --cutover to preview the handover.',
@@ -320,4 +372,62 @@ it('prints the agent-hook label once when setup is missing', () => {
   expect(renderSetupStatus([{ id: 'machine.agents', scope: fixture.home, state: 'absent', detail: 'none', hooksDeployment: STATUS_URL }])).toEqual([
     `Agent hooks: Not set up; run myco member provision --server ${STATUS_URL}.`,
   ]);
+});
+
+for (const location of ['own', 'dev', 'custom'] as const) it(`observes installed 1.4 hooks as incomplete capture with friendly copy and exit 3: ${location}`, async () => {
+  const restore = bindSandboxChildHome(scratch, { MYCO_HOME: fixture.home });
+  try {
+    const settings = path.join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.writeFileSync(settings, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${location === 'custom' ? 'MYCO_HOME=' + path.join(scratch, 'custom') + ' ' : ''}${location === 'own' ? fixture.home : path.join(scratch, '.myco-dev')}/bin/myco hook session-start --myco-managed` }] }] } }));
+    const facts = await observeSetupStatus(fixture.home, { role: 'join', url: STATUS_URL }, deps());
+    expect(facts.find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'incomplete', detail: 'legacy-hooks' });
+    expect(await run(['--status'], deps())).toBe(3);
+    const row = lines.find(line => line.includes('Agent hooks:'));
+    expect(row).toContain('Myco 1.4 still captures your agents; run myco setup --cutover to hand over.');
+    expect(row).not.toContain(scratch);
+    expect(row).not.toContain('Could not read');
+  } finally { restore(); }
+});
+
+
+for (const explicit of [true, false]) it(`status and dry run confirm the same ${explicit ? 'explicit legacy homes' : 'legacy home directory'} source set`, async () => {
+  const legacyHomeDir = path.join(scratch, 'source-home');
+  const sourceHome = path.join(legacyHomeDir, explicit ? 'retained' : '.myco');
+  const vault = path.join(sourceHome, 'groves', 'retained', 'myco.db');
+  fs.mkdirSync(path.dirname(vault), { recursive: true });
+  const db = new Database(vault);
+  db.exec(fs.readFileSync(new URL('../fixtures/legacy/vault-v76.sql', import.meta.url), 'utf8'));
+  db.run("INSERT INTO sessions (id, project_id, project_root, agent, started_at, ended_at, status, created_at) VALUES ('source-session', 'proj_status_1', ?, 'claude-code', 1700000000, 1700000060, 'completed', 1700000000)", [fixture.repositories[0]]);
+  db.close();
+  const bytes = fs.readFileSync(vault);
+  let passes = 0;
+  const fetch = Object.assign(async (_input: unknown, init?: RequestInit) => {
+    passes++;
+    const body = JSON.parse(String(init?.body)) as { eventGroups: string[][] };
+    return Response.json({ persisted: true, confirmed: true, eventIds: body.eventGroups.flat(), sporeIds: [], lineageIds: [], projectState: 'active' });
+  }, { preconnect: () => {} });
+  const facts = await observeSetupStatus(fixture.home, {}, { ...deps(), fetch, legacyHomeDir, ...(explicit ? { legacyHomes: [sourceHome] } : {}) });
+  expect(facts.find(fact => fact.id === 'legacy')?.detail).toMatch(/^partial /);
+  expect(passes).toBe(1);
+  expect(await dryCutover(['--dry-run', ...(explicit ? ['--legacy-home', sourceHome] : [])], {
+    mycoHome: fixture.home, env: { ...process.env, HOME: legacyHomeDir }, machineId: 'synthetic-machine', fetch,
+    stdout: line => lines.push(line), stderr: line => { throw new Error(line); },
+  })).toBe(true);
+  expect(passes).toBe(3);
+  expect(lines.join('\n')).toContain('only the transcript pass remains');
+  expect(fs.readFileSync(vault)).toEqual(bytes);
+});
+
+it('reports legacy hooks before any 2.0 membership or provision record exists', async () => {
+  const home = path.join(scratch, 'legacy-only');
+  const restore = bindSandboxChildHome(scratch, { MYCO_HOME: home });
+  try {
+    const file = path.join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'myco hook session-start --myco-managed' }] }] } }));
+    const facts = await observeSetupStatus(home, {}, deps());
+    expect(facts.find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'incomplete', detail: 'legacy-hooks' });
+    expect(renderSetupStatus(facts).join('\n')).toContain('Myco 1.4 still captures your agents; run myco setup --cutover to hand over.');
+  } finally { restore(); }
 });

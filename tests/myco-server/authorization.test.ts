@@ -82,6 +82,14 @@ function approvedActions(actor: string, transport: Transport, kind: ResourceKind
 }
 
 describe('Deployment authorization policy', () => {
+  it('admits only members to source-specific legacy completion reads', () => {
+    const route = ROUTES.find(route => route.path === '/import/legacy-history');
+    expect(route?.authorization).toEqual({ resource: 'processed', action: 'read', resolver: 'project', subjects: ['member'], transport: 'http' });
+    expect(route).toMatchObject({ auth: 'member', capture: false, createProject: false });
+    for (const [actor, subject] of Object.entries(SUBJECTS)) {
+      expect({ actor, allowed: authorizeDeclaration(subject, route?.authorization, {}, resource('processed')) }).toEqual({ actor, allowed: ['owner', 'admin', 'member'].includes(actor) });
+    }
+  });
   it('declares each device route and refuses inactive, foreign and incompatible actors', () => {
     const rows = [
       ['/auth/device/start', 'protocol', 'protocol', 'protocol', ['enrollment']],

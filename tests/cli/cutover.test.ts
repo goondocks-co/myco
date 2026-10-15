@@ -951,11 +951,11 @@ describe('cutover project destinations and receipts', () => {
   const projectsOn = (rig: MemberRig, table: string) => rig.env.sqlite.query(`SELECT DISTINCT project_id FROM ${table} ORDER BY project_id`).all();
 
   it('previews first, then places homelab only on personal and every other project only on work', async () => {
-    let requests = 0;
-    const fetch: MemberRig['fetch'] = (input, init) => { requests += 1; return fetchBoth(input, init); };
+    const requests: string[] = [];
+    const fetch: MemberRig['fetch'] = (input, init) => { requests.push(new URL(new Request(input, init).url).pathname); return fetchBoth(input, init); };
     const before = sha(m.vault);
     const dry = await m.run(['--dry-run'], { fetch, agents: [] });
-    expect(dry.ok).toBe(true); expect(requests).toBe(0); expect(sha(m.vault)).toBe(before);
+    expect(dry.ok).toBe(true); expect(requests.every(route => route === '/import/legacy-history')).toBe(true); expect(sha(m.vault)).toBe(before);
     expect(dry.out.join('\n')).toContain(`${HOMELAB} from ${m.vault}: to ${PERSONAL}`);
     expect(dry.out.join('\n')).toContain(`${PROJECT} from ${m.vault}: to ${SERVER}`);
     expect(fs.existsSync(path.join(m.mycoHome, 'member', 'cutover.json'))).toBe(false);
@@ -997,7 +997,7 @@ describe('cutover project destinations and receipts', () => {
     const stop = new AbortController();
     const interrupted: MemberRig['fetch'] = async (input, init) => {
       const req = new Request(input, init);
-      if (new URL(req.url).origin === PERSONAL) stop.abort();
+      if (new URL(req.url).origin === PERSONAL && new URL(req.url).pathname !== '/import/legacy-history') stop.abort();
       return fetchBoth(req);
     };
     expect((await m.run([], { fetch: interrupted, signal: stop.signal, agents: [] })).ok).toBe(false);

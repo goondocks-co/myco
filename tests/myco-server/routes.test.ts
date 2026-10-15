@@ -33,6 +33,7 @@ describe('route table', () => {
     '/members/raw-claims', '/members/ownership', '/members/ownership/transfer', '/members/roles',
     '/members/status',        // a read of Deployment health
     '/import/plan',           // advice on what to ship; stores nothing
+    '/import/legacy-history', // source completion evidence; stores nothing
     '/spores/save', '/spores/list', '/spores/get', '/spores/resolve',  // the member's own spore surface
     '/context/prompt', '/context/session',                              // injection reads
     '/worker/claim', '/worker/lease', '/worker/end', '/worker/steps', '/worker/repository', '/worker/models',  // the Deployment's own work, scoped to no Project

@@ -655,6 +655,11 @@ describe('gates', () => {
         malformed: (token) => new Request('https://s/import/plan', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
         wellFormed: (token) => new Request('https://s/import/plan', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ candidates: [] }) }),
       },
+      'POST /import/legacy-history': {
+        shape: 'persisted',
+        malformed: (token) => new Request('https://s/import/legacy-history', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
+        wellFormed: (token) => new Request('https://s/import/legacy-history', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ eventGroups: [[crypto.randomUUID()]] }) }),
+      },
       'POST /runs/claim': {
         shape: 'persisted',
         malformed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
@@ -1363,6 +1368,7 @@ describe('gates', () => {
       'member POST /context/session',
       'member POST /events',
       'member POST /import/plan',
+      'member POST /import/legacy-history',
       'member POST /mcp',
       'member POST /members/credential/revoke',
       'member POST /members/harnesses/report',

@@ -1,3 +1,4 @@
+import { legacyConfirmationHint } from './legacy-capture.js';
 import os from 'node:os';
 import path from 'node:path';
 import type { Observation } from '@myco/setup/observe.js';
@@ -39,8 +40,10 @@ function describe(fact: Observation, url: string | undefined): string {
   if (fact.id === 'legacy') {
     const state = legacyState(fact);
     if (state === 'unavailable') return `Myco 1.4 migration records could not be read: ${sentence(fact.legacyError ?? fact.detail.replace(/^unavailable\s*/, ''))}. Inspect ${shortPath(fact.scope)}, then run myco setup --cutover.`;
+    const confirmationHint = legacyConfirmationHint(fact.legacyConfirmation);
+    if (confirmationHint !== null) return confirmationHint;
     if (state === 'needs-destination' && fact.state === 'incomplete') return 'Some Myco 1.4 projects need a destination; run myco setup --cutover to preview the handover.';
-    return legacySentences[state] ?? legacySentences.unavailable;
+    return [legacySentences[state] ?? legacySentences.unavailable, fact.legacyNotice].filter(Boolean).join(' ');
   }
   if (fact.state === 'unavailable') return `Could not read ${labels[fact.id] ?? 'this observation'}: ${sentence(fact.detail)}. Inspect with ${fact.id.startsWith('runner.') ? 'myco runner status' : 'myco doctor'}.`;
   if (fact.id === 'runner.choice' && complete) return fact.detail === 'run-work' ? "This machine also runs Myco's work." : "This machine does not run Myco's work.";
@@ -55,9 +58,12 @@ function describe(fact: Observation, url: string | undefined): string {
   if (fact.id === 'default' && complete) return `${fact.detail} — new repositories join it.`;
   if (fact.id === 'machine.signin') return complete ? 'This machine is signed in (remote authentication not checked).' : `${sentence(fact.detail)}. Run myco login ${address}.`;
   if (fact.id === 'machine.agents') {
-    if (complete) return fact.detail === 'current' ? `set up for ${fact.hooksDeployment ?? address}` : fact.detail === 'declined' ? 'Setup declined.' : 'No supported agents installed.';
-    if (fact.detail === 'deferred-legacy') return 'Myco 1.4 still owns agent capture. Preview the handover with myco setup --cutover.';
-    return fact.state === 'absent' ? `Not set up; run myco member provision --server ${address}.` : 'Out of date; run myco member provision --refresh.';
+    if (fact.detail === 'legacy-hooks') return 'Myco 1.4 still captures your agents; run myco setup --cutover to hand over.';
+    const capture = fact.memberCapture ? 'Myco 2.0 capture is installed. ' : '';
+    if (complete) return fact.detail === 'current'
+      ? fact.memberCapture ? `Myco 2.0 capture is installed for ${fact.hooksDeployment ?? address}.` : `set up for ${fact.hooksDeployment ?? address}`
+      : fact.detail === 'declined' ? 'Setup declined.' : 'No supported agents installed.';
+    return capture + (fact.state === 'absent' ? `Not set up; run myco member provision --server ${address}.` : 'Out of date; run myco member provision --refresh.');
   }
   if (fact.id === 'project') {
     if (fact.detail.startsWith('bound-cutover: ')) return `${shortPath(fact.scope)}: sends to ${fact.detail.slice('bound-cutover: '.length)} (cutover destination).`;

@@ -171,8 +171,8 @@ describe('myco login sets up the agents on this machine', () => {
     const rig = unjoinedRig();
     expect(await run([await invite(rig), ...(choice === 'no-agents' ? ['--no-agents'] : [])], deps(rig, { agents: () => ['claude-code'], provision: choice === 'defer' ? 'defer' : 'now' }))).toBe(true);
     expect(out).not.toContain(LEGACY_AGENT_DEFERRAL);
-    expect(out.filter(line => line.includes('confirm where each project went'))).toEqual([
-      'Moved by an earlier version; run `myco setup --cutover` to confirm where each project went, or preview manually with `myco cutover --dry-run`.',
+    expect(out.filter(line => line.includes('Earlier moves are unconfirmed'))).toEqual([
+      'Earlier moves are unconfirmed; run `myco setup --cutover` to review each project destination, or preview manually with `myco cutover --dry-run`.',
     ]);
     if (choice === 'now') expect(read(path.join(claudeDir, 'settings.json'))).toContain('--credential registry');
     else expect(read(path.join(claudeDir, 'settings.json'))).toBeNull();
