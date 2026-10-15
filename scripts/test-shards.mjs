@@ -1,6 +1,28 @@
 const MAX_SHARDS = 256;
 export const PARITY_PLAN_PREFIX = '[myco-parity-plan] ';
 
+/** Fill execution groups in input order within duration and worker limits. */
+export function groupByDuration(items, budgetMs, weight, maxItems = Infinity) {
+  if (!Number.isFinite(budgetMs) || budgetMs <= 0) throw new Error('Group budget must be positive and finite');
+  if (maxItems !== Infinity && (!Number.isSafeInteger(maxItems) || maxItems <= 0)) throw new Error('Group item limit must be a positive integer');
+  const groups = [];
+  let group = [];
+  let elapsed = 0;
+  for (const item of items) {
+    const duration = weight(item);
+    if (!Number.isFinite(duration) || duration <= 0) throw new Error('Group weights must be positive and finite');
+    if (group.length > 0 && (group.length >= maxItems || elapsed + duration > budgetMs)) {
+      groups.push(group);
+      group = [];
+      elapsed = 0;
+    }
+    group.push(item);
+    elapsed += duration;
+  }
+  if (group.length > 0) groups.push(group);
+  return groups;
+}
+
 /** Select one intact group from an already assigned shard. */
 export function selectGroup(groups, label) {
   if (label === undefined) return groups;

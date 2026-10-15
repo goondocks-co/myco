@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseShard, selectGroup, selectShard } from '../../scripts/test-shards.mjs';
+import { groupByDuration, parseShard, selectGroup, selectShard } from '../../scripts/test-shards.mjs';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -9,11 +9,51 @@ import durations from '../../scripts/test-durations.json';
 import parityWorkload from '../fixtures/runner/parity-ci-9777180d.json';
 import completeParityWorkload from '../fixtures/runner/parity-ci-f2c7ecc5.json';
 import nodeWorkloadFixture from '../fixtures/runner/node-ci-durations.json';
-import { assertNodeShardHeadroom, nodeDurationSamples, recordedNodeDurations, type NodeGroup, type NodeWorkload } from '../../scripts/node-test-durations.mjs';
+import { assertNodeShardHeadroom, nodeDurationSamples, nodeGroupBudget, recordedNodeDurations, type NodeGroup, type NodeWorkload } from '../../scripts/node-test-durations.mjs';
 
 const nodeWorkload: NodeWorkload = nodeWorkloadFixture;
 
 describe('test shard selection', () => {
+  test('keeps heavy isolated files apart when small files are inserted before either journey', () => {
+    const workflow = parseYaml(fs.readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+    const budget = nodeGroupBudget(workflow.jobs.tests['timeout-minutes'] * 60_000);
+    const files = fs.readdirSync(new URL('../setup/', import.meta.url))
+      .filter(file => file.endsWith('.test.ts')).map(file => `tests/setup/${file}`).sort();
+    const weights: Record<string, number> = durations.files;
+    const weight = (file: string) => weights[file] ?? 1;
+    const beforeJourneys = 'tests/setup/journeys-small.test.ts';
+    const beforeSigkill = 'tests/setup/sigkill-before.test.ts';
+    for (const additions of [[], [beforeJourneys], [beforeSigkill], [beforeJourneys, beforeSigkill]]) {
+      const targets = [...files, ...additions].sort();
+      const groups = groupByDuration(targets, budget, weight, 3);
+      expect(groups.flat()).toEqual(targets);
+      expect(groupByDuration(targets, budget, weight, 3)).toEqual(groups);
+      for (const group of groups) {
+        expect(group.length).toBeLessThanOrEqual(3);
+        expect(group.reduce((total, file) => total + weight(file), 0)).toBeLessThanOrEqual(budget);
+      }
+      const journeys = groups.find(group => group.includes('tests/setup/journeys.test.ts'));
+      expect(journeys).not.toContain('tests/setup/sigkill-resume.test.ts');
+    }
+  });
+
+  test('isolates an oversized file and names it in the headroom refusal', () => {
+    const budget = nodeGroupBudget(900_000);
+    const weights: Record<string, number> = { small: 1, oversized: budget + 1, exact: budget };
+    const targets = ['small', 'oversized', 'small', 'exact', 'small'];
+    const groups = groupByDuration(targets, budget, file => weights[file]!);
+    expect(groups).toEqual([['small'], ['oversized'], ['small'], ['exact'], ['small']]);
+    const oversized = { label: 'oversized group', files: ['oversized'], estimatedMs: weights.oversized! };
+    expect(() => assertNodeShardHeadroom([[oversized], [], [], [], []], 900_000, weights, nodeWorkload)).toThrow('split the group: oversized');
+    const overJob = { ...oversized, files: ['over-job'], estimatedMs: 900_001 };
+    expect(() => assertNodeShardHeadroom([[overJob], [], [], [], []], 900_000, { 'over-job': 900_001 }, nodeWorkload)).toThrow('split the group: over-job');
+    expect(groupByDuration([], budget, () => 1)).toEqual([]);
+    expect(groupByDuration([1, 2, 3, 4], budget, () => 1, 3)).toEqual([[1, 2, 3], [4]]);
+    expect(() => groupByDuration([1], 0, () => 1)).toThrow('budget');
+    expect(() => groupByDuration([1], budget, () => NaN)).toThrow('weights');
+    expect(() => groupByDuration([1], budget, () => 1, 0)).toThrow('item limit');
+  });
+
   test('retains recorded node process wall time when splitting a file into balancing units', () => {
     for (const [index, sample] of nodeDurationSamples(nodeWorkload).entries()) {
       const elapsed = nodeWorkload.runs[index]!.shards.flatMap(shard => shard.groups).reduce((sum, group) => sum + group.milliseconds, 0);
