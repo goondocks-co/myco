@@ -358,11 +358,11 @@ it('carries neither provider text nor an exception message into a status or a lo
     'recovery_attempt_failed', 'recovery_attempt_transient', 'recovery_attempt_interrupted', 'recovery_export_unsettled', 'export_unsettled', 'export_unanswered',
     'recovery_inventory_read', 'recovery_staging_completed',
     'export', 'download', 'inventory', 'copy', 'downloaded', 'complete', 'failed',
-    'provider_unavailable', 'provider_refused', 'export_failed', 'export_not_offered', 'export_unparsable',
+    'provider_unavailable', 'provider_refused', 'provider_unexpected', 'export_failed', 'export_not_offered', 'export_unparsable',
     'download_unranged', 'download_changed', 'download_lost', 'staging_unreconciled', 'schema_disagrees', 'internal',
     'export_stalled', 'staging_changed', 'inventory_disagrees', 'inventory_unreadable', 'inventory_oversize',
     'object_missing', 'object_changed', 'staging_incomplete',
-    'transport', 'http', 'provider', 'protocol', 'Error', 'TypeError', 'RangeError', 'SyntaxError', 'other',
+    'transport', 'http', 'provider', 'protocol', 'encoding', 'Error', 'TypeError', 'RangeError', 'SyntaxError', 'other',
   ]);
   for (const line of logged) {
     for (const [key, value] of Object.entries(JSON.parse(line) as Record<string, unknown>)) {
