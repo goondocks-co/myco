@@ -6,6 +6,8 @@
  * - `MYCO_TEST_FETCH_LOG=<file>`: every fetch the hook makes is appended to the file, one URL per line.
  * - `MYCO_TEST_KICK_LOG=<file>`: the member helper is not started; each start the hook's kick makes is appended to
  *   the file instead, its arguments as one JSON line.
+ * - `MYCO_TEST_GIT_PROBE=<file>`: observe Git requests with deterministic async completion and a fixed hook clock.
+ * - `MYCO_TEST_HOOK_ELAPSED_MS=<ms>`: advance the injected hook clock beyond its process-start budget.
  * The loader table is the one the CLI dispatches hooks through (`HOOK_DISPATCH`).
  */
 import fs from 'node:fs';
@@ -30,5 +32,15 @@ const spawn: DetachedSpawn | undefined = kickLog === undefined ? undefined : (_c
   fs.appendFileSync(kickLog, `${JSON.stringify(args)}\n`);
   return { started: true, pid: process.pid };
 };
+const gitProbe = process.env.MYCO_TEST_GIT_PROBE;
+if (gitProbe !== undefined) {
+  const { installGitProcessProbe } = await import('./git-process-probe.js');
+  installGitProcessProbe(gitProbe, process.env.MYCO_TEST_REAL_GIT!);
+}
 const mod = await HOOK_DISPATCH[hookName]();
-await mod.main({ credential: parseCredentialFlag(process.argv), fetch: fetchImpl, helperSpawn: spawn });
+const startedAt = Date.now();
+const elapsed = process.env.MYCO_TEST_HOOK_ELAPSED_MS;
+await mod.main({
+  credential: parseCredentialFlag(process.argv), fetch: fetchImpl, helperSpawn: spawn,
+  ...(gitProbe === undefined && elapsed === undefined ? {} : { now: () => startedAt + Number(elapsed ?? 0), startedAt }),
+});
