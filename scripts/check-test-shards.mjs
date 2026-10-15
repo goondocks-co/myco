@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 import { PARITY_PLAN_PREFIX } from './test-shards.mjs';
+import { assertNodeShardHeadroom } from './node-test-durations.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const workflow = parse(fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8'));
@@ -52,12 +53,17 @@ try {
   const discovered = fs.readdirSync(path.join(root, 'tests'), { recursive: true })
     .filter((file) => /\.test\.tsx?$/.test(file)).map((file) => `tests/${file.split(path.sep).join('/')}`);
   exactlyOnce(full.flatMap((phase) => phase.files), discovered, 'Full suite');
+  const nodePlans = [];
   const sharded = workflow.jobs.tests.strategy.matrix.include.flatMap(({ kind, shard }) => {
     const plan = testPlan({ MYCO_TEST_KIND: kind, MYCO_TEST_SHARD: shard });
+    if (kind === 'node') nodePlans.push(plan);
     console.log(`${kind} ${shard}: estimated ${Math.round(plan.reduce((sum, phase) => sum + phase.estimatedMs, 0) / 1000)}s`);
     return plan;
   });
   exactlyOnce(sharded.flatMap((phase) => phase.files), discovered, 'CI test shards');
+  const durations = JSON.parse(fs.readFileSync(path.join(root, 'scripts/test-durations.json'), 'utf8'));
+  const nodeWorkload = JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/runner/node-ci-1848.json'), 'utf8'));
+  assertNodeShardHeadroom(nodePlans, workflow.jobs.tests['timeout-minutes'] * 60_000, durations.files, nodeWorkload);
   const fullPhases = full.filter((phase) => !phase.label.endsWith('.tsx'));
   const shardPhases = sharded.filter((phase) => !phase.label.endsWith('.tsx'));
   assert.deepEqual(shardPhases.sort((a, b) => a.label.localeCompare(b.label)), fullPhases.sort((a, b) => a.label.localeCompare(b.label)), 'Node phase isolation changed');
