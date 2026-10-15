@@ -8,8 +8,48 @@ import { parse as parseYaml } from 'yaml';
 import durations from '../../scripts/test-durations.json';
 import parityWorkload from '../fixtures/runner/parity-ci-9777180d.json';
 import completeParityWorkload from '../fixtures/runner/parity-ci-f2c7ecc5.json';
+import nodeWorkloadFixture from '../fixtures/runner/node-ci-durations.json';
+import { assertNodeShardHeadroom, nodeDurationSamples, recordedNodeDurations, type NodeGroup, type NodeWorkload } from '../../scripts/node-test-durations.mjs';
+
+const nodeWorkload: NodeWorkload = nodeWorkloadFixture;
 
 describe('test shard selection', () => {
+  test('retains recorded node process wall time when splitting a file into balancing units', () => {
+    for (const [index, sample] of nodeDurationSamples(nodeWorkload).entries()) {
+      const elapsed = nodeWorkload.runs[index]!.shards.flatMap(shard => shard.groups).reduce((sum, group) => sum + group.milliseconds, 0);
+      expect(Object.values(sample.files).reduce((sum, milliseconds) => sum + milliseconds, 0)).toBeCloseTo(elapsed, 5);
+    }
+  });
+
+  test('gates node shard headroom against every complete recorded CI workload', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-node-shards-'));
+    try {
+      const manifest = path.join(root, 'plan.json');
+      const result = spawnSync('node', ['scripts/run-bun-tests.mjs'], {
+        env: { ...process.env, MYCO_RUNNER_DRY_RUN: '1', MYCO_TEST_KIND: 'node', MYCO_TEST_SHARD: '1/1', MYCO_RUNNER_PLAN_FILE: manifest, MYCO_RUNNER_REPORT_DIR: path.join(root, 'reports') },
+        encoding: 'utf8', timeout: 30_000,
+      });
+      expect({ status: result.status, error: result.error, stderr: result.stderr }).toMatchObject({ status: 0, error: undefined });
+      const groups: NodeGroup[] = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+      const workflow = parseYaml(fs.readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+      const count = workflow.jobs.tests.strategy.matrix.include.filter((job: { kind: string }) => job.kind === 'node').length;
+      const timeout = workflow.jobs.tests['timeout-minutes'] * 60_000;
+      const plans = Array.from({ length: count }, (_, index) => selectShard(groups, { index: index + 1, count }, group => group.estimatedMs));
+      expect(() => assertNodeShardHeadroom(plans, timeout, durations.files, nodeWorkload)).not.toThrow();
+      const incomplete = { runs: nodeWorkload.runs.map(run => ({ ...run, shards: run.shards.slice(1) })) };
+      expect(() => assertNodeShardHeadroom(plans, timeout, durations.files, incomplete)).toThrow('incomplete node workload');
+      const stale = { ...durations.files, 'tests/setup/journeys.test.ts': 2920 };
+      expect(() => assertNodeShardHeadroom(plans, timeout, stale, nodeWorkload)).toThrow('Stale node duration');
+      const unrecorded = { label: 'new file', files: ['tests/unrecorded.test.ts'], estimatedMs: 100 };
+      expect(() => assertNodeShardHeadroom([[unrecorded], ...plans.slice(1)], timeout, durations.files, nodeWorkload)).toThrow('explicit duration weight');
+      const recorded = recordedNodeDurations(nodeWorkload);
+      const journeyFiles = ['tests/setup/journeys.test.ts', 'tests/setup/sigkill-resume.test.ts'];
+      const oversized = { label: 'combined journeys', files: journeyFiles, estimatedMs: journeyFiles.reduce((sum, file) => sum + recorded[file]!, 0) };
+      expect(() => assertNodeShardHeadroom([[oversized], ...plans.slice(1)], timeout, durations.files, nodeWorkload)).toThrow('split the group');
+      expect(() => assertNodeShardHeadroom([groups, ...plans.slice(1).map(() => [])], timeout, durations.files, nodeWorkload)).toThrow('with headroom');
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }, 40_000);
+
   test('fits the recorded parity workload with startup allowance and headroom on every CI shard', () => {
     const workflow = parseYaml(fs.readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'));
     const count = workflow.jobs.parity.strategy.matrix.shard.length;

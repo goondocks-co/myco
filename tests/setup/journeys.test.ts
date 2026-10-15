@@ -751,47 +751,6 @@ describe('legacy journey (e)', () => {
     ]) expect(() => parseSetupOptions(args)).toThrow();
   });
 
-  it('resumes across SIGKILL at every observed cutover mutation boundary and preserves 1.4 data', async () => {
-    const initial = await rig({ multi: true, agents: ['claude-code', 'codex'] });
-    expect(await run(flags.filter(flag => flag !== '--no-agents'), initial.deps)).toBe(0);
-    const boundaries = ['consent', ...new Set(initial.checkpoints)];
-    expect(boundaries).toContain('destinations');
-    expect(boundaries).toContain('handover');
-    expect(boundaries).toContain('stopped-source:0');
-    expect(boundaries).toContain('stopped-source:1');
-    expect(boundaries).toContain('stopped-source:final');
-    expect(boundaries).toContain('copy');
-    expect(boundaries).toContain('action:3:0');
-    expect(boundaries).toContain('action:3:1');
-    expect(boundaries).toContain('vault:proj_legacy_a');
-    expect(boundaries).toContain('transcripts:proj_legacy_b');
-    const repo = fileURLToPath(new globalThis.URL('../../', import.meta.url));
-    const args = ['test', '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'), '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/legacy_journey_interruption_test.ts')];
-    for (const growth of [false, true]) for (const [index, boundary] of boundaries.entries()) {
-      const childRoot = path.join(root, `kill-${growth}-${index}`);
-      fs.mkdirSync(childRoot);
-      const env = sandboxChildEnv(childRoot, { MYCO_SETUP_FIXTURE_ROOT: childRoot, ...(growth ? { MYCO_SETUP_GROW: '1' } : {}) });
-      const child = spawn(process.execPath, args, { env: { ...env, MYCO_SETUP_STOP_AFTER: boundary }, cwd: childRoot, stdio: ['ignore', 'pipe', 'pipe'] });
-      let output = '';
-      const capture = (chunk: Buffer) => { output += chunk.toString(); };
-      child.stdout.on('data', capture); child.stderr.on('data', capture);
-      const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
-      try {
-        const deadline = Date.now() + 15_000;
-        while (!fs.existsSync(path.join(childRoot, 'reached')) && child.exitCode === null && Date.now() < deadline) await Bun.sleep(20);
-        expect({ boundary, reached: fs.existsSync(path.join(childRoot, 'reached')), output }).toMatchObject({ reached: true });
-      } finally { if (child.exitCode === null) child.kill('SIGKILL'); await exited; }
-      const fixture = JSON.parse(fs.readFileSync(path.join(childRoot, 'legacy-fixture.json'), 'utf8')) as ReturnType<typeof legacyFixtureHome>;
-      expect(fs.readFileSync(fixture.vault)).toEqual(fs.readFileSync(path.join(childRoot, 'vault-before')));
-      const result = Bun.spawnSync([process.execPath, ...args], { env: { ...env, MYCO_SETUP_RESUME: '1' }, cwd: childRoot, stdout: 'pipe', stderr: 'pipe' });
-      expect({ boundary, code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
-      expect(fs.readFileSync(fixture.vault)).toEqual(fs.readFileSync(path.join(childRoot, 'vault-before')));
-      expect(fs.readFileSync(path.join(fixture.mycoHome, 'unmanaged.txt'), 'utf8')).toBe('Keep this user file byte for byte.\n');
-      const resumed = JSON.parse(fs.readFileSync(path.join(childRoot, 'resumed'), 'utf8')) as { calls: { route: string; url: string }[] };
-      if (boundary === 'vault:proj_legacy_b' || boundary.startsWith('settings:')) expect(resumed.calls.filter(call => call.route === '/events' || call.route === '/spores/save')).toEqual([]);
-    }
-  }, 180_000);
-
   it('resumes after an exception at every observed cutover mutation boundary without duplicated imports', async () => {
     const captureFlags = flags.filter(flag => flag !== '--no-agents');
     const initial = await rig({ multi: true, agents: ['claude-code', 'codex'] });
