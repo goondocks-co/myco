@@ -697,7 +697,7 @@
     "tests/server/wrangler-template-drift.test.ts": 167,
     "tests/service/task-proof.test.ts": 229,
     "tests/service/windows-native-ci-contract.test.ts": 26,
-    "tests/setup/agent-set.test.ts": 5853,
+    "tests/setup/agent-set.test.ts": 8045,
     "tests/setup/fixtures.test.ts": 2581,
     "tests/setup/github-signin.test.ts": 5502,
     "tests/setup/journeys.test.ts": 152629,

@@ -16,7 +16,7 @@ import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { observeSetup, observeSetupStatus } from '@myco/setup/observe.js';
 import { run as setup } from '@myco/cli/setup.js';
 import { recordProvision, readProvisionRecord, provisionRecordPath } from '@myco/symbionts/member-provision-record.js';
-import { deploymentPath, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
+import { deploymentPath, readDeploymentMembership, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { getPluginVersion } from '@myco/version.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { ownerDeployment, ACCOUNT } from './fixtures/owner-deployment.js';
@@ -211,7 +211,7 @@ function repairChild(mode: string, signal: string) {
   });
   return { child, exited, output: () => output };
 }
-async function helperLease() {
+async function helperLease(releaseOnProvision = true) {
   const signal = path.join(scratch, 'release-helper');
   const holder = repairChild('hold', signal);
   await new Promise<void>((resolve, reject) => {
@@ -220,7 +220,7 @@ async function helperLease() {
   });
   const acquire = LifecycleLock.acquire;
   const watch = spyOn(LifecycleLock, 'acquire').mockImplementation((file, opts) => {
-    if (opts?.command === 'myco member provision') fs.writeFileSync(signal, 'release');
+    if (releaseOnProvision && opts?.command === 'myco member provision') fs.writeFileSync(signal, 'release');
     return acquire(file, opts);
   });
   return { ...holder, signal, watch };
@@ -243,9 +243,9 @@ for (const operation of ['named', 'batch', 'join', 'healing'] as const) it(opera
   const originalWrite = recordModule.recordProvision;
   const originalReconcile = recordModule.reconcileProvisionAgents;
   const write = operation === 'healing'
-    ? spyOn(recordModule, 'reconcileProvisionAgents').mockImplementation((h, record) => {
+    ? spyOn(recordModule, 'reconcileProvisionAgents').mockImplementation((...args) => {
       beginRemoval();
-      return originalReconcile(h, record);
+      return originalReconcile(...args);
     })
     : spyOn(recordModule, 'recordProvision').mockImplementation((h, record, opts) => {
       if (record.agents.length === 1 && record.agents[0] === 'claude-code') beginRemoval();
@@ -331,6 +331,64 @@ it('healing keeps a hook-trust prompt settled during its registration scan settl
   } finally { scan.mockRestore(); }
 });
 
+it('healing retains a captured agent and its binary recorded by cutover during the scan', () => {
+  provision('claude-code');
+  const original = recordModule.reconcileProvisionAgents;
+  let binary: string | undefined;
+  const reconcile = spyOn(recordModule, 'reconcileProvisionAgents').mockImplementation((...args) => {
+    expect(provision('codex').kind).toBe('provisioned');
+    binary = readProvisionRecord(home)?.binaries?.codex;
+    expect(binary).toBeDefined();
+    return original(...args);
+  });
+  try {
+    const result = keepCurrent(home, { binaryFound: () => true });
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
+    expect(readProvisionRecord(home)?.binaries?.codex).toBe(binary);
+    expect(result?.harnesses.map(fact => fact.id)).toEqual(['claude-code', 'codex']);
+  } finally { reconcile.mockRestore(); }
+});
+
+it('login completes after a short agent setup timeout and names the provisioning remedy', async () => {
+  const holder = await helperLease(false);
+  const lines: string[] = [];
+  const errors: string[] = [];
+  try {
+    const rig = unjoinedRig();
+    const authority = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' });
+    expect(await login(['https://s/join#' + authority.key], {
+      mycoHome: home, cwd: scratch, machineId: 'fixture', fetch: Object.assign(rig.fetch, { preconnect: () => {} }),
+      agents: () => ['claude-code', 'codex'], provisionTimeoutMs: 25,
+      stdout: line => lines.push(line), stderr: line => errors.push(line),
+    })).toBe(true);
+    expect(readDeploymentMembership('https://s', home)).not.toBeNull();
+    expect(lines.join('\n')).toContain('Signed in to https://s');
+    expect(lines).toContain("Myco is updating this machine's agents; run myco member provision when it finishes.");
+    expect(lines.join('\n')).not.toContain('Retry this command');
+    expect(errors).toEqual([]);
+    expect(readProvisionRecord(home)).toBeNull();
+  } finally {
+    holder.watch.mockRestore();
+    fs.writeFileSync(holder.signal, 'release');
+    expect(await holder.exited, holder.output()).toBe(0);
+  }
+  expect(member.runProvision([], { mycoHome: home, cwd: scratch, agents: () => ['claude-code', 'codex'], stdout: () => {} })).toBe(true);
+  expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
+});
+
+it('login surfaces unexpected agent provisioning failures after sign-in', async () => {
+  const rig = unjoinedRig();
+  const authority = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' });
+  const provisioning = spyOn(member, 'provisionDetectedAgents').mockImplementation(() => { throw new Error('fixture provisioning failure'); });
+  try {
+    await expect(login(['https://s/join#' + authority.key], {
+      mycoHome: home, cwd: scratch, machineId: 'fixture', fetch: Object.assign(rig.fetch, { preconnect: () => {} }),
+      stdout: () => {}, stderr: () => {},
+    })).rejects.toThrow('fixture provisioning failure');
+  } finally { provisioning.mockRestore(); }
+});
+
 it('keep-current replaces an unreadable diagnostic state without failing or repeating its warning', () => {
   provision('claude-code');
   const file = path.join(home, 'member', 'provision-problem.json');
@@ -379,16 +437,23 @@ it('person-run lease timeouts name the busy operation and retry without an owner
   } finally { acquire.mockRestore(); }
 });
 
-it('a later reconciliation timeout asks the person to retry their command', () => {
+it('successful installation tolerates busy healing while an explicit refresh still waits', () => {
   provision('claude-code');
+  provision('codex');
+  omitCodex();
   const original = LifecycleLock.acquire;
   const acquire = spyOn(LifecycleLock, 'acquire').mockImplementation((file, opts) => opts?.command === 'myco member reconcile'
     ? { acquired: false, holder: null, holderPid: null } : original(file, opts));
   try {
-    for (const args of [['claude-code', '--server', SERVER], ['--server', SERVER], ['--refresh']]) {
-      expect(() => member.runProvision(args, { mycoHome: home, cwd: scratch, agents: () => ['claude-code'] })).toThrow("Myco is updating this machine's agents. Retry this command after the current update finishes.");
+    for (const args of [['claude-code', '--server', SERVER], ['--server', SERVER]]) {
+      expect(member.runProvision(args, { mycoHome: home, cwd: scratch, agents: () => ['claude-code'], stdout: () => {} })).toBe(true);
+      expect(acquire.mock.calls.at(-1)?.[1]?.wait).not.toBe(true);
     }
+    expect(readProvisionRecord(home)?.agents).toEqual(['claude-code']);
+    expect(() => member.runProvision(['--refresh'], { mycoHome: home, cwd: scratch })).toThrow("Myco is updating this machine's agents. Retry this command after the current update finishes.");
   } finally { acquire.mockRestore(); }
+  expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code', 'codex']);
+  expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
 });
 
 it('unexpected registration inspection errors remain observable', async () => {
@@ -471,6 +536,7 @@ for (const repair of ['refresh', 'provision', 'keep-current'] as const) it(`${re
 it('status, doctor, refresh and keep-current consume the shared agent-set function', async () => {
   provision('claude-code');
   provision('codex');
+  omitCodex();
   const shared = spyOn(member, 'managedMemberHarnesses').mockReturnValue(['claude-code']);
   try {
     const facts = await status();

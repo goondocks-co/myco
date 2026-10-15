@@ -420,10 +420,6 @@ function provisionAgent(
   fail: (line: string) => unknown,
 ): boolean {
   const outcome = provisionChosenAgent(agent, root, mycoHome, deps);
-  if (outcome === null) {
-    fail('a helper is provisioning agents; retry when it finishes');
-    return false;
-  }
   if (outcome.kind === 'unknown') {
     fail(`unknown agent "${agent}" — the membership is recorded; provision it with \`myco member provision <agent>\``);
     return false;
@@ -477,9 +473,13 @@ export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, o
 
 /** Chosen agents, including surviving owned registrations absent from the provision record. */
 export function managedMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string; onInspectionError?: (message: string) => void } = {}): string[] {
-  const uncaptured = new Set(loadManifests().filter(manifest => !globalInstaller(manifest, null, mycoHome, opts).capturesAsMember()).map(manifest => manifest.name));
+  const uncaptured = uncapturableMemberHarnesses(mycoHome, opts);
   const recorded = (readProvisionRecordStrict(mycoHome)?.agents ?? []).filter(agent => !uncaptured.has(agent));
   return [...new Set([...recorded, ...registeredMemberHarnesses(mycoHome, serverUrl, { ...opts, exclude: recorded })])].sort();
+}
+
+function uncapturableMemberHarnesses(mycoHome: string, opts: { packageRoot?: string }): Set<string> {
+  return new Set(loadManifests().filter(manifest => !globalInstaller(manifest, null, mycoHome, opts).capturesAsMember()).map(manifest => manifest.name));
 }
 
 /** The recorded destination, or an explicitly selected or unambiguous joined Deployment. */
@@ -494,22 +494,30 @@ export function memberProvisionTarget(mycoHome: string, serverUrl?: string): str
 
 const MEMBER_REPAIR_WAIT_MS = 15_000;
 
-function withMemberRepair<T>(mycoHome: string, command: string, fn: () => T, opts: { wait?: boolean } = {}): T | null {
-  const acquired = LifecycleLock.acquire(path.join(mycoHome, 'member', REPAIR_LOCK), { command, ...opts, ...(opts.wait ? { timeoutMs: MEMBER_REPAIR_WAIT_MS } : {}) });
+export class MemberRepairBusyError extends Error {
+  constructor() {
+    super("Myco is updating this machine's agents. Retry this command after the current update finishes.");
+  }
+}
+
+function withMemberRepair<T>(mycoHome: string, command: string, fn: () => T, opts: { wait: true; timeoutMs?: number }): T;
+function withMemberRepair<T>(mycoHome: string, command: string, fn: () => T, opts?: { wait?: boolean; timeoutMs?: number }): T | null;
+function withMemberRepair<T>(mycoHome: string, command: string, fn: () => T, opts: { wait?: boolean; timeoutMs?: number } = {}): T | null {
+  const acquired = LifecycleLock.acquire(path.join(mycoHome, 'member', REPAIR_LOCK), { command, ...opts, ...(opts.wait ? { timeoutMs: opts.timeoutMs ?? MEMBER_REPAIR_WAIT_MS } : {}) });
   if (!acquired.acquired) {
-    if (opts.wait) throw new Error("Myco is updating this machine's agents. Retry this command after the current update finishes.");
+    if (opts.wait) throw new MemberRepairBusyError();
     return null;
   }
   try { return fn(); } finally { acquired.lock.release(); }
 }
 
-function provisionChosenAgent(agent: string, root: string | null, mycoHome: string, opts: { packageRoot?: string; serverUrl?: string }): ProvisionOutcome | null {
+function provisionChosenAgent(agent: string, root: string | null, mycoHome: string, opts: { packageRoot?: string; serverUrl?: string }): ProvisionOutcome {
   const outcome = withMemberRepair(mycoHome, 'myco member provision', () => {
     const backup = provisionBackup(mycoHome);
     try { return provisionGlobally(agent, root, mycoHome, { ...opts, backup }); }
     finally { backup.pruneUnchanged(); }
   }, { wait: true });
-  if (outcome?.kind === 'provisioned' || outcome?.kind === 'unchanged') withManagedMemberHarnesses(mycoHome, { ...opts, wait: true }, () => {});
+  if (outcome.kind === 'provisioned' || outcome.kind === 'unchanged') withManagedMemberHarnesses(mycoHome, opts, () => {});
   return outcome;
 }
 
@@ -521,8 +529,9 @@ export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageR
     const before = readProvisionRecordStrict(mycoHome);
     const agents = managedMemberHarnesses(mycoHome, serverUrl, opts);
     if (before === null && agents.length === 0) return null;
-    const record = reconcileProvisionAgents(mycoHome, { version: getPluginVersion(), serverUrl, agents });
-    return fn(record, agents);
+    const discovered = agents.filter(agent => !before?.agents.includes(agent));
+    const record = reconcileProvisionAgents(mycoHome, { version: getPluginVersion(), serverUrl, discovered }, uncapturableMemberHarnesses(mycoHome, opts));
+    return fn(record, record.agents);
   }, { wait: opts.wait });
 }
 
@@ -637,7 +646,7 @@ export interface DetectedProvision {
  * then provisioning is global alone, with no project root to check or retire registrations in.
  */
 export function provisionDetectedAgents(
-  mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; agents?: () => string[]; preserveOtherMemberTools?: boolean } = {},
+  mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; agents?: () => string[]; preserveOtherMemberTools?: boolean; timeoutMs?: number } = {},
 ): DetectedProvision {
   return provisionAgents((opts.agents ?? (() => detectMachineInstalledSymbionts().map((m) => m.name)))(), mycoHome, serverUrl, root, opts);
 }
@@ -646,15 +655,11 @@ export function provisionDetectedAgents(
  * Provision `agents` as `provisionDetectedAgents` does; the installer records each successful global registration.
  */
 export function provisionAgents(
-  agents: readonly string[], mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; preserveOtherMemberTools?: boolean } = {},
+  agents: readonly string[], mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; preserveOtherMemberTools?: boolean; timeoutMs?: number } = {},
 ): DetectedProvision {
-  const found = withMemberRepair(mycoHome, 'myco member provision', () => installMemberAgents(agents, mycoHome, serverUrl, root, opts), { wait: true });
-  if (found === null) return {
-    provisioned: [], unchanged: [], heldSkills: [],
-    skipped: loadManifests().filter(manifest => agents.includes(manifest.name)).map(manifest => ({ agent: manifest.name, displayName: manifest.displayName, reason: 'a helper is provisioning agents; retry when it finishes' })),
-  };
-  withManagedMemberHarnesses(mycoHome, { ...opts, wait: true }, () => {});
-  if (opts.preserveOtherMemberTools && found.skipped.length === 0) keepCurrent(mycoHome, { packageRoot: opts.packageRoot, wait: true });
+  const found = withMemberRepair(mycoHome, 'myco member provision', () => installMemberAgents(agents, mycoHome, serverUrl, root, opts), { wait: true, timeoutMs: opts.timeoutMs });
+  withManagedMemberHarnesses(mycoHome, opts, () => {});
+  if (opts.preserveOtherMemberTools && found.skipped.length === 0) keepCurrent(mycoHome, { packageRoot: opts.packageRoot });
   return found;
 }
 
@@ -796,12 +801,10 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     const recordedServer = readProvisionRecord(mycoHome)?.serverUrl ?? selectedDeploymentMembership(mycoHome)?.serverUrl;
     if (recordedServer !== undefined) installer.forDeployment(recordedServer);
     try {
-      const removed = withMemberRepair(mycoHome, 'myco member provision --remove', () => {
+      withMemberRepair(mycoHome, 'myco member provision --remove', () => {
         installer.uninstallMemberRegistration();
         forgetProvision(mycoHome, agent);
-        return true;
       }, { wait: true });
-      if (removed === null) return fail('a helper is provisioning agents; retry when it finishes');
     } catch (error) { return fail(error instanceof Error ? error.message : String(error)); }
     out(`Removed Myco's hooks and MCP entry for ${manifest.displayName}.`);
     return true;
@@ -834,7 +837,6 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     return true;
   }
   const outcome = provisionChosenAgent(agent, folder, mycoHome, { packageRoot: deps.packageRoot, serverUrl });
-  if (outcome === null) return fail('a helper is provisioning agents; retry when it finishes');
   if (outcome.kind === 'unknown') return fail(`unknown agent "${agent}"`);
   if (outcome.kind === 'refused') return fail(outcome.detail);
   out(outcome.detail);

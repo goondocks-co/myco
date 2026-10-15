@@ -99,14 +99,15 @@ export function settleHookTrust(mycoHome: string, reported: ProvisionRecord['pen
   });
 }
 
-/** Replace the managed agent set and prune metadata from the record held by the file lease. */
-export function reconcileProvisionAgents(mycoHome: string, provision: Pick<ProvisionRecord, 'version' | 'serverUrl' | 'agents'>): ProvisionRecord {
+/** Retain captured choices, add discovered registrations and prune metadata under the file lease. */
+export function reconcileProvisionAgents(mycoHome: string, provision: Pick<ProvisionRecord, 'version' | 'serverUrl'> & { discovered: readonly string[] }, uncapturable: ReadonlySet<string>): ProvisionRecord {
   return withProvisionLock(mycoHome, () => {
     const before = readProvisionRecordStrict(mycoHome);
+    const agents = [...new Set([...(before?.agents ?? []).filter(agent => !uncapturable.has(agent)), ...provision.discovered])].sort();
     const retain = <V>(entries: Record<string, V> | undefined): Record<string, V> | undefined => entries === undefined ? undefined
-      : Object.fromEntries(Object.entries(entries).filter(([id]) => provision.agents.includes(id)));
+      : Object.fromEntries(Object.entries(entries).filter(([id]) => agents.includes(id)));
     return writeProvisionRecord(mycoHome, {
-      ...provision, version: before?.version ?? provision.version, serverUrl: before?.serverUrl ?? provision.serverUrl,
+      agents, version: before?.version ?? provision.version, serverUrl: before?.serverUrl ?? provision.serverUrl,
       binaries: retain(before?.binaries), pendingTrust: retain(before?.pendingTrust),
     }, { replace: true });
   });

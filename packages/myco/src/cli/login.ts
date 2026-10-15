@@ -15,7 +15,7 @@ import type { WorkerServiceDeps } from './worker-service.js';
 import { importSignInHistory, withSignInCapture } from './signin-capture.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import { deploymentUrl, listRegistryEntries } from '../member/registry.js';
-import { detectedProvisionLines, provisionDetectedAgents, recordNoAgents } from './member.js';
+import { detectedProvisionLines, provisionDetectedAgents, recordNoAgents, MemberRepairBusyError } from './member.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 import { legacyCaptureGuidance } from '@myco/cli/legacy-capture.js';
 
@@ -62,6 +62,8 @@ through the same capture-folder rules described above.
 `;
 
 export interface LoginDeps {
+  /** Bound waiting for the agent setup lease. */
+  provisionTimeoutMs?: number;
   /** Deferral leaves the agent choice unrecorded for a later provisioning step. */
   provision?: 'now' | 'defer';
   fetch?: typeof fetch;
@@ -200,8 +202,13 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
       if (migration.warning !== null) out(migration.warning);
     }
     else {
-      const found = provisionDetectedAgents(mycoHome, code.serverUrl, root ?? null, { packageRoot: deps.packageRoot, agents: deps.agents });
-      for (const line of detectedProvisionLines(found)) out(`  ${line}`);
+      try {
+        const found = provisionDetectedAgents(mycoHome, code.serverUrl, root ?? null, { packageRoot: deps.packageRoot, agents: deps.agents, timeoutMs: deps.provisionTimeoutMs });
+        for (const line of detectedProvisionLines(found)) out(`  ${line}`);
+      } catch (error) {
+        if (!(error instanceof MemberRepairBusyError)) throw error;
+        out("Myco is updating this machine's agents; run myco member provision when it finishes.");
+      }
     }
   }
 
