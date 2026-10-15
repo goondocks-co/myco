@@ -2,8 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { SERVER_FEATURES } from '@myco-server-worker/constants.js';
-import { HARNESS_HEALTH_FEATURE } from '@goondocks/myco-shared/harness-health';
-import { HARNESS_RUN_CAPTURE_MARGIN_MS, HARNESS_SILENT_MS, MACHINE_ACTIVE_MS, parseProvisionedHarnessReport, recordProvisionedHarnessReport } from '@myco-server-worker/core/harness-health.js';
+import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE, MAX_HARNESS_DEPLOYMENT_CHARS } from '@goondocks/myco-shared/harness-health';
+import { HARNESS_RUN_CAPTURE_MARGIN_MS, HARNESS_SILENT_MS, MACHINE_ACTIVE_MS, parseProvisionedHarnessReport, recordProvisionedHarnessReport, provisionedHarnessHealth } from '@myco-server-worker/core/harness-health.js';
 import { latestHarnessCapture } from '@myco-server-worker/read/harness-health.js';
 import { readAttention, type AttentionItem } from '@myco-server-worker/core/attention.js';
 import { envelope, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
@@ -252,4 +252,22 @@ describe('provisioned harness health', () => {
     await send(imported);
     expect((r.fixture.sqlite.query(`SELECT last_live_received_at FROM sessions WHERE session_id = 'new_capture'`).get() as { last_live_received_at: number }).last_live_received_at).toBe(stored.last_live_received_at);
   });
+});
+
+it('accepts held tools as informational wiring without repair or capture-silence attention', async () => {
+  const r = await rig();
+  const held = { id: 'claude-code', provisioned: true as const, state: 'held_elsewhere' as const, toolsDeployment: 'https://other.myco.example', ranAt: NOW };
+  expect(SERVER_FEATURES).toContain(HARNESS_HELD_ELSEWHERE_FEATURE);
+  r.session('machine_1', 'old_claude', 'claude-code', NOW - 2 * HARNESS_SILENT_MS);
+  const response = await r.post(r.token1, { harnesses: [held] });
+  expect(response.body).toMatchObject({ persisted: true });
+  expect(response.features?.split(',')).toContain(HARNESS_HELD_ELSEWHERE_FEATURE);
+  expect(await r.attention()).toEqual([]);
+  expect(await provisionedHarnessHealth(r.fixture.db)).toEqual([{ ...held, machineId: 'machine_1', machineName: 'Ada laptop' }]);
+  for (const toolsDeployment of ['', 'https://bad.example/\n', 'x'.repeat(MAX_HARNESS_DEPLOYMENT_CHARS + 1)]) {
+    expect(parseProvisionedHarnessReport({ harnesses: [{ ...held, toolsDeployment }] })).toBeNull();
+  }
+  expect(parseProvisionedHarnessReport({ harnesses: [{ ...held, toolsDeployment: undefined }] })).toBeNull();
+  expect(parseProvisionedHarnessReport({ harnesses: [{ ...held, state: 'ready' }] })).toBeNull();
+  expect(parseProvisionedHarnessReport({ harnesses: [{ ...held, action: 'Provision it' }] })).toBeNull();
 });

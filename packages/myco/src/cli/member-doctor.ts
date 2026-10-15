@@ -3,6 +3,8 @@ import { terminalText } from '@myco/utils/terminal-text.js';
 import { readUpdateNotice } from '../upgrade/check-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { harnessToolsElsewhere } from '@goondocks/myco-shared/setup-guidance';
 import { DOCTOR_SIGN_IN, DOCTOR_REFUSED_HOOK_REPAIR } from '@goondocks/myco-shared/setup-guidance';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
@@ -12,7 +14,7 @@ import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { repositoryMycoEntries } from '@myco/symbionts/repository-entries.js';
-import { SymbiontInstaller } from '../symbionts/installer.js';
+import { SymbiontInstaller, MemberMcpConflictError } from '../symbionts/installer.js';
 import { readProvisionRecord } from '../symbionts/member-provision-record.js';
 import { missingMemberSkills } from '../symbionts/member-skill-links.js';
 import { getPluginVersion } from '../version.js';
@@ -108,28 +110,38 @@ export function refusedHookChecks(mycoHome: string, now: number): DoctorCheck[] 
 }
 
 /** The build and registration recorded by agent provisioning, with current wiring checked. */
-export function setupChecks(mycoHome: string, version: string = getPluginVersion()): DoctorCheck[] {
+export function setupChecks(mycoHome: string, version: string = getPluginVersion()): Array<DoctorCheck & { toolsDeployment?: string }> {
   const record = readProvisionRecord(mycoHome);
   if (record === null) return [row('Setup', 'warn', 'nothing records which agents Myco set up on this machine. Run `myco member provision`.')];
-  if (record.version !== version) {
-    return [row('Setup', 'warn', `your agents were set up by Myco ${record.version}; this is ${version}. Run \`myco member provision --refresh\`.`)];
-  }
   const missing: string[] = [];
+  const held: Array<DoctorCheck & { toolsDeployment: string }> = [];
+  const heldAgents = new Set<string>();
+  const issues: DoctorCheck[] = [];
   for (const manifest of loadManifests().filter((m) => record.agents.includes(m.name))) {
     try {
       const installer = new SymbiontInstaller(manifest, mycoHome, resolvePackageRoot(), false, mycoHome)
         .withoutProjectRoot().forDeployment(record.serverUrl);
-      if (!installer.memberRegistrationCurrent()) return [row('Setup', 'warn', `${manifest.displayName}'s hooks or MCP entry are missing or stale. The next Myco helper pass repairs them; run \`myco member provision --refresh\` to repair them now.`)];
+      if (!installer.memberRegistrationCurrent()) issues.push(row('Setup', 'warn', `${manifest.displayName}'s hooks or MCP entry are missing or stale. The next Myco helper pass repairs them; run \`myco member provision --refresh\` to repair them now.`));
     } catch (error) {
-      return [row('Setup', 'warn', `${manifest.displayName}'s configuration could not be checked: ${error instanceof Error ? error.message : String(error)}. Run \`myco member provision ${manifest.name}\`.`)];
+      if (error instanceof MemberMcpConflictError && error.toolsDeployment !== undefined) {
+        heldAgents.add(manifest.name);
+        held.push({ ...row('Setup', 'ok', harnessToolsElsewhere(manifest.displayName, os.hostname(), error.toolsDeployment)), toolsDeployment: error.toolsDeployment });
+        continue;
+      }
+      issues.push(row('Setup', 'warn', `${manifest.displayName}'s configuration could not be checked: ${error instanceof Error ? error.message : String(error)}. Run \`myco member provision ${manifest.name}\`.`));
+      continue;
     }
     const target = manifest.registration?.globalSkillsTarget;
     if (!target) continue;
     const absent = missingMemberSkills(mycoHome, target);
     if (absent.length > 0) missing.push(`${manifest.displayName} (${absent.join(', ')})`);
   }
-  if (missing.length > 0) return [row('Setup', 'warn', `skills are missing for ${missing.join('; ')}. Run \`myco member provision --refresh\`.`)];
-  return [row('Setup', 'ok', `${record.agents.length === 0 ? 'no agent' : record.agents.join(', ')} set up by this build for ${record.serverUrl}.`)];
+  if (missing.length > 0) issues.push(row('Setup', 'warn', `skills are missing for ${missing.join('; ')}. Run \`myco member provision --refresh\`.`));
+  if (record.version !== version && (held.length === 0 || held.length !== record.agents.length)) issues.unshift(row('Setup', 'warn', `your agents were set up by Myco ${record.version}; this is ${version}. Run \`myco member provision --refresh\`.`));
+  if (issues.length > 0) return [...held, ...issues];
+  if (held.length === record.agents.length && held.length > 0) return held;
+  const current = record.agents.filter((agent) => !heldAgents.has(agent));
+  return [...held, row('Setup', 'ok', `${current.length === 0 ? 'no agent' : current.join(', ')} set up by this build for ${record.serverUrl}.`)];
 }
 
 /** The Deployment and capture checks scoped to one repository. */

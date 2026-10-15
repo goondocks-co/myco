@@ -6,7 +6,7 @@ import type { Observation } from '@myco/setup/observe.js';
 const labels: Record<string, string> = {
   legacy: '1.4 migration', journey: 'Setup', default: 'Default Deployment',
   'machine.signin': 'Signed in', 'machine.credential': 'Sign-in credential',
-  'machine.agents': 'Agent hooks', project: 'Repository',
+  'machine.agents': 'Agent hooks', 'machine.tools': 'Agent tools', project: 'Repository',
   'deployment.health': 'Deployment', 'deployment.signin': 'GitHub sign-in',
   'deployment.create': 'Deployment creation', 'deployment.owner': 'Owner account', 'deployment.serving': 'Serving',
   'runner.choice': 'Runner', 'runner.enrollment': 'Runner',
@@ -57,6 +57,7 @@ function describe(fact: Observation, url: string | undefined): string {
   if (fact.id === 'default' && fact.state === 'absent') return `Not selected. New repositories will not automatically join a Deployment. Run myco login --default ${address} (approves this machine again).`;
   if (fact.id === 'default' && complete) return `${fact.detail} — new repositories join it.`;
   if (fact.id === 'machine.signin') return complete ? 'This machine is signed in (remote authentication not checked).' : `${sentence(fact.detail)}. Run myco login ${address}.`;
+  if (fact.id === 'machine.tools') return fact.detail;
   if (fact.id === 'machine.agents') {
     if (fact.detail === 'legacy-hooks') return 'Myco 1.4 still captures your agents; run myco setup --cutover to hand over.';
     const capture = fact.memberCapture ? 'Myco 2.0 capture is installed. ' : '';
@@ -94,7 +95,7 @@ const plural = (count: number, noun: string): string => `${count} ${count === 1 
 export function renderSetupStatus(facts: readonly Observation[]): string[] {
   const lines: string[] = [];
   const groups = new Map<string | undefined, Observation[]>();
-  const homeIds = new Set(['legacy', 'default', 'machine.agents']);
+  const homeIds = new Set(['legacy', 'default', 'machine.agents', 'machine.tools']);
   const homeFacts = facts.filter(fact => homeIds.has(fact.id));
   const defaultUrl = homeFacts.find(fact => fact.id === 'default' && fact.state === 'complete')?.detail;
   const addresses = [...new Set(homeFacts.find(fact => fact.id === 'default')?.joinedDeployments ?? facts.filter(fact => fact.id === 'journey' && fact.detail === 'join').map(fact => fact.deployment).filter((url): url is string => url !== undefined))].sort();

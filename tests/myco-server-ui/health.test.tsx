@@ -466,3 +466,17 @@ describe('dashboard status honesty gates', () => {
     expect(screen.queryByText('Could not reach the server')).toBeNull();
   });
 });
+
+it('lists tools held by another Deployment in Status without a Needs you item', async () => {
+  server(routes({
+    '/api/status': () => Response.json({ ...STATUS, harnesses: [{ id: 'claude-code', provisioned: true, state: 'held_elsewhere', toolsDeployment: 'https://myco.whisker.engineering', machineId: 'ada_5a2d54af', machineName: 'CKIRBY-MBP' }] }),
+    '/api/attention': () => Response.json({ items: [], unavailable: [] }),
+  }));
+  mount();
+  const status = await screen.findByRole('region', { name: 'Status' });
+  const copy = "Claude Code's Myco tools on CKIRBY-MBP use myco.whisker.engineering";
+  expect(await within(status).findByText(copy)).toBeTruthy();
+  const needsYou = screen.getByRole('region', { name: 'Needs you' });
+  expect(needsYou.textContent).not.toContain('CKIRBY-MBP');
+  expect(needsYou.textContent).not.toContain('member provision');
+});

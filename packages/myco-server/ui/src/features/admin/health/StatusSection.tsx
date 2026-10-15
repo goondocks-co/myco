@@ -5,7 +5,7 @@ import type { StatusResponse } from '../../../lib/api';
 import { formatCount } from '../../../lib/format';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { useAttention } from '../../../hooks/use-attention';
-import { ago, transcriptStopWords } from '../../today/words';
+import { ago, transcriptStopWords, harnessHealthWords } from '../../today/words';
 import { AdminSection, RowCard } from '../AdminFrame';
 import { backlogWords, capabilityWords } from './words';
 import { useEmbeddingSwitch, usePassedOver } from '../../../hooks/use-settings';
@@ -68,6 +68,7 @@ export function StatusSection({ status, now, projectName }: StatusSectionProps) 
 }
 
 function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse; now: number; projectName: StatusSectionProps['projectName']; onRetry: () => void }) {
+  const harnesses = data.harnesses ?? [];
   const schema = schemaLine(data.schema);
   const backlog = backlogWords(data.transcriptBacklog);
   const projects = [...data.projects].sort((a, b) => (b.lastActivityAt ?? -1) - (a.lastActivityAt ?? -1));
@@ -84,6 +85,12 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
       </Card>
 
       <StoppedRecordings projectName={projectName} />
+      {data.unavailable?.includes('installedAgents') ? <ReadUnavailable label="installed agents" onRetry={onRetry} /> : harnesses.length > 0 && <div className="flex flex-col gap-s2" data-health-harnesses="">
+        <h3 className="t-h3 text-ink">Installed agents</h3>
+        <RowCard label="Installed agents">
+          {harnesses.map((fact) => <p key={`${fact.machineId}/${fact.id}`} className="px-s4 py-s2 t-body text-ink-2">{harnessHealthWords(fact)}</p>)}
+        </RowCard>
+      </div>}
       <QueueWarning queue={data.workers.available ? data.workers.queue : undefined} />
       <SearchByMeaning now={now} />
 

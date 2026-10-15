@@ -9,6 +9,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import type * as Ui from '../../packages/myco-server/ui/src/features/admin/health/wire.ts';
+import type { MachineHarnessHealth } from '../../packages/myco-server/ui/src/features/today/wire.ts';
+import type { provisionedHarnessHealth } from '../../packages/myco-server/src/core/harness-health.ts';
 import type { KpiReport } from '../../packages/myco-server/src/read/kpis.ts';
 import type { ListedBackup, RestoreOutcome } from '../../packages/myco-server/src/core/backup.ts';
 import type { RestorePreviewAnswer } from '../../packages/myco-server/src/api/backups.ts';
@@ -30,7 +32,8 @@ type RecoveryAnswer = (RecoveryProducerStatus & { supported: true; recoverable: 
 
 const SAME: [
   Same<Ui.KpiReport, KpiReport>,
-] = [true];
+  Same<MachineHarnessHealth, Awaited<ReturnType<typeof provisionedHarnessHealth>>[number]>,
+] = [true, true];
 
 const READS: [
   Reads<ListedBackup, Ui.BackupRow>,

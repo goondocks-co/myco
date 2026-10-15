@@ -1,6 +1,9 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import os from 'node:os';
+import { harnessToolsElsewhere } from '@goondocks/myco-shared/setup-guidance';
+import { MemberMcpConflictError } from '@myco/symbionts/installer.js';
 import { expandHome, resolveMycoHome } from '@myco/paths/home.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { getPluginVersion } from '@myco/version.js';
@@ -15,7 +18,7 @@ import { readDeploymentFeaturesStrict } from '@myco/member/context-cache.js';
 import { listRegistryEntries, deploymentUrl, type RegistryEntry } from '@myco/member/registry.js';
 import { ServerClient, classifyEventAnswer, type FetchLike } from '@myco/member/transport.js';
 import { readHarnessActivity } from '@myco/symbionts/harness-activity.js';
-import { HARNESS_HEALTH_FEATURE } from '@goondocks/myco-shared/harness-health';
+import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
 
 export const REPAIR_LOCK = 'keep-current.lock';
 const REPORT_CAP_MS = 2_000;
@@ -43,9 +46,10 @@ function rememberState(mycoHome: string, harnesses: ProvisionedHarnessFact[]): v
   try { before = JSON.parse(fs.readFileSync(target, 'utf8')); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  const next = Object.fromEntries(harnesses.map(({ id, state, action }) => [id, { state, action }]));
+  const next = Object.fromEntries(harnesses.map(({ id, state, action, toolsDeployment }) => [id, { state, action, toolsDeployment }]));
   for (const fact of harnesses) {
-    if (fact.action !== undefined && JSON.stringify(before[fact.id]) !== JSON.stringify(next[fact.id])) process.stderr.write(`[myco] keep-current: ${fact.action}\n`);
+    const words = fact.state === 'held_elsewhere' ? harnessToolsElsewhere(loadManifests().find((m) => m.name === fact.id)?.displayName ?? fact.id, os.hostname(), fact.toolsDeployment!) : fact.action;
+    if (words !== undefined && JSON.stringify(before[fact.id]) !== JSON.stringify(next[fact.id])) process.stderr.write(`[myco] keep-current: ${words}\n`);
   }
   if (JSON.stringify(before) !== JSON.stringify(next)) atomicWriteFileSync(target, JSON.stringify(next));
 }
@@ -65,6 +69,7 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
       const manifest = manifests.find((m) => m.name === id);
       let state: ProvisionedHarnessFact['state'] = 'ready';
       let action: string | undefined;
+      let toolsDeployment: string | undefined;
       try {
         if (manifest === undefined) throw new Error('This build has no manifest for the provisioned harness');
         const installed = installEvidence(manifest, deps.binaryFound ?? isBinaryOnPath);
@@ -88,20 +93,26 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
           action = `Install ${manifest.displayName} again`;
         }
       } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code ?? ((error as Error).cause as NodeJS.ErrnoException | undefined)?.code;
-        state = code === 'EACCES' || code === 'EPERM' || code === 'EROFS' ? 'unwritable' : 'repair_failed';
-        action = state === 'unwritable'
-          ? `Allow Myco to write ${manifest?.displayName ?? id}'s configuration`
-          : `Run myco member provision ${id} to see what needs fixing`;
+        if (error instanceof MemberMcpConflictError && error.toolsDeployment !== undefined) {
+          state = 'held_elsewhere';
+          toolsDeployment = error.toolsDeployment;
+        } else {
+          const code = (error as NodeJS.ErrnoException).code ?? ((error as Error).cause as NodeJS.ErrnoException | undefined)?.code;
+          state = code === 'EACCES' || code === 'EPERM' || code === 'EROFS' ? 'unwritable' : 'repair_failed';
+          action = state === 'unwritable'
+            ? `Allow Myco to write ${manifest?.displayName ?? id}'s configuration`
+            : `Run myco member provision ${id} to see what needs fixing`;
+        }
       }
       let ranAt: number | undefined;
       try { if (manifest !== undefined) ranAt = harnessRanAt(manifest, mycoHome); } catch {
         state = 'repair_failed';
+        toolsDeployment = undefined;
         action = `Can't tell whether ${manifest?.displayName ?? id} ran; open it and check access to its session store`;
       }
-      result.harnesses.push({ id, provisioned: true, state, ...(ranAt === undefined ? {} : { ranAt }), ...(result.pendingTrust?.[id] === undefined ? {} : { hookRepairAt: result.pendingTrust[id].at }), ...(action === undefined ? {} : { action }) });
+      result.harnesses.push({ id, provisioned: true, state, ...(toolsDeployment === undefined ? {} : { toolsDeployment }), ...(ranAt === undefined ? {} : { ranAt }), ...(result.pendingTrust?.[id] === undefined ? {} : { hookRepairAt: result.pendingTrust[id].at }), ...(action === undefined ? {} : { action }) });
     }
-    if (result.harnesses.every((fact) => fact.state === 'ready' || fact.state === 'trust_required')) recordProvision(mycoHome, { serverUrl: record.serverUrl, agents: [], version: getPluginVersion() });
+    if (result.harnesses.every((fact) => fact.state === 'ready' || fact.state === 'trust_required' || fact.state === 'held_elsewhere')) recordProvision(mycoHome, { serverUrl: record.serverUrl, agents: [], version: getPluginVersion() });
     rememberState(mycoHome, result.harnesses);
     return result;
   } finally { acquired.lock.release(); }
@@ -117,13 +128,15 @@ export async function reportHarnesses(result: KeepCurrentResult | null, mycoHome
   if (entry === undefined || deploymentUrl(entry.serverUrl) !== deploymentUrl(result.serverUrl)) return;
   const budget = deadlineBudget(deadline);
   if (!canStartRequest(budget, now())) return;
-  const body = JSON.stringify({ harnesses: result.harnesses });
+  const features = readDeploymentFeaturesStrict(entry, mycoHome);
+  const harnesses = features.includes(HARNESS_HELD_ELSEWHERE_FEATURE) ? result.harnesses : result.harnesses.filter((fact) => fact.state !== 'held_elsewhere');
+  const body = JSON.stringify({ harnesses });
   const digest = crypto.createHash('sha256').update(body).digest('hex');
   const hashPath = path.join(mycoHome, 'member', `harness-report-${crypto.createHash('sha256').update(deploymentUrl(result.serverUrl)).digest('hex')}.sha256`);
   const acquired = LifecycleLock.acquire(`${hashPath}.lock`, { command: 'myco member harness report' });
   if (!acquired.acquired) return;
   try {
-    const advertised = readDeploymentFeaturesStrict(entry, mycoHome).includes(HARNESS_HEALTH_FEATURE);
+    const advertised = features.includes(HARNESS_HEALTH_FEATURE);
     const featureStatePath = `${hashPath}.feature`;
     const state = advertised ? 'advertised' : 'missing';
     let previous: string | undefined;

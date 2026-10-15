@@ -14,10 +14,13 @@ import { writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from 
 import { updateProjectContext } from '@myco/member/context-cache.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { PROTOCOL_HEADER, MEMBER_PROTOCOL } from '@goondocks/myco-shared/member-protocol';
-import { HARNESS_HEALTH_FEATURE } from '@goondocks/myco-shared/harness-health';
+import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
 import { run as update } from '@myco/cli/update.js';
 import { setupChecks } from '@myco/cli/member-doctor.js';
 import { memberRig } from '../member/helpers/server.js';
+import { run as setup } from '@myco/cli/setup.js';
+import { getPluginVersion } from '@myco/version.js';
+import { parseProvisionedHarnessReport } from '@myco-server-worker/core/harness-health.js';
 import { readAttention } from '@myco-server-worker/core/attention.js';
 
 const SERVER = 'https://myco.example';
@@ -481,4 +484,107 @@ it('a second hook repair changes the report even when its state action and activ
   await reportHarnesses(keepCurrent(home, { binaryFound: () => true }), home, Date.now() + 10_000, { entry, fetch });
   expect(reports).toHaveLength(2);
   expect(reports[0]).not.toEqual(reports[1]);
+});
+
+const OTHER_SERVER = 'https://other.myco.example';
+
+function toolsHeldElsewhere(agent = 'claude-code'): string {
+  writeDeploymentMembership({ serverUrl: OTHER_SERVER, token: 'B'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+  provisionGlobally(agent, null, home, { serverUrl: OTHER_SERVER });
+  recordProvision(home, { version: 'old', serverUrl: SERVER, agents: [agent] }, { replace: true });
+  return agent === 'claude-code' ? path.join(agentHome, '.claude.json') : config();
+}
+
+for (const agent of ['claude-code', 'codex']) it(`keeps ${agent}'s tools held by another member Deployment settled without provisioning`, async () => {
+  const target = toolsHeldElsewhere(agent);
+  const priorChecks = setupChecks(home);
+  expect(priorChecks[0].detail).toContain('use other.myco.example');
+  expect(priorChecks.map(check => check.detail).join(' ')).not.toContain('member provision');
+  const initialStatus: string[] = [];
+  await setup(['--status'], { mycoHome: home, cwd: agentHome, agents: () => [agent], stdout: line => initialStatus.push(line), stderr: line => { throw new Error(line); } });
+  expect(initialStatus.join('\n')).toContain(priorChecks[0].detail);
+  expect(initialStatus.join('\n')).not.toContain('member provision');
+  expect(readProvisionRecord(home)?.version).toBe('old');
+  const before = harnessFiles().map(file => [file, fs.readFileSync(file, 'utf8'), fs.statSync(file).mtimeMs]);
+  const install = spyOn(SymbiontInstaller.prototype, 'install');
+  const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  try {
+    const first = keepCurrent(home, { binaryFound: () => true });
+    expect(first?.harnesses).toEqual([{ id: agent, provisioned: true, state: 'held_elsewhere', toolsDeployment: OTHER_SERVER }]);
+    expect(first?.harnesses[0].action).toBeUndefined();
+    expect(readProvisionRecord(home)?.version).toBe(getPluginVersion());
+    expect(readProvisionRecord(home)?.agents).toEqual([agent]);
+    const stateFile = path.join(home, 'member', 'harness-states.json');
+    const stateTime = fs.statSync(stateFile).mtimeMs;
+    expect(keepCurrent(home, { binaryFound: () => true })).toEqual(first);
+    expect(fs.statSync(stateFile).mtimeMs).toBe(stateTime);
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(String(stderr.mock.calls[0]?.[0])).toContain('use other.myco.example');
+    expect(String(stderr.mock.calls[0]?.[0])).not.toContain('member provision');
+    expect(install).not.toHaveBeenCalled();
+    expect(harnessFiles().map(file => [file, fs.readFileSync(file, 'utf8'), fs.statSync(file).mtimeMs])).toEqual(before);
+    const checks = setupChecks(home);
+    expect(checks.every(check => check.status === 'ok')).toBe(true);
+    expect(checks[0].detail).toContain('use other.myco.example');
+    expect(checks.map(check => check.detail).join(' ')).not.toContain('member provision');
+    const lines: string[] = [];
+    await setup(['--status'], { mycoHome: home, cwd: agentHome, agents: () => [agent], stdout: line => lines.push(line), stderr: line => { throw new Error(line); }, fetch: async () => { throw new Error('no network in status'); } });
+    expect(lines.join('\n')).toContain(checks[0].detail);
+    expect(lines.filter(line => line.includes('Agent tools:')).join('\n')).not.toContain('member provision');
+    expect(fs.readFileSync(target, 'utf8')).toContain(OTHER_SERVER);
+    fs.writeFileSync(target, fs.readFileSync(target, 'utf8').replaceAll(OTHER_SERVER, SERVER));
+    expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].state).toBe('ready');
+    expect(install).not.toHaveBeenCalled();
+  } finally { install.mockRestore(); stderr.mockRestore(); }
+});
+
+for (const kind of ['foreign', 'legacy', 'same-deployment', 'mismatched-helper']) it(`keeps ${kind} MCP conflicts classified as repair failures`, () => {
+  const target = toolsHeldElsewhere();
+  const file = JSON.parse(fs.readFileSync(target, 'utf8'));
+  if (kind === 'foreign') file.mcpServers.myco.headersHelper = file.mcpServers.myco.headersHelper.replace(/.* member mcp-headers/, '/opt/other-myco member mcp-headers');
+  if (kind === 'legacy') file.mcpServers.myco = { command: '/opt/myco-1.4', args: ['mcp'] };
+  if (kind === 'same-deployment') {
+    file.mcpServers.myco.url = SERVER + '/mcp';
+    file.mcpServers.myco.headersHelper = file.mcpServers.myco.headersHelper.replace(OTHER_SERVER, SERVER).replace('--credential registry', '--credential env');
+  }
+  if (kind === 'mismatched-helper') file.mcpServers.myco.headersHelper = file.mcpServers.myco.headersHelper.replace(OTHER_SERVER, SERVER);
+  fs.writeFileSync(target, JSON.stringify(file));
+  expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0]).toMatchObject({ state: 'repair_failed', action: expect.stringContaining('member provision') });
+});
+
+it('omits held tools for the older feature set, clears prior repair attention, and reports them after upgrade', async () => {
+  const rig = await memberRig();
+  rig.env.sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_1', 'mem_machine_1', ?)`, [Date.now()]);
+  const entry = { version: REGISTRY_VERSION, projectId: 'proj_1', root: agentHome, serverUrl: SERVER, token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 };
+  writeRegistryEntry(entry, { mycoHome: home });
+  toolsHeldElsewhere();
+  const result = keepCurrent(home, { binaryFound: () => true })!;
+  const spool = new MemberSpool(entry, { mycoHome: home }).dir;
+  updateProjectContext(spool, home, cache => { cache.features = [HARNESS_HEALTH_FEATURE]; });
+  const bodies: Array<{ harnesses: Array<{ state: string }> }> = [];
+  const accepted: boolean[] = [];
+  const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init);
+    const body = await request.clone().json() as { harnesses: Array<{ state: string }> };
+    bodies.push(body);
+    // The compatibility fixture accepts only harness-health-v1 states and fields.
+    const oldStates = ['ready', 'binary_missing', 'unwritable', 'trust_required', 'repair_failed'];
+    if (bodies.length === 1 && (body.harnesses.some(fact => !oldStates.includes(fact.state)) || parseProvisionedHarnessReport(body) === null)) {
+      accepted.push(false);
+      return Response.json({ persisted: false, code: 'invalid_field' }, { headers: { [PROTOCOL_HEADER]: String(MEMBER_PROTOCOL) } });
+    }
+    const answer = await rig.fetch(request);
+    accepted.push((await answer.clone().json() as { persisted: boolean }).persisted);
+    return answer;
+  };
+  await rig.fetch(new Request(SERVER + '/members/harnesses/report', { method: 'POST', headers: { authorization: 'Bearer ' + rig.token, 'content-type': 'application/json', [PROTOCOL_HEADER]: String(MEMBER_PROTOCOL) }, body: JSON.stringify({ harnesses: [{ id: 'claude-code', provisioned: true, state: 'repair_failed', action: 'Repair it' }] }) }));
+  expect((await readAttention(rig.env.serverEnv, Date.now())).items.some(item => item.kind === 'harness_needs_repair')).toBe(true);
+  await reportHarnesses(result, home, Date.now() + 10_000, { entry, fetch });
+  expect(bodies).toEqual([{ harnesses: [] }]);
+  expect(accepted).toEqual([true]);
+  expect((await readAttention(rig.env.serverEnv, Date.now())).items.some(item => item.kind === 'harness_needs_repair')).toBe(false);
+  updateProjectContext(spool, home, cache => { cache.features = [HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE]; });
+  await reportHarnesses(result, home, Date.now() + 10_000, { entry, fetch });
+  expect(bodies[1]).toEqual({ harnesses: result.harnesses });
+  expect(accepted).toEqual([true, true]);
 });

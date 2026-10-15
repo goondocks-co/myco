@@ -43,7 +43,7 @@ const REMOTE_MCP_TYPE = 'http';
 export class MemberProvisionConflictError extends Error { }
 
 export class MemberMcpConflictError extends MemberProvisionConflictError {
-  constructor(message: string, readonly problem: string = message, cause?: unknown) {
+  constructor(message: string, readonly problem: string = message, cause?: unknown, readonly toolsDeployment?: string) {
     super(message, { cause });
   }
 }
@@ -871,7 +871,8 @@ export class SymbiontInstaller {
       const other = this.entryDeployment(existing);
       if (this.isMemberMcpServer(existing) && other !== null) {
         const message = toolsStayOnDeployment(this.manifest.displayName, other);
-        throw new MemberMcpConflictError(message, message);
+        const heldElsewhere = other !== this.entryDeployment(desired ?? {}) && sameCredentialSource && this.helperDeployment(existing) === other;
+        throw new MemberMcpConflictError(message, message, undefined, heldElsewhere ? other : undefined);
       }
       throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, 'Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover');
     }

@@ -77,11 +77,12 @@ describe('dashboard status and scope honesty on both store adapters', () => {
           return inner.prepare(query);
         } };
         const body = await (await handleStatus({ ...f.serverEnv, db }, context(await deploymentIdentity(f.db), 'member'))).json() as StatusResponse;
-        expect(body.unavailable).toEqual(expect.arrayContaining(['machines', 'workers', 'capture']));
+        expect(body.unavailable).toEqual(expect.arrayContaining(['machines', 'workers', 'capture', 'installedAgents']));
         expect(body.schema.matches).toBe(true);
         expect(body.workers.available).toBe(false);
         expect(body.workers.fleet).toBeNull();
         expect(body.capture).toEqual([]);
+        expect(body.harnesses).toEqual([]);
       } finally { f.sqlite.close(); }
     });
     it(`finding 9: ${target} returns the final receipt timestamp of an ended session`, async () => {
