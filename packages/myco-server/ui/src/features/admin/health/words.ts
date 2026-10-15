@@ -104,6 +104,7 @@ export function latestWords(schedule: RecoverySchedule, form: RecoveryForm = 'st
 const PRODUCER_FAILURE_WORDS: Readonly<Record<string, string>> = {
   provider_unavailable: 'the storage provider could not be reached',
   provider_refused: 'the storage provider refused',
+  provider_unexpected: 'the storage provider answered in an unexpected format',
   export_failed: 'the database export failed',
   export_not_offered: 'the database offers no export',
   export_unparsable: 'the export could not be read',

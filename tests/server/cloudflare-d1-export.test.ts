@@ -633,6 +633,35 @@ describe('a download served encoded anyway', () => {
     }
   }
 
+  for (const [encoding, bytes] of [['x-gzip', gzipSync(sql)], ['gzip, br', brotliCompressSync(gzipSync(sql))]] as const) {
+    it(`decodes an export served as ${encoding} in the order its codings were applied`, async () => {
+      const api = provider(() => 'complete');
+      const fetch: CloudflareFetch = (url, init) => url.startsWith('https://signed.fixture/')
+        ? Promise.resolve(new Response(bytes, { headers: { 'content-encoding': encoding, 'content-length': String(bytes.length) } }))
+        : api.fetch(url, init);
+      await run(fetch, { pollMs: 0 });
+      expect(fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8')).toBe(sql);
+    });
+  }
+
+  for (const encoding of ['gzip', 'identity'] as const) {
+    it(`publishes an export served as ${encoding} readable by its owner only, and removes a decode a killed process left behind`, async () => {
+      const api = provider(() => 'complete');
+      const bytes = encoding === 'gzip' ? gzipSync(sql) : Buffer.from(sql);
+      const stale = path.join(dir, 'd1.sql.part.decoded');
+      fs.writeFileSync(stale, 'CREATE TABLE stale(v);\n', { mode: 0o644 });
+      fs.chmodSync(stale, 0o644);
+      const fetch: CloudflareFetch = (url, init) => url.startsWith('https://signed.fixture/')
+        ? Promise.resolve(new Response(bytes, { headers: { 'content-encoding': encoding, 'content-length': String(bytes.length) } }))
+        : api.fetch(url, init);
+      await run(fetch, { pollMs: 0 });
+      const output = path.join(dir, 'd1.sql');
+      expect(fs.readFileSync(output, 'utf8')).toBe(sql);
+      expect(fs.statSync(output).mode & 0o777).toBe(0o600);
+      expect(fs.existsSync(stale)).toBe(false);
+    });
+  }
+
   it('rejects a gzip export cut between complete members before missing rows can become a snapshot', async () => {
     const api = provider(() => 'complete');
     const prefix = gzipSync(sql);
@@ -745,6 +774,17 @@ describe('a resumed download that does not match what it resumes', () => {
     await run(served.fetch, { pollMs: 0 });
     expect({ output: output(), requests: served.asked.length }).toEqual({ output: '-- export bm-1, twenty\n', requests: 2 });
   });
+
+  for (const [length, body] of [['', 0], ['0x8', 8], ['+8', 8], ['8.0', 8], ['8e0', 8]] as const) {
+    it(`never takes an answer that declares its length as ${JSON.stringify(length)} as whole`, async () => {
+      const api = provider(() => 'complete');
+      const served = servedInTurn(api, [() => new Response(WHOLE.slice(0, body), { headers: { 'content-length': length } }), whole()]);
+      const reports: string[] = [];
+      await run(served.fetch, { pollMs: 0, report: (message) => reports.push(message) });
+      expect({ output: output(), requests: served.asked.length }).toEqual({ output: '-- export bm-1, twenty\n', requests: 2 });
+      expect(reports.join('\n')).toContain('declared no length');
+    });
+  }
 });
 
 describe('a download no longer served while its export is reported running', () => {

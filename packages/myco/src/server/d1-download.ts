@@ -18,6 +18,7 @@ export interface D1Download {
   reader: D1DownloadReader | null;
 }
 export type D1DownloadFetch = (url: string, init: RequestInit) => Promise<D1Download>;
+/** An injected HTTP fetch; it must honor `decompress: false` and answer the bytes as served (Bun's fetch does, Node's does not). */
 export type D1DownloadHttpFetch = (url: string, init: RequestInit & { decompress: false }) => Promise<Response>;
 
 /** Adapts an injected HTTP response to the download reader contract. */

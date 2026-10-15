@@ -306,6 +306,19 @@ it('retries a provider outage during an export rather than ending the attempt, t
   expect([second.stage, second.error]).toEqual(['failed', 'provider_unavailable']);
 });
 
+it('names a range the provider keeps answering encoded as an unexpected answer, never moving its cursor (#1837)', async () => {
+  const state = checkpoint({ stage: 'download', sqlBytes: 8, sqlEtag: 'w/"one"', uploadId: 'upload-1', downloadOffset: 4 });
+  state.signed = 'https://signed/one';
+  state.held = [{ part: 1, bytes: 4, sha256: await digestOf(body(1)), etag: 'etag-1' }];
+  const encoded: RangeAnswer = { status: 'error', failure: failure('encoding', 206, true) };
+  const { port } = ports({ ranges: [encoded, encoded] });
+  const limits = { ...PRODUCER_LIMITS, partBytes: 4, maxTransient: 2 };
+  const first = await continueAttempt(state, port, limits);
+  expect([first.stage, first.error, state.state.attempts, state.state.downloadOffset]).toEqual(['download', 'provider_unexpected', 1, 4]);
+  const second = await continueAttempt(state, port, limits);
+  expect([second.stage, second.error, state.state.downloadOffset, state.held.length]).toEqual(['failed', 'provider_unexpected', 4, 1]);
+});
+
 it('bounds how many times one attempt may ask for a fresh export', async () => {
   const limits = { ...PRODUCER_LIMITS, partBytes: 4, maxReExports: 2 };
   const state = checkpoint({ stage: 'download', sqlBytes: 8, uploadId: 'upload-1', reExports: 2 });

@@ -176,11 +176,11 @@ export interface AttemptCheckpoint {
 
 /**
  * Why a port could not answer, as facts alone: a request or an answer that did not arrive whole, a refused status, a
- * failure the provider itself reported, an answer whose shape cannot be used, or a staging store that could not take
- * a write. A port hands over no message of any kind.
+ * failure the provider itself reported, an answer whose shape cannot be used, bytes served in a content encoding other
+ * than the one asked for, or a staging store that could not take a write. A port hands over no message of any kind.
  */
 export interface PortFailure {
-  cause: 'transport' | 'http' | 'provider' | 'protocol' | 'storage';
+  cause: 'transport' | 'http' | 'provider' | 'protocol' | 'encoding' | 'storage';
   /** The status a refusal carried, where one exists. */
   status: number | null;
   transient: boolean;
@@ -351,7 +351,9 @@ export class TransientProducerFailure extends Error {
  * nothing else, which keeps provider text, a signed URL and an exception message out of both.
  */
 export type ProducerRefusal =
-  | 'provider_unavailable' | 'provider_refused' | 'export_failed' | 'export_not_offered' | 'export_unparsable'
+  | 'provider_unavailable' | 'provider_refused'
+  /** The provider answered in a content encoding the producer does not read. */
+  | 'provider_unexpected' | 'export_failed' | 'export_not_offered' | 'export_unparsable'
   | 'export_stalled'
   /** The attempt's own request to start an export got no answer that says whether it started, inside its budget. */
   | 'export_unanswered'
@@ -371,19 +373,25 @@ const INVENTORY_REFUSAL: Record<InventoryRefusal, ProducerRefusal> = {
   inventory_oversize: 'inventory_oversize',
 };
 
+/** What a transient failure is reported as, while the attempt spends it and once it ends the attempt. */
+const TRANSIENT_REFUSAL: Record<PortFailure['cause'], ProducerRefusal> = {
+  transport: 'provider_unavailable', http: 'provider_unavailable', provider: 'provider_unavailable',
+  protocol: 'provider_unavailable', encoding: 'provider_unexpected', storage: 'provider_unavailable',
+};
+
 const COPY_REFUSAL: Record<PortFailure['cause'], ProducerRefusal> = {
   transport: 'provider_unavailable', http: 'object_changed', provider: 'object_changed',
-  protocol: 'object_changed', storage: 'provider_unavailable',
+  protocol: 'object_changed', encoding: 'provider_unexpected', storage: 'provider_unavailable',
 };
 
 const EXPORT_REFUSAL: Record<PortFailure['cause'], ProducerRefusal> = {
   transport: 'provider_unavailable', http: 'provider_refused', provider: 'export_failed',
-  protocol: 'export_not_offered', storage: 'provider_unavailable',
+  protocol: 'export_not_offered', encoding: 'provider_unexpected', storage: 'provider_unavailable',
 };
 
 const DOWNLOAD_REFUSAL: Record<PortFailure['cause'], ProducerRefusal> = {
   transport: 'provider_unavailable', http: 'download_changed', provider: 'download_changed',
-  protocol: 'download_changed', storage: 'provider_unavailable',
+  protocol: 'download_changed', encoding: 'provider_unexpected', storage: 'provider_unavailable',
 };
 
 /** The exception shapes a log may name, so an unexpected throw is classified rather than quoted. */
@@ -423,11 +431,11 @@ export async function continueAttempt(
     if (error instanceof TransientProducerFailure && open.attempts + 1 < limits.maxTransient) {
       const { cause, status } = error.failure;
       emit({ kind: 'recovery_attempt_transient', attempt: open.id, stage: open.stage, spent: open.attempts + 1, cause, status });
-      checkpoint.update(open.id, { attempts: open.attempts + 1, error: 'provider_unavailable' });
-      return { attempt: open.id, stage: open.stage, progressed: false, nextInMs: 1_000, sourcePaused: open.stage === 'export', error: 'provider_unavailable' };
+      checkpoint.update(open.id, { attempts: open.attempts + 1, error: TRANSIENT_REFUSAL[cause] });
+      return { attempt: open.id, stage: open.stage, progressed: false, nextInMs: 1_000, sourcePaused: open.stage === 'export', error: TRANSIENT_REFUSAL[cause] };
     }
     if (error instanceof TransientProducerFailure) {
-      return failAttempt(open, checkpoint, ports, 'provider_unavailable', { spent: open.attempts, status: error.failure.status ?? 0 });
+      return failAttempt(open, checkpoint, ports, TRANSIENT_REFUSAL[error.failure.cause], { spent: open.attempts, status: error.failure.status ?? 0 });
     }
     // An interrupted step spends one bounded attempt and keeps its stage; exhaustion is terminal.
     if (open.attempts + 1 < limits.maxTransient) {

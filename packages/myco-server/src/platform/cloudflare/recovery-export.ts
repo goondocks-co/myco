@@ -254,7 +254,7 @@ export function cloudflareProducerPorts(
       const encoding = (response.headers.get('content-encoding') ?? '').trim().toLowerCase();
       if (encoding !== '' && encoding !== 'identity') {
         if (response.body !== null) await discardStoredBody(response.body);
-        return { status: 'error', failure: TRANSPORT };
+        return { status: 'error', failure: failure('encoding', response.status, true) };
       }
       const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
       if (range === null || Number(range[1]) !== offset) {

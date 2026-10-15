@@ -448,7 +448,8 @@ function exporter(context: D1ExportContext) {
         }
         resumed = true;
       }
-      const declared = resumed ? Number(range![2]) : Number(response.headers.get('content-length') ?? Number.NaN);
+      const length = response.headers.get('content-length');
+      const declared = resumed ? Number(range![2]) : length !== null && /^\d+$/.test(length) ? Number(length) : Number.NaN;
       // A whole answer is told from a cut one by the length it declares; one that declares none is never taken.
       if (!Number.isFinite(declared)) {
         await response.reader.cancel().catch(() => {});
@@ -510,6 +511,7 @@ function exporter(context: D1ExportContext) {
   const download = async (tables: readonly string[], bookmark: string | null, signedUrl: string): Promise<{ bytes: number; sha256: string }> => {
     const part = `${context.output}.part`;
     fs.rmSync(part, { force: true });
+    fs.rmSync(`${part}.decoded`, { force: true });
     let url = signedUrl;
     const served: { etag: string | null; total: number | null } = { etag: null, total: null };
     for (let attempt = 1; ; attempt += 1) {

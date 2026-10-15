@@ -84,7 +84,7 @@ it('refuses an encoded range even when its decoded prefix matches the entire adv
   }) as typeof fetch;
   try {
     const answer = await cloudflareProducerPorts(target(), bucket(), source()).readRange('https://signed.example/one', 0, whole.length);
-    expect(answer).toEqual({ status: 'error', failure: { cause: 'transport', status: null, transient: true } });
+    expect(answer).toEqual({ status: 'error', failure: { cause: 'encoding', status: 206, transient: true } });
     expect(asked?.get('accept-encoding')).toBe('identity');
     expect(cancelled).toBe(true);
   } finally { globalThis.fetch = original; }
