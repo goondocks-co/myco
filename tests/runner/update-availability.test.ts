@@ -9,6 +9,7 @@ import { renderUnit, servicePaths, type ServiceSpec } from '@myco/server/service
 import { runWorker } from '@myco/runner/loop.js';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
+import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-availability-'));
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -82,15 +83,71 @@ describe('runner update execution availability', () => {
     expect(f.controller.contactPayload().lastResult).toMatchObject({ result: 'failed', reason: expect.stringContaining('helper exited 23') });
   });
 
+  it('defers cleanup held by another process without changing the successful update report', async () => {
+    let removals = 0;
+    const f = fixture('cleanup-contended', { removeGuardian: () => { removals++; } });
+    expect(await f.controller.idle()).toBe('restart');
+    withRunnerUpdateState(f.home, state => {
+      delete state.transaction;
+      state.nextCheckAt = f.time.now + 6 * 60 * 60_000;
+      state.lastResults = { [serverUrl]: { fromVersion: from, toVersion: to, result: 'updated', at: f.time.now } };
+      state.cleanup = { currentVersion: to, previousVersion: from, platform: process.platform, serverUrl, fromVersion: from, toVersion: to };
+    });
+    const before = readRunnerUpdateState(f.home);
+    const payload = f.controller.contactPayload();
+    const logs = [...f.logs];
+    const holder = Bun.spawn([process.execPath, '--eval', `
+      import { LifecycleLock } from ${JSON.stringify(path.resolve('packages/myco/src/utils/lifecycle-lock.ts'))};
+      const held = LifecycleLock.acquire(${JSON.stringify(path.join(f.home, 'runner', '.update-cleanup.lock'))});
+      if (!held.acquired) throw new Error('cleanup holder did not acquire its lock');
+      console.log('held');
+      for await (const chunk of Bun.stdin.stream()) break;
+      held.lock.release();
+    `], { cwd: f.home, env: sandboxChildEnv(f.home), stdin: 'pipe', stdout: 'pipe', stderr: 'inherit', timeout: 5000 });
+    try {
+      const ready = await holder.stdout.getReader().read();
+      expect(new TextDecoder().decode(ready.value)).toBe('held\n');
+      f.controller.startup();
+      expect(await f.controller.idle()).toBe('continue');
+      expect(readRunnerUpdateState(f.home)).toEqual(before);
+      expect(f.controller.contactPayload()).toEqual(payload);
+      expect(f.controller.contactPayload().updateState).toBeUndefined();
+      expect(removals).toBe(0);
+      expect(f.logs).toEqual(logs);
+      holder.stdin.write('release');
+      holder.stdin.end();
+      expect(await holder.exited).toBe(0);
+      expect(await f.controller.idle()).toBe('continue');
+      const cleaned = readRunnerUpdateState(f.home);
+      expect(cleaned.guardian).toBeUndefined();
+      expect(cleaned.cleanup).toBeUndefined();
+      expect(cleaned.cleanupFailures).toBe(0);
+      expect(cleaned.cleanupReason).toBeUndefined();
+      expect(cleaned.nextCleanupAt).toBeUndefined();
+      expect(cleaned.lastResults).toEqual(before.lastResults);
+      expect(f.controller.contactPayload()).toEqual(payload);
+      expect(removals).toBe(1);
+    } finally {
+      holder.kill();
+      await holder.exited;
+    }
+  });
+
   it('reports cleanup failure with backoff while continuing to claim', async () => {
     let removals = 0;
     const f = fixture('cleanup', { removeGuardian: () => { removals++; throw new Error('versions folder cannot be pruned'); } });
     expect(await f.controller.idle()).toBe('restart');
     withRunnerUpdateState(f.home, state => { delete state.transaction; state.cleanup = { failedVersion: to, currentVersion: from, platform: process.platform }; });
     await claimsWork(f);
-    expect(f.controller.contactPayload().lastResult?.reason).toContain('cleanup');
+    const reason = 'runner update cleanup failed: Error: versions folder cannot be pruned';
+    expect(readRunnerUpdateState(f.home)).toMatchObject({ cleanupFailures: 1, cleanupReason: reason, nextCleanupAt: f.time.now + 60 * 60_000 });
+    expect(f.controller.contactPayload()).toMatchObject({ lastResult: { result: 'failed', reason }, updateState: { phase: 'cleanup_pending', reason } });
     await f.controller.idle();
     expect(removals).toBe(1);
+    f.time.now += 60 * 60_000;
+    await f.controller.idle();
+    expect(removals).toBe(2);
+    expect(readRunnerUpdateState(f.home)).toMatchObject({ cleanupFailures: 2, cleanupReason: reason, nextCleanupAt: f.time.now + 2 * 60 * 60_000 });
   });
 
   it('backs off refused versions exponentially, retains the ETag and attempt identity', async () => {

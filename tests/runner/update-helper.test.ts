@@ -8,6 +8,7 @@ import { versionBinaryPath, writeInstallMarker } from '../../packages/myco/src/i
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { placeExecutable } from '../../packages/myco/src/install/place-binary.js';
 import type { ServiceSpec } from '../../packages/myco/src/server/service.js';
+import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-helper-test-'));
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -56,6 +57,51 @@ function fixture(label: string) {
 }
 
 describe('runner update helper', () => {
+  for (const outcome of ['orphaned', 'updated', 'refused', 'rolled_back', 'recovered-rollback'] as const) {
+    it(`exits cleanly when ${outcome} cleanup is held by another holder`, async () => {
+      const f = fixture(`cleanup-contended-${outcome}`);
+      if (outcome === 'orphaned') {
+        withRunnerUpdateState(f.home, state => {
+          delete state.transaction;
+          state.lastResults = { [serverUrl]: { fromVersion: from, toVersion: to, result: 'updated', at: f.time } };
+          state.cleanup = { currentVersion: to, previousVersion: from, platform: 'linux' };
+        });
+      } else if (outcome === 'updated') {
+        withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
+      } else if (outcome === 'refused') {
+        f.deps.probe = () => ({ runs: false, detail: 'candidate no longer verifies' });
+      } else if (outcome === 'rolled_back') {
+        withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'adopted'; state.transaction!.healthRefusal = 'runner credential refused'; });
+      } else {
+        withRunnerUpdateState(f.home, state => {
+          state.transaction!.phase = 'rollback';
+          state.transaction!.failureReason = 'runner credential refused';
+          state.transaction!.rollbackResult = 'rolled_back';
+        });
+      }
+      let prunes = 0;
+      f.deps.prune = () => { prunes++; };
+      const held = LifecycleLock.acquire(path.join(f.home, 'runner', '.update-cleanup.lock'));
+      if (!held.acquired) throw new Error('cleanup holder did not acquire its lock');
+      try {
+        await expect(runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps)).resolves.toBeUndefined();
+        const state = readRunnerUpdateState(f.home);
+        expect(state.transaction).toBeUndefined();
+        expect(state.lastResults?.[serverUrl]?.result).toBe(outcome === 'orphaned' ? 'updated' : outcome === 'recovered-rollback' ? 'rolled_back' : outcome);
+        expect(state.cleanup).toBeDefined();
+        expect(state.cleanupFailures).toBeUndefined();
+        expect(state.cleanupReason).toBeUndefined();
+        expect(state.nextCleanupAt).toBeUndefined();
+        expect(prunes).toBe(0);
+      } finally { held.lock.release(); }
+      const results = readRunnerUpdateState(f.home).lastResults;
+      await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps);
+      expect(readRunnerUpdateState(f.home).cleanup).toBeUndefined();
+      expect(readRunnerUpdateState(f.home).lastResults).toEqual(results);
+      expect(prunes).toBe(1);
+    });
+  }
+
   it('refuses a staged candidate that fails its handoff probe before stopping the original service', async () => {
     const f = fixture('candidate-probe');
     const before = fs.statSync(f.binaryPath).ino;
