@@ -6,6 +6,26 @@ const background = (n = 30): SporeCandidate[] => Array.from({ length: n }, (_, i
 }));
 
 describe('prompt relevance', () => {
+  it('withholds an ordinary best match across many query comparisons and admits a separated match', () => {
+    const reference = Array.from({ length: 30 }, (_, i) => ({
+      id: `peer-${i}`, similarity: i / 145, neighborMean: 0.9, neighborStd: 0.1,
+    }));
+    const ordinary = { id: 'best', similarity: 0.22, neighborMean: 0.9, neighborStd: 0.1 };
+    let counts: unknown;
+    expect(selectRelevantSpores([ordinary, ...reference], { maxResults: 7, observe: n => { counts = n; } })).toEqual([]);
+    expect(counts).toEqual({ calibrated: 31, scored: 31, probable: 0, separated: 0 });
+    expect(selectRelevantSpores([{ ...ordinary, similarity: 0.4 }, ...reference], { maxResults: 7 }).map(s => s.id))
+      .toEqual(['best']);
+  });
+
+  it('bounds the query tail without assuming independent candidate distances', () => {
+    const query = { mean: 0.8, std: 0.1 };
+    const own = { mean: 0.9, std: 0.1 };
+    expect(mutualProximity(0.6, query, own)).toBeGreaterThan(0.9);
+    expect(mutualProximity(0.6, query, own, 100)).toBe(0);
+    expect(mutualProximity(0.3, query, own, 100)).toBeGreaterThan(0.99);
+  });
+
   it('leaves the outlier out of its own query statistics so it cannot widen the spore band', () => {
     const candidates = [0.9, 0.77, 0.3, 0.32, 0.35, 0.39].map((similarity, i) => ({
       id: i === 0 ? 'outlier' : i === 1 ? 'runner-up' : `peer-${i}`,

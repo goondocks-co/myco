@@ -405,7 +405,10 @@ describe('the rendered context', () => {
     const { db, sqlite } = store();
     const long = 'x'.repeat(INJECTION_BUDGET_TOKENS * 4);
     for (let i = 0; i < 10; i += 1) await insertSpore(db, SCOPE, spore(`sp${i}`, { content: long, createdAt: NOW - i }));
-    const served = await select(db, { leaves: { enabled: true, maxPerPrompt: 10 } });
+    const served = await selectSporesForPrompt(db, SCOPE, { enabled: true, maxPerPrompt: 10 }, true,
+      { sessionId: SESSION, promptId: 'p1', promptHash: 'hash_1', prompt: PROMPT, now: NOW },
+      semanticRecall(db, SCOPE, { backgroundCount: 90 }));
+    expect(served.items.length).toBeGreaterThanOrEqual(INJECTION_MIN_ITEMS);
     const lines = served.context.split('\n- ').length - 1;
     expect(lines).toBe(served.items.length);
     expect(estimateTokens(served.context)).toBeLessThanOrEqual(INJECTION_BUDGET_TOKENS);

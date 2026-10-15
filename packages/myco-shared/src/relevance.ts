@@ -155,8 +155,11 @@ export function mutualProximity(
   distance: number,
   queryStats: DistributionStats,
   sporeStats?: DistributionStats,
+  /** Number of query-side comparisons bounded by the family-wise tail probability. */
+  queryComparisons = 1,
 ): number {
-  const queryFactor = proximityFactor(distance, queryStats);
+  // Bonferroni bounds the query-side tail across all comparisons, including correlated candidates.
+  const queryFactor = Math.max(0, 1 - queryComparisons * (1 - proximityFactor(distance, queryStats)));
   if (!sporeStats) return 0;
   return queryFactor * proximityFactor(distance, sporeStats);
 }
@@ -185,11 +188,13 @@ export function selectRelevantSpores(
 
   const scored = pool
     .map((c) => {
-      const queryStats = distributionStats(reference.filter(peer => peer.id !== c.id).map(peer => 1 - peer.similarity));
+      const peers = reference.filter(peer => peer.id !== c.id);
+      const queryStats = distributionStats(peers.map(peer => 1 - peer.similarity));
       const mp = mutualProximity(
         1 - c.similarity,
         queryStats,
         isCalibrated(c) ? boundedCalibration(c, calibrated) : pooled,
+        reference.length,
       );
       // Query-relative excess retains distance information when probability factors saturate.
       const excess = Math.max(0, (queryStats.mean - (1 - c.similarity)) / Math.max(queryStats.std, STD_EPSILON));

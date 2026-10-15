@@ -4,33 +4,28 @@
  * Recorded, never edited: `MYCO_EVAL_RECORD=1 npm run test:parity` writes it, the parity eval holds every release to it,
  * and `tests/myco-server/recall-gold.test.ts` recomputes both headline figures from the record.
  */
-export const recallQuality = 0.391;
+export const recallQuality = 0.4254;
 export const caseCount = 48;
 
 export const recallBaseline = {
  "version": 1,
  "caseCount": 48,
- "recallQuality": 0.391,
+ "recallQuality": 0.4254,
  "targets": {
   "hosted": {
-   "recallQuality": 0.391,
-   "passed": 12,
+   "recallQuality": 0.4254,
+   "passed": 15,
    "mustNot": {
-    "matches": 25,
+    "matches": 13,
     "caseIds": [
-     "rp-01",
      "rp-09",
-     "rp-11",
      "rp-13",
      "rp-14",
      "rp-18",
      "rp-19",
-     "rp-22",
      "rp-24",
      "rp-25",
-     "rp-27",
      "rp-30",
-     "rp-35",
      "rp-37",
      "rp-45",
      "rp-46",
@@ -39,13 +34,10 @@ export const recallBaseline = {
    },
    "cases": {
     "rp-01": {
-     "spores": [
-      "decision-3235fecb",
-      "pattern-951fc175"
-     ],
+     "spores": [],
      "plans": [],
      "pass": false,
-     "graded": 0.5
+     "graded": 0
     },
     "rp-02": {
      "spores": [
@@ -65,7 +57,6 @@ export const recallBaseline = {
     },
     "rp-04": {
      "spores": [
-      "gotcha-ab095250",
       "decision-efda0a7f"
      ],
      "plans": [],
@@ -73,15 +64,10 @@ export const recallBaseline = {
      "graded": 0
     },
     "rp-05": {
-     "spores": [
-      "pattern-55f78337",
-      "decision-99ff3f2a",
-      "gotcha-4e22ff90",
-      "wisdom-0ae9c566"
-     ],
+     "spores": [],
      "plans": [],
-     "pass": false,
-     "graded": 0
+     "pass": true,
+     "graded": 1
     },
     "rp-06": {
      "spores": [
@@ -110,13 +96,12 @@ export const recallBaseline = {
     },
     "rp-09": {
      "spores": [
-      "gotcha-ea1915d6",
       "gotcha-582cfdc6",
       "gotcha-26e00b05"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.1667
+     "graded": 0.25
     },
     "rp-10": {
      "spores": [
@@ -127,22 +112,15 @@ export const recallBaseline = {
      "graded": 0.5
     },
     "rp-11": {
-     "spores": [
-      "gotcha-05b29309",
-      "gotcha-582cfdc6"
-     ],
+     "spores": [],
      "plans": [],
      "pass": false,
-     "graded": 0.25
+     "graded": 0
     },
     "rp-12": {
      "spores": [
-      "gotcha-61b34f87",
       "architecture-dbdb80a8",
-      "pattern-95c3e7c3",
-      "trade_off-8d1a35ee",
-      "gotcha-104287ae",
-      "wisdom-0ae9c566"
+      "gotcha-104287ae"
      ],
      "plans": [],
      "pass": false,
@@ -158,24 +136,20 @@ export const recallBaseline = {
     },
     "rp-14": {
      "spores": [
-      "decision-1af798e2",
       "decision-164b9ec6",
-      "gotcha-b6ac3ff4",
-      "gotcha-73456cc3",
-      "gotcha-0b64daeb"
+      "gotcha-73456cc3"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.4
+     "graded": 0.25
     },
     "rp-15": {
      "spores": [
-      "gotcha-7df77408",
-      "trade_off-8d1a35ee"
+      "gotcha-7df77408"
      ],
      "plans": [],
      "pass": true,
-     "graded": 0.5
+     "graded": 1
     },
     "rp-16": {
      "spores": [
@@ -193,13 +167,11 @@ export const recallBaseline = {
     },
     "rp-18": {
      "spores": [
-      "decision-2d352d4a",
-      "gotcha-47345f8f",
-      "pattern-bca367e0"
+      "decision-2d352d4a"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.3333
+     "graded": 0
     },
     "rp-19": {
      "spores": [
@@ -227,14 +199,12 @@ export const recallBaseline = {
     "rp-22": {
      "spores": [
       "architecture-dbdb80a8",
-      "gotcha-a860dd00",
-      "trade_off-eb979ed9",
       "architecture-11db18c6",
       "architecture-aed84f4f"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.6
+     "graded": 0.4444
     },
     "rp-23": {
      "spores": [
@@ -247,7 +217,6 @@ export const recallBaseline = {
     "rp-24": {
      "spores": [
       "pattern-4c6f6ae9",
-      "gotcha-b6ac3ff4",
       "decision-b9f22e00"
      ],
      "plans": [],
@@ -269,24 +238,16 @@ export const recallBaseline = {
      "graded": 1
     },
     "rp-27": {
-     "spores": [
-      "pattern-b4690499",
-      "gotcha-5aca3e37"
-     ],
-     "plans": [],
-     "pass": false,
-     "graded": 0.1667
-    },
-    "rp-28": {
-     "spores": [
-      "gotcha-2db458a1",
-      "architecture-9b116da2",
-      "gotcha-efaf7da0",
-      "decision-16748312"
-     ],
+     "spores": [],
      "plans": [],
      "pass": false,
      "graded": 0
+    },
+    "rp-28": {
+     "spores": [],
+     "plans": [],
+     "pass": true,
+     "graded": 1
     },
     "rp-29": {
      "spores": [],
@@ -315,8 +276,8 @@ export const recallBaseline = {
     "rp-32": {
      "spores": [
       "bug_fix-b7a0b15d",
-      "gotcha-25b5948d",
-      "gotcha-5c06ba4c"
+      "gotcha-5c06ba4c",
+      "gotcha-25b5948d"
      ],
      "plans": [],
      "pass": false,
@@ -341,23 +302,18 @@ export const recallBaseline = {
     },
     "rp-35": {
      "spores": [
-      "decision-efda0a7f",
-      "pattern-78fa6e80",
       "decision-bc755ab1",
-      "decision-48a78b54",
-      "architecture-a95609ec"
+      "decision-b67c2b3a"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.1
+     "graded": 0.25
     },
     "rp-36": {
-     "spores": [
-      "decision-30ad1abc"
-     ],
+     "spores": [],
      "plans": [],
-     "pass": false,
-     "graded": 0
+     "pass": true,
+     "graded": 1
     },
     "rp-37": {
      "spores": [
@@ -404,8 +360,8 @@ export const recallBaseline = {
     },
     "rp-43": {
      "spores": [
-      "decision-a7d1bf51",
-      "decision-16748312"
+      "decision-16748312",
+      "decision-a7d1bf51"
      ],
      "plans": [
       "a3b1e332-96a2-56e0-9afa-01876916c3a3"
@@ -425,8 +381,7 @@ export const recallBaseline = {
      "spores": [
       "gotcha-89a50d19",
       "decision-358cba44",
-      "gotcha-3da46fc2",
-      "gotcha-20d2fea0"
+      "gotcha-3da46fc2"
      ],
      "plans": [],
      "pass": false,
@@ -436,29 +391,24 @@ export const recallBaseline = {
      "spores": [
       "pattern-5c2725ae",
       "gotcha-0ce73b33",
-      "pattern-bca367e0",
-      "gotcha-6699d14a"
+      "pattern-bca367e0"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.125
+     "graded": 0
     },
     "rp-47": {
      "spores": [
-      "decision-915db719",
-      "pattern-4c6f6ae9",
-      "pattern-bca367e0",
-      "gotcha-ee798214",
-      "architecture-3f7cbad0"
+      "decision-915db719"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.4
+     "graded": 0
     },
     "rp-48": {
      "spores": [
-      "decision-3d502b35",
-      "gotcha-ea8bc225"
+      "gotcha-ea8bc225",
+      "decision-3d502b35"
      ],
      "plans": [],
      "pass": true,
@@ -467,24 +417,19 @@ export const recallBaseline = {
    }
   },
   "self-hosted": {
-   "recallQuality": 0.391,
-   "passed": 12,
+   "recallQuality": 0.4254,
+   "passed": 15,
    "mustNot": {
-    "matches": 25,
+    "matches": 13,
     "caseIds": [
-     "rp-01",
      "rp-09",
-     "rp-11",
      "rp-13",
      "rp-14",
      "rp-18",
      "rp-19",
-     "rp-22",
      "rp-24",
      "rp-25",
-     "rp-27",
      "rp-30",
-     "rp-35",
      "rp-37",
      "rp-45",
      "rp-46",
@@ -493,13 +438,10 @@ export const recallBaseline = {
    },
    "cases": {
     "rp-01": {
-     "spores": [
-      "decision-3235fecb",
-      "pattern-951fc175"
-     ],
+     "spores": [],
      "plans": [],
      "pass": false,
-     "graded": 0.5
+     "graded": 0
     },
     "rp-02": {
      "spores": [
@@ -519,7 +461,6 @@ export const recallBaseline = {
     },
     "rp-04": {
      "spores": [
-      "gotcha-ab095250",
       "decision-efda0a7f"
      ],
      "plans": [],
@@ -527,15 +468,10 @@ export const recallBaseline = {
      "graded": 0
     },
     "rp-05": {
-     "spores": [
-      "pattern-55f78337",
-      "decision-99ff3f2a",
-      "gotcha-4e22ff90",
-      "wisdom-0ae9c566"
-     ],
+     "spores": [],
      "plans": [],
-     "pass": false,
-     "graded": 0
+     "pass": true,
+     "graded": 1
     },
     "rp-06": {
      "spores": [
@@ -564,13 +500,12 @@ export const recallBaseline = {
     },
     "rp-09": {
      "spores": [
-      "gotcha-ea1915d6",
       "gotcha-582cfdc6",
       "gotcha-26e00b05"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.1667
+     "graded": 0.25
     },
     "rp-10": {
      "spores": [
@@ -581,22 +516,15 @@ export const recallBaseline = {
      "graded": 0.5
     },
     "rp-11": {
-     "spores": [
-      "gotcha-05b29309",
-      "gotcha-582cfdc6"
-     ],
+     "spores": [],
      "plans": [],
      "pass": false,
-     "graded": 0.25
+     "graded": 0
     },
     "rp-12": {
      "spores": [
-      "gotcha-61b34f87",
       "architecture-dbdb80a8",
-      "pattern-95c3e7c3",
-      "trade_off-8d1a35ee",
-      "gotcha-104287ae",
-      "wisdom-0ae9c566"
+      "gotcha-104287ae"
      ],
      "plans": [],
      "pass": false,
@@ -612,24 +540,20 @@ export const recallBaseline = {
     },
     "rp-14": {
      "spores": [
-      "decision-1af798e2",
       "decision-164b9ec6",
-      "gotcha-b6ac3ff4",
-      "gotcha-73456cc3",
-      "gotcha-0b64daeb"
+      "gotcha-73456cc3"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.4
+     "graded": 0.25
     },
     "rp-15": {
      "spores": [
-      "gotcha-7df77408",
-      "trade_off-8d1a35ee"
+      "gotcha-7df77408"
      ],
      "plans": [],
      "pass": true,
-     "graded": 0.5
+     "graded": 1
     },
     "rp-16": {
      "spores": [
@@ -647,13 +571,11 @@ export const recallBaseline = {
     },
     "rp-18": {
      "spores": [
-      "decision-2d352d4a",
-      "gotcha-47345f8f",
-      "pattern-bca367e0"
+      "decision-2d352d4a"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.3333
+     "graded": 0
     },
     "rp-19": {
      "spores": [
@@ -681,14 +603,12 @@ export const recallBaseline = {
     "rp-22": {
      "spores": [
       "architecture-dbdb80a8",
-      "gotcha-a860dd00",
-      "trade_off-eb979ed9",
       "architecture-11db18c6",
       "architecture-aed84f4f"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.6
+     "graded": 0.4444
     },
     "rp-23": {
      "spores": [
@@ -701,7 +621,6 @@ export const recallBaseline = {
     "rp-24": {
      "spores": [
       "pattern-4c6f6ae9",
-      "gotcha-b6ac3ff4",
       "decision-b9f22e00"
      ],
      "plans": [],
@@ -723,24 +642,16 @@ export const recallBaseline = {
      "graded": 1
     },
     "rp-27": {
-     "spores": [
-      "pattern-b4690499",
-      "gotcha-5aca3e37"
-     ],
-     "plans": [],
-     "pass": false,
-     "graded": 0.1667
-    },
-    "rp-28": {
-     "spores": [
-      "gotcha-2db458a1",
-      "architecture-9b116da2",
-      "gotcha-efaf7da0",
-      "decision-16748312"
-     ],
+     "spores": [],
      "plans": [],
      "pass": false,
      "graded": 0
+    },
+    "rp-28": {
+     "spores": [],
+     "plans": [],
+     "pass": true,
+     "graded": 1
     },
     "rp-29": {
      "spores": [],
@@ -769,8 +680,8 @@ export const recallBaseline = {
     "rp-32": {
      "spores": [
       "bug_fix-b7a0b15d",
-      "gotcha-25b5948d",
-      "gotcha-5c06ba4c"
+      "gotcha-5c06ba4c",
+      "gotcha-25b5948d"
      ],
      "plans": [],
      "pass": false,
@@ -795,23 +706,18 @@ export const recallBaseline = {
     },
     "rp-35": {
      "spores": [
-      "decision-efda0a7f",
-      "pattern-78fa6e80",
       "decision-bc755ab1",
-      "decision-48a78b54",
-      "architecture-a95609ec"
+      "decision-b67c2b3a"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.1
+     "graded": 0.25
     },
     "rp-36": {
-     "spores": [
-      "decision-30ad1abc"
-     ],
+     "spores": [],
      "plans": [],
-     "pass": false,
-     "graded": 0
+     "pass": true,
+     "graded": 1
     },
     "rp-37": {
      "spores": [
@@ -858,8 +764,8 @@ export const recallBaseline = {
     },
     "rp-43": {
      "spores": [
-      "decision-a7d1bf51",
-      "decision-16748312"
+      "decision-16748312",
+      "decision-a7d1bf51"
      ],
      "plans": [
       "a3b1e332-96a2-56e0-9afa-01876916c3a3"
@@ -879,8 +785,7 @@ export const recallBaseline = {
      "spores": [
       "gotcha-89a50d19",
       "decision-358cba44",
-      "gotcha-3da46fc2",
-      "gotcha-20d2fea0"
+      "gotcha-3da46fc2"
      ],
      "plans": [],
      "pass": false,
@@ -890,29 +795,24 @@ export const recallBaseline = {
      "spores": [
       "pattern-5c2725ae",
       "gotcha-0ce73b33",
-      "pattern-bca367e0",
-      "gotcha-6699d14a"
+      "pattern-bca367e0"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.125
+     "graded": 0
     },
     "rp-47": {
      "spores": [
-      "decision-915db719",
-      "pattern-4c6f6ae9",
-      "pattern-bca367e0",
-      "gotcha-ee798214",
-      "architecture-3f7cbad0"
+      "decision-915db719"
      ],
      "plans": [],
      "pass": false,
-     "graded": 0.4
+     "graded": 0
     },
     "rp-48": {
      "spores": [
-      "decision-3d502b35",
-      "gotcha-ea8bc225"
+      "gotcha-ea8bc225",
+      "decision-3d502b35"
      ],
      "plans": [],
      "pass": true,

@@ -42,6 +42,10 @@ Correction 6, directed by the coordinator on 2026-10-12, records leave-one-out p
 
 **Plan evidence is weaker than spore evidence.** All plan bodies are fixed placeholders, including the delivery-reset plan. Their shared text inflates plan-to-plan similarity, so success on these plan vectors does not establish calibration quality on production plan bodies.
 
+Part 2 bounds the prompt-side normal tail across the complete pre-exclusion spore candidate pool using Bonferroni's union bound. Both local front doors record recall quality 0.3910 → 0.4254, passing cases 12/48 → 15/48, negative cases serving 10/17 → 7/17, named must-not matches 25 → 13, and items served 96 → 57. All twelve previously passing cases still pass; rp-05, rp-28 and rp-36 now pass by serving nothing. The tightened precision ceiling admits only the thirteen remaining matches' case IDs. No new must-not match is introduced.
+
+The task permits withholding borderline items while preserving currently passing cases. Re-recording explicitly accepts expected-spore losses on already-failing positives: rp-01 (`pattern-951fc175`), rp-11 (`gotcha-05b29309`), rp-14 (`gotcha-b6ac3ff4`), rp-18 (`pattern-bca367e0`), rp-22 (`trade_off-eb979ed9`), rp-27 (`gotcha-5aca3e37`), rp-46 (`gotcha-6699d14a`), and rp-47 (`gotcha-ee798214`, `architecture-3f7cbad0`). These cases remain failing; their lower individual recall is included in the aggregate score. Owner judgments and plan vectors are unchanged. The expected rp-43 live plan remains served. This correction establishes no improvement for the reported small-plan-pool false-positive rate; real plan bodies remain absent (#1807).
+
 ## Embedding keys
 
 Each row's `embedKey` is the sha256 of the exact text the server passes to `EmbeddingProvider.embed`:

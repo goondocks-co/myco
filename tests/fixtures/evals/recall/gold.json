@@ -1898,26 +1898,21 @@
   }
  ],
  "precisionRatchet": {
-  "matches": 25,
+  "matches": 13,
   "caseIds": [
-   "rp-01",
    "rp-09",
-   "rp-11",
    "rp-13",
    "rp-14",
    "rp-18",
    "rp-19",
-   "rp-22",
    "rp-24",
    "rp-25",
-   "rp-27",
    "rp-30",
-   "rp-35",
    "rp-37",
    "rp-45",
    "rp-46",
    "rp-47"
   ],
-  "reason": "Coordinator-directed Correction 6 on 2026-10-12: leave-one-out prompt statistics and a named five-calibrated-spore minimum prioritize independent evidence. Gold 0.3962 (12/48) to 0.3910 (12/48); named must-not matches 26 to 25 with none new; rp-43 stays served. The minimum alone leaves gold unchanged; leave-one-out drops expected decision-1d95cf73 from rp-31. Correction 5 recorded affine invariance and precision over recall: 0.3979 (9/48) to 0.3962 (12/48), must-not matches 67 to 26 with none new. Original owner spore judgments remain unchanged."
+  "reason": "Prompt-side multiple-comparison correction: no new named must-not matches; preserve all previously passing cases."
  }
 }
