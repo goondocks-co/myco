@@ -9,6 +9,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { createHash } from 'node:crypto';
+import { gzipSync, deflateSync, brotliCompressSync, zstdCompressSync } from 'node:zlib';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,6 +18,7 @@ import {
   D1_EXPORT_BOUND_MS, D1_EXPORT_CANCEL_MARGIN_MS, D1_EXPORT_DOWNLOAD_ATTEMPTS, D1_EXPORT_POLL_ATTEMPTS, D1ExportFailed, D1ExportRecordUnreadable, D1ExportUnfinished, D1ExportUnsettled,
   D1_QUERY_ATTEMPTS, D1ExportStartBudget, exportD1, exportRecordPath, exportResultPath, queryD1, releaseD1Export, releaseKeptD1Export, settleD1Export, type D1ExportOptions,
 } from '@myco/server/cloudflare-d1-export.js';
+import { fetchD1Download } from '@myco/server/d1-download.js';
 import { transientReadFailure } from '@myco/server/object-read.js';
 import { readD1ExportAnswer } from '@goondocks/myco-shared/d1-export';
 import { D1_EXPORT_ANSWERS } from '../helpers/d1-export-answers.ts';
@@ -572,17 +574,119 @@ describe('a download that closes before its length', () => {
 });
 
 describe('a download served encoded anyway', () => {
-  it('is asked for as stored, and taken whole where it comes encoded, its declared length counting bytes never seen here', async () => {
+  const sql = "CREATE TABLE t(v TEXT);\nINSERT INTO t VALUES('whole');\n";
+  for (const [encoding, compress] of [['gzip', gzipSync], ['deflate', deflateSync], ['br', brotliCompressSync]] as const) {
+    it(`accepts a whole ${encoding} export after checking its raw length and decoding it`, async () => {
+      const api = provider(() => 'complete');
+      const bytes = compress(sql);
+      const fetch: CloudflareFetch = async (url, init) => {
+        if (!url.startsWith('https://signed.fixture/')) return api.fetch(url, init);
+        expect(init).toMatchObject({ decompress: false });
+        expect(new Headers(init.headers).get('accept-encoding')).toBe('identity');
+        return new Response(bytes, { headers: { 'content-encoding': encoding, 'content-length': String(bytes.length) } });
+      };
+      await run(fetch, { pollMs: 0 });
+      expect(fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8')).toBe(sql);
+      expect(recorded()).toMatchObject({ downloaded: true, result: { bytes: Buffer.byteLength(sql), sha256: createHash('sha256').update(sql).digest('hex') } });
+    });
+
+    for (const transport of ['request', 'fetch'] as const) {
+      it(`downloads a whole ${encoding} export through the real ${transport} transport`, async () => {
+        const bytes = compress(sql);
+        const server = Bun.serve({ port: 0, fetch: () => new Response(bytes,
+          { headers: { 'content-encoding': encoding, 'content-length': String(bytes.length) } }) });
+        const api = provider(() => 'complete');
+        try {
+          const fetch: CloudflareFetch = (url, init) => url.startsWith('https://signed.fixture/')
+            ? globalThis.fetch(String(server.url), init) : api.fetch(url, init);
+          await run(fetch, { pollMs: 0, ...(transport === 'request'
+            ? { download: (_url, init) => fetchD1Download(String(server.url), init) } : {}) });
+          expect(fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8')).toBe(sql);
+        } finally { server.stop(true); }
+      });
+    }
+
+    for (const length of ['whole', 'cut', 'missing'] as const) {
+      it(`never publishes a cut ${encoding} export with ${length} declared length`, async () => {
+        const api = provider(() => 'complete');
+        const bytes = compress(sql);
+        const cut = bytes.subarray(0, Math.floor(bytes.length / 2));
+        const ranges: Array<string | null> = [];
+        const reports: string[] = [];
+        const fetch: CloudflareFetch = async (url, init) => {
+          if (!url.startsWith('https://signed.fixture/')) return api.fetch(url, init);
+          ranges.push(new Headers(init.headers).get('range'));
+          return new Response(cut, { headers: { 'content-encoding': encoding, etag: '"compressed"',
+            ...(length === 'missing' ? {} : { 'content-length': String(length === 'whole' ? bytes.length : cut.length) }) } });
+        };
+        const failure = await run(fetch, { pollMs: 0, report: (message) => reports.push(message) }).then(() => null, (error: unknown) => error);
+        expect(transientReadFailure(failure)).toBe(true);
+        expect(ranges).toEqual(Array(D1_EXPORT_DOWNLOAD_ATTEMPTS).fill(null));
+        expect(fs.existsSync(path.join(dir, 'd1.sql'))).toBe(false);
+        expect(fs.existsSync(path.join(dir, 'd1.sql.part'))).toBe(false);
+        expect(fs.existsSync(path.join(dir, 'd1.sql.part.decoded'))).toBe(false);
+        expect(recorded().downloaded).not.toBe(true);
+        expect(api.started()).toBe(1);
+        if (length === 'whole') expect(reports.join('\n')).toContain(`ended at ${cut.length} of ${bytes.length} bytes`);
+        if (length === 'missing') expect(reports.join('\n')).toContain('declared no length');
+      });
+    }
+  }
+
+  for (const [encoding, bytes] of [['x-gzip', gzipSync(sql)], ['gzip, br', brotliCompressSync(gzipSync(sql))]] as const) {
+    it(`decodes an export served as ${encoding} in the order its codings were applied`, async () => {
+      const api = provider(() => 'complete');
+      const fetch: CloudflareFetch = (url, init) => url.startsWith('https://signed.fixture/')
+        ? Promise.resolve(new Response(bytes, { headers: { 'content-encoding': encoding, 'content-length': String(bytes.length) } }))
+        : api.fetch(url, init);
+      await run(fetch, { pollMs: 0 });
+      expect(fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8')).toBe(sql);
+    });
+  }
+
+  for (const encoding of ['gzip', 'identity'] as const) {
+    it(`publishes an export served as ${encoding} readable by its owner only, and removes a decode a killed process left behind`, async () => {
+      const api = provider(() => 'complete');
+      const bytes = encoding === 'gzip' ? gzipSync(sql) : Buffer.from(sql);
+      const stale = path.join(dir, 'd1.sql.part.decoded');
+      fs.writeFileSync(stale, 'CREATE TABLE stale(v);\n', { mode: 0o644 });
+      fs.chmodSync(stale, 0o644);
+      const fetch: CloudflareFetch = (url, init) => url.startsWith('https://signed.fixture/')
+        ? Promise.resolve(new Response(bytes, { headers: { 'content-encoding': encoding, 'content-length': String(bytes.length) } }))
+        : api.fetch(url, init);
+      await run(fetch, { pollMs: 0 });
+      const output = path.join(dir, 'd1.sql');
+      expect(fs.readFileSync(output, 'utf8')).toBe(sql);
+      expect(fs.statSync(output).mode & 0o777).toBe(0o600);
+      expect(fs.existsSync(stale)).toBe(false);
+    });
+  }
+
+  it('rejects a gzip export cut between complete members before missing rows can become a snapshot', async () => {
     const api = provider(() => 'complete');
-    const asked: Array<string | null> = [];
-    const fetch: CloudflareFetch = async (url, init) => {
-      if (!url.startsWith('https://signed.fixture/')) return api.fetch(url, init);
-      asked.push(new Headers(init.headers).get('accept-encoding'));
-      // What a decoding fetch hands over: the whole SQL, under the encoded length.
-      return new Response('-- export bm-1, decoded\n', { status: 200, headers: { 'content-encoding': 'gzip', 'content-length': '7' } });
-    };
-    await run(fetch, { pollMs: 0 });
-    expect({ output: fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8'), asked }).toEqual({ output: '-- export bm-1, decoded\n', asked: ['identity'] });
+    const prefix = gzipSync(sql);
+    const complete = Buffer.concat([prefix, gzipSync("INSERT INTO t VALUES('second');\n")]);
+    const fetch: CloudflareFetch = (url, init) => url.startsWith('https://signed.fixture/')
+      ? Promise.resolve(new Response(prefix, { headers: { 'content-encoding': 'gzip', 'content-length': String(complete.length) } }))
+      : api.fetch(url, init);
+    const failure = await run(fetch, { pollMs: 0 }).then(() => null, (error: unknown) => error);
+    expect(transientReadFailure(failure)).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'd1.sql'))).toBe(false);
+    expect(recorded().downloaded).not.toBe(true);
+  });
+
+  it('refuses zstd as an unsupported encoding and retries the same export as identity', async () => {
+    const api = provider(() => 'complete');
+    const bytes = zstdCompressSync(Buffer.from(sql));
+    const served = servedInTurn(api, [
+      () => new Response(bytes, { headers: { 'content-encoding': 'zstd', 'content-length': String(bytes.length) } }),
+      () => sized(sql),
+    ]);
+    const reports: string[] = [];
+    await run(served.fetch, { pollMs: 0, report: (message) => reports.push(message) });
+    expect(fs.readFileSync(path.join(dir, 'd1.sql'), 'utf8')).toBe(sql);
+    expect(served.asked.map((request) => request.range)).toEqual([null, null]);
+    expect(reports.join('\n')).toContain('unsupported content encoding: zstd');
   });
 });
 
@@ -658,7 +762,7 @@ describe('a resumed download that does not match what it resumes', () => {
   it('never appends a range to an encoded answer, and drops an encoded partial file its stream broke off', async () => {
     const api = provider(() => 'complete');
     // Its first bytes are written before the connection breaks off.
-    const broken = () => new Response(new ReadableStream({ start(c) { c.enqueue(WHOLE.slice(0, 4)); }, pull(c) { c.error(new TypeError('fetch failed')); } }), { headers: { 'content-encoding': 'gzip' } });
+    const broken = () => new Response(new ReadableStream({ start(c) { c.enqueue(WHOLE.slice(0, 4)); }, pull(c) { c.error(new TypeError('fetch failed')); } }), { headers: { 'content-encoding': 'gzip', 'content-length': String(WHOLE.length) } });
     const served = servedInTurn(api, [cutAt(8), ranged(8, WHOLE.byteLength, { 'content-encoding': 'gzip' }), broken, whole()]);
     await run(served.fetch, { pollMs: 0 });
     expect({ output: output(), ranges: served.asked.map((a) => a.range) }).toEqual({ output: '-- export bm-1, twenty\n', ranges: [null, 'bytes=8-', null, null] });
@@ -670,6 +774,17 @@ describe('a resumed download that does not match what it resumes', () => {
     await run(served.fetch, { pollMs: 0 });
     expect({ output: output(), requests: served.asked.length }).toEqual({ output: '-- export bm-1, twenty\n', requests: 2 });
   });
+
+  for (const [length, body] of [['', 0], ['0x8', 8], ['+8', 8], ['8.0', 8], ['8e0', 8]] as const) {
+    it(`never takes an answer that declares its length as ${JSON.stringify(length)} as whole`, async () => {
+      const api = provider(() => 'complete');
+      const served = servedInTurn(api, [() => new Response(WHOLE.slice(0, body), { headers: { 'content-length': length } }), whole()]);
+      const reports: string[] = [];
+      await run(served.fetch, { pollMs: 0, report: (message) => reports.push(message) });
+      expect({ output: output(), requests: served.asked.length }).toEqual({ output: '-- export bm-1, twenty\n', requests: 2 });
+      expect(reports.join('\n')).toContain('declared no length');
+    });
+  }
 });
 
 describe('a download no longer served while its export is reported running', () => {

@@ -3,6 +3,7 @@
  * how a wake keeps a Deployment alive while its own database is unreadable.
  */
 import { expect, it } from 'bun:test';
+import { gzipSync } from 'node:zlib';
 import {
   armFloor, CONTINUATION_FLOOR_MS, soonestWake,
 } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
@@ -63,6 +64,30 @@ it('sends the account credential to the provider API and to nothing else', async
   // The signed download is a capability of its own: it is fetched with no credential attached.
   expect(seen[1]!.url).toBe('https://signed.example/one');
   expect(seen[1]!.authorization).toBeNull();
+});
+
+it('refuses an encoded range even when its decoded prefix matches the entire advertised raw length', async () => {
+  const prefix = "CREATE TABLE t(v);\nINSERT INTO t VALUES(1);\n--" + 'a'.repeat(68) + '\n';
+  const first = gzipSync(prefix);
+  const whole = Buffer.concat([first, gzipSync('INSERT INTO t VALUES(2);\n')]);
+  expect(Buffer.byteLength(prefix)).toBe(whole.length);
+  expect(first.length).toBeLessThan(whole.length);
+  const original = globalThis.fetch;
+  let cancelled = false;
+  let asked: Headers | undefined;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    asked = new Headers(init?.headers);
+    return new Response(new ReadableStream({
+      pull(controller) { controller.enqueue(new TextEncoder().encode(prefix)); controller.close(); },
+      cancel() { cancelled = true; },
+    }), { status: 206, headers: { 'content-encoding': 'gzip', 'content-range': `bytes 0-${whole.length - 1}/${whole.length}` } });
+  }) as typeof fetch;
+  try {
+    const answer = await cloudflareProducerPorts(target(), bucket(), source()).readRange('https://signed.example/one', 0, whole.length);
+    expect(answer).toEqual({ status: 'error', failure: { cause: 'encoding', status: 206, transient: true } });
+    expect(asked?.get('accept-encoding')).toBe('identity');
+    expect(cancelled).toBe(true);
+  } finally { globalThis.fetch = original; }
 });
 
 it('refuses any export origin but the provider, unless a test runtime declares a loopback one', () => {

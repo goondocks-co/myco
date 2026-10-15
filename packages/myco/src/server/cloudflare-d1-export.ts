@@ -39,7 +39,7 @@ import { z } from 'zod';
 import { readD1ExportAnswer, type D1ExportReading } from '@goondocks/myco-shared/d1-export';
 import { ObjectReadError, transientApiCode, transientStatus } from './object-read.js';
 import type { CloudflareFetch, OperatorLogin } from './cloudflare.js';
-import { fetchD1Download, injectedD1Download, type D1Download, type D1DownloadFetch } from './d1-download.js';
+import { decodeD1Download, fetchD1Download, injectedD1Download, type D1Download, type D1DownloadFetch } from './d1-download.js';
 
 /**
  * How long one export may run, from its first request to its completion. A backup's export takes minutes; this is
@@ -432,8 +432,7 @@ function exporter(context: D1ExportContext) {
         await response.reader?.cancel().catch(() => {});
         return failed(`the D1 export download failed (HTTP ${response.status})`, false, response.status === 408 || response.status === 429 || response.status >= 500);
       }
-      // An answer served encoded anyway counts its length and ranges in bytes this side never sees: it is taken whole,
-      // with no length to hold it to, and never resumed or appended to.
+      // Encoded answers are checked as stored, then decoded whole; their bytes are never resumed or appended.
       const encoded = !['identity', ''].includes((response.headers.get('content-encoding') ?? '').trim().toLowerCase());
       const range = /^bytes (\d+)-\d+\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
       const etag = response.headers.get('etag');
@@ -449,9 +448,10 @@ function exporter(context: D1ExportContext) {
         }
         resumed = true;
       }
-      const declared = encoded ? Number.NaN : resumed ? Number(range![2]) : Number(response.headers.get('content-length') ?? Number.NaN);
+      const length = response.headers.get('content-length');
+      const declared = resumed ? Number(range![2]) : length !== null && /^\d+$/.test(length) ? Number(length) : Number.NaN;
       // A whole answer is told from a cut one by the length it declares; one that declares none is never taken.
-      if (!encoded && !Number.isFinite(declared)) {
+      if (!Number.isFinite(declared)) {
         await response.reader.cancel().catch(() => {});
         fs.rmSync(part, { force: true });
         return failed('the D1 export download declared no length, so a whole answer cannot be told from a cut one');
@@ -482,7 +482,20 @@ function exporter(context: D1ExportContext) {
       } finally {
         fs.closeSync(handle);
       }
-      if (Number.isFinite(declared) && written !== declared) return failed(`the D1 export download ended at ${written} of ${declared} bytes`);
+      if (written !== declared) {
+        if (encoded) fs.rmSync(part, { force: true });
+        return failed(`the D1 export download ended at ${written} of ${declared} bytes`);
+      }
+      if (encoded) {
+        const decoded = `${part}.decoded`;
+        try {
+          await decodeD1Download(part, decoded, response.headers.get('content-encoding')!);
+          fs.renameSync(decoded, part);
+        } catch (error) {
+          fs.rmSync(part, { force: true });
+          return failed(`the D1 export download could not be decoded whole: ${redacted((error as Error).message)}`);
+        } finally { fs.rmSync(decoded, { force: true }); }
+      }
       return null;
     } finally {
       controller.abort();
@@ -498,6 +511,7 @@ function exporter(context: D1ExportContext) {
   const download = async (tables: readonly string[], bookmark: string | null, signedUrl: string): Promise<{ bytes: number; sha256: string }> => {
     const part = `${context.output}.part`;
     fs.rmSync(part, { force: true });
+    fs.rmSync(`${part}.decoded`, { force: true });
     let url = signedUrl;
     const served: { etag: string | null; total: number | null } = { etag: null, total: null };
     for (let attempt = 1; ; attempt += 1) {

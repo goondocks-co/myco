@@ -359,6 +359,11 @@ describe('automatic recovery on Health', () => {
     expect(latestWords({ ...recoveryBase, latest: { ...waiting, stage: 'failed', failure: 'export_unanswered', waiting: null } } as never)).toContain('failed: the export it asked for never answered');
   });
 
+  it('names a provider that kept answering in an unexpected format apart from one it could not reach (#1837)', () => {
+    const failed = { attempt: 3, stage: 'failed', startedAt: null, failure: 'provider_unexpected', waiting: null };
+    expect(latestWords({ ...recoveryBase, latest: failed } as never)).toBe('Attempt 3 failed: the storage provider answered in an unexpected format.');
+  });
+
   it('names a failure only once the attempt failed, and says how long a wait has lasted (#1484 F7, F1)', () => {
     const advancing = { attempt: 3, stage: 'export', startedAt: null, failure: 'provider_unavailable', waiting: null };
     expect(latestWords({ ...recoveryBase, latest: advancing } as never)).toBe('Attempt 3 is exporting the database.');

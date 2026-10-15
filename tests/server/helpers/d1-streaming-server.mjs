@@ -18,9 +18,14 @@ const server = http.createServer(async (request, response) => {
   }
   const offset = Number(/^bytes=(\d+)-$/.exec(request.headers.range ?? '')?.[1] ?? 0);
   if (gzip) {
-    const compressed = gzipSync(Buffer.concat([prefix, row]));
-    response.writeHead(200, { 'content-encoding': 'gzip', 'content-length': compressed.length });
-    response.end(compressed);
+    const head = gzipSync(prefix);
+    const member = gzipSync(row);
+    response.writeHead(200, { 'content-encoding': 'gzip', 'content-length': head.length + rows * member.length });
+    response.write(head);
+    for (let index = 0; index < rows; index++) {
+      if (!response.write(member)) await once(response, 'drain');
+    }
+    response.end();
     return;
   }
   const interrupt = ++downloads === 1 && process.argv[3] !== 'clean';

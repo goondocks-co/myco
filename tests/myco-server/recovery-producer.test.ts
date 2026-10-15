@@ -306,6 +306,19 @@ it('retries a provider outage during an export rather than ending the attempt, t
   expect([second.stage, second.error]).toEqual(['failed', 'provider_unavailable']);
 });
 
+it('names a range the provider keeps answering encoded as an unexpected answer, never moving its cursor (#1837)', async () => {
+  const state = checkpoint({ stage: 'download', sqlBytes: 8, sqlEtag: 'w/"one"', uploadId: 'upload-1', downloadOffset: 4 });
+  state.signed = 'https://signed/one';
+  state.held = [{ part: 1, bytes: 4, sha256: await digestOf(body(1)), etag: 'etag-1' }];
+  const encoded: RangeAnswer = { status: 'error', failure: failure('encoding', 206, true) };
+  const { port } = ports({ ranges: [encoded, encoded] });
+  const limits = { ...PRODUCER_LIMITS, partBytes: 4, maxTransient: 2 };
+  const first = await continueAttempt(state, port, limits);
+  expect([first.stage, first.error, state.state.attempts, state.state.downloadOffset]).toEqual(['download', 'provider_unexpected', 1, 4]);
+  const second = await continueAttempt(state, port, limits);
+  expect([second.stage, second.error, state.state.downloadOffset, state.held.length]).toEqual(['failed', 'provider_unexpected', 4, 1]);
+});
+
 it('bounds how many times one attempt may ask for a fresh export', async () => {
   const limits = { ...PRODUCER_LIMITS, partBytes: 4, maxReExports: 2 };
   const state = checkpoint({ stage: 'download', sqlBytes: 8, uploadId: 'upload-1', reExports: 2 });
@@ -345,11 +358,11 @@ it('carries neither provider text nor an exception message into a status or a lo
     'recovery_attempt_failed', 'recovery_attempt_transient', 'recovery_attempt_interrupted', 'recovery_export_unsettled', 'export_unsettled', 'export_unanswered',
     'recovery_inventory_read', 'recovery_staging_completed',
     'export', 'download', 'inventory', 'copy', 'downloaded', 'complete', 'failed',
-    'provider_unavailable', 'provider_refused', 'export_failed', 'export_not_offered', 'export_unparsable',
+    'provider_unavailable', 'provider_refused', 'provider_unexpected', 'export_failed', 'export_not_offered', 'export_unparsable',
     'download_unranged', 'download_changed', 'download_lost', 'staging_unreconciled', 'schema_disagrees', 'internal',
     'export_stalled', 'staging_changed', 'inventory_disagrees', 'inventory_unreadable', 'inventory_oversize',
     'object_missing', 'object_changed', 'staging_incomplete',
-    'transport', 'http', 'provider', 'protocol', 'Error', 'TypeError', 'RangeError', 'SyntaxError', 'other',
+    'transport', 'http', 'provider', 'protocol', 'encoding', 'Error', 'TypeError', 'RangeError', 'SyntaxError', 'other',
   ]);
   for (const line of logged) {
     for (const [key, value] of Object.entries(JSON.parse(line) as Record<string, unknown>)) {

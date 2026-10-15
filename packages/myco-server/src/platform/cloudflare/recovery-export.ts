@@ -242,7 +242,7 @@ export function cloudflareProducerPorts(
       // The signed URL is a capability of its own: it is fetched with no Authorization header.
       let response: Response;
       try {
-        response = await fetch(url, { signal: deadline(), headers: { range: `bytes=${offset}-${offset + length - 1}` } });
+        response = await fetch(url, { signal: deadline(), headers: { range: `bytes=${offset}-${offset + length - 1}`, 'accept-encoding': 'identity' } });
       } catch {
         return { status: 'error', failure: TRANSPORT };
       }
@@ -250,6 +250,11 @@ export function cloudflareProducerPorts(
       if (response.status === 200) return { status: 'unranged' };
       if (response.status !== 206) {
         return { status: 'error', failure: failure('http', response.status, transientStatus(response.status)) };
+      }
+      const encoding = (response.headers.get('content-encoding') ?? '').trim().toLowerCase();
+      if (encoding !== '' && encoding !== 'identity') {
+        if (response.body !== null) await discardStoredBody(response.body);
+        return { status: 'error', failure: failure('encoding', response.status, true) };
       }
       const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
       if (range === null || Number(range[1]) !== offset) {

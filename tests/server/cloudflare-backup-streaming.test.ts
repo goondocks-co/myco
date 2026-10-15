@@ -1,5 +1,6 @@
 import { expect, it } from 'bun:test';
 import fs from 'node:fs';
+import { gunzipSync } from 'node:zlib';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -124,25 +125,41 @@ it(`downloads and imports an 8x larger SQL export with less than ${MAX_RSS_GROWT
   });
 }, 600_000);
 
+it(`decodes and imports a large gzip export with less than ${MAX_RSS_GROWTH_MIB} MiB RSS growth`, async () => {
+  await withServer(BASELINE_ROWS, 'gzip', async (baselineMetadata) => {
+    await withServer(LARGE_ROWS, 'gzip', async (largeMetadata) => {
+      const [baselineKiB, largeKiB] = await measureExports([
+        { rows: BASELINE_ROWS, interrupted: false, metadata: baselineMetadata },
+        { rows: LARGE_ROWS, interrupted: false, metadata: largeMetadata },
+      ]);
+      const growthKiB = largeKiB - baselineKiB;
+      console.log(`D1 gzip RSS growth: ${growthKiB} KiB; safety cap ${MAX_RSS_KIB} KiB`);
+      expect(growthKiB).toBeGreaterThanOrEqual(0);
+      expect(growthKiB).toBeLessThan(MAX_RSS_GROWTH_KIB);
+    });
+  });
+}, 600_000);
+
 it('resumes an interrupted SQL export and imports every row', async () => {
   await withServer(4096, 'interrupt', async (metadata) => {
     await measureExports([{ rows: 4096, interrupted: true, metadata }]);
   });
 }, 300_000);
 
-it('streams a redirected, encoded signed download while preserving its encoding metadata', async () => {
+it('streams a redirected signed download as raw bytes before decoding it', async () => {
   await withServer(1, 'gzip', async (metadata) => {
     const { signedUrl } = JSON.parse(metadata);
     const response = await fetchD1Download(signedUrl, { headers: { 'accept-encoding': 'identity' } });
     expect(response.headers.get('content-encoding')).toBe('gzip');
-    const decoder = new TextDecoder();
-    let text = '';
+    const chunks: Uint8Array[] = [];
     for (;;) {
       const chunk = await response.reader!.read();
       if (chunk.done) break;
-      text += decoder.decode(chunk.value, { stream: true });
+      chunks.push(chunk.value);
     }
-    text += decoder.decode();
+    const raw = Buffer.concat(chunks);
+    expect(raw.length).toBe(Number(response.headers.get('content-length')));
+    const text = new TextDecoder().decode(gunzipSync(raw));
     expect(text).toStartWith('CREATE TABLE payloads(value TEXT);');
     expect(text).toContain('INSERT INTO payloads');
     expect(text.length).toBeGreaterThan(Number(response.headers.get('content-length')));
