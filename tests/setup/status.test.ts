@@ -415,6 +415,8 @@ it('prints the agent-hook label once when setup is missing', () => {
 for (const location of ['own', 'dev', 'custom'] as const) it(`observes installed 1.4 hooks as incomplete capture with friendly copy and exit 3: ${location}`, async () => {
   const restore = bindSandboxChildHome(scratch, { MYCO_HOME: fixture.home });
   try {
+    fs.mkdirSync(path.join(scratch, '.myco-dev'), { recursive: true });
+    fs.mkdirSync(path.join(scratch, 'custom'), { recursive: true });
     const settings = path.join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json');
     fs.mkdirSync(path.dirname(settings), { recursive: true });
     fs.writeFileSync(settings, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${location === 'custom' ? 'MYCO_HOME=' + path.join(scratch, 'custom') + ' ' : ''}${location === 'own' ? fixture.home : path.join(scratch, '.myco-dev')}/bin/myco hook session-start --myco-managed` }] }] } }));
@@ -467,5 +469,21 @@ it('reports legacy hooks before any 2.0 membership or provision record exists', 
     const facts = await observeSetupStatus(home, {}, deps());
     expect(facts.find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'incomplete', detail: 'legacy-hooks' });
     expect(renderSetupStatus(facts).join('\n')).toContain('Myco 1.4 still captures your agents; run myco setup --cutover to hand over.');
+  } finally { restore(); }
+});
+
+it('does not report a stale hook as legacy capture or held elsewhere in status and doctor', async () => {
+  const restore = bindSandboxChildHome(scratch, { MYCO_HOME: fixture.home });
+  try {
+    const settings = path.join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.writeFileSync(settings, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: `${scratch}/deleted/bin/myco hook stop --myco-managed` }] }] } }));
+    const before = fs.readFileSync(settings);
+    const facts = await observeSetupStatus(fixture.home, { role: 'join', url: STATUS_URL }, deps());
+    expect(facts.find(fact => fact.id === 'machine.agents')?.detail).not.toBe('legacy-hooks');
+    expect(renderSetupStatus(facts).join('\n')).not.toMatch(/held elsewhere|another installation|another Deployment|1.4 still captures/);
+    const doctor = (await homeReport(fixture.home, { ...deps(), worker: { runner: () => { throw new Error('No service calls'); } } })).map(check => check.detail).join('\n');
+    expect(doctor).not.toMatch(/held elsewhere|another installation|another Deployment|still own capture/);
+    expect(fs.readFileSync(settings)).toEqual(before);
   } finally { restore(); }
 });

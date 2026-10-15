@@ -82,18 +82,23 @@ describe('the 1.4.8 registration locations', () => {
 });
 
 describe('whose a registration is', () => {
-  const legacy = ['/Users/u/.myco-dev'];
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-legacy-verdict-'));
+  const legacyHome = path.join(home, 'legacy');
+  const foreignHome = path.join(home, 'foreign');
+  fs.mkdirSync(legacyHome);
+  fs.mkdirSync(foreignHome);
+  const legacy = [legacyHome];
   it('judges hooks, MCP entries and plugin files', () => {
-    expect(hookVerdict('/Users/u/.myco-dev/bin/myco hook stop --symbiont codex --myco-managed', legacy)).toBe('legacy');
+    expect(hookVerdict(`${legacyHome}/bin/myco hook stop --symbiont codex --myco-managed`, legacy)).toBe('legacy');
     expect(hookVerdict('myco hook stop --symbiont codex --myco-managed', legacy)).toBe('legacy');
-    expect(hookVerdict('MYCO_HOME=/Users/u/smoke /Users/u/.myco-dev/bin/myco hook stop --myco-managed', legacy)).toBe('foreign');
-    expect(hookVerdict('/Users/u/dsmoke-host/bin/myco hook stop --myco-managed', legacy)).toBe('foreign');
-    expect(hookVerdict(`/Users/u/.myco-dev/bin/myco hook stop ${CREDENTIAL_FLAG} registry --myco-managed`, legacy)).toBe('member');
+    expect(hookVerdict(`MYCO_HOME=${foreignHome} ${legacyHome}/bin/myco hook stop --myco-managed`, legacy)).toBe('foreign');
+    expect(hookVerdict(`${foreignHome}/bin/myco hook stop --myco-managed`, legacy)).toBe('foreign');
+    expect(hookVerdict(`${legacyHome}/bin/myco hook stop ${CREDENTIAL_FLAG} registry --myco-managed`, legacy)).toBe('member');
     expect(hookVerdict('echo mine', legacy)).toBeNull();
-    expect(mcpVerdict({ command: '/Users/u/.myco-dev/bin/myco', args: ['mcp'] }, legacy)).toBe('legacy');
-    expect(mcpVerdict({ command: ['/Users/u/.myco-dev/bin/myco', 'mcp'] }, legacy)).toBe('legacy');
-    expect(mcpVerdict({ command: '/Users/u/.myco-dev/bin/myco', args: ['mcp'], env: { MYCO_HOME: '/Users/u/smoke' } }, legacy)).toBe('foreign');
-    expect(mcpVerdict({ command: '/Users/u/.myco-dev/bin/myco', args: ['mcp', CREDENTIAL_FLAG, 'registry'] }, legacy)).toBe('member');
+    expect(mcpVerdict({ command: `${legacyHome}/bin/myco`, args: ['mcp'] }, legacy)).toBe('legacy');
+    expect(mcpVerdict({ command: [`${legacyHome}/bin/myco`, 'mcp'] }, legacy)).toBe('legacy');
+    expect(mcpVerdict({ command: `${legacyHome}/bin/myco`, args: ['mcp'], env: { MYCO_HOME: foreignHome } }, legacy)).toBe('foreign');
+    expect(mcpVerdict({ command: `${legacyHome}/bin/myco`, args: ['mcp', CREDENTIAL_FLAG, 'registry'] }, legacy)).toBe('member');
     expect(pluginVerdict('// myco:plugin-marker\n', legacy)).toBe('legacy');
     expect(pluginVerdict('// myco:member-plugin\n', legacy)).toBe('member');
     expect(pluginVerdict('export default {}\n', legacy)).toBeNull();
@@ -103,7 +108,7 @@ describe('whose a registration is', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-legacy-reg-'));
     const toml = path.join(home, '.codex', 'config.toml');
     fs.mkdirSync(path.dirname(toml), { recursive: true });
-    fs.writeFileSync(toml, '[features]\nhooks = true\n\n[mcp_servers.myco]\ncommand = "/Users/u/.myco-dev/bin/myco"\nargs = ["mcp"]\n\n[mcp_servers.mine]\ncommand = "mine"\n');
+    fs.writeFileSync(toml, `[features]\nhooks = true\n\n[mcp_servers.myco]\ncommand = "${legacyHome}/bin/myco"\nargs = ["mcp"]\n\n[mcp_servers.mine]\ncommand = "mine"\n`);
     const scan = scanLegacyRegistrations({ homeDir: home, legacyHomes: legacy });
     expect(scan.findings.map((f) => [f.location.agent, f.verdict])).toEqual([['codex', 'legacy']]);
     expect(removeLegacyRegistrations(toml, scan.findings, legacy)).toEqual([`removed the 1.4 \`myco\` MCP entry from ${toml}`]);
@@ -112,4 +117,20 @@ describe('whose a registration is', () => {
     expect(after).not.toContain('[mcp_servers.myco]');
     expect(after).toContain('hooks = true');
   });
+});
+
+it('lists each stale plugin hook and preserves it when handing over a live legacy hook beside it', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-mixed-plugin-'));
+  const legacy = path.join(home, 'legacy');
+  fs.mkdirSync(legacy);
+  const binary = path.join(home, 'missing', 'bin', 'myco');
+  const file = path.join(home, '.gemini', 'config', 'plugins', 'myco', 'hooks.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const stale = { command: `${binary} hook stop --myco-managed` };
+  fs.writeFileSync(file, JSON.stringify({ hooks: { Stop: [{ hooks: [stale, { command: `${legacy}/bin/myco hook stop --myco-managed` }] }] } }));
+  const scan = scanLegacyRegistrations({ homeDir: home, legacyHomes: [legacy] });
+  expect(scan.findings.filter(finding => finding.verdict === 'stale')).toMatchObject([{ file, keyPath: 'hooks.Stop.0.hooks.0.command', missingBinary: binary }]);
+  removeLegacyRegistrations(file, scan.findings, [legacy]);
+  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ hooks: { Stop: [{ hooks: [stale] }] } });
+  expect(scanLegacyRegistrations({ homeDir: home, legacyHomes: [legacy] }).findings.map(finding => finding.verdict)).toEqual(['stale']);
 });

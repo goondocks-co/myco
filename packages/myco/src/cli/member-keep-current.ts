@@ -1,4 +1,4 @@
-import { MemberProvisionConflictError, MemberMcpConflictError } from '@myco/symbionts/installer.js';
+import { MemberProvisionConflictError, MemberMcpConflictError, MemberStaleRegistrationError } from '@myco/symbionts/installer.js';
 import { joinSentences } from '@myco/utils/sentences.js';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -108,6 +108,7 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
         state = code === 'EACCES' || code === 'EPERM' || code === 'EROFS' ? 'unwritable' : 'repair_failed';
         action = state === 'unwritable'
           ? `Allow Myco to write ${manifest?.displayName ?? id}'s configuration`
+          : error instanceof MemberStaleRegistrationError ? error.remedy
           : error instanceof MemberMcpConflictError && error.repairAction !== undefined ? error.repairAction
           : `Run myco doctor to check ${manifest?.displayName ?? id}'s capture configuration`;
         if (error instanceof MemberProvisionConflictError) {

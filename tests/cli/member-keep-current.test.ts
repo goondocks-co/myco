@@ -774,3 +774,22 @@ it('repairs a moved runtime pin without taking held tools or losing their owners
   expect(keepCurrent(home, { binaryFound: () => true })).toEqual(first);
   expect(harnessFiles().map(file => [file, fs.readFileSync(file, 'utf8'), fs.statSync(file).mtimeMs])).toEqual(before);
 });
+
+for (const agent of ['claude-code', 'codex']) for (const surface of ['hooks', 'mcp']) it(`does not hold ${agent}'s stale ${surface} elsewhere or overwrite them during repair`, async () => {
+  const tools = toolsHeldElsewhere(agent);
+  const target = surface === 'mcp' ? tools : agent === 'codex' ? hooks() : path.join(agentHome, '.claude', 'settings.json');
+  const binary = path.join(agentHome, 'deleted', 'bin', 'myco');
+  const entry = { command: binary, args: ['mcp'] };
+  fs.writeFileSync(target, surface === 'hooks' ? JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: `${binary} hook stop --credential registry --myco-managed` }] }] } })
+    : agent === 'codex' ? `[mcp_servers.myco]\ncommand = ${JSON.stringify(binary)}\nargs = ["mcp"]\n` : JSON.stringify({ mcpServers: { myco: entry } }));
+  const before = fs.readFileSync(target);
+  expect(setupChecks(home).some(check => check.toolsDeployment !== undefined)).toBe(false);
+  const result = keepCurrent(home, { binaryFound: () => true });
+  expect(result?.harnesses[0].state).toBe('repair_failed');
+  expect(result?.harnesses[0].toolsDeployment).toBeUndefined();
+  expect(fs.readFileSync(target)).toEqual(before);
+  const lines: string[] = [];
+  await setup(['--status'], { mycoHome: home, cwd: agentHome, agents: () => [agent], stdout: line => lines.push(line), stderr: line => { throw new Error(line); } });
+  expect(lines.join('\n')).not.toMatch(/use other.myco.example|held elsewhere|another installation|another Deployment/);
+  expect(fs.readFileSync(target)).toEqual(before);
+});

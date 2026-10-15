@@ -3,7 +3,7 @@ import path from 'node:path';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { MYCO_MCP_SERVER_NAME } from '@myco/member/registration-ownership.js';
-import { hookVerdict, legacyRegistrationAt as at, type LegacyFinding } from '@myco/member/legacy-registration-files.js';
+import { hookVerdict, pluginVerdict, legacyRegistrationAt as at, type LegacyFinding } from '@myco/member/legacy-registration-files.js';
 export { type LegacyLocationKind, type LegacyLocation, LEGACY_REGISTRATIONS, CLAUDE_PROJECT_MCP, type LegacyTarget, legacyTargets, type LegacyFinding, type LegacyScan, hookVerdict, pluginVerdict, type ScanOptions, scanLegacyRegistrations, mcpVerdict, type Verdict } from '@myco/member/legacy-registration-files.js';
 
 /** Write `content` over `file` atomically, keeping the file's mode. */
@@ -63,6 +63,14 @@ export function removeLegacyRegistrations(file: string, planned: readonly Legacy
     return [`removed the skill link ${file}`];
   }
   if (mine.some((f) => f.location.kind === 'plugin-file' || f.location.kind === 'plugin-manifest')) {
+    if (mine.some((f) => f.location.kind === 'plugin-file') && file.endsWith('.json')) {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const kept = `${JSON.stringify(withoutLegacyHooks(parsed, homes), null, 2)}\n`;
+      if (pluginVerdict(kept, homes, ownHome) !== null) {
+        rewriteKeepingMode(file, kept);
+        return [`removed ${mine.length} 1.4 hook${mine.length === 1 ? '' : 's'} from ${file}`];
+      }
+    }
     fs.unlinkSync(file);
     return [`removed ${file}`];
   }

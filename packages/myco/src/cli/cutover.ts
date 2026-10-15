@@ -64,6 +64,7 @@ import type { SchtasksRunner } from '@myco/member/legacy-service/windows.js';
 import type { LaunchctlRunner } from '@myco/member/legacy-service/launchd.js';
 import { detectMachineInstalledSymbionts, loadManifests } from '../symbionts/detect.js';
 import { removeLegacyRegistrations, rewriteKeepingMode, scanLegacyRegistrations, type LegacyFinding } from '../symbionts/legacy-registrations.js';
+import { staleRegistrationWords } from '@myco/member/legacy-registration-files.js';
 import { pinMachineHome, previewGlobalProvision, provisionGlobally, type ProvisionOutcome } from './member.js';
 import { legacyReportLines, reportLines, STOPPED_WORDS, transcriptImportComplete } from './import.js';
 import { resolveManagedBinaryPath } from '../symbionts/installer.js';
@@ -522,6 +523,10 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
   const scanOptions = { homeDir, legacyHomes, ownHome: mycoHome, folders: handoverRoots };
   const scan = scanLegacyRegistrations(scanOptions);
   for (const { file, reason } of scan.unreadable) blockers.push(`${file} holds a Myco entry but could not be read (${reason}); fix or move it, then run again.`);
+  const displayName = (agent: string) => loadManifests().find((m) => m.name === agent)?.displayName ?? agent;
+  for (const finding of scan.findings.filter((f) => f.verdict === 'stale')) {
+    out(`   ${staleRegistrationWords(finding, displayName(finding.location.agent))}`);
+  }
   // A connected folder's runtime.command pin naming a 1.4 home's binary is pointed at the 2.0 binary.
   const binary2 = resolveManagedBinaryPath(mycoHome);
   const underHome = (file: string, home: string) => path.resolve(file).startsWith(`${path.resolve(home)}${path.sep}`);
@@ -552,7 +557,6 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
     && (finding.location.kind === 'mcp' ? p.targets.mcp.includes(finding.file) && (finding.serversPath ?? []).length === 1 : p.targets.hooks === finding.file));
   const removals = scan.findings.filter((f) => f.verdict === 'legacy' && !handledByProvisioning(f));
   const removalFiles = [...new Set(removals.map((f) => f.file))];
-  const displayName = (agent: string) => loadManifests().find((m) => m.name === agent)?.displayName ?? agent;
   const regular = (file: string) => { try { return fs.lstatSync(file).isFile(); } catch { return false; } };
   const touched = [...new Set([...provisioned.flatMap((p) => p.targets.all), ...removalFiles])].filter(regular);
   const backup = new CutoverBackup(cutoverBackupDir(mycoHome, stamp), 'cutover', platform);

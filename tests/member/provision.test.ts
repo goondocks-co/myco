@@ -199,7 +199,10 @@ for (const holder of ['hook', 'same-url'] as const) it(`keeps another 2.0 ${hold
     ? hookCommands(JSON.parse(original).hooks)[0].split(' ')[0]
     : (parseToml(original) as { mcp_servers: { myco: { http_headers_helper: string } } }).mcp_servers.myco.http_headers_helper.split(' ')[0];
   const encodedBinary = JSON.stringify(currentBinary).slice(1, -1);
-  fs.writeFileSync(file, original.replaceAll(encodedBinary, '/other/myco/bin/myco').replaceAll(currentBinary, '/other/myco/bin/myco'));
+  const foreignHome = path.join(agentHome, 'other-myco');
+  fs.mkdirSync(foreignHome);
+  const foreignBinary = path.join(foreignHome, 'bin', 'myco');
+  fs.writeFileSync(file, original.replaceAll(encodedBinary, JSON.stringify(foreignBinary).slice(1, -1)).replaceAll(currentBinary, foreignBinary));
   const before = fs.readFileSync(file, 'utf8');
   const refused = await provision(['codex']);
   expect(refused.out).toEqual([]);
