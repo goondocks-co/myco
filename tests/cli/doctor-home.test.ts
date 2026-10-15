@@ -22,6 +22,7 @@ import { newRunnerBearer, runnerRecordPath } from '@myco/runner/runner-registry.
 import { installWorkerService } from '@myco/runner/service.js';
 import { recordingPlatform } from '../member/helpers/service-platform.js';
 import { statusHome, STATUS_NOW } from '../setup/fixtures/status-home.js';
+import { writeRetainedLegacyVault } from '../helpers/legacy-migration-fixture.js';
 
 let scratch: string;
 let home: string;
@@ -147,7 +148,7 @@ describe('home doctor', () => {
 
   it('detects leftover 1.4 state even after login without executing the managed binary', async () => {
     fs.mkdirSync(path.join(home, 'groves', 'old'), { recursive: true });
-    fs.writeFileSync(path.join(home, 'groves', 'old', 'myco.db'), 'fixture');
+    writeRetainedLegacyVault(path.join(home, 'groves', 'old', 'myco.db'));
     const bin = path.join(home, 'bin', 'myco');
     fs.mkdirSync(path.dirname(bin), { recursive: true });
     const sentinel = path.join(scratch, 'binary-executed');
@@ -204,7 +205,7 @@ describe('home doctor', () => {
     expect(helpText(deps)).toBe(MEMBER_USAGE);
     const vault = path.join(process.env.HOME!, '.myco', 'myco.db');
     fs.mkdirSync(path.dirname(vault), { recursive: true });
-    fs.writeFileSync(vault, 'fixture');
+    writeRetainedLegacyVault(vault);
     expect(useHomeDoctor(home)).toBe(false);
     expect(helpText(deps)).toContain(MEMBER_USAGE);
     expect(helpText(deps)).toContain('myco cutover --dry-run');
@@ -217,7 +218,7 @@ describe('home doctor', () => {
 
   it('does not call backup-only evidence moved while legacy hooks still own capture', async () => {
     const vault = path.join(home, 'myco.db');
-    fs.writeFileSync(vault, 'retained vault');
+    writeRetainedLegacyVault(vault);
     fs.mkdirSync(path.join(home, 'member'), { recursive: true });
     fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: { [vault]: {} } }), { mode: 0o600 });
     const settings = path.join(process.env.HOME!, '.claude', 'settings.json');

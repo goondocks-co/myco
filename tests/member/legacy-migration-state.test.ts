@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { completedLegacyDestination, legacyMigrationState, type CutoverState } from '@myco/member/legacy-migration.js';
 import { isMemberHome } from '@myco/member/home-role.js';
-import { legacyVaultStamp } from '@myco/member/legacy-sources.js';
+import { legacyVaultProjectIds, legacyVaultStamp } from '@myco/member/legacy-sources.js';
+import { readLegacyVault } from '@myco/member/legacy-import.js';
 import { deploymentKeyFor } from '@myco/member/registry.js';
 import { readVaultContent } from '@myco/member/legacy-backup.js';
 import { withLegacyBinaryTraps } from '../helpers/legacy-migration-fixture.js';
@@ -109,6 +110,87 @@ function stateIs(state: ReturnType<typeof legacyMigrationState>['state']): void 
   expect(isMemberHome(home)).toBe(true);
   expect(legacyMigrationState(home).state).toBe(state);
 }
+
+function emptyVault(grove = 'empty'): string {
+  const file = path.join(home, 'groves', grove, 'myco.db');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const db = new Database(file);
+  try { db.exec(fs.readFileSync(new URL('../fixtures/legacy/vault-v76.sql', import.meta.url), 'utf8')); } finally { db.close(); }
+  expect(readLegacyVault(file)).toEqual([]);
+  return file;
+}
+
+it('ignores an empty vault beside a fully receipted vault and preserves terminal notices', () => {
+  const empty = emptyVault();
+  const file = vault();
+  const state = receipts(file, state => {
+    state.migrations![file].projects.proj_1.transcripts = { state: 'none', at: 1, endedBy: 'project_archived' };
+    delete state.handover;
+    state.migrations![file].projects.proj_1.evidence = { kind: 'deployment', at: 1, machineId: 'fixture', eventIds: ['event'] };
+  });
+  state.backups[empty] = { copy: 'unused', ...readVaultContent(empty), at: 1 };
+  fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify(state), { mode: 0o600 });
+  const before = fs.readFileSync(empty);
+  expect(legacyMigrationState(home)).toEqual({ state: 'moved', terminalProjects: [{ name: 'proj_1', state: 'archived' }] });
+  expect(fs.readFileSync(empty)).toEqual(before);
+});
+
+it('reports none for an empty vault alone with a backup', () => {
+  const file = emptyVault();
+  backup(file);
+  const before = fs.readFileSync(file);
+  stateIs('none');
+  expect(fs.readFileSync(file)).toEqual(before);
+});
+
+it('reports none for an empty vault without a backup', () => {
+  const file = emptyVault();
+  const before = fs.readFileSync(file);
+  stateIs('none');
+  expect(fs.readFileSync(file)).toEqual(before);
+});
+
+for (const kind of ['not SQLite', 'truncated'] as const) for (const backedUp of [false, true]) {
+  it(`names an unreadable unreceipted ${kind} vault with ${backedUp ? 'a backup' : 'no backup'}`, () => {
+    const file = vault();
+    if (backedUp) backup(file);
+    if (kind === 'not SQLite') fs.writeFileSync(file, 'not a SQLite database');
+    else fs.truncateSync(file, fs.statSync(file).size / 2);
+    const before = fs.readFileSync(file);
+    expect(legacyMigrationState(home)).toMatchObject({ state: 'unavailable', file });
+    expect(fs.readFileSync(file)).toEqual(before);
+  });
+}
+
+for (const backedUp of [false, true]) it(`blocks a vault with an unassigned session and ${backedUp ? 'a backup' : 'no backup'}`, () => {
+  const file = emptyVault();
+  const db = new Database(file);
+  try { db.run("INSERT INTO sessions (id, agent, started_at, created_at) VALUES ('orphan', 'codex', 1, 1)"); } finally { db.close(); }
+  expect(legacyVaultProjectIds(file)).toEqual([]);
+  expect(readLegacyVault(file)).toEqual([]);
+  if (backedUp) backup(file);
+  const before = fs.readFileSync(file);
+  stateIs(backedUp ? 'needs-destination' : 'unmoved');
+  expect(fs.readFileSync(file)).toEqual(before);
+});
+
+const unassignedContent = [
+  ['prompt', "INSERT INTO prompt_batches (id, session_id, created_at) VALUES ('prompt', 'missing', 1)"],
+  ['plan', "INSERT INTO plans (id, logical_key, created_at) VALUES ('plan', 'key', 1)"],
+  ['spore', "INSERT INTO spores (id, agent_id, observation_type, content, created_at) VALUES ('spore', 'agent', 'discovery', 'retained', 1)"],
+  ['resolution', "INSERT INTO resolution_events (id, agent_id, spore_id, action, created_at) VALUES ('resolution', 'agent', 'missing', 'obsolete', 1)"],
+  ['tombstone', "INSERT INTO session_tombstones (session_id, deleted_at, source) VALUES ('missing', 1, 'api_delete')"],
+] as const;
+for (const [kind, insert] of unassignedContent) it(`blocks a vault holding only an unassigned ${kind}`, () => {
+  const file = emptyVault();
+  const db = new Database(file);
+  try { db.run(insert); } finally { db.close(); }
+  expect(readLegacyVault(file)).toEqual([]);
+  backup(file);
+  const before = fs.readFileSync(file);
+  stateIs('needs-destination');
+  expect(fs.readFileSync(file)).toEqual(before);
+});
 
 it('reports none and unmoved after login without a receipt', () => {
   stateIs('none');

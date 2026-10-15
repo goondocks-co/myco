@@ -61,6 +61,15 @@ it('does not probe or describe earlier moves for never-moved route-free projects
   expect(fs.readFileSync(f.vault)).toEqual(f.bytes);
 });
 
+it('preserves sign-in guidance when an unreceipted routed project needs sign-in', async () => {
+  const f = fixture(['proj_a'], { receipt: false, noMembers: true, routes: true });
+  writeCutoverState(f.home, { backups: { [f.vault]: { copy: 'unused', ...readVaultContent(f.vault), at: 1 } } });
+  const observed = await observeLegacyMigration(f.home, { fetch: async () => { throw new Error('unexpected network'); } });
+  expect(observed).toMatchObject({ state: 'needs-destination', confirmation: 'sign-in-required' });
+  expect(legacyCaptureGuidance(observed).hint).toContain('myco login');
+  expect(fs.readFileSync(f.vault)).toEqual(f.bytes);
+});
+
 for (const ambiguous of ['proj_a', 'proj_z']) it(`retains ambiguous over missing regardless of project order: ${ambiguous}`, async () => {
   const f = fixture([ambiguous, 'proj_b']);
   const observed = await observeLegacyMigration(f.home, { fetch: async (input, init) => {

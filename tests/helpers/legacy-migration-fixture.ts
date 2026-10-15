@@ -1,5 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { Database } from 'bun:sqlite';
+
+export function writeRetainedLegacyVault(file: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const db = new Database(file);
+  try {
+    db.exec(fs.readFileSync(new URL('../fixtures/legacy/vault-v76.sql', import.meta.url), 'utf8'));
+    db.run("INSERT INTO sessions (id, agent, started_at, created_at) VALUES ('retained', 'codex', 1, 1)");
+  } finally { db.close(); }
+}
 
 export async function withLegacyBinaryTraps(mycoHome: string, userHome: string, run: (marker: string) => Promise<void>): Promise<void> {
   const marker = path.join(mycoHome, 'legacy-binary-executed');

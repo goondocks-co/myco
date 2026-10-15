@@ -24,7 +24,7 @@ import { Database } from 'bun:sqlite';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 import { legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { readVaultContent } from '@myco/member/legacy-backup.js';
-import { withLegacyBinaryTraps } from '../helpers/legacy-migration-fixture.js';
+import { withLegacyBinaryTraps, writeRetainedLegacyVault } from '../helpers/legacy-migration-fixture.js';
 
 describe('myco login sets up the agents on this machine', () => {
   let home: string;
@@ -171,9 +171,10 @@ describe('myco login sets up the agents on this machine', () => {
     const rig = unjoinedRig();
     expect(await run([await invite(rig), ...(choice === 'no-agents' ? ['--no-agents'] : [])], deps(rig, { agents: () => ['claude-code'], provision: choice === 'defer' ? 'defer' : 'now' }))).toBe(true);
     expect(out).not.toContain(LEGACY_AGENT_DEFERRAL);
-    expect(out.filter(line => line.includes('Earlier moves are unconfirmed'))).toEqual([
-      'Earlier moves are unconfirmed; run `myco setup --cutover` to review each project destination, or preview manually with `myco cutover --dry-run`.',
+    expect(out.filter(line => line.includes('data has no destination yet'))).toEqual([
+      'Some Myco 1.4 data has no destination yet; run myco setup --cutover to preview the handover.',
     ]);
+    expect(out.join('\n')).not.toContain('Earlier moves are unconfirmed');
     if (choice === 'now') expect(read(path.join(claudeDir, 'settings.json'))).toContain('--credential registry');
     else expect(read(path.join(claudeDir, 'settings.json'))).toBeNull();
   });
@@ -184,7 +185,7 @@ describe('myco login sets up the agents on this machine', () => {
     const legacy = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${home}/bin/myco hook session-start --symbiont claude-code --myco-managed` }] }] } });
     fs.writeFileSync(settings, legacy);
     const vault = path.join(home, 'groves', 'legacy', 'myco.db');
-    fs.mkdirSync(path.dirname(vault), { recursive: true }); fs.writeFileSync(vault, 'retained');
+    writeRetainedLegacyVault(vault);
     fs.mkdirSync(path.join(home, 'member'), { recursive: true });
     fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: { [vault]: {} } }), { mode: 0o600 });
     const rig = unjoinedRig();
@@ -222,7 +223,8 @@ describe('myco login sets up the agents on this machine', () => {
     fs.writeFileSync(settings, '{"legacy":"capture must stay"}');
     const vault = path.join(home, 'groves', 'legacy', 'myco.db');
     fs.mkdirSync(path.dirname(vault), { recursive: true });
-    fs.writeFileSync(vault, 'retained vault');
+    writeRetainedLegacyVault(vault);
+    const vaultBytes = fs.readFileSync(vault);
     const rig = unjoinedRig();
     for (let attempt = 0; attempt < 2; attempt++) {
       out.length = 0;
@@ -232,7 +234,7 @@ describe('myco login sets up the agents on this machine', () => {
       expect(out).toContain(LEGACY_AGENT_DEFERRAL);
       expect(readProvisionRecord(home)).toBeNull();
       expect(read(settings)).toBe('{"legacy":"capture must stay"}');
-      expect(read(vault)).toBe('retained vault');
+      expect(fs.readFileSync(vault)).toEqual(vaultBytes);
       fs.writeFileSync(path.join(home, 'member', 'cutover.json'), '{"version":1,"backups":{}}', { mode: 0o600 });
     }
     expect(err).toEqual([]);
@@ -298,7 +300,7 @@ describe('myco login sets up the agents on this machine', () => {
   it.skipIf(process.platform === 'win32')('never executes a legacy binary during observation or deferred login', async () => {
     const vault = path.join(home, 'groves', 'legacy', 'myco.db');
     fs.mkdirSync(path.dirname(vault), { recursive: true });
-    fs.writeFileSync(vault, 'retained vault');
+    writeRetainedLegacyVault(vault);
     await withLegacyBinaryTraps(home, userHome, async (marker) => {
       expect(legacyMigrationState(home).state).toBe('unmoved');
       expect(fs.existsSync(marker)).toBe(false);

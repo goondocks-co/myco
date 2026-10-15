@@ -19,6 +19,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { writeRetainedLegacyVault } from '../helpers/legacy-migration-fixture.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
@@ -209,7 +210,7 @@ describe('the dispatched read verbs in a fresh joined checkout', () => {
     const fresh = await cli(m, '--help');
     expect(fresh.stdout).toContain('Project intelligence (answered by the Deployment for this project)');
     fs.mkdirSync(path.join(m.home, 'groves'));
-    fs.writeFileSync(path.join(m.home, 'myco.db'), 'fixture');
+    writeRetainedLegacyVault(path.join(m.home, 'myco.db'));
     const before = legacyArtifacts(m);
     const legacy = await cli(m, '--help');
     expect(legacy.stdout).toContain('myco cutover --dry-run');

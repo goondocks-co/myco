@@ -1,4 +1,4 @@
-import { legacyConfirmationHint } from './legacy-capture.js';
+import { LEGACY_DESTINATION_HINT, legacyConfirmationHint } from './legacy-capture.js';
 import os from 'node:os';
 import path from 'node:path';
 import type { Observation } from '@myco/setup/observe.js';
@@ -44,7 +44,7 @@ function describe(fact: StatusObservation, url: string | undefined): string {
     if (state === 'unavailable') return `Myco 1.4 migration records could not be read: ${sentence(fact.legacyError ?? fact.detail.replace(/^unavailable\s*/, ''))}. Inspect ${shortPath(fact.scope)}, then run myco setup --cutover.`;
     const confirmationHint = legacyConfirmationHint(fact.legacyConfirmation, fact.legacyConfirmationProjects);
     if (confirmationHint !== null) return confirmationHint;
-    if (state === 'needs-destination' && fact.state === 'incomplete') return 'Some Myco 1.4 projects need a destination; run myco setup --cutover to preview the handover.';
+    if (state === 'needs-destination' && fact.state === 'incomplete') return LEGACY_DESTINATION_HINT;
     return [legacySentences[state] ?? legacySentences.unavailable, fact.legacyNotice].filter(Boolean).join(' ');
   }
   if (fact.state === 'unavailable') return `Could not read ${labels[fact.id] ?? 'this observation'}: ${sentence(fact.detail)}. Inspect with ${fact.id.startsWith('runner.') ? 'myco runner status' : 'myco doctor'}.`;

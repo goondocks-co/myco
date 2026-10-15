@@ -123,6 +123,7 @@ function legacyPreservation(home: string, entries: readonly string[]): string | 
   const state = legacyMigrationState(home);
   const kept = entries.map(entry => path.join(home, entry)).join(', ');
   const retained = `Your 1.4 files remain at ${kept}.`;
+  if (state.state === 'none') return retained;
   if (state.state === 'moved') return `${retained} Check backups/cutover-* before deleting them by hand.`;
   const detail = state.state === 'changed' ? ` ${state.warning}`
     : state.state === 'unavailable' ? ` Migration status unavailable: ${state.detail}` : '';
