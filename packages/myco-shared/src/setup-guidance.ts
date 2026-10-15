@@ -60,5 +60,5 @@ export const machineSettingsLocation = (serverUrl: string | null): string =>
   `the dashboard${serverUrl === null ? '' : ` (${serverUrl}${MACHINE_SETTINGS_CONTROLS.path})`}, under ${MACHINE_SETTINGS_CONTROLS.page} › ${MACHINE_SETTINGS_CONTROLS.action} for this machine`;
 
 /** The machine's global tools use this Deployment; capture keeps its own routing. */
-export const harnessToolsElsewhere = (harness: string, machine: string, address: string): string =>
-  `${harness}'s Myco tools on ${machine} use ${address.replace(/^https?:\/\//, '').replace(/\/$/, '')}`;
+export const harnessToolsElsewhere = (harness: string, machine: string, address?: string): string =>
+  `${harness}'s Myco tools on ${machine} use ${address === undefined ? 'another Myco' : address.replace(/^https?:\/\//, '').replace(/\/$/, '')}`;

@@ -19,6 +19,8 @@ import { optOut, settleConnection } from './member-auto-join.js';
 import { defaultMembership, readDefaultDeployment } from '../member/default-deployment.js';
 import { selectedDeploymentMembership } from '../member/token-pairing.js';
 import { assignLegacyPending, flushPending, listHeldEnds, listPending, PENDING_MAX_RECORDS, PENDING_TTL_MS } from '../member/pending.js';
+import { harnessToolsElsewhere } from '@goondocks/myco-shared/setup-guidance';
+import { hostname } from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DoctorCheck } from './doctor-member.js';
@@ -47,7 +49,7 @@ import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
 import { CutoverBackup } from '../member/cutover-backup.js';
 import { linkMemberSkills, missingMemberSkills, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
-import { readProvisionRecord, recordProvision, forgetProvision } from '../symbionts/member-provision-record.js';
+import { readProvisionRecord, recordProvision, forgetProvision, holdHookTrust } from '../symbionts/member-provision-record.js';
 import { REPAIR_LOCK, keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
 import { getPluginVersion } from '../version.js';
 import { postRoute } from './deployment-reader.js';
@@ -472,21 +474,30 @@ export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, o
 }
 
 /** Read-only registration and settings currency through the installer. */
-export function memberHarnessCurrent(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): boolean {
+export function memberHarnessStatus(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): { current: boolean; toolsDeployment?: string } {
   const manifest = loadManifests().find((candidate) => candidate.name === agent);
-  if (manifest === undefined || !globalInstaller(manifest, null, mycoHome, opts).forDeployment(serverUrl).memberRegistrationCurrent()) return false;
+  if (manifest === undefined) return { current: false };
+  const installer = globalInstaller(manifest, null, mycoHome, opts).forDeployment(serverUrl).preservingOtherMemberTools();
+  const toolsDeployment = installer.memberToolsDeployment();
+  const registrationCurrent = installer.memberRegistrationCurrent();
   const target = manifest.registration?.globalSkillsTarget;
-  return target == null || missingMemberSkills(mycoHome, target).length === 0;
+  const skillsCurrent = target == null || missingMemberSkills(mycoHome, target).length === 0;
+  return { current: registrationCurrent && skillsCurrent, ...(toolsDeployment === undefined ? {} : { toolsDeployment }) };
+}
+
+export function memberHarnessCurrent(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): boolean {
+  return memberHarnessStatus(agent, mycoHome, serverUrl, opts).current;
 }
 
 export function provisionGlobally(
   agent: string, root: string | null, mycoHome: string,
-  opts: { packageRoot?: string; legacyHomes?: readonly string[]; serverUrl?: string; backup?: CutoverBackup } = {},
+  opts: { packageRoot?: string; legacyHomes?: readonly string[]; serverUrl?: string; backup?: CutoverBackup; preserveOtherMemberTools?: boolean } = {},
 ): ProvisionOutcome {
   const manifest = loadManifests().find((m) => m.name === agent);
   if (!manifest) return { kind: 'unknown' };
   const installer = globalInstaller(manifest, root, mycoHome, opts);
   if (opts.serverUrl !== undefined) installer.forDeployment(opts.serverUrl);
+  if (opts.preserveOtherMemberTools) installer.preservingOtherMemberTools();
   // Every agent file this may write is copied first; `restore.md` beside the copies puts back what the person had.
   const targets = opts.backup === undefined ? [] : installer.memberGlobalTargets().all;
   const absent = targets.filter((file) => !fs.existsSync(file));
@@ -507,6 +518,11 @@ export function provisionGlobally(
   const target = manifest.registration?.globalSkillsTarget;
   const skills = installer.capturesAsMember() && target ? linkMemberSkills(mycoHome, skillsFolder(target), opts.legacyHomes ?? []) : null;
   const skillsMoved = skills !== null && (skills.linked.length > 0 || skills.removed.length > 0);
+  if (opts.preserveOtherMemberTools && opts.serverUrl !== undefined) {
+    if (!memberHarnessCurrent(agent, mycoHome, opts.serverUrl, opts)) throw new Error(`${manifest.displayName}'s capture configuration is still incomplete`);
+    installer.recordMemberProvision(readProvisionRecord(mycoHome)?.version ?? getPluginVersion());
+    if (installed.hooks && manifest.registration?.memberHookTrustAction) holdHookTrust(mycoHome, agent, manifest.registration.memberHookTrustAction);
+  }
   return installed.hooks || installed.mcp || skillsMoved
     ? { kind: 'provisioned', detail: `provisioned ${manifest.displayName} globally${installed.mcp ? ` (${surface} and MCP)` : ''}`, skills, hooksChanged: installed.hooks }
     : { kind: 'unchanged', detail: `no global registration changes for ${manifest.displayName}`, skills };
@@ -525,12 +541,13 @@ export type OwnershipPreview =
   | { kind: 'ready'; displayName: string; replaces: string[]; targets: { hooks: string | null; mcp: string[]; all: string[] } };
 
 export function previewGlobalProvision(
-  agent: string, root: string | null, mycoHome: string, serverUrl: string, opts: { packageRoot?: string; legacyHomes?: readonly string[] } = {},
+  agent: string, root: string | null, mycoHome: string, serverUrl: string, opts: { packageRoot?: string; legacyHomes?: readonly string[]; preserveOtherMemberTools?: boolean } = {},
 ): OwnershipPreview {
   const manifest = loadManifests().find((m) => m.name === agent);
   if (!manifest) return { kind: 'unknown' };
   const installer = globalInstaller(manifest, root, mycoHome, opts);
   if (!installer.capturesAsMember()) return { kind: 'uncaptured', displayName: manifest.displayName };
+  if (opts.preserveOtherMemberTools) installer.preservingOtherMemberTools();
   const found = installer.globalOwnership(serverUrl);
   return found.problem !== null
     ? { kind: 'refused', displayName: manifest.displayName, detail: found.problem }
@@ -541,6 +558,7 @@ export function previewGlobalProvision(
 export interface DetectedProvision {
   provisioned: string[];
   unchanged: string[];
+  toolsElsewhere?: string[];
   skipped: Array<{ agent: string; displayName: string; reason: string }>;
   /** Skill folders where another installation, or the person, holds a skill's place. */
   heldSkills: Array<{ folder: string; names: string[] }>;
@@ -554,7 +572,7 @@ export interface DetectedProvision {
  * then provisioning is global alone, with no project root to check or retire registrations in.
  */
 export function provisionDetectedAgents(
-  mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; agents?: () => string[] } = {},
+  mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; agents?: () => string[]; preserveOtherMemberTools?: boolean } = {},
 ): DetectedProvision {
   return provisionAgents((opts.agents ?? (() => detectMachineInstalledSymbionts().map((m) => m.name)))(), mycoHome, serverUrl, root, opts);
 }
@@ -563,24 +581,33 @@ export function provisionDetectedAgents(
  * Provision `agents` as `provisionDetectedAgents` does; the installer records each successful global registration.
  */
 export function provisionAgents(
-  agents: readonly string[], mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string } = {},
+  agents: readonly string[], mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; preserveOtherMemberTools?: boolean } = {},
 ): DetectedProvision {
   const found: DetectedProvision = { provisioned: [], unchanged: [], skipped: [], heldSkills: [] };
   const backup = provisionBackup(mycoHome);
   try {
   for (const agent of agents) {
-    const preview = previewGlobalProvision(agent, root, mycoHome, serverUrl, { packageRoot: opts.packageRoot });
+    const preview = previewGlobalProvision(agent, root, mycoHome, serverUrl, { ...opts });
     if (preview.kind === 'unknown') continue;
     if (preview.kind === 'uncaptured') { found.skipped.push({ agent, displayName: preview.displayName, reason: 'Myco does not capture it as a member yet' }); continue; }
     if (preview.kind === 'refused') { found.skipped.push({ agent, displayName: preview.displayName, reason: preview.detail }); continue; }
-    const outcome = provisionGlobally(agent, root, mycoHome, { packageRoot: opts.packageRoot, serverUrl, backup });
+    const current = opts.preserveOtherMemberTools && readProvisionRecord(mycoHome)?.agents.includes(agent)
+      && memberHarnessCurrent(agent, mycoHome, serverUrl, opts);
+    const outcome: ProvisionOutcome = current
+      ? { kind: 'unchanged', detail: `no global registration changes for ${preview.displayName}` }
+      : provisionGlobally(agent, root, mycoHome, { ...opts, serverUrl, backup });
     if (outcome.kind === 'refused') { found.skipped.push({ agent, displayName: preview.displayName, reason: outcome.detail }); continue; }
     if (outcome.kind === 'unknown') continue;
     (outcome.kind === 'provisioned' ? found.provisioned : found.unchanged).push(preview.displayName);
+    if (opts.preserveOtherMemberTools) {
+      const status = memberHarnessStatus(agent, mycoHome, serverUrl, opts);
+      if (status.toolsDeployment !== undefined) (found.toolsElsewhere ??= []).push(harnessToolsElsewhere(preview.displayName, hostname(), status.toolsDeployment));
+    }
     const held = outcome.skills?.held ?? [];
     if (held.length > 0 && !found.heldSkills.some((h) => h.folder === outcome.skills!.folder)) found.heldSkills.push({ folder: outcome.skills!.folder, names: held.map((h) => h.name) });
   }
   } finally { backup.pruneUnchanged(); }
+  if (opts.preserveOtherMemberTools && found.skipped.length === 0) keepCurrent(mycoHome, { packageRoot: opts.packageRoot });
   return found;
 }
 
@@ -608,6 +635,7 @@ export function detectedProvisionLines(found: DetectedProvision): string[] {
   const ready = [...found.provisioned, ...found.unchanged];
   const lines: string[] = [];
   if (ready.length > 0) lines.push(`Capture is set up for ${ready.join(', ')}.`);
+  lines.push(...found.toolsElsewhere ?? []);
   for (const skip of found.skipped) lines.push(`Skipped ${skip.displayName}: ${skip.reason.replace(/[.]+$/, '')}.`);
   for (const held of found.heldSkills) lines.push(`Left ${held.names.join(', ')} in ${held.folder} as they are: another installation or you put them there.`);
   if (ready.length === 0 && found.skipped.length === 0) lines.push('No supported agent is installed on this machine; once one is, run `myco member provision`.');

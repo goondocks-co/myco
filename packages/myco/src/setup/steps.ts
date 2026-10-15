@@ -461,8 +461,7 @@ const STEPS: readonly SetupStep[] = [
     act: async (ctx) => {
       const answers = chosen(ctx);
       if (answers.noAgents) { recordNoAgents(ctx.home, answers.url); return; }
-      if (fact(ctx, 'machine.agents')?.state === 'complete') return;
-      const result = provisionDetectedAgents(ctx.home, answers.url, answers.root ?? null, { agents: ctx.deps.agents, packageRoot: ctx.deps.packageRoot });
+      const result = provisionDetectedAgents(ctx.home, answers.url, answers.root ?? null, { agents: ctx.deps.agents, packageRoot: ctx.deps.packageRoot, preserveOtherMemberTools: true });
       detectedProvisionLines(result).forEach(ctx.out);
       if (result.skipped.length > 0) throw new Error('Some agents could not be set up; resolve the reported ownership, then run myco setup again.');
     },

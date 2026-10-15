@@ -10,7 +10,7 @@ import { provisionGlobally, runProvision, provisionBackup } from '@myco/cli/memb
 import { runHelperVerb } from '@myco/cli/member-helper.js';
 import { keepCurrent, reportHarnesses, harnessRanAt } from '@myco/cli/member-keep-current.js';
 import { readProvisionRecord, recordProvision, holdHookTrust } from '@myco/symbionts/member-provision-record.js';
-import { writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from '@myco/member/registry.js';
+import { writeDeploymentMembership, writeRegistryEntry, deploymentPath, REGISTRY_VERSION } from '@myco/member/registry.js';
 import { updateProjectContext } from '@myco/member/context-cache.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { PROTOCOL_HEADER, MEMBER_PROTOCOL } from '@goondocks/myco-shared/member-protocol';
@@ -137,7 +137,7 @@ it('doctor names missing hooks or MCP without writing any configuration', () => 
   provisionGlobally('codex', null, home, { serverUrl: SERVER });
   expect(setupChecks(home)[0].status).toBe('ok');
   fs.unlinkSync(hooks());
-  expect(setupChecks(home)[0]).toMatchObject({ status: 'warn', detail: expect.stringContaining('hooks or MCP entry are missing or stale') });
+  expect(setupChecks(home)[0]).toMatchObject({ status: 'warn', detail: expect.stringContaining('capture configuration is missing or stale') });
   expect(fs.existsSync(hooks())).toBe(false);
   keepCurrent(home, { binaryFound: () => true });
   fs.writeFileSync(config(), '[features]\nhooks = true\n');
@@ -202,7 +202,7 @@ it('an unrepairable helper pass reaches Deployment Health through the real repor
   updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
   await runHelperVerb(['--project', entry.projectId, '--server', SERVER, '--home', home, '--stderr'], { fetch: rig.fetch, lingerMs: 0 });
   expect((await readAttention(rig.env.serverEnv, Date.now())).items).toContainEqual(expect.objectContaining({
-    kind: 'harness_needs_repair', machineId: 'machine_1', harness: 'codex', state: 'repair_failed', action: 'Run myco member provision codex to see what needs fixing',
+    kind: 'harness_needs_repair', machineId: 'machine_1', harness: 'codex', state: 'repair_failed', action: "Run myco doctor to check Codex's capture configuration",
   }));
   expect(fs.readFileSync(config(), 'utf8')).toBe('invalid TOML [');
 });
@@ -498,11 +498,12 @@ function toolsHeldElsewhere(agent = 'claude-code'): string {
 for (const agent of ['claude-code', 'codex']) it(`keeps ${agent}'s tools held by another member Deployment settled without provisioning`, async () => {
   const target = toolsHeldElsewhere(agent);
   const priorChecks = setupChecks(home);
-  expect(priorChecks[0].detail).toContain('use other.myco.example');
+  expect(priorChecks.some(check => check.detail.includes('use other.myco.example'))).toBe(true);
+  expect(priorChecks.some(check => check.status === 'warn' && check.detail.includes('this is'))).toBe(true);
   expect(priorChecks.map(check => check.detail).join(' ')).not.toContain('member provision');
   const initialStatus: string[] = [];
   await setup(['--status'], { mycoHome: home, cwd: agentHome, agents: () => [agent], stdout: line => initialStatus.push(line), stderr: line => { throw new Error(line); } });
-  expect(initialStatus.join('\n')).toContain(priorChecks[0].detail);
+  expect(initialStatus.join('\n')).toContain('use other.myco.example');
   expect(initialStatus.join('\n')).not.toContain('member provision');
   expect(readProvisionRecord(home)?.version).toBe('old');
   const before = harnessFiles().map(file => [file, fs.readFileSync(file, 'utf8'), fs.statSync(file).mtimeMs]);
@@ -530,7 +531,7 @@ for (const agent of ['claude-code', 'codex']) it(`keeps ${agent}'s tools held by
     const lines: string[] = [];
     await setup(['--status'], { mycoHome: home, cwd: agentHome, agents: () => [agent], stdout: line => lines.push(line), stderr: line => { throw new Error(line); }, fetch: async () => { throw new Error('no network in status'); } });
     expect(lines.join('\n')).toContain(checks[0].detail);
-    expect(lines.filter(line => line.includes('Agent tools:')).join('\n')).not.toContain('member provision');
+    expect(lines.filter(line => line.includes('Agent hooks:')).join('\n')).not.toContain('member provision');
     expect(fs.readFileSync(target, 'utf8')).toContain(OTHER_SERVER);
     fs.writeFileSync(target, fs.readFileSync(target, 'utf8').replaceAll(OTHER_SERVER, SERVER));
     expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].state).toBe('ready');
@@ -549,7 +550,7 @@ for (const kind of ['foreign', 'legacy', 'same-deployment', 'mismatched-helper']
   }
   if (kind === 'mismatched-helper') file.mcpServers.myco.headersHelper = file.mcpServers.myco.headersHelper.replace(OTHER_SERVER, SERVER);
   fs.writeFileSync(target, JSON.stringify(file));
-  expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0]).toMatchObject({ state: 'repair_failed', action: expect.stringContaining('member provision') });
+  expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0]).toMatchObject({ state: 'repair_failed', action: expect.stringContaining('myco doctor') });
 });
 
 it('omits held tools for the older feature set, clears prior repair attention, and reports them after upgrade', async () => {
@@ -587,4 +588,122 @@ it('omits held tools for the older feature set, clears prior repair attention, a
   await reportHarnesses(result, home, Date.now() + 10_000, { entry, fetch });
   expect(bodies[1]).toEqual({ harnesses: result.harnesses });
   expect(accepted).toEqual([true, true]);
+});
+
+
+it('repairs deleted capture hooks before settling held tools, preserving the MCP entry', () => {
+  const target = toolsHeldElsewhere();
+  const hookFile = path.join(agentHome, '.claude', 'settings.json');
+  const original = fs.readFileSync(hookFile, 'utf8');
+  const mcp = fs.readFileSync(target, 'utf8');
+  fs.unlinkSync(hookFile);
+  const result = keepCurrent(home, { binaryFound: () => true });
+  expect(fs.readFileSync(hookFile, 'utf8')).toBe(original);
+  expect(result?.harnesses[0]).toMatchObject({ state: 'held_elsewhere', toolsDeployment: OTHER_SERVER });
+  expect(fs.readFileSync(target, 'utf8')).toBe(mcp);
+  expect(readProvisionRecord(home)?.version).toBe(getPluginVersion());
+  const before = fs.statSync(hookFile).mtimeMs;
+  keepCurrent(home, { binaryFound: () => true });
+  expect(fs.statSync(hookFile).mtimeMs).toBe(before);
+});
+
+it('reports unrepairable capture independently of held tools without taking the entry or settling the record', () => {
+  const target = toolsHeldElsewhere();
+  const before = fs.readFileSync(target, 'utf8');
+  const hookFile = path.join(agentHome, '.claude', 'settings.json');
+  fs.unlinkSync(hookFile);
+  fs.mkdirSync(hookFile);
+  const fact = keepCurrent(home, { binaryFound: () => true })?.harnesses[0];
+  expect(fact?.state).toBe('repair_failed');
+  expect(fact?.toolsDeployment).toBeUndefined();
+  expect(fact?.action).toContain('myco doctor');
+  expect(fact?.action).not.toContain('member provision');
+  expect(readProvisionRecord(home)?.version).toBe('old');
+  expect(fs.readFileSync(target, 'utf8')).toBe(before);
+});
+
+it('doctor and status check missing skills and old versions even when tools use another Deployment', async () => {
+  toolsHeldElsewhere();
+  const manifest = loadManifests().find(m => m.name === 'claude-code')!;
+  const folder = expandHome(manifest.registration!.globalSkillsTarget!);
+  const skill = fs.readdirSync(folder)[0]!;
+  fs.unlinkSync(path.join(folder, skill));
+  const checks = setupChecks(home);
+  expect(checks.some(check => check.status === 'warn' && check.detail.includes('skills are missing'))).toBe(true);
+  expect(checks.some(check => check.status === 'warn' && check.detail.includes('this is'))).toBe(true);
+  expect(checks.map(check => check.detail).join(' ')).not.toContain('member provision');
+  const lines: string[] = [];
+  await setup(['--status', '--json'], { mycoHome: home, cwd: agentHome, agents: () => ['claude-code'], stdout: line => lines.push(line), stderr: line => { throw new Error(line); } });
+  const status = JSON.parse(lines.join('\n')).observations.find((fact: { id: string }) => fact.id === 'machine.agents');
+  expect(status.detail).not.toContain('member provision');
+  expect(status).toMatchObject({ state: 'incomplete', informational: false, detail: expect.stringContaining('skills are missing') });
+  expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].state).toBe('held_elsewhere');
+  expect(fs.existsSync(path.join(folder, skill))).toBe(true);
+});
+
+it('refuses to settle tools pointing at a Deployment this home no longer has a membership for', () => {
+  const target = toolsHeldElsewhere();
+  const before = fs.readFileSync(target, 'utf8');
+  fs.unlinkSync(deploymentPath(OTHER_SERVER, home));
+  const fact = keepCurrent(home, { binaryFound: () => true })?.harnesses[0];
+  expect(fact?.state).toBe('repair_failed');
+  expect(fact?.toolsDeployment).toBeUndefined();
+  expect(fact?.action).toContain('myco doctor');
+  expect(fact?.action).not.toContain('member provision');
+  expect(readProvisionRecord(home)?.version).toBe('old');
+  expect(fs.readFileSync(target, 'utf8')).toBe(before);
+});
+
+it('keeps the machine.agents JSON contract and settles held tools in guided setup', async () => {
+  const target = toolsHeldElsewhere();
+  const before = fs.readFileSync(target, 'utf8');
+  const lines: string[] = [];
+  const errors: string[] = [];
+  const fetch = Object.assign(async (input: string | URL | Request) => {
+    const route = new URL(input instanceof Request ? input.url : input).pathname;
+    if (route === '/health') return Response.json({ ok: true });
+    if (route === '/auth/login') return new Response(null, { status: 302, headers: { location: 'https://github.com/login/oauth/authorize?client_id=fixture&redirect_uri=https%3A%2F%2Fmyco.example%2Fauth%2Fcallback' } });
+    if (route === '/members/status') return Response.json({ target: 'fixture' }, { headers: { [PROTOCOL_HEADER]: String(MEMBER_PROTOCOL) } });
+    throw new Error('unexpected fixture route ' + route);
+  }, { preconnect: () => {} });
+  const deps = { mycoHome: home, cwd: agentHome, agents: () => ['claude-code'], stdout: (line: string) => lines.push(line), stderr: (line: string) => errors.push(line), fetch, ask: async () => null };
+  writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_1', root: agentHome, serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+  const code = await setup(['--join', SERVER, '--no-runner', '--yes'], deps);
+  expect({ code, errors }).toEqual({ code: 0, errors: [] });
+  expect(lines.join('\n')).toContain('use other.myco.example');
+  expect(lines.join('\n')).not.toContain('member provision');
+  expect(fs.readFileSync(target, 'utf8')).toBe(before);
+  lines.length = 0;
+  await setup(['--status', '--json'], deps);
+  const body = JSON.parse(lines.join('\n'));
+  const agents = body.observations.find((fact: { id: string }) => fact.id === 'machine.agents');
+  expect(agents).toMatchObject({ state: 'complete', informational: true, detail: expect.stringContaining('use other.myco.example') });
+  expect(body.observations.some((fact: { id: string }) => fact.id === 'machine.tools')).toBe(false);
+});
+
+
+it('repairs a moved runtime pin without taking held tools or losing their ownership on later passes', () => {
+  const oldBinary = path.join(home, 'old', 'myco');
+  const newBinary = path.join(home, 'new', 'myco');
+  for (const binary of [oldBinary, newBinary]) {
+    fs.mkdirSync(path.dirname(binary), { recursive: true });
+    fs.writeFileSync(binary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  }
+  fs.writeFileSync(path.join(home, 'runtime.command'), oldBinary + '\n');
+  writeDeploymentMembership({ serverUrl: OTHER_SERVER, token: 'B'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+  provisionGlobally('claude-code', null, home, { serverUrl: OTHER_SERVER });
+  recordProvision(home, { version: 'old', serverUrl: SERVER, agents: ['claude-code'] });
+  fs.writeFileSync(path.join(home, 'runtime.command'), newBinary + '\n');
+  const first = keepCurrent(home, { binaryFound: () => true });
+  expect(first?.harnesses[0]).toMatchObject({ state: 'held_elsewhere', toolsDeployment: OTHER_SERVER });
+  const target = path.join(agentHome, '.claude.json');
+  const entry = JSON.parse(fs.readFileSync(target, 'utf8')).mcpServers.myco;
+  expect(entry.url).toBe(OTHER_SERVER + '/mcp');
+  expect(entry.headersHelper).toContain(newBinary);
+  expect(entry.headersHelper).not.toContain(oldBinary);
+  expect(fs.readFileSync(path.join(agentHome, '.claude', 'settings.json'), 'utf8')).toContain(newBinary);
+  expect(readProvisionRecord(home)?.binaries?.['claude-code']).toBe(newBinary);
+  const before = harnessFiles().map(file => [file, fs.readFileSync(file, 'utf8'), fs.statSync(file).mtimeMs]);
+  expect(keepCurrent(home, { binaryFound: () => true })).toEqual(first);
+  expect(harnessFiles().map(file => [file, fs.readFileSync(file, 'utf8'), fs.statSync(file).mtimeMs])).toEqual(before);
 });

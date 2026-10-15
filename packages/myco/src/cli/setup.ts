@@ -207,11 +207,12 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     if (options.status) {
       file.answers.root = options.answers.root ?? statusRepository(deps.cwd ?? process.cwd());
       const observations = await observeSetupStatus(home, file.answers, { ...deps, legacyHomeDir: deps.legacyHomeDir ?? deps.cutoverDeps?.env?.HOME, checkRemote: options.checkRemote }, options.answers.role !== undefined);
-      const agents = observations.find((fact) => fact.id === 'machine.agents' && fact.state === 'unavailable');
+      const agents = observations.find((fact) => fact.id === 'machine.agents');
       if (agents !== undefined) {
         const checks = setupChecks(home);
         if (checks.some((check) => check.toolsDeployment !== undefined)) {
-          agents.id = 'machine.tools';
+          agents.informational = checks.every((check) => check.status === 'ok');
+          Object.assign(agents, { agentHealth: true });
           agents.state = checks.every((check) => check.status === 'ok') ? 'complete' : 'incomplete';
           agents.detail = checks.map((check) => check.detail).join('\n');
         }

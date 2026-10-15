@@ -467,7 +467,7 @@ describe('dashboard status honesty gates', () => {
   });
 });
 
-it('lists tools held by another Deployment in Status without a Needs you item', async () => {
+it('lists tools held by another Deployment in Status', async () => {
   server(routes({
     '/api/status': () => Response.json({ ...STATUS, harnesses: [{ id: 'claude-code', provisioned: true, state: 'held_elsewhere', toolsDeployment: 'https://myco.whisker.engineering', machineId: 'ada_5a2d54af', machineName: 'CKIRBY-MBP' }] }),
     '/api/attention': () => Response.json({ items: [], unavailable: [] }),
@@ -476,7 +476,18 @@ it('lists tools held by another Deployment in Status without a Needs you item', 
   const status = await screen.findByRole('region', { name: 'Status' });
   const copy = "Claude Code's Myco tools on CKIRBY-MBP use myco.whisker.engineering";
   expect(await within(status).findByText(copy)).toBeTruthy();
-  const needsYou = screen.getByRole('region', { name: 'Needs you' });
-  expect(needsYou.textContent).not.toContain('CKIRBY-MBP');
-  expect(needsYou.textContent).not.toContain('member provision');
+});
+
+
+it('names the machine for private held destinations and for repair states', async () => {
+  server(routes({
+    '/api/status': () => Response.json({ ...STATUS, harnesses: [
+      { id: 'claude-code', provisioned: true, state: 'held_elsewhere', machineId: 'ada_5a2d54af', machineName: 'Personal laptop' },
+      { id: 'codex', provisioned: true, state: 'unwritable', action: 'Allow Myco to write Codex configuration', machineId: 'work', machineName: 'Work laptop' },
+    ] }),
+  }));
+  mount();
+  const status = await screen.findByRole('region', { name: 'Status' });
+  expect(await within(status).findByText("Claude Code's Myco tools on Personal laptop use another Myco")).toBeTruthy();
+  expect(await within(status).findByText('Codex on Work laptop: Allow Myco to write Codex configuration')).toBeTruthy();
 });

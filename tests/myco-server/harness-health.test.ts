@@ -95,14 +95,17 @@ describe('provisioned harness health', () => {
     expect(await r.attention(NOW + 31 * 24 * HOUR)).toEqual([]);
   });
 
-  it('retains trust required when a later file probe says ready, until captured use proves the hook ran', async () => {
+  for (const settled of [
+    fact('codex', 'ready'),
+    { id: 'codex', provisioned: true as const, state: 'held_elsewhere' as const, toolsDeployment: 'https://other.example' },
+  ]) it(`retains trust required when a later file probe says ${settled.state}, until captured use proves the hook ran`, async () => {
     const r = await rig();
     await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'trust_required', 'Approve Codex in system settings.')] }, NOW - 3 * HOUR);
-    await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready')] }, NOW - 2 * HOUR);
+    await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [settled] }, NOW - 2 * HOUR);
     expect((await r.attention()).map((item) => item.kind)).toEqual(['harness_needs_repair']);
     r.session('machine_1', 'used_codex', 'codex', NOW - HOUR);
     expect(await r.attention()).toEqual([]);
-    await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready')] }, NOW);
+    await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [settled] }, NOW);
     expect(await r.attention()).toEqual([]);
   });
 
@@ -254,7 +257,7 @@ describe('provisioned harness health', () => {
   });
 });
 
-it('accepts held tools as informational wiring without repair or capture-silence attention', async () => {
+it('accepts held tools as informational wiring without repair attention while preserving capture-silence attention', async () => {
   const r = await rig();
   const held = { id: 'claude-code', provisioned: true as const, state: 'held_elsewhere' as const, toolsDeployment: 'https://other.myco.example', ranAt: NOW };
   expect(SERVER_FEATURES).toContain(HARNESS_HELD_ELSEWHERE_FEATURE);
@@ -262,7 +265,8 @@ it('accepts held tools as informational wiring without repair or capture-silence
   const response = await r.post(r.token1, { harnesses: [held] });
   expect(response.body).toMatchObject({ persisted: true });
   expect(response.features?.split(',')).toContain(HARNESS_HELD_ELSEWHERE_FEATURE);
-  expect(await r.attention()).toEqual([]);
+  expect(await r.attention()).toEqual([expect.objectContaining({ kind: 'harness_capture_silent', harness: 'claude-code' })]);
+  expect((await r.attention()).some(item => item.kind === 'harness_needs_repair')).toBe(false);
   expect(await provisionedHarnessHealth(r.fixture.db)).toEqual([{ ...held, machineId: 'machine_1', machineName: 'Ada laptop' }]);
   for (const toolsDeployment of ['', 'https://bad.example/\n', 'x'.repeat(MAX_HARNESS_DEPLOYMENT_CHARS + 1)]) {
     expect(parseProvisionedHarnessReport({ harnesses: [{ ...held, toolsDeployment }] })).toBeNull();

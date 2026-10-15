@@ -22,7 +22,7 @@ import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, SERVER_FLAG, type CredentialSource } from '../member/constants.js';
 import { parseCredentialFlag } from '../member/credential.js';
 import { admitMemberServerUrl, memberServerDialUrl } from '../member/server-url.js';
-import { deploymentUrl } from '../member/registry.js';
+import { deploymentUrl, listDeploymentMembershipsResult } from '../member/registry.js';
 import { MCP_PATH } from '../plugins/spec.js';
 import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
 import { readRegistryEntry } from '../member/registry.js';
@@ -303,9 +303,7 @@ export class SymbiontInstaller {
   }
 
   install(): InstallResult {
-    // Every refusal runs before the first write: a member is provisioned
-    // with both surfaces or with neither, never with a plugin whose tools
-    // the host would then refuse to serve.
+    // Ownership and settings are admitted before the first write.
     if (this.isMemberPluginFile()) {
       this.assertMemberMcpWritable();
       const hooks = this.writeMemberPlugin();
@@ -366,11 +364,11 @@ export class SymbiontInstaller {
     return written;
   }
 
-  renderMemberMcp(source: CredentialSource): Record<string, unknown> | null {
+  renderMemberMcp(source: CredentialSource, serverUrlOverride?: string): Record<string, unknown> | null {
     const reg = this.manifest.registration;
     if (!reg?.mcpTarget) return null;
     if (reg.memberMcpHeadersHelperKey) {
-      const serverUrl = readRegistryEntry(this.projectRoot, this.memberHomeDir())?.serverUrl ?? this.expectedServerUrl ?? this.deploymentUrl;
+      const serverUrl = serverUrlOverride ?? readRegistryEntry(this.projectRoot, this.memberHomeDir())?.serverUrl ?? this.expectedServerUrl ?? this.deploymentUrl;
       if (serverUrl === undefined) return null;
       const binaryPath = this.binaryPath();
       assertSafeBinaryPathForUnquoted(binaryPath);
@@ -404,8 +402,8 @@ export class SymbiontInstaller {
   }
 
   installMemberMcp(): boolean {
-    this.assertMemberMcpWritable();
-    const block = this.renderMemberMcp('registry');
+    const toolsDeployment = this.assertMemberMcpWritable();
+    const block = this.renderMemberMcp('registry', toolsDeployment);
     const targetPath = this.memberMcpTargetPath();
     if (block === null || targetPath === null) return false;
     const reg = this.manifest.registration!;
@@ -432,6 +430,7 @@ export class SymbiontInstaller {
   }
 
   uninstallMemberMcp(): boolean {
+    if (this.preserveOtherMemberTools && this.memberToolsDeployment() !== undefined) return false;
     const targetPath = this.memberMcpTargetPath();
     if (targetPath === null || !fs.existsSync(targetPath)) return false;
     if (this.manifest.registration?.mcpFormat === 'toml') {
@@ -628,16 +627,20 @@ export class SymbiontInstaller {
     });
   }
 
-  private assertMemberMcpWritable(): void {
+  private assertMemberMcpWritable(): string | undefined {
     this.preflightMemberSettings();
     this.readMemberMcpTarget();
-    this.assertGlobalMemberOwnership();
+    return this.assertGlobalMemberOwnership();
   }
 
   private finishMemberInstall(result: InstallResult): InstallResult {
-    const serverUrl = readRegistryEntry(this.projectRoot, this.memberHomeDir())?.serverUrl ?? this.deploymentUrl;
-    if (serverUrl !== undefined) recordProvision(this.memberHomeDir(), { version: getPluginVersion(), serverUrl, agents: [this.manifest.name], binaries: { [this.manifest.name]: this.binaryPath() } });
+    if (!this.preserveOtherMemberTools) this.recordMemberProvision(getPluginVersion());
     return result;
+  }
+
+  recordMemberProvision(version: string): void {
+    const serverUrl = readRegistryEntry(this.projectRoot, this.memberHomeDir())?.serverUrl ?? this.deploymentUrl;
+    if (serverUrl !== undefined) recordProvision(this.memberHomeDir(), { version, serverUrl, agents: [this.manifest.name], binaries: { [this.manifest.name]: this.binaryPath() } });
   }
 
   private legacyHomes: readonly string[] = [];
@@ -645,6 +648,16 @@ export class SymbiontInstaller {
   private expectedServerUrl: string | undefined;
   private deploymentUrl: string | undefined;
   private noProjectRoot = false;
+  private preserveOtherMemberTools = false;
+
+  preservingOtherMemberTools(): this {
+    this.preserveOtherMemberTools = true;
+    return this;
+  }
+
+  memberToolsDeployment(): string | undefined {
+    return this.assertGlobalMemberOwnership();
+  }
 
   withoutProjectRoot(): this {
     this.noProjectRoot = true;
@@ -763,7 +776,7 @@ export class SymbiontInstaller {
   }
 
   memberRegistrationCurrent(): boolean {
-    this.assertGlobalMemberOwnership();
+    const toolsDeployment = this.assertGlobalMemberOwnership();
     if (!this.memberSettingsCurrent()) return false;
     const target = this.resolveAbsoluteTarget('hooks');
     if (target === null || !fs.existsSync(target)) return false;
@@ -788,7 +801,7 @@ export class SymbiontInstaller {
       if (Object.keys(managed).length !== Object.keys(expectedHooks).length || Object.entries(expectedHooks).some(([event, groups]) => !sameGroups(managed[event] ?? [], groups as unknown[]))) return false;
     }
     const targetMcp = this.memberMcpTargetPath();
-    const desired = this.renderMemberMcp('registry');
+    const desired = this.renderMemberMcp('registry', toolsDeployment);
     if (targetMcp === null || desired === null) return true;
     const toml = this.manifest.registration?.mcpFormat === 'toml';
     const expected = (toml ? tomlMemberServers(desired, this.projectRoot) : desired)[MYCO_MCP_SERVER_NAME] as Record<string, unknown>;
@@ -819,7 +832,7 @@ export class SymbiontInstaller {
     return { problem: null, replaces: this.legacyHomes.filter((home) => texts.some((text) => text.includes(`${home}${path.sep}`))) };
   }
 
-  private assertGlobalMemberOwnership(targetOverride?: { path: string; serversKey: string } | 'hooks'): void {
+  private assertGlobalMemberOwnership(targetOverride?: { path: string; serversKey: string } | 'hooks'): string | undefined {
     const memberHome = this.memberHomeDir();
     const record = readProvisionRecord(memberHome);
     const ownBinaries = [this.binaryPath(), managedBinaryPath(memberHome, process.platform), ...(record?.binaries?.[this.manifest.name] ? [record.binaries[this.manifest.name]] : [])];
@@ -871,7 +884,11 @@ export class SymbiontInstaller {
       const other = this.entryDeployment(existing);
       if (this.isMemberMcpServer(existing) && other !== null) {
         const message = toolsStayOnDeployment(this.manifest.displayName, other);
-        const heldElsewhere = other !== this.entryDeployment(desired ?? {}) && sameCredentialSource && this.helperDeployment(existing) === other;
+        const memberships = listDeploymentMembershipsResult(memberHome);
+        const heldElsewhere = other !== this.entryDeployment(desired ?? {}) && sameCredentialSource && this.helperDeployment(existing) === other
+          && memberships.readable && memberships.unavailableEntries === 0
+          && memberships.memberships.some((membership) => deploymentUrl(membership.serverUrl) === other && !membership.refreshTerminal);
+        if (heldElsewhere && this.preserveOtherMemberTools) return other;
         throw new MemberMcpConflictError(message, message, undefined, heldElsewhere ? other : undefined);
       }
       throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, 'Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover');

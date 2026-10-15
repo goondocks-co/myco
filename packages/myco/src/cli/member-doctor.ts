@@ -1,3 +1,4 @@
+import { memberHarnessStatus } from '@myco/cli/member.js';
 /** Home diagnostics and the current repository's Deployment checks. No repairs are performed. */
 import { terminalText } from '@myco/utils/terminal-text.js';
 import { readUpdateNotice } from '../upgrade/check-cache.js';
@@ -14,7 +15,7 @@ import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { repositoryMycoEntries } from '@myco/symbionts/repository-entries.js';
-import { SymbiontInstaller, MemberMcpConflictError } from '../symbionts/installer.js';
+import { SymbiontInstaller } from '../symbionts/installer.js';
 import { readProvisionRecord } from '../symbionts/member-provision-record.js';
 import { missingMemberSkills } from '../symbionts/member-skill-links.js';
 import { getPluginVersion } from '../version.js';
@@ -119,25 +120,22 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
   const issues: DoctorCheck[] = [];
   for (const manifest of loadManifests().filter((m) => record.agents.includes(m.name))) {
     try {
-      const installer = new SymbiontInstaller(manifest, mycoHome, resolvePackageRoot(), false, mycoHome)
-        .withoutProjectRoot().forDeployment(record.serverUrl);
-      if (!installer.memberRegistrationCurrent()) issues.push(row('Setup', 'warn', `${manifest.displayName}'s hooks or MCP entry are missing or stale. The next Myco helper pass repairs them; run \`myco member provision --refresh\` to repair them now.`));
-    } catch (error) {
-      if (error instanceof MemberMcpConflictError && error.toolsDeployment !== undefined) {
+      const status = memberHarnessStatus(manifest.name, mycoHome, record.serverUrl);
+      if (!status.current) issues.push(row('Setup', 'warn', `${manifest.displayName}'s capture configuration is missing or stale. The next Myco helper pass repairs it; run myco doctor after that pass to check it.`));
+      if (status.toolsDeployment !== undefined) {
         heldAgents.add(manifest.name);
-        held.push({ ...row('Setup', 'ok', harnessToolsElsewhere(manifest.displayName, os.hostname(), error.toolsDeployment)), toolsDeployment: error.toolsDeployment });
-        continue;
+        held.push({ ...row('Setup', status.current ? 'ok' : 'warn', harnessToolsElsewhere(manifest.displayName, os.hostname(), status.toolsDeployment)), toolsDeployment: status.toolsDeployment });
       }
-      issues.push(row('Setup', 'warn', `${manifest.displayName}'s configuration could not be checked: ${error instanceof Error ? error.message : String(error)}. Run \`myco member provision ${manifest.name}\`.`));
-      continue;
+    } catch (error) {
+      issues.push(row('Setup', 'warn', `${manifest.displayName}'s configuration could not be checked: ${error instanceof Error ? error.message : String(error)}. Run myco doctor after restoring access.`));
     }
     const target = manifest.registration?.globalSkillsTarget;
     if (!target) continue;
     const absent = missingMemberSkills(mycoHome, target);
     if (absent.length > 0) missing.push(`${manifest.displayName} (${absent.join(', ')})`);
   }
-  if (missing.length > 0) issues.push(row('Setup', 'warn', `skills are missing for ${missing.join('; ')}. Run \`myco member provision --refresh\`.`));
-  if (record.version !== version && (held.length === 0 || held.length !== record.agents.length)) issues.unshift(row('Setup', 'warn', `your agents were set up by Myco ${record.version}; this is ${version}. Run \`myco member provision --refresh\`.`));
+  if (missing.length > 0) issues.push(row('Setup', 'warn', `skills are missing for ${missing.join('; ')}. The next Myco helper pass updates them.`));
+  if (record.version !== version) issues.unshift(row('Setup', 'warn', `your agents were set up by Myco ${record.version}; this is ${version}. The next Myco helper pass updates them.`));
   if (issues.length > 0) return [...held, ...issues];
   if (held.length === record.agents.length && held.length > 0) return held;
   const current = record.agents.filter((agent) => !heldAgents.has(agent));

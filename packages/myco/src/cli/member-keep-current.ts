@@ -3,15 +3,14 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import { harnessToolsElsewhere } from '@goondocks/myco-shared/setup-guidance';
-import { MemberMcpConflictError } from '@myco/symbionts/installer.js';
 import { expandHome, resolveMycoHome } from '@myco/paths/home.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { getPluginVersion } from '@myco/version.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { isBinaryOnPath, loadManifests } from '@myco/symbionts/detect.js';
-import { readProvisionRecord, recordProvision, holdHookTrust, settleHookTrust, type ProvisionRecord } from '@myco/symbionts/member-provision-record.js';
-import { provisionGlobally, registeredMemberHarnesses, memberHarnessCurrent, provisionBackup } from '@myco/cli/member.js';
+import { readProvisionRecord, recordProvision, settleHookTrust, type ProvisionRecord } from '@myco/symbionts/member-provision-record.js';
+import { provisionGlobally, registeredMemberHarnesses, memberHarnessStatus, provisionBackup } from '@myco/cli/member.js';
 import type { ProvisionedHarnessFact } from '@goondocks/myco-shared/harness-health';
 import { deadlineBudget, canStartRequest, subRequestBudget } from '@myco/member/budget.js';
 import { readDeploymentFeaturesStrict } from '@myco/member/context-cache.js';
@@ -73,19 +72,26 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
       try {
         if (manifest === undefined) throw new Error('This build has no manifest for the provisioned harness');
         const installed = installEvidence(manifest, deps.binaryFound ?? isBinaryOnPath);
-        if (installed && !memberHarnessCurrent(id, mycoHome, record.serverUrl, deps)) {
+        let status = installed ? memberHarnessStatus(id, mycoHome, record.serverUrl, deps) : { current: false };
+        if (installed && !status.current) {
           const backup = provisionBackup(mycoHome);
           try {
-            const outcome = provisionGlobally(id, null, mycoHome, { serverUrl: record.serverUrl, packageRoot: deps.packageRoot, backup });
+            const outcome = provisionGlobally(id, null, mycoHome, { serverUrl: record.serverUrl, packageRoot: deps.packageRoot, backup, preserveOtherMemberTools: true });
             if (outcome.kind === 'refused') throw Object.assign(new Error(outcome.detail), { code: outcome.code });
             if (outcome.kind === 'unknown') throw new Error('This build cannot provision the harness');
-            if (outcome.hooksChanged && manifest.registration?.memberHookTrustAction) holdHookTrust(mycoHome, id, manifest.registration.memberHookTrustAction);
           } finally { backup.pruneUnchanged(); }
+          status = memberHarnessStatus(id, mycoHome, record.serverUrl, deps);
+          if (!status.current) throw new Error('Capture configuration is still incomplete');
+        }
+        if (status.toolsDeployment !== undefined) {
+          state = 'held_elsewhere';
+          toolsDeployment = status.toolsDeployment;
         }
         if (installed) result.ready.push(manifest.displayName);
         const pendingTrust = readProvisionRecord(mycoHome)?.pendingTrust?.[id];
         if (pendingTrust !== undefined) {
           state = 'trust_required';
+          toolsDeployment = undefined;
           action = pendingTrust.action;
           result.pendingTrust = { ...result.pendingTrust, [id]: pendingTrust };
         } else if (!installed) {
@@ -93,16 +99,12 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
           action = `Install ${manifest.displayName} again`;
         }
       } catch (error) {
-        if (error instanceof MemberMcpConflictError && error.toolsDeployment !== undefined) {
-          state = 'held_elsewhere';
-          toolsDeployment = error.toolsDeployment;
-        } else {
-          const code = (error as NodeJS.ErrnoException).code ?? ((error as Error).cause as NodeJS.ErrnoException | undefined)?.code;
-          state = code === 'EACCES' || code === 'EPERM' || code === 'EROFS' ? 'unwritable' : 'repair_failed';
-          action = state === 'unwritable'
-            ? `Allow Myco to write ${manifest?.displayName ?? id}'s configuration`
-            : `Run myco member provision ${id} to see what needs fixing`;
-        }
+        toolsDeployment = undefined;
+        const code = (error as NodeJS.ErrnoException).code ?? ((error as Error).cause as NodeJS.ErrnoException | undefined)?.code;
+        state = code === 'EACCES' || code === 'EPERM' || code === 'EROFS' ? 'unwritable' : 'repair_failed';
+        action = state === 'unwritable'
+          ? `Allow Myco to write ${manifest?.displayName ?? id}'s configuration`
+          : `Run myco doctor to check ${manifest?.displayName ?? id}'s capture configuration`;
       }
       let ranAt: number | undefined;
       try { if (manifest !== undefined) ranAt = harnessRanAt(manifest, mycoHome); } catch {

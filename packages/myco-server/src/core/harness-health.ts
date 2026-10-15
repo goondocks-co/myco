@@ -51,13 +51,15 @@ function storedFacts(raw: string): StoredHarnessFact[] {
   return report.harnesses.map((fact, i) => ({ ...fact, sinceAt: (parsed[i] as { sinceAt: number }).sinceAt }));
 }
 
+const captureConfigured = (state: ProvisionedHarnessFact['state']): state is 'ready' | 'held_elsewhere' => state === 'ready' || state === 'held_elsewhere';
+
 /** One writer for current machine harness facts; a repeated state retains the instant it first needed attention. */
 export async function recordProvisionedHarnessReport(db: RelationalStore, machineId: string, report: ProvisionedHarnessReport, now: number): Promise<void> {
   const raw = await machineHarnessReport(db, machineId);
   const prior = new Map((raw === null ? [] : storedFacts(raw)).map((fact) => [fact.id, fact]));
   const trustSince = report.harnesses.flatMap((fact) => {
     const previous = prior.get(fact.id);
-    return previous?.state === 'trust_required' && (fact.state === 'ready' || fact.state === 'trust_required') ? [previous.sinceAt] : [];
+    return previous?.state === 'trust_required' && (captureConfigured(fact.state) || fact.state === 'trust_required') ? [previous.sinceAt] : [];
   });
   const lastCapture = new Map<string, number>();
   if (trustSince.length > 0) {
@@ -67,7 +69,7 @@ export async function recordProvisionedHarnessReport(db: RelationalStore, machin
   const harnesses = report.harnesses.map((fact): StoredHarnessFact => {
     const previous = prior.get(fact.id);
     if (fact.state === 'trust_required' && fact.hookRepairAt !== undefined && fact.hookRepairAt !== previous?.hookRepairAt) return { ...fact, sinceAt: now };
-    if (previous?.state === 'trust_required' && fact.state === 'ready' && (lastCapture.get(fact.id) ?? 0) <= previous.sinceAt) {
+    if (previous?.state === 'trust_required' && captureConfigured(fact.state) && (lastCapture.get(fact.id) ?? 0) <= previous.sinceAt) {
       return { ...previous, ranAt: fact.ranAt };
     }
     if (previous?.state === 'trust_required' && fact.state === 'trust_required' && (lastCapture.get(fact.id) ?? 0) > previous.sinceAt) return { ...fact, sinceAt: now };
@@ -118,11 +120,10 @@ export async function provisionedHarnessAttention(db: RelationalStore, now: numb
   const facts: HarnessAttentionFact[] = [];
   for (const report of reports) {
     for (const harness of report.harnesses) {
-      if (harness.state === 'held_elsewhere') continue;
       const base = { machineId: report.machineId, machineName: machineNames.get(report.machineId) ?? null, harness: harness.id };
       const lastCapturedAt = captured.get(`${report.machineId}\0${harness.id}`) ?? null;
       const trustConfirmed = harness.state === 'trust_required' && (confirmedTrust.get(`${report.machineId}\0${harness.id}`) ?? 0) > harness.sinceAt;
-      if (harness.state !== 'ready' && !trustConfirmed) {
+      if (!captureConfigured(harness.state) && !trustConfirmed) {
         facts.push({ ...base, kind: 'harness_needs_repair', state: harness.state, action: harness.action!, since: harness.sinceAt });
         continue;
       }

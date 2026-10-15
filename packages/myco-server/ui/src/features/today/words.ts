@@ -456,7 +456,7 @@ export function repositoryNeededWords(projectId: string, name: string | null, co
 export function harnessHealthWords(fact: MachineHarnessHealth): string {
   const harness = harnessLabel(fact.id);
   const machine = fact.machineName ?? 'a machine';
-  if (fact.state === 'held_elsewhere') return harnessToolsElsewhere(harness, machine, fact.toolsDeployment!);
+  if (fact.state === 'held_elsewhere') return harnessToolsElsewhere(harness, machine, fact.toolsDeployment);
   if (fact.state === 'ready') return `${harness}'s Myco tools on ${machine} are set up`;
-  return fact.action!;
+  return `${harness} on ${machine}: ${fact.action!}`;
 }

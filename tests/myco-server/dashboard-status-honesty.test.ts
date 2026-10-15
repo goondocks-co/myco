@@ -1,3 +1,4 @@
+import { recordProvisionedHarnessReport } from '@myco-server-worker/core/harness-health.js';
 import { describe, expect, it } from 'bun:test';
 import { handleStatus } from '@myco-server-worker/api/status.js';
 import { handleTaskDescriptions } from '@myco-server-worker/api/task-descriptions.js';
@@ -83,6 +84,30 @@ describe('dashboard status and scope honesty on both store adapters', () => {
         expect(body.workers.fleet).toBeNull();
         expect(body.capture).toEqual([]);
         expect(body.harnesses).toEqual([]);
+      } finally { f.sqlite.close(); }
+    });
+    it(`${target} reveals held tools' address only to the machine owner, including admin views`, async () => {
+      const f = sqliteEnv();
+      try {
+        const db = target === 'native' ? sqliteRelationalStore(f.sqlite) : f.db;
+        const aud = await deploymentIdentity(f.db);
+        const owner = context(aud, 'member');
+        const admin = context(aud);
+        f.sqlite.run("INSERT INTO machine_claims (machine_id, member_id, claimed_at, label) VALUES ('held-machine', ?, ?, 'Personal laptop')", [owner.member.id, owner.now]);
+        await recordProvisionedHarnessReport(db, 'held-machine', { harnesses: [{ id: 'claude-code', provisioned: true, state: 'held_elsewhere', toolsDeployment: 'https://personal.example' }] }, owner.now);
+        const read = async (ctx: OwnerContext) => (await handleStatus({ ...f.serverEnv, db }, ctx)).json() as Promise<StatusResponse>;
+        const own = await read(owner);
+        expect(own.harnesses).toContainEqual(expect.objectContaining({ machineId: 'held-machine', toolsDeployment: 'https://personal.example' }));
+        const other = await read(admin);
+        expect(other.harnesses).toContainEqual(expect.objectContaining({ machineId: 'held-machine', state: 'held_elsewhere' }));
+        expect(other.harnesses?.find(row => row.machineId === 'held-machine')?.toolsDeployment).toBeUndefined();
+        expect(JSON.stringify(other)).not.toContain('personal.example');
+        const denied: RelationalStore = { ...db, prepare: query => {
+          if (/SELECT machine_id FROM machine_claims WHERE member_id/.test(query)) throw new Error('fixture unread ownership');
+          return db.prepare(query);
+        } };
+        const unread = await (await handleStatus({ ...f.serverEnv, db: denied }, admin)).json() as StatusResponse;
+        expect(JSON.stringify(unread)).not.toContain('personal.example');
       } finally { f.sqlite.close(); }
     });
     it(`finding 9: ${target} returns the final receipt timestamp of an ended session`, async () => {
