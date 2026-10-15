@@ -108,6 +108,7 @@ export function renderSetupStatus(facts: readonly StatusObservation[]): string[]
       ? `Not selected. New repositories will not automatically join a Deployment.${addresses.length ? ` Joined: ${addresses.join(', ')}.` : ''} Choose one with myco login --default <address> (approves this machine again).`
       : describe(fact, fact.hooksDeployment);
     lines.push(`${labels[fact.id]}: ${detail}`);
+    lines.push(...fact.agentOffers ?? []);
   }
   for (const fact of facts.filter(fact => !homeIds.has(fact.id))) {
     groups.set(fact.deployment, [...(groups.get(fact.deployment) ?? []), fact]);

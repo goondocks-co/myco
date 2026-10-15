@@ -47,7 +47,7 @@ export function assertNodeShardHeadroom(plans, timeoutMs, weights, workload) {
   for (const run of workload.runs) assert.equal(run.shards.length, plans.length, `${run.source}: incomplete node workload`);
   const recorded = recordedNodeDurations(workload);
   for (const file of plans.flatMap(plan => plan.flatMap(group => group.files))) {
-    assert.ok(Number.isFinite(weights[file]) && weights[file] > 0, `Node file needs an explicit duration weight: ${file}`);
+    assert.ok(Number.isFinite(weights[file]) && weights[file] > 0, `Node file needs an explicit duration weight: ${file}; add "${file}": <ms> to scripts/test-durations.json, using its measured npm test time.`);
     if (recorded[file] !== undefined) assert.ok(weights[file] >= recorded[file], `Stale node duration: ${file}; recorded ${recorded[file]}ms, configured ${weights[file]}ms`);
   }
   for (const [index, plan] of plans.entries()) {

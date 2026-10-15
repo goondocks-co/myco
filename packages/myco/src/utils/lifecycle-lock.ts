@@ -30,14 +30,63 @@
  */
 
 import fs from 'node:fs';
+import { constants as osConstants } from 'node:os';
 import path from 'node:path';
-import { dlopen, FFIType, suffix, ptr } from 'bun:ffi';
+import { dlopen, FFIType, suffix, ptr, read } from 'bun:ffi';
 
 // `flock(2)` operation flags. Linux and macOS agree on these values.
 const LOCK_SH = 1;
 const LOCK_EX = 2;
 const LOCK_NB = 4;
 const LOCK_UN = 8;
+const LOCK_WAIT_POLL_MS = 10;
+const lockWaiter = new Int32Array(new SharedArrayBuffer(4));
+const retryableFlockErrnos = new Set([
+  osConstants.errno.EAGAIN,
+  osConstants.errno.EWOULDBLOCK,
+  osConstants.errno.EINTR,
+]);
+
+interface FlockApi {
+  flock(fd: number, op: number): number;
+  errno(): number;
+}
+
+function lockDeadline(opts: AcquireOptions): number | undefined {
+  if (!opts.wait || opts.timeoutMs === undefined) return undefined;
+  if (!Number.isFinite(opts.timeoutMs) || opts.timeoutMs < 0) {
+    throw new RangeError('LifecycleLock: timeoutMs must be a non-negative finite number');
+  }
+  return performance.now() + opts.timeoutMs;
+}
+
+function waitForLockRetry(deadline: number): boolean {
+  const remaining = deadline - performance.now();
+  if (remaining <= 0) return false;
+  Atomics.wait(lockWaiter, 0, 0, Math.min(remaining, LOCK_WAIT_POLL_MS));
+  return true;
+}
+
+function flockAcquire(
+  flockApi: FlockApi, fd: number, lockPath: string, mode: number, wait: boolean, deadline: number | undefined,
+): boolean {
+  const operation = mode | (wait && deadline === undefined ? 0 : LOCK_NB);
+  try {
+    do {
+      if (flockApi.flock(fd, operation) === 0) return true;
+      if (deadline === undefined) return false;
+      const errno = flockApi.errno();
+      if (!retryableFlockErrnos.has(errno)) {
+        const code = Object.entries(osConstants.errno).find(([, value]) => value === errno)?.[0] ?? `ERRNO_${errno}`;
+        throw Object.assign(new Error(`LifecycleLock: flock failed on ${lockPath} (${code}, errno ${errno})`), { code });
+      }
+    } while (waitForLockRetry(deadline));
+    return false;
+  } catch (error) {
+    try { fs.closeSync(fd); } catch { /* fd may already be closed */ }
+    throw error;
+  }
+}
 
 /**
  * Candidate library names per platform. The plain `libc.${suffix}`
@@ -53,10 +102,10 @@ function libcCandidates(): readonly string[] {
   return [`libc.${suffix}`];
 }
 
-let flockBinding: { flock: (fd: number, op: number) => number } | null = null;
+let flockBinding: FlockApi | null = null;
 let flockBindingError: Error | null = null;
 
-function loadFlock(): { flock: (fd: number, op: number) => number } {
+function loadFlock(): FlockApi {
   if (flockBinding) return flockBinding;
   if (flockBindingError) throw flockBindingError;
   if (process.platform === 'win32') {
@@ -68,12 +117,22 @@ function loadFlock(): { flock: (fd: number, op: number) => number } {
     throw flockBindingError;
   }
   const errors: string[] = [];
+  const errnoSymbol = process.platform === 'darwin' ? '__error' : '__errno_location';
   for (const name of libcCandidates()) {
     try {
       const lib = dlopen(name, {
         flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+        [errnoSymbol]: { args: [], returns: FFIType.ptr },
       });
-      flockBinding = lib.symbols as never;
+      const symbols = lib.symbols as unknown as Record<string, (...args: number[]) => number | null>;
+      flockBinding = {
+        flock: symbols.flock as FlockApi['flock'],
+        errno: () => {
+          const address = symbols[errnoSymbol]!();
+          if (address === null) throw new Error(`LifecycleLock: ${errnoSymbol} returned no errno address`);
+          return read.i32(address);
+        },
+      };
       return flockBinding!;
     } catch (err) {
       errors.push(`${name}: ${(err as Error).message}`);
@@ -104,6 +163,7 @@ const WIN_FILE_ATTRIBUTE_NORMAL = 0x80;
 const WIN_INVALID_HANDLE = 0xffff_ffff_ffff_ffffn;
 const WIN_LOCKFILE_FAIL_IMMEDIATELY = 0x1;
 const WIN_LOCKFILE_EXCLUSIVE_LOCK = 0x2;
+const WIN_ERROR_LOCK_VIOLATION = 33;
 // Lock a single sentinel byte far past EOF. flock on POSIX is advisory and
 // locks the whole file; LockFileEx is MANDATORY (blocks reads/writes to the
 // locked range), so locking the metadata bytes would stop `readLockHolder`
@@ -179,13 +239,20 @@ function writeHolderFile(lockPath: string, info: LockHolder): void {
   fs.writeFileSync(lockPath, JSON.stringify(info, null, 2) + '\n');
 }
 
-function winAcquire(lockPath: string, opts: AcquireOptions): AcquireResult {
+function winAcquire(lockPath: string, opts: AcquireOptions, deadline: number | undefined): AcquireResult {
   const k = loadKernel32();
   if (opts.create !== false) fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const handle = winOpenLockHandle(k, lockPath, opts.create !== false);
   const ov = winOverlapped();
   const shared = opts.mode === 'shared';
-  const rc = k.LockFileEx(handle, (shared ? 0 : WIN_LOCKFILE_EXCLUSIVE_LOCK) | (opts.wait ? 0 : WIN_LOCKFILE_FAIL_IMMEDIATELY), 0, 1, 0, ptr(ov));
+  const flags = (shared ? 0 : WIN_LOCKFILE_EXCLUSIVE_LOCK)
+    | (opts.wait && deadline === undefined ? 0 : WIN_LOCKFILE_FAIL_IMMEDIATELY);
+  let rc: number;
+  do {
+    rc = k.LockFileEx(handle, flags, 0, 1, 0, ptr(ov));
+    if (rc !== 0) break;
+    if (deadline === undefined || k.GetLastError() !== WIN_ERROR_LOCK_VIOLATION) break;
+  } while (waitForLockRetry(deadline));
   if (rc === 0) {
     const holder = readLockHolder(lockPath);
     k.CloseHandle(handle);
@@ -248,8 +315,8 @@ function refuseSharedUpdate(): never {
  * A `flock` shared lease: it coexists with other shared leases, excludes every exclusive one, writes and truncates
  * nothing, and is released by the kernel when this process ends.
  */
-function sharedLease(flockApi: { flock: (fd: number, op: number) => number }, fd: number, lockPath: string, wait = false): AcquireResult {
-  if (flockApi.flock(fd, LOCK_SH | (wait ? 0 : LOCK_NB)) !== 0) {
+function sharedLease(flockApi: FlockApi, fd: number, lockPath: string, wait = false, deadline?: number): AcquireResult {
+  if (!flockAcquire(flockApi, fd, lockPath, LOCK_SH, wait, deadline)) {
     const holder = readHolderMetadata(fd);
     fs.closeSync(fd);
     return { acquired: false, holder, holderPid: holder?.pid ?? null };
@@ -334,6 +401,8 @@ export type AcquireResult = AcquireSuccess | AcquireRefused;
 export interface AcquireOptions {
   /** Wait for the lease rather than returning a contention result. */
   wait?: boolean;
+  /** Bound `wait: true` in milliseconds. A timed out wait returns holder metadata. */
+  timeoutMs?: number;
   /** Override the command string written to the lock file. Defaults to
    *  `process.argv.join(' ')`. Informational only. */
   command?: string;
@@ -346,15 +415,15 @@ export interface AcquireOptions {
 
 export const LifecycleLock = {
   acquire(lockPath: string, opts: AcquireOptions = {}): AcquireResult {
-    if (process.platform === 'win32') return winAcquire(lockPath, opts);
+    const deadline = lockDeadline(opts);
+    if (process.platform === 'win32') return winAcquire(lockPath, opts, deadline);
     const flockApi = loadFlock();
     if (opts.create !== false) fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 
     let fd = fs.openSync(lockPath, fs.constants.O_RDWR | (opts.create !== false ? fs.constants.O_CREAT : 0), 0o644);
-    if (opts.mode === 'shared') return sharedLease(flockApi, fd, lockPath, opts.wait);
+    if (opts.mode === 'shared') return sharedLease(flockApi, fd, lockPath, opts.wait, deadline);
     for (let attempt = 0; ; attempt++) {
-      const rc = flockApi.flock(fd, LOCK_EX | (opts.wait ? 0 : LOCK_NB));
-      if (rc !== 0) {
+      if (!flockAcquire(flockApi, fd, lockPath, LOCK_EX, opts.wait === true, deadline)) {
         const holder = readHolderMetadata(fd);
         fs.closeSync(fd);
         return {

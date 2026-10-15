@@ -30,6 +30,19 @@ export function provisionRecordPath(mycoHome: string): string {
   return path.join(mycoHome, PROVISION_RECORD);
 }
 
+export class UnreadableProvisionRecordError extends Error {
+  constructor(mycoHome: string) {
+    super(`Myco's agent setup record at ${provisionRecordPath(mycoHome)} could not be read. Restore it from a backup or delete it, then run myco member provision --refresh.`);
+  }
+}
+
+/** Missing records are distinct from existing records that cannot be read. */
+export function readProvisionRecordStrict(mycoHome: string): ProvisionRecord | null {
+  const record = readProvisionRecord(mycoHome);
+  if (record === null && fs.existsSync(provisionRecordPath(mycoHome))) throw new UnreadableProvisionRecordError(mycoHome);
+  return record;
+}
+
 /** The record, or null where none is written or it cannot be read as one. */
 export function readProvisionRecord(mycoHome: string): ProvisionRecord | null {
   try {
@@ -83,6 +96,20 @@ export function settleHookTrust(mycoHome: string, reported: ProvisionRecord['pen
     if (record === null || reported === undefined || record.pendingTrust === undefined) return;
     const pendingTrust = Object.fromEntries(Object.entries(record.pendingTrust).filter(([id, trust]) => reported[id]?.at !== trust.at));
     if (Object.keys(pendingTrust).length !== Object.keys(record.pendingTrust).length) writeProvisionRecord(mycoHome, { ...record, pendingTrust });
+  });
+}
+
+/** Retain captured choices, add discovered registrations and prune metadata under the file lease. */
+export function reconcileProvisionAgents(mycoHome: string, provision: Pick<ProvisionRecord, 'version' | 'serverUrl'> & { discovered: readonly string[] }, uncapturable: ReadonlySet<string>): ProvisionRecord {
+  return withProvisionLock(mycoHome, () => {
+    const before = readProvisionRecordStrict(mycoHome);
+    const agents = [...new Set([...(before?.agents ?? []).filter(agent => !uncapturable.has(agent)), ...provision.discovered])].sort();
+    const retain = <V>(entries: Record<string, V> | undefined): Record<string, V> | undefined => entries === undefined ? undefined
+      : Object.fromEntries(Object.entries(entries).filter(([id]) => agents.includes(id)));
+    return writeProvisionRecord(mycoHome, {
+      agents, version: before?.version ?? provision.version, serverUrl: before?.serverUrl ?? provision.serverUrl,
+      binaries: retain(before?.binaries), pendingTrust: retain(before?.pendingTrust),
+    }, { replace: true });
   });
 }
 

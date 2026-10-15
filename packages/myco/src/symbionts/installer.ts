@@ -852,6 +852,7 @@ export class SymbiontInstaller {
   }
 
   memberRegistrationCurrent(scan = this.scanMemberRegistrations(), allowStaleTools = false): boolean {
+    if (!this.memberRegistrationPresent(scan)) return false;
     const toolsDeployment = this.assertGlobalMemberOwnership(undefined, scan);
     const blocked = this.blockedRegistrations(scan);
     if (blocked.some(finding => !allowStaleTools || finding.location.kind !== 'mcp')) return false;

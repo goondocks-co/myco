@@ -49,7 +49,7 @@ import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
 import { CutoverBackup } from '../member/cutover-backup.js';
 import { linkMemberSkills, missingMemberSkills, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
-import { readProvisionRecord, recordProvision, forgetProvision, holdHookTrust } from '../symbionts/member-provision-record.js';
+import { readProvisionRecord, readProvisionRecordStrict, recordProvision, reconcileProvisionAgents, forgetProvision, holdHookTrust, type ProvisionRecord } from '../symbionts/member-provision-record.js';
 import { REPAIR_LOCK, keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
 import { getPluginVersion } from '../version.js';
 import { postRoute } from './deployment-reader.js';
@@ -419,11 +419,7 @@ function provisionAgent(
   out: (line: string) => void,
   fail: (line: string) => unknown,
 ): boolean {
-  const backup = provisionBackup(mycoHome);
-  let outcome: ProvisionOutcome;
-  try {
-    outcome = provisionGlobally(agent, root, mycoHome, { packageRoot: deps.packageRoot, backup });
-  } finally { backup.pruneUnchanged(); }
+  const outcome = provisionChosenAgent(agent, root, mycoHome, deps);
   if (outcome.kind === 'unknown') {
     fail(`unknown agent "${agent}" — the membership is recorded; provision it with \`myco member provision <agent>\``);
     return false;
@@ -462,15 +458,81 @@ function globalInstaller(
 }
 
 /** Manifest-backed evidence of prior provisioning in this home's global registrations. */
-export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string; exclude?: string[] } = {}): string[] {
+export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string; exclude?: string[]; onInspectionError?: (message: string) => void } = {}): string[] {
   return loadManifests().filter((manifest) => !opts.exclude?.includes(manifest.name)).flatMap((manifest) => {
     try {
-      return globalInstaller(manifest, null, mycoHome, opts).forDeployment(serverUrl).memberRegistrationPresent() ? [manifest.name] : [];
+      const installer = globalInstaller(manifest, null, mycoHome, opts).forDeployment(serverUrl).preservingOtherMemberTools();
+      return installer.capturesAsMember() && installer.memberRegistrationPresent() ? [manifest.name] : [];
     } catch (error) {
-      process.stderr.write(`[myco] keep-current: could not inspect ${manifest.displayName}: ${error instanceof Error ? error.message : String(error)}\n`);
+      if (!(error instanceof MemberProvisionConflictError)) throw error;
+      opts.onInspectionError?.(`could not inspect ${manifest.displayName}: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     }
   });
+}
+
+/** Chosen agents, including surviving owned registrations absent from the provision record. */
+export function managedMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string; onInspectionError?: (message: string) => void } = {}): string[] {
+  const uncaptured = uncapturableMemberHarnesses(mycoHome, opts);
+  const recorded = (readProvisionRecordStrict(mycoHome)?.agents ?? []).filter(agent => !uncaptured.has(agent));
+  return [...new Set([...recorded, ...registeredMemberHarnesses(mycoHome, serverUrl, { ...opts, exclude: recorded })])].sort();
+}
+
+function uncapturableMemberHarnesses(mycoHome: string, opts: { packageRoot?: string }): Set<string> {
+  return new Set(loadManifests().filter(manifest => !globalInstaller(manifest, null, mycoHome, opts).capturesAsMember()).map(manifest => manifest.name));
+}
+
+/** The recorded destination, or an explicitly selected or unambiguous joined Deployment. */
+export function memberProvisionTarget(mycoHome: string, serverUrl?: string): string | undefined {
+  const record = readProvisionRecordStrict(mycoHome);
+  if (record !== null) return record.serverUrl;
+  const selected = selectedDeploymentMembership(mycoHome, serverUrl);
+  if (selected !== null) return selected.serverUrl;
+  const memberships = serverUrl === undefined ? listDeploymentMemberships(mycoHome) : [];
+  return memberships.length === 1 ? memberships[0].serverUrl : undefined;
+}
+
+const MEMBER_REPAIR_WAIT_MS = 15_000;
+
+export class MemberRepairBusyError extends Error {
+  constructor() {
+    super("Myco is updating this machine's agents. Retry this command after the current update finishes.");
+  }
+}
+
+function withMemberRepair<T>(mycoHome: string, command: string, fn: () => T, opts: { wait: true; timeoutMs?: number }): T;
+function withMemberRepair<T>(mycoHome: string, command: string, fn: () => T, opts?: { wait?: boolean; timeoutMs?: number }): T | null;
+function withMemberRepair<T>(mycoHome: string, command: string, fn: () => T, opts: { wait?: boolean; timeoutMs?: number } = {}): T | null {
+  const acquired = LifecycleLock.acquire(path.join(mycoHome, 'member', REPAIR_LOCK), { command, ...opts, ...(opts.wait ? { timeoutMs: opts.timeoutMs ?? MEMBER_REPAIR_WAIT_MS } : {}) });
+  if (!acquired.acquired) {
+    if (opts.wait) throw new MemberRepairBusyError();
+    return null;
+  }
+  try { return fn(); } finally { acquired.lock.release(); }
+}
+
+function provisionChosenAgent(agent: string, root: string | null, mycoHome: string, opts: { packageRoot?: string; serverUrl?: string }): ProvisionOutcome {
+  const outcome = withMemberRepair(mycoHome, 'myco member provision', () => {
+    const backup = provisionBackup(mycoHome);
+    try { return provisionGlobally(agent, root, mycoHome, { ...opts, backup }); }
+    finally { backup.pruneUnchanged(); }
+  }, { wait: true });
+  if (outcome.kind === 'provisioned' || outcome.kind === 'unchanged') withManagedMemberHarnesses(mycoHome, opts, () => {});
+  return outcome;
+}
+
+/** Reconcile fresh choices and owned registrations, and hold the repair lease through the operation. */
+export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageRoot?: string; serverUrl?: string; onInspectionError?: (message: string) => void; wait?: boolean }, fn: (record: ProvisionRecord, agents: string[]) => T): T | null {
+  return withMemberRepair(mycoHome, 'myco member reconcile', () => {
+    const serverUrl = memberProvisionTarget(mycoHome, opts.serverUrl);
+    if (serverUrl === undefined) return null;
+    const before = readProvisionRecordStrict(mycoHome);
+    const agents = managedMemberHarnesses(mycoHome, serverUrl, opts);
+    if (before === null && agents.length === 0) return null;
+    const discovered = agents.filter(agent => !before?.agents.includes(agent));
+    const record = reconcileProvisionAgents(mycoHome, { version: getPluginVersion(), serverUrl, discovered }, uncapturableMemberHarnesses(mycoHome, opts));
+    return fn(record, record.agents);
+  }, { wait: opts.wait });
 }
 
 /** Read-only registration and settings currency through the installer. */
@@ -584,7 +646,7 @@ export interface DetectedProvision {
  * then provisioning is global alone, with no project root to check or retire registrations in.
  */
 export function provisionDetectedAgents(
-  mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; agents?: () => string[]; preserveOtherMemberTools?: boolean } = {},
+  mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; agents?: () => string[]; preserveOtherMemberTools?: boolean; timeoutMs?: number } = {},
 ): DetectedProvision {
   return provisionAgents((opts.agents ?? (() => detectMachineInstalledSymbionts().map((m) => m.name)))(), mycoHome, serverUrl, root, opts);
 }
@@ -593,7 +655,16 @@ export function provisionDetectedAgents(
  * Provision `agents` as `provisionDetectedAgents` does; the installer records each successful global registration.
  */
 export function provisionAgents(
-  agents: readonly string[], mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; preserveOtherMemberTools?: boolean } = {},
+  agents: readonly string[], mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; preserveOtherMemberTools?: boolean; timeoutMs?: number } = {},
+): DetectedProvision {
+  const found = withMemberRepair(mycoHome, 'myco member provision', () => installMemberAgents(agents, mycoHome, serverUrl, root, opts), { wait: true, timeoutMs: opts.timeoutMs });
+  withManagedMemberHarnesses(mycoHome, opts, () => {});
+  if (opts.preserveOtherMemberTools && found.skipped.length === 0) keepCurrent(mycoHome, { packageRoot: opts.packageRoot });
+  return found;
+}
+
+function installMemberAgents(
+  agents: readonly string[], mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; preserveOtherMemberTools?: boolean },
 ): DetectedProvision {
   const found: DetectedProvision = { provisioned: [], unchanged: [], skipped: [], heldSkills: [] };
   const backup = provisionBackup(mycoHome);
@@ -628,7 +699,6 @@ export function provisionAgents(
     if (held.length > 0 && !found.heldSkills.some((h) => h.folder === outcome.skills!.folder)) found.heldSkills.push({ folder: outcome.skills!.folder, names: held.map((h) => h.name) });
   }
   } finally { backup.pruneUnchanged(); }
-  if (opts.preserveOtherMemberTools && found.skipped.length === 0) keepCurrent(mycoHome, { packageRoot: opts.packageRoot });
   return found;
 }
 
@@ -696,16 +766,25 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
   if (refresh) {
     if (remove) return fail('--refresh and --remove cannot be combined');
     if (agent !== undefined) return fail('--refresh sets up again the agents set up before; it takes no agent');
-    // Refresh recorded harnesses and existing owned registrations for their recorded Deployment.
-    const record = readProvisionRecord(mycoHome);
-    if (record === null) {
-      // Said once: the empty record written here keeps later refreshes quiet until the person provisions.
-      out('Myco has not set up your agents on this machine; run `myco member provision` to set them up.');
-      const membership = selectedDeploymentMembership(mycoHome);
-      if (membership !== null) recordNoAgents(mycoHome, membership.serverUrl);
-      return true;
-    }
-    const repaired = keepCurrent(mycoHome, { packageRoot: deps.packageRoot });
+    const checked = withMemberRepair(mycoHome, 'myco member provision --refresh', () => {
+      const record = readProvisionRecord(mycoHome);
+      if (record === null) {
+        const serverUrl = memberProvisionTarget(mycoHome, serverArg);
+        if (serverUrl === undefined && serverArg === undefined) {
+          const memberships = listDeploymentMemberships(mycoHome);
+          if (memberships.length > 1) return fail(`this machine is a member of ${memberships.length} Deployments; name one with --server (${memberships.map(m => deploymentUrl(m.serverUrl)).join(', ')})`);
+        }
+        const agents = serverUrl === undefined ? [] : managedMemberHarnesses(mycoHome, serverUrl, deps);
+        if (agents.length === 0) {
+          out('Myco has not set up your agents on this machine; run `myco member provision` to set them up.');
+          if (serverUrl !== undefined) recordNoAgents(mycoHome, serverUrl);
+          return 'finished' as const;
+        }
+      }
+      return 'repair' as const;
+    }, { wait: true });
+    if (checked !== 'repair') return checked === 'finished';
+    const repaired = keepCurrent(mycoHome, { packageRoot: deps.packageRoot, serverUrl: serverArg, wait: true });
     refreshed?.(repaired, mycoHome);
     if (repaired !== null) {
       if (repaired.harnesses.length === 0) out('No agent is set up for Myco on this machine; `myco member provision` sets them up.');
@@ -721,13 +800,12 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     const installer = globalInstaller(manifest, null, mycoHome, deps);
     const recordedServer = readProvisionRecord(mycoHome)?.serverUrl ?? selectedDeploymentMembership(mycoHome)?.serverUrl;
     if (recordedServer !== undefined) installer.forDeployment(recordedServer);
-    const lease = LifecycleLock.acquire(path.join(mycoHome, 'member', REPAIR_LOCK), { command: 'myco member provision --remove' });
-    if (!lease.acquired) return fail('a helper is provisioning agents; retry when it finishes');
     try {
-      installer.uninstallMemberRegistration();
-      forgetProvision(mycoHome, agent);
+      withMemberRepair(mycoHome, 'myco member provision --remove', () => {
+        installer.uninstallMemberRegistration();
+        forgetProvision(mycoHome, agent);
+      }, { wait: true });
     } catch (error) { return fail(error instanceof Error ? error.message : String(error)); }
-    finally { lease.lock.release(); }
     out(`Removed Myco's hooks and MCP entry for ${manifest.displayName}.`);
     return true;
   }
@@ -758,11 +836,7 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     for (const line of detectedProvisionLines(found)) out(line);
     return true;
   }
-  const backup = provisionBackup(mycoHome);
-  let outcome: ProvisionOutcome;
-  try {
-    outcome = provisionGlobally(agent, folder, mycoHome, { packageRoot: deps.packageRoot, serverUrl, backup });
-  } finally { backup.pruneUnchanged(); }
+  const outcome = provisionChosenAgent(agent, folder, mycoHome, { packageRoot: deps.packageRoot, serverUrl });
   if (outcome.kind === 'unknown') return fail(`unknown agent "${agent}"`);
   if (outcome.kind === 'refused') return fail(outcome.detail);
   out(outcome.detail);

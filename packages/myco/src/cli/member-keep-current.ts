@@ -9,10 +9,10 @@ import { expandHome, resolveMycoHome } from '@myco/paths/home.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { getPluginVersion } from '@myco/version.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
-import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
+import { LifecycleLock, withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 import { isBinaryOnPath, loadManifests } from '@myco/symbionts/detect.js';
-import { readProvisionRecord, recordProvision, settleHookTrust, type ProvisionRecord } from '@myco/symbionts/member-provision-record.js';
-import { provisionGlobally, registeredMemberHarnesses, memberHarnessStatus, provisionBackup } from '@myco/cli/member.js';
+import { readProvisionRecord, recordProvision, settleHookTrust, UnreadableProvisionRecordError, type ProvisionRecord } from '@myco/symbionts/member-provision-record.js';
+import { provisionGlobally, withManagedMemberHarnesses, memberHarnessStatus, provisionBackup } from '@myco/cli/member.js';
 import type { ProvisionedHarnessFact } from '@goondocks/myco-shared/harness-health';
 import { deadlineBudget, canStartRequest, subRequestBudget } from '@myco/member/budget.js';
 import { readDeploymentFeaturesStrict } from '@myco/member/context-cache.js';
@@ -57,81 +57,93 @@ function rememberState(mycoHome: string, result: KeepCurrentResult): void {
   if (JSON.stringify(before) !== JSON.stringify(next)) atomicWriteFileSync(target, JSON.stringify(next));
 }
 
-/** Repair the recorded harnesses through provisioning, serialized across this home's project helpers. */
-export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: string) => boolean; packageRoot?: string } = {}): KeepCurrentResult | null {
-  let record = readProvisionRecord(mycoHome);
-  if (record === null) return null;
-  const acquired = LifecycleLock.acquire(path.join(mycoHome, 'member', REPAIR_LOCK), { command: 'myco member keep-current' });
-  if (!acquired.acquired) return null;
+function rememberProvisionProblem(mycoHome: string, problem: string | null): void {
+  const target = path.join(mycoHome, 'member', 'provision-problem.json');
+  withFileLockSync(`${target}.lock`, () => {
+    let before: unknown;
+    try { before = JSON.parse(fs.readFileSync(target, 'utf8')); } catch { /* Unreadable diagnostic state is replaced below. */ }
+    if (before === problem) return;
+    atomicWriteFileSync(target, JSON.stringify(problem));
+    if (problem !== null) process.stderr.write(`[myco] keep-current: ${problem}\n`);
+  });
+}
+
+/** Repair the managed harnesses through provisioning, serialized across this home's project helpers. */
+export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: string) => boolean; packageRoot?: string; serverUrl?: string; wait?: boolean } = {}): KeepCurrentResult | null {
   try {
-    const discovered = registeredMemberHarnesses(mycoHome, record.serverUrl, { ...deps, exclude: record.agents });
-    if (discovered.some((id) => !record!.agents.includes(id))) record = recordProvision(mycoHome, { version: record.version, serverUrl: record.serverUrl, agents: discovered });
-    const result: KeepCurrentResult = { serverUrl: record.serverUrl, harnesses: [], ready: [] };
-    const manifests = loadManifests();
-    for (const id of record.agents) {
-      const manifest = manifests.find((m) => m.name === id);
-      let state: ProvisionedHarnessFact['state'] = 'ready';
-      let action: string | undefined;
-      let toolsDeployment: string | undefined;
-      try {
-        if (manifest === undefined) throw new Error('This build has no manifest for the provisioned harness');
-        const installed = installEvidence(manifest, deps.binaryFound ?? isBinaryOnPath);
-        let status = installed ? memberHarnessStatus(id, mycoHome, record.serverUrl, deps) : { current: false };
-        if (installed && !status.current) {
-          const backup = provisionBackup(mycoHome);
-          try {
-            const outcome = provisionGlobally(id, null, mycoHome, { serverUrl: record.serverUrl, packageRoot: deps.packageRoot, backup, preserveOtherMemberTools: true });
-            if (outcome.kind === 'refused') throw Object.assign(new Error(outcome.detail), { code: outcome.code });
-            if (outcome.kind === 'unknown') throw new Error('This build cannot provision the harness');
-          } finally { backup.pruneUnchanged(); }
-          status = memberHarnessStatus(id, mycoHome, record.serverUrl, deps);
-          if (!status.current) {
-            if (status.stale?.length) throw new MemberStaleRegistrationError(status.stale);
-            throw new Error('Capture configuration is still incomplete');
+    return withManagedMemberHarnesses(mycoHome, { ...deps, onInspectionError: message => process.stderr.write(`[myco] keep-current: ${message}\n`) }, (record, discovered) => {
+      rememberProvisionProblem(mycoHome, null);
+      const result: KeepCurrentResult = { serverUrl: record.serverUrl, harnesses: [], ready: [] };
+      const manifests = loadManifests();
+      for (const id of discovered) {
+        const manifest = manifests.find((m) => m.name === id);
+        let state: ProvisionedHarnessFact['state'] = 'ready';
+        let action: string | undefined;
+        let toolsDeployment: string | undefined;
+        try {
+          if (manifest === undefined) throw new Error('This build has no manifest for the provisioned harness');
+          const installed = installEvidence(manifest, deps.binaryFound ?? isBinaryOnPath);
+          let status = installed ? memberHarnessStatus(id, mycoHome, record.serverUrl, deps) : { current: false };
+          if (installed && !status.current) {
+            const backup = provisionBackup(mycoHome);
+            try {
+              const outcome = provisionGlobally(id, null, mycoHome, { serverUrl: record.serverUrl, packageRoot: deps.packageRoot, backup, preserveOtherMemberTools: true });
+              if (outcome.kind === 'refused') throw Object.assign(new Error(outcome.detail), { code: outcome.code });
+              if (outcome.kind === 'unknown') throw new Error('This build cannot provision the harness');
+            } finally { backup.pruneUnchanged(); }
+            status = memberHarnessStatus(id, mycoHome, record.serverUrl, deps);
+            if (!status.current) {
+              if (status.stale?.length) throw new MemberStaleRegistrationError(status.stale);
+              throw new Error('Capture configuration is still incomplete');
+            }
+          }
+          if (status.toolsDeployment !== undefined) {
+            state = 'held_elsewhere';
+            toolsDeployment = status.toolsDeployment;
+          }
+          if (installed) result.ready.push(manifest.displayName);
+          const pendingTrust = readProvisionRecord(mycoHome)?.pendingTrust?.[id];
+          if (pendingTrust !== undefined) {
+            state = 'trust_required';
+            toolsDeployment = undefined;
+            action = pendingTrust.action;
+            result.pendingTrust = { ...result.pendingTrust, [id]: pendingTrust };
+          } else if (!installed) {
+            state = 'binary_missing';
+            action = `Install ${manifest.displayName} again`;
+          }
+        } catch (error) {
+          toolsDeployment = undefined;
+          const code = (error as NodeJS.ErrnoException).code ?? ((error as Error).cause as NodeJS.ErrnoException | undefined)?.code;
+          state = code === 'EACCES' || code === 'EPERM' || code === 'EROFS' ? 'unwritable' : 'repair_failed';
+          action = state === 'unwritable'
+            ? `Allow Myco to write ${manifest?.displayName ?? id}'s configuration`
+            : error instanceof MemberStaleRegistrationError ? error.message
+            : error instanceof MemberMcpConflictError && error.repairAction !== undefined ? error.repairAction
+            : `Run myco doctor to check ${manifest?.displayName ?? id}'s capture configuration`;
+          if (error instanceof MemberProvisionConflictError) {
+            const remedy = state !== 'unwritable' && error instanceof MemberMcpConflictError ? error.localRemedy ?? action : action;
+            (result.localActions ??= {})[id] = error instanceof MemberStaleRegistrationError ? error.problem : joinSentences(error.problem, remedy);
           }
         }
-        if (status.toolsDeployment !== undefined) {
-          state = 'held_elsewhere';
-          toolsDeployment = status.toolsDeployment;
-        }
-        if (installed) result.ready.push(manifest.displayName);
-        const pendingTrust = readProvisionRecord(mycoHome)?.pendingTrust?.[id];
-        if (pendingTrust !== undefined) {
-          state = 'trust_required';
+        let ranAt: number | undefined;
+        try { if (manifest !== undefined) ranAt = harnessRanAt(manifest, mycoHome); } catch {
+          state = 'repair_failed';
+          delete result.localActions?.[id];
           toolsDeployment = undefined;
-          action = pendingTrust.action;
-          result.pendingTrust = { ...result.pendingTrust, [id]: pendingTrust };
-        } else if (!installed) {
-          state = 'binary_missing';
-          action = `Install ${manifest.displayName} again`;
+          action = `Can't tell whether ${manifest?.displayName ?? id} ran; open it and check access to its session store`;
         }
-      } catch (error) {
-        toolsDeployment = undefined;
-        const code = (error as NodeJS.ErrnoException).code ?? ((error as Error).cause as NodeJS.ErrnoException | undefined)?.code;
-        state = code === 'EACCES' || code === 'EPERM' || code === 'EROFS' ? 'unwritable' : 'repair_failed';
-        action = state === 'unwritable'
-          ? `Allow Myco to write ${manifest?.displayName ?? id}'s configuration`
-          : error instanceof MemberStaleRegistrationError ? error.message
-          : error instanceof MemberMcpConflictError && error.repairAction !== undefined ? error.repairAction
-          : `Run myco doctor to check ${manifest?.displayName ?? id}'s capture configuration`;
-        if (error instanceof MemberProvisionConflictError) {
-          const remedy = state !== 'unwritable' && error instanceof MemberMcpConflictError ? error.localRemedy ?? action : action;
-          (result.localActions ??= {})[id] = error instanceof MemberStaleRegistrationError ? error.problem : joinSentences(error.problem, remedy);
-        }
+        result.harnesses.push({ id, provisioned: true, state, ...(toolsDeployment === undefined ? {} : { toolsDeployment }), ...(ranAt === undefined ? {} : { ranAt }), ...(result.pendingTrust?.[id] === undefined ? {} : { hookRepairAt: result.pendingTrust[id].at }), ...(action === undefined ? {} : { action }) });
       }
-      let ranAt: number | undefined;
-      try { if (manifest !== undefined) ranAt = harnessRanAt(manifest, mycoHome); } catch {
-        state = 'repair_failed';
-        delete result.localActions?.[id];
-        toolsDeployment = undefined;
-        action = `Can't tell whether ${manifest?.displayName ?? id} ran; open it and check access to its session store`;
-      }
-      result.harnesses.push({ id, provisioned: true, state, ...(toolsDeployment === undefined ? {} : { toolsDeployment }), ...(ranAt === undefined ? {} : { ranAt }), ...(result.pendingTrust?.[id] === undefined ? {} : { hookRepairAt: result.pendingTrust[id].at }), ...(action === undefined ? {} : { action }) });
-    }
-    if (result.harnesses.every((fact) => fact.state === 'ready' || fact.state === 'trust_required' || fact.state === 'held_elsewhere')) recordProvision(mycoHome, { serverUrl: record.serverUrl, agents: [], version: getPluginVersion() });
-    rememberState(mycoHome, result);
-    return result;
-  } finally { acquired.lock.release(); }
+      if (result.harnesses.every((fact) => fact.state === 'ready' || fact.state === 'trust_required' || fact.state === 'held_elsewhere')) recordProvision(mycoHome, { serverUrl: record.serverUrl, agents: [], version: getPluginVersion() });
+      rememberState(mycoHome, result);
+      return result;
+    });
+  } catch (error) {
+    if (!(error instanceof UnreadableProvisionRecordError)) throw error;
+    rememberProvisionProblem(mycoHome, error.message);
+    return null;
+  }
 }
 
 /** Report only to a Deployment that advertised the additive harness-health surface; delivery has its own capped share. */

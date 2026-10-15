@@ -6,7 +6,7 @@
  * holder metadata roundtrip, and OS-level auto-release.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -22,35 +22,45 @@ describe.skipIf(!supported)('LifecycleLock', () => {
   let lockPath: string;
   let orphan: ChildProcess | null = null;
   let orphanHolderPid: number | null = null;
+  let terminator: ChildProcess | null = null;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lifecycle-lock-unit-'));
     lockPath = path.join(tmpDir, 'test.lock');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     killOrphan();
+    await Promise.all([waitForOrphanExit(), waitForChildExit(terminator)]);
     orphan = null;
     orphanHolderPid = null;
+    terminator = null;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   function killOrphan(): void {
+    if (terminator?.pid && terminator.exitCode === null && terminator.signalCode === null) {
+      try { terminator.kill('SIGKILL'); } catch { /* already dead */ }
+    }
     if (orphanHolderPid && orphanHolderPid !== orphan?.pid) {
       try { process.kill(orphanHolderPid, 'SIGKILL'); } catch { /* already dead */ }
     }
-    if (orphan?.pid) {
+    if (orphan?.pid && orphan.exitCode === null && orphan.signalCode === null) {
       try { process.kill(orphan.pid, 'SIGKILL'); } catch { /* already dead */ }
     }
   }
 
-  function waitForOrphanExit(): Promise<void> {
-    if (!orphan || orphan.exitCode !== null || orphan.signalCode !== null) {
+  function waitForChildExit(child: ChildProcess | null): Promise<void> {
+    if (!child || child.exitCode !== null || child.signalCode !== null) {
       return Promise.resolve();
     }
     return new Promise<void>((resolve) => {
-      orphan!.once('exit', () => resolve());
+      child.once('exit', () => resolve());
     });
+  }
+
+  function waitForOrphanExit(): Promise<void> {
+    return waitForChildExit(orphan);
   }
 
   async function spawnLockHolder(): Promise<number> {
@@ -136,6 +146,69 @@ describe.skipIf(!supported)('LifecycleLock', () => {
     expect(result.holder!.pid).toBe(holderPid);
     expect(typeof result.holder!.startedAt).toBe('number');
   }, 10_000);
+
+  for (const mode of ['exclusive', 'shared'] as const) {
+    it(`a bounded ${mode} wait times out on a live holder and reports it`, async () => {
+      const holderPid = await spawnLockHolder();
+
+      const started = performance.now();
+      const result = LifecycleLock.acquire(lockPath, { mode, wait: true, timeoutMs: 80 });
+      const elapsed = performance.now() - started;
+
+      expect(result.acquired).toBe(false);
+      if (result.acquired) throw new Error('unreachable');
+      expect(result.holderPid).toBe(holderPid);
+      expect(result.holder?.pid).toBe(holderPid);
+      expect(elapsed).toBeGreaterThanOrEqual(60);
+      expect(elapsed).toBeLessThan(3_000);
+    }, 10_000);
+  }
+
+  it('a bounded wait surfaces a permanent flock failure without retrying', () => {
+    const ready = LifecycleLock.acquire(lockPath);
+    if (!ready.acquired) throw new Error('unreachable');
+    ready.lock.release();
+
+    const closedFd = fs.openSync(lockPath, 'r+');
+    fs.closeSync(closedFd);
+    const opening = spyOn(fs, 'openSync').mockImplementation(() => closedFd);
+    const closing = spyOn(fs, 'closeSync');
+    const sleeping = spyOn(Atomics, 'wait').mockImplementation(() => {
+      throw new Error('permanent flock failure was retried');
+    });
+    try {
+      expect(() => LifecycleLock.acquire(lockPath, { wait: true, timeoutMs: 1_000 }))
+        .toThrow(expect.objectContaining({ code: 'EBADF' }));
+      expect(closing).toHaveBeenCalledWith(closedFd);
+      expect(sleeping).not.toHaveBeenCalled();
+    } finally {
+      sleeping.mockRestore();
+      closing.mockRestore();
+      opening.mockRestore();
+    }
+  });
+
+  for (const [name, options] of [
+    ['bounded', { wait: true, timeoutMs: 5_000 }],
+    ['blocking', { wait: true }],
+  ] as const) {
+    it(`a ${name} wait acquires after the holder exits`, async () => {
+      await spawnLockHolder();
+      const orphanExited = waitForOrphanExit();
+      terminator = spawn(process.execPath, [
+        '-e',
+        'setTimeout(() => process.kill(Number(process.argv[1]), "SIGTERM"), 80)',
+        String(orphanHolderPid),
+      ], { stdio: 'ignore', cwd: process.cwd() });
+      const terminatorExited = waitForChildExit(terminator);
+
+      const result = LifecycleLock.acquire(lockPath, options);
+      if (result.acquired) result.lock.release();
+      await Promise.all([orphanExited, terminatorExited]);
+      expect(terminator.exitCode).toBe(0);
+      expect(result.acquired).toBe(true);
+    }, 10_000);
+  }
 
   it('an OS-level kill releases the lock so the next acquire succeeds', async () => {
     await spawnLockHolder();
