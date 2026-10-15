@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from 'bun:test';
+import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -69,4 +69,28 @@ for (const key of ['headersHelper', 'http_headers_helper']) it(`classifies a sta
   expect(mcpVerdict(entry, [])).toBe('stale');
   fs.mkdirSync(home);
   expect(mcpVerdict(entry, [])).toBe('member');
+});
+
+it('treats ENOTDIR as absent without throwing from a verdict', () => {
+  fs.writeFileSync(home, 'a file');
+  const nested = path.join(home, 'deleted', 'bin', 'myco');
+  expect(commandVerdict(`${nested} hook stop`, [])).toBe('stale');
+  expect(mcpVerdict({ command: nested }, [])).toBe('stale');
+  expect(pluginFileVerdict(`// myco:plugin-marker\nconst binary = "${nested}";`, [])).toBe('stale');
+});
+
+it('keeps inaccessible paths present without throwing from a verdict', () => {
+  const stat = spyOn(fs, 'statSync').mockImplementation(() => { throw Object.assign(new Error('inaccessible'), { code: 'EACCES' }); });
+  try {
+    expect(commandVerdict(`${binary} hook stop`, [])).toBe('foreign');
+    expect(mcpVerdict({ command: binary }, [])).toBe('foreign');
+    expect(pluginFileVerdict(`// myco:plugin-marker\nconst binary = "${binary}";`, [])).toBe('foreign');
+  } finally { stat.mockRestore(); }
+});
+
+it('keeps a dangling home symlink present', () => {
+  fs.symlinkSync(path.join(scratch, 'unmounted'), home);
+  expect(commandVerdict(`${binary} hook stop`, [])).toBe('foreign');
+  expect(mcpVerdict({ command: binary }, [])).toBe('foreign');
+  expect(pluginFileVerdict(`// myco:plugin-marker\nconst binary = "${binary}";`, [])).toBe('foreign');
 });

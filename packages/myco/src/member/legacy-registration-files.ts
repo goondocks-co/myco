@@ -45,8 +45,16 @@ export interface LegacyScan {
   unreadable: Array<{ file: string; reason: string }>;
 }
 
-export function staleRegistrationWords(finding: LegacyFinding, agent = finding.location.agent): string {
-  return `${agent}: stale Myco entry in ${finding.file} at ${finding.keyPath}; binary ${finding.missingBinary} is missing. Myco leaves it alone; you may delete that entry.`;
+export function staleRegistrationSurface(finding: LegacyFinding): 'tools' | 'capture hooks' {
+  return finding.location.kind === 'mcp' ? 'tools' : 'capture hooks';
+}
+
+export function staleRegistrationWords(finding: LegacyFinding, agent = finding.location.agent, skipped = false): string {
+  const entry = finding.serversPath !== undefined
+    ? finding.serversPath[0] === 'projects' ? `the "myco" MCP server for project ${finding.serversPath[1]}` : 'the top-level "myco" MCP server'
+    : finding.keyPath?.startsWith('hooks.') ? `a ${finding.keyPath.split('.')[1]} hook running ${finding.missingBinary}` : 'the Myco plugin';
+  const outcome = skipped ? `${staleRegistrationSurface(finding)} are not set up because this entry occupies their place` : 'nothing else is affected';
+  return `${agent}: stale Myco entry in ${finding.file}: ${entry}; binary ${finding.missingBinary} is missing. Myco leaves this entry alone; ${outcome}. You may delete it${skipped ? ', then run myco member provision --refresh.' : '.'}`;
 }
 
 export function hookVerdict(command: string, legacyHomes: readonly string[]): Verdict | null {
@@ -155,7 +163,7 @@ export function scanLegacyRegistrations(opts: ScanOptions): LegacyScan {
     if (location.kind !== 'plugin-manifest' || !fs.existsSync(file)) continue;
     if (pluginVerdicts.get(path.dirname(file)) === 'legacy') scan.findings.push({ location, file, verdict: 'legacy', subject: file });
   }
-  const unique = new Map(scan.findings.map((f) => [`${f.file}\0${f.location.kind}\0${(f.serversPath ?? []).join('/')}\0${f.subject}`, f]));
+  const unique = new Map(scan.findings.map((f) => [`${f.file}\0${f.location.kind}\0${(f.serversPath ?? []).join('/')}\0${f.keyPath ?? ''}\0${f.subject}`, f]));
   scan.findings = [...unique.values()];
   return scan;
 }

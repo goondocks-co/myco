@@ -64,7 +64,7 @@ import type { SchtasksRunner } from '@myco/member/legacy-service/windows.js';
 import type { LaunchctlRunner } from '@myco/member/legacy-service/launchd.js';
 import { detectMachineInstalledSymbionts, loadManifests } from '../symbionts/detect.js';
 import { removeLegacyRegistrations, rewriteKeepingMode, scanLegacyRegistrations, type LegacyFinding } from '../symbionts/legacy-registrations.js';
-import { staleRegistrationWords } from '@myco/member/legacy-registration-files.js';
+import { staleRegistrationWords, staleRegistrationSurface } from '@myco/member/legacy-registration-files.js';
 import { pinMachineHome, previewGlobalProvision, provisionGlobally, type ProvisionOutcome } from './member.js';
 import { legacyReportLines, reportLines, STOPPED_WORDS, transcriptImportComplete } from './import.js';
 import { resolveManagedBinaryPath } from '../symbionts/installer.js';
@@ -529,9 +529,12 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
   const scan = scanRegistrations();
   for (const { file, reason } of scan.unreadable) blockers.push(`${file} holds a Myco entry but could not be read (${reason}); fix or move it, then run again.`);
   const displayName = (agent: string) => loadManifests().find((m) => m.name === agent)?.displayName ?? agent;
-  const staleAgents = new Set(scan.findings.filter((finding) => finding.verdict === 'stale' && finding.location.scope === 'global').map((finding) => finding.location.agent));
+  const reportedStale = new Set<string>();
   for (const finding of scan.findings.filter((f) => f.verdict === 'stale')) {
-    out(`   ${staleRegistrationWords(finding, displayName(finding.location.agent))}`);
+    const blocked = provisioned.some(p => p.targets.blocked.some(entry => entry.file === finding.file && entry.keyPath === finding.keyPath));
+    const words = staleRegistrationWords(finding, displayName(finding.location.agent), blocked);
+    reportedStale.add(words);
+    out(`   ${words}`);
   }
   // A connected folder's runtime.command pin naming a 1.4 home's binary is pointed at the 2.0 binary.
   const binary2 = resolveManagedBinaryPath(mycoHome);
@@ -583,15 +586,13 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       },
     }])) },
     { step: 3, title: 'Point the agents 2.0 captures at 2.0', actions: provisioned.map((p): Action => ({
-      would: staleAgents.has(p.agent)
-        ? `would set up ${p.displayName}'s ${[...(p.targets.hooks === null ? [] : ['hooks']), ...(p.targets.mcp.length === 0 ? [] : ['tools']), 'skills'].join(', ')} for ${mycoHome}; stale entries are left alone`
-        : `would point ${p.displayName} at ${mycoHome}${p.replaces.length > 0 ? `, replacing the 1.4 hooks and MCP entry of ${p.replaces.join(', ')}` : ''}`,
+      would: `would set up ${p.displayName}'s ${[...(p.targets.hooks === null ? [] : ['hooks']), ...(p.targets.mcp.length === 0 ? [] : ['tools']), 'skills'].join(', ')} for ${mycoHome}${p.replaces.length > 0 ? `, replacing the 1.4 registrations of ${p.replaces.join(', ')}` : ''}${p.targets.skipped.length === 0 ? '' : `; ${[...new Set(p.targets.blocked.map(staleRegistrationSurface))].join(' and ')} are not set up because stale entries occupy their place`}`,
       outcomes: [`provision ${p.agent}`],
       run: async () => {
         const outcome: ProvisionOutcome = (deps.provision ?? provisionGlobally)(p.agent, null, mycoHome, { packageRoot: deps.packageRoot, legacyHomes, serverUrl });
         if (outcome.kind === 'refused') throw new Error(`${p.agent}: ${outcome.detail}`);
         if (outcome.kind === 'unknown') throw new Error(`${p.agent}: no such agent`);
-        return { lines: [outcome.detail], made: [`provision ${p.agent}`] };
+        return { lines: outcome.detail.split('\n').filter(line => !reportedStale.has(line)), made: [`provision ${p.agent}`] };
       },
     })) },
     { step: 4, title: 'Take 1.4 out of every other place it registered with an agent', actions: [...removalFiles.map((file): Action => {

@@ -55,6 +55,22 @@ afterEach(() => {
   }
 });
 
+it('repairs capture beside an unrelated stale Claude project entry', () => {
+  provisionGlobally('claude-code', null, home, { serverUrl: SERVER });
+  const file = path.join(agentHome, '.claude.json');
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const folder = '/Users/x/my.app';
+  const entry = { command: path.join(agentHome, 'deleted-install', 'bin', 'myco') };
+  data.projects = { [folder]: { mcpServers: { myco: entry } } };
+  fs.writeFileSync(file, JSON.stringify(data));
+  fs.writeFileSync(path.join(agentHome, '.claude', 'settings.json'), '{}');
+  const result = keepCurrent(home, { binaryFound: () => true });
+  expect(result?.harnesses[0].state).toBe('ready');
+  expect(result?.harnesses[0].toolsDeployment).toBeUndefined();
+  expect(fs.readFileSync(path.join(agentHome, '.claude', 'settings.json'), 'utf8')).toContain('--credential registry');
+  expect(JSON.parse(fs.readFileSync(file, 'utf8')).projects[folder].mcpServers.myco).toEqual(entry);
+});
+
 it('records every harness at the shared provisioning operation, including unchanged installs', () => {
   recordProvision(home, { version: 'old', serverUrl: SERVER, agents: [] });
   for (const agent of ['codex', 'claude-code']) provisionGlobally(agent, null, home, { serverUrl: SERVER });
@@ -776,7 +792,8 @@ it('repairs a moved runtime pin without taking held tools or losing their owners
 });
 
 for (const agent of ['claude-code', 'codex']) for (const surface of ['hooks', 'mcp', 'helper']) for (const linked of surface === 'helper' ? [false] : [false, true]) it(`does not hold ${agent}'s stale ${surface} elsewhere or overwrite them during repair${linked ? ' through a linked config' : ''}`, async () => {
-  const tools = toolsHeldElsewhere(agent);
+  if (surface === 'hooks') provisionGlobally(agent, null, home, { serverUrl: SERVER });
+  const tools = surface === 'hooks' ? agent === 'claude-code' ? path.join(agentHome, '.claude.json') : config() : toolsHeldElsewhere(agent);
   const target = surface !== 'hooks' ? tools : agent === 'codex' ? hooks() : path.join(agentHome, '.claude', 'settings.json');
   const binary = path.join(agentHome, 'deleted', 'bin', 'myco');
   const entry = { command: binary, args: ['mcp'] };
@@ -797,11 +814,19 @@ for (const agent of ['claude-code', 'codex']) for (const surface of ['hooks', 'm
   const before = fs.readFileSync(target);
   expect(setupChecks(home).some(check => check.toolsDeployment !== undefined)).toBe(false);
   const result = keepCurrent(home, { binaryFound: () => true });
-  expect(result?.harnesses[0].state).toBe('repair_failed');
+  expect(result?.harnesses[0].state).toBe(surface === 'hooks' ? agent === 'codex' ? 'trust_required' : 'ready' : 'repair_failed');
   expect(result?.harnesses[0].toolsDeployment).toBeUndefined();
-  expect(fs.readFileSync(target)).toEqual(before);
+  if (surface !== 'hooks') {
+    if (agent === 'codex') expect(parseToml(fs.readFileSync(target, 'utf8')).mcp_servers).toEqual(parseToml(before.toString()).mcp_servers);
+    else expect(fs.readFileSync(target)).toEqual(before);
+  }
+  else expect(JSON.parse(fs.readFileSync(target, 'utf8')).hooks.Stop).toContainEqual(JSON.parse(before.toString()).hooks.Stop[0]);
   const lines: string[] = [];
   await setup(['--status'], { mycoHome: home, cwd: agentHome, agents: () => [agent], stdout: line => lines.push(line), stderr: line => { throw new Error(line); } });
   expect(lines.join('\n')).not.toMatch(/use other.myco.example|held elsewhere|another installation|another Deployment/);
-  expect(fs.readFileSync(target)).toEqual(before);
+  if (surface !== 'hooks') {
+    if (agent === 'codex') expect(parseToml(fs.readFileSync(target, 'utf8')).mcp_servers).toEqual(parseToml(before.toString()).mcp_servers);
+    else expect(fs.readFileSync(target)).toEqual(before);
+  }
+  else expect(JSON.parse(fs.readFileSync(target, 'utf8')).hooks.Stop).toContainEqual(JSON.parse(before.toString()).hooks.Stop[0]);
 });

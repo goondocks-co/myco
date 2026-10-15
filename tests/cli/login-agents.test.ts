@@ -119,7 +119,7 @@ describe('myco login sets up the agents on this machine', () => {
     expect(read(path.join(codexDir, 'hooks.json')) ?? '').toContain('--credential registry');
   });
 
-  it('names a stale hook without claiming capture is set up or held by another installation', async () => {
+  it('sets up capture beside a stale hook and reports that nothing else is affected', async () => {
     fs.mkdirSync(claudeDir, { recursive: true });
     fs.mkdirSync(codexDir, { recursive: true });
     const file = path.join(claudeDir, 'settings.json');
@@ -128,11 +128,43 @@ describe('myco login sets up the agents on this machine', () => {
     fs.writeFileSync(file, stale);
     const rig = unjoinedRig();
     expect(await run([await invite(rig)], deps(rig))).toBe(true);
-    expect(read(file)).toBe(stale);
-    expect(out.join('\n')).toContain(`Skipped Claude Code: Claude Code: stale Myco entry in ${file} at hooks.Stop.0.hooks.0.command; binary ${binary} is missing.`);
-    expect(out.join('\n')).toContain('Capture is set up for Codex.');
-    expect(out.join('\n')).not.toContain('Capture is set up for Claude Code');
+    expect(JSON.parse(read(file)!).hooks.Stop).toContainEqual(JSON.parse(stale).hooks.Stop[0]);
+    expect(read(file)).toContain('--credential registry');
+    expect(out.join('\n')).toContain(`Claude Code: stale Myco entry in ${file}: a Stop hook running ${binary}; binary ${binary} is missing.`);
+    expect(out.join('\n')).toContain('nothing else is affected. You may delete it.');
+    expect(out.join('\n')).toContain('Capture is set up for Claude Code, Codex.');
+    expect(out.join('\n')).not.toContain('Skipped Claude Code');
     expect(out.join('\n')).not.toMatch(/another installation|held elsewhere/);
+  });
+
+  it('sets up login beside an unrelated stale Claude project entry', async () => {
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.mkdirSync(codexDir, { recursive: true });
+    const folder = '/Users/x/my.app';
+    const entry = { command: path.join(root, 'deleted-install', 'bin', 'myco') };
+    fs.writeFileSync(path.join(userHome, '.claude.json'), JSON.stringify({ projects: { [folder]: { mcpServers: { myco: entry } } } }));
+    const rig = unjoinedRig();
+    expect(await run([await invite(rig)], deps(rig))).toBe(true);
+    expect(JSON.parse(read(path.join(userHome, '.claude.json'))!).projects[folder].mcpServers.myco).toEqual(entry);
+    expect(read(path.join(claudeDir, 'settings.json'))).toContain('--credential registry');
+    expect(out.join('\n')).toContain('Capture is set up for Claude Code, Codex.');
+    expect(out.join('\n')).not.toContain('Skipped Claude Code');
+  });
+
+  it('sets up capture beside stale top-level tools and names the skipped surface once', async () => {
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const file = path.join(userHome, '.claude.json');
+    const entry = { command: path.join(root, 'deleted-install', 'bin', 'myco') };
+    fs.writeFileSync(file, JSON.stringify({ mcpServers: { myco: entry } }));
+    const rig = unjoinedRig();
+    expect(await run([await invite(rig)], deps(rig, { agents: () => ['claude-code'] }))).toBe(true);
+    expect(read(path.join(claudeDir, 'settings.json'))).toContain('--credential registry');
+    expect(JSON.parse(read(file)!).mcpServers.myco).toEqual(entry);
+    expect(out.join('\n')).toContain('Capture is set up for Claude Code.');
+    expect(out.join('\n')).toContain('tools are not set up because this entry occupies their place');
+    expect(out.join('\n')).toContain('myco member provision --refresh');
+    expect(out.filter(line => line.includes(`stale Myco entry in ${file}`))).toHaveLength(1);
+    expect(out.join('\n')).not.toMatch(/Skipped Claude Code|Claude Code: Claude Code/);
   });
 
   it('sets up nothing with --no-agents, and a later `member provision` sets them all up from the membership alone', async () => {

@@ -78,6 +78,46 @@ beforeEach(() => {
 afterEach(() => { restore(); fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('Deployment-scoped logout', () => {
+  it('removes this machines entries while keeping stale credential-marked hooks and tools', async () => {
+    join(A);
+    globalInstaller(A).install();
+    const binary = path.join(root, 'deleted-install', 'bin', 'myco');
+    const hooksFile = path.join(home, '.claude', 'settings.json');
+    const settings = JSON.parse(fs.readFileSync(hooksFile, 'utf8'));
+    const staleHook = { hooks: [{ command: `${binary} hook stop --myco-managed --credential registry` }] };
+    settings.hooks.Stop.push(staleHook);
+    fs.writeFileSync(hooksFile, JSON.stringify(settings));
+    const file = path.join(home, '.claude.json');
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const staleTools = { type: 'http', url: `${A}/mcp`, headersHelper: `${binary} member mcp-headers --credential registry --server ${A}` };
+    data.servers = { myco: staleTools };
+    fs.writeFileSync(file, JSON.stringify(data));
+    await logoutDeployment(A, { mode: 'local-only' }, deps);
+    expect(JSON.parse(fs.readFileSync(hooksFile, 'utf8')).hooks.Stop).toEqual([staleHook]);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).servers.myco).toEqual(staleTools);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers?.myco).toBeUndefined();
+    expect(globalInstaller(A).inspectMemberHooks().member).toBe(false);
+  });
+
+  it('reconciles every agent beside an unrelated stale Claude project entry', async () => {
+    join(A);
+    const agents = ['claude-code', 'codex', 'cursor'];
+    const installers = agents.map(agent => new SymbiontInstaller(loadManifests().find(m => m.name === agent)!, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(A));
+    for (const installer of installers) installer.install();
+    const file = path.join(home, '.claude.json');
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const folder = '/Users/x/my.app';
+    const entry = { command: path.join(root, 'deleted-install', 'bin', 'myco') };
+    data.projects = { [folder]: { mcpServers: { myco: entry } } };
+    fs.writeFileSync(file, JSON.stringify(data));
+    await logoutDeployment(A, { mode: 'local-only' }, deps);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).projects[folder].mcpServers.myco).toEqual(entry);
+    for (const installer of installers) {
+      expect(installer.inspectMemberHooks().member).toBe(false);
+      expect(installer.inspectMemberMcp(A).some(e => e.present)).toBe(false);
+    }
+  });
+
   it('refuses a missing revoke route in the real pipeline and warns under local-only', async () => {
     const rig = await memberRig();
     const index = ROUTES.findIndex((r) => r.path === '/members/credential/revoke');

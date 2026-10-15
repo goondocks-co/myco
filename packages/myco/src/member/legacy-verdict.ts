@@ -22,10 +22,9 @@ const under = (file: string, home: string): boolean => file === home || file.sta
 const MANAGED_BINARY_HOME = /^(.*)[/\\]bin[/\\](?:versions[/\\][^/\\]+[/\\])?myco(?:\.exe)?$/;
 const MCP_HEADER_HELPER_KEYS = ['headersHelper', 'http_headers_helper'] as const;
 
-function absent(file: string): boolean {
-  try { fs.statSync(file); return false; } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
-    throw error;
+function absent(file: string, home = false): boolean {
+  try { (home ? fs.lstatSync : fs.statSync)(file); return false; } catch (error) {
+    return ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '');
   }
 }
 
@@ -33,7 +32,7 @@ function staleBinary(binary: string | undefined, home?: string): string | undefi
   if (binary === undefined || !path.isAbsolute(binary)) return;
   const inferred = binary.match(MANAGED_BINARY_HOME)?.[1];
   const homes = [home, inferred].filter((value): value is string => value !== undefined);
-  if (homes.length > 0 && homes.every(path.isAbsolute) && absent(binary) && homes.every(absent)) return binary;
+  if (homes.length > 0 && homes.every(path.isAbsolute) && absent(binary) && homes.every((home) => absent(home, true))) return binary;
 }
 
 export function staleCommandBinary(command: string): string | undefined {
@@ -113,5 +112,5 @@ export function pluginFileVerdict(content: string, legacyHomes: readonly string[
 export function stalePluginBinary(content: string): string | undefined {
   const binaries = pluginBinaries(content);
   const homes = [...homesNamedIn(content), ...pluginHomes(content)];
-  return binaries.length > 0 && homes.every(path.isAbsolute) && binaries.every((binary) => staleBinary(binary) !== undefined) && homes.every(absent) ? binaries[0] : undefined;
+  return binaries.length > 0 && homes.every(path.isAbsolute) && binaries.every((binary) => staleBinary(binary) !== undefined) && homes.every((home) => absent(home, true)) ? binaries[0] : undefined;
 }

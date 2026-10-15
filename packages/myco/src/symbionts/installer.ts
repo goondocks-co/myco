@@ -33,9 +33,9 @@ import { managedBinaryPath } from '../install/managed-binary.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 
-function managedHookGroup(group: Record<string, unknown>): Record<string, unknown> {
+function managedHookGroup(group: Record<string, unknown>, matches = isMycoHookCommand): Record<string, unknown> {
   if (!Array.isArray(group.hooks)) return group;
-  return { ...group, hooks: group.hooks.filter((hook: { command?: string }) => typeof hook.command === 'string' && isMycoHookCommand(hook.command)) };
+  return { ...group, hooks: group.hooks.filter((hook: { command?: string }) => typeof hook.command === 'string' && matches(hook.command)) };
 }
 
 const TEMPLATES_SUBDIR = 'src/symbionts/templates';
@@ -74,8 +74,8 @@ export class MemberMcpConflictError extends MemberProvisionConflictError {
 export class MemberPluginConflictError extends MemberProvisionConflictError { }
 
 export class MemberStaleRegistrationError extends MemberProvisionConflictError {
-  constructor(finding: LegacyFinding, agent: string) {
-    super(staleRegistrationWords(finding, agent), `Delete that entry if ${agent} should use this Myco, then run myco member provision --refresh.`);
+  constructor(messages: string[]) {
+    super(messages.join('\n'), '');
   }
 }
 
@@ -145,6 +145,8 @@ function hookCommandsIn(raw: string): string[] {
     return [...raw.matchAll(/"command"\s*:\s*("(?:[^"\\]|\\.)*")/g)].map((m) => JSON.parse(m[1]) as string);
   }
 }
+
+export type MemberRegistrationScan = ReadonlyArray<LegacyFinding & { target: string }>;
 
 export interface InstallResult {
   hooks: boolean;
@@ -331,18 +333,18 @@ export class SymbiontInstaller {
     return this.readTemplateFile(path.join(this.manifest.name, filename));
   }
 
-  install(): InstallResult {
+  install(scan = this.scanMemberRegistrations()): InstallResult {
     // Ownership and settings are admitted before the first write.
     if (this.isMemberPluginFile()) {
-      this.assertMemberMcpWritable();
-      const hooks = this.writeMemberPlugin();
-      return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp() });
+      this.assertMemberMcpWritable(scan);
+      const hooks = this.writeMemberPlugin(scan);
+      return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp(scan) });
     }
     if (this.renderMemberHooks('registry') === null) return emptyInstallResult();
-    this.assertMemberMcpWritable();
-    const settings = this.installSettings();
-    const hooks = this.installMemberHooks();
-    return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp(), settings });
+    this.assertMemberMcpWritable(scan);
+    const settings = this.installSettings(scan);
+    const hooks = this.installMemberHooks(scan);
+    return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp(scan), settings });
   }
 
   renderMemberHooks(source: CredentialSource): Record<string, unknown> | null {
@@ -360,11 +362,11 @@ export class SymbiontInstaller {
     return block;
   }
 
-  installMemberHooks(): boolean {
-    this.assertMemberMcpWritable();
+  installMemberHooks(scan = this.scanMemberRegistrations()): boolean {
+    this.assertMemberMcpWritable(scan);
     const block = this.renderMemberHooks('registry');
     if (block === null) return false;
-    return this.writeRegistrationTarget(this.resolveAbsoluteTarget('hooks'), (targetPath) => {
+    return this.writeRegistrationTarget(this.resolveAbsoluteTarget('hooks'), 'hooks', scan, (targetPath) => {
 
       const settings = readJsonFile(targetPath);
       const existingHooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
@@ -373,11 +375,11 @@ export class SymbiontInstaller {
         const wanted = [...((block[event] ?? []) as Record<string, unknown>[])];
         const merged: unknown[] = [];
         for (const group of (existingHooks[event] ?? []) as Record<string, unknown>[]) {
-          if (!isMycoHookGroup(group)) { merged.push(group); continue; }
-          const match = wanted.findIndex((candidate) => isDeepStrictEqual(candidate, managedHookGroup(group)));
+          if (!hookCommands(group).some(command => this.managesHook(command))) { merged.push(group); continue; }
+          const match = wanted.findIndex((candidate) => isDeepStrictEqual(candidate, managedHookGroup(group, command => this.managesHook(command))));
           if (match >= 0) { wanted.splice(match, 1); merged.push(group); }
           else {
-            const foreign = withoutMycoHooks([group]);
+            const foreign = withoutMycoHooks([group], command => this.managesHook(command));
             if (foreign.length > 0) merged.push(...foreign);
             else if (wanted.length > 0) merged.push(wanted.shift());
           }
@@ -430,32 +432,35 @@ export class SymbiontInstaller {
     return target === null ? null : throughLink(target);
   }
 
-  installMemberMcp(): boolean {
-    const toolsDeployment = this.assertMemberMcpWritable();
+  installMemberMcp(scan = this.scanMemberRegistrations()): boolean {
+    const toolsDeployment = this.assertMemberMcpWritable(scan);
     const block = this.renderMemberMcp('registry', toolsDeployment);
     if (block === null) return false;
-    return this.writeRegistrationTarget(this.memberMcpTargetPath(), (targetPath) => {
+    return this.writeRegistrationTarget(this.memberMcpTargetPath(), 'mcp', scan, (targetPath) => {
       const reg = this.manifest.registration!;
-      // A TOML server list (Codex) is edited section by section; the JSON sweep
-      // below is for the JSON targets. The JSON hosts' levers are not written.
-      // Codex's remote entry needs no `cwd`: it runs the headers helper in the
-      // session's directory, where the membership resolves the way every hook's does.
-      if (reg.mcpFormat === 'toml') return this.installMcpToml(targetPath, tomlMemberServers(block, this.projectRoot));
-      const serversKey = reg.mcpServersKey ?? 'mcpServers';
-      const data = this.readMemberMcpTarget() ?? {};
-      for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
-        if (candidateKey === serversKey) continue;
-        const candidate = data[candidateKey];
-        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
-        const bag = candidate as Record<string, unknown>;
-        if (!(MYCO_MCP_SERVER_NAME in bag)) continue;
-        delete bag[MYCO_MCP_SERVER_NAME];
-        if (Object.keys(bag).length === 0) delete data[candidateKey];
-      }
-      const servers = (data[serversKey] ?? {}) as Record<string, unknown>;
-      for (const [name, def] of Object.entries(block)) servers[name] = def;
-      data[serversKey] = servers;
-      return writeJsonFile(targetPath, data);
+      return this.withWritableMcpEntry(this.mycoServerIn(targetPath, reg.mcpFormat === 'toml', reg.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : reg.mcpServersKey ?? 'mcpServers'), () => {
+        // A TOML server list (Codex) is edited section by section; the JSON sweep
+        // below is for the JSON targets. The JSON hosts' levers are not written.
+        // Codex's remote entry needs no `cwd`: it runs the headers helper in the
+        // session's directory, where the membership resolves the way every hook's does.
+        if (reg.mcpFormat === 'toml') return this.installMcpToml(targetPath, tomlMemberServers(block, this.projectRoot));
+        const serversKey = reg.mcpServersKey ?? 'mcpServers';
+        const data = this.readMemberMcpTarget() ?? {};
+        for (const candidateKey of KNOWN_MCP_SERVERS_KEYS) {
+          if (candidateKey === serversKey) continue;
+          const candidate = data[candidateKey];
+          if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+          const bag = candidate as Record<string, unknown>;
+          this.withWritableMcpEntry(bag[MYCO_MCP_SERVER_NAME], () => {
+            delete bag[MYCO_MCP_SERVER_NAME];
+            if (Object.keys(bag).length === 0) delete data[candidateKey];
+          });
+        }
+        const servers = (data[serversKey] ?? {}) as Record<string, unknown>;
+        for (const [name, def] of Object.entries(block)) servers[name] = def;
+        data[serversKey] = servers;
+        return writeJsonFile(targetPath, data);
+      }) ?? false;
     });
   }
 
@@ -473,10 +478,12 @@ export class SymbiontInstaller {
       if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
       const bag = candidate as Record<string, unknown>;
       if (!(MYCO_MCP_SERVER_NAME in bag)) continue;
-      if (!this.isMemberMcpServer(bag[MYCO_MCP_SERVER_NAME])) continue;
-      delete bag[MYCO_MCP_SERVER_NAME];
-      removed = true;
-      if (Object.keys(bag).length === 0) delete data[key];
+      this.withWritableMcpEntry(bag[MYCO_MCP_SERVER_NAME], () => {
+        if (!this.isMemberMcpServer(bag[MYCO_MCP_SERVER_NAME])) return;
+        delete bag[MYCO_MCP_SERVER_NAME];
+        removed = true;
+        if (Object.keys(bag).length === 0) delete data[key];
+      });
     }
     if (!removed) return false;
     this.writeMemberJson(targetPath, data, this.readOwnedSettingsAudit()?.file as SettingsFileAudit | undefined);
@@ -595,10 +602,10 @@ export class SymbiontInstaller {
     }
     const present = this.isConfigured();
     if (this.manifest.registration?.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE) {
-      return { ...none, present, member: present && raw.includes(MEMBER_PLUGIN_MARKER), readable: true };
+      return { ...none, present, member: present && pluginFileVerdict(raw, this.legacyHomes, this.memberHomeDir()) !== 'stale' && raw.includes(MEMBER_PLUGIN_MARKER), readable: true };
     }
     const memberCommands = hookCommandsIn(raw)
-      .filter((command) => isMycoHookCommand(command) && parseCredentialFlag(command.split(/\s+/)) !== null);
+      .filter((command) => this.managesHook(command) && parseCredentialFlag(command.split(/\s+/)) !== null);
     return { ...none, present, member: present && memberCommands.length > 0, memberCommands, readable: true };
   }
 
@@ -657,10 +664,10 @@ export class SymbiontInstaller {
     });
   }
 
-  private assertMemberMcpWritable(): string | undefined {
+  private assertMemberMcpWritable(scan: MemberRegistrationScan): string | undefined {
     this.preflightMemberSettings();
     this.readMemberMcpTarget();
-    return this.assertGlobalMemberOwnership();
+    return this.assertGlobalMemberOwnership(undefined, scan);
   }
 
   private finishMemberInstall(result: InstallResult): InstallResult {
@@ -685,8 +692,8 @@ export class SymbiontInstaller {
     return this;
   }
 
-  memberToolsDeployment(): string | undefined {
-    return this.assertGlobalMemberOwnership();
+  memberToolsDeployment(scan = this.scanMemberRegistrations()): string | undefined {
+    return this.assertGlobalMemberOwnership(undefined, scan);
   }
 
   withoutProjectRoot(): this {
@@ -710,17 +717,18 @@ export class SymbiontInstaller {
   }
 
   reconcileDeploymentLogout(leavingUrl: string, nextDefault: string | null, keepHooks: boolean): void {
+    const scan = this.scanMemberRegistrations();
     if (!keepHooks) this.preflightMemberSettings();
     this.forDeployment(nextDefault ?? leavingUrl).replacingDeployment(leavingUrl);
-    this.reconcileDeploymentMcp(leavingUrl, nextDefault, !keepHooks);
+    this.reconcileDeploymentMcp(leavingUrl, nextDefault, !keepHooks, scan);
     if (!keepHooks) {
-      this.assertGlobalMemberOwnership('hooks');
+      this.assertGlobalMemberOwnership('hooks', scan);
       this.uninstallMemberHooks();
       this.uninstallSettings();
     }
   }
 
-  private reconcileDeploymentMcp(leavingUrl: string, nextDefault: string | null, removeUnscoped: boolean): void {
+  private reconcileDeploymentMcp(leavingUrl: string, nextDefault: string | null, removeUnscoped: boolean, scan: MemberRegistrationScan): void {
     const toml = this.manifest.registration?.mcpFormat === 'toml';
     for (const declared of this.resolveAbsoluteMcpTargets()) {
       const target = { ...declared, path: throughLink(declared.path) };
@@ -737,23 +745,25 @@ export class SymbiontInstaller {
         const entry = servers[MYCO_MCP_SERVER_NAME];
         if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
         const server = entry as Record<string, unknown>;
-        const dialled = this.entryDeployment(server);
-        const minted = this.helperDeployment(server);
-        const unscoped = dialled === null && minted === null && removeUnscoped && this.isMemberMcpServer(server);
-        if (!unscoped && dialled !== deploymentUrl(leavingUrl) && minted !== deploymentUrl(leavingUrl)) continue;
-        if (dialled !== minted) throw this.memberMcpConflict(`the Myco MCP entry in ${target.path} names conflicting Deployments`, 'Fix the entry');
-        this.assertGlobalMemberOwnership({ path: target.path, serversKey: key });
-        const desired = nextDefault === null ? null : this.renderMemberMcp('registry');
-        replacement = desired;
-        if (toml) {
-          if (desired === null) this.uninstallMcpToml(target.path);
-          else this.installMcpToml(target.path, tomlMemberServers(desired, this.projectRoot));
-        } else {
-          if (desired !== null && key === primaryKey) servers[MYCO_MCP_SERVER_NAME] = desired[MYCO_MCP_SERVER_NAME];
-          else delete servers[MYCO_MCP_SERVER_NAME];
-          if (Object.keys(servers).length === 0) delete file[key];
-          changed = true;
-        }
+        this.withWritableMcpEntry(server, () => {
+          const dialled = this.entryDeployment(server);
+          const minted = this.helperDeployment(server);
+          const unscoped = dialled === null && minted === null && removeUnscoped && this.isMemberMcpServer(server);
+          if (!unscoped && dialled !== deploymentUrl(leavingUrl) && minted !== deploymentUrl(leavingUrl)) return;
+          if (dialled !== minted) throw this.memberMcpConflict(`the Myco MCP entry in ${target.path} names conflicting Deployments`, 'Fix the entry');
+          this.assertGlobalMemberOwnership({ path: target.path, serversKey: key }, scan);
+          const desired = nextDefault === null ? null : this.renderMemberMcp('registry');
+          replacement = desired;
+          if (toml) {
+            if (desired === null) this.uninstallMcpToml(target.path);
+            else this.installMcpToml(target.path, tomlMemberServers(desired, this.projectRoot));
+          } else {
+            if (desired !== null && key === primaryKey) servers[MYCO_MCP_SERVER_NAME] = desired[MYCO_MCP_SERVER_NAME];
+            else delete servers[MYCO_MCP_SERVER_NAME];
+            if (Object.keys(servers).length === 0) delete file[key];
+            changed = true;
+          }
+        });
       }
       if (changed) {
         if (replacement !== null) {
@@ -782,46 +792,68 @@ export class SymbiontInstaller {
     return Boolean(this.manifest.registration?.memberHooksTarget);
   }
 
-  memberGlobalTargets(): { hooks: string | null; mcp: string[]; all: string[] } {
-    const stale = this.staleRegistrationFiles();
+  memberGlobalTargets(scan = this.scanMemberRegistrations()): { hooks: string | null; mcp: string[]; all: string[]; skipped: string[]; blocked: MemberRegistrationScan } {
     const hookTarget = this.resolveAbsoluteTarget('hooks');
-    const hooks = hookTarget !== null && !stale.has(hookTarget) ? hookTarget : null;
+    const hooks = this.blocksRegistration(hookTarget, 'hooks', scan) ? null : hookTarget;
     const written = this.memberMcpTargetPath();
-    const mcp = written === null || stale.has(written) ? [] : [written];
+    const mcp = written === null || this.blocksRegistration(written, 'mcp', scan) ? [] : [written];
     const all = [hooks, ...mcp, this.resolveAbsoluteTarget('settings')];
-    return { hooks, mcp, all: [...new Set(all.filter((file): file is string => file !== null && !stale.has(file)))] };
+    const blocked = this.blockedRegistrations(scan);
+    const skipped = blocked.map(finding => staleRegistrationWords(finding, this.manifest.displayName, true));
+    return { hooks, mcp, all: [...new Set(all.filter((file): file is string => file !== null))], skipped, blocked };
   }
 
-  private staleRegistrations(): Array<LegacyFinding & { target: string }> {
+  scanMemberRegistrations(): MemberRegistrationScan {
     return scanLegacyRegistrations({ homeDir: process.env.HOME ?? os.homedir(), legacyHomes: this.legacyHomes, ownHome: this.memberHomeDir(), allClaudeProjects: true })
-      .findings.filter((finding) => finding.verdict === 'stale').map((finding) => ({ ...finding, target: throughLink(finding.file) }));
+      .findings.filter((finding) => finding.verdict === 'stale' && finding.location.agent === this.manifest.name).map((finding) => ({ ...finding, target: throughLink(finding.file) }));
   }
 
-  private staleRegistrationFiles(): Set<string> {
-    return new Set(this.staleRegistrations().map((finding) => finding.target));
+  private blocksRegistration(target: string | null, surface: 'hooks' | 'mcp' | 'settings', scan: MemberRegistrationScan): boolean {
+    return scan.some(finding => finding.target === target && (surface === 'hooks' ? this.isMemberPluginFile() : surface === 'mcp'
+      && finding.location.kind === 'mcp' && finding.serversPath?.length === 1
+      && finding.serversPath[0] === (this.manifest.registration?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : this.manifest.registration?.mcpServersKey ?? 'mcpServers')));
   }
 
-  private writeRegistrationTarget(target: string | null, write: (target: string) => boolean): boolean {
-    return target === null || this.staleRegistrationFiles().has(target) ? false : write(target);
+  private blockedRegistrations(scan: MemberRegistrationScan): MemberRegistrationScan {
+    return scan.filter(finding => this.blocksRegistration(finding.target, finding.location.kind === 'mcp' ? 'mcp' : 'hooks', [finding])
+      && finding.target === (finding.location.kind === 'mcp' ? this.memberMcpTargetPath() : this.resolveAbsoluteTarget('hooks')));
   }
 
-  memberRegistrationPresent(): boolean {
-    this.assertGlobalMemberOwnership();
+  staleRegistrationMessages(scan: MemberRegistrationScan): string[] {
+    const blocked = this.blockedRegistrations(scan);
+    return scan.map(finding => staleRegistrationWords(finding, this.manifest.displayName, blocked.includes(finding)));
+  }
+
+  private managesHook(command: string): boolean {
+    return isMycoHookCommand(command) && commandVerdict(command, this.legacyHomes) !== 'stale';
+  }
+
+  private withWritableMcpEntry<T>(entry: unknown, write: () => T): T | undefined {
+    return mcpVerdict(entry, this.legacyHomes) === 'stale' ? undefined : write();
+  }
+
+  private writeRegistrationTarget(target: string | null, surface: 'hooks' | 'mcp' | 'settings', scan: MemberRegistrationScan, write: (target: string) => boolean): boolean {
+    return target === null || this.blocksRegistration(target, surface, scan) ? false : write(target);
+  }
+
+  memberRegistrationPresent(scan = this.scanMemberRegistrations()): boolean {
+    this.assertGlobalMemberOwnership(undefined, scan);
     const target = this.resolveAbsoluteTarget('hooks');
     if (target !== null && fs.existsSync(target)) {
       if (this.isMemberPluginFile()) {
-        if (fs.readFileSync(target, 'utf8').includes(MEMBER_PLUGIN_MARKER)) return true;
-      } else if (hookCommands(this.readMcpFile(target, false)?.hooks).some((command) => rawHasMycoOwnershipSignal(command) && parseCredentialFlag(command.split(/\s+/)) === 'registry')) return true;
+        if (!this.blocksRegistration(target, 'hooks', scan) && fs.readFileSync(target, 'utf8').includes(MEMBER_PLUGIN_MARKER)) return true;
+      } else if (hookCommands(this.readMcpFile(target, false)?.hooks).some((command) => this.managesHook(command) && parseCredentialFlag(command.split(/\s+/)) === 'registry')) return true;
     }
     const mcp = this.memberMcpTargetPath();
     if (mcp === null) return false;
     const toml = this.manifest.registration?.mcpFormat === 'toml';
     const existing = this.mycoServerIn(mcp, toml, toml ? TOML_MCP_SERVERS_KEY : (this.manifest.registration?.mcpServersKey ?? 'mcpServers'));
-    return existing !== null && this.isMemberMcpServer(existing);
+    return existing !== null && this.withWritableMcpEntry(existing, () => this.isMemberMcpServer(existing)) === true;
   }
 
-  memberRegistrationCurrent(): boolean {
-    const toolsDeployment = this.assertGlobalMemberOwnership();
+  memberRegistrationCurrent(scan = this.scanMemberRegistrations()): boolean {
+    const toolsDeployment = this.assertGlobalMemberOwnership(undefined, scan);
+    if (this.blockedRegistrations(scan).length > 0) return false;
     if (!this.memberSettingsCurrent()) return false;
     const target = this.resolveAbsoluteTarget('hooks');
     if (target === null || !fs.existsSync(target)) return false;
@@ -830,7 +862,7 @@ export class SymbiontInstaller {
     } else {
       const hooks = this.readMcpFile(target, false)?.hooks;
       const managed = Object.fromEntries(Object.entries((hooks ?? {}) as Record<string, Record<string, unknown>[]>).flatMap(([event, groups]) => {
-        const owned = groups.filter(isMycoHookGroup).map(managedHookGroup);
+        const owned = groups.filter(group => hookCommands(group).some(command => this.managesHook(command))).map(group => managedHookGroup(group, command => this.managesHook(command)));
         return owned.length === 0 ? [] : [[event, owned]];
       }));
       const expectedHooks = this.renderMemberHooks('registry') ?? {};
@@ -862,10 +894,10 @@ export class SymbiontInstaller {
     return isDeepStrictEqual(existing, deepMergeSettingsWithAudit(existing, template, emptyJsonAudit()));
   }
 
-  globalOwnership(serverUrl: string): { problem: string | null; replaces: string[] } {
+  globalOwnership(serverUrl: string, scan = this.scanMemberRegistrations()): { problem: string | null; replaces: string[] } {
     this.expectedServerUrl = serverUrl;
     try {
-      this.assertGlobalMemberOwnership();
+      this.assertGlobalMemberOwnership(undefined, scan);
     } catch (error) {
       if (error instanceof MemberProvisionConflictError) return { problem: error.message, replaces: [] };
       throw error;
@@ -877,12 +909,7 @@ export class SymbiontInstaller {
     return { problem: null, replaces: this.legacyHomes.filter((home) => texts.some((text) => text.includes(`${home}${path.sep}`))) };
   }
 
-  private assertGlobalMemberOwnership(targetOverride?: { path: string; serversKey: string } | 'hooks'): string | undefined {
-    if (this.legacyHomes.length === 0) {
-      const targets = [this.resolveAbsoluteTarget('hooks'), this.memberMcpTargetPath()];
-      const stale = this.staleRegistrations().find((finding) => targets.includes(finding.target));
-      if (stale !== undefined) throw new MemberStaleRegistrationError(stale, this.manifest.displayName);
-    }
+  private assertGlobalMemberOwnership(targetOverride?: { path: string; serversKey: string } | 'hooks', scan: MemberRegistrationScan = this.scanMemberRegistrations()): string | undefined {
     const memberHome = this.memberHomeDir();
     const record = readProvisionRecord(memberHome);
     const ownBinaries = [this.binaryPath(), managedBinaryPath(memberHome, process.platform), ...(record?.binaries?.[this.manifest.name] ? [record.binaries[this.manifest.name]] : [])];
@@ -920,41 +947,43 @@ export class SymbiontInstaller {
     if (!mcpTarget) return;
     const existing = this.mycoServerIn(mcpTarget, reg?.mcpFormat === 'toml', targetOverride?.serversKey ?? (reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : (reg?.mcpServersKey ?? 'mcpServers')));
     if (existing === null) return;
-    if (mcpVerdict(existing, this.legacyHomes) === 'stale') return;
-    const desired = this.renderMemberMcp('registry')?.[MYCO_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
-    const helperKey = reg?.memberMcpHeadersHelperKey;
-    const helper = helperKey && typeof existing[helperKey] === 'string' ? existing[helperKey] as string : null;
-    const argv = Array.isArray(existing.command) ? existing.command : [existing.command, ...(Array.isArray(existing.args) ? existing.args : [])];
-    const sameCredentialSource = helper !== null
-      ? ownBinaries.some((binary) => helper.startsWith(`${binary} member mcp-headers `)) && parseCredentialFlag(helper.split(/\s+/)) === 'registry'
-      : argv.every((arg): arg is string => typeof arg === 'string') && ownBinaries.includes(argv[0]) && parseCredentialFlag(argv) === 'registry';
-    const legacy = this.legacyHomes.length > 0 && mcpVerdict(existing, this.legacyHomes) === 'legacy';
-    const replacing = this.leavingDeployment !== undefined && this.entryDeployment(existing) === this.leavingDeployment
-      && this.helperDeployment(existing) === this.leavingDeployment;
-    if (!legacy && (!this.isMemberMcpServer(existing) || (existing.url !== desired?.url && !replacing) || !sameCredentialSource)) {
-      const other = this.entryDeployment(existing);
-      if (this.isMemberMcpServer(existing) && other !== null) {
-        const memberships = listDeploymentMembershipsResult(memberHome);
-        const readable = memberships.readable && memberships.unavailableEntries === 0;
-        const connected = memberships.memberships.some((membership) => deploymentUrl(membership.serverUrl) === other && !membership.refreshTerminal);
-        if (readable && !connected) {
-          const home = process.env.HOME ?? os.homedir();
-          const file = mcpTarget.startsWith(home + path.sep) ? '~' + mcpTarget.slice(home.length) : mcpTarget;
-          const serversKey = targetOverride?.serversKey ?? (reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : (reg?.mcpServersKey ?? 'mcpServers'));
-          const problem = `${this.manifest.displayName}'s Myco tools point at ${other}; this machine is no longer connected there.`;
-          const toolsRecovery = { address: other, file, entry: `${serversKey}.${MYCO_MCP_SERVER_NAME}` };
-          const repairAction = `${this.manifest.displayName}'s Myco tools point at a Myco this machine is no longer connected to. Open myco doctor on that machine for its address and reconnection steps.`;
-          throw new MemberMcpConflictError(problem, toolsRecoveryRemedy(toolsRecovery), { repairAction, toolsRecovery });
+    if (this.blocksRegistration(mcpTarget, 'mcp', scan)) return;
+    return this.withWritableMcpEntry(existing, () => {
+      const desired = this.renderMemberMcp('registry')?.[MYCO_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
+      const helperKey = reg?.memberMcpHeadersHelperKey;
+      const helper = helperKey && typeof existing[helperKey] === 'string' ? existing[helperKey] as string : null;
+      const argv = Array.isArray(existing.command) ? existing.command : [existing.command, ...(Array.isArray(existing.args) ? existing.args : [])];
+      const sameCredentialSource = helper !== null
+        ? ownBinaries.some((binary) => helper.startsWith(`${binary} member mcp-headers `)) && parseCredentialFlag(helper.split(/\s+/)) === 'registry'
+        : argv.every((arg): arg is string => typeof arg === 'string') && ownBinaries.includes(argv[0]) && parseCredentialFlag(argv) === 'registry';
+      const legacy = this.legacyHomes.length > 0 && mcpVerdict(existing, this.legacyHomes) === 'legacy';
+      const replacing = this.leavingDeployment !== undefined && this.entryDeployment(existing) === this.leavingDeployment
+        && this.helperDeployment(existing) === this.leavingDeployment;
+      if (!legacy && (!this.isMemberMcpServer(existing) || (existing.url !== desired?.url && !replacing) || !sameCredentialSource)) {
+        const other = this.entryDeployment(existing);
+        if (this.isMemberMcpServer(existing) && other !== null) {
+          const memberships = listDeploymentMembershipsResult(memberHome);
+          const readable = memberships.readable && memberships.unavailableEntries === 0;
+          const connected = memberships.memberships.some((membership) => deploymentUrl(membership.serverUrl) === other && !membership.refreshTerminal);
+          if (readable && !connected) {
+            const home = process.env.HOME ?? os.homedir();
+            const file = mcpTarget.startsWith(home + path.sep) ? '~' + mcpTarget.slice(home.length) : mcpTarget;
+            const serversKey = targetOverride?.serversKey ?? (reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : (reg?.mcpServersKey ?? 'mcpServers'));
+            const problem = `${this.manifest.displayName}'s Myco tools point at ${other}; this machine is no longer connected there.`;
+            const toolsRecovery = { address: other, file, entry: `${serversKey}.${MYCO_MCP_SERVER_NAME}` };
+            const repairAction = `${this.manifest.displayName}'s Myco tools point at a Myco this machine is no longer connected to. Open myco doctor on that machine for its address and reconnection steps.`;
+            throw new MemberMcpConflictError(problem, toolsRecoveryRemedy(toolsRecovery), { repairAction, toolsRecovery });
+          }
+          const heldElsewhere = other !== this.entryDeployment(desired ?? {}) && sameCredentialSource && this.helperDeployment(existing) === other
+            && readable && connected;
+          if (heldElsewhere && this.preserveOtherMemberTools) return other;
+          const { problem, remedy } = readable && connected ? toolsStayOnDeploymentGuidance(this.manifest.displayName, other)
+            : { problem: `${this.manifest.displayName}'s Myco tools point at ${other}, but this machine's Myco connections could not all be read.`, remedy: "Restore access to this machine's Myco connection files." };
+          throw new MemberMcpConflictError(problem, remedy, { toolsDeployment: heldElsewhere ? other : undefined });
         }
-        const heldElsewhere = other !== this.entryDeployment(desired ?? {}) && sameCredentialSource && this.helperDeployment(existing) === other
-          && readable && connected;
-        if (heldElsewhere && this.preserveOtherMemberTools) return other;
-        const { problem, remedy } = readable && connected ? toolsStayOnDeploymentGuidance(this.manifest.displayName, other)
-          : { problem: `${this.manifest.displayName}'s Myco tools point at ${other}, but this machine's Myco connections could not all be read.`, remedy: "Restore access to this machine's Myco connection files." };
-        throw new MemberMcpConflictError(problem, remedy, { toolsDeployment: heldElsewhere ? other : undefined });
+        throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, 'Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover');
       }
-      throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, 'Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover');
-    }
+    });
   }
 
   isMemberPluginFile(): boolean {
@@ -962,10 +991,10 @@ export class SymbiontInstaller {
     return reg?.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE && Boolean(reg.memberHooksTarget);
   }
 
-  private writeMemberPlugin(): boolean {
+  private writeMemberPlugin(scan: MemberRegistrationScan): boolean {
     const rendered = this.renderMemberPlugin('registry');
     if (rendered === null) return false;
-    return this.writeRegistrationTarget(this.resolveAbsoluteTarget('hooks'), (targetPath) => {
+    return this.writeRegistrationTarget(this.resolveAbsoluteTarget('hooks'), 'hooks', scan, (targetPath) => {
       this.assertMemberPluginTargetIsMyco(targetPath);
       const written = this.writeManagedFile(targetPath, rendered);
       return written;
@@ -1007,7 +1036,8 @@ export class SymbiontInstaller {
     if (targetPath === null || !fs.existsSync(targetPath)) return false;
     if (this.isMemberPluginFile()) {
       // Only the member plugin: a 1.4 project plugin at the same path carries the generic marker alone.
-      if (!fs.readFileSync(targetPath, 'utf-8').includes(MEMBER_PLUGIN_MARKER)) return false;
+      const content = fs.readFileSync(targetPath, 'utf-8');
+      if (pluginFileVerdict(content, this.legacyHomes, this.memberHomeDir()) === 'stale' || !content.includes(MEMBER_PLUGIN_MARKER)) return false;
       fs.rmSync(targetPath, { force: true });
       return true;
     }
@@ -1016,7 +1046,7 @@ export class SymbiontInstaller {
     const kept: Record<string, unknown[]> = {};
     let removed = false;
     for (const [event, groups] of Object.entries(existingHooks)) {
-      const foreign = withoutMycoHooks(groups as Array<Record<string, unknown>>, command => command.includes(CREDENTIAL_FLAG));
+      const foreign = withoutMycoHooks(groups as Array<Record<string, unknown>>, command => this.managesHook(command) && command.includes(CREDENTIAL_FLAG));
       if (!isDeepStrictEqual(groups, foreign)) removed = true;
       if (foreign.length > 0) kept[event] = foreign;
     }
@@ -1115,25 +1145,27 @@ export class SymbiontInstaller {
   }
 
   private installMcpToml(targetPath: string, template: Record<string, unknown>): boolean {
-    let original = '';
-    try { original = fs.readFileSync(targetPath, 'utf-8'); } catch { /* doesn't exist */ }
+    return this.withWritableMcpEntry(this.mycoServerIn(targetPath, true, TOML_MCP_SERVERS_KEY), () => {
+      let original = '';
+      try { original = fs.readFileSync(targetPath, 'utf-8'); } catch { /* doesn't exist */ }
 
-    let raw = original;
-    for (const [name, def] of Object.entries(template)) {
-      raw = buildTomlMcpSection(raw, name, def as Record<string, unknown>);
-    }
+      let raw = original;
+      for (const [name, def] of Object.entries(template)) {
+        raw = buildTomlMcpSection(raw, name, def as Record<string, unknown>);
+      }
 
-    // Idempotency (mirrors installMcpJson): skip the write when the upsert
-    // produced no change, so the detection tick doesn't churn a config.toml the
-    // agent owns on every pass.
-    if (isDeepStrictEqual(parseToml(raw), parseToml(original))) return false;
+      // Idempotency (mirrors installMcpJson): skip the write when the upsert
+      // produced no change, so the detection tick doesn't churn a config.toml the
+      // agent owns on every pass.
+      if (isDeepStrictEqual(parseToml(raw), parseToml(original))) return false;
 
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    atomicWriteFileSync(targetPath, raw);
-    return true;
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      atomicWriteFileSync(targetPath, raw);
+      return true;
+    }) ?? false;
   }
 
-  installSettings(): boolean {
+  installSettings(scan = this.scanMemberRegistrations()): boolean {
     this.preflightMemberSettings();
     const reg = this.manifest.registration;
     if (!reg?.settingsTarget) return false;
@@ -1144,7 +1176,7 @@ export class SymbiontInstaller {
     // Plugin-file hook targets don't share their file with settings;
     // resolveAbsoluteTarget returns null in that case under global
     // scope so the settings template can't clobber the plugin source.
-    return this.writeRegistrationTarget(this.resolveAbsoluteTarget('settings'), (targetPath) => {
+    return this.writeRegistrationTarget(this.resolveAbsoluteTarget('settings'), 'settings', scan, (targetPath) => {
       const settingsFormat = reg.settingsFormat ?? 'json';
 
       if (settingsFormat === 'toml') {
@@ -1467,23 +1499,26 @@ export class SymbiontInstaller {
   }
 
   private uninstallMcpToml(targetPath: string): boolean {
-    let raw = '';
-    try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { return false; }
+    return this.withWritableMcpEntry(this.mycoServerIn(targetPath, true, TOML_MCP_SERVERS_KEY), () => {
+      let raw = '';
+      try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { return false; }
 
-    const sectionHeader = `[mcp_servers.${MYCO_MCP_SERVER_NAME}]`;
-    if (!raw.includes(sectionHeader)) return false;
+      const sectionHeader = `[mcp_servers.${MYCO_MCP_SERVER_NAME}]`;
+      if (!raw.includes(sectionHeader)) return false;
 
-    const startIdx = raw.indexOf(sectionHeader);
-    const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, `mcp_servers.${MYCO_MCP_SERVER_NAME}`);
-    const before = raw.slice(0, startIdx).trimEnd();
-    const after = raw.slice(endIdx).trimStart();
-    const updated = (before + (before && after ? '\n\n' : '') + after).trimEnd();
+      const startIdx = raw.indexOf(sectionHeader);
+      const endIdx = findTomlSectionEnd(raw, startIdx + sectionHeader.length, `mcp_servers.${MYCO_MCP_SERVER_NAME}`);
+      const before = raw.slice(0, startIdx).trimEnd();
+      const after = raw.slice(endIdx).trimStart();
+      const updated = (before + (before && after ? '\n\n' : '') + after).trimEnd();
 
-    if (!updated.trim()) {
-      try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
-    } else {
-      atomicWriteFileSync(targetPath, updated + "\n");
-    }
-    return true;
+      if (!updated.trim()) {
+        try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+      } else {
+        atomicWriteFileSync(targetPath, updated + "\n");
+      }
+      return true;
+    }) ?? false;
   }
+
 }
