@@ -44,6 +44,7 @@ import { globalFetchDouble } from '../helpers/global-fetch.js';
 import { listingOnly, withRunMcp } from '../helpers/run-mcp-fetch.ts';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 import { CORPUS, FREE_TEXT } from '../helpers/secret-corpus.ts';
+import { flagValue } from '../helpers/argv-flag.ts';
 
 const CONNECTION = { serverUrl: 'https://deployment.example', projectId: 'proj_1', runToken: 'tok_run_secret' };
 
@@ -220,7 +221,7 @@ describe('the Claude Code driver', () => {
     mkdirSync(repo);
     await collect(claudeCodeDriver.run({ ...run, sourceReadOnly: true, prompt: 'read history', credentialEnv: {} }, new AbortController().signal));
     const args = readFileSync(join(dir, 'argv.txt'), 'utf8').split('\n');
-    const argv = args[args.indexOf('--allowedTools') + 1]!.split(',');
+    const argv = flagValue(args, '--allowedTools')!.split(',');
     expect(argv).toContain('Bash(git log:*)');
     expect(argv).toContain('Bash(git -C repo rev-list:*)');
     expect(argv).not.toContain('Bash(git -C repo grep:*)');
