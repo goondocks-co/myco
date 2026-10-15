@@ -830,3 +830,19 @@ for (const agent of ['claude-code', 'codex']) for (const surface of ['hooks', 'm
   }
   else expect(JSON.parse(fs.readFileSync(target, 'utf8')).hooks.Stop).toContainEqual(JSON.parse(before.toString()).hooks.Stop[0]);
 });
+
+it('logs stale-blocked tools once until the entry changes', () => {
+  provisionGlobally('claude-code', null, home, { serverUrl: SERVER });
+  const file = path.join(agentHome, '.claude.json');
+  const write = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  try {
+    const block = (name: string) => fs.writeFileSync(file, JSON.stringify({ mcpServers: { myco: { command: path.join(agentHome, name, 'bin', 'myco') } } }));
+    block('deleted-install');
+    expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].state).toBe('repair_failed');
+    expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].state).toBe('repair_failed');
+    expect(write.mock.calls.filter(args => String(args[0]).includes('stale Myco entry'))).toHaveLength(1);
+    block('another-deleted-install');
+    keepCurrent(home, { binaryFound: () => true });
+    expect(write.mock.calls.filter(args => String(args[0]).includes('stale Myco entry'))).toHaveLength(2);
+  } finally { write.mockRestore(); }
+});

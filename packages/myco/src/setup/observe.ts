@@ -6,7 +6,7 @@ import { observeLegacyMigration, legacyConfirmationObserver } from '@myco/cli/cu
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readDeploymentMembershipResult, readRegistryEntryResult } from '@myco/member/registry.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { postRoute } from '@myco/cli/deployment-reader.js';
-import { memberHarnessCurrent } from '@myco/cli/member.js';
+import { memberHarnessStatus } from '@myco/cli/member.js';
 import type { WorkerServiceDeps } from '@myco/cli/worker-service.js';
 import { observationInstant, observeProjectCapture, observeRunnerService } from '@myco/cli/home-observations.js';
 import { isLiveRunner, listRunnerRecordsResult, readRunnerRecord } from '@myco/runner/runner-registry.js';
@@ -31,6 +31,7 @@ export interface Observation {
   deployment?: string;
   hooksDeployment?: string;
   memberCapture?: true;
+  staleTools?: string[];
   joinedDeployments?: string[];
   legacyError?: string;
   legacyNotice?: string;
@@ -140,13 +141,19 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
       if (hooksUrl === undefined) return;
       const same = record !== null && deploymentUrl(record.serverUrl) === hooksUrl;
       const agents = (deps.agents ?? (() => detectMachineInstalledSymbionts().map((manifest) => manifest.name)))();
-      const installed = agents.length > 0 && agents.every((agent) => memberHarnessCurrent(agent, home, hooksUrl, deps));
+      const statuses = agents.map(agent => memberHarnessStatus(agent, home, hooksUrl, deps));
+      const installed = agents.length > 0 && statuses.every(status => status.current);
       if (!installed && ((answers.noAgents && record === null) || (same && record.agents.length === 0))) { add('machine.agents', 'complete', 'declined'); return; }
       if (agents.length === 0) { add('machine.agents', 'complete', 'none-installed'); return; }
       const current = same && record.version === getPluginVersion()
         && agents.every((agent) => record.agents.includes(agent)) && installed;
       const fact = add('machine.agents', current ? 'complete' : record === null ? 'absent' : 'incomplete', current ? 'current' : 'stale');
       if (installed) fact.memberCapture = true;
+      if (same && record.version === getPluginVersion() && agents.every(agent => record.agents.includes(agent))
+        && statuses.every(status => status.current || status.currentExceptStaleTools) && !installed) {
+        fact.memberCapture = true;
+        fact.staleTools = statuses.flatMap(status => status.stale ?? []);
+      }
       if (deps.status && record !== null) fact.hooksDeployment = record.serverUrl;
     });
   }

@@ -51,8 +51,8 @@ export function staleRegistrationSurface(finding: LegacyFinding): 'tools' | 'cap
 
 export function staleRegistrationWords(finding: LegacyFinding, agent = finding.location.agent, skipped = false): string {
   const entry = finding.serversPath !== undefined
-    ? finding.serversPath[0] === 'projects' ? `the "myco" MCP server for project ${finding.serversPath[1]}` : 'the top-level "myco" MCP server'
-    : finding.keyPath?.startsWith('hooks.') ? `a ${finding.keyPath.split('.')[1]} hook running ${finding.missingBinary}` : 'the Myco plugin';
+    ? finding.serversPath[0] === 'projects' ? `the "myco" MCP server for project ${finding.serversPath[1]}` : finding.serversPath[0] === 'mcp_servers' ? 'the Myco tools entry' : 'the top-level "myco" MCP server'
+    : finding.keyPath?.startsWith('hooks.') ? `a ${finding.keyPath.split('.')[1]} hook` : 'the Myco plugin';
   const outcome = skipped ? `${staleRegistrationSurface(finding)} are not set up because this entry occupies their place` : 'nothing else is affected';
   return `${agent}: stale Myco entry in ${finding.file}: ${entry}; binary ${finding.missingBinary} is missing. Myco leaves this entry alone; ${outcome}. You may delete it${skipped ? ', then run myco member provision --refresh.' : '.'}`;
 }

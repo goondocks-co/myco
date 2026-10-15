@@ -440,7 +440,7 @@ function provisionAgent(
 export type ProvisionOutcome =
   | { kind: 'unknown' }
   | { kind: 'refused'; detail: string; code?: string }
-  | { kind: 'provisioned' | 'unchanged'; detail: string; skills?: SkillLinks | null; hooksChanged?: boolean; captureReady?: boolean; stale?: string[] };
+  | { kind: 'provisioned' | 'unchanged'; detail: string; skills?: SkillLinks | null; hooksChanged?: boolean; captureReady?: boolean; written?: string[]; stale?: string[] };
 
 /**
  * Install an agent's member hooks (or plugin) and MCP entry globally, from the
@@ -474,7 +474,7 @@ export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, o
 }
 
 /** Read-only registration and settings currency through the installer. */
-export function memberHarnessStatus(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): { current: boolean; toolsDeployment?: string; stale?: string[] } {
+export function memberHarnessStatus(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): { current: boolean; currentExceptStaleTools?: boolean; toolsDeployment?: string; stale?: string[] } {
   const manifest = loadManifests().find((candidate) => candidate.name === agent);
   if (manifest === undefined) return { current: false };
   const installer = globalInstaller(manifest, null, mycoHome, opts).forDeployment(serverUrl).preservingOtherMemberTools();
@@ -487,7 +487,7 @@ function inspectMemberHarness(installer: SymbiontInstaller, manifest: ReturnType
   const stale = installer.memberGlobalTargets(scan).skipped;
   const target = manifest.registration?.globalSkillsTarget;
   const skillsCurrent = target == null || missingMemberSkills(mycoHome, target).length === 0;
-  return { current: registrationCurrent && skillsCurrent, ...(stale.length === 0 ? {} : { stale }), ...(toolsDeployment === undefined ? {} : { toolsDeployment }) };
+  return { current: registrationCurrent && skillsCurrent, currentExceptStaleTools: stale.length > 0 && skillsCurrent && installer.memberRegistrationCurrent(scan, true), ...(stale.length === 0 ? {} : { stale }), ...(toolsDeployment === undefined ? {} : { toolsDeployment }) };
 }
 
 export function memberHarnessCurrent(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): boolean {
@@ -534,7 +534,7 @@ export function provisionGlobally(
   const written = [installed.hooks ? surface : null, installed.mcp ? 'tools' : null, skillsMoved ? 'skills' : null, installed.settings ? 'settings' : null].filter((value): value is string => value !== null);
   const changed = written.length > 0;
   const detail = changed ? `provisioned ${manifest.displayName} globally (${written.join(', ')})` : `no global registration changes for ${manifest.displayName}`;
-  return { kind: changed ? 'provisioned' : 'unchanged', detail: [detail, ...stale].join('\n'), skills, hooksChanged: installed.hooks, captureReady: registration.hooks !== null, stale };
+  return { kind: changed ? 'provisioned' : 'unchanged', detail: [detail, ...stale].join('\n'), skills, hooksChanged: installed.hooks, captureReady: registration.hooks !== null, written, stale };
 }
 
 /**
@@ -610,7 +610,12 @@ export function provisionAgents(
       : provisionGlobally(agent, root, mycoHome, { ...opts, serverUrl, backup });
     if (outcome.kind === 'refused') { found.skipped.push({ agent, displayName: preview.displayName, reason: outcome.detail }); continue; }
     if (outcome.kind === 'unknown') continue;
-    if (outcome.captureReady === false) (found.partial ??= []).push(outcome.detail);
+    if (outcome.captureReady === false) {
+      const surfaces = outcome.written ?? [];
+      const words = surfaces.length > 1 ? `${surfaces.slice(0, -1).join(', ')} and ${surfaces.at(-1)}` : surfaces[0];
+      if (words) (found.partial ??= []).push(`${words[0].toUpperCase()}${words.slice(1)} are set up for ${preview.displayName}.`);
+      (found.partial ??= []).push(`Capture is not set up for ${preview.displayName}.`, ...outcome.stale ?? []);
+    }
     else {
       (outcome.kind === 'provisioned' ? found.provisioned : found.unchanged).push(preview.displayName);
       (found.notices ??= []).push(...outcome.stale ?? []);

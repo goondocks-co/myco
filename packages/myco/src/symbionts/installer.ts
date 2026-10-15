@@ -851,9 +851,10 @@ export class SymbiontInstaller {
     return existing !== null && this.withWritableMcpEntry(existing, () => this.isMemberMcpServer(existing)) === true;
   }
 
-  memberRegistrationCurrent(scan = this.scanMemberRegistrations()): boolean {
+  memberRegistrationCurrent(scan = this.scanMemberRegistrations(), allowStaleTools = false): boolean {
     const toolsDeployment = this.assertGlobalMemberOwnership(undefined, scan);
-    if (this.blockedRegistrations(scan).length > 0) return false;
+    const blocked = this.blockedRegistrations(scan);
+    if (blocked.some(finding => !allowStaleTools || finding.location.kind !== 'mcp')) return false;
     if (!this.memberSettingsCurrent()) return false;
     const target = this.resolveAbsoluteTarget('hooks');
     if (target === null || !fs.existsSync(target)) return false;
@@ -879,7 +880,7 @@ export class SymbiontInstaller {
     }
     const targetMcp = this.memberMcpTargetPath();
     const desired = this.renderMemberMcp('registry', toolsDeployment);
-    if (targetMcp === null || desired === null) return true;
+    if (targetMcp === null || desired === null || (allowStaleTools && blocked.length > 0)) return true;
     const toml = this.manifest.registration?.mcpFormat === 'toml';
     const expected = (toml ? tomlMemberServers(desired, this.projectRoot) : desired)[MYCO_MCP_SERVER_NAME] as Record<string, unknown>;
     const existing = this.mycoServerIn(targetMcp, toml, toml ? TOML_MCP_SERVERS_KEY : (this.manifest.registration?.mcpServersKey ?? 'mcpServers'));

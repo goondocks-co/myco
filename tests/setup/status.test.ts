@@ -487,3 +487,31 @@ it('does not report a stale hook as legacy capture or held elsewhere in status a
     expect(fs.readFileSync(settings)).toEqual(before);
   } finally { restore(); }
 });
+
+it('reports current capture and stale-blocked tools with the delete-then-refresh remedy', async () => {
+  const restore = bindSandboxChildHome(scratch, { MYCO_HOME: fixture.home });
+  try {
+    provisionGlobally('claude-code', null, fixture.home, { serverUrl: STATUS_URL });
+    const file = path.join(process.env.HOME!, '.claude.json');
+    const binary = path.join(scratch, 'deleted-install', 'bin', 'myco');
+    const before = JSON.stringify({ mcpServers: { myco: { command: binary } } });
+    fs.writeFileSync(file, before);
+    await run(['--status'], deps());
+    const row = lines.find(line => line.startsWith('Agent hooks:'))!;
+    expect(row).toContain('Capture is set up.');
+    expect(row).toContain(`stale Myco entry in ${file}`);
+    expect(row).toContain('the top-level "myco" MCP server');
+    expect(row).toContain(`binary ${binary} is missing`);
+    expect(row).toContain('tools are not set up because this entry occupies their place');
+    expect(row).toContain('You may delete it, then run myco member provision --refresh.');
+    expect(row).not.toMatch(/Out of date|held elsewhere|another installation/);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    const settings = path.join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+    const data = JSON.parse(fs.readFileSync(settings, 'utf8'));
+    data.hooks.Stop[0].hooks[0].timeout = 999;
+    fs.writeFileSync(settings, JSON.stringify(data));
+    lines = [];
+    await run(['--status'], deps());
+    expect(lines.find(line => line.startsWith('Agent hooks:'))).toContain('Out of date');
+  } finally { restore(); }
+});

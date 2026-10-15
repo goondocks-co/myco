@@ -15,7 +15,7 @@ import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult } from '../member/registry.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { repositoryMycoEntries } from '@myco/symbionts/repository-entries.js';
-import { SymbiontInstaller, MemberProvisionConflictError, MemberMcpConflictError, MemberStaleRegistrationError } from '../symbionts/installer.js';
+import { SymbiontInstaller, MemberProvisionConflictError, MemberMcpConflictError } from '../symbionts/installer.js';
 import { joinSentences } from '@myco/utils/sentences.js';
 import { readProvisionRecord } from '../symbionts/member-provision-record.js';
 import { missingMemberSkills } from '../symbionts/member-skill-links.js';
@@ -113,7 +113,7 @@ export function refusedHookChecks(mycoHome: string, now: number): DoctorCheck[] 
 
 function setupRefusalWords(agent: string, error: unknown): string {
   const problem = error instanceof MemberProvisionConflictError ? error.problem : error instanceof Error ? error.message : String(error);
-  const recovery = error instanceof MemberStaleRegistrationError ? error.remedy : error instanceof MemberMcpConflictError ? error.localRemedy : undefined;
+  const recovery = error instanceof MemberMcpConflictError ? error.localRemedy : undefined;
   return recovery === undefined
     ? joinSentences(`${agent}'s configuration could not be checked: ${problem}`, 'Review this configuration before changing global hooks or tools.')
     : joinSentences(problem, recovery);

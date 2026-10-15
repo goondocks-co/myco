@@ -68,16 +68,18 @@ describe('myco member provision', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
   });
 
-  it('reports a partially set up plugin agent without claiming no agent is installed', () => {
+  for (const agent of ['pi', 'opencode']) it(`reports a partially set up ${agent} without claiming no agent is installed`, () => {
     join();
-    const manifest = loadManifests().find(m => m.name === 'pi')!;
+    const manifest = loadManifests().find(m => m.name === agent)!;
     const file = path.join(agentHome, manifest.registration!.globalHooksTarget!.replace(/^~\//, ''));
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const before = `// myco:plugin-marker\nconst binary = "${root}/deleted-install/bin/myco";\n`;
     fs.writeFileSync(file, before);
-    const lines = detectedProvisionLines(provisionAgents(['pi'], mycoHome, SERVER, root));
+    const lines = detectedProvisionLines(provisionAgents([agent], mycoHome, SERVER, root));
     expect(lines.join('\n')).toContain('capture hooks are not set up');
-    expect(lines.join('\n')).not.toMatch(/No supported agent|Capture is set up|tools are not set up/);
+    expect(lines.join('\n')).not.toMatch(/No supported agent|Capture is set up|tools are not set up|provisioned .* globally/);
+    expect(lines).toContain(`Capture is not set up for ${manifest.displayName}.`);
+    expect(lines[0]).toBe(agent === 'opencode' ? 'Tools and skills are set up for OpenCode.' : 'Skills are set up for Pi.');
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
   });
 
@@ -95,7 +97,29 @@ describe('myco member provision', () => {
     expect(outcome.detail).not.toContain('(plugin');
     expect(outcome.detail).toContain('capture hooks are not set up');
     expect(outcome.captureReady).toBe(false);
+    const lines = detectedProvisionLines(provisionAgents(['opencode'], mycoHome, SERVER, root));
+    expect(lines[0]).toBe('Capture is not set up for OpenCode.');
+    expect(lines.join('\n')).not.toContain('provisioned OpenCode globally');
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('preserves a stale hook in an outdated member hook group while refreshing capture', () => {
+    join();
+    provisionGlobally('claude-code', root, mycoHome, { serverUrl: SERVER });
+    const file = path.join(agentHome, '.claude', 'settings.json');
+    const current = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const stale = { type: 'command', command: `${root}/deleted-install/bin/myco hook stop --myco-managed`, timeout: 3 };
+    const bytes = JSON.stringify(stale);
+    const outdated = structuredClone(current);
+    outdated.hooks.Stop[0].hooks[0].timeout = 999;
+    outdated.hooks.Stop[0].hooks.push(stale);
+    fs.writeFileSync(file, JSON.stringify(outdated));
+    provisionGlobally('claude-code', root, mycoHome, { serverUrl: SERVER });
+    const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const remaining = after.hooks.Stop.flatMap((group: { hooks: unknown[] }) => group.hooks);
+    expect(remaining.filter((hook: unknown) => JSON.stringify(hook) === bytes)).toHaveLength(1);
+    expect(remaining.filter((hook: { command: string }) => hook.command !== stale.command)).toEqual(current.hooks.Stop.flatMap((group: { hooks: unknown[] }) => group.hooks));
+    expect(new SymbiontInstaller(loadManifests().find(m => m.name === 'claude-code')!, root, resolvePackageRoot(), false, mycoHome).forDeployment(SERVER).memberRegistrationCurrent()).toBe(true);
   });
 
   for (const preserveOtherMemberTools of [false, true]) it(`scans registrations once per provisioning or preview operation (preserve other tools: ${preserveOtherMemberTools})`, () => {
@@ -122,7 +146,7 @@ describe('myco member provision', () => {
     const outcome = provisionGlobally('claude-code', root, mycoHome, { serverUrl: SERVER });
     expect(outcome.kind).toBe('provisioned');
     if (outcome.kind !== 'provisioned') throw new Error('Expected provisioning beside the stale entry');
-    expect(outcome.detail).toContain('(hooks');
+    expect(outcome.detail.split('\n')[0]).toBe(key === 'mcpServers' ? 'provisioned Claude Code globally (hooks, skills, settings)' : 'provisioned Claude Code globally (hooks, tools, skills, settings)');
     expect(outcome.detail).toContain(key === 'mcpServers' ? 'tools are not set up' : 'nothing else is affected');
     expect(outcome.detail).not.toContain('(hooks and MCP)');
     expect(JSON.parse(fs.readFileSync(file, 'utf8'))[key].myco).toEqual(entry);

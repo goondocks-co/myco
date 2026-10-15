@@ -130,7 +130,7 @@ describe('myco login sets up the agents on this machine', () => {
     expect(await run([await invite(rig)], deps(rig))).toBe(true);
     expect(JSON.parse(read(file)!).hooks.Stop).toContainEqual(JSON.parse(stale).hooks.Stop[0]);
     expect(read(file)).toContain('--credential registry');
-    expect(out.join('\n')).toContain(`Claude Code: stale Myco entry in ${file}: a Stop hook running ${binary}; binary ${binary} is missing.`);
+    expect(out.join('\n')).toContain(`Claude Code: stale Myco entry in ${file}: a Stop hook; binary ${binary} is missing.`);
     expect(out.join('\n')).toContain('nothing else is affected. You may delete it.');
     expect(out.join('\n')).toContain('Capture is set up for Claude Code, Codex.');
     expect(out.join('\n')).not.toContain('Skipped Claude Code');

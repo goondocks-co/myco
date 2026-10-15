@@ -817,7 +817,7 @@ describe('myco cutover', () => {
     expect(action).toContain('tools are not set up because stale entries occupy their place');
     const real = await m.run();
     expect(real.ok).toBe(true);
-    expect(real.out.join('\n')).toContain('provisioned Claude Code globally (hooks');
+    expect(real.out.map(line => line.trim())).toContain('provisioned Claude Code globally (hooks, skills, settings)');
     expect(real.out.join('\n')).not.toContain('(hooks and MCP)');
     expect(readJson(file).mcpServers).toEqual({ myco: entry });
     expect(hookCommands(readJson(settingsFile()).hooks).some(command => command.includes('--credential registry'))).toBe(true);
@@ -989,7 +989,7 @@ describe('myco cutover', () => {
       const result = await m.run(args, { agents: ['claude-code', agent] });
       expect(result.err).toEqual([]);
       expect(result.ok).toBe(true);
-      expect(result.out.join('\n')).toContain(`stale Myco entry in ${file}: the top-level "myco" MCP server; binary ${binary} is missing.`);
+      expect(result.out.join('\n')).toContain(`stale Myco entry in ${file}: ${agent === 'codex' ? 'the Myco tools entry' : 'the top-level "myco" MCP server'}; binary ${binary} is missing.`);
       expect(result.out.join('\n')).not.toMatch(/held elsewhere|point at https:\/\/other.invalid/);
       if (args.length > 0 || agent !== 'codex') expect(fs.readFileSync(file)).toEqual(before);
       else expect(parseToml(fs.readFileSync(file, 'utf8'))[serversKey]).toEqual(parseToml(before.toString())[serversKey]);
