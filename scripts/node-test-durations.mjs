@@ -1,3 +1,4 @@
+// Refresh: download node artifacts from N green runs, replace node-ci-durations.json runs, then run node scripts/node-test-durations.mjs tests/fixtures/runner/node-ci-durations.json.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -10,17 +11,17 @@ export function nodeDurationSamples(workload) {
     const files = {};
     assert.deepEqual(shards.map(shard => shard.shard).sort((left, right) => left - right), Array.from({ length: shards.length }, (_, index) => index + 1), `${source}: incomplete shard sequence`);
     for (const { groups } of shards) for (const group of groups) {
-      const total = group.files.reduce((sum, file) => sum + file.milliseconds, 0);
+      const total = Object.values(group.files).reduce((sum, milliseconds) => sum + milliseconds, 0);
       assert.ok(total > 0, `${source}: group needs positive recorded duration`);
       const scale = group.milliseconds / total;
-      for (const file of group.files) {
-        assert.ok(!(file.file in files), `${source}: duplicate file ${file.file}`);
-        const split = file.split;
+      for (const [file, milliseconds] of Object.entries(group.files)) {
+        assert.ok(!(file in files), `${source}: duplicate file ${file}`);
+        const split = group.splits?.[file];
         if (split) {
-          assert.ok(split.milliseconds > 0 && split.milliseconds < file.milliseconds, `${source}: invalid split`);
+          assert.ok(split.milliseconds > 0 && split.milliseconds < milliseconds, `${source}: invalid split`);
           files[split.file] = split.milliseconds * scale;
         }
-        files[file.file] = (file.milliseconds - (split?.milliseconds ?? 0)) * scale;
+        files[file] = (milliseconds - (split?.milliseconds ?? 0)) * scale;
       }
     }
     return { source, files };
@@ -64,7 +65,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const workload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   const target = new URL('./test-durations.json', import.meta.url);
   const durations = JSON.parse(fs.readFileSync(target, 'utf8'));
-  Object.assign(durations.files, recordedNodeDurations(workload));
+  for (const [file, milliseconds] of Object.entries(recordedNodeDurations(workload))) {
+    durations.files[file] = Math.max(durations.files[file] ?? 0, milliseconds);
+  }
   durations.files = Object.fromEntries(Object.entries(durations.files).sort(([left], [right]) => left.localeCompare(right)));
   durations.sources = [...new Set([...durations.sources, ...workload.runs.map(run => run.source)])];
   fs.writeFileSync(target, JSON.stringify(durations, null, 2) + '\n');

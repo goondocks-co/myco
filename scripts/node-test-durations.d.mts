@@ -6,7 +6,8 @@ export interface NodeWorkload {
       groups: {
         label: string;
         milliseconds: number;
-        files: { file: string; milliseconds: number; split?: { file: string; milliseconds: number } }[];
+        files: Partial<Record<string, number>>;
+        splits?: Record<string, { file: string; milliseconds: number }>;
       }[];
     }[];
   }[];

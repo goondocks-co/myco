@@ -8,8 +8,10 @@ import { parse as parseYaml } from 'yaml';
 import durations from '../../scripts/test-durations.json';
 import parityWorkload from '../fixtures/runner/parity-ci-9777180d.json';
 import completeParityWorkload from '../fixtures/runner/parity-ci-f2c7ecc5.json';
-import nodeWorkload from '../fixtures/runner/node-ci-1848.json';
-import { assertNodeShardHeadroom, nodeDurationSamples, recordedNodeDurations, type NodeGroup } from '../../scripts/node-test-durations.mjs';
+import nodeWorkloadFixture from '../fixtures/runner/node-ci-durations.json';
+import { assertNodeShardHeadroom, nodeDurationSamples, recordedNodeDurations, type NodeGroup, type NodeWorkload } from '../../scripts/node-test-durations.mjs';
+
+const nodeWorkload: NodeWorkload = nodeWorkloadFixture;
 
 describe('test shard selection', () => {
   test('retains recorded node process wall time when splitting a file into balancing units', () => {

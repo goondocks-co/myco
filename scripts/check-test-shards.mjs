@@ -62,7 +62,7 @@ try {
   });
   exactlyOnce(sharded.flatMap((phase) => phase.files), discovered, 'CI test shards');
   const durations = JSON.parse(fs.readFileSync(path.join(root, 'scripts/test-durations.json'), 'utf8'));
-  const nodeWorkload = JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/runner/node-ci-1848.json'), 'utf8'));
+  const nodeWorkload = JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/runner/node-ci-durations.json'), 'utf8'));
   assertNodeShardHeadroom(nodePlans, workflow.jobs.tests['timeout-minutes'] * 60_000, durations.files, nodeWorkload);
   const fullPhases = full.filter((phase) => !phase.label.endsWith('.tsx'));
   const shardPhases = sharded.filter((phase) => !phase.label.endsWith('.tsx'));
