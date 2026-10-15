@@ -104,20 +104,22 @@ it('refresh with --server recovers an owned registration among several joined De
   expect(readProvisionRecord(home)).toMatchObject({ serverUrl: SERVER, agents: ['claude-code'] });
 });
 
-it('manages unrecorded current capture while its tools remain on another joined Deployment', async () => {
+for (const missingHooks of [false, true]) it(`manages unrecorded ${missingHooks ? 'deleted' : 'current'} capture while its tools remain on another joined Deployment`, async () => {
   const second = 'https://second.example';
   writeDeploymentMembership({ serverUrl: second, token: 'B'.repeat(43), machineId: 'second', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
   provision('claude-code');
   expect(member.provisionGlobally('codex', null, home, { serverUrl: second })).toMatchObject({ kind: 'provisioned' });
   omitCodex();
+  if (missingHooks) fs.unlinkSync(path.join(process.env.CODEX_HOME!, 'hooks.json'));
   const file = path.join(process.env.CODEX_HOME!, 'config.toml');
   const before = fs.readFileSync(file, 'utf8');
-  expect(member.memberHarnessStatus('codex', home, SERVER)).toMatchObject({ current: true, toolsDeployment: second });
+  expect(member.memberHarnessStatus('codex', home, SERVER)).toMatchObject({ current: !missingHooks, toolsDeployment: second });
   expect(member.managedMemberHarnesses(home, SERVER)).toEqual(['claude-code', 'codex']);
-  expect((await status()).find(fact => fact.id === 'machine.agents')?.state).toBe('complete');
-  expect(setupChecks(home)).toContainEqual(expect.objectContaining({ status: 'ok', toolsDeployment: second }));
+  expect((await status()).find(fact => fact.id === 'machine.agents')?.state).toBe(missingHooks ? 'incomplete' : 'complete');
+  expect(setupChecks(home)).toContainEqual(expect.objectContaining({ status: missingHooks ? 'warn' : 'ok', toolsDeployment: second }));
   expect(refresh()).toBe(true);
   expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
+  expect(member.memberHarnessStatus('codex', home, SERVER).current).toBe(true);
   expect(fs.readFileSync(file, 'utf8')).toBe(before);
 });
 
