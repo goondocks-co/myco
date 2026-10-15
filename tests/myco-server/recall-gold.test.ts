@@ -292,7 +292,7 @@ describe('the committed baseline', () => {
   const baseline = recallBaseline as RecallBaseline;
 
   it('holds the approved must-not count and case identities on both doors', () => {
-    expect(gold.precisionRatchet.matches).toBe(13);
+    expect(gold.precisionRatchet.matches).toBe(21);
     for (const target of Object.values(baseline.targets)) {
       expect(mustNotRegressions(gold.cases, target.cases, gold.precisionRatchet)).toEqual([]);
       expect(target.mustNot).toEqual(summarizeMustNot(gold.cases, target.cases));

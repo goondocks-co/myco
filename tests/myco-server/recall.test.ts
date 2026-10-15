@@ -599,7 +599,7 @@ describe('POST /context/prompt', () => {
     const namespaces: string[] = [];
     e.env.VECTORIZE = { ...index, query: async (...args: Parameters<typeof index.query>) => { namespaces.push(args[1].namespace); return index.query(...args); } };
     try {
-      for (const [projectId, name, count, plans] of [['proj_1', 'myco', 100, 4], ['proj_2', 'unifi-mcp', 453, 112]] as const) {
+      for (const [projectId, name, count, plans] of [['proj_1', 'myco', 30, 4], ['proj_2', 'unifi-mcp', 453, 112]] as const) {
         e.sqlite.run(`UPDATE projects SET name = ? WHERE project_id = ?`, [name, projectId]);
 
         for (let i = 0; i < 45; i++) e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, origin_path, started_at)
@@ -640,10 +640,10 @@ describe('POST /context/prompt', () => {
         const spores = legacyOnly ? 3 : 7;
         const planHits = projectId === 'proj_1' ? 4 : 100;
         const hydratedPlans = 0;
-        const sporeHits = 100;
+        const sporeHits = projectId === 'proj_1' ? 30 : 100;
         expect(JSON.parse(row.selection)).toEqual({
           planCalibration: 'insufficient', planQueryCandidates: sporeHits,
-          sporeRawMatches: sporeHits, sporeJoined: sporeHits, sporeHits,
+          sporeRawMatches: projectId === 'proj_1' ? 30 : 100, sporeJoined: projectId === 'proj_1' ? 30 : 100, sporeHits: projectId === 'proj_1' ? 30 : 100,
           sporeCalibrated: sporeHits, sporeScored: sporeHits, sporeProbable: 10, sporeSeparated: 10,
           sporeRelevant: spores, sporeHydrated: spores,
           planRawMatches: planHits, planJoined: planHits, planHits, planUnserved: planHits, planEligible: planHits, planCalibrationFailed: 0, planCalibrated: projectId === 'proj_1' ? 0 : planHits,
