@@ -128,6 +128,16 @@ export const legacyImportParity: ParityScenario = {
     let recordBind = 0;
     const recordPlan = (await target.sql(`EXPLAIN QUERY PLAN ${LEGACY_RECORDS_SQL.replace(/\?/g, () => lit(binds[recordBind++]!))}`)).map(row => row.detail).join('\n');
     expect(recordPlan).toContain('SEARCH e USING INDEX sqlite_autoindex_events_1 (project_id=? AND event_id=?)');
+    const contentProbe = async (sessions = [vaultSession, startOnly]) => (await post(LEGACY_HISTORY_PATH, { eventGroups: [], sessions, projectState: true })).json();
+    await target.sql(`INSERT INTO transcripts (project_id,transcript_id,session_id,machine_id,size,first_received_at,last_received_at,token_id) VALUES (${lit(target.projectId)},'legacy-source-transcript',${lit(startOnly)},${lit(String(owner.machine_id))},5000,1,1,'fixture')`);
+    expect(await contentProbe()).toEqual({ persisted: true, confirmed: true, eventIds: [], projectState: 'active', sources: { withTranscript: [startOnly], vaultSourced: [vaultSession] } });
+    await target.sql(`UPDATE transcripts SET machine_id = 'other-machine' WHERE project_id = ${lit(target.projectId)} AND transcript_id = 'legacy-source-transcript'`);
+    expect(await contentProbe()).toMatchObject({ sources: { withTranscript: [], vaultSourced: [vaultSession] } });
+    await target.sql(`UPDATE projects SET archived_at = 1 WHERE project_id = ${lit(target.projectId)}`);
+    try { expect(await contentProbe()).toMatchObject({ projectState: 'archived' }); }
+    finally { await target.sql(`UPDATE projects SET archived_at = NULL WHERE project_id = ${lit(target.projectId)}`); }
+    const missingState = await fetch(`${target.url}${LEGACY_HISTORY_PATH}`, { method: 'POST', headers: { ...target.memberHeaders(), 'x-myco-project': `proj_missing_${stamp}`, 'content-type': 'application/json' }, body: JSON.stringify({ eventGroups: [], projectState: true }) });
+    expect(await missingState.json()).toMatchObject({ persisted: false, code: 'no_project' });
     const projectsBefore = await target.sql('SELECT project_id FROM projects ORDER BY project_id');
     const missing = await fetch(`${target.url}${LEGACY_HISTORY_PATH}`, { method: 'POST', headers: { ...target.memberHeaders(), 'x-myco-project': `proj_missing_${stamp}`, 'content-type': 'application/json' }, body: JSON.stringify({ eventGroups: [[eventId]] }) });
     expect((await missing.json() as { confirmed?: boolean }).confirmed).not.toBe(true);

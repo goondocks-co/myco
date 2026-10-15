@@ -1,3 +1,5 @@
+import { legacyConfirmationHint } from './legacy-capture.js';
+import { ServerClient } from '@myco/member/transport.js';
 import { machineSettingsLocation } from '@goondocks/myco-shared/setup-guidance';
 /**
  * `myco cutover` — move retained 1.4 projects to their routed Deployments.
@@ -66,8 +68,8 @@ import { pinMachineHome, previewGlobalProvision, provisionGlobally, type Provisi
 import { legacyReportLines, reportLines, STOPPED_WORDS, transcriptImportComplete } from './import.js';
 import { resolveManagedBinaryPath } from '../symbionts/installer.js';
 import { defaultMembership } from '@myco/member/default-deployment.js';
-import { completedLegacyDestination, readCutoverState, writeCutoverState as writeState } from '@myco/member/legacy-migration.js';
-import { observeLegacyMigration } from '@myco/member/legacy-confirmation.js';
+import { completedLegacyDestination, completedLegacyVault, readCutoverState, writeCutoverState as writeState } from '@myco/member/legacy-migration.js';
+import { observeLegacyMigration, legacyDestinationEnd } from '@myco/member/legacy-confirmation.js';
 export { observeLegacyMigration, legacyConfirmationObserver } from '@myco/member/legacy-confirmation.js';
 import { legacyRealpath, legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
@@ -836,7 +838,20 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
           if (signal.aborted) return false;
           const receipt = state.migrations?.[project.vault]?.projects[project.projectId];
           let deleted: string[] = [];
-          if (receipt?.evidence?.kind !== 'deployment' || receipt.vault?.state !== 'complete') {
+          const resumedVault = completedLegacyVault(receipt?.vault);
+          const finishTerminal = (endedBy: 'project_archived' | 'project_deleted') => {
+            if (!dry && receipt !== undefined && completedLegacyVault(receipt.vault)) {
+              receipt.transcripts = { state: 'none', at: now(), endedBy };
+              writeState(mycoHome, state);
+              deps.onCheckpoint?.(`transcripts:${project.projectId}`);
+            }
+            out(`   moved; its project is ${endedBy === 'project_archived' ? 'archived' : 'deleted'} (${project.projectId})`);
+          };
+          const destinationEnd = async () => {
+            const membership = listDeploymentMemberships(mycoHome).find(member => deploymentUrl(member.serverUrl) === dest.serverUrl);
+            return membership === undefined ? 'sign-in-required' as const : legacyDestinationEnd(new ServerClient({ ...membership, projectId: project.projectId }, deps.fetch));
+          };
+          if (!resumedVault) {
             const legacy: LegacyImportReport = await runLegacyImport({ sources: [copies.get(project.vault)!], project: project.projectId, serverUrl: dest.serverUrl, dryRun: dry }, { ...importDeps, progress: (l) => out(`   ${l}`) });
             for (const line of legacyReportLines(legacy, dry)) out(`   ${line}`);
             const complete = legacy.refused === undefined && legacy.projects.length > 0 && legacy.projects.every(legacyProjectImportComplete);
@@ -855,6 +870,17 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
             deleted = readLegacyVault(copies.get(project.vault)!).filter(source => source.projectId === project.projectId).flatMap(source => legacyDeletedSessionIds(source, machineId, mycoHome));
             out(`   vault history for ${project.projectId} is confirmed; only the transcript pass remains`);
           }
+          if (resumedVault) {
+            const endedBy = await destinationEnd();
+            if (endedBy === 'project_archived' || endedBy === 'project_deleted') {
+              finishTerminal(endedBy);
+              continue;
+            }
+            if (endedBy !== 'active') {
+              problem(legacyConfirmationHint(endedBy) ?? 'The transcript destination is unconfirmed; Myco will check again. Keep the 1.4 data.');
+              continue;
+            }
+          }
           if (dry) { out(`   would then import agent transcripts for ${project.projectId} on ${dest.serverUrl}`); continue; }
           const hasTranscriptBinding = listRegistryEntries(mycoHome).some((b) => b.projectId === project.projectId && deploymentUrl(b.serverUrl) === dest.serverUrl);
           if (!hasTranscriptBinding) {
@@ -866,6 +892,10 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
             { ...importDeps, progress: (l) => out(`   ${l}`) },
           );
           const transcriptsComplete = transcriptImportComplete(transcripts) && transcripts.projects.every((p) => !p.notAttempted);
+          if (!transcriptsComplete && completedLegacyVault(receipt?.vault)) {
+            const endedBy = await destinationEnd();
+            if (endedBy === 'project_archived' || endedBy === 'project_deleted') { finishTerminal(endedBy); continue; }
+          }
           if (receipt !== undefined) {
             receipt.transcripts = { state: transcriptsComplete ? 'complete' : 'partial', at: now(), endedBy: transcripts.stoppedBy ?? transcripts.refused ?? transcripts.projects.find((p) => p.endedBy !== undefined)?.endedBy };
             writeState(mycoHome, state);

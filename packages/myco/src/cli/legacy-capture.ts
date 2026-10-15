@@ -1,8 +1,11 @@
+import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import type { LegacyMigrationState } from '@myco/member/legacy-migration.js';
 import { LEGACY_AGENT_DEFERRAL } from '@goondocks/myco-shared/setup-guidance';
 
 export function legacyConfirmationHint(confirmation: LegacyMigrationState['confirmation']): string | null {
   switch (confirmation) {
+    case 'sign-in-required': return `Myco couldn't confirm earlier moves; ${REJOIN_HINT}. Then run myco setup --cutover. Keep the 1.4 data.`;
+    case 'pending': return "Earlier moves are unconfirmed; Myco will check again. Keep the 1.4 data.";
     case 'unavailable': return "Myco couldn't confirm earlier moves; it will check again when online. Keep the 1.4 data.";
     case 'update-required': return "Myco couldn't confirm earlier moves; update the Deployment, then run myco setup --cutover. Keep the 1.4 data.";
     case 'project-missing': return "A project is no longer on its Deployment; keep the 1.4 data and run myco setup --cutover to review its destination.";

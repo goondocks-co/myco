@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from 'bun:test';
+import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -29,7 +29,7 @@ for (const allConfirmed of [true, false]) it(`requires every bounded proof batch
   fs.mkdirSync(folder); fs.mkdirSync(path.dirname(vault), { recursive: true });
   const db = new Database(vault);
   db.exec(fs.readFileSync(new URL('../fixtures/legacy/vault-v76.sql', import.meta.url), 'utf8'));
-  const count = Math.floor(LEGACY_HISTORY_MAX_EVENTS / 2) + 1;
+  const count = LEGACY_HISTORY_MAX_EVENTS + 1;
   try {
     for (let index = 0; index < count; index++) db.run("INSERT INTO sessions (id, project_id, project_root, agent, started_at, ended_at, status, created_at) VALUES (?, 'proj_old', ?, 'claude-code', 1700000000, 1700000060, 'completed', 1700000000)", [`source-${index}`, folder]);
   } finally { db.close(); }
@@ -38,6 +38,8 @@ for (const allConfirmed of [true, false]) it(`requires every bounded proof batch
   writeRegistryEntry({ ...membership, version: 2, root: folder, projectId: 'proj_old' }, { mycoHome: home });
   const bytes = fs.readFileSync(vault);
   let batches = 0;
+  const clock = Date.now();
+  const time = spyOn(Date, 'now').mockImplementation(() => clock + batches * 4000);
   const result = await observeLegacyMigration(home, { fetch: async (input, init) => {
     expect(new URL(new Request(input, init).url).pathname).toBe(LEGACY_HISTORY_PATH);
     const { eventGroups } = JSON.parse(String(init?.body)) as { eventGroups: string[][] };
@@ -47,7 +49,8 @@ for (const allConfirmed of [true, false]) it(`requires every bounded proof batch
     const confirmed = allConfirmed || batches === 1;
     return Response.json({ persisted: true, confirmed, ...(confirmed ? { eventIds: eventGroups.map(group => group[0]) } : {}) });
   } });
-  expect(batches).toBe(2);
+  time.mockRestore();
+  expect(batches).toBe(allConfirmed ? 3 : 2);
   expect(result.state).toBe(allConfirmed ? 'partial' : 'unmoved');
   if (allConfirmed) expect(readCutoverState(home).migrations?.[vault]?.projects.proj_old?.evidence?.eventIds).toHaveLength(count);
   else expect(readCutoverState(home).migrations).toBeUndefined();
@@ -107,7 +110,7 @@ for (const receipt of ['backup-only', 'absent'] as const) for (const refused of 
 });
 
 
-for (const outcome of ['unreachable', 'refused', 'route_missing', 'project-missing', 'busy'] as const) it(`names the next step for confirmation ${outcome}`, async () => {
+for (const outcome of ['unreachable', 'refused', 'route_missing', 'project-missing', 'busy', 'unauthorized', 'timeout'] as const) it(`names the next step for confirmation ${outcome}`, async () => {
   const home = path.join(root, 'myco');
   const vault = path.join(home, 'groves', 'retained', 'myco.db');
   const folder = path.join(root, 'repo');
@@ -125,14 +128,16 @@ for (const outcome of ['unreachable', 'refused', 'route_missing', 'project-missi
   try {
     const result = await observeLegacyMigration(home, { fetch: async (_input, init) => {
       if (outcome === 'unreachable') throw new Error('offline');
+      if (outcome === 'unauthorized') return new Response('revoked', { status: 401 });
+      if (outcome === 'timeout') return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('fixture timed out')), { once: true }));
       if (outcome === 'busy') {
         const body = JSON.parse(String(init?.body)) as { eventGroups: string[][] };
         return Response.json({ persisted: true, confirmed: true, eventIds: body.eventGroups.flat(), sporeIds: [], lineageIds: [] });
       }
       return Response.json({ persisted: false, code: outcome === 'project-missing' ? 'no_project' : outcome, reason: 'fixture' });
     } });
-    expect(result.confirmation).toBe(outcome === 'unreachable' ? 'unavailable' : (outcome === 'refused' || outcome === 'route_missing') ? 'update-required' : outcome);
-    expect(legacyCaptureGuidance(result).hint?.toLowerCase()).toContain(outcome === 'unreachable' ? 'online' : outcome === 'busy' ? 'another cutover is running' : outcome === 'project-missing' ? 'no longer on' : 'update the deployment');
+    expect(result.confirmation).toBe(outcome === 'unauthorized' ? 'sign-in-required' : outcome === 'timeout' ? 'pending' : outcome === 'unreachable' ? 'unavailable' : (outcome === 'refused' || outcome === 'route_missing') ? 'update-required' : outcome);
+    expect(legacyCaptureGuidance(result).hint?.toLowerCase()).toContain(outcome === 'unauthorized' ? 'myco login <link>' : outcome === 'timeout' ? 'will check again' : outcome === 'unreachable' ? 'online' : outcome === 'busy' ? 'another cutover is running' : outcome === 'project-missing' ? 'no longer on' : 'update the deployment');
     expect(readCutoverState(home).migrations).toBeUndefined();
   } finally { if (held?.acquired) held.lock.release(); }
-});
+}, 10_000);

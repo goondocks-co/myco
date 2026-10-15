@@ -1,3 +1,5 @@
+import { renderSetupStatus } from '@myco/cli/setup-status.js';
+import { rootSlug } from '@myco/symbionts/transcript-attribution.js';
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
@@ -142,18 +144,63 @@ describe('legacy journey (e)', () => {
     expect(errors.join('\n')).toContain('Project connection did not finish');
   });
 
-  for (const evidence of ['confirmed', 'archived', 'title-only', 'confirmed-dry-run', 'confirmed-setup', 'absent', 'growth', 'deleted', 'denied', 'unreachable'] as const) it(`recovers alpha backup-only moves only with Deployment evidence: ${evidence}`, async () => {
+  function transcriptOnDisk(fixture: Awaited<ReturnType<typeof legacyJourney>>, sessionId: string, stamp: Date): string {
+    const project = fixture.legacy.projects[0]!;
+    let file = '';
+    for (const base of new Set([path.join(fixture.legacy.home, '.claude'), process.env.CLAUDE_CONFIG_DIR!])) {
+      file = path.join(base, 'projects', `-${rootSlug(project.root)}`, `${sessionId}.jsonl`);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, [
+        { type: 'user', cwd: project.root, sessionId, message: { content: 'Retained transcript ' + 'x'.repeat(5000) }, timestamp: stamp.toISOString() },
+        { type: 'assistant', cwd: project.root, sessionId, message: { content: [{ type: 'text', text: 'Retained response' }] }, timestamp: new Date(stamp.getTime() + 1000).toISOString() },
+      ].map(row => JSON.stringify(row) + '\n').join(''));
+      fs.utimesSync(file, stamp, stamp);
+    }
+    return file;
+  }
+
+  for (const evidence of ['confirmed', 'malformed', 'archived', 'transcript', 'transcript-held', 'archived-transcript', 'deleted-transcript', 'receipt-archived-transcript', 'title-only', 'confirmed-dry-run', 'confirmed-setup', 'absent', 'growth', 'deleted', 'denied', 'unreachable'] as const) it(`recovers alpha backup-only moves only with Deployment evidence: ${evidence}`, async () => {
     const fixture = await rig();
+    if (evidence === 'malformed') {
+      const source = new Database(fixture.legacy.vault);
+      try { source.run("INSERT INTO resolution_events (id, project_id, agent_id, spore_id, action, reason, created_at) VALUES ('bad-lineage', ?, 'user', ?, 'supersede', 'Missing successor', 1700000060)", [fixture.legacy.projects[0]!.id, 'spore_' + fixture.legacy.projects[0]!.id]); }
+      finally { source.close(); }
+    }
     if (evidence === 'title-only') {
       const source = new Database(fixture.legacy.vault);
       try { source.run('DELETE FROM prompt_batches'); } finally { source.close(); }
     }
+    if (evidence === 'transcript' || evidence === 'transcript-held') {
+      const project = fixture.legacy.projects[0]!;
+      const id = crypto.randomUUID();
+      const stamp = new Date(Date.now() - 3 * 86_400_000);
+      const transcript = transcriptOnDisk(fixture, id, stamp);
+      const source = new Database(fixture.legacy.vault);
+      try {
+        source.run('PRAGMA foreign_keys = OFF');
+        source.run('UPDATE sessions SET id = ?, transcript_path = ?, started_at = ?, ended_at = ? WHERE id = ?', [id, transcript, stamp.getTime() / 1000, stamp.getTime() / 1000 + 60, project.sessionId]);
+        source.run('UPDATE prompt_batches SET session_id = ?, started_at = ? WHERE session_id = ?', [id, stamp.getTime() / 1000, project.sessionId]);
+      } finally { source.close(); }
+    }
     const before = fs.readFileSync(fixture.legacy.vault);
     expect(await run(flags, fixture.deps)).toBe(0);
     const state = readCutoverState(home);
+    if (evidence === 'transcript-held') {
+      const source = readLegacyVault(fixture.legacy.vault)[0]!;
+      const id = source.sessions[0]!.id;
+      for (const base of new Set([path.join(fixture.legacy.home, '.claude'), process.env.CLAUDE_CONFIG_DIR!]))
+        fs.unlinkSync(path.join(base, 'projects', `-${rootSlug(fixture.legacy.projects[0]!.root)}`, `${id}.jsonl`));
+    }
     const file = path.join(home, 'member', 'cutover.json');
     if (evidence === 'absent' || evidence === 'growth') fs.unlinkSync(file);
-    else fs.writeFileSync(file, JSON.stringify({ backups: state.backups }));
+    else if (evidence === 'receipt-archived-transcript' || evidence === 'deleted-transcript') {
+      for (const receipt of Object.values(state.migrations!)) for (const project of Object.values(receipt.projects)) {
+        delete project.transcripts;
+        delete project.destinations;
+      }
+      fs.writeFileSync(file, JSON.stringify(state));
+    } else fs.writeFileSync(file, JSON.stringify({ backups: state.backups }));
+    if (evidence.endsWith('-transcript')) transcriptOnDisk(fixture, crypto.randomUUID(), new Date(Date.now() - 2 * 86_400_000));
     if (evidence === 'growth') {
       const source = new Database(fixture.legacy.vault);
       try { source.run("INSERT INTO sessions (id, project_id, agent, started_at, ended_at, status, created_at) VALUES ('new-unmoved', ?, 'claude-code', 1700000100, 1700000200, 'completed', 1700000100)", [fixture.legacy.projects[0]!.id]); }
@@ -162,13 +209,13 @@ describe('legacy journey (e)', () => {
     const sourceBytes = fs.readFileSync(fixture.legacy.vault);
     const destination = new Database(path.join(root, 'journey-e', 'deployment-0.sqlite'));
     try {
-      if (evidence === 'archived') destination.run('UPDATE projects SET archived_at = 1');
+      if (['archived', 'archived-transcript', 'receipt-archived-transcript'].includes(evidence)) destination.run('UPDATE projects SET archived_at = 1');
       if (evidence === 'denied') destination.run("UPDATE events SET producer_adapter = 'claude-code'");
       if (evidence === 'title-only') for (const source of readLegacyVault(fixture.legacy.vault)) {
         const titleId = legacyHistoryCompletionGroups(source, 'machine_1', home)[0]![1]!;
         destination.run("UPDATE events SET producer_adapter = 'claude-code', channel = 'cli' WHERE project_id = ? AND event_id <> ?", [source.projectId, titleId]);
       }
-      if (evidence === 'deleted') {
+      if (evidence === 'deleted' || evidence === 'deleted-transcript') {
         destination.run('PRAGMA foreign_keys = OFF');
         for (const project of fixture.legacy.projects) destination.run('DELETE FROM projects WHERE project_id = ?', [project.id]);
       }
@@ -178,15 +225,25 @@ describe('legacy journey (e)', () => {
     if (evidence === 'confirmed-dry-run') expect(await cutoverRun(['--dry-run'], { ...fixture.deps.cutoverDeps, mycoHome: home, fetch: deps.fetch, stdout: line => lines.push(line), stderr: line => errors.push(line) })).toBe(true);
     if (evidence === 'confirmed-setup') expect(await run(flags, { ...fixture.deps, ask: async question => { throw new Error(`Unexpected prompt: ${question}`); } })).toBe(0);
     const observations = await observeSetup(home, {}, { fetch: deps.fetch, agents: () => [], status: true });
-    if (['confirmed', 'archived', 'title-only', 'confirmed-dry-run', 'confirmed-setup', 'absent'].includes(evidence)) {
-      expect(legacyMigrationState(home).state).toBe(evidence === 'confirmed-setup' ? 'moved' : 'partial');
-      expect(readCutoverState(home)).toMatchObject({ version: 2, migrations: { [fixture.legacy.vault]: { projects: {
+    if (['confirmed', 'malformed', 'archived', 'transcript', 'transcript-held', 'archived-transcript', 'deleted-transcript', 'receipt-archived-transcript', 'title-only', 'confirmed-dry-run', 'confirmed-setup', 'absent'].includes(evidence)) {
+      const terminal = ['confirmed-setup', 'archived', 'archived-transcript', 'deleted-transcript', 'receipt-archived-transcript'].includes(evidence);
+      expect(legacyMigrationState(home).state).toBe(terminal ? 'moved' : 'partial');
+      if (!['receipt-archived-transcript', 'deleted-transcript'].includes(evidence)) expect(readCutoverState(home)).toMatchObject({ version: 2, migrations: { [fixture.legacy.vault]: { projects: {
         [fixture.legacy.projects[0]!.id]: { evidence: { kind: 'deployment', machineId: 'machine_1' } },
       } } } });
+      if (evidence === 'malformed') {
+        expect(legacyMigrationState(home).ignoredLineage).toBe(1);
+        expect(renderSetupStatus(observations).join('\n')).toContain('Skipped 1 malformed 1.4 lineage event');
+      }
       const plan = planCutover(home, { homeDir: fixture.legacy.home, dryRun: true }, fixture.deps.cutoverDeps);
-      expect(plan.projects.map(project => project.destination.kind)).toEqual(evidence === 'confirmed-setup' ? ['moved', 'moved'] : ['destination', 'destination']);
+      expect(plan.projects.map(project => project.destination.kind)).toEqual(terminal ? ['moved', 'moved'] : ['destination', 'destination']);
       expect(await run(flags, { ...fixture.deps, ask: async question => { throw new Error(`Unexpected prompt: ${question}`); } })).toBe(0);
       expect(fixture.calls.slice(requests).filter(call => ['/events', '/spores/save', '/members/projects/resolve'].includes(call.route))).toEqual([]);
+      if (terminal && evidence !== 'confirmed-setup') {
+        expect(lines.join('\n') + errors.join('\n')).not.toContain('unarchive');
+        expect(renderSetupStatus(observations).join('\n')).toContain(`moved; its project is ${evidence === 'deleted-transcript' ? 'deleted' : 'archived'}`);
+        expect(readCutoverState(home).migrations![fixture.legacy.vault]!.projects[fixture.legacy.projects[0]!.id]!.transcripts).toMatchObject({ state: 'none', endedBy: evidence === 'deleted-transcript' ? 'project_deleted' : 'project_archived' });
+      }
       const receipt = fs.readFileSync(file);
       await observeSetup(home, {}, { fetch: fakeFetch(async () => { throw new Error('terminal receipts must stay offline'); }), agents: () => [], status: true });
       expect(fs.readFileSync(file)).toEqual(receipt);
@@ -200,6 +257,24 @@ describe('legacy journey (e)', () => {
     if (evidence !== 'growth') expect(sourceBytes).toEqual(before);
   });
 
+  it('finishes transcripts terminally when the destination is archived immediately after the vault checkpoint', async () => {
+    const fixture = await rig();
+    const project = fixture.legacy.projects[0]!;
+    transcriptOnDisk(fixture, crypto.randomUUID(), new Date(Date.now() - 2 * 86_400_000));
+    const before = fs.readFileSync(fixture.legacy.vault);
+    const cutoverDeps = { ...fixture.deps.cutoverDeps, onCheckpoint: (label: string) => {
+      if (label !== `vault:${project.id}`) return;
+      const db = new Database(path.join(root, 'journey-e', 'deployment-0.sqlite'));
+      try { db.run('UPDATE projects SET archived_at = 1 WHERE project_id = ?', [project.id]); }
+      finally { db.close(); }
+    } };
+    expect(await run(flags, { ...fixture.deps, cutoverDeps })).toBe(0);
+    expect(legacyMigrationState(home).state).toBe('moved');
+    expect(readCutoverState(home).migrations![fixture.legacy.vault]!.projects[project.id]!.transcripts).toMatchObject({ state: 'none', endedBy: 'project_archived' });
+    expect(lines.join('\n') + errors.join('\n')).not.toContain('unarchive');
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(before);
+  });
+
   it('confirms each candidate once across an entire setup run and retries only transcripts after vault evidence', async () => {
     const fixture = await rig();
     expect(await run(flags, fixture.deps)).toBe(0);
@@ -209,7 +284,7 @@ describe('legacy journey (e)', () => {
     expect(await run(flags, fixture.deps)).toBe(0);
     const calls = fixture.calls.slice(requests);
     for (const project of fixture.legacy.projects) {
-      expect(calls.filter(call => call.route === '/import/legacy-history' && call.project === project.id)).toHaveLength(1);
+      expect(calls.filter(call => call.route === '/import/legacy-history' && call.project === project.id)).toHaveLength(3);
       expect(readCutoverState(home).migrations?.[fixture.legacy.vault]?.projects[project.id]).toMatchObject({ vault: { state: 'complete' }, transcripts: { state: 'complete' } });
     }
     expect(lines.join('\n')).toContain('only the transcript pass remains');

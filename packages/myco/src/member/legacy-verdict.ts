@@ -27,6 +27,13 @@ function verdictFor(binary: string | undefined, mycoHome: string | undefined, le
   return homes.some((home) => under(path.resolve(binary), home)) ? 'legacy' : 'foreign';
 }
 
+/** Capture status recognizes legacy Myco hooks independently of their unmanaged home. */
+export function isLegacyMycoHook(command: string): boolean {
+  if (command.includes(CREDENTIAL_FLAG)) return false;
+  const { words } = commandWords(command);
+  return /^myco(\.exe)?$/.test(path.basename(words[0] ?? '')) && words[1] === 'hook';
+}
+
 export function commandVerdict(command: string, legacyHomes: readonly string[]): Verdict {
   if (command.includes(CREDENTIAL_FLAG)) return 'member';
   const { env, words } = commandWords(command);

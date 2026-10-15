@@ -154,6 +154,8 @@ export interface LegacyHistoryIdentities {
   recordIds?: string[];
   sporeIds?: string[];
   lineageIds?: string[];
+  sessions?: string[];
+  projectState?: true;
 }
 export type PlanStatus = (typeof PLAN_STATUSES)[number];
 

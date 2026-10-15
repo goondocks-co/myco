@@ -42,7 +42,7 @@ export interface HeldTranscript {
  * worth importing. Only the head digest tells those two apart.
  */
 export async function heldTranscriptsFor(
-  db: RelationalStore, scope: ReadScope, sessionIds: readonly string[], transcriptIds: readonly string[],
+  db: RelationalStore, scope: ReadScope, sessionIds: readonly string[], transcriptIds: readonly string[], machineId?: string,
 ): Promise<HeldTranscript[]> {
   // One statement per key, not one with an OR across two. An OR leaves the
   // planner a single equality to work with and it falls back to scanning the
@@ -54,8 +54,8 @@ export async function heldTranscriptsFor(
     for (const run of inListChunks(keys)) {
       const { results } = await db
         .prepare(`SELECT transcript_id, session_id, size, head_hash, role FROM transcripts
-                   WHERE project_id = ? AND ${column} IN (${run.map(() => '?').join(', ')})`)
-        .bind(scope.projectId, ...run)
+                   WHERE project_id = ? AND ${column} IN (${run.map(() => '?').join(', ')}) ${machineId === undefined ? '' : 'AND machine_id = ?'}`)
+        .bind(scope.projectId, ...run, ...(machineId === undefined ? [] : [machineId]))
         .all<{ transcript_id: string; session_id: string; size: number; head_hash: string | null; role: string }>();
       for (const r of results) {
         rows.set(r.transcript_id, { transcriptId: r.transcript_id, sessionId: r.session_id, size: r.size, headHash: r.head_hash, role: r.role });

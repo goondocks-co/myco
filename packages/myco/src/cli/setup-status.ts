@@ -43,7 +43,7 @@ function describe(fact: Observation, url: string | undefined): string {
     const confirmationHint = legacyConfirmationHint(fact.legacyConfirmation);
     if (confirmationHint !== null) return confirmationHint;
     if (state === 'needs-destination' && fact.state === 'incomplete') return 'Some Myco 1.4 projects need a destination; run myco setup --cutover to preview the handover.';
-    return legacySentences[state] ?? legacySentences.unavailable;
+    return [legacySentences[state] ?? legacySentences.unavailable, fact.legacyNotice].filter(Boolean).join(' ');
   }
   if (fact.state === 'unavailable') return `Could not read ${labels[fact.id] ?? 'this observation'}: ${sentence(fact.detail)}. Inspect with ${fact.id.startsWith('runner.') ? 'myco runner status' : 'myco doctor'}.`;
   if (fact.id === 'runner.choice' && complete) return fact.detail === 'run-work' ? "This machine also runs Myco's work." : "This machine does not run Myco's work.";

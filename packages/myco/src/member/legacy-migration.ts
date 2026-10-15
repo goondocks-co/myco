@@ -1,3 +1,4 @@
+import { isLegacyMycoHook } from './legacy-verdict.js';
 /** The local cutover receipt capability. */
 import path from 'node:path';
 import { readVaultContent, type TableCounts } from '@myco/member/legacy-backup.js';
@@ -13,7 +14,8 @@ export function installedLegacyHooks(home: string, opts: { homeDir?: string; hom
   const homeDir = opts.homeDir ?? resolveHomeDir();
   const scan = scanLegacyRegistrations({ homeDir, ownHome: home, legacyHomes: opts.homes ?? [home, defaultMycoHome(homeDir)] });
   if (scan.unreadable.length > 0) throw new LegacyMigrationUnreadable(scan.unreadable[0].file, scan.unreadable[0].reason);
-  return scan.findings.some(finding => finding.verdict === 'legacy' && ['hooks', 'plugin-file'].includes(finding.location.kind));
+  return scan.findings.some(finding => (finding.verdict === 'legacy' && ['hooks', 'plugin-file'].includes(finding.location.kind))
+    || (finding.location.kind === 'hooks' && finding.verdict === 'foreign' && isLegacyMycoHook(finding.subject)));
 }
 
 export interface MigrationPass {
@@ -23,7 +25,7 @@ export interface MigrationPass {
   endedBy?: string;
 }
 export interface MigrationProjectReceipt {
-  evidence?: { kind: 'deployment'; at: number; machineId: string; eventIds: string[]; sporeIds?: string[]; lineageIds?: string[] };
+  evidence?: { kind: 'deployment'; at: number; machineId: string; eventIds: string[]; sporeIds?: string[]; lineageIds?: string[]; ignoredLineage?: number };
   root?: string | null;
   destination?: { serverUrl: string; key: string } | { skip: true; at: number };
   vault?: MigrationPass;
@@ -49,7 +51,7 @@ export type LegacyMigrationState = (
   | { state: 'unavailable'; file: string; detail: string }
   | { state: 'changed'; warning: string }
   | { state: 'none' | 'unmoved' | 'needs-destination' | 'handover-pending' | 'partial' | 'moved' }
-) & { legacyOwnsCapture?: true; confirmation?: 'unavailable' | 'not-found' | 'update-required' | 'project-missing' | 'busy' };
+) & { legacyOwnsCapture?: true; confirmation?: 'unavailable' | 'not-found' | 'update-required' | 'project-missing' | 'busy' | 'sign-in-required' | 'pending'; ignoredLineage?: number; terminalProjects?: ('archived' | 'deleted')[] };
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -73,6 +75,7 @@ function validProject(value: unknown): boolean {
   if (!record(value) || !validPass(value.vault, false) || !validPass(value.transcripts, true)) return false;
   if (value.evidence !== undefined && (!record(value.evidence) || value.evidence.kind !== 'deployment' || !timestamp(value.evidence.at)
     || typeof value.evidence.machineId !== 'string' || !strings(value.evidence.eventIds) || (value.evidence.sporeIds !== undefined && !strings(value.evidence.sporeIds)) || (value.evidence.lineageIds !== undefined && !strings(value.evidence.lineageIds))
+    || (value.evidence.ignoredLineage !== undefined && (!timestamp(value.evidence.ignoredLineage) || !Number.isInteger(value.evidence.ignoredLineage)))
     || ![value.evidence.eventIds, value.evidence.sporeIds, value.evidence.lineageIds].some(ids => Array.isArray(ids) && ids.length > 0))) return false;
   if (value.root !== undefined && value.root !== null && typeof value.root !== 'string') return false;
   const dest = value.destination;
@@ -134,6 +137,13 @@ export function sameLegacyStamp(vault: LegacySources['vaults'][number], receipt:
     && JSON.stringify(vault.wal) === JSON.stringify(receipt.wal ?? null);
 }
 
+export function completedLegacyVault(pass: MigrationPass | undefined): boolean {
+  return pass?.state === 'complete' && pass.endedBy === undefined && (pass.failures?.length ?? 0) === 0;
+}
+export function terminalLegacyTranscript(pass: MigrationPass | undefined): boolean {
+  return pass?.state === 'none' && ['project_archived', 'project_deleted'].includes(pass.endedBy ?? '');
+}
+
 /** Completion belongs to the recorded source and destination, independently of live Project state. */
 export function completedLegacyDestination(receipt: MigrationReceipt, project: MigrationProjectReceipt): string | null {
   const destination = project.destination;
@@ -141,9 +151,8 @@ export function completedLegacyDestination(receipt: MigrationReceipt, project: M
   const delivered = project.destinations?.[destination.key];
   const passes = delivered ?? project;
   if ((delivered !== undefined && (delivered.serverUrl !== destination.serverUrl || delivered.digest !== receipt.digest))
-    || passes.vault?.state !== 'complete' || !['complete', 'none'].includes(passes.transcripts?.state ?? '')
-    || passes.vault.endedBy !== undefined || (passes.vault.failures?.length ?? 0) > 0
-    || passes.transcripts?.endedBy !== undefined || (passes.transcripts?.failures?.length ?? 0) > 0) return null;
+    || !completedLegacyVault(passes.vault) || !['complete', 'none'].includes(passes.transcripts?.state ?? '')
+    || (passes.transcripts?.endedBy !== undefined && !terminalLegacyTranscript(passes.transcripts)) || (passes.transcripts?.failures?.length ?? 0) > 0) return null;
   return destination.serverUrl;
 }
 
@@ -172,15 +181,18 @@ export function legacyMigrationState(home: string, opts: { homeDir?: string; hom
     const states = sources.homes.map(readCutoverState);
     if (sources.vaults.length === 0 && sources.units.length === 0 && sources.registrations.length === 0) return { state: 'none' };
     const migrations = states.flatMap((s) => Object.entries(s.migrations ?? {}).map(([file, receipt]) => ({ file: legacyRealpath(file), receipt, state: s })));
-    const held = sources.vaults.map((vault) => ({ vault, entries: migrations.filter((r) => r.file === vault.path) }));
+    const held = sources.vaults.map(vault => {
+      const entries = migrations.filter(entry => entry.file === vault.path);
+      return { vault, entries, selected: entries.find(entry => sameLegacyStamp(vault, entry.receipt)) ?? entries[0] };
+    });
     if (held.some(({ vault, entries }) => entries.length === 0 && !states.some((s) => Object.keys(s.backups).some((file) => legacyRealpath(file) === vault.path)))) return observed({ state: 'unmoved' });
     let changed = false;
     let needsDestination = false;
     let partial = false;
-    for (const { vault, entries } of held) {
+    for (const { vault, entries, selected } of held) {
       if (entries.length === 0) { needsDestination = true; continue; }
       // Current metadata avoids opening and hashing an unchanged vault.
-      const entry = entries.find((e) => sameLegacyStamp(vault, e.receipt)) ?? entries[0];
+      const entry = selected!;
       const receipt = entry.receipt;
       const current = sameLegacyStamp(vault, receipt);
       if (!current) {
@@ -206,7 +218,12 @@ export function legacyMigrationState(home: string, opts: { homeDir?: string; hom
     const confirmed = held.every(({ entries }) => entries.some(({ receipt }) => Object.values(receipt.projects).length > 0
       && Object.values(receipt.projects).every(project => project.evidence?.kind === 'deployment')));
     if ((!states.some((s) => s.handover !== undefined) && !confirmed) || sources.units.length > 0 || sources.registrations.length > 0) return observed({ state: 'handover-pending' });
-    return { state: partial ? 'partial' : 'moved' };
+    const projects = held.flatMap(({ selected }) => Object.values(selected?.receipt.projects ?? {}));
+    const ignoredLineage = projects.reduce((sum, project) => sum + (project.evidence?.ignoredLineage ?? 0), 0);
+    const terminalProjects = projects.flatMap(project => terminalLegacyTranscript(project.transcripts)
+      ? [project.transcripts!.endedBy === 'project_archived' ? 'archived' as const : 'deleted' as const] : []);
+    return { state: partial ? 'partial' : 'moved', ...(ignoredLineage > 0 ? { ignoredLineage } : {}),
+      ...(terminalProjects.length > 0 ? { terminalProjects: [...new Set(terminalProjects)] } : {}) };
   } catch (error) {
     const file = error instanceof LegacyMigrationUnreadable ? error.file : error instanceof Error && 'path' in error ? String(error.path) : home;
     return { state: 'unavailable', file, detail: new LegacyMigrationUnreadable(file, error).message };

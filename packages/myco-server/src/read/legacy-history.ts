@@ -32,3 +32,9 @@ export async function importedLegacyRows(db: RelationalStore, projectId: string,
   ]);
   return { sporeIds: new Set(results[0].results.map(row => row.id)), lineageIds: new Set(results[1].results.map(row => row.id)) };
 }
+
+/** Exact Project identity includes archived destinations without admitting capture. */
+export async function legacyDestinationState(db: RelationalStore, projectId: string): Promise<'active' | 'archived' | 'deleted'> {
+  const row = await db.prepare('SELECT archived_at FROM projects WHERE project_id = ?').bind(projectId).first<{ archived_at: number | null }>();
+  return row === null ? 'deleted' : row.archived_at === null ? 'active' : 'archived';
+}

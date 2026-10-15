@@ -374,12 +374,12 @@ it('prints the agent-hook label once when setup is missing', () => {
   ]);
 });
 
-it('observes installed 1.4 hooks as incomplete capture with friendly copy and exit 3', async () => {
+for (const location of ['own', 'dev', 'custom'] as const) it(`observes installed 1.4 hooks as incomplete capture with friendly copy and exit 3: ${location}`, async () => {
   const restore = bindSandboxChildHome(scratch, { MYCO_HOME: fixture.home });
   try {
     const settings = path.join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json');
     fs.mkdirSync(path.dirname(settings), { recursive: true });
-    fs.writeFileSync(settings, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${fixture.home}/bin/myco hook session-start --myco-managed` }] }] } }));
+    fs.writeFileSync(settings, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${location === 'custom' ? 'MYCO_HOME=' + path.join(scratch, 'custom') + ' ' : ''}${location === 'own' ? fixture.home : path.join(scratch, '.myco-dev')}/bin/myco hook session-start --myco-managed` }] }] } }));
     const facts = await observeSetupStatus(fixture.home, { role: 'join', url: STATUS_URL }, deps());
     expect(facts.find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'incomplete', detail: 'legacy-hooks' });
     expect(await run(['--status'], deps())).toBe(3);
@@ -405,7 +405,7 @@ for (const explicit of [true, false]) it(`status and dry run confirm the same ${
   const fetch = Object.assign(async (_input: unknown, init?: RequestInit) => {
     passes++;
     const body = JSON.parse(String(init?.body)) as { eventGroups: string[][] };
-    return Response.json({ persisted: true, confirmed: true, eventIds: body.eventGroups.flat(), sporeIds: [], lineageIds: [] });
+    return Response.json({ persisted: true, confirmed: true, eventIds: body.eventGroups.flat(), sporeIds: [], lineageIds: [], projectState: 'active' });
   }, { preconnect: () => {} });
   const facts = await observeSetupStatus(fixture.home, {}, { ...deps(), fetch, legacyHomeDir, ...(explicit ? { legacyHomes: [sourceHome] } : {}) });
   expect(facts.find(fact => fact.id === 'legacy')?.detail).toMatch(/^partial /);
@@ -414,7 +414,7 @@ for (const explicit of [true, false]) it(`status and dry run confirm the same ${
     mycoHome: fixture.home, env: { ...process.env, HOME: legacyHomeDir }, machineId: 'synthetic-machine', fetch,
     stdout: line => lines.push(line), stderr: line => { throw new Error(line); },
   })).toBe(true);
-  expect(passes).toBe(1);
+  expect(passes).toBe(3);
   expect(lines.join('\n')).toContain('only the transcript pass remains');
   expect(fs.readFileSync(vault)).toEqual(bytes);
 });

@@ -33,6 +33,7 @@ export interface Observation {
   memberCapture?: true;
   joinedDeployments?: string[];
   legacyError?: string;
+  legacyNotice?: string;
   legacyConfirmation?: import('@myco/member/legacy-migration.js').LegacyMigrationState['confirmation'];
   capture?: { waiting?: number | null; nextProbeAt?: number; recentRefusals?: number; unreadableLines?: number };
   target?: 'cloudflare' | 'local';
@@ -74,6 +75,8 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
     const guidance = legacyCaptureGuidance(migration);
     facts.push({
       id: 'legacy',
+      legacyNotice: [migration.terminalProjects?.map(state => `moved; its project is ${state}`).join('; '),
+        migration.ignoredLineage ? `Skipped ${migration.ignoredLineage} malformed 1.4 lineage event(s) during confirmation.` : null].filter(Boolean).join(' '),
       ...(migration.state === 'unavailable' ? { legacyError: migration.detail } : {}),
       ...(migration.confirmation === undefined ? {} : { legacyConfirmation: migration.confirmation }),
       scope: migration.state === 'unavailable' ? migration.file : home,
