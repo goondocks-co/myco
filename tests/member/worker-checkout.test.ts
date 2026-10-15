@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { gitRepositoryFixture, GIT_READ_CREDENTIAL } from '../helpers/git-repository.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
+import { flagValue } from '../helpers/argv-flag.ts';
 
 /**
  * A native child reads the checkout and writes through the run's HTTP MCP
@@ -144,9 +145,8 @@ describe('worker repository checkout over the Deployment wire', () => {
         // A seeding run grounds nothing in digests, so its checkout hashes nothing.
         expect(observed.listing).toBeNull();
         const args = observed.args as string[];
-        expect(args[args.indexOf('--allowedTools') + 1]!.split(',')).toContain('Bash(git -C repo log:*)');
-        expect(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2)).toEqual(['--model', 'sonnet']);
-        expect(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2)).toEqual(['--effort', 'medium']);
+        expect(flagValue(args, '--allowedTools')!.split(',')).toContain('Bash(git -C repo log:*)');
+        expect([flagValue(args, '--model'), flagValue(args, '--effort')]).toEqual(['sonnet', 'medium']);
         expect(JSON.stringify(observed)).not.toContain(GIT_READ_CREDENTIAL.token);
         expect(JSON.stringify(lines)).not.toContain(owner.token);
         expect(await readdir(runRoot)).toEqual([]);

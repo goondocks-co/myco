@@ -2,6 +2,7 @@ import { mkdtempSync, writeFileSync } from '../support/fenced-fs.mjs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
+import { FLAG_VALUE_SOURCE } from './argv-flag.js';
 
 /** A native peer answers SDK initialization and calls its real permission callbacks over stdin/stdout. */
 export function stubClaudeSource(lines: readonly string[], calls: readonly Record<string, unknown>[] = [], failure?: 'timeout' | 'throw'): string {
@@ -9,6 +10,7 @@ export function stubClaudeSource(lines: readonly string[], calls: readonly Recor
   writeFileSync(join(bin, 'claude'), `#!/usr/bin/env node
 const fs = require('node:fs');
 const readline = require('node:readline');
+${FLAG_VALUE_SOURCE}
 fs.writeFileSync(${JSON.stringify(join(bin, 'argv.txt'))}, process.argv.slice(2).join('\\n'));
 fs.writeFileSync(${JSON.stringify(join(bin, 'cwd.txt'))}, process.cwd());
 const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
@@ -41,16 +43,14 @@ rl.on('line', async line => {
       const result = failure === 'timeout' ? null : await ask({subtype:'hook_callback',callback_id:callback,input:{hook_event_name:'PreToolUse',cwd:process.cwd(),...call,...(failure === 'throw' ? {tool_name:null} : {})}});
       let decision = result?.subtype === 'success' ? result.response.hookSpecificOutput.permissionDecision : null;
       const argv = process.argv.slice(2);
-      const settingsAt = argv.indexOf('--settings');
-      const settings = settingsAt < 0 ? {} : JSON.parse(argv[settingsAt + 1]);
+      const settings = JSON.parse(flagValue(argv, '--settings') ?? '{}');
       const forceAsk = settings.permissions?.ask?.includes(call.tool_name);
       if (decision === 'ask' || forceAsk && decision !== 'deny') {
         const permission = await ask({subtype:'can_use_tool',tool_name:call.tool_name,input:call.tool_input});
         decision = permission.subtype === 'success' ? permission.response.behavior : 'deny';
       } else if (decision === null) {
         // A failed hook falls through to native literal allows and in-cwd read approval.
-        const allowedAt = argv.indexOf('--allowedTools');
-        const rules = allowedAt < 0 ? [] : argv[allowedAt + 1].split(',');
+        const rules = flagValue(argv, '--allowedTools')?.split(',') ?? [];
         decision = rules.some(rule => rule.startsWith(call.tool_name + '(')) || call.tool_name === 'Read' && call.tool_input.file_path.startsWith(process.cwd() + '/') ? 'allow' : 'deny';
       }
       if (decision === 'allow' && call.tool_name === 'Read') fs.readFileSync(call.tool_input.file_path);
