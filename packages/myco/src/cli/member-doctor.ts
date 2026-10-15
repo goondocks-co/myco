@@ -29,6 +29,7 @@ import { pathIsAbsent } from '../member/store.js';
 import { listRunnerRecords, isLiveRunner } from '../runner/runner-registry.js';
 import { ServerClient } from '../member/transport.js';
 import { legacyMigrationState } from '../member/legacy-migration.js';
+import { observeLegacyStrayHistory } from '../member/legacy-strays.js';
 import { legacyVaultFiles } from '../member/home-role.js';
 import { defaultMycoHome } from '../paths/home.js';
 
@@ -292,6 +293,8 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
     checks.push(row('Runner offer', record.lastOffer ? 'ok' : 'not-checked', `${record.serverUrl}: ${record.lastOffer ? `offered ${record.lastOffer.offered.join(', ') || 'none'}; withheld ${record.lastOffer.withheld.join(', ') || 'none'}; observed ${iso(record.lastOffer.observedAt)}` : 'unknown (no acknowledged service offer); run `myco runner status` after starting the runner'}.`));
   }
   const migration = legacyMigrationState(home);
+  try { checks.push(...observeLegacyStrayHistory(home).map(line => row('Migration', 'warn', line))); }
+  catch (error) { checks.push(row('Migration', 'warn', `Earlier moves could not be checked: ${error instanceof Error ? error.message : String(error)}`)); }
   if (migration.state === 'unavailable') {
     checks.push(row('Myco 1.4', 'fail', `migration state unavailable: ${migration.detail}. Inspect ${migration.file}, then run \`myco cutover --dry-run\`.`));
   } else if (migration.state === 'needs-destination') {

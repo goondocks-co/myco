@@ -16,11 +16,13 @@ import { homeReport } from '@myco/cli/member-doctor.js';
 import { consentToPlan, cutoverConsentPlan, type SetupDeps } from '@myco/setup/steps.js';
 import { observeSetup } from '@myco/setup/observe.js';
 import { planFingerprint, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
-import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, deploymentPath, deploymentKeyFor, machineSettingsPath } from '@myco/member/registry.js';
+import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, registryEntryPath, deploymentPath, deploymentKeyFor, machineSettingsPath } from '@myco/member/registry.js';
 import { legacyMigrationState, type LegacyMigrationState } from '@myco/member/legacy-migration.js';
 import { legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { readVaultContent } from '@myco/member/legacy-backup.js';
 import { MemberSpool } from '@myco/member/spool.js';
+import { LegacyLedger } from '@myco/member/legacy-ledger.js';
+import { observeLegacyStrayHistory } from '@myco/member/legacy-strays.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { bufferLockPath, sessionStatePath, updateSessionState } from '@myco/member/session-state.js';
 import { installWorkerService } from '@myco/runner/service.js';
@@ -349,6 +351,70 @@ describe('legacy journey (e)', () => {
       expect(fs.readFileSync(fixture.legacy.vault)).toEqual(before);
     });
   }
+
+  it('names earlier stray history in guided preview, status and doctor', async () => {
+    const fixture = await rig({ multi: true });
+    const project = fixture.legacy.projects[1]!;
+    const ledger = new LegacyLedger(home, LEGACY_URLS[0], project.id);
+    ledger.append({ k: 'session', session: project.sessionId });
+    const before = fs.readFileSync(ledger.file);
+    expect({ code: await run(flags, fixture.deps), errors }).toEqual({ code: 0, errors: [] });
+    const previewLines = lines.filter(line => line.includes('An earlier move also put'));
+    expect(previewLines.length).toBeGreaterThan(0);
+    const expected = `An earlier move also put ${path.basename(project.root)}'s history on ${LEGACY_URLS[0]} (it now goes to ${LEGACY_URLS[1]}). Myco leaves that copy alone; you can remove it from that Deployment.`;
+    expect(previewLines.every(line => line.trim() === expected)).toBe(true);
+    const previewAt = lines.findIndex(line => line.includes('cutover preview (dry run)'));
+    const executionAt = lines.findIndex(line => line.startsWith('Cutting over '));
+    expect(previewAt).toBeGreaterThanOrEqual(0);
+    expect(executionAt).toBeGreaterThan(previewAt);
+    expect(lines.slice(previewAt, executionAt).filter(line => line.includes('An earlier move also put')).map(line => line.trim())).toEqual([expected]);
+    lines = [];
+    expect(await run(['--status'], fixture.deps)).toBe(0);
+    expect(lines.filter(line => line.includes('An earlier move also put'))).toEqual([expected]);
+    const doctor = await homeReport(home, { ...fixture.deps.cutoverDeps, cwd: root, fetch: fixture.deps.fetch, worker: { runner: () => { throw new Error('No service calls'); } } });
+    expect(doctor.filter(check => check.detail.includes('An earlier move also put')).map(check => check.detail)).toEqual([expected]);
+    expect(fs.readFileSync(ledger.file)).toEqual(before);
+  });
+
+  it('surfaces an unreadable route in status and doctor before claiming where stray history goes', async () => {
+    const fixture = await rig({ multi: true });
+    const project = fixture.legacy.projects[1]!;
+    new LegacyLedger(home, LEGACY_URLS[0], project.id).append({ k: 'session', session: project.sessionId });
+    const binding = registryEntryPath(project.root, home);
+    fs.writeFileSync(binding, '{');
+    expect(() => observeLegacyStrayHistory(home, { homeDir: fixture.legacy.home })).toThrow('binding at');
+    expect(await run(['--status'], fixture.deps)).toBe(4);
+    expect(lines.join('\n')).toMatch(/binding at|Project routes could not all be read/);
+    expect(lines.join('\n')).not.toContain('An earlier move also put');
+    const doctor = await homeReport(home, { ...fixture.deps.cutoverDeps, cwd: root, fetch: fixture.deps.fetch, worker: { runner: () => { throw new Error('No service calls'); } } });
+    expect(doctor.some(check => check.detail.includes('Earlier moves could not be checked:') && check.detail.includes('binding at'))).toBe(true);
+    expect(doctor.some(check => check.detail.includes('An earlier move also put'))).toBe(false);
+  });
+
+  it('reports retained Deployment proof after its ledger is lost and the project moves elsewhere', async () => {
+    const fixture = await rig({ secondMembership: true });
+    const original = readDeploymentMembership(LEGACY_URLS[0], home)!;
+    for (const project of fixture.legacy.projects) writeRegistryEntry({ ...original, version: 2, root: project.root, projectId: project.id }, { mycoHome: home });
+    expect(await run(flags, fixture.deps)).toBe(0);
+    const state = readCutoverState(home);
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: state.backups }));
+    expect(await run(flags, fixture.deps)).toBe(0);
+    const project = fixture.legacy.projects[1]!;
+    expect(readCutoverState(home).migrations![fixture.legacy.vault]!.projects[project.id]!.evidence?.kind).toBe('deployment');
+    fs.rmSync(new LegacyLedger(home, LEGACY_URLS[0], project.id).file);
+    const membership = readDeploymentMembership(LEGACY_URLS[1], home)!;
+    writeRegistryEntry({ ...membership, version: 2, root: project.root, projectId: project.id }, { mycoHome: home });
+    const requests = fixture.calls.length;
+    lines = [];
+    expect({ code: await run(['--yes', '--route', `${project.id}=${LEGACY_URLS[1]}`], { ...fixture.deps, ask: async () => 'yes' }), errors }).toEqual({ code: 0, errors: [] });
+    const expected = `An earlier move also put ${path.basename(project.root)}'s history on ${LEGACY_URLS[0]} (it now goes to ${LEGACY_URLS[1]}). Myco leaves that copy alone; you can remove it from that Deployment.`;
+    expect(lines.filter(line => line.includes('An earlier move also put')).every(line => line.trim() === expected)).toBe(true);
+    expect(lines.some(line => line.trim() === expected)).toBe(true);
+    expect(fixture.calls.slice(requests).filter(call => call.url === LEGACY_URLS[0] && call.route === '/import/legacy-history')).toEqual([]);
+    lines = [];
+    expect(await run(['--status'], fixture.deps)).toBe(0);
+    expect(lines.filter(line => line.includes('An earlier move also put'))).toEqual([expected]);
+  });
 
   for (const multi of [false, true]) it(`moves the coherent 1.4 home to ${multi ? 'two destinations' : 'one destination'} and resumes without duplicates`, async () => {
     const fixture = await rig({ multi });

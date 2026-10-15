@@ -68,12 +68,13 @@ import { staleRegistrationWords, staleRegistrationSurface } from '@myco/member/l
 import { pinMachineHome, previewGlobalProvision, provisionGlobally, type ProvisionOutcome } from './member.js';
 import { legacyReportLines, reportLines, STOPPED_WORDS, transcriptImportComplete } from './import.js';
 import { resolveManagedBinaryPath } from '../symbionts/installer.js';
-import { defaultMembership } from '@myco/member/default-deployment.js';
-import { completedLegacyDestination, completedLegacyVault, readCutoverState, writeCutoverState as writeState } from '@myco/member/legacy-migration.js';
+import { completedLegacyVault, readCutoverState, writeCutoverState as writeState } from '@myco/member/legacy-migration.js';
 import { observeLegacyMigration, legacyDestinationEnd } from '@myco/member/legacy-confirmation.js';
 export { observeLegacyMigration, legacyConfirmationObserver } from '@myco/member/legacy-confirmation.js';
 import { legacyProjectNames, legacyRealpath, legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
+import { legacyStrayHistoryLines } from '@myco/member/legacy-strays.js';
+import { planLegacyProjects, repositoryPresent, type LegacyDestination } from '@myco/member/legacy-placement.js';
 import { cutoverAbsentFolder, cutoverForeignBinding } from '@goondocks/myco-shared/setup-guidance';
 
 export const CUTOVER_HELP = `Usage: myco cutover [options]
@@ -199,18 +200,6 @@ export function legacyHomesFor(named: readonly string[], mycoHome: string, homeD
 const copyPathFor = (home: string, vault: string, stamp: string): string =>
   path.join(home, 'backups', `cutover-${stamp}`, path.relative(path.join(home, 'groves'), vault));
 
-/** The Deployment this machine is signed in to, or why there is none. */
-function membershipFor(mycoHome: string, serverUrl: string | undefined): DeploymentMembership | string {
-  const memberships = listDeploymentMemberships(mycoHome);
-  if (serverUrl !== undefined) {
-    return memberships.find((m) => deploymentUrl(m.serverUrl) === deploymentUrl(serverUrl)) ?? `this machine is not signed in to ${serverUrl}; run \`myco login\` first`;
-  }
-  const fallback = defaultMembership(mycoHome);
-  if (fallback !== null) return fallback;
-  if (memberships.length === 1) return memberships[0];
-  return memberships.length === 0 ? 'this machine is not signed in to a Deployment; run `myco login` first' : `this machine belongs to ${memberships.length} Deployments; name one with --server`;
-}
-
 /** Why this home is the one a run uses, in words. */
 function chosenBy(resolved: ResolvedMycoHome | null): string {
   if (resolved === null) return '';
@@ -227,9 +216,6 @@ type Binding =
   | { kind: 'absent'; projectId: string; root: string | null }
   | { kind: 'elsewhere'; projectId: string; root: string; boundTo: string }
   | { kind: 'connected' | 'connect'; projectId: string; root: string };
-
-const repositoryPresent = (root: string | null): root is string =>
-  root !== null && fs.existsSync(root) && isSafeProjectRoot(root);
 
 function bindingFor(project: { projectId: string; root: string | null }, mycoHome: string, serverUrl: string): Binding {
   const { projectId, root } = project;
@@ -286,14 +272,14 @@ export interface CutoverOptions {
   requireSourceMatch?: boolean;
   homeDir?: string;
 }
-type CutoverDestination = { kind: 'destination' | 'moved'; serverUrl: string } | { kind: 'skip' | 'undecided' };
 export interface CutoverPlan {
   home: string;
   selection?: ResolvedMycoHome;
   options: CutoverOptions;
   vaults: { home: string; vault: string; digest: string; counts: TableCounts; stamp: ReturnType<typeof legacyVaultStamp> }[];
-  projects: { projectId: string; root: string | null; vault: string; counts: ReturnType<typeof legacyProjectRoots>[number]['counts']; destination: CutoverDestination; fallback?: 'server' | 'default' }[];
+  projects: { projectId: string; root: string | null; vault: string; counts: ReturnType<typeof legacyProjectRoots>[number]['counts']; destination: LegacyDestination; fallback?: 'server' | 'default' }[];
   memberships: DeploymentMembership[];
+  strayHistory: string[];
   blockers: string[];
   plannedAt: number;
   machineId: string | null;
@@ -335,46 +321,8 @@ export function planCutover(home: string, options: CutoverOptions = {}, deps: Cu
     const vault = legacyRealpath(file);
     return { home: h, vault, ...readVaultContent(vault), stamp: legacyVaultStamp(vault) };
   }));
-  const memberships = listDeploymentMemberships(home);
-  const fallback = membershipFor(home, options.serverUrl);
-  const vaultDigests = new Map(vaults.map(source => [source.vault, source.digest]));
-  const projects = legacyProjectRoots(vaults.map((v) => v.vault)).map((project) => {
-    const { projectId, root, vault } = project;
-    const receipt = Object.entries(state.migrations ?? {}).find(([file]) => legacyRealpath(file) === vault)?.[1];
-    const previous = receipt?.projects[projectId];
-    const held = previous?.destination;
-    const route = options.routes?.get(projectId);
-    const skip = options.skips?.has(projectId) || (route === undefined && held !== undefined && 'skip' in held);
-    if (skip && route !== undefined) blockers.push(`${projectId}: choose exactly one of --route or --skip`);
-    if (skip) return { ...project, destination: { kind: 'skip' } as CutoverDestination };
-    const completed = receipt !== undefined && previous !== undefined && receipt.digest === vaultDigests.get(vault)
-      ? completedLegacyDestination(receipt, previous) : null;
-    if (completed !== null && (route === undefined || deploymentUrl(route) === completed)) return { ...project, destination: { kind: 'moved', serverUrl: completed } as CutoverDestination };
-    const binding = root === null ? null : readRegistryEntryResult(root, home);
-    if (binding?.status === 'unavailable') blockers.push(`${projectId}: the binding at ${root} is unreadable; restore it before cutover`);
-    const foreignProject = binding?.status === 'present' && binding.entry.projectId !== projectId;
-    const boundUrl = binding?.status === 'present' && !foreignProject ? deploymentUrl(binding.entry.serverUrl) : undefined;
-    if (route !== undefined && boundUrl !== undefined && deploymentUrl(route) !== boundUrl) blockers.push(`${projectId}: ${root} routes to ${boundUrl}, so cutover cannot send it to ${route}; review the repository binding first`);
-    const heldUrl = held !== undefined && 'serverUrl' in held ? held.serverUrl : undefined;
-    if (heldUrl !== undefined && boundUrl !== undefined && heldUrl !== boundUrl && route === undefined) blockers.push(`${projectId}: its receipt names ${heldUrl} but its repository now routes to ${boundUrl}; confirm with --route ${projectId}=${boundUrl} or --skip ${projectId}`);
-    const routedUrl = boundUrl ?? (route === undefined ? heldUrl : deploymentUrl(route));
-    const canFallback = !foreignProject && (options.serverUrl !== undefined || repositoryPresent(root));
-    const serverUrl = routedUrl ?? (!canFallback || typeof fallback === 'string' ? undefined : deploymentUrl(fallback.serverUrl));
-    if (serverUrl === undefined) {
-      const reason = root !== null && fs.existsSync(root) && !repositoryPresent(root) ? `${root} is not a repository; no destination` : 'no destination';
-      blockers.push(`${projectId}: ${reason}; use --route ${projectId}=<url> or --skip ${projectId}`);
-      return { ...project, destination: { kind: 'undecided' } as CutoverDestination };
-    }
-    if (!memberships.some((m) => deploymentUrl(m.serverUrl) === serverUrl)) blockers.push(`${projectId}: not signed in to ${serverUrl}; run myco login ${serverUrl}`);
-    return { ...project, destination: { kind: 'destination', serverUrl } as CutoverDestination,
-      ...(routedUrl === undefined ? { fallback: options.serverUrl === undefined ? 'default' as const : 'server' as const } : {}) };
-  });
-  const ids = new Set(projects.map((p) => p.projectId));
-  for (const id of [...(options.routes?.keys() ?? []), ...(options.skips ?? [])]) if (!ids.has(id)) blockers.push(`${id}: no such project in the 1.4 vaults`);
-  for (const id of ids) {
-    const urls = new Set(projects.filter((p) => p.projectId === id && p.destination.kind === 'destination').map((p) => p.destination.kind === 'destination' ? p.destination.serverUrl : ''));
-    if (urls.size > 1) blockers.push(`${id}: its repositories route to different Deployments; resolve their bindings before cutover`);
-  }
+  const { projects, memberships, fallback, blockers: placementBlockers } = planLegacyProjects(home, vaults, options, state);
+  blockers.push(...placementBlockers);
   const destinations = new Set(projects.flatMap((p) => p.destination.kind === 'destination' ? [p.destination.serverUrl] : []));
   if (projects.length === 0 && typeof fallback === 'string') blockers.push(fallback);
   let machineId = deps.machineId ?? null;
@@ -383,7 +331,7 @@ export function planCutover(home: string, options: CutoverOptions = {}, deps: Cu
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     if (machineId === null) blockers.push('this home has no machine identity; run myco login before cutover');
   }
-  const plan: CutoverPlan = { home, options, vaults, projects, memberships: [...destinations].flatMap((url) => memberships.find((m) => deploymentUrl(m.serverUrl) === url) ?? []), blockers, plannedAt, machineId, agents: [], handover: [], copies: [] };
+  const plan: CutoverPlan = { home, options, vaults, projects, strayHistory: legacyStrayHistoryLines(home, projects, state), memberships: [...destinations].flatMap((url) => memberships.find((m) => deploymentUrl(m.serverUrl) === url) ?? []), blockers, plannedAt, machineId, agents: [], handover: [], copies: [] };
   if (blockers.length === 0) {
     const prepared = prepareCutover(plan, deps);
     plan.blockers.push(...prepared.blockers);
@@ -489,6 +437,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       : p.fallback === 'default' ? ' (default Deployment; no repository route)' : '';
     out(`   ${p.projectId} from ${p.vault}: ${dest.kind === 'destination' ? `to ${dest.serverUrl}${fallback}` : dest.kind === 'moved' ? `moved to ${dest.serverUrl}; completion recorded` : dest.kind} (${JSON.stringify(p.counts)})`);
   }
+  for (const line of cutover.strayHistory) out(`   ${line}`);
   for (const b of bindings) {
     if (b.kind === 'absent') out(`   ${cutoverAbsentFolder(b.projectId, b.root)}`);
     if (b.kind === 'elsewhere') out(`   ${cutoverForeignBinding(b.projectId, b.root, b.boundTo, b.serverUrl)}`);
@@ -744,7 +693,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
             const dest = p.destination;
             const previous = projects[p.projectId];
             const destinations = { ...previous?.destinations };
-            if (previous?.destination !== undefined && 'key' in previous.destination && held !== undefined) destinations[previous.destination.key] = { serverUrl: previous.destination.serverUrl, digest: held.digest, size: held.size, mtimeMs: held.mtimeMs, vault: previous.vault, transcripts: previous.transcripts };
+            if (previous?.destination !== undefined && 'key' in previous.destination && held !== undefined) destinations[previous.destination.key] = { serverUrl: previous.destination.serverUrl, digest: held.digest, size: held.size, mtimeMs: held.mtimeMs, vault: previous.vault, transcripts: previous.transcripts, evidence: previous.evidence ?? destinations[previous.destination.key]?.evidence };
             if (dest.kind === 'skip') projects[p.projectId] = { ...previous, destinations, root: p.root, destination: { skip: true, at: now() } };
             else if (dest.kind === 'destination') {
               const same = held?.digest === digest && previous?.destination !== undefined && 'serverUrl' in previous.destination && previous.destination.serverUrl === dest.serverUrl;

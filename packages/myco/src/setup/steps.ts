@@ -166,6 +166,7 @@ const LEGACY_COPY = {
 
 function showCutoverPreview(ctx: Context, plan: CutoverPlan): void {
   ctx.out('Myco 1.4 cutover preview (dry run):');
+  for (const line of plan.strayHistory) ctx.out(`  ${line}`);
   ctx.out(`  Capture agents: ${plan.agents.join(', ') || 'declined or none detected'}`);
   for (const vault of plan.vaults) ctx.out(`  Vault ${vault.vault}: ${JSON.stringify(vault.counts)}; digest ${vault.digest}`);
   for (const project of plan.projects) ctx.out(`  ${project.vault} :: ${project.projectId}: ${project.destination.kind === 'destination' ? project.destination.serverUrl : project.destination.kind}${project.fallback ? ` (${project.fallback === 'default' ? 'default Deployment' : '--server'}; no repository route)` : ''}; folder ${project.root ?? '(absent)'}; ${JSON.stringify(project.counts)}`);

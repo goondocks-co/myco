@@ -15,6 +15,7 @@ import { detectMachineInstalledSymbionts } from '@myco/symbionts/detect.js';
 import { readProvisionRecordStrict, UnreadableProvisionRecordError } from '@myco/symbionts/member-provision-record.js';
 import { getPluginVersion } from '@myco/version.js';
 import { legacyCaptureGuidance } from '@myco/cli/legacy-capture.js';
+import { observeLegacyStrayHistory } from '@myco/member/legacy-strays.js';
 import type { SetupAnswers } from '@myco/setup/answers.js';
 import { inspectLocal, type LocalLifecycleDeps } from '@myco/server/local-lifecycle.js';
 import { peekDeploymentRecord } from '@myco/server/cloudflare.js';
@@ -37,6 +38,7 @@ export interface Observation {
   joinedDeployments?: string[];
   legacyError?: string;
   legacyNotice?: string;
+  legacyStrayHistory?: string[];
   legacyConfirmationProjects?: import('@myco/member/legacy-migration.js').LegacyMigrationState['confirmationProjects'];
   legacyConfirmation?: import('@myco/member/legacy-migration.js').LegacyMigrationState['confirmation'];
   capture?: { waiting?: number | null; nextProbeAt?: number; recentRefusals?: number; unreadableLines?: number };
@@ -82,6 +84,7 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
     const guidance = legacyCaptureGuidance(migration);
     facts.push({
       id: 'legacy',
+      legacyStrayHistory: migration.state === 'unavailable' ? [] : observeLegacyStrayHistory(home, { homeDir: deps.legacyHomeDir, homes: deps.legacyHomes }),
       legacyNotice: [guidance.notice,
         migration.ignoredLineage ? `Skipped ${migration.ignoredLineage} malformed 1.4 lineage event(s) during confirmation.` : null].filter(Boolean).join(' '),
       ...(migration.state === 'unavailable' ? { legacyError: migration.detail } : {}),

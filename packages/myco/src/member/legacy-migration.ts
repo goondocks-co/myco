@@ -72,12 +72,17 @@ const validPass = (value: unknown, transcript: boolean): boolean => value === un
   && (transcript ? ['complete', 'partial', 'none'] : ['complete', 'partial', 'refused']).includes(String(value.state))
   && timestamp(value.at) && (value.endedBy === undefined || typeof value.endedBy === 'string')
   && (value.failures === undefined || (Array.isArray(value.failures) && value.failures.every((f) => record(f) && typeof f.what === 'string' && typeof f.cause === 'string'))));
+/** A retained Deployment confirmation names accepted records and their machine attribution. */
+export function isLegacyDeploymentEvidence(value: unknown): value is NonNullable<MigrationProjectReceipt['evidence']> {
+  return record(value) && value.kind === 'deployment' && timestamp(value.at)
+    && typeof value.machineId === 'string' && strings(value.eventIds) && (value.sporeIds === undefined || strings(value.sporeIds)) && (value.lineageIds === undefined || strings(value.lineageIds))
+    && (value.ignoredLineage === undefined || (timestamp(value.ignoredLineage) && Number.isInteger(value.ignoredLineage)))
+    && [value.eventIds, value.sporeIds, value.lineageIds].some(ids => Array.isArray(ids) && ids.length > 0);
+}
+
 function validProject(value: unknown): boolean {
   if (!record(value) || !validPass(value.vault, false) || !validPass(value.transcripts, true)) return false;
-  if (value.evidence !== undefined && (!record(value.evidence) || value.evidence.kind !== 'deployment' || !timestamp(value.evidence.at)
-    || typeof value.evidence.machineId !== 'string' || !strings(value.evidence.eventIds) || (value.evidence.sporeIds !== undefined && !strings(value.evidence.sporeIds)) || (value.evidence.lineageIds !== undefined && !strings(value.evidence.lineageIds))
-    || (value.evidence.ignoredLineage !== undefined && (!timestamp(value.evidence.ignoredLineage) || !Number.isInteger(value.evidence.ignoredLineage)))
-    || ![value.evidence.eventIds, value.evidence.sporeIds, value.evidence.lineageIds].some(ids => Array.isArray(ids) && ids.length > 0))) return false;
+  if (value.evidence !== undefined && !isLegacyDeploymentEvidence(value.evidence)) return false;
   if (value.root !== undefined && value.root !== null && typeof value.root !== 'string') return false;
   const dest = value.destination;
   if (dest !== undefined && (!record(dest) || ('skip' in dest
