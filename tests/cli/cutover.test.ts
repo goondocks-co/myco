@@ -775,7 +775,8 @@ describe('myco cutover', () => {
   it.skipIf(!process.env.MYCO_CUTOVER_TEST_BINARY)('preserves a stale entry through the compiled cutover command against a fake Deployment', async () => {
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: request => m.rig.fetch(request) });
     const serverUrl = `http://127.0.0.1:${server.port}`;
-    writeDeploymentMembership({ serverUrl, token: m.rig.token, tokenId: m.rig.tokenId, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome: m.mycoHome });
+    const mycoHome = tempMycoHome();
+    writeDeploymentMembership({ serverUrl, token: m.rig.token, tokenId: m.rig.tokenId, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome });
     const file = path.join(m.home, 'Library', 'Application Support', 'Code', 'User', 'mcp.json');
     const binary = path.join(m.home, 'deleted-install', 'bin', 'myco');
     writeJson(file, { servers: { myco: { command: binary, args: ['mcp'] } } });
@@ -790,7 +791,7 @@ describe('myco cutover', () => {
       for (const args of [['--dry-run'], []]) {
         const child = Bun.spawn([process.env.MYCO_CUTOVER_TEST_BINARY!, 'cutover', '--server', serverUrl, '--legacy-home', m.legacyHome, ...args], {
           cwd: m.home, stdout: 'pipe', stderr: 'pipe', env: { ...process.env, HOME: m.home, CODEX_HOME: path.join(m.home, '.codex'),
-            CLAUDE_CONFIG_DIR: path.join(m.home, '.claude'), XDG_CONFIG_HOME: path.join(m.home, '.config'), MYCO_HOME: m.mycoHome,
+            CLAUDE_CONFIG_DIR: path.join(m.home, '.claude'), XDG_CONFIG_HOME: path.join(m.home, '.config'), MYCO_HOME: mycoHome,
             TMPDIR: path.join(m.home, 'tmp'), MYCO_LAUNCH_AGENTS_DIR: unitDir, PATH: `${bin}${path.delimiter}${process.env.PATH}` },
         });
         const timeout = setTimeout(() => child.kill(), 20_000);
