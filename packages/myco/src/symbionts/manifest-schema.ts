@@ -380,22 +380,12 @@ const RegistrationSchema = z.object({
    * user content and other sources' skills are untouched.
    */
   retiredGlobalSkillsTargets: z.array(z.string()).optional(),
-  /**
-   * Absolute path (with `~` expansion) where Myco writes the settings
-   * template under global scope. When unset, settings under global scope
-   * share the file with hooks (the historical Claude-Code-style merge:
-   * one settings.json carries hooks + MCP + settings together).
-   *
-   * Required for symbionts whose `settingsFormat` doesn't match the file
-   * shape `globalHooksTarget` expects — most notably Codex, whose hooks
-   * file is JSON (`~/.codex/hooks.json`) but whose settings format is
-   * TOML. Without an explicit `globalSettingsTarget`, the installer's
-   * settings writer drops a `[features]` TOML section into the JSON
-   * hooks file, producing a hybrid file Codex itself appends to on every
-   * launch — and silently invalidating Codex's trust-hash on every
-   * Myco bootstrap pass.
-   */
+  /** Global settings file; null or absent disables settings installation. */
   globalSettingsTarget: z.string().nullable().optional(),
+  /** The agent schema accepts hooks and settings in the same file. */
+  hooksContainSettings: z.boolean().optional(),
+  /** Exact obsolete root settings values removed from a hooks-only file. */
+  retiredHookSettings: z.record(z.string(), z.unknown()).optional(),
   /**
    * Project-relative path of the agent's plugin-bundle manifest. Plugin-
    * file symbionts (Antigravity) require a bundle manifest at the root
@@ -482,7 +472,7 @@ const RegistrationSchema = z.object({
    * removed; real user content and user-added skills are untouched.
    */
   retiredSkillsTargets: z.array(z.string()).optional(),
-  settingsTarget: z.string().optional(),
+  settingsTarget: z.string().nullable().optional(),
   /** Format of the settings file. TOML-format agents (e.g., Codex) emit top-level template keys as TOML sections. */
   settingsFormat: z.enum(['json', 'toml']).default('json'),
   /** Instruction file that stubs out to AGENTS.md. Only for agents that don't read AGENTS.md natively. */

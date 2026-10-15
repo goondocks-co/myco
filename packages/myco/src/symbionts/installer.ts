@@ -17,6 +17,7 @@ import { getPluginVersion } from '@myco/version.js';
 import { assertSafeProjectRoot } from '../project-root.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey, readTomlSectionKeyLine } from './toml-helpers.js';
 import { deepMergeSettingsWithAudit, emptyJsonAudit, removeAuditedSettings, type JsonSettingsAudit, type SettingsFileAudit } from './settings-merge.js';
+import { retiredHookSettings } from './retired-hook-settings.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { isMycoHookCommand, isMycoHookGroup, withoutMycoHooks, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
@@ -340,9 +341,10 @@ export class SymbiontInstaller {
       const hooks = this.writeMemberPlugin(scan);
       return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp(scan) });
     }
-    if (this.renderMemberHooks('registry') === null) return emptyInstallResult();
+    if (this.renderMemberHooks('registry') === null) return { ...emptyInstallResult(), settings: this.migrateRetiredHookSettings(scan) };
     this.assertMemberMcpWritable(scan);
-    const settings = this.installSettings(scan);
+    const migrated = this.migrateRetiredHookSettings(scan);
+    const settings = this.installSettings(scan) || migrated;
     const hooks = this.installMemberHooks(scan);
     return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp(scan), settings });
   }
@@ -888,7 +890,59 @@ export class SymbiontInstaller {
     return existing !== null && Object.entries(expected).every(([key, value]) => isDeepStrictEqual(existing[key], value));
   }
 
+  private retiredSettingsPlan(): { target: string; text: string; changed: boolean; conflicts: string[] } | null {
+    const reg = this.manifest.registration;
+    const target = this.resolveAbsoluteTarget('hooks');
+    if (target === null || reg?.hooksContainSettings || !reg?.retiredHookSettings) return null;
+    let raw: string;
+    try { raw = fs.readFileSync(target, 'utf8'); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+    const { text, conflicts } = retiredHookSettings(raw, reg.retiredHookSettings);
+    return { target, text, changed: text !== raw, conflicts };
+  }
+
+  private retiredSettingsReportPath(): string {
+    return path.join(this.memberHomeDir(), 'installer-audit', `${this.manifest.name}-retired-hook-settings.json`);
+  }
+
+  private retiredSettingsReported(): string[] {
+    try {
+      const keys: unknown = JSON.parse(fs.readFileSync(this.retiredSettingsReportPath(), 'utf8'));
+      if (!Array.isArray(keys) || !keys.every(key => typeof key === 'string')) throw new Error('Invalid retired settings report');
+      return keys;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+  }
+
+  private migrateRetiredHookSettings(scan: MemberRegistrationScan): boolean {
+    const plan = this.retiredSettingsPlan();
+    if (plan === null) return false;
+    this.assertGlobalMemberOwnership('hooks', scan);
+    return this.writeRegistrationTarget(plan.target, 'hooks', scan, target => {
+      const reported = this.retiredSettingsReported();
+      const pending = plan.conflicts.filter(key => !reported.includes(key));
+      for (const key of pending) console.warn(`${this.manifest.displayName}: left user-changed ${key} in ${target}; review this setting manually.`);
+      if (pending.length > 0) {
+        const file = this.retiredSettingsReportPath();
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        atomicWriteFileSync(file, JSON.stringify([...reported, ...pending]) + '\n');
+      }
+      if (plan.changed) atomicWriteFileSync(target, plan.text);
+      return plan.changed;
+    });
+  }
+
+  retiredHookSettingsCurrent(): boolean {
+    const retired = this.retiredSettingsPlan();
+    return retired === null || !retired.changed && retired.conflicts.every(key => this.retiredSettingsReported().includes(key));
+  }
+
   private memberSettingsCurrent(): boolean {
+    if (!this.retiredHookSettingsCurrent()) return false;
     const target = this.resolveAbsoluteTarget('settings');
     const template = this.loadTemplate('settings');
     if (target === null || template === null) return true;

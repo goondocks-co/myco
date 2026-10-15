@@ -526,6 +526,17 @@ export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageR
   return withMemberRepair(mycoHome, 'myco member reconcile', () => {
     const serverUrl = memberProvisionTarget(mycoHome, opts.serverUrl);
     if (serverUrl === undefined) return null;
+    let backup: CutoverBackup | undefined;
+    try {
+      for (const manifest of loadManifests()) {
+        if (!manifest.registration?.retiredHookSettings) continue;
+        const installer = globalInstaller(manifest, null, mycoHome, opts);
+        if (installer.capturesAsMember() || installer.retiredHookSettingsCurrent()) continue;
+        backup ??= provisionBackup(mycoHome);
+        const outcome = provisionGlobally(manifest.name, null, mycoHome, { ...opts, serverUrl, backup });
+        if (outcome.kind === 'refused') throw new MemberProvisionConflictError(outcome.detail, '');
+      }
+    } finally { backup?.pruneUnchanged(); }
     const before = readProvisionRecordStrict(mycoHome);
     const agents = managedMemberHarnesses(mycoHome, serverUrl, opts);
     if (before === null && agents.length === 0) return null;
@@ -783,8 +794,9 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
       }
       return 'repair' as const;
     }, { wait: true });
-    if (checked !== 'repair') return checked === 'finished';
+    if (checked !== 'repair' && checked !== 'finished') return false;
     const repaired = keepCurrent(mycoHome, { packageRoot: deps.packageRoot, serverUrl: serverArg, wait: true });
+    if (checked === 'finished') return true;
     refreshed?.(repaired, mycoHome);
     if (repaired !== null) {
       if (repaired.harnesses.length === 0) out('No agent is set up for Myco on this machine; `myco member provision` sets them up.');

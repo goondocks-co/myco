@@ -34,6 +34,7 @@ capture:
     transcriptCwdPath: "cwd"
     retention: member
 registration:
+  globalSettingsTarget: null
   hookResponse:
     # The plugin reads the hook's stdout directly, so the response is JSON and
     # carries the minted prompt id back for stamping on transcript lines.

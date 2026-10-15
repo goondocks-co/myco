@@ -48,15 +48,7 @@ registration:
   globalSkillsTarget: ~/.agents/skills
   retiredGlobalSkillsTargets:
     - ~/.codeium/windsurf/skills
-  settingsTarget: .windsurf/settings.json
-  # Cascade's `windsurf.cascadeCommandsAllowList` is an IDE user-settings
-  # key, not a hooks-file key. The installer's default global fallback
-  # would write it into the hooks file (line 338 in installer.ts), which
-  # poisons Cascade's hooks schema with an unknown root key and silently
-  # disables every hook. Explicit `null` opts Windsurf out of global
-  # settings installation entirely — capture works without the allowlist,
-  # and the right surface for that key is the Windsurf IDE settings file
-  # (a future, separate concern).
+  settingsTarget: null
   globalSettingsTarget: null
 capabilities:
   # Windsurf's bundled hook template does not currently register a

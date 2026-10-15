@@ -137,7 +137,7 @@ describe('symbiont manifests', () => {
     expect(manifest.registration!.hooksTarget).toBe('.github/hooks/myco-hooks.json');
     expect(manifest.registration!.mcpTarget).toBe('.vscode/mcp.json');
     expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
-    expect(manifest.registration!.settingsTarget).toBe('.vscode/settings.json');
+    expect(manifest.registration!.settingsTarget).toBeNull();
     // Copilot is the canonical multi-target MCP case: two surfaces of
     // the same agent runtime with diverging top-level JSON keys. The
     // schema normalizes the YAML into Array<{path, serversKey?}> so the
@@ -171,10 +171,10 @@ describe('symbiont manifests', () => {
     expect(manifest.registration!.settingsTarget).toBe('.claude/settings.json');
   });
 
-  it('cursor manifest has settingsTarget', () => {
+  it('cursor manifest disables settings installation', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'cursor.yaml'), 'utf-8');
     const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
-    expect(manifest.registration!.settingsTarget).toBe('.cursor/settings.json');
+    expect(manifest.registration!.settingsTarget).toBeNull();
   });
 
   it('codex manifest has settingsTarget', () => {
@@ -223,7 +223,7 @@ describe('symbiont manifests', () => {
     expect(manifest.registration!.hooksTarget).toBe('.windsurf/hooks.json');
     expect(manifest.registration!.mcpTarget).toBeUndefined();
     expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
-    expect(manifest.registration!.settingsTarget).toBe('.windsurf/settings.json');
+    expect(manifest.registration!.settingsTarget).toBeNull();
   });
 
   it('antigravity manifest has planDirs configured', () => {

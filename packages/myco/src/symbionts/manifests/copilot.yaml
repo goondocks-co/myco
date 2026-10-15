@@ -94,12 +94,12 @@ registration:
   globalSkillsTarget: ~/.agents/skills
   retiredGlobalSkillsTargets:
     - ~/.copilot/skills
-  settingsTarget: .vscode/settings.json
-  # Copilot's hook file (~/.copilot/hooks/myco-hooks.json) accepts the
-  # `chat.tools.terminal.autoApprove` key alongside the hooks block —
-  # share-with-hooks is the intended global surface. Explicit declaration
-  # (vs. silent fallback) per /code-review finding C9.
-  globalSettingsTarget: ~/.copilot/hooks/myco-hooks.json
+  settingsTarget: null
+  globalSettingsTarget: null
+  retiredHookSettings:
+    chat.tools.terminal.autoApprove:
+      myco: true
+      myco-dev: true
   instructionsFile: .github/copilot-instructions.md
   hookResponse:
     format: plain-text
