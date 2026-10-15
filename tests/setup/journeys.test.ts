@@ -14,7 +14,7 @@ import { runRunnerService } from '@myco/cli/runner-service.js';
 import { executorServiceTarget } from '@myco/cli/worker-service.js';
 import { homeReport } from '@myco/cli/member-doctor.js';
 import { consentToPlan, cutoverConsentPlan, type SetupDeps } from '@myco/setup/steps.js';
-import { observeSetup } from '@myco/setup/observe.js';
+import { observeSetup, setupExitCode } from '@myco/setup/observe.js';
 import { planFingerprint, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
 import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, registryEntryPath, deploymentPath, deploymentKeyFor, machineSettingsPath } from '@myco/member/registry.js';
 import { legacyMigrationState, type LegacyMigrationState } from '@myco/member/legacy-migration.js';
@@ -361,7 +361,7 @@ describe('legacy journey (e)', () => {
     expect({ code: await run(flags, fixture.deps), errors }).toEqual({ code: 0, errors: [] });
     const previewLines = lines.filter(line => line.includes('An earlier move also put'));
     expect(previewLines.length).toBeGreaterThan(0);
-    const expected = `An earlier move also put ${path.basename(project.root)}'s history on ${LEGACY_URLS[0]} (it now goes to ${LEGACY_URLS[1]}). Myco leaves that copy alone; you can remove it from that Deployment.`;
+    const expected = `An earlier move also put ${path.basename(project.root)}'s history on ${LEGACY_URLS[0]} (it now goes to ${LEGACY_URLS[1]}). Myco leaves that copy alone; you can remove it from that Deployment. Run myco cutover --dismiss-earlier-copies once you have.`;
     expect(previewLines.every(line => line.trim() === expected)).toBe(true);
     const previewAt = lines.findIndex(line => line.includes('cutover preview (dry run)'));
     const executionAt = lines.findIndex(line => line.startsWith('Cutting over '));
@@ -373,7 +373,75 @@ describe('legacy journey (e)', () => {
     expect(lines.filter(line => line.includes('An earlier move also put'))).toEqual([expected]);
     const doctor = await homeReport(home, { ...fixture.deps.cutoverDeps, cwd: root, fetch: fixture.deps.fetch, worker: { runner: () => { throw new Error('No service calls'); } } });
     expect(doctor.filter(check => check.detail.includes('An earlier move also put')).map(check => check.detail)).toEqual([expected]);
+    expect(doctor.filter(check => check.detail.includes('An earlier move also put')).map(check => ({ status: check.status, fixable: check.fixable }))).toEqual([{ status: 'info', fixable: false }]);
     expect(fs.readFileSync(ledger.file)).toEqual(before);
+  });
+
+  it('dismisses earlier history across status, guided preview, cutover preview and doctor', async () => {
+    const fixture = await rig({ multi: true });
+    const project = fixture.legacy.projects[1]!;
+    const ledger = new LegacyLedger(home, LEGACY_URLS[0], project.id);
+    ledger.append({ k: 'session', session: project.sessionId });
+    expect(await run(flags, fixture.deps)).toBe(0);
+    const proofFile = path.join(home, 'member', 'cutover.json');
+    const proof = fs.readFileSync(proofFile);
+    const bytes = fs.readFileSync(ledger.file);
+    lines = [];
+    expect(await cutoverRun(['--dismiss-earlier-copies'], { ...fixture.deps.cutoverDeps, mycoHome: home,
+      fetch: fakeFetch(async () => { throw new Error('Dismissal must not call a Deployment'); }),
+      stdout: line => lines.push(line), stderr: line => errors.push(line),
+    })).toBe(true);
+    expect(lines.filter(line => line.startsWith('Dismissed'))).toHaveLength(1);
+    expect(fs.readFileSync(ledger.file)).toEqual(bytes);
+    expect(fs.readFileSync(proofFile)).toEqual(proof);
+    lines = [];
+    expect(await run(['--status'], fixture.deps)).toBe(0);
+    expect(lines.join('\n')).not.toContain('An earlier move also put');
+    const plan = planCutover(home, { homeDir: fixture.legacy.home, dryRun: true }, fixture.deps.cutoverDeps);
+    expect(plan.strayHistory).toEqual([]);
+    lines = [];
+    expect((await runCutover(plan, { ...fixture.deps.cutoverDeps, stdout: line => lines.push(line), fetch: fixture.deps.fetch })).ok).toBe(true);
+    expect(lines.join('\n')).not.toContain('An earlier move also put');
+    lines = [];
+    expect(await run(['--yes', '--cutover'], fixture.deps)).toBe(0);
+    expect(lines.join('\n')).not.toContain('An earlier move also put');
+    const doctor = await homeReport(home, { ...fixture.deps.cutoverDeps, cwd: root, fetch: fixture.deps.fetch,
+      worker: { runner: () => { throw new Error('No service calls'); } },
+    });
+    expect(doctor.some(check => check.detail.includes('An earlier move also put'))).toBe(false);
+  });
+
+  for (const state of ['moved', 'none'] as const) for (const broken of ['membership', 'ledger'] as const) it(`keeps ${state} migration status when the earlier-copy ${broken} check is unavailable`, async () => {
+    const fixture = await rig({ multi: true });
+    const project = fixture.legacy.projects[1]!;
+    new LegacyLedger(home, LEGACY_URLS[0], project.id).append({ k: 'session', session: project.sessionId });
+    if (broken === 'membership') fs.writeFileSync(deploymentPath(LEGACY_URLS[0], home), '{');
+    else {
+      const dir = path.join(home, 'member', 'legacy');
+      fs.renameSync(dir, `${dir}-retained`);
+      fs.writeFileSync(dir, 'unreadable ledger directory');
+    }
+    const observations = await observeSetup(home, {}, { legacyHomeDir: fixture.legacy.home, legacyObserver: async () => ({ state }), agents: () => [], status: true });
+    const migration = observations.find(fact => fact.id === 'legacy')!;
+    expect(migration.state).toBe('complete');
+    expect(migration.detail).toStartWith(state);
+    expect(setupExitCode([migration])).toBe(0);
+    expect(renderSetupStatus([migration]).join('\n')).toContain('Earlier moves could not be checked:');
+    expect(renderSetupStatus([migration]).join('\n')).not.toContain('migration records could not be read');
+  });
+
+  it('keeps refused project placement out of the guided earlier-copy preview', async () => {
+    const fixture = await rig({ multi: true });
+    const project = fixture.legacy.projects[1]!;
+    new LegacyLedger(home, LEGACY_URLS[0], project.id).append({ k: 'session', session: project.sessionId });
+    fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: {}, migrations: {
+      [fixture.legacy.vault]: { digest: 'earlier', size: 1, mtimeMs: 1, projects: {
+        [project.id]: { destination: { serverUrl: LEGACY_URLS[0], key: deploymentKeyFor(LEGACY_URLS[0]) }, vault: { state: 'partial', at: 1 } },
+      } },
+    } }), { mode: 0o600 });
+    expect(await run(flags, fixture.deps)).toBe(2);
+    expect(errors.join('\n')).toContain('its receipt names');
+    expect(lines.join('\n')).not.toContain('An earlier move also put');
   });
 
   it('surfaces an unreadable route in status and doctor before claiming where stray history goes', async () => {
@@ -407,7 +475,7 @@ describe('legacy journey (e)', () => {
     const requests = fixture.calls.length;
     lines = [];
     expect({ code: await run(['--yes', '--route', `${project.id}=${LEGACY_URLS[1]}`], { ...fixture.deps, ask: async () => 'yes' }), errors }).toEqual({ code: 0, errors: [] });
-    const expected = `An earlier move also put ${path.basename(project.root)}'s history on ${LEGACY_URLS[0]} (it now goes to ${LEGACY_URLS[1]}). Myco leaves that copy alone; you can remove it from that Deployment.`;
+    const expected = `An earlier move also put ${path.basename(project.root)}'s history on ${LEGACY_URLS[0]} (it now goes to ${LEGACY_URLS[1]}). Myco leaves that copy alone; you can remove it from that Deployment. Run myco cutover --dismiss-earlier-copies once you have.`;
     expect(lines.filter(line => line.includes('An earlier move also put')).every(line => line.trim() === expected)).toBe(true);
     expect(lines.some(line => line.trim() === expected)).toBe(true);
     expect(fixture.calls.slice(requests).filter(call => call.url === LEGACY_URLS[0] && call.route === '/import/legacy-history')).toEqual([]);

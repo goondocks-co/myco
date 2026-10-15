@@ -242,6 +242,7 @@ const STATUS_COL_WIDTH = 6;
 
 const STATUS_LABELS: Record<DoctorCheck['status'], { text: string; color: string }> = {
   'not-checked': { text: 'not checked', color: '\x1b[90m' },
+  info: { text: 'info', color: '\x1b[90m' },
   ok: { text: 'ok', color: '\x1b[32m' },
   fail: { text: 'FAIL', color: '\x1b[31m' },
   warn: { text: '!!', color: '\x1b[33m' },

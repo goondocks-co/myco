@@ -1168,7 +1168,9 @@ describe('the `myco cutover` command', () => {
     const refused = spawnSync(process.execPath, [cli, 'cutover', '--dry-run'], { env, cwd: home, encoding: 'utf8', timeout: 60_000 });
     expect(refused.stderr).toContain('myco cutover: this machine is not signed in to a Deployment');
     expect(refused.status).toBe(2);
-    expect(spawnSync(process.execPath, [cli, 'cutover', '--help'], { env, cwd: home, encoding: 'utf8', timeout: 60_000 }).status).toBe(0);
+    const help = spawnSync(process.execPath, [cli, 'cutover', '--help'], { env, cwd: home, encoding: 'utf8', timeout: 60_000 });
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain('--dismiss-earlier-copies');
   });
 });
 
@@ -1234,6 +1236,101 @@ describe('cutover project destinations and receipts', () => {
     expect(requests.every(url => url === PERSONAL)).toBe(true);
   });
 
+  it('dismisses earlier copies locally and raises them again when accepted history grows', async () => {
+    const ledger = new LegacyLedger(m.mycoHome, SERVER, HOMELAB);
+    ledger.append({ k: 'session', session: 'accepted-session' });
+    const file = path.join(m.mycoHome, 'member', 'cutover.json');
+    writeJson(file, { backups: {}, migrations: { [m.vault]: { digest: 'earlier', size: 1, mtimeMs: 1, projects: {
+      [HOMELAB]: { destinations: { [deploymentKeyFor(SERVER)]: { serverUrl: SERVER, digest: 'earlier', size: 1, mtimeMs: 1,
+        evidence: { kind: 'deployment', at: 1, machineId: TEST_MACHINE_ID, eventIds: ['accepted-event'], sporeIds: ['accepted-spore'] },
+      } } },
+    } } } });
+    fs.chmodSync(file, 0o600);
+    const proof = fs.readFileSync(file);
+    const bytes = fs.readFileSync(ledger.file);
+    const fetch: MemberRig['fetch'] = () => { throw new Error('Dismissal must not contact a Deployment'); };
+    const dismissed = await m.run(['--dismiss-earlier-copies'], { fetch, agents: [] });
+    expect(dismissed).toMatchObject({ ok: true, err: [] });
+    expect(dismissed.out.filter(line => line.startsWith('Dismissed'))).toHaveLength(1);
+    expect(dismissed.out.join('\n')).toContain(`homelab's history on ${SERVER}`);
+    expect(fs.readFileSync(ledger.file)).toEqual(bytes);
+    expect(fs.readFileSync(file)).toEqual(proof);
+    const options = { homes: [m.legacyHome], homeDir: m.home };
+    expect(observeLegacyStrayHistory(m.mycoHome, options)).toEqual([]);
+    const preview = await m.run(['--dry-run', '--skip', PROJECT], { fetch: fetchBoth, agents: [] });
+    expect(preview.ok).toBe(true);
+    expect(preview.out.filter(line => line.includes('An earlier move also put'))).toEqual([]);
+    ledger.append({ k: 'session', session: 'accepted-session' });
+    expect(observeLegacyStrayHistory(m.mycoHome, options)).toEqual([]);
+    ledger.append({ k: 'lineage', id: 'new-accepted-history' });
+    expect(observeLegacyStrayHistory(m.mycoHome, options)).toHaveLength(1);
+    expect(fs.readFileSync(file)).toEqual(proof);
+  });
+
+  it('raises new accepted history after a dismissed ledger is lost', async () => {
+    const ledger = new LegacyLedger(m.mycoHome, SERVER, HOMELAB);
+    ledger.append({ k: 'session', session: 'first-session' }, { k: 'session', session: 'second-session' });
+    const file = path.join(m.mycoHome, 'member', 'cutover.json');
+    writeJson(file, { backups: {}, migrations: { [m.vault]: { digest: 'earlier', size: 1, mtimeMs: 1, projects: {
+      [HOMELAB]: { destinations: { [deploymentKeyFor(SERVER)]: { serverUrl: SERVER, digest: 'earlier', size: 1, mtimeMs: 1,
+        evidence: { kind: 'deployment', at: 1, machineId: TEST_MACHINE_ID, eventIds: ['accepted-event'] },
+      } } },
+    } } } });
+    fs.chmodSync(file, 0o600);
+    const options = { homes: [m.legacyHome], homeDir: m.home };
+    expect((await m.run(['--dismiss-earlier-copies'], { fetch: () => { throw new Error('No network calls'); }, agents: [] })).ok).toBe(true);
+    expect(observeLegacyStrayHistory(m.mycoHome, options)).toEqual([]);
+    fs.rmSync(ledger.file);
+    ledger.append({ k: 'spore', id: 'new-accepted-spore' });
+    expect(observeLegacyStrayHistory(m.mycoHome, options)).toHaveLength(1);
+    ledger.append({ k: 'lineage', id: 'new-accepted-lineage' });
+    expect(observeLegacyStrayHistory(m.mycoHome, options)).toHaveLength(1);
+  });
+
+  it('refuses unreadable earlier-copy acknowledgements without overwriting them', async () => {
+    const ledger = new LegacyLedger(m.mycoHome, SERVER, HOMELAB);
+    ledger.append({ k: 'session', session: 'accepted-session' });
+    const file = path.join(m.mycoHome, 'member', 'legacy-earlier-copies.json');
+    fs.writeFileSync(file, '{', { mode: 0o600 });
+    const bytes = fs.readFileSync(ledger.file);
+    const result = await m.run(['--dismiss-earlier-copies'], { fetch: () => { throw new Error('No network calls'); }, agents: [] });
+    expect(result.ok).toBe(false);
+    expect(result.err.join('\n')).toContain('Earlier-copy acknowledgements could not be read');
+    expect(fs.readFileSync(file, 'utf8')).toBe('{');
+    expect(fs.readFileSync(ledger.file)).toEqual(bytes);
+  });
+
+  it('does not report skipped history as routed elsewhere', async () => {
+    new LegacyLedger(m.mycoHome, SERVER, HOMELAB).append({ k: 'spore', id: 'accepted-spore' });
+    const result = await m.run(['--dry-run', '--skip', HOMELAB], { fetch: fetchBoth, agents: [] });
+    expect(result.ok).toBe(true);
+    expect(result.out.filter(line => line.includes('An earlier move also put'))).toEqual([]);
+  });
+
+  it('omits earlier-copy lines for a refused receipt destination', () => {
+    new LegacyLedger(m.mycoHome, SERVER, HOMELAB).append({ k: 'spore', id: 'accepted-spore' });
+    const file = path.join(m.mycoHome, 'member', 'cutover.json');
+    writeJson(file, { backups: {}, migrations: { [m.vault]: { digest: 'earlier', size: 1, mtimeMs: 1, projects: {
+      [HOMELAB]: { destination: { serverUrl: SERVER, key: deploymentKeyFor(SERVER) }, vault: { state: 'partial', at: 1 } },
+    } } } });
+    fs.chmodSync(file, 0o600);
+    const plan = planCutover(m.mycoHome, { legacyHomes: [m.legacyHome], homeDir: m.home }, { machineId: TEST_MACHINE_ID });
+    expect(plan.blockers.join('\n')).toContain('its receipt names');
+    expect(plan.strayHistory).toEqual([]);
+  });
+
+  it('refuses an unreadable binding at cutover without reporting its destination', async () => {
+    new LegacyLedger(m.mycoHome, SERVER, HOMELAB).append({ k: 'spore', id: 'accepted-spore' });
+    fs.writeFileSync(registryEntryPath(homelab, m.mycoHome), '{');
+    const plan = planCutover(m.mycoHome, { legacyHomes: [m.legacyHome], homeDir: m.home }, { machineId: TEST_MACHINE_ID });
+    expect(plan.blockers.join('\n')).toContain(`the binding at ${homelab} is unreadable`);
+    expect(plan.strayHistory).toEqual([]);
+    const result = await m.run(['--dry-run'], { fetch: fetchBoth, agents: [] });
+    expect(result.ok).toBe(false);
+    expect(result.err.join('\n')).toContain('memberships or Project routes could not all be read');
+    expect(result.out.filter(line => line.includes('An earlier move also put'))).toEqual([]);
+  });
+
   it('does not report the current destination or a source choice without accepted history', async () => {
     new LegacyLedger(m.mycoHome, PERSONAL, HOMELAB).append({ k: 'spore', id: 'already-personal' });
     new LegacyLedger(m.mycoHome, SERVER, HOMELAB).append({ k: 'source', session: 'not-sent', from: 'vault' }, { k: 'reconciled', version: 1 });
@@ -1266,9 +1363,9 @@ describe('cutover project destinations and receipts', () => {
     expect(result.ok).toBe(true);
     const lines = result.out.filter(line => line.includes('An earlier move also put'));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain(`Deployment ${deploymentKeyFor(url)} (its address is no longer saved on this machine)`);
-    expect(lines[0]).toContain(`it now goes to ${PERSONAL}`);
-    expect(lines[0]).toContain('This machine no longer belongs to that Deployment.');
+    expect(lines[0]).toContain(`a Deployment this machine has left (stored as ${deploymentKeyFor(url)}; its address was not kept)`);
+    expect(lines[0]).toContain(`It now goes to ${PERSONAL}`);
+    expect(lines[0]).toContain('a Deployment this machine has left');
   });
 
   it('status preserves the same completed destination as cutover after a repository rebind', async () => {
@@ -1312,8 +1409,11 @@ describe('cutover project destinations and receipts', () => {
       fs.writeFileSync(resolveMachineIdPath(m.mycoHome), TEST_MACHINE_ID);
       fs.mkdirSync(path.join(m.home, 'tmp'));
       const command = process.env.MYCO_CUTOVER_TEST_BINARY ? [process.env.MYCO_CUTOVER_TEST_BINARY] : [process.execPath, path.join(resolvePackageRoot(), 'src', 'cli.ts')];
+      let dismissed = false;
       for (const args of [
         ['cutover', '--dry-run', '--legacy-home', m.legacyHome, '--skip', PROJECT],
+        ['setup', '--status'],
+        ['cutover', '--dismiss-earlier-copies', '--legacy-home', m.legacyHome],
         ['setup', '--status'],
       ]) {
         const child = Bun.spawn([...command, ...args], { cwd: m.home, stdout: 'pipe', stderr: 'pipe', env: {
@@ -1324,9 +1424,10 @@ describe('cutover project destinations and receipts', () => {
         try {
           const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
           expect({ code, stderr }).toEqual({ code: args[0] === 'cutover' ? 0 : 3, stderr: '' });
+          if (args.includes('--dismiss-earlier-copies')) { dismissed = true; expect(stdout).toContain(`Dismissed the earlier copy of homelab's history on ${oldUrl}`); }
           const lines = stdout.split('\n').filter(line => line.includes('An earlier move also put'));
-          expect(lines).toHaveLength(1);
-          expect(lines[0]).toContain(`homelab's history on ${oldUrl} (it now goes to ${currentUrl})`);
+          expect(lines).toHaveLength(dismissed ? 0 : 1);
+          if (!dismissed) expect(lines[0]).toContain(`homelab's history on ${oldUrl} (it now goes to ${currentUrl})`);
           expect(fs.readFileSync(ledger.file)).toEqual(before);
           expect(m.rig.env.sqlite.serialize()).toEqual(data);
         } finally { clearTimeout(timeout); }

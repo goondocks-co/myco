@@ -73,7 +73,7 @@ import { observeLegacyMigration, legacyDestinationEnd } from '@myco/member/legac
 export { observeLegacyMigration, legacyConfirmationObserver } from '@myco/member/legacy-confirmation.js';
 import { legacyProjectNames, legacyRealpath, legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
-import { legacyStrayHistoryLines } from '@myco/member/legacy-strays.js';
+import { legacyStrayHistoryLines, dismissLegacyEarlierCopies } from '@myco/member/legacy-strays.js';
 import { planLegacyProjects, repositoryPresent, type LegacyDestination } from '@myco/member/legacy-placement.js';
 import { cutoverAbsentFolder, cutoverForeignBinding } from '@goondocks/myco-shared/setup-guidance';
 
@@ -98,6 +98,9 @@ Options:
   --route <id>=<url>   Route one 1.4 project to a signed-in Deployment; repeat
   --skip <id>          Skip one 1.4 project's history; keep its spool; repeat
   --server <url>       Fallback for projects with no repository binding
+  --dismiss-earlier-copies
+                       Stop reporting the earlier copies currently recorded;
+                       no Deployment is contacted and no history is deleted
   --dry-run            Report what each step would do, and do nothing
   --help               Show this message
 `;
@@ -105,6 +108,7 @@ Options:
 interface Parsed {
   error?: string;
   help?: true;
+  dismissEarlierCopies?: true;
   legacyHomes: string[];
   mappings: DirectoryMapping[];
   serverUrl?: string;
@@ -121,6 +125,9 @@ export function parseArgs(args: readonly string[]): Parsed {
     switch (arg) {
       case '--help': case '-h':
         return { ...parsed, help: true };
+      case '--dismiss-earlier-copies':
+        parsed.dismissEarlierCopies = true;
+        break;
       case '--dry-run':
         parsed.dryRun = true;
         break;
@@ -151,6 +158,7 @@ export function parseArgs(args: readonly string[]): Parsed {
         return { ...parsed, error: `unknown option ${arg}` };
     }
   }
+  if (parsed.dismissEarlierCopies && (parsed.dryRun || parsed.routes.size > 0 || parsed.skips.size > 0 || parsed.serverUrl !== undefined || parsed.mappings.length > 0)) return { ...parsed, error: '--dismiss-earlier-copies accepts only --legacy-home alongside it' };
   return parsed;
 }
 
@@ -321,7 +329,7 @@ export function planCutover(home: string, options: CutoverOptions = {}, deps: Cu
     const vault = legacyRealpath(file);
     return { home: h, vault, ...readVaultContent(vault), stamp: legacyVaultStamp(vault) };
   }));
-  const { projects, memberships, fallback, blockers: placementBlockers } = planLegacyProjects(home, vaults, options, state);
+  const { projects, memberships, fallback, blockers: placementBlockers, issues } = planLegacyProjects(home, vaults, options, state);
   blockers.push(...placementBlockers);
   const destinations = new Set(projects.flatMap((p) => p.destination.kind === 'destination' ? [p.destination.serverUrl] : []));
   if (projects.length === 0 && typeof fallback === 'string') blockers.push(fallback);
@@ -331,7 +339,7 @@ export function planCutover(home: string, options: CutoverOptions = {}, deps: Cu
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     if (machineId === null) blockers.push('this home has no machine identity; run myco login before cutover');
   }
-  const plan: CutoverPlan = { home, options, vaults, projects, strayHistory: legacyStrayHistoryLines(home, projects, state), memberships: [...destinations].flatMap((url) => memberships.find((m) => deploymentUrl(m.serverUrl) === url) ?? []), blockers, plannedAt, machineId, agents: [], handover: [], copies: [] };
+  const plan: CutoverPlan = { home, options, vaults, projects, strayHistory: legacyStrayHistoryLines(home, projects.filter(project => !issues.some(issue => issue.projectId === project.projectId)), state), memberships: [...destinations].flatMap((url) => memberships.find((m) => deploymentUrl(m.serverUrl) === url) ?? []), blockers, plannedAt, machineId, agents: [], handover: [], copies: [] };
   if (blockers.length === 0) {
     const prepared = prepareCutover(plan, deps);
     plan.blockers.push(...prepared.blockers);
@@ -384,6 +392,12 @@ export async function run(args: readonly string[], deps: CutoverDeps = {}): Prom
     const env = deps.env ?? process.env;
     const homeDir = env.HOME || resolveHomeDir();
     const home = deps.mycoHome ?? resolveMycoHomeWithSource({ env, homeDir }).home;
+    if (parsed.dismissEarlierCopies) {
+      const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
+      const lines = dismissLegacyEarlierCopies(home, { homeDir, ...(parsed.legacyHomes.length > 0 ? { homes: parsed.legacyHomes } : {}) });
+      for (const line of lines.length > 0 ? lines : ['No earlier copies need dismissing.']) out(line);
+      return true;
+    }
     await observeLegacyMigration(home, { fetch: deps.fetch, now: deps.now, homeDir, ...(parsed.legacyHomes.length > 0 ? { homes: parsed.legacyHomes } : {}) });
     const plan = planCutover(home, { ...parsed, homeDir }, deps);
     if (deps.mycoHome === undefined) plan.selection = resolveMycoHomeWithSource({ env, homeDir });

@@ -94,8 +94,9 @@ export class LegacyLedger {
 }
 
 /** Accepted history by Project and Deployment key, independently of current membership. */
-export function legacyHistoryByProject(mycoHome: string): Map<string, string[]> {
-  const history = new Map<string, string[]>();
+export type LegacyHistory = Map<string, Map<string, Set<string>>>;
+export function legacyHistoryByProject(mycoHome: string): LegacyHistory {
+  const history: LegacyHistory = new Map();
   const dir = path.join(memberRoot(mycoHome), LEGACY_DIRNAME);
   let entries: fs.Dirent[];
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (error) {
@@ -107,13 +108,15 @@ export function legacyHistoryByProject(mycoHome: string): Map<string, string[]> 
     for (const file of fs.readdirSync(path.join(dir, entry.name), { withFileTypes: true })) {
       if (!file.isFile() || !file.name.endsWith(LEDGER_EXTENSION)) continue;
       const text = fs.readFileSync(path.join(dir, entry.name, file.name), 'utf8');
-      const accepted = text.split('\n').some(raw => {
+      const accepted = new Set(text.split('\n').flatMap(raw => {
         const line = parseLine(raw);
-        return line?.k === 'session' || line?.k === 'spore' || line?.k === 'lineage';
-      });
-      if (!accepted) continue;
+        return line?.k === 'session' ? [`session:${line.session}`] : line?.k === 'spore' || line?.k === 'lineage' ? [`${line.k}:${line.id}`] : [];
+      }));
+      if (accepted.size === 0) continue;
       const projectId = file.name.slice(0, -LEDGER_EXTENSION.length);
-      history.set(projectId, [...(history.get(projectId) ?? []), entry.name]);
+      const project = history.get(projectId) ?? new Map<string, Set<string>>();
+      project.set(entry.name, accepted);
+      history.set(projectId, project);
     }
   }
   return history;

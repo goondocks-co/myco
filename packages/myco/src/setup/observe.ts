@@ -39,6 +39,7 @@ export interface Observation {
   legacyError?: string;
   legacyNotice?: string;
   legacyStrayHistory?: string[];
+  legacyStrayHistoryError?: string;
   legacyConfirmationProjects?: import('@myco/member/legacy-migration.js').LegacyMigrationState['confirmationProjects'];
   legacyConfirmation?: import('@myco/member/legacy-migration.js').LegacyMigrationState['confirmation'];
   capture?: { waiting?: number | null; nextProbeAt?: number; recentRefusals?: number; unreadableLines?: number };
@@ -82,9 +83,14 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
   await read('legacy', async () => {
     const migration = await (deps.legacyObserver ?? observeLegacyMigration)(home, { fetch: deps.fetch, now: deps.now, homeDir: deps.legacyHomeDir, homes: deps.legacyHomes });
     const guidance = legacyCaptureGuidance(migration);
+    let strayHistory: Pick<Observation, 'legacyStrayHistory' | 'legacyStrayHistoryError'> = {};
+    if (migration.state !== 'unavailable') {
+      try { strayHistory = { legacyStrayHistory: observeLegacyStrayHistory(home, { homeDir: deps.legacyHomeDir, homes: deps.legacyHomes }) }; }
+      catch (error) { strayHistory = { legacyStrayHistoryError: error instanceof Error ? error.message : String(error) }; }
+    }
     facts.push({
       id: 'legacy',
-      legacyStrayHistory: migration.state === 'unavailable' ? [] : observeLegacyStrayHistory(home, { homeDir: deps.legacyHomeDir, homes: deps.legacyHomes }),
+      ...strayHistory,
       legacyNotice: [guidance.notice,
         migration.ignoredLineage ? `Skipped ${migration.ignoredLineage} malformed 1.4 lineage event(s) during confirmation.` : null].filter(Boolean).join(' '),
       ...(migration.state === 'unavailable' ? { legacyError: migration.detail } : {}),
