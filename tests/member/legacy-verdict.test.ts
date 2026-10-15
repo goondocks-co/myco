@@ -32,6 +32,9 @@ for (const present of ['home', 'binary'] as const) it(`keeps another installatio
 it('keeps bare and relative commands unchanged, and requires a named or managed home', () => {
   expect(commandVerdict('myco hook stop', [])).toBe('legacy');
   expect(mcpVerdict({ command: 'myco' }, [])).toBe('legacy');
+  expect(mcpVerdict({ headersHelper: 'myco member mcp-headers' }, [])).toBe('foreign');
+  expect(mcpVerdict({ headersHelper: 'myco member mcp-headers --credential registry' }, [])).toBe('member');
+  expect(pluginFileVerdict(`// myco:plugin-marker\nconst binary = "${binary}"; const MYCO_HOME = ".";`, [])).toBe('foreign');
   expect(mcpVerdict({ command: 'myco', env: { MYCO_HOME: home } }, [])).toBe('foreign');
   expect(mcpVerdict({ command: './bin/myco', env: { MYCO_HOME: home } }, [])).toBe('foreign');
   expect(mcpVerdict({ command: path.join(scratch, 'unknown') }, [])).toBe('foreign');
@@ -59,4 +62,11 @@ it('keeps an existing binary foreign even when its explicitly named home is gone
   fs.writeFileSync(binary, 'fixture');
   expect(mcpVerdict({ command: binary, env: { MYCO_HOME: home } }, [])).toBe('foreign');
   expect(commandVerdict(`MYCO_HOME=${home} ${binary} hook stop`, [])).toBe('foreign');
+});
+
+for (const key of ['headersHelper', 'http_headers_helper']) it(`classifies a stale remote MCP ${key} command before member ownership`, () => {
+  const entry = { url: 'https://other.invalid/mcp', [key]: `${binary} member mcp-headers --credential registry --server https://other.invalid` };
+  expect(mcpVerdict(entry, [])).toBe('stale');
+  fs.mkdirSync(home);
+  expect(mcpVerdict(entry, [])).toBe('member');
 });

@@ -123,7 +123,9 @@ describe('OpenCode member MCP', () => {
     expect((await member(['provision', 'opencode'])).out[0]).toContain('(plugin and MCP)');
 
     // The shape a 1.4 global install leaves: a launcher the project's own command replaces.
-    writeGlobalConfig({ type: 'local', command: ['/Users/someone/.myco/bin/myco', 'mcp'], enabled: true, timeout: 30 });
+    const legacyHome = path.join(agentHome, 'other-install');
+    fs.mkdirSync(legacyHome);
+    writeGlobalConfig({ type: 'local', command: [path.join(legacyHome, 'bin', 'myco'), 'mcp'], enabled: true, timeout: 30 });
     expect((await member(['provision', 'opencode'])).err.join('\n')).toContain('capture cutover');
     expect(process.exitCode).toBe(2);
   });

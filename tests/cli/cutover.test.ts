@@ -628,7 +628,9 @@ describe('myco cutover', () => {
   });
 
   it('refuses a member MCP entry of another Deployment before its first change', async () => {
-    const other = '/elsewhere/member/bin/myco';
+    const otherHome = path.join(m.home, 'other-member');
+    fs.mkdirSync(otherHome);
+    const other = path.join(otherHome, 'bin', 'myco');
     writeJson(path.join(m.home, '.claude.json'), { mcpServers: { myco: { type: 'http', url: 'https://other.invalid/mcp', headersHelper: `${other} member mcp-headers ${CREDENTIAL_FLAG} registry --server https://other.invalid` } } });
     const unchanged = untouched();
     for (const args of [['--dry-run'], []]) {
@@ -856,6 +858,27 @@ describe('myco cutover', () => {
         expect(result.out.join('\n')).toContain(`would set up Claude Code's hooks, skills for ${m.mycoHome}; stale entries are left alone`);
         expect(result.out.join('\n')).not.toContain(`would point Claude Code at ${m.mycoHome}`);
       }
+      expect(fs.readFileSync(file)).toEqual(before);
+    }
+  });
+
+  for (const [agent, fileName, helperKey, serversKey] of [
+    ['claude-code', '.claude.json', 'headersHelper', 'mcpServers'],
+    ['codex', '.codex/config.toml', 'http_headers_helper', 'mcp_servers'],
+  ]) it(`leaves ${agent}'s stale remote tools helper alone without naming another Deployment`, async () => {
+    const file = path.join(m.home, fileName);
+    const binary = path.join(m.home, 'deleted-member', 'bin', 'myco');
+    const helper = `${binary} member mcp-headers --credential registry --server https://other.invalid`;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (agent === 'codex') fs.writeFileSync(file, `[mcp_servers.myco]\nurl = "https://other.invalid/mcp"\n${helperKey} = ${JSON.stringify(helper)}\n`);
+    else writeJson(file, { mcpServers: { myco: { type: 'http', url: 'https://other.invalid/mcp', [helperKey]: helper } } });
+    const before = fs.readFileSync(file);
+    for (const args of [['--dry-run'], []]) {
+      const result = await m.run(args, { agents: ['claude-code', agent] });
+      expect(result.err).toEqual([]);
+      expect(result.ok).toBe(true);
+      expect(result.out.join('\n')).toContain(`stale Myco entry in ${file} at ${serversKey}.myco; binary ${binary} is missing.`);
+      expect(result.out.join('\n')).not.toMatch(/held elsewhere|point at https:\/\/other.invalid/);
       expect(fs.readFileSync(file)).toEqual(before);
     }
   });

@@ -20,6 +20,7 @@ function commandWords(command: string): { env: Record<string, string>; words: st
 
 const under = (file: string, home: string): boolean => file === home || file.startsWith(`${home}${path.sep}`);
 const MANAGED_BINARY_HOME = /^(.*)[/\\]bin[/\\](?:versions[/\\][^/\\]+[/\\])?myco(?:\.exe)?$/;
+const MCP_HEADER_HELPER_KEYS = ['headersHelper', 'http_headers_helper'] as const;
 
 function absent(file: string): boolean {
   try { fs.statSync(file); return false; } catch (error) {
@@ -40,16 +41,21 @@ export function staleCommandBinary(command: string): string | undefined {
   return staleBinary(words[0], env.MYCO_HOME);
 }
 
-function mcpCommand(entry: unknown): { binary?: string; home?: string } {
+function mcpCommand(entry: unknown): { binary?: string; home?: string; helper?: string } {
   const record = (entry && typeof entry === 'object' && !Array.isArray(entry) ? entry : {}) as Record<string, unknown>;
   const env = [record.env, record.environment].find((v) => v && typeof v === 'object' && !Array.isArray(v)) as Record<string, unknown> | undefined;
   const command = Array.isArray(record.command) ? record.command[0] : record.command;
-  return { binary: typeof command === 'string' ? command : undefined, home: typeof env?.MYCO_HOME === 'string' ? env.MYCO_HOME : undefined };
+  const home = typeof env?.MYCO_HOME === 'string' ? env.MYCO_HOME : undefined;
+  const helper = MCP_HEADER_HELPER_KEYS.map((key) => record[key]).find((value): value is string => typeof value === 'string');
+  return { binary: typeof command === 'string' ? command : undefined, home, helper };
 }
 
 export function staleMcpBinary(entry: unknown): string | undefined {
-  const { binary, home } = mcpCommand(entry);
-  return staleBinary(binary, home);
+  const { binary, home, helper } = mcpCommand(entry);
+  if (binary !== undefined) return staleBinary(binary, home);
+  if (helper === undefined) return;
+  const parsed = commandWords(helper);
+  return staleBinary(parsed.words[0], parsed.env.MYCO_HOME ?? home);
 }
 
 function verdictFor(binary: string | undefined, mycoHome: string | undefined, legacyHomes: readonly string[]): Verdict {
@@ -85,10 +91,13 @@ function pluginBinaries(content: string): string[] {
   return [...content.matchAll(/["'`]([^"'`\r\n]+\/bin\/(?:versions\/[^/"'`]+\/)?myco(?:\.exe)?)["'`]|([^\s"'`=(]+\/bin\/(?:versions\/[^/\s]+\/)?myco(?:\.exe)?)\b/g)].map((m) => m[1] ?? m[2]);
 }
 
+function pluginHomes(content: string): string[] {
+  return [...content.matchAll(/MYCO_HOME["'`]?\s*[:=]\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([^\s"'`,;)]+))/g)].map((m) => m[1] ?? m[2] ?? m[3] ?? m[4]);
+}
+
 function homesNamedIn(content: string): string[] {
   const binaries = pluginBinaries(content).flatMap((binary) => binary.match(MANAGED_BINARY_HOME)?.[1] ?? []);
-  const set = [...content.matchAll(/MYCO_HOME["'`]?\s*[:=]\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([^\s"'`,;)]+))/g)].map((m) => m[1] ?? m[2] ?? m[3] ?? m[4]);
-  return [...binaries, ...set].filter((home) => path.isAbsolute(home)).map((home) => path.resolve(home));
+  return [...binaries, ...pluginHomes(content)].filter((home) => path.isAbsolute(home)).map((home) => path.resolve(home));
 }
 
 export function pluginFileVerdict(content: string, legacyHomes: readonly string[], ownHome?: string): Verdict | null {
@@ -103,6 +112,6 @@ export function pluginFileVerdict(content: string, legacyHomes: readonly string[
 
 export function stalePluginBinary(content: string): string | undefined {
   const binaries = pluginBinaries(content);
-  const homes = homesNamedIn(content);
-  return binaries.length > 0 && binaries.every((binary) => staleBinary(binary) !== undefined) && homes.every(absent) ? binaries[0] : undefined;
+  const homes = [...homesNamedIn(content), ...pluginHomes(content)];
+  return binaries.length > 0 && homes.every(path.isAbsolute) && binaries.every((binary) => staleBinary(binary) !== undefined) && homes.every(absent) ? binaries[0] : undefined;
 }
