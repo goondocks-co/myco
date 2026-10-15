@@ -50,7 +50,8 @@ export interface SelectOptions {
   /** Max spores to inject. */
   maxResults: number;
   /** Minimum MP probability to inject at all. 0.5 = "more likely than not
-   *  mutually-near"; a probability midpoint, not a model-dependent cosine. */
+   *  mutually-near"; a probability midpoint, not a model-dependent cosine.
+   *  Spore admission also requires corpus proximity >= sqrt(minProbability). */
   minProbability?: number;
   /** Keep this fraction of the strongest MP and standardized-distance evidence. */
   relativeBand?: number;
@@ -174,6 +175,8 @@ export function selectRelevantSpores(
 ): SelectedSpore[] {
   const minProbability = opts.minProbability ?? DEFAULT_MIN_PROBABILITY;
   const relativeBand = opts.relativeBand ?? DEFAULT_RELATIVE_BAND;
+  // Unitless lower bound on the corpus proximity factor.
+  const corpusFloor = Math.sqrt(minProbability);
 
   const reference = (opts.referenceCandidates ?? candidates).filter(c => Number.isFinite(c.similarity));
   const calibrated = reference.filter(isCalibrated);
@@ -186,20 +189,18 @@ export function selectRelevantSpores(
   const scored = pool
     .map((c) => {
       const queryStats = distributionStats(reference.filter(peer => peer.id !== c.id).map(peer => 1 - peer.similarity));
-      const mp = mutualProximity(
-        1 - c.similarity,
-        queryStats,
-        isCalibrated(c) ? boundedCalibration(c, calibrated) : pooled,
-      );
+      const corpusStats = isCalibrated(c) ? boundedCalibration(c, calibrated) : pooled;
+      const mp = mutualProximity(1 - c.similarity, queryStats, corpusStats);
+      const corpusProbable = proximityFactor(1 - c.similarity, corpusStats) >= corpusFloor;
       // Query-relative excess retains distance information when probability factors saturate.
       const excess = Math.max(0, (queryStats.mean - (1 - c.similarity)) / Math.max(queryStats.std, STD_EPSILON));
-      return { id: c.id, mp, similarity: c.similarity, separation: mp * excess };
+      return { id: c.id, mp, corpusProbable, similarity: c.similarity, separation: mp * excess };
     })
     .sort((a, b) => b.mp - a.mp || b.similarity - a.similarity);
 
   const top = scored[0].mp;
   const cutoff = Math.max(minProbability, top * relativeBand);
-  const probable = scored.filter((s) => s.mp >= cutoff);
+  const probable = scored.filter((s) => s.corpusProbable && s.mp >= cutoff);
   const separationCutoff = Math.max(...probable.map((s) => s.separation)) * relativeBand;
   const separated = probable.filter((s) => s.separation >= separationCutoff);
   observe(scored.length, probable.length, separated.length);

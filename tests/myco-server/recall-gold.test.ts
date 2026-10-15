@@ -84,6 +84,19 @@ describe('model-relative prompt selection on frozen gold geometry', () => {
     } finally { sqlite.close(); }
   }
 
+  it('holds measured gold blocks to the recorded precision and recall ratchet', async () => {
+    const answers = await measure(0, 1);
+    const served = Object.fromEntries(answers.map(a => [a.id, {
+      spores: a.items.filter(i => i.kind === 'spore').map(i => i.id),
+      plans: a.items.filter(i => i.kind === 'plan').map(i => i.id),
+    }]));
+    for (const target of Object.values(recallBaseline.targets)) {
+      const comparison = compareToBaseline(gold.cases, served, target);
+      expect(comparison).toEqual({ regressions: [], improvements: [], drift: [] });
+    }
+    expect(mustNotRegressions(gold.cases, served, gold.precisionRatchet)).toEqual([]);
+  }, 30_000);
+
   it('keeps served spores and plans identical under affine similarity changes', async () => {
     const baseline = await measure(0, 1);
     expect(baseline.find(a => a.id === 'rp-43')!.items.filter(i => i.kind === 'plan').map(i => i.id))
@@ -279,7 +292,7 @@ describe('the committed baseline', () => {
   const baseline = recallBaseline as RecallBaseline;
 
   it('holds the approved must-not count and case identities on both doors', () => {
-    expect(gold.precisionRatchet.matches).toBe(25);
+    expect(gold.precisionRatchet.matches).toBe(21);
     for (const target of Object.values(baseline.targets)) {
       expect(mustNotRegressions(gold.cases, target.cases, gold.precisionRatchet)).toEqual([]);
       expect(target.mustNot).toEqual(summarizeMustNot(gold.cases, target.cases));
