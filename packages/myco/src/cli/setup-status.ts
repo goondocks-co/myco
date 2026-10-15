@@ -42,7 +42,7 @@ function describe(fact: StatusObservation, url: string | undefined): string {
   if (fact.id === 'legacy') {
     const state = legacyState(fact);
     if (state === 'unavailable') return `Myco 1.4 migration records could not be read: ${sentence(fact.legacyError ?? fact.detail.replace(/^unavailable\s*/, ''))}. Inspect ${shortPath(fact.scope)}, then run myco setup --cutover.`;
-    const confirmationHint = legacyConfirmationHint(fact.legacyConfirmation, fact.legacyConfirmationProjects, state === 'needs-destination');
+    const confirmationHint = legacyConfirmationHint(fact.legacyConfirmation, fact.legacyConfirmationProjects);
     if (confirmationHint !== null) return confirmationHint;
     if (state === 'needs-destination' && fact.state === 'incomplete') return LEGACY_DESTINATION_HINT;
     return [legacySentences[state] ?? legacySentences.unavailable, fact.legacyNotice].filter(Boolean).join(' ');

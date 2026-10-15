@@ -156,8 +156,7 @@ export async function observeLegacyMigration(home: string, deps: LegacyConfirmat
   const state = readCutoverState(home);
   const { memberships, bindings } = confirmationRegistry(home);
   const sources = legacySources(home, { homeDir: deps.homeDir, homes: deps.homes });
-  const receipts = new Map(Object.entries(state.migrations ?? {}).map(([file, receipt]) => [legacyRealpath(file), receipt]));
-  const results = new Map<string, { projectId: string; confirmation: Confirmation; receipted?: true }>();
+  const results = new Map<string, { projectId: string; confirmation: Confirmation }>();
   const failures = new Map<string, Confirmation>();
   const identities = new Map<string, DeploymentIdentity>();
   const names = legacyProjectNames(sources.vaults.flatMap(source => legacyVaultProjectIds(source.path).map(projectId => ({
@@ -165,11 +164,10 @@ export async function observeLegacyMigration(home: string, deps: LegacyConfirmat
   }))));
   const report = (vault: string, projectId: string, confirmation: Confirmation) => {
     const key = JSON.stringify([vault, projectId]);
-    results.set(key, { projectId, confirmation: preferredConfirmation(results.get(key)?.confirmation ?? 'not-found', confirmation),
-      ...(receipts.get(vault)?.projects[projectId] === undefined ? {} : { receipted: true }) });
+    results.set(key, { projectId, confirmation: preferredConfirmation(results.get(key)?.confirmation ?? 'not-found', confirmation) });
   };
   for (const source of sources.vaults) {
-    const prior = receipts.get(source.path);
+    const prior = Object.entries(state.migrations ?? {}).find(([file]) => legacyRealpath(file) === source.path)?.[1];
     const ids = legacyVaultProjectIds(source.path);
     const candidates = ids.flatMap(projectId => {
       const previous = prior?.projects[projectId];
@@ -296,6 +294,5 @@ export async function observeLegacyMigration(home: string, deps: LegacyConfirmat
   const observed = legacyMigrationState(home, deps);
   return ['unmoved', 'needs-destination', 'partial', 'handover-pending'].includes(observed.state)
     ? { ...observed, confirmation: [...results.values()].reduce((result, project) => preferredConfirmation(result, project.confirmation), 'not-found' as Confirmation),
-      confirmationProjects: [...results.values()].map(project => ({ name: names.get(project.projectId)!, confirmation: project.confirmation,
-        ...(project.receipted ? { receipted: true as const } : {}) })) } : observed;
+      confirmationProjects: [...results.values()].map(project => ({ name: names.get(project.projectId)!, confirmation: project.confirmation })) } : observed;
 }

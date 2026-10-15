@@ -251,7 +251,7 @@ describe('legacy journey (e)', () => {
       expect(legacyMigrationState(home).state).toBe('needs-destination');
       if (evidence === 'growth') expect(readCutoverState(home).migrations?.[fixture.legacy.vault]?.projects[fixture.legacy.projects[0]!.id]?.destination).toBeUndefined();
       else expect(readCutoverState(home).migrations).toBeUndefined();
-      if (evidence !== 'growth') expect(observations.find(fact => fact.id === 'legacy')?.hint).toBe('Some Myco 1.4 projects need a destination; run myco setup --cutover to preview the handover.');
+      if (evidence !== 'growth') expect(observations.find(fact => fact.id === 'legacy')?.hint).toContain(evidence === 'unreachable' ? 'online' : evidence === 'deleted' ? 'no longer on' : 'destination');
     }
     expect(fs.readFileSync(fixture.legacy.vault)).toEqual(sourceBytes);
     if (evidence !== 'growth') expect(sourceBytes).toEqual(before);

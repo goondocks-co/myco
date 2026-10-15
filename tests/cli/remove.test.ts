@@ -219,6 +219,26 @@ describe('member-only remove', () => {
     } finally { output.mockRestore(); }
   });
 
+  it('reports no migration work when remove preserves an empty vault', async () => {
+    member();
+    const vault = path.join(home, 'groves', 'empty', 'myco.db');
+    fs.mkdirSync(path.dirname(vault), { recursive: true });
+    const db = new Database(vault);
+    try { db.exec(fs.readFileSync(new URL('../fixtures/legacy/vault-v76.sql', import.meta.url), 'utf8')); } finally { db.close(); }
+    const before = fs.readFileSync(vault);
+    expect(legacyMigrationState(home).state).toBe('none');
+    const output = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await run(['--yes'], deps());
+      expect(process.exitCode).toBe(0);
+      const message = output.mock.calls.flat().join('\n');
+      expect(message).toContain('Your 1.4 files remain');
+      expect(message).not.toContain('remaining migration work');
+      expect(message).not.toContain('myco cutover');
+      expect(fs.readFileSync(vault)).toEqual(before);
+    } finally { output.mockRestore(); }
+  });
+
   for (const state of ['changed', 'needs-destination'] as const) {
     it(`never suggests hand deletion while migration is ${state}`, async () => {
       member();

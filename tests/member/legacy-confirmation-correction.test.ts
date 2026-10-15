@@ -61,12 +61,12 @@ it('does not probe or describe earlier moves for never-moved route-free projects
   expect(fs.readFileSync(f.vault)).toEqual(f.bytes);
 });
 
-it('uses destination wording when an unreceipted routed project needs sign-in', async () => {
+it('preserves sign-in guidance when an unreceipted routed project needs sign-in', async () => {
   const f = fixture(['proj_a'], { receipt: false, noMembers: true, routes: true });
   writeCutoverState(f.home, { backups: { [f.vault]: { copy: 'unused', ...readVaultContent(f.vault), at: 1 } } });
   const observed = await observeLegacyMigration(f.home, { fetch: async () => { throw new Error('unexpected network'); } });
   expect(observed).toMatchObject({ state: 'needs-destination', confirmation: 'sign-in-required' });
-  expect(legacyCaptureGuidance(observed).hint).toBe('Some Myco 1.4 projects need a destination; run myco setup --cutover to preview the handover.');
+  expect(legacyCaptureGuidance(observed).hint).toContain('myco login');
   expect(fs.readFileSync(f.vault)).toEqual(f.bytes);
 });
 
@@ -340,7 +340,7 @@ it('C1: memoizes a hanging project-state probe across three route-free projects'
     return new Promise<Response>((_resolve, reject) => request.signal.addEventListener('abort', () => reject(new Error('fixture timed out')), { once: true }));
   } });
   expect(observed.confirmation).toBe('pending');
-  expect(observed.confirmationProjects).toEqual(projects.map(name => ({ name, confirmation: 'pending', receipted: true })));
+  expect(observed.confirmationProjects).toEqual(projects.map(name => ({ name, confirmation: 'pending' })));
   expect(hungReads).toBe(1);
   expect(missingReads).toBe(3);
   expect(readCutoverState(f.home).migrations![f.vault]!.projects).toEqual(Object.fromEntries(projects.map(id => [id, {}])));

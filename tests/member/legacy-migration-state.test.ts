@@ -150,6 +150,18 @@ it('reports none for an empty vault without a backup', () => {
   expect(fs.readFileSync(file)).toEqual(before);
 });
 
+for (const kind of ['not SQLite', 'truncated'] as const) for (const backedUp of [false, true]) {
+  it(`names an unreadable unreceipted ${kind} vault with ${backedUp ? 'a backup' : 'no backup'}`, () => {
+    const file = vault();
+    if (backedUp) backup(file);
+    if (kind === 'not SQLite') fs.writeFileSync(file, 'not a SQLite database');
+    else fs.truncateSync(file, fs.statSync(file).size / 2);
+    const before = fs.readFileSync(file);
+    expect(legacyMigrationState(home)).toMatchObject({ state: 'unavailable', file });
+    expect(fs.readFileSync(file)).toEqual(before);
+  });
+}
+
 for (const backedUp of [false, true]) it(`blocks a vault with an unassigned session and ${backedUp ? 'a backup' : 'no backup'}`, () => {
   const file = emptyVault();
   const db = new Database(file);

@@ -52,7 +52,7 @@ export type LegacyMigrationState = (
   | { state: 'unavailable'; file: string; detail: string }
   | { state: 'changed'; warning: string }
   | { state: 'none' | 'unmoved' | 'needs-destination' | 'handover-pending' | 'partial' | 'moved' }
-) & { legacyOwnsCapture?: true; confirmation?: LegacyConfirmation; confirmationProjects?: { name: string; confirmation: LegacyConfirmation; receipted?: true }[]; ignoredLineage?: number; terminalProjects?: { name: string; state: 'archived' | 'deleted' }[] };
+) & { legacyOwnsCapture?: true; confirmation?: LegacyConfirmation; confirmationProjects?: { name: string; confirmation: LegacyConfirmation }[]; ignoredLineage?: number; terminalProjects?: { name: string; state: 'archived' | 'deleted' }[] };
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -185,7 +185,11 @@ export function legacyMigrationState(home: string, opts: { homeDir?: string; hom
     const held = sources.vaults.map(vault => {
       const entries = migrations.filter(entry => entry.file === vault.path);
       return { vault, entries, selected: entries.find(entry => sameLegacyStamp(vault, entry.receipt)) ?? entries[0] };
-    }).filter(({ vault, entries }) => entries.length > 0 || legacyVaultHasContent(vault.path));
+    }).filter(({ vault, entries }) => {
+      if (entries.length > 0) return true;
+      try { return legacyVaultHasContent(vault.path); }
+      catch (error) { throw new LegacyMigrationUnreadable(vault.path, error); }
+    });
     if (held.length === 0 && sources.units.length === 0 && sources.registrations.length === 0) return { state: 'none' };
     if (held.some(({ vault, entries }) => entries.length === 0 && !states.some((s) => Object.keys(s.backups).some((file) => legacyRealpath(file) === vault.path)))) return observed({ state: 'unmoved' });
     let changed = false;
