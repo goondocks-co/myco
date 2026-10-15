@@ -822,9 +822,6 @@ export class SymbiontInstaller {
 
   memberRegistrationCurrent(): boolean {
     const toolsDeployment = this.assertGlobalMemberOwnership();
-    const targets = [this.resolveAbsoluteTarget('hooks'), this.memberMcpTargetPath()];
-    const stale = this.staleRegistrations().find((finding) => targets.includes(finding.file));
-    if (stale !== undefined) throw new MemberStaleRegistrationError(stale, this.manifest.displayName);
     if (!this.memberSettingsCurrent()) return false;
     const target = this.resolveAbsoluteTarget('hooks');
     if (target === null || !fs.existsSync(target)) return false;
@@ -881,6 +878,11 @@ export class SymbiontInstaller {
   }
 
   private assertGlobalMemberOwnership(targetOverride?: { path: string; serversKey: string } | 'hooks'): string | undefined {
+    if (this.legacyHomes.length === 0) {
+      const targets = [this.resolveAbsoluteTarget('hooks'), this.memberMcpTargetPath()];
+      const stale = this.staleRegistrations().find((finding) => targets.includes(finding.file));
+      if (stale !== undefined) throw new MemberStaleRegistrationError(stale, this.manifest.displayName);
+    }
     const memberHome = this.memberHomeDir();
     const record = readProvisionRecord(memberHome);
     const ownBinaries = [this.binaryPath(), managedBinaryPath(memberHome, process.platform), ...(record?.binaries?.[this.manifest.name] ? [record.binaries[this.manifest.name]] : [])];

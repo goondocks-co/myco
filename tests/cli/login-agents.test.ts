@@ -107,7 +107,9 @@ describe('myco login sets up the agents on this machine', () => {
   it('leaves an agent whose hooks belong to another installation byte for byte as it is, names it, and sets up the rest', async () => {
     fs.mkdirSync(claudeDir, { recursive: true });
     fs.mkdirSync(codexDir, { recursive: true });
-    const foreign = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: '/opt/other/bin/myco hook session-start --symbiont claude-code --myco-managed' }] }] } }, null, 2);
+    const foreignHome = path.join(root, 'other-install');
+    fs.mkdirSync(foreignHome);
+    const foreign = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${foreignHome}/bin/myco hook session-start --symbiont claude-code --myco-managed` }] }] } }, null, 2);
     fs.writeFileSync(path.join(claudeDir, 'settings.json'), foreign);
     const rig = unjoinedRig();
     expect(await run([await invite(rig)], deps(rig))).toBe(true);
@@ -115,6 +117,22 @@ describe('myco login sets up the agents on this machine', () => {
     expect(out.join('\n')).toMatch(/Skipped Claude Code: .*another installation/);
     expect(out.join('\n')).toContain('Capture is set up for Codex.');
     expect(read(path.join(codexDir, 'hooks.json')) ?? '').toContain('--credential registry');
+  });
+
+  it('names a stale hook without claiming capture is set up or held by another installation', async () => {
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.mkdirSync(codexDir, { recursive: true });
+    const file = path.join(claudeDir, 'settings.json');
+    const binary = path.join(root, 'deleted-install', 'bin', 'myco');
+    const stale = JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: `${binary} hook stop --myco-managed` }] }] } });
+    fs.writeFileSync(file, stale);
+    const rig = unjoinedRig();
+    expect(await run([await invite(rig)], deps(rig))).toBe(true);
+    expect(read(file)).toBe(stale);
+    expect(out.join('\n')).toContain(`Skipped Claude Code: Claude Code: stale Myco entry in ${file} at hooks.Stop.0.hooks.0.command; binary ${binary} is missing.`);
+    expect(out.join('\n')).toContain('Capture is set up for Codex.');
+    expect(out.join('\n')).not.toContain('Capture is set up for Claude Code');
+    expect(out.join('\n')).not.toMatch(/another installation|held elsewhere/);
   });
 
   it('sets up nothing with --no-agents, and a later `member provision` sets them all up from the membership alone', async () => {
