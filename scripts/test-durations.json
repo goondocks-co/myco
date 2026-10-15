@@ -623,6 +623,7 @@
     "tests/myco-shared/runner-update.test.ts": 4,
     "tests/parity/locked-retry.test.ts": 113,
     "tests/parity/parity.test.ts": 463,
+    "tests/parity/schema-upgrade.test.ts": 750,
     "tests/parity/transport-load.test.ts": 134,
     "tests/plugins/marketplace.test.ts": 157,
     "tests/project-root/resolve.test.ts": 114,
