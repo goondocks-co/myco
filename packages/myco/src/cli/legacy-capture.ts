@@ -2,8 +2,13 @@ import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import type { LegacyMigrationState } from '@myco/member/legacy-migration.js';
 import { LEGACY_AGENT_DEFERRAL } from '@goondocks/myco-shared/setup-guidance';
 
-export function legacyConfirmationHint(confirmation: LegacyMigrationState['confirmation']): string | null {
+export const legacyMovedNotice = (name: string, state: 'archived' | 'deleted'): string => `${name} has been moved; its project is ${state} on the Deployment.`;
+
+export function legacyConfirmationHint(confirmation: LegacyMigrationState['confirmation'], projects: LegacyMigrationState['confirmationProjects'] = []): string | null {
+  const names = projects.filter(project => project.confirmation === confirmation).map(project => project.name).join(', ') || 'this project';
   switch (confirmation) {
+    case 'no-destination': return `Myco couldn't find a Deployment holding the earlier move for ${names}. Run myco setup --cutover to choose a destination, or skip the project. Keep the 1.4 data.`;
+    case 'ambiguous': return `More than one Deployment holds the earlier move for ${names}. Run myco setup --cutover to choose its destination, or skip the project. Keep the 1.4 data.`;
     case 'sign-in-required': return `Myco couldn't confirm earlier moves; ${REJOIN_HINT}. Then run myco setup --cutover. Keep the 1.4 data.`;
     case 'pending': return "Earlier moves are unconfirmed; Myco will check again. Keep the 1.4 data.";
     case 'unavailable': return "Myco couldn't confirm earlier moves; it will check again when online. Keep the 1.4 data.";
@@ -16,13 +21,14 @@ export function legacyConfirmationHint(confirmation: LegacyMigrationState['confi
 
 /** Capture ownership determines whether agent setup must wait for cutover. */
 export function legacyCaptureGuidance(migration: LegacyMigrationState) {
-  const hint = legacyConfirmationHint(migration.confirmation) ?? (migration.state === 'needs-destination' && migration.legacyOwnsCapture !== true
+  const hint = legacyConfirmationHint(migration.confirmation, migration.confirmationProjects) ?? (migration.state === 'needs-destination' && migration.legacyOwnsCapture !== true
     ? 'Earlier moves are unconfirmed; run `myco setup --cutover` to review each project destination, or preview manually with `myco cutover --dry-run`.' : null);
   const deferral = migration.state === 'unavailable'
     ? `Agent setup deferred: ${migration.detail}. Inspect ${migration.file}, then run myco setup --cutover.`
     : migration.state === 'unmoved' || migration.state === 'changed' || migration.legacyOwnsCapture === true
       ? LEGACY_AGENT_DEFERRAL : null;
   return {
+    notice: migration.terminalProjects?.map(project => legacyMovedNotice(project.name, project.state)).join(' ') ?? null,
     status: migration.state === 'unavailable' ? 'unavailable' as const : deferral === null ? 'ready' as const : 'deferred' as const,
     hint,
     deferral,

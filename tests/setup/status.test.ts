@@ -307,7 +307,9 @@ for (const backupOnly of [false, true]) it(`reports installed 2.0 capture separa
     const text = renderSetupStatus(facts).join('\n');
     expect(text).toContain('Agent hooks: Myco 2.0 capture is installed');
     expect(text).not.toContain('1.4 still owns agent capture');
+    expect(facts.find(fact => fact.id === 'legacy')?.legacyConfirmation).toBe('not-found');
     expect(text).toContain(backupOnly ? 'Some Myco 1.4 projects need a destination' : 'Myco 1.4 data has not been moved');
+    expect(text).not.toContain('earlier move');
     const doctor = (await homeReport(fixture.home, { ...deps(), worker: { runner: () => { throw new Error('No service calls'); } } })).map(check => check.detail).join('\n');
     expect(doctor).toContain('hooks (');
     expect(doctor).toContain('are installed; capture execution not checked');

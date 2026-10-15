@@ -58,6 +58,28 @@ export function legacyVaultProjectIds(file: string): string[] {
   } finally { db.close(); }
 }
 
+/** Repository names are disambiguated by Project identity. */
+export function legacyProjectNames(projects: readonly { vault: string; projectId: string; root?: string | null }[]): Map<string, string> {
+  const names = new Map(projects.map(project => [project.projectId, project.root
+    ? path.posix.basename(project.root.replaceAll('\\', '/')) : legacyVaultProjectName(project.vault, project.projectId)]));
+  const counts = new Map<string, number>();
+  for (const name of names.values()) counts.set(name, (counts.get(name) ?? 0) + 1);
+  return new Map([...names].map(([id, name]) => [id, counts.get(name)! > 1 ? `${name} (${id})` : name]));
+}
+
+/** A Project's display name from its newest recorded repository root. */
+export function legacyVaultProjectName(file: string, projectId: string): string {
+  const db = new Database(file, { readonly: true });
+  try {
+    const columns = new Set(db.query<{ name: string }, []>('PRAGMA table_info(sessions)').all().map(row => row.name));
+    if (!columns.has('project_id') || !columns.has('project_root')) return projectId;
+    const order = ['started_at', 'id'].filter(column => columns.has(column)).map(column => `${column} DESC`).join(', ');
+    const row = db.query<{ project_root: string }, [string]>(`SELECT project_root FROM sessions
+      WHERE project_id = ? AND typeof(project_root) = 'text' AND project_root <> '' ${order ? `ORDER BY ${order}` : ''} LIMIT 1`).get(projectId);
+    return row ? path.posix.basename(row.project_root.replaceAll('\\', '/')) : projectId;
+  } finally { db.close(); }
+}
+
 export function legacySources(home: string, opts: { homeDir?: string; homes?: readonly string[]; folders?: readonly string[]; unitDirs?: ReturnType<typeof unitDirectories> } = {}): LegacySources {
   const homeDir = opts.homeDir ?? resolveHomeDir();
   const homes = [...new Set((opts.homes ?? [home, defaultMycoHome(homeDir)]).map(legacyRealpath))];
