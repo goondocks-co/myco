@@ -122,8 +122,8 @@ export const recallBaseline = {
     "rp-12": {
      "spores": [
       "gotcha-61b34f87",
-      "pattern-95c3e7c3",
       "architecture-dbdb80a8",
+      "pattern-95c3e7c3",
       "trade_off-8d1a35ee",
       "gotcha-104287ae"
      ],
@@ -313,10 +313,10 @@ export const recallBaseline = {
     },
     "rp-35": {
      "spores": [
-      "pattern-78fa6e80",
       "decision-efda0a7f",
-      "decision-48a78b54",
+      "pattern-78fa6e80",
       "decision-bc755ab1",
+      "decision-48a78b54",
       "architecture-a95609ec"
      ],
      "plans": [],
@@ -405,8 +405,8 @@ export const recallBaseline = {
     "rp-46": {
      "spores": [
       "pattern-5c2725ae",
-      "pattern-bca367e0",
       "gotcha-0ce73b33",
+      "pattern-bca367e0",
       "gotcha-6699d14a"
      ],
      "plans": [],
@@ -416,8 +416,8 @@ export const recallBaseline = {
     "rp-47": {
      "spores": [
       "decision-915db719",
-      "pattern-bca367e0",
       "pattern-4c6f6ae9",
+      "pattern-bca367e0",
       "gotcha-ee798214",
       "architecture-3f7cbad0"
      ],
@@ -546,8 +546,8 @@ export const recallBaseline = {
     "rp-12": {
      "spores": [
       "gotcha-61b34f87",
-      "pattern-95c3e7c3",
       "architecture-dbdb80a8",
+      "pattern-95c3e7c3",
       "trade_off-8d1a35ee",
       "gotcha-104287ae"
      ],
@@ -737,10 +737,10 @@ export const recallBaseline = {
     },
     "rp-35": {
      "spores": [
-      "pattern-78fa6e80",
       "decision-efda0a7f",
-      "decision-48a78b54",
+      "pattern-78fa6e80",
       "decision-bc755ab1",
+      "decision-48a78b54",
       "architecture-a95609ec"
      ],
      "plans": [],
@@ -829,8 +829,8 @@ export const recallBaseline = {
     "rp-46": {
      "spores": [
       "pattern-5c2725ae",
-      "pattern-bca367e0",
       "gotcha-0ce73b33",
+      "pattern-bca367e0",
       "gotcha-6699d14a"
      ],
      "plans": [],
@@ -840,8 +840,8 @@ export const recallBaseline = {
     "rp-47": {
      "spores": [
       "decision-915db719",
-      "pattern-bca367e0",
       "pattern-4c6f6ae9",
+      "pattern-bca367e0",
       "gotcha-ee798214",
       "architecture-3f7cbad0"
      ],

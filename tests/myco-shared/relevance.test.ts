@@ -8,17 +8,32 @@ const background = (n = 30): SporeCandidate[] => Array.from({ length: n }, (_, i
 }));
 
 describe('prompt relevance', () => {
-  it.each([20, 30, 100].flatMap(n => [1 / 10, 1 / 5, 1 / 3, 1 / 2]
+  it.each([20, 30, 100].flatMap(n => [1 / 10, 1 / 5, 1 / 3, 1 / 2, ...(n === 100 ? [0.8, 0.9] : [])]
     .flatMap(fraction => [false, true].map(exact => ({ n, k: Math.ceil(n * fraction), exact })))))
     ('serves a covered topic among $n candidates ($k matches, exact=$exact)', ({ n, k, exact }) => {
-      const candidates = Array.from({ length: n }, (_, i) => ({
-        id: `s${i}`,
-        similarity: i < k ? (exact ? 1 : 0.75 + 0.02 * cluster.normal[i]!)
-          : 0.45 + 0.05 * cluster.normal[100 + i]!,
-        neighborMean: 0.55, neighborStd: 0.08,
-      }));
-      const served = selectRelevantSpores(candidates, { maxResults: 7 });
-      expect(served.filter(s => Number(s.id.slice(1)) < k).length).toBeGreaterThanOrEqual(Math.min(k, 7));
+      const trials = n === 100 && k >= 80 ? 16 : 1;
+      for (let trial = 0; trial < trials; trial++) {
+        const candidates = Array.from({ length: n }, (_, i) => ({
+          id: `s${i}`,
+          similarity: i < k ? (exact ? 1 : 0.75 + 0.02 * cluster.normal[(i + trial * 7) % 200]!)
+            : 0.45 + 0.05 * cluster.normal[(100 + i + trial * 13) % 200]!,
+          neighborMean: 0.55, neighborStd: 0.08,
+        }));
+        const served = selectRelevantSpores(candidates, { maxResults: 7 });
+        expect(served.filter(s => Number(s.id.slice(1)) < k).length).toBeGreaterThanOrEqual(Math.min(k, 7));
+      }
+    });
+
+  it.each([10, 20, 50, 100].flatMap(n => [4, 5].map(z => ({ n, z }))))
+    ('admits a single $z-sigma match among $n candidates over frozen backgrounds', ({ n, z }) => {
+      for (let trial = 0; trial < 32; trial++) {
+        const candidates = Array.from({ length: n }, (_, i) => ({
+          id: `s${i}`,
+          similarity: 1 - (0.55 + (i === 0 ? -z : cluster.normal[(i + trial * 7) % 200]!) * 0.08),
+          neighborMean: 0.55, neighborStd: 0.08,
+        }));
+        expect(selectRelevantSpores(candidates, { maxResults: 7 }).map(s => s.id)).toContain('s0');
+      }
     });
 
   it.each([20, 30, 100, 368])('requires corpus evidence for a query-close cluster at corpus size %s', n => {
@@ -39,32 +54,27 @@ describe('prompt relevance', () => {
     }
   });
 
-  it('withholds an ordinary best match across many query comparisons and admits a separated match', () => {
-    const reference = cluster.normalQuantiles.map((z, i) => ({
-      id: `peer-${i}`, similarity: 0.2 + 0.05 * z, neighborMean: 0.9, neighborStd: 0.1,
-    }));
-    const ordinary = { id: 'best', similarity: 0.3175, neighborMean: 0.9, neighborStd: 0.1 };
-    let counts: unknown;
-    expect(selectRelevantSpores([ordinary], { maxResults: 7, referenceCandidates: reference, observe: n => { counts = n; } })).toEqual([]);
-    expect(counts).toEqual({ calibrated: 100, scored: 1, probable: 0, separated: 0 });
-    expect(selectRelevantSpores([{ ...ordinary, similarity: 0.6 }], { maxResults: 7, referenceCandidates: reference }).map(s => s.id))
-      .toEqual(['best']);
+  it.each([
+    { minProbability: 0.36, below: 59, above: 60 },
+    { minProbability: 0.64, below: 79, above: 80 },
+    { minProbability: 0.81, below: 89, above: 90 },
+  ])('applies the corpus floor at the configured probability $minProbability', ({ minProbability, below, above }) => {
+    const referenceCandidates = background();
+    const candidate = (index: number) => ({
+      id: 'boundary', similarity: 0.9,
+      neighborMean: 0.1 + cluster.normalQuantiles[index]! * 0.1, neighborStd: 0.1,
+    });
+    expect(selectRelevantSpores([candidate(below)], { maxResults: 7, referenceCandidates, minProbability })).toEqual([]);
+    expect(selectRelevantSpores([candidate(above)], { maxResults: 7, referenceCandidates, minProbability }).map(s => s.id))
+      .toEqual(['boundary']);
   });
 
-  it('withholds weak corpus evidence even when the robust query factor saturates', () => {
+  it('withholds weak corpus evidence even when the query factor saturates', () => {
     const reference = background();
     const weak = { id: 'weak', similarity: 0.9, neighborMean: 0.12, neighborStd: 0.1 };
     expect(selectRelevantSpores([weak], { maxResults: 7, referenceCandidates: reference })).toEqual([]);
     expect(selectRelevantSpores([{ ...weak, neighborMean: 0.2 }], { maxResults: 7, referenceCandidates: reference }).map(s => s.id))
       .toEqual(['weak']);
-  });
-
-  it('bounds the query tail without assuming independent candidate distances', () => {
-    const query = { mean: 0.8, std: 0.1 };
-    const own = { mean: 0.9, std: 0.1 };
-    expect(mutualProximity(0.6, query, own)).toBeGreaterThan(0.9);
-    expect(mutualProximity(0.6, query, own, 100)).toBe(0);
-    expect(mutualProximity(0.3, query, own, 100)).toBeGreaterThan(0.99);
   });
 
   it('leaves the outlier out of its own query statistics so it cannot widen the spore band', () => {
@@ -167,28 +177,6 @@ describe('prompt relevance', () => {
       { id: 'exact', similarity: 1 }, { id: 'weak', similarity: 0 }, ...reference,
     ], { maxResults: 7 });
     expect(selected.map(s => s.id)).toEqual(['exact']);
-  });
-
-  it('keeps admission unchanged after many near-relevant candidates were served', () => {
-    const background = Array.from({ length: 60 }, (_, i) => ({
-      id: `background-${i}`, similarity: 0.2 + 0.05 * cluster.normalQuantiles[Math.floor(i * 100 / 60)]!,
-      neighborMean: 0.9, neighborStd: 0.1,
-    }));
-    const pool = [
-      { id: 'anchor', similarity: 0.3819038192091764, neighborMean: 0.9, neighborStd: 0.1 },
-      { id: 'borderline', similarity: 0.3625843710142336, neighborMean: 0.9, neighborStd: 0.1 },
-      ...Array.from({ length: 38 }, (_, i) => ({
-        id: `near-${i}`, similarity: 0.37914389803847026, neighborMean: 0.9, neighborStd: 0.1,
-      })),
-      ...background,
-    ];
-    const first = selectRelevantSpores(pool, { maxResults: 7 });
-    expect(first).toHaveLength(7);
-    expect(first.some(s => s.id === 'borderline')).toBe(false);
-    const remaining = selectRelevantSpores(pool.map(c => ({
-      ...c, alreadyInjected: c.id.startsWith('near-'),
-    })), { maxResults: 7 });
-    expect(remaining).toEqual(first.filter(s => !s.id.startsWith('near-')));
   });
 
   it('keeps the calibration background stable as served items leave the eligible pool', () => {

@@ -85,12 +85,6 @@ export type PlanCalibration = 'none' | 'project' | 'insufficient';
 /** Unitless standard-deviation bound for the central 95% normal interval of candidate baselines. */
 const BASELINE_STD_LIMIT = 2;
 
-/** Unitless upper-distance quantiles bound the fit above the nearest 90% and below the farthest 5%. */
-const QUERY_BACKGROUND_QUANTILES = [
-  { fraction: 0.9, normalZ: 1.2815515655446004 },
-  { fraction: 0.95, normalZ: 1.6448536269514722 },
-] as const;
-
 type CalibratedCandidate = SporeCandidate & { neighborMean: number; neighborStd: number };
 
 function isCalibrated(c: SporeCandidate): c is CalibratedCandidate {
@@ -144,22 +138,6 @@ export function distributionStats(values: number[]): DistributionStats {
   return { mean, std: Math.sqrt(variance) };
 }
 
-function quantile(sorted: number[], fraction: number): number {
-  const index = (sorted.length - 1) * fraction;
-  const lower = Math.floor(index);
-  return sorted[lower]! + (sorted[Math.ceil(index)]! - sorted[lower]!) * (index - lower);
-}
-
-/** The upper-distance background fitted to its corresponding standard-normal quantiles. */
-function promptReferenceStats(distances: number[]): DistributionStats {
-  const sorted = [...distances].sort((a, b) => a - b);
-  const [lower, upper] = QUERY_BACKGROUND_QUANTILES;
-  const low = quantile(sorted, lower.fraction);
-  const high = quantile(sorted, upper.fraction);
-  const std = (high - low) / (upper.normalZ - lower.normalZ);
-  return { mean: low - lower.normalZ * std, std };
-}
-
 /**
  * Probability that `distance` is closer-than-typical given a reference
  * distribution. 1 - Φ(z): high when the distance sits below the distribution's
@@ -178,24 +156,10 @@ export function mutualProximity(
   distance: number,
   queryStats: DistributionStats,
   sporeStats?: DistributionStats,
-  /** Number of query-side comparisons bounded by the family-wise tail probability. */
-  queryComparisons = 1,
 ): number {
-  const factors = proximityFactors(distance, queryStats, sporeStats, queryComparisons);
-  return factors.query * factors.corpus;
-}
-
-function proximityFactors(
-  distance: number,
-  queryStats: DistributionStats,
-  sporeStats: DistributionStats | undefined,
-  queryComparisons: number,
-): { query: number; corpus: number } {
-  // Bonferroni bounds the query-side tail across all comparisons, including correlated candidates.
-  return {
-    query: Math.max(0, 1 - queryComparisons * (1 - proximityFactor(distance, queryStats))),
-    corpus: sporeStats === undefined ? 0 : proximityFactor(distance, sporeStats),
-  };
+  const queryFactor = proximityFactor(distance, queryStats);
+  if (!sporeStats) return 0;
+  return queryFactor * proximityFactor(distance, sporeStats);
 }
 
 /**
@@ -222,21 +186,14 @@ export function selectRelevantSpores(
 
   const pooled = pooledCalibration(calibrated);
 
-  const queryStats = promptReferenceStats(reference.map(c => 1 - c.similarity));
-
   const scored = pool
     .map((c) => {
-      const factors = proximityFactors(
-        1 - c.similarity,
-        queryStats,
-        isCalibrated(c) ? boundedCalibration(c, calibrated) : pooled,
-        reference.length,
-      );
-      const mp = factors.query * factors.corpus;
-      const corpusProbable = factors.corpus >= corpusFloor;
+      const queryStats = distributionStats(reference.filter(peer => peer.id !== c.id).map(peer => 1 - peer.similarity));
+      const corpusStats = isCalibrated(c) ? boundedCalibration(c, calibrated) : pooled;
+      const mp = mutualProximity(1 - c.similarity, queryStats, corpusStats);
+      const corpusProbable = proximityFactor(1 - c.similarity, corpusStats) >= corpusFloor;
       // Query-relative excess retains distance information when probability factors saturate.
-      const separationStats = distributionStats(reference.filter(peer => peer.id !== c.id).map(peer => 1 - peer.similarity));
-      const excess = Math.max(0, (separationStats.mean - (1 - c.similarity)) / Math.max(separationStats.std, STD_EPSILON));
+      const excess = Math.max(0, (queryStats.mean - (1 - c.similarity)) / Math.max(queryStats.std, STD_EPSILON));
       return { id: c.id, mp, corpusProbable, similarity: c.similarity, separation: mp * excess };
     })
     .sort((a, b) => b.mp - a.mp || b.similarity - a.similarity);
