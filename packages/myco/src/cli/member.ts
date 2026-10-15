@@ -719,7 +719,6 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
   if (refresh) {
     if (remove) return fail('--refresh and --remove cannot be combined');
     if (agent !== undefined) return fail('--refresh sets up again the agents set up before; it takes no agent');
-    // Refresh recorded harnesses and existing owned registrations for their recorded Deployment.
     const record = readProvisionRecord(mycoHome);
     if (record === null) {
       const serverUrl = memberProvisionTarget(mycoHome, serverArg);
