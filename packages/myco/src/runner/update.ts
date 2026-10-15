@@ -297,12 +297,12 @@ function runnerUpdateGuardianBinary(home: string, platform: NodeJS.Platform): st
 export function cleanupRunnerUpdateGuardian(home: string, platform: NodeJS.Platform, deps: {
   removeGuardian?: (spec: ServiceSpec, platform: NodeJS.Platform) => void;
   prune?: typeof pruneVersions;
-} = {}): void {
+} = {}): 'complete' | 'deferred' {
   const held = LifecycleLock.acquire(path.join(home, 'runner', UPDATE_CLEANUP_LOCK), { command: 'myco runner update cleanup' });
-  if (!held.acquired) throw new Error('runner update cleanup is already in progress');
+  if (!held.acquired) return 'deferred';
   try {
   let state = readState(home);
-  if (state.transaction !== undefined) return;
+  if (state.transaction !== undefined) return 'deferred';
   if (state.guardian !== undefined) {
     if (state.guardian.unit.label !== runnerUpdateGuardianLabel(home)) throw new Error('runner update guardian belongs to another home');
     (deps.removeGuardian ?? ((spec, targetPlatform) => { uninstallService(spec, { platform: targetPlatform }); }))(state.guardian, platform);
@@ -311,8 +311,8 @@ export function cleanupRunnerUpdateGuardian(home: string, platform: NodeJS.Platf
   }
   const cleanup = state.cleanup;
   fs.rmSync(runnerUpdateGuardianBinary(home, platform), { force: true });
-  if (cleanup === undefined) return;
-  if (state.guardian !== undefined) return;
+  if (cleanup === undefined) return 'complete';
+  if (state.guardian !== undefined) return 'deferred';
   const root = versionsDir(home, cleanup.platform, cleanup.localAppData);
   let failedDir: string | undefined;
   if (cleanup.failedVersion !== undefined) {
@@ -325,6 +325,7 @@ export function cleanupRunnerUpdateGuardian(home: string, platform: NodeJS.Platf
     semver.valid(version) !== null && fs.statSync(path.join(root, version)).isDirectory()) : [];
   if ((failedDir !== undefined && fs.existsSync(failedDir)) || retained.length > 2) throw new Error('runner update version cleanup is incomplete');
   withState(home, next => { if (next.transaction === undefined && next.guardian === undefined) { delete next.cleanup; delete next.cleanupReason; delete next.nextCleanupAt; next.cleanupFailures = 0; } });
+  return 'complete';
   } finally { held.lock.release(); }
 }
 
@@ -413,8 +414,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     if (state.guardian === undefined && state.cleanup === undefined) return true;
     if (state.transaction !== undefined || now() < (state.nextCleanupAt ?? 0)) return false;
     try {
-      cleanupRunnerUpdateGuardian(home, platform, { removeGuardian: deps.removeGuardian, prune: deps.prune });
-      return true;
+      return cleanupRunnerUpdateGuardian(home, platform, { removeGuardian: deps.removeGuardian, prune: deps.prune }) === 'complete';
     } catch (error) {
       const reason = sanitizeRunnerUpdateReason('runner update cleanup failed: ' + String(error));
       log(reason);
