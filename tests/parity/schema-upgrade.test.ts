@@ -46,9 +46,14 @@ it('counts an omitted prerequisite SQL rejection as a detected mutation', () => 
   const db = previousSchema();
   try {
     expect(() => db.exec('CREATE INDEX "next index" ON "next table"(id)')).toThrow('no such table');
-    expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: no such table: next table'))).toBe(true);
-    expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: not authorized: SQLITE_AUTH'))).toBe(false);
-    expect(isLocalMigrationSqlFailure(new Error('spawn wrangler ENOENT'))).toBe(false);
+    const omitted = 'CREATE TABLE "next table" (id TEXT PRIMARY KEY)';
+    expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: no such table: next table'), omitted)).toBe(true);
+    expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: no such table: different table'), omitted)).toBe(false);
+    expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: SQLITE_ERROR: near "X": syntax error'), omitted)).toBe(false);
+    expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: not authorized: SQLITE_AUTH'), omitted)).toBe(false);
+    expect(isLocalMigrationSqlFailure(new Error('spawn wrangler ENOENT'), omitted)).toBe(false);
+    expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: no such column: [new column]'), 'ALTER TABLE "upgrade parent" ADD COLUMN [new column] TEXT')).toBe(true);
+    expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: no such index: next index'), 'CREATE INDEX [next index] ON "upgrade parent"(id)')).toBe(true);
   } finally { db.close(); }
 });
 
@@ -64,23 +69,38 @@ it('requires an observed state mismatch after a local SQL rejection', async () =
       CREATE TABLE "upgrade parent" (id TEXT PRIMARY KEY);`);
     const actualSchema = schemaObjects(db);
 
+    const omitted = 'CREATE TABLE "next table" (id TEXT PRIMARY KEY)';
     const sqlRefusal = new Error('wrangler d1 migrations apply exited 1: SQLITE_ERROR: no such table: next table');
     let verifications = 0;
     await expect(assertMigrationMutationDetected(
+      omitted,
       async () => { throw sqlRefusal; },
       () => { verifications += 1; assertUpgradeState(databaseFile, 1, actualSchema, {}); },
     )).rejects.toBe(sqlRefusal);
     expect(verifications).toBe(1);
 
     await assertMigrationMutationDetected(
+      omitted,
       async () => { throw sqlRefusal; },
       () => assertUpgradeState(databaseFile, 2, actualSchema, {}),
     );
     await assertMigrationMutationDetected(
+      omitted,
       async () => { throw sqlRefusal; },
       () => assertUpgradeState(databaseFile, 1, [...actualSchema, { type: 'table', name: 'next table', sql: 'CREATE TABLE "next table" (id TEXT)' }], {}),
     );
+    for (const unrelated of [
+      new Error('wrangler d1 migrations apply exited 1: SQLITE_ERROR: near "X": syntax error'),
+      new Error('wrangler d1 migrations apply exited 1: no such table: different table'),
+    ]) {
+      await expect(assertMigrationMutationDetected(
+        omitted,
+        async () => { throw unrelated; },
+        () => assertUpgradeState(databaseFile, 2, actualSchema, {}),
+      )).rejects.toBe(unrelated);
+    }
     await expect(assertMigrationMutationDetected(
+      omitted,
       async () => { throw sqlRefusal; },
       () => { throw new Error('unrelated D1 file read failure'); },
     )).rejects.toThrow('unrelated D1 file read failure');

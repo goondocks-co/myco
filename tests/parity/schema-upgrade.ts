@@ -102,16 +102,43 @@ export function referencedExistingTables(db: Database, statements: readonly stri
   return [...tables];
 }
 
-export function isLocalMigrationSqlFailure(error: unknown): boolean {
-  if (!(error instanceof Error) || !/^wrangler d1 migrations apply exited [1-9]\d*:/m.test(error.message)) return false;
-  return /\b(?:SQLITE_ERROR|SQLITE_CONSTRAINT|no such (?:table|column|index)|FOREIGN KEY constraint failed|CHECK constraint failed|syntax error)\b/i.test(error.message);
+function omittedObject(statement: string): { kind: string; name: string } | undefined {
+  const tokens = sqlIdentifiers(statement);
+  const words = tokens.map((token) => token.toUpperCase());
+  if (words[0] === 'ALTER' && words[1] === 'TABLE') {
+    const add = words.indexOf('ADD', 3);
+    if (add < 0) return undefined;
+    const column = tokens[add + (words[add + 1] === 'COLUMN' ? 2 : 1)];
+    return column === undefined ? undefined : { kind: 'column', name: column };
+  }
+  if (words[0] !== 'CREATE') return undefined;
+  let index = 1;
+  if (words[index] === 'TEMP' || words[index] === 'TEMPORARY') index += 1;
+  if (words[index] === 'UNIQUE') index += 1;
+  const kind = words[index]?.toLowerCase();
+  if (kind !== 'table' && kind !== 'index' && kind !== 'trigger' && kind !== 'view') return undefined;
+  index += 1;
+  if (words[index] === 'IF' && words[index + 1] === 'NOT' && words[index + 2] === 'EXISTS') index += 3;
+  const name = tokens[index];
+  return name === undefined ? undefined : { kind, name };
 }
 
-export async function assertMigrationMutationDetected(apply: () => Promise<void>, verify: () => void): Promise<void> {
+export function isLocalMigrationSqlFailure(error: unknown, omittedStatement: string): boolean {
+  if (!(error instanceof Error) || !/^wrangler d1 migrations apply exited [1-9]\d*:/m.test(error.message)) return false;
+  const omitted = omittedObject(omittedStatement);
+  const missing = /\bno such (table|column|index|trigger|view):[ \t]*([^\r\n]+)/i.exec(error.message);
+  if (omitted === undefined || missing === null) return false;
+  const missingKind = missing[1]!.toLowerCase();
+  if (missingKind !== omitted.kind && !(omitted.kind === 'view' && missingKind === 'table')) return false;
+  const missingName = missing[2]!.trim().replace(/[.;]$/, '').replace(/^(["`\[])(.*)(["`\]])$/, '$2');
+  return missingName.toLowerCase() === omitted.name.toLowerCase();
+}
+
+export async function assertMigrationMutationDetected(omittedStatement: string, apply: () => Promise<void>, verify: () => void): Promise<void> {
   let migrationError: unknown;
   try { await apply(); }
   catch (error) {
-    if (!isLocalMigrationSqlFailure(error)) throw error;
+    if (!isLocalMigrationSqlFailure(error, omittedStatement)) throw error;
     migrationError = error;
   }
   try { verify(); }

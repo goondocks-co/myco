@@ -152,7 +152,7 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
   const runtime = session ??= devSession(SERVER_DIR);
   try {
     await wrangler(['secrets-store', 'secret', 'create', storeId, '--name', 'parity-wrap-key', '--scopes', 'workers', '--value', btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))), '-c', configName, '--persist-to', persistDir]);
-    let upgrade: { version: number; expected: ReturnType<typeof schemaObjects>; expectedRows: Record<string, string>; mutatedConfig: string; mutatedPersist: string } | undefined;
+    let upgrade: { version: number; expected: ReturnType<typeof schemaObjects>; expectedRows: Record<string, string>; mutatedConfig: string; mutatedPersist: string; omittedStatement: string } | undefined;
     if (options.latestSchemaUpgrade) {
       const files = renderMigrationFiles();
       const latest = files.at(-1);
@@ -189,7 +189,7 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       fs.writeFileSync(path.join(mutatedDir, latest.name), renderMigrationFile({ ...step, statements: step.statements.slice(1) }));
       const mutatedConfig = path.join(root, 'mutated-wrangler.toml');
       fs.writeFileSync(mutatedConfig, config.replace(/^migrations_dir = .*$/m, `migrations_dir = ${JSON.stringify(mutatedDir)}`) + configTail);
-      upgrade = { version: latestVersion, expected: expectedSchema(files), expectedRows, mutatedConfig, mutatedPersist };
+      upgrade = { version: latestVersion, expected: expectedSchema(files), expectedRows, mutatedConfig, mutatedPersist, omittedStatement: step.statements[0]! };
       fs.writeFileSync(configPath, config + configTail);
     }
     await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir]);
@@ -202,6 +202,7 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       await probeForeignKeyAssertion(databaseFile, workerdSql);
       assertUpgradeState(databaseFile, upgrade.version, upgrade.expected, upgrade.expectedRows);
       await assertMigrationMutationDetected(
+        upgrade.omittedStatement,
         async () => { await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', upgrade.mutatedConfig, '--persist-to', upgrade.mutatedPersist]); },
         () => assertUpgradeState(localD1File(upgrade.mutatedPersist), upgrade.version, upgrade.expected, upgrade.expectedRows),
       );
