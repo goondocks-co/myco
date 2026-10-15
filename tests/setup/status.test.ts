@@ -415,6 +415,8 @@ it('prints the agent-hook label once when setup is missing', () => {
 for (const location of ['own', 'dev', 'custom'] as const) it(`observes installed 1.4 hooks as incomplete capture with friendly copy and exit 3: ${location}`, async () => {
   const restore = bindSandboxChildHome(scratch, { MYCO_HOME: fixture.home });
   try {
+    fs.mkdirSync(path.join(scratch, '.myco-dev'), { recursive: true });
+    fs.mkdirSync(path.join(scratch, 'custom'), { recursive: true });
     const settings = path.join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json');
     fs.mkdirSync(path.dirname(settings), { recursive: true });
     fs.writeFileSync(settings, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${location === 'custom' ? 'MYCO_HOME=' + path.join(scratch, 'custom') + ' ' : ''}${location === 'own' ? fixture.home : path.join(scratch, '.myco-dev')}/bin/myco hook session-start --myco-managed` }] }] } }));
@@ -467,5 +469,49 @@ it('reports legacy hooks before any 2.0 membership or provision record exists', 
     const facts = await observeSetupStatus(home, {}, deps());
     expect(facts.find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'incomplete', detail: 'legacy-hooks' });
     expect(renderSetupStatus(facts).join('\n')).toContain('Myco 1.4 still captures your agents; run myco setup --cutover to hand over.');
+  } finally { restore(); }
+});
+
+it('does not report a stale hook as legacy capture or held elsewhere in status and doctor', async () => {
+  const restore = bindSandboxChildHome(scratch, { MYCO_HOME: fixture.home });
+  try {
+    const settings = path.join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.writeFileSync(settings, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: `${scratch}/deleted/bin/myco hook stop --myco-managed` }] }] } }));
+    const before = fs.readFileSync(settings);
+    const facts = await observeSetupStatus(fixture.home, { role: 'join', url: STATUS_URL }, deps());
+    expect(facts.find(fact => fact.id === 'machine.agents')?.detail).not.toBe('legacy-hooks');
+    expect(renderSetupStatus(facts).join('\n')).not.toMatch(/held elsewhere|another installation|another Deployment|1.4 still captures/);
+    const doctor = (await homeReport(fixture.home, { ...deps(), worker: { runner: () => { throw new Error('No service calls'); } } })).map(check => check.detail).join('\n');
+    expect(doctor).not.toMatch(/held elsewhere|another installation|another Deployment|still own capture/);
+    expect(fs.readFileSync(settings)).toEqual(before);
+  } finally { restore(); }
+});
+
+it('reports current capture and stale-blocked tools with the delete-then-refresh remedy', async () => {
+  const restore = bindSandboxChildHome(scratch, { MYCO_HOME: fixture.home });
+  try {
+    provisionGlobally('claude-code', null, fixture.home, { serverUrl: STATUS_URL });
+    const file = path.join(process.env.HOME!, '.claude.json');
+    const binary = path.join(scratch, 'deleted-install', 'bin', 'myco');
+    const before = JSON.stringify({ mcpServers: { myco: { command: binary } } });
+    fs.writeFileSync(file, before);
+    await run(['--status'], deps());
+    const row = lines.find(line => line.startsWith('Agent hooks:'))!;
+    expect(row).toContain('Capture is set up.');
+    expect(row).toContain(`stale Myco entry in ${file}`);
+    expect(row).toContain('the top-level "myco" MCP server');
+    expect(row).toContain(`binary ${binary} is missing`);
+    expect(row).toContain('tools are not set up because this entry occupies their place');
+    expect(row).toContain('You may delete it, then run myco member provision --refresh.');
+    expect(row).not.toMatch(/Out of date|held elsewhere|another installation/);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    const settings = path.join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+    const data = JSON.parse(fs.readFileSync(settings, 'utf8'));
+    data.hooks.Stop[0].hooks[0].timeout = 999;
+    fs.writeFileSync(settings, JSON.stringify(data));
+    lines = [];
+    await run(['--status'], deps());
+    expect(lines.find(line => line.startsWith('Agent hooks:'))).toContain('Out of date');
   } finally { restore(); }
 });

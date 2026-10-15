@@ -1,4 +1,4 @@
-import { MemberProvisionConflictError, MemberMcpConflictError } from '@myco/symbionts/installer.js';
+import { MemberProvisionConflictError, MemberMcpConflictError, MemberStaleRegistrationError } from '@myco/symbionts/installer.js';
 import { joinSentences } from '@myco/utils/sentences.js';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -85,7 +85,10 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
             if (outcome.kind === 'unknown') throw new Error('This build cannot provision the harness');
           } finally { backup.pruneUnchanged(); }
           status = memberHarnessStatus(id, mycoHome, record.serverUrl, deps);
-          if (!status.current) throw new Error('Capture configuration is still incomplete');
+          if (!status.current) {
+            if (status.stale?.length) throw new MemberStaleRegistrationError(status.stale);
+            throw new Error('Capture configuration is still incomplete');
+          }
         }
         if (status.toolsDeployment !== undefined) {
           state = 'held_elsewhere';
@@ -108,11 +111,12 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
         state = code === 'EACCES' || code === 'EPERM' || code === 'EROFS' ? 'unwritable' : 'repair_failed';
         action = state === 'unwritable'
           ? `Allow Myco to write ${manifest?.displayName ?? id}'s configuration`
+          : error instanceof MemberStaleRegistrationError ? error.message
           : error instanceof MemberMcpConflictError && error.repairAction !== undefined ? error.repairAction
           : `Run myco doctor to check ${manifest?.displayName ?? id}'s capture configuration`;
         if (error instanceof MemberProvisionConflictError) {
           const remedy = state !== 'unwritable' && error instanceof MemberMcpConflictError ? error.localRemedy ?? action : action;
-          (result.localActions ??= {})[id] = joinSentences(error.problem, remedy);
+          (result.localActions ??= {})[id] = error instanceof MemberStaleRegistrationError ? error.problem : joinSentences(error.problem, remedy);
         }
       }
       let ranAt: number | undefined;

@@ -4,13 +4,13 @@
  * recorded membership — the same provisioning `join --provision` runs, reading
  * and writing no token.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
-import { run as runMemberCli } from '@myco/cli/member.js';
+import { run as runMemberCli, provisionGlobally, previewGlobalProvision, provisionAgents, detectedProvisionLines } from '@myco/cli/member.js';
 import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
 import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
@@ -55,12 +55,111 @@ async function provision(args: string[]): Promise<{ out: string[]; err: string[]
 }
 
 describe('myco member provision', () => {
+  it('leaves stale Codex tools with a credential marker during uninstall', () => {
+    join();
+    const file = path.join(agentHome, '.codex', 'config.toml');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const helper = `${root}/deleted-install/bin/myco member mcp-headers --credential registry --server ${SERVER}`;
+    const before = `[mcp_servers.myco]\nurl = "${SERVER}/mcp"\nhttp_headers_helper = ${JSON.stringify(helper)}\n`;
+    fs.writeFileSync(file, before);
+    const installer = new SymbiontInstaller(loadManifests().find(m => m.name === 'codex')!, root, resolvePackageRoot(), false, mycoHome).forDeployment(SERVER);
+    expect(installer.memberRegistrationPresent()).toBe(false);
+    installer.uninstallMemberRegistration();
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  for (const agent of ['pi', 'opencode']) it(`reports a partially set up ${agent} without claiming no agent is installed`, () => {
+    join();
+    const manifest = loadManifests().find(m => m.name === agent)!;
+    const file = path.join(agentHome, manifest.registration!.globalHooksTarget!.replace(/^~\//, ''));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const before = `// myco:plugin-marker\nconst binary = "${root}/deleted-install/bin/myco";\n`;
+    fs.writeFileSync(file, before);
+    const lines = detectedProvisionLines(provisionAgents([agent], mycoHome, SERVER, root));
+    expect(lines.join('\n')).toContain('capture hooks are not set up');
+    expect(lines.join('\n')).not.toMatch(/No supported agent|Capture is set up|tools are not set up|provisioned .* globally/);
+    expect(lines).toContain(`Capture is not set up for ${manifest.displayName}.`);
+    expect(lines[0]).toBe(agent === 'opencode' ? 'Tools and skills are set up for OpenCode.' : 'Skills are set up for Pi.');
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('reports tools without claiming a stale capture plugin was installed', () => {
+    join();
+    const manifest = loadManifests().find(m => m.name === 'opencode')!;
+    const file = path.join(agentHome, manifest.registration!.globalHooksTarget!.replace(/^~\//, ''));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const before = `// myco:plugin-marker\nconst binary = "${root}/deleted-install/bin/myco";\n`;
+    fs.writeFileSync(file, before);
+    const outcome = provisionGlobally('opencode', root, mycoHome, { serverUrl: SERVER });
+    expect(outcome.kind).toBe('provisioned');
+    if (outcome.kind !== 'provisioned') throw new Error('Expected tools beside the stale plugin');
+    expect(outcome.detail).toContain('(tools, skills)');
+    expect(outcome.detail).not.toContain('(plugin');
+    expect(outcome.detail).toContain('capture hooks are not set up');
+    expect(outcome.captureReady).toBe(false);
+    const lines = detectedProvisionLines(provisionAgents(['opencode'], mycoHome, SERVER, root));
+    expect(lines[0]).toBe('Capture is not set up for OpenCode.');
+    expect(lines.join('\n')).not.toContain('provisioned OpenCode globally');
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('preserves a stale hook in an outdated member hook group while refreshing capture', () => {
+    join();
+    provisionGlobally('claude-code', root, mycoHome, { serverUrl: SERVER });
+    const file = path.join(agentHome, '.claude', 'settings.json');
+    const current = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const stale = { type: 'command', command: `${root}/deleted-install/bin/myco hook stop --myco-managed`, timeout: 3 };
+    const bytes = JSON.stringify(stale);
+    const outdated = structuredClone(current);
+    outdated.hooks.Stop[0].hooks[0].timeout = 999;
+    outdated.hooks.Stop[0].hooks.push(stale);
+    fs.writeFileSync(file, JSON.stringify(outdated));
+    provisionGlobally('claude-code', root, mycoHome, { serverUrl: SERVER });
+    const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const remaining = after.hooks.Stop.flatMap((group: { hooks: unknown[] }) => group.hooks);
+    expect(remaining.filter((hook: unknown) => JSON.stringify(hook) === bytes)).toHaveLength(1);
+    expect(remaining.filter((hook: { command: string }) => hook.command !== stale.command)).toEqual(current.hooks.Stop.flatMap((group: { hooks: unknown[] }) => group.hooks));
+    expect(new SymbiontInstaller(loadManifests().find(m => m.name === 'claude-code')!, root, resolvePackageRoot(), false, mycoHome).forDeployment(SERVER).memberRegistrationCurrent()).toBe(true);
+  });
+
+  for (const preserveOtherMemberTools of [false, true]) it(`scans registrations once per provisioning or preview operation (preserve other tools: ${preserveOtherMemberTools})`, () => {
+    join();
+    const scan = spyOn(SymbiontInstaller.prototype, 'scanMemberRegistrations');
+    try {
+      expect(provisionGlobally('claude-code', root, mycoHome, { serverUrl: SERVER, preserveOtherMemberTools }).kind).toBe('provisioned');
+      expect(scan).toHaveBeenCalledTimes(1);
+      expect(previewGlobalProvision('claude-code', root, mycoHome, SERVER).kind).toBe('ready');
+      expect(scan).toHaveBeenCalledTimes(2);
+    } finally { scan.mockRestore(); }
+  });
+
+  for (const key of ['mcpServers', 'servers']) it(`preserves a stale ${key} entry and sets up every other writable surface`, () => {
+    join();
+    const file = path.join(agentHome, '.claude.json');
+    const entry = { command: path.join(root, 'deleted-install', 'bin', 'myco') };
+    fs.writeFileSync(file, JSON.stringify({ [key]: { myco: entry } }));
+    const preview = previewGlobalProvision('claude-code', root, mycoHome, SERVER);
+    expect(preview.kind).toBe('ready');
+    if (preview.kind !== 'ready') throw new Error('Expected a writable preview');
+    expect(preview.targets.hooks).not.toBeNull();
+    expect(preview.targets.mcp.length).toBe(key === 'mcpServers' ? 0 : 1);
+    const outcome = provisionGlobally('claude-code', root, mycoHome, { serverUrl: SERVER });
+    expect(outcome.kind).toBe('provisioned');
+    if (outcome.kind !== 'provisioned') throw new Error('Expected provisioning beside the stale entry');
+    expect(outcome.detail.split('\n')[0]).toBe(key === 'mcpServers' ? 'provisioned Claude Code globally (hooks, skills, settings)' : 'provisioned Claude Code globally (hooks, tools, skills, settings)');
+    expect(outcome.detail).toContain(key === 'mcpServers' ? 'tools are not set up' : 'nothing else is affected');
+    expect(outcome.detail).not.toContain('(hooks and MCP)');
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))[key].myco).toEqual(entry);
+    expect(fs.readFileSync(path.join(agentHome, '.claude', 'settings.json'), 'utf8')).toContain('--credential registry');
+    if (key !== 'mcpServers') expect(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers.myco.url).toBe(`${SERVER}/mcp`);
+  });
+
   it('writes the agent\'s hooks and remote MCP entry from the recorded membership, leaves the membership as it was, and reports an unchanged pass', async () => {
     join();
     const before = readRegistryEntry(root, mycoHome);
     const first = await provision(['codex']);
     expect(first.err).toEqual([]);
-    expect(first.out).toEqual(['provisioned Codex globally (hooks and MCP)']);
+    expect(first.out).toEqual(['provisioned Codex globally (hooks, tools, skills, settings)']);
     const config = parseToml(fs.readFileSync(path.join(agentHome, '.codex', 'config.toml'), 'utf8')) as { mcp_servers: { myco: { url: string; http_headers_helper: string } } };
     expect(config.mcp_servers.myco.url).toBe(`${SERVER}/mcp`);
     expect(config.mcp_servers.myco.http_headers_helper).toContain(`member mcp-headers ${CREDENTIAL_FLAG} registry --server ${SERVER}`);
@@ -113,7 +212,7 @@ describe('myco member provision', () => {
 
       process.exitCode = 0;
       fs.writeFileSync(globalConfig, '[mcp_servers.other]\ncommand = "other"\n');
-      expect((await provision(['codex'])).out).toEqual(['provisioned Codex globally (hooks and MCP)']);
+      expect((await provision(['codex'])).out).toEqual(['provisioned Codex globally (hooks, tools, skills, settings)']);
       expect(process.exitCode ?? 0).toBe(0);
     } finally {
       fs.rmSync(path.dirname(globalConfig), { recursive: true, force: true });
@@ -199,7 +298,10 @@ for (const holder of ['hook', 'same-url'] as const) it(`keeps another 2.0 ${hold
     ? hookCommands(JSON.parse(original).hooks)[0].split(' ')[0]
     : (parseToml(original) as { mcp_servers: { myco: { http_headers_helper: string } } }).mcp_servers.myco.http_headers_helper.split(' ')[0];
   const encodedBinary = JSON.stringify(currentBinary).slice(1, -1);
-  fs.writeFileSync(file, original.replaceAll(encodedBinary, '/other/myco/bin/myco').replaceAll(currentBinary, '/other/myco/bin/myco'));
+  const foreignHome = path.join(agentHome, 'other-myco');
+  fs.mkdirSync(foreignHome);
+  const foreignBinary = path.join(foreignHome, 'bin', 'myco');
+  fs.writeFileSync(file, original.replaceAll(encodedBinary, JSON.stringify(foreignBinary).slice(1, -1)).replaceAll(currentBinary, foreignBinary));
   const before = fs.readFileSync(file, 'utf8');
   const refused = await provision(['codex']);
   expect(refused.out).toEqual([]);

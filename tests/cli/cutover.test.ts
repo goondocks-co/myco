@@ -28,6 +28,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { run as runCutover, planCutover, runCutover as executeCutoverPlan, type CutoverDeps } from '@myco/cli/cutover.js';
 import { Database } from 'bun:sqlite';
+import { parse as parseToml } from 'smol-toml';
 
 import { resolveServiceDaemonStatePath } from '@myco/paths/service.js';
 import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
@@ -37,6 +38,7 @@ import { deploymentKeyFor } from '@myco/member/registry.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { legacyMigrationState, readCutoverState } from '@myco/member/legacy-migration.js';
 import { provisionGlobally } from '@myco/cli/member.js';
+import { LEGACY_REGISTRATIONS, CLAUDE_PROJECT_MCP, scanLegacyRegistrations } from '@myco/member/legacy-registration-files.js';
 import { stopHomeDaemon } from '@myco/member/legacy-daemon-stop.js';
 import type { LaunchctlRunner } from '@myco/member/legacy-service/launchd.js';
 import { resolvePackageRoot } from '@myco/symbionts/detect.js';
@@ -382,7 +384,9 @@ describe('myco cutover', () => {
       process.env.HOME = other.home;
       const foreignPlugin = path.join(other.home, '.cline', 'plugins', 'myco.ts');
       fs.mkdirSync(path.dirname(foreignPlugin), { recursive: true });
-      fs.writeFileSync(foreignPlugin, '// myco:plugin-marker\nconst bin = "/elsewhere/other/bin/myco";\n');
+      const foreignHome = path.join(other.home, 'other-install');
+      fs.mkdirSync(foreignHome);
+      fs.writeFileSync(foreignPlugin, `// myco:plugin-marker\nconst bin = "${foreignHome}/bin/myco";\n`);
       const refused = await other.run();
       expect(refused.ok).toBe(false);
       expect(refused.err.join('\n')).toContain(`${foreignPlugin} holds a Myco plugin of another installation`);
@@ -625,7 +629,9 @@ describe('myco cutover', () => {
   });
 
   it('refuses a member MCP entry of another Deployment before its first change', async () => {
-    const other = '/elsewhere/member/bin/myco';
+    const otherHome = path.join(m.home, 'other-member');
+    fs.mkdirSync(otherHome);
+    const other = path.join(otherHome, 'bin', 'myco');
     writeJson(path.join(m.home, '.claude.json'), { mcpServers: { myco: { type: 'http', url: 'https://other.invalid/mcp', headersHelper: `${other} member mcp-headers ${CREDENTIAL_FLAG} registry --server https://other.invalid` } } });
     const unchanged = untouched();
     for (const args of [['--dry-run'], []]) {
@@ -767,6 +773,248 @@ describe('myco cutover', () => {
     };
   };
 
+  it('keeps a stale hook beside live member capture and the users hook', async () => {
+    const file = path.join(m.home, '.claude', 'settings.json');
+    const settings = readJson(file);
+    const binary = path.join(m.home, 'deleted-install', 'bin', 'myco');
+    const stale = { hooks: [{ command: `${binary} hook stop --myco-managed`, timeout: 3 }] };
+    (settings.hooks as Record<string, unknown[]>).Stop.push(stale);
+    writeJson(file, settings);
+    const dry = await m.run(['--dry-run']);
+    expect(dry.ok).toBe(true);
+    expect(dry.out.join('\n')).toContain("would set up Claude Code's hooks, tools, skills");
+    const real = await m.run();
+    expect(real.ok).toBe(true);
+    const commands = hookCommands(readJson(file).hooks);
+    expect(commands.some(command => command.includes('--credential registry'))).toBe(true);
+    expect(commands).toContain('echo mine');
+    expect(commands).toContain(stale.hooks[0].command);
+    expect(JSON.stringify((readJson(file).hooks as Record<string, unknown[]>).Stop.find(group => JSON.stringify(group) === JSON.stringify(stale)))).toBe(JSON.stringify(stale));
+    expect(commands.some(command => command.startsWith(path.join(m.legacyHome, 'bin', 'myco')))).toBe(false);
+  });
+
+  it('names only the blocked plugin surface when an agent has no MCP target', async () => {
+    const file = path.join(m.home, '.pi', 'agent', 'extensions', 'myco', 'index.ts');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const before = `// myco:plugin-marker\nconst binary = "${m.home}/deleted-install/bin/myco";\n`;
+    fs.writeFileSync(file, before);
+    const dry = await m.run(['--dry-run'], { agents: ['claude-code', 'pi'] });
+    expect(dry.ok).toBe(true);
+    expect(dry.out.join('\n')).toContain('capture hooks are not set up because stale entries occupy their place');
+    expect(dry.out.join('\n')).not.toContain('capture hooks and tools are not set up');
+    expect((await m.run([], { agents: ['claude-code', 'pi'] })).ok).toBe(true);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('names the skipped tools surface in preview while setting up capture beside it', async () => {
+    const file = path.join(m.home, '.claude.json');
+    const entry = { command: `${m.home}/deleted-install/bin/myco` };
+    writeJson(file, { mcpServers: { myco: entry } });
+    const dry = await m.run(['--dry-run']);
+    expect(dry.ok).toBe(true);
+    const action = dry.out.find(line => line.includes("would set up Claude Code's"));
+    expect(action).toContain("hooks, skills");
+    expect(action).toContain('tools are not set up because stale entries occupy their place');
+    const real = await m.run();
+    expect(real.ok).toBe(true);
+    expect(real.out.map(line => line.trim())).toContain('provisioned Claude Code globally (hooks, skills, settings)');
+    expect(real.out.join('\n')).not.toContain('(hooks and MCP)');
+    expect(readJson(file).mcpServers).toEqual({ myco: entry });
+    expect(hookCommands(readJson(settingsFile()).hooks).some(command => command.includes('--credential registry'))).toBe(true);
+    for (const result of [dry, real]) expect(result.out.filter(line => line.includes(`stale Myco entry in ${file}`))).toHaveLength(1);
+  });
+
+  it('reports each repeated stale hook entry while preserving both groups', async () => {
+    const file = settingsFile();
+    const settings = readJson(file);
+    const stale = { hooks: [{ command: `${m.home}/deleted-install/bin/myco hook stop --myco-managed` }] };
+    (settings.hooks as Record<string, unknown[]>).Stop.push(stale, structuredClone(stale));
+    writeJson(file, settings);
+    for (const args of [['--dry-run'], []]) {
+      const result = await m.run(args);
+      expect(result.ok).toBe(true);
+      expect(result.out.filter(line => line.includes(`stale Myco entry in ${file}:`))).toHaveLength(2);
+      expect((readJson(file).hooks as Record<string, unknown[]>).Stop.filter(group => JSON.stringify(group) === JSON.stringify(stale))).toHaveLength(2);
+    }
+  });
+
+  it('removes and backs up top-level Claude 1.4 tools when Claude is not provisioned', async () => {
+    const file = path.join(m.home, '.claude.json');
+    const before = fs.readFileSync(file);
+    const dry = await m.run(['--dry-run'], { agents: ['codex'] });
+    expect(dry.ok).toBe(true);
+    expect(dry.out.join('\n')).toContain(`would remove the \`myco\` MCP entry from ${file}`);
+    expect(fs.readFileSync(file)).toEqual(before);
+    expect((await m.run([], { agents: ['codex'] })).ok).toBe(true);
+    expect((readJson(file).mcpServers as Record<string, unknown> | undefined)?.myco).toBeUndefined();
+    expect(backupsOf(file)).toHaveLength(1);
+  });
+
+  it.skipIf(!process.env.MYCO_CUTOVER_TEST_BINARY)('preserves a stale entry through the compiled cutover command against a fake Deployment', async () => {
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: request => m.rig.fetch(request) });
+    const serverUrl = `http://127.0.0.1:${server.port}`;
+    const mycoHome = tempMycoHome();
+    writeDeploymentMembership({ serverUrl, token: m.rig.token, tokenId: m.rig.tokenId, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    const file = path.join(m.home, 'Library', 'Application Support', 'Code', 'User', 'mcp.json');
+    const binary = path.join(m.home, 'deleted-install', 'bin', 'myco');
+    writeJson(file, { servers: { myco: { command: binary, args: ['mcp'] } } });
+    const before = fs.readFileSync(file);
+    const hooksFile = path.join(m.home, '.claude', 'settings.json');
+    const settings = readJson(hooksFile);
+    const staleHook = { hooks: [{ command: `${binary} hook stop --myco-managed` }] };
+    (settings.hooks as Record<string, unknown[]>).Stop.push(staleHook);
+    writeJson(hooksFile, settings);
+    const unitDir = path.join(m.home, 'empty-units');
+    const bin = path.join(m.home, 'bin');
+    fs.mkdirSync(unitDir);
+    fs.mkdirSync(bin);
+    fs.mkdirSync(path.join(m.home, 'tmp'));
+    fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    try {
+      for (const args of [['--dry-run'], []]) {
+        const child = Bun.spawn([process.env.MYCO_CUTOVER_TEST_BINARY!, 'cutover', '--server', serverUrl, '--legacy-home', m.legacyHome, ...args], {
+          cwd: m.home, stdout: 'pipe', stderr: 'pipe', env: { ...process.env, HOME: m.home, CODEX_HOME: path.join(m.home, '.codex'),
+            CLAUDE_CONFIG_DIR: path.join(m.home, '.claude'), XDG_CONFIG_HOME: path.join(m.home, '.config'), MYCO_HOME: mycoHome,
+            TMPDIR: path.join(m.home, 'tmp'), MYCO_LAUNCH_AGENTS_DIR: unitDir, PATH: `${bin}${path.delimiter}${process.env.PATH}` },
+        });
+        const timeout = setTimeout(() => child.kill(), 20_000);
+        try {
+          const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+          expect({ code, stderr }).toEqual({ code: 0, stderr: '' });
+          expect(stdout).toContain(`stale Myco entry in ${file}: the top-level "myco" MCP server; binary ${binary} is missing.`);
+          expect(fs.readFileSync(file)).toEqual(before);
+          expect((readJson(hooksFile).hooks as Record<string, unknown[]>).Stop).toContainEqual(staleHook);
+          if (args.length === 0) {
+            expect(hookCommands(readJson(hooksFile).hooks).some(command => command.includes('--credential registry'))).toBe(true);
+            expect(hookCommands(readJson(hooksFile).hooks)).toContain('echo mine');
+          }
+        } finally { clearTimeout(timeout); if (child.exitCode === null) { child.kill(); await child.exited; } }
+      }
+      expect(m.rig.rows('sessions')).toBeGreaterThan(0);
+    } finally { await server.stop(true); }
+  });
+
+  for (const location of [...LEGACY_REGISTRATIONS.filter((location) => ['mcp', 'hooks', 'plugin-file'].includes(location.kind)), CLAUDE_PROJECT_MCP]) {
+    it(`leaves a stale ${location.agent} ${location.scope} ${location.path} ${location.kind} unchanged through preview and cutover`, async () => {
+      const binary = path.join(m.home, 'deleted-install', 'bin', 'myco');
+      const file = location.scope === 'project' ? path.join(m.root, location.path) : path.join(m.home, location.path.replace(/^~\//, ''));
+      const command = `${binary} hook stop --symbiont ${location.agent} --myco-managed`;
+      if (location.kind === 'mcp') {
+        if (location.format === 'toml') {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, `[mcp_servers.myco]\ncommand = ${JSON.stringify(binary)}\nargs = ["mcp"]\n`);
+        } else {
+          const entry = { command: location.agent === 'opencode' ? [binary, 'mcp'] : binary, args: ['mcp'] };
+          writeJson(file, location === CLAUDE_PROJECT_MCP ? { projects: { [m.root]: { mcpServers: { myco: entry } } } } : { [location.serversKey!]: { myco: entry } });
+        }
+      } else if (location.kind === 'hooks' || location.path.endsWith('.json')) {
+        writeJson(file, { hooks: { Stop: [{ hooks: [{ type: 'command', command }] }] } });
+      } else {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, `// myco:plugin-marker\nconst bin = ${JSON.stringify(binary)};\n`);
+      }
+      const before = fs.readFileSync(file);
+      const preserved = () => scanLegacyRegistrations({ homeDir: m.home, folders: [m.root], legacyHomes: [m.legacyHome], ownHome: m.mycoHome, allClaudeProjects: true }).findings.filter(finding => finding.file === file && finding.verdict === 'stale').map(finding => finding.subject);
+      const entries = preserved();
+      for (const args of [['--dry-run'], []]) {
+        const result = await m.run(args, { agents: [...new Set(['claude-code', location.agent])] });
+        expect(result.err).toEqual([]);
+        expect(result.ok).toBe(true);
+        const stale = result.out.filter((line) => line.includes(`stale Myco entry in ${file}:`));
+        expect(stale).toHaveLength(1);
+        expect(stale[0]).toContain(`binary ${binary} is missing. Myco leaves this entry alone;`);
+        expect(stale[0]).toContain(location.agent === 'claude-code' ? 'Claude Code' : location.agent === 'copilot' ? 'GitHub Copilot' : '');
+        expect(stale[0]).toContain("You may delete it");
+        expect(preserved()).toEqual(entries);
+        if (args.length > 0) expect(fs.readFileSync(file)).toEqual(before);
+      }
+    });
+  }
+
+  for (const kind of ['hooks', 'mcp']) it(`preserves stale ${kind} in a linked global config`, async () => {
+    const file = kind === 'hooks' ? settingsFile() : path.join(m.home, '.claude.json');
+    const target = path.join(m.home, 'dotfiles', `${kind}.json`);
+    const binary = path.join(m.home, 'deleted-install', 'bin', 'myco');
+    writeJson(target, kind === 'hooks' ? { hooks: { Stop: [{ hooks: [{ command: `${binary} hook stop --myco-managed` }] }] } }
+      : { mcpServers: { myco: { command: binary, args: ['mcp'] } } });
+    fs.unlinkSync(file);
+    fs.symlinkSync(target, file);
+    const before = fs.readFileSync(target);
+    for (const args of [['--dry-run'], []]) {
+      const result = await m.run(args);
+      expect(result.err).toEqual([]);
+      expect(result.ok).toBe(true);
+      expect(result.out.join('\n')).toContain(`stale Myco entry in ${file}`);
+      if (kind === 'mcp') expect(result.out.join('\n')).toContain('tools are not set up because this entry occupies their place');
+      expect(fs.lstatSync(file).isSymbolicLink()).toBe(true);
+      if (kind === 'mcp' || args.length > 0) expect(fs.readFileSync(target)).toEqual(before);
+      else expect(hookCommands(readJson(target).hooks)).toContain(`${binary} hook stop --myco-managed`);
+    }
+  });
+
+  it('lists a stale Claude project entry outside the migration roots while preserving its entry and unrelated legacy entries', async () => {
+    const file = path.join(m.home, '.claude.json');
+    const folder = path.join(m.home, 'unrelated-project');
+    const binary = path.join(m.home, 'deleted-install', 'bin', 'myco');
+    writeJson(file, { projects: {
+      [folder]: { mcpServers: { myco: { command: binary, args: ['mcp'] } } },
+      [path.join(m.home, 'unrelated-legacy')]: { mcpServers: { myco: { command: `${m.legacyHome}/bin/myco`, args: ['mcp'] } } },
+    } });
+    const before = readJson(file).projects;
+    for (const args of [['--dry-run'], []]) {
+      const result = await m.run(args);
+      expect(result.err).toEqual([]);
+      expect(result.ok).toBe(true);
+      expect(result.out.filter(line => line.includes(`stale Myco entry in ${file}: the "myco" MCP server for project ${folder};`))).toHaveLength(1);
+      if (args.length > 0) {
+        expect(result.out.join('\n')).toContain(`would set up Claude Code's hooks, tools, skills for ${m.mycoHome}`);
+        expect(result.out.join('\n')).not.toContain(`would point Claude Code at ${m.mycoHome}`);
+      }
+      expect(readJson(file).projects).toEqual(before);
+    }
+  });
+
+  for (const [agent, fileName, helperKey, serversKey] of [
+    ['claude-code', '.claude.json', 'headersHelper', 'mcpServers'],
+    ['codex', '.codex/config.toml', 'http_headers_helper', 'mcp_servers'],
+  ]) it(`leaves ${agent}'s stale remote tools helper alone without naming another Deployment`, async () => {
+    const file = path.join(m.home, fileName);
+    const binary = path.join(m.home, 'deleted-member', 'bin', 'myco');
+    const helper = `${binary} member mcp-headers --credential registry --server https://other.invalid`;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (agent === 'codex') fs.writeFileSync(file, `[mcp_servers.myco]\nurl = "https://other.invalid/mcp"\n${helperKey} = ${JSON.stringify(helper)}\n`);
+    else writeJson(file, { mcpServers: { myco: { type: 'http', url: 'https://other.invalid/mcp', [helperKey]: helper } } });
+    const before = fs.readFileSync(file);
+    for (const args of [['--dry-run'], []]) {
+      const result = await m.run(args, { agents: ['claude-code', agent] });
+      expect(result.err).toEqual([]);
+      expect(result.ok).toBe(true);
+      expect(result.out.join('\n')).toContain(`stale Myco entry in ${file}: ${agent === 'codex' ? 'the Myco tools entry' : 'the top-level "myco" MCP server'}; binary ${binary} is missing.`);
+      expect(result.out.join('\n')).not.toMatch(/held elsewhere|point at https:\/\/other.invalid/);
+      if (args.length > 0 || agent !== 'codex') expect(fs.readFileSync(file)).toEqual(before);
+      else expect(parseToml(fs.readFileSync(file, 'utf8'))[serversKey]).toEqual(parseToml(before.toString())[serversKey]);
+    }
+  });
+
+  for (const state of ['home-present', 'binary-present', 'bare'] as const) {
+    it(`keeps the existing foreign MCP refusal for ${state}`, async () => {
+      const other = path.join(m.home, 'other-install');
+      if (state !== 'bare') fs.mkdirSync(other);
+      const binary = state === 'bare' ? 'myco' : path.join(other, 'bin', 'myco');
+      if (state === 'binary-present') { fs.mkdirSync(path.dirname(binary)); fs.writeFileSync(binary, 'fixture'); }
+      const file = path.join(m.home, 'Library', 'Application Support', 'Code', 'User', 'mcp.json');
+      writeJson(file, { servers: { myco: { command: binary, env: { MYCO_HOME: other } } } });
+      const before = fs.readFileSync(file);
+      for (const args of [['--dry-run'], []]) {
+        const result = await m.run(args);
+        expect(result.ok).toBe(false);
+        expect(result.err.join('\n')).toContain(`${file} holds a Myco MCP entry of another installation`);
+        expect(result.err.join('\n')).toContain('--legacy-home');
+        expect(fs.readFileSync(file)).toEqual(before);
+      }
+    });
+  }
+
   it('stops before its first change when another installation holds the agents\' settings, and names the flag', async () => {
     fs.writeFileSync(path.join(m.legacyHome, 'claims', 'symbiont-config.json'), JSON.stringify({ subsystem: 'symbiont-config', owner: '/elsewhere/.myco-other', pid: 1, claimed_at: 1 }));
     const unchanged = untouched();
@@ -792,7 +1040,9 @@ describe('myco cutover', () => {
   });
 
   it('stops before its first change when another home\'s hooks are in the agents\' settings, and names them and the flag', async () => {
-    const other = '/elsewhere/.myco-other/bin/myco';
+    const otherHome = path.join(m.home, 'other-install');
+    fs.mkdirSync(otherHome);
+    const other = path.join(otherHome, 'bin', 'myco');
     const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
     for (const foreign of [`${other} hook stop --symbiont claude-code --myco-managed`, `MYCO_HOME=/elsewhere/member-home ${legacyBin} hook stop --symbiont claude-code --myco-managed`]) {
       writeJson(settingsFile(), { hooks: { Stop: [{ hooks: [{ type: 'command', command: foreign }] }] } });
@@ -801,7 +1051,7 @@ describe('myco cutover', () => {
         const result = await m.run(args);
         expect(result.ok).toBe(false);
         expect(result.err.join('\n')).toContain(`belong to another installation (\`${foreign}\`)`);
-        expect(result.err.join('\n')).toContain('--legacy-home /elsewhere/');
+        expect(result.err.join('\n')).toContain('--legacy-home');
         unchanged();
       }
     }
@@ -817,7 +1067,7 @@ describe('myco cutover', () => {
     expect(dry.ok).toBe(true);
     const said = dry.out.join('\n');
     expect(said).toContain(`into ${m.mycoHome} (chosen by the machine pin ${path.join(m.legacyHome, 'runtime.home')})`);
-    expect(said).toContain(`would point Claude Code at ${m.mycoHome}, replacing the 1.4 hooks and MCP entry of ${m.legacyHome}`);
+    expect(said).toContain(`would set up Claude Code's hooks, tools, skills for ${m.mycoHome}, replacing the 1.4 registrations of ${m.legacyHome}`);
     unchanged();
 
     const real = await m.run([], { mycoHome: null, env });

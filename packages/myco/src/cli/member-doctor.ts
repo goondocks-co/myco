@@ -130,7 +130,7 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
   for (const manifest of loadManifests().filter((m) => record.agents.includes(m.name))) {
     try {
       const status = memberHarnessStatus(manifest.name, mycoHome, record.serverUrl);
-      if (!status.current) issues.push(row('Setup', 'warn', `${manifest.displayName}'s capture configuration is missing or stale. The next Myco helper pass repairs it.`));
+      if (!status.current) issues.push(row('Setup', 'warn', status.stale?.join('\n') ?? `${manifest.displayName}'s capture configuration is missing or stale. The next Myco helper pass repairs it.`));
       if (status.toolsDeployment !== undefined) {
         heldAgents.add(manifest.name);
         held.push({ ...row('Setup', status.current ? 'ok' : 'warn', harnessToolsElsewhere(manifest.displayName, os.hostname(), status.toolsDeployment)), toolsDeployment: status.toolsDeployment });

@@ -104,7 +104,9 @@ describe('a member\'s agent setup', () => {
   });
 
   const foreignCodexHooks = () => {
-    const foreign = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: '/opt/other/bin/myco hook session-start --symbiont codex --myco-managed' }] }] } }, null, 2);
+    const foreignHome = path.join(agentHome, 'other-install');
+    fs.mkdirSync(foreignHome, { recursive: true });
+    const foreign = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${foreignHome}/bin/myco hook session-start --symbiont codex --myco-managed` }] }] } }, null, 2);
     fs.writeFileSync(path.join(agentHome, '.codex', 'hooks.json'), foreign);
     return foreign;
   };

@@ -80,7 +80,7 @@ describe('OpenCode member MCP', () => {
     fs.writeFileSync(path.join(root, 'opencode.json'), JSON.stringify({ mcp: { other: { type: 'local', command: ['/bin/true'] } } }));
     const provisioned = await member(['provision', 'opencode']);
     expect(provisioned.err).toEqual([]);
-    expect(provisioned.out[0]).toBe('provisioned OpenCode globally (plugin and MCP)');
+    expect(provisioned.out[0]).toBe('provisioned OpenCode globally (plugin, tools, skills)');
 
     const raw = fs.readFileSync(globalConfigPath(), 'utf8');
     const server = JSON.parse(raw).mcp.myco;
@@ -98,7 +98,10 @@ describe('OpenCode member MCP', () => {
   ] as const) {
     it(`refuses before any write when the global config declares ${label}`, async () => {
       join();
-      const global = writeGlobalConfig(server);
+      const foreignHome = path.join(root, 'other-install');
+      fs.mkdirSync(foreignHome);
+      const entry = 'environment' in server ? { ...server, environment: { MYCO_HOME: foreignHome } } : server;
+      const global = writeGlobalConfig(entry);
       const before = fs.readFileSync(global, 'utf8');
       const refused = await member(['provision', 'opencode']);
       expect(refused.out).toEqual([]);
@@ -120,10 +123,12 @@ describe('OpenCode member MCP', () => {
 
     process.exitCode = 0;
     fs.rmSync(global);
-    expect((await member(['provision', 'opencode'])).out[0]).toContain('(plugin and MCP)');
+    expect((await member(['provision', 'opencode'])).out[0]).toContain('(plugin, tools, skills)');
 
     // The shape a 1.4 global install leaves: a launcher the project's own command replaces.
-    writeGlobalConfig({ type: 'local', command: ['/Users/someone/.myco/bin/myco', 'mcp'], enabled: true, timeout: 30 });
+    const legacyHome = path.join(agentHome, 'other-install');
+    fs.mkdirSync(legacyHome);
+    writeGlobalConfig({ type: 'local', command: [path.join(legacyHome, 'bin', 'myco'), 'mcp'], enabled: true, timeout: 30 });
     expect((await member(['provision', 'opencode'])).err.join('\n')).toContain('capture cutover');
     expect(process.exitCode).toBe(2);
   });

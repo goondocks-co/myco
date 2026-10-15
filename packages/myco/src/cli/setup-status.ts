@@ -61,6 +61,7 @@ function describe(fact: StatusObservation, url: string | undefined): string {
   if (fact.id === 'machine.signin') return complete ? 'This machine is signed in (remote authentication not checked).' : `${sentence(fact.detail)}. Run myco login ${address}.`;
   if (fact.id === 'machine.agents' && fact.agentHealth) return fact.detail;
   if (fact.id === 'machine.agents') {
+    if (fact.staleTools?.length) return `Capture is set up. ${fact.staleTools.join(' ')}`;
     if (fact.detail === 'legacy-hooks') return 'Myco 1.4 still captures your agents; run myco setup --cutover to hand over.';
     const capture = fact.memberCapture ? 'Myco 2.0 capture is installed. ' : '';
     if (complete) return fact.detail === 'current'

@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { completedLegacyDestination, legacyMigrationState, type CutoverState } from '@myco/member/legacy-migration.js';
+import { completedLegacyDestination, installedLegacyHooks, legacyMigrationState, type CutoverState } from '@myco/member/legacy-migration.js';
 import { isMemberHome } from '@myco/member/home-role.js';
 import { legacyVaultProjectIds, legacyVaultStamp } from '@myco/member/legacy-sources.js';
 import { readLegacyVault } from '@myco/member/legacy-import.js';
@@ -318,4 +318,11 @@ it('refuses malformed skip and completion receipts', () => {
   const complete = JSON.parse(fs.readFileSync(record, 'utf8'));
   complete.migrations[file].projects.proj_1.vault = { state: 'complete' };
   fs.writeFileSync(record, JSON.stringify(complete)); stateIs('unavailable');
+});
+
+it('ignores stale hooks when deciding whether legacy capture still needs handover', () => {
+  const settings = path.join(userHome, '.claude', 'settings.json');
+  fs.mkdirSync(path.dirname(settings), { recursive: true });
+  fs.writeFileSync(settings, JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: `${root}/deleted/bin/myco hook stop --myco-managed` }] }] } }));
+  expect(installedLegacyHooks(home, { homeDir: userHome })).toBe(false);
 });

@@ -440,7 +440,7 @@ function provisionAgent(
 export type ProvisionOutcome =
   | { kind: 'unknown' }
   | { kind: 'refused'; detail: string; code?: string }
-  | { kind: 'provisioned' | 'unchanged'; detail: string; skills?: SkillLinks | null; hooksChanged?: boolean };
+  | { kind: 'provisioned' | 'unchanged'; detail: string; skills?: SkillLinks | null; hooksChanged?: boolean; captureReady?: boolean; written?: string[]; stale?: string[] };
 
 /**
  * Install an agent's member hooks (or plugin) and MCP entry globally, from the
@@ -474,15 +474,20 @@ export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, o
 }
 
 /** Read-only registration and settings currency through the installer. */
-export function memberHarnessStatus(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): { current: boolean; toolsDeployment?: string } {
+export function memberHarnessStatus(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): { current: boolean; currentExceptStaleTools?: boolean; toolsDeployment?: string; stale?: string[] } {
   const manifest = loadManifests().find((candidate) => candidate.name === agent);
   if (manifest === undefined) return { current: false };
   const installer = globalInstaller(manifest, null, mycoHome, opts).forDeployment(serverUrl).preservingOtherMemberTools();
-  const toolsDeployment = installer.memberToolsDeployment();
-  const registrationCurrent = installer.memberRegistrationCurrent();
+  return inspectMemberHarness(installer, manifest, mycoHome, installer.scanMemberRegistrations());
+}
+
+function inspectMemberHarness(installer: SymbiontInstaller, manifest: ReturnType<typeof loadManifests>[number], mycoHome: string, scan: ReturnType<SymbiontInstaller['scanMemberRegistrations']>) {
+  const toolsDeployment = installer.memberToolsDeployment(scan);
+  const registrationCurrent = installer.memberRegistrationCurrent(scan);
+  const stale = installer.memberGlobalTargets(scan).skipped;
   const target = manifest.registration?.globalSkillsTarget;
   const skillsCurrent = target == null || missingMemberSkills(mycoHome, target).length === 0;
-  return { current: registrationCurrent && skillsCurrent, ...(toolsDeployment === undefined ? {} : { toolsDeployment }) };
+  return { current: registrationCurrent && skillsCurrent, currentExceptStaleTools: stale.length > 0 && skillsCurrent && installer.memberRegistrationCurrent(scan, true), ...(stale.length === 0 ? {} : { stale }), ...(toolsDeployment === undefined ? {} : { toolsDeployment }) };
 }
 
 export function memberHarnessCurrent(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): boolean {
@@ -499,13 +504,15 @@ export function provisionGlobally(
   if (opts.serverUrl !== undefined) installer.forDeployment(opts.serverUrl);
   if (opts.preserveOtherMemberTools) installer.preservingOtherMemberTools();
   // Every agent file this may write is copied first; `restore.md` beside the copies puts back what the person had.
-  const targets = opts.backup === undefined ? [] : installer.memberGlobalTargets().all;
+  const scan = installer.scanMemberRegistrations();
+  const registration = installer.memberGlobalTargets(scan);
+  const targets = opts.backup === undefined ? [] : registration.all;
   const absent = targets.filter((file) => !fs.existsSync(file));
   const regular = (file: string) => { try { return fs.statSync(file).isFile(); } catch { return false; } };
   for (const file of targets) if (regular(file) && !opts.backup!.all.some((e) => e.original === file)) opts.backup!.take(file);
   let installed;
   try {
-    installed = installer.install();
+    installed = installer.install(scan);
   } catch (error) {
     if (!(error instanceof MemberProvisionConflictError)) throw error;
     const code = (error.cause as NodeJS.ErrnoException | undefined)?.code;
@@ -519,13 +526,15 @@ export function provisionGlobally(
   const skills = installer.capturesAsMember() && target ? linkMemberSkills(mycoHome, skillsFolder(target), opts.legacyHomes ?? []) : null;
   const skillsMoved = skills !== null && (skills.linked.length > 0 || skills.removed.length > 0);
   if (opts.preserveOtherMemberTools && opts.serverUrl !== undefined) {
-    if (!memberHarnessCurrent(agent, mycoHome, opts.serverUrl, opts)) throw new Error(`${manifest.displayName}'s capture configuration is still incomplete`);
+    if (registration.skipped.length === 0 && !inspectMemberHarness(installer, manifest, mycoHome, scan).current) throw new Error(`${manifest.displayName}'s capture configuration is still incomplete`);
     installer.recordMemberProvision(readProvisionRecord(mycoHome)?.version ?? getPluginVersion());
     if (installed.hooks && manifest.registration?.memberHookTrustAction) holdHookTrust(mycoHome, agent, manifest.registration.memberHookTrustAction);
   }
-  return installed.hooks || installed.mcp || skillsMoved
-    ? { kind: 'provisioned', detail: `provisioned ${manifest.displayName} globally${installed.mcp ? ` (${surface} and MCP)` : ''}`, skills, hooksChanged: installed.hooks }
-    : { kind: 'unchanged', detail: `no global registration changes for ${manifest.displayName}`, skills };
+  const stale = installer.staleRegistrationMessages(scan);
+  const written = [installed.hooks ? surface : null, installed.mcp ? 'tools' : null, skillsMoved ? 'skills' : null, installed.settings ? 'settings' : null].filter((value): value is string => value !== null);
+  const changed = written.length > 0;
+  const detail = changed ? `provisioned ${manifest.displayName} globally (${written.join(', ')})` : `no global registration changes for ${manifest.displayName}`;
+  return { kind: changed ? 'provisioned' : 'unchanged', detail: [detail, ...stale].join('\n'), skills, hooksChanged: installed.hooks, captureReady: registration.hooks !== null, written, stale };
 }
 
 /**
@@ -538,7 +547,7 @@ export type OwnershipPreview =
   | { kind: 'unknown' }
   | { kind: 'uncaptured'; displayName: string }
   | { kind: 'refused'; displayName: string; detail: string }
-  | { kind: 'ready'; displayName: string; replaces: string[]; targets: { hooks: string | null; mcp: string[]; all: string[] } };
+  | { kind: 'ready'; displayName: string; replaces: string[]; targets: ReturnType<SymbiontInstaller['memberGlobalTargets']> };
 
 export function previewGlobalProvision(
   agent: string, root: string | null, mycoHome: string, serverUrl: string, opts: { packageRoot?: string; legacyHomes?: readonly string[]; preserveOtherMemberTools?: boolean } = {},
@@ -548,10 +557,11 @@ export function previewGlobalProvision(
   const installer = globalInstaller(manifest, root, mycoHome, opts);
   if (!installer.capturesAsMember()) return { kind: 'uncaptured', displayName: manifest.displayName };
   if (opts.preserveOtherMemberTools) installer.preservingOtherMemberTools();
-  const found = installer.globalOwnership(serverUrl);
+  const scan = installer.scanMemberRegistrations();
+  const found = installer.globalOwnership(serverUrl, scan);
   return found.problem !== null
     ? { kind: 'refused', displayName: manifest.displayName, detail: found.problem }
-    : { kind: 'ready', displayName: manifest.displayName, replaces: found.replaces, targets: installer.memberGlobalTargets() };
+    : { kind: 'ready', displayName: manifest.displayName, replaces: found.replaces, targets: installer.memberGlobalTargets(scan) };
 }
 
 /** What provisioning every agent found on this machine came to: the agents set up, those already current, and those left alone with the reason. */
@@ -559,6 +569,8 @@ export interface DetectedProvision {
   provisioned: string[];
   unchanged: string[];
   toolsElsewhere?: string[];
+  notices?: string[];
+  partial?: string[];
   skipped: Array<{ agent: string; displayName: string; reason: string }>;
   /** Skill folders where another installation, or the person, holds a skill's place. */
   heldSkills: Array<{ folder: string; names: string[] }>;
@@ -598,7 +610,16 @@ export function provisionAgents(
       : provisionGlobally(agent, root, mycoHome, { ...opts, serverUrl, backup });
     if (outcome.kind === 'refused') { found.skipped.push({ agent, displayName: preview.displayName, reason: outcome.detail }); continue; }
     if (outcome.kind === 'unknown') continue;
-    (outcome.kind === 'provisioned' ? found.provisioned : found.unchanged).push(preview.displayName);
+    if (outcome.captureReady === false) {
+      const surfaces = outcome.written ?? [];
+      const words = surfaces.length > 1 ? `${surfaces.slice(0, -1).join(', ')} and ${surfaces.at(-1)}` : surfaces[0];
+      if (words) (found.partial ??= []).push(`${words[0].toUpperCase()}${words.slice(1)} are set up for ${preview.displayName}.`);
+      (found.partial ??= []).push(`Capture is not set up for ${preview.displayName}.`, ...outcome.stale ?? []);
+    }
+    else {
+      (outcome.kind === 'provisioned' ? found.provisioned : found.unchanged).push(preview.displayName);
+      (found.notices ??= []).push(...outcome.stale ?? []);
+    }
     if (opts.preserveOtherMemberTools) {
       const status = memberHarnessStatus(agent, mycoHome, serverUrl, opts);
       if (status.toolsDeployment !== undefined) (found.toolsElsewhere ??= []).push(harnessToolsElsewhere(preview.displayName, hostname(), status.toolsDeployment));
@@ -635,10 +656,10 @@ export function detectedProvisionLines(found: DetectedProvision): string[] {
   const ready = [...found.provisioned, ...found.unchanged];
   const lines: string[] = [];
   if (ready.length > 0) lines.push(`Capture is set up for ${ready.join(', ')}.`);
-  lines.push(...found.toolsElsewhere ?? []);
+  lines.push(...found.partial ?? [], ...found.notices ?? [], ...found.toolsElsewhere ?? []);
   for (const skip of found.skipped) lines.push(`Skipped ${skip.displayName}: ${skip.reason.replace(/[.]+$/, '')}.`);
   for (const held of found.heldSkills) lines.push(`Left ${held.names.join(', ')} in ${held.folder} as they are: another installation or you put them there.`);
-  if (ready.length === 0 && found.skipped.length === 0) lines.push('No supported agent is installed on this machine; once one is, run `myco member provision`.');
+  if (ready.length === 0 && found.skipped.length === 0 && !found.partial?.length) lines.push('No supported agent is installed on this machine; once one is, run `myco member provision`.');
   return lines;
 }
 
