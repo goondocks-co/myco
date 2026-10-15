@@ -12,7 +12,7 @@ import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { isBinaryOnPath, loadManifests } from '@myco/symbionts/detect.js';
 import { readProvisionRecord, recordProvision, settleHookTrust, type ProvisionRecord } from '@myco/symbionts/member-provision-record.js';
-import { provisionGlobally, registeredMemberHarnesses, memberHarnessStatus, provisionBackup } from '@myco/cli/member.js';
+import { provisionGlobally, managedMemberHarnesses, memberHarnessStatus, provisionBackup } from '@myco/cli/member.js';
 import type { ProvisionedHarnessFact } from '@goondocks/myco-shared/harness-health';
 import { deadlineBudget, canStartRequest, subRequestBudget } from '@myco/member/budget.js';
 import { readDeploymentFeaturesStrict } from '@myco/member/context-cache.js';
@@ -64,11 +64,11 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
   const acquired = LifecycleLock.acquire(path.join(mycoHome, 'member', REPAIR_LOCK), { command: 'myco member keep-current' });
   if (!acquired.acquired) return null;
   try {
-    const discovered = registeredMemberHarnesses(mycoHome, record.serverUrl, { ...deps, exclude: record.agents });
+    const discovered = managedMemberHarnesses(mycoHome, record.serverUrl, deps);
     if (discovered.some((id) => !record!.agents.includes(id))) record = recordProvision(mycoHome, { version: record.version, serverUrl: record.serverUrl, agents: discovered });
     const result: KeepCurrentResult = { serverUrl: record.serverUrl, harnesses: [], ready: [] };
     const manifests = loadManifests();
-    for (const id of record.agents) {
+    for (const id of discovered) {
       const manifest = manifests.find((m) => m.name === id);
       let state: ProvisionedHarnessFact['state'] = 'ready';
       let action: string | undefined;

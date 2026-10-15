@@ -6,12 +6,12 @@ import { observeLegacyMigration, legacyConfirmationObserver } from '@myco/cli/cu
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readDeploymentMembershipResult, readRegistryEntryResult } from '@myco/member/registry.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { postRoute } from '@myco/cli/deployment-reader.js';
-import { memberHarnessStatus } from '@myco/cli/member.js';
+import { managedMemberHarnesses, memberHarnessStatus } from '@myco/cli/member.js';
 import type { WorkerServiceDeps } from '@myco/cli/worker-service.js';
 import { observationInstant, observeProjectCapture, observeRunnerService } from '@myco/cli/home-observations.js';
 import { isLiveRunner, listRunnerRecordsResult, readRunnerRecord } from '@myco/runner/runner-registry.js';
 import { signInState } from '@myco/server/github-app.js';
-import { detectMachineInstalledSymbionts } from '@myco/symbionts/detect.js';
+import { detectMachineInstalledSymbionts, loadManifests } from '@myco/symbionts/detect.js';
 import { provisionRecordPath, readProvisionRecord } from '@myco/symbionts/member-provision-record.js';
 import { getPluginVersion } from '@myco/version.js';
 import { legacyCaptureGuidance } from '@myco/cli/legacy-capture.js';
@@ -32,6 +32,7 @@ export interface Observation {
   hooksDeployment?: string;
   memberCapture?: true;
   staleTools?: string[];
+  agentOffers?: string[];
   joinedDeployments?: string[];
   legacyError?: string;
   legacyNotice?: string;
@@ -140,16 +141,26 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
       const hooksUrl = deps.status && record !== null ? deploymentUrl(record.serverUrl) : url;
       if (hooksUrl === undefined) return;
       const same = record !== null && deploymentUrl(record.serverUrl) === hooksUrl;
-      const agents = (deps.agents ?? (() => detectMachineInstalledSymbionts().map((manifest) => manifest.name)))();
+      const detected = (deps.agents ?? (() => detectMachineInstalledSymbionts().map((manifest) => manifest.name)))();
+      const agents = deps.status ? managedMemberHarnesses(home, hooksUrl, deps) : detected;
+      const offers = deps.status ? detected.filter(agent => !agents.includes(agent)).map(agent => {
+        const name = loadManifests().find(manifest => manifest.name === agent)?.displayName ?? agent;
+        return `${name} is installed; Myco doesn't capture it yet. Run myco member provision ${agent} to add it.`;
+      }) : [];
+      const agentFact = (state: Observation['state'], detail: string): Observation => {
+        const fact = add('machine.agents', state, detail);
+        if (offers.length > 0) fact.agentOffers = offers;
+        return fact;
+      };
       const statuses = agents.map(agent => memberHarnessStatus(agent, home, hooksUrl, deps));
       const installed = agents.length > 0 && statuses.every(status => status.current);
-      if (!installed && ((answers.noAgents && record === null) || (same && record.agents.length === 0))) { add('machine.agents', 'complete', 'declined'); return; }
-      if (agents.length === 0) { add('machine.agents', 'complete', 'none-installed'); return; }
+      if (!installed && ((answers.noAgents && record === null) || (same && record.agents.length === 0 && (!deps.status || agents.length === 0)))) { agentFact('complete', 'declined'); return; }
+      if (agents.length === 0) { agentFact(detected.length > 0 ? 'absent' : 'complete', detected.length > 0 ? 'stale' : 'none-installed'); return; }
       const current = same && record.version === getPluginVersion()
-        && agents.every((agent) => record.agents.includes(agent)) && installed;
-      const fact = add('machine.agents', current ? 'complete' : record === null ? 'absent' : 'incomplete', current ? 'current' : 'stale');
+        && installed;
+      const fact = agentFact(current ? 'complete' : record === null ? 'absent' : 'incomplete', current ? 'current' : 'stale');
       if (installed) fact.memberCapture = true;
-      if (same && record.version === getPluginVersion() && agents.every(agent => record.agents.includes(agent))
+      if (same && record.version === getPluginVersion()
         && statuses.every(status => status.current || status.currentExceptStaleTools) && !installed) {
         fact.memberCapture = true;
         fact.staleTools = statuses.flatMap(status => status.stale ?? []);

@@ -473,6 +473,17 @@ export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, o
   });
 }
 
+/** Chosen agents, including surviving owned registrations absent from the provision record. */
+export function managedMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): string[] {
+  const recorded = readProvisionRecord(mycoHome)?.agents ?? [];
+  return [...new Set([...recorded, ...registeredMemberHarnesses(mycoHome, serverUrl, { ...opts, exclude: recorded })])].sort();
+}
+
+function recordManagedMemberHarnesses(mycoHome: string, opts: { packageRoot?: string }): void {
+  const record = readProvisionRecord(mycoHome);
+  if (record !== null) recordProvision(mycoHome, { version: record.version, serverUrl: record.serverUrl, agents: managedMemberHarnesses(mycoHome, record.serverUrl, opts) });
+}
+
 /** Read-only registration and settings currency through the installer. */
 export function memberHarnessStatus(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): { current: boolean; currentExceptStaleTools?: boolean; toolsDeployment?: string; stale?: string[] } {
   const manifest = loadManifests().find((candidate) => candidate.name === agent);
@@ -628,6 +639,7 @@ export function provisionAgents(
     if (held.length > 0 && !found.heldSkills.some((h) => h.folder === outcome.skills!.folder)) found.heldSkills.push({ folder: outcome.skills!.folder, names: held.map((h) => h.name) });
   }
   } finally { backup.pruneUnchanged(); }
+  recordManagedMemberHarnesses(mycoHome, opts);
   if (opts.preserveOtherMemberTools && found.skipped.length === 0) keepCurrent(mycoHome, { packageRoot: opts.packageRoot });
   return found;
 }
@@ -699,11 +711,14 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     // Refresh recorded harnesses and existing owned registrations for their recorded Deployment.
     const record = readProvisionRecord(mycoHome);
     if (record === null) {
-      // Said once: the empty record written here keeps later refreshes quiet until the person provisions.
-      out('Myco has not set up your agents on this machine; run `myco member provision` to set them up.');
       const membership = selectedDeploymentMembership(mycoHome);
-      if (membership !== null) recordNoAgents(mycoHome, membership.serverUrl);
-      return true;
+      const agents = membership === null ? [] : managedMemberHarnesses(mycoHome, membership.serverUrl, deps);
+      if (membership !== null && agents.length > 0) recordProvision(mycoHome, { serverUrl: membership.serverUrl, agents, version: getPluginVersion() });
+      else {
+        out('Myco has not set up your agents on this machine; run `myco member provision` to set them up.');
+        if (membership !== null) recordNoAgents(mycoHome, membership.serverUrl);
+        return true;
+      }
     }
     const repaired = keepCurrent(mycoHome, { packageRoot: deps.packageRoot });
     refreshed?.(repaired, mycoHome);
@@ -765,6 +780,7 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
   } finally { backup.pruneUnchanged(); }
   if (outcome.kind === 'unknown') return fail(`unknown agent "${agent}"`);
   if (outcome.kind === 'refused') return fail(outcome.detail);
+  recordManagedMemberHarnesses(mycoHome, deps);
   out(outcome.detail);
   const held = outcome.skills?.held ?? [];
   if (held.length > 0) out(`Left ${held.map((h) => h.name).join(', ')} in ${outcome.skills!.folder} as they are: another installation or you put them there.`);
