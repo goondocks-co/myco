@@ -1,6 +1,9 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
-import { isLocalMigrationSqlFailure, referencedExistingTables, seedReferencedTables } from './schema-upgrade.ts';
+import { assertMigrationMutationDetected, assertUpgradeState, isLocalMigrationSqlFailure, referencedExistingTables, schemaObjects, seedReferencedTables } from './schema-upgrade.ts';
 
 const trigger = `CREATE TRIGGER "next trigger" AFTER UPDATE ON "upgrade parent"
   BEGIN UPDATE "upgrade parent" SET label = 'migrated' WHERE id = NEW.id; END`;
@@ -47,4 +50,42 @@ it('counts an omitted prerequisite SQL rejection as a detected mutation', () => 
     expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: not authorized: SQLITE_AUTH'))).toBe(false);
     expect(isLocalMigrationSqlFailure(new Error('spawn wrangler ENOENT'))).toBe(false);
   } finally { db.close(); }
+});
+
+it('requires an observed state mismatch after a local SQL rejection', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-schema-upgrade-mutation-'));
+  const databaseFile = path.join(root, 'previous.sqlite');
+  const db = new Database(databaseFile);
+  try {
+    db.exec(`CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO schema_meta VALUES ('version', '1');
+      CREATE TABLE d1_migrations (id INTEGER PRIMARY KEY);
+      INSERT INTO d1_migrations (id) VALUES (1);
+      CREATE TABLE "upgrade parent" (id TEXT PRIMARY KEY);`);
+    const actualSchema = schemaObjects(db);
+
+    const sqlRefusal = new Error('wrangler d1 migrations apply exited 1: SQLITE_ERROR: no such table: next table');
+    let verifications = 0;
+    await expect(assertMigrationMutationDetected(
+      async () => { throw sqlRefusal; },
+      () => { verifications += 1; assertUpgradeState(databaseFile, 1, actualSchema, {}); },
+    )).rejects.toBe(sqlRefusal);
+    expect(verifications).toBe(1);
+
+    await assertMigrationMutationDetected(
+      async () => { throw sqlRefusal; },
+      () => assertUpgradeState(databaseFile, 2, actualSchema, {}),
+    );
+    await assertMigrationMutationDetected(
+      async () => { throw sqlRefusal; },
+      () => assertUpgradeState(databaseFile, 1, [...actualSchema, { type: 'table', name: 'next table', sql: 'CREATE TABLE "next table" (id TEXT)' }], {}),
+    );
+    await expect(assertMigrationMutationDetected(
+      async () => { throw sqlRefusal; },
+      () => { throw new Error('unrelated D1 file read failure'); },
+    )).rejects.toThrow('unrelated D1 file read failure');
+  } finally {
+    db.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

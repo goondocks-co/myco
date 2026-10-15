@@ -6,7 +6,7 @@ import { Database } from 'bun:sqlite';
 import { renderMigrationFile, renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { devSession } from './dev-session.ts';
-import { assertUpgradeState, expectedSchema, isLocalMigrationSqlFailure, localD1File, probeForeignKeyAssertion, schemaObjects, seedPreviousSchema, tableRows } from '../schema-upgrade.ts';
+import { assertMigrationMutationDetected, assertUpgradeState, expectedSchema, localD1File, probeForeignKeyAssertion, schemaObjects, seedPreviousSchema, tableRows } from '../schema-upgrade.ts';
 import { parityWranglerConfig } from '@myco/server/deploy-config.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHeadersFor, memberHeadersFor, type ParityTarget } from '../harness.ts';
@@ -201,21 +201,10 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       if (JSON.stringify(quickCheck) !== JSON.stringify([{ quick_check: 'ok' }])) throw new Error(`upgraded workerd D1 failed quick_check: ${JSON.stringify(quickCheck)}`);
       await probeForeignKeyAssertion(databaseFile, workerdSql);
       assertUpgradeState(databaseFile, upgrade.version, upgrade.expected, upgrade.expectedRows);
-      let detectedDroppedStatement = false;
-      try { await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', upgrade.mutatedConfig, '--persist-to', upgrade.mutatedPersist]); }
-      catch (error) {
-        if (!isLocalMigrationSqlFailure(error)) throw error;
-        detectedDroppedStatement = true;
-      }
-      if (!detectedDroppedStatement) {
-        try {
-          assertUpgradeState(localD1File(upgrade.mutatedPersist), upgrade.version, upgrade.expected, upgrade.expectedRows);
-        } catch (error) {
-          if (!(error as Error).message.includes('schema objects differ') && !(error as Error).message.includes('rows differ')) throw error;
-          detectedDroppedStatement = true;
-        }
-      }
-      if (!detectedDroppedStatement) throw new Error('dropped latest migration statement escaped the D1 upgrade gate');
+      await assertMigrationMutationDetected(
+        async () => { await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', upgrade.mutatedConfig, '--persist-to', upgrade.mutatedPersist]); },
+        () => assertUpgradeState(localD1File(upgrade.mutatedPersist), upgrade.version, upgrade.expected, upgrade.expectedRows),
+      );
     }
 
     const mint = Bun.spawn(['bun', path.join(SERVER_DIR, 'scripts', 'mint-local.ts'), MEMBER_ID, MACHINE_ID, '--rotating', '--print-token'], { cwd: root, stdout: 'pipe', stderr: 'pipe' });

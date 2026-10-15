@@ -10,6 +10,8 @@ export function schemaObjects(db: Database): Array<{ type: string; name: string;
 
 const sqlIdentifier = (name: string): string => `"${name.replaceAll('"', '""')}"`;
 
+export class UpgradeStateMismatchError extends Error {}
+
 export function expectedSchema(files: ReturnType<typeof renderMigrationFiles>): ReturnType<typeof schemaObjects> {
   const db = new Database(':memory:');
   try {
@@ -31,23 +33,23 @@ export function assertUpgradeState(databaseFile: string, version: number, expect
   const db = new Database(databaseFile);
   try {
     const actualVersion = Number((db.query("SELECT value FROM schema_meta WHERE key = 'version'").get() as { value: string }).value);
-    if (actualVersion !== version) throw new Error(`D1 upgrade fixture expected schema ${version}, got ${actualVersion}`);
+    if (actualVersion !== version) throw new UpgradeStateMismatchError(`D1 upgrade fixture expected schema ${version}, got ${actualVersion}`);
     const applied = Number((db.query('SELECT COUNT(*) AS count FROM d1_migrations').get() as { count: number }).count);
-    if (applied !== version) throw new Error(`D1 upgrade fixture expected ${version} applied Wrangler migrations, got ${applied}`);
+    if (applied !== version) throw new UpgradeStateMismatchError(`D1 upgrade fixture expected ${version} applied Wrangler migrations, got ${applied}`);
     const actual = schemaObjects(db);
     if (JSON.stringify(actual) !== JSON.stringify(expected)) {
       const first = actual.findIndex((item, index) => JSON.stringify(item) !== JSON.stringify(expected[index]));
-      throw new Error(`D1 upgrade fixture schema objects differ at version ${version}: ${JSON.stringify({ actual: actual[first], expected: expected[first], actualCount: actual.length, expectedCount: expected.length })}`);
+      throw new UpgradeStateMismatchError(`D1 upgrade fixture schema objects differ at version ${version}: ${JSON.stringify({ actual: actual[first], expected: expected[first], actualCount: actual.length, expectedCount: expected.length })}`);
     }
     const foreignKeys = db.query('PRAGMA foreign_key_check').all();
-    if (foreignKeys.length !== 0) throw new Error(`D1 upgrade fixture has FK violations: ${JSON.stringify(foreignKeys)}`);
+    if (foreignKeys.length !== 0) throw new UpgradeStateMismatchError(`D1 upgrade fixture has FK violations: ${JSON.stringify(foreignKeys)}`);
     for (const [table, rows] of Object.entries(expectedRows)) {
       const actualRows = tableRows(db, [table])[table];
-      if (actualRows !== rows) throw new Error(`D1 upgrade fixture rows differ in ${table}: ${JSON.stringify({ actual: actualRows, expected: rows })}`);
+      if (actualRows !== rows) throw new UpgradeStateMismatchError(`D1 upgrade fixture rows differ in ${table}: ${JSON.stringify({ actual: actualRows, expected: rows })}`);
     }
     // D1 refuses integrity_check; the closed local D1 file permits the full SQLite check.
     const integrity = db.query('PRAGMA integrity_check').all();
-    if (JSON.stringify(integrity) !== JSON.stringify([{ integrity_check: 'ok' }])) throw new Error(`D1 upgrade fixture failed integrity_check: ${JSON.stringify(integrity)}`);
+    if (JSON.stringify(integrity) !== JSON.stringify([{ integrity_check: 'ok' }])) throw new UpgradeStateMismatchError(`D1 upgrade fixture failed integrity_check: ${JSON.stringify(integrity)}`);
   } finally { db.close(); }
 }
 
@@ -103,6 +105,22 @@ export function referencedExistingTables(db: Database, statements: readonly stri
 export function isLocalMigrationSqlFailure(error: unknown): boolean {
   if (!(error instanceof Error) || !/^wrangler d1 migrations apply exited [1-9]\d*:/m.test(error.message)) return false;
   return /\b(?:SQLITE_ERROR|SQLITE_CONSTRAINT|no such (?:table|column|index)|FOREIGN KEY constraint failed|CHECK constraint failed|syntax error)\b/i.test(error.message);
+}
+
+export async function assertMigrationMutationDetected(apply: () => Promise<void>, verify: () => void): Promise<void> {
+  let migrationError: unknown;
+  try { await apply(); }
+  catch (error) {
+    if (!isLocalMigrationSqlFailure(error)) throw error;
+    migrationError = error;
+  }
+  try { verify(); }
+  catch (error) {
+    if (error instanceof UpgradeStateMismatchError) return;
+    throw error;
+  }
+  if (migrationError !== undefined) throw migrationError;
+  throw new Error('dropped latest migration statement escaped the D1 upgrade gate');
 }
 
 export function seedReferencedTables(db: Database, statements: readonly string[]): string[] {
