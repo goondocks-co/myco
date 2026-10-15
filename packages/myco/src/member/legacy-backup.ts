@@ -24,6 +24,15 @@ export interface VaultContent {
   digest: string;
 }
 
+/** Any import content, including rows with no Project identity. Each table read stops at its first row. */
+export function legacyVaultHasContent(file: string): boolean {
+  const db = new Database(file, { readonly: true });
+  try {
+    const present = new Set(db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(row => row.name));
+    return BACKUP_TABLES.some(table => present.has(table) && db.query(`SELECT 1 FROM ${table} LIMIT 1`).get() !== null);
+  } finally { db.close(); }
+}
+
 /**
  * Row counts and a digest of every checked table the database has. Each row
  * is hashed on its own and the table's row hashes are sorted before they are

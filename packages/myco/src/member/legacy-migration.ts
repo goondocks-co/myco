@@ -1,7 +1,7 @@
 import { isLegacyMycoHook } from './legacy-verdict.js';
 /** The local cutover receipt capability. */
 import path from 'node:path';
-import { readVaultContent, type TableCounts } from '@myco/member/legacy-backup.js';
+import { legacyVaultHasContent, readVaultContent, type TableCounts } from '@myco/member/legacy-backup.js';
 import { LegacyMigrationUnreadable, legacyRealpath, legacySources, legacyVaultProjectIds, legacyProjectNames, type LegacySources } from '@myco/member/legacy-sources.js';
 export { LegacyMigrationUnreadable } from '@myco/member/legacy-sources.js';
 import { ensureMemberDir, memberRoot, readPrivateJson, writePrivateFileAtomic } from '@myco/member/store.js';
@@ -52,7 +52,7 @@ export type LegacyMigrationState = (
   | { state: 'unavailable'; file: string; detail: string }
   | { state: 'changed'; warning: string }
   | { state: 'none' | 'unmoved' | 'needs-destination' | 'handover-pending' | 'partial' | 'moved' }
-) & { legacyOwnsCapture?: true; confirmation?: LegacyConfirmation; confirmationProjects?: { name: string; confirmation: LegacyConfirmation }[]; ignoredLineage?: number; terminalProjects?: { name: string; state: 'archived' | 'deleted' }[] };
+) & { legacyOwnsCapture?: true; confirmation?: LegacyConfirmation; confirmationProjects?: { name: string; confirmation: LegacyConfirmation; receipted?: true }[]; ignoredLineage?: number; terminalProjects?: { name: string; state: 'archived' | 'deleted' }[] };
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -185,7 +185,8 @@ export function legacyMigrationState(home: string, opts: { homeDir?: string; hom
     const held = sources.vaults.map(vault => {
       const entries = migrations.filter(entry => entry.file === vault.path);
       return { vault, entries, selected: entries.find(entry => sameLegacyStamp(vault, entry.receipt)) ?? entries[0] };
-    });
+    }).filter(({ vault, entries }) => entries.length > 0 || legacyVaultHasContent(vault.path));
+    if (held.length === 0 && sources.units.length === 0 && sources.registrations.length === 0) return { state: 'none' };
     if (held.some(({ vault, entries }) => entries.length === 0 && !states.some((s) => Object.keys(s.backups).some((file) => legacyRealpath(file) === vault.path)))) return observed({ state: 'unmoved' });
     let changed = false;
     let needsDestination = false;

@@ -16,10 +16,11 @@ import { statusHome, STATUS_URL, STATUS_NOW } from './fixtures/status-home.js';
 import { Database } from 'bun:sqlite';
 import { provisionGlobally } from '@myco/cli/member.js';
 import { homeReport } from '@myco/cli/member-doctor.js';
-import { legacyMigrationState } from '@myco/member/legacy-migration.js';
+import { legacyMigrationState, type LegacyMigrationState } from '@myco/member/legacy-migration.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { resolveManagedBinaryPath } from '@myco/symbionts/installer.js';
 import { readVaultContent } from '@myco/member/legacy-backup.js';
+import { legacyCaptureGuidance } from '@myco/cli/legacy-capture.js';
 
 let scratch: string;
 let fixture: ReturnType<typeof statusHome>;
@@ -330,10 +331,36 @@ for (const backupOnly of [false, true]) it(`reports installed 2.0 capture separa
     expect(fs.readFileSync(vault)).toEqual(bytes);
   } finally { restore(); }
 });
+it('explains destination selection without claiming unconfirmed earlier moves', () => {
+  for (const confirmation of [undefined, 'pending', 'sign-in-required'] as const) {
+    const guidance = legacyCaptureGuidance({ state: 'needs-destination', confirmation });
+    expect(guidance.hint).toBe('Some Myco 1.4 projects need a destination; run myco setup --cutover to preview the handover.');
+    expect(guidance.hint).not.toContain('Earlier moves');
+    expect(renderSetupStatus([{ id: 'legacy', scope: fixture.home, state: 'incomplete', detail: 'needs-destination', legacyConfirmation: confirmation }])).toEqual([
+      `1.4 migration: ${guidance.hint}`,
+    ]);
+  }
+  const confirmationProjects = [{ name: 'retained', confirmation: 'pending', receipted: true }] as const;
+  expect(legacyCaptureGuidance({ state: 'needs-destination', confirmation: 'pending', confirmationProjects: [...confirmationProjects] }).hint).toContain('Earlier moves are unconfirmed');
+  expect(renderSetupStatus([{ id: 'legacy', scope: fixture.home, state: 'incomplete', detail: 'needs-destination', legacyConfirmation: 'pending', legacyConfirmationProjects: [...confirmationProjects] }]).join('\n')).toContain('Earlier moves are unconfirmed');
+});
+
 it('explains destination selection when legacy still owns capture', () => {
   expect(renderSetupStatus([{ id: 'legacy', scope: fixture.home, state: 'incomplete', detail: 'needs-destination Agent setup deferred until cutover.' }])).toEqual([
     '1.4 migration: Some Myco 1.4 projects need a destination; run myco setup --cutover to preview the handover.',
   ]);
+});
+
+it('names only receipted projects in an earlier-move destination hint', () => {
+  const confirmationProjects = [
+    { name: 'moved-project', confirmation: 'ambiguous', receipted: true },
+    { name: 'never-moved', confirmation: 'ambiguous' },
+  ] as const;
+  const migration = { state: 'needs-destination', confirmation: 'ambiguous', confirmationProjects: [...confirmationProjects] } satisfies LegacyMigrationState;
+  const hint = legacyCaptureGuidance(migration).hint!;
+  expect(hint).toContain('earlier move for moved-project');
+  expect(hint).not.toContain('never-moved');
+  expect(renderSetupStatus([{ id: 'legacy', scope: fixture.home, state: 'incomplete', detail: 'needs-destination', legacyConfirmation: migration.confirmation, legacyConfirmationProjects: migration.confirmationProjects }])).toEqual([`1.4 migration: ${hint}`]);
 });
 
 it('keeps a runner-only journey independent of absent member hooks', async () => {

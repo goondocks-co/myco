@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { writeRetainedLegacyVault } from '../helpers/legacy-migration-fixture.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.js';
 import { runMemberVerb } from '@myco/cli/member-dispatch.js';
@@ -373,7 +374,7 @@ describe('a joined member with no 1.4 vault', () => {
     expect(help(checkout)).toBe(MEMBER_USAGE);
     fs.mkdirSync(path.join(mycoHome, 'groves'));
     expect(help(checkout)).toBe(MEMBER_USAGE);
-    fs.writeFileSync(path.join(mycoHome, 'myco.db'), 'fixture');
+    writeRetainedLegacyVault(path.join(mycoHome, 'myco.db'));
     expect(help(checkout).startsWith(MEMBER_USAGE)).toBe(true);
     expect(help(checkout)).toContain('myco cutover --dry-run');
     join(rig);
