@@ -38,6 +38,24 @@ function commit(dir: string, name = 'a.txt'): void {
   git(dir, ...IDENTITY, 'commit', '-q', '-m', name);
 }
 
+function submodule(superproject: string, name: string): string {
+  const gitDir = path.join(superproject, '.git', 'modules', name);
+  fs.mkdirSync(path.dirname(gitDir), { recursive: true });
+  const top = repo(path.join(superproject, name), ['--separate-git-dir', gitDir]);
+  fs.writeFileSync(path.join(top, '.git'), `gitdir: ${path.relative(top, gitDir).replaceAll('\\', '/')}\n`);
+  git(top, 'config', 'core.worktree', path.relative(gitDir, top).replaceAll('\\', '/'));
+  commit(top);
+  const sha = git(top, 'rev-parse', 'HEAD');
+  git(superproject, 'config', '-f', '.gitmodules', `submodule.${name}.path`, name);
+  git(superproject, 'config', '-f', '.gitmodules', `submodule.${name}.url`, `./${name}`);
+  git(superproject, 'config', `submodule.${name}.url`, top);
+  git(superproject, 'add', '.gitmodules');
+  git(superproject, 'update-index', '--add', '--cacheinfo', `160000,${sha},${name}`);
+  expect(git(superproject, 'submodule', 'status', '--', name)).toBe(`${sha} ${name} (heads/main)`);
+  expect(canonicalPath(git(top, 'rev-parse', '--show-toplevel'))).toBe(canonicalPath(top));
+  return top;
+}
+
 /** What git says from `cwd`, in the shapes the member uses. */
 function gitSays(cwd: string) {
   const common = tryGit(cwd, 'rev-parse', '--git-common-dir');
@@ -120,10 +138,8 @@ const LAYOUTS: Array<{ name: string; make: (dir: string) => string; fromFiles: b
   {
     name: 'a submodule', fromFiles: false,
     make: (d) => {
-      const lib = repo(path.join(d, 'lib')); commit(lib);
       const r = repo(path.join(d, 'r')); commit(r);
-      git(r, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'vendor/lib');
-      return path.join(r, 'vendor', 'lib');
+      return submodule(r, 'vendor/lib');
     },
   },
   { name: 'a config that includes another', make: (d) => { const r = repo(path.join(d, 'r')); commit(r); git(r, 'config', 'include.path', 'absent.gitconfig'); return r; }, fromFiles: false },
@@ -286,11 +302,9 @@ describe('file-only repository attribution on Windows', () => {
 describe('member repository identity', () => {
   it('keeps sibling submodules and a separate git directory as distinct work trees', () => {
     const d = base();
-    const lib = repo(path.join(d, 'lib')); commit(lib);
     const superproject = repo(path.join(d, 'super')); commit(superproject);
     for (const name of ['sub', 'sub2']) {
-      git(superproject, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, name);
-      const top = path.join(superproject, name);
+      const top = submodule(superproject, name);
       fs.mkdirSync(path.join(top, 'src'));
       expect(resolveRepositoryRoot(path.join(top, 'src'), [], {})).toBe(top);
       expect(resolveMemberProjectRoot(path.join(top, 'src'))).toBe(top);
