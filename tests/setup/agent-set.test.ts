@@ -11,7 +11,6 @@ import { observeSetup, observeSetupStatus } from '@myco/setup/observe.js';
 import { run as setup } from '@myco/cli/setup.js';
 import { recordProvision, readProvisionRecord, provisionRecordPath } from '@myco/symbionts/member-provision-record.js';
 import { writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
-import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { getPluginVersion } from '@myco/version.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { ownerDeployment, ACCOUNT } from './fixtures/owner-deployment.js';
@@ -50,8 +49,9 @@ it('keeps chosen current agents complete and offers each installed agent never s
   const facts = await status();
   expect(facts.find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'complete', detail: 'current' });
   const lines = renderSetupStatus(facts);
-  for (const [id, name] of [['codex', 'Codex'], ['windsurf', 'Windsurf'], ['copilot', 'GitHub Copilot']]) {
-    expect(lines).toContain(`${name} is installed; Myco doesn't capture it yet. Run myco member provision ${id} to add it.`);
+  expect(lines).toContain("Codex is installed; Myco doesn't capture it yet. Run myco member provision codex to add it.");
+  for (const name of ['Windsurf', 'GitHub Copilot']) {
+    expect(lines).toContain(`${name} is installed; Myco doesn't capture it yet. Capture support is not available in this build.`);
   }
   expect(lines.join('\n')).not.toContain('Out of date');
   expect(refresh()).toBe(true);
@@ -79,18 +79,29 @@ it('an empty Windsurf hooks file is no Myco registration and is never enrolled b
   expect(member.managedMemberHarnesses(home, SERVER)).toEqual(['claude-code', 'codex']);
   const facts = await status();
   expect(facts.find(fact => fact.id === 'machine.agents')?.state).toBe('complete');
-  expect(renderSetupStatus(facts)).toContain("Windsurf is installed; Myco doesn't capture it yet. Run myco member provision windsurf to add it.");
+  expect(renderSetupStatus(facts)).toContain("Windsurf is installed; Myco doesn't capture it yet. Capture support is not available in this build.");
   expect(refresh()).toBe(true);
   expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
   expect(fs.readFileSync(file, 'utf8')).toBe('{}');
 });
 
-it('refresh recovers owned registrations when the whole provision record is missing', () => {
+for (const repair of ['refresh', 'keep-current'] as const) it(`${repair} recovers owned registrations without a provision record or Default Deployment`, async () => {
   provision('claude-code');
-  recordDefaultDeployment(SERVER, { mycoHome: home });
   fs.unlinkSync(provisionRecordPath(home));
-  expect(refresh()).toBe(true);
+  expect(setupChecks(home)).toContainEqual(expect.objectContaining({ status: 'ok', detail: expect.stringContaining('claude-code set up by this build') }));
+  expect((await status()).find(fact => fact.id === 'machine.agents')?.state).toBe('complete');
+  expect(readProvisionRecord(home)).toBeNull();
+  if (repair === 'refresh') expect(refresh()).toBe(true);
+  else expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code']);
   expect(readProvisionRecord(home)?.agents).toEqual(['claude-code']);
+});
+
+it('refresh with --server recovers an owned registration among several joined Deployments', () => {
+  provision('claude-code');
+  fs.unlinkSync(provisionRecordPath(home));
+  writeDeploymentMembership({ serverUrl: 'https://second.example', token: 'B'.repeat(43), machineId: 'second', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+  expect(member.runProvision(['--refresh', '--server', SERVER], { mycoHome: home, cwd: scratch, stdout: () => {} })).toBe(true);
+  expect(readProvisionRecord(home)).toMatchObject({ serverUrl: SERVER, agents: ['claude-code'] });
 });
 
 for (const repair of ['refresh', 'provision', 'keep-current'] as const) it(`${repair} records surviving current Codex capture without choosing Copilot`, async () => {

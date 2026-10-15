@@ -1,4 +1,4 @@
-import { managedMemberHarnesses, memberHarnessStatus } from '@myco/cli/member.js';
+import { managedMemberHarnesses, memberProvisionTarget, memberHarnessStatus } from '@myco/cli/member.js';
 /** Home diagnostics and the current repository's Deployment checks. No repairs are performed. */
 import { terminalText } from '@myco/utils/terminal-text.js';
 import { readUpdateNotice } from '../upgrade/check-cache.js';
@@ -122,15 +122,16 @@ function setupRefusalWords(agent: string, error: unknown): string {
 /** The build and registration recorded by agent provisioning, with current wiring checked. */
 export function setupChecks(mycoHome: string, version: string = getPluginVersion()): Array<DoctorCheck & { toolsDeployment?: string }> {
   const record = readProvisionRecord(mycoHome);
-  if (record === null) return [row('Setup', 'warn', 'nothing records which agents Myco set up on this machine. Run `myco member provision`.')];
-  const agents = managedMemberHarnesses(mycoHome, record.serverUrl);
+  const serverUrl = memberProvisionTarget(mycoHome);
+  const agents = serverUrl === undefined ? [] : managedMemberHarnesses(mycoHome, serverUrl);
+  if (serverUrl === undefined || (record === null && agents.length === 0)) return [row('Setup', 'warn', 'nothing records which agents Myco set up on this machine. Run `myco member provision`.')];
   const missing: string[] = [];
   const held: Array<DoctorCheck & { toolsDeployment: string }> = [];
   const heldAgents = new Set<string>();
   const issues: DoctorCheck[] = [];
   for (const manifest of loadManifests().filter((m) => agents.includes(m.name))) {
     try {
-      const status = memberHarnessStatus(manifest.name, mycoHome, record.serverUrl);
+      const status = memberHarnessStatus(manifest.name, mycoHome, serverUrl);
       if (!status.current) issues.push(row('Setup', 'warn', status.stale?.join('\n') ?? `${manifest.displayName}'s capture configuration is missing or stale. The next Myco helper pass repairs it.`));
       if (status.toolsDeployment !== undefined) {
         heldAgents.add(manifest.name);
@@ -145,11 +146,11 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
     if (absent.length > 0) missing.push(`${manifest.displayName} (${absent.join(', ')})`);
   }
   if (missing.length > 0) issues.push(row('Setup', 'warn', `skills are missing for ${missing.join('; ')}. The next Myco helper pass updates them.`));
-  if (record.version !== version) issues.unshift(row('Setup', 'warn', `your agents were set up by Myco ${record.version}; this is ${version}. The next Myco helper pass updates them.`));
+  if (record !== null && record.version !== version) issues.unshift(row('Setup', 'warn', `your agents were set up by Myco ${record.version}; this is ${version}. The next Myco helper pass updates them.`));
   if (issues.length > 0) return [...held, ...issues];
   if (held.length === agents.length && held.length > 0) return held;
   const current = agents.filter((agent) => !heldAgents.has(agent));
-  return [...held, row('Setup', 'ok', `${current.length === 0 ? 'no agent' : current.join(', ')} set up by this build for ${record.serverUrl}.`)];
+  return [...held, row('Setup', 'ok', `${current.length === 0 ? 'no agent' : current.join(', ')} set up by this build for ${serverUrl}.`)];
 }
 
 /** The Deployment and capture checks scoped to one repository. */

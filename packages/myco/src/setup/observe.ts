@@ -140,12 +140,15 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
       if (record === null && answers.role !== 'join' && answers.role !== 'create') return;
       const hooksUrl = deps.status && record !== null ? deploymentUrl(record.serverUrl) : url;
       if (hooksUrl === undefined) return;
-      const same = record !== null && deploymentUrl(record.serverUrl) === hooksUrl;
+      const same = record === null || deploymentUrl(record.serverUrl) === hooksUrl;
       const detected = (deps.agents ?? (() => detectMachineInstalledSymbionts().map((manifest) => manifest.name)))();
       const agents = deps.status ? managedMemberHarnesses(home, hooksUrl, deps) : detected;
       const offers = deps.status ? detected.filter(agent => !agents.includes(agent)).map(agent => {
-        const name = loadManifests().find(manifest => manifest.name === agent)?.displayName ?? agent;
-        return `${name} is installed; Myco doesn't capture it yet. Run myco member provision ${agent} to add it.`;
+        const manifest = loadManifests().find(manifest => manifest.name === agent);
+        const name = manifest?.displayName ?? agent;
+        return manifest?.registration?.memberHooksTarget
+          ? `${name} is installed; Myco doesn't capture it yet. Run myco member provision ${agent} to add it.`
+          : `${name} is installed; Myco doesn't capture it yet. Capture support is not available in this build.`;
       }) : [];
       const agentFact = (state: Observation['state'], detail: string): Observation => {
         const fact = add('machine.agents', state, detail);
@@ -154,13 +157,13 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
       };
       const statuses = agents.map(agent => memberHarnessStatus(agent, home, hooksUrl, deps));
       const installed = agents.length > 0 && statuses.every(status => status.current);
-      if (!installed && ((answers.noAgents && record === null) || (same && record.agents.length === 0 && (!deps.status || agents.length === 0)))) { agentFact('complete', 'declined'); return; }
+      if (!installed && ((answers.noAgents && record === null) || (same && record?.agents.length === 0 && (!deps.status || agents.length === 0)))) { agentFact('complete', 'declined'); return; }
       if (agents.length === 0) { agentFact(detected.length > 0 ? 'absent' : 'complete', detected.length > 0 ? 'stale' : 'none-installed'); return; }
-      const current = same && record.version === getPluginVersion()
+      const current = same && (record === null || record.version === getPluginVersion())
         && installed;
       const fact = agentFact(current ? 'complete' : record === null ? 'absent' : 'incomplete', current ? 'current' : 'stale');
       if (installed) fact.memberCapture = true;
-      if (same && record.version === getPluginVersion()
+      if (same && (record === null || record.version === getPluginVersion())
         && statuses.every(status => status.current || status.currentExceptStaleTools) && !installed) {
         fact.memberCapture = true;
         fact.staleTools = statuses.flatMap(status => status.stale ?? []);

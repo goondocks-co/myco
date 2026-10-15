@@ -12,7 +12,7 @@ import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { isBinaryOnPath, loadManifests } from '@myco/symbionts/detect.js';
 import { readProvisionRecord, recordProvision, settleHookTrust, type ProvisionRecord } from '@myco/symbionts/member-provision-record.js';
-import { provisionGlobally, managedMemberHarnesses, memberHarnessStatus, provisionBackup } from '@myco/cli/member.js';
+import { provisionGlobally, managedMemberHarnesses, memberProvisionTarget, memberHarnessStatus, provisionBackup } from '@myco/cli/member.js';
 import type { ProvisionedHarnessFact } from '@goondocks/myco-shared/harness-health';
 import { deadlineBudget, canStartRequest, subRequestBudget } from '@myco/member/budget.js';
 import { readDeploymentFeaturesStrict } from '@myco/member/context-cache.js';
@@ -58,13 +58,18 @@ function rememberState(mycoHome: string, result: KeepCurrentResult): void {
 }
 
 /** Repair the recorded harnesses through provisioning, serialized across this home's project helpers. */
-export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: string) => boolean; packageRoot?: string } = {}): KeepCurrentResult | null {
+export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: string) => boolean; packageRoot?: string; serverUrl?: string } = {}): KeepCurrentResult | null {
   let record = readProvisionRecord(mycoHome);
-  if (record === null) return null;
+  const serverUrl = memberProvisionTarget(mycoHome, deps.serverUrl);
+  if (serverUrl === undefined) return null;
   const acquired = LifecycleLock.acquire(path.join(mycoHome, 'member', REPAIR_LOCK), { command: 'myco member keep-current' });
   if (!acquired.acquired) return null;
   try {
-    const discovered = managedMemberHarnesses(mycoHome, record.serverUrl, deps);
+    const discovered = managedMemberHarnesses(mycoHome, serverUrl, deps);
+    if (record === null) {
+      if (discovered.length === 0) return null;
+      record = recordProvision(mycoHome, { serverUrl, agents: discovered, version: getPluginVersion() });
+    }
     if (discovered.some((id) => !record!.agents.includes(id))) record = recordProvision(mycoHome, { version: record.version, serverUrl: record.serverUrl, agents: discovered });
     const result: KeepCurrentResult = { serverUrl: record.serverUrl, harnesses: [], ready: [] };
     const manifests = loadManifests();

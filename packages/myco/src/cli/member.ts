@@ -49,7 +49,7 @@ import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
 import { CutoverBackup } from '../member/cutover-backup.js';
 import { linkMemberSkills, missingMemberSkills, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
-import { readProvisionRecord, recordProvision, forgetProvision, holdHookTrust } from '../symbionts/member-provision-record.js';
+import { readProvisionRecord, provisionRecordPath, recordProvision, forgetProvision, holdHookTrust } from '../symbionts/member-provision-record.js';
 import { REPAIR_LOCK, keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
 import { getPluginVersion } from '../version.js';
 import { postRoute } from './deployment-reader.js';
@@ -479,6 +479,17 @@ export function managedMemberHarnesses(mycoHome: string, serverUrl: string, opts
   return [...new Set([...recorded, ...registeredMemberHarnesses(mycoHome, serverUrl, { ...opts, exclude: recorded })])].sort();
 }
 
+/** The recorded destination, or an explicitly selected or unambiguous joined Deployment. */
+export function memberProvisionTarget(mycoHome: string, serverUrl?: string): string | undefined {
+  const record = readProvisionRecord(mycoHome);
+  if (record !== null) return record.serverUrl;
+  if (fs.existsSync(provisionRecordPath(mycoHome))) throw new Error(`${provisionRecordPath(mycoHome)}: cannot read provision record`);
+  const selected = selectedDeploymentMembership(mycoHome, serverUrl);
+  if (selected !== null) return selected.serverUrl;
+  const memberships = serverUrl === undefined ? listDeploymentMemberships(mycoHome) : [];
+  return memberships.length === 1 ? memberships[0].serverUrl : undefined;
+}
+
 function recordManagedMemberHarnesses(mycoHome: string, opts: { packageRoot?: string }): void {
   const record = readProvisionRecord(mycoHome);
   if (record !== null) recordProvision(mycoHome, { version: record.version, serverUrl: record.serverUrl, agents: managedMemberHarnesses(mycoHome, record.serverUrl, opts) });
@@ -711,16 +722,15 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     // Refresh recorded harnesses and existing owned registrations for their recorded Deployment.
     const record = readProvisionRecord(mycoHome);
     if (record === null) {
-      const membership = selectedDeploymentMembership(mycoHome);
-      const agents = membership === null ? [] : managedMemberHarnesses(mycoHome, membership.serverUrl, deps);
-      if (membership !== null && agents.length > 0) recordProvision(mycoHome, { serverUrl: membership.serverUrl, agents, version: getPluginVersion() });
-      else {
+      const serverUrl = memberProvisionTarget(mycoHome, serverArg);
+      const agents = serverUrl === undefined ? [] : managedMemberHarnesses(mycoHome, serverUrl, deps);
+      if (agents.length === 0) {
         out('Myco has not set up your agents on this machine; run `myco member provision` to set them up.');
-        if (membership !== null) recordNoAgents(mycoHome, membership.serverUrl);
+        if (serverUrl !== undefined) recordNoAgents(mycoHome, serverUrl);
         return true;
       }
     }
-    const repaired = keepCurrent(mycoHome, { packageRoot: deps.packageRoot });
+    const repaired = keepCurrent(mycoHome, { packageRoot: deps.packageRoot, serverUrl: serverArg });
     refreshed?.(repaired, mycoHome);
     if (repaired !== null) {
       if (repaired.harnesses.length === 0) out('No agent is set up for Myco on this machine; `myco member provision` sets them up.');
