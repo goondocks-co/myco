@@ -6,7 +6,7 @@ import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { retiredHookSettings } from '@myco/symbionts/retired-hook-settings.js';
 import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/member/subsystem-claim.js';
 import { SymbiontManifestSchema } from '@myco/symbionts/manifest-schema.js';
-import { MemberProvisionConflictError, SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { MemberFileReadRefusal, MemberProvisionConflictError, SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { provisionGlobally, provisionBackup, provisionAgents, runProvision } from '@myco/cli/member.js';
 import { keepCurrent } from '@myco/cli/member-keep-current.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
@@ -77,6 +77,25 @@ it('propagates unexpected strict-reader errors instead of converting them to fil
   try { expect(() => member.assertMemberFilesReadable()).toThrow(TypeError); }
   finally { reader.mockRestore(); }
   expect(fs.readFileSync(file, 'utf8')).toBe(raw);
+});
+
+it.each(['claude-code', 'opencode'])('propagates programmer read errors with Node codes for %s', name => {
+  install(name);
+  const member = new SymbiontInstaller(manifest(name), home, resolvePackageRoot(), false, memberHome).withoutProjectRoot();
+  const failure = Object.assign(new TypeError('unexpected read argument'), { code: 'ERR_INVALID_ARG_TYPE' });
+  const read = spyOn(fs, 'readFileSync').mockImplementation(() => { throw failure; });
+  try { expect(() => member.assertMemberFilesReadable()).toThrow(TypeError); }
+  finally { read.mockRestore(); }
+});
+
+it('names an actual filesystem read failure as an isolatable file refusal', () => {
+  install('claude-code');
+  const member = new SymbiontInstaller(manifest('claude-code'), home, resolvePackageRoot(), false, memberHome).withoutProjectRoot();
+  const file = member.memberGlobalTargets().mcp[0];
+  fs.unlinkSync(file);
+  fs.mkdirSync(file);
+  expect(() => member.assertMemberFilesReadable()).toThrow(MemberFileReadRefusal);
+  expect(() => member.assertMemberFilesReadable()).toThrow(file);
 });
 
 it.each(['cursor', 'copilot'])('provisioning %s writes hooks without terminal approval settings', name => {

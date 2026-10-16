@@ -23,8 +23,8 @@ export interface ProvisionRecord {
   binaries?: Record<string, string>;
   /** Hook trust actions waiting to reach the Deployment. */
   pendingTrust?: Record<string, { action: string; at: number }>;
-  /** Agents whose configuration still needs logout reconciliation, by leaving Deployment. */
-  pendingLogout?: Record<string, string>;
+  /** Each agent's Deployments awaiting configuration logout reconciliation. */
+  pendingLogout?: Record<string, string[]>;
   at: number;
 }
 
@@ -55,7 +55,7 @@ export function readProvisionRecord(mycoHome: string): ProvisionRecord | null {
     const pendingTrust = value.pendingTrust !== null && typeof value.pendingTrust === 'object' && !Array.isArray(value.pendingTrust)
       ? Object.fromEntries(Object.entries(value.pendingTrust).filter(([, trust]) => trust !== null && typeof trust === 'object' && typeof trust.action === 'string' && Number.isFinite(trust.at))) : undefined;
     const pendingLogout = value.pendingLogout !== null && typeof value.pendingLogout === 'object' && !Array.isArray(value.pendingLogout)
-      ? Object.fromEntries(Object.entries(value.pendingLogout).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : undefined;
+      ? Object.fromEntries(Object.entries(value.pendingLogout).filter((entry): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(url => typeof url === 'string'))) : undefined;
     return { version: value.version, serverUrl: value.serverUrl, agents: value.agents.filter((a): a is string => typeof a === 'string'), ...(binaries === undefined ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined ? {} : { pendingLogout }), at: Number(value.at ?? 0) };
   } catch {
     return null;
@@ -114,7 +114,7 @@ export function settleHookTrust(mycoHome: string, reported: ProvisionRecord['pen
 export function reconcileProvisionAgents(mycoHome: string, provision: Pick<ProvisionRecord, 'version' | 'serverUrl'> & { discovered: readonly string[] }, uncapturable: ReadonlySet<string>): ProvisionRecord {
   return withProvisionLock(mycoHome, () => {
     const before = readProvisionRecordStrict(mycoHome);
-    const agents = [...new Set([...(before?.agents ?? []).filter(agent => !uncapturable.has(agent)), ...provision.discovered])].sort();
+    const agents = [...new Set([...(before?.agents ?? []).filter(agent => !uncapturable.has(agent) || (before?.pendingLogout?.[agent]?.length ?? 0) > 0), ...provision.discovered])].sort();
     return writeProvisionRecord(mycoHome, {
       agents, version: before?.version ?? provision.version, serverUrl: before?.serverUrl ?? provision.serverUrl,
       ...retainedProvisionMetadata(before, agents),
@@ -138,9 +138,12 @@ export function reconcileProvisionDeployment(mycoHome: string, leavingUrl: strin
     const record = readProvisionRecord(mycoHome);
     if (record === null) return;
     const [held, leaving] = [record.serverUrl, leavingUrl].map((url) => deploymentUrl(normalizeMemberServerAddress(url)?.origin ?? url));
-    const pendingLogout = Object.fromEntries(Object.entries(record.pendingLogout ?? {}).filter(([agent, url]) => url !== leaving || unreconciledAgents.includes(agent)));
-    for (const agent of record.agents) if (unreconciledAgents.includes(agent)) pendingLogout[agent] = leaving;
-    const retrying = Object.values(record.pendingLogout ?? {}).includes(leaving);
+    const pendingLogout: NonNullable<ProvisionRecord['pendingLogout']> = Object.fromEntries(Object.entries(record.pendingLogout ?? {}).flatMap(([agent, urls]) => {
+      const kept = urls.filter(url => url !== leaving || unreconciledAgents.includes(agent));
+      return kept.length === 0 ? [] : [[agent, kept]];
+    }));
+    for (const agent of record.agents) if (unreconciledAgents.includes(agent)) pendingLogout[agent] = [...new Set([...pendingLogout[agent] ?? [], leaving])].sort();
+    const retrying = Object.values(record.pendingLogout ?? {}).some(urls => urls.includes(leaving));
     if (held !== leaving && !(retrying && nextDefault === null)) {
       if (JSON.stringify(record.pendingLogout ?? {}) !== JSON.stringify(pendingLogout)) writeProvisionRecord(mycoHome, { ...record, pendingLogout }, { replace: true });
       return;

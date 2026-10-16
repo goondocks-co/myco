@@ -17,6 +17,7 @@ import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { hookCommands } from '@myco/symbionts/member-hooks.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
+import { recordProvision, reconcileProvisionAgents } from '@myco/symbionts/member-provision-record.js';
 
 const TOKEN = 'A'.repeat(43);
 const SERVER = 'https://myco.example';
@@ -55,6 +56,16 @@ async function provision(args: string[]): Promise<{ out: string[]; err: string[]
 }
 
 describe('myco member provision', () => {
+  it('retains an uncapturable agent pending logout while pruning an ordinary uncapturable choice', () => {
+    const binary = path.join(mycoHome, 'bin', 'myco');
+    recordProvision(mycoHome, { version: 'test', serverUrl: SERVER, agents: ['copilot', 'windsurf'], binaries: { copilot: binary, windsurf: binary }, pendingTrust: { copilot: { action: 'review', at: 1 } }, pendingLogout: { copilot: [SERVER] } });
+    const record = reconcileProvisionAgents(mycoHome, { version: 'test', serverUrl: SERVER, discovered: [] }, new Set(['copilot', 'windsurf']));
+    expect(record.agents).toEqual(['copilot']);
+    expect(record.binaries).toEqual({ copilot: binary });
+    expect(record.pendingTrust).toEqual({ copilot: { action: 'review', at: 1 } });
+    expect(record.pendingLogout).toEqual({ copilot: [SERVER] });
+  });
+
   it('leaves stale Codex tools with a credential marker during uninstall', () => {
     join();
     const file = path.join(agentHome, '.codex', 'config.toml');

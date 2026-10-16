@@ -134,7 +134,7 @@ function firstLine(error: unknown): string {
 }
 
 function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && 'code' in error && typeof error.code === 'string';
+  return error instanceof Error && 'code' in error && typeof error.code === 'string' && !error.code.startsWith('ERR_');
 }
 
 const KNOWN_MCP_SERVERS_KEYS = ['mcpServers', 'servers', 'mcp'] as const;
@@ -551,15 +551,19 @@ export class SymbiontInstaller {
     return [server.command, server.args].some((list) => Array.isArray(list) && list.includes(CREDENTIAL_FLAG));
   }
 
-  private readMcpFile(filePath: string, toml: boolean): Record<string, unknown> | null {
-    let raw: string;
+  private readMemberFile(filePath: string): string | null {
     try {
-      raw = fs.readFileSync(filePath, 'utf-8');
+      return fs.readFileSync(filePath, 'utf-8');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       if (!isFileSystemError(error)) throw error;
       throw new MemberFileReadRefusal(filePath, error);
     }
+  }
+
+  private readMcpFile(filePath: string, toml: boolean): Record<string, unknown> | null {
+    const raw = this.readMemberFile(filePath);
+    if (raw === null) return null;
     try {
       const parsed: unknown = toml ? structuredClone(parseToml(raw)) : JSON.parse(raw);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new SyntaxError('expected a configuration object');
@@ -952,13 +956,8 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     const target = this.resolveAbsoluteTarget('hooks');
     if (target === null || reg?.hooksContainSettings || !reg?.retiredHookSettings) return null;
-    let raw: string;
-    try { raw = fs.readFileSync(target, 'utf8'); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      if (!isFileSystemError(error)) throw error;
-      throw new MemberFileReadRefusal(target, error);
-    }
+    const raw = this.readMemberFile(target);
+    if (raw === null) return null;
     try {
       const { text, conflicts } = retiredHookSettings(raw, reg.retiredHookSettings);
       return { target, text, changed: text !== raw, conflicts };
@@ -1089,14 +1088,13 @@ export class SymbiontInstaller {
     const target = this.resolveAbsoluteTarget('hooks');
     if (target && fs.existsSync(target)) {
       if (this.isMemberPluginFile()) {
-        let content: string;
-        try { content = fs.readFileSync(target, 'utf8'); } catch (error) {
-          throw new MemberFileReadRefusal(target, error);
-        }
-        const verdict = pluginFileVerdict(content, this.legacyHomes, memberHome);
-        const replaceable = verdict === 'stale' || verdict === 'member' || (verdict === 'legacy' && this.legacyHomes.length > 0);
-        if (!replaceable) {
-          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation.`, captureHolderNext(content.includes(MEMBER_PLUGIN_MARKER) || content.includes(CREDENTIAL_FLAG) ? 'member' : verdict));
+        const content = this.readMemberFile(target);
+        if (content !== null) {
+          const verdict = pluginFileVerdict(content, this.legacyHomes, memberHome);
+          const replaceable = verdict === 'stale' || verdict === 'member' || (verdict === 'legacy' && this.legacyHomes.length > 0);
+          if (!replaceable) {
+            throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation.`, captureHolderNext(content.includes(MEMBER_PLUGIN_MARKER) || content.includes(CREDENTIAL_FLAG) ? 'member' : verdict));
+          }
         }
       } else {
         const settings = this.readMcpFile(target, false);
@@ -1195,12 +1193,8 @@ export class SymbiontInstaller {
     this.preflightMemberSettings();
     const hooks = this.resolveAbsoluteTarget('hooks');
     if (hooks !== null) {
-      if (this.isMemberPluginFile()) {
-        try { fs.readFileSync(hooks, 'utf8'); }
-        catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new MemberFileReadRefusal(hooks, error);
-        }
-      } else this.readMcpFile(hooks, false);
+      if (this.isMemberPluginFile()) this.readMemberFile(hooks);
+      else this.readMcpFile(hooks, false);
     }
     for (const target of this.resolveAbsoluteMcpTargets()) this.readMcpFile(throughLink(target.path), this.manifest.registration?.mcpFormat === 'toml');
   }
@@ -1218,7 +1212,8 @@ export class SymbiontInstaller {
     if (targetPath === null || !fs.existsSync(targetPath)) return false;
     if (this.isMemberPluginFile()) {
       // Only the member plugin: a 1.4 project plugin at the same path carries the generic marker alone.
-      const content = fs.readFileSync(targetPath, 'utf-8');
+      const content = this.readMemberFile(targetPath);
+      if (content === null) return false;
       if (pluginFileVerdict(content, this.legacyHomes, this.memberHomeDir()) === 'stale' || !content.includes(MEMBER_PLUGIN_MARKER)) return false;
       fs.rmSync(targetPath, { force: true });
       return true;
