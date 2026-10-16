@@ -41,13 +41,14 @@ export interface LogoutReport {
   survivors: string[];
   keptSpool: { path: string; paths: string[]; sessions: number };
   runner: boolean;
+  unreconciledAgents: Array<{ agent: string; reason: string }>;
 }
 
 export interface LogoutRuntime {
   aliases(serverUrl: string): Promise<readonly string[]>;
   snapshot(aliases: readonly string[]): { agents: string[]; workerUrls: string[]; runner: boolean };
   removeWorkers(urls: readonly string[]): void;
-  reconcile(serverUrl: string, nextDefault: string | null, keepHooks: boolean, bindings: readonly ProjectBinding[], liveBindings: readonly ProjectBinding[]): void;
+  reconcile(serverUrl: string, nextDefault: string | null, keepHooks: boolean, bindings: readonly ProjectBinding[], liveBindings: readonly ProjectBinding[]): LogoutReport['unreconciledAgents'] | void;
 }
 
 export interface LogoutDeps {
@@ -214,14 +215,15 @@ export async function logoutDeployment(input: string, opts: { mode: 'revoke' | '
       }, mycoHome);
       await advance('config');
     }
+    let unreconciledAgents: LogoutReport['unreconciledAgents'] = [];
     if (journal.phase === 'config') {
       withRegistryLock(() => {
         if (readDeploymentMembershipResult(serverUrl, mycoHome).status !== 'missing') throw new Error('This Deployment was signed in again during logout; configuration was left in place');
         const surviving = memberships(mycoHome);
         const next = readDefaultDeployment(mycoHome)?.serverUrl ?? null;
-        deps.runtime.reconcile(serverUrl, next, surviving.length > 0, journal.bindings, logoutBindings(mycoHome));
+        unreconciledAgents = deps.runtime.reconcile(serverUrl, next, surviving.length > 0, journal.bindings, logoutBindings(mycoHome)) ?? [];
       }, mycoHome);
-      await advance('done');
+      if (unreconciledAgents.length === 0) await advance('done');
     }
     return withRegistryLock(() => {
       const connectedRoots = new Set(logoutBindings(mycoHome).map((binding) => canonicalRootIdentity(binding.root)));
@@ -229,9 +231,9 @@ export async function logoutDeployment(input: string, opts: { mode: 'revoke' | '
         .filter((root) => !connectedRoots.has(canonicalRootIdentity(root)) && isLeft(rootKeyFor(root, mycoHome), mycoHome));
       const report: LogoutReport = {
         serverUrl, revoked: journal.revoke === 'revoked', machineId: journal.machineId, leftRoots, defaultUrl: readDefaultDeployment(mycoHome)?.serverUrl ?? null,
-        survivors: memberships(mycoHome).map((m) => m.serverUrl), keptSpool: spoolReport(serverUrl, mycoHome), runner: journal.runner,
+        survivors: memberships(mycoHome).map((m) => m.serverUrl), keptSpool: spoolReport(serverUrl, mycoHome), runner: journal.runner, unreconciledAgents,
       };
-      fs.rmSync(logoutJournalPath(serverUrl, mycoHome), { force: true });
+      if (unreconciledAgents.length === 0) fs.rmSync(logoutJournalPath(serverUrl, mycoHome), { force: true });
       lease.lock.release();
       fs.rmSync(lock, { force: true });
       return report;

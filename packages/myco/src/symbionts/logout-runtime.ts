@@ -7,12 +7,13 @@ import {
   type LogoutDeps, type LogoutReport, type LogoutRuntime,
 } from '../member/logout.js';
 import { loadManifests, resolvePackageRoot } from './detect.js';
-import { SymbiontInstaller } from './installer.js';
+import { MemberFileReconciliation, SymbiontInstaller } from './installer.js';
 import { readProvisionRecord, reconcileProvisionDeployment } from './member-provision-record.js';
 
 export interface LogoutRuntimeDeps extends Omit<LogoutDeps, 'runtime'> {
   packageRoot?: string;
   worker?: WorkerServiceDeps;
+  onReconciliationProblem?: (problem: string) => void;
 }
 
 /** Supply service and agent configuration operations to the member logout capability. */
@@ -46,11 +47,17 @@ export function logoutDeployment(
     },
     reconcile: (serverUrl, nextDefault, keepHooks) => {
       const packageRoot = deps.packageRoot ?? resolvePackageRoot();
+      const reconciliation = new MemberFileReconciliation();
+      const { problems } = reconciliation;
       for (const manifest of loadManifests()) {
         const installer = new SymbiontInstaller(manifest, mycoHome, packageRoot, false, mycoHome).withoutProjectRoot();
-        installer.reconcileDeploymentLogout(serverUrl, nextDefault, keepHooks);
+        reconciliation.attempt(manifest, () => installer.reconcileDeploymentLogout(serverUrl, nextDefault, keepHooks));
       }
-      reconcileProvisionDeployment(mycoHome, serverUrl, nextDefault);
+      reconciliation.finish(
+        () => reconcileProvisionDeployment(mycoHome, serverUrl, nextDefault, [...problems.keys()]),
+        deps.onReconciliationProblem ?? (problem => process.stderr.write(`myco logout: ${problem}\n`)),
+      );
+      return [...problems].map(([agent, reason]) => ({ agent, reason }));
     },
   };
   return logoutMemberDeployment(input, opts, { ...deps, mycoHome, runtime });

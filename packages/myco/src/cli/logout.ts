@@ -31,7 +31,7 @@ export async function run(args: readonly string[], deps: LogoutCliDeps = {}): Pr
   const chosen = deps.mycoHome === undefined ? memberHomeFor(folder) : null;
   const mycoHome = deps.mycoHome ?? chosen!.home;
   try {
-    const report = await logoutDeployment(addresses[0], { mode: args.includes('--local-only') ? 'local-only' : 'revoke' }, { ...deps, mycoHome });
+    const report = await logoutDeployment(addresses[0], { mode: args.includes('--local-only') ? 'local-only' : 'revoke' }, { ...deps, mycoHome, onReconciliationProblem: problem => err(`myco logout: ${problem}`) });
     const pinned = chosen === null ? null : pinnedHomeLine(chosen, folder);
     if (pinned !== null) out(pinned);
     out(`Signed out of ${report.serverUrl}.`);
@@ -43,6 +43,11 @@ export async function run(args: readonly string[], deps: LogoutCliDeps = {}): Pr
     if (report.defaultUrl !== null) out(`New repositories join ${report.defaultUrl}.`);
     else if (report.survivors.length > 1) out('Choose the Deployment new repositories join with `myco login --default <url>`.');
     if (report.runner) out(`This machine is also a runner for ${report.serverUrl}; remove it on the Runners page or \`myco runner uninstall --server ${report.serverUrl}\`.`);
+    for (const { reason } of report.unreconciledAgents) err(`myco logout: ${reason}`);
+    if (report.unreconciledAgents.length > 0) {
+      err(`Agent configuration was not fully reconciled; fix the reported files, then retry \`myco logout ${report.serverUrl}\`.`);
+      return false;
+    }
     return true;
   } catch (error) {
     err(`myco logout: ${error instanceof Error ? error.message : String(error)}`);

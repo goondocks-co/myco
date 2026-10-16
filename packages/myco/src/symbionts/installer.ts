@@ -7,24 +7,24 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { parse as parseToml } from 'smol-toml';
+import { parse as parseToml, TomlError } from 'smol-toml';
 import { expandHome, resolveMycoHome } from '@myco/paths/home.js';
 import { isClaimedByPeer, readClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import { commandVerdict, mcpVerdict, MEMBER_PLUGIN_MARKER, MYCO_PLUGIN_FILE_MARKER, pluginFileVerdict } from './legacy-verdict.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
+import { readProvisionRecord, readProvisionRecordStrict, recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { getPluginVersion } from '@myco/version.js';
 import { assertSafeProjectRoot } from '../project-root.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey, readTomlSectionKeyLine } from './toml-helpers.js';
 import { deepMergeSettingsWithAudit, emptyJsonAudit, removeAuditedSettings, type JsonSettingsAudit, type SettingsFileAudit } from './settings-merge.js';
-import { retiredHookSettings, type RetiredSettingsConflict } from './retired-hook-settings.js';
+import { retiredHookSettings, RetiredHookSettingsParseError, type RetiredSettingsConflict } from './retired-hook-settings.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { isMycoHookCommand, isMycoHookGroup, withoutMycoHooks, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, SERVER_FLAG, type CredentialSource } from '../member/constants.js';
 import { parseCredentialFlag } from '../member/credential.js';
 import { admitMemberServerUrl, memberServerDialUrl } from '../member/server-url.js';
-import { deploymentUrl, listDeploymentMembershipsResult } from '../member/registry.js';
+import { deploymentUrl, listDeploymentMembershipsResult, readDeploymentMembershipResult } from '../member/registry.js';
 import { MCP_PATH } from '../plugins/spec.js';
 import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
 import { readRegistryEntry } from '../member/registry.js';
@@ -51,7 +51,7 @@ export class MemberProvisionConflictError extends Error {
 
 export class MemberRetiredSettingsRefusal extends MemberProvisionConflictError {
   constructor(readonly file: string, cause: unknown) {
-    super(`Could not reconcile retired settings in ${file} (${firstLine(cause)}).`, 'Review this file before changing its settings.', { cause });
+    super(`Could not reconcile retired settings in ${file} (${firstLine(cause)}), so nothing was written there.`, 'Review this file before changing its settings.', { cause });
   }
 }
 
@@ -85,6 +85,69 @@ export class MemberMcpConflictError extends MemberProvisionConflictError {
 
 export class MemberPluginConflictError extends MemberProvisionConflictError { }
 
+export class MemberPendingLogoutError extends MemberMcpConflictError {
+  constructor(agent: string, leaving: string) {
+    const problem = `${agent} is waiting for \`myco logout ${leaving}\` to finish.`;
+    super(problem, `Run \`myco logout ${leaving}\` again; it names any file it still can't read.`, { repairAction: problem });
+  }
+
+  override get localRemedy(): string { return this.remedy; }
+}
+
+export class MemberFileReadRefusal extends MemberMcpConflictError {
+  constructor(readonly file: string, cause: unknown, agent?: string) {
+    const remedy = agent === undefined ? 'Restore read access and valid configuration before retrying.' : `Fix the file, then run \`myco member provision ${agent}\`.`;
+    super(`could not read ${file} (${firstLine(cause)}), so nothing was written there.`, remedy, { cause, repairAction: remedy });
+  }
+
+  override get localRemedy(): string { return this.remedy; }
+}
+
+/** Isolate named file refusals while allowing unexpected failures to propagate. */
+export function isolateMemberFileRefusal<T>(operation: () => T, report: (error: MemberFileReadRefusal | MemberRetiredSettingsRefusal) => void): T | null {
+  try { return operation(); }
+  catch (error) {
+    if (!(error instanceof MemberFileReadRefusal) && !(error instanceof MemberRetiredSettingsRefusal)) throw error;
+    report(error);
+    return null;
+  }
+}
+
+/** Collect each agent's outcome and defer unexpected failures until reconciliation ends. */
+export class MemberFileReconciliation {
+  readonly problems = new Map<string, string>();
+  private readonly refusals = new Map<string, string>();
+  private readonly unexpected: unknown[] = [];
+
+  attempt<T>(manifest: SymbiontManifest, operation: () => T): T | null {
+    try {
+      return isolateMemberFileRefusal(operation, error => {
+        const problem = `${manifest.displayName}: ${error.problem}`;
+        this.problems.set(manifest.name, problem);
+        this.refusals.set(manifest.name, problem);
+      });
+    } catch (error) {
+      this.problems.set(manifest.name, `${manifest.displayName}: ${firstLine(error)}`);
+      this.unexpected.push(error);
+      return null;
+    }
+  }
+
+  finish(operation: () => void, report: (problem: string) => void): void {
+    try {
+      operation();
+      this.throwUnexpected();
+    } catch (error) {
+      for (const problem of this.refusals.values()) report(problem);
+      throw error;
+    }
+  }
+
+  throwUnexpected(): void {
+    if (this.unexpected.length > 0) throw this.unexpected[0];
+  }
+}
+
 export class MemberStaleRegistrationError extends MemberProvisionConflictError {
   constructor(messages: string[]) {
     super(messages.join('\n'), '');
@@ -95,6 +158,10 @@ const TOML_MCP_SERVERS_KEY = 'mcp_servers';
 
 function firstLine(error: unknown): string {
   return error instanceof Error ? error.message.split('\n')[0] : String(error);
+}
+
+function isFileSystemError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string' && !error.code.startsWith('ERR_');
 }
 
 const KNOWN_MCP_SERVERS_KEYS = ['mcpServers', 'servers', 'mcp'] as const;
@@ -346,6 +413,7 @@ export class SymbiontInstaller {
   }
 
   install(scan = this.scanMemberRegistrations()): InstallResult {
+    this.assertMemberProvisionAllowed();
     // Ownership and settings are admitted before the first write.
     if (this.isMemberPluginFile()) {
       this.assertMemberMcpWritable(scan);
@@ -511,20 +579,26 @@ export class SymbiontInstaller {
     return [server.command, server.args].some((list) => Array.isArray(list) && list.includes(CREDENTIAL_FLAG));
   }
 
-  private readMcpFile(filePath: string, toml: boolean): Record<string, unknown> | null {
-    let raw: string;
+  private readMemberFile(filePath: string): string | null {
     try {
-      raw = fs.readFileSync(filePath, 'utf-8');
+      return fs.readFileSync(filePath, 'utf-8');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw this.memberMcpConflict(`could not read ${filePath} (${firstLine(error)})`, 'Fix the file', error);
+      if (!isFileSystemError(error)) throw error;
+      throw new MemberFileReadRefusal(filePath, error, this.manifest.name);
     }
+  }
+
+  private readMcpFile(filePath: string, toml: boolean): Record<string, unknown> | null {
+    const raw = this.readMemberFile(filePath);
+    if (raw === null) return null;
     try {
       const parsed: unknown = toml ? structuredClone(parseToml(raw)) : JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('expected a configuration object');
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new SyntaxError('expected a configuration object');
       return parsed as Record<string, unknown>;
     } catch (error) {
-      throw this.memberMcpConflict(`could not read ${filePath} (${firstLine(error)})`, 'Fix the file');
+      if (!(error instanceof SyntaxError) && !(error instanceof TomlError)) throw error;
+      throw new MemberFileReadRefusal(filePath, error, this.manifest.name);
     }
   }
 
@@ -731,9 +805,13 @@ export class SymbiontInstaller {
 
   reconcileDeploymentLogout(leavingUrl: string, nextDefault: string | null, keepHooks: boolean): void {
     const scan = this.scanMemberRegistrations();
-    if (!keepHooks) this.preflightMemberSettings();
+    if (!keepHooks) {
+      this.assertMemberFilesReadable();
+      this.assertGlobalMemberOwnership('hooks', scan);
+    }
     this.forDeployment(nextDefault ?? leavingUrl).replacingDeployment(leavingUrl);
-    this.reconcileRetiredHookSettings(scan);
+    if (keepHooks) this.reconcileRetiredHookSettings(scan);
+    else this.migrateRetiredHookSettings(scan);
     this.reconcileDeploymentMcp(leavingUrl, nextDefault, !keepHooks, scan);
     if (!keepHooks) {
       this.assertGlobalMemberOwnership('hooks', scan);
@@ -906,13 +984,14 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     const target = this.resolveAbsoluteTarget('hooks');
     if (target === null || reg?.hooksContainSettings || !reg?.retiredHookSettings) return null;
+    const raw = this.readMemberFile(target);
+    if (raw === null) return null;
     try {
-      const raw = fs.readFileSync(target, 'utf8');
       const { text, conflicts } = retiredHookSettings(raw, reg.retiredHookSettings);
       return { target, text, changed: text !== raw, conflicts };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw new MemberRetiredSettingsRefusal(target, error);
+      if (error instanceof RetiredHookSettingsParseError) throw new MemberRetiredSettingsRefusal(target, error);
+      throw error;
     }
   }
 
@@ -927,10 +1006,11 @@ export class SymbiontInstaller {
       if (report === null || typeof report !== 'object' || !('values' in report)
         || report.values === null || typeof report.values !== 'object' || Array.isArray(report.values)
         || !Object.values(report.values).every(hashes => Array.isArray(hashes) && hashes.every(hash => typeof hash === 'string'))
-        || 'problem' in report && typeof report.problem !== 'string') throw new Error('Invalid retired settings report');
+        || 'problem' in report && typeof report.problem !== 'string') throw new SyntaxError('Invalid retired settings report');
       return report as RetiredSettingsReport;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { values: {} };
+      if (!(error instanceof SyntaxError) && !isFileSystemError(error)) throw error;
       throw new MemberRetiredSettingsRefusal(this.retiredSettingsReportPath(), error);
     }
   }
@@ -958,47 +1038,38 @@ export class SymbiontInstaller {
   migrateRetiredHookSettings(scan?: MemberRegistrationScan, beforeWrite?: (file: string) => void): boolean {
     if (!this.manifest.registration?.retiredHookSettings) return false;
     const plan = this.retiredSettingsPlan();
-    try {
-      if (plan === null || !plan.changed && plan.conflicts.length === 0) {
-        const saved = this.retiredSettingsReported();
-        if (saved.problem !== undefined) {
-          delete saved.problem;
-          this.writeRetiredSettingsReport(saved);
-        }
-        return false;
+    if (plan === null || !plan.changed && plan.conflicts.length === 0) {
+      const saved = this.retiredSettingsReported();
+      if (saved.problem !== undefined) {
+        delete saved.problem;
+        this.writeRetiredSettingsReport(saved);
       }
-      const registrations = scan ?? this.scanMemberRegistrations();
-      this.assertGlobalMemberOwnership('hooks', registrations);
-      return this.writeRegistrationTarget(plan.target, 'hooks', registrations, target => {
-        const saved = this.retiredSettingsReported();
-        const pending = plan.conflicts.filter(({ key, hash }) => !saved.values[key]?.includes(hash));
-        for (const { key, hash } of pending) {
-          console.warn(`${this.manifest.displayName}: left user-changed ${key} in ${target}; review this setting manually.`);
-          saved.values[key] = [...saved.values[key] ?? [], hash];
-        }
-        if (pending.length > 0 || saved.problem !== undefined) {
-          delete saved.problem;
-          this.writeRetiredSettingsReport(saved);
-        }
-        if (plan.changed) {
-          beforeWrite?.(target);
-          atomicWriteFileSync(target, plan.text);
-        }
-        return plan.changed;
-      });
-    } catch (error) {
-      throw error instanceof MemberRetiredSettingsRefusal ? error : new MemberRetiredSettingsRefusal(plan?.target ?? this.retiredSettingsReportPath(), error);
+      return false;
     }
+    const registrations = scan ?? this.scanMemberRegistrations();
+    this.assertGlobalMemberOwnership('hooks', registrations);
+    return this.writeRegistrationTarget(plan.target, 'hooks', registrations, target => {
+      const saved = this.retiredSettingsReported();
+      const pending = plan.conflicts.filter(({ key, hash }) => !saved.values[key]?.includes(hash));
+      for (const { key, hash } of pending) {
+        console.warn(`${this.manifest.displayName}: left user-changed ${key} in ${target}; review this setting manually.`);
+        saved.values[key] = [...saved.values[key] ?? [], hash];
+      }
+      if (pending.length > 0 || saved.problem !== undefined) {
+        delete saved.problem;
+        this.writeRetiredSettingsReport(saved);
+      }
+      if (plan.changed) {
+        beforeWrite?.(target);
+        atomicWriteFileSync(target, plan.text);
+      }
+      return plan.changed;
+    });
   }
 
   /** Reconcile retired output, reporting a refusal without blocking the caller's other work. */
   reconcileRetiredHookSettings(scan?: MemberRegistrationScan, beforeWrite?: (file: string) => void, report?: (message: string) => void): boolean | null {
-    try { return this.migrateRetiredHookSettings(scan, beforeWrite); }
-    catch (error) {
-      if (!(error instanceof MemberRetiredSettingsRefusal)) throw error;
-      this.reportRetiredSettingsProblem(error, report);
-      return null;
-    }
+    return isolateMemberFileRefusal(() => this.migrateRetiredHookSettings(scan, beforeWrite), error => this.reportRetiredSettingsProblem(error, report));
   }
 
   retiredHookSettingsCurrent(): boolean {
@@ -1020,6 +1091,7 @@ export class SymbiontInstaller {
   globalOwnership(serverUrl: string, scan = this.scanMemberRegistrations()): { problem: string | null; replaces: string[] } {
     this.expectedServerUrl = serverUrl;
     try {
+      this.assertMemberProvisionAllowed();
       this.assertGlobalMemberOwnership(undefined, scan);
     } catch (error) {
       if (error instanceof MemberProvisionConflictError) return { problem: error.message, replaces: [] };
@@ -1030,6 +1102,20 @@ export class SymbiontInstaller {
     const texts = [this.resolveAbsoluteTarget('hooks'), this.memberMcpTargetPath()]
       .flatMap((file) => { try { return file === null ? [] : [fs.readFileSync(file, 'utf8')]; } catch { return []; } });
     return { problem: null, replaces: this.legacyHomes.filter((home) => texts.some((text) => text.includes(`${home}${path.sep}`))) };
+  }
+
+  /** Hold repair to a pending logout destination only while its membership is missing. */
+  assertMemberProvisionAllowed(): void {
+    const record = readProvisionRecordStrict(this.memberHomeDir());
+    const target = this.expectedServerUrl ?? this.deploymentUrl ?? record?.serverUrl;
+    this.assertDeploymentLogoutFinished(target, record);
+  }
+
+  private assertDeploymentLogoutFinished(target: string | undefined, record = readProvisionRecordStrict(this.memberHomeDir())): void {
+    const leaving = record?.pendingLogout?.[this.manifest.name]?.find(url => deploymentUrl(url) === deploymentUrl(target ?? ''));
+    if (leaving !== undefined && readDeploymentMembershipResult(leaving, this.memberHomeDir()).status === 'missing') {
+      throw new MemberPendingLogoutError(this.manifest.displayName, leaving);
+    }
   }
 
   private assertGlobalMemberOwnership(targetOverride?: { path: string; serversKey: string } | 'hooks', scan: MemberRegistrationScan = this.scanMemberRegistrations()): string | undefined {
@@ -1045,14 +1131,13 @@ export class SymbiontInstaller {
     const target = this.resolveAbsoluteTarget('hooks');
     if (target && fs.existsSync(target)) {
       if (this.isMemberPluginFile()) {
-        let content: string;
-        try { content = fs.readFileSync(target, 'utf8'); } catch (error) {
-          throw new MemberProvisionConflictError(`could not read ${target} (${firstLine(error)}), so nothing was written.`, 'Restore read access to this file.');
-        }
-        const verdict = pluginFileVerdict(content, this.legacyHomes, memberHome);
-        const replaceable = verdict === 'stale' || verdict === 'member' || (verdict === 'legacy' && this.legacyHomes.length > 0);
-        if (!replaceable) {
-          throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation.`, captureHolderNext(content.includes(MEMBER_PLUGIN_MARKER) || content.includes(CREDENTIAL_FLAG) ? 'member' : verdict));
+        const content = this.readMemberFile(target);
+        if (content !== null) {
+          const verdict = pluginFileVerdict(content, this.legacyHomes, memberHome);
+          const replaceable = verdict === 'stale' || verdict === 'member' || (verdict === 'legacy' && this.legacyHomes.length > 0);
+          if (!replaceable) {
+            throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation.`, captureHolderNext(content.includes(MEMBER_PLUGIN_MARKER) || content.includes(CREDENTIAL_FLAG) ? 'member' : verdict));
+          }
         }
       } else {
         const settings = this.readMcpFile(target, false);
@@ -1089,6 +1174,7 @@ export class SymbiontInstaller {
           const readable = memberships.readable && memberships.unavailableEntries === 0;
           const connected = memberships.memberships.some((membership) => deploymentUrl(membership.serverUrl) === other && !membership.refreshTerminal);
           if (readable && !connected) {
+            this.assertDeploymentLogoutFinished(other);
             const home = process.env.HOME ?? os.homedir();
             const file = mcpTarget.startsWith(home + path.sep) ? '~' + mcpTarget.slice(home.length) : mcpTarget;
             const serversKey = targetOverride?.serversKey ?? (reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : (reg?.mcpServersKey ?? 'mcpServers'));
@@ -1143,13 +1229,23 @@ export class SymbiontInstaller {
   }
 
   assertMemberUninstallable(): void {
+    this.assertMemberFilesReadable();
     this.assertGlobalMemberOwnership();
+  }
+
+  assertMemberFilesReadable(): void {
     this.preflightMemberSettings();
+    const hooks = this.resolveAbsoluteTarget('hooks');
+    if (hooks !== null) {
+      if (this.isMemberPluginFile()) this.readMemberFile(hooks);
+      else this.readMcpFile(hooks, false);
+    }
+    for (const target of this.resolveAbsoluteMcpTargets()) this.readMcpFile(throughLink(target.path), this.manifest.registration?.mcpFormat === 'toml');
   }
 
   uninstallMemberRegistration(): void {
     this.assertMemberUninstallable();
-    this.reconcileRetiredHookSettings();
+    this.migrateRetiredHookSettings();
     this.uninstallMemberHooks();
     this.uninstallMemberMcp();
     this.uninstallSettings();
@@ -1160,12 +1256,13 @@ export class SymbiontInstaller {
     if (targetPath === null || !fs.existsSync(targetPath)) return false;
     if (this.isMemberPluginFile()) {
       // Only the member plugin: a 1.4 project plugin at the same path carries the generic marker alone.
-      const content = fs.readFileSync(targetPath, 'utf-8');
+      const content = this.readMemberFile(targetPath);
+      if (content === null) return false;
       if (pluginFileVerdict(content, this.legacyHomes, this.memberHomeDir()) === 'stale' || !content.includes(MEMBER_PLUGIN_MARKER)) return false;
       fs.rmSync(targetPath, { force: true });
       return true;
     }
-    const settings = readJsonFile(targetPath);
+    const settings = this.readMcpFile(targetPath, false) ?? {};
     const existingHooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
     const kept: Record<string, unknown[]> = {};
     let removed = false;
@@ -1573,8 +1670,7 @@ export class SymbiontInstaller {
       return false;
     }
 
-    let raw = '';
-    try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    let raw = this.readMemberFile(targetPath) ?? '';
 
     // Only currently declared settings remain managed.
     const templateSections = new Set<string>();
@@ -1624,8 +1720,8 @@ export class SymbiontInstaller {
 
   private uninstallMcpToml(targetPath: string): boolean {
     return this.withWritableMcpEntry(this.mycoServerIn(targetPath, true, TOML_MCP_SERVERS_KEY), () => {
-      let raw = '';
-      try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { return false; }
+      const raw = this.readMemberFile(targetPath);
+      if (raw === null) return false;
 
       const sectionHeader = `[mcp_servers.${MYCO_MCP_SERVER_NAME}]`;
       if (!raw.includes(sectionHeader)) return false;
@@ -1637,7 +1733,7 @@ export class SymbiontInstaller {
       const updated = (before + (before && after ? '\n\n' : '') + after).trimEnd();
 
       if (!updated.trim()) {
-        try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+        fs.unlinkSync(targetPath);
       } else {
         atomicWriteFileSync(targetPath, updated + "\n");
       }

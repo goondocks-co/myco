@@ -29,7 +29,9 @@ export function writeJsonFile(filePath: string, data: Record<string, unknown>): 
 /** Write a JSON file, or delete it if the object is empty. */
 export function writeOrDeleteJsonFile(filePath: string, data: Record<string, unknown>): void {
   if (Object.keys(data).length === 0) {
-    try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+    try { fs.unlinkSync(filePath); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   } else {
     writeJsonFile(filePath, data);
   }

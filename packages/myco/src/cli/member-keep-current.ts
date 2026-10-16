@@ -1,4 +1,4 @@
-import { MemberProvisionConflictError, MemberMcpConflictError, MemberStaleRegistrationError } from '@myco/symbionts/installer.js';
+import { MemberFileReadRefusal, MemberPendingLogoutError, MemberProvisionConflictError, MemberMcpConflictError, MemberStaleRegistrationError, SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { joinSentences } from '@myco/utils/sentences.js';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -10,7 +10,7 @@ import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { getPluginVersion } from '@myco/version.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { LifecycleLock, withFileLockSync } from '@myco/utils/lifecycle-lock.js';
-import { isBinaryOnPath, loadManifests } from '@myco/symbionts/detect.js';
+import { isBinaryOnPath, loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { readProvisionRecord, recordProvision, settleHookTrust, UnreadableProvisionRecordError, type ProvisionRecord } from '@myco/symbionts/member-provision-record.js';
 import { provisionGlobally, withManagedMemberHarnesses, memberHarnessStatus, provisionBackup } from '@myco/cli/member.js';
 import type { ProvisionedHarnessFact } from '@goondocks/myco-shared/harness-health';
@@ -80,8 +80,10 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
         let state: ProvisionedHarnessFact['state'] = 'ready';
         let action: string | undefined;
         let toolsDeployment: string | undefined;
+        let waitingForLogout = false;
         try {
           if (manifest === undefined) throw new Error('This build has no manifest for the provisioned harness');
+          new SymbiontInstaller(manifest, mycoHome, deps.packageRoot ?? resolvePackageRoot(), false, mycoHome).withoutProjectRoot().forDeployment(record.serverUrl).assertMemberProvisionAllowed();
           const installed = installEvidence(manifest, deps.binaryFound ?? isBinaryOnPath);
           let status = installed ? memberHarnessStatus(id, mycoHome, record.serverUrl, deps) : { current: false };
           if (installed && !status.current) {
@@ -113,21 +115,22 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
             action = `Install ${manifest.displayName} again`;
           }
         } catch (error) {
+          waitingForLogout = error instanceof MemberPendingLogoutError;
           toolsDeployment = undefined;
           const code = (error as NodeJS.ErrnoException).code ?? ((error as Error).cause as NodeJS.ErrnoException | undefined)?.code;
           state = code === 'EACCES' || code === 'EPERM' || code === 'EROFS' ? 'unwritable' : 'repair_failed';
-          action = state === 'unwritable'
+          action = error instanceof MemberFileReadRefusal ? error.remedy : state === 'unwritable'
             ? `Allow Myco to write ${manifest?.displayName ?? id}'s configuration`
             : error instanceof MemberStaleRegistrationError ? error.message
             : error instanceof MemberMcpConflictError && error.repairAction !== undefined ? error.repairAction
             : `Run myco doctor to check ${manifest?.displayName ?? id}'s capture configuration`;
           if (error instanceof MemberProvisionConflictError) {
-            const remedy = state !== 'unwritable' && error instanceof MemberMcpConflictError ? error.localRemedy ?? action : action;
+            const remedy = error instanceof MemberMcpConflictError && (state !== 'unwritable' || error instanceof MemberFileReadRefusal) ? error.localRemedy ?? action : action;
             (result.localActions ??= {})[id] = error instanceof MemberStaleRegistrationError ? error.problem : joinSentences(error.problem, remedy);
           }
         }
         let ranAt: number | undefined;
-        try { if (manifest !== undefined) ranAt = harnessRanAt(manifest, mycoHome); } catch {
+        try { if (manifest !== undefined && !waitingForLogout) ranAt = harnessRanAt(manifest, mycoHome); } catch {
           state = 'repair_failed';
           delete result.localActions?.[id];
           toolsDeployment = undefined;

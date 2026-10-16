@@ -20,6 +20,9 @@ import { readVaultContent } from '@myco/member/legacy-backup.js';
 import { retiredVerbMessage } from '@myco/cli/retired-verbs.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 import { defaultSpec, servicePaths, renderUnit } from '@myco/server/service.js';
+import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
+import { MemberFileReadRefusal, SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
 
 const SERVER = 'https://member.example';
 let root: string;
@@ -78,6 +81,110 @@ function member(): void {
 }
 
 describe('member-only remove', () => {
+  it('retains a registered agent after repeated retired-settings parse refusals', async () => {
+    member();
+    const cursor = new SymbiontInstaller(loadManifests().find(manifest => manifest.name === 'cursor')!, home, resolvePackageRoot(), false, home).withoutProjectRoot().forDeployment(SERVER);
+    cursor.install();
+    const file = cursor.memberGlobalTargets().hooks!;
+    const raw = '{"user":1,"user":2,"chat.tools.terminal.autoApprove":{"myco":true,"myco-dev":true}}';
+    fs.writeFileSync(file, raw);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(cursor.reconcileRetiredHookSettings()).toBeNull();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        warn.mockClear();
+        await run(['--purge', '--yes'], deps());
+        expect(process.exitCode).toBe(1);
+        expect(readProvisionRecord(home)).toMatchObject({ agents: ['cursor'] });
+        expect(warn.mock.calls.filter(([line]) => String(line).includes(file))).toHaveLength(1);
+        expect(fs.readFileSync(file, 'utf8')).toBe(raw);
+        expect(cursor.inspectMemberMcp().some(entry => entry.present)).toBe(true);
+        expect(fs.existsSync(path.join(home, 'install.json'))).toBe(true);
+      }
+    } finally { warn.mockRestore(); }
+  });
+
+  for (const unexpected of [false, true]) it(`continues the uninstall pass after ${unexpected ? 'an unexpected error' : 'a typed read refusal'}, then reports failure`, async () => {
+    member();
+    const manifests = loadManifests();
+    const installers = manifests.map(manifest => new SymbiontInstaller(manifest, home, resolvePackageRoot(), false, home).withoutProjectRoot().forDeployment(SERVER));
+    for (const installer of installers) installer.install();
+    const file = path.join(user, '.claude', 'settings.json');
+    const failure = unexpected ? new TypeError('unexpected uninstall bug') : new MemberFileReadRefusal(file, new SyntaxError('unreadable after preflight'));
+    const original = SymbiontInstaller.prototype.uninstallMemberRegistration;
+    const uninstall = spyOn(SymbiontInstaller.prototype, 'uninstallMemberRegistration').mockImplementation(function(this: SymbiontInstaller) {
+      if (this.memberGlobalTargets().hooks === file) throw failure;
+      return original.call(this);
+    });
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      if (unexpected) await expect(run(['--yes'], deps())).rejects.toBe(failure);
+      else {
+        await run(['--yes'], deps());
+        expect(process.exitCode).toBe(1);
+      }
+      for (const [index, installer] of installers.entries()) {
+        expect(installer.inspectMemberHooks().member).toBe(manifests[index].name === 'claude-code');
+      }
+      expect(readProvisionRecord(home)?.agents).toEqual(['claude-code']);
+      expect(warn.mock.calls.filter(([line]) => String(line).includes(unexpected ? 'unexpected uninstall bug' : file))).toHaveLength(1);
+    } finally { warn.mockRestore(); uninstall.mockRestore(); }
+  });
+
+  for (const agent of ['copilot', 'cursor']) for (const purge of [false, true]) it(`aborts before teardown on BOM ${agent} hooks during ${purge ? 'purge' : 'plain removal'}`, async () => {
+    member();
+    const manifests = loadManifests();
+    const installers = manifests.map(manifest => new SymbiontInstaller(manifest, home, resolvePackageRoot(), false, home).withoutProjectRoot().forDeployment(SERVER));
+    for (const installer of installers) installer.install();
+    recordProvision(home, { version: 'test', serverUrl: SERVER, agents: manifests.map(manifest => manifest.name) });
+    const file = installers[manifests.findIndex(manifest => manifest.name === agent)].memberGlobalTargets().hooks!;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const clean = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '{"user":true}';
+    fs.writeFileSync(file, '\ufeff' + clean);
+    installWorkerService({ ...deps().worker, mycoHome: home, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
+    platform.commands.length = 0;
+    const before = snapshot(root);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    const preflight = spyOn(SymbiontInstaller.prototype, 'assertMemberFilesReadable');
+    try {
+      await run(purge ? ['--purge', '--yes'] : ['--yes'], deps());
+      expect(process.exitCode).toBe(1);
+      expect(new Set(preflight.mock.contexts).size).toBe(manifests.length);
+      expect(snapshot(root)).toEqual(before);
+      expect(platform.commands).toEqual([]);
+      expect(readProvisionRecord(home)?.agents).toEqual(manifests.map(manifest => manifest.name).sort());
+      expect(warn.mock.calls.filter(([line]) => String(line).includes(file))).toHaveLength(1);
+      expect(warn.mock.calls.flat().join('\n')).toContain('removal aborted');
+      expect(fs.existsSync(path.join(home, 'install.json'))).toBe(true);
+    } finally { warn.mockRestore(); preflight.mockRestore(); }
+  });
+
+  it('reports every typed preflight refusal before throwing an unexpected error without teardown', async () => {
+    member();
+    installWorkerService({ ...deps().worker, mycoHome: home, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
+    const files = [path.join(user, '.copilot', 'hooks', 'myco-hooks.json'), path.join(user, '.cursor', 'hooks.json')];
+    for (const file of files) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, '\ufeff{"user":true}');
+    }
+    const original = SymbiontInstaller.prototype.assertMemberFilesReadable;
+    const failure = new TypeError('unexpected preflight bug');
+    const inspect = spyOn(SymbiontInstaller.prototype, 'assertMemberFilesReadable').mockImplementation(function(this: SymbiontInstaller) {
+      if (this.memberGlobalTargets().hooks === path.join(user, '.claude', 'settings.json')) throw failure;
+      return original.call(this);
+    });
+    platform.commands.length = 0;
+    const before = snapshot(root);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(run(['--purge', '--yes'], deps())).rejects.toBe(failure);
+      expect(snapshot(root)).toEqual(before);
+      expect(platform.commands).toEqual([]);
+      for (const file of files) expect(warn.mock.calls.filter(([line]) => String(line).includes(file))).toHaveLength(1);
+      expect(warn.mock.calls.flat().join('\n')).toContain('removal aborted');
+    } finally { inspect.mockRestore(); warn.mockRestore(); }
+  });
+
   it('removes registrations despite a truncated internal audit and preserves unowned settings', async () => {
     member();
     const target = path.join(user, '.claude/settings.json');
@@ -591,11 +698,19 @@ describe('member-only remove', () => {
     installWorkerService({ ...deps().worker, mycoHome: home, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
     fs.mkdirSync(path.join(user, '.cursor'), { recursive: true });
     fs.writeFileSync(path.join(user, '.cursor', 'mcp.json'), '{broken');
+    const file = path.join(user, '.cursor', 'mcp.json');
     const before = snapshot(root);
     platform.commands.length = 0;
-    await expect(run(['--purge', '--yes'], deps())).rejects.toThrow('Cannot read');
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await run(['--purge', '--yes'], deps());
+      expect(warn.mock.calls.filter(([line]) => String(line).includes(file))).toHaveLength(1);
+    }
+    finally { warn.mockRestore(); }
+    expect(process.exitCode).toBe(1);
     expect(snapshot(root)).toEqual(before);
     expect(platform.commands).toEqual([]);
+    expect(fs.existsSync(path.join(home, 'install.json'))).toBe(true);
   });
 
   it('preserves another home’s orphan executor service', async () => {

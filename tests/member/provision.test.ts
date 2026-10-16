@@ -10,13 +10,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
-import { run as runMemberCli, provisionGlobally, previewGlobalProvision, provisionAgents, detectedProvisionLines } from '@myco/cli/member.js';
+import { run as runMemberCli, provisionGlobally, previewGlobalProvision, provisionAgents, detectedProvisionLines, withManagedMemberHarnesses } from '@myco/cli/member.js';
 import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
-import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
+import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { hookCommands } from '@myco/symbionts/member-hooks.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
+import { recordProvision, reconcileProvisionAgents, provisionRecordPath, readProvisionRecord, readProvisionRecordStrict } from '@myco/symbionts/member-provision-record.js';
 
 const TOKEN = 'A'.repeat(43);
 const SERVER = 'https://myco.example';
@@ -55,6 +56,82 @@ async function provision(args: string[]): Promise<{ out: string[]; err: string[]
 }
 
 describe('myco member provision', () => {
+  for (const kind of ['membership', 'project']) it(`clears only the joined Deployment pending logouts on a successful ${kind} join`, () => {
+    const other = 'https://other.example';
+    const binaries = { 'claude-code': '/fixture/myco', cursor: '/fixture/myco' };
+    const pendingTrust = { cursor: { action: 'review', at: 1 } };
+    recordProvision(mycoHome, { version: 'test', serverUrl: SERVER, agents: ['claude-code', 'cursor'], binaries, pendingTrust, pendingLogout: { 'claude-code': [SERVER, other], cursor: [SERVER] } });
+    if (kind === 'project') join();
+    else writeDeploymentMembership({ serverUrl: SERVER + '/', token: TOKEN, machineId: 'm1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    expect(readProvisionRecord(mycoHome)).toMatchObject({ serverUrl: SERVER, agents: ['claude-code', 'cursor'], binaries, pendingTrust, pendingLogout: { 'claude-code': [other] } });
+  });
+
+  it('filters malformed pending logout entries for lenient readers while strict readers refuse the record', () => {
+    recordProvision(mycoHome, { version: 'test', serverUrl: SERVER, agents: ['claude-code', 'cursor'] });
+    const file = provisionRecordPath(mycoHome);
+    const raw = JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), pendingLogout: { 'claude-code': [SERVER], cursor: SERVER, unknown: [42] } });
+    fs.writeFileSync(file, raw);
+    expect(readProvisionRecord(mycoHome)).toMatchObject({ serverUrl: SERVER, agents: ['claude-code', 'cursor'], pendingLogout: { 'claude-code': [SERVER] } });
+    expect(() => readProvisionRecordStrict(mycoHome)).toThrow('agent setup record');
+    expect(fs.readFileSync(file, 'utf8')).toBe(raw);
+  });
+
+  it('names the file and provision command when an agent config cannot be parsed', async () => {
+    join();
+    provisionGlobally('codex', root, mycoHome, { serverUrl: SERVER });
+    const file = path.join(agentHome, '.codex', 'config.toml');
+    fs.writeFileSync(file, 'invalid TOML [');
+    const { err } = await provision(['codex', '--root', root]);
+    expect(err.join('\n')).toContain(file);
+    expect(err.join('\n')).toContain('Fix the file, then run `myco member provision codex`.');
+    expect(fs.readFileSync(file, 'utf8')).toBe('invalid TOML [');
+  });
+
+  for (const recorded of [SERVER, 'https://left.example']) it(`allows provisioning for the survivor with pending logout and record on ${recorded}`, () => {
+    join();
+    recordProvision(mycoHome, { version: 'test', serverUrl: recorded, agents: ['claude-code'], pendingLogout: { 'claude-code': ['https://left.example'] } });
+    expect(provisionGlobally('claude-code', root, mycoHome, { serverUrl: SERVER }).kind).toBe('provisioned');
+    expect(fs.readFileSync(path.join(agentHome, '.claude', 'settings.json'), 'utf8')).toContain('--credential registry');
+  });
+
+  it('refuses an explicitly selected pending logout destination beside a surviving recorded destination', () => {
+    recordProvision(mycoHome, { version: 'test', serverUrl: SERVER, agents: ['claude-code'], pendingLogout: { 'claude-code': ['https://left.example'] } });
+    const outcome = provisionGlobally('claude-code', null, mycoHome, { serverUrl: 'https://left.example' });
+    expect(outcome).toMatchObject({ kind: 'refused', detail: expect.stringContaining('waiting for `myco logout https://left.example` to finish') });
+    expect(fs.existsSync(path.join(agentHome, '.claude', 'settings.json'))).toBe(false);
+  });
+
+  for (const pendingLogout of [null, [], { 'claude-code': 'https://left.example' }, { 'claude-code': [42] }]) it(`refuses malformed pending logout state ${JSON.stringify(pendingLogout)} before provisioning`, () => {
+    recordProvision(mycoHome, { version: 'test', serverUrl: SERVER, agents: ['claude-code'] });
+    const file = provisionRecordPath(mycoHome);
+    const raw = JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), pendingLogout });
+    fs.writeFileSync(file, raw);
+    expect(() => provisionGlobally('claude-code', null, mycoHome, { serverUrl: SERVER })).toThrow('agent setup record');
+    expect(fs.readFileSync(file, 'utf8')).toBe(raw);
+    expect(fs.existsSync(path.join(agentHome, '.claude', 'settings.json'))).toBe(false);
+  });
+
+  it('propagates unexpected admission errors without writing a retired-settings diagnostic', () => {
+    recordProvision(mycoHome, { version: 'test', serverUrl: SERVER, agents: ['claude-code'] });
+    const failure = new TypeError('unexpected provision admission bug');
+    const admit = spyOn(SymbiontInstaller.prototype, 'assertMemberProvisionAllowed').mockImplementation(() => { throw failure; });
+    const report = spyOn(SymbiontInstaller.prototype, 'reportRetiredSettingsProblem');
+    try {
+      expect(() => withManagedMemberHarnesses(mycoHome, {}, () => {})).toThrow(failure);
+      expect(report).not.toHaveBeenCalled();
+    } finally { admit.mockRestore(); report.mockRestore(); }
+  });
+
+  it('retains an uncapturable agent pending logout while pruning an ordinary uncapturable choice', () => {
+    const binary = path.join(mycoHome, 'bin', 'myco');
+    recordProvision(mycoHome, { version: 'test', serverUrl: SERVER, agents: ['copilot', 'windsurf'], binaries: { copilot: binary, windsurf: binary }, pendingTrust: { copilot: { action: 'review', at: 1 } }, pendingLogout: { copilot: [SERVER] } });
+    const record = reconcileProvisionAgents(mycoHome, { version: 'test', serverUrl: SERVER, discovered: [] }, new Set(['copilot', 'windsurf']));
+    expect(record.agents).toEqual(['copilot']);
+    expect(record.binaries).toEqual({ copilot: binary });
+    expect(record.pendingTrust).toEqual({ copilot: { action: 'review', at: 1 } });
+    expect(record.pendingLogout).toEqual({ copilot: [SERVER] });
+  });
+
   it('leaves stale Codex tools with a credential marker during uninstall', () => {
     join();
     const file = path.join(agentHome, '.codex', 'config.toml');

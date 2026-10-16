@@ -55,7 +55,7 @@ import { REPAIR_LOCK, keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, ty
 import { getPluginVersion } from '../version.js';
 import { postRoute } from './deployment-reader.js';
 import { detectMachineInstalledSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
+import { MemberPendingLogoutError, MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
 import { ensureGitIgnored } from '@myco/utils/git-exclude.js';
 import { describeWorkerService, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
 
@@ -533,6 +533,14 @@ export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageR
       if (!manifest.registration?.retiredHookSettings) continue;
       const installer = globalInstaller(manifest, null, mycoHome, opts);
       try {
+        installer.forDeployment(serverUrl).assertMemberProvisionAllowed();
+      } catch (error) {
+        if (!(error instanceof MemberPendingLogoutError)) throw error;
+        retiredSettingsProblems.add(manifest.name);
+        (opts.onInspectionError ?? console.warn)(error.message);
+        continue;
+      }
+      try {
         let backup: CutoverBackup | undefined;
         try {
           const migrated = installer.reconcileRetiredHookSettings(undefined, file => {
@@ -560,6 +568,7 @@ export function memberHarnessStatus(agent: string, mycoHome: string, serverUrl: 
   const manifest = loadManifests().find((candidate) => candidate.name === agent);
   if (manifest === undefined) return { current: false };
   const installer = globalInstaller(manifest, null, mycoHome, opts).forDeployment(serverUrl).preservingOtherMemberTools();
+  installer.assertMemberProvisionAllowed();
   return inspectMemberHarness(installer, manifest, mycoHome, installer.scanMemberRegistrations());
 }
 

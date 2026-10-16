@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,6 +6,8 @@ import { bindSandboxChildHome, sandboxChildEnv } from '../../scripts/test-enviro
 import { logoutJournalPath } from '@myco/member/logout.js';
 import { logoutDeployment, type LogoutRuntimeDeps } from '@myco/symbionts/logout-runtime.js';
 import { run as logoutCli } from '@myco/cli/logout.js';
+import { keepCurrent } from '@myco/cli/member-keep-current.js';
+import { provisionGlobally, provisionAgents, run as memberCli } from '@myco/cli/member.js';
 import {
   deploymentPath, deploymentFeaturesPath, machineSettingsPath, registryEntryPath, readDeploymentMembership, readRegistryEntry,
   writeDeploymentMembership, writeRegistryEntry,
@@ -14,7 +16,7 @@ import { defaultDeploymentPath, readDefaultDeployment, recordDefaultDeployment }
 import { MemberSpool } from '@myco/member/spool.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
-import { provisionRecordPath, readProvisionRecord } from '@myco/symbionts/member-provision-record.js';
+import { provisionRecordPath, readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { runnerRecordPath } from '@myco/runner/runner-registry.js';
 import { executorServiceTarget } from '@myco/cli/worker-service.js';
 import { installWorkerService } from '@myco/runner/service.js';
@@ -78,6 +80,379 @@ beforeEach(() => {
 afterEach(() => { restore(); fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('Deployment-scoped logout', () => {
+  for (const agent of ['codex', 'claude-code']) it(`fails ${agent} MCP deletion after visiting every manifest and retains retry ownership`, async () => {
+    join(A);
+    const manifests = loadManifests();
+    const installers = manifests.map(manifest => new SymbiontInstaller(manifest, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(A));
+    for (const installer of installers) installer.install();
+    const failed = installers[manifests.findIndex(manifest => manifest.name === agent)];
+    const file = failed.memberGlobalTargets().mcp[0];
+    if (agent === 'codex') {
+      const raw = fs.readFileSync(file, 'utf8');
+      const section = raw.indexOf('[mcp_servers.myco]');
+      expect(section).toBeGreaterThanOrEqual(0);
+      fs.writeFileSync(file, raw.slice(section));
+    }
+    const before = bytes(file);
+    const failure = Object.assign(new Error(`Could not delete ${file}`), { code: 'EPERM' });
+    const unlink = fs.unlinkSync;
+    const deletion = spyOn(fs, 'unlinkSync').mockImplementation(target => {
+      if (target === file) throw failure;
+      return unlink(target);
+    });
+    const visits = spyOn(SymbiontInstaller.prototype, 'reconcileDeploymentLogout');
+    try {
+      await expect(logoutDeployment(A, { mode: 'revoke' }, deps)).rejects.toBe(failure);
+      expect(visits).toHaveBeenCalledTimes(manifests.length);
+      expect(bytes(file)).toEqual(before);
+      expect(readProvisionRecord(mycoHome)).toMatchObject({ agents: [agent], pendingLogout: { [agent]: [A] } });
+      expect(JSON.parse(fs.readFileSync(logoutJournalPath(A, mycoHome), 'utf8')).phase).toBe('config');
+      for (const [index, installer] of installers.entries()) if (manifests[index].name !== agent) expect(installer.inspectMemberHooks().member).toBe(false);
+    } finally { visits.mockRestore(); deletion.mockRestore(); }
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toEqual([]);
+    expect(fs.existsSync(file)).toBe(false);
+    expect(readProvisionRecord(mycoHome)).toBeNull();
+    expect(requests).toHaveLength(1);
+  });
+
+  for (const first of [A, B]) it(`retains both pending logouts for one agent until both retries complete (${first} first)`, async () => {
+    join(A); join(B);
+    recordDefaultDeployment(A, { mycoHome });
+    globalInstaller(A).install();
+    const file = globalInstaller(A).memberGlobalTargets().mcp[0];
+    const clean = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '\ufeff' + clean);
+    for (const url of [A, B]) expect((await logoutDeployment(url, { mode: 'revoke' }, deps)).unreconciledAgents).toHaveLength(1);
+    expect(readProvisionRecord(mycoHome)?.pendingLogout).toEqual({ 'claude-code': [A, B] });
+    fs.writeFileSync(file, clean);
+    const second = first === A ? B : A;
+    expect((await logoutDeployment(first, { mode: 'revoke' }, deps)).unreconciledAgents).toEqual([]);
+    expect(readProvisionRecord(mycoHome)).toMatchObject({ agents: ['claude-code'], pendingLogout: { 'claude-code': [second] } });
+    expect(fs.existsSync(logoutJournalPath(first, mycoHome))).toBe(false);
+    expect(fs.existsSync(logoutJournalPath(second, mycoHome))).toBe(true);
+    expect((await logoutDeployment(second, { mode: 'revoke' }, deps)).unreconciledAgents).toEqual([]);
+    expect(readProvisionRecord(mycoHome)).toBeNull();
+    expect(fs.existsSync(logoutJournalPath(second, mycoHome))).toBe(false);
+    expect(globalInstaller(A).inspectMemberMcp().some(entry => entry.present)).toBe(false);
+    expect(requests).toHaveLength(2);
+  });
+
+  for (const agent of ['copilot', 'cursor']) it(`keeps repeated retired-settings refusals retryable for ${agent}`, async () => {
+    join(A);
+    globalInstaller(A).install();
+    const installer = new SymbiontInstaller(loadManifests().find(manifest => manifest.name === agent)!, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(A);
+    installer.install();
+    const file = installer.memberGlobalTargets().hooks!;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const raw = '{"user":1,"user":2,"chat.tools.terminal.autoApprove":{"myco":true,"myco-dev":true}}';
+    fs.writeFileSync(file, raw);
+    recordProvision(mycoHome, { version: 'test', serverUrl: A, agents: ['claude-code', agent] });
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(installer.reconcileRetiredHookSettings()).toBeNull();
+      warn.mockClear();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const err: string[] = [];
+        expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: line => err.push(line) })).toBe(false);
+        expect(err.filter(line => line.includes(file))).toHaveLength(1);
+        expect(err.join('\n')).toContain('nothing was written there');
+        expect(readProvisionRecord(mycoHome)).toMatchObject({ agents: [agent], pendingLogout: { [agent]: [A] } });
+        expect(JSON.parse(fs.readFileSync(logoutJournalPath(A, mycoHome), 'utf8')).phase).toBe('config');
+        expect(fs.readFileSync(file, 'utf8')).toBe(raw);
+      }
+      expect(warn).not.toHaveBeenCalled();
+      fs.writeFileSync(file, '{"user":1}');
+      expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: () => {} })).toBe(true);
+      expect(readProvisionRecord(mycoHome)).toBeNull();
+      expect(requests).toHaveLength(1);
+    } finally { warn.mockRestore(); }
+  });
+
+  it('keeps a joined Deployment provision record after retry with multiple survivors and no default', async () => {
+    join(A); join(B); join(C);
+    recordDefaultDeployment(A, { mycoHome });
+    globalInstaller(B).install();
+    const binaries = { 'claude-code': path.join(mycoHome, 'bin', 'myco') };
+    const pendingTrust = { 'claude-code': { action: 'review', at: 1 } };
+    recordProvision(mycoHome, { version: 'test', serverUrl: B, agents: ['claude-code'], binaries, pendingTrust }, { replace: true });
+    const file = globalInstaller(B).memberGlobalTargets().mcp[0];
+    const clean = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '\ufeff' + clean);
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toHaveLength(1);
+    expect(readDefaultDeployment(mycoHome)).toBeNull();
+    fs.writeFileSync(file, clean);
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toEqual([]);
+    expect(readProvisionRecord(mycoHome)).toMatchObject({ serverUrl: B, agents: ['claude-code'], binaries, pendingTrust });
+    expect(readProvisionRecord(mycoHome)?.pendingLogout).toBeUndefined();
+    expect(readDeploymentMembership(B, mycoHome)).not.toBeNull();
+    expect(fs.readFileSync(file, 'utf8')).toContain(B);
+    expect(keepCurrent(mycoHome, { packageRoot: PKG, binaryFound: () => true })?.serverUrl).toBe(B);
+    expect(requests).toHaveLength(1);
+  });
+
+  for (const repair of ['keep-current', 'keep-current without binary', 'refresh', 'provision', 'detected provision']) it(`holds ${repair} until the last Deployment logout finishes`, async () => {
+    join(A);
+    globalInstaller(A).install();
+    const file = globalInstaller(A).memberGlobalTargets().hooks!;
+    const clean = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '\ufeff' + clean);
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents.map(({ agent }) => agent)).toEqual(['claude-code']);
+    fs.unlinkSync(file);
+    const before = tree(home);
+    const messages: string[] = [];
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(chunk => { messages.push(String(chunk)); return true; });
+    const warn = spyOn(console, 'warn').mockImplementation(message => { messages.push(String(message)); });
+    try {
+      if (repair.startsWith('keep-current')) {
+        const result = keepCurrent(mycoHome, { packageRoot: PKG, binaryFound: () => repair === 'keep-current' });
+        expect(result?.harnesses).toEqual([expect.objectContaining({ id: 'claude-code', state: 'repair_failed', action: expect.stringContaining('waiting for') })]);
+        expect(result?.ready).toEqual([]);
+      } else if (repair === 'refresh') {
+        await memberCli(['provision', '--refresh'], { mycoHome, packageRoot: PKG, cwd: root, stdout: message => messages.push(message), stderr: message => messages.push(message) });
+      } else if (repair === 'provision') {
+        const outcome = provisionGlobally('claude-code', null, mycoHome, { packageRoot: PKG, serverUrl: A });
+        expect(outcome.kind).toBe('refused');
+        if (outcome.kind === 'refused') messages.push(outcome.detail);
+      } else {
+        const outcome = provisionAgents(['claude-code'], mycoHome, A, null, { packageRoot: PKG });
+        expect(outcome.skipped).toHaveLength(1);
+        messages.push(outcome.skipped[0].reason);
+      }
+      expect(messages.join('\n')).toContain('waiting for `myco logout ' + A + '` to finish');
+      expect(fs.existsSync(file)).toBe(false);
+      const after = tree(home);
+      for (const [name, contents] of Object.entries(before)) if (!name.startsWith('.myco/')) expect(after[name]).toBe(contents);
+      expect(Object.keys(after).filter(name => !name.startsWith('.myco/'))).toEqual(Object.keys(before).filter(name => !name.startsWith('.myco/')));
+      expect(readProvisionRecord(mycoHome)).toMatchObject({ serverUrl: A, pendingLogout: { 'claude-code': [A] } });
+    } finally { stderr.mockRestore(); warn.mockRestore(); }
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toEqual([]);
+    expect(readProvisionRecord(mycoHome)).toBeNull();
+    expect(requests).toHaveLength(1);
+  });
+
+  it('reports a typed file refusal before an unexpected logout error', async () => {
+    join(A);
+    const manifests = loadManifests();
+    const installers = manifests.map(manifest => new SymbiontInstaller(manifest, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(A));
+    for (const installer of installers) installer.install();
+    const file = installers[manifests.findIndex(manifest => manifest.name === 'copilot')].memberGlobalTargets().hooks!;
+    recordProvision(mycoHome, { version: 'test', serverUrl: A, agents: manifests.map(manifest => manifest.name) });
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '\ufeff{"user":true}');
+    const original = SymbiontInstaller.prototype.reconcileDeploymentLogout;
+    const unexpected = new TypeError('unexpected mixed logout bug');
+    const visit = spyOn(SymbiontInstaller.prototype, 'reconcileDeploymentLogout').mockImplementation(function(this: SymbiontInstaller, ...args) {
+      if (this.memberGlobalTargets().hooks === globalInstaller(A).memberGlobalTargets().hooks) throw unexpected;
+      return original.apply(this, args);
+    });
+    const messages: string[] = [];
+    try {
+      expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: message => messages.push(message) })).toBe(false);
+      expect(visit).toHaveBeenCalledTimes(manifests.length);
+      expect(messages.filter(message => message.includes(file))).toHaveLength(1);
+      expect(messages[0]).toContain(file);
+      expect(messages[0]).toContain('nothing was written there');
+      expect(messages.at(-1)).toBe('myco logout: unexpected mixed logout bug');
+      expect(readProvisionRecord(mycoHome)?.agents).toEqual(['claude-code', 'copilot']);
+    } finally { visit.mockRestore(); }
+  });
+
+  it('reports a typed file refusal before an unexpected provision-record write error', async () => {
+    join(A);
+    const copilot = new SymbiontInstaller(loadManifests().find(manifest => manifest.name === 'copilot')!, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(A);
+    globalInstaller(A).install();
+    recordProvision(mycoHome, { version: 'test', serverUrl: A, agents: ['claude-code', 'copilot'] });
+    const file = copilot.memberGlobalTargets().hooks!;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '\ufeff{"user":true}');
+    const original = fs.renameSync;
+    const failure = Object.assign(new Error('cannot save provision record'), { code: 'EPERM' });
+    const rename = spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(to) === provisionRecordPath(mycoHome)) throw failure;
+      original(from, to);
+    });
+    const messages: string[] = [];
+    try {
+      expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: message => messages.push(message) })).toBe(false);
+      expect(messages.filter(message => message.includes(file))).toHaveLength(1);
+      expect(messages[0]).toContain(file);
+      expect(messages.at(-1)).toBe('myco logout: cannot save provision record');
+      expect(fs.readFileSync(file, 'utf8')).toBe('\ufeff{"user":true}');
+      expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(true);
+    } finally { rename.mockRestore(); }
+  });
+
+  for (const repair of ['provision', 'provisionAgents', 'keep-current']) it(`repairs ${repair} after rejoining a partially logged-out Deployment without advising logout`, async () => {
+    join(A);
+    globalInstaller(A).install();
+    const file = globalInstaller(A).memberGlobalTargets().hooks!;
+    const clean = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '\ufeff' + clean);
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toHaveLength(1);
+    fs.unlinkSync(file);
+    join(A);
+    expect(readProvisionRecord(mycoHome)).toMatchObject({ serverUrl: A, agents: ['claude-code'] });
+    expect(readProvisionRecord(mycoHome)?.pendingLogout).toBeUndefined();
+    // Joined memberships admit repair while pending logout metadata remains.
+    recordProvision(mycoHome, { ...readProvisionRecord(mycoHome)!, pendingLogout: { 'claude-code': [A] } }, { replace: true });
+    const messages: string[] = [];
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(chunk => { messages.push(String(chunk)); return true; });
+    const warn = spyOn(console, 'warn').mockImplementation(line => { messages.push(String(line)); });
+    try {
+      if (repair === 'provision') {
+        const outcome = provisionGlobally('claude-code', null, mycoHome, { packageRoot: PKG, serverUrl: A, preserveOtherMemberTools: true });
+        expect(outcome.kind).toBe('provisioned');
+        if (outcome.kind !== 'unknown') messages.push(outcome.detail);
+      } else if (repair === 'provisionAgents') {
+        const outcome = provisionAgents(['claude-code'], mycoHome, A, null, { packageRoot: PKG, preserveOtherMemberTools: true });
+        expect(outcome.skipped).toEqual([]);
+        expect(outcome.provisioned).toEqual(['Claude Code']);
+      } else {
+        const result = keepCurrent(mycoHome, { packageRoot: PKG, binaryFound: () => true });
+        expect(result?.harnesses[0].state).toBe('ready');
+        messages.push(...result?.harnesses.map(fact => fact.action ?? '') ?? []);
+      }
+      expect(globalInstaller(A).inspectMemberHooks().member).toBe(true);
+      expect(messages.join('\n')).not.toContain('myco logout');
+      expect(readDeploymentMembership(A, mycoHome)).not.toBeNull();
+    } finally { stderr.mockRestore(); warn.mockRestore(); }
+  });
+
+  it('keeps pending cleanup advice specific when the record has moved to a survivor', async () => {
+    join(A); join(B);
+    recordDefaultDeployment(A, { mycoHome });
+    globalInstaller(A).install();
+    const file = globalInstaller(A).memberGlobalTargets().hooks!;
+    const clean = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '\ufeff' + clean);
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toHaveLength(1);
+    fs.writeFileSync(file, clean);
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const result = keepCurrent(mycoHome, { packageRoot: PKG, binaryFound: () => true });
+      expect(result?.serverUrl).toBe(B);
+      expect(result?.localActions?.['claude-code']).toContain('Run `myco logout ' + A + '` again; it names any file it still can\'t read.');
+      expect(result?.localActions?.['claude-code']).not.toContain('myco login');
+      expect(result?.localActions?.['claude-code']).not.toContain('mcpServers.myco');
+    } finally { stderr.mockRestore(); }
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toEqual([]);
+    expect(readProvisionRecord(mycoHome)?.serverUrl).toBe(B);
+  });
+
+  it('records the failed agent leaving destination beside the surviving default and clears it on retry', async () => {
+    join(A); join(B);
+    recordDefaultDeployment(A, { mycoHome });
+    globalInstaller(A).install();
+    const cursor = new SymbiontInstaller(loadManifests().find(manifest => manifest.name === 'cursor')!, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(A);
+    cursor.install();
+    const file = globalInstaller(A).memberGlobalTargets().mcp[0];
+    const clean = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '\ufeff' + clean);
+    const partial = await logoutDeployment(A, { mode: 'revoke' }, deps);
+    expect(partial.unreconciledAgents).toEqual([{ agent: 'claude-code', reason: expect.stringContaining(file) }]);
+    expect(readProvisionRecord(mycoHome)).toMatchObject({ serverUrl: B, agents: expect.arrayContaining(['claude-code', 'cursor']), pendingLogout: { 'claude-code': [A] } });
+    expect(fs.readFileSync(file, 'utf8')).toBe('\ufeff' + clean);
+    expect(cursor.inspectMemberMcp()[0].present).toBe(true);
+    fs.writeFileSync(file, clean);
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toEqual([]);
+    expect(readProvisionRecord(mycoHome)?.serverUrl).toBe(B);
+    expect(readProvisionRecord(mycoHome)?.pendingLogout).toBeUndefined();
+    expect(fs.readFileSync(file, 'utf8')).toContain(B);
+    expect(fs.readFileSync(file, 'utf8')).not.toContain(A);
+    expect(requests).toHaveLength(1);
+  });
+
+  for (const agent of ['copilot', 'cursor']) it(`finishes other agents and returns a retryable partial logout for BOM ${agent} hooks`, async () => {
+    join(A);
+    const manifests = loadManifests();
+    const installers = manifests.map(manifest => new SymbiontInstaller(manifest, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(A));
+    for (const installer of installers) installer.install();
+    const failed = installers[manifests.findIndex(manifest => manifest.name === agent)];
+    const file = failed.memberGlobalTargets().hooks!;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const clean = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '{"user":true}';
+    fs.writeFileSync(file, '\ufeff' + clean);
+    const before = bytes(file);
+    const binaries = Object.fromEntries(manifests.map(manifest => [manifest.name, path.join(mycoHome, 'bin', 'myco')]));
+    const pendingTrust = Object.fromEntries(manifests.map(manifest => [manifest.name, { action: 'review', at: 1 }]));
+    recordProvision(mycoHome, { version: 'test', serverUrl: A, agents: manifests.map(manifest => manifest.name), binaries, pendingTrust });
+    const visits = spyOn(SymbiontInstaller.prototype, 'reconcileDeploymentLogout');
+    const warning = spyOn(console, 'warn').mockImplementation(() => {});
+    const out: string[] = [];
+    const err: string[] = [];
+    try {
+      expect(await logoutCli([A], { ...deps, stdout: line => out.push(line), stderr: line => err.push(line) })).toBe(false);
+      expect(visits).toHaveBeenCalledTimes(manifests.length);
+      expect(bytes(file)).toEqual(before);
+      for (const [index, installer] of installers.entries()) {
+        if (manifests[index].name !== agent) expect(installer.inspectMemberHooks().member).toBe(false);
+      }
+      expect(readProvisionRecord(mycoHome)).toMatchObject({ agents: [agent], binaries: { [agent]: binaries[agent] }, pendingTrust: { [agent]: pendingTrust[agent] } });
+      expect(Object.keys(readProvisionRecord(mycoHome)!.binaries!)).toEqual([agent]);
+      expect(Object.keys(readProvisionRecord(mycoHome)!.pendingTrust!)).toEqual([agent]);
+      expect([...err, ...warning.mock.calls.map(([line]) => String(line))].filter(line => line.includes(file))).toHaveLength(1);
+      expect(err.join('\n')).toContain('nothing was written there');
+      expect(err.join('\n')).toContain('not fully reconciled');
+      expect(out.join('\n')).toContain(`Signed out of ${A}`);
+      expect(JSON.parse(fs.readFileSync(logoutJournalPath(A, mycoHome), 'utf8')).phase).toBe('config');
+      expect(readDeploymentMembership(A, mycoHome)).toBeNull();
+      const partial = await logoutDeployment(A, { mode: 'revoke' }, deps);
+      expect(partial.unreconciledAgents).toEqual([{ agent, reason: expect.stringContaining(file) }]);
+      expect(visits).toHaveBeenCalledTimes(manifests.length * 2);
+      fs.writeFileSync(file, clean);
+      expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: () => {} })).toBe(true);
+      expect(visits).toHaveBeenCalledTimes(manifests.length * 3);
+      expect(failed.inspectMemberHooks().member).toBe(false);
+      expect(readProvisionRecord(mycoHome)).toBeNull();
+      expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(false);
+      expect(requests).toHaveLength(1);
+    } finally { visits.mockRestore(); warning.mockRestore(); }
+  });
+
+  it('fails unexpected reconciliation errors after visiting every manifest and reconciling the provision record', async () => {
+    join(A);
+    globalInstaller(A).install();
+    const original = SymbiontInstaller.prototype.reconcileDeploymentLogout;
+    let visited = 0;
+    const failure = new TypeError('unexpected reconciliation bug');
+    const visits = spyOn(SymbiontInstaller.prototype, 'reconcileDeploymentLogout').mockImplementation(function(this: SymbiontInstaller, ...args) {
+      if (++visited === loadManifests().findIndex(manifest => manifest.name === 'claude-code') + 1) throw failure;
+      return original.apply(this, args);
+    });
+    try {
+      await expect(logoutDeployment(A, { mode: 'revoke' }, deps)).rejects.toBe(failure);
+      expect(visited).toBe(loadManifests().length);
+      expect(readProvisionRecord(mycoHome)?.agents).toEqual(['claude-code']);
+      expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(true);
+    } finally { visits.mockRestore(); }
+  });
+
+  it('returns a complete clean logout with every manifest visited and no provision record or journal', async () => {
+    join(A);
+    globalInstaller(A).install();
+    const visits = spyOn(SymbiontInstaller.prototype, 'reconcileDeploymentLogout');
+    const err: string[] = [];
+    try {
+      expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: line => err.push(line) })).toBe(true);
+      expect(visits).toHaveBeenCalledTimes(loadManifests().length);
+      expect(err).toEqual([]);
+      expect(globalInstaller(A).inspectMemberHooks().member).toBe(false);
+      expect(readProvisionRecord(mycoHome)).toBeNull();
+      expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(false);
+    } finally { visits.mockRestore(); }
+  });
+
+  it('keeps unreadable unrelated hooks untouched when another Deployment survives', async () => {
+    join(A); join(B);
+    const file = path.join(home, '.cursor', 'hooks.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '\ufeff{"user":true}');
+    const before = bytes(file);
+    const report = await logoutDeployment(A, { mode: 'revoke' }, deps);
+    expect(report.unreconciledAgents).toEqual([]);
+    expect(bytes(file)).toEqual(before);
+  });
+
   it('removes this machines entries while keeping stale credential-marked hooks and tools', async () => {
     join(A);
     globalInstaller(A).install();

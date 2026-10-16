@@ -47,7 +47,7 @@ afterEach(() => {
     for (const check of setupChecks(home)) {
       expect(check.detail.toLowerCase()).not.toMatch(/run `?myco doctor/);
       expect(check.detail).not.toContain('..');
-      expect(check.detail).not.toMatch(/myco member provision (?:claude-code|codex)/);
+      if (check.detail.includes('could not read')) expect(check.detail).toMatch(/Fix the file, then run `myco member provision (?:claude-code|codex)`/);
     }
   } finally {
     for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
@@ -159,7 +159,10 @@ it.skipIf(process.platform === 'win32')('reports a removed binary, an unwritable
 it('never overwrites unreadable user config and retries a failed repair without forgetting the harness', () => {
   provisionGlobally('codex', null, home, { serverUrl: SERVER });
   fs.writeFileSync(config(), 'invalid TOML [');
-  expect(keepCurrent(home)?.harnesses[0].state).toBe('repair_failed');
+  const result = keepCurrent(home);
+  expect(result?.harnesses[0]).toMatchObject({ state: 'repair_failed', action: 'Fix the file, then run `myco member provision codex`.' });
+  expect(result?.localActions?.codex).toContain('Fix the file, then run `myco member provision codex`.');
+  expect(setupChecks(home).map(check => check.detail).join('\n')).toContain('Fix the file, then run `myco member provision codex`.');
   expect(fs.readFileSync(config(), 'utf8')).toBe('invalid TOML [');
   expect(readProvisionRecord(home)?.agents).toEqual(['codex']);
 });
@@ -248,7 +251,7 @@ it('an unrepairable helper pass reaches Deployment Health through the real repor
   updateProjectContext(new MemberSpool(entry, { mycoHome: home }).dir, home, (cache) => { cache.features = [HARNESS_HEALTH_FEATURE]; });
   await runHelperVerb(['--project', entry.projectId, '--server', SERVER, '--home', home, '--stderr'], { fetch: rig.fetch, lingerMs: 0 });
   expect((await readAttention(rig.env.serverEnv, Date.now())).items).toContainEqual(expect.objectContaining({
-    kind: 'harness_needs_repair', machineId: 'machine_1', harness: 'codex', state: 'repair_failed', action: "Run myco doctor to check Codex's capture configuration",
+    kind: 'harness_needs_repair', machineId: 'machine_1', harness: 'codex', state: 'repair_failed', action: 'Fix the file, then run `myco member provision codex`.',
   }));
   expect(fs.readFileSync(config(), 'utf8')).toBe('invalid TOML [');
 });
@@ -662,8 +665,7 @@ it('reports unrepairable capture independently of held tools without taking the 
   const fact = keepCurrent(home, { binaryFound: () => true })?.harnesses[0];
   expect(fact?.state).toBe('repair_failed');
   expect(fact?.toolsDeployment).toBeUndefined();
-  expect(fact?.action).toContain('myco doctor');
-  expect(fact?.action).not.toContain('member provision');
+  expect(fact?.action).toBe('Fix the file, then run `myco member provision claude-code`.');
   expect(readProvisionRecord(home)?.version).toBe('old');
   expect(fs.readFileSync(target, 'utf8')).toBe(before);
 });
