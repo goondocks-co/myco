@@ -522,16 +522,34 @@ function provisionChosenAgent(agent: string, root: string | null, mycoHome: stri
 }
 
 /** Reconcile fresh choices and owned registrations, and hold the repair lease through the operation. */
-export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageRoot?: string; serverUrl?: string; onInspectionError?: (message: string) => void; wait?: boolean }, fn: (record: ProvisionRecord, agents: string[]) => T): T | null {
+export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageRoot?: string; serverUrl?: string; onInspectionError?: (message: string) => void; wait?: boolean }, fn: (record: ProvisionRecord, agents: string[], retiredSettingsProblems: ReadonlySet<string>) => T): T | null {
   return withMemberRepair(mycoHome, 'myco member reconcile', () => {
     const serverUrl = memberProvisionTarget(mycoHome, opts.serverUrl);
     if (serverUrl === undefined) return null;
+    const retiredSettingsProblems = new Set<string>();
+    for (const manifest of loadManifests()) {
+      if (!manifest.registration?.retiredHookSettings) continue;
+      const installer = globalInstaller(manifest, null, mycoHome, opts);
+      try {
+        let backup: CutoverBackup | undefined;
+        try {
+          const migrated = installer.reconcileRetiredHookSettings(undefined, file => {
+            backup ??= provisionBackup(mycoHome);
+            if (!backup.all.some(entry => entry.original === file)) backup.take(file);
+          }, opts.onInspectionError);
+          if (migrated === null) retiredSettingsProblems.add(manifest.name);
+        } finally { backup?.pruneUnchanged(); }
+      } catch (error) {
+        retiredSettingsProblems.add(manifest.name);
+        installer.reportRetiredSettingsProblem(error, opts.onInspectionError);
+      }
+    }
     const before = readProvisionRecordStrict(mycoHome);
     const agents = managedMemberHarnesses(mycoHome, serverUrl, opts);
     if (before === null && agents.length === 0) return null;
     const discovered = agents.filter(agent => !before?.agents.includes(agent));
     const record = reconcileProvisionAgents(mycoHome, { version: getPluginVersion(), serverUrl, discovered }, uncapturableMemberHarnesses(mycoHome, opts));
-    return fn(record, record.agents);
+    return fn(record, record.agents, retiredSettingsProblems);
   }, { wait: opts.wait });
 }
 
@@ -783,8 +801,9 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
       }
       return 'repair' as const;
     }, { wait: true });
-    if (checked !== 'repair') return checked === 'finished';
+    if (checked !== 'repair' && checked !== 'finished') return false;
     const repaired = keepCurrent(mycoHome, { packageRoot: deps.packageRoot, serverUrl: serverArg, wait: true });
+    if (checked === 'finished') return true;
     refreshed?.(repaired, mycoHome);
     if (repaired !== null) {
       if (repaired.harnesses.length === 0) out('No agent is set up for Myco on this machine; `myco member provision` sets them up.');

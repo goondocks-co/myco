@@ -42,7 +42,7 @@ function installEvidence(manifest: SymbiontManifest, binaryFound: (binary: strin
   return binaryFound(manifest.binary) || (manifest.health?.installLocations ?? []).some((location) => fs.existsSync(expandHome(location)));
 }
 
-function rememberState(mycoHome: string, result: KeepCurrentResult): void {
+function rememberState(mycoHome: string, result: KeepCurrentResult, reportedProblems: ReadonlySet<string>): void {
   const { harnesses, localActions } = result;
   const target = path.join(mycoHome, 'member', 'harness-states.json');
   let before: Record<string, unknown> = {};
@@ -52,7 +52,7 @@ function rememberState(mycoHome: string, result: KeepCurrentResult): void {
   const next = Object.fromEntries(harnesses.map(({ id, state, action, toolsDeployment }) => [id, { state, action, toolsDeployment, ...(localActions?.[id] === undefined ? {} : { localAction: localActions[id] }) }]));
   for (const fact of harnesses) {
     const words = localActions?.[fact.id] ?? (fact.state === 'held_elsewhere' ? harnessToolsElsewhere(loadManifests().find((m) => m.name === fact.id)?.displayName ?? fact.id, os.hostname(), fact.toolsDeployment!) : fact.action);
-    if (words !== undefined && JSON.stringify(before[fact.id]) !== JSON.stringify(next[fact.id])) process.stderr.write(`[myco] keep-current: ${words}\n`);
+    if (words !== undefined && !reportedProblems.has(fact.id) && JSON.stringify(before[fact.id]) !== JSON.stringify(next[fact.id])) process.stderr.write(`[myco] keep-current: ${words}\n`);
   }
   if (JSON.stringify(before) !== JSON.stringify(next)) atomicWriteFileSync(target, JSON.stringify(next));
 }
@@ -71,7 +71,7 @@ function rememberProvisionProblem(mycoHome: string, problem: string | null): voi
 /** Repair the managed harnesses through provisioning, serialized across this home's project helpers. */
 export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: string) => boolean; packageRoot?: string; serverUrl?: string; wait?: boolean } = {}): KeepCurrentResult | null {
   try {
-    return withManagedMemberHarnesses(mycoHome, { ...deps, onInspectionError: message => process.stderr.write(`[myco] keep-current: ${message}\n`) }, (record, discovered) => {
+    return withManagedMemberHarnesses(mycoHome, { ...deps, onInspectionError: message => process.stderr.write(`[myco] keep-current: ${message}\n`) }, (record, discovered, retiredSettingsProblems) => {
       rememberProvisionProblem(mycoHome, null);
       const result: KeepCurrentResult = { serverUrl: record.serverUrl, harnesses: [], ready: [] };
       const manifests = loadManifests();
@@ -136,7 +136,7 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
         result.harnesses.push({ id, provisioned: true, state, ...(toolsDeployment === undefined ? {} : { toolsDeployment }), ...(ranAt === undefined ? {} : { ranAt }), ...(result.pendingTrust?.[id] === undefined ? {} : { hookRepairAt: result.pendingTrust[id].at }), ...(action === undefined ? {} : { action }) });
       }
       if (result.harnesses.every((fact) => fact.state === 'ready' || fact.state === 'trust_required' || fact.state === 'held_elsewhere')) recordProvision(mycoHome, { serverUrl: record.serverUrl, agents: [], version: getPluginVersion() });
-      rememberState(mycoHome, result);
+      rememberState(mycoHome, result, retiredSettingsProblems);
       return result;
     });
   } catch (error) {

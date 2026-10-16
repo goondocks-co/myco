@@ -52,6 +52,8 @@ capture:
     # dogfood. Mirrors the pattern other symbionts use until verified.
     - .agents/plugins/myco/plans/
 registration:
+  settingsTarget: null
+  globalSettingsTarget: null
   # Antigravity discovers workspace plugins under .agents/plugins/<name>/.
   # The hooks file inside that bundle is hooks.json.
   hooksTarget: .agents/plugins/myco/hooks.json

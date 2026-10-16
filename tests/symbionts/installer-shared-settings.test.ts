@@ -20,6 +20,7 @@ const CLAUDE_MANIFEST = symbiontManifest({
   settingsPath: '.claude/settings.json',
   hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
   registration: {
+    hooksContainSettings: true,
     hooksTarget: '.claude/settings.json',
     mcpTarget: '.mcp.json',
     skillsTarget: '.claude/skills',
@@ -87,6 +88,7 @@ const MCP_BATCHED_MANIFEST = symbiontManifest({
   settingsPath: '.mcpbatched/config.json',
   hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
   registration: {
+    hooksContainSettings: true,
     hooksTarget: '.mcpbatched/config.json',
     mcpTarget: '.mcpbatched/config.json',
     mcpFormat: 'json',
@@ -105,6 +107,7 @@ const COLOCATED_MANIFEST = symbiontManifest({
   settingsPath: '.clibatched/config.json',
   hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
   registration: {
+    hooksContainSettings: true,
     hooksTarget: '.clibatched/config.json',
     mcpTarget: '.clibatched/config.json',
     mcpFormat: 'json',
@@ -121,6 +124,7 @@ const GEMINI_MANIFEST = symbiontManifest({
   pluginRootEnvVar: 'GEMINI_PLUGIN_ROOT',
   hookFields: { transcriptPath: 'transcript_path', lastResponse: 'last_assistant_message', sessionId: 'session_id' },
   registration: {
+    hooksContainSettings: true,
     hooksTarget: '.gemini/settings.json',
     mcpTarget: '.gemini/settings.json',
     skillsTarget: '.agents/skills',

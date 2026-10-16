@@ -17,6 +17,7 @@ import { getPluginVersion } from '@myco/version.js';
 import { assertSafeProjectRoot } from '../project-root.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey, readTomlSectionKeyLine } from './toml-helpers.js';
 import { deepMergeSettingsWithAudit, emptyJsonAudit, removeAuditedSettings, type JsonSettingsAudit, type SettingsFileAudit } from './settings-merge.js';
+import { retiredHookSettings, type RetiredSettingsConflict } from './retired-hook-settings.js';
 import { readJsonFile, writeJsonFile, writeOrDeleteJsonFile } from './json-helpers.js';
 import { isMycoHookCommand, isMycoHookGroup, withoutMycoHooks, MYCO_MANAGED_MARKER } from './install-helpers.js';
 import { hookCommands, memberHookTemplate } from './member-hooks.js';
@@ -46,6 +47,17 @@ export class MemberProvisionConflictError extends Error {
   constructor(readonly problem: string, readonly remedy: string, options?: ErrorOptions) {
     super(joinSentences(problem, remedy), options);
   }
+}
+
+export class MemberRetiredSettingsRefusal extends MemberProvisionConflictError {
+  constructor(readonly file: string, cause: unknown) {
+    super(`Could not reconcile retired settings in ${file} (${firstLine(cause)}).`, 'Review this file before changing its settings.', { cause });
+  }
+}
+
+interface RetiredSettingsReport {
+  values: Record<string, string[]>;
+  problem?: string;
 }
 
 interface MemberToolsRecovery { address: string; file: string; entry: string }
@@ -340,9 +352,10 @@ export class SymbiontInstaller {
       const hooks = this.writeMemberPlugin(scan);
       return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp(scan) });
     }
-    if (this.renderMemberHooks('registry') === null) return emptyInstallResult();
+    if (this.renderMemberHooks('registry') === null) return { ...emptyInstallResult(), settings: this.migrateRetiredHookSettings(scan) };
     this.assertMemberMcpWritable(scan);
-    const settings = this.installSettings(scan);
+    const migrated = this.migrateRetiredHookSettings(scan);
+    const settings = this.installSettings(scan) || migrated;
     const hooks = this.installMemberHooks(scan);
     return this.finishMemberInstall({ ...emptyInstallResult(), hooks, mcp: this.installMemberMcp(scan), settings });
   }
@@ -720,6 +733,7 @@ export class SymbiontInstaller {
     const scan = this.scanMemberRegistrations();
     if (!keepHooks) this.preflightMemberSettings();
     this.forDeployment(nextDefault ?? leavingUrl).replacingDeployment(leavingUrl);
+    this.reconcileRetiredHookSettings(scan);
     this.reconcileDeploymentMcp(leavingUrl, nextDefault, !keepHooks, scan);
     if (!keepHooks) {
       this.assertGlobalMemberOwnership('hooks', scan);
@@ -888,7 +902,114 @@ export class SymbiontInstaller {
     return existing !== null && Object.entries(expected).every(([key, value]) => isDeepStrictEqual(existing[key], value));
   }
 
+  private retiredSettingsPlan(): { target: string; text: string; changed: boolean; conflicts: RetiredSettingsConflict[] } | null {
+    const reg = this.manifest.registration;
+    const target = this.resolveAbsoluteTarget('hooks');
+    if (target === null || reg?.hooksContainSettings || !reg?.retiredHookSettings) return null;
+    try {
+      const raw = fs.readFileSync(target, 'utf8');
+      const { text, conflicts } = retiredHookSettings(raw, reg.retiredHookSettings);
+      return { target, text, changed: text !== raw, conflicts };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw new MemberRetiredSettingsRefusal(target, error);
+    }
+  }
+
+  private retiredSettingsReportPath(): string {
+    return path.join(this.memberHomeDir(), 'installer-audit', `${this.manifest.name}-retired-hook-settings.json`);
+  }
+
+  private retiredSettingsReported(): RetiredSettingsReport {
+    try {
+      const report: unknown = JSON.parse(fs.readFileSync(this.retiredSettingsReportPath(), 'utf8'));
+      if (Array.isArray(report) && report.every(key => typeof key === 'string')) return { values: {} };
+      if (report === null || typeof report !== 'object' || !('values' in report)
+        || report.values === null || typeof report.values !== 'object' || Array.isArray(report.values)
+        || !Object.values(report.values).every(hashes => Array.isArray(hashes) && hashes.every(hash => typeof hash === 'string'))
+        || 'problem' in report && typeof report.problem !== 'string') throw new Error('Invalid retired settings report');
+      return report as RetiredSettingsReport;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { values: {} };
+      throw new MemberRetiredSettingsRefusal(this.retiredSettingsReportPath(), error);
+    }
+  }
+
+  private writeRetiredSettingsReport(report: RetiredSettingsReport): void {
+    const file = this.retiredSettingsReportPath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    atomicWriteFileSync(file, JSON.stringify(report) + '\n');
+  }
+
+  reportRetiredSettingsProblem(error: unknown, report: (message: string) => void = console.warn): void {
+    const file = this.resolveAbsoluteTarget('hooks');
+    const refusal = error instanceof MemberRetiredSettingsRefusal ? error : new MemberRetiredSettingsRefusal(file ?? this.manifest.name, error);
+    try {
+      const saved = this.retiredSettingsReported();
+      if (saved.problem === refusal.message) return;
+      this.writeRetiredSettingsReport({ ...saved, problem: refusal.message });
+    } catch (diagnosticError) {
+      report(`${this.manifest.displayName}: ${refusal.message} Could not record this problem (${firstLine(diagnosticError)}).`);
+      return;
+    }
+    report(`${this.manifest.displayName}: ${refusal.message}`);
+  }
+
+  migrateRetiredHookSettings(scan?: MemberRegistrationScan, beforeWrite?: (file: string) => void): boolean {
+    if (!this.manifest.registration?.retiredHookSettings) return false;
+    const plan = this.retiredSettingsPlan();
+    try {
+      if (plan === null || !plan.changed && plan.conflicts.length === 0) {
+        const saved = this.retiredSettingsReported();
+        if (saved.problem !== undefined) {
+          delete saved.problem;
+          this.writeRetiredSettingsReport(saved);
+        }
+        return false;
+      }
+      const registrations = scan ?? this.scanMemberRegistrations();
+      this.assertGlobalMemberOwnership('hooks', registrations);
+      return this.writeRegistrationTarget(plan.target, 'hooks', registrations, target => {
+        const saved = this.retiredSettingsReported();
+        const pending = plan.conflicts.filter(({ key, hash }) => !saved.values[key]?.includes(hash));
+        for (const { key, hash } of pending) {
+          console.warn(`${this.manifest.displayName}: left user-changed ${key} in ${target}; review this setting manually.`);
+          saved.values[key] = [...saved.values[key] ?? [], hash];
+        }
+        if (pending.length > 0 || saved.problem !== undefined) {
+          delete saved.problem;
+          this.writeRetiredSettingsReport(saved);
+        }
+        if (plan.changed) {
+          beforeWrite?.(target);
+          atomicWriteFileSync(target, plan.text);
+        }
+        return plan.changed;
+      });
+    } catch (error) {
+      throw error instanceof MemberRetiredSettingsRefusal ? error : new MemberRetiredSettingsRefusal(plan?.target ?? this.retiredSettingsReportPath(), error);
+    }
+  }
+
+  /** Reconcile retired output, reporting a refusal without blocking the caller's other work. */
+  reconcileRetiredHookSettings(scan?: MemberRegistrationScan, beforeWrite?: (file: string) => void, report?: (message: string) => void): boolean | null {
+    try { return this.migrateRetiredHookSettings(scan, beforeWrite); }
+    catch (error) {
+      if (!(error instanceof MemberRetiredSettingsRefusal)) throw error;
+      this.reportRetiredSettingsProblem(error, report);
+      return null;
+    }
+  }
+
+  retiredHookSettingsCurrent(): boolean {
+    const retired = this.retiredSettingsPlan();
+    if (retired === null || !retired.changed && retired.conflicts.length === 0) return true;
+    const saved = this.retiredSettingsReported();
+    return !retired.changed && retired.conflicts.every(({ key, hash }) => saved.values[key]?.includes(hash));
+  }
+
   private memberSettingsCurrent(): boolean {
+    if (!this.retiredHookSettingsCurrent()) return false;
     const target = this.resolveAbsoluteTarget('settings');
     const template = this.loadTemplate('settings');
     if (target === null || template === null) return true;
@@ -1028,6 +1149,7 @@ export class SymbiontInstaller {
 
   uninstallMemberRegistration(): void {
     this.assertMemberUninstallable();
+    this.reconcileRetiredHookSettings();
     this.uninstallMemberHooks();
     this.uninstallMemberMcp();
     this.uninstallSettings();

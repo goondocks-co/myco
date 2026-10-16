@@ -77,6 +77,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "retiredGlobalSkillsTargets": [
         "~/.gemini/antigravity/skills"
       ],
+      "globalSettingsTarget": null,
       "pluginManifestTarget": ".agents/plugins/myco/plugin.json",
       "globalPluginManifestTarget": "~/.gemini/config/plugins/myco/plugin.json",
       "hooksFormat": "plugin-file",
@@ -87,6 +88,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpTarget": ".agents/plugins/myco/mcp_config.json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
+      "settingsTarget": null,
       "settingsFormat": "json"
     },
     "capabilities": {
@@ -627,6 +629,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       ],
       "globalSkillsTarget": "~/.claude/skills",
       "globalSettingsTarget": "~/.claude/settings.json",
+      "hooksContainSettings": true,
       "hooksFormat": "json",
       "mcpTarget": ".mcp.json",
       "mcpFormat": "json",
@@ -1066,6 +1069,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ],
       "globalSkillsTarget": "~/.cline/skills",
+      "globalSettingsTarget": null,
       "hooksFormat": "plugin-file",
       "hookResponse": {
         "format": "json",
@@ -1078,6 +1082,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
       "skillsTarget": ".cline/skills",
+      "settingsTarget": null,
       "settingsFormat": "json"
     },
     "capabilities": {
@@ -1696,7 +1701,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "retiredGlobalSkillsTargets": [
         "~/.copilot/skills"
       ],
-      "globalSettingsTarget": "~/.copilot/hooks/myco-hooks.json",
+      "globalSettingsTarget": null,
+      "retiredHookSettings": {
+        "chat.tools.terminal.autoApprove": {
+          "myco": true,
+          "myco-dev": true
+        }
+      },
       "hooksFormat": "json",
       "hookResponse": {
         "format": "plain-text",
@@ -1708,7 +1719,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
       "skillsTarget": ".agents/skills",
-      "settingsTarget": ".vscode/settings.json",
+      "settingsTarget": null,
       "settingsFormat": "json",
       "instructionsFile": ".github/copilot-instructions.md"
     },
@@ -2030,7 +2041,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "retiredGlobalSkillsTargets": [
         "~/.cursor/skills"
       ],
-      "globalSettingsTarget": "~/.cursor/hooks.json",
+      "globalSettingsTarget": null,
+      "retiredHookSettings": {
+        "chat.tools.terminal.autoApprove": {
+          "myco": true,
+          "myco-dev": true
+        }
+      },
       "hooksFormat": "json",
       "hooksConfigVersion": 1,
       "hookResponse": {
@@ -2051,7 +2068,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "retiredSkillsTargets": [
         ".cursor/skills"
       ],
-      "settingsTarget": ".cursor/settings.json",
+      "settingsTarget": null,
       "settingsFormat": "json"
     },
     "capabilities": {
@@ -2375,6 +2392,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "retiredGlobalSkillsTargets": [
         "~/.config/opencode/skills"
       ],
+      "globalSettingsTarget": null,
       "hooksFormat": "plugin-file",
       "hookResponse": {
         "format": "json",
@@ -2733,6 +2751,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "retiredGlobalSkillsTargets": [
         "~/.pi/agent/skills"
       ],
+      "globalSettingsTarget": null,
       "hooksFormat": "plugin-file",
       "hookResponse": {
         "format": "json",
@@ -2745,6 +2764,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
       "skillsTarget": ".agents/skills",
+      "settingsTarget": null,
       "settingsFormat": "json"
     },
     "capabilities": {
@@ -2868,7 +2888,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
       "skillsTarget": ".agents/skills",
-      "settingsTarget": ".windsurf/settings.json",
+      "settingsTarget": null,
       "settingsFormat": "json"
     },
     "capabilities": {
