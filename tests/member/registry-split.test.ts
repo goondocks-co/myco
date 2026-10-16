@@ -13,7 +13,7 @@ import path from 'node:path';
 import { canonicalRootIdentity } from '@myco/utils/git-files.js';
 import {
   deploymentPath, deploymentsDir, listRegistryEntries, migrateRegistry, projectsDir, readDeploymentMembership,
-  readRegistryEntry, registryEntryPath, registryKeyFor, removeRegistryEntry, writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION, TOKEN_SCOPED_FIELDS, type RegistryEntry,
+  readRegistryEntry, registryEntryPath, registryKeyFor, removeRegistryEntry, writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION, BINDING_FORMAT_VERSION, TOKEN_SCOPED_FIELDS, type RegistryEntry,
 } from '@myco/member/registry.js';
 import { ensureMemberDir } from '@myco/member/store.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
@@ -64,7 +64,7 @@ describe('registry v1 → v2', () => {
 
     // On disk it is now two files: the project file holds no credential at all.
     const binding = read(registryEntryPath(root, mycoHome));
-    expect(binding).toEqual({ version: REGISTRY_VERSION, root: canonicalRootIdentity(root), ...(canonicalRootIdentity(root) !== root ? { displayRoot: root } : {}), projectId: 'proj_1', serverUrl: 'https://s.example', joinedAt: 1, updatedAt: 1 });
+    expect(binding).toEqual({ version: BINDING_FORMAT_VERSION, root: canonicalRootIdentity(root), ...(canonicalRootIdentity(root) !== root ? { displayRoot: root } : {}), projectId: 'proj_1', serverUrl: 'https://s.example', joinedAt: 1, updatedAt: 1 });
     expect(Object.keys(binding)).not.toContain('token');
     expect(read(deploymentPath('https://s.example', mycoHome))).toMatchObject({ version: REGISTRY_VERSION, serverUrl: 'https://s.example', token: v1.token, machineId: 'm1' });
   });
@@ -171,7 +171,7 @@ describe('a v1 entry still captures', () => {
     expect(rig.rows('events')).toBe(1);
     // And the upgrade happened on the way through, once.
     expect(fs.readdirSync(deploymentsDir(mycoHome)).filter((f) => f.endsWith('.json'))).toHaveLength(1);
-    expect(read(registryEntryPath(root, mycoHome)).version).toBe(REGISTRY_VERSION);
+    expect(read(registryEntryPath(root, mycoHome)).version).toBe(BINDING_FORMAT_VERSION);
   });
 });
 
@@ -224,12 +224,12 @@ describe('registry split', () => {
     expect(readRegistryEntry(root, mycoHome)).not.toBeNull();
 
     const binding = read(registryEntryPath(root, mycoHome));
-    fs.writeFileSync(registryEntryPath(root, mycoHome), `${JSON.stringify({ ...binding, version: REGISTRY_VERSION + 1, projectId: 'proj_from_the_future' }, null, 2)}\n`, { mode: 0o600 });
+    fs.writeFileSync(registryEntryPath(root, mycoHome), `${JSON.stringify({ ...binding, version: BINDING_FORMAT_VERSION + 1, projectId: 'proj_from_the_future' }, null, 2)}\n`, { mode: 0o600 });
 
     expect(readRegistryEntry(root, mycoHome)).toBeNull();
     expect(listRegistryEntries(mycoHome)).toEqual([]);
     // And it is left exactly as the newer build wrote it: a downgrade never rewrites forward-written state.
-    expect(read(registryEntryPath(root, mycoHome))).toMatchObject({ version: REGISTRY_VERSION + 1, projectId: 'proj_from_the_future' });
+    expect(read(registryEntryPath(root, mycoHome))).toMatchObject({ version: BINDING_FORMAT_VERSION + 1, projectId: 'proj_from_the_future' });
   });
 
   it('merges into an existing membership instead of replacing it, so binding a second project keeps the first project working', () => {

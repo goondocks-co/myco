@@ -24,13 +24,15 @@ import { pinLegacySpoolDestinationForProject } from './spool-migration.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { canonicalRootIdentity } from '../utils/git-files.js';
+import { directoryWitnesses, filesystemWitnessesCurrent, type FilesystemWitness } from '../utils/filesystem-proof.js';
+import { canonicalRootIdentity, rootIdentityMayMatch } from '../utils/git-files.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync, type AcquireResult } from '../utils/lifecycle-lock.js';
 import { isProjectId, type RefreshTerminalReason } from './constants.js';
 import { assertMemberPathContained, pathIsAbsent, ensureMemberDir, ensurePrivateFile, memberRoot, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
 
 export const REGISTRY_VERSION = 2;
+export const BINDING_FORMAT_VERSION = 3;
 const PROJECTS_DIRNAME = 'projects';
 const DEPLOYMENTS_DIRNAME = 'deployments';
 const REGISTRY_LOCK = '.lock';
@@ -201,7 +203,7 @@ function isEntry(value: unknown): value is RegistryEntry {
 /** A v2 binding on disk: a root, its Project, and the Deployment holding the credential. */
 function isBinding(value: unknown): value is ProjectBinding {
   const version = readableVersion(value);
-  if (version === null || version > REGISTRY_VERSION) return false;
+  if (version === null || version > BINDING_FORMAT_VERSION) return false;
   const b = value as Record<string, unknown>;
   return typeof b.root === 'string' && b.root.length > 0
     && (b.displayRoot === undefined || typeof b.displayRoot === 'string' && b.displayRoot.length > 0)
@@ -261,10 +263,10 @@ export function readDeploymentMembership(serverUrl: string, mycoHome: string = r
 }
 
 /** A binding and its membership as one record; null when the membership is gone, which is a machine that has not joined this Deployment. */
-function compose(binding: ProjectBinding, mycoHome: string, identity: string): RegistryEntry | null {
-  if (canonicalRootIdentity(binding.root) !== identity) return null;
+function compose(binding: ProjectBinding, mycoHome: string, identity: string, queriedRoot?: string): RegistryEntry | null {
   const display = binding.displayRoot ?? binding.root;
-  const displayMatches = canonicalRootIdentity(display) === identity;
+  let displayMatches = false;
+  try { displayMatches = display === binding.root || display === queriedRoot || canonicalRootIdentity(display) === identity; } catch { /* The canonical binding remains authoritative. */ }
   const membership = readDeploymentMembership(binding.serverUrl, mycoHome);
   if (membership === null) return null;
   // The lookup is by a truncated hash of the URL, so agreement is asserted rather than
@@ -319,7 +321,7 @@ function decompose(entry: RegistryEntry): { membership: DeploymentMembership; bi
       updatedAt: entry.updatedAt,
     },
     binding: {
-      version: REGISTRY_VERSION,
+      version: BINDING_FORMAT_VERSION,
       root,
       ...(entry.displayRoot !== undefined || root !== entry.root ? { displayRoot: entry.displayRoot ?? entry.root } : {}),
       projectId: entry.projectId,
@@ -363,6 +365,7 @@ function migrateRegistryLocked(mycoHome: string): { upgraded: number; consolidat
     legacy.push({ file, entry: read.value });
   }
   if (legacy.length === 0) return { upgraded: 0, consolidated: 0 };
+  invalidateCanonicalRegistry(mycoHome);
 
   const byDeployment = new Map<string, RegistryEntry>();
   for (const { entry } of legacy) {
@@ -378,7 +381,7 @@ function migrateRegistryLocked(mycoHome: string): { upgraded: number; consolidat
   }
   for (const { file, entry } of legacy) {
     const { binding } = decompose(entry);
-    writePrivateFileAtomic(file, `${JSON.stringify(binding, null, 2)}\n`);
+    writePrivateFileAtomic(file, `${JSON.stringify({ ...binding, version: REGISTRY_VERSION }, null, 2)}\n`);
   }
   const consolidated = legacy.length - byDeployment.size;
   if (consolidated > 0) {
@@ -401,11 +404,13 @@ function legacyRegistryKey(root: string): string {
 
 type RootBindingFile = { file: string; binding: ProjectBinding; identity: string };
 type BindingRead = { ok: true; binding: ProjectBinding; identity: string }
-  | { ok: false; reason: RegistryRefusal; stderrReason: RegistryRefusal; detail?: string };
+  | { ok: false; reason: RegistryRefusal; stderrReason: RegistryRefusal; detail?: string; roots?: string[] };
 const bindingReadCache = new Map<string, { stamp: string; read: Extract<BindingRead, { ok: true }> }>();
 
 /** Metadata guards cached parses against replacement, in-place edits and permission changes. */
-function readBindingFile(file: string, name: string, mycoHome: string, directoryChecked = false): BindingRead {
+type QueriedIdentity = { root: string; value: string };
+
+function readBindingFile(file: string, name: string, mycoHome: string, directoryChecked = false, queried?: QueriedIdentity): BindingRead {
   const malformed = (detail: string): BindingRead => ({ ok: false, reason: 'malformed', stderrReason: 'malformed', detail });
   let stamp: string | undefined;
   try {
@@ -414,9 +419,8 @@ function readBindingFile(file: string, name: string, mycoHome: string, directory
     if (stat.isFile()) {
       stamp = [stat.dev, stat.ino, stat.size, stat.mode, stat.mtimeNs, stat.ctimeNs].join(':');
       const cached = bindingReadCache.get(file);
-      if (cached?.stamp === stamp && cached.read.binding.root === cached.read.identity) return cached.read;
-    }
-    assertMemberPathContained(file, mycoHome);
+      if (cached?.stamp === stamp) return validateBinding(cached.read.binding, name, queried);
+    } else assertMemberPathContained(file, mycoHome);
   } catch (error) {
     const reason = (error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(file) ? 'missing' : 'unreadable';
     return { ok: false, reason, stderrReason: reason };
@@ -426,15 +430,75 @@ function readBindingFile(file: string, name: string, mycoHome: string, directory
   if (!isBinding(read.value)) return malformed('not a registry entry');
   const binding = read.value;
   if (!isProjectId(binding.projectId)) return malformed('project id out of grammar');
-  const identity = canonicalRootIdentity(binding.root);
-  if (![legacyRegistryKey(identity), legacyRegistryKey(binding.displayRoot ?? binding.root)].some(key => name === `${key}.json`)) return malformed('root mismatch');
-  const result = { ok: true as const, binding, identity };
-  if (stamp !== undefined) bindingReadCache.set(file, { stamp, read: result });
+  const result = validateBinding(binding, name, queried);
+  if (stamp !== undefined && result.ok) bindingReadCache.set(file, { stamp, read: result });
   return result;
 }
 
+function validateBinding(binding: ProjectBinding, name: string, queried?: QueriedIdentity): BindingRead {
+  const roots = [binding.root, ...(binding.displayRoot ? [binding.displayRoot] : [])];
+  if (binding.version >= BINDING_FORMAT_VERSION && name !== legacyRegistryKey(binding.root) + '.json') {
+    return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: 'root mismatch' };
+  }
+  try {
+    const identity = queried !== undefined && (binding.root === queried.root || binding.root === queried.value)
+      ? queried.value : canonicalRootIdentity(binding.root);
+    if (![legacyRegistryKey(identity), legacyRegistryKey(binding.root), legacyRegistryKey(binding.displayRoot ?? binding.root)].some(key => name === `${key}.json`)) {
+      return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: 'root mismatch' };
+    }
+    return { ok: true, binding, identity };
+  } catch (error) {
+    return { ok: false, reason: 'unreadable', stderrReason: 'unreadable', detail: (error as NodeJS.ErrnoException).code ?? 'identity unavailable', roots };
+  }
+}
+
+type UnavailableBinding = { file: string; roots?: string[]; reason: RegistryRefusal; detail?: string };
+
+function unavailableMayName(record: UnavailableBinding, root: string, identity: string): boolean {
+  if ([legacyRegistryKey(root), legacyRegistryKey(identity)].some(key => path.basename(record.file) === `${key}.json`)) return true;
+  return record.roots?.some(saved => rootIdentityMayMatch(saved, identity, root)) ?? false;
+}
+
+const canonicalProofPath = (home: string): string => path.join(memberRoot(home), 'registry-canonical');
+const registryStamp = (home: string): string => {
+  const stat = fs.statSync(projectsDir(home), { bigint: true });
+  return [stat.dev, stat.ino, stat.mtimeNs, stat.ctimeNs].join(':');
+};
+
+interface CanonicalRegistryProof { version: number; stamp: string; witnesses: FilesystemWitness[] }
+
+function canonicalRegistryProof(home: string): CanonicalRegistryProof | null {
+  try {
+    assertMemberPathContained(canonicalProofPath(home), home);
+    const proof = readPrivateJson<CanonicalRegistryProof>(canonicalProofPath(home));
+    return proof.ok && proof.value.version === 3 && proof.value.stamp === registryStamp(home)
+      && Array.isArray(proof.value.witnesses) && filesystemWitnessesCurrent(proof.value.witnesses) ? proof.value : null;
+  } catch { return null; }
+}
+
+function invalidateCanonicalRegistry(home: string): void {
+  assertMemberPathContained(path.dirname(canonicalProofPath(home)), home);
+  fs.rmSync(canonicalProofPath(home), { force: true });
+}
+
+/** Caller holds the registry lock; the proof certifies a fully canonical directory generation. */
+function certifyCanonicalRegistry(home: string): void {
+  try {
+    const snapshot = rootBindingFiles(home);
+    if (snapshot.unavailable.length || snapshot.records.some(record => record.binding.version !== BINDING_FORMAT_VERSION
+      || record.binding.root !== record.identity || path.basename(record.file) !== `${legacyRegistryKey(record.identity)}.json`)) return;
+    const stamp = registryStamp(home);
+    const witnesses = directoryWitnesses(snapshot.records.map(record => path.dirname(record.binding.root)));
+    if (snapshot.records.some(record => canonicalRootIdentity(record.binding.root) !== record.identity)
+      || !filesystemWitnessesCurrent(witnesses) || registryStamp(home) !== stamp) return;
+    writePrivateFileAtomic(canonicalProofPath(home), JSON.stringify({ version: 3, stamp, witnesses }));
+  } catch (error) {
+    reportSkippedPrivateFile('registry identity cache', canonicalProofPath(home), { reason: 'unreadable', detail: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 /** Every binding is accounted for; an unreadable predecessor cannot prove a repository unconnected. */
-function rootBindingFiles(mycoHome: string): { records: RootBindingFile[]; unavailable: string[] } {
+function rootBindingFiles(mycoHome: string): { records: RootBindingFile[]; unavailable: UnavailableBinding[] } {
   const dir = projectsDir(mycoHome);
   assertMemberPathContained(dir, mycoHome);
   let names: string[];
@@ -444,12 +508,23 @@ function rootBindingFiles(mycoHome: string): { records: RootBindingFile[]; unava
     throw error;
   }
   const records: RootBindingFile[] = [];
-  const unavailable: string[] = [];
+  const unavailable: UnavailableBinding[] = [];
   for (const name of names.filter(name => name.endsWith('.json'))) {
     const file = path.join(dir, name);
     const read = readBindingFile(file, name, mycoHome, true);
     if (read.ok) records.push({ file, binding: read.binding, identity: read.identity });
-    else if (read.reason !== 'missing') unavailable.push(file);
+    else if (read.reason !== 'missing') {
+      let roots = read.roots;
+      if (roots === undefined && read.detail !== 'root mismatch') {
+        try {
+          assertMemberPathContained(file, mycoHome);
+          if (!fs.lstatSync(file).isFile()) throw new Error('Not a binding file');
+          const value: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+          if (fs.lstatSync(file).isFile() && isBinding(value)) roots = [value.root, ...(value.displayRoot ? [value.displayRoot] : [])];
+        } catch { /* The filename still identifies its own unavailable binding. */ }
+      }
+      unavailable.push({ file, roots, reason: read.stderrReason, detail: read.detail });
+    }
   }
   return { records, unavailable };
 }
@@ -468,15 +543,15 @@ function bindingConflict(records: readonly RootBindingFile[]): RegistryConflict 
 }
 
 export function registryConflictWords(conflict: RegistryConflict): string {
-  return `Repository connection conflict: ${conflict.bindings.map(b => `"${b.root}" connects to ${b.serverUrl} / ${b.projectId}`).join('; ')}. Capture and automatic connection are stopped; choose the intended connection and remove the other repository binding.`;
+  return `Repository connection conflict: ${conflict.bindings.map(b => `"${b.root}" connects to ${b.serverUrl} / ${b.projectId}`).join('; ')}. Capture and automatic connection are stopped; run \`myco member join <server-url> --project <project>\` from this repository to choose its connection, or \`myco member leave\` to disconnect it.`;
 }
 
 /** Caller holds the registry lock. The canonical file lands before any predecessor is removed. */
-function migrateRootBindings(root: string, mycoHome: string, opts: { admitWrite?: boolean } = {}): void {
+function migrateRootBindings(root: string, mycoHome: string): void {
   const identity = canonicalRootIdentity(root);
   const snapshot = rootBindingFiles(mycoHome);
   const target = registryEntryPath(root, mycoHome);
-  if (opts.admitWrite && snapshot.unavailable.some(file => file !== target)) throw new Error('Repository connections could not all be read; restore the unreadable binding before changing a connection');
+  if (snapshot.unavailable.some(record => unavailableMayName(record, root, identity) && record.file !== target)) throw new Error('This repository connection could not be read; run `myco member join` here to repair it');
   let records = snapshot.records.filter(record => record.identity === identity);
   const conflict = bindingConflict(records);
   if (conflict) throw new Error(registryConflictWords(conflict));
@@ -487,13 +562,15 @@ function migrateRootBindings(root: string, mycoHome: string, opts: { admitWrite?
   if (records.length === 0) return;
   const file = registryEntryPath(identity, mycoHome);
   const chosen = records.find(r => r.file === file) ?? records.reduce((a, b) => a.binding.updatedAt >= b.binding.updatedAt ? a : b);
-  const binding: ProjectBinding = { ...chosen.binding, root: identity,
+  const binding: ProjectBinding = { ...chosen.binding, version: BINDING_FORMAT_VERSION, root: identity,
     ...(chosen.binding.displayRoot !== undefined || chosen.binding.root !== identity ? { displayRoot: chosen.binding.displayRoot ?? chosen.binding.root } : {}) };
   if (chosen.file !== file || JSON.stringify(chosen.binding) !== JSON.stringify(binding)) {
     if (fs.existsSync(file) && !records.some(r => r.file === file)) throw new Error(`Could not read repository binding ${file}; migration refused`);
+    invalidateCanonicalRegistry(mycoHome);
     writePrivateFileAtomic(file, `${JSON.stringify(binding, null, 2)}\n`);
   }
   for (const record of records) if (record.file !== file) fs.unlinkSync(record.file);
+  certifyCanonicalRegistry(mycoHome);
 }
 
 /** Run `fn` holding the registry lock (blocking). */
@@ -520,11 +597,18 @@ export function acquireRegistryLock(mycoHome: string = resolveMycoHome()): Acqui
  * Rotation goes through here, so a rotated token reaches every project bound to
  * that Deployment at once: they read one membership, not a copy each.
  */
-export function writeRegistryEntry(entry: RegistryEntry, opts: { mycoHome?: string; locked?: boolean } = {}): void {
+export function writeRegistryEntry(entry: RegistryEntry, opts: { mycoHome?: string; locked?: boolean; resolveConflict?: boolean } = {}): void {
   const mycoHome = opts.mycoHome ?? resolveMycoHome();
   const write = () => {
     prepareRegistryDir(mycoHome);
-    migrateRootBindings(entry.root, mycoHome, { admitWrite: true });
+    const identity = canonicalRootIdentity(entry.root);
+    const snapshot = opts.resolveConflict ? rootBindingFiles(mycoHome) : null;
+    const predecessors = snapshot === null ? [] : [
+      ...snapshot.records.filter(record => record.identity === identity).map(record => record.file),
+      ...snapshot.unavailable.filter(record => unavailableMayName(record, entry.root, identity)).map(record => record.file),
+    ];
+    if (!opts.resolveConflict) migrateRootBindings(entry.root, mycoHome);
+    invalidateCanonicalRegistry(mycoHome);
     pinLegacySpoolDestinationForProject(entry.projectId, mycoHome);
     const { membership, binding } = decompose(entry);
     // The membership is MERGED, never replaced. One membership serves every project
@@ -538,7 +622,10 @@ export function writeRegistryEntry(entry: RegistryEntry, opts: { mycoHome?: stri
     // binding knows, so an existing membership keeps the instant it already has.
     const merged = mergeMembership(readDeploymentMembership(entry.serverUrl, mycoHome), membership);
     writePrivateFileAtomic(deploymentPath(entry.serverUrl, mycoHome), `${JSON.stringify(merged, null, 2)}\n`);
-    writePrivateFileAtomic(registryEntryPath(entry.root, mycoHome), `${JSON.stringify(binding, null, 2)}\n`);
+    const file = registryEntryPath(entry.root, mycoHome);
+    writePrivateFileAtomic(file, `${JSON.stringify(binding, null, 2)}\n`);
+    for (const predecessor of predecessors) if (predecessor !== file) fs.unlinkSync(predecessor);
+    certifyCanonicalRegistry(mycoHome);
   };
   if (opts.locked) write();
   else withRegistryLock(write, mycoHome);
@@ -581,17 +668,25 @@ export function writeDeploymentMembership(
  */
 export function removeRegistryEntry(root: string, mycoHome: string = resolveMycoHome()): boolean {
   return withRegistryLock(() => {
-    migrateRootBindings(root, mycoHome);
-    const file = registryEntryPath(root, mycoHome);
-    if (!fs.existsSync(file)) return false;
-    const read = readPrivateJson<ProjectBinding>(file);
-    const serverUrl = read.ok && isBinding(read.value) ? read.value.serverUrl : null;
-    if (read.ok && isBinding(read.value)) pinLegacySpoolDestinationForProject(read.value.projectId, mycoHome);
-    fs.unlinkSync(file);
-    // The machine's default Deployment keeps its membership with no binding left: new repositories join through it.
-    if (serverUrl !== null && !anyBindingMayName(serverUrl, mycoHome) && !isDefaultDeployment(serverUrl, mycoHome)) {
+    const identity = canonicalRootIdentity(root);
+    const snapshot = rootBindingFiles(mycoHome);
+    const files = new Set(snapshot.records.filter(record => record.identity === identity).map(record => record.file));
+    for (const record of snapshot.unavailable) if (unavailableMayName(record, root, identity)) files.add(record.file);
+    if (files.size === 0) return false;
+    invalidateCanonicalRegistry(mycoHome);
+    const servers = new Set<string>();
+    for (const file of files) {
+      const read = readPrivateJson<ProjectBinding>(file);
+      if (read.ok && isBinding(read.value)) {
+        pinLegacySpoolDestinationForProject(read.value.projectId, mycoHome);
+        servers.add(read.value.serverUrl);
+      }
+      fs.unlinkSync(file);
+    }
+    for (const serverUrl of servers) if (!anyBindingMayName(serverUrl, mycoHome) && !isDefaultDeployment(serverUrl, mycoHome)) {
       fs.rmSync(deploymentPath(serverUrl, mycoHome), { force: true });
     }
+    certifyCanonicalRegistry(mycoHome);
     return true;
   }, mycoHome);
 }
@@ -627,13 +722,12 @@ export function listRegistryEntries(mycoHome: string = resolveMycoHome()): Regis
   migrateRegistry(mycoHome);
   withRegistryLock(() => {
     const snapshot = rootBindingFiles(mycoHome);
-    if (snapshot.unavailable.length > 0) return;
     const groups = new Map<string, RootBindingFile[]>();
     for (const record of snapshot.records) {
       const identity = record.identity;
       groups.set(identity, [...(groups.get(identity) ?? []), record]);
     }
-    for (const [root, records] of groups) if (!bindingConflict(records)) migrateRootBindings(root, mycoHome);
+    for (const [root, records] of groups) if (!bindingConflict(records) && !snapshot.unavailable.some(record => unavailableMayName(record, root, root))) migrateRootBindings(root, mycoHome);
   }, mycoHome);
   const result = listRegistryEntriesResult(mycoHome);
   for (const conflict of result.conflicts ?? []) process.stderr.write(`myco: ${registryConflictWords(conflict)}\n`);
@@ -648,25 +742,25 @@ export type RegistryRefusal = 'missing' | 'unreadable' | 'loose-mode' | 'malform
  * membership a v2 binding composes with. A v1 file is already a whole entry and
  * is read as one, so nothing here migrates or writes.
  */
-function readEntryFile(file: string, name: string, mycoHome: string, readLegacy = false):
-  { ok: true; entry: RegistryEntry } | { ok: false; reason: RegistryRefusal; stderrReason: RegistryRefusal; detail?: string } {
-  const read = readBindingFile(file, name, mycoHome);
+function readEntryFile(file: string, name: string, mycoHome: string, readLegacy = false, queried?: QueriedIdentity):
+  { ok: true; entry: RegistryEntry; identity: string } | { ok: false; reason: RegistryRefusal; stderrReason: RegistryRefusal; detail?: string } {
+  const read = readBindingFile(file, name, mycoHome, false, queried);
   if (!read.ok) return read;
   const binding = read.binding;
   const malformed = (detail: string) => ({ ok: false as const, reason: 'malformed' as const, stderrReason: 'malformed' as const, detail });
   if (readLegacy && readableVersion(binding) === 1) {
     const v1 = binding as unknown;
     if (!isEntry(v1)) return malformed('not a registry entry');
-    return { ok: true, entry: { ...v1 } };
+    return { ok: true, entry: { ...v1 }, identity: read.identity };
   }
   try {
     assertMemberPathContained(deploymentPath(binding.serverUrl, mycoHome), mycoHome);
   } catch {
     return { ok: false, reason: 'unreadable', stderrReason: 'unreadable' };
   }
-  const composed = compose(binding, mycoHome, read.identity);
+  const composed = compose(binding, mycoHome, read.identity, queried?.root);
   if (composed === null) return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: `no membership for ${binding.serverUrl}` };
-  return { ok: true, entry: composed };
+  return { ok: true, entry: composed, identity: read.identity };
 }
 
 /** An entry a report asked for: held, never written, or there and unusable. */
@@ -696,21 +790,46 @@ export function listRegistryEntriesResult(mycoHome: string = resolveMycoHome()):
     const conflict = bindingConflict(records);
     return conflict ? [conflict] : [];
   });
-  const blocked = new Set(conflicts.map(c => c.root));
+  const blocked = new Set([...conflicts.map(c => c.root), ...[...entries.keys()].filter(root => snapshot.unavailable.some(record => unavailableMayName(record, root, root)))]);
   return { entries: [...entries].filter(([identity]) => !blocked.has(identity)).map(([, entry]) => entry), readable: true, unavailableEntries, ...(conflicts.length ? { conflicts } : {}) };
 }
 
 /** A binding distinguishes proven absence from unavailable state; upgrading is explicit. */
 export function readRegistryEntryResult(root: string, mycoHome: string = resolveMycoHome(), opts: { upgrade?: boolean } = {}): RegistryEntryResult {
-  const identity = canonicalRootIdentity(root);
+  let identity: string;
+  try { identity = canonicalRootIdentity(root); } catch { return { status: 'unavailable' }; }
+  const directFile = path.join(projectsDir(mycoHome), `${legacyRegistryKey(identity)}.json`);
+  const direct = readEntryFile(directFile, path.basename(directFile), mycoHome, false, { root, value: identity });
+  const proof = canonicalRegistryProof(mycoHome);
+  if (proof !== null && registryStamp(mycoHome) === proof.stamp) {
+    if (direct.ok && direct.identity === identity) return { status: 'present', entry: direct.entry };
+    if (!direct.ok && direct.reason === 'missing') {
+      if (path.basename(identity) === path.basename(identity).toLowerCase()) return { status: 'missing' };
+      const alternate = path.join(canonicalRootIdentity(path.dirname(root)), path.basename(root).toLowerCase());
+      const file = path.join(projectsDir(mycoHome), legacyRegistryKey(alternate) + '.json');
+      if (file !== directFile && rootIdentityMayMatch(alternate, identity)) {
+        const aliased = readEntryFile(file, path.basename(file), mycoHome);
+        if (aliased.ok && aliased.identity === identity && filesystemWitnessesCurrent(proof.witnesses)) {
+          if (opts.upgrade) {
+            const lease = acquireRegistryLock(mycoHome);
+            if (lease.acquired) {
+              try { migrateRootBindings(root, mycoHome); } finally { lease.lock.release(); }
+            }
+          }
+          return { status: 'present', entry: aliased.entry };
+        }
+        if (!aliased.ok && aliased.reason !== 'missing') return { status: 'unavailable' };
+      }
+      return { status: 'missing' };
+    }
+  }
   let snapshot: ReturnType<typeof rootBindingFiles>;
   try { snapshot = rootBindingFiles(mycoHome); }
   catch { return { status: 'unavailable' }; }
   const records = snapshot.records.filter(record => record.identity === identity);
-  if (snapshot.unavailable.length > 0) {
-    const file = registryEntryPath(identity, mycoHome);
-    const read = readEntryFile(file, path.basename(file), mycoHome, true);
-    if (!read.ok && read.reason !== 'missing') reportSkippedPrivateFile('registry entry', file, { reason: read.stderrReason, detail: read.detail });
+  const unavailable = snapshot.unavailable.filter(record => unavailableMayName(record, root, identity));
+  if (unavailable.length) {
+    for (const record of unavailable) reportSkippedPrivateFile('registry entry', record.file, record);
     return { status: 'unavailable' };
   }
   const conflict = bindingConflict(records);
@@ -723,7 +842,7 @@ export function readRegistryEntryResult(root: string, mycoHome: string = resolve
     reportSkippedPrivateFile('registry entry', records[0].file, { reason: 'malformed', detail: 'not upgradable from v1' });
     return { status: 'unavailable' };
   }
-  if (opts.upgrade && records.some(({ binding, file }) => file !== registryEntryPath(identity, mycoHome) || binding.root !== identity)) {
+  if (opts.upgrade && records.some(({ binding, file }) => file !== registryEntryPath(identity, mycoHome) || binding.root !== identity || binding.version < BINDING_FORMAT_VERSION)) {
     const lock = acquireRegistryLock(mycoHome);
     if (lock.acquired) {
       try { migrateRootBindings(root, mycoHome); }
@@ -734,8 +853,15 @@ export function readRegistryEntryResult(root: string, mycoHome: string = resolve
   const file = registryEntryPath(identity, mycoHome);
   const selected = records.find(record => record.file === file) ?? records[0];
   const at = selected?.file ?? file;
-  const read = readEntryFile(at, path.basename(at), mycoHome, true);
-  if (read.ok && canonicalRootIdentity(read.entry.root) === identity) {
+  let read = readEntryFile(at, path.basename(at), mycoHome, true);
+  if (!read.ok && read.reason === 'missing' && at !== file) read = readEntryFile(file, path.basename(file), mycoHome, true);
+  if (read.ok && read.identity === identity) {
+    if (opts.upgrade && proof === null) {
+      const lease = acquireRegistryLock(mycoHome);
+      if (lease.acquired) {
+        try { certifyCanonicalRegistry(mycoHome); } finally { lease.lock.release(); }
+      }
+    }
     return { status: 'present', entry: read.entry };
   }
   if (!read.ok && read.reason !== 'missing') reportSkippedPrivateFile('registry entry', at, { reason: read.stderrReason, detail: read.detail });

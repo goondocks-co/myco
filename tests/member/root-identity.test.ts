@@ -5,16 +5,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  acquireRegistryLock, deploymentKeyFor, listRegistryEntriesResult, projectsDir, readRegistryEntry, readRegistryEntryResult,
+  acquireRegistryLock, removeRegistryEntry, deploymentKeyFor, listRegistryEntriesResult, projectsDir, readRegistryEntry, readRegistryEntryResult,
   registryEntryPath, registryKeyFor, REGISTRY_VERSION, writeDeploymentMembership, writeRegistryEntry, type RegistryEntry,
 } from '@myco/member/registry.js';
 import { canonicalRootIdentity } from '@myco/utils/git-files.js';
 import { resolveMemberProjectRoot, resolveCredential } from '@myco/member/credential.js';
-import { rootKeyFor, machineSalt, listJoinRequests, markLeft, isLeft, clearLeft, joinStanding, writeAutoJoinState, autoJoinDir, markSweepDone, requestJoin, queueImport, listPendingImports } from '@myco/member/auto-join.js';
+import { rootKeyFor, machineSalt, listJoinRequests, markLeft, isLeft, clearLeft, joinStanding, writeAutoJoinState, autoJoinDir, markSweepDone, requestJoin, queueImport, listPendingImports, autoJoinIdentityIssues } from '@myco/member/auto-join.js';
 import { autoJoinHold, LEFT_ALONE } from '@myco/member/auto-join-hook.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { appendPending, listPending, pendingSpool, pendingDir, withPendingLock } from '@myco/member/pending.js';
-import { runStatus, runMcpHeaders } from '@myco/cli/member.js';
+import { runStatus, runMcpHeaders, runLeave } from '@myco/cli/member.js';
 import { homeReport } from '@myco/cli/member-doctor.js';
 import { joinPass, optOut, runAutoJoin, settleConnection } from '@myco/cli/member-auto-join.js';
 import { runHook } from './helpers/hooks.js';
@@ -155,13 +155,14 @@ it.skipIf(!caseAliases)('old-key opt-outs keep the strongest restriction across 
   expect(isLeft(key, mycoHome)).toBe(false);
 });
 
-it('an unattributed old opt-out blocks automatic connection and is preserved by another root clear', () => {
+it('an unattributed old opt-out stays local to its key and is preserved by another root clear', () => {
   defaultWork();
   markLeft('e'.repeat(32), mycoHome, 1, { explicitJoinOnly: true });
   const key = rootKeyFor(root, mycoHome);
   clearLeft(key, mycoHome);
-  expect(isLeft(key, mycoHome)).toBe(true);
-  expect(autoJoinHold({ root: alias, hookName: 'session-start', agent: 'claude-code', sessionId: 'anonymous-left', mycoHome, now: 3, env: { MYCO_TEMPORARY_FOLDERS: path.join(base, 'excluded') }, later: () => { throw new Error('automatic join'); } })).toBe(LEFT_ALONE);
+  expect(isLeft(key, mycoHome)).toBe(false);
+  expect(isLeft('e'.repeat(32), mycoHome)).toBe(true);
+  expect(autoJoinIdentityIssues(mycoHome).map(issue => issue.kind)).toEqual(['opt-out']);
 });
 
 it('native-expanded roots find opt-outs and choices recorded under a generic short spelling', () => {
@@ -213,10 +214,10 @@ it.skipIf(!caseAliases)('a saved old-key dashboard choice reaches that Project t
   expect(readRegistryEntry(root, mycoHome)?.projectId).toBe(TEST_PROJECT_ID);
 });
 
-it('an unknown saved choice blocks automatic connection even beside a known choice', () => {
+it('an unknown saved choice is reported without blocking a known choice for another folder', () => {
   const key = rootKeyFor(root, mycoHome);
   cacheMachineSettings('https://work.invalid', { leaves: { 'capture.auto_join_roots': [base], 'capture.connect_roots': { [key]: 'proj_known', ['e'.repeat(32)]: 'proj_unknown' } } }, mycoHome);
-  expect(() => joinStanding(root, key, 'https://work.invalid', mycoHome, 2)).toThrow('unknown folder');
+  expect(joinStanding(root, key, 'https://work.invalid', mycoHome, 2).leaves.connectRoots[key]).toBe('proj_known');
 });
 
 it('missing metadata with held bytes is surfaced by receipt recovery and automatic replay', () => {
@@ -251,11 +252,12 @@ it('a retargeted recorded alias cannot transfer capture, opt-outs, or a saved ch
   const key = rootKeyFor(other, mycoHome);
   const live = new MemberSpool(entry(other), { mycoHome });
   expect(() => flushHeldCapture(other, entry(other), held.opts)).toThrow('identity unavailable');
-  expect(() => restoreHeldReceiptsForHook(other, 'held-alias', live, held.opts)).toThrow('identity unavailable');
+  restoreHeldReceiptsForHook(other, 'held-alias', live, held.opts);
+  expect(readSessionState(live.dir, 'held-alias').prompts.receipt).toBeUndefined();
   clearLeft(key, mycoHome);
   expect(fs.existsSync(path.join(mycoHome, 'member/auto-join/left', `${held.repo.rootKey}.json`))).toBe(true);
   cacheMachineSettings('https://work.invalid', { leaves: { 'capture.auto_join_roots': [base], 'capture.connect_roots': { [held.repo.rootKey]: 'proj_original' } } }, mycoHome);
-  expect(() => joinStanding(other, key, 'https://work.invalid', mycoHome, 2)).toThrow('unknown folder');
+  expect(() => joinStanding(other, key, 'https://work.invalid', mycoHome, 2)).toThrow('unavailable identity');
   expect(isLeft(rootKeyFor(root, mycoHome), mycoHome)).toBe(true);
 });
 
@@ -458,7 +460,7 @@ for (const legacy of [false, true]) it('a main checkout bound through injected n
   } finally { expansion.mockRestore(); }
 });
 for (const damage of ['malformed', 'loose-mode', 'outside-link']) {
-  it.skipIf(process.platform === 'win32' && damage === 'loose-mode' || !fileLinks && damage === 'outside-link')('a ' + damage + ' old alias entry stays unavailable from every spelling and cannot join the default Myco (mode and file-link variants require host support)', () => {
+  it.skipIf(process.platform === 'win32' && damage === 'loose-mode' || !fileLinks && damage === 'outside-link')('a ' + damage + ' old alias entry fails closed for its identifiable root and preserves another binding (mode and file-link variants require host support)', () => {
     const old = oldBinding(alias);
     oldBinding(root, 'https://work.invalid', 'proj_work');
     defaultWork();
@@ -469,11 +471,12 @@ for (const damage of ['malformed', 'loose-mode', 'outside-link']) {
       fs.renameSync(old, outside);
       fs.symlinkSync(outside, old);
     }
-    for (const at of [root, alias]) {
+    for (const at of damage === 'loose-mode' ? [root, alias] : [alias]) {
       expect(readRegistryEntryResult(at, mycoHome, { upgrade: true }).status).toBe('unavailable');
       expect(autoJoinHold({ root: at, hookName: 'session-start', agent: 'claude-code', sessionId: 'damaged', mycoHome, now: 1, env: {}, later: () => { throw new Error('must not join'); } })).toBeNull();
     }
-    expect(() => writeRegistryEntry(entry(root), { mycoHome })).toThrow('could not all be read');
+    if (damage === 'loose-mode') expect(() => writeRegistryEntry(entry(root), { mycoHome })).toThrow('could not be read');
+    else expect(readRegistryEntryResult(root, mycoHome).status).toBe('present');
     expect(fs.existsSync(old)).toBe(true);
     expect(listPending({ mycoHome, now: 1 })).toEqual([]);
   });
@@ -537,4 +540,310 @@ it.skipIf(!caseAliases)('transcript placement uses case-probed identity when nat
   try {
     expect(attributeTranscript('claude-code', transcript, [root], { git: { mainCheckout: cwd => cwd } })).toEqual({ kind: 'bound', root });
   } finally { preservesCase.mockRestore(); }
+});
+
+it('moving a bound ancestor behind a symlink stays local and can be rejoined in fresh processes', () => {
+  const other = path.join(base, 'Other', 'RepoB');
+  fs.mkdirSync(other, { recursive: true });
+  writeRegistryEntry(entry(root), { mycoHome });
+  writeRegistryEntry(entry(other, 'https://work.invalid', 'proj_work'), { mycoHome });
+  const moved = path.join(base, 'Disk', 'Physical');
+  fs.mkdirSync(path.dirname(moved));
+  fs.renameSync(path.dirname(root), moved);
+  fs.symlinkSync(moved, path.dirname(root), 'junction');
+  const module = path.resolve('packages/myco/src/member/registry.ts');
+  const readFresh = (at: string): string => execFileSync(process.execPath, ['--tsconfig-override', path.resolve('tsconfig.json'), '-e',
+    `import { readRegistryEntryResult } from ${JSON.stringify(module)}; const r=readRegistryEntryResult(${JSON.stringify(at)},${JSON.stringify(mycoHome)}); console.log(r.status === 'present' ? r.entry.projectId : r.status);`],
+  { cwd: base, encoding: 'utf8' }).trim();
+  expect(readFresh(other)).toBe('proj_work');
+  expect(readFresh(root)).toBe('proj_personal');
+  writeRegistryEntry(entry(root, 'https://personal.invalid', 'proj_rejoined'), { mycoHome });
+  expect(readFresh(root)).toBe('proj_rejoined');
+});
+
+it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('an unsearchable bound folder fails closed only for itself (host requires POSIX permissions)', () => {
+  const other = path.join(base, 'Other', 'RepoB');
+  fs.mkdirSync(other, { recursive: true });
+  writeRegistryEntry(entry(root), { mycoHome });
+  writeRegistryEntry(entry(other, 'https://work.invalid', 'proj_work'), { mycoHome });
+  execFileSync('/bin/chmod', ['000', path.dirname(root)]);
+  try {
+    expect(readRegistryEntryResult(other, mycoHome).status).toBe('present');
+    expect(readRegistryEntryResult(path.join(base, 'Unbound'), mycoHome).status).toBe('missing');
+    expect(readRegistryEntryResult(root, mycoHome).status).toBe('unavailable');
+  } finally { execFileSync('/bin/chmod', ['700', path.dirname(root)]); }
+});
+
+it('an orphaned opt-out and choice never suppress holding for an unrelated repository', () => {
+  defaultWork();
+  const key = legacyRootKey(alias);
+  markLeft(key, mycoHome, 1, { repository: { root: alias } });
+  writeAutoJoinState({ root: alias, rootKey: key, label: 'Repo', outcome: 'outside_folders', serverUrl: 'https://work.invalid', attemptAt: 1 }, mycoHome);
+  cacheMachineSettings('https://work.invalid', { leaves: { 'capture.connect_roots': { [key]: 'proj_old' } } }, mycoHome);
+  fs.unlinkSync(path.join(base, 'alias'));
+  const unrelated = path.join(base, 'Unrelated');
+  fs.mkdirSync(unrelated);
+  execFileSync('git', ['init', '-q'], { cwd: unrelated });
+  const held = autoJoinHold({ root: unrelated, hookName: 'session-end', agent: 'claude-code', sessionId: 'unrelated', mycoHome, now: 2, env: { MYCO_TEMPORARY_FOLDERS: path.join(base, 'excluded') }, later: () => {} });
+  expect(held).not.toBe(LEFT_ALONE);
+  expect(held).not.toBeNull();
+  expect(typeof held === 'object' && held?.spool).toBeTruthy();
+});
+
+it('a canonical binding lookup does not parse other migrated bindings', () => {
+  for (let index = 0; index < 20; index++) {
+    const at = path.join(base, 'Other' + index);
+    fs.mkdirSync(at);
+    writeRegistryEntry(entry(at), { mycoHome });
+  }
+  writeRegistryEntry(entry(root), { mycoHome });
+  const read = spyOn(fs, 'readFileSync');
+  try {
+    expect(readRegistryEntryResult(root, mycoHome).status).toBe('present');
+    const bindings = read.mock.calls.filter(([at]) => String(at).startsWith(projectsDir(mycoHome)) && String(at).endsWith('.json'));
+    expect(bindings.length).toBeLessThanOrEqual(1);
+  } finally { read.mockRestore(); }
+});
+
+it('a cached binding follows an ancestor move instead of reporting a missing repository', () => {
+  writeRegistryEntry(entry(root), { mycoHome });
+  expect(readRegistryEntryResult(root, mycoHome).status).toBe('present');
+  const moved = path.join(base, 'Moved');
+  fs.renameSync(path.dirname(root), moved);
+  fs.symlinkSync(moved, path.dirname(root), 'junction');
+  expect(readRegistryEntryResult(root, mycoHome).status).toBe('present');
+});
+
+it('explicit connection replacement and leave resolve only the selected repository conflict', () => {
+  oldBinding(root);
+  oldBinding(alias, 'https://work.invalid', 'proj_work');
+  const unrelated = path.join(base, 'Unrelated');
+  fs.mkdirSync(unrelated);
+  writeRegistryEntry(entry(unrelated, 'https://unrelated.invalid', 'proj_unrelated'), { mycoHome });
+  expect(readRegistryEntryResult(root, mycoHome).status).toBe('unavailable');
+  writeRegistryEntry(entry(root), { mycoHome, resolveConflict: true });
+  expect(readRegistryEntry(root, mycoHome)?.projectId).toBe('proj_personal');
+  expect(readRegistryEntry(unrelated, mycoHome)?.projectId).toBe('proj_unrelated');
+  oldBinding(alias, 'https://work.invalid', 'proj_work');
+  expect(runLeave([], { cwd: root, mycoHome, stdout: () => {}, stderr: () => {} })).toBe(true);
+  expect(readRegistryEntryResult(root, mycoHome).status).toBe('missing');
+  expect(readRegistryEntry(unrelated, mycoHome)?.projectId).toBe('proj_unrelated');
+});
+
+it('receipt recovery reads candidate keys without enumerating other held directories', () => {
+  const held = heldAlias();
+  const live = new MemberSpool(entry(root), { mycoHome });
+  const other = path.join(base, 'Other');
+  fs.mkdirSync(other);
+  pendingSpool({ root: other, rootKey: rootKeyFor(other, mycoHome), serverUrl: held.repo.serverUrl }, held.opts);
+  restoreHeldReceiptsForHook(root, 'held-alias', live, held.opts);
+  const scan = spyOn(fs, 'readdirSync');
+  try {
+    restoreHeldReceiptsForHook(root, 'held-alias', live, held.opts);
+    expect(scan.mock.calls.some(([at]) => String(at) === path.dirname(pendingDir(held.repo.rootKey, mycoHome, held.repo.serverUrl)))).toBe(false);
+    expect(readSessionState(live.dir, 'held-alias').prompts.receipt).toBe('prompt-old-key');
+  } finally { scan.mockRestore(); }
+});
+
+it('an orphaned connection for this alias stays local and cannot throw through the hook', async () => {
+  defaultWork();
+  const key = legacyRootKey(alias);
+  markLeft(key, mycoHome, 1, { repository: { root: alias } });
+  writeAutoJoinState({ root: alias, rootKey: key, label: 'Repo', outcome: 'outside_folders', serverUrl: 'https://work.invalid', attemptAt: 1 }, mycoHome);
+  const other = path.join(base, 'Other', 'Repo');
+  fs.mkdirSync(other, { recursive: true });
+  execFileSync('git', ['init', '-q'], { cwd: other });
+  fs.unlinkSync(path.join(base, 'alias'));
+  fs.symlinkSync(path.dirname(other), path.join(base, 'alias'), 'junction');
+  cacheMachineSettings('https://work.invalid', { leaves: { 'capture.connect_roots': { [key]: 'proj_old' } } }, mycoHome);
+  expect(autoJoinHold({ root: alias, hookName: 'session-end', agent: 'claude-code', sessionId: 'local-choice', mycoHome, now: 2,
+    env: { MYCO_TEMPORARY_FOLDERS: path.join(base, 'excluded') }, later: () => { throw new Error('must not join'); } })).toBe(LEFT_ALONE);
+  const lines: string[] = [];
+  runStatus([], { cwd: other, mycoHome, stdout: line => lines.push(line), stderr: line => lines.push(line) });
+  const checks = await homeReport(mycoHome, { cwd: other, fetch: (async () => new Response('{}', { status: 503 })) as import('@myco/member/transport.js').FetchLike });
+  for (const text of [lines.join('\n'), checks.map(check => check.detail).join('\n')]) {
+    expect(text.match(/Saved Myco connection/g)).toHaveLength(1);
+    expect(text).toContain('myco member join');
+  }
+});
+
+it('the cold canonical fast path never canonicalizes other migrated bindings', () => {
+  for (let index = 0; index < 20; index++) {
+    const at = path.join(base, 'Other' + index);
+    fs.mkdirSync(at);
+    writeRegistryEntry(entry(at), { mycoHome });
+  }
+  writeRegistryEntry(entry(root), { mycoHome });
+  const source = 'import fs from "node:fs"; import {readRegistryEntryResult} from '
+    + JSON.stringify(path.resolve('packages/myco/src/member/registry.ts'))
+    + '; const native=fs.realpathSync.native; let other=0; fs.realpathSync.native=(p)=>{if(String(p).toLowerCase().startsWith('
+    + JSON.stringify(path.join(base, 'Other').toLowerCase()) + ')) other++; return native(p)}; const r=readRegistryEntryResult('
+    + JSON.stringify(root) + ',' + JSON.stringify(mycoHome) + '); console.log(JSON.stringify({status:r.status,other}));';
+  const result = JSON.parse(execFileSync(process.execPath, ['--tsconfig-override', path.resolve('tsconfig.json'), '-e', source], { cwd: base, encoding: 'utf8' }));
+  expect(result).toEqual({ status: 'present', other: 0 });
+});
+
+it('join and leave work beside an unrelated damaged binding without deleting it', () => {
+  const damaged = oldBinding(root);
+  fs.writeFileSync(damaged, '{');
+  const bytes = fs.readFileSync(damaged);
+  const other = path.join(base, 'Other');
+  fs.mkdirSync(other);
+  writeRegistryEntry(entry(other), { mycoHome });
+  expect(readRegistryEntryResult(other, mycoHome).status).toBe('present');
+  expect(readRegistryEntryResult(path.join(base, 'Unbound'), mycoHome).status).toBe('missing');
+  expect(removeRegistryEntry(other, mycoHome)).toBe(true);
+  expect(fs.readFileSync(damaged)).toEqual(bytes);
+});
+
+it('an explicit re-join after an ancestor move succeeds in a fresh process', () => {
+  writeRegistryEntry(entry(root), { mycoHome });
+  const moved = path.join(base, 'Moved');
+  fs.renameSync(path.dirname(root), moved);
+  fs.symlinkSync(moved, path.dirname(root), 'junction');
+  const source = 'import {writeRegistryEntry,readRegistryEntryResult} from '
+    + JSON.stringify(path.resolve('packages/myco/src/member/registry.ts'))
+    + '; writeRegistryEntry(' + JSON.stringify(entry(root, 'https://personal.invalid', 'proj_rejoined'))
+    + ',{mycoHome:' + JSON.stringify(mycoHome) + ',resolveConflict:true}); const r=readRegistryEntryResult('
+    + JSON.stringify(root) + ',' + JSON.stringify(mycoHome) + '); console.log(r.status==="present"?r.entry.projectId:r.status);';
+  expect(execFileSync(process.execPath, ['--tsconfig-override', path.resolve('tsconfig.json'), '-e', source], { cwd: base, encoding: 'utf8' }).trim()).toBe('proj_rejoined');
+});
+
+for (const kind of ['opt-out', 'choice']) it('an orphaned ' + kind + ' stays local when its recorded symlink disappears', () => {
+  defaultWork();
+  const key = legacyRootKey(alias);
+  if (kind === 'opt-out') markLeft(key, mycoHome, 1, { repository: { root: alias } });
+  else {
+    writeAutoJoinState({ root: alias, rootKey: key, label: 'Repo', outcome: 'outside_folders', serverUrl: 'https://work.invalid', attemptAt: 1 }, mycoHome);
+    cacheMachineSettings('https://work.invalid', { leaves: { 'capture.connect_roots': { [key]: 'proj_old' } } }, mycoHome);
+  }
+  fs.unlinkSync(path.join(base, 'alias'));
+  const other = path.join(base, 'Unrelated');
+  fs.mkdirSync(other);
+  execFileSync('git', ['init', '-q'], { cwd: other });
+  const held = autoJoinHold({ root: other, hookName: 'session-end', agent: 'claude-code', sessionId: 'other', mycoHome, now: 2,
+    env: { MYCO_TEMPORARY_FOLDERS: path.join(base, 'excluded') }, later: () => {} });
+  expect(held).not.toBeNull();
+  expect(held).not.toBe(LEFT_ALONE);
+  expect(typeof held === 'object' && held?.spool).toBeTruthy();
+});
+
+it('a new legacy alias invalidates the clean registry proof before a conflicting lookup', () => {
+  writeRegistryEntry(entry(root), { mycoHome });
+  oldBinding(alias, 'https://work.invalid', 'proj_work');
+  expect(readRegistryEntryResult(root, mycoHome).status).toBe('unavailable');
+  expect(listRegistryEntriesResult(mycoHome).conflicts).toHaveLength(1);
+});
+
+it('filesystem-only alias conflicts invalidate the clean registry proof', () => {
+  const other = path.join(base, 'Other', 'Repo');
+  fs.mkdirSync(other, { recursive: true });
+  writeRegistryEntry(entry(root), { mycoHome });
+  writeRegistryEntry(entry(other, 'https://work.invalid', 'proj_work'), { mycoHome });
+  fs.rmSync(other, { recursive: true });
+  fs.symlinkSync(root, other, 'junction');
+  expect(readRegistryEntryResult(root, mycoHome).status).toBe('unavailable');
+  expect(listRegistryEntriesResult(mycoHome).conflicts).toHaveLength(1);
+});
+
+it('an in-place foreign-root claim is malformed for its own canonical binding only', () => {
+  const other = path.join(base, 'Other');
+  fs.mkdirSync(other);
+  writeRegistryEntry(entry(root), { mycoHome });
+  writeRegistryEntry(entry(other, 'https://work.invalid', 'proj_work'), { mycoHome });
+  const file = registryEntryPath(other, mycoHome);
+  const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...value, root: canonicalRootIdentity(root), displayRoot: canonicalRootIdentity(other) }));
+  expect(readRegistryEntryResult(root, mycoHome).status).toBe('present');
+  expect(readRegistryEntryResult(other, mycoHome).status).toBe('unavailable');
+  expect(listRegistryEntriesResult(mycoHome)).toMatchObject({ entries: [{ projectId: 'proj_personal' }], unavailableEntries: 1 });
+  expect(listRegistryEntriesResult(mycoHome).conflicts ?? []).toHaveLength(0);
+});
+
+it('a historical held spelling is discovered without state records and cached across receipt reads', () => {
+  const generic = fs.realpathSync.bind(fs);
+  const native = fs.realpathSync.native;
+  const spelling = spyOn(fs, 'realpathSync').mockImplementation(((at: fs.PathLike) => String(at) === alias ? alias : generic(at)) as typeof fs.realpathSync);
+  Object.assign(fs.realpathSync, { native });
+  try {
+    heldAlias();
+    const live = new MemberSpool(entry(root), { mycoHome });
+    restoreHeldReceiptsForHook(root, 'held-alias', live, { mycoHome, now: Date.now() });
+    expect(readSessionState(live.dir, 'held-alias').prompts.receipt).toBe('prompt-old-key');
+    const scan = spyOn(fs, 'readdirSync');
+    try {
+      restoreHeldReceiptsForHook(root, 'held-alias', live, { mycoHome, now: Date.now() });
+      expect(scan.mock.calls.some(([at]) => String(at) === path.dirname(pendingDir(legacyRootKey(alias), mycoHome, 'https://personal.invalid')))).toBe(false);
+    } finally { scan.mockRestore(); }
+  } finally { spelling.mockRestore(); }
+});
+
+it('malformed held identity proofs are rebuilt before receipt recovery', () => {
+  const held = heldAlias();
+  const live = new MemberSpool(entry(root), { mycoHome });
+  restoreHeldReceiptsForHook(root, 'held-alias', live, held.opts);
+  const file = path.join(mycoHome, 'member/pending-identities', deploymentKeyFor(held.repo.serverUrl));
+  const proof = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete proof.aliases;
+  fs.writeFileSync(file, JSON.stringify(proof), { mode: 0o600 });
+  expect(() => restoreHeldReceiptsForHook(root, 'held-alias', live, held.opts)).not.toThrow();
+  expect(JSON.parse(fs.readFileSync(file, 'utf8')).aliases).toBeDefined();
+});
+
+it('unreadable held metadata does not certify an incomplete identity index', () => {
+  const held = heldAlias();
+  const live = new MemberSpool(entry(root), { mycoHome });
+  const file = path.join(pendingDir(held.repo.rootKey, mycoHome, held.repo.serverUrl), 'pending.json');
+  const read = fs.readFileSync.bind(fs);
+  const spy = spyOn(fs, 'readFileSync').mockImplementation(((at: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+    if (String(at) === file) throw Object.assign(new Error('unavailable metadata'), { code: 'EACCES' });
+    return (read as (...args: unknown[]) => unknown)(at, ...args);
+  }) as typeof fs.readFileSync);
+  try {
+    expect(() => restoreHeldReceiptsForHook(root, 'held-alias', live, held.opts)).toThrow();
+    expect(fs.existsSync(path.join(mycoHome, 'member/pending-identities', deploymentKeyFor(held.repo.serverUrl)))).toBe(false);
+  } finally { spy.mockRestore(); }
+  restoreHeldReceiptsForHook(root, 'held-alias', live, held.opts);
+  expect(readSessionState(live.dir, 'held-alias').prompts.receipt).toBe('prompt-old-key');
+});
+
+it('joining beside a deleted unrelated repository parent does not fail during cache certification', () => {
+  const other = path.join(base, 'DeletedParent', 'Repo');
+  fs.mkdirSync(other, { recursive: true });
+  writeRegistryEntry(entry(other, 'https://work.invalid', 'proj_work'), { mycoHome });
+  fs.rmSync(path.dirname(other), { recursive: true });
+  expect(() => writeRegistryEntry(entry(root, 'https://personal.invalid', 'proj_updated'), { mycoHome })).not.toThrow();
+  expect(readRegistryEntry(root, mycoHome)?.projectId).toBe('proj_updated');
+});
+
+it('leaving preserves unrelated damaged held metadata and capture', async () => {
+  const other = path.join(base, 'OtherHeld');
+  fs.mkdirSync(other);
+  const held = heldAlias('https://personal.invalid', other);
+  const dir = pendingDir(held.repo.rootKey, mycoHome, held.repo.serverUrl);
+  const bytes = fs.readFileSync(path.join(dir, 'held-alias.jsonl'));
+  fs.writeFileSync(path.join(dir, 'pending.json'), '{damaged', { mode: 0o600 });
+  await optOut(root, null, { mycoHome, now: held.opts.now });
+  expect(fs.readFileSync(path.join(dir, 'held-alias.jsonl'))).toEqual(bytes);
+  expect(fs.readFileSync(path.join(dir, 'pending.json'), 'utf8')).toBe('{damaged');
+});
+
+for (const shape of ['root-file', 'deployment-file']) it('an unrelated held ' + shape + ' cannot abort leave or replay', async () => {
+  const held = heldAlias();
+  const dir = pendingDir('d'.repeat(32), mycoHome, held.repo.serverUrl);
+  const bad = shape === 'root-file' ? dir : path.join(path.dirname(path.dirname(dir)), deploymentKeyFor('https://unrelated.invalid'));
+  fs.mkdirSync(path.dirname(bad), { recursive: true });
+  fs.writeFileSync(bad, 'unrelated bytes', { mode: 0o600 });
+  expect(flushHeldCapture(root, entry(root), held.opts)).toBe(1);
+  await optOut(root, null, { mycoHome, now: held.opts.now });
+  expect(fs.readFileSync(bad, 'utf8')).toBe('unrelated bytes');
+});
+
+it('a malformed held directory for this repository still fails closed', async () => {
+  const key = rootKeyFor(root, mycoHome);
+  const dir = pendingDir(key, mycoHome, 'https://personal.invalid');
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  fs.writeFileSync(dir, 'own unavailable capture', { mode: 0o600 });
+  await expect(optOut(root, null, { mycoHome, now: Date.now() })).rejects.toThrow('directory unavailable');
+  expect(fs.readFileSync(dir, 'utf8')).toBe('own unavailable capture');
 });

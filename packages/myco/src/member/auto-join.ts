@@ -25,7 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { HELD_CAPTURE_TTL_DAYS, type HeldState, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 import { resolveRepositoryProjectRoot, isSafeProjectRoot } from '../project-root.js';
-import { canonicalPath, canonicalRootIdentity } from '../utils/git-files.js';
+import { canonicalPath, canonicalRootIdentity, rootIdentityMayMatch } from '../utils/git-files.js';
 import { temporaryFolders, isAgentScratchDirectory } from '../utils/temporary-folders.js';
 export { temporaryFolders } from '../utils/temporary-folders.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
@@ -35,7 +35,7 @@ import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, r
 import { PENDING_MAX_RECORDS, type HeldEnd } from './pending.js';
 import { machineAutoJoinLeaves } from './machine-settings.js';
 import { isProjectId } from './constants.js';
-import { acquireRegistryLock, deploymentKeyFor, deploymentUrl, withRegistryLock } from './registry.js';
+import { acquireRegistryLock, deploymentKeyFor, deploymentUrl, listDeploymentMembershipsResult, withRegistryLock } from './registry.js';
 
 
 export const AUTO_JOIN_DIRNAME = 'auto-join';
@@ -267,9 +267,11 @@ export function rootKeyFor(root: string, mycoHome: string): string {
 /** A persisted key must name the current physical repository under the current or legacy hash. */
 export function rootKeyMatches(rootKey: string, root: string, mycoHome: string): boolean {
   if (!ROOT_KEY_PATTERN.test(rootKey)) return false;
-  const context = rootKeyContext(root, mycoHome);
-  const owner = rootKeyContexts.get(rootContextKey(rootKey, mycoHome));
-  return context.keys.has(rootKey) && (owner === undefined || owner.identity === context.identity);
+  try {
+    const context = rootKeyContext(root, mycoHome);
+    const owner = rootKeyContexts.get(rootContextKey(rootKey, mycoHome));
+    return context.keys.has(rootKey) && (owner === undefined || owner.identity === context.identity);
+  } catch { return false; }
 }
 
 function recordedRootKeys(mycoHome: string): Array<{ root: string; rootKey: string }> {
@@ -292,15 +294,23 @@ export function rootKeysFor(root: string, mycoHome: string): string[] {
   return compatibleRootKeys(rootKeyFor(root, mycoHome), mycoHome);
 }
 
-function knownRootKeys(mycoHome: string): Set<string> {
-  const keys = new Set<string>();
-  for (const context of rootKeyContexts.values()) if (context.home === path.resolve(mycoHome)) for (const key of context.keys) keys.add(key);
-  for (const record of recordedRootKeys(mycoHome)) {
-    if (!rootKeyMatches(record.rootKey, record.root, mycoHome)) continue;
-    keys.add(record.rootKey);
-    keys.add(saltedRootKey(canonicalRootIdentity(record.root), mycoHome));
+/** Orphaned settings are reported once per saved key, with a user resolution command. */
+export function autoJoinIdentityIssues(mycoHome: string): Array<{ kind: 'opt-out' | 'choice'; key: string; root?: string; message: string }> {
+  const records = recordedRootKeys(mycoHome);
+  const issues: ReturnType<typeof autoJoinIdentityIssues> = [];
+  for (const mark of listLeftRepositories(mycoHome)) {
+    if ('error' in mark || mark.root === undefined || !rootKeyMatches(mark.key, mark.root, mycoHome)) {
+      issues.push({ kind: 'opt-out', key: mark.key, root: 'root' in mark ? mark.root : undefined,
+        message: `Saved opt-out for ${'root' in mark && mark.root ? mark.root : 'repository key ' + mark.key} needs review. Run \`myco member join\` from the affected repository to reconnect.` });
+    }
   }
-  return keys;
+  for (const membership of listDeploymentMembershipsResult(mycoHome).memberships) for (const key of Object.keys(machineAutoJoinLeaves(membership.serverUrl, mycoHome).connectRoots)) {
+    const record = records.find(record => record.rootKey === key);
+    if (record !== undefined && rootKeyMatches(key, record.root, mycoHome)) continue;
+    issues.push({ kind: 'choice', key, root: record?.root,
+      message: `Saved Myco connection for ${record?.root ?? 'repository key ' + key} needs review on ${membership.serverUrl}. Run \`myco member join\` from the affected repository to choose its connection.` });
+  }
+  return [...new Map(issues.map(issue => [issue.kind + ':' + issue.key, issue])).values()];
 }
 
 /** Saved connection choices follow proven aliases; an unattributed choice cannot become a default join. */
@@ -309,8 +319,11 @@ export function autoJoinLeavesFor(rootKey: string, serverUrl: string, mycoHome: 
   const keys = compatibleRootKeys(rootKey, mycoHome).filter(key => Object.prototype.hasOwnProperty.call(leaves.connectRoots, key));
   const choices = [...new Set(keys.map(key => leaves.connectRoots[key]!))];
   if (choices.length > 1) throw new Error('This folder has different saved Myco connections. Choose its connection before connecting automatically.');
-  const known = knownRootKeys(mycoHome);
-  if (Object.keys(leaves.connectRoots).some(key => !known.has(key))) throw new Error('A saved Myco connection names an unknown folder. Review that connection before connecting automatically.');
+  const context = rootKeyContexts.get(rootContextKey(rootKey, mycoHome));
+  if (context !== undefined && recordedRootKeys(mycoHome).some(record => Object.prototype.hasOwnProperty.call(leaves.connectRoots, record.rootKey)
+    && !keys.includes(record.rootKey) && rootIdentityMayMatch(record.root, context.identity))) {
+    throw new Error('A saved Myco connection for this folder has an unavailable identity. Run `myco member join` here to choose its connection.');
+  }
   return { ...leaves, ...(choices.length === 1 ? { connectRoots: { ...leaves.connectRoots, [rootKey]: choices[0]! } } : {}), connectionRootKey: keys.includes(rootKey) ? rootKey : keys[0] ?? null };
 }
 
@@ -400,7 +413,7 @@ function readStateFile(file: string): AutoJoinState | null {
     return null;
   }
   const value = read.value;
-  if (value?.version === STATE_VERSION && typeof value.attemptAt === 'number' && typeof value.outcome === 'string'
+  if (value?.version === STATE_VERSION && typeof value.root === 'string' && typeof value.attemptAt === 'number' && typeof value.outcome === 'string'
     && typeof value.serverUrl === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)) return value;
   reportSkippedPrivateFile('auto-join state', file, { reason: 'invalid' });
   return null;
@@ -746,14 +759,13 @@ export function leftForConnection(rootKey: string, mycoHome: string, connectTo: 
 function leftStanding(rootKey: string, mycoHome: string, connectTo: string | null): 'absent' | 'left' | 'reconnect' {
   const keys = new Set(compatibleRootKeys(rootKey, mycoHome));
   const context = rootKeyContexts.get(rootContextKey(rootKey, mycoHome));
-  const known = context === undefined ? null : knownRootKeys(mycoHome);
   let observed = false;
   for (const mark of listLeftRepositories(mycoHome)) {
-    if ('error' in mark) return 'left';
+    if ('error' in mark) { if (keys.has(mark.key)) return 'left'; continue; }
     if (keys.has(mark.key)) {
       observed = true;
       if (mark.explicitJoinOnly || connectTo === null) return 'left';
-    } else if (known !== null && !known.has(mark.key)) return 'left';
+    } else if (context !== undefined && mark.root !== undefined && rootIdentityMayMatch(mark.root, context.identity)) return 'left';
   }
   return observed ? 'reconnect' : 'absent';
 }

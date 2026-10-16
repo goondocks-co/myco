@@ -59,7 +59,13 @@ export function autoJoinHold(opts: {
   // Left with `myco member leave`: nothing is captured, held or said, until the repository is connected again. The
   // cached settings can be newer than the ones the last attempt read: a repository they place elsewhere (its folder now
   // captured, or connected from "Needs you") is tried again at once. Any other waits out its backoff.
-  const { standing, leaves, state } = joinStanding(opts.root, rootKey, serverUrl, opts.mycoHome, opts.now);
+  let current: ReturnType<typeof joinStanding>;
+  try { current = joinStanding(opts.root, rootKey, serverUrl, opts.mycoHome, opts.now); }
+  catch (error) {
+    process.stderr.write(`myco: automatic connection for ${opts.root} is unavailable: ${error instanceof Error ? error.message : String(error)}\n`);
+    return LEFT_ALONE;
+  }
+  const { standing, leaves, state } = current;
   if (standing === 'left') return LEFT_ALONE;
   // Repositories met before auto-join existed are swept once, by the helper's join bucket.
   if (!sweepDone(opts.mycoHome)) opts.later(join);

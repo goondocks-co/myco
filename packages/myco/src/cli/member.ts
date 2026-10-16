@@ -14,7 +14,7 @@ import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
  */
 import { IDENTITY_LINK_TTL_MS, INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { seedMachineSettings } from '../member/machine-settings.js';
-import { listAutoJoinStates } from '../member/auto-join.js';
+import { autoJoinIdentityIssues, listAutoJoinStates } from '../member/auto-join.js';
 import { optOut, settleConnection } from './member-auto-join.js';
 import { defaultMembership, readDefaultDeployment } from '../member/default-deployment.js';
 import { selectedDeploymentMembership } from '../member/token-pairing.js';
@@ -265,7 +265,7 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
     joinedAt: existing?.joinedAt ?? now(),
     updatedAt: now(),
   };
-  writeRegistryEntry(entry, { mycoHome });
+  writeRegistryEntry(entry, { mycoHome, resolveConflict: true });
   // What this repository's hooks held while it had no connection joins the project now, and "Needs you" forgets it.
   await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true });
   const pinned = pinProjectHome(root, mycoHome);
@@ -380,7 +380,7 @@ async function connectFolder(
     version: REGISTRY_VERSION, projectId: project.projectId, serverUrl, token: membership.token, root,
     machineId: membership.machineId ?? getMachineId(), joinedAt: existing?.joinedAt ?? now(), updatedAt: now(),
   };
-  writeRegistryEntry(entry, { mycoHome });
+  writeRegistryEntry(entry, { mycoHome, resolveConflict: true });
   // What this repository's hooks held while it had no connection joins the project now, and "Needs you" forgets it.
   await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true });
   const pinned = pinProjectHome(root, mycoHome);
@@ -890,22 +890,32 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
   const mycoHome = homeFor(deps);
   const root = resolveMemberProjectRoot(deps.cwd);
-  const entry = readRegistryEntry(root, mycoHome);
-  if (!entry) {
+  const selected = readRegistryEntryResult(root, mycoHome);
+  const entry = selected.status === 'present' ? selected.entry : null;
+  if (!entry && selected.status === 'missing') {
     err(`myco member leave: no membership recorded for ${root}`);
     process.exitCode = 2;
     return false;
   }
+  if (entry === null && args.includes('--purge')) {
+    err('myco member leave: choose the repository connection with myco member join before purging its capture');
+    process.exitCode = 2;
+    return false;
+  }
   // Leaving is an opt-out: auto-join leaves this repository alone until it is joined or connected again.
-  void optOut(root, readDeploymentMembership(entry.serverUrl, mycoHome), { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch })
-    .catch((error) => err(`myco member leave: could not report opt-out to ${deploymentUrl(entry.serverUrl)} (${(error as Error).message})`));
+  void optOut(root, entry ? readDeploymentMembership(entry.serverUrl, mycoHome) : null, { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch })
+    .catch((error) => err(`myco member leave: could not report opt-out to ${deploymentUrl(entry?.serverUrl ?? 'Myco')} (${(error as Error).message})`));
   removeRegistryEntry(root, mycoHome);
   clearMissingMembership(root, mycoHome);
-  out(`left ${entry.projectId} for ${root}; auto-join leaves it alone until you join it again`);
+  out(`left ${entry?.projectId ?? 'repository connections'} for ${root}; auto-join leaves it alone until you join it again`);
   // The pin points at a home that no longer holds this project. Left standing it
   // would send every hook here to look for a membership that is gone, and each
   // one would count another miss.
   if (unpinProjectHome(root, mycoHome)) out(`removed this project's ${RUNTIME_HOME_FILENAME} pin`);
+  if (entry === null) {
+    out('spools kept for the unresolved connections; re-join the intended Project before draining capture');
+    return true;
+  }
   if (!args.includes('--purge')) {
     const depth = new MemberSpool(entry, { mycoHome }).sessionIds().length;
     out(`spool kept: ${depth} session file(s) — \`myco member drain\` after re-joining, or \`myco member leave --purge\` to discard`);
@@ -1076,6 +1086,7 @@ function reportRefusedHooks(out: (line: string) => void, deps: MemberCliDeps): v
 function reportAutoJoin(out: (line: string) => void, selection: { root: string | null; all: boolean }, deps: MemberCliDeps): void {
   const mycoHome = homeFor(deps);
   const now = (deps.now ?? Date.now)();
+  for (const issue of autoJoinIdentityIssues(mycoHome)) out(issue.message);
   for (const legacy of listLegacySpools(mycoHome)) {
     out(`legacy capture: ${legacy.projectId} — ${legacy.records} event(s) in ${legacy.sessions} session(s); ${legacy.destination?.serverUrl ?? 'destination ambiguous'}; ${legacy.reason ?? 'retained locally with migration receipts'}`);
   }

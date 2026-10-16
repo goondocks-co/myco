@@ -181,18 +181,26 @@ export function canonicalPath(p: string): string {
   try { return fs.realpathSync.native(absolute); } catch { return absolute; }
 }
 
+type RootFileIdentity = { dev: number | bigint; ino: number | bigint; ctimeMs?: number | bigint };
+
 export interface CanonicalRootIdentityDeps {
   realpath?: (p: string) => string;
-  stat?: (p: string) => Pick<fs.Stats, 'dev' | 'ino'> & Partial<Pick<fs.Stats, 'ctimeMs'>>;
+  stat?: (p: string) => RootFileIdentity;
+  lstat?: (p: string) => RootFileIdentity;
   paths?: typeof path;
-  caseCache?: Map<string, { stamp: string; insensitive: boolean }>;
+  caseCache?: Map<string, { stamp: string; insensitive: boolean; volumeRoot?: string }>;
 }
 
-const pathCaseCache = new Map<string, { stamp: string; insensitive: boolean }>();
+const pathCaseCache = new Map<string, { stamp: string; insensitive: boolean; volumeRoot?: string }>();
 
 /** Native realpath expands aliases; case is folded only after an identity probe on the existing path. */
 export function canonicalRootIdentity(p: string, deps: CanonicalRootIdentityDeps = {}): string {
   return canonicalRootDetails(p, deps).identity;
+}
+
+/** A saved spelling can name only the same literal path or a proven canonical identity. */
+export function rootIdentityMayMatch(saved: string, identity: string, spelling = identity): boolean {
+  try { return path.resolve(saved) === path.resolve(spelling) || canonicalRootIdentity(saved) === identity; } catch { return false; }
 }
 
 function canonicalRootDetails(p: string, deps: CanonicalRootIdentityDeps): { identity: string; insensitive: boolean } {
@@ -209,13 +217,15 @@ function canonicalRootDetails(p: string, deps: CanonicalRootIdentityDeps): { ide
     return { identity: paths.join(found.identity, found.insensitive ? name.toLowerCase() : name), insensitive: found.insensitive };
   }
   const cache = deps.caseCache ?? pathCaseCache;
-  const stat = deps.stat ?? fs.statSync;
+  const stat = deps.stat ?? ((at: string) => fs.statSync(at, { bigint: true }));
+  const lstat = deps.lstat ?? ((at: string) => fs.lstatSync(at, { bigint: true }));
   const actual = stat(physical);
   const parent = paths.dirname(physical);
   const parentStat = parent === physical ? actual : stat(parent);
   const stamp = [actual.dev, actual.ino, actual.ctimeMs, parentStat.dev, parentStat.ino, parentStat.ctimeMs].join(':');
   const cached = cache.get(physical);
   let insensitive = cached?.stamp === stamp ? cached.insensitive : undefined;
+  let volumeRoot = cached?.stamp === stamp ? cached.volumeRoot ?? physical : physical;
   if (insensitive === undefined) {
     insensitive = false;
     for (let at = physical; paths.dirname(at) !== at; at = paths.dirname(at)) {
@@ -226,16 +236,26 @@ function canonicalRootDetails(p: string, deps: CanonicalRootIdentityDeps): { ide
         const original = at === physical ? actual : stat(at);
         const containing = at === physical ? parentStat : stat(paths.dirname(at));
         if (original.dev !== actual.dev || containing.dev !== actual.dev) break;
-        const alternate = stat(paths.join(paths.dirname(at), flipped));
+        const alternate = lstat(paths.join(paths.dirname(at), flipped));
         insensitive = original.dev === alternate.dev && original.ino === alternate.ino;
       } catch (error) {
         if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
       }
       break;
     }
-    cache.set(physical, { stamp, insensitive });
+    if (insensitive) {
+      while (paths.dirname(volumeRoot) !== volumeRoot) {
+        const parent = paths.dirname(volumeRoot);
+        const containing = volumeRoot === physical ? parentStat : stat(parent);
+        if (containing.dev !== actual.dev) break;
+        volumeRoot = parent;
+      }
+    }
+    cache.set(physical, { stamp, insensitive, volumeRoot });
   }
-  return { identity: insensitive ? physical.toLowerCase() : physical, insensitive };
+  const folded = paths.dirname(volumeRoot) === volumeRoot ? physical.toLowerCase()
+    : volumeRoot + physical.slice(volumeRoot.length).toLowerCase();
+  return { identity: insensitive ? folded : physical, insensitive };
 }
 
 /**

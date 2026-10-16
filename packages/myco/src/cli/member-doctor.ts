@@ -24,7 +24,7 @@ import { checkMemberMcpResolution, checkWorkerServices, formatCheck, type Doctor
 import { envOf, homeOf, membershipProblem, openDeployment, rootOf, type MemberVerbDeps } from './deployment-reader.js';
 import type { WorkerServiceDeps } from './worker-service.js';
 import { readDefaultDeployment } from '../member/default-deployment.js';
-import { listLeftRepositories } from '../member/auto-join.js';
+import { autoJoinIdentityIssues, listLeftRepositories } from '../member/auto-join.js';
 import { pathIsAbsent } from '../member/store.js';
 import { listRunnerRecords, isLiveRunner } from '../runner/runner-registry.js';
 import { ServerClient } from '../member/transport.js';
@@ -226,7 +226,7 @@ function leftRepositoryChecks(home: string): DoctorCheck[] {
 
 /** Local machine facts, independent of the current repository's binding. */
 export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Promise<DoctorCheck[]> {
-  const checks: DoctorCheck[] = [];
+  const checks: DoctorCheck[] = autoJoinIdentityIssues(home).filter(issue => issue.kind === 'choice').map(issue => row('Repository connection', 'warn', issue.message));
   const now = (deps.now ?? Date.now)();
   let runners: ReturnType<typeof listRunnerRecords> = [];
   try { runners = listRunnerRecords(home); }
