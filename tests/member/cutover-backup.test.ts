@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { CutoverBackup } from '@myco/member/cutover-backup.js';
 import { identifyLegacyExecutable, LEGACY_EXECUTABLE_RECORD } from '@myco/cli/cutover-executable.js';
 import type { MycoUnit } from '@myco/member/legacy-unit-files.js';
-import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+import { sandboxChildEnv, resolveTestTool } from '../../scripts/test-environment.mjs';
 
 const PWSH = spawnSync('sh', ['-c', 'command -v pwsh'], { env: process.env, encoding: 'utf8' }).stdout.trim();
 const made: string[] = [];
@@ -18,12 +18,35 @@ function fixture(platform: NodeJS.Platform = 'darwin') {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cutover-backup-')); made.push(home);
   const executable = path.join(home, 'bin', platform === 'win32' ? 'myco.exe' : 'myco');
   write(executable, '2.0 executable');
+  write(path.join(home, 'install.json'), JSON.stringify({ version: '2.0.0', bin: executable, binary_sha256: digest(executable) }));
   const unit: MycoUnit = { executable, home, file: path.join(home, 'co.goondocks.myco.service'), args: ['daemon'], label: 'co.goondocks.myco', scope: 'user' };
   write(unit.file, executable + ' daemon');
   const slot = (version: string, bytes = version) => { const file = path.join(home, 'bin', 'versions', version, path.basename(executable)); write(file, bytes); return file; };
   const backup = new CutoverBackup(path.join(home, 'backup'), 'cutover', platform);
   const recipe = () => { backup.takeLegacyUnit(unit, identifyLegacyExecutable(unit, platform)); backup.pruneUnchanged(); return fs.readFileSync(path.join(backup.dir, 'restore.md'), 'utf8'); };
   return { home, executable, unit, slot, backup, recipe };
+}
+
+function offlineLegacyDownload(home: string) {
+  const tools = path.join(home, 'tools'); fs.mkdirSync(tools);
+  const artifact = path.join(home, 'old'); write(artifact, '#!/bin/sh\necho 1.4.8\n');
+  const asset = 'myco-darwin-' + (process.arch === 'arm64' ? 'arm64' : 'x64');
+  const sums = path.join(home, 'sums'); write(sums, digest(artifact) + '  ' + asset + '\n');
+  const requests = path.join(home, 'download-requests');
+  write(path.join(tools, 'curl'), `#!/bin/sh
+url=""; out=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; -w) shift 2 ;; --proto) shift 2 ;; -*) shift ;; *) url="$1"; shift ;; esac; done
+printf '%s\n' "$url" >> '${requests}'
+case "$url" in
+  *matching-refs*) printf '%s' '[{"ref":"refs/tags/myco/v1.4.9"},{"ref":"refs/tags/myco/v1.4.8"}]' ;;
+  *releases/tags/*1.4.9) printf '%s' '{"prerelease":false,"draft":true}' > "$out"; printf 200 ;;
+  *releases/tags/*1.4.8) printf '%s' '{"prerelease":false,"draft":false}' > "$out"; printf 200 ;;
+  *myco%2Fv1.4.8/SHA256SUMS) cp '${sums}' "$out" ;;
+  *myco%2Fv1.4.8/myco-darwin-*) cp '${artifact}' "$out" ;;
+  *) exit 97 ;;
+esac
+`);
+  return { artifact, asset, requests, env: sandboxChildEnv(home, { PATH: tools + path.delimiter + process.env.PATH }) };
 }
 
 describe('cutover executable recovery', () => {
@@ -65,27 +88,61 @@ describe('cutover executable recovery', () => {
     expect(recipe).toContain('at ' + f.executable + ' before starting the service.');
     if (version) { expect(recipe).toContain("version='1.4.8'"); expect(recipe).not.toContain('matching-refs'); }
     else { expect(recipe).toContain('previous exact version was not recorded'); expect(recipe).toContain('latest Myco 1.4 release'); }
-    const tools = path.join(f.home, 'tools'); fs.mkdirSync(tools);
-    const artifact = path.join(f.home, 'old'); write(artifact, '#!/bin/sh\necho 1.4.8\n');
-    const asset = 'myco-darwin-' + (process.arch === 'arm64' ? 'arm64' : 'x64');
-    const sums = path.join(f.home, 'sums'); write(sums, digest(artifact) + '  ' + asset + '\n');
-    const curl = `#!/bin/sh
-url=""; out=""
-while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; -w) shift 2 ;; --proto) shift 2 ;; -*) shift ;; *) url="$1"; shift ;; esac; done
-case "$url" in
-  *matching-refs*) printf '%s' '[{"ref":"refs/tags/myco/v1.4.9"},{"ref":"refs/tags/myco/v1.4.8"}]' ;;
-  *releases/tags/*1.4.9) printf '%s' '{"prerelease":false,"draft":true}' > "$out"; printf 200 ;;
-  *releases/tags/*1.4.8) printf '%s' '{"prerelease":false,"draft":false}' > "$out"; printf 200 ;;
-  *myco%2Fv1.4.8/SHA256SUMS) cp '${sums}' "$out" ;;
-  *myco%2Fv1.4.8/myco-darwin-*) cp '${artifact}' "$out" ;;
-  *) exit 97 ;;
-esac
-`;
-    write(path.join(tools, 'curl'), curl);
+    const download = offlineLegacyDownload(f.home);
     const commands = [...recipe.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]).join('\n');
-    const undo = spawnSync('sh', ['-c', commands], { cwd: f.home, env: sandboxChildEnv(f.home, { PATH: tools + path.delimiter + process.env.PATH }), encoding: 'utf8' });
+    const undo = spawnSync('sh', ['-c', commands], { cwd: f.home, env: download.env, encoding: 'utf8' });
     expect({ status: undo.status, stderr: undo.stderr }).toEqual({ status: 0, stderr: '' });
-    expect(fs.readFileSync(f.executable)).toEqual(fs.readFileSync(artifact));
+    expect(fs.readFileSync(f.executable)).toEqual(fs.readFileSync(download.artifact));
+  });
+
+  for (const shell of ['sh', 'bash', 'zsh']) {
+    const available = resolveTestTool(shell, [process.env.PATH, '/bin', '/usr/bin'].join(path.delimiter));
+    it.skipIf(!available)(`runs every POSIX recovery fence in ${shell} (requires an installed ${shell})`, () => {
+      for (const state of ['saved', 'missing-pinned', 'missing-latest', 'present']) {
+        const f = fixture(); const download = offlineLegacyDownload(f.home);
+        const settings = path.join(f.home, "agent's settings.json"); write(settings, 'original agent settings');
+        f.backup.take(settings); write(settings, 'changed agent settings');
+        if (state === 'saved') f.slot('1.4.8', fs.readFileSync(download.artifact, 'utf8'));
+        if (state === 'missing-pinned') write(path.join(f.home, 'service/daemon.json'), JSON.stringify({ version: '1.4.8' }));
+        if (state === 'present') { write(f.executable, fs.readFileSync(download.artifact, 'utf8')); f.slot('1.4.8', fs.readFileSync(download.artifact, 'utf8')); }
+        const recipe = f.recipe();
+        const fences = [...recipe.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]);
+        expect(fences.length).toBeGreaterThan(0);
+        for (const fence of fences) {
+          const flags = shell === 'zsh' ? ['-f'] : shell === 'bash' ? ['--noprofile', '--norc'] : [];
+          if (!available) throw new Error('The requested shell is unavailable.');
+          const undo = spawnSync(available, [...flags, '-c', fence], { cwd: f.home, env: download.env, encoding: 'utf8' });
+          expect({ state, code: undo.status, stderr: undo.stderr }).toEqual({ state, code: 0, stderr: '' });
+        }
+        expect(fs.readFileSync(f.executable)).toEqual(fs.readFileSync(download.artifact));
+        expect(fs.readFileSync(settings, 'utf8')).toBe('original agent settings');
+        if (state === 'missing-latest') {
+          const requests = fs.readFileSync(download.requests, 'utf8').trim().split('\n');
+          expect(requests.filter(url => url.includes('/releases/tags/')).map(url => url.split('myco%2Fv')[1])).toEqual(['1.4.9', '1.4.8']);
+          expect(requests.filter(url => url.includes('/download/'))).toEqual([
+            'https://github.com/goondocks-co/myco/releases/download/myco%2Fv1.4.8/' + download.asset,
+            'https://github.com/goondocks-co/myco/releases/download/myco%2Fv1.4.8/SHA256SUMS',
+          ]);
+        }
+      }
+    });
+  }
+
+  it.each(['marker', 'slot'])('claims replacement of 2.x only after matching current bytes to its %s', (evidence) => {
+    for (const saved of [false, true]) {
+      const f = fixture(); if (saved) f.slot('1.4.8');
+      if (evidence === 'slot') { fs.unlinkSync(path.join(f.home, 'install.json')); f.slot('2.0.0', fs.readFileSync(f.executable, 'utf8')); }
+      expect(f.recipe()).toContain('replaces Myco 2.0 at ' + f.executable);
+    }
+  });
+
+  it.each(['absent', 'wrong-digest', 'wrong-path', 'different-slot'])('describes an unidentified current executable with %s evidence', (evidence) => {
+    const f = fixture(); f.slot('1.4.8'); fs.unlinkSync(path.join(f.home, 'install.json'));
+    if (evidence === 'wrong-digest' || evidence === 'wrong-path') write(path.join(f.home, 'install.json'), JSON.stringify({ version: '2.0.0', bin: evidence === 'wrong-path' ? path.join(f.home, 'elsewhere') : f.executable, binary_sha256: evidence === 'wrong-digest' ? '0'.repeat(64) : digest(f.executable) }));
+    if (evidence === 'different-slot') f.slot('2.0.0', 'different 2.x bytes');
+    const recipe = f.recipe();
+    expect(recipe).toContain('The executable at ' + f.executable + ' could not be identified and will be replaced.');
+    expect(recipe).not.toContain('replaces Myco 2.0');
   });
 
   it('lists checksum-matching preserved copies when no version record identifies them', () => {
@@ -161,6 +218,7 @@ esac
     write(slot, 'changed before backup'); f.backup.takeLegacyUnit(f.unit, recovery); f.backup.pruneUnchanged();
     const recipe = fs.readFileSync(path.join(f.backup.dir, 'restore.md'), 'utf8');
     expect(recipe).toContain('changed while it was being saved'); expect(recipe).toContain("version='1.4.8'");
+    expect(recipe).toContain('replaces Myco 2.0 at ' + f.executable);
     expect(recipe).not.toContain('- ' + slot); expect(recipe).not.toContain('Choose the correct');
   });
 

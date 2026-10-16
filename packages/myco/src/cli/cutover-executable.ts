@@ -8,8 +8,9 @@ import type { MycoUnit } from '@myco/member/legacy-unit-files.js';
 
 export const LEGACY_EXECUTABLE_RECORD = 'legacy-executable.json';
 
-const legacyVersion = (value: unknown): string | null =>
-  typeof value === 'string' && valid(value) && value.startsWith('1.') ? value : null;
+const versionInMajor = (value: unknown, major: number): string | null =>
+  typeof value === 'string' && valid(value) && value.startsWith(`${major}.`) ? value : null;
+const legacyVersion = (value: unknown): string | null => versionInMajor(value, 1);
 
 export function identifyLegacyExecutable(unit: Pick<MycoUnit, 'executable' | 'home'>, platform: NodeJS.Platform = process.platform): LegacyExecutableRecovery {
   const warnings: string[] = [];
@@ -54,8 +55,9 @@ export function identifyLegacyExecutable(unit: Pick<MycoUnit, 'executable' | 'ho
   if (currentHash && currentHash === recordedHash) return { kind: 'present', version: recordedVersion, warnings };
   const marker = unit.home ? read(path.join(unit.home, 'install.json')) : null;
   const installedVersion = legacyVersion(marker?.version);
-  if (currentHash && installedVersion && typeof marker?.bin === 'string' && identity(marker.bin) === identity(unit.executable)
-    && typeof marker.binary_sha256 === 'string' && marker.binary_sha256.toLowerCase() === currentHash) {
+  const markerMatchesCurrent = Boolean(currentHash && typeof marker?.bin === 'string' && identity(marker.bin) === identity(unit.executable)
+    && typeof marker.binary_sha256 === 'string' && marker.binary_sha256.toLowerCase() === currentHash);
+  if (installedVersion && markerMatchesCurrent) {
     return { kind: 'present', version: installedVersion, warnings };
   }
   const list = (dir: string): string[] => {
@@ -65,8 +67,11 @@ export function identifyLegacyExecutable(unit: Pick<MycoUnit, 'executable' | 'ho
       return [];
     }
   };
+  const versionNames = list(path.join(bin, 'versions'));
+  const currentIs2 = Boolean(currentHash && (markerMatchesCurrent && versionInMajor(marker?.version, 2)
+    || versionNames.filter(name => versionInMajor(name, 2)).some(name => hash(path.join(bin, 'versions', name, path.basename(unit.executable))) === currentHash)));
   const candidates: Candidate[] = [];
-  for (const name of list(path.join(bin, 'versions')).filter(name => legacyVersion(name) !== null)) {
+  for (const name of versionNames.filter(name => legacyVersion(name) !== null)) {
     const source = path.join(bin, 'versions', name, path.basename(unit.executable));
     if (rejected.has(identity(source))) continue;
     const digest = hash(source);
@@ -83,16 +88,16 @@ export function identifyLegacyExecutable(unit: Pick<MycoUnit, 'executable' | 'ho
   }
   const daemonVersion = unit.home ? legacyVersion(read(path.join(unit.home, 'service', 'daemon.json'))?.version) : null;
   const version = recordedVersion ?? daemonVersion;
-  const missing = (choices: Candidate[] = []): LegacyExecutableRecovery => ({ kind: 'missing', candidates: choices.map(candidate => candidate.source), version, warnings });
+  const missing = (choices: Candidate[] = []): LegacyExecutableRecovery => ({ kind: 'missing', candidates: choices.map(candidate => candidate.source), version, warnings, currentIs2 });
   if (recordedHash) {
     const selected = recordedCopy ?? candidates.find(candidate => candidate.sha256 === recordedHash);
-    return selected ? { kind: 'saved', ...selected, version: recordedVersion ?? selected.version, warnings } : missing();
+    return selected ? { kind: 'saved', ...selected, version: recordedVersion ?? selected.version, warnings, currentIs2 } : missing();
   }
   if (version) {
     if (recordedVersion && daemonVersion && recordedVersion !== daemonVersion) return missing();
     const selected = candidates.find(candidate => candidate.version === version);
-    return selected ? { kind: 'saved', ...selected, warnings } : missing();
+    return selected ? { kind: 'saved', ...selected, warnings, currentIs2 } : missing();
   }
   const selected = candidates.length === 1 && candidates[0].version ? candidates[0] : null;
-  return selected ? { kind: 'saved', ...selected, warnings } : missing(candidates);
+  return selected ? { kind: 'saved', ...selected, warnings, currentIs2 } : missing(candidates);
 }

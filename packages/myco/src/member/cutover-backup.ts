@@ -18,10 +18,11 @@ import path from 'node:path';
 import { writePrivateFileAtomic } from './store.js';
 import type { MycoUnit } from './legacy-unit-files.js';
 
-export type LegacyExecutableRecovery =
+export type LegacyExecutableRecovery = (
   | { kind: 'present'; version: string | null; warnings: string[] }
   | { kind: 'saved'; source: string; sha256: string; version: string | null; warnings: string[] }
-  | { kind: 'missing'; candidates: string[]; version: string | null; warnings: string[] };
+  | { kind: 'missing'; candidates: string[]; version: string | null; warnings: string[] }
+) & { currentIs2?: boolean };
 
 export type BackupEntry =
   | { original: string; backup: string; sha256: string; task?: string }
@@ -85,7 +86,9 @@ function executableRecoveryRecipe(entries: readonly BackupEntry[], platform: Nod
     if (!('recovery' in entry)) return [];
     const { recovery, original } = entry;
     if (recovery.kind === 'present') return [...recovery.warnings, `The Myco 1.x executable is still in place at ${original}. No executable recovery is needed.`, ''];
-    const preface = [...recovery.warnings, `Restoring the saved executable replaces Myco 2.0 at ${original}.`];
+    const preface = [...recovery.warnings, recovery.currentIs2
+      ? `Restoring the saved executable replaces Myco 2.0 at ${original}.`
+      : `The executable at ${original} could not be identified and will be replaced.`];
     if (recovery.kind === 'saved') {
       const commands = windows ? [
         `if ((Get-FileHash -LiteralPath ${psQuote(recovery.source)} -Algorithm SHA256).Hash.ToLowerInvariant() -ne '${recovery.sha256}') { throw 'The saved executable checksum does not match.' }`,
@@ -132,9 +135,9 @@ function executableRecoveryRecipe(entries: readonly BackupEntry[], platform: Nod
         'releases=$(mktemp -d)',
         `candidates=$(curl --proto '=https' --tlsv1.2 -fsSL ${quote(refs)} | grep -o '"refs/tags/myco/v1\\.4\\.[0-9]*"' | sed 's|"refs/tags/myco/v||;s|"||' | sort -t. -k3,3nr)`,
         'version=',
-        'for candidate in $candidates; do',
-        `  status=$(curl --proto '=https' --tlsv1.2 -sS -o "$releases/release.json" -w '%{http_code}' "https://api.github.com/repos/goondocks-co/myco/releases/tags/myco%2Fv$candidate")`,
-        '  case "$status" in 200) ;; 404) continue ;; *) echo "Could not find the latest Myco 1.4 release (HTTP $status)" >&2; exit 1 ;; esac',
+        `for candidate in $(printf '%s\\n' "$candidates"); do`,
+        `  http_status=$(curl --proto '=https' --tlsv1.2 -sS -o "$releases/release.json" -w '%{http_code}' "https://api.github.com/repos/goondocks-co/myco/releases/tags/myco%2Fv$candidate")`,
+        '  case "$http_status" in 200) ;; 404) continue ;; *) echo "Could not find the latest Myco 1.4 release (HTTP $http_status)" >&2; exit 1 ;; esac',
         `  if grep -q '"prerelease"[[:space:]]*:[[:space:]]*false' "$releases/release.json" && grep -q '"draft"[[:space:]]*:[[:space:]]*false' "$releases/release.json"; then version=$candidate; break; fi`,
         'done',
         `test -n "$version" || { echo 'No published Myco 1.4 release was found.' >&2; exit 1; }`,
@@ -233,7 +236,7 @@ export class CutoverBackup {
         if (sha256(fs.readFileSync(source)) !== recovery.sha256) throw new Error('The executable changed while it was being saved.');
         recovery = { ...recovery, source };
       } catch (error) {
-        recovery = { kind: 'missing', candidates: [], version: recovery.version,
+        recovery = { kind: 'missing', candidates: [], version: recovery.version, currentIs2: recovery.currentIs2,
           warnings: [...recovery.warnings, `Could not save the executable for undo: ${(error as Error).message}`] };
       }
     }
