@@ -58,13 +58,15 @@ export function readSetupFile(home: string): SetupFile {
   return parsed.data;
 }
 
-/** Observed journey identity applies to this run and is omitted by every save. */
+/** Observed journey values apply to this run and are omitted by every save. */
 export function applyObservedSetupJourney(file: SetupFile, journey: SetupAnswers): void {
-  const keys = ['role', 'url', 'target', ...(journey.runWork === undefined ? [] : ['runWork'])];
+  const keys = ['role', 'url', 'target', 'root', ...(journey.runWork === undefined ? [] : ['runWork'])];
   const observed = new Set(keys.filter(key => file[OBSERVED_ANSWERS]?.has(key) || Reflect.get(file.answers, key) === undefined));
   file.answers = { ...file.answers, ...Object.fromEntries(Object.entries(journey).filter(([key]) => observed.has(key))) };
   file[OBSERVED_ANSWERS] = observed;
 }
+
+export const hasObservedSetupJourney = (file: SetupFile): boolean => file[OBSERVED_ANSWERS]?.has('role') === true;
 
 /** Setup persists choices and consent only; credentials and completion belong to their owners. */
 export function saveSetupFile(home: string, value: SetupFile): void {

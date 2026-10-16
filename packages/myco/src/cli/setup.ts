@@ -230,7 +230,7 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     if (!file.answers.role && !options.change) {
       const { guidedJourneys: journeys, failures, inferenceFailures } = observeSetupJourneys(home);
       if (failures.length > 0 || inferenceFailures.length > 0) throw new Error(`${[...failures.map(fact => fact.detail), ...inferenceFailures].join('\n')} Restore access, or pass --join, --create or --runner.`);
-      const root = resolveMemberProjectRoot(options.answers.root ?? deps.cwd);
+      const root = resolveMemberProjectRoot(file.answers.root ?? deps.cwd);
       const binding = journeys.some(journey => journey.role === 'join') ? readRegistryEntryResult(root, home) : { status: 'missing' } as const;
       if (binding.status === 'unavailable') throw new Error(`Repository binding could not be read: ${registryEntryPath(root, home)}. Run myco doctor.`);
       const bound = binding.status === 'present' ? journeys.find(journey => journey.role === 'join' && journey.url === deploymentUrl(binding.entry.serverUrl)) : undefined;
@@ -248,7 +248,6 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
       if (journey) {
         if (answered) file.answers = { ...file.answers, ...journey };
         else applyObservedSetupJourney(file, journey);
-        if (bound === journey) file.answers.root = root;
         validateCreationOptions(file.answers);
         out(bound === journey ? `This repository sends to ${journey.url}; continuing.` : `This machine ${setupJourneyWords(journey)}; continuing.`);
         saveSetupFile(home, file);

@@ -108,18 +108,25 @@ describe('legacy journey (e)', () => {
     const url = LEGACY_URLS[bound]!;
     const other = LEGACY_URLS[bound === 0 ? 1 : 0];
     recordDefaultDeployment(other, { mycoHome: home, replace: true });
-    const deps = { ...fixture.deps, cwd: root, ask: async (question: string) => { throw new Error(`Unexpected prompt: ${question}`); } };
+    const deps = { ...fixture.deps, cwd: root, ask: async () => null };
+    const file = readSetupFile(home);
+    file.answers = { noAgents: true, runWork: false };
+    const plan = planCutover(home, { dryRun: true, homeDir: fixture.legacy.home }, { ...fixture.deps.cutoverDeps, agents: () => [] });
+    file.consented.cutover = planFingerprint(cutoverConsentPlan(plan));
+    saveSetupFile(home, file);
     expect(await run(['--status'], deps)).toBe(3);
     const remedy = lines.join('\n').match(/myco setup --cutover/)?.[0];
     expect(remedy).toBe('myco setup --cutover');
     lines = [];
-    expect(await run([...remedy!.split(' ').slice(2), '--yes', '--no-agents', '--no-runner', '--keep-default'], deps)).toBe(0);
+    expect({ code: await run(remedy!.split(' ').slice(2), deps), errors }).toEqual({ code: 0, errors: [] });
     expect(errors).toEqual([]);
     expect(lines).toContain(`This repository sends to ${url}; continuing.`);
     expect(readRegistryEntry(root, home)?.serverUrl).toBe(url);
     expect(readDefaultDeployment(home)?.serverUrl).toBe(other);
     expect(readSetupFile(home).answers.role).toBeUndefined();
     expect(readSetupFile(home).answers.url).toBeUndefined();
+    expect(readSetupFile(home).answers.root).toBeUndefined();
+    expect(readSetupFile(home).answers.makeDefault).toBeUndefined();
     expect(await run([], deps)).toBe(0);
   });
 

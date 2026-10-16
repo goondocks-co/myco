@@ -290,15 +290,17 @@ export function observeSetupJourneys(home: string): { journeys: SetupAnswers[]; 
     }
   } catch (error) { unavailable('deployment.create', error instanceof Error ? error.message : String(error)); }
   for (const membership of memberships.memberships) journeys.push({ role: 'join', url: deploymentUrl(membership.serverUrl) });
+  const guidedJourneys = journeys.filter(journey => !manual.has(journey)).map(journey => ({ ...journey }));
   const runners = listRunnerRecordsResult(home);
   for (const runner of runners.records) {
     const url = deploymentUrl(runner.serverUrl);
-    const member = journeys.find(journey => journey.role === 'join' && journey.url === url);
+    journeys.push({ role: 'runner', url });
+    const member = guidedJourneys.find(journey => journey.role === 'join' && journey.url === url);
     if (member) member.runWork = true;
-    else journeys.push({ role: 'runner', url });
+    else guidedJourneys.push({ role: 'runner', url });
   }
   for (const error of runners.errors) unavailable('runner.enrollment', `Runner record could not be read: ${error}. Run myco runner status.`);
-  return { journeys, guidedJourneys: journeys.filter(journey => !manual.has(journey)), failures, inferenceFailures, joinedDeployments: memberships.memberships.map(membership => deploymentUrl(membership.serverUrl)) };
+  return { journeys, guidedJourneys, failures, inferenceFailures, joinedDeployments: memberships.memberships.map(membership => deploymentUrl(membership.serverUrl)) };
 }
 
 /** Status derives journeys from observed machine state, independent of saved progress. */
@@ -312,8 +314,7 @@ export async function observeSetupStatus(home: string, answers: SetupAnswers, de
   if (selected && answers.role && (answers.url || answers.role === 'create')) journeys.push(answers);
   else {
     journeys.push(...observedJourneys.journeys);
-    if (answers.role && (answers.url || answers.role === 'create') && !journeys.some(journey => journey.role === answers.role && (answers.role === 'create' ? journey.target === answers.target : journey.url === answers.url)
-      || answers.role === 'runner' && journey.role === 'join' && journey.runWork && journey.url === answers.url)) journeys.push(answers);
+    if (answers.role && (answers.url || answers.role === 'create') && !journeys.some(journey => journey.role === answers.role && (answers.role === 'create' ? journey.target === answers.target : journey.url === answers.url))) journeys.push(answers);
   }
   if (journeys.length === 0) {
     const observed = await observeSetup(home, {}, { ...deps, status: true });

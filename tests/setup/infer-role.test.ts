@@ -5,8 +5,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { run } from '@myco/cli/setup.js';
 import { applyObservedSetupJourney, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
-import { deploymentPath, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
-import { defaultDeploymentPath, recordDefaultDeployment } from '@myco/member/default-deployment.js';
+import { deploymentPath, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
+import { defaultDeploymentPath, readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { runnerRecordPath, newRunnerBearer } from '@myco/runner/runner-registry.js';
 import { writeDeploymentRecord } from '@myco/server/cloudflare.js';
 import { createLocalDeployment, DEFAULT_LOCAL_RECORD, peekLocalPaths } from '@myco/server/local.js';
@@ -77,6 +77,11 @@ it('asks which observed Deployment when neither membership is default', async ()
   } })).toBe(2);
   expect(questions).toHaveLength(1);
   expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: SECOND });
+  questions = []; lines = [];
+  expect(await run([], deps())).toBe(2);
+  expect(questions).toEqual([]);
+  expect(lines.join('\n')).not.toContain('continuing.');
+  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: SECOND });
 });
 
 for (const mode of ['empty', 'change', 'something else'] as const) it(`asks the role for ${mode}`, async () => {
@@ -106,10 +111,14 @@ it('refuses an unreadable membership by file before any prompt or saved answer',
 
 for (const change of [false, true]) it(`keeps an explicit join ahead of inferred membership${change ? ' with --change' : ''}`, async () => {
   membership(FIRST);
+  recordDefaultDeployment(FIRST, { mycoHome: home });
   expect(await run([...(change ? ['--change'] : []), '--join', SECOND], deps())).toBe(2);
   expect(questions).toEqual([]);
   expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: SECOND });
   expect(lines.join('\n')).not.toContain('continuing.');
+  expect(await run([], deps())).toBe(2);
+  expect(questions).toEqual([]);
+  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: SECOND });
 });
 
 it('asks for device approval when the inferred membership credential is refused', async () => {
@@ -202,12 +211,72 @@ for (const bound of [FIRST, SECOND]) for (const hasDefault of [false, true]) it(
   fs.mkdirSync(repo); execFileSync('git', ['init', '-q', repo]);
   writeRegistryEntry({ version: 2, root: repo, projectId: 'proj_bound', serverUrl: bound, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
   const calls: string[] = [];
-  expect(await run(['--no-agents', '--no-runner', '--keep-default'], { ...deps(), cwd: repo, fetch: online(calls) })).toBe(0);
+  expect(await run(['--no-agents', '--no-runner'], { ...deps(), cwd: repo, fetch: online(calls) })).toBe(0);
   expect(questions).toEqual([]);
   expect(errors).toEqual([]);
   expect(lines).toContain(`This repository sends to ${bound}; continuing.`);
   expect(calls.every(url => url === bound)).toBe(true);
   expect(readSetupFile(home).answers.role).toBeUndefined();
+  expect(readSetupFile(home).answers.makeDefault).toBeUndefined();
+  expect(readDefaultDeployment(home)?.serverUrl).toBe(hasDefault ? bound === FIRST ? SECOND : FIRST : undefined);
+});
+
+for (const bound of [false, true]) it(`re-resolves an inferred repository after a ${bound ? 'bound' : 'unbound'} run`, async () => {
+  membership(FIRST); membership(SECOND);
+  recordDefaultDeployment(SECOND, { mycoHome: home });
+  const repositories = ['a', 'b'].map(name => {
+    const repo = path.join(scratch, name);
+    fs.mkdirSync(repo); execFileSync('git', ['init', '-q', repo]);
+    return repo;
+  });
+  const connect = (root: string, serverUrl: string) => {
+    const entry = { version: 2 as const, root, projectId: `proj_${path.basename(root)}`, serverUrl, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 };
+    writeRegistryEntry(entry, { mycoHome: home });
+    return entry;
+  };
+  if (bound) connect(repositories[0]!, FIRST);
+  const joined: string[] = [];
+  const join = async (args: readonly string[]) => {
+    const root = args[args.indexOf('--root') + 1]!;
+    joined.push(root);
+    return connect(root, args[0]!);
+  };
+  for (const cwd of repositories) {
+    lines = [];
+    expect(await run(['--no-agents', '--no-runner'], { ...deps(), cwd, fetch: online(), join })).toBe(0);
+    expect(lines.at(-1)).toContain(cwd);
+  }
+  expect(readSetupFile(home).answers.root).toBeUndefined();
+  expect(joined).toEqual(bound ? [repositories[1]!] : repositories);
+  expect(readRegistryEntry(repositories[1]!, home)?.serverUrl).toBe(SECOND);
+  expect(questions).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+for (const saved of [false, true]) it(`keeps ${saved ? 'a saved' : 'an explicit'} root and an explicit default choice on an inferred journey`, async () => {
+  membership(FIRST); membership(SECOND);
+  recordDefaultDeployment(SECOND, { mycoHome: home });
+  const root = path.join(scratch, 'chosen');
+  fs.mkdirSync(root); execFileSync('git', ['init', '-q', root]);
+  if (saved) saveSetupFile(home, { version: 1, answers: { root }, consented: {} });
+  writeRegistryEntry({ version: 2, root, projectId: 'proj_chosen', serverUrl: FIRST, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+  expect(await run([...(saved ? [] : ['--root', root]), '--default', '--no-agents', '--no-runner'], { ...deps(), fetch: online() })).toBe(0);
+  expect(readSetupFile(home).answers).toMatchObject({ root, makeDefault: true });
+  expect(readDefaultDeployment(home)?.serverUrl).toBe(FIRST);
+  expect(questions).toEqual([]);
+});
+
+it('keeps the default on an inferred journey despite a saved default choice', async () => {
+  membership(FIRST); membership(SECOND);
+  recordDefaultDeployment(SECOND, { mycoHome: home });
+  const root = path.join(scratch, 'bound');
+  fs.mkdirSync(root); execFileSync('git', ['init', '-q', root]);
+  writeRegistryEntry({ version: 2, root, projectId: 'proj_bound', serverUrl: FIRST, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+  saveSetupFile(home, { version: 1, answers: { makeDefault: true, noAgents: true, runWork: false }, consented: {} });
+  expect(await run([], { ...deps(), cwd: root, fetch: online() })).toBe(0);
+  expect(readDefaultDeployment(home)?.serverUrl).toBe(SECOND);
+  expect(readSetupFile(home).answers.makeDefault).toBe(true);
+  expect(questions).toEqual([]);
 });
 
 for (const damaged of ['local', 'runner'] as const) it(`names the unreadable ${damaged} record and explicit role remedies without prompting`, async () => {
@@ -229,11 +298,12 @@ for (const damaged of ['local', 'runner'] as const) it(`names the unreadable ${d
   }
 });
 
-it('combines membership and runner records for one Deployment into one observed join journey', async () => {
+it('combines membership and runner records only for guided setup', async () => {
   membership(FIRST); runnerRecord(FIRST);
-  expect(observeSetupJourneys(home).journeys).toEqual([{ role: 'join', url: FIRST, runWork: true }]);
+  expect(observeSetupJourneys(home).guidedJourneys).toEqual([{ role: 'join', url: FIRST, runWork: true }]);
+  expect(observeSetupJourneys(home).journeys).toEqual([{ role: 'join', url: FIRST }, { role: 'runner', url: FIRST }]);
   const observed = await observeSetupStatus(home, {}, { ...deps(), worker: { home: scratch, runner: () => { throw new Error('fixture service unavailable'); } } });
-  expect(observed.filter(fact => fact.id === 'journey')).toMatchObject([{ detail: 'join', deployment: FIRST }]);
+  expect(observed.filter(fact => fact.id === 'journey')).toMatchObject([{ detail: 'join', deployment: FIRST }, { detail: 'runner', deployment: FIRST }]);
   expect(await run(['--no-runner'], deps())).toBe(2);
   expect(questions).toEqual([]);
   expect(readSetupFile(home).answers).toMatchObject({ runWork: false });
