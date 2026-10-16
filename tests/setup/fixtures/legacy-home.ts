@@ -8,7 +8,7 @@ const LEGACY_SECONDS = 1_700_000_000;
 export const LEGACY_PROJECT_IDS = ['proj_legacy_a', 'proj_legacy_b'] as const;
 
 /** A file-only 1.4 home with retained history, owned integrations and unit files. No runnable 1.x binary. */
-export function legacyFixtureHome(root: string, options: { skippedProject?: boolean } = {}) {
+export function legacyFixtureHome(root: string, options: { skippedProject?: boolean; agentSettings?: boolean } = {}) {
   assertTestPath(process.env.MYCO_TEST_RUN_ROOT!, root, 'legacy fixture');
   const home = path.join(root, 'user');
   const mycoHome = path.join(home, '.myco');
@@ -35,10 +35,12 @@ export function legacyFixtureHome(root: string, options: { skippedProject?: bool
   } finally { db.close(); }
   write(binary, 'Fixture presence marker. Never execute a 1.x binary.\n');
   write(path.join(mycoHome, 'claims', 'symbiont-config.json'), JSON.stringify({ subsystem: 'symbiont-config', owner: mycoHome, pid: 1, claimed_at: 1 }));
-  const hook = (event: string) => ({ hooks: [{ type: 'command', command: `${binary} hook ${event} --symbiont claude-code --myco-managed` }] });
-  write(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [hook('session-start')], Stop: [hook('stop')] }, userSetting: 'preserve' }));
-  write(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { myco: { command: binary, args: ['mcp'] }, unrelated: { command: 'user-tool' } } }));
-  write(path.join(home, '.codex', 'config.toml'), `[mcp_servers.myco]\ncommand = "${binary}"\nargs = ["mcp"]\n`);
+  if (options.agentSettings !== false) {
+    const hook = (event: string) => ({ hooks: [{ type: 'command', command: `${binary} hook ${event} --symbiont claude-code --myco-managed` }] });
+    write(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [hook('session-start')], Stop: [hook('stop')] }, userSetting: 'preserve' }));
+    write(path.join(home, '.claude.json'), JSON.stringify({ mcpServers: { myco: { command: binary, args: ['mcp'] }, unrelated: { command: 'user-tool' } } }));
+    write(path.join(home, '.codex', 'config.toml'), `[mcp_servers.myco]\ncommand = "${binary}"\nargs = ["mcp"]\n`);
+  }
   const label = 'co.goondocks.myco';
   const agentsDir = path.join(home, 'Library', 'LaunchAgents');
   write(path.join(agentsDir, `${label}.plist`), `<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array><string>${binary}</string><string>daemon</string></array><key>EnvironmentVariables</key><dict><key>MYCO_HOME</key><string>${mycoHome}</string></dict></dict></plist>`);

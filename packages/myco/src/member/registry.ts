@@ -945,7 +945,7 @@ export function listDeploymentMemberships(mycoHome: string = resolveMycoHome()):
 }
 
 /** A complete membership listing for decisions that require proof of unique ownership. */
-export function listDeploymentMembershipsResult(mycoHome: string = resolveMycoHome()): { memberships: DeploymentMembership[]; readable: boolean; unavailableEntries: number } {
+export function listDeploymentMembershipsResult(mycoHome: string = resolveMycoHome()): { memberships: DeploymentMembership[]; readable: boolean; unavailableEntries: number; unavailableFiles: string[] } {
   return membershipListing(mycoHome, false);
 }
 
@@ -956,20 +956,22 @@ function membershipListing(mycoHome: string, report: boolean): ReturnType<typeof
   catch (error) {
     const absent = (error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(dir);
     if (report && !absent) throw error;
-    return { memberships: [], readable: absent, unavailableEntries: 0 };
+    return { memberships: [], readable: absent, unavailableEntries: 0, unavailableFiles: absent ? [] : [dir] };
   }
   const memberships: DeploymentMembership[] = [];
   let unavailableEntries = 0;
+  const unavailableFiles: string[] = [];
   for (const name of names.filter((name) => name.endsWith('.json'))) {
     const read = readPrivateJson<DeploymentMembership>(path.join(dir, name));
     if (!read.ok || !isMembership(read.value) || `${deploymentKeyFor(read.value.serverUrl)}.json` !== name) {
       unavailableEntries += 1;
+      unavailableFiles.push(path.join(dir, name));
       if (report) reportSkippedPrivateFile('deployment membership', path.join(dir, name), read.ok ? { reason: 'malformed', detail: 'not a deployment membership at its URL key' } : read);
       continue;
     }
     memberships.push(read.value);
   }
-  return { memberships, readable: true, unavailableEntries };
+  return { memberships, readable: true, unavailableEntries, unavailableFiles };
 }
 
 /** A Deployment membership as a reader that must tell absence from damage sees it. */

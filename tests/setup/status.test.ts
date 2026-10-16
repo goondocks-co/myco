@@ -112,6 +112,7 @@ it('observes every membership and runner record, retaining matching saved choice
   expect(lines.filter(line => line.includes('Setup:'))).toHaveLength(2);
   const facts = await observeSetupStatus(fixture.home, { url: STATUS_URL, role: 'join', runnerService: 'skip', noAgents: true }, deps());
   expect(facts.filter(fact => fact.id === 'journey').map(fact => [fact.deployment, fact.detail]).sort()).toEqual([[STATUS_URL, 'join'], [second, 'join'], [STATUS_URL, 'runner']].sort());
+  expect(facts.filter(fact => fact.id === 'runner.enrollment')).toMatchObject([{ state: 'complete', deployment: STATUS_URL }]);
 });
 
 it('keeps complete status at zero and unreadable observations at four', async () => {

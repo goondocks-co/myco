@@ -7,8 +7,10 @@ import { UNUSUAL } from '@myco/utils/git-files.js';
 import { runGitAnswer } from '@myco/utils/git.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { runnerServerUrl, RUNNER_NAME_PATTERN } from '@myco/cli/runner-deps.js';
-import { readSetupFile, saveSetupFile, setupCloudflareUrl, type SetupAnswers } from '@myco/setup/answers.js';
-import { observeSetupStatus, setupExitCode } from '@myco/setup/observe.js';
+import { applyObservedSetupJourney, applyObservedSetupRunWork, readSetupFile, saveSetupFile, setupCloudflareUrl, type SetupAnswers } from '@myco/setup/answers.js';
+import { observeSetupJourneys, observeSetupRunWork, observeSetupStatus, setupExitCode } from '@myco/setup/observe.js';
+import { readDefaultDeployment } from '@myco/member/default-deployment.js';
+import { deploymentUrl, readRegistryEntryResult, registryEntryPath } from '@myco/member/registry.js';
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { setupChecks } from '@myco/cli/member-doctor.js';
 import { conductSetup, type SetupDeps } from '@myco/setup/steps.js';
@@ -184,6 +186,7 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
   if (args.includes('--help') || args.includes('-h')) { out(SETUP_HELP); return 0; }
   try {
     const options = parseSetupOptions(args);
+    let freshJoin = options.answers.role === 'join';
     const home = deps.mycoHome ?? resolveMycoHome();
     const file = readSetupFile(home);
     const changedTarget = (options.answers.url !== undefined && (options.answers.url !== file.answers.url || options.answers.role !== file.answers.role))
@@ -225,10 +228,44 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     const migration = legacyMigrationState(home);
     if (migration.state === 'unavailable') throw new Error(`Legacy migration state unavailable: ${migration.detail}. Restore access, then run myco setup again.`);
     if (migration.state !== 'none' && migration.state !== 'moved') out(`Myco 1.4 sources found (${migration.state}). Setup will preview moving them after sign-in. No legacy binary is executed.`);
+    if (!file.answers.role && !options.change) {
+      const { guidedJourneys: journeys, failures, inferenceFailures } = observeSetupJourneys(home);
+      const requireReadable = (unavailable: typeof failures): void => {
+        if (unavailable.length > 0 || inferenceFailures.length > 0) throw new Error(`${[...unavailable.map(fact => fact.id === 'runner.enrollment' ? `${fact.detail.replace(/\.$/, '')} or pass --run-work or --no-runner.` : fact.detail), ...inferenceFailures].join('\n')} Restore access, or pass --join, --create or --runner.`);
+      };
+      requireReadable(failures.filter(fact => fact.id !== 'runner.enrollment'));
+      const root = resolveMemberProjectRoot(file.answers.root ?? deps.cwd);
+      const binding = journeys.some(journey => journey.role === 'join') ? readRegistryEntryResult(root, home) : { status: 'missing' } as const;
+      if (binding.status === 'unavailable') throw new Error(`Repository binding could not be read: ${registryEntryPath(root, home)}. Run myco doctor.`);
+      const bound = binding.status === 'present' ? journeys.find(journey => journey.role === 'join' && journey.url === deploymentUrl(binding.entry.serverUrl)) : undefined;
+      const defaultUrl = !bound && journeys.length > 1 ? readDefaultDeployment(home, { strict: true })?.serverUrl : undefined;
+      let journey = bound ?? (journeys.length === 1 ? journeys[0] : journeys.find(journey => journey.role === 'join' && journey.url === defaultUrl));
+      let answered = false;
+      if (!journey && journeys.length > 1) {
+        const choices = journeys.map((journey, index) => `${index + 1}) ${setupJourneyWords(journey)}`);
+        const answer = await askRequired(ask, `Which Myco should setup continue with?\n${choices.join('\n')}\n${journeys.length + 1}) Something else`, '--create cloudflare|local, --join <address> or --runner <address>');
+        const index = Number(answer) - 1;
+        if (!Number.isInteger(index) || index < 0 || index > journeys.length) throw new Error(`Choose a number from 1 to ${journeys.length + 1}; run myco setup --help for the available choices.`);
+        journey = journeys[index];
+        answered = true;
+      }
+      if (journey && journey.role !== 'join') requireReadable(failures);
+      if (journey) {
+        if (answered) {
+          const { runWork: _runWork, ...identity } = journey;
+          file.answers = { ...file.answers, ...identity };
+        }
+        applyObservedSetupJourney(file, journey);
+        validateCreationOptions(file.answers);
+        out(bound === journey ? `This repository sends to ${journey.url}; continuing.` : `This machine ${setupJourneyWords(journey)}; continuing.`);
+        saveSetupFile(home, file);
+      }
+    }
     if (!file.answers.role) {
       const role = await askRequired(ask, 'What should this machine do? 1) Start a new Myco 2) Join a Myco 3) Run Myco’s work', '--create cloudflare|local, --join <address> or --runner <address>');
       if (!['1', '2', '3'].includes(role)) throw new Error('Choose 1, 2 or 3; run myco setup --help for the available choices.');
       file.answers.role = role === '1' ? 'create' : role === '2' ? 'join' : 'runner';
+      freshJoin = file.answers.role === 'join';
       validateCreationOptions(file.answers);
       saveSetupFile(home, file);
     }
@@ -240,7 +277,10 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
       options.answers.role = selected.answers.role;
     }
     validateCreationOptions(file.answers);
-    if (file.answers.role === 'join') file.answers.root ??= resolveMemberProjectRoot(deps.cwd);
+    if (file.answers.role === 'join') {
+      file.answers.root ??= resolveMemberProjectRoot(deps.cwd);
+      if (!freshJoin && file.answers.runWork === undefined) applyObservedSetupRunWork(file, observeSetupRunWork(home, file.answers.url!));
+    }
     if (file.answers.role === 'create') file.answers.root ??= statusRepository(deps.cwd ?? process.cwd());
     saveSetupFile(home, file);
     await conductSetup(home, file, { ...deps, loginAddress: options.address }, { yes: options.yes, explicitJoin: options.answers.role === 'join', explicitLegacyPlacement: args.includes('--route') || args.includes('--skip'), explicitDefault: args.includes('--default'), explicitProject: args.includes('--project'), newProjectChanged });
@@ -249,6 +289,12 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     err(`myco setup: ${error instanceof Error ? error.message : String(error)}`);
     return args.includes('--status') ? 4 : 2;
   }
+}
+
+function setupJourneyWords(journey: SetupAnswers): string {
+  if (journey.role === 'join') return `joins ${journey.url}`;
+  if (journey.role === 'runner') return `runs Myco’s work for ${journey.url}`;
+  return journey.url ? `starts Myco at ${journey.url}` : journey.target === 'local' ? 'starts Myco on this machine' : 'starts Myco on Cloudflare';
 }
 
 /** Repository identity follows capture's common-directory rule without keeping a git verdict. */

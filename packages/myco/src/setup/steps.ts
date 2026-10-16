@@ -24,7 +24,7 @@ import { runOrThrow, systemRunner } from '@myco/server/runner.js';
 import { readRunnerRecord } from '@myco/runner/runner-registry.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult } from '@myco/member/registry.js';
-import { canonicalPlan, planFingerprint, saveSetupFile, setupCloudflareUrl, type SetupFile, type SetupPlan } from '@myco/setup/answers.js';
+import { canonicalPlan, hasObservedSetupJourney, planFingerprint, saveSetupFile, setupCloudflareUrl, type SetupFile, type SetupPlan } from '@myco/setup/answers.js';
 import { observeSetup, type Observation, type ObserveDeps } from '@myco/setup/observe.js';
 import { askOnTerminal, askRequired, confirm, type Ask } from '@myco/setup/prompt.js';
 import { planCutover, runCutover, cutoverSourcePlan, cutoverReconciliation, type CutoverDeps, type CutoverPlan } from '@myco/cli/cutover.js';
@@ -437,6 +437,7 @@ const STEPS: readonly SetupStep[] = [
   {
     id: 'default', requires: ['default'], applies: isMember,
     act: async (ctx) => {
+      if (hasObservedSetupJourney(ctx.file) && !ctx.explicitDefault) return;
       const answers = chosen(ctx);
       const previous = readDefaultDeployment(ctx.home, { strict: true });
       if (!previous || previous.serverUrl === answers.url) return;

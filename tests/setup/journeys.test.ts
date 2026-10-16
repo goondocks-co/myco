@@ -7,9 +7,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+import { sandboxChildEnv, bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { run, parseSetupOptions } from '@myco/cli/setup.js';
 import { run as login } from '@myco/cli/login.js';
+import { resetMachineIdCache } from '@myco/machine-id.js';
 import { runRunnerService } from '@myco/cli/runner-service.js';
 import { executorServiceTarget } from '@myco/cli/worker-service.js';
 import { homeReport } from '@myco/cli/member-doctor.js';
@@ -64,6 +65,7 @@ let lines: string[];
 let errors: string[];
 const closers: (() => void | Promise<void>)[] = [];
 beforeEach(() => {
+  resetMachineIdCache();
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-setup-journey-'));
   home = path.join(root, 'myco'); project = path.join(root, 'repo');
   fs.mkdirSync(project);
@@ -74,6 +76,7 @@ afterEach(async () => {
   for (const close of closers.splice(0)) await close();
   fs.rmSync(root, { recursive: true, force: true });
   process.exitCode = 0;
+  resetMachineIdCache();
 });
 const base = (): SetupDeps => ({ mycoHome: home, cwd: project, ask: async () => null, agents: () => [], stdout: line => lines.push(line), stderr: line => errors.push(line) });
 
@@ -1626,13 +1629,17 @@ const configuredFetch = fakeFetch(async (input) => {
   throw new Error(`unexpected route ${route}`);
 });
 
-async function deployment(target: 'native' | 'd1-adapter') {
+async function deployment(target: 'native' | 'd1-adapter', projectIds: readonly string[] = []) {
   const github = fakeGitHub();
+  const addProjects = (sqlite: Database) => {
+    for (const id of projectIds) sqlite.run('INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, 0)', [id, id]);
+  };
   let handler: BunHandler | undefined;
   let handle: (request: Request) => Promise<Response>;
   const secrets = { GITHUB_CLIENT_ID: SETUP_APP.clientId, GITHUB_CLIENT_SECRET: SETUP_APP.clientSecret, SESSION_SECRET };
   if (target === 'native') {
     const sqlite = seededSqlite();
+    addProjects(sqlite);
     sqlite.run("UPDATE members SET github_id = '770001', role = 'member' WHERE id = 'mem_machine_2'");
     const databasePath = path.join(root, 'server.sqlite');
     fs.writeFileSync(databasePath, sqlite.serialize()); sqlite.close();
@@ -1641,6 +1648,7 @@ async function deployment(target: 'native' | 'd1-adapter') {
     handle = handler.fetch;
   } else {
     const fixture = sqliteEnv();
+    addProjects(fixture.sqlite);
     fixture.sqlite.run("UPDATE members SET github_id = '770001', role = 'member' WHERE id = 'mem_machine_2'");
     closers.push(() => fixture.sqlite.close());
     const server = createServer({ now: Date.now, sourceOf: () => '192.0.2.30', fetchImpl: github.fetchImpl });
@@ -1670,6 +1678,66 @@ async function deployment(target: 'native' | 'd1-adapter') {
 }
 
 describe('teammate journey (c)', () => {
+  for (const bound of [0, 1]) for (const yes of [false, true]) it(`completes the printed cutover remedy after login and member join from repository ${bound} with ${yes ? '--yes and no ask callback' : 'cutover consent only'}`, async () => {
+    const legacy = legacyFixtureHome(path.join(root, 'inferred-legacy'), { agentSettings: false });
+    home = legacy.mycoHome;
+    project = legacy.projects[bound]!.root;
+    for (const entry of legacy.projects) execFileSync('git', ['init', '-q', entry.root]);
+    closers.push(bindSandboxChildHome(root, legacy.env));
+    const server = await deployment('native', legacy.projects.map(entry => entry.id));
+    const deps: SetupDeps = { mycoHome: home, cwd: project, agents: () => ['claude-code'],
+      stdout: line => lines.push(line), stderr: line => errors.push(line),
+      fetch: server.fetchImpl, sleep: async () => {},
+      cutoverDeps: { env: legacy.env, platform: 'darwin', unitDirs: [{ dir: legacy.agentsDir, scope: 'user' }],
+        stopDaemon: async () => 'none', launchctl: { run: async () => ({ stdout: 'Could not find service in domain', exitCode: 113 }) } },
+    };
+    expect(await login([URL], { ...deps, provision: 'defer' })).toBe(true);
+    for (const entry of legacy.projects) {
+      expect(await runJoin([URL, '--project', entry.id, '--no-worker', '--root', entry.root], { ...deps, cwd: entry.root })).not.toBeNull();
+    }
+    const other = 'https://other.invalid';
+    writeDeploymentMembership({ serverUrl: other, token: 'T'.repeat(43), machineId: 'other-machine', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+    recordDefaultDeployment(other, { mycoHome: home, replace: true });
+    const before = await observeSetup(home, { role: 'join', url: URL, root: project }, deps);
+    expect(before.find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'complete', detail: 'current' });
+    const transcript = path.join(process.env.CLAUDE_CONFIG_DIR!, 'projects', `-${rootSlug(project)}`, 'pending-transcript.jsonl');
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, JSON.stringify({ type: 'user', cwd: project, sessionId: 'pending-transcript', message: { content: 'Pending history ' + 'x'.repeat(5000) }, timestamp: new Date(Date.now() - 86_400_000).toISOString() }) + '\n');
+    expect(fs.existsSync(setupFilePath(home))).toBe(false);
+    expect(await run(['--status'], deps)).toBe(3);
+    const remedy = lines.join('\n').match(/myco setup --cutover/)?.[0];
+    expect(remedy).toBe('myco setup --cutover');
+    const questions: string[] = [];
+    if (!yes) deps.ask = async question => {
+      questions.push(question);
+      if (!question.startsWith('Approve this plan?') || !lines.at(-1)?.startsWith('Move now?')) throw new Error(`Unexpected prompt: ${question}`);
+      return 'yes';
+    };
+    lines = [];
+    expect({ code: await run([...remedy!.split(' ').slice(2), ...(yes ? ['--yes'] : [])], deps), errors }).toEqual({ code: 0, errors: [] });
+    expect(questions).toHaveLength(yes ? 0 : 1);
+    expect(lines.join('\n')).toContain('Myco 1.4 cutover preview');
+    expect(legacyMigrationState(home).state).toBe('moved');
+    expect(readRegistryEntry(project, home)?.serverUrl).toBe(URL);
+    expect(readDefaultDeployment(home)?.serverUrl).toBe(other);
+    for (const key of ['role', 'url', 'root', 'runWork', 'noAgents', 'makeDefault'] as const) expect(readSetupFile(home).answers[key]).toBeUndefined();
+    expect(server.calls.filter(route => route === '/auth/device/start')).toHaveLength(1);
+    expect(await run([], deps)).toBe(0);
+  });
+
+  it('plain setup resumes login and member join without asking a role or repeating sign-in', async () => {
+    const server = await deployment('native');
+    const deps: SetupDeps = { ...base(), fetch: server.fetchImpl, sleep: async () => {},
+      ask: async question => { throw new Error(`Unexpected prompt: ${question}`); },
+    };
+    expect(await login([URL], { ...deps, machineId: 'plain-inferred-machine', provision: 'defer' })).toBe(true);
+    expect(await runJoin([URL, '--project', 'proj_1', '--no-worker', '--no-agents', '--root', project], deps)).not.toBeNull();
+    expect(fs.existsSync(setupFilePath(home))).toBe(false);
+    expect(await run([], deps)).toBe(0);
+    expect(errors).toEqual([]);
+    expect(server.calls.filter(route => route === '/auth/device/start')).toHaveLength(1);
+  });
+
   for (const target of ['native', 'd1-adapter'] as const) it(`joins as a fake GitHub teammate through ${target}, with no worker`, async () => {
     const server = await deployment(target);
     const platform = recordingPlatform();
