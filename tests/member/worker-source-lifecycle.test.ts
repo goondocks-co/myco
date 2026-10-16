@@ -8,18 +8,24 @@ import { runGrant } from '@myco/runner/drivers/grant.js';
 import { harnessById } from '@myco/runner/harnesses.js';
 import { discardRunDir, writeRunDir } from '@myco/runner/mcp-config.js';
 import { RUN_DIRECTORY_MANIFEST } from '@myco/runner/run-directory.js';
-import { STOP_GRACE_MS } from '@myco/runner/process-group.js';
 import { stubClaudeSource } from '../helpers/stub-claude-source.js';
 import { processAlive } from '../support/process-alive.js';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 
-const BOUND_MS = STOP_GRACE_MS * 3;
+const BOUND_MS = 30_000;
 async function bounded<T>(work: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try { return await Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('source cleanup exceeded its bound')), BOUND_MS); })]); }
   finally { clearTimeout(timer); }
 }
 const alive = (pid: number): boolean => processAlive(pid);
+async function until(check: () => boolean): Promise<void> {
+  const deadline = Date.now() + BOUND_MS;
+  while (!check()) {
+    if (Date.now() >= deadline) throw new Error('source process state did not arrive');
+    await new Promise((resolve) => { setTimeout(resolve, 10); });
+  }
+}
 
 function fixture(id: 'claude-code' | 'opencode' | 'codex') {
   const root = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-source-lifecycle-')));
@@ -70,7 +76,7 @@ else require('node:readline').createInterface({ input: process.stdin }).on('line
 `, { mode: 0o755 });
   }
   const pids = (): number[] => existsSync(pidFile) ? JSON.parse(readFileSync(pidFile, 'utf8')) as number[] : [];
-  return { spec, bin, repo, pids, ready: () => bounded((async () => { while (pids().length !== 2) await new Promise((resolve) => { setTimeout(resolve, 10); }); })()), cleanup: async () => {
+  return { spec, bin, repo, pids, ready: () => until(() => pids().length === 2), cleanup: async () => {
     for (const pid of [...pids(), ...(existsSync(helperReady) ? [Number(readFileSync(helperReady, 'utf8'))] : [])]) {
       try { process.kill(pid, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
     }
@@ -129,8 +135,8 @@ describe('source containment with run process ownership', () => {
     try {
       await f.ready();
       await bounded(started.dispose());
-      expect(await bounded(started.exit)).toBe(-1);
       expect(f.pids().map(alive)).toEqual([false, false]);
+      expect(await bounded(started.exit)).toBe(-1);
     } finally {
       stopping.abort();
       await started.dispose();

@@ -8,6 +8,8 @@
  *   the file instead, its arguments as one JSON line.
  * - `MYCO_TEST_GIT_PROBE=<file>`: observe Git requests with deterministic async completion and a fixed hook clock.
  * - `MYCO_TEST_HOOK_ELAPSED_MS=<ms>`: advance the injected hook clock beyond its process-start budget.
+ * - `MYCO_TEST_GIT_BUDGET_PROBE=<file>`: use the budget probe's advancing clock from hook start.
+ * - `MYCO_TEST_REAL_GIT_PROBE=<file>`: observe real Git launches, signals and hook return with the real clock.
  * The loader table is the one the CLI dispatches hooks through (`HOOK_DISPATCH`).
  */
 import fs from 'node:fs';
@@ -33,6 +35,11 @@ const spawn: DetachedSpawn | undefined = kickLog === undefined ? undefined : (_c
   return { started: true, pid: process.pid };
 };
 const gitProbe = process.env.MYCO_TEST_GIT_PROBE;
+const realGitProbe = process.env.MYCO_TEST_REAL_GIT_PROBE;
+if (realGitProbe !== undefined) {
+  const { installRealGitProbe } = await import('./git-budget-probe.js');
+  installRealGitProbe(realGitProbe);
+}
 if (gitProbe !== undefined) {
   const { installGitProcessProbe } = await import('./git-process-probe.js');
   installGitProcessProbe(gitProbe, process.env.MYCO_TEST_REAL_GIT!);
@@ -40,7 +47,11 @@ if (gitProbe !== undefined) {
 const mod = await HOOK_DISPATCH[hookName]();
 const startedAt = Date.now();
 const elapsed = process.env.MYCO_TEST_HOOK_ELAPSED_MS;
+const budgetProbe = process.env.MYCO_TEST_GIT_BUDGET_PROBE;
 await mod.main({
   credential: parseCredentialFlag(process.argv), fetch: fetchImpl, helperSpawn: spawn,
-  ...(gitProbe === undefined && elapsed === undefined ? {} : { now: () => startedAt + Number(elapsed ?? 0), startedAt }),
+  ...(gitProbe === undefined && elapsed === undefined && budgetProbe === undefined && realGitProbe === undefined ? {} : {
+    now: budgetProbe === undefined && realGitProbe === undefined ? () => startedAt + Number(elapsed ?? 0) : () => Date.now(), startedAt,
+  }),
 });
+if (realGitProbe !== undefined) fs.appendFileSync(realGitProbe, `${JSON.stringify({ phase: 'return' })}\n`);
