@@ -13,7 +13,7 @@ import { MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_REV
 import type { ErrorClassifier, OutboundFetch, ServerEnv } from './core/adapters.js';
 import { TURN_END_HEADER } from './ingest/turns.js';
 import { stampRequest } from './core/activity.js';
-import { matchRoute, methodsServing, type Route, type Shape } from './routes.js';
+import { isOwnedPath, matchRoute, methodsServing, UNSERVED_PATHS, type Route, type Shape } from './routes.js';
 import { activateSuccessor, authenticateServerMemberToken, releasedRunCredential, detectLineageReplay, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
 import { admitRunControl, inProcessCredential, IN_PROCESS_SCOPE, CONTROL_CAPABILITIES, heldRunOfCredential, runDeadline, runtimeCaller } from './api/run-admission.js';
 import { runWriteStore, RunWriteExpired } from './core/run-write-store.js';
@@ -313,6 +313,7 @@ export function createServer(deps: ServerDeps) {
   async function run(request: Request, env: ServerEnv, contextTimings?: ContextTimings): Promise<Response> {
     const url = new URL(request.url);
     const matched = matchRoute(request.method, url.pathname);
+    if (matched === null && isOwnedPath(url.pathname, UNSERVED_PATHS)) return Response.json({ error: 'not_found' }, { status: 404 });
     const now = deps.now();
 
     if (matched?.route.auth === 'public') return protocolAdmitted(matched.route, 'public') ? matched.route.handler(request) : unauthorized();

@@ -65,14 +65,14 @@ simple = { limit = 300, period = 60 }
 # secret_name = "myco-secret-wrap-key"
 
 # The dashboard: static build output served from the edge store before the
-# Worker runs. \`run_worker_first\` names every path the Worker owns — its live
-# routes and the retired 1.4 prefixes it answers 401 — and is held equal to
+# Worker runs. \`run_worker_first\` names every path the Worker owns — live routes,
+# retired prefixes and reserved protocol paths — and is held equal to
 # \`ownedPathPatterns()\` in src/routes.ts by tests/myco-server/gates.test.ts.
 # No binding: the Worker never fetches an asset itself.
 [assets]
 directory = "ui/dist"
 not_found_handling = "single-page-application"
-run_worker_first = [ "/api/*", "/auth/*", "/blobs/*", "/context/*", "/events", "/events/*", "/health", "/import/*", "/mcp", "/members/*", "/routed-capture/*", "/runners/*", "/runs/*", "/sessions/*", "/spores/*", "/tokens/*", "/worker/*" ]
+run_worker_first = [ "/.well-known/*", "/api/*", "/auth/*", "/blobs/*", "/context/*", "/events", "/events/*", "/health", "/import/*", "/mcp", "/members/*", "/register", "/routed-capture/*", "/runners/*", "/runs/*", "/sessions/*", "/spores/*", "/tokens/*", "/worker/*" ]
 
 [triggers]
 crons = [ "*/15 * * * *" ]

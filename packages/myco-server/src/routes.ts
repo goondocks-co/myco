@@ -385,15 +385,18 @@ export const RETIRED_ROUTES: readonly RetiredRoute[] = [
   { method: 'POST', path: '/runs/canopy-map', replacedBy: ['myco_run_map'] },
 ];
 
+/** Reserved protocol paths without a matching route answer JSON 404 before authentication. */
+export const UNSERVED_PATHS = ['/.well-known/*', '/register'] as const;
+
 /**
- * Every path prefix the server answers itself, live and retired. An exact path
- * stays exact; a path with further segments becomes `/<first>/*`, which owns the
- * paths under `/<first>/` and never `/<first>` itself. A static shell served
+ * Every path the server owns: live routes, retired routes and reserved protocol
+ * paths. An exact path stays exact; a path with further segments becomes
+ * `/<first>/*`, which owns the paths under `/<first>/` and never `/<first>` itself. A static shell served
  * beside the server hands these paths to it and answers the rest, so a
  * dashboard page may sit at `/sessions` while the server keeps `/sessions/…`.
  */
 export function ownedPathPatterns(): string[] {
-  const out = new Set<string>();
+  const out = new Set<string>(UNSERVED_PATHS);
   for (const { path } of [...ROUTES, ...RETIRED_ROUTES]) {
     const segments = path.split('/').filter((s) => s.length > 0);
     out.add(segments.length === 1 ? `/${segments[0]}` : `/${segments[0]}/*`);
