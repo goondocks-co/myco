@@ -56,7 +56,7 @@ The human. Uses Myco, controls Myco, reviews Myco-agent-generated data, and admi
 When the boundaries blur, three failure modes appear:
 
 1. **Symbionts get capabilities they shouldn't have.** Granting a symbiont an `admin_restart` tool means any drift in that symbiont's planning loop can interrupt the user's Deployment mid-work.
-2. **The Myco agent's internal tool surface bloats with symbiont-facing concerns.** This makes the harness harder to reason about and slows tool dispatch in editorial work.
+2. **The Myco agent's internal tool surface bloats with symbiont-facing concerns.** This makes the Myco agent's tools harder to reason about and slows tool dispatch in editorial work.
 3. **Users lose a clear mental model.** "Why does the agent restart on its own?" "Why did Cursor try to apply an update?" Boundary violations confuse users about what each actor is for.
 
 ## The "agent-native parity" misread

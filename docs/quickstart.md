@@ -2,10 +2,6 @@
 
 Connect your machine to a Myco, start a coding session, and see the work on Today. You need a supported coding agent and an invitation from an administrator. If you already sign in to the dashboard, you can use its address instead. To run your own instead, follow [Run your own Myco](self-hosting.md). Moving existing data? See [Moving from Myco 1.4](upgrade.md#upgrading-from-myco-14).
 
-## Run your own instead
-
-After installing the binary below, run `myco setup` from a repository you want to connect. On a fresh machine, choose **Start a new Myco** and where it runs. Setup guides creation, GitHub sign-in, owner linking and this machine's connection. Use `myco setup --create cloudflare` or `myco setup --create local` to choose explicitly. Follow [Run your own Myco](self-hosting.md) for requirements and the manual command reference.
-
 ## 1. Install
 
 On macOS or Linux:
