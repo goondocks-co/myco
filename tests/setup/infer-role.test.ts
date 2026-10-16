@@ -4,13 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parseSetupOptions, run } from '@myco/cli/setup.js';
-import { applyObservedSetupJourney, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
+import { applyObservedSetupJourney, applyObservedSetupRunWork, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
 import { deploymentPath, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { defaultDeploymentPath, readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { runnerRecordPath, newRunnerBearer } from '@myco/runner/runner-registry.js';
 import { writeDeploymentRecord } from '@myco/server/cloudflare.js';
 import { createLocalDeployment, DEFAULT_LOCAL_RECORD, peekLocalPaths } from '@myco/server/local.js';
 import { observeSetupJourneys, observeSetupStatus } from '@myco/setup/observe.js';
+import type { SetupDeps } from '@myco/setup/steps.js';
 
 const FIRST = 'https://first.invalid';
 const SECOND = 'https://second.invalid';
@@ -180,6 +181,26 @@ const online = (calls: string[] = []): typeof fetch => Object.assign(async (inpu
   return Response.json({ error: 'not_found' }, { status: 404 });
 }, { preconnect: () => {} });
 
+const readyJoin = (): SetupDeps => {
+  const root = path.join(scratch, 'repo');
+  fs.mkdirSync(root); execFileSync('git', ['init', '-q', root]);
+  const fetch = online();
+  return { ...deps(), cwd: root,
+    fetch: Object.assign(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      if (new URL(new Request(input, init).url).pathname === '/runners/contact') return Response.json({ persisted: true,
+        runner: { id: 'rn_choices', name: 'Fixture runner', deploymentId: 'fixture', state: 'enabled' },
+        credential: { id: 'fixture', expiresAt: 9999999999999, refreshAfter: 0 } });
+      return fetch(input, init);
+    }, { preconnect: () => {} }),
+    worker: { home: scratch, lockDir: path.join(scratch, 'locks'), harnessDirs: () => [], runner: () => ({ status: 113 }) },
+    join: async args => {
+      const entry = { version: 2 as const, root: args[args.indexOf('--root') + 1]!, projectId: 'proj_ready', serverUrl: args[0]!, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 };
+      writeRegistryEntry(entry, { mycoHome: home });
+      return entry;
+    },
+  };
+};
+
 it('re-infers after leaving the observed Deployment without signing back in or retaining a stale status journey', async () => {
   membership(FIRST);
   expect(await run([], deps())).toBe(2);
@@ -336,14 +357,63 @@ for (const enrolled of [false, true]) for (const choice of ['observed', 'flagged
   membership(FIRST); membership(SECOND);
   if (enrolled) runnerRecord(FIRST);
   if (choice === 'saved') saveSetupFile(home, { version: 1, answers: { runWork: !enrolled }, consented: {} });
-  expect(await run(choice === 'flagged' ? [enrolled ? '--no-runner' : '--run-work'] : [], { ...deps(), ask: async question => {
+  const ready = choice === 'observed' ? readyJoin() : deps();
+  const flags = choice === 'flagged' ? [enrolled ? '--no-runner' : '--run-work'] : enrolled && choice === 'observed' ? ['--runner-service', 'skip'] : [];
+  expect(await run(flags, { ...ready, ask: async question => {
     questions.push(question);
     expect(question).toContain('Which Myco');
     return '1';
-  } })).toBe(2);
+  } })).toBe(choice === 'observed' ? 0 : 2);
   expect(questions).toHaveLength(1);
   expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: FIRST });
   expect(readSetupFile(home).answers.runWork).toBe(choice === 'observed' ? undefined : !enrolled);
+  if (choice === 'observed') {
+    expect(await run(['--status'], ready)).toBe(0);
+    expect({ code: await run([], ready), errors }).toEqual({ code: 0, errors: [] });
+    expect(questions).toHaveLength(1);
+    expect(readSetupFile(home).answers.runWork).toBeUndefined();
+  }
+});
+
+it('observes runner choice when resuming a saved explicit join', async () => {
+  membership(FIRST);
+  const ready = readyJoin();
+  expect(await run(['--join', FIRST], { ...ready, fetch: deps().fetch })).toBe(2);
+  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: FIRST });
+  expect(readSetupFile(home).answers.runWork).toBeUndefined();
+  errors = [];
+  expect({ code: await run([], ready), errors }).toEqual({ code: 0, errors: [] });
+  expect(questions).toEqual([]);
+  expect(readSetupFile(home).answers.runWork).toBeUndefined();
+});
+
+it('refuses unreadable runner enrollment for a saved join before any prompt', async () => {
+  membership(FIRST);
+  runnerRecord(FIRST);
+  const record = runnerRecordPath(FIRST, home);
+  fs.writeFileSync(record, '{', { mode: 0o600 });
+  saveSetupFile(home, { version: 1, answers: { role: 'join', url: FIRST }, consented: {} });
+  expect(await run([], deps())).toBe(2);
+  expect(errors.join('\n')).toContain(record);
+  expect(questions).toEqual([]);
+  expect(readSetupFile(home).answers.runWork).toBeUndefined();
+});
+
+it('keeps all observations unsaved when runner enrollment is observed separately', () => {
+  const file = readSetupFile(home);
+  applyObservedSetupJourney(file, { role: 'join', url: FIRST, root: scratch });
+  applyObservedSetupRunWork(file, false);
+  file.answers.noAgents = true;
+  saveSetupFile(home, file);
+  expect(file.answers).toMatchObject({ role: 'join', url: FIRST, root: scratch, runWork: false });
+  expect(readSetupFile(home).answers).toEqual({ noAgents: true });
+});
+
+for (const runWork of [false, true]) it(`preserves an answered runner choice of ${runWork} during observation`, () => {
+  const file = { version: 1 as const, answers: { role: 'join' as const, url: FIRST, runWork }, consented: {} };
+  applyObservedSetupRunWork(file, !runWork);
+  saveSetupFile(home, file);
+  expect(readSetupFile(home).answers).toEqual({ role: 'join', url: FIRST, runWork });
 });
 
 it('asks the role instead of inferring guided creation for a fronted local Deployment', async () => {

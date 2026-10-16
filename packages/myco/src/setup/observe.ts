@@ -260,6 +260,20 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
   return facts;
 }
 
+function observeSetupRunners(home: string) {
+  const runners = listRunnerRecordsResult(home);
+  const deployments = new Set(runners.records.map(runner => deploymentUrl(runner.serverUrl)));
+  const failures: Observation[] = runners.errors.map(error => ({ id: 'runner.enrollment', scope: home, state: 'unavailable', detail: `Runner record could not be read: ${error}. Run myco runner status.` }));
+  return { records: runners.records, failures, runWork: (url: string) => deployments.has(deploymentUrl(url)) };
+}
+
+/** Joining machines run work only for Deployments with a runner record. */
+export function observeSetupRunWork(home: string, url: string): boolean {
+  const runners = observeSetupRunners(home);
+  if (runners.failures.length > 0) throw new Error(runners.failures.map(fact => fact.detail).join('\n'));
+  return runners.runWork(url);
+}
+
 /** Machine journeys come from Deployment creation, membership and runner records. */
 export function observeSetupJourneys(home: string): { journeys: SetupAnswers[]; guidedJourneys: SetupAnswers[]; failures: Observation[]; inferenceFailures: string[]; joinedDeployments: string[] } {
   const journeys: SetupAnswers[] = [];
@@ -290,16 +304,14 @@ export function observeSetupJourneys(home: string): { journeys: SetupAnswers[]; 
     }
   } catch (error) { unavailable('deployment.create', error instanceof Error ? error.message : String(error)); }
   for (const membership of memberships.memberships) journeys.push({ role: 'join', url: deploymentUrl(membership.serverUrl) });
-  const guidedJourneys = journeys.filter(journey => !manual.has(journey)).map(journey => ({ ...journey, ...(journey.role === 'join' ? { runWork: false } : {}) }));
-  const runners = listRunnerRecordsResult(home);
+  const runners = observeSetupRunners(home);
+  const guidedJourneys = journeys.filter(journey => !manual.has(journey)).map(journey => ({ ...journey, ...(journey.role === 'join' ? { runWork: runners.runWork(journey.url!) } : {}) }));
   for (const runner of runners.records) {
     const url = deploymentUrl(runner.serverUrl);
     journeys.push({ role: 'runner', url });
-    const member = guidedJourneys.find(journey => journey.role === 'join' && journey.url === url);
-    if (member) member.runWork = true;
-    else guidedJourneys.push({ role: 'runner', url });
+    if (!guidedJourneys.some(journey => journey.role === 'join' && journey.url === url)) guidedJourneys.push({ role: 'runner', url });
   }
-  for (const error of runners.errors) unavailable('runner.enrollment', `Runner record could not be read: ${error}. Run myco runner status.`);
+  failures.push(...runners.failures);
   return { journeys, guidedJourneys, failures, inferenceFailures, joinedDeployments: memberships.memberships.map(membership => deploymentUrl(membership.serverUrl)) };
 }
 

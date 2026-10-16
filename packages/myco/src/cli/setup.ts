@@ -7,8 +7,8 @@ import { UNUSUAL } from '@myco/utils/git-files.js';
 import { runGitAnswer } from '@myco/utils/git.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { runnerServerUrl, RUNNER_NAME_PATTERN } from '@myco/cli/runner-deps.js';
-import { applyObservedSetupJourney, readSetupFile, saveSetupFile, setupCloudflareUrl, type SetupAnswers } from '@myco/setup/answers.js';
-import { observeSetupJourneys, observeSetupStatus, setupExitCode } from '@myco/setup/observe.js';
+import { applyObservedSetupJourney, applyObservedSetupRunWork, readSetupFile, saveSetupFile, setupCloudflareUrl, type SetupAnswers } from '@myco/setup/answers.js';
+import { observeSetupJourneys, observeSetupRunWork, observeSetupStatus, setupExitCode } from '@myco/setup/observe.js';
 import { readDefaultDeployment } from '@myco/member/default-deployment.js';
 import { deploymentUrl, readRegistryEntryResult, registryEntryPath } from '@myco/member/registry.js';
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
@@ -271,7 +271,10 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
       options.answers.role = selected.answers.role;
     }
     validateCreationOptions(file.answers);
-    if (file.answers.role === 'join') file.answers.root ??= resolveMemberProjectRoot(deps.cwd);
+    if (file.answers.role === 'join') {
+      file.answers.root ??= resolveMemberProjectRoot(deps.cwd);
+      if (file.answers.runWork === undefined) applyObservedSetupRunWork(file, observeSetupRunWork(home, file.answers.url!));
+    }
     if (file.answers.role === 'create') file.answers.root ??= statusRepository(deps.cwd ?? process.cwd());
     saveSetupFile(home, file);
     await conductSetup(home, file, { ...deps, loginAddress: options.address }, { yes: options.yes, explicitJoin: options.answers.role === 'join', explicitLegacyPlacement: args.includes('--route') || args.includes('--skip'), explicitDefault: args.includes('--default'), explicitProject: args.includes('--project'), newProjectChanged });

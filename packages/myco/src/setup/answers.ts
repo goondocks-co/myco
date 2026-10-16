@@ -61,8 +61,17 @@ export function readSetupFile(home: string): SetupFile {
 /** Observed journey values apply to this run and are omitted by every save. */
 export function applyObservedSetupJourney(file: SetupFile, journey: SetupAnswers): void {
   const keys = ['role', 'url', 'target', 'root', ...(journey.runWork === undefined ? [] : ['runWork'])];
-  const observed = new Set(keys.filter(key => file[OBSERVED_ANSWERS]?.has(key) || Reflect.get(file.answers, key) === undefined));
-  file.answers = { ...file.answers, ...Object.fromEntries(Object.entries(journey).filter(([key]) => observed.has(key))) };
+  applyObservedAnswers(file, journey, keys);
+}
+
+/** Runner enrollment supplies an unsaved choice unless the user already made one. */
+export function applyObservedSetupRunWork(file: SetupFile, runWork: boolean): void {
+  applyObservedAnswers(file, { runWork }, ['runWork']);
+}
+
+function applyObservedAnswers(file: SetupFile, answers: SetupAnswers, keys: string[]): void {
+  const observed = new Set([...file[OBSERVED_ANSWERS] ?? [], ...keys.filter(key => Reflect.get(file.answers, key) === undefined)]);
+  file.answers = { ...file.answers, ...Object.fromEntries(Object.entries(answers).filter(([key]) => observed.has(key))) };
   file[OBSERVED_ANSWERS] = observed;
 }
 
