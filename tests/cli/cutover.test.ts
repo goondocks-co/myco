@@ -180,6 +180,64 @@ describe('myco cutover', () => {
     if (heldHome === undefined) delete process.env.HOME; else process.env.HOME = heldHome;
   });
 
+  it.each([false, true])('restores the exact 1.x executable after replacement (retained slot %s)', async (retained) => {
+    const { sandboxChildEnv } = await import('../../scripts/test-environment.mjs');
+    const stable = path.join(m.legacyHome, 'bin', 'myco');
+    const slot = path.join(m.legacyHome, 'bin', 'versions', '1.4.8', 'myco');
+    const old = '#!/bin/sh\necho 1.4.8\n';
+    fs.mkdirSync(path.dirname(stable), { recursive: true }); fs.writeFileSync(stable, old, { mode: 0o755 });
+    if (retained) { fs.mkdirSync(path.dirname(slot), { recursive: true }); fs.copyFileSync(stable, slot); }
+    writeJson(path.join(m.legacyHome, 'install.json'), { channel: 'stable', version: '1.4.8', bin: stable, binary_sha256: sha(stable) });
+    const source = path.join(m.home, 'offline-source'); fs.mkdirSync(source);
+    const asset = 'myco-' + process.platform + '-' + process.arch;
+    fs.writeFileSync(path.join(source, 'fake.c'), '#include <stdio.h>\nint main(void){puts("2.0.0");return 0;}');
+    const compiled = spawnSync('cc', ['-o', path.join(source, asset), path.join(source, 'fake.c')], { cwd: m.home, env: sandboxChildEnv(m.home), encoding: 'utf8' });
+    expect({ status: compiled.status, stderr: compiled.stderr }).toEqual({ status: 0, stderr: '' });
+    fs.writeFileSync(path.join(source, 'SHA256SUMS'), sha(path.join(source, asset)) + '  ' + asset + '\n');
+    const childEnv = sandboxChildEnv(m.home, { MYCO_HOME: m.legacyHome, MYCO_INSTALL_FROM: source, MYCO_INSTALL_VERSION: '2.0.0' });
+    const installed = spawnSync('sh', [path.resolve('docs/install.sh'), '--replace-1.4'], { cwd: m.home, env: childEnv, encoding: 'utf8' });
+    expect(installed.status).toBe(0);
+    expect(fs.readFileSync(stable, 'utf8')).not.toBe(old);
+    if (retained) fs.unlinkSync(path.join(m.legacyHome, 'legacy-executable.json'));
+    else {
+      const decoy = path.join(m.legacyHome, 'bin', 'versions', '1.4.9', 'myco');
+      fs.mkdirSync(path.dirname(decoy), { recursive: true }); fs.writeFileSync(decoy, 'another 1.x executable');
+    }
+    let backupHome = m.mycoHome;
+    if (process.env.MYCO_CUTOVER_TEST_BINARY) {
+      const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: request => m.rig.fetch(request) });
+      const serverUrl = `http://127.0.0.1:${server.port}`;
+      backupHome = path.join(m.home, 'compiled-member');
+      writeDeploymentMembership({ serverUrl, token: m.rig.token, tokenId: m.rig.tokenId, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome: backupHome });
+      fs.writeFileSync(resolveMachineIdPath(backupHome), TEST_MACHINE_ID);
+      const tools = path.join(m.home, 'tools'); fs.mkdirSync(tools);
+      fs.writeFileSync(path.join(tools, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      try {
+        const child = Bun.spawn([process.env.MYCO_CUTOVER_TEST_BINARY, 'cutover', '--server', serverUrl, '--legacy-home', m.legacyHome], {
+          cwd: m.home, stdout: 'pipe', stderr: 'pipe',
+          env: sandboxChildEnv(m.home, { MYCO_HOME: backupHome, MYCO_LAUNCH_AGENTS_DIR: m.agentsDir, PATH: tools + path.delimiter + process.env.PATH }),
+        });
+        const timeout = setTimeout(() => child.kill(), 20_000);
+        try {
+          const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text(), new Response(child.stdout).text()]);
+          expect({ code, stderr }).toEqual({ code: 0, stderr: '' });
+        } finally { clearTimeout(timeout); if (child.exitCode === null) { child.kill(); await child.exited; } }
+      } finally { await server.stop(true); }
+    } else {
+      const result = await m.run(); expect(result.ok).toBe(true);
+    }
+    const [folder] = fs.readdirSync(path.join(backupHome, 'backups'));
+    const recipe = fs.readFileSync(path.join(backupHome, 'backups', folder, 'restore.md'), 'utf8');
+    expect(recipe).toContain('replaces Myco 2.0 at ' + stable);
+    const commands = [...recipe.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]).join('\n');
+    const undo = spawnSync('sh', ['-c', commands], { cwd: m.home, env: childEnv, encoding: 'utf8' });
+    expect({ status: undo.status, stderr: undo.stderr }).toEqual({ status: 0, stderr: '' });
+    expect(fs.readFileSync(path.join(m.agentsDir, DAEMON_LABEL + '.plist'), 'utf8')).toContain(stable);
+    expect(fs.readFileSync(stable, 'utf8')).toBe(old);
+    expect(fs.statSync(stable).mode & 0o777).toBe(0o755);
+    expect(fs.readFileSync(path.join(source, asset))).toEqual(fs.readFileSync(path.join(m.legacyHome, 'bin', 'versions', '2.0.0', 'myco')));
+  });
+
   const settingsFile = () => path.join(m.home, '.claude', 'settings.json');
   const claimOwner = (claimsHome: string) => (readJson(path.join(claimsHome, 'claims', 'symbiont-config.json')) as { owner: string }).owner;
   const bootouts = () => m.launchctl.calls.filter((c) => c[0] === 'bootout').map((c) => c[c.length - 1].split('/').pop());

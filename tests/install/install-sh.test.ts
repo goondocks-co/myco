@@ -493,10 +493,59 @@ exec '${mv}' "$@"
 
         expect(run.out).toContain('myco cutover --dry-run');
         expect(fs.readFileSync(legacy.vault, 'utf8')).toBe('a 1.4 vault');
-        expect(files(path.join(legacy.home, '.myco')).filter((f) => !f.startsWith('bin/') && f !== 'install.json')).toEqual(['groves/grove_a/myco.db']);
+        expect(files(path.join(legacy.home, '.myco')).filter((f) => !f.startsWith('bin/') && f !== 'install.json' && f !== 'legacy-executable.json')).toEqual(['groves/grove_a/myco.db']);
         // 1.4.8's idle adopt skips a versions/<v> slot holding this marker.
-        expect(files(path.join(legacy.home, '.myco', 'bin'))).toEqual(['myco', 'versions/2.0.0-beta.1/.adopt-failed', 'versions/2.0.0-beta.1/myco']);
+        const record = JSON.parse(fs.readFileSync(path.join(legacy.home, '.myco', 'legacy-executable.json'), 'utf8'));
+        expect(record).toMatchObject({ version: '1.4.8', replaced_at: legacy.binary });
+        expect(record.sha256).toBe(digest(record.path));
+        expect(fs.readFileSync(record.path, 'utf8')).toBe('#!/bin/sh\necho 1.4.8\n');
+        expect(files(path.join(legacy.home, '.myco', 'bin'))).toEqual([
+          'myco', 'versions/1.4.8/myco', 'versions/2.0.0-beta.1/.adopt-failed', 'versions/2.0.0-beta.1/myco']);
       }
+    });
+
+    it.skipIf(!HAS_CC)('preserves an explicitly replaced unclassified executable without inventing a version', () => {
+      const legacy = legacyHome({ binary: true }); const before = digest(legacy.binary);
+      fs.unlinkSync(path.join(legacy.home, '.myco', 'install.json'));
+      expect(install(legacy.home, FROM(), ['--replace-1.4']).status).toBe(0);
+      const record = JSON.parse(fs.readFileSync(path.join(legacy.home, '.myco', 'legacy-executable.json'), 'utf8'));
+      expect(record.version).toBeNull(); expect(record.sha256).toBe(before); expect(digest(record.path)).toBe(before);
+    });
+
+    it.skipIf(!HAS_CC)('reuses an identical legacy slot without duplicating the executable', () => {
+      const legacy = legacyHome({ binary: true });
+      const slot = path.join(path.dirname(legacy.binary), 'versions', '1.4.8', 'myco');
+      fs.mkdirSync(path.dirname(slot), { recursive: true }); fs.copyFileSync(legacy.binary, slot);
+      expect(install(legacy.home, FROM(), ['--replace-1.4']).status).toBe(0);
+      const record = JSON.parse(fs.readFileSync(path.join(legacy.home, '.myco', 'legacy-executable.json'), 'utf8'));
+      expect(record.path).toBe(slot);
+      expect(record.sha256).toBe(digest(slot));
+      expect(fs.existsSync(path.join(path.dirname(legacy.binary), 'legacy'))).toBe(false);
+    });
+
+    it.skipIf(!HAS_CC)('stops before overwriting if preserving the old executable fails', () => {
+      const legacy = legacyHome({ binary: true });
+      const before = digest(legacy.binary);
+      const tools = toolbox(tmp('myco-install-copy-failure-'), { jq: false });
+      const cp = resolveTestTool('cp')!;
+      fs.unlinkSync(path.join(tools, 'cp'));
+      fs.writeFileSync(path.join(tools, 'cp'), `#!/bin/sh
+for arg in "$@"; do case "$arg" in */myco.legacy) exit 73 ;; esac; done
+exec '${cp}' "$@"
+`, { mode: 0o755 });
+      const run = install(legacy.home, FROM(), ['--replace-1.4'], tools);
+      expect(run.status).not.toBe(0); expect(run.out).toContain('Could not preserve');
+      expect(digest(legacy.binary)).toBe(before);
+      expect(fs.existsSync(path.join(path.dirname(legacy.binary), 'versions', '2.0.0-beta.1'))).toBe(false);
+    });
+
+    it.skipIf(!HAS_CC)('keeps the copy and install when the preservation record cannot be published', () => {
+      const legacy = legacyHome({ binary: true }); const before = digest(legacy.binary);
+      fs.mkdirSync(path.join(legacy.home, '.myco', 'legacy-executable.json'));
+      const run = install(legacy.home, FROM(), ['--replace-1.4']);
+      expect(run.status).toBe(0); expect(run.out).toContain('but could not record it');
+      expect(digest(path.join(path.dirname(legacy.binary), 'versions', '1.4.8', 'myco'))).toBe(before);
+      expect(digest(legacy.binary)).not.toBe(before);
     });
 
     it.skipIf(!HAS_CC)('installs as usual in a home a cutover already moved to 2.0', () => {

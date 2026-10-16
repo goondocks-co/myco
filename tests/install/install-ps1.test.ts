@@ -18,7 +18,7 @@ const release = (version: string, extra = {}) => ({
 });
 const beforeGa = [release('1.4.9'), release('1.4.10-beta.1'), release('2.0.0-alpha.10'), release('2.0.0-beta.2')];
 
-function select(releases: unknown[], opts: { channel?: string; current?: string; evidence?: 'marker' | 'slot' | 'unknown'; state?: 'member' | 'cutover' | 'symlink' | 'empty' | 'vault'; replace?: boolean; install?: string; joined?: boolean; probe?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string; refreshFailure?: boolean } = {}) {
+function select(releases: unknown[], opts: { channel?: string; current?: string; evidence?: 'marker' | 'slot' | 'unknown'; state?: 'member' | 'cutover' | 'symlink' | 'empty' | 'vault'; replace?: boolean; install?: string; joined?: boolean; probe?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string; refreshFailure?: boolean; failPreserve?: boolean; failRecord?: boolean } = {}) {
   const home = fs.mkdtempSync(path.join(root, 'home-'));
   const mycoHome = path.join(home, '.myco');
   const bin = path.join(home, 'bin');
@@ -78,11 +78,19 @@ int main(int argc, char **argv) {
     const vault = path.join(mycoHome, 'groves/g/myco.db');
     fs.mkdirSync(path.dirname(vault), { recursive: true }); fs.writeFileSync(vault, 'legacy vault');
   }
+  if (opts.failRecord) fs.mkdirSync(path.join(mycoHome, 'legacy-executable.json'));
   const before = opts.current ? fs.readFileSync(exe) : undefined;
   const linkBefore = opts.state === 'symlink' ? fs.readlinkSync(exe) : undefined;
   const file = path.join(home, 'install.ps1');
   fs.writeFileSync(file, SCRIPT);
-  const program = `function Invoke-WebRequest { param($Uri, $Headers, $OutFile, [switch]$UseBasicParsing, $ErrorAction)
+  const copyFailure = opts.failPreserve ? `function Copy-Item {
+    param($Path, $Destination, [switch]$Force, $LiteralPath, $ErrorAction)
+    if ($Destination -like '*myco.legacy') { throw 'fixture preservation copy failure' }
+    if ($LiteralPath) { Microsoft.PowerShell.Management\\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Force }
+    else { Microsoft.PowerShell.Management\\Copy-Item -Path $Path -Destination $Destination -Force }
+  }` : '';
+  const program = `${copyFailure}
+  function Invoke-WebRequest { param($Uri, $Headers, $OutFile, [switch]$UseBasicParsing, $ErrorAction)
     ${download}
     [PSCustomObject]@{ Content = ${quote(JSON.stringify(releases))} }
   }
@@ -223,6 +231,38 @@ describe('the Windows installer', () => {
       release('9.1.0', { prerelease: true }), release('9.2.0', { assets: [] }), release('09.0.0')];
     expect(select([...beforeGa, ...bad, release('2.0.0-beta.10')], { channel: 'beta' }).out).toContain('Found: myco/v2.0.0-beta.10');
   });
+  it.skipIf(PWSH === '' || process.platform === 'win32')('preserves stable-only legacy bytes and records their identity before replacement', () => {
+    const run = select(beforeGa, { current: '1.4.8', replace: true, install: '2.0.0-beta.2' });
+    expect(run.status).toBe(0);
+    const record = JSON.parse(fs.readFileSync(path.join(run.mycoHome, 'legacy-executable.json'), 'utf8').replace(/^\uFEFF/, ''));
+    expect(record).toMatchObject({ version: '1.4.8', replaced_at: run.exe });
+    expect(fs.readFileSync(record.path)).toEqual(run.before!);
+    expect(record.sha256).toBe(crypto.createHash('sha256').update(run.before!).digest('hex'));
+    expect(fs.readFileSync(run.exe)).not.toEqual(run.before!);
+  });
+
+  it.skipIf(PWSH === '' || process.platform === 'win32')('reuses an identical Windows legacy slot', () => {
+    const run = select(beforeGa, { current: '1.4.8', evidence: 'slot', replace: true, install: '2.0.0-beta.2' });
+    expect(run.status).toBe(0);
+    const record = JSON.parse(fs.readFileSync(path.join(run.mycoHome, 'legacy-executable.json'), 'utf8').replace(/^\uFEFF/, ''));
+    expect(record.path).toBe(path.join(path.dirname(run.exe), 'versions', '1.4.8', 'myco.exe'));
+    expect(fs.existsSync(path.join(path.dirname(run.exe), 'legacy'))).toBe(false);
+  });
+
+  it.skipIf(PWSH === '' || process.platform === 'win32')('aborts Windows replacement if the preservation copy fails', () => {
+    const run = select(beforeGa, { current: '1.4.8', replace: true, install: '2.0.0-beta.2', failPreserve: true });
+    expect(run.status).not.toBe(0); expect(run.out).toContain('Could not preserve');
+    expect(fs.readFileSync(run.exe)).toEqual(run.before!);
+    expect(fs.existsSync(path.join(path.dirname(run.exe), 'versions', '2.0.0-beta.2'))).toBe(false);
+  });
+
+  it.skipIf(PWSH === '' || process.platform === 'win32')('keeps the Windows copy and installation if publishing its record fails', () => {
+    const run = select(beforeGa, { current: '1.4.8', replace: true, install: '2.0.0-beta.2', failRecord: true });
+    expect(run.status).toBe(0); expect(run.out).toContain('but could not record it');
+    expect(fs.readFileSync(path.join(path.dirname(run.exe), 'versions', '1.4.8', 'myco.exe'))).toEqual(run.before!);
+    expect(fs.readFileSync(run.exe)).not.toEqual(run.before!);
+  });
+
   it.skipIf(PWSH === '' || process.platform === 'win32')('installs fixture releases and only refreshes a joined 2.x member', () => {
     for (const scenario of [
       { install: '2.0.0-beta.2' },

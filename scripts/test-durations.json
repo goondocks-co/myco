@@ -8,7 +8,8 @@
     "https://github.com/goondocks-co/myco/actions/runs/38724215040",
     "https://github.com/goondocks-co/myco/actions/runs/38743027517",
     "local: npm test -- tests/member/legacy-verdict.test.ts, Bun 1.4.0, darwin-arm64; 140ms process wall time",
-    "local: npm test -- tests/symbionts/installer-settings-targets.test.ts, Bun 1.4.0, darwin-arm64; conservative 2000ms weight for the installer migration and refusal contracts"
+    "local: npm test -- tests/symbionts/installer-settings-targets.test.ts, Bun 1.4.0, darwin-arm64; conservative 2000ms weight for the installer migration and refusal contracts",
+    "local: cutover backup recovery literal Unix and PowerShell recipes, Bun 1.4.0, darwin-arm64; 10000ms including 2x measured 3990ms plus startup"
   ],
   "files": {
     "target/test-bundles/node-env-mt-E0RYoB/tests-symbionts-parsers.test.ts": 117,
@@ -780,7 +781,8 @@
     "tests/utils/lock-file-identity.test.ts": 4776,
     "tests/utils/repository-name.test.ts": 476,
     "tests/utils/windows-atomic-replace.test.ts": 2,
-    "tests/myco-server/semantic-hydration.test.ts": 16000
+    "tests/myco-server/semantic-hydration.test.ts": 16000,
+    "tests/member/cutover-backup.test.ts": 10000
   },
   "parity": {
     "D1: latest migration upgrades seeded previous schema to expected state": 45000,

@@ -344,6 +344,46 @@ try {
     # atomic — a partial copy can never leave a broken stable binary.
     # -------------------------------------------------------------------------
 
+    # Keep the replaced executable before publishing any 2.x binary.
+    if ($Replace14 -and $HasBinary -and -not $LegacyInstall -and ($CurrentVersion.StartsWith('1.') -or $UnknownBinary)) {
+        $legacyHash = (Get-FileHash $Exe -Algorithm SHA256).Hash.ToLowerInvariant()
+        $legacyCopy = $null
+        $candidates = @(Get-MycoFiles (Join-Path $BinDir 'versions/1.*/myco.exe')) + @(Get-MycoFiles (Join-Path $BinDir 'legacy/*/myco.exe'))
+        foreach ($candidate in $candidates) {
+            if ((Get-FileHash $candidate.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -eq $legacyHash) { $legacyCopy = $candidate.FullName; break }
+        }
+        if (-not $legacyCopy) {
+            $legacyDir = Join-Path $BinDir "legacy/$legacyHash"
+            $knownSlot = Join-Path $BinDir "versions/$CurrentVersion/myco.exe"
+            if ($CurrentVersion.StartsWith('1.') -and -not (Test-Path $knownSlot)) { $legacyDir = Split-Path $knownSlot }
+            $legacyCopy = Join-Path $legacyDir 'myco.exe'
+            try {
+                New-Item -ItemType Directory -Force -Path $legacyDir | Out-Null
+                $legacyTemp = Join-Path $tmpDir 'myco.legacy'
+                Copy-Item -LiteralPath $Exe -Destination $legacyTemp -Force
+                Move-Item -LiteralPath $legacyTemp -Destination $legacyCopy -Force
+            } catch { throw "Could not preserve the executable at ${Exe}; nothing was replaced: $_" }
+        }
+        if ((Get-FileHash $legacyCopy -Algorithm SHA256).Hash.ToLowerInvariant() -ne $legacyHash) {
+            throw "The preserved executable does not match ${Exe}; nothing was replaced."
+        }
+        $recordTemp = $null
+        try {
+            New-Item -ItemType Directory -Force -Path $MycoHome | Out-Null
+            $recordTemp = Join-Path $MycoHome ('.legacy-executable-' + [Guid]::NewGuid().ToString('N'))
+            $legacyVersion = if ($CurrentVersion.StartsWith('1.')) { $CurrentVersion } else { $null }
+            @{ path = $legacyCopy; sha256 = $legacyHash; version = $legacyVersion; replaced_at = $Exe } |
+                ConvertTo-Json | Set-Content -LiteralPath $recordTemp -Encoding UTF8
+            if (Test-Path (Join-Path $MycoHome 'legacy-executable.json') -PathType Container) { throw 'The preservation record path is a directory.' }
+            Move-Item -LiteralPath $recordTemp -Destination (Join-Path $MycoHome 'legacy-executable.json') -Force
+        } catch { Write-Warning "Kept the previous executable at $legacyCopy, but could not record it in $MycoHome/legacy-executable.json. Keep that path for undo: $_" }
+        finally {
+            if ($recordTemp -and (Test-Path $recordTemp)) {
+                try { Remove-Item -LiteralPath $recordTemp -Force } catch { Write-Warning "Could not remove the temporary preservation record at ${recordTemp}: $_" }
+            }
+        }
+    }
+
     # Place the versioned copy
     New-Item -ItemType Directory -Force -Path $VersionDir | Out-Null
     $VersionExe = Join-Path $VersionDir "myco.exe"
