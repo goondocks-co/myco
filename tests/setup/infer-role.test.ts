@@ -2,13 +2,15 @@ import { afterEach, beforeEach, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { run } from '@myco/cli/setup.js';
-import { readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
-import { deploymentPath, writeDeploymentMembership } from '@myco/member/registry.js';
+import { applyObservedSetupJourney, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
+import { deploymentPath, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { defaultDeploymentPath, recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { runnerRecordPath, newRunnerBearer } from '@myco/runner/runner-registry.js';
 import { writeDeploymentRecord } from '@myco/server/cloudflare.js';
 import { createLocalDeployment, DEFAULT_LOCAL_RECORD, peekLocalPaths } from '@myco/server/local.js';
+import { observeSetupJourneys, observeSetupStatus } from '@myco/setup/observe.js';
 
 const FIRST = 'https://first.invalid';
 const SECOND = 'https://second.invalid';
@@ -35,7 +37,8 @@ it('resumes one membership without a setup file or role question', async () => {
   membership(FIRST);
   expect(await run([], deps())).toBe(2);
   expect(questions).toEqual([]);
-  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: FIRST });
+  expect(readSetupFile(home).answers.role).toBeUndefined();
+  expect(readSetupFile(home).answers.url).toBeUndefined();
   expect(lines).toContain(`This machine joins ${FIRST}; continuing.`);
   expect(errors.join('\n')).toContain('Deployment unreachable');
 });
@@ -48,7 +51,7 @@ for (const joined of [false, true]) it(`does not consult a damaged default with 
   expect(await run([], { ...deps(), ask: async question => { questions.push(question); return null; } })).toBe(2);
   if (joined) {
     expect(questions).toEqual([]);
-    expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: FIRST });
+    expect(readSetupFile(home).answers.role).toBeUndefined();
     expect(lines).toContain(`This machine joins ${FIRST}; continuing.`);
   } else expect(questions[0]).toContain('What should this machine do?');
 });
@@ -58,7 +61,7 @@ it('chooses and names the default among two memberships', async () => {
   recordDefaultDeployment(SECOND, { mycoHome: home });
   expect(await run([], deps())).toBe(2);
   expect(questions).toEqual([]);
-  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: SECOND });
+  expect(readSetupFile(home).answers.role).toBeUndefined();
   expect(lines).toContain(`This machine joins ${SECOND}; continuing.`);
 });
 
@@ -134,7 +137,8 @@ it('infers a runner-only machine without asking the member role question', async
   fs.writeFileSync(file, JSON.stringify({ version: 1, serverUrl: FIRST, token: newRunnerBearer(), runnerId: 'rn_inferred', deploymentId: 'fixture', name: 'Fixture runner' }), { mode: 0o600 });
   expect(await run([], { ...deps(), worker: { home: scratch, harnessDirs: () => [], runner: () => { throw new Error('fixture service unavailable'); } } })).toBe(2);
   expect(questions).toEqual([]);
-  expect(readSetupFile(home).answers).toMatchObject({ role: 'runner', url: FIRST });
+  expect(readSetupFile(home).answers.role).toBeUndefined();
+  expect(readSetupFile(home).answers.url).toBeUndefined();
   expect(lines).toContain(`This machine runs Myco’s work for ${FIRST}; continuing.`);
 });
 
@@ -146,6 +150,130 @@ for (const target of ['local', 'cloudflare'] as const) it(`infers a ${target} cr
     ask: async question => { questions.push(question); throw new Error(`Stopped at creation choice: ${question}`); },
   })).toBe(2);
   expect(questions.join('\n')).not.toContain('What should this machine do?');
-  expect(readSetupFile(home).answers).toMatchObject({ role: 'create', target, url: target === 'local' ? 'http://127.0.0.1:8787' : FIRST });
+  expect(readSetupFile(home).answers.role).toBeUndefined();
+  expect(readSetupFile(home).answers.url).toBeUndefined();
+  expect(readSetupFile(home).answers.target).toBeUndefined();
   expect(lines.join('\n')).toContain('This machine starts Myco');
+});
+
+const runnerRecord = (serverUrl: string) => {
+  const file = runnerRecordPath(serverUrl, home);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ version: 1, serverUrl, token: newRunnerBearer(), runnerId: 'rn_choices', deploymentId: 'fixture', name: 'Fixture runner' }), { mode: 0o600 });
+  return file;
+};
+const online = (calls: string[] = []): typeof fetch => Object.assign(async (input: Parameters<typeof fetch>[0]) => {
+  const url = new URL(new Request(input).url);
+  calls.push(url.origin);
+  if (url.pathname === '/health') return Response.json({ ok: true });
+  if (url.pathname === '/auth/login') return new Response(null, { status: 302, headers: { location: `https://github.com/login/oauth/authorize?client_id=fixture&redirect_uri=${encodeURIComponent(`${url.origin}/auth/callback`)}` } });
+  if (url.pathname === '/members/status') return Response.json({ ok: true });
+  return Response.json({ error: 'not_found' }, { status: 404 });
+}, { preconnect: () => {} });
+
+it('re-infers after leaving the observed Deployment without signing back in or retaining a stale status journey', async () => {
+  membership(FIRST);
+  expect(await run([], deps())).toBe(2);
+  fs.rmSync(deploymentPath(FIRST, home));
+  membership(SECOND);
+  recordDefaultDeployment(SECOND, { mycoHome: home, replace: true });
+  const logins: string[][] = [];
+  const calls: string[] = [];
+  lines = []; errors = [];
+  expect(await run(['--cutover', '--yes', '--no-agents', '--no-runner'], { ...deps(), fetch: online(calls),
+    login: async args => { logins.push([...args]); return false; }, join: async () => null,
+  })).toBe(2);
+  expect(logins).toEqual([]);
+  expect(calls.length).toBeGreaterThan(0);
+  expect(calls.every(url => url === SECOND)).toBe(true);
+  expect(readSetupFile(home).answers).toMatchObject({ cutover: true, noAgents: true, runWork: false });
+  expect(readSetupFile(home).answers.role).toBeUndefined();
+  expect(readSetupFile(home).answers.url).toBeUndefined();
+  lines = [];
+  await run(['--status', '--json'], deps());
+  expect(lines.join('\n')).not.toContain(FIRST);
+  expect(JSON.parse(lines[0]!).observations.filter((fact: { id: string }) => fact.id === 'journey')).toMatchObject([{ detail: 'join', deployment: SECOND }]);
+});
+
+for (const bound of [FIRST, SECOND]) for (const hasDefault of [false, true]) it(`uses the repository binding to ${bound} ${hasDefault ? 'ahead of the other default' : 'without a default'}`, async () => {
+  membership(FIRST); membership(SECOND);
+  if (hasDefault) recordDefaultDeployment(bound === FIRST ? SECOND : FIRST, { mycoHome: home });
+  const repo = path.join(scratch, 'repo');
+  fs.mkdirSync(repo); execFileSync('git', ['init', '-q', repo]);
+  writeRegistryEntry({ version: 2, root: repo, projectId: 'proj_bound', serverUrl: bound, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+  const calls: string[] = [];
+  expect(await run(['--no-agents', '--no-runner', '--keep-default'], { ...deps(), cwd: repo, fetch: online(calls) })).toBe(0);
+  expect(questions).toEqual([]);
+  expect(errors).toEqual([]);
+  expect(lines).toContain(`This repository sends to ${bound}; continuing.`);
+  expect(calls.every(url => url === bound)).toBe(true);
+  expect(readSetupFile(home).answers.role).toBeUndefined();
+});
+
+for (const damaged of ['local', 'runner'] as const) it(`names the unreadable ${damaged} record and explicit role remedies without prompting`, async () => {
+  membership(FIRST);
+  let file: string;
+  if (damaged === 'local') {
+    createLocalDeployment(DEFAULT_LOCAL_RECORD, { library: null, vec0: null }, peekLocalPaths(home));
+    file = peekLocalPaths(home).recordFile;
+  } else file = runnerRecord(SECOND);
+  fs.writeFileSync(file, '{', { mode: 0o600 });
+  expect(await run([], deps())).toBe(2);
+  expect(questions).toEqual([]);
+  expect(errors.join('\n')).toContain(file);
+  expect(errors.join('\n')).toContain('or pass --join, --create or --runner');
+  expect(readSetupFile(home).answers.role).toBeUndefined();
+  if (damaged === 'local') {
+    const facts = await observeSetupStatus(home, {}, { ...deps(), local: { native: { library: null, vec0: null }, service: { runner: () => { throw new Error('fixture service unavailable'); } } } });
+    expect(facts.filter(fact => fact.target === 'local').map(fact => fact.id)).toEqual(expect.arrayContaining(['deployment.create', 'deployment.signin', 'deployment.owner', 'deployment.serving', 'journey']));
+  }
+});
+
+it('combines membership and runner records for one Deployment into one observed join journey', async () => {
+  membership(FIRST); runnerRecord(FIRST);
+  expect(observeSetupJourneys(home).journeys).toEqual([{ role: 'join', url: FIRST, runWork: true }]);
+  const observed = await observeSetupStatus(home, {}, { ...deps(), worker: { home: scratch, runner: () => { throw new Error('fixture service unavailable'); } } });
+  expect(observed.filter(fact => fact.id === 'journey')).toMatchObject([{ detail: 'join', deployment: FIRST }]);
+  expect(await run(['--no-runner'], deps())).toBe(2);
+  expect(questions).toEqual([]);
+  expect(readSetupFile(home).answers).toMatchObject({ runWork: false });
+});
+
+it('asks the role instead of inferring guided creation for a fronted local Deployment', async () => {
+  createLocalDeployment({ ...DEFAULT_LOCAL_RECORD, origin: 'https://fronted.invalid' }, { library: null, vec0: null }, peekLocalPaths(home));
+  expect(await run([], { ...deps(), ask: async question => { questions.push(question); return null; } })).toBe(2);
+  expect(questions).toHaveLength(1);
+  expect(questions[0]).toContain('What should this machine do?');
+  expect(errors.join('\n')).not.toContain('loopback only');
+});
+
+it('chooses a default membership alongside a runner, hosted creation or local creation', async () => {
+  runnerRecord(FIRST);
+  writeDeploymentRecord({ accountId: 'a'.repeat(32), workerName: 'w', databaseName: 'd', bucketName: 'b', versionId: null, deployedAt: new Date(0).toISOString(), url: FIRST }, home);
+  createLocalDeployment(DEFAULT_LOCAL_RECORD, { library: null, vec0: null }, peekLocalPaths(home));
+  membership(SECOND); recordDefaultDeployment(SECOND, { mycoHome: home });
+  expect(await run([], deps())).toBe(2);
+  expect(questions).toEqual([]);
+  expect(lines).toContain(`This machine joins ${SECOND}; continuing.`);
+});
+
+it('lists different runner and member Deployments as choices without a default', async () => {
+  runnerRecord(FIRST); membership(SECOND);
+  expect(await run([], { ...deps(), ask: async question => { questions.push(question); return null; } })).toBe(2);
+  expect(questions).toHaveLength(1);
+  expect(questions[0]).toContain(`joins ${SECOND}`);
+  expect(questions[0]).toContain(`runs Myco’s work for ${FIRST}`);
+});
+
+it('keeps observed identity out of every save while preserving answered choices and consent', () => {
+  const file = readSetupFile(home);
+  applyObservedSetupJourney(file, { role: 'create', target: 'cloudflare' });
+  file.answers.url = FIRST;
+  file.answers.cutover = true;
+  file.consented.device = 'a'.repeat(64);
+  saveSetupFile(home, file);
+  file.answers.runWork = false;
+  saveSetupFile(home, { ...file });
+  expect(file.answers).toMatchObject({ role: 'create', url: FIRST });
+  expect(readSetupFile(home)).toEqual({ version: 1, answers: { cutover: true, runWork: false }, consented: { device: 'a'.repeat(64) } });
 });

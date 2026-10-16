@@ -708,6 +708,7 @@
     "tests/setup/journeys.test.ts": 152629,
     "tests/setup/prompt.test.ts": 172,
     "tests/setup/sigkill-resume.test.ts": 112148,
+    "tests/setup/status-journey-contract.test.ts": 10000,
     "tests/setup/status.test.ts": 7701,
     "tests/skills/contamination.test.ts": 106,
     "tests/skills/description-contamination.test.ts": 103,

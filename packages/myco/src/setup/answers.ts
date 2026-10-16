@@ -34,7 +34,8 @@ const SetupFileSchema = z.object({
 }).strict();
 
 export type SetupAnswers = z.infer<typeof AnswersSchema>;
-export type SetupFile = z.infer<typeof SetupFileSchema>;
+const OBSERVED_ANSWERS = Symbol('observedSetupAnswers');
+export type SetupFile = z.infer<typeof SetupFileSchema> & { [OBSERVED_ANSWERS]?: ReadonlySet<string> };
 export const setupFilePath = (home: string): string => path.join(home, 'setup.json');
 
 /** The hosted address is an HTTPS origin with no embedded credentials. */
@@ -57,9 +58,19 @@ export function readSetupFile(home: string): SetupFile {
   return parsed.data;
 }
 
+/** Observed journey identity applies to this run and is omitted by every save. */
+export function applyObservedSetupJourney(file: SetupFile, journey: SetupAnswers): void {
+  const keys = ['role', 'url', 'target', ...(journey.runWork === undefined ? [] : ['runWork'])];
+  const observed = new Set(keys.filter(key => file[OBSERVED_ANSWERS]?.has(key) || Reflect.get(file.answers, key) === undefined));
+  file.answers = { ...file.answers, ...Object.fromEntries(Object.entries(journey).filter(([key]) => observed.has(key))) };
+  file[OBSERVED_ANSWERS] = observed;
+}
+
 /** Setup persists choices and consent only; credentials and completion belong to their owners. */
 export function saveSetupFile(home: string, value: SetupFile): void {
   const parsed = SetupFileSchema.parse(value);
+  const observed = value[OBSERVED_ANSWERS];
+  if (observed) parsed.answers = Object.fromEntries(Object.entries(parsed.answers).filter(([key]) => !observed.has(key)));
   fs.mkdirSync(home, { recursive: true, mode: 0o700 });
   writePrivateFileAtomic(setupFilePath(home), `${JSON.stringify(parsed, null, 2)}\n`);
 }

@@ -7,9 +7,10 @@ import { UNUSUAL } from '@myco/utils/git-files.js';
 import { runGitAnswer } from '@myco/utils/git.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { runnerServerUrl, RUNNER_NAME_PATTERN } from '@myco/cli/runner-deps.js';
-import { readSetupFile, saveSetupFile, setupCloudflareUrl, type SetupAnswers } from '@myco/setup/answers.js';
+import { applyObservedSetupJourney, readSetupFile, saveSetupFile, setupCloudflareUrl, type SetupAnswers } from '@myco/setup/answers.js';
 import { observeSetupJourneys, observeSetupStatus, setupExitCode } from '@myco/setup/observe.js';
 import { readDefaultDeployment } from '@myco/member/default-deployment.js';
+import { deploymentUrl, readRegistryEntryResult, registryEntryPath } from '@myco/member/registry.js';
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { setupChecks } from '@myco/cli/member-doctor.js';
 import { conductSetup, type SetupDeps } from '@myco/setup/steps.js';
@@ -227,21 +228,29 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     if (migration.state === 'unavailable') throw new Error(`Legacy migration state unavailable: ${migration.detail}. Restore access, then run myco setup again.`);
     if (migration.state !== 'none' && migration.state !== 'moved') out(`Myco 1.4 sources found (${migration.state}). Setup will preview moving them after sign-in. No legacy binary is executed.`);
     if (!file.answers.role && !options.change) {
-      const { journeys, failures } = observeSetupJourneys(home);
-      if (failures.length > 0) throw new Error(failures.map(fact => fact.detail).join('\n'));
-      const defaultUrl = journeys.length > 1 ? readDefaultDeployment(home, { strict: true })?.serverUrl : undefined;
-      let journey = journeys.length === 1 ? journeys[0] : journeys.find(journey => journey.role === 'join' && journey.url === defaultUrl);
+      const { guidedJourneys: journeys, failures, inferenceFailures } = observeSetupJourneys(home);
+      if (failures.length > 0 || inferenceFailures.length > 0) throw new Error(`${[...failures.map(fact => fact.detail), ...inferenceFailures].join('\n')} Restore access, or pass --join, --create or --runner.`);
+      const root = resolveMemberProjectRoot(options.answers.root ?? deps.cwd);
+      const binding = journeys.some(journey => journey.role === 'join') ? readRegistryEntryResult(root, home) : { status: 'missing' } as const;
+      if (binding.status === 'unavailable') throw new Error(`Repository binding could not be read: ${registryEntryPath(root, home)}. Run myco doctor.`);
+      const bound = binding.status === 'present' ? journeys.find(journey => journey.role === 'join' && journey.url === deploymentUrl(binding.entry.serverUrl)) : undefined;
+      const defaultUrl = !bound && journeys.length > 1 ? readDefaultDeployment(home, { strict: true })?.serverUrl : undefined;
+      let journey = bound ?? (journeys.length === 1 ? journeys[0] : journeys.find(journey => journey.role === 'join' && journey.url === defaultUrl));
+      let answered = false;
       if (!journey && journeys.length > 1) {
         const choices = journeys.map((journey, index) => `${index + 1}) ${setupJourneyWords(journey)}`);
         const answer = await askRequired(ask, `Which Myco should setup continue with?\n${choices.join('\n')}\n${journeys.length + 1}) Something else`, '--create cloudflare|local, --join <address> or --runner <address>');
         const index = Number(answer) - 1;
         if (!Number.isInteger(index) || index < 0 || index > journeys.length) throw new Error(`Choose a number from 1 to ${journeys.length + 1}; run myco setup --help for the available choices.`);
         journey = journeys[index];
+        answered = true;
       }
       if (journey) {
-        file.answers = { ...file.answers, ...journey };
+        if (answered) file.answers = { ...file.answers, ...journey };
+        else applyObservedSetupJourney(file, journey);
+        if (bound === journey) file.answers.root = root;
         validateCreationOptions(file.answers);
-        out(`This machine ${setupJourneyWords(journey)}; continuing.`);
+        out(bound === journey ? `This repository sends to ${journey.url}; continuing.` : `This machine ${setupJourneyWords(journey)}; continuing.`);
         saveSetupFile(home, file);
       }
     }

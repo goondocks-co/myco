@@ -102,6 +102,27 @@ describe('legacy journey (e)', () => {
     return { ...fixture, deps: { ...fixture.deps, stdout: (line: string) => lines.push(line), stderr: (line: string) => errors.push(line) } };
   };
 
+  for (const bound of [0, 1]) it(`completes the printed cutover remedy from repository ${bound} while the other Deployment is default`, async () => {
+    const fixture = await rig({ multi: true });
+    const root = fixture.legacy.projects[bound]!.root;
+    const url = LEGACY_URLS[bound]!;
+    const other = LEGACY_URLS[bound === 0 ? 1 : 0];
+    recordDefaultDeployment(other, { mycoHome: home, replace: true });
+    const deps = { ...fixture.deps, cwd: root, ask: async (question: string) => { throw new Error(`Unexpected prompt: ${question}`); } };
+    expect(await run(['--status'], deps)).toBe(3);
+    const remedy = lines.join('\n').match(/myco setup --cutover/)?.[0];
+    expect(remedy).toBe('myco setup --cutover');
+    lines = [];
+    expect(await run([...remedy!.split(' ').slice(2), '--yes', '--no-agents', '--no-runner', '--keep-default'], deps)).toBe(0);
+    expect(errors).toEqual([]);
+    expect(lines).toContain(`This repository sends to ${url}; continuing.`);
+    expect(readRegistryEntry(root, home)?.serverUrl).toBe(url);
+    expect(readDefaultDeployment(home)?.serverUrl).toBe(other);
+    expect(readSetupFile(home).answers.role).toBeUndefined();
+    expect(readSetupFile(home).answers.url).toBeUndefined();
+    expect(await run([], deps)).toBe(0);
+  });
+
   it('completes from the repository routed to the other Deployment and reruns cleanly', async () => {
     const fixture = await rig({ multi: true });
     const deps = { ...fixture.deps, cwd: fixture.legacy.projects[1]!.root };
@@ -1698,7 +1719,8 @@ describe('teammate journey (c)', () => {
     expect(lines.join('\n')).toContain('Myco 1.4 cutover preview');
     expect(errors.join('\n')).toContain('no terminal');
     expect(errors.join('\n')).not.toContain('Role prompt');
-    expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: URL });
+    expect(readSetupFile(home).answers.role).toBeUndefined();
+    expect(readSetupFile(home).answers.url).toBeUndefined();
     expect(server.calls.filter(route => route === '/auth/device/start')).toHaveLength(1);
   });
 
