@@ -24,7 +24,7 @@ import { pinLegacySpoolDestinationForProject } from './spool-migration.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { directoryWitnesses, filesystemWitnessesCurrent, type FilesystemWitness } from '../utils/filesystem-proof.js';
+import { rootTopologyWitnesses, filesystemWitnessesCurrent, type FilesystemWitness } from '../utils/filesystem-proof.js';
 import { canonicalRootIdentity, rootIdentityMayMatch } from '../utils/git-files.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync, type AcquireResult } from '../utils/lifecycle-lock.js';
@@ -471,7 +471,7 @@ function canonicalRegistryProof(home: string): CanonicalRegistryProof | null {
   try {
     assertMemberPathContained(canonicalProofPath(home), home);
     const proof = readPrivateJson<CanonicalRegistryProof>(canonicalProofPath(home));
-    return proof.ok && proof.value.version === 3 && proof.value.stamp === registryStamp(home)
+    return proof.ok && proof.value.version === 4 && proof.value.stamp === registryStamp(home)
       && Array.isArray(proof.value.witnesses) && filesystemWitnessesCurrent(proof.value.witnesses) ? proof.value : null;
   } catch { return null; }
 }
@@ -488,10 +488,10 @@ function certifyCanonicalRegistry(home: string): void {
     if (snapshot.unavailable.length || snapshot.records.some(record => record.binding.version !== BINDING_FORMAT_VERSION
       || record.binding.root !== record.identity || path.basename(record.file) !== `${legacyRegistryKey(record.identity)}.json`)) return;
     const stamp = registryStamp(home);
-    const witnesses = directoryWitnesses(snapshot.records.map(record => path.dirname(record.binding.root)));
+    const witnesses = rootTopologyWitnesses(snapshot.records.map(record => record.binding.root));
     if (snapshot.records.some(record => canonicalRootIdentity(record.binding.root) !== record.identity)
       || !filesystemWitnessesCurrent(witnesses) || registryStamp(home) !== stamp) return;
-    writePrivateFileAtomic(canonicalProofPath(home), JSON.stringify({ version: 3, stamp, witnesses }));
+    writePrivateFileAtomic(canonicalProofPath(home), JSON.stringify({ version: 4, stamp, witnesses }));
   } catch (error) {
     reportSkippedPrivateFile('registry identity cache', canonicalProofPath(home), { reason: 'unreadable', detail: error instanceof Error ? error.message : String(error) });
   }

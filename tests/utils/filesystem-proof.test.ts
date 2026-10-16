@@ -2,7 +2,7 @@ import { afterEach, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { directoryWitnesses, filesystemWitnesses, filesystemWitnessesCurrent } from '@myco/utils/filesystem-proof.js';
+import { rootTopologyWitnesses, filesystemWitnesses, filesystemWitnessesCurrent } from '@myco/utils/filesystem-proof.js';
 
 const roots: string[] = [];
 const fixture = () => {
@@ -17,8 +17,8 @@ it('a parent witness detects a repository entry replaced by an alias', () => {
   const parent = path.join(root, 'parent');
   fs.mkdirSync(parent);
   fs.mkdirSync(path.join(parent, 'repo'));
-  const proof = directoryWitnesses([parent, parent]);
-  expect(proof).toHaveLength(1);
+  const proof = rootTopologyWitnesses([path.join(parent, 'repo'), path.join(parent, 'repo')]);
+  expect(proof).toEqual(rootTopologyWitnesses([path.join(parent, 'repo')]));
   expect(filesystemWitnessesCurrent(proof)).toBe(true);
   fs.renameSync(path.join(parent, 'repo'), path.join(parent, 'saved'));
   fs.symlinkSync(path.join(parent, 'saved'), path.join(parent, 'repo'), 'junction');
@@ -32,10 +32,18 @@ it('a parent witness follows and detects an ancestor retarget', () => {
   for (const dir of [original, replacement]) fs.mkdirSync(path.join(dir, 'parent'), { recursive: true });
   const link = path.join(root, 'link');
   fs.symlinkSync(original, link, 'junction');
-  const proof = directoryWitnesses([path.join(link, 'parent')]);
+  const proof = rootTopologyWitnesses([path.join(link, 'parent')]);
   fs.unlinkSync(link);
   fs.symlinkSync(replacement, link, 'junction');
   expect(filesystemWitnessesCurrent(proof)).toBe(false);
+});
+
+it('topology witnesses ignore directory metadata changes that preserve identity', () => {
+  const root = fixture();
+  const proof = rootTopologyWitnesses([root]);
+  fs.writeFileSync(path.join(root, 'new-file'), 'data');
+  expect(filesystemWitnessesCurrent(proof)).toBe(true);
+  expect(proof.every(witness => witness.stamp.split(':').length === 2)).toBe(true);
 });
 
 it('metadata witnesses reject in-place edits and malformed derived witnesses', () => {

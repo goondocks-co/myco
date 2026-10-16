@@ -636,6 +636,35 @@ it('a cached binding follows an ancestor move instead of reporting a missing rep
   expect(readRegistryEntryResult(root, mycoHome).status).toBe('present');
 });
 
+for (const depth of [2, 3]) for (const operation of ['lookup', 'autoJoinHold']) {
+  it('a fresh ' + operation + ' rejects a stale proof after an ancestor moves at depth ' + depth, () => {
+    const ancestor = path.join(base, 'Move');
+    const repository = path.join(ancestor, ...Array.from({ length: depth - 1 }, (_, index) => 'Group' + index), 'repo');
+    fs.mkdirSync(repository, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: repository });
+    defaultWork();
+    writeRegistryEntry(entry(repository), { mycoHome });
+    expect(fs.existsSync(path.join(mycoHome, 'member', 'registry-canonical'))).toBe(true);
+    const moved = path.join(base, 'Disk', 'Move');
+    fs.mkdirSync(path.dirname(moved));
+    fs.renameSync(ancestor, moved);
+    fs.symlinkSync(moved, ancestor, 'junction');
+    const source = 'import {readRegistryEntryResult} from ' + JSON.stringify(path.resolve('packages/myco/src/member/registry.ts'))
+      + '; import {autoJoinHold} from ' + JSON.stringify(path.resolve('packages/myco/src/member/auto-join-hook.ts'))
+      + '; const root=' + JSON.stringify(repository) + ',mycoHome=' + JSON.stringify(mycoHome)
+      + '; let queued=0; const result=' + (operation === 'lookup' ? 'readRegistryEntryResult(root,mycoHome)' : 'autoJoinHold({root,mycoHome,hookName:"session-end",agent:"claude-code",sessionId:"moved",now:2,env:{MYCO_TEMPORARY_FOLDERS:' + JSON.stringify(path.join(base, 'excluded')) + '},later:()=>queued++})')
+      + '; console.log(JSON.stringify({result,queued}));';
+    const answer = JSON.parse(execFileSync(process.execPath, ['--tsconfig-override', path.resolve('tsconfig.json'), '-e', source], { cwd: base, encoding: 'utf8' }));
+    if (operation === 'lookup') {
+      expect(['present', 'unavailable']).toContain(answer.result.status);
+      if (answer.result.status === 'present') expect(answer.result.entry.serverUrl).toBe('https://personal.invalid');
+    } else expect(answer.result).toBeNull();
+    expect(answer.queued).toBe(0);
+    expect(listJoinRequests(mycoHome)).toEqual([]);
+    expect(listPending({ mycoHome, now: 2 })).toEqual([]);
+  });
+}
+
 it('explicit connection replacement and leave resolve only the selected repository conflict', () => {
   oldBinding(root);
   oldBinding(alias, 'https://work.invalid', 'proj_work');

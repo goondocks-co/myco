@@ -46,7 +46,14 @@ export function filesystemWitnessesCurrent(witnesses: readonly FilesystemWitness
   try { return witnesses.every(witness => stamp(witness.at, witness.kind) === witness.stamp); } catch { return false; }
 }
 
-/** Resolving each immediate parent observes ancestor replacement and changes to repository directory entries. */
-export function directoryWitnesses(directories: readonly string[]): FilesystemWitness[] {
-  return [...new Set(directories)].map(at => ({ at, kind: 'directory', stamp: stamp(at, 'directory') }));
+/** Root and ancestor identities detect replacement of any repository path component. */
+export function rootTopologyWitnesses(roots: readonly string[]): FilesystemWitness[] {
+  const paths = new Set<string>();
+  for (const root of roots) {
+    for (let at = root; ; at = path.dirname(at)) {
+      paths.add(at);
+      if (path.dirname(at) === at) break;
+    }
+  }
+  return [...paths].map(at => ({ at, kind: 'root', stamp: stamp(at, 'root') }));
 }
