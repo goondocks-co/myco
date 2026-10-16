@@ -783,7 +783,7 @@
     "tests/utils/windows-atomic-replace.test.ts": 2,
     "tests/myco-server/semantic-hydration.test.ts": 16000,
     "tests/member/cutover-backup.test.ts": 10000,
-    "tests/upgrade/guarded-binary.test.ts": 2000
+    "tests/upgrade/guarded-binary.test.ts": 3000
   },
   "parity": {
     "D1: latest migration upgrades seeded previous schema to expected state": 45000,

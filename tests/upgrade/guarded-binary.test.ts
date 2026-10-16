@@ -307,6 +307,47 @@ for (const caller of ['manual', 'automatic'] as const) it(`bounds lock contentio
   expect(stages).toBe(1);
 });
 
+it('excludes a manual custom-home update while the default home updates the same executable', async () => {
+  const customHome = path.join(root, 'custom');
+  writeInstallMarker(customHome, { bin: live, source: 'curl', channel: 'alpha' });
+  let entered!: () => void;
+  let unblock!: () => void;
+  const enteredStage = new Promise<void>(resolve => { entered = resolve; });
+  const releaseStage = new Promise<void>(resolve => { unblock = resolve; });
+  deps.stageBinary = async () => {
+    stages++;
+    if (stages === 1) { entered(); await releaseStage; }
+    return { version: to, versionDir: stage };
+  };
+  const first = updateBinary('automatic', {}, deps);
+  await enteredStage;
+  try {
+    expect(await updateBinary('manual', {}, { ...deps, home: customHome })).toEqual({ kind: 'failed', reason: 'an update is running' });
+    expect(stages).toBe(1);
+  } finally { unblock(); await first; }
+});
+
+it('holds a custom home repair lease as well as the machine lease and releases partial acquisitions', async () => {
+  const customHome = path.join(root, 'custom-repair');
+  writeInstallMarker(customHome, { bin: live, source: 'curl', channel: 'alpha' });
+  const repairing = LifecycleLock.acquire(path.join(customHome, 'member', REPAIR_LOCK));
+  expect(repairing.acquired).toBe(true);
+  try {
+    expect(await updateBinary('manual', {}, { ...deps, home: customHome })).toEqual({ kind: 'failed', reason: 'an update is running' });
+    expect(stages).toBe(0);
+    const machine = LifecycleLock.acquire(path.join(home, 'member', REPAIR_LOCK));
+    expect(machine.acquired).toBe(true);
+    if (machine.acquired) machine.lock.release();
+  } finally { if (repairing.acquired) repairing.lock.release(); }
+  expect((await updateBinary('manual', {}, { ...deps, home: customHome })).kind).toBe('adopted');
+});
+
+it.skipIf(process.platform === 'win32')('deduplicates machine and member repair leases for a home alias', async () => {
+  const alias = path.join(root, 'home-alias');
+  fs.symlinkSync(home, alias, 'dir');
+  expect((await updateBinary('manual', {}, { ...deps, home: alias })).kind).toBe('adopted');
+});
+
 it('refuses a 1.x release even from an injected resolver', async () => {
   deps.currentVersion = '1.4.8';
   fs.writeFileSync(live, '1.4.8');

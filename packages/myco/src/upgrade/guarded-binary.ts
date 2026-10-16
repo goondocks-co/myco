@@ -5,10 +5,10 @@ import { spawnSync } from 'node:child_process';
 import semver from 'semver';
 import { isDevelopmentVersion, selectChannelRelease, isV2Version } from '../../scripts/release-policy.mjs';
 import { resolveBinary, readLayeredPin } from '@myco/runtime/binary-resolution.js';
-import { canonicalHomePath, isDefaultMycoHome, resolveMycoHome } from '@myco/paths/home.js';
+import { canonicalHomePath, defaultMycoHome, isDefaultMycoHome, resolveMycoHome } from '@myco/paths/home.js';
 import { readInstallMarker } from '@myco/install/managed-binary.js';
 import { placeExecutable, readyExecutable } from '@myco/install/place-binary.js';
-import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
+import { LifecycleLock, type LockHandle } from '@myco/utils/lifecycle-lock.js';
 import { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
 import { getPluginVersion } from '@myco/version.js';
 import { stageBinary, DEFAULT_BINARY_UPDATE_DEPS, type StageBinaryDeps } from './apply-binary.js';
@@ -108,10 +108,14 @@ export async function updateBinary(
   const platform = deps.platform ?? process.platform;
   const localAppData = deps.localAppData ?? process.env.LOCALAPPDATA;
   const runningVersion = deps.currentVersion ?? getPluginVersion();
-  let lease: ReturnType<typeof LifecycleLock.acquire> | undefined;
+  const leases: LockHandle[] = [];
   try {
-    lease = LifecycleLock.acquire(path.join(home, 'member', REPAIR_LOCK), { wait: true, timeoutMs: BINARY_UPDATE_WAIT_MS, command: 'myco update binary' });
-    if (!lease.acquired) return { kind: caller === 'manual' ? 'failed' : 'skipped', reason: 'an update is running' };
+    const lockHomes = [...new Set([defaultMycoHome(), home].map(canonicalHomePath))];
+    for (const lockHome of lockHomes) {
+      const lease = LifecycleLock.acquire(path.join(lockHome, 'member', REPAIR_LOCK), { wait: true, timeoutMs: BINARY_UPDATE_WAIT_MS, command: 'myco update binary' });
+      if (!lease.acquired) return { kind: caller === 'manual' ? 'failed' : 'skipped', reason: 'an update is running' };
+      leases.push(lease.lock);
+    }
     if (options.skipBinary) return { kind: 'skipped', reason: '--skip-binary requested' };
     if (isDevelopmentVersion(runningVersion)) return { kind: 'skipped', reason: 'development build' };
     if (caller === 'automatic' && !isDefaultMycoHome(home)) return { kind: 'skipped', reason: 'this is not the default Myco home' };
@@ -176,5 +180,5 @@ export async function updateBinary(
     } finally { fs.rmSync(staging, { recursive: true, force: true }); }
   } catch (error) {
     return { kind: 'failed', reason: detail(error) };
-  } finally { if (lease?.acquired) lease.lock.release(); }
+  } finally { for (const lease of leases.reverse()) lease.release(); }
 }
