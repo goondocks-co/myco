@@ -366,13 +366,13 @@ export async function selectSporesForPrompt(
   counts.planEligible = eligiblePlans.length;
   const loadPlanVectors = async () => {
     if (eligiblePlans.length === 0 || planHits.length < PLAN_MIN_CALIBRATION) return [];
-    try { return await semantic.vectors.get({ projectId: scope.projectId, modelKey: semantic.provider.modelKey }, planHits.map((h) => h.vector_id)); }
+    try { return await duringCandidate('vector', () => semantic.vectors.get({ projectId: scope.projectId, modelKey: semantic.provider.modelKey }, planHits.map((h) => h.vector_id))); }
     catch { counts.planCalibrationFailed++; return []; }
   };
-  const [hydrated, planVectors] = await settledAll([
+  const [hydrated, planVectors] = await duringInjection('hydrate_spores', counts, () => settledAll([
     duringInjection('hydrate_spores', counts, () => listSporesByIds(db, scope, relevant.map((s) => s.id)), timings, 'hydrate'),
     loadPlanVectors(),
-  ]);
+  ]));
   const bySpore = new Map(hydrated.filter((s) => s.status === 'active').map((s) => [s.id, s]));
   const sporeItems: InjectionItem[] = relevant.flatMap((s) => {
     const row = bySpore.get(s.id);

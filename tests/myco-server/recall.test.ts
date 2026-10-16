@@ -424,6 +424,44 @@ describe('prompt selection diagnostics', () => {
     } finally { release(); record.mockRestore(); log.mockRestore(); sqlite.close(); }
   });
 
+  it('records delayed plan-calibration failure and vector timing when spore hydration fails first', async () => {
+    const { db, sqlite } = store();
+    await insertSpore(db, SCOPE, spore('selected'));
+    for (let i = 0; i < 5; i++) sqlite.query(`INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,created_at,updated_at,token_id,received_at)
+      VALUES(?, ?, 'history', 'event', 'machine', 'Plan', 'Body', 'hash', 'active', 1, 1, 'token', 1)`).run(SCOPE.projectId, `plan-${i}`);
+    const semantic = await semanticRecall(db, SCOPE)();
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const calibrationStarted = new Promise<void>((resolve) => { started = resolve; });
+    semantic.vectors.get = async () => { started(); await gate; throw new Error('calibration unavailable'); };
+    const broken: RelationalStore = { ...db, prepare: (sql) => {
+      const wrap = (statement: PreparedStatement): PreparedStatement => ({ ...statement,
+        bind: (...params) => wrap(statement.bind(...params)),
+        all: async () => { throw new Error('hydration unavailable'); },
+      });
+      const statement = db.prepare(sql);
+      return sql.includes('FROM spores WHERE project_id = ? AND id IN') ? wrap(statement) : statement;
+    } };
+    const timings = new ContextTimings();
+    const record = spyOn(timings, 'record');
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    let answered = false;
+    try {
+      const answer = composePromptContext(broken, SCOPE, ON, true, { sessionId: SESSION, promptId: 'hydrate-failure', text: PROMPT, now: NOW }, async () => semantic, undefined, timings)
+        .then((body) => { answered = true; return body; });
+      await calibrationStarted;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const premature = answered;
+      release();
+      await answer;
+      expect(premature).toBe(false);
+      expect(selectionOf(sqlite, 'hydrate-failure')).toMatchObject({ planCalibrationFailed: 1 });
+      expect(record.mock.calls.filter(([stage]) => stage === 'vector')).toHaveLength(3);
+      expect(sqlite.query('SELECT failures FROM prompt_context_answers').get()).toEqual({ failures: '[{"contributor":"spores","error":"unknown","operation":"hydrate_spores"}]' });
+    } finally { release(); record.mockRestore(); log.mockRestore(); sqlite.close(); }
+  });
+
   it('separates missing semantic configuration, provider unavailability and unexpected embed throws', async () => {
     const { db, sqlite } = store();
     const semantic = await semanticRecall(db, SCOPE)();
@@ -739,9 +777,9 @@ describe('POST /context/prompt', () => {
     }
   });
 
-  it('times pipeline refusals before the prompt handler', async () => {
+  it.each(['/context/prompt', '/context/session', '/context/subagent'])('times pipeline refusals before the context handler: %s', async (route) => {
     const { e } = await member();
-    const response = await worker.fetch(new Request('https://s/context/prompt', { method: 'POST', body: '{}' }), e.env);
+    const response = await worker.fetch(new Request(`https://s${route}`, { method: 'POST', body: '{}' }), e.env);
     expect(response.status).toBe(503);
     expect(contextTiming(response)).toMatchObject({ embed: 0, vector: 0, candidate: 0, hydrate: 0 });
   });
