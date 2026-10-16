@@ -8,6 +8,7 @@
  *   the file instead, its arguments as one JSON line.
  * - `MYCO_TEST_GIT_PROBE=<file>`: observe Git requests with deterministic async completion and a fixed hook clock.
  * - `MYCO_TEST_HOOK_ELAPSED_MS=<ms>`: advance the injected hook clock beyond its process-start budget.
+ * - `MYCO_TEST_GIT_BUDGET_PROBE=<file>`: use the budget probe's advancing clock from hook start.
  * The loader table is the one the CLI dispatches hooks through (`HOOK_DISPATCH`).
  */
 import fs from 'node:fs';
@@ -40,7 +41,10 @@ if (gitProbe !== undefined) {
 const mod = await HOOK_DISPATCH[hookName]();
 const startedAt = Date.now();
 const elapsed = process.env.MYCO_TEST_HOOK_ELAPSED_MS;
+const budgetProbe = process.env.MYCO_TEST_GIT_BUDGET_PROBE;
 await mod.main({
   credential: parseCredentialFlag(process.argv), fetch: fetchImpl, helperSpawn: spawn,
-  ...(gitProbe === undefined && elapsed === undefined ? {} : { now: () => startedAt + Number(elapsed ?? 0), startedAt }),
+  ...(gitProbe === undefined && elapsed === undefined && budgetProbe === undefined ? {} : {
+    now: budgetProbe === undefined ? () => startedAt + Number(elapsed ?? 0) : () => Date.now(), startedAt,
+  }),
 });
