@@ -1626,8 +1626,7 @@ export class SymbiontInstaller {
       return false;
     }
 
-    let raw = '';
-    try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    let raw = this.readMemberFile(targetPath) ?? '';
 
     // Only currently declared settings remain managed.
     const templateSections = new Set<string>();
@@ -1677,8 +1676,8 @@ export class SymbiontInstaller {
 
   private uninstallMcpToml(targetPath: string): boolean {
     return this.withWritableMcpEntry(this.mycoServerIn(targetPath, true, TOML_MCP_SERVERS_KEY), () => {
-      let raw = '';
-      try { raw = fs.readFileSync(targetPath, 'utf-8'); } catch { return false; }
+      const raw = this.readMemberFile(targetPath);
+      if (raw === null) return false;
 
       const sectionHeader = `[mcp_servers.${MYCO_MCP_SERVER_NAME}]`;
       if (!raw.includes(sectionHeader)) return false;
@@ -1690,7 +1689,7 @@ export class SymbiontInstaller {
       const updated = (before + (before && after ? '\n\n' : '') + after).trimEnd();
 
       if (!updated.trim()) {
-        try { fs.unlinkSync(targetPath); } catch { /* ignore */ }
+        fs.unlinkSync(targetPath);
       } else {
         atomicWriteFileSync(targetPath, updated + "\n");
       }

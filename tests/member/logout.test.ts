@@ -78,6 +78,41 @@ beforeEach(() => {
 afterEach(() => { restore(); fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('Deployment-scoped logout', () => {
+  for (const agent of ['codex', 'claude-code']) it(`fails ${agent} MCP deletion after visiting every manifest and retains retry ownership`, async () => {
+    join(A);
+    const manifests = loadManifests();
+    const installers = manifests.map(manifest => new SymbiontInstaller(manifest, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(A));
+    for (const installer of installers) installer.install();
+    const failed = installers[manifests.findIndex(manifest => manifest.name === agent)];
+    const file = failed.memberGlobalTargets().mcp[0];
+    if (agent === 'codex') {
+      const raw = fs.readFileSync(file, 'utf8');
+      const section = raw.indexOf('[mcp_servers.myco]');
+      expect(section).toBeGreaterThanOrEqual(0);
+      fs.writeFileSync(file, raw.slice(section));
+    }
+    const before = bytes(file);
+    const failure = Object.assign(new Error(`Could not delete ${file}`), { code: 'EPERM' });
+    const unlink = fs.unlinkSync;
+    const deletion = spyOn(fs, 'unlinkSync').mockImplementation(target => {
+      if (target === file) throw failure;
+      return unlink(target);
+    });
+    const visits = spyOn(SymbiontInstaller.prototype, 'reconcileDeploymentLogout');
+    try {
+      await expect(logoutDeployment(A, { mode: 'revoke' }, deps)).rejects.toBe(failure);
+      expect(visits).toHaveBeenCalledTimes(manifests.length);
+      expect(bytes(file)).toEqual(before);
+      expect(readProvisionRecord(mycoHome)).toMatchObject({ agents: [agent], pendingLogout: { [agent]: [A] } });
+      expect(JSON.parse(fs.readFileSync(logoutJournalPath(A, mycoHome), 'utf8')).phase).toBe('config');
+      for (const [index, installer] of installers.entries()) if (manifests[index].name !== agent) expect(installer.inspectMemberHooks().member).toBe(false);
+    } finally { visits.mockRestore(); deletion.mockRestore(); }
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toEqual([]);
+    expect(fs.existsSync(file)).toBe(false);
+    expect(readProvisionRecord(mycoHome)).toBeNull();
+    expect(requests).toHaveLength(1);
+  });
+
   for (const first of [A, B]) it(`retains both pending logouts for one agent until both retries complete (${first} first)`, async () => {
     join(A); join(B);
     recordDefaultDeployment(A, { mycoHome });
