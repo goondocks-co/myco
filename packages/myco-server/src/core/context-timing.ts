@@ -5,21 +5,23 @@ const STAGES: readonly ContextTimingStage[] = ['embed', 'vector', 'candidate', '
 const duration = (milliseconds: number): string => Math.max(0, milliseconds).toFixed(3);
 
 export class ContextTimings {
-  private readonly durations: Record<ContextTimingStage, number> = { embed: 0, vector: 0, candidate: 0, hydrate: 0 };
+  private readonly durations: Partial<Record<ContextTimingStage, number>> = {};
 
   record(stage: ContextTimingStage, milliseconds: number): void {
-    this.durations[stage] += milliseconds;
+    this.durations[stage] = (this.durations[stage] ?? 0) + milliseconds;
   }
 
   header(): string {
-    return STAGES.map((stage) => `${stage};dur=${duration(this.durations[stage])}`).join(', ');
+    return STAGES.flatMap((stage) => {
+      const milliseconds = this.durations[stage];
+      return milliseconds === undefined ? [] : [`${stage};dur=${duration(milliseconds)}`];
+    }).join(', ');
   }
 }
 
 /** The pipeline adds total to every context answer, including pre-handler refusals. */
-export function withContextServerTiming(response: Response, startedAt: number): Response {
+export function withContextServerTiming(response: Response, startedAt: number, timings: ContextTimings): Response {
   const headers = new Headers(response.headers);
-  const stages = headers.get('server-timing') ?? new ContextTimings().header();
-  headers.set('server-timing', `${stages}, total;dur=${duration(performance.now() - startedAt)}`);
+  headers.set('server-timing', [timings.header(), `total;dur=${duration(performance.now() - startedAt)}`].filter(Boolean).join(', '));
   return new Response(response.body, { status: response.status, headers });
 }

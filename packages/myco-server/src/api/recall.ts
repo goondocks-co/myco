@@ -14,7 +14,6 @@
  * empty block as a named decision rather than a silence.
  */
 import { machineBlockFor } from '../core/machine-settings.js';
-import { ContextTimings } from '../core/context-timing.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { composePromptContext, composeSessionContext, readRecallLeaves } from '../core/recall.js';
@@ -87,11 +86,10 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
     readRecallLeaves(env.db),
     settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),
   ]);
-  const timings = new ContextTimings();
   const served = await composePromptContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, {
     sessionId, promptId, text, now: ctx.now,
-  }, () => resolveSemanticSearch(env), env.platform?.classifyError, timings);
-  return Response.json({ persisted: true, ...served }, { headers: { 'server-timing': timings.header() } });
+  }, () => resolveSemanticSearch(env), env.platform?.classifyError, ctx.contextTimings);
+  return Response.json({ persisted: true, ...served });
 }
 
 export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): Promise<Response> {
