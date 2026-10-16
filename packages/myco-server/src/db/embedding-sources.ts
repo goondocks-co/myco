@@ -17,15 +17,21 @@ export const EMBEDDING_SOURCES = [
 /** One embedding source, with every clause of its SELECT as text. */
 export type Source = { readonly [K in keyof (typeof EMBEDDING_SOURCES)[number]]: string };
 
-const unionOf = (list: readonly Source[]): string => list.map((s) => `SELECT project_id, '${s.type}' AS type, '${s.table}' AS namespace, ${s.id} AS record_id,
-  ${s.title} AS title, ${s.text} AS text, ${s.blob} AS blob_key, ${s.status} AS status,
+/** The source's projection and eligibility, with the caller's text projection. */
+export const embeddingSourceSelect = (s: Source, text = s.text): string => `SELECT project_id, '${s.type}' AS type, '${s.table}' AS namespace, ${s.id} AS record_id,
+  ${s.title} AS title, ${text} AS text, ${s.blob} AS blob_key, ${s.status} AS status,
   COALESCE(${s.session}, '') AS session_id, ${s.prompt} AS prompt_id, ${s.created} AS created_at, ${s.observation} AS observation_type
-  FROM ${s.table} WHERE ${s.eligible}`).join(' UNION ALL ');
+  FROM ${s.table} WHERE ${s.eligible}`;
+
+const unionOf = (list: readonly Source[]): string => list.map((s) => embeddingSourceSelect(s)).join(' UNION ALL ');
+
+/** The latest release classification for source alias `s`, with checked-time ties ordered by id. */
+export const EMBEDDING_RELEASE_COLUMNS = `COALESCE((SELECT k.state FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_state,
+    COALESCE((SELECT k.confidence FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_confidence`;
 
 /** The `embedding_sources` view over a set of sources. */
 export const embeddingSourcesView = (list: readonly Source[]): string => `CREATE VIEW IF NOT EXISTS embedding_sources AS SELECT s.*, v.revision,
-    COALESCE((SELECT k.state FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_state,
-    COALESCE((SELECT k.confidence FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_confidence
+    ${EMBEDDING_RELEASE_COLUMNS}
     FROM (${unionOf(list)}) s JOIN embedding_versions v ON v.project_id = s.project_id AND v.type = s.type AND v.record_id = s.record_id`;
 
 /** The sources with a session dated and stated by what it is presented with; what a search filters on. */

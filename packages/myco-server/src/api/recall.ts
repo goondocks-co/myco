@@ -88,7 +88,7 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
   ]);
   const served = await composePromptContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, {
     sessionId, promptId, text, now: ctx.now,
-  }, () => resolveSemanticSearch(env), env.platform?.classifyError);
+  }, () => resolveSemanticSearch(env), env.platform?.classifyError, ctx.contextTimings);
   return Response.json({ persisted: true, ...served });
 }
 

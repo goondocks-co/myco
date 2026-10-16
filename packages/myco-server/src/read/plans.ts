@@ -197,9 +197,12 @@ async function selectPlans(
 }
 
 /** One plan inside the scope, or null — including when the key exists under another project. */
-export async function getPlan(db: RelationalStore, scope: ReadScope, planKey: string): Promise<ProjectPlanRow | null> {
-  const row = await db.prepare(`SELECT ${COLUMNS} FROM plans WHERE project_id = ? AND plan_key = ?`).bind(scope.projectId, planKey).first<Record<string, unknown>>();
+export function getPlan(db: RelationalStore, scope: ReadScope, planKey: string, options: { summary: true }): Promise<Pick<ProjectPlanRow, 'planKey' | 'title' | 'status'> | null>;
+export function getPlan(db: RelationalStore, scope: ReadScope, planKey: string): Promise<ProjectPlanRow | null>;
+export async function getPlan(db: RelationalStore, scope: ReadScope, planKey: string, options: { summary?: boolean } = {}): Promise<Pick<ProjectPlanRow, 'planKey' | 'title' | 'status'> | ProjectPlanRow | null> {
+  const row = await db.prepare(`SELECT ${options.summary ? 'plan_key, title, status' : COLUMNS} FROM plans WHERE project_id = ? AND plan_key = ?`).bind(scope.projectId, planKey).first<Record<string, unknown>>();
   if (row === null) return null;
+  if (options.summary) return { planKey: row.plan_key as string, title: row.title as string | null, status: row.status as string };
   const tags = await tagsOf(db, scope, [planKey]);
   return toPlan(row, tags.get(planKey) ?? []);
 }

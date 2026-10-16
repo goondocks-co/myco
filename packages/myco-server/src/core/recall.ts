@@ -33,6 +33,7 @@
  * failure in the spore half then leaves the nudge unburned for the next prompt.
  */
 import type { ErrorClassifier, RelationalStore } from './adapters.js';
+import type { ContextTimings } from './context-timing.js';
 import { INJECTION_LEAVES, InjectionFailure, emptyInjectionCounts, injectionLeaves, selectSporesForPrompt, type InjectionCounts, type InjectionLeaves, type InjectionSkip } from './injection.js';
 import type { SemanticSearch } from '../read/embedding.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingTexts } from './settings.js';
@@ -308,6 +309,7 @@ export async function composePromptContext(
   input: { sessionId: string; promptId: string; text: string; now: number },
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   classifyError?: ErrorClassifier,
+  timings?: ContextTimings,
 ): Promise<PromptContext> {
   const identity = { projectId: scope.projectId, sessionId: input.sessionId, promptId: input.promptId };
   let counts = emptyInjectionCounts();
@@ -323,7 +325,7 @@ export async function composePromptContext(
       promptHash: await sha256Hex(input.text),
       prompt: input.text,
       now: input.now,
-    }, resolveSemantic).catch((error: unknown) => {
+    }, resolveSemantic, timings).catch((error: unknown) => {
       if (error instanceof InjectionFailure) counts = error.counts;
       throw error;
     });

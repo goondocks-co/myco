@@ -7,6 +7,7 @@ import { authorizeHttp, httpAuthorizationDecision } from './auth/http-authorizat
 import { emptyBodyRefusal, LINK_REQUIRES_ADMIN } from './auth/members.js';
 import { parseJsonObject, badRequest } from './api/scope.js';
 import { RAW_CACHE_HEADERS } from './core/raw-resources.js';
+import { ContextTimings, withContextServerTiming } from './core/context-timing.js';
 import { runControlRefusalCode } from '@goondocks/myco-shared/run-control';
 import { MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_ORDER_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, isMachineSettingsRevision } from '@goondocks/myco-shared/member-protocol';
 import type { ErrorClassifier, OutboundFetch, ServerEnv } from './core/adapters.js';
@@ -309,7 +310,7 @@ async function runSubject(env: ServerEnv, run: HeldRun, tokenId: string): Promis
 }
 
 export function createServer(deps: ServerDeps) {
-  async function run(request: Request, env: ServerEnv): Promise<Response> {
+  async function run(request: Request, env: ServerEnv, contextTimings?: ContextTimings): Promise<Response> {
     const url = new URL(request.url);
     const matched = matchRoute(request.method, url.pathname);
     const now = deps.now();
@@ -492,7 +493,7 @@ export function createServer(deps: ServerDeps) {
       if (rotating || await revokedForReplay(env.db, digest)) return (await env.sourceLimit.limit({ key: source })).success ? replayRevoked() : limited();
       return anonymous();
     }
-    return withProtocol(await member(request, env, auth, matched, url, now));
+    return withProtocol(await member(request, env, auth, matched, url, now, contextTimings));
   }
 
   /**
@@ -548,9 +549,9 @@ export function createServer(deps: ServerDeps) {
   }
 
   /** Every failure after authentication answers in the route's shape once the route is known, and carries the protocol number; only what `admitted` returns leaves here. */
-  async function member(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, url: URL, now: number): Promise<Response> {
+  async function member(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, url: URL, now: number, contextTimings?: ContextTimings): Promise<Response> {
     try {
-      const answered = await admitted(request, env, auth, matched, url, now);
+      const answered = await admitted(request, env, auth, matched, url, now, contextTimings);
       return answered;
     } catch (err) {
       emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)), memberId: auth.memberId, tokenId: auth.tokenId });
@@ -558,7 +559,7 @@ export function createServer(deps: ServerDeps) {
     }
   }
 
-  async function admitted(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, url: URL, now: number): Promise<Response> {
+  async function admitted(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, url: URL, now: number, contextTimings?: ContextTimings): Promise<Response> {
     if (auth.predecessorId !== null && auth.firstUsedAt === null) {
       await activateSuccessor(env.db, { tokenId: auth.tokenId, predecessorId: auth.predecessorId }, now);
       emit({ kind: 'successor_activated', memberId: auth.memberId, tokenId: auth.tokenId, predecessorId: auth.predecessorId });
@@ -668,6 +669,7 @@ export function createServer(deps: ServerDeps) {
       const limit = await resolved();
       if (limit !== null) return limit;
       const answered = await route.handler(env, {
+        contextTimings,
         projectId, memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId,
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
         ...machineContractHeaders(request), body: body.text, bodyBytes: body.bytes, now, clock: deps.now, origin: url.origin, turnEnd: request.headers.get(TURN_END_HEADER) === '1',
@@ -860,13 +862,16 @@ export function createServer(deps: ServerDeps) {
   }
 
   async function handleRequest(request: Request, env: ServerEnv): Promise<Response> {
-    const route = matchRoute(request.method, new URL(request.url).pathname)?.route;
+    const pathname = new URL(request.url).pathname;
+    const route = matchRoute(request.method, pathname)?.route;
     const raw = route?.auth === 'session' && 'raw' in route && route.raw !== undefined;
+    const timing = pathname.startsWith('/context/') ? { startedAt: performance.now(), stages: new ContextTimings() } : null;
+    const answer = (response: Response): Response => stamp(timing === null ? response : withContextServerTiming(response, timing.startedAt, timing.stages), raw);
     try {
-      return stamp(await run(request, env), raw);
+      return answer(await run(request, env, timing?.stages));
     } catch (err) {
       emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });
-      return stamp(unavailable(), raw);
+      return answer(unavailable());
     }
   }
 

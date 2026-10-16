@@ -4,6 +4,8 @@ import { VECTOR_QUERY_LIMIT, VECTOR_TYPES, vectorMatches, type VectorFilters, ty
 import { inListChunks, type ReadScope } from './scope.js';
 import { SEARCH_PREVIEW_CHARS, type SearchOptions, type SearchResult } from '@goondocks/myco-shared/search-types';
 import { notTombstonedSql } from '../core/tombstones.js';
+import { CURRENT_EMBEDDING_SOURCES, EMBEDDING_RELEASE_COLUMNS, embeddingSourceSelect } from '../db/embedding-sources.js';
+import { settledAll } from '../core/settled.js';
 
 export interface EmbeddingSource extends VectorMetadata {
   project_id: string;
@@ -22,25 +24,60 @@ const MIN_SEARCH_SIMILARITY = 0.3;
 
 export interface SemanticHitCounts { rawMatches: number; joinedHits: number; filteredHits: number }
 
+interface SemanticHitOptions {
+  topK: number;
+  minScore?: number;
+  filters?: VectorFilters;
+  preview?: boolean;
+  observe?: (counts: SemanticHitCounts) => void;
+  during?: <T>(operation: 'vector' | 'sql', work: () => Promise<T>) => Promise<T>;
+}
+
+/** A bounded character prefix, including embedded NULs; blob slicing advances past each NUL. */
+function previewSql(text: string): string {
+  return `(WITH RECURSIVE chunks(prefix, rest, remaining) AS (
+    SELECT '', ${text}, ${SEARCH_PREVIEW_CHARS}
+    UNION ALL SELECT prefix || substr(rest, 1, remaining) || char(0),
+      CAST(substr(CAST(rest AS BLOB), instr(CAST(rest AS BLOB), x'00') + 1) AS TEXT),
+      remaining - length(substr(rest, 1, remaining)) - 1
+    FROM chunks WHERE remaining > 0 AND instr(CAST(rest AS BLOB), x'00') > 0
+      AND length(substr(rest, 1, remaining)) < remaining
+  ) SELECT prefix || substr(rest, 1, remaining) FROM chunks
+    WHERE remaining = 0 OR instr(CAST(rest AS BLOB), x'00') = 0
+      OR length(substr(rest, 1, remaining)) = remaining LIMIT 1)`;
+}
+
+/** Receipt ids drive every source lookup; CROSS JOIN preserves that indexed order. */
+function hitHydrationSql(ids: readonly string[], preview: boolean): string {
+  const branches = CURRENT_EMBEDDING_SOURCES.map((source) => `SELECT s.*, v.revision,
+    ${EMBEDDING_RELEASE_COLUMNS},
+    r.id AS vector_id, r.neighbor_mean, r.neighbor_std
+    FROM hits r CROSS JOIN (${embeddingSourceSelect(source, preview ? previewSql(source.text) : "''")}) s
+    CROSS JOIN embedding_versions v
+    WHERE r.type = '${source.type}' AND s.project_id = r.project_id AND s.record_id = r.record_id
+      AND v.project_id = r.project_id AND v.type = r.type AND v.record_id = r.record_id AND v.revision = r.revision
+      ${source.type === 'session' ? `AND ${notTombstonedSql('s')}` : ''}`);
+  return `WITH hits AS MATERIALIZED (SELECT * FROM embedding_receipts
+    WHERE project_id = ? AND model_key = ? AND ready = 1 AND id IN (${ids.map(() => '?').join(',')}))
+    ${branches.join(' UNION ALL ')}`;
+}
+
 /** A vector is readable only while its source revision is still eligible in the same project. */
-export async function semanticHits(db: RelationalStore, scope: ReadScope, semantic: SemanticSearch, values: number[], options: { topK: number; minScore?: number; filters?: VectorFilters; observe?: (counts: SemanticHitCounts) => void }): Promise<SemanticHit[]> {
+export async function semanticHits(db: RelationalStore, scope: ReadScope, semantic: SemanticSearch, values: number[], options: SemanticHitOptions): Promise<SemanticHit[]> {
   const partition = { projectId: scope.projectId, modelKey: semantic.provider.modelKey };
-  const { observe, ...queryOptions } = options;
-  const hits = await semantic.vectors.query(partition, { values, ...queryOptions });
+  const { observe, preview = false, during = <T>(_operation: 'vector' | 'sql', work: () => Promise<T>) => work(), ...queryOptions } = options;
+  const hits = await during('vector', () => semantic.vectors.query(partition, { values, ...queryOptions }));
   observe?.({ rawMatches: hits.length, joinedHits: 0, filteredHits: 0 });
   const byId = new Map(hits.map((h) => [h.id, h.score]));
   const rows: SemanticHit[] = [];
   let joinedHits = 0;
-  for (const ids of inListChunks(hits.map((h) => h.id))) {
-    const found = await db.prepare(`SELECT s.*, r.id AS vector_id, r.neighbor_mean, r.neighbor_std FROM embedding_receipts r
-      JOIN embedding_sources s ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
-      WHERE r.project_id = ? AND r.model_key = ? AND r.ready = 1 AND r.id IN (${ids.map(() => '?').join(',')})
-      AND (s.type <> 'session' OR ${notTombstonedSql('s')})`)
+  await during('sql', () => settledAll(inListChunks(hits.map((h) => h.id)).map(async (ids) => {
+    const found = await db.prepare(hitHydrationSql(ids, preview))
       .bind(scope.projectId, partition.modelKey, ...ids).all<Omit<SemanticHit, 'score'>>();
     joinedHits += found.results.length;
     rows.push(...found.results.filter((r) => vectorMatches(r, options.filters)).map((r) => ({ ...r, score: byId.get(r.vector_id)! })));
     observe?.({ rawMatches: hits.length, joinedHits, filteredHits: rows.length });
-  }
+  })));
   return rows.sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id));
 }
 
@@ -57,7 +94,7 @@ export async function semanticSearch(db: RelationalStore, scope: ReadScope, sema
   };
   const retained = types.filter((t): t is VectorType => (VECTOR_TYPES as readonly string[]).includes(t));
   const branches = await Promise.all(retained.map((type) => semanticHits(db, scope, semantic, values,
-    { topK: VECTOR_QUERY_LIMIT, minScore: MIN_SEARCH_SIMILARITY, filters: { ...filters, type } })));
+    { topK: VECTOR_QUERY_LIMIT, minScore: MIN_SEARCH_SIMILARITY, filters: { ...filters, type }, preview: true })));
   const tools: Partial<Record<VectorType, string>> = { session: 'myco_sessions', spore: 'myco_spores', plan: 'myco_plans' };
   return branches.flat().sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, limit).map((row) => {
     const tool = tools[row.type];

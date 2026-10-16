@@ -14,7 +14,7 @@ import {
 } from '@myco-server-worker/core/injection.js';
 import { insertSpore, type SporeInsert } from '@myco-server-worker/core/spores.js';
 import { OBSERVATION_TYPES } from '@myco-server-worker/core/spores.js';
-import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
+import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 import { semanticRecall } from './helpers/semantic-recall.js';
 import * as plans from '@myco-server-worker/read/plans.js';
@@ -306,14 +306,29 @@ describe('plan selection', () => {
     semantic.vectors.query = async (partition, options) => options.filters?.type === 'plan' ?
       vectors.map(v => ({ id: v.id, score: cosineSimilarity(query, v.values) })) :
       (await originalQuery(partition, options)).map((h, i) => ({ ...h, score: similarity - 0.1 - i / 1000 }));
+    const planReads: Array<Record<string, unknown>> = [];
+    const recallDb: RelationalStore = { ...db, prepare: (sql) => {
+      const wrap = (statement: PreparedStatement): PreparedStatement => ({ ...statement,
+        bind: (...params) => wrap(statement.bind(...params)),
+        first: async <T,>() => {
+          const row = await statement.first<T>();
+          if (row !== null) planReads.push(row as Record<string, unknown>);
+          return row;
+        },
+      });
+      const statement = db.prepare(sql);
+      return sql.includes('FROM plans WHERE') ? wrap(statement) : statement;
+    } };
     try {
-      const answer = await selectSporesForPrompt(db, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
+      const answer = await selectSporesForPrompt(recallDb, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
         { sessionId: SESSION, promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
       const expected = ['capture', 'receipts'];
       expect(answer.items.map(i => i.id)).toEqual(expected);
       expect(answer.context).toContain('Preserve pending transcript batches during member reconnect');
       expect(answer.counts).toMatchObject({ planEligible: 3, planCalibrated: 5, planScored: 3, planRelevant: expected.length, planHydrated: expected.length });
       expect(answer.counts.planProbable).toBeGreaterThanOrEqual(expected.length);
+      expect(planReads).toHaveLength(expected.length);
+      expect(planReads.every((row) => !('content' in row))).toBe(true);
       expect(get).toHaveBeenCalledTimes(1);
       expect(JSON.parse(rows(sqlite)[0]!.plan_ids as string)).toEqual(expected);
       const row = await plans.getPlan(db, SCOPE, 'retry');

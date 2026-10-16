@@ -6,6 +6,7 @@ import type { HeldRun } from './core/runs.js';
 import type { OwnerConfig } from './auth/owner/config.js';
 import type { OwnerSession } from './auth/owner/cookie.js';
 import type { DashboardMember } from './auth/identity-link.js';
+import type { ContextTimings } from './core/context-timing.js';
 
 /** Context for a credential-free auth route: the owner configuration and outbound fetch, and deliberately no bindings. */
 export interface AuthContext {
@@ -36,6 +37,7 @@ export type SessionContext = Omit<OwnerContext, 'member'> & { member: DashboardM
 
 /** Context for a json route: the pipeline has read the body. `machineId` is the token's; the pipeline refuses a token without one before any handler runs. The token's lifetime and lineage travel with it for the refresh route. */
 export interface RouteContext {
+  contextTimings?: ContextTimings;
   projectId: string;
   /** The member the presented credential belongs to. */
   memberId: string;
