@@ -13,6 +13,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { filesystemWitnesses, filesystemWitnessesCurrent, type FilesystemWitness } from '../utils/filesystem-proof.js';
+import { canonicalRootIdentity, rootIdentityMayMatch } from '../utils/git-files.js';
 import { resolveMycoHome } from '../paths/home.js';
 import type { OutboundEvent } from './envelope.js';
 import { BLOBS_DIRNAME, MemberSpool, REFUSED_LOG_FILE, SPOOL_DIRNAME, toWire, type TurnEndMark } from './spool.js';
@@ -23,10 +25,11 @@ import { isProjectId } from './constants.js';
 import { CaptureLossLedger, recordSessionLoss } from './capture-loss.js';
 import { HELD_CAPTURE_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
-import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
+import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic, reportSkippedPrivateFile } from './store.js';
 import { admitMemberServerUrl } from './server-url.js';
 import { adoptPendingTranscript } from './transcript-routing.js';
 import { isRoutedSpoolNamespace } from './routing.js';
+import { rootKeyMatches, rootKeysFor } from './auto-join.js';
 
 export const PENDING_DIRNAME = 'pending';
 /** How long capture waits for its repository to join before it is discarded. */
@@ -186,7 +189,7 @@ export function listHeldEnds(mycoHome: string): HeldEnd[] {
     .filter((end): end is HeldEnd => end !== null).sort((a, b) => b.at - a.at);
 }
 
-function pendingLocations(mycoHome: string, ended = false): Array<{ rootKey: string; serverUrl?: string; dir: string }> {
+function pendingLocations(mycoHome: string, ended = false, forRoot?: string): Array<{ rootKey: string; serverUrl?: string; dir: string }> {
   const root = pendingRoot(mycoHome);
   const names = readDirectory(root);
   if (names === null) return [];
@@ -200,15 +203,18 @@ function pendingLocations(mycoHome: string, ended = false): Array<{ rootKey: str
     }
     if (!DEPLOYMENT_KEY.test(name)) continue;
     const directory = path.join(root, name);
-    const parent = lstatEntry(directory);
-    if (parent === null) continue;
-    if (!parent.isDirectory()) throw new Error(`Pending capture directory unavailable: ${directory}`);
-    if (!ended && readMeta(directory)?.version === 1) {
+    const parent = readPendingRoot(forRoot, name, directory, mycoHome, () => {
+      const entry = lstatEntry(directory);
+      if (entry !== null && !entry.isDirectory()) throw new Error('Pending capture directory unavailable: ' + directory);
+      return entry;
+    });
+    if (parent == null) continue;
+    if (!ended && forRoot === undefined && readMeta(directory)?.version === 1) {
       locations.push({ rootKey: name, dir: directory });
       continue;
     }
-    const nested = readDirectory(directory);
-    if (nested === null) continue;
+    const nested = readPendingRoot(forRoot, name, directory, mycoHome, () => readDirectory(directory));
+    if (nested == null) continue;
     let foundNested = false;
     for (const leaf of nested) {
       if (ended && !leaf.endsWith(suffix)) continue;
@@ -216,24 +222,33 @@ function pendingLocations(mycoHome: string, ended = false): Array<{ rootKey: str
       if (!ROOT_KEY.test(rootKey)) continue;
       const file = path.join(directory, leaf);
       if (!ended) {
-        const entry = lstatEntry(file);
-        if (entry === null) continue;
-        if (!entry.isDirectory()) throw new Error(`Pending capture directory unavailable: ${file}`);
+        const entry = readPendingRoot(forRoot, rootKey, file, mycoHome, () => {
+          const current = lstatEntry(file);
+          if (current !== null && !current.isDirectory()) throw new Error('Pending capture directory unavailable: ' + file);
+          return current;
+        });
+        if (entry == null) continue;
       }
       foundNested = true;
       if (ended) {
         const read = readPrivateJson<HeldEnd>(file);
         if (!read.ok) {
           if (read.reason === 'missing') continue;
-          throw new Error(`Pending capture end unavailable (${read.reason}${read.detail ? `: ${read.detail}` : ''}): ${file}`);
+          const error = new Error(`Pending capture end unavailable (${read.reason}${read.detail ? `: ${read.detail}` : ''}): ${file}`);
+          if (forRoot === undefined) throw error;
+          reportPendingRootFailure(forRoot, rootKey, null, file, mycoHome, error);
+          continue;
         }
         const serverUrl = read.value?.serverUrl;
         if (typeof serverUrl !== 'string' || deploymentKeyFor(serverUrl) !== name || serverUrl !== normalizedServerUrl(serverUrl)) {
-          throw new Error(`Pending capture end invalid: ${file}`);
+          const error = new Error(`Pending capture end invalid: ${file}`);
+          if (forRoot === undefined) throw error;
+          reportPendingRootFailure(forRoot, rootKey, typeof read.value?.root === 'string' ? read.value : null, file, mycoHome, error);
+          continue;
         }
         locations.push({ rootKey, dir: path.join(directory, rootKey), serverUrl });
       } else {
-        const meta = readMeta(file);
+        const meta = forRoot === undefined ? readMeta(file) : null;
         locations.push({ rootKey, dir: file, ...(meta === null ? {} : { serverUrl: meta.serverUrl }) });
       }
     }
@@ -286,7 +301,7 @@ function ensurePendingMeta(repo: { root: string; rootKey: string; serverUrl?: st
   const held = readPrivateJson<PendingMeta>(path.join(dir, META_FILE));
   if (held.ok) {
     const meta = readMeta(dir);
-    if (meta === null || meta.root !== repo.root || meta.rootKey !== repo.rootKey || meta.serverUrl !== (repo.serverUrl === undefined ? undefined : normalizedServerUrl(repo.serverUrl))) {
+    if (meta === null || canonicalRootIdentity(meta.root) !== canonicalRootIdentity(repo.root) || meta.rootKey !== repo.rootKey || meta.serverUrl !== (repo.serverUrl === undefined ? undefined : normalizedServerUrl(repo.serverUrl))) {
       throw new Error('Pending capture destination mismatch');
     }
     return dir;
@@ -540,18 +555,34 @@ export function discardPending(rootKey: string, mycoHome: string): void {
   });
 }
 
+/** Discard held capture and end notices for validated aliases of a repository on every Deployment. */
+export function discardPendingForRoot(root: string, mycoHome: string): void {
+  const locations = [...pendingLocations(mycoHome, false, root).map(location => ({ ...location, ended: false })),
+    ...pendingLocations(mycoHome, true, root).map(location => ({ ...location, ended: true }))];
+  for (const location of locations) withPendingLock(location.rootKey, mycoHome, () => {
+    let meta: Pick<PendingMeta, 'root'> | null = null;
+    try {
+      assertMemberPathContained(location.dir, mycoHome);
+      meta = location.ended ? readHeldEnd(location.rootKey, mycoHome, location.serverUrl) : pendingMetaWithCapture(location.dir, mycoHome);
+      const keyMatches = rootKeyMatches(location.rootKey, root, mycoHome);
+      if (meta === null) {
+        if (keyMatches && !location.ended) fs.rmSync(location.dir, { recursive: true, force: true });
+        return;
+      }
+      const matches = pendingNamesRoot(root, location.rootKey, meta, location.dir, mycoHome);
+      if (matches) fs.rmSync(location.ended ? endedPath(location.rootKey, mycoHome, location.serverUrl) : location.dir, { recursive: !location.ended, force: true });
+    } catch (error) { reportPendingRootFailure(root, location.rootKey, meta, location.dir, mycoHome, error); }
+  });
+}
+
 /** Every repository whose capture is waiting, oldest first; expired ones are discarded on the way. */
 export function listPending(opts: { mycoHome: string; now: number }): PendingSummary[] {
   const found: PendingSummary[] = [];
   for (const { rootKey, serverUrl, dir } of pendingLocations(opts.mycoHome)) {
     withPendingLock(rootKey, opts.mycoHome, () => {
       if (expirePath(dir, opts)) return;
-      const meta = readMeta(dir);
-      if (meta === null) {
-        const entries = readDirectory(dir);
-        if (entries === null || (path.dirname(dir) !== pendingRoot(opts.mycoHome) && entries.every((entry) => entry === BLOBS_DIRNAME))) return;
-        throw new Error(`Pending capture metadata missing while capture remains held: ${dir}`);
-      }
+      const meta = pendingMetaWithCapture(dir, opts.mycoHome);
+      if (meta === null) return;
       const spool = new MemberSpool(null, { mycoHome: opts.mycoHome, dir, initialize: false });
       const sessions = spool.sessionIds();
       const assigned = serverUrl === undefined ? readLegacyAssignment(path.join(dir, ASSIGNMENT_FILE)) : null;
@@ -561,6 +592,153 @@ export function listPending(opts: { mycoHome: string; now: number }): PendingSum
     });
   }
   return found.sort((a, b) => a.createdAt - b.createdAt);
+}
+
+function pendingMetaWithCapture(dir: string, mycoHome: string): PendingMeta | null {
+  const meta = readMeta(dir);
+  if (meta !== null) return meta;
+  const entries = readDirectory(dir);
+  if (entries === null || (path.dirname(dir) !== pendingRoot(mycoHome) && entries.every(entry => entry === BLOBS_DIRNAME))) return null;
+  throw new Error(`Pending capture metadata missing while capture remains held: ${dir}`);
+}
+
+function pendingNamesRoot(root: string, rootKey: string, meta: Pick<PendingMeta, 'root'>, dir: string, mycoHome: string): boolean {
+  const matches = canonicalRootIdentity(meta.root) === canonicalRootIdentity(root);
+  if ((matches && !rootKeyMatches(rootKey, meta.root, mycoHome)) || (!matches && rootKeyMatches(rootKey, root, mycoHome))) {
+    throw new Error(`Pending capture identity unavailable; held capture kept for review: ${dir}`);
+  }
+  return matches;
+}
+
+function readPendingRoot<T>(root: string | undefined, rootKey: string, dir: string, home: string, read: () => T): T | undefined {
+  try { return read(); } catch (error) { reportPendingRootFailure(root, rootKey, null, dir, home, error); return undefined; }
+}
+
+function reportPendingRootFailure(root: string | undefined, rootKey: string, meta: Pick<PendingMeta, 'root'> | null, dir: string, home: string, error: unknown): void {
+  if (root === undefined || rootKeyMatches(rootKey, root, home) || (meta !== null && rootIdentityMayMatch(meta.root, canonicalRootIdentity(root), root))) throw error;
+  reportSkippedPrivateFile('held capture', dir, { reason: 'unavailable', detail: error instanceof Error ? error.message : String(error) });
+}
+
+function withPendingForRoot<T>(root: string, serverUrl: string, mycoHome: string, fn: (rootKey: string, dir: string) => T, locked = true, keys?: readonly string[]): T[] {
+  const server = normalizedServerUrl(serverUrl);
+  const parent = path.join(pendingRoot(mycoHome), deploymentKeyFor(server));
+  assertMemberPathContained(parent, mycoHome);
+  const names = keys ?? readDirectory(parent) ?? [];
+  return names.filter(name => ROOT_KEY.test(name)).flatMap(rootKey => {
+    const dir = pendingDir(rootKey, mycoHome, server);
+    let taken: ReturnType<typeof LifecycleLock.acquire> | null = null;
+    let meta: PendingMeta | null = null;
+    try {
+      assertMemberPathContained(dir, mycoHome);
+      const entry = lstatEntry(dir);
+      if (entry === null) return [];
+      if (!entry.isDirectory()) throw new Error('Pending capture directory unavailable: ' + dir);
+      taken = locked ? LifecycleLock.acquire(path.join(pendingRoot(mycoHome), '.' + rootKey + '.lock'), { command: 'myco member held migration' }) : null;
+      if (taken !== null && !taken.acquired) return [];
+      meta = pendingMetaWithCapture(dir, mycoHome);
+      if (meta === null) return [];
+      if (meta.serverUrl !== server) throw new Error('Pending capture destination mismatch: ' + dir);
+      return pendingNamesRoot(root, rootKey, meta, dir, mycoHome) ? [fn(rootKey, dir)] : [];
+    } catch (error) {
+      reportPendingRootFailure(root, rootKey, meta, dir, mycoHome, error);
+      return [];
+    } finally { if (taken?.acquired) taken.lock.release(); }
+  });
+}
+
+/** Replay all held keys naming this repository on its pinned Deployment. */
+export function flushPendingForRoot(root: string, into: MemberSpool, opts: { mycoHome: string; now: number; deadline?: number }): number {
+  if (Date.now() >= (opts.deadline ?? Number.POSITIVE_INFINITY)) return 0;
+  if (into.routing === null) throw new Error('Pending capture requires a destination');
+  return withPendingForRoot(root, into.routing.serverUrl, opts.mycoHome, rootKey =>
+    Date.now() >= (opts.deadline ?? Number.POSITIVE_INFINITY) ? 0 : moveHeld(rootKey, into, opts)).reduce((sum, count) => sum + count, 0);
+}
+
+interface HeldIdentityProof {
+  version: number;
+  stamp: string;
+  aliases: Record<string, string[]>;
+  witnesses: FilesystemWitness[];
+}
+
+function pendingDirectoryStamp(parent: string): string | null {
+  try {
+    const stat = fs.lstatSync(parent, { bigint: true });
+    if (!stat.isDirectory()) throw new Error('Pending capture namespace is not a directory');
+    return [stat.dev, stat.ino, stat.mtimeNs, stat.ctimeNs].join(':');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(parent)) return null;
+    throw error;
+  }
+}
+
+/** Validated metadata aliases survive fresh hooks; changed metadata or topology invalidates the derived proof. */
+function heldKeysForRoot(root: string, serverUrl: string, home: string): string[] {
+  const parent = path.join(pendingRoot(home), deploymentKeyFor(serverUrl));
+  assertMemberPathContained(parent, home);
+  const stamp = pendingDirectoryStamp(parent);
+  if (stamp === null) return [];
+  const keys = rootKeysFor(root, home);
+  const identity = canonicalRootIdentity(root);
+  const proofFile = path.join(memberRoot(home), 'pending-identities', deploymentKeyFor(serverUrl));
+  assertMemberPathContained(proofFile, home);
+  const proof = readPrivateJson<HeldIdentityProof>(proofFile);
+  if (proof.ok && proof.value?.version === 1 && proof.value.stamp === stamp && Array.isArray(proof.value.witnesses)
+    && proof.value.aliases !== null && typeof proof.value.aliases === 'object' && !Array.isArray(proof.value.aliases)
+    && Object.values(proof.value.aliases).every(value => Array.isArray(value) && value.every(key => typeof key === 'string' && ROOT_KEY.test(key)))
+    && filesystemWitnessesCurrent(proof.value.witnesses) && pendingDirectoryStamp(parent) === stamp) {
+    return [...new Set([...keys, ...(proof.value.aliases[identity] ?? [])])];
+  }
+  let complete = true;
+  const aliases: Record<string, string[]> = {};
+  const witnesses: FilesystemWitness[] = [];
+  const metas: PendingMeta[] = [];
+  for (const key of readDirectory(parent) ?? []) {
+    if (!ROOT_KEY.test(key)) continue;
+    const dir = pendingDir(key, home, serverUrl);
+    try {
+      assertMemberPathContained(dir, home);
+      if (!fs.lstatSync(dir).isDirectory()) throw new Error('Pending capture directory unavailable');
+      const metaFile = path.join(dir, META_FILE);
+      const before = lstatEntry(metaFile) === null ? filesystemWitnesses([], [], [dir]) : filesystemWitnesses([], [metaFile]);
+      witnesses.push(...before);
+      const meta = pendingMetaWithCapture(dir, home);
+      if (meta !== null && meta.serverUrl === serverUrl) metas.push(meta);
+    } catch (error) {
+      complete = false;
+      reportSkippedPrivateFile('held identity', dir, { reason: 'unavailable', detail: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  for (const meta of metas) {
+    try {
+      witnesses.push(...filesystemWitnesses([meta.root]));
+      if (!rootKeyMatches(meta.rootKey, meta.root, home)) continue;
+      const target = canonicalRootIdentity(meta.root);
+      aliases[target] = [...(aliases[target] ?? []), meta.rootKey];
+    } catch (error) {
+      complete = false;
+      reportSkippedPrivateFile('held topology', meta.root, { reason: 'unavailable', detail: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  if (complete && pendingDirectoryStamp(parent) === stamp && filesystemWitnessesCurrent(witnesses)) {
+    try {
+      ensureMemberDir(path.dirname(proofFile), home);
+      writePrivateFileAtomic(proofFile, JSON.stringify({ version: 1, stamp, aliases, witnesses }));
+    } catch (error) {
+      reportSkippedPrivateFile('held identity cache', proofFile, { reason: 'unavailable', detail: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return [...new Set([...keys, ...(aliases[identity] ?? [])])];
+}
+
+/** Read held receipts from every validated key naming this repository and Deployment. */
+export function heldSessionStates(root: string, route: MemberRoutingIdentity, sessionId: string, mycoHome: string): SessionState[] {
+  return withPendingForRoot(root, route.serverUrl, mycoHome, (_rootKey, dir) => {
+    const result = readSessionStateResult(dir, sessionId);
+    if (result.ok) return [result.state];
+    if (result.reason !== 'missing') process.stderr.write(`[myco] member: pending receipts ${sessionId} ${result.reason} — kept for helper retry\n`);
+    return [];
+  }, false, heldKeysForRoot(root, normalizedServerUrl(route.serverUrl), mycoHome)).flat();
 }
 
 /**

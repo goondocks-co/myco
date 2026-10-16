@@ -495,6 +495,9 @@ jobs:
           tests/member/helper.test.ts
           tests/member/auto-join-lock.test.ts
           tests/utils/git-files.test.ts
+          tests/utils/canonical-path.test.ts
+          tests/member/root-identity.test.ts
+          tests/member/registry-rollback.test.ts
           tests/utils/git-capabilities.test.ts
           tests/scripts/run-test-command.test.ts
           tests/member/git-verdict.test.ts

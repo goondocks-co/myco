@@ -28,7 +28,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAtPath } from '../utils/dot-path.js';
-import { canonicalPath, resolveRepositoryRoot, repositoryRootResolver } from '../utils/git-files.js';
+import { canonicalPath, canonicalRootIdentity, resolveRepositoryRoot, repositoryRootResolver } from '../utils/git-files.js';
 import { isAgentScratchDirectory } from '../utils/temporary-folders.js';
 export { canonicalPath } from '../utils/git-files.js';
 import { manifestTranscriptDiscovery } from './transcript-discovery.js';
@@ -202,7 +202,7 @@ export interface PlacementOptions {
  */
 export function transcriptPlacer(roots: Iterable<string>, opts: PlacementOptions = {}): (agent: string, filePath: string) => Attribution {
   const known = [...roots];
-  const canonicalRoots = new Map(known.map((root) => [canonicalPath(root), root]));
+  const canonicalRoots = new Map(known.map((root) => [canonicalRootIdentity(root), root]));
   const repositoryRoots = [...(opts.repositoryRoots ?? known)];
   const resolve = repositoryRootResolver(repositoryRoots);
   const ask = opts.git ?? git;
@@ -217,13 +217,13 @@ export function transcriptPlacer(roots: Iterable<string>, opts: PlacementOptions
       : ask.mainCheckout(recorded);
     const inRepository = main !== null;
     let root = main === null
-      ? canonicalRoots.get(canonicalPath(recorded)) ?? null
-      : canonicalRoots.get(canonicalPath(main)) ?? null;
+      ? canonicalRoots.get(canonicalRootIdentity(recorded)) ?? null
+      : canonicalRoots.get(canonicalRootIdentity(main)) ?? null;
     if (root === null && !inRepository) {
       const mapping = mappings.find((m) => mappingCovers(m, recorded) || mappingCovers(m, canonicalPath(recorded)));
       if (mapping !== undefined) {
         const target = ask.mainCheckout(mapping.to) ?? mapping.to;
-        root = canonicalRoots.get(canonicalPath(target)) ?? null;
+        root = canonicalRoots.get(canonicalRootIdentity(target)) ?? null;
       }
     }
     const result = { root, inRepository };

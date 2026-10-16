@@ -25,6 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { HELD_CAPTURE_TTL_DAYS, type HeldState, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 import { resolveRepositoryProjectRoot, isSafeProjectRoot } from '../project-root.js';
+import { canonicalPath, canonicalRootIdentity, rootIdentityMayMatch } from '../utils/git-files.js';
 import { temporaryFolders, isAgentScratchDirectory } from '../utils/temporary-folders.js';
 export { temporaryFolders } from '../utils/temporary-folders.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
@@ -34,7 +35,7 @@ import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, r
 import { PENDING_MAX_RECORDS, type HeldEnd } from './pending.js';
 import { machineAutoJoinLeaves } from './machine-settings.js';
 import { isProjectId } from './constants.js';
-import { acquireRegistryLock, deploymentKeyFor, deploymentUrl, withRegistryLock } from './registry.js';
+import { acquireRegistryLock, deploymentKeyFor, deploymentUrl, listDeploymentMembershipsResult, withRegistryLock } from './registry.js';
 
 
 export const AUTO_JOIN_DIRNAME = 'auto-join';
@@ -234,9 +235,96 @@ export function machineSalt(mycoHome: string): string {
   return placed;
 }
 
-/** Machine capture settings deduplicate aliases by physical root; registry bindings retain their literal root spelling. */
+interface RootKeyContext { home: string; identity: string; key: string; keys: Set<string> }
+const rootKeyContexts = new Map<string, RootKeyContext>();
+const rootContextKey = (rootKey: string, mycoHome: string): string => `${path.resolve(mycoHome)}\0${rootKey}`;
+const saltedRootKey = (root: string, mycoHome: string): string => crypto.createHash('sha256').update(`${machineSalt(mycoHome)}\0${root}`).digest('hex').slice(0, 32);
+
+function rootKeyContext(root: string, mycoHome: string): RootKeyContext {
+  const identity = canonicalRootIdentity(root);
+  const key = saltedRootKey(identity, mycoHome);
+  return { home: path.resolve(mycoHome), identity, key, keys: new Set([key, saltedRootKey(real(root), mycoHome), saltedRootKey(real(canonicalPath(root)), mycoHome)]) };
+}
+
+function rememberRootKey(root: string, mycoHome: string, persistedKey?: string): RootKeyContext {
+  const context = rootKeyContext(root, mycoHome);
+  for (const known of rootKeyContexts.values()) if (known.home === context.home && known.identity === context.identity) for (const key of known.keys) context.keys.add(key);
+  for (const key of context.keys) {
+    const owner = rootKeyContexts.get(rootContextKey(key, mycoHome));
+    if (owner !== undefined && owner.identity !== context.identity) context.keys.delete(key);
+  }
+  if (persistedKey !== undefined && !context.keys.has(persistedKey)) throw new Error('Saved repository identity changed; record retained');
+  rootKeyContexts.set(rootContextKey(context.key, mycoHome), context);
+  if (persistedKey !== undefined) rootKeyContexts.set(rootContextKey(persistedKey, mycoHome), context);
+  return context;
+}
+
+/** Machine capture settings and registry bindings share one canonical root identity. */
 export function rootKeyFor(root: string, mycoHome: string): string {
-  return crypto.createHash('sha256').update(`${machineSalt(mycoHome)}\0${real(root)}`).digest('hex').slice(0, 32);
+  return rememberRootKey(root, mycoHome).key;
+}
+
+/** A persisted key must name the current physical repository under the current or legacy hash. */
+export function rootKeyMatches(rootKey: string, root: string, mycoHome: string): boolean {
+  if (!ROOT_KEY_PATTERN.test(rootKey)) return false;
+  try {
+    const context = rootKeyContext(root, mycoHome);
+    const owner = rootKeyContexts.get(rootContextKey(rootKey, mycoHome));
+    return context.keys.has(rootKey) && (owner === undefined || owner.identity === context.identity);
+  } catch { return false; }
+}
+
+function recordedRootKeys(mycoHome: string): Array<{ root: string; rootKey: string }> {
+  return [...listAutoJoinStates(mycoHome),
+    ...listLeftRepositories(mycoHome).flatMap(mark => 'root' in mark && mark.root !== undefined ? [{ root: mark.root, rootKey: mark.key }] : [])];
+}
+
+function compatibleRootKeys(rootKey: string, mycoHome: string): string[] {
+  const context = rootKeyContexts.get(rootContextKey(rootKey, mycoHome));
+  if (context === undefined) return [rootKey];
+  const keys = new Set(context.keys);
+  for (const record of recordedRootKeys(mycoHome)) {
+    if (rootKeyMatches(record.rootKey, record.root, mycoHome) && canonicalRootIdentity(record.root) === context.identity) keys.add(record.rootKey);
+  }
+  return [...keys];
+}
+
+/** Current and validated persisted keys naming one repository. */
+export function rootKeysFor(root: string, mycoHome: string): string[] {
+  return compatibleRootKeys(rootKeyFor(root, mycoHome), mycoHome);
+}
+
+/** Orphaned settings are reported once per saved key, with a user resolution command. */
+export function autoJoinIdentityIssues(mycoHome: string): Array<{ kind: 'opt-out' | 'choice'; key: string; root?: string; message: string }> {
+  const records = recordedRootKeys(mycoHome);
+  const issues: ReturnType<typeof autoJoinIdentityIssues> = [];
+  for (const mark of listLeftRepositories(mycoHome)) {
+    if ('error' in mark || mark.root === undefined || !rootKeyMatches(mark.key, mark.root, mycoHome)) {
+      issues.push({ kind: 'opt-out', key: mark.key, root: 'root' in mark ? mark.root : undefined,
+        message: `Saved opt-out for ${'root' in mark && mark.root ? mark.root : 'repository key ' + mark.key} needs review. Run \`myco member join\` from the affected repository to reconnect.` });
+    }
+  }
+  for (const membership of listDeploymentMembershipsResult(mycoHome).memberships) for (const key of Object.keys(machineAutoJoinLeaves(membership.serverUrl, mycoHome).connectRoots)) {
+    const record = records.find(record => record.rootKey === key);
+    if (record !== undefined && rootKeyMatches(key, record.root, mycoHome)) continue;
+    issues.push({ kind: 'choice', key, root: record?.root,
+      message: `Saved Myco connection for ${record?.root ?? 'repository key ' + key} needs review on ${membership.serverUrl}. Run \`myco member join\` from the affected repository to choose its connection.` });
+  }
+  return [...new Map(issues.map(issue => [issue.kind + ':' + issue.key, issue])).values()];
+}
+
+/** Saved connection choices follow proven aliases; an unattributed choice cannot become a default join. */
+export function autoJoinLeavesFor(rootKey: string, serverUrl: string, mycoHome: string): ReturnType<typeof machineAutoJoinLeaves> & { connectionRootKey: string | null } {
+  const leaves = machineAutoJoinLeaves(serverUrl, mycoHome);
+  const keys = compatibleRootKeys(rootKey, mycoHome).filter(key => Object.prototype.hasOwnProperty.call(leaves.connectRoots, key));
+  const choices = [...new Set(keys.map(key => leaves.connectRoots[key]!))];
+  if (choices.length > 1) throw new Error('This folder has different saved Myco connections. Choose its connection before connecting automatically.');
+  const context = rootKeyContexts.get(rootContextKey(rootKey, mycoHome));
+  if (context !== undefined && recordedRootKeys(mycoHome).some(record => Object.prototype.hasOwnProperty.call(leaves.connectRoots, record.rootKey)
+    && !keys.includes(record.rootKey) && rootIdentityMayMatch(record.root, context.identity))) {
+    throw new Error('A saved Myco connection for this folder has an unavailable identity. Run `myco member join` here to choose its connection.');
+  }
+  return { ...leaves, ...(choices.length === 1 ? { connectRoots: { ...leaves.connectRoots, [rootKey]: choices[0]! } } : {}), connectionRootKey: keys.includes(rootKey) ? rootKey : keys[0] ?? null };
 }
 
 export function autoJoinDir(mycoHome: string): string {
@@ -325,21 +413,18 @@ function readStateFile(file: string): AutoJoinState | null {
     return null;
   }
   const value = read.value;
-  if (value?.version === STATE_VERSION && typeof value.attemptAt === 'number' && typeof value.outcome === 'string'
+  if (value?.version === STATE_VERSION && typeof value.root === 'string' && typeof value.attemptAt === 'number' && typeof value.outcome === 'string'
     && typeof value.serverUrl === 'string' && ROOT_KEY_PATTERN.test(value.rootKey)) return value;
   reportSkippedPrivateFile('auto-join state', file, { reason: 'invalid' });
   return null;
 }
 
 export function readAutoJoinState(rootKey: string, mycoHome: string, serverUrl?: string): AutoJoinState | null {
-  if (serverUrl === undefined) {
-    const legacy = readStateFile(statePath(rootKey, mycoHome));
-    return legacy?.rootKey === rootKey ? legacy : null;
-  }
-  const scoped = readStateFile(statePath(rootKey, mycoHome, serverUrl));
-  if (scoped !== null) return scoped.rootKey === rootKey && deploymentUrl(scoped.serverUrl) === deploymentUrl(serverUrl) ? scoped : null;
-  const legacy = readStateFile(statePath(rootKey, mycoHome));
-  return legacy !== null && legacy.rootKey === rootKey && deploymentUrl(legacy.serverUrl) === deploymentUrl(serverUrl) ? legacy : null;
+  return compatibleRootKeys(rootKey, mycoHome).flatMap(key => {
+    const scoped = serverUrl === undefined ? null : readStateFile(statePath(key, mycoHome, serverUrl));
+    const state = scoped ?? readStateFile(statePath(key, mycoHome));
+    return state !== null && state.rootKey === key && (serverUrl === undefined || deploymentUrl(state.serverUrl) === deploymentUrl(serverUrl)) ? [state] : [];
+  }).sort((a, b) => b.attemptAt - a.attemptAt)[0] ?? null;
 }
 
 export function writeAutoJoinState(state: Omit<AutoJoinState, 'version'>, mycoHome: string): void {
@@ -419,7 +504,7 @@ export function markSweepDone(mycoHome: string, now: number): void {
 export function joinStanding(root: string, rootKey: string, serverUrl: string, mycoHome: string, now: number): {
   standing: 'left' | 'due' | 'waiting'; leaves: { autoJoinRoots: string[]; connectRoots: Record<string, string> }; state: AutoJoinState | null;
 } {
-  const leaves = machineAutoJoinLeaves(serverUrl, mycoHome);
+  const leaves = autoJoinLeavesFor(rootKey, serverUrl, mycoHome);
   const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, rootKey) ? leaves.connectRoots[rootKey]! : null;
   const state = readAutoJoinState(rootKey, mycoHome, serverUrl);
   if (leftForConnection(rootKey, mycoHome, connectTo)) return { standing: 'left', leaves, state };
@@ -430,13 +515,24 @@ export function joinStanding(root: string, rootKey: string, serverUrl: string, m
 /** A repository a hook asked the helper to try joining, when, and for which Deployment. */
 export interface JoinRequest { root: string; rootKey: string; at: number; serverUrl?: string }
 
+function verifiedRootRecord<T extends { root: string; rootKey: string }>(value: T, file: string, label: string, mycoHome: string): T[] {
+  const physical = canonicalPath(value.root);
+  if (rootKeyMatches(value.rootKey, value.root, mycoHome)) {
+    rememberRootKey(value.root, mycoHome, value.rootKey);
+    return [{ ...value, root: physical }];
+  }
+  reportSkippedPrivateFile(label, file, { reason: 'invalid', detail: 'repository identity changed; record retained' });
+  return [];
+}
+
 const requestPath = (rootKey: string, mycoHome: string, serverUrl?: string): string => scopedFile(REQUESTS_DIRNAME, rootKey, mycoHome, serverUrl);
 
 /** Ask the helper to try joining a repository, with the Deployment it was asked for: kept until an attempt is made, one per repository. */
 export function requestJoin(root: string, rootKey: string, serverUrl: string, mycoHome: string, now: number): void {
+  if (rootKey !== rootKeyFor(root, mycoHome)) throw new Error('Join request repository identity mismatch');
   const file = requestPath(rootKey, mycoHome, serverUrl);
   ensureMemberDir(path.dirname(file), mycoHome);
-  writePrivateFileAtomic(file, `${JSON.stringify({ root, rootKey, at: now, serverUrl: deploymentUrl(serverUrl) })}\n`);
+  writePrivateFileAtomic(file, `${JSON.stringify({ root: canonicalPath(root), rootKey, at: now, serverUrl: deploymentUrl(serverUrl) })}\n`);
 }
 
 /** Every repository waiting for an attempt, the oldest asked first. */
@@ -454,7 +550,7 @@ export function listJoinRequests(mycoHome: string): JoinRequest[] {
         && typeof value.at === 'number' && path.basename(file) === `${value.rootKey}.json`
         && (value.serverUrl === undefined || typeof value.serverUrl === 'string')
         && (path.dirname(file) === path.join(autoJoinDir(mycoHome), REQUESTS_DIRNAME)
-          || (value.serverUrl !== undefined && path.basename(path.dirname(file)) === deploymentKeyFor(value.serverUrl)))) return [value];
+          || (value.serverUrl !== undefined && path.basename(path.dirname(file)) === deploymentKeyFor(value.serverUrl)))) return verifiedRootRecord(value, file, 'auto-join request', mycoHome);
       reportSkippedPrivateFile('auto-join request', file, { reason: 'invalid' });
       return [];
     });
@@ -490,9 +586,10 @@ const importPath = (rootKey: string, mycoHome: string, route?: Pick<PendingImpor
   scopedFile(IMPORTS_DIRNAME, rootKey, mycoHome, route?.serverUrl, route?.projectId);
 
 export function queueImport(record: PendingImport, mycoHome: string): void {
+  if (record.rootKey !== rootKeyFor(record.root, mycoHome)) throw new Error('Pending import repository identity mismatch');
   const file = importPath(record.rootKey, mycoHome, record);
   ensureMemberDir(path.dirname(file), mycoHome);
-  writePrivateFileAtomic(file, `${JSON.stringify({ ...record, serverUrl: deploymentUrl(record.serverUrl) })}\n`);
+  writePrivateFileAtomic(file, `${JSON.stringify({ ...record, root: canonicalPath(record.root), serverUrl: deploymentUrl(record.serverUrl) })}\n`);
 }
 
 /** Every joined repository whose past sessions are still to bring, the oldest joined first. */
@@ -511,7 +608,7 @@ export function listPendingImports(mycoHome: string): PendingImport[] {
         && path.basename(file) === `${value.rootKey}.json`
         && (path.dirname(file) === path.join(autoJoinDir(mycoHome), IMPORTS_DIRNAME)
           || (path.basename(path.dirname(file)) === value.projectId
-            && path.basename(path.dirname(path.dirname(file))) === deploymentKeyFor(value.serverUrl)))) return [value];
+            && path.basename(path.dirname(path.dirname(file))) === deploymentKeyFor(value.serverUrl)))) return verifiedRootRecord(value, file, 'pending import', mycoHome);
       reportSkippedPrivateFile('pending import', file, { reason: 'invalid' });
       return [];
     });
@@ -611,7 +708,12 @@ export function markLeft(rootKey: string, mycoHome: string, now: number, opts: {
     const file = leftPath(rootKey, mycoHome);
     const held = readPrivateJson<{ explicitJoinOnly?: true; repository?: { root: string; serverUrl?: string } }>(file);
     if (!held.ok && !(held.reason === 'missing' && pathIsAbsent(file))) throw new Error('Could not read the repository opt-out; it was left in place');
-    const explicitJoinOnly = opts.explicitJoinOnly === true || (held.ok && held.value?.explicitJoinOnly === true);
+    const strict = compatibleRootKeys(rootKey, mycoHome).some(key => {
+      const read = readPrivateJson<{ explicitJoinOnly?: true }>(leftPath(key, mycoHome));
+      if (!read.ok && !(read.reason === 'missing' && pathIsAbsent(leftPath(key, mycoHome)))) throw new Error('Could not read the repository opt-out; it was left in place');
+      return read.ok && read.value?.explicitJoinOnly === true;
+    });
+    const explicitJoinOnly = opts.explicitJoinOnly === true || strict;
     ensureMemberDir(path.dirname(file), mycoHome);
     writePrivateFileAtomic(file, `${JSON.stringify({ at: now, repository: opts.repository ?? (held.ok ? held.value.repository : undefined), ...(explicitJoinOnly ? { explicitJoinOnly: true } : {}) })}\n`);
   };
@@ -639,12 +741,7 @@ export function listLeftRepositories(mycoHome: string): ({ key: string; root?: s
 
 /** Logout opt-outs require an explicit local join; settings directives carry no proof of a new connection choice. */
 export function leftForConnection(rootKey: string, mycoHome: string, connectTo: string | null): boolean {
-  const file = leftPath(rootKey, mycoHome);
-  const standing = (): 'absent' | 'left' | 'reconnect' => {
-    const read = readPrivateJson<{ at: number; explicitJoinOnly?: true }>(file);
-    if (!read.ok) return read.reason === 'missing' && pathIsAbsent(file) ? 'absent' : 'left';
-    return read.value.explicitJoinOnly === true || connectTo === null ? 'left' : 'reconnect';
-  };
+  const standing = (): 'absent' | 'left' | 'reconnect' => leftStanding(rootKey, mycoHome, connectTo);
   const observed = standing();
   if (observed !== 'reconnect') return observed === 'left';
   const lease = acquireRegistryLock(mycoHome);
@@ -659,10 +756,24 @@ export function leftForConnection(rootKey: string, mycoHome: string, connectTo: 
   }
 }
 
-export const isLeft = (rootKey: string, mycoHome: string): boolean => fs.existsSync(leftPath(rootKey, mycoHome));
+function leftStanding(rootKey: string, mycoHome: string, connectTo: string | null): 'absent' | 'left' | 'reconnect' {
+  const keys = new Set(compatibleRootKeys(rootKey, mycoHome));
+  const context = rootKeyContexts.get(rootContextKey(rootKey, mycoHome));
+  let observed = false;
+  for (const mark of listLeftRepositories(mycoHome)) {
+    if ('error' in mark) { if (keys.has(mark.key)) return 'left'; continue; }
+    if (keys.has(mark.key)) {
+      observed = true;
+      if (mark.explicitJoinOnly || connectTo === null) return 'left';
+    } else if (context !== undefined && mark.root !== undefined && rootIdentityMayMatch(mark.root, context.identity)) return 'left';
+  }
+  return observed ? 'reconnect' : 'absent';
+}
+
+export const isLeft = (rootKey: string, mycoHome: string): boolean => leftStanding(rootKey, mycoHome, null) === 'left';
 
 export function clearLeft(rootKey: string, mycoHome: string): void {
-  fs.rmSync(leftPath(rootKey, mycoHome), { force: true });
+  for (const key of compatibleRootKeys(rootKey, mycoHome)) fs.rmSync(leftPath(key, mycoHome), { force: true });
 }
 
 /** Whether this session has not been told on this Deployment yet, marking it told. A marker that cannot be written tells it again next time. */

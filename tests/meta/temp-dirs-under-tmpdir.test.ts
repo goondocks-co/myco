@@ -21,6 +21,7 @@ const SELF = fileURLToPath(import.meta.url);
  * names that path; nothing else does.
  */
 const NAMED_FIXED_PATHS: ReadonlyMap<string, string> = new Map([
+  ["tests/member/root-identity.test.ts: '/tmp/'", 'exercises the macOS alias of a fixture created under os.tmpdir(); allocates no fixed directory'],
   ["tests/scripts/test-temp-root.test.ts: '/var/tmp'", 'asserts the OS default directory inspected by the runner; creates no entries there'],
 ]);
 

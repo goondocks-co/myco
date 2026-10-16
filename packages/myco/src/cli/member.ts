@@ -14,7 +14,7 @@ import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
  */
 import { IDENTITY_LINK_TTL_MS, INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { seedMachineSettings } from '../member/machine-settings.js';
-import { listAutoJoinStates } from '../member/auto-join.js';
+import { autoJoinIdentityIssues, listAutoJoinStates } from '../member/auto-join.js';
 import { optOut, settleConnection } from './member-auto-join.js';
 import { defaultMembership, readDefaultDeployment } from '../member/default-deployment.js';
 import { selectedDeploymentMembership } from '../member/token-pairing.js';
@@ -23,6 +23,7 @@ import { harnessToolsElsewhere } from '@goondocks/myco-shared/setup-guidance';
 import { hostname } from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { canonicalRootIdentity } from '../utils/git-files.js';
 import type { DoctorCheck } from './doctor-member.js';
 import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
@@ -36,7 +37,7 @@ import { clearJoinRefusals } from '../member/join-code.js';
 import { refreshMemberCredential, type RefreshReport } from '../member/refresh.js';
 import { readRefusedHook, REFUSED_HOOK_KINDS, refusedHookWords } from '../member/refused-hooks.js';
 import { clearMissingMembership, listMissingMembershipsResult, pruneMissingMemberships, readMissingMembership, readMissingMembershipResult, type MissingMembershipRecord } from '../member/no-membership.js';
-import { deploymentUrl, listDeploymentMemberships, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from '../member/registry.js';
+import { deploymentUrl, listDeploymentMemberships, listRegistryEntries, listRegistryEntriesResult, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, removeRegistryEntry, writeRegistryEntry, REGISTRY_VERSION, registryConflictWords, type RegistryConflict, type RegistryEntry } from '../member/registry.js';
 import { applySpoolRetention } from '../member/retention.js';
 import { assignLegacySpoolDestination, listLegacySpools } from '../member/spool-migration.js';
 import { listRoutingEntries, listRoutingEntriesResult, routingEntry, routingKey, type BufferedDestinationIssue } from '../member/routing.js';
@@ -115,7 +116,7 @@ function entriesFor(args: readonly string[], deps: MemberCliDeps): RegistryEntry
  * reported rather than repaired.
  */
 function registrySelection(args: readonly string[], deps: MemberCliDeps): {
-  root: string | null; all: boolean; entries: RegistryEntry[]; readable: boolean; unavailableEntries: number; heldDestinations: BufferedDestinationIssue[];
+  root: string | null; all: boolean; entries: RegistryEntry[]; readable: boolean; unavailableEntries: number; heldDestinations: BufferedDestinationIssue[]; conflicts?: RegistryConflict[];
 } {
   const mycoHome = homeFor(deps);
   const all = args.includes('--all');
@@ -130,6 +131,7 @@ function registrySelection(args: readonly string[], deps: MemberCliDeps): {
   const selected = root === null ? null : readRegistryEntryResult(root, mycoHome);
   return {
     root, all, heldDestinations: [],
+    ...(selected?.status === 'unavailable' && selected.conflict ? { conflicts: [selected.conflict] } : {}),
     entries: selected?.status === 'present' ? [selected.entry] : [],
     readable: selected?.status !== 'unavailable',
     unavailableEntries: selected?.status === 'unavailable' ? 1 : 0,
@@ -263,7 +265,7 @@ export async function runJoin(args: readonly string[], deps: MemberCliDeps = {})
     joinedAt: existing?.joinedAt ?? now(),
     updatedAt: now(),
   };
-  writeRegistryEntry(entry, { mycoHome });
+  writeRegistryEntry(entry, { mycoHome, resolveConflict: true });
   // What this repository's hooks held while it had no connection joins the project now, and "Needs you" forgets it.
   await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true });
   const pinned = pinProjectHome(root, mycoHome);
@@ -378,7 +380,7 @@ async function connectFolder(
     version: REGISTRY_VERSION, projectId: project.projectId, serverUrl, token: membership.token, root,
     machineId: membership.machineId ?? getMachineId(), joinedAt: existing?.joinedAt ?? now(), updatedAt: now(),
   };
-  writeRegistryEntry(entry, { mycoHome });
+  writeRegistryEntry(entry, { mycoHome, resolveConflict: true });
   // What this repository's hooks held while it had no connection joins the project now, and "Needs you" forgets it.
   await settleConnection(entry, { mycoHome, now, fetch: deps.fetch, tell: true });
   const pinned = pinProjectHome(root, mycoHome);
@@ -888,22 +890,32 @@ export function runLeave(args: readonly string[], deps: MemberCliDeps = {}): boo
   const err = deps.stderr ?? ((l) => process.stderr.write(`${l}\n`));
   const mycoHome = homeFor(deps);
   const root = resolveMemberProjectRoot(deps.cwd);
-  const entry = readRegistryEntry(root, mycoHome);
-  if (!entry) {
+  const selected = readRegistryEntryResult(root, mycoHome);
+  const entry = selected.status === 'present' ? selected.entry : null;
+  if (!entry && selected.status === 'missing') {
     err(`myco member leave: no membership recorded for ${root}`);
     process.exitCode = 2;
     return false;
   }
+  if (entry === null && args.includes('--purge')) {
+    err('myco member leave: choose the repository connection with myco member join before purging its capture');
+    process.exitCode = 2;
+    return false;
+  }
   // Leaving is an opt-out: auto-join leaves this repository alone until it is joined or connected again.
-  void optOut(root, readDeploymentMembership(entry.serverUrl, mycoHome), { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch })
-    .catch((error) => err(`myco member leave: could not report opt-out to ${deploymentUrl(entry.serverUrl)} (${(error as Error).message})`));
+  void optOut(root, entry ? readDeploymentMembership(entry.serverUrl, mycoHome) : null, { mycoHome, now: (deps.now ?? Date.now)(), fetch: deps.fetch })
+    .catch((error) => err(`myco member leave: could not report opt-out to ${deploymentUrl(entry?.serverUrl ?? 'Myco')} (${(error as Error).message})`));
   removeRegistryEntry(root, mycoHome);
   clearMissingMembership(root, mycoHome);
-  out(`left ${entry.projectId} for ${root}; auto-join leaves it alone until you join it again`);
+  out(`left ${entry?.projectId ?? 'repository connections'} for ${root}; auto-join leaves it alone until you join it again`);
   // The pin points at a home that no longer holds this project. Left standing it
   // would send every hook here to look for a membership that is gone, and each
   // one would count another miss.
   if (unpinProjectHome(root, mycoHome)) out(`removed this project's ${RUNTIME_HOME_FILENAME} pin`);
+  if (entry === null) {
+    out('spools kept for the unresolved connections; re-join the intended Project before draining capture');
+    return true;
+  }
   if (!args.includes('--purge')) {
     const depth = new MemberSpool(entry, { mycoHome }).sessionIds().length;
     out(`spool kept: ${depth} session file(s) — \`myco member drain\` after re-joining, or \`myco member leave --purge\` to discard`);
@@ -1014,7 +1026,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     const facts = projectDiagnostics(entry, mycoHome, now());
     const { membership, spool, latch, refusals } = facts;
     out(`project:    ${membership.projectId}`);
-    out(`root:       ${membership.root || 'no repository currently bound'}`);
+    out(`root:       ${(entry.displayRoot ?? membership.root) || 'no repository currently bound'}`);
     out(`server:     ${membership.serverUrl ?? 'unknown'}`);
     out(`token:      ${redact(entry.token)}${membership.tokenId ? ` (${membership.tokenId})` : ''}`);
     out(`expires:    ${membership.unavailableFields.includes('expiresAt') ? 'unknown' : `${when(membership.expiresAt ?? undefined)}${membership.expired === true ? ' (EXPIRED)' : ''}`}`);
@@ -1036,6 +1048,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     out(`latch:      ${!facts.latchReadable ? 'unknown — latch could not be read' : latch ? `offline since ${when(latch.since)}, next probe ${when(latch.nextProbeAt)} (backoff ${latch.backoffMs} ms)` : 'online'}`);
     out(`worker:     ${workerServiceWords(describeWorkerService(entry.serverUrl, { ...deps.worker, mycoHome })).line}`);
   }
+  for (const conflict of selection.conflicts ?? []) out(registryConflictWords(conflict));
   for (const held of selection.heldDestinations) out(`buffered destination: ${held.key} — ${held.reason}; capture held locally`);
   if (selection.all) {
     if (!selection.readable) err('myco member: the registry directory could not be read');
@@ -1043,6 +1056,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
       out(`registry:   ${selection.unavailableEntries} ${selection.unavailableEntries === 1 ? 'entry' : 'entries'} could not be read`);
     }
   } else if (selection.root === null) err('myco member: this directory belongs to no project');
+  else if (selection.conflicts?.length) { /* the conflicting connections are reported above */ }
   else if (!selection.readable) err(`myco member: the registry entry for ${selection.root} could not be read`);
   else if (selection.entries.length === 0) {
     err(`myco member: no registry entry for ${selection.root} — run \`myco member join\``);
@@ -1072,12 +1086,13 @@ function reportRefusedHooks(out: (line: string) => void, deps: MemberCliDeps): v
 function reportAutoJoin(out: (line: string) => void, selection: { root: string | null; all: boolean }, deps: MemberCliDeps): void {
   const mycoHome = homeFor(deps);
   const now = (deps.now ?? Date.now)();
+  for (const issue of autoJoinIdentityIssues(mycoHome)) out(issue.message);
   for (const legacy of listLegacySpools(mycoHome)) {
     out(`legacy capture: ${legacy.projectId} — ${legacy.records} event(s) in ${legacy.sessions} session(s); ${legacy.destination?.serverUrl ?? 'destination ambiguous'}; ${legacy.reason ?? 'retained locally with migration receipts'}`);
   }
   const held = readDefaultDeployment(mycoHome);
   out(`default:    ${held === null ? 'none — `myco login` records the Deployment new repositories join' : `${held.serverUrl} (new repositories join it)`}`);
-  const mine = (root: string): boolean => selection.all || (selection.root !== null && path.resolve(root) === path.resolve(selection.root));
+  const mine = (root: string): boolean => selection.all || (selection.root !== null && canonicalRootIdentity(root) === canonicalRootIdentity(selection.root));
   for (const state of listAutoJoinStates(mycoHome).filter((s) => s.outcome !== 'joined' && mine(s.root))) {
     const why = state.outcome === 'outside_folders' ? 'outside the folders this machine captures'
       : state.outcome === 'unreachable' ? `the Deployment could not be reached (${state.detail ?? 'no answer'}); tried again at the next hook`
@@ -1391,8 +1406,9 @@ export function runMcpHeaders(args: readonly string[], deps: MemberCliDeps = {})
   if (!expected || expected.startsWith('--')) return fail(`pass ${SERVER_FLAG} <server-url>, the Deployment this entry's URL names`, 2);
   if (source === 'registry') {
     const home = homeFor(deps);
-    const binding = readRegistryEntry(resolveMemberProjectRoot(deps.cwd), home);
-    if (binding === null) {
+    const binding = readRegistryEntryResult(resolveMemberProjectRoot(deps.cwd), home, { upgrade: true });
+    if (binding.status === 'unavailable') return fail(binding.conflict ? registryConflictWords(binding.conflict) : 'the repository connection could not be read', 1);
+    if (binding.status === 'missing') {
       const membership = readDeploymentMembership(expected, home);
       if (!membership || deploymentUrl(membership.serverUrl) !== deploymentUrl(expected) || !admitMemberServerUrl(membership.serverUrl) || !isMemberTokenShape(membership.token)) {
         return fail('no valid membership for the configured Deployment', 1);

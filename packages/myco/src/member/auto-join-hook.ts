@@ -14,7 +14,7 @@ import type { DetachedSpawn } from '../runtime/spawn-detached.js';
 import type { CredentialRecord } from './credential.js';
 import { defaultMembership } from './default-deployment.js';
 import { pendingSpool, readHeldEnd } from './pending.js';
-import { deploymentUrl } from './registry.js';
+import { deploymentUrl, readRegistryEntryResult } from './registry.js';
 import type { MemberSpool } from './spool.js';
 
 /** What a hook holds in a repository with no connection: the pending spool and the credential it is built under, and what to tell the person. */
@@ -49,6 +49,7 @@ export function autoJoinHold(opts: {
   root: string; hookName: string; agent: string; sessionId: string; mycoHome: string; now: number; env?: NodeJS.ProcessEnv; spawn?: DetachedSpawn;
   later: (step: () => void) => void;
 }): AutoJoinHold | typeof LEFT_ALONE | null {
+  if (readRegistryEntryResult(opts.root, opts.mycoHome).status !== 'missing') return null;
   const membership = defaultMembership(opts.mycoHome);
   if (membership === null) return null;
   const serverUrl = deploymentUrl(membership.serverUrl);
@@ -58,7 +59,13 @@ export function autoJoinHold(opts: {
   // Left with `myco member leave`: nothing is captured, held or said, until the repository is connected again. The
   // cached settings can be newer than the ones the last attempt read: a repository they place elsewhere (its folder now
   // captured, or connected from "Needs you") is tried again at once. Any other waits out its backoff.
-  const { standing, leaves, state } = joinStanding(opts.root, rootKey, serverUrl, opts.mycoHome, opts.now);
+  let current: ReturnType<typeof joinStanding>;
+  try { current = joinStanding(opts.root, rootKey, serverUrl, opts.mycoHome, opts.now); }
+  catch (error) {
+    process.stderr.write(`myco: automatic connection for ${opts.root} is unavailable: ${error instanceof Error ? error.message : String(error)}\n`);
+    return LEFT_ALONE;
+  }
+  const { standing, leaves, state } = current;
   if (standing === 'left') return LEFT_ALONE;
   // Repositories met before auto-join existed are swept once, by the helper's join bucket.
   if (!sweepDone(opts.mycoHome)) opts.later(join);

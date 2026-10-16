@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { canonicalRootIdentity } from '../utils/git-files.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock } from '../utils/lifecycle-lock.js';
 import { CONNECT_TIMEOUT_CAP_MS } from './constants.js';
@@ -187,7 +188,7 @@ export async function logoutDeployment(input: string, opts: { mode: 'revoke' | '
       const runtime = deps.runtime.snapshot(aliases);
       const j: LogoutJournal = {
         version: 1, serverUrl, startedAt: (deps.now ?? Date.now)(), phase: 'revoke', tokenDigest: membershipTokenDigest(membership),
-        machineId: membership.machineId, bindings: [...new Map([...(saved?.bindings ?? []), ...bindings].map((binding) => [path.resolve(binding.root), binding])).values()], defaultUrl: readDefaultDeployment(mycoHome)?.serverUrl ?? null,
+        machineId: membership.machineId, bindings: [...new Map([...(saved?.bindings ?? []), ...bindings].map((binding) => [canonicalRootIdentity(binding.root), binding])).values()], defaultUrl: readDefaultDeployment(mycoHome)?.serverUrl ?? null,
         ...runtime,
       };
       saveJournal(j, mycoHome);
@@ -223,9 +224,9 @@ export async function logoutDeployment(input: string, opts: { mode: 'revoke' | '
       await advance('done');
     }
     return withRegistryLock(() => {
-      const connectedRoots = new Set(logoutBindings(mycoHome).map((binding) => path.resolve(binding.root)));
-      const leftRoots = journal.bindings.map((binding) => binding.root)
-        .filter((root) => !connectedRoots.has(path.resolve(root)) && isLeft(rootKeyFor(root, mycoHome), mycoHome));
+      const connectedRoots = new Set(logoutBindings(mycoHome).map((binding) => canonicalRootIdentity(binding.root)));
+      const leftRoots = journal.bindings.map((binding) => binding.displayRoot ?? binding.root)
+        .filter((root) => !connectedRoots.has(canonicalRootIdentity(root)) && isLeft(rootKeyFor(root, mycoHome), mycoHome));
       const report: LogoutReport = {
         serverUrl, revoked: journal.revoke === 'revoked', machineId: journal.machineId, leftRoots, defaultUrl: readDefaultDeployment(mycoHome)?.serverUrl ?? null,
         survivors: memberships(mycoHome).map((m) => m.serverUrl), keptSpool: spoolReport(serverUrl, mycoHome), runner: journal.runner,

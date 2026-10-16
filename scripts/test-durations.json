@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: canonical root focused npm test, Bun 1.4.0, darwin-arm64; 2x measured file duration plus startup",
     "local: PR5 correction full npm test, Bun 1.4.0, darwin-arm64",
     "local: PR5 correction native + Cloudflare parity, Bun 1.4.0; conservative recorded CI parity floors retained",
     "local: supervisor-start runtime focused npm test, Bun 1.4.0, darwin-arm64; 2x CI margin including program startup",
@@ -164,10 +165,12 @@
     "tests/member/refresh.test.ts": 1927,
     "tests/member/refusal-permanence.test.ts": 147,
     "tests/member/registry-read-during-write.test.ts": 173,
+    "tests/member/registry-rollback.test.ts": 4000,
     "tests/member/registry-split.test.ts": 587,
     "tests/member/registry.test.ts": 278,
     "tests/member/repository-ownership.test.ts": 3362,
     "tests/member/retention.test.ts": 1378,
+    "tests/member/root-identity.test.ts": 7000,
     "tests/member/routed-layout.test.ts": 210,
     "tests/member/routing-isolation.test.ts": 4990,
     "tests/member/server-url.test.ts": 136,
@@ -761,6 +764,8 @@
     "tests/upgrade/release-assets.test.ts": 169,
     "tests/upgrade/release-channels.test.ts": 411,
     "tests/utils/atomic-writes.test.ts": 28,
+    "tests/utils/canonical-path.test.ts": 200,
+    "tests/utils/filesystem-proof.test.ts": 200,
     "tests/utils/deep-merge.test.ts": 2,
     "tests/utils/dot-path.test.ts": 3,
     "tests/utils/find-package-root.test.ts": 68,

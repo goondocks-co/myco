@@ -14,7 +14,7 @@ import { memberHomeFor } from './home-for-folder.js';
 import { CREDENTIAL_FLAG, CREDENTIAL_SOURCES, ENV_JOIN_CODE, MEMBER_TOKEN_PATTERN, type CredentialSource, type RefreshTerminalReason } from './constants.js';
 import { recordMissingMembership } from './no-membership.js';
 import { JOIN_CODE_REFUSALS, parseJoinCode } from './join-code.js';
-import { deploymentUrl, readRegistryEntryResult, type RegistryEntry } from './registry.js';
+import { deploymentUrl, readRegistryEntryResult, registryConflictWords, type RegistryEntry } from './registry.js';
 import { admitMemberServerUrl, MEMBER_SERVER_URL_RULE } from './server-url.js';
 
 export { CREDENTIAL_FLAG, type CredentialSource };
@@ -111,6 +111,10 @@ export function resolveCredential(
   if (source === 'env') return joinCodeCredential(env, entry, root, mycoHome);
   if (!entry) {
     if (lookup.status === 'missing' && opts.claimsUnconnected?.(root) === true) return null;
+    if (lookup.status === 'unavailable' && lookup.conflict) {
+      stderr(registryConflictWords(lookup.conflict));
+      return null;
+    }
     if (lookup.status === 'unavailable') {
       stderr(`registry binding for ${root} is unavailable — no capture; restore its Deployment membership`);
       return null;

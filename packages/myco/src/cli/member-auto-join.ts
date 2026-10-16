@@ -26,7 +26,7 @@ import { resolveMycoHome } from '../paths/home.js';
 import {
   clearJoinRequest, clearPendingImport, dropJoinRequest, isLeft, leftForConnection, joinStanding, listJoinRequests, listPendingImports, markSweepDone, placeRepository, queueImport,
   readAutoJoinState, repositoryAt, sweepDone, takeRepositoryLock,
-  clearLeft, forgetAutoJoinState, markLeft, markSessionsReported, nextAttemptAfter, rootKeyFor, silentRepository, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
+  autoJoinLeavesFor, clearLeft, forgetAutoJoinState, markLeft, markSessionsReported, nextAttemptAfter, rootKeyFor, rootKeysFor, silentRepository, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
 } from '../member/auto-join.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import type { HelperPass } from '../member/helper.js';
@@ -34,11 +34,11 @@ import { CONNECT_TIMEOUT_CAP_MS } from '../member/constants.js';
 import { defaultMembership } from '../member/default-deployment.js';
 import { assertDeploymentTokenPair } from '../member/token-pairing.js';
 import { IMPORT_DEADLINE, runImport } from '../member/import.js';
-import { forgetConnectRoot, machineAutoJoinLeaves, seedMachineSettings } from '../member/machine-settings.js';
+import { forgetConnectRoot, seedMachineSettings } from '../member/machine-settings.js';
 import { clearMissingMembership, listMissingMemberships } from '../member/no-membership.js';
-import { discardPending, flushPending, readHeldEnd } from '../member/pending.js';
+import { discardPendingForRoot, readHeldEnd } from '../member/pending.js';
+import { flushHeldCapture } from '../member/held.js';
 import { deploymentUrl, readDeploymentMembership, readRegistryEntry, readRegistryEntryResult, REGISTRY_VERSION, withRegistryLock, writeRegistryEntry, type DeploymentMembership, type RegistryEntry } from '../member/registry.js';
-import { MemberSpool } from '../member/spool.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { postRoute } from './deployment-reader.js';
 import type { MemberCliDeps } from './member.js';
@@ -91,7 +91,7 @@ export async function settleConnection(entry: RegistryEntry, opts: { mycoHome: s
     clearLeft(rootKey, opts.mycoHome);
   }, opts.mycoHome);
   dropJoinRequest(rootKey, opts.mycoHome, entry.serverUrl);
-  const moved = flushPending(rootKey, new MemberSpool(entry, { mycoHome: opts.mycoHome }), { mycoHome: opts.mycoHome, now: opts.now() });
+  const moved = flushHeldCapture(entry.root, entry, { mycoHome: opts.mycoHome, now: opts.now() });
   const state = readAutoJoinState(rootKey, opts.mycoHome, entry.serverUrl);
   if (state !== null && state.outcome !== 'joined') writeAutoJoinState({ ...state, outcome: 'joined', reason: undefined, detail: undefined, projectId: entry.projectId, attemptAt: opts.now() }, opts.mycoHome);
   // Only a repository this machine tried to join can be listed for "Needs you"; any other has nothing to forget.
@@ -125,7 +125,7 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
   const previous = readAutoJoinState(repo.rootKey, mycoHome, membership.serverUrl);
 
   await seedMachineSettings({ serverUrl: membership.serverUrl, token: membership.token }, { mycoHome, fetch: deps.fetch });
-  const leaves = machineAutoJoinLeaves(membership.serverUrl, mycoHome);
+  const leaves = autoJoinLeavesFor(repo.rootKey, membership.serverUrl, mycoHome);
   const placement = placeRepository(repo, leaves);
   const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, repo.rootKey) ? leaves.connectRoots[repo.rootKey]! : null;
   // Ordinary leave markers accept a new dashboard connection; logout markers require an explicit local join.
@@ -167,7 +167,7 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
     return { root, result: 'outside_folders' };
   }
 
-  const answer = await postRoute(client, budget, RESOLVE_PROJECT_PATH, named);
+  const answer = await postRoute(client, budget, RESOLVE_PROJECT_PATH, { ...named, rootKey: leaves.connectionRootKey ?? repo.rootKey });
   if (!answer.ok) {
     const reason = isUncapturedReason(answer.error.code) ? answer.error.code : undefined;
     // An answer naming why is the Deployment's decision, and recorded it with the sessions; anything else is a
@@ -345,16 +345,19 @@ export async function runAutoJoin(args: readonly string[], deps: MemberCliDeps =
  */
 export async function optOut(root: string, membership: { serverUrl: string; token: string } | null, opts: { mycoHome: string; now: number; fetch?: FetchLike }): Promise<unknown> {
   if (membership !== null) assertDeploymentTokenPair(membership, opts.mycoHome);
-  const rootKey = rootKeyFor(root, opts.mycoHome);
+  const keys = rootKeysFor(root, opts.mycoHome);
+  const rootKey = keys[0]!;
   markLeft(rootKey, opts.mycoHome, opts.now, { repository: { root, serverUrl: membership?.serverUrl } });
   // Nothing asked for it before is made: no join, and no past sessions brought.
-  dropJoinRequest(rootKey, opts.mycoHome);
-  clearPendingImport(rootKey, opts.mycoHome);
-  discardPending(rootKey, opts.mycoHome);
+  for (const key of keys) {
+    dropJoinRequest(key, opts.mycoHome);
+    clearPendingImport(key, opts.mycoHome);
+  }
+  discardPendingForRoot(root, opts.mycoHome);
   // Whatever auto-join found before is forgotten: connected again, the repository starts from nothing.
-  forgetAutoJoinState(rootKey, opts.mycoHome);
+  for (const key of keys) forgetAutoJoinState(key, opts.mycoHome);
   if (membership === null) return;
-  forgetConnectRoot(membership.serverUrl, rootKey, opts.mycoHome);
+  for (const key of keys) forgetConnectRoot(membership.serverUrl, key, opts.mycoHome);
   const client = new ServerClient({ serverUrl: membership.serverUrl, token: membership.token }, opts.fetch ?? globalThis.fetch);
-  return postRoute(client, { connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS, requestTimeoutMs: STATE_TIMEOUT_MS }, UNCAPTURED_STATE_PATH, { rootKey, state: 'left' }).catch(() => null);
+  return Promise.all(keys.map(key => postRoute(client, { connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS, requestTimeoutMs: STATE_TIMEOUT_MS }, UNCAPTURED_STATE_PATH, { rootKey: key, state: 'left' }).catch(() => null)));
 }
