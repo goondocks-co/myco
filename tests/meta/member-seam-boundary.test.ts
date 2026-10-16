@@ -100,6 +100,8 @@ const ALLOWLIST: readonly string[] = [
   'project-root.ts',
   'machine-id.ts',
   'utils/lifecycle-lock.ts',
+  'utils/atomic-write.ts',
+  'utils/windows-atomic-replace.ts',
   'utils/sync-directory.ts',
   'utils/dot-path.ts',
   'utils/terminal-text.ts',

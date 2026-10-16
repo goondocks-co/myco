@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
-import { writePrivateFileAtomic } from './store.js';
+import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 
 /** The record, under the member home. */
 export const PROVISION_RECORD = path.join('member', 'provisioned.json');
@@ -85,7 +85,7 @@ function writeProvisionRecord(mycoHome: string, record: Omit<ProvisionRecord, 'a
   const next: ProvisionRecord = { version: record.version, serverUrl: record.serverUrl, agents: [...new Set([...kept, ...record.agents])].sort(), ...(Object.keys(binaries).length === 0 ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined || Object.keys(pendingLogout).length === 0 ? {} : { pendingLogout }), at: record.at ?? Date.now() };
   if (record.at === undefined && before !== null && before.version === next.version && before.serverUrl === next.serverUrl && JSON.stringify(before.agents) === JSON.stringify(next.agents) && JSON.stringify(before.binaries) === JSON.stringify(next.binaries) && JSON.stringify(before.pendingTrust) === JSON.stringify(next.pendingTrust) && JSON.stringify(before.pendingLogout) === JSON.stringify(next.pendingLogout)) return before;
   fs.mkdirSync(path.dirname(provisionRecordPath(mycoHome)), { recursive: true, mode: 0o700 });
-  writePrivateFileAtomic(provisionRecordPath(mycoHome), `${JSON.stringify(next, null, 2)}\n`);
+  atomicWriteFileSync(provisionRecordPath(mycoHome), `${JSON.stringify(next, null, 2)}\n`);
   return next;
 }
 
