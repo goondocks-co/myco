@@ -40,12 +40,22 @@ function supportsCaseAliases(): boolean {
 }
 const caseAliases = supportsCaseAliases();
 function windowsShortPath(at: string): string {
-  return execFileSync('cmd.exe', ['/d', '/c', 'for %I in ("' + at + '") do @echo %~sI'], { encoding: 'utf8' }).trim();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-short-path-'));
+  const script = path.join(directory, 'short-path.ps1');
+  try {
+    fs.writeFileSync(script, 'param([string]$Path)\n$ErrorActionPreference = "Stop"\n(New-Object -ComObject Scripting.FileSystemObject).GetFolder($Path).ShortPath\n');
+    return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', script, at], { encoding: 'utf8' }).trim();
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }
 function supportsShortNames(): boolean {
   if (process.platform !== 'win32') return false;
   const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-short-name-'));
-  try { return /~[0-9]/.test(windowsShortPath(probe)); }
+  try {
+    const long = fs.realpathSync.native(probe);
+    const short = windowsShortPath(long);
+    if (!fs.existsSync(short)) throw new Error('Short-path helper returned a nonexistent directory: ' + short);
+    return short !== long && /~[0-9]/.test(short);
+  }
   finally { fs.rmSync(probe, { recursive: true, force: true }); }
 }
 const shortNames = supportsShortNames();
@@ -437,7 +447,17 @@ for (const disagreement of ['Deployment', 'Project']) {
 }
 
 it.skipIf(!shortNames)('alias gate: live Windows 8.3 names (host volume must provide short names)', async () => {
-  await aliasGate([root, windowsShortPath(root), alias]);
+  const long = fs.realpathSync.native(root);
+  const short = windowsShortPath(long);
+  expect(fs.existsSync(short)).toBe(true);
+  expect(short).not.toBe(long);
+  await aliasGate([long, short, alias]);
+});
+it.skipIf(process.platform !== 'win32' || !/~[0-9]/.test(os.tmpdir()))('alias gate: live Windows short ancestor (host temp directory must have a short ancestor)', async () => {
+  const long = fs.realpathSync.native(root);
+  expect(path.dirname(root)).not.toBe(path.dirname(long));
+  expect(fs.existsSync(root)).toBe(true);
+  await aliasGate([root, long, alias]);
 });
 for (const legacy of [false, true]) it('a main checkout bound through injected native 8.3 expansion is found from linked long-name Git pointers (legacy: ' + legacy + ')', () => {
   const linked = path.join(base, 'linked');
@@ -535,8 +555,10 @@ it.skipIf(!caseAliases)('transcript placement uses case-probed identity when nat
   const transcript = path.join(base, 'case-transcript.jsonl');
   fs.writeFileSync(transcript, JSON.stringify({ type: 'user', cwd: variant }) + '\n');
   const native = fs.realpathSync.native;
-  const preservesCase = spyOn(fs.realpathSync, 'native').mockImplementation(((at: fs.PathLike) =>
-    String(at) === variant ? variant : native(at)) as typeof fs.realpathSync.native);
+  const preservesCase = spyOn(fs.realpathSync, 'native').mockImplementation(((at: fs.PathLike) => {
+    const resolved = native(at);
+    return String(at) === variant ? path.join(path.dirname(resolved), path.basename(variant)) : resolved;
+  }) as typeof fs.realpathSync.native);
   try {
     expect(attributeTranscript('claude-code', transcript, [root], { git: { mainCheckout: cwd => cwd } })).toEqual({ kind: 'bound', root });
   } finally { preservesCase.mockRestore(); }
@@ -846,34 +868,4 @@ it('a malformed held directory for this repository still fails closed', async ()
   fs.writeFileSync(dir, 'own unavailable capture', { mode: 0o600 });
   await expect(optOut(root, null, { mycoHome, now: Date.now() })).rejects.toThrow('directory unavailable');
   expect(fs.readFileSync(dir, 'utf8')).toBe('own unavailable capture');
-});
-
-
-it.skipIf(process.platform !== 'win32')('windows-identity-diagnostic', () => {
-  const emit = (value: unknown) => { try { console.log('windows-identity-diagnostic ' + JSON.stringify(value)); } catch { /* Diagnostics are non-failing. */ } };
-  const errorText = (error: unknown): string => { try { return error instanceof Error ? error.message : String(error); } catch { return 'unavailable'; } };
-  const observe = (read: () => unknown): unknown => {
-    try { return read(); } catch (error) { return { error: errorText(error) }; }
-  };
-  const fileIdentity = (stat: { dev: number | bigint; ino: number | bigint }) => ({ dev: String(stat.dev), ino: String(stat.ino) });
-  try {
-    emit({ bun: process.versions.bun });
-    const long = path.join(base, 'WindowsIdentityDiagnostic', 'RepositoryLongName');
-    fs.mkdirSync(long, { recursive: true });
-    const short = observe(() => windowsShortPath(long));
-    const flipped = path.join(path.dirname(long), path.basename(long).replace(/[a-zA-Z]/, char => char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase()));
-    emit({ bun: process.versions.bun, long, short, flipped });
-    for (const spelling of [long, ...(typeof short === 'string' ? [short] : []), flipped]) {
-      const cache = new Map<string, { stamp: string; insensitive: boolean; volumeRoot?: string }>();
-      emit({
-        spelling,
-        native: observe(() => fs.realpathSync.native(spelling)),
-        generic: observe(() => fs.realpathSync(spelling)),
-        stat: observe(() => fileIdentity(fs.statSync(spelling))),
-        bigintStat: observe(() => fileIdentity(fs.statSync(spelling, { bigint: true }))),
-        bigintLstat: observe(() => fileIdentity(fs.lstatSync(spelling, { bigint: true }))),
-        probe: observe(() => ({ identity: canonicalRootIdentity(spelling, { caseCache: cache }), verdicts: [...cache.values()] })),
-      });
-    }
-  } catch (error) { emit({ diagnosticError: errorText(error) }); }
 });

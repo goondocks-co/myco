@@ -139,7 +139,8 @@ it('the production probe requests lossless bigint identities for stat and lstat'
     return { dev: 1n, ino: 9007199254740993n };
   }) as typeof fs.lstatSync);
   try {
-    expect(canonicalRootIdentity('/Volume/Repo', { realpath: at => at, caseCache: new Map() })).toBe('/Volume/Repo');
+    const root = path.resolve('Volume', 'Repo');
+    expect(canonicalRootIdentity(root, { realpath: at => at, caseCache: new Map() })).toBe(root);
   } finally { stat.mockRestore(); lstat.mockRestore(); }
 });
 
