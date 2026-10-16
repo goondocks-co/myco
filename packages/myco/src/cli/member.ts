@@ -533,10 +533,11 @@ export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageR
       try {
         let backup: CutoverBackup | undefined;
         try {
-          installer.migrateRetiredHookSettings(undefined, file => {
+          const migrated = installer.reconcileRetiredHookSettings(undefined, file => {
             backup ??= provisionBackup(mycoHome);
             if (!backup.all.some(entry => entry.original === file)) backup.take(file);
-          });
+          }, opts.onInspectionError);
+          if (migrated === null) retiredSettingsProblems.add(manifest.name);
         } finally { backup?.pruneUnchanged(); }
       } catch (error) {
         retiredSettingsProblems.add(manifest.name);

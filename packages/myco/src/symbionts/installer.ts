@@ -733,7 +733,7 @@ export class SymbiontInstaller {
     const scan = this.scanMemberRegistrations();
     if (!keepHooks) this.preflightMemberSettings();
     this.forDeployment(nextDefault ?? leavingUrl).replacingDeployment(leavingUrl);
-    this.migrateRetiredHookSettings(scan);
+    this.reconcileRetiredHookSettings(scan);
     this.reconcileDeploymentMcp(leavingUrl, nextDefault, !keepHooks, scan);
     if (!keepHooks) {
       this.assertGlobalMemberOwnership('hooks', scan);
@@ -956,9 +956,17 @@ export class SymbiontInstaller {
   }
 
   migrateRetiredHookSettings(scan?: MemberRegistrationScan, beforeWrite?: (file: string) => void): boolean {
+    if (!this.manifest.registration?.retiredHookSettings) return false;
     const plan = this.retiredSettingsPlan();
-    if (plan === null || !plan.changed && plan.conflicts.length === 0) return false;
     try {
+      if (plan === null || !plan.changed && plan.conflicts.length === 0) {
+        const saved = this.retiredSettingsReported();
+        if (saved.problem !== undefined) {
+          delete saved.problem;
+          this.writeRetiredSettingsReport(saved);
+        }
+        return false;
+      }
       const registrations = scan ?? this.scanMemberRegistrations();
       this.assertGlobalMemberOwnership('hooks', registrations);
       return this.writeRegistrationTarget(plan.target, 'hooks', registrations, target => {
@@ -979,7 +987,17 @@ export class SymbiontInstaller {
         return plan.changed;
       });
     } catch (error) {
-      throw error instanceof MemberRetiredSettingsRefusal ? error : new MemberRetiredSettingsRefusal(plan.target, error);
+      throw error instanceof MemberRetiredSettingsRefusal ? error : new MemberRetiredSettingsRefusal(plan?.target ?? this.retiredSettingsReportPath(), error);
+    }
+  }
+
+  /** Reconcile retired output, reporting a refusal without blocking the caller's other work. */
+  reconcileRetiredHookSettings(scan?: MemberRegistrationScan, beforeWrite?: (file: string) => void, report?: (message: string) => void): boolean | null {
+    try { return this.migrateRetiredHookSettings(scan, beforeWrite); }
+    catch (error) {
+      if (!(error instanceof MemberRetiredSettingsRefusal)) throw error;
+      this.reportRetiredSettingsProblem(error, report);
+      return null;
     }
   }
 
@@ -1131,7 +1149,7 @@ export class SymbiontInstaller {
 
   uninstallMemberRegistration(): void {
     this.assertMemberUninstallable();
-    this.migrateRetiredHookSettings();
+    this.reconcileRetiredHookSettings();
     this.uninstallMemberHooks();
     this.uninstallMemberMcp();
     this.uninstallSettings();

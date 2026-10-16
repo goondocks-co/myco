@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import path from 'node:path';
-import { expandHome } from '@myco/paths/home.js';
 
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
 import { PROVIDER_SLOT_NAMES } from '@goondocks/myco-shared/provider-slots';
@@ -485,7 +484,7 @@ const RegistrationSchema = z.object({
     [registration.settingsTarget, registration.hooksTarget, 'settingsTarget'],
     [registration.globalSettingsTarget, registration.globalHooksTarget, 'globalSettingsTarget'],
   ] as const) {
-    if (settings != null && hooks != null && path.normalize(expandHome(settings)) === path.normalize(expandHome(hooks))) {
+    if (settings != null && hooks != null && path.normalize(settings) === path.normalize(hooks)) {
       ctx.addIssue({ code: 'custom', path: [field], message: 'Shared hooks and settings files require hooksContainSettings: true' });
     }
   }

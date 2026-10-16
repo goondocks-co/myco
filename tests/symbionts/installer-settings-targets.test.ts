@@ -4,14 +4,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { retiredHookSettings } from '@myco/symbionts/retired-hook-settings.js';
-import { claimSubsystem, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/member/subsystem-claim.js';
+import { claimSubsystem, releaseSubsystemClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/member/subsystem-claim.js';
 import { SymbiontManifestSchema } from '@myco/symbionts/manifest-schema.js';
 import { MemberProvisionConflictError, SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { provisionGlobally, provisionBackup, provisionAgents, runProvision } from '@myco/cli/member.js';
 import { keepCurrent } from '@myco/cli/member-keep-current.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { getPluginVersion } from '@myco/version.js';
-import { recordProvision } from '@myco/symbionts/member-provision-record.js';
+import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
+import { logoutDeployment } from '@myco/symbionts/logout-runtime.js';
+import { recordingPlatform } from '../helpers/fake-service-manager.js';
+import { recordProvision, readProvisionRecord } from '@myco/symbionts/member-provision-record.js';
 
 const SERVER = 'https://myco.example';
 const KEY = 'chat.tools.terminal.autoApprove';
@@ -307,4 +310,104 @@ it('reports ambiguous captured Cursor settings once while recording its failure 
     expect(fs.readFileSync(file, 'utf8')).toBe(raw);
     expect([...stderr.mock.calls, ...warn.mock.calls].filter(([text]) => String(text).includes(file))).toHaveLength(1);
   } finally { stderr.mockRestore(); warn.mockRestore(); }
+});
+
+
+it.each([['\ufeff{', true], ['{"x":1,"x":2,', true], ['\ufeff{', false], ['{"x":1,"x":2,', false]] as const)('logout reconciles every agent and provision record past Copilot cleanup (%s, retired key: %s)', async (prefix, retired) => {
+  const next = 'https://next.example';
+  writeDeploymentMembership({ serverUrl: next, token: 'B'.repeat(43), machineId: 'm1', joinedAt: 1, updatedAt: 1 }, { mycoHome: memberHome });
+  recordDefaultDeployment(SERVER, { mycoHome: memberHome });
+  install('claude-code');
+  install('cursor');
+  const file = copilotFile(prefix + (retired ? `"${KEY}":${JSON.stringify(VALUE)}}` : '"user":true}'));
+  const before = fs.readFileSync(file, 'utf8');
+  const reconcile = spyOn(SymbiontInstaller.prototype, 'reconcileDeploymentLogout');
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await logoutDeployment(SERVER, { mode: 'revoke' }, { home, mycoHome: memberHome, packageRoot: resolvePackageRoot(), worker: { platform: 'darwin', runner: recordingPlatform().runner }, fetch: async () => Response.json({ persisted: true, revoked: 1 }) });
+    expect(reconcile).toHaveBeenCalledTimes(loadManifests().length);
+    expect(reconcile.mock.calls.every(([, , keepHooks]) => keepHooks)).toBe(true);
+    expect(readProvisionRecord(memberHome)?.serverUrl).toBe(next);
+    expect(readProvisionRecord(memberHome)?.agents).toEqual(expect.arrayContaining(['claude-code', 'cursor']));
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    expect(warn.mock.calls.filter(([text]) => String(text).includes(file))).toHaveLength(Number(retired));
+    const cursor = new SymbiontInstaller(manifest('cursor'), home, resolvePackageRoot(), false, memberHome).withoutProjectRoot();
+    expect(cursor.inspectMemberMcp().some(entry => entry.present)).toBe(true);
+  } finally { reconcile.mockRestore(); warn.mockRestore(); }
+});
+
+it.each(['remove', 'logout-keep', 'logout-remove'])('continues %s despite ambiguous retired Cursor cleanup', action => {
+  install('cursor');
+  const file = hooksFile('cursor');
+  const raw = fs.readFileSync(file, 'utf8').replace('{', `{"user":1,"user":2,"${KEY}":${JSON.stringify(VALUE)},`);
+  fs.writeFileSync(file, raw);
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  const out: string[] = [];
+  try {
+    if (action === 'remove') {
+      expect(runProvision(['--remove', 'cursor'], { mycoHome: memberHome, cwd: home, stdout: text => out.push(text), stderr: text => out.push(text) })).toBe(true);
+      expect(readProvisionRecord(memberHome)?.agents).not.toContain('cursor');
+    } else {
+      const member = new SymbiontInstaller(manifest('cursor'), home, resolvePackageRoot(), false, memberHome).withoutProjectRoot();
+      expect(() => member.reconcileDeploymentLogout(SERVER, action === 'logout-keep' ? 'https://next.example' : null, action === 'logout-keep')).not.toThrow();
+    }
+    expect(warn.mock.calls.filter(([text]) => String(text).includes(file))).toHaveLength(1);
+    expect(Object.hasOwn(JSON.parse(fs.readFileSync(file, 'utf8')), KEY)).toBe(true);
+    const member = new SymbiontInstaller(manifest('cursor'), home, resolvePackageRoot(), false, memberHome).withoutProjectRoot();
+    expect(member.inspectMemberHooks().member).toBe(action === 'logout-keep');
+    expect(member.inspectMemberMcp().some(entry => entry.present)).toBe(action === 'logout-keep');
+  } finally { warn.mockRestore(); }
+});
+
+it.each(['absent-key', 'absent-file', 'reported-value'])('clears a retired settings problem after a healthy %s pass so it can recur', healthy => {
+  const { file, expected } = seed('copilot', VALUE);
+  const owner = path.join(home, 'peer');
+  const claimsHome = resolveClaimsHome();
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  try {
+    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, owner, { claimsHome });
+    keepCurrent(memberHome, { binaryFound: () => false });
+    const reportFile = path.join(memberHome, 'installer-audit/copilot-retired-hook-settings.json');
+    expect(JSON.parse(fs.readFileSync(reportFile, 'utf8')).problem).toContain(file);
+    releaseSubsystemClaim(SYMBIONT_CONFIG_SUBSYSTEM, owner, { claimsHome });
+    if (healthy === 'absent-file') fs.unlinkSync(file);
+    else if (healthy === 'absent-key') fs.writeFileSync(file, expected);
+    else fs.writeFileSync(file, JSON.stringify({ [KEY]: { myco: false } }));
+    keepCurrent(memberHome, { binaryFound: () => false });
+    const report = JSON.parse(fs.readFileSync(reportFile, 'utf8'));
+    expect(report.problem).toBeUndefined();
+    if (healthy === 'reported-value') expect(report.values[KEY]).toHaveLength(1);
+    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, owner, { claimsHome });
+    fs.writeFileSync(file, JSON.stringify({ [KEY]: VALUE }));
+    keepCurrent(memberHome, { binaryFound: () => false });
+    expect([...warn.mock.calls, ...stderr.mock.calls].filter(([text]) => String(text).includes(file) && String(text).includes('Could not reconcile'))).toHaveLength(2);
+  } finally { warn.mockRestore(); stderr.mockRestore(); }
+});
+
+it('parses manifests without resolving or validating HOME', () => {
+  const agent = manifest('cursor');
+  const savedRoot = process.env.MYCO_SANDBOX_ROOT;
+  process.env.MYCO_SANDBOX_ROOT = path.join(home, 'sandbox-without-home');
+  try {
+    expect(() => SymbiontManifestSchema.parse({ ...agent, registration: { ...agent.registration, globalSettingsTarget: '~/.cursor/settings.json' } })).not.toThrow();
+    expect(() => SymbiontManifestSchema.parse({ ...agent, registration: { ...agent.registration, globalSettingsTarget: '~/.cursor/./hooks.json' } })).toThrow(/hooksContainSettings/);
+  } finally { if (savedRoot === undefined) delete process.env.MYCO_SANDBOX_ROOT; else process.env.MYCO_SANDBOX_ROOT = savedRoot; }
+});
+
+it('cleans exact output and reports changed values for Cursor without a 2.0 registration', () => {
+  const file = hooksFile('cursor');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ [KEY]: VALUE, user: true }));
+  keepCurrent(memberHome, { binaryFound: () => false });
+  expect(fs.readFileSync(file, 'utf8')).toBe('{"user":true}');
+  fs.writeFileSync(file, JSON.stringify({ [KEY]: { myco: false }, user: true }));
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    keepCurrent(memberHome, { binaryFound: () => false });
+    keepCurrent(memberHome, { binaryFound: () => false });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))[KEY]).toEqual({ myco: false });
+    expect(readProvisionRecord(memberHome)).toBeNull();
+  } finally { warn.mockRestore(); }
 });
