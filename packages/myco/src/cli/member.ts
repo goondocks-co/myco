@@ -522,27 +522,33 @@ function provisionChosenAgent(agent: string, root: string | null, mycoHome: stri
 }
 
 /** Reconcile fresh choices and owned registrations, and hold the repair lease through the operation. */
-export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageRoot?: string; serverUrl?: string; onInspectionError?: (message: string) => void; wait?: boolean }, fn: (record: ProvisionRecord, agents: string[]) => T): T | null {
+export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageRoot?: string; serverUrl?: string; onInspectionError?: (message: string) => void; wait?: boolean }, fn: (record: ProvisionRecord, agents: string[], retiredSettingsProblems: ReadonlySet<string>) => T): T | null {
   return withMemberRepair(mycoHome, 'myco member reconcile', () => {
     const serverUrl = memberProvisionTarget(mycoHome, opts.serverUrl);
     if (serverUrl === undefined) return null;
-    let backup: CutoverBackup | undefined;
-    try {
-      for (const manifest of loadManifests()) {
-        if (!manifest.registration?.retiredHookSettings) continue;
-        const installer = globalInstaller(manifest, null, mycoHome, opts);
-        if (installer.capturesAsMember() || installer.retiredHookSettingsCurrent()) continue;
-        backup ??= provisionBackup(mycoHome);
-        const outcome = provisionGlobally(manifest.name, null, mycoHome, { ...opts, serverUrl, backup });
-        if (outcome.kind === 'refused') throw new MemberProvisionConflictError(outcome.detail, '');
+    const retiredSettingsProblems = new Set<string>();
+    for (const manifest of loadManifests()) {
+      if (!manifest.registration?.retiredHookSettings) continue;
+      const installer = globalInstaller(manifest, null, mycoHome, opts);
+      try {
+        let backup: CutoverBackup | undefined;
+        try {
+          installer.migrateRetiredHookSettings(undefined, file => {
+            backup ??= provisionBackup(mycoHome);
+            if (!backup.all.some(entry => entry.original === file)) backup.take(file);
+          });
+        } finally { backup?.pruneUnchanged(); }
+      } catch (error) {
+        retiredSettingsProblems.add(manifest.name);
+        installer.reportRetiredSettingsProblem(error, opts.onInspectionError);
       }
-    } finally { backup?.pruneUnchanged(); }
+    }
     const before = readProvisionRecordStrict(mycoHome);
     const agents = managedMemberHarnesses(mycoHome, serverUrl, opts);
     if (before === null && agents.length === 0) return null;
     const discovered = agents.filter(agent => !before?.agents.includes(agent));
     const record = reconcileProvisionAgents(mycoHome, { version: getPluginVersion(), serverUrl, discovered }, uncapturableMemberHarnesses(mycoHome, opts));
-    return fn(record, record.agents);
+    return fn(record, record.agents, retiredSettingsProblems);
   }, { wait: opts.wait });
 }
 

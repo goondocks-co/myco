@@ -7,7 +7,7 @@
     "https://github.com/goondocks-co/myco/actions/runs/38724215040",
     "https://github.com/goondocks-co/myco/actions/runs/38743027517",
     "local: npm test -- tests/member/legacy-verdict.test.ts, Bun 1.4.0, darwin-arm64; 140ms process wall time",
-    "local: npm test -- tests/symbionts/installer-settings-targets.test.ts, Bun 1.4.0, darwin-arm64; conservative 1000ms weight for the installer migration contract"
+    "local: npm test -- tests/symbionts/installer-settings-targets.test.ts, Bun 1.4.0, darwin-arm64; conservative 2000ms weight for the installer migration and refusal contracts"
   ],
   "files": {
     "target/test-bundles/node-env-mt-E0RYoB/tests-symbionts-parsers.test.ts": 117,
@@ -723,7 +723,7 @@
     "tests/symbionts/hook-template-symbiont-flag.test.ts": 173,
     "tests/symbionts/installer-capture-roundtrip.test.ts": 237,
     "tests/symbionts/installer-invariants.test.ts": 302,
-    "tests/symbionts/installer-settings-targets.test.ts": 1000,
+    "tests/symbionts/installer-settings-targets.test.ts": 2000,
     "tests/symbionts/installer-shared-settings.test.ts": 351,
     "tests/symbionts/legacy-registrations.test.ts": 146,
     "tests/symbionts/managed-binary-path.test.ts": 185,

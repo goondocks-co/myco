@@ -4,8 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { retiredHookSettings } from '@myco/symbionts/retired-hook-settings.js';
-import { SymbiontInstaller } from '@myco/symbionts/installer.js';
-import { provisionGlobally, provisionBackup, runProvision } from '@myco/cli/member.js';
+import { claimSubsystem, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/member/subsystem-claim.js';
+import { SymbiontManifestSchema } from '@myco/symbionts/manifest-schema.js';
+import { MemberProvisionConflictError, SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { provisionGlobally, provisionBackup, provisionAgents, runProvision } from '@myco/cli/member.js';
 import { keepCurrent } from '@myco/cli/member-keep-current.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { getPluginVersion } from '@myco/version.js';
@@ -128,7 +130,7 @@ it.each([
 
 it('refuses ambiguous duplicate keys and malformed JSON before migration writes', () => {
   expect(() => retiredHookSettings(`{"${KEY}":false,"${KEY}":${JSON.stringify(VALUE)}}`, { [KEY]: VALUE })).toThrow();
-  expect(() => retiredHookSettings('{"hooks":', { [KEY]: VALUE })).toThrow();
+  expect(() => retiredHookSettings(`{"${KEY}":`, { [KEY]: VALUE })).toThrow();
 });
 
 it('a healthy reconciliation preserves existing backup history', () => {
@@ -140,4 +142,169 @@ it('a healthy reconciliation preserves existing backup history', () => {
   const before = fs.readdirSync(backups).sort();
   keepCurrent(memberHome, { binaryFound: () => false });
   expect(fs.readdirSync(backups).sort()).toEqual(before);
+});
+
+function copilotFile(raw: string): string {
+  const file = hooksFile('copilot');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, raw);
+  return file;
+}
+
+it.each(['{"hooks":{"a":1,"a":2}}', '\ufeff{"hooks":{}}', `{"note":"${KEY}","hooks":{"a":1,"a":2}}`, `{"nested":{"${KEY}":false},"a":1,"a":2}`])('ignores unowned Copilot syntax without a retired key through keep-current and refresh (%s)', raw => {
+  install('claude-code');
+  const file = copilotFile(raw);
+  expect(new SymbiontInstaller(manifest('copilot'), home, resolvePackageRoot(), false, memberHome).retiredHookSettingsCurrent()).toBe(true);
+  const claude = hooksFile('claude-code');
+  for (const run of [() => keepCurrent(memberHome, { binaryFound: () => true }), () => runProvision(['--refresh'], { mycoHome: memberHome, cwd: home })]) {
+    fs.unlinkSync(claude);
+    expect(run).not.toThrow();
+    expect(JSON.parse(fs.readFileSync(claude, 'utf8')).hooks).toBeDefined();
+    expect(fs.readFileSync(file, 'utf8')).toBe(raw);
+    expect(JSON.parse(fs.readFileSync(path.join(memberHome, 'member/harness-states.json'), 'utf8'))['claude-code'].state).toBe('ready');
+  }
+});
+
+it.each(['{"x":1,"x":2,', '\ufeff{'])('isolates ambiguous retired Copilot settings and reports its file once (%s)', prefix => {
+  install('claude-code');
+  const file = copilotFile(prefix + `"${KEY}":${JSON.stringify(VALUE)}}`);
+  const before = fs.readFileSync(file, 'utf8');
+  const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    fs.unlinkSync(hooksFile('claude-code'));
+    expect(() => keepCurrent(memberHome, { binaryFound: () => true })).not.toThrow();
+    expect(() => runProvision(['--refresh'], { mycoHome: memberHome, cwd: home })).not.toThrow();
+    expect(() => runProvision(['claude-code', '--server', SERVER], { mycoHome: memberHome, cwd: home })).not.toThrow();
+    expect(() => provisionAgents(['claude-code'], memberHome, SERVER, null)).not.toThrow();
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    expect(JSON.parse(fs.readFileSync(path.join(memberHome, 'member/harness-states.json'), 'utf8'))['claude-code'].state).toBe('ready');
+    const reports = [...stderr.mock.calls, ...warn.mock.calls].filter(([text]) => String(text).includes(file));
+    expect(reports).toHaveLength(1);
+    expect(String(reports[0][0])).toContain('Copilot');
+  } finally { stderr.mockRestore(); warn.mockRestore(); }
+});
+
+it('isolates a peer claim refusal per file through keep-current and refresh', () => {
+  install('claude-code');
+  const file = copilotFile(JSON.stringify({ [KEY]: VALUE }));
+  const before = fs.readFileSync(file, 'utf8');
+  claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, path.join(home, 'peer'), { claimsHome: resolveClaimsHome() });
+  const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    expect(() => keepCurrent(memberHome, { binaryFound: () => true })).not.toThrow();
+    expect(() => runProvision(['--refresh'], { mycoHome: memberHome, cwd: home })).not.toThrow();
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    expect(JSON.parse(fs.readFileSync(path.join(memberHome, 'member/harness-states.json'), 'utf8'))['claude-code'].state).toBe('repair_failed');
+    expect([...stderr.mock.calls, ...warn.mock.calls].filter(([text]) => String(text).includes(file))).toHaveLength(1);
+  } finally { stderr.mockRestore(); warn.mockRestore(); }
+});
+
+it('isolates an unreadable retired settings file with a typed named refusal', () => {
+  install('claude-code');
+  const file = copilotFile(JSON.stringify({ [KEY]: VALUE }));
+  const read = fs.readFileSync;
+  const fail = spyOn(fs, 'readFileSync').mockImplementation(((name: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+    if (String(name) === file) throw Object.assign(new Error('fixture unreadable'), { code: 'EACCES' });
+    return Reflect.apply(read, fs, [name, ...args]);
+  }) as typeof fs.readFileSync);
+  const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  try {
+    const member = new SymbiontInstaller(manifest('copilot'), home, resolvePackageRoot(), false, memberHome);
+    expect(() => member.retiredHookSettingsCurrent()).toThrow(MemberProvisionConflictError);
+    expect(() => member.retiredHookSettingsCurrent()).toThrow(file);
+    fs.unlinkSync(hooksFile('claude-code'));
+    expect(() => keepCurrent(memberHome, { binaryFound: () => true })).not.toThrow();
+    expect(() => runProvision(['--refresh'], { mycoHome: memberHome, cwd: home })).not.toThrow();
+    expect(JSON.parse(fs.readFileSync(path.join(memberHome, 'member/harness-states.json'), 'utf8'))['claude-code'].state).toBe('ready');
+    expect(stderr.mock.calls.filter(([text]) => String(text).includes(file))).toHaveLength(1);
+  } finally { fail.mockRestore(); stderr.mockRestore(); }
+});
+
+it('keeps Cursor duplicate-key tolerance when the retired key is absent', () => {
+  install('cursor');
+  const file = hooksFile('cursor');
+  const raw = fs.readFileSync(file, 'utf8').replace('{', '{"user":1,"user":2,');
+  fs.writeFileSync(file, raw);
+  expect(() => keepCurrent(memberHome, { binaryFound: () => true })).not.toThrow();
+  expect(fs.readFileSync(file, 'utf8')).toBe(raw);
+  expect(JSON.parse(fs.readFileSync(path.join(memberHome, 'member/harness-states.json'), 'utf8')).cursor.state).toBe('ready');
+});
+
+it('gives a typed named refusal for ambiguous Cursor settings with a retired key', () => {
+  install('cursor');
+  const file = hooksFile('cursor');
+  const raw = fs.readFileSync(file, 'utf8').replace('{', `{"user":1,"user":2,"${KEY}":${JSON.stringify(VALUE)},`);
+  fs.writeFileSync(file, raw);
+  const member = new SymbiontInstaller(manifest('cursor'), home, resolvePackageRoot(), false, memberHome);
+  expect(() => member.retiredHookSettingsCurrent()).toThrow(MemberProvisionConflictError);
+  expect(() => member.retiredHookSettingsCurrent()).toThrow(file);
+  expect(fs.readFileSync(file, 'utf8')).toBe(raw);
+});
+
+it('rejects normalized shared settings paths through the manifest schema', () => {
+  for (const [settings, hooks] of [['~/.cursor/./hooks.json', '~/.cursor/hooks.json'], ['.cursor/./hooks.json', '.cursor/hooks.json']]) {
+    const agent = manifest('cursor');
+    expect(() => SymbiontManifestSchema.parse({ ...agent, registration: { ...agent.registration, settingsTarget: settings, hooksTarget: hooks, globalSettingsTarget: settings, globalHooksTarget: hooks } })).toThrow(/hooksContainSettings/);
+  }
+});
+
+it.each(['cursor', 'copilot'])('reports each distinct %s user value only once without pruning backup history', name => {
+  const { file, before } = seed(name, { myco: false });
+  const backups = path.join(memberHome, 'backups');
+  for (let index = 0; index < 10; index++) fs.mkdirSync(path.join(backups, `member-provision-old-${index}`), { recursive: true });
+  const prior = fs.readdirSync(backups).sort();
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    keepCurrent(memberHome, { binaryFound: () => true });
+    keepCurrent(memberHome, { binaryFound: () => true });
+    expect(fs.readdirSync(backups).sort()).toEqual(prior);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    const data = JSON.parse(before); data[KEY] = { '*': true };
+    fs.writeFileSync(file, JSON.stringify(data));
+    keepCurrent(memberHome, { binaryFound: () => true });
+    keepCurrent(memberHome, { binaryFound: () => true });
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))[KEY]).toEqual({ '*': true });
+  } finally { warn.mockRestore(); }
+});
+
+it.each(['uninstall', 'logout'])('removes exact retired Cursor settings on %s before a helper pass', action => {
+  const { file } = seed('cursor', VALUE);
+  const member = new SymbiontInstaller(manifest('cursor'), home, resolvePackageRoot(), false, memberHome).withoutProjectRoot().forDeployment(SERVER);
+  if (action === 'uninstall') member.uninstallMemberRegistration();
+  else member.reconcileDeploymentLogout(SERVER, null, false);
+  expect(Object.hasOwn(JSON.parse(fs.readFileSync(file, 'utf8')), KEY)).toBe(false);
+});
+
+it('removes adjacent retired keys at the end without losing remaining bytes', () => {
+  expect(retiredHookSettings('{"a":1,"k1":true,"k2":true}', { k1: true, k2: true }).text).toBe('{"a":1}');
+  expect(retiredHookSettings('{"k1":true,"k2":true}', { k1: true, k2: true }).text).toBe('{}');
+});
+
+it('removes complete retired entry lines while preserving every other byte', () => {
+  const raw = '{\r\n\t"a": 1,\r\n\t"k1": {\r\n\t\t"myco": true\r\n\t},\r\n\t"b": 2\r\n}\r\n';
+  expect(retiredHookSettings(raw, { k1: { myco: true } }).text).toBe('{\r\n\t"a": 1,\r\n\t"b": 2\r\n}\r\n');
+});
+
+it('reports ambiguous captured Cursor settings once while recording its failure and repairing Claude', () => {
+  install('cursor');
+  install('claude-code');
+  const file = hooksFile('cursor');
+  const raw = fs.readFileSync(file, 'utf8').replace('{', `{"user":1,"user":2,"${KEY}":${JSON.stringify(VALUE)},`);
+  fs.writeFileSync(file, raw);
+  fs.unlinkSync(hooksFile('claude-code'));
+  const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    expect(() => keepCurrent(memberHome, { binaryFound: () => true })).not.toThrow();
+    expect(() => runProvision(['--refresh'], { mycoHome: memberHome, cwd: home })).not.toThrow();
+    const states = JSON.parse(fs.readFileSync(path.join(memberHome, 'member/harness-states.json'), 'utf8'));
+    expect(states.cursor.state).toBe('repair_failed');
+    expect(states.cursor.localAction).toContain(file);
+    expect(states['claude-code'].state).toBe('ready');
+    expect(fs.readFileSync(file, 'utf8')).toBe(raw);
+    expect([...stderr.mock.calls, ...warn.mock.calls].filter(([text]) => String(text).includes(file))).toHaveLength(1);
+  } finally { stderr.mockRestore(); warn.mockRestore(); }
 });

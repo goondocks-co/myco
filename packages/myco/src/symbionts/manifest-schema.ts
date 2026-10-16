@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import path from 'node:path';
+import { expandHome } from '@myco/paths/home.js';
 
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
 import { PROVIDER_SLOT_NAMES } from '@goondocks/myco-shared/provider-slots';
@@ -477,7 +479,17 @@ const RegistrationSchema = z.object({
   settingsFormat: z.enum(['json', 'toml']).default('json'),
   /** Instruction file that stubs out to AGENTS.md. Only for agents that don't read AGENTS.md natively. */
   instructionsFile: z.string().optional(),
-}).strict();
+}).strict().superRefine((registration, ctx) => {
+  if (registration.hooksContainSettings) return;
+  for (const [settings, hooks, field] of [
+    [registration.settingsTarget, registration.hooksTarget, 'settingsTarget'],
+    [registration.globalSettingsTarget, registration.globalHooksTarget, 'globalSettingsTarget'],
+  ] as const) {
+    if (settings != null && hooks != null && path.normalize(expandHome(settings)) === path.normalize(expandHome(hooks))) {
+      ctx.addIssue({ code: 'custom', path: [field], message: 'Shared hooks and settings files require hooksContainSettings: true' });
+    }
+  }
+});
 
 /**
  * Declarative description of a tool call that performs a file read, used by
