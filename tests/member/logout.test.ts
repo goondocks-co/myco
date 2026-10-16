@@ -78,6 +78,60 @@ beforeEach(() => {
 afterEach(() => { restore(); fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('Deployment-scoped logout', () => {
+  for (const agent of ['copilot', 'cursor']) it(`keeps repeated retired-settings refusals retryable for ${agent}`, async () => {
+    join(A);
+    globalInstaller(A).install();
+    const installer = new SymbiontInstaller(loadManifests().find(manifest => manifest.name === agent)!, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(A);
+    installer.install();
+    const file = installer.memberGlobalTargets().hooks!;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const raw = '{"user":1,"user":2,"chat.tools.terminal.autoApprove":{"myco":true,"myco-dev":true}}';
+    fs.writeFileSync(file, raw);
+    recordProvision(mycoHome, { version: 'test', serverUrl: A, agents: ['claude-code', agent] });
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(installer.reconcileRetiredHookSettings()).toBeNull();
+      warn.mockClear();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const err: string[] = [];
+        expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: line => err.push(line) })).toBe(false);
+        expect(err.filter(line => line.includes(file))).toHaveLength(1);
+        expect(err.join('\n')).toContain('nothing was written there');
+        expect(readProvisionRecord(mycoHome)).toMatchObject({ agents: [agent], pendingLogout: { [agent]: A } });
+        expect(JSON.parse(fs.readFileSync(logoutJournalPath(A, mycoHome), 'utf8')).phase).toBe('config');
+        expect(fs.readFileSync(file, 'utf8')).toBe(raw);
+      }
+      expect(warn).not.toHaveBeenCalled();
+      fs.writeFileSync(file, '{"user":1}');
+      expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: () => {} })).toBe(true);
+      expect(readProvisionRecord(mycoHome)).toBeNull();
+      expect(requests).toHaveLength(1);
+    } finally { warn.mockRestore(); }
+  });
+
+  it('records the failed agent leaving destination beside the surviving default and clears it on retry', async () => {
+    join(A); join(B);
+    recordDefaultDeployment(A, { mycoHome });
+    globalInstaller(A).install();
+    const cursor = new SymbiontInstaller(loadManifests().find(manifest => manifest.name === 'cursor')!, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(A);
+    cursor.install();
+    const file = globalInstaller(A).memberGlobalTargets().mcp[0];
+    const clean = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '\ufeff' + clean);
+    const partial = await logoutDeployment(A, { mode: 'revoke' }, deps);
+    expect(partial.unreconciledAgents).toEqual([{ agent: 'claude-code', reason: expect.stringContaining(file) }]);
+    expect(readProvisionRecord(mycoHome)).toMatchObject({ serverUrl: B, agents: expect.arrayContaining(['claude-code', 'cursor']), pendingLogout: { 'claude-code': A } });
+    expect(fs.readFileSync(file, 'utf8')).toBe('\ufeff' + clean);
+    expect(cursor.inspectMemberMcp()[0].present).toBe(true);
+    fs.writeFileSync(file, clean);
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toEqual([]);
+    expect(readProvisionRecord(mycoHome)?.serverUrl).toBe(B);
+    expect(readProvisionRecord(mycoHome)?.pendingLogout).toBeUndefined();
+    expect(fs.readFileSync(file, 'utf8')).toContain(B);
+    expect(fs.readFileSync(file, 'utf8')).not.toContain(A);
+    expect(requests).toHaveLength(1);
+  });
+
   for (const agent of ['copilot', 'cursor']) it(`finishes other agents and returns a retryable partial logout for BOM ${agent} hooks`, async () => {
     join(A);
     const manifests = loadManifests();

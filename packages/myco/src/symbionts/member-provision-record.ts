@@ -23,6 +23,8 @@ export interface ProvisionRecord {
   binaries?: Record<string, string>;
   /** Hook trust actions waiting to reach the Deployment. */
   pendingTrust?: Record<string, { action: string; at: number }>;
+  /** Agents whose configuration still needs logout reconciliation, by leaving Deployment. */
+  pendingLogout?: Record<string, string>;
   at: number;
 }
 
@@ -52,7 +54,9 @@ export function readProvisionRecord(mycoHome: string): ProvisionRecord | null {
       ? Object.fromEntries(Object.entries(value.binaries).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : undefined;
     const pendingTrust = value.pendingTrust !== null && typeof value.pendingTrust === 'object' && !Array.isArray(value.pendingTrust)
       ? Object.fromEntries(Object.entries(value.pendingTrust).filter(([, trust]) => trust !== null && typeof trust === 'object' && typeof trust.action === 'string' && Number.isFinite(trust.at))) : undefined;
-    return { version: value.version, serverUrl: value.serverUrl, agents: value.agents.filter((a): a is string => typeof a === 'string'), ...(binaries === undefined ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), at: Number(value.at ?? 0) };
+    const pendingLogout = value.pendingLogout !== null && typeof value.pendingLogout === 'object' && !Array.isArray(value.pendingLogout)
+      ? Object.fromEntries(Object.entries(value.pendingLogout).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : undefined;
+    return { version: value.version, serverUrl: value.serverUrl, agents: value.agents.filter((a): a is string => typeof a === 'string'), ...(binaries === undefined ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined ? {} : { pendingLogout }), at: Number(value.at ?? 0) };
   } catch {
     return null;
   }
@@ -73,11 +77,18 @@ function writeProvisionRecord(mycoHome: string, record: Omit<ProvisionRecord, 'a
   const kept = !opts.replace && before !== null ? before.agents : [];
   const binaries = { ...(!opts.replace && before !== null ? before.binaries : {}), ...record.binaries };
   const pendingTrust = record.pendingTrust ?? (!opts.replace && before !== null ? before.pendingTrust : undefined);
-  const next: ProvisionRecord = { version: record.version, serverUrl: record.serverUrl, agents: [...new Set([...kept, ...record.agents])].sort(), ...(Object.keys(binaries).length === 0 ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), at: record.at ?? Date.now() };
-  if (record.at === undefined && before !== null && before.version === next.version && before.serverUrl === next.serverUrl && JSON.stringify(before.agents) === JSON.stringify(next.agents) && JSON.stringify(before.binaries) === JSON.stringify(next.binaries) && JSON.stringify(before.pendingTrust) === JSON.stringify(next.pendingTrust)) return before;
+  const pendingLogout = record.pendingLogout ?? (!opts.replace && before !== null ? before.pendingLogout : undefined);
+  const next: ProvisionRecord = { version: record.version, serverUrl: record.serverUrl, agents: [...new Set([...kept, ...record.agents])].sort(), ...(Object.keys(binaries).length === 0 ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined || Object.keys(pendingLogout).length === 0 ? {} : { pendingLogout }), at: record.at ?? Date.now() };
+  if (record.at === undefined && before !== null && before.version === next.version && before.serverUrl === next.serverUrl && JSON.stringify(before.agents) === JSON.stringify(next.agents) && JSON.stringify(before.binaries) === JSON.stringify(next.binaries) && JSON.stringify(before.pendingTrust) === JSON.stringify(next.pendingTrust) && JSON.stringify(before.pendingLogout) === JSON.stringify(next.pendingLogout)) return before;
   fs.mkdirSync(path.dirname(provisionRecordPath(mycoHome)), { recursive: true, mode: 0o700 });
   atomicWriteFileSync(provisionRecordPath(mycoHome), `${JSON.stringify(next, null, 2)}\n`);
   return next;
+}
+
+function retainedProvisionMetadata(record: ProvisionRecord | null, agents: readonly string[]): Pick<ProvisionRecord, 'binaries' | 'pendingTrust' | 'pendingLogout'> {
+  const retain = <V>(entries: Record<string, V> | undefined): Record<string, V> | undefined => entries === undefined ? undefined
+    : Object.fromEntries(Object.entries(entries).filter(([id]) => agents.includes(id)));
+  return { binaries: retain(record?.binaries), pendingTrust: retain(record?.pendingTrust), pendingLogout: retain(record?.pendingLogout) };
 }
 
 /** Hold a hook trust action until its report is accepted. */
@@ -104,11 +115,9 @@ export function reconcileProvisionAgents(mycoHome: string, provision: Pick<Provi
   return withProvisionLock(mycoHome, () => {
     const before = readProvisionRecordStrict(mycoHome);
     const agents = [...new Set([...(before?.agents ?? []).filter(agent => !uncapturable.has(agent)), ...provision.discovered])].sort();
-    const retain = <V>(entries: Record<string, V> | undefined): Record<string, V> | undefined => entries === undefined ? undefined
-      : Object.fromEntries(Object.entries(entries).filter(([id]) => agents.includes(id)));
     return writeProvisionRecord(mycoHome, {
       agents, version: before?.version ?? provision.version, serverUrl: before?.serverUrl ?? provision.serverUrl,
-      binaries: retain(before?.binaries), pendingTrust: retain(before?.pendingTrust),
+      ...retainedProvisionMetadata(before, agents),
     }, { replace: true });
   });
 }
@@ -118,11 +127,8 @@ export function forgetProvision(mycoHome: string, agent: string): void {
   withProvisionLock(mycoHome, () => {
     const record = readProvisionRecord(mycoHome);
     if (record === null) return;
-    const binaries = { ...record.binaries };
-    const pendingTrust = { ...record.pendingTrust };
-    delete binaries[agent];
-    delete pendingTrust[agent];
-    writeProvisionRecord(mycoHome, { ...record, agents: record.agents.filter((id) => id !== agent), binaries, pendingTrust }, { replace: true });
+    const agents = record.agents.filter((id) => id !== agent);
+    writeProvisionRecord(mycoHome, { ...record, agents, ...retainedProvisionMetadata(record, agents) }, { replace: true });
   });
 }
 
@@ -132,17 +138,21 @@ export function reconcileProvisionDeployment(mycoHome: string, leavingUrl: strin
     const record = readProvisionRecord(mycoHome);
     if (record === null) return;
     const [held, leaving] = [record.serverUrl, leavingUrl].map((url) => deploymentUrl(normalizeMemberServerAddress(url)?.origin ?? url));
-    if (held !== leaving) return;
-    if (nextDefault !== null) {
-      writeProvisionRecord(mycoHome, { ...record, serverUrl: nextDefault }, { replace: true });
+    const pendingLogout = Object.fromEntries(Object.entries(record.pendingLogout ?? {}).filter(([agent, url]) => url !== leaving || unreconciledAgents.includes(agent)));
+    for (const agent of record.agents) if (unreconciledAgents.includes(agent)) pendingLogout[agent] = leaving;
+    const retrying = Object.values(record.pendingLogout ?? {}).includes(leaving);
+    if (held !== leaving && !(retrying && nextDefault === null)) {
+      if (JSON.stringify(record.pendingLogout ?? {}) !== JSON.stringify(pendingLogout)) writeProvisionRecord(mycoHome, { ...record, pendingLogout }, { replace: true });
       return;
     }
-    const agents = record.agents.filter(agent => unreconciledAgents.includes(agent));
+    if (nextDefault !== null) {
+      writeProvisionRecord(mycoHome, { ...record, serverUrl: nextDefault, pendingLogout }, { replace: true });
+      return;
+    }
+    const agents = record.agents.filter(agent => agent in pendingLogout);
     if (agents.length === 0) fs.rmSync(provisionRecordPath(mycoHome), { force: true });
     else {
-      const retain = <V>(entries: Record<string, V> | undefined): Record<string, V> | undefined => entries === undefined ? undefined
-        : Object.fromEntries(Object.entries(entries).filter(([id]) => agents.includes(id)));
-      writeProvisionRecord(mycoHome, { ...record, agents, binaries: retain(record.binaries), pendingTrust: retain(record.pendingTrust) }, { replace: true });
+      writeProvisionRecord(mycoHome, { ...record, agents, ...retainedProvisionMetadata({ ...record, pendingLogout }, agents) }, { replace: true });
     }
   });
 }

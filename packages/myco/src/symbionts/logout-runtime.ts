@@ -50,8 +50,7 @@ export function logoutDeployment(
       const { problems } = reconciliation;
       for (const manifest of loadManifests()) {
         const installer = new SymbiontInstaller(manifest, mycoHome, packageRoot, false, mycoHome).withoutProjectRoot();
-        reconciliation.attempt(manifest, () => installer.reconcileDeploymentLogout(serverUrl, nextDefault, keepHooks,
-          keepHooks ? undefined : message => problems.set(manifest.name, message)));
+        reconciliation.attempt(manifest, () => installer.reconcileDeploymentLogout(serverUrl, nextDefault, keepHooks));
       }
       reconcileProvisionDeployment(mycoHome, serverUrl, nextDefault, [...problems.keys()]);
       reconciliation.throwUnexpected();

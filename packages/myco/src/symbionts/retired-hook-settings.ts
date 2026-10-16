@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 
 export interface RetiredSettingsConflict { key: string; hash: string }
 
+export class RetiredHookSettingsParseError extends Error { }
+
 function hasRetiredRootKey(raw: string, keys: string[]): boolean {
   let depth = 0;
   for (const match of raw.matchAll(/"(?:\\.|[^"\\])*"|[{}\[\]]/g)) {
@@ -29,12 +31,17 @@ function valueHash(value: unknown): string {
 export function retiredHookSettings(raw: string, retired: Record<string, unknown>): { text: string; conflicts: RetiredSettingsConflict[] } {
   const keys = Object.keys(retired);
   if (!hasRetiredRootKey(raw, keys)) return { text: raw, conflicts: [] };
-  const data = JSON.parse(raw) as Record<string, unknown>;
+  let data: Record<string, unknown>;
+  try { data = JSON.parse(raw) as Record<string, unknown>; }
+  catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw new RetiredHookSettingsParseError(error.message, { cause: error });
+  }
   const document = parseDocument(raw);
-  if (document.errors.length > 0) throw document.errors[0];
-  if (!isMap(document.contents)) throw new Error('Hooks file must be a JSON object');
+  if (document.errors.length > 0) throw new RetiredHookSettingsParseError(document.errors[0].message, { cause: document.errors[0] });
+  if (!isMap(document.contents)) throw new RetiredHookSettingsParseError('Hooks file must be a JSON object');
   const pairs = document.contents.items.map(pair => {
-    if (!isScalar(pair.key) || !pair.key.range || !pair.value?.range) throw new Error('Cannot locate hooks entry');
+    if (!isScalar(pair.key) || !pair.key.range || !pair.value?.range) throw new RetiredHookSettingsParseError('Cannot locate hooks entry');
     return { key: String(pair.key.value), start: pair.key.range[0], end: pair.value.range[1] };
   });
   const conflicts: RetiredSettingsConflict[] = [];

@@ -81,6 +81,29 @@ function member(): void {
 }
 
 describe('member-only remove', () => {
+  it('retains a registered agent after repeated retired-settings parse refusals', async () => {
+    member();
+    const cursor = new SymbiontInstaller(loadManifests().find(manifest => manifest.name === 'cursor')!, home, resolvePackageRoot(), false, home).withoutProjectRoot().forDeployment(SERVER);
+    cursor.install();
+    const file = cursor.memberGlobalTargets().hooks!;
+    const raw = '{"user":1,"user":2,"chat.tools.terminal.autoApprove":{"myco":true,"myco-dev":true}}';
+    fs.writeFileSync(file, raw);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(cursor.reconcileRetiredHookSettings()).toBeNull();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        warn.mockClear();
+        await run(['--purge', '--yes'], deps());
+        expect(process.exitCode).toBe(1);
+        expect(readProvisionRecord(home)).toMatchObject({ agents: ['cursor'] });
+        expect(warn.mock.calls.filter(([line]) => String(line).includes(file))).toHaveLength(1);
+        expect(fs.readFileSync(file, 'utf8')).toBe(raw);
+        expect(cursor.inspectMemberMcp().some(entry => entry.present)).toBe(true);
+        expect(fs.existsSync(path.join(home, 'install.json'))).toBe(true);
+      }
+    } finally { warn.mockRestore(); }
+  });
+
   for (const unexpected of [false, true]) it(`continues the uninstall pass after ${unexpected ? 'an unexpected error' : 'a typed read refusal'}, then reports failure`, async () => {
     member();
     const manifests = loadManifests();
