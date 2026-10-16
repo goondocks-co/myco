@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { run, type UpgradeDeps } from '@myco/cli/update.js';
 import { run as alias } from '@myco/cli/upgrade.js';
+import { placeExecutable } from '@myco/install/place-binary.js';
 import { writeInstallMarker } from '@myco/install/managed-binary.js';
 import { readUpdateNotice } from '@myco/upgrade/check-cache.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
@@ -22,6 +23,18 @@ beforeEach(() => {
   writeInstallMarker(home, { channel: 'alpha', source: 'curl', bin: path.join(home, 'bin', 'myco') });
 });
 afterEach(() => { log.mockRestore(); error.mockRestore(); restore(); process.exitCode = 0; fs.rmSync(home, { recursive: true, force: true }); });
+const prepareStage = (events: string[]) => async () => {
+  events.push('verify');
+  const versionDir = path.join(home, 'release');
+  fs.mkdirSync(versionDir, { recursive: true });
+  fs.writeFileSync(path.join(versionDir, 'myco'), '2.0.0-alpha.3');
+  fs.writeFileSync(path.join(versionDir, 'myco.exe'), '2.0.0-alpha.3');
+  return { version: '2.0.0-alpha.3', versionDir };
+};
+const place = (events: string[]) => (source: string, dest: string) => {
+  events.push('adopt');
+  placeExecutable(source, dest);
+};
 const refs = (version: string) => ({ targetVersion: version, assetName: 'myco-darwin-arm64', assetUrl: 'fixture', sha256sumsUrl: 'sums' });
 it('upgrade is exactly the update operation', () => { expect(alias).toBe(run); });
 it('verifies and adopts before refreshing agents and reports the recorded channel', async () => {
@@ -29,8 +42,8 @@ it('verifies and adopts before refreshing agents and reports the recorded channe
   await run([], {
     home, currentVersion: '2.0.0-alpha.2', isMemberHome: () => true,
     resolveRefs: async channel => { expect(channel).toBe('alpha'); return refs('2.0.0-alpha.3'); },
-    stageBinary: async () => { events.push('verify'); return { version: '2.0.0-alpha.3', versionDir: home }; },
-    adoptStaged: async () => { events.push('adopt'); },
+    stageBinary: prepareStage(events),
+    placeBinary: place(events), probeVersion: file => fs.readFileSync(file, 'utf8'),
     refreshMember: async () => { events.push('refresh'); },
   });
   expect(events).toEqual(['verify', 'adopt', 'refresh']);
@@ -50,7 +63,7 @@ it('refreshes an already current member and surfaces refresh failure with the ex
 it('check reports only, never stages, adopts or refreshes, and stores a channel-scoped doctor check', async () => {
   const forbidden = async () => { throw new Error('check mutated the install'); };
   await run(['--check'], {
-    home, currentVersion: '2.0.0-alpha.2', stageBinary: forbidden, adoptStaged: forbidden, refreshMember: forbidden,
+    home, currentVersion: '2.0.0-alpha.2', stageBinary: forbidden, placeBinary: forbidden, refreshMember: forbidden,
     checkFn: async () => ({ id: 'myco', display_name: 'Myco', package_name: '@goondocks/myco', installed: true, installed_version: '2.0.0-alpha.2',
       latest_version: '2.0.0-alpha.3', latest_stable: null, latest_beta: null, update_available: true, revert_available: false }),
   });
@@ -77,7 +90,7 @@ it('a runner home delegates all selection flags to the idle-only runner path and
       runnerServiceInstalled: () => true,
       runRunner: async args => { collected.push([...args]); return true; },
       resolveRefs: async () => { throw new Error('runner bypassed its update owner'); },
-      adoptStaged: async () => { throw new Error('runner adopted outside idle boundary'); },
+      placeBinary: async () => { throw new Error('runner adopted outside idle boundary'); },
     });
   }
   expect(collected).toEqual([
@@ -92,7 +105,7 @@ it('checks the exact requested version rather than a newer channel release, with
   await run(['--check', '--target-version', '2.0.0-alpha.4'], {
     home, currentVersion: '2.0.0-alpha.3', targetTriple: () => 'darwin-arm64',
     fetchReleases: async () => ['2.0.0-alpha.5', '2.0.0-alpha.4'].map(version => ({ tag_name: `myco/v${version}`, prerelease: true, assets: [] })),
-    stageBinary: forbidden, adoptStaged: forbidden, refreshMember: forbidden,
+    stageBinary: forbidden, placeBinary: forbidden, refreshMember: forbidden,
   });
   expect(output.join('\n')).toContain('from 2.0.0-alpha.3 to 2.0.0-alpha.4 on channel alpha');
   expect(output.join('\n')).not.toContain('2.0.0-alpha.5');
@@ -106,8 +119,8 @@ for (const mode of ['registered-but-uninstalled member', 'foreground-only runner
     runnerRecords: () => [{ version: 1, serverUrl: 'https://fixture.invalid', runnerId: 'runner', name: 'fixture', token: 'fixture' }],
     runRunner: async () => { throw new Error('uninstalled service delegated'); },
     resolveRefs: async () => refs('2.0.0-alpha.3'),
-    stageBinary: async () => { events.push('verify'); return { version: '2.0.0-alpha.3', versionDir: home }; },
-    adoptStaged: async () => { events.push('adopt'); },
+    stageBinary: prepareStage(events),
+    placeBinary: place(events), probeVersion: file => fs.readFileSync(file, 'utf8'),
     refreshMember: async () => { events.push('refresh'); },
   });
   expect(events).toEqual(mode.includes('member') ? ['verify', 'adopt', 'refresh'] : ['verify', 'adopt']);

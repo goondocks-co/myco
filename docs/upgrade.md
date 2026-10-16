@@ -12,6 +12,12 @@ myco doctor
 
 Myco 2.0 updates on demand on member machines. A member installation runs no member update timer or local service. `--check` reports availability without replacing the binary or changing agent setup. `myco update` verifies the download, replaces the installed binary and refreshes global agent configuration, even when the binary is already current. Read its result for any remaining step, then start a new coding-agent session. Doctor checks the connection and setup and reports cached update information.
 
+Binary updates support macOS, Linux and Windows. Myco checks the downloaded version before and after replacement and keeps the previous binary beside the installed one. If the replacement fails its check, the result says **update rolled back** and names the restored version. A version that failed verification is skipped on later updates.
+
+A development build or a runtime pin selecting another binary reports **binary update skipped**, with its reason. `myco update --skip-binary` explicitly keeps the binary and still refreshes agent setup. Automatic updates also skip non-default Myco homes; a person can update an installation using `MYCO_HOME` or `MYCO_BIN_DIR` as usual. If another update is running, Myco says so.
+
+Agent setup runs after the binary step, including a skipped update or rollback. When another Myco home manages this machine's agent configuration, its global hooks, MCP entries and skill links are preserved. To explicitly transfer responsibility to this home, run `myco update --claim`. `--check` never takes responsibility or refreshes agents.
+
 The installer records a release channel. **Stable** selects stable releases; **beta** includes beta and stable; **alpha** includes alpha, beta and stable. Updates choose the newest eligible version and keep your current build when the available one is older. A fresh installer chooses an available 2.x stable release, then beta, then alpha when no later release phase exists.
 
 To use another channel for one update:

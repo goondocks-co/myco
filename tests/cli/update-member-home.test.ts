@@ -13,6 +13,7 @@ import { run } from '@myco/cli/update.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { getPluginVersion } from '@myco/version.js';
+import { claimSubsystem, readClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/member/subsystem-claim.js';
 
 let home: string;
 let agentHome: string;
@@ -35,10 +36,11 @@ afterEach(() => {
   fs.rmSync(agentHome, { recursive: true, force: true });
 });
 
-async function update(): Promise<string> {
+async function update(args: string[] = []): Promise<string> {
   const lines: string[] = [];
+  const consoleLog = spyOn(console, 'log').mockImplementation((...args) => { lines.push(args.join(' ') + '\n'); });
   const log = spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; });
-  try { await run([], { resolveRefs: async () => null, refreshMember: async () => { if (!runProvision(['--refresh'], { mycoHome: home, cwd: agentHome })) throw new Error('refresh failed'); } }); } finally { log.mockRestore(); }
+  try { await run(args, { resolveRefs: async () => null, refreshMember: async () => { if (!runProvision(['--refresh'], { mycoHome: home, cwd: agentHome })) throw new Error('refresh failed'); } }); } finally { log.mockRestore(); consoleLog.mockRestore(); }
   return lines.join('');
 }
 
@@ -48,6 +50,41 @@ it('sets up again the agents provisioning recorded, with this build, and writes 
   expect(fs.readFileSync(settings(), 'utf8')).toContain('--credential registry');
   expect(readProvisionRecord(home)).toMatchObject({ version: getPluginVersion(), agents: ['claude-code'] });
   expect(fs.existsSync(path.join(home, 'last-update-version'))).toBe(false);
+});
+
+it('explicit skip still refreshes agents and releases the binary lease before provisioning', async () => {
+  recordProvision(home, { version: '2.0.0-beta.0', serverUrl: 'https://myco.example', agents: ['claude-code'] });
+  const said = await update(['--skip-binary']);
+  expect(said).toContain('binary update skipped (--skip-binary requested)');
+  expect(said).toContain('Capture is set up for Claude Code.');
+  expect(fs.readFileSync(settings(), 'utf8')).toContain('--credential registry');
+});
+
+it('preserves global config and skill links under a peer claim until --claim explicitly transfers it', async () => {
+  recordProvision(home, { version: '2.0.0-beta.0', serverUrl: 'https://myco.example', agents: ['claude-code'] });
+  const peer = path.join(agentHome, 'peer-home');
+  fs.mkdirSync(peer);
+  claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, peer);
+  const bytes = '{"userSetting": true}\n';
+  fs.writeFileSync(settings(), bytes);
+  const previousClaimsHome = process.env.MYCO_CLAIMS_HOME;
+  process.env.MYCO_CLAIMS_HOME = path.join(home, 'fake-claims');
+  try {
+    expect(await update(['--skip-binary'])).toContain(`global agent setup is managed by ${peer}`);
+    expect(fs.readFileSync(settings(), 'utf8')).toBe(bytes);
+    expect(fs.existsSync(path.join(agentHome, '.claude.json'))).toBe(false);
+    expect(fs.existsSync(path.join(agentHome, '.claude', 'skills'))).toBe(false);
+    expect(readClaim(SYMBIONT_CONFIG_SUBSYSTEM)?.owner).toBe(peer);
+    const said = await update(['--skip-binary', '--claim']);
+    expect(said).toContain('now manages this machine');
+    expect(readClaim(SYMBIONT_CONFIG_SUBSYSTEM, resolveClaimsHome())?.owner).toBe(home);
+    expect(fs.readFileSync(settings(), 'utf8')).toContain('--credential registry');
+    expect(fs.existsSync(path.join(agentHome, '.claude.json'))).toBe(true);
+    expect(fs.readdirSync(path.join(agentHome, '.claude', 'skills')).length).toBeGreaterThan(0);
+  } finally {
+    if (previousClaimsHome === undefined) delete process.env.MYCO_CLAIMS_HOME; else process.env.MYCO_CLAIMS_HOME = previousClaimsHome;
+    process.exitCode = 0;
+  }
 });
 
 it('sets up nothing where no provisioning is recorded, and says how, once', async () => {

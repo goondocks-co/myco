@@ -178,6 +178,7 @@ export interface StageBinarySuccess {
 /** Result of a failed `stageBinary`. */
 export interface StageBinaryError {
   error: string;
+  verificationFailed?: boolean;
 }
 
 export type StageBinaryResult = StageBinarySuccess | StageBinaryError;
@@ -278,6 +279,7 @@ export async function stageBinary(
     try { fs.rmSync(vDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     return {
       error: `could not stage binary to ${vBinPath}: ${err instanceof Error ? err.message : String(err)} — staging aborted (stable binary untouched)`,
+      verificationFailed: true,
     };
   }
 
