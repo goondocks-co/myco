@@ -18,28 +18,44 @@ user-invocable: true
 
 The Cloudflare Deployment is one of two front doors. It is storage, MCP, ingest and a scheduler; it runs no harness. Provisioning is **one verb from artifacts the binary carries** — there is no source checkout on the machine that deploys, and no container runtime anywhere.
 
-## The operator contract
+## Guided owner setup
 
-Node and wrangler are prerequisites **on the operator's machine for provisioning**, not on machines merely capturing sessions or running tasks, and not inside the Deployment.
+Lead with `myco setup` for a new owner. On a fresh machine, choose **Start a new Myco**, then Cloudflare. To choose explicitly:
 
 ```bash
-npm install -g wrangler && wrangler login
+myco setup --create cloudflare
+```
+
+Node and Wrangler are prerequisites on the operator's machine. Setup asks for the Cloudflare account and address before creating resources, guides GitHub sign-in registration, prints a private owner link and waits for linking before signing this machine in. Choose the address before registering sign-in.
+
+Rerun `myco setup` after interruption; it continues from observed state. Existing machine connections can select a joining journey, so use `--create cloudflare` explicitly when creating is intended. Use `myco setup --status` for read-only progress, with `--check-remote` for remote checks.
+
+After sign-in, follow **Get started** on **Today** for the next action. Creating a server does not enroll a runner. A runner is an explicit choice on a machine with a supported coding agent signed in; see [Runners](https://myco.sh/runners). Automatic work also needs **Work on a schedule** enabled in **Settings**.
+
+For a 1.4 machine, follow **myco-setup** or [Moving from Myco 1.4](https://myco.sh/upgrade#upgrading-from-myco-14). Guided setup previews the move and asks for approval. The manual reference is `myco cutover --dry-run`, then `myco cutover`; keep its backups and `restore.md`. `myco cutover --dismiss-earlier-copies` only acknowledges earlier copies locally after review; it deletes no history and contacts no Deployment.
+
+To leave a wrong Deployment, use `myco logout <address>`. It preserves capture and runner registrations and updates each agent separately. A partial logout names any agent configuration it could not update; fix the named files and rerun the same command, even after local membership has been removed. With an unreachable server, `myco logout <address> --local-only` removes local connections without revoking the remote credential.
+
+## Manual operator reference
+
+Node and Wrangler are needed here, not on machines merely capturing sessions or running tasks. Server commands select the sole existing Deployment, or local on a fresh home. If both Deployments exist, or an old Compose installation is retained, name the supported target explicitly.
+
+```bash
+npm install -g wrangler
+wrangler login
+wrangler whoami
 myco server create --target cloudflare --account-id <id> [--url https://myco.example.com]
 myco server github-app --target cloudflare --url <chosen-address>
 myco server setup-owner --target cloudflare
-myco server status   --target cloudflare
-myco server update   --target cloudflare
+myco server status --target cloudflare
+myco server update --target cloudflare
 myco server rollback --target cloudflare [--version <id>]
-myco server destroy  --target cloudflare --yes
+myco server destroy --target cloudflare --yes
 ```
 
-Choose the address before registering GitHub sign-in. Use the printed workers.dev address or a custom domain in the same Cloudflare account. Complete GitHub app registration, then open the private, expiring owner link from `setup-owner`, sign in and choose **Connect this account**. Repeating owner setup replaces a pending link; an already connected account is preserved and setup refuses. Hosted owner setup works through the operator's Cloudflare login while the Deployment keeps serving.
+Use the printed workers.dev address or a custom domain in the same Cloudflare account. Complete GitHub app registration, then open the private, expiring owner link from `setup-owner`, sign in and choose **Connect this account**. Repeating owner setup replaces a pending link; an already connected account is preserved and setup refuses. Hosted owner setup uses the operator's Cloudflare login while the Deployment keeps serving.
 
-Sign this machine in with `myco setup --join <address>`. Invite teammates through **People & machines** → **Invite a teammate** and connect dashboard accounts through **Connect GitHub**. For guided owner creation, use `myco setup --create cloudflare --account-id <id>`; rerun after an interruption to resume creation, sign-in and owner linking. The standalone server commands above remain available.
-
-Enroll a runner explicitly on a machine with a supported coding agent already signed in: `myco runner register <address>`, approve its device code as an owner or administrator, then `myco runner install --server <address>`. Check `myco runner doctor --server <address>` and the dashboard's **Runners** page. Membership and server creation do not enroll a runner; queued work waits until one is ready.
-
-Project capabilities **Context for sessions**, **Code map** and **Learning** default on. Automatic work also needs **Work on a schedule** enabled in **Settings**. **Runs of one task at once** defaults to 2 across projects and is configurable there. Large initial history learns under a separate first-extraction ramp; see [Runners](https://myco.sh/runners).
+Sign this machine in with `myco setup --join <address>`, then follow the dashboard checklist. Invite teammates through **People & machines** → **Invite a teammate**; **Connect GitHub** gives them dashboard sign-in.
 
 `create` is idempotent: every resource is ensured, an existing record keeps its ids, and a re-run converges. That also makes it the adopt path for resources created by hand. `destroy` removes the Worker only — the database, bucket, store and record all stand, because the Worker is re-creatable from the binary and the data is not.
 

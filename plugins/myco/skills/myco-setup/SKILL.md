@@ -13,7 +13,7 @@ user-invocable: true
 
 # Setting Myco up
 
-After verifying the installed binary below, lead with `myco setup --join <address>` when joining an existing Myco. It guides sign-in, project selection and global agent setup; `myco setup --status` reports observed progress without changing it. Bare `myco setup` offers starting a new Myco, joining one or running Myco's work. Setup handles new owners, joining, running work and moving 1.4 history. Creation supports Cloudflare and loopback access on this machine.
+After verifying the installed binary below, lead with `myco setup --join <address>` when joining an existing Myco. It guides sign-in, project selection and global agent setup; `myco setup --status` reports observed progress without changing it. Bare `myco setup` continues from observed Deployment, membership and runner state. It uses the current repository's connection or the default Myco when possible, asks which observed Myco to continue with when needed, and offers starting, joining or running work when no journey is known. Use `--change` to ask for choices again or `--create`, `--join` or `--runner` to choose explicitly. Setup handles new owners, joining, running work and moving 1.4 history. Creation supports Cloudflare and loopback access on this machine.
 
 The plugin supplies skills and remote tools. Installing the binary adds session and plan capture, import and optional runner commands. A working plugin alone does not mean capture is installed.
 
@@ -51,7 +51,7 @@ Open the printed approval page in a browser signed in to that dashboard, check t
 
 Setup resumes when rerun. `myco login <address>` is the manual sign-in and agent-setup path; login already provisions agents. Use `myco member provision --refresh` only when refreshing existing setup is needed. A bare host uses HTTPS; a loopback Deployment needs its full `http://127.0.0.1:8787` address.
 
-For a new owner, run `myco setup --create cloudflare` or `myco setup --create local`. Setup chooses the address before GitHub registration, prints a private owner link, waits for linking and signs this machine in. Rerun after an interruption to resume from observed state. Local setup is loopback only; a foreground server runs in the user's separate terminal. Follow **myco-server-provisioning** or [Run your own Myco](https://myco.sh/self-hosting) for the standalone operations. Every server command needs an explicit `--target local` or `--target cloudflare`.
+For a new owner, run `myco setup --create cloudflare` or `myco setup --create local`. Setup chooses the address before GitHub registration, prints a private owner link, waits for linking and signs this machine in. Rerun after an interruption to resume from observed state. Local setup is loopback only; a foreground server runs in the user's separate terminal. Follow **myco-server-provisioning** or [Run your own Myco](https://myco.sh/self-hosting) for the standalone operations. Server commands select the sole existing Deployment, default to local on a fresh home and require an explicit `--target local` or `--target cloudflare` when both are held. A retained Compose installation also requires an explicit supported target.
 
 ## 3. Connect repositories
 
@@ -88,13 +88,15 @@ myco cutover --dry-run
 
 Review every destination and proposed agent and service change before `myco cutover`. For several Deployments, sign in to each first. Use `--route <id>=<url>` for an explicit project destination, `--skip <id>` to leave history and spool in place, and, on the manual cutover command, `--map <old-dir>=<repo-root>` for transcripts from old directories. Preview with the same options you will apply. An unresolved or conflicting route needs a decision, not a guessed default.
 
-Cutover preserves original vaults, verifies copies and records history and transcript progress separately in `~/.myco/member/cutover.json`. A partial import remains unfinished; fix the named problem and rerun. It reports old extra plan folders; add wanted folders under **My machines** → **Extra plan folders**. Verify imported history and a new captured session before retiring old data. See [Moving from 1.4](https://myco.sh/upgrade#upgrading-from-myco-14) for fallback routing and additional homes.
+Cutover preserves original vaults, verifies copies and records history and transcript progress separately in `~/.myco/member/cutover.json`. Changed agent settings are backed up under `~/.myco/backups/cutover-<stamp>/`; its `restore.md` describes how to undo those changes. Keep those backups. If earlier copies on other Deployments are reported, review them there before using `myco cutover --dismiss-earlier-copies` to acknowledge the reported copies locally. This contacts no Deployment and deletes no history; new or changed copies are reported again. Run it separately from the move or preview, with only `--legacy-home` if needed. A partial import remains unfinished; fix the named problem and rerun. It reports old extra plan folders; add wanted folders under **My machines** → **Extra plan folders**. Verify imported history and a new captured session before retiring old data. See [Moving from 1.4](https://myco.sh/upgrade#upgrading-from-myco-14) for fallback routing and additional homes.
 
 ## 5. Optional: enroll a runner
 
 Capture, login and server startup do not enroll an executor. Continue only when the owner has chosen this machine to run this Deployment's agent work.
 
-On an always-on machine, run `myco setup` and choose **Run Myco's work**. Sign in to a supported coding agent there under the service account. For a known Myco address:
+The following choice appears when the machine has no existing Myco setup.
+
+On an always-on machine, run `myco setup` and choose **Run Myco's work**. On an already configured machine, use `--runner <address>` to choose runner enrollment explicitly. Sign in to a supported coding agent there under the service account. For a known Myco address:
 
 ```bash
 myco setup --runner <address>
@@ -117,7 +119,7 @@ myco member status
 
 Read the results for credential, agent wiring, queued delivery, runner state and server reachability. Confirm a new session on Today and, when a runner is configured, a completed task under **Myco’s work**.
 
-For the wrong Deployment, use `myco logout <address>`: it revokes this machine's member credential and removes local connections while preserving captured data and runner registrations. If unreachable, `myco logout <address> --local-only` removes only local connections; an administrator must revoke the server credential.
+For the wrong Deployment, use `myco logout <address>`: it revokes this machine's member credential and removes local connections while preserving captured data and runner registrations. Logout reconciles each agent independently. If any agent configuration cannot be updated, it reports partial completion and the file problem; fix that problem and rerun the same logout command, including after the membership was removed. Do not treat a partial result as complete. If unreachable, `myco logout <address> --local-only` removes only local connections; an administrator must revoke the server credential.
 
 Member machines update on demand with `myco update`. Installed runners update between runs; a combined member and runner home may need an interactive `myco update` or `myco member provision --refresh` after handoff to finish agent refresh.
 

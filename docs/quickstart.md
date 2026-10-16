@@ -2,6 +2,10 @@
 
 Connect your machine to a Myco, start a coding session, and see the work on Today. You need a supported coding agent and an invitation from an administrator. If you already sign in to the dashboard, you can use its address instead. To run your own instead, follow [Run your own Myco](self-hosting.md). Moving existing data? See [Moving from Myco 1.4](upgrade.md#upgrading-from-myco-14).
 
+## Run your own instead
+
+After installing the binary below, run `myco setup` from a repository you want to connect. On a fresh machine, choose **Start a new Myco** and where it runs. Setup guides creation, GitHub sign-in, owner linking and this machine's connection. Use `myco setup --create cloudflare` or `myco setup --create local` to choose explicitly. Follow [Run your own Myco](self-hosting.md) for requirements and the manual command reference.
+
 ## 1. Install
 
 On macOS or Linux:
@@ -34,7 +38,7 @@ Run this from the repository you want to connect:
 myco setup --join <address>
 ```
 
-Setup guides sign-in, project selection and agent setup. You can run it again to resume. Joining does not require you to run Myco's own tasks; decline the runner choice if this machine is only for your coding sessions.
+Setup guides sign-in, project selection and agent setup. You can run `myco setup` again to resume; it uses this machine’s existing connections and asks which Myco to continue with if needed. Joining does not require you to run Myco's own tasks; decline the runner choice if this machine is only for your coding sessions.
 
 If you only need sign-in and agent setup, use:
 
@@ -92,6 +96,6 @@ Install Myco from your agent's plugin marketplace, then provide your Myco's addr
 myco logout <address>
 ```
 
-This revokes this machine's member credential for that Myco and removes its local connections. Captured data is kept. Other Mycos and runner registrations remain in place. If the server is unreachable, `myco logout <address> --local-only` removes the local connection without revoking the server credential; an administrator can stop it in the dashboard.
+This revokes this machine's member credential for that Myco and removes its local connections. Captured data is kept. Other Mycos and runner registrations remain in place. Agent configuration is updated separately for each agent. If logout reports that it could not finish updating an agent, fix the named file problem and rerun the same logout command, even if the local connection has already been removed. If the server is unreachable, `myco logout <address> --local-only` removes the local connection without revoking the server credential; an administrator can stop it in the dashboard.
 
 **Known limit:** on a machine joined to two Deployments, an agent's Myco tools may reach only one of them. Check `myco doctor` before relying on tools across both ([#1724](https://github.com/goondocks-co/myco/issues/1724)).

@@ -6,22 +6,21 @@
 
 ### Myco agent
 
-Myco's own LLM-powered intelligence harness. Runs tasks the user does not run directly:
+Myco's own intelligence runs on registered runners. The Deployment builds each task's prompt and checks its result:
 
-- `skill-survey` — scans sessions, identifies candidate skills
-- `full-intelligence` — generates plans, distills patterns
-- `canopy-describe` — produces per-file summaries for code intelligence
+- `extract-curate` — learns from captured sessions
+- `vault-seed` — learns from a connected repository
+- `title-summary` — titles and summarizes sessions
+- `canopy-map` — maps the project's code
 
-The Myco agent **does work users don't do** — that's its whole reason for existing. It's getting more powerful over time. It can do many things a user can do, but its primary domain is editorial work on the project's intelligence graph (spores, plans, sessions, skills, canopy entries).
-
-Its tool surface lives at `packages/myco/src/agent/tools/`. **This is not the MCP surface.** It is internal to the harness and exists to give the agent the affordances it needs to do its work.
+Its editorial work produces project intelligence. Its tools come from the run-scoped MCP surface in `packages/myco-server/src/mcp/run-surface.ts`. Each task declares its allowed tools in `packages/myco-server/src/core/task-catalogue.ts`; the MCP entry point enforces that set. Those credentials do not use the member tool surface.
 
 ### Symbiont
 
 Coding agents like Claude Code, Cursor, opencode, Codex. Symbionts integrate with Myco via three channels:
 
-1. **Hooks** — capture session events (prompts, tool calls, responses) into the vault
-2. **MCP bridge** — read project intelligence via the tools surface
+1. **Hooks** — send capture through the member spool to the Deployment
+2. **Deployment MCP** — read project intelligence and record spores and plans
 3. **Installed skills** — workflows that instruct the symbiont on when to call the CLI, when to consult Myco, when to write spores, etc.
 
 Symbionts **use Myco; they do not control it.** A symbiont:
@@ -32,10 +31,10 @@ Symbionts **use Myco; they do not control it.** A symbiont:
 
 A symbiont does **not**:
 
-- Restart the daemon
+- Restart the Deployment
 - Trigger Myco's own updates
 - Drive backups, restores, or database maintenance
-- Manage skill candidate state (that's the Myco agent's domain via the skill-survey pipeline)
+- Use a run's private tools or credentials
 
 ### User
 
@@ -45,18 +44,18 @@ The human. Uses Myco, controls Myco, reviews Myco-agent-generated data, and admi
 
 | Surface | Path | Audience | Allowed operations |
 |---|---|---|---|
-| **MCP tools** | `packages/myco/src/tools/` | Symbionts | Read + editorial (spores, plans). No admin. |
-| **Skills** | `packages/myco/skills/` (built-in) + vault-generated | Symbionts | Workflow guidance; may instruct symbiont to invoke CLI. |
+| **MCP tools** | `packages/myco-server/src/mcp/` | Symbionts | Read + editorial (spores, plans). No admin. |
+| **Skills** | `packages/myco/skills/` (built-in) | Symbionts | Workflow guidance; may instruct symbiont to invoke CLI. |
 | **CLI** | `packages/myco/src/cli/` | Users (primary), Symbionts (via skills only) | Full surface: read, write, admin, lifecycle. |
 | **UI** | `packages/myco-server/ui/` | Users | Primary interface — everything users do day-to-day. |
-| **Agent harness tools** | `packages/myco/src/agent/tools/` | Myco agent | Internal harness affordances for editorial work. |
-| **Daemon HTTP API** | `packages/myco/src/daemon/api/` | All of the above, indirectly | Source of truth for the runtime; each higher surface is a façade over a subset. |
+| **Run tools** | `packages/myco-server/src/mcp/run-surface.ts` | Myco agent | Task-declared tools for bounded editorial work, attributed to the run. |
+| **Deployment HTTP API** | `packages/myco-server/src/routes.ts` + `pipeline.ts` | Users and authenticated machines | Shared server operations behind the native and Cloudflare front doors. |
 
 ## Why the boundaries matter
 
 When the boundaries blur, three failure modes appear:
 
-1. **Symbionts get capabilities they shouldn't have.** Granting a symbiont an `admin_restart` tool means any drift in that symbiont's planning loop can cycle the user's daemon mid-work. This is the bug Bucket F created and Bucket K reversed.
+1. **Symbionts get capabilities they shouldn't have.** Granting a symbiont an `admin_restart` tool means any drift in that symbiont's planning loop can interrupt the user's Deployment mid-work.
 2. **The Myco agent's internal tool surface bloats with symbiont-facing concerns.** This makes the harness harder to reason about and slows tool dispatch in editorial work.
 3. **Users lose a clear mental model.** "Why does the agent restart on its own?" "Why did Cursor try to apply an update?" Boundary violations confuse users about what each actor is for.
 
@@ -64,7 +63,7 @@ When the boundaries blur, three failure modes appear:
 
 A common third-party principle — *"any action a user can take, an agent can also take"* — is stated without scope. Applied literally to Myco, it produces the same mistake: every UI button gets an MCP tool, including admin surfaces that have no business on the MCP wire.
 
-The correct scope: agent-native parity applies to **the agent's editorial domain**. Symbionts get parity with users for **reading project intelligence**, not for **controlling the runtime**. The Myco agent gets parity with users for **work users delegate to it** (skill survey, plan generation), not for **everything users can do** (restart the daemon, change channels).
+The correct scope: agent-native parity applies to **the agent's editorial domain**. Symbionts get parity with users for **reading project intelligence**, not for **controlling the runtime**. The Myco agent gets parity with users for **work users delegate to it** (learning from sessions, mapping code), not for **everything users can do** (restart the Deployment, change channels).
 
 ## When in doubt
 
@@ -74,10 +73,7 @@ Before adding a new MCP tool, ask:
 2. Is the operation read/editorial, or administrative?
 3. If administrative — does a Skill already exist that instructs the Symbiont to run the corresponding CLI command? If yes, that's the right shape. If not, write the Skill, don't add the tool.
 
-Before adding a new agent harness tool, ask:
-
-1. Is this an affordance Myco's intelligence work genuinely needs?
-2. Would exposing this to Symbionts be safe? If yes, consider whether the same code can live in `tools/` instead of `agent/tools/`. If no, keep it private to the harness.
+Before adding a run tool, identify the task that needs it, add it to that task's declared allowed tools and keep run-only tools off the member surface. When member and run tools perform the same editorial operation, share its underlying implementation.
 
 ## See also
 
