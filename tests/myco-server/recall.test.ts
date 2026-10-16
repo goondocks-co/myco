@@ -387,6 +387,43 @@ describe('prompt selection diagnostics', () => {
     } finally { log.mockRestore(); sqlite.close(); }
   });
 
+  it.each(['spore', 'plan'] as const)('settles candidate branches and their timings after a %s failure', async (failedType) => {
+    const { db, sqlite } = store();
+    sqlite.query(`INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,created_at,updated_at,token_id,received_at)
+      VALUES(?, 'plan', 'history', 'event', 'machine', 'Plan', 'Body', 'hash', 'active', 1, 1, 'token', 1)`).run(SCOPE.projectId);
+    const semantic = await semanticRecall(db, SCOPE)();
+    const query = semantic.vectors.query;
+    const successfulType = failedType === 'spore' ? 'plan' : 'spore';
+    const expected = await query({ projectId: SCOPE.projectId, modelKey: semantic.provider.modelKey }, { values: [1, 0], topK: 100, filters: { type: successfulType } });
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const pendingStarted = new Promise<void>((resolve) => { started = resolve; });
+    semantic.vectors.query = async (scope, options) => {
+      if (options.filters?.type === failedType) throw new Error('vector unavailable');
+      started();
+      await gate;
+      return query(scope, options);
+    };
+    const timings = new ContextTimings();
+    const record = spyOn(timings, 'record');
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    let answered = false;
+    try {
+      const answer = composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, promptId: 'settled', text: PROMPT, now: NOW }, async () => semantic, undefined, timings)
+        .then((body) => { answered = true; return body; });
+      await pendingStarted;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const premature = answered;
+      release();
+      await answer;
+      expect(premature).toBe(false);
+      expect(selectionOf(sqlite, 'settled')).toMatchObject({ [`${successfulType}RawMatches`]: expected.length, [`${successfulType}Joined`]: expected.length });
+      expect(record.mock.calls.filter(([stage]) => stage === 'vector')).toHaveLength(2);
+      expect(record.mock.calls.filter(([stage]) => stage === 'candidate')).toHaveLength(3);
+    } finally { release(); record.mockRestore(); log.mockRestore(); sqlite.close(); }
+  });
+
   it('separates missing semantic configuration, provider unavailability and unexpected embed throws', async () => {
     const { db, sqlite } = store();
     const semantic = await semanticRecall(db, SCOPE)();

@@ -328,7 +328,7 @@ describe('plan selection', () => {
       expect(answer.counts).toMatchObject({ planEligible: 3, planCalibrated: 5, planScored: 3, planRelevant: expected.length, planHydrated: expected.length });
       expect(answer.counts.planProbable).toBeGreaterThanOrEqual(expected.length);
       expect(planReads).toHaveLength(expected.length);
-      expect(planReads.every((row) => row.content === null)).toBe(true);
+      expect(planReads.every((row) => !('content' in row))).toBe(true);
       expect(get).toHaveBeenCalledTimes(1);
       expect(JSON.parse(rows(sqlite)[0]!.plan_ids as string)).toEqual(expected);
       const row = await plans.getPlan(db, SCOPE, 'retry');

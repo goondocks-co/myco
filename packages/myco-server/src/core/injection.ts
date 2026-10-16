@@ -39,6 +39,7 @@ import { semanticHits, type SemanticSearch } from '../read/embedding.js';
 import { EmbeddingUnavailable } from './embedding/provider.js';
 import { cosineSimilarity, VECTOR_QUERY_LIMIT } from './embedding/vectors.js';
 import type { ContextTimings, ContextTimingStage } from './context-timing.js';
+import { settledAll } from './settled.js';
 
 /** A prompt shorter than this carries too little to serve against. */
 export const MIN_PROMPT_CHARS = 10;
@@ -146,7 +147,7 @@ export class InjectionFailure extends Error {
 async function duringInjection<T>(operation: InjectionFailure['operation'], counts: InjectionCounts, work: () => Promise<T>, timings?: ContextTimings, stage?: ContextTimingStage): Promise<T> {
   const startedAt = stage === undefined || timings === undefined ? 0 : performance.now();
   try { return await work(); }
-  catch (error) { if (error instanceof InjectionFailure) throw error; throw new InjectionFailure(operation, error, { ...counts }); }
+  catch (error) { throw new InjectionFailure(operation, error instanceof InjectionFailure ? error.cause : error, { ...counts }); }
   finally { if (stage !== undefined && timings !== undefined) timings.record(stage, performance.now() - startedAt); }
 }
 
@@ -345,7 +346,7 @@ export async function selectSporesForPrompt(
   const duringCandidate = <T>(operation: 'vector' | 'sql', work: () => Promise<T>): Promise<T> =>
     duringInjection('candidates', counts, work, timings, operation === 'vector' ? 'vector' : 'candidate');
 
-  const [sporeHits, planHits, servedSpores, servedPlans] = await duringInjection('candidates', counts, () => Promise.all([
+  const [sporeHits, planHits, servedSpores, servedPlans] = await duringInjection('candidates', counts, () => settledAll([
     semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'spore', status: 'active' }, observe: (n) => { counts.sporeRawMatches = n.rawMatches; counts.sporeJoined = n.joinedHits; counts.sporeHits = n.filteredHits; }, during: duringCandidate }),
     semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'plan' }, observe: (n) => { counts.planRawMatches = n.rawMatches; counts.planJoined = n.joinedHits; counts.planHits = n.filteredHits; }, during: duringCandidate }),
     duringInjection('candidates', counts, () => injectedSporeIds(db, scope, input.sessionId), timings, 'candidate'),
@@ -368,7 +369,7 @@ export async function selectSporesForPrompt(
     try { return await semantic.vectors.get({ projectId: scope.projectId, modelKey: semantic.provider.modelKey }, planHits.map((h) => h.vector_id)); }
     catch { counts.planCalibrationFailed++; return []; }
   };
-  const [hydrated, planVectors] = await Promise.all([
+  const [hydrated, planVectors] = await settledAll([
     duringInjection('hydrate_spores', counts, () => listSporesByIds(db, scope, relevant.map((s) => s.id)), timings, 'hydrate'),
     loadPlanVectors(),
   ]);
@@ -397,7 +398,7 @@ export async function selectSporesForPrompt(
     observe: (n) => { counts.planCalibrated = n.calibrated; counts.planScored = n.scored; counts.planProbable = n.probable; counts.planSeparated = n.separated; },
   });
   counts.planRelevant = planCandidates.length;
-  const planRows = await duringInjection('hydrate_plans', counts, () => Promise.all(planCandidates.map((h) => getPlan(db, scope, h.id, { includeContent: false }))), timings, 'hydrate');
+  const planRows = await duringInjection('hydrate_plans', counts, () => settledAll(planCandidates.map((h) => getPlan(db, scope, h.id, { summary: true }))), timings, 'hydrate');
   const planItems: InjectionItem[] = planRows.flatMap((row) =>
     row === null || !isLivePlan(row) ? [] : [{ kind: 'plan' as const, id: row.planKey, label: `plan: ${row.status}`, text: row.title ?? row.planKey }]);
   counts.planHydrated = planItems.length;

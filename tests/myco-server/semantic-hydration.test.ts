@@ -13,7 +13,7 @@ import { measuredStore } from './helpers/read-budget.js';
 
 const SCOPE = { projectId: 'proj_1' };
 const MODEL = 'hydration-model';
-const BODY = 'Long preview 😀'.repeat(1_000);
+const BODY = 'Long preview 😀\0'.repeat(1_000);
 type Statement = { sql: string; params: unknown[]; rows: Record<string, unknown>[] };
 
 function capturingStore(db: RelationalStore) {
@@ -158,7 +158,11 @@ for (const target of ['bun', 'workerd-d1'] as const) {
       const previews = capturingStore(db);
       const previewRows = await semanticHits(previews.db, SCOPE, semantic(matches), [1, 0], { topK: 100, preview: true });
       expect(previewRows.map((row) => row.text.slice(0, SEARCH_PREVIEW_CHARS))).toEqual(all.map((row) => row.text.slice(0, SEARCH_PREVIEW_CHARS)));
-      for (const { rows } of previews.statements) for (const row of rows) expect(Array.from(String(row.text)).length).toBeLessThanOrEqual(SEARCH_PREVIEW_CHARS);
+      for (const statement of previews.statements) {
+        for (const row of statement.rows) expect(Array.from(String(row.text)).length).toBeLessThanOrEqual(SEARCH_PREVIEW_CHARS);
+        const explained = (await db.prepare(`EXPLAIN QUERY PLAN ${statement.sql}`).bind(...statement.params).all<{ detail: string }>()).results;
+        expect(explained.filter(({ detail }) => /\bSCAN\b/.test(detail) && !/\bSCAN (?:r|chunks|CONSTANT ROW)\b/.test(detail))).toEqual([]);
+      }
       const search = await semanticSearch(db, SCOPE, semantic(matches), ['spore', 'plan', 'session'], { query: 'fixture prompt' }, 100);
       const expected = (await Promise.all(['spore', 'plan', 'session'].map((type) => oracle(db, matches, { type })))).flat()
         .sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, 100);
@@ -208,3 +212,44 @@ test('multiple hydration chunks are in flight together and observations retain a
     expect(observations.at(-1)).toEqual({ rawMatches: 100, joinedHits: result.length, filteredHits: result.length });
   } finally { sqlite.close(); }
 }, 5_000);
+
+for (const failedChunk of [0, 1]) {
+  test(`hydration settles the other chunk before reporting chunk ${failedChunk}'s failure`, async () => {
+    const sqlite = seededSqlite();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      const db = sqliteD1(sqlite);
+      const matches = await seed(db);
+      const successfulIds = inListChunks(matches)[1 - failedChunk];
+      const expected = await oracle(db, successfulIds);
+      let chunk = 0;
+      let failed!: () => void;
+      const failureStarted = new Promise<void>((resolve) => { failed = resolve; });
+      const wrapped: RelationalStore = { ...db, prepare: (sql) => {
+        const index = chunk++;
+        const wrap = (statement: PreparedStatement): PreparedStatement => ({ ...statement,
+          bind: (...params) => wrap(statement.bind(...params)),
+          all: async <T,>() => {
+            if (index === failedChunk) { failed(); throw new Error('receipt unavailable'); }
+            await gate;
+            return statement.all<T>();
+          },
+        });
+        return wrap(db.prepare(sql));
+      } };
+      const observations: SemanticHitCounts[] = [];
+      let answered = false;
+      const answer = semanticHits(wrapped, SCOPE, semantic(matches), [1, 0], { topK: 100, observe: (n) => observations.push(n) })
+        .then(() => { throw new Error('expected refusal'); }, (error: unknown) => { answered = true; return { error, counts: observations.at(-1) }; });
+      await failureStarted;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const premature = answered;
+      release();
+      const result = await answer;
+      expect(premature).toBe(false);
+      expect(result.error).toMatchObject({ message: 'receipt unavailable' });
+      expect(result.counts).toEqual({ rawMatches: matches.length, joinedHits: expected.length, filteredHits: expected.length });
+    } finally { release(); sqlite.close(); }
+  });
+}

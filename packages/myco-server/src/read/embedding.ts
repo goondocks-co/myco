@@ -4,7 +4,8 @@ import { VECTOR_QUERY_LIMIT, VECTOR_TYPES, vectorMatches, type VectorFilters, ty
 import { inListChunks, type ReadScope } from './scope.js';
 import { SEARCH_PREVIEW_CHARS, type SearchOptions, type SearchResult } from '@goondocks/myco-shared/search-types';
 import { notTombstonedSql } from '../core/tombstones.js';
-import { CURRENT_EMBEDDING_SOURCES, embeddingSourceSelect } from '../db/embedding-sources.js';
+import { CURRENT_EMBEDDING_SOURCES, EMBEDDING_RELEASE_COLUMNS, embeddingSourceSelect } from '../db/embedding-sources.js';
+import { settledAll } from '../core/settled.js';
 
 export interface EmbeddingSource extends VectorMetadata {
   project_id: string;
@@ -32,13 +33,26 @@ interface SemanticHitOptions {
   during?: <T>(operation: 'vector' | 'sql', work: () => Promise<T>) => Promise<T>;
 }
 
+/** A bounded character prefix, including embedded NULs; blob slicing advances past each NUL. */
+function previewSql(text: string): string {
+  return `(WITH RECURSIVE chunks(prefix, rest, remaining) AS (
+    SELECT '', ${text}, ${SEARCH_PREVIEW_CHARS}
+    UNION ALL SELECT prefix || substr(rest, 1, remaining) || char(0),
+      CAST(substr(CAST(rest AS BLOB), instr(CAST(rest AS BLOB), x'00') + 1) AS TEXT),
+      remaining - length(substr(rest, 1, remaining)) - 1
+    FROM chunks WHERE remaining > 0 AND instr(CAST(rest AS BLOB), x'00') > 0
+      AND length(substr(rest, 1, remaining)) < remaining
+  ) SELECT prefix || substr(rest, 1, remaining) FROM chunks
+    WHERE remaining = 0 OR instr(CAST(rest AS BLOB), x'00') = 0
+      OR length(substr(rest, 1, remaining)) = remaining LIMIT 1)`;
+}
+
 /** Receipt ids drive every source lookup; CROSS JOIN preserves that indexed order. */
 function hitHydrationSql(ids: readonly string[], preview: boolean): string {
   const branches = CURRENT_EMBEDDING_SOURCES.map((source) => `SELECT s.*, v.revision,
-    COALESCE((SELECT k.state FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_state,
-    COALESCE((SELECT k.confidence FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_confidence,
+    ${EMBEDDING_RELEASE_COLUMNS},
     r.id AS vector_id, r.neighbor_mean, r.neighbor_std
-    FROM hits r CROSS JOIN (${embeddingSourceSelect(source, preview ? `substr(${source.text}, 1, ${SEARCH_PREVIEW_CHARS})` : "''")}) s
+    FROM hits r CROSS JOIN (${embeddingSourceSelect(source, preview ? previewSql(source.text) : "''")}) s
     CROSS JOIN embedding_versions v
     WHERE r.type = '${source.type}' AND s.project_id = r.project_id AND s.record_id = r.record_id
       AND v.project_id = r.project_id AND v.type = r.type AND v.record_id = r.record_id AND v.revision = r.revision
@@ -57,7 +71,7 @@ export async function semanticHits(db: RelationalStore, scope: ReadScope, semant
   const byId = new Map(hits.map((h) => [h.id, h.score]));
   const rows: SemanticHit[] = [];
   let joinedHits = 0;
-  await during('sql', () => Promise.all(inListChunks(hits.map((h) => h.id)).map(async (ids) => {
+  await during('sql', () => settledAll(inListChunks(hits.map((h) => h.id)).map(async (ids) => {
     const found = await db.prepare(hitHydrationSql(ids, preview))
       .bind(scope.projectId, partition.modelKey, ...ids).all<Omit<SemanticHit, 'score'>>();
     joinedHits += found.results.length;

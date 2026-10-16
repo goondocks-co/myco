@@ -25,10 +25,13 @@ export const embeddingSourceSelect = (s: Source, text = s.text): string => `SELE
 
 const unionOf = (list: readonly Source[]): string => list.map((s) => embeddingSourceSelect(s)).join(' UNION ALL ');
 
+/** The latest release classification for source alias `s`, with checked-time ties ordered by id. */
+export const EMBEDDING_RELEASE_COLUMNS = `COALESCE((SELECT k.state FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_state,
+    COALESCE((SELECT k.confidence FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_confidence`;
+
 /** The `embedding_sources` view over a set of sources. */
 export const embeddingSourcesView = (list: readonly Source[]): string => `CREATE VIEW IF NOT EXISTS embedding_sources AS SELECT s.*, v.revision,
-    COALESCE((SELECT k.state FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_state,
-    COALESCE((SELECT k.confidence FROM knowledge_release_state k WHERE k.project_id = s.project_id AND k.namespace = s.namespace AND k.record_id = s.record_id ORDER BY k.checked_at DESC, k.id LIMIT 1), '') AS release_confidence
+    ${EMBEDDING_RELEASE_COLUMNS}
     FROM (${unionOf(list)}) s JOIN embedding_versions v ON v.project_id = s.project_id AND v.type = s.type AND v.record_id = s.record_id`;
 
 /** The sources with a session dated and stated by what it is presented with; what a search filters on. */

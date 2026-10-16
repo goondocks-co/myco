@@ -37,7 +37,7 @@ export function progressOf(content: string | null): string {
   return total === 0 ? 'N/A' : `${checked}/${total}`;
 }
 
-const columns = (includeContent = true): string => `plan_key, session_id, prompt_id, title, status, ${includeContent ? 'content' : 'NULL AS content'}, blob_key,
+const COLUMNS = `plan_key, session_id, prompt_id, title, status, content, blob_key,
   CASE WHEN ${processedResourceProofSql('plans.project_id', 'plan', 'plans.plan_key', 'plans.blob_key')}
     THEN ${registeredObjectKeySql('plans.project_id', 'plans.blob_key')} END AS object_key,
   origin_path, updated_by, created_at, updated_at`;
@@ -183,7 +183,7 @@ async function selectPlans(
     conditions.push(k.where); params.push(...k.params);
   }
   const { results } = await db
-    .prepare(`SELECT project_id, ${columns()} FROM plans${walks === '' ? '' : ` INDEXED BY ${walks}`} WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC, plan_key DESC LIMIT ?`)
+    .prepare(`SELECT project_id, ${COLUMNS} FROM plans${walks === '' ? '' : ` INDEXED BY ${walks}`} WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC, plan_key DESC LIMIT ?`)
     .bind(...params, k.limit + 1)
     .all<Record<string, unknown>>();
   const shown = results.slice(0, k.limit);
@@ -197,9 +197,12 @@ async function selectPlans(
 }
 
 /** One plan inside the scope, or null — including when the key exists under another project. */
-export async function getPlan(db: RelationalStore, scope: ReadScope, planKey: string, options: { includeContent?: boolean } = {}): Promise<ProjectPlanRow | null> {
-  const row = await db.prepare(`SELECT ${columns(options.includeContent)} FROM plans WHERE project_id = ? AND plan_key = ?`).bind(scope.projectId, planKey).first<Record<string, unknown>>();
+export function getPlan(db: RelationalStore, scope: ReadScope, planKey: string, options: { summary: true }): Promise<Pick<ProjectPlanRow, 'planKey' | 'title' | 'status'> | null>;
+export function getPlan(db: RelationalStore, scope: ReadScope, planKey: string): Promise<ProjectPlanRow | null>;
+export async function getPlan(db: RelationalStore, scope: ReadScope, planKey: string, options: { summary?: boolean } = {}): Promise<Pick<ProjectPlanRow, 'planKey' | 'title' | 'status'> | ProjectPlanRow | null> {
+  const row = await db.prepare(`SELECT ${options.summary ? 'plan_key, title, status' : COLUMNS} FROM plans WHERE project_id = ? AND plan_key = ?`).bind(scope.projectId, planKey).first<Record<string, unknown>>();
   if (row === null) return null;
+  if (options.summary) return { planKey: row.plan_key as string, title: row.title as string | null, status: row.status as string };
   const tags = await tagsOf(db, scope, [planKey]);
   return toPlan(row, tags.get(planKey) ?? []);
 }
