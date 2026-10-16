@@ -9,6 +9,44 @@ import { useTestProcessIdentityReader } from '../../scripts/test-process-tree.mj
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-command-gate-'));
 afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
 
+async function waitForReady(
+  isReady: () => boolean,
+  exited: Promise<number | null>,
+  stderr: () => string,
+  pause: () => Promise<unknown> = () => Bun.sleep(20),
+): Promise<void> {
+  let stopped = false;
+  try {
+    await Promise.race([
+      (async () => { while (!stopped && !isReady()) await pause(); })(),
+      exited.then((status) => { throw new Error(`wrapper exited before readiness (status ${status}): ${stderr()}`); }),
+    ]);
+  } finally {
+    stopped = true;
+  }
+}
+
+describe('command readiness wait', () => {
+  it('reports an exit before readiness with its status and stderr', async () => {
+    let ready = false;
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { resume = resolve; });
+    const wait = waitForReady(() => ready, Promise.resolve(7), () => 'fixture refused', () => paused);
+    await expect(wait).rejects.toThrow('wrapper exited before readiness (status 7): fixture refused');
+    ready = true;
+    resume();
+  });
+
+  it('proceeds when readiness arrives while the wrapper is still running', async () => {
+    let ready = false;
+    let finish!: (status: number) => void;
+    const exited = new Promise<number>((resolve) => { finish = resolve; });
+    await waitForReady(() => ready, exited, () => '', async () => { ready = true; });
+    expect(ready).toBe(true);
+    finish(0);
+  });
+});
+
 describe('non-Bun test command temp boundary', () => {
   for (const mode of [
     { name: 'local', ci: '', strict: '', status: 0, label: 'WARN' },
@@ -31,10 +69,9 @@ describe('non-Bun test command temp boundary', () => {
       });
       let stderr = '';
       wrapper.stderr!.on('data', (chunk) => { stderr += chunk; });
-      const exited = new Promise((resolve, reject) => { wrapper.on('error', reject); wrapper.on('close', resolve); });
+      const exited = new Promise<number | null>((resolve, reject) => { wrapper.on('error', reject); wrapper.on('close', resolve); });
       try {
-        const deadline = Date.now() + 20_000;
-        while (!fs.existsSync(ready) && Date.now() < deadline) await Bun.sleep(20);
+        await waitForReady(() => fs.existsSync(ready), exited, () => stderr);
         expect(fs.existsSync(ready)).toBe(true);
         const sibling = spawnSync('node', ['-e', `require('node:fs').writeFileSync(${JSON.stringify(foreign)}, 'foreign')`]);
         expect(sibling.status).toBe(0);
@@ -82,11 +119,10 @@ describe('non-Bun test command temp boundary', () => {
       const wrapper = spawn('node', args, { env: { ...process.env, MYCO_TEST_CLEANUP_RETRIES: mutation ? '10' : '30', TMPDIR: parent, TEMP: parent, TMP: parent }, stdio: ['ignore', 'pipe', 'pipe'] });
       let stderr = '';
       wrapper.stderr!.on('data', (chunk) => { stderr += chunk; });
-      const exited = new Promise((resolve, reject) => { wrapper.on('error', reject); wrapper.on('close', resolve); });
+      const exited = new Promise<number | null>((resolve, reject) => { wrapper.on('error', reject); wrapper.on('close', resolve); });
       let holder;
       try {
-        const deadline = Date.now() + 20_000;
-        while (!fs.existsSync(ready) && Date.now() < deadline) await Bun.sleep(20);
+        await waitForReady(() => fs.existsSync(ready), exited, () => stderr);
         const file = JSON.parse(fs.readFileSync(ready, 'utf8')) as string;
         const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
         holder = spawn(process.env.MYCO_TEST_PWSH_EXECUTABLE!, ['-NoProfile', '-NonInteractive', '-Command', `
@@ -176,19 +212,20 @@ describe('non-Bun test command temp boundary', () => {
       setInterval(()=>{},1000);
     `;
     const wrapper = spawn('node', ['scripts/run-test-command.mjs', 'node', '-e', script], {
-      env: { ...process.env, TMPDIR: parent, TEMP: parent, TMP: parent }, stdio: 'ignore',
+      env: { ...process.env, TMPDIR: parent, TEMP: parent, TMP: parent }, stdio: ['ignore', 'ignore', 'pipe'],
     });
-    const exited = new Promise((resolve) => wrapper.on('exit', resolve));
+    let stderr = '';
+    wrapper.stderr!.on('data', (chunk) => { stderr += chunk; });
+    const exited = new Promise<number | null>((resolve, reject) => { wrapper.on('error', reject); wrapper.on('close', resolve); });
     let pids: number[] = [];
     const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
     try {
-      const deadline = Date.now() + 20_000;
-      while (!fs.existsSync(ready) && Date.now() < deadline) await Bun.sleep(20);
+      await waitForReady(() => fs.existsSync(ready), exited, () => stderr);
       pids = JSON.parse(fs.readFileSync(ready, 'utf8')) as number[];
       expect(pids.every(alive)).toBe(true);
       wrapper.kill('SIGTERM');
       await exited;
-      while (pids.some(alive) && Date.now() < deadline) await Bun.sleep(20);
+      while (pids.some(alive)) await Bun.sleep(20);
       expect(pids.filter(alive)).toEqual([]);
       expect(fs.readdirSync(parent)).toEqual([]);
     } finally {
