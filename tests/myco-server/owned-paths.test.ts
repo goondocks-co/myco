@@ -14,6 +14,9 @@ import { join } from 'node:path';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { RETIRED_ROUTES, ROUTES, isOwnedPath, ownedPathPatterns } from '@myco-server-worker/routes.js';
 import { withStaticAssets, withStaticMap } from '@myco-server-worker/platform/bun/static.js';
+import { BUNDLED_WORKER } from '@myco/worker-bundle.generated.js';
+import { bootSelfhosted } from '../parity/targets/selfhosted.js';
+import type { ParityTarget } from '../parity/harness.js';
 
 const WRANGLER = readFileSync(join(import.meta.dir, '..', '..', 'packages', 'myco-server', 'wrangler.toml'), 'utf8');
 const tomlValue = (key: string): string => {
@@ -24,6 +27,7 @@ const tomlValue = (key: string): string => {
 const RUN_WORKER_FIRST = [...tomlValue('run_worker_first').matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
 const SHELL = '<!doctype html><div id="root"></div>';
 const SERVER = 'server';
+const DISCOVERY_PATHS = ['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp', '/.well-known/oauth-authorization-server', '/.well-known/openid-configuration', '/.well-known/unknown', '/register'];
 
 /** The dashboard's pages in the plan's URL scheme, each at its bare path. */
 const PAGES = ['/', '/sessions', '/knowledge', '/knowledge/plans', '/work', '/projects', '/people', '/settings', '/status', '/me/machines', '/join', '/link', '/device', '/spores', '/plans', '/p/proj_1/sessions'];
@@ -37,6 +41,8 @@ const PROBES = [...new Set([...PAGES, ...ROUTE_PATHS, ...BARE_PREFIXES, ...[...B
 
 let dir = '';
 let mf: Miniflare | null = null;
+let protocolMf: Miniflare | null = null;
+let native: ParityTarget | null = null;
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'myco-owned-paths-'));
   writeFileSync(join(dir, 'index.html'), SHELL);
@@ -52,8 +58,23 @@ beforeAll(async () => {
     },
   }));
   await mf.ready;
+  protocolMf = new Miniflare(convertV4MiniflareOptions({
+    modules: true,
+    script: Buffer.from(BUNDLED_WORKER, 'base64').toString('utf8'),
+    compatibilityDate: JSON.parse(tomlValue('compatibility_date')) as string,
+    assets: {
+      directory: dir,
+      routerConfig: { has_user_worker: true },
+      run_worker_first: RUN_WORKER_FIRST,
+      assetConfig: { not_found_handling: JSON.parse(tomlValue('not_found_handling')) as 'single-page-application' },
+    },
+  }));
+  await protocolMf.ready;
+  native = await bootSelfhosted({ uiAssets: { 'index.html': new TextEncoder().encode(SHELL) } });
 }, 60_000);
 afterAll(async () => {
+  await native?.stop();
+  await protocolMf?.dispose();
   await mf?.dispose();
   rmSync(dir, { recursive: true, force: true });
 });
@@ -79,6 +100,35 @@ async function selfhosted(path: string, method = 'GET'): Promise<'server' | 'das
 }
 
 describe('the paths the server owns, read the same way on both targets', () => {
+  for (const target of ['cloudflare', 'selfhosted'] as const) {
+    const request = (path: string, method = 'GET') => target === 'cloudflare'
+      ? protocolMf!.dispatchFetch(`http://localhost${path}`, { method })
+      : fetch(`${native!.url}${path}`, { method });
+
+    for (const path of DISCOVERY_PATHS) {
+      it(`[${target}] answers ${path} with JSON 404 on every method`, async () => {
+        for (const method of ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+          const response = await request(path, method);
+          expect({ path, method, status: response.status, type: response.headers.get('content-type')?.split(';')[0] })
+            .toEqual({ path, method, status: 404, type: 'application/json' });
+          const body = await response.text();
+          expect(body).not.toContain('<');
+          if (method === 'HEAD') expect(body).toBe('');
+          else expect(JSON.parse(body)).toEqual({ error: 'not_found' });
+        }
+      });
+    }
+
+    it(`[${target}] serves the dashboard shell at / and /sessions`, async () => {
+      for (const path of ['/', '/sessions']) {
+        const response = await request(path);
+        expect(response.status).toBe(200);
+        expect(response.headers.get('content-type')).toContain('text/html');
+        expect(await response.text()).toBe(SHELL);
+      }
+    });
+  }
+
   it('serves the Sessions page at /sessions on both targets, while the server keeps /sessions/register', async () => {
     expect(await edge('/sessions')).toBe('dashboard');
     expect(await selfhosted('/sessions')).toBe('dashboard');

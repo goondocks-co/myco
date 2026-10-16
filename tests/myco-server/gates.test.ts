@@ -5,7 +5,7 @@ import { Database } from 'bun:sqlite';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RETIRED_ROUTES, ROUTES, SESSION_AUTHORITIES, grantRoutes, isOwnedPath, ownedPathPatterns, type Shape } from '@myco-server-worker/routes.js';
+import { RETIRED_ROUTES, ROUTES, SESSION_AUTHORITIES, UNSERVED_PATHS, grantRoutes, isOwnedPath, ownedPathPatterns, type Shape } from '@myco-server-worker/routes.js';
 import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
 import worker from '@myco-server-worker/index.js';
 import { createIngestThrottle } from './helpers/throttle.js';
@@ -188,10 +188,11 @@ describe('gates', () => {
   });
 
   it('refuses probed paths absent from the route table, via the deployed entry', async () => {
+    expect(UNSERVED_PATHS).toEqual(['/.well-known/*', '/register']);
     for (const path of PROBE_PATHS) {
       for (const method of ['GET', 'POST']) {
         const res = await worker.fetch(withSource(path, { method, body: method === 'POST' ? '{}' : undefined }), env());
-        expect({ method, path, status: res.status }).toEqual({ method, path, status: 401 });
+        expect({ method, path, status: res.status }).toEqual({ method, path, status: isOwnedPath(path, UNSERVED_PATHS) ? 404 : 401 });
       }
     }
   });
