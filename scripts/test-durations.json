@@ -779,7 +779,8 @@
     "tests/utils/lifecycle-lock.test.ts": 930,
     "tests/utils/lock-file-identity.test.ts": 4776,
     "tests/utils/repository-name.test.ts": 476,
-    "tests/utils/windows-atomic-replace.test.ts": 2
+    "tests/utils/windows-atomic-replace.test.ts": 2,
+    "tests/myco-server/semantic-hydration.test.ts": 12000
   },
   "parity": {
     "D1: latest migration upgrades seeded previous schema to expected state": 45000,

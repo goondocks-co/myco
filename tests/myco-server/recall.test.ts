@@ -30,6 +30,7 @@ import { normalizePlanPath } from '@myco/member/plan-files.js';
 import { vectorNamespace } from '@myco-server-worker/core/embedding/vectors.js';
 import { classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
 import { emptyInjectionCounts, type InjectionCounts } from '@myco-server-worker/core/injection.js';
+import { ContextTimings } from '@myco-server-worker/core/context-timing.js';
 import { EmbeddingUnavailable } from '@myco-server-worker/core/embedding/provider.js';
 import * as plans from '@myco-server-worker/read/plans.js';
 import { agentRunRetention, JOB_BATCH } from '@myco-server-worker/core/jobs-run.js';
@@ -44,6 +45,24 @@ const SESSION = 'sess_1';
 /** Plain enough to carry no planning intent, long enough to clear the selector's floor. */
 const PROMPT = 'what did we settle on for the selector';
 const PLANNING_PROMPT = 'let us write the implementation plan for the selector';
+
+function contextTiming(response: Response): Record<'embed' | 'vector' | 'candidate' | 'hydrate' | 'total', number> {
+  const header = response.headers.get('server-timing');
+  expect(header).toMatch(/^embed;dur=\d+\.\d{3}, vector;dur=\d+\.\d{3}, candidate;dur=\d+\.\d{3}, hydrate;dur=\d+\.\d{3}, total;dur=\d+\.\d{3}$/);
+  return Object.fromEntries((header ?? '').split(', ').map((metric) => {
+    const [name, value] = metric.split(';dur=');
+    return [name, Number(value)];
+  })) as Record<'embed' | 'vector' | 'candidate' | 'hydrate' | 'total', number>;
+}
+
+it('formats numeric context stage durations', () => {
+  const timings = new ContextTimings();
+  timings.record('embed', 1.23456);
+  timings.record('vector', 2);
+  timings.record('candidate', 0.125);
+  timings.record('candidate', 0.25);
+  expect(timings.header()).toBe('embed;dur=1.235, vector;dur=2.000, candidate;dur=0.375, hydrate;dur=0.000');
+});
 
 const TEMPLATE = '# Project guidance\nKeep the plan current.';
 
@@ -358,7 +377,7 @@ describe('prompt selection diagnostics', () => {
     });
     const failingDb: RelationalStore = { ...db, prepare: sql => {
       const statement = db.prepare(sql);
-      return sql.includes('JOIN embedding_sources s') ? wrap(statement) : statement;
+      return sql.startsWith('WITH hits AS MATERIALIZED') ? wrap(statement) : statement;
     } };
     const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
@@ -676,15 +695,26 @@ describe('POST /context/prompt', () => {
   it('refuses a body it cannot read and one that names no session, prompt or text', async () => {
     const { e, token } = await member();
     for (const body of ['not json', '[]', '{}', { sessionId: 's', promptId: 'p' }, { sessionId: 's', promptId: 'p', text: 42 }, { sessionId: 's', promptId: 'p', text: '' }]) {
-      const answer = await (await worker.fetch(post(token, body), e.env)).json() as Record<string, unknown>;
+      const response = await worker.fetch(post(token, body), e.env);
+      const answer = await response.json() as Record<string, unknown>;
+      expect(contextTiming(response).total).toBeGreaterThan(0);
       expect({ body: JSON.stringify(body), persisted: answer.persisted, code: answer.code }).toEqual({ body: JSON.stringify(body), persisted: false, code: 'parse' });
     }
+  });
+
+  it('times pipeline refusals before the prompt handler', async () => {
+    const { e } = await member();
+    const response = await worker.fetch(new Request('https://s/context/prompt', { method: 'POST', body: '{}' }), e.env);
+    expect(response.status).toBe(503);
+    expect(contextTiming(response)).toMatchObject({ embed: 0, vector: 0, candidate: 0, hydrate: 0 });
   });
 
   it('answers the explicitly cortex-off Project an empty block naming the gate', async () => {
     const { e, token } = await member();
     await settingsWriter(e.db).setCapability('proj_1', 'cortex', false, 'mem_machine_1', NOW);
-    const answer = await (await worker.fetch(post(token, { sessionId: 's1', promptId: 'p1', text: PLANNING_PROMPT }), e.env)).json();
+    const response = await worker.fetch(post(token, { sessionId: 's1', promptId: 'p1', text: PLANNING_PROMPT }), e.env);
+    const answer = await response.json();
+    expect(contextTiming(response)).toMatchObject({ embed: 0, vector: 0, candidate: 0, hydrate: 0 });
     expect(answer).toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'] });
   });
 
@@ -700,7 +730,14 @@ describe('POST /context/prompt', () => {
       if ((await reconcileEmbedding({ db: e.db, blobs: e.bucket, ...semantic }, 'proj_1', NOW)).processed === 0) break;
     }
 
-    const first = await (await worker.fetch(post(token, { sessionId: 's1', promptId: 'p1', text: PLANNING_PROMPT }), e.env)).json() as Record<string, unknown>;
+    const firstResponse = await worker.fetch(post(token, { sessionId: 's1', promptId: 'p1', text: PLANNING_PROMPT }), e.env);
+    const first = await firstResponse.json() as Record<string, unknown>;
+    const measured = contextTiming(firstResponse);
+    expect(measured.embed).toBeGreaterThan(0);
+    expect(measured.vector).toBeGreaterThan(0);
+    expect(measured.candidate).toBeGreaterThan(0);
+    expect(measured.hydrate).toBeGreaterThan(0);
+    expect(measured.total).toBeGreaterThan(0);
     expect(first.persisted).toBe(true);
     expect(first.parts).toEqual([{ kind: 'plan-nudge' }, { kind: 'spores', sporeIds: ['sp_route'], planIds: [] }]);
     expect(String(first.context).startsWith(PLAN_INTENT_NUDGE)).toBe(true);
@@ -768,7 +805,9 @@ describe('POST /context/session', () => {
   it('refuses a body it cannot read, one that names no session, and one naming a kind it does not serve', async () => {
     const { e, token } = await member();
     for (const body of ['not json', '[]', '{}', { sessionId: 's' }, { kind: 'start' }, { sessionId: 's', kind: 'resume' }, { sessionId: 's', kind: 'start', agentType: '' }, { sessionId: 's', kind: 'subagent', agentId: 42 }]) {
-      const got = await answer(e, token, body);
+      const response = await worker.fetch(post(token, body), e.env);
+      const got = await response.json() as Record<string, unknown>;
+      expect(contextTiming(response)).toMatchObject({ embed: 0, vector: 0, candidate: 0, hydrate: 0 });
       expect({ body: JSON.stringify(body), persisted: got.persisted, code: got.code })
         .toEqual({ body: JSON.stringify(body), persisted: false, code: 'parse' });
     }
@@ -779,7 +818,9 @@ describe('POST /context/session', () => {
     admit(e);
     await settingsWriter(e.db).setLeaf(INSTRUCTIONS_TEMPLATE_LEAF, 'Keep the plan current.', 'mem_machine_1', NOW);
     for (let i = 0; i < 2; i++) {
-      const start = await answer(e, token, { kind: 'start', preview: true });
+      const response = await worker.fetch(post(token, { kind: 'start', preview: true }), e.env);
+      const start = await response.json() as Record<string, unknown>;
+      expect(contextTiming(response)).toMatchObject({ embed: 0, vector: 0, candidate: 0, hydrate: 0 });
       expect({ persisted: start.persisted, context: start.context, kind: start.kind })
         .toEqual({ persisted: true, context: `${projectLine('proj_1')}\n\nKeep the plan current.`, kind: 'cortex' });
       const sub = await answer(e, token, { kind: 'subagent', preview: true });

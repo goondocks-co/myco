@@ -7,6 +7,7 @@ import { authorizeHttp, httpAuthorizationDecision } from './auth/http-authorizat
 import { emptyBodyRefusal, LINK_REQUIRES_ADMIN } from './auth/members.js';
 import { parseJsonObject, badRequest } from './api/scope.js';
 import { RAW_CACHE_HEADERS } from './core/raw-resources.js';
+import { withContextServerTiming } from './core/context-timing.js';
 import { runControlRefusalCode } from '@goondocks/myco-shared/run-control';
 import { MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_ORDER_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, isMachineSettingsRevision } from '@goondocks/myco-shared/member-protocol';
 import type { ErrorClassifier, OutboundFetch, ServerEnv } from './core/adapters.js';
@@ -860,13 +861,16 @@ export function createServer(deps: ServerDeps) {
   }
 
   async function handleRequest(request: Request, env: ServerEnv): Promise<Response> {
-    const route = matchRoute(request.method, new URL(request.url).pathname)?.route;
+    const pathname = new URL(request.url).pathname;
+    const route = matchRoute(request.method, pathname)?.route;
     const raw = route?.auth === 'session' && 'raw' in route && route.raw !== undefined;
+    const contextStartedAt = pathname.startsWith('/context/') ? performance.now() : null;
+    const answer = (response: Response): Response => stamp(contextStartedAt === null ? response : withContextServerTiming(response, contextStartedAt), raw);
     try {
-      return stamp(await run(request, env), raw);
+      return answer(await run(request, env));
     } catch (err) {
       emit({ kind: 'request_error', error_class: classify(err, errorClassifierOf(env)) });
-      return stamp(unavailable(), raw);
+      return answer(unavailable());
     }
   }
 
