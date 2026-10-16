@@ -10,14 +10,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
-import { run as runMemberCli, provisionGlobally, previewGlobalProvision, provisionAgents, detectedProvisionLines } from '@myco/cli/member.js';
+import { run as runMemberCli, provisionGlobally, previewGlobalProvision, provisionAgents, detectedProvisionLines, withManagedMemberHarnesses } from '@myco/cli/member.js';
 import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
 import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { hookCommands } from '@myco/symbionts/member-hooks.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
-import { recordProvision, reconcileProvisionAgents } from '@myco/symbionts/member-provision-record.js';
+import { recordProvision, reconcileProvisionAgents, provisionRecordPath } from '@myco/symbionts/member-provision-record.js';
 
 const TOKEN = 'A'.repeat(43);
 const SERVER = 'https://myco.example';
@@ -56,6 +56,52 @@ async function provision(args: string[]): Promise<{ out: string[]; err: string[]
 }
 
 describe('myco member provision', () => {
+  it('names the file and provision command when an agent config cannot be parsed', async () => {
+    join();
+    provisionGlobally('codex', root, mycoHome, { serverUrl: SERVER });
+    const file = path.join(agentHome, '.codex', 'config.toml');
+    fs.writeFileSync(file, 'invalid TOML [');
+    const { err } = await provision(['codex', '--root', root]);
+    expect(err.join('\n')).toContain(file);
+    expect(err.join('\n')).toContain('Fix the file, then run `myco member provision codex`.');
+    expect(fs.readFileSync(file, 'utf8')).toBe('invalid TOML [');
+  });
+
+  for (const recorded of [SERVER, 'https://left.example']) it(`allows provisioning for the survivor with pending logout and record on ${recorded}`, () => {
+    join();
+    recordProvision(mycoHome, { version: 'test', serverUrl: recorded, agents: ['claude-code'], pendingLogout: { 'claude-code': ['https://left.example'] } });
+    expect(provisionGlobally('claude-code', root, mycoHome, { serverUrl: SERVER }).kind).toBe('provisioned');
+    expect(fs.readFileSync(path.join(agentHome, '.claude', 'settings.json'), 'utf8')).toContain('--credential registry');
+  });
+
+  it('refuses an explicitly selected pending logout destination beside a surviving recorded destination', () => {
+    recordProvision(mycoHome, { version: 'test', serverUrl: SERVER, agents: ['claude-code'], pendingLogout: { 'claude-code': ['https://left.example'] } });
+    const outcome = provisionGlobally('claude-code', null, mycoHome, { serverUrl: 'https://left.example' });
+    expect(outcome).toMatchObject({ kind: 'refused', detail: expect.stringContaining('waiting for `myco logout https://left.example` to finish') });
+    expect(fs.existsSync(path.join(agentHome, '.claude', 'settings.json'))).toBe(false);
+  });
+
+  for (const pendingLogout of [null, [], { 'claude-code': 'https://left.example' }, { 'claude-code': [42] }]) it(`refuses malformed pending logout state ${JSON.stringify(pendingLogout)} before provisioning`, () => {
+    recordProvision(mycoHome, { version: 'test', serverUrl: SERVER, agents: ['claude-code'] });
+    const file = provisionRecordPath(mycoHome);
+    const raw = JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), pendingLogout });
+    fs.writeFileSync(file, raw);
+    expect(() => provisionGlobally('claude-code', null, mycoHome, { serverUrl: SERVER })).toThrow('agent setup record');
+    expect(fs.readFileSync(file, 'utf8')).toBe(raw);
+    expect(fs.existsSync(path.join(agentHome, '.claude', 'settings.json'))).toBe(false);
+  });
+
+  it('propagates unexpected admission errors without writing a retired-settings diagnostic', () => {
+    recordProvision(mycoHome, { version: 'test', serverUrl: SERVER, agents: ['claude-code'] });
+    const failure = new TypeError('unexpected provision admission bug');
+    const admit = spyOn(SymbiontInstaller.prototype, 'assertMemberProvisionAllowed').mockImplementation(() => { throw failure; });
+    const report = spyOn(SymbiontInstaller.prototype, 'reportRetiredSettingsProblem');
+    try {
+      expect(() => withManagedMemberHarnesses(mycoHome, {}, () => {})).toThrow(failure);
+      expect(report).not.toHaveBeenCalled();
+    } finally { admit.mockRestore(); report.mockRestore(); }
+  });
+
   it('retains an uncapturable agent pending logout while pruning an ordinary uncapturable choice', () => {
     const binary = path.join(mycoHome, 'bin', 'myco');
     recordProvision(mycoHome, { version: 'test', serverUrl: SERVER, agents: ['copilot', 'windsurf'], binaries: { copilot: binary, windsurf: binary }, pendingTrust: { copilot: { action: 'review', at: 1 } }, pendingLogout: { copilot: [SERVER] } });

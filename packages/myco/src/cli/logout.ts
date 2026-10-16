@@ -31,7 +31,7 @@ export async function run(args: readonly string[], deps: LogoutCliDeps = {}): Pr
   const chosen = deps.mycoHome === undefined ? memberHomeFor(folder) : null;
   const mycoHome = deps.mycoHome ?? chosen!.home;
   try {
-    const report = await logoutDeployment(addresses[0], { mode: args.includes('--local-only') ? 'local-only' : 'revoke' }, { ...deps, mycoHome });
+    const report = await logoutDeployment(addresses[0], { mode: args.includes('--local-only') ? 'local-only' : 'revoke' }, { ...deps, mycoHome, onReconciliationProblem: problem => err(`myco logout: ${problem}`) });
     const pinned = chosen === null ? null : pinnedHomeLine(chosen, folder);
     if (pinned !== null) out(pinned);
     out(`Signed out of ${report.serverUrl}.`);

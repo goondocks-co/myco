@@ -12,7 +12,7 @@ import { expandHome, resolveMycoHome } from '@myco/paths/home.js';
 import { isClaimedByPeer, readClaim, resolveClaimsHome, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import { commandVerdict, mcpVerdict, MEMBER_PLUGIN_MARKER, MYCO_PLUGIN_FILE_MARKER, pluginFileVerdict } from './legacy-verdict.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
+import { readProvisionRecord, readProvisionRecordStrict, recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { getPluginVersion } from '@myco/version.js';
 import { assertSafeProjectRoot } from '../project-root.js';
 import { findTomlSectionEnd, buildTomlMcpSection, upsertTomlSectionKeys, removeTomlSectionKeys, readTomlSectionKey, readTomlSectionKeyLine } from './toml-helpers.js';
@@ -85,10 +85,22 @@ export class MemberMcpConflictError extends MemberProvisionConflictError {
 
 export class MemberPluginConflictError extends MemberProvisionConflictError { }
 
-export class MemberFileReadRefusal extends MemberMcpConflictError {
-  constructor(readonly file: string, cause: unknown) {
-    super(`could not read ${file} (${firstLine(cause)}), so nothing was written there.`, 'Restore read access and valid configuration before retrying.', { cause });
+export class MemberPendingLogoutError extends MemberMcpConflictError {
+  constructor(agent: string, leaving: string) {
+    const problem = `${agent} is waiting for \`myco logout ${leaving}\` to finish.`;
+    super(problem, `Fix the reported files, then retry \`myco logout ${leaving}\`.`, { repairAction: problem });
   }
+
+  override get localRemedy(): string { return this.remedy; }
+}
+
+export class MemberFileReadRefusal extends MemberMcpConflictError {
+  constructor(readonly file: string, cause: unknown, agent?: string) {
+    const remedy = agent === undefined ? 'Restore read access and valid configuration before retrying.' : `Fix the file, then run \`myco member provision ${agent}\`.`;
+    super(`could not read ${file} (${firstLine(cause)}), so nothing was written there.`, remedy, { cause, repairAction: remedy });
+  }
+
+  override get localRemedy(): string { return this.remedy; }
 }
 
 /** Isolate named file refusals while allowing unexpected failures to propagate. */
@@ -104,15 +116,30 @@ export function isolateMemberFileRefusal<T>(operation: () => T, report: (error: 
 /** Collect each agent's outcome and defer unexpected failures until reconciliation ends. */
 export class MemberFileReconciliation {
   readonly problems = new Map<string, string>();
+  private readonly refusals = new Map<string, string>();
   private readonly unexpected: unknown[] = [];
 
   attempt<T>(manifest: SymbiontManifest, operation: () => T): T | null {
     try {
-      return isolateMemberFileRefusal(operation, error => this.problems.set(manifest.name, `${manifest.displayName}: ${error.message}`));
+      return isolateMemberFileRefusal(operation, error => {
+        const problem = `${manifest.displayName}: ${error.problem}`;
+        this.problems.set(manifest.name, problem);
+        this.refusals.set(manifest.name, problem);
+      });
     } catch (error) {
       this.problems.set(manifest.name, `${manifest.displayName}: ${firstLine(error)}`);
       this.unexpected.push(error);
       return null;
+    }
+  }
+
+  finish(operation: () => void, report: (problem: string) => void): void {
+    try {
+      operation();
+      this.throwUnexpected();
+    } catch (error) {
+      for (const problem of this.refusals.values()) report(problem);
+      throw error;
     }
   }
 
@@ -386,6 +413,7 @@ export class SymbiontInstaller {
   }
 
   install(scan = this.scanMemberRegistrations()): InstallResult {
+    this.assertMemberProvisionAllowed();
     // Ownership and settings are admitted before the first write.
     if (this.isMemberPluginFile()) {
       this.assertMemberMcpWritable(scan);
@@ -557,7 +585,7 @@ export class SymbiontInstaller {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       if (!isFileSystemError(error)) throw error;
-      throw new MemberFileReadRefusal(filePath, error);
+      throw new MemberFileReadRefusal(filePath, error, this.manifest.name);
     }
   }
 
@@ -570,7 +598,7 @@ export class SymbiontInstaller {
       return parsed as Record<string, unknown>;
     } catch (error) {
       if (!(error instanceof SyntaxError) && !(error instanceof TomlError)) throw error;
-      throw new MemberFileReadRefusal(filePath, error);
+      throw new MemberFileReadRefusal(filePath, error, this.manifest.name);
     }
   }
 
@@ -1063,6 +1091,7 @@ export class SymbiontInstaller {
   globalOwnership(serverUrl: string, scan = this.scanMemberRegistrations()): { problem: string | null; replaces: string[] } {
     this.expectedServerUrl = serverUrl;
     try {
+      this.assertMemberProvisionAllowed();
       this.assertGlobalMemberOwnership(undefined, scan);
     } catch (error) {
       if (error instanceof MemberProvisionConflictError) return { problem: error.message, replaces: [] };
@@ -1073,6 +1102,16 @@ export class SymbiontInstaller {
     const texts = [this.resolveAbsoluteTarget('hooks'), this.memberMcpTargetPath()]
       .flatMap((file) => { try { return file === null ? [] : [fs.readFileSync(file, 'utf8')]; } catch { return []; } });
     return { problem: null, replaces: this.legacyHomes.filter((home) => texts.some((text) => text.includes(`${home}${path.sep}`))) };
+  }
+
+  /** Pending logout destinations remain unchanged until logout finishes. */
+  assertMemberProvisionAllowed(): void {
+    const record = readProvisionRecordStrict(this.memberHomeDir());
+    const target = this.expectedServerUrl ?? this.deploymentUrl ?? record?.serverUrl;
+    const leaving = record?.pendingLogout?.[this.manifest.name]?.find(url => deploymentUrl(url) === deploymentUrl(target ?? ''));
+    if (leaving !== undefined) {
+      throw new MemberPendingLogoutError(this.manifest.displayName, leaving);
+    }
   }
 
   private assertGlobalMemberOwnership(targetOverride?: { path: string; serversKey: string } | 'hooks', scan: MemberRegistrationScan = this.scanMemberRegistrations()): string | undefined {

@@ -221,6 +221,13 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
     });
     return registration === null ? [] : [registration];
   });
+  if (problems.size > 0) {
+    for (const problem of problems.values()) console.warn(`myco remove: ${problem}`);
+    console.warn('Cannot read every agent\'s member registration; removal aborted.');
+    reconciliation.throwUnexpected();
+    process.exitCode = 1;
+    return;
+  }
   const remove = (): void => {
     assertUnchangedHome();
     const sweep = sweepWorkerServices({ ...deps.worker, mycoHome: home }, { onlyThisHome: true });

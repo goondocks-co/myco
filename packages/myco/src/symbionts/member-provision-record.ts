@@ -3,7 +3,7 @@
  * Helper passes and updates reconcile the harnesses this record names through the installer.
  */
 import fs from 'node:fs';
-import { deploymentUrl } from '../member/registry.js';
+import { deploymentUrl, readDeploymentMembershipResult } from '../member/registry.js';
 import { normalizeMemberServerAddress } from '../member/server-url.js';
 import path from 'node:path';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
@@ -54,8 +54,9 @@ export function readProvisionRecord(mycoHome: string): ProvisionRecord | null {
       ? Object.fromEntries(Object.entries(value.binaries).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) : undefined;
     const pendingTrust = value.pendingTrust !== null && typeof value.pendingTrust === 'object' && !Array.isArray(value.pendingTrust)
       ? Object.fromEntries(Object.entries(value.pendingTrust).filter(([, trust]) => trust !== null && typeof trust === 'object' && typeof trust.action === 'string' && Number.isFinite(trust.at))) : undefined;
-    const pendingLogout = value.pendingLogout !== null && typeof value.pendingLogout === 'object' && !Array.isArray(value.pendingLogout)
-      ? Object.fromEntries(Object.entries(value.pendingLogout).filter((entry): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(url => typeof url === 'string'))) : undefined;
+    if (value.pendingLogout !== undefined && (value.pendingLogout === null || typeof value.pendingLogout !== 'object' || Array.isArray(value.pendingLogout)
+      || Object.values(value.pendingLogout).some(urls => !Array.isArray(urls) || urls.some(url => typeof url !== 'string')))) return null;
+    const pendingLogout = value.pendingLogout;
     return { version: value.version, serverUrl: value.serverUrl, agents: value.agents.filter((a): a is string => typeof a === 'string'), ...(binaries === undefined ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined ? {} : { pendingLogout }), at: Number(value.at ?? 0) };
   } catch {
     return null;
@@ -144,7 +145,7 @@ export function reconcileProvisionDeployment(mycoHome: string, leavingUrl: strin
     }));
     for (const agent of record.agents) if (unreconciledAgents.includes(agent)) pendingLogout[agent] = [...new Set([...pendingLogout[agent] ?? [], leaving])].sort();
     const retrying = Object.values(record.pendingLogout ?? {}).some(urls => urls.includes(leaving));
-    if (held !== leaving && !(retrying && nextDefault === null)) {
+    if (held !== leaving && !(retrying && readDeploymentMembershipResult(held, mycoHome).status === 'missing')) {
       if (JSON.stringify(record.pendingLogout ?? {}) !== JSON.stringify(pendingLogout)) writeProvisionRecord(mycoHome, { ...record, pendingLogout }, { replace: true });
       return;
     }

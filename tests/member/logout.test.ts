@@ -6,6 +6,8 @@ import { bindSandboxChildHome, sandboxChildEnv } from '../../scripts/test-enviro
 import { logoutJournalPath } from '@myco/member/logout.js';
 import { logoutDeployment, type LogoutRuntimeDeps } from '@myco/symbionts/logout-runtime.js';
 import { run as logoutCli } from '@myco/cli/logout.js';
+import { keepCurrent } from '@myco/cli/member-keep-current.js';
+import { provisionGlobally, provisionAgents, run as memberCli } from '@myco/cli/member.js';
 import {
   deploymentPath, deploymentFeaturesPath, machineSettingsPath, registryEntryPath, readDeploymentMembership, readRegistryEntry,
   writeDeploymentMembership, writeRegistryEntry,
@@ -164,6 +166,120 @@ describe('Deployment-scoped logout', () => {
       expect(readProvisionRecord(mycoHome)).toBeNull();
       expect(requests).toHaveLength(1);
     } finally { warn.mockRestore(); }
+  });
+
+  it('keeps a joined Deployment provision record after retry with multiple survivors and no default', async () => {
+    join(A); join(B); join(C);
+    recordDefaultDeployment(A, { mycoHome });
+    globalInstaller(B).install();
+    const binaries = { 'claude-code': path.join(mycoHome, 'bin', 'myco') };
+    const pendingTrust = { 'claude-code': { action: 'review', at: 1 } };
+    recordProvision(mycoHome, { version: 'test', serverUrl: B, agents: ['claude-code'], binaries, pendingTrust }, { replace: true });
+    const file = globalInstaller(B).memberGlobalTargets().mcp[0];
+    const clean = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '\ufeff' + clean);
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toHaveLength(1);
+    expect(readDefaultDeployment(mycoHome)).toBeNull();
+    fs.writeFileSync(file, clean);
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toEqual([]);
+    expect(readProvisionRecord(mycoHome)).toMatchObject({ serverUrl: B, agents: ['claude-code'], binaries, pendingTrust });
+    expect(readProvisionRecord(mycoHome)?.pendingLogout).toBeUndefined();
+    expect(readDeploymentMembership(B, mycoHome)).not.toBeNull();
+    expect(fs.readFileSync(file, 'utf8')).toContain(B);
+    expect(keepCurrent(mycoHome, { packageRoot: PKG, binaryFound: () => true })?.serverUrl).toBe(B);
+    expect(requests).toHaveLength(1);
+  });
+
+  for (const repair of ['keep-current', 'keep-current without binary', 'refresh', 'provision', 'detected provision']) it(`holds ${repair} until the last Deployment logout finishes`, async () => {
+    join(A);
+    globalInstaller(A).install();
+    const file = globalInstaller(A).memberGlobalTargets().hooks!;
+    const clean = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '\ufeff' + clean);
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents.map(({ agent }) => agent)).toEqual(['claude-code']);
+    fs.unlinkSync(file);
+    const before = tree(home);
+    const messages: string[] = [];
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(chunk => { messages.push(String(chunk)); return true; });
+    const warn = spyOn(console, 'warn').mockImplementation(message => { messages.push(String(message)); });
+    try {
+      if (repair.startsWith('keep-current')) {
+        const result = keepCurrent(mycoHome, { packageRoot: PKG, binaryFound: () => repair === 'keep-current' });
+        expect(result?.harnesses).toEqual([expect.objectContaining({ id: 'claude-code', state: 'repair_failed', action: expect.stringContaining('waiting for') })]);
+        expect(result?.ready).toEqual([]);
+      } else if (repair === 'refresh') {
+        await memberCli(['provision', '--refresh'], { mycoHome, packageRoot: PKG, cwd: root, stdout: message => messages.push(message), stderr: message => messages.push(message) });
+      } else if (repair === 'provision') {
+        const outcome = provisionGlobally('claude-code', null, mycoHome, { packageRoot: PKG, serverUrl: A });
+        expect(outcome.kind).toBe('refused');
+        if (outcome.kind === 'refused') messages.push(outcome.detail);
+      } else {
+        const outcome = provisionAgents(['claude-code'], mycoHome, A, null, { packageRoot: PKG });
+        expect(outcome.skipped).toHaveLength(1);
+        messages.push(outcome.skipped[0].reason);
+      }
+      expect(messages.join('\n')).toContain('waiting for `myco logout ' + A + '` to finish');
+      expect(fs.existsSync(file)).toBe(false);
+      const after = tree(home);
+      for (const [name, contents] of Object.entries(before)) if (!name.startsWith('.myco/')) expect(after[name]).toBe(contents);
+      expect(Object.keys(after).filter(name => !name.startsWith('.myco/'))).toEqual(Object.keys(before).filter(name => !name.startsWith('.myco/')));
+      expect(readProvisionRecord(mycoHome)).toMatchObject({ serverUrl: A, pendingLogout: { 'claude-code': [A] } });
+    } finally { stderr.mockRestore(); warn.mockRestore(); }
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toEqual([]);
+    expect(readProvisionRecord(mycoHome)).toBeNull();
+    expect(requests).toHaveLength(1);
+  });
+
+  it('reports a typed file refusal before an unexpected logout error', async () => {
+    join(A);
+    const manifests = loadManifests();
+    const installers = manifests.map(manifest => new SymbiontInstaller(manifest, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(A));
+    for (const installer of installers) installer.install();
+    const file = installers[manifests.findIndex(manifest => manifest.name === 'copilot')].memberGlobalTargets().hooks!;
+    recordProvision(mycoHome, { version: 'test', serverUrl: A, agents: manifests.map(manifest => manifest.name) });
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '\ufeff{"user":true}');
+    const original = SymbiontInstaller.prototype.reconcileDeploymentLogout;
+    const unexpected = new TypeError('unexpected mixed logout bug');
+    const visit = spyOn(SymbiontInstaller.prototype, 'reconcileDeploymentLogout').mockImplementation(function(this: SymbiontInstaller, ...args) {
+      if (this.memberGlobalTargets().hooks === globalInstaller(A).memberGlobalTargets().hooks) throw unexpected;
+      return original.apply(this, args);
+    });
+    const messages: string[] = [];
+    try {
+      expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: message => messages.push(message) })).toBe(false);
+      expect(visit).toHaveBeenCalledTimes(manifests.length);
+      expect(messages.filter(message => message.includes(file))).toHaveLength(1);
+      expect(messages[0]).toContain(file);
+      expect(messages[0]).toContain('nothing was written there');
+      expect(messages.at(-1)).toBe('myco logout: unexpected mixed logout bug');
+      expect(readProvisionRecord(mycoHome)?.agents).toEqual(['claude-code', 'copilot']);
+    } finally { visit.mockRestore(); }
+  });
+
+  it('reports a typed file refusal before an unexpected provision-record write error', async () => {
+    join(A);
+    const copilot = new SymbiontInstaller(loadManifests().find(manifest => manifest.name === 'copilot')!, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(A);
+    globalInstaller(A).install();
+    recordProvision(mycoHome, { version: 'test', serverUrl: A, agents: ['claude-code', 'copilot'] });
+    const file = copilot.memberGlobalTargets().hooks!;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '\ufeff{"user":true}');
+    const original = fs.renameSync;
+    const failure = Object.assign(new Error('cannot save provision record'), { code: 'EPERM' });
+    const rename = spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(to) === provisionRecordPath(mycoHome)) throw failure;
+      original(from, to);
+    });
+    const messages: string[] = [];
+    try {
+      expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: message => messages.push(message) })).toBe(false);
+      expect(messages.filter(message => message.includes(file))).toHaveLength(1);
+      expect(messages[0]).toContain(file);
+      expect(messages.at(-1)).toBe('myco logout: cannot save provision record');
+      expect(fs.readFileSync(file, 'utf8')).toBe('\ufeff{"user":true}');
+      expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(true);
+    } finally { rename.mockRestore(); }
   });
 
   it('records the failed agent leaving destination beside the surviving default and clears it on retry', async () => {
