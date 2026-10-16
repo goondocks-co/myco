@@ -20,12 +20,12 @@ export function installGitBudgetProbe(log: string, beforeGit: () => Pick<GitBudg
   spyOn(Date, 'now').mockImplementation(() => now);
   const original = { ...childProcess };
   const timers = globalThis.setTimeout;
-  // A Git spawn's next timer is its caller's deadline.
+  const expectedDeadlineMs = 500;
   const pending: Array<{ args: string[]; at: number }> = [];
   const isGit = (command: string) => ['git', 'git.exe'].includes(path.basename(command));
   const record = (event: Omit<GitBudgetObservation, 'at'>) => fs.appendFileSync(log, `${JSON.stringify({ ...event, at: now, ...beforeGit() })}\n`);
   spyOn(globalThis, 'setTimeout').mockImplementation(Object.assign(<Args extends unknown[]>(callback: (...args: Args) => void, timeout?: number, ...args: Args) => {
-    const git = pending.shift();
+    const git = timeout === expectedDeadlineMs ? pending.shift() : undefined;
     if (git === undefined) return timers(callback, timeout, ...args);
     record({ args: git.args, phase: 'deadline', timeout });
     return timers(() => {
@@ -50,6 +50,23 @@ export function installGitBudgetProbe(log: string, beforeGit: () => Pick<GitBudg
         queueMicrotask(() => child.emit('close', null, signal));
         return true;
       } });
+      return child;
+    },
+  }));
+}
+
+/** Observe real Git processes and signal issuance without changing their lifetime. */
+export function installRealGitProbe(log: string): void {
+  const original = { ...childProcess };
+  mock.module('node:child_process', () => ({
+    ...original,
+    spawn: (command: string, args: string[], options: childProcess.SpawnOptions) => {
+      const child = original.spawn(command, args, options);
+      if (path.basename(command) !== 'git') return child;
+      const record = (phase: string, signal?: number | NodeJS.Signals) => fs.appendFileSync(log, `${JSON.stringify({ phase, pid: child.pid, args, signal })}\n`);
+      record('start');
+      const kill = child.kill.bind(child);
+      child.kill = (signal) => { record('kill', signal); return kill(signal); };
       return child;
     },
   }));

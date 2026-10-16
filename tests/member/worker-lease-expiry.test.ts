@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from '../support/fenced-fs.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +11,7 @@ import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 const SERVER = 'https://deployment.example';
 const OBSERVATION_BOUND_MS = 30_000;
 const SHORT_RENEWAL_MS = 80;
+const HEARTBEAT_ONLY_LEASE_MS = OBSERVATION_BOUND_MS * 4;
 const wait = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
 
 async function until(check: () => boolean, ms = OBSERVATION_BOUND_MS): Promise<void> {
@@ -29,7 +30,7 @@ function alive(pid: number): boolean {
   }
 }
 
-function rig(options: { heartbeatMs: number; leaseMs: number; renewal: (sequence: number) => Promise<Response> | Response }) {
+function rig(options: { heartbeatMs: number; leaseMs: number; observeExpiry?: boolean; renewal: (sequence: number) => Promise<Response> | Response }) {
   const dir = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-lease-expiry-')));
   const release = join(dir, 'release');
   const spawned = join(dir, 'spawned');
@@ -37,6 +38,12 @@ function rig(options: { heartbeatMs: number; leaseMs: number; renewal: (sequence
   const stopping = new AbortController();
   let now = Date.now();
   const clock = () => now;
+  const expiryTimers: Array<{ at: number; delay: number | undefined }> = [];
+  const timers = globalThis.setTimeout;
+  const timerProbe = options.observeExpiry ? spyOn(globalThis, 'setTimeout').mockImplementation(Object.assign(<Args extends unknown[]>(callback: (...args: Args) => void, delay?: number, ...args: Args) => {
+    if (callback.name === 'scheduleExpiry') expiryTimers.push({ at: clock(), delay });
+    return timers(callback, delay, ...args);
+  }, timers)) : undefined;
   const requests: Array<{ path: string; at: number }> = [];
   const lines: Array<{ line: string; at: number }> = [];
   let claimed = false;
@@ -61,7 +68,7 @@ function rig(options: { heartbeatMs: number; leaseMs: number; renewal: (sequence
     clock,
   }));
   const pids = () => existsSync(spawned) ? readFileSync(spawned, 'utf8').trim().split('\n').map(Number) : [];
-  return { start, requests, lines, pids, stopping,
+  return { start, requests, lines, pids, stopping, expiryTimers, restore: () => timerProbe?.mockRestore(),
     advance: (ms: number) => { now += ms; },
     snapshot: () => ({ requests: requests.slice(-5), renewals, lines: lines.slice(-10), pids: pids(), alive: pids().map(alive) }),
     release: () => writeFileSync(release, ''),
@@ -85,6 +92,24 @@ async function bounded<T>(work: Promise<T>, snapshot: () => unknown): Promise<T>
       timer = setTimeout(() => reject(new Error(`lease worker did not settle: ${JSON.stringify(snapshot())}`)), OBSERVATION_BOUND_MS);
     })]);
   } finally { clearTimeout(timer); }
+}
+
+async function withWorker(r: ReturnType<typeof rig>, check: (worker: ReturnType<ReturnType<typeof rig>['start']>) => Promise<void>, beforeCleanup: () => void = () => {}): Promise<void> {
+  const worker = r.start();
+  let failure: { error: unknown } | undefined;
+  try { await check(worker); }
+  catch (error) { failure = { error }; throw error; }
+  finally {
+    try {
+      beforeCleanup();
+      r.release();
+      r.stopping.abort();
+      await bounded(worker, r.snapshot);
+    } catch (error) {
+      if (failure !== undefined) throw new AggregateError([failure.error, error], 'lease assertion and cleanup failed', { cause: failure.error });
+      throw error;
+    } finally { r.restore(); }
+  }
 }
 
 async function expectLost(r: ReturnType<typeof rig>, worker: ReturnType<ReturnType<typeof rig>['start']>, expiresAt: () => number, supersededExpiry?: () => number): Promise<void> {
@@ -113,48 +138,46 @@ async function observeRenewal(r: ReturnType<typeof rig>, step: () => void): Prom
 describe('a worker stops at its accepted lease expiry', () => {
   it('stops an awake harness when every renewal is unreachable', async () => {
     const r = rig({ heartbeatMs: 30, leaseMs: 300, renewal: unreachable });
-    const worker = r.start();
-    try {
+    await withWorker(r, async (worker) => {
       await until(() => r.pids().length === 1 && r.renewalCount() >= 1);
       r.advance(300);
       await expectLost(r, worker, () => r.claimedAt() + 300);
-    }
-    finally { r.release(); r.stopping.abort(); await bounded(worker, r.snapshot); }
+    });
   }, OBSERVATION_BOUND_MS * 3);
 
   it('expires a short lease before a longer heartbeat can run', async () => {
     const r = rig({ heartbeatMs: OBSERVATION_BOUND_MS * 2, leaseMs: 300, renewal: unreachable });
-    const worker = r.start();
-    try {
+    await withWorker(r, async (worker) => {
       await until(() => r.pids().length === 1);
       r.advance(300);
       await expectLost(r, worker, () => r.claimedAt() + 300);
       expect(r.renewalCount()).toBe(0);
-    }
-    finally { r.release(); r.stopping.abort(); await bounded(worker, r.snapshot); }
+    });
   }, OBSERVATION_BOUND_MS * 3);
 
   it('checks awake clock expiry on a heartbeat while renewal requests never return', async () => {
-    const r = rig({ heartbeatMs: 30, leaseMs: 1_000, renewal: () => new Promise<Response>(() => {}) });
-    const worker = r.start();
-    try {
+    const r = rig({ heartbeatMs: 30, leaseMs: HEARTBEAT_ONLY_LEASE_MS, renewal: () => new Promise<Response>(() => {}) });
+    await withWorker(r, async (worker) => {
       await until(() => r.pids().length === 1 && r.renewalCount() >= 3);
-      r.advance(1_000);
-      await expectLost(r, worker, () => r.claimedAt() + 1_000);
-    } finally { r.release(); r.stopping.abort(); await bounded(worker, r.snapshot); }
+      r.advance(HEARTBEAT_ONLY_LEASE_MS);
+      await expectLost(r, worker, () => r.claimedAt() + HEARTBEAT_ONLY_LEASE_MS);
+    });
   }, OBSERVATION_BOUND_MS * 3);
 
   it('accepts a newer renewal that shortens the initial lease', async () => {
-    const r = rig({ heartbeatMs: 150, leaseMs: 10_000, renewal: sequence => sequence === 1 ? held(SHORT_RENEWAL_MS) : unreachable() });
-    const worker = r.start();
-    try {
+    const r = rig({ heartbeatMs: 150, leaseMs: 10_000, observeExpiry: true, renewal: sequence => sequence === 1 ? held(SHORT_RENEWAL_MS) : unreachable() });
+    await withWorker(r, async (worker) => {
       await until(() => r.pids().length === 1 && r.renewalCount() >= 2);
+      const sentAt = r.requests.find(request => request.path === '/worker/lease')!.at;
+      expect(r.expiryTimers.slice(0, 2)).toEqual([
+        { at: r.claimedAt(), delay: 10_000 },
+        { at: sentAt, delay: SHORT_RENEWAL_MS },
+      ]);
       await observeRenewal(r, () => r.advance(SHORT_RENEWAL_MS - 1));
       expectHeld(r);
       r.advance(1);
       await expectLost(r, worker, () => r.requests.find(request => request.path === '/worker/lease')!.at + SHORT_RENEWAL_MS, () => r.claimedAt() + 10_000);
-    }
-    finally { r.release(); r.stopping.abort(); await bounded(worker, r.snapshot); }
+    });
   }, OBSERVATION_BOUND_MS * 3);
 
   it('ignores an older late successful reply that would extend a newer short lease', async () => {
@@ -163,13 +186,12 @@ describe('a worker stops at its accepted lease expiry', () => {
       ? new Promise<Response>((resolve) => { answerOld = () => resolve(held(10_000)); })
       : sequence === 2 ? held(150) : unreachable(),
     });
-    const worker = r.start();
-    try {
+    await withWorker(r, async (worker) => {
       await until(() => r.pids().length === 1 && r.renewalCount() >= 3);
       await observeRenewal(r, answerOld);
       r.advance(150);
       await expectLost(r, worker, () => r.requests.filter(request => request.path === '/worker/lease')[1]!.at + 150, () => r.claimedAt() + 10_000);
-    } finally { answerOld(); r.release(); r.stopping.abort(); await bounded(worker, r.snapshot); }
+    }, () => answerOld());
   }, OBSERVATION_BOUND_MS * 3);
 
   it('ignores an older late successful reply that would shorten a newer live lease', async () => {
@@ -177,15 +199,14 @@ describe('a worker stops at its accepted lease expiry', () => {
     const r = rig({ heartbeatMs: 80, leaseMs: 10_000, renewal: sequence => sequence === 1
       ? new Promise<Response>((resolve) => { answerOld = () => resolve(held(1)); }) : sequence === 2 ? held(1_000) : unreachable(),
     });
-    const worker = r.start();
-    try {
+    await withWorker(r, async (worker) => {
       await until(() => r.pids().length === 1 && r.renewalCount() >= 3);
       await observeRenewal(r, answerOld);
       await observeRenewal(r, () => r.advance(150));
       expectHeld(r);
       r.release();
-      expect(await worker).toEqual({ driven: 1, refused: null });
+      expect(await bounded(worker, r.snapshot)).toEqual({ driven: 1, refused: null });
       expect(r.ended()).toHaveLength(1);
-    } finally { answerOld(); r.release(); r.stopping.abort(); await bounded(worker, r.snapshot); }
+    }, () => answerOld());
   }, OBSERVATION_BOUND_MS * 3);
 });

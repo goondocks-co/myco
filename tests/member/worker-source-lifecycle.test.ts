@@ -112,7 +112,6 @@ describe('source containment with run process ownership', () => {
           };
           if (ending === 'consumer exception') await expect(bounded(consume())).rejects.toBe(failure);
           else await bounded(consume());
-          await until(() => f.pids().every(pid => !alive(pid)));
           expect(f.pids().map(alive)).toEqual([false, false]);
           discardRunDir(f.spec.scratchDir);
           expect(existsSync(f.spec.scratchDir)).toBe(false);
@@ -136,9 +135,8 @@ describe('source containment with run process ownership', () => {
     try {
       await f.ready();
       await bounded(started.dispose());
-      expect(await bounded(started.exit)).toBe(-1);
-      await until(() => f.pids().every(pid => !alive(pid)));
       expect(f.pids().map(alive)).toEqual([false, false]);
+      expect(await bounded(started.exit)).toBe(-1);
     } finally {
       stopping.abort();
       await started.dispose();
