@@ -13,7 +13,13 @@ Install the Myco binary using the [installation steps](quickstart.md#1.-install)
 
 Choose the address before setting up GitHub sign-in. The sign-in callback belongs to that address; changing it means configuring sign-in again and signing machines in again.
 
-For guided setup, run one of these from a repository you want to connect:
+From a repository you want to connect, start with:
+
+```bash
+myco setup
+```
+
+On a fresh machine, choose **Start a new Myco**, then Cloudflare or this machine. Setup continues an existing setup from what it finds on this machine; it asks which Myco to use when it cannot choose. To explicitly create a Deployment, use:
 
 ```bash
 myco setup --create cloudflare
@@ -22,9 +28,25 @@ myco setup --create local
 
 Setup asks for the account and address before creating Cloudflare resources. For local hosting, it asks for a port and whether to start at login or wait for you to run `myco server run --target local` in another terminal. It guides GitHub registration, private owner linking and this machine's sign-in, then asks about a project and a runner. A runner is a separate choice; creating a server never starts agent work by itself.
 
-Rerun the same command after an interruption, including a partial Cloudflare create. Existing resources are reused; their appearance does not change the consented identity of the plan. Progress comes from the Deployment and machine records; `setup.json` holds choices and consent fingerprints. Changing an account, address or resource name requires fresh consent. Cloudflare login and stopping a local service ask for consent each time. Setup prints the private owner link with its expiry so you can open it yourself when a browser opener is unavailable. `myco setup --status` reads local state; add `--check-remote` to check the server. Hosted owner linking is checked through your operator login during setup; status leaves that check pending. The standalone operations below remain available.
+Rerun `myco setup` after an interruption, including a partial Cloudflare create. Existing resources are reused. Changing the account, address or resource names asks for approval again. Setup prints the private owner link and its expiry so you can open it yourself if a browser does not open.
 
-## On this machine
+`myco setup --status` reports progress without changing it; add `--check-remote` to check server reachability and sign-in. Hosted owner linking is checked through your Cloudflare login during setup; status leaves that check pending.
+
+## Finish in the dashboard
+
+Open **Today** and follow **Get started** for the next action. The checklist reflects what Myco can verify, including a live captured session, a ready runner and recent work that produced results. Imported history alone does not complete live capture. See [The dashboard](dashboard.md#get-started).
+
+Creating a server does not start a runner. Choose a machine for Myco's work only when you want it to run tasks; for a loopback Deployment it must be this machine. Follow [Runners](runners.md) for sign-in, capacity and updates, and [Join a Myco](quickstart.md) for capture checks. To invite teammates, use **People & machines** → **Invite a teammate**; **Connect GitHub** gives them dashboard sign-in.
+
+For automatic work, enable **Work on a schedule** in **Settings** → **Myco’s work**. The project switches **Context for sessions**, **Code map** and **Learning** are on by default. Scheduling starts off.
+
+## Manual server commands
+
+Use these when you want to perform the owner steps individually. Choose the address before configuring GitHub sign-in, then create the server, configure sign-in and link its first owner.
+
+Server commands select the sole Deployment held on this machine, or default to local when there is none. If this machine holds both local and Cloudflare Deployments, pass `--target local` or `--target cloudflare`. The examples name their target explicitly. A retained Compose installation requires an explicit supported target; Compose itself is retired.
+
+### On this machine
 
 Run these in order, while the server is stopped:
 
@@ -43,7 +65,7 @@ If the link expires, stop the foreground server with Ctrl-C, or stop its install
 
 The address is `http://127.0.0.1:8787`. If that port is taken, pass `--port <number>` to `myco server create --target local` and use that port in the sign-in URL too. Data lives in `~/.myco/server/local/`; service output goes to `~/.myco/logs/server.log`.
 
-## On Cloudflare
+### On Cloudflare
 
 Install Node.js and Wrangler on the machine you deploy from, and sign Wrangler in to your Cloudflare account:
 
@@ -67,29 +89,15 @@ For a domain you own in the same Cloudflare account, add `--url https://myco.exa
 
 Complete GitHub registration, then open the private link from `setup-owner` and choose **Connect this account**. The link expires after 15 minutes; rerunning setup replaces it. Hosted owner setup works through your Cloudflare login while the server keeps serving. It requires configured GitHub sign-in and refuses once an account is connected.
 
-## Connect this machine, add a runner and invite people
+### Sign this machine in
 
-From a repository you want to capture, sign this machine in using the chosen address:
+After linking the owner, run this from a repository you want to capture:
 
 ```bash
 myco setup --join <address>
 ```
 
-Approve the printed code in a browser signed in to the dashboard. Setup guides project selection and agent configuration. Start a new coding-agent session afterward. See [Join a Myco](quickstart.md) for repository auto-join and connection checks.
-
-Choose a machine to do Myco's own work, sign in to a supported coding agent on it, and register it explicitly:
-
-```bash
-myco runner register <address>
-myco runner install --server <address>
-myco runner doctor --server <address>
-```
-
-An owner or administrator approves the runner's device code. For a loopback Deployment, the runner must be on the same machine. Creating the server or joining a coding machine does not start a runner. Without one, sessions still capture and agent work waits in the queue. Follow [Runners](runners.md) for sign-in, capacity and updates.
-
-In **People & machines**, choose **Invite a teammate** and share its one-time login command. To give that person dashboard sign-in, choose **Connect GitHub** for their entry and send the connection link.
-
-The project switches **Context for sessions**, **Code map** and **Learning** are on by default. In **Settings** → **Myco’s work**, turn on **Work on a schedule** for automatic work; scheduling starts off. Connect a repository in **Project settings** for code-based work. Use **Run a task** under **Myco’s work** to start work manually, then check its result there.
+Approve the printed code in a browser signed in to the dashboard, then follow **Get started** on **Today**. Start a new coding-agent session after setup. Runner enrollment remains an explicit choice.
 
 ## Check and stop the server
 

@@ -38,8 +38,8 @@ myco setup --join <address>
 
 Approve the machine in a browser signed in to that Myco. Start a new agent session in a repository under `~/Repos`, and see it on **Today**. The [Join a Myco guide](docs/quickstart.md) covers joining, other folders and checking your setup.
 
-- [Run your own Myco](docs/self-hosting.md) on Cloudflare or this machine.
-- [Move from Myco 1.4](docs/upgrade.md#upgrading-from-myco-14), keeping your existing data.
+- [Run your own Myco](docs/self-hosting.md): `myco setup` guides creation on Cloudflare or this machine.
+- [Move from Myco 1.4](docs/upgrade.md#upgrading-from-myco-14): `myco setup` previews the move and keeps your source data.
 - [Connect your agents](docs/agents.md) and see what is captured.
 - [Agent tools and skills](docs/agent-tools.md) for reading and recording project knowledge.
 - [External agents](docs/external-agents.md) for hosted reviewers and the plugin-only path.

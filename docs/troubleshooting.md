@@ -51,7 +51,7 @@ Check the addresses in Doctor and the repository routes in member status. To lea
 myco logout <address>
 ```
 
-This revokes this machine's member credential and removes its local connections to that server. Captured history stays on the server. Other memberships and runner registrations remain.
+This revokes this machine's member credential and removes its local connections to that server. Captured history stays on the server. Other memberships and runner registrations remain. Logout updates each agent independently. If it reports that agent configuration was not fully updated, fix the named file problem and rerun the same logout command. You can retry after the local connection has already been removed.
 
 If the server is unreachable, `myco logout <address> --local-only` removes local connections without revoking the remote credential. Ask an administrator to stop that machine's access in the dashboard. Then sign in to the intended server and reconnect the repository.
 

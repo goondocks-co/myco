@@ -66,7 +66,7 @@ myco setup
 
 To choose a release phase explicitly, set `MYCO_CHANNEL=beta` or `MYCO_CHANNEL=alpha` on `sh`. On Windows x64, use the PowerShell installer's `-Replace14` option; the 2.0 Windows path is not yet verified.
 
-Setup detects 1.4 data and registrations by reading files; it never executes a 1.x binary. It helps you sign in to an existing Deployment or create one, previews the cutover, asks you to approve that exact plan and runs the existing cutover operation. Each project has its own destination, so one move can cover several Deployments. Sign in to every destination first. Projects with no route require an explicit destination or skip choice. With several signed-in Deployments, setup also asks about projects that would otherwise fall back to the default; without a terminal, pass `--route` or `--skip`.
+Setup detects 1.4 data and agent connections by reading files; it never executes a 1.x binary. It continues from the Deployment and connections already on this machine, asking you to choose when there is more than one possible next step. It helps you sign in to an existing Deployment or create one, previews the cutover, asks you to approve that exact plan and runs the existing cutover operation. Each project has its own destination, so one move can cover several Deployments. Sign in to every destination first. Projects with no route require an explicit destination or skip choice. With several signed-in Deployments, setup also asks about projects that would otherwise fall back to the default; without a terminal, pass `--route` or `--skip`.
 
 For an existing Deployment:
 
@@ -83,7 +83,7 @@ myco setup --join <address> --cutover --route <project-id>=<other-address> --ski
 myco setup --status
 ```
 
-Run `myco setup` again to resume. `--yes` accepts a printed first plan; a changed source, destination, skip choice or capture agent set requires fresh interactive approval. Capture written during this run’s handover moves too when the projects and destinations are unchanged; setup records the stopped source and reports how many sessions were added. `--no-agents` declines installing 2.0 agent integrations during the handover. `--no-cutover` leaves the migration pending and stops setup before the agents, project and runner steps. Status is strictly read-only. If 1.4 wrote more data after migration, keep its files and run `myco setup --cutover` to review the new plan. Setup names partial imports and remaining handover work, then resumes them through cutover's receipts and import ledger.
+Run `myco setup` again to resume. `--yes` accepts a printed first plan; a changed source, destination, skip choice or capture agent set requires fresh interactive approval. Capture written during this run’s handover moves too when the projects and destinations are unchanged; setup records the stopped source and reports how many sessions were added. `--no-agents` declines installing 2.0 agent integrations during the handover. `--no-cutover` leaves the migration pending and stops setup before the agents, project and runner steps. Status is strictly read-only. If 1.4 wrote more data after migration, keep its files and run `myco setup --cutover` to review the new plan. Setup names partial imports and remaining work so you can fix the reported problem and rerun.
 
 ### Manual cutover
 
@@ -123,15 +123,23 @@ For a preview that needs no extra options, apply it with:
 myco cutover
 ```
 
+### Earlier copies on another Myco
+
+If an earlier move also copied history to another Deployment, Myco reports that copy and leaves it alone. After you have reviewed or removed it on that Deployment, acknowledge the copies currently reported:
+
+```bash
+myco cutover --dismiss-earlier-copies
+```
+
+This only stops reporting those recorded copies on this machine. It contacts no Deployment and deletes no history. New or changed copies are reported again. Use this separately from a preview or move; only `--legacy-home <dir>` can accompany it.
+
 ### What moves, and how to check it
 
-Cutover backs up changed agent settings, connects the old project folders, hands agent configuration to 2.0 and stops the 1.4 service. It then copies and verifies each old vault before importing project history and agent transcripts. The original vaults stay in place. Copies and imports can resume when you rerun the command.
+Cutover writes backups of changed agent settings and the 1.4 service under `~/.myco/backups/cutover-<stamp>/`, with a `restore.md` containing commands to undo those changes. Keep that folder and read its recovery instructions before undoing a move. Cutover connects the old project folders, hands agent configuration to 2.0 and stops the 1.4 service. It then copies and verifies each old vault before importing project history and agent transcripts. The original vaults stay in place. Copies and imports can resume when you rerun the command.
 
 Receipts in `~/.myco/member/cutover.json` record destinations, verified copies, history import and transcript progress separately. A partial or refused import is unfinished, even if agent setup succeeded. Fix the named problem, preview again and rerun with the same routing choices. If a repository now points elsewhere than its receipt, confirm the new destination with `--route` or leave it with `--skip`.
 
-Status, setup and `myco cutover --dry-run` can confirm an earlier move with the Deployment and backfill a current receipt. The proof covers every importable source session's terminal import event and title, each nonempty plan event, every spore ID and each valid lineage/resolution ID. Malformed lineage events that the importer skips are counted in status. For vault-sourced sessions, the proof also requires the vault prompt and response IDs. For transcript-sourced sessions, it uses the import plan's held-transcript evidence from this machine instead. Sessions require this machine's import channel and producer; spores and lineage require this member's authorship and this machine where a session link records it (those rows do not retain a channel or standalone machine identity). Missing source evidence leaves the earlier move unconfirmed.
-
-Vault evidence does not prove the separate transcript pass: that pass remains pending and resumes idempotently while its Project accepts capture. Once the vault pass is complete, an archived or deleted destination ends the transcript pass permanently; status reports the move and its destination's state. No unarchive or re-import is needed. Large proofs use bounded batches with a request budget for each batch. A timeout leaves the move unconfirmed and Myco checks again; an expired or revoked sign-in asks you to sign in again. Keep the 1.4 files until you have verified the move.
+Setup and status can check an earlier move with its destination. Missing evidence, a timeout or an expired sign-in leaves the move unconfirmed; follow the reported next step and keep the 1.4 files. A completed history import does not prove the separate transcript import has finished. If its destination was archived or deleted after history finished moving, Myco reports that state and stops trying to import transcripts there.
 
 Old extra plan folders are reported, not silently copied into machine settings. Add the ones you still want under **My machines** → **Extra plan folders**. Configure the Deployment's models and schedule in **Settings** and register a [runner](runners.md); moving history does not enroll a runner.
 

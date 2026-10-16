@@ -6,7 +6,13 @@ The dashboard is where your team sees what its agents did and what Myco learned 
 myco open
 ```
 
-You sign in with GitHub. Your GitHub account reaches the dashboard through your sign-in as a member. An administrator connects it from **People & machines**: they choose **Connect GitHub** on your row and send you the link it makes. Open that link while signed in to GitHub as yourself. For a brand-new server, the operator creates the first administrator with `myco server setup-owner --target local` or `myco server setup-owner --target cloudflare`, then follows the private GitHub account-link URL it prints. Local setup requires a stopped server; Cloudflare setup keeps it serving.
+You sign in with GitHub. Your GitHub account reaches the dashboard through your sign-in as a member. An administrator connects it from **People & machines**: they choose **Connect GitHub** on your row and send you the link it makes. Open that link while signed in to GitHub as yourself. For a brand-new server, the owner starts with `myco setup`; see [Run your own Myco](self-hosting.md) for guided creation and the manual owner commands.
+
+## Get started
+
+On **Today**, **Get started** shows the next action for your setup, with links or commands to continue. It checks what has actually happened; an imported session does not count as live capture. Administrators see server and runner progress as well as capture; members see their own machine and session steps.
+
+The checklist also appears when **Projects** is empty. **Hide for now** dismisses it in this browser; **Show Get started** brings it back on the empty Projects page. It disappears when the checks are complete. If it cannot check progress, it says so and offers **Retry**.
 
 ## Your projects
 
