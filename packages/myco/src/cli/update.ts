@@ -198,6 +198,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
     console.error(`Myco: update rolled back to ${outcome.version} (${outcome.reason}).`);
     process.exitCode = 1;
   } else console.log(`Myco: from ${currentVersion} to ${outcome.version} on channel ${channel}${outcome.kind === 'already-current' ? ` (${outcome.reason})` : ''}.`);
+  if ('retainedPrevious' in outcome && outcome.retainedPrevious !== undefined) console.log(`An earlier version could not be removed (${outcome.retainedPrevious.reason}); kept at ${outcome.retainedPrevious.path}.`);
   await refresh();
 }
 

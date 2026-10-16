@@ -12,7 +12,7 @@ myco doctor
 
 Myco 2.0 updates on demand on member machines. A member installation runs no member update timer or local service. `--check` reports availability without replacing the binary or changing agent setup. `myco update` verifies the download, replaces the installed binary and refreshes global agent configuration, even when the binary is already current. Read its result for any remaining step, then start a new coding-agent session. Doctor checks the connection and setup and reports cached update information.
 
-Binary updates support macOS, Linux and Windows. Myco checks the downloaded version before and after replacement and keeps the previous binary beside the installed one. If the replacement fails its check, the result says **update rolled back** and names the restored version. A version that failed verification is skipped on later updates.
+Binary updates support macOS, Linux and Windows. Myco checks the downloaded version before and after replacement and keeps the previous binary beside the installed one. If the replacement fails its check, the result says **update rolled back** and names the restored version. A version that failed verification is skipped on later updates. If an earlier version cannot be removed, the result names the retained file and why it was kept.
 
 A development build or a runtime pin selecting another binary reports **binary update skipped**, with its reason. `myco update --skip-binary` explicitly keeps the binary and still refreshes agent setup. Automatic updates also skip non-default Myco homes; a person can update an installation using `MYCO_HOME` or `MYCO_BIN_DIR` as usual. If another update is running, Myco says so.
 
@@ -70,7 +70,7 @@ curl -fsSL https://myco.sh/install.sh | sh -s -- --replace-1.4
 myco setup
 ```
 
-To choose a release phase explicitly, set `MYCO_CHANNEL=beta` or `MYCO_CHANNEL=alpha` on `sh`. On Windows x64, use the PowerShell installer's `-Replace14` option; the 2.0 Windows path is not yet verified.
+To choose a release phase explicitly, set `MYCO_CHANNEL=beta` or `MYCO_CHANNEL=alpha` on `sh`. On Windows x64, use the PowerShell installer's `-Replace14` option; that Windows cutover path is not yet verified.
 
 Setup detects 1.4 data and agent connections by reading files; it never executes a 1.x binary. It continues from the Deployment and connections already on this machine, asking you to choose when there is more than one possible next step. It helps you sign in to an existing Deployment or create one, previews the cutover, asks you to approve that exact plan and runs the existing cutover operation. Each project has its own destination, so one move can cover several Deployments. Sign in to every destination first. Projects with no route require an explicit destination or skip choice. With several signed-in Deployments, setup also asks about projects that would otherwise fall back to the default; without a terminal, pass `--route` or `--skip`.
 

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import semver from 'semver';
 import { isDevelopmentVersion, selectChannelRelease, isV2Version } from '../../scripts/release-policy.mjs';
@@ -20,12 +21,14 @@ import type { ReleaseChannel } from '@myco/constants/update.js';
 export const BINARY_UPDATE_WAIT_MS = 250;
 export const BINARY_VERSION_TIMEOUT_MS = 30_000;
 
+type RetainedPrevious = { path: string; reason: string };
+
 export type BinaryUpdateOutcome =
   | { kind: 'skipped'; reason: string }
   | { kind: 'failed'; reason: string }
   | { kind: 'already-current'; version: string; reason: string }
-  | { kind: 'adopted'; version: string }
-  | { kind: 'rolled-back'; version: string; reason: string };
+  | { kind: 'adopted'; version: string; retainedPrevious?: RetainedPrevious }
+  | { kind: 'rolled-back'; version: string; reason: string; retainedPrevious?: RetainedPrevious };
 
 export interface BinaryUpdateDeps {
   resolveRefs?: (channel: ReleaseChannel) => Promise<AssetRefs | null>;
@@ -68,7 +71,34 @@ function probeVersion(binary: string): string {
 
 const detail = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
-/** One guarded binary operation for interactive updates and member keep-current. Releases its lease before agent setup. */
+type BinaryFileOps = NonNullable<BinaryUpdateDeps['fs']>;
+
+function keepPrevious(binary: string, previous: string, staging: string, platform: NodeJS.Platform, fileOps: BinaryFileOps): string | undefined {
+  if (platform !== 'win32') {
+    const next = path.join(staging, 'myco.prev');
+    fileOps.linkSync(binary, next);
+    fileOps.renameSync(next, previous);
+    return undefined;
+  }
+  const retired = fs.existsSync(previous) ? path.join(path.dirname(binary), `.myco-retired-${randomUUID()}.exe`) : undefined;
+  if (retired !== undefined) fileOps.renameSync(previous, retired);
+  try { fileOps.renameSync(binary, previous); }
+  catch (error) {
+    if (retired !== undefined) fileOps.renameSync(retired, previous);
+    throw error;
+  }
+  return retired;
+}
+
+function retirePrevious(retired: string | undefined, fileOps: BinaryFileOps): { retainedPrevious?: RetainedPrevious } {
+  if (retired === undefined) return {};
+  try { fileOps.rmSync(retired); return {}; }
+  catch (error) {
+    return { retainedPrevious: { path: retired, reason: detail(error) } };
+  }
+}
+
+/** Guards and verifies one binary replacement, releasing the lease before returning. */
 export async function updateBinary(
   caller: 'manual' | 'automatic',
   options: { skipBinary?: boolean; targetVersion?: string | null; channel?: ReleaseChannel } = {},
@@ -122,12 +152,8 @@ export async function updateBinary(
         markAdoptFailed(home, platform, refs.targetVersion, localAppData);
         return { kind: 'failed', reason: `downloaded version could not be verified: ${detail(error)}` };
       }
-      fileOps.rmSync(previous, { force: true });
       const hadLive = fs.existsSync(binary);
-      if (hadLive) {
-        if (platform === 'win32') fileOps.renameSync(binary, previous);
-        else fileOps.linkSync(binary, previous);
-      }
+      const retired = hadLive ? keepPrevious(binary, previous, staging, platform, fileOps) : undefined;
       try {
         fileOps.renameSync(candidate, binary);
         const version = probe(binary);
@@ -143,10 +169,10 @@ export async function updateBinary(
           return { kind: 'failed', reason: `replacement failed (${detail(error)}); could not restore ${previous} (${detail(restoreError)})` };
         }
         markAdoptFailed(home, platform, refs.targetVersion, localAppData);
-        return hadLive ? { kind: 'rolled-back', version: current, reason: detail(error) }
+        return hadLive ? { kind: 'rolled-back', version: current, reason: detail(error), ...retirePrevious(retired, fileOps) }
           : { kind: 'failed', reason: `installed version could not be verified: ${detail(error)}` };
       }
-      return { kind: 'adopted', version: refs.targetVersion };
+      return { kind: 'adopted', version: refs.targetVersion, ...retirePrevious(retired, fileOps) };
     } finally { fs.rmSync(staging, { recursive: true, force: true }); }
   } catch (error) {
     return { kind: 'failed', reason: detail(error) };

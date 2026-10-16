@@ -111,7 +111,11 @@ describe('a 2.0 member home and the 1.4 daemon', () => {
     expect(daemon.stderr).toContain(`${mycoHome} holds Myco 1.4 vaults (${path.join(mycoHome, 'groves')}) that no cutover has moved to Myco 2.0`);
     expect(fs.readFileSync(vault, 'utf8')).toBe('a 1.4 vault');
     expect(fs.statSync(vault).mtimeMs).toBe(stamp);
-    expect((fs.readdirSync(mycoHome, { recursive: true }) as string[]).sort()).toEqual([...before, path.join('bin', 'versions', getPluginVersion(), '.adopt-failed')].sort());
+    expect((fs.readdirSync(mycoHome, { recursive: true }) as string[]).sort()).toEqual([
+      ...before, path.join('bin', 'versions', getPluginVersion(), '.adopt-failed'),
+      path.join('bin', 'adopt-failed.json'), path.join('bin', 'adopt-failed.json.lock'),
+    ].sort());
+    expect(JSON.parse(fs.readFileSync(path.join(mycoHome, 'bin', 'adopt-failed.json'), 'utf8'))).toEqual([getPluginVersion()]);
 
     // A cutover record, or a membership, makes it a member home, which the member gate answers instead.
     fs.mkdirSync(path.join(mycoHome, 'member'), { recursive: true });

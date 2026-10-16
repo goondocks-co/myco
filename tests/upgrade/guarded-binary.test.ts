@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, expect, it } from 'bun:test';
+import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { updateBinary, BINARY_UPDATE_WAIT_MS, type BinaryUpdateDeps } from '@myco/upgrade/guarded-binary.js';
 import { hasAdoptFailed, markAdoptFailed } from '@myco/upgrade/adopt-failed.js';
 import { pruneVersions } from '@myco/upgrade/apply-binary.js';
+import * as binaryPrimitives from '@myco/upgrade/apply-binary.js';
 import { placeExecutable } from '@myco/install/place-binary.js';
 import { writeInstallMarker, versionDir } from '@myco/install/managed-binary.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
@@ -28,7 +29,7 @@ beforeEach(() => {
   stage = path.join(root, 'release');
   fs.mkdirSync(path.dirname(live), { recursive: true });
   fs.mkdirSync(stage);
-  fs.writeFileSync(live, from);
+  fs.writeFileSync(live, from, { mode: 0o755 });
   writeInstallMarker(home, { bin: live, source: 'curl', channel: 'alpha' });
   fs.writeFileSync(path.join(stage, 'myco'), to);
   fs.writeFileSync(path.join(stage, 'myco.exe'), to);
@@ -42,6 +43,11 @@ beforeEach(() => {
   };
 });
 afterEach(() => { restore(); fs.rmSync(root, { recursive: true, force: true }); });
+
+it('exports no unguarded member adoption or copy-back operation', () => {
+  expect(binaryPrimitives).not.toHaveProperty('adoptStaged');
+  expect(binaryPrimitives).not.toHaveProperty('restoreVersion');
+});
 
 for (const version of ['0.0.0-dev', '0.0.0-dev+fixture', '0.0.0']) it(`skips development build ${version} before resolving releases`, async () => {
   deps.currentVersion = version;
@@ -139,6 +145,7 @@ for (const platform of ['linux', 'win32'] as const) it(`restores the previous by
   expect(await updateBinary('manual', {}, deps)).toEqual({ kind: 'rolled-back', version: from, reason: 'replacement failed' });
   expect(fs.readFileSync(live, 'utf8')).toBe(from);
   expect(hasAdoptFailed(home, platform, to, deps.localAppData)).toBe(true);
+  if (process.platform !== 'win32') expect(fs.statSync(live).mode & 0o111).not.toBe(0);
 });
 
 it.skipIf(process.platform === 'win32')('hard-links the old inode before atomically swapping and never removes the live path', async () => {
@@ -149,13 +156,19 @@ it.skipIf(process.platform === 'win32')('hard-links the old inode before atomica
   deps.fs = {
     rmSync: (file, options) => { expect(fs.existsSync(live)).toBe(true); fs.rmSync(file, options); },
     linkSync: (source, dest) => {
-      expect(source).toBe(live); expect(dest).toBe(previous);
+      expect(source).toBe(live); expect(path.basename(String(dest))).toBe('myco.prev');
       fs.linkSync(source, dest);
       expect(fs.statSync(dest).ino).toBe(inode);
       expect(fs.statSync(live).ino).toBe(inode);
       events.push('link');
     },
     renameSync: (source, dest) => {
+      if (dest === previous) {
+        expect(fs.statSync(source).ino).toBe(inode);
+        expect(fs.readFileSync(previous, 'utf8')).toBe('older backup');
+        fs.renameSync(source, dest);
+        return;
+      }
       expect(fs.readFileSync(live, 'utf8')).toBe(from);
       expect(fs.readFileSync(previous, 'utf8')).toBe(from);
       expect(fs.statSync(previous).ino).toBe(fs.statSync(live).ino);
@@ -168,6 +181,18 @@ it.skipIf(process.platform === 'win32')('hard-links the old inode before atomica
   expect(events).toEqual(['link', 'swap']);
   expect(fs.statSync(previous).ino).toBe(inode);
   expect(fs.statSync(live).ino).not.toBe(inode);
+  expect(fs.statSync(live).mode & 0o111).not.toBe(0);
+  expect(fs.readFileSync(path.join(stage, 'myco'), 'utf8')).toBe(to);
+  expect(fs.readdirSync(path.dirname(live)).some(file => file.startsWith('.myco-update-'))).toBe(false);
+});
+
+it.skipIf(process.platform === 'win32')('reports a placement chmod failure, preserves live bytes, and removes temporary files', async () => {
+  const chmod = spyOn(fs, 'chmodSync').mockImplementation(() => { throw new Error('chmod failed'); });
+  try {
+    expect(await updateBinary('manual', {}, deps)).toMatchObject({ kind: 'failed', reason: expect.stringContaining('chmod failed') });
+    expect(fs.readFileSync(live, 'utf8')).toBe(from);
+    expect(fs.readdirSync(path.dirname(live)).some(file => file.startsWith('.myco-update-'))).toBe(false);
+  } finally { chmod.mockRestore(); }
 });
 
 it('Windows renames an open live file aside before installing the replacement', async () => {
@@ -180,20 +205,64 @@ it('Windows renames an open live file aside before installing the replacement', 
     rmSync: fs.rmSync,
     linkSync: () => { throw new Error('Windows used a hard link'); },
     renameSync: (source, dest) => {
-      events.push(dest === previous ? 'aside' : 'replace');
+      events.push(source === previous ? 'retire' : dest === previous ? 'aside' : 'replace');
       if (dest === live) { expect(fs.existsSync(live)).toBe(false); expect(fs.readFileSync(previous, 'utf8')).toBe(from); }
       fs.renameSync(source, dest);
     },
   };
   try {
     expect((await updateBinary('manual', {}, deps)).kind).toBe('adopted');
-    expect(events).toEqual(['aside', 'replace']);
+    expect(events).toEqual(['retire', 'aside', 'replace']);
     expect(fs.readFileSync(fd, 'utf8')).toBe(from);
     expect(fs.readFileSync(live, 'utf8')).toBe(to);
   } finally { fs.closeSync(fd); }
 });
 
-it.skipIf(process.platform !== 'win32')('Windows replaces an exe while a process is executing it', async () => {
+for (const platform of ['linux', 'win32'] as const) it(`preserves an earlier backup when securing the new backup fails on ${platform}`, async () => {
+  deps.platform = platform;
+  const previous = path.join(path.dirname(live), platform === 'win32' ? 'myco.prev.exe' : 'myco.prev');
+  fs.writeFileSync(previous, 'earlier backup');
+  deps.fs = {
+    rmSync: fs.rmSync,
+    linkSync: () => { throw new Error('cannot secure backup'); },
+    renameSync: (source, dest) => {
+      if (source === live) throw new Error('cannot secure backup');
+      fs.renameSync(source, dest);
+    },
+  };
+  expect(await updateBinary('manual', {}, deps)).toMatchObject({ kind: 'failed', reason: 'cannot secure backup' });
+  expect(fs.readFileSync(live, 'utf8')).toBe(from);
+  expect(fs.readFileSync(previous, 'utf8')).toBe('earlier backup');
+});
+
+for (const [code, rollback] of [['EPERM', false], ['EIO', false], ['EIO', true]] as const) it(`Windows reports the installed outcome when previous-version cleanup fails: ${code}, rollback=${rollback}`, async () => {
+  deps.platform = 'win32';
+  const previous = path.join(path.dirname(live), 'myco.prev.exe');
+  fs.writeFileSync(previous, 'earlier running version');
+  deps.fs = {
+    linkSync: fs.linkSync, renameSync: fs.renameSync,
+    rmSync: (file, options) => {
+      if (String(file).includes('.myco-retired-')) throw Object.assign(new Error('cleanup failed'), { code });
+      fs.rmSync(file, options);
+    },
+  };
+  if (rollback) deps.probeVersion = file => {
+    const version = fs.readFileSync(file, 'utf8');
+    if (file === live && version === to) throw new Error('post-check failed');
+    return version;
+  };
+  const outcome = await updateBinary('manual', {}, deps);
+  expect(outcome.kind).toBe(rollback ? 'rolled-back' : 'adopted');
+  if (outcome.kind === 'adopted' || outcome.kind === 'rolled-back') {
+    expect(outcome.version).toBe(rollback ? from : to);
+    expect(outcome.retainedPrevious!.reason).toBe('cleanup failed');
+    expect(fs.readFileSync(outcome.retainedPrevious!.path, 'utf8')).toBe('earlier running version');
+  }
+  expect(fs.readFileSync(live, 'utf8')).toBe(rollback ? from : to);
+  expect(fs.existsSync(previous)).toBe(!rollback);
+});
+
+it.skipIf(process.platform !== 'win32')('Windows performs consecutive replacements while a process executes the older exe', async () => {
   fs.copyFileSync(process.execPath, live);
   fs.copyFileSync(process.execPath, path.join(stage, 'myco.exe'));
   const child = Bun.spawn([live, '-e', 'console.log("ready"); await Bun.sleep(60000)'], {
@@ -208,6 +277,11 @@ it.skipIf(process.platform !== 'win32')('Windows replaces an exe while a process
     expect(child.exitCode).toBeNull();
     expect(fs.readFileSync(path.join(path.dirname(live), 'myco.prev.exe'))).toEqual(fs.readFileSync(process.execPath));
     expect(fs.readFileSync(live)).toEqual(fs.readFileSync(process.execPath));
+    const next = '2.0.0-alpha.4';
+    deps.resolveRefs = async () => ({ targetVersion: next, assetName: 'fixture', assetUrl: 'fixture', sha256sumsUrl: 'fixture' });
+    deps.probeVersion = file => file === live && liveProbes++ === 2 ? to : next;
+    expect((await updateBinary('manual', {}, deps)).kind).toBe('adopted');
+    expect(child.exitCode).toBeNull();
   } finally { child.kill(); await child.exited; }
 }, 15_000);
 
