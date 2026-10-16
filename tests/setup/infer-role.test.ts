@@ -388,17 +388,119 @@ it('observes runner choice when resuming a saved explicit join', async () => {
   expect(readSetupFile(home).answers.runWork).toBeUndefined();
 });
 
+for (const enrolled of [false, true]) it(`resumes a re-typed join without a terminal or saved runner choice, enrollment ${enrolled}`, async () => {
+  membership(FIRST);
+  if (enrolled) runnerRecord(FIRST);
+  const ready = readyJoin();
+  expect({ code: await run(['--join', FIRST, ...(enrolled ? ['--runner-service', 'skip'] : [])], { ...ready, ask: async question => {
+    questions.push(question);
+    return null;
+  } }), errors, questions }).toEqual({ code: 0, errors: [], questions: [] });
+  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: FIRST });
+  expect(readSetupFile(home).answers.runWork).toBeUndefined();
+});
+
+for (const source of ['flag', 'role answer'] as const) it(`asks and saves a changed runner choice for an existing membership from ${source}`, async () => {
+  membership(FIRST);
+  saveSetupFile(home, { version: 1, answers: { role: 'join', url: FIRST, runWork: false }, consented: {} });
+  const ready = readyJoin();
+  let logins = 0;
+  expect(await run(['--change', ...(source === 'flag' ? ['--join', FIRST] : [])], { ...ready,
+    login: async () => { logins++; return false; },
+    ask: async question => {
+      questions.push(question);
+      if (question.includes('What should this machine do?')) return '2';
+      if (question.includes('What is your Myco')) return FIRST;
+      if (question.includes('Make this machine a runner?')) return 'yes';
+      expect(question).toContain('Approve this plan?');
+      return 'no';
+    },
+  })).toBe(2);
+  expect(questions.filter(question => question.includes('Make this machine a runner?'))).toHaveLength(1);
+  expect(questions).toHaveLength(source === 'flag' ? 2 : 4);
+  expect(errors.join('\n')).toContain('Plan declined');
+  expect(logins).toBe(0);
+  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: FIRST, runWork: true });
+});
+
+for (const damage of ['malformed', 'loose mode', 'wrong URL'] as const) it(`refuses a re-typed join over ${damage} membership before consulting runner enrollment`, async () => {
+  membership(FIRST);
+  const record = deploymentPath(FIRST, home);
+  if (damage === 'malformed') fs.writeFileSync(record, '{', { mode: 0o600 });
+  else if (damage === 'loose mode') fs.chmodSync(record, 0o644);
+  else fs.writeFileSync(record, JSON.stringify({ serverUrl: SECOND, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }), { mode: 0o600 });
+  fs.writeFileSync(runnerRecord(FIRST), '{', { mode: 0o600 });
+  const before = fs.readFileSync(record);
+  let logins = 0;
+  expect(await run(['--join', FIRST], { ...readyJoin(), login: async () => { logins++; return false; } })).toBe(2);
+  expect(questions).toEqual([]);
+  expect(logins).toBe(0);
+  expect(errors.join('\n')).toContain('machine.signin');
+  expect(errors.join('\n')).toContain('unavailable');
+  expect(errors.join('\n')).not.toContain('Runner record could not be read');
+  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: FIRST });
+  expect(readSetupFile(home).answers.runWork).toBeUndefined();
+  expect(fs.readFileSync(record)).toEqual(before);
+});
+
+it('names the only unreadable runner record before any prompt and permits an explicit join', async () => {
+  const record = runnerRecord(SECOND);
+  fs.writeFileSync(record, '{', { mode: 0o600 });
+  expect(await run([], deps())).toBe(2);
+  expect(questions).toEqual([]);
+  expect(errors.join('\n')).toContain(record);
+  expect(errors.join('\n')).toContain('or pass --join, --create or --runner');
+  expect(errors.join('\n')).not.toContain('--run-work or --no-runner');
+  expect(fs.existsSync(setupFilePath(home))).toBe(false);
+  errors = [];
+  const ready = readyJoin();
+  expect({ code: await run(['--join', FIRST], { ...ready,
+    login: async () => { membership(FIRST); return true; },
+    ask: async question => {
+      questions.push(question);
+      expect(question).toContain('Make this machine a runner?');
+      return 'no';
+    },
+  }), errors }).toEqual({ code: 0, errors: [] });
+  expect(questions).toHaveLength(1);
+  expect(readSetupFile(home).answers.runWork).toBe(false);
+  expect(fs.readFileSync(record, 'utf8')).toBe('{');
+});
+
+it('offers working explicit-role advice for inferred creation with unrelated runner damage', async () => {
+  writeDeploymentRecord({ accountId: 'a'.repeat(32), workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: new Date(0).toISOString(), url: FIRST }, home);
+  const record = runnerRecord(SECOND);
+  fs.writeFileSync(record, '{', { mode: 0o600 });
+  for (const flags of [[], ['--run-work'], ['--no-runner']]) {
+    errors = [];
+    expect(await run(flags, deps())).toBe(2);
+    expect(questions).toEqual([]);
+    expect(errors.join('\n')).toContain(record);
+    expect(errors.join('\n')).toContain('or pass --join, --create or --runner');
+    expect(errors.join('\n')).not.toContain('--run-work or --no-runner');
+  }
+  errors = [];
+  expect(await run(['--create', 'cloudflare'], { ...deps(),
+    cloudflare: { runner: { run: async () => { throw new Error('fixture Cloudflare setup reached'); } } },
+  })).toBe(2);
+  expect(questions).toEqual([]);
+  expect(errors.join('\n')).toContain('fixture Cloudflare setup reached');
+  expect(errors.join('\n')).not.toContain(record);
+  expect(fs.readFileSync(record, 'utf8')).toBe('{');
+});
+
 for (const source of ['flag', 'role answer', 'something else'] as const) for (const damaged of [false, true]) it(`asks and saves the runner choice once for a fresh join from ${source}, unrelated damage ${damaged}`, async () => {
   if (damaged) fs.writeFileSync(runnerRecord(SECOND), '{', { mode: 0o600 });
   if (source === 'something else') { membership(FIRST); membership(SECOND); }
+  const target = source === 'something else' ? 'https://new.invalid' : FIRST;
   const ready = readyJoin();
-  const first = await run(source === 'flag' ? ['--join', FIRST] : [], { ...ready,
-    login: async () => { membership(FIRST); return true; },
+  const first = await run(source === 'flag' ? ['--join', target] : source === 'role answer' && damaged ? ['--change'] : [], { ...ready,
+    login: async () => { membership(target); return true; },
     ask: async question => {
       questions.push(question);
       if (source === 'something else' && question.includes('Which Myco')) return '3';
       if (source !== 'flag' && question.includes('What should this machine do?')) return '2';
-      if (source !== 'flag' && question.includes('What is your Myco')) return FIRST;
+      if (source !== 'flag' && question.includes('What is your Myco')) return target;
       expect(question).toContain('Make this machine a runner?');
       return 'no';
     },
@@ -406,7 +508,7 @@ for (const source of ['flag', 'role answer', 'something else'] as const) for (co
   expect({ first, errors }).toEqual({ first: 0, errors: [] });
   expect(questions.filter(question => question.includes('Make this machine a runner?'))).toHaveLength(1);
   expect(questions).toHaveLength(source === 'flag' ? 1 : source === 'role answer' ? 3 : 4);
-  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: FIRST, runWork: false });
+  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: target, runWork: false });
   questions = []; errors = [];
   expect({ code: await run([], ready), errors, questions }).toEqual({ code: 0, errors: [], questions: [] });
   expect(readSetupFile(home).answers.runWork).toBe(false);

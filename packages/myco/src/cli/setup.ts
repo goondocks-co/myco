@@ -10,7 +10,7 @@ import { runnerServerUrl, RUNNER_NAME_PATTERN } from '@myco/cli/runner-deps.js';
 import { applyObservedSetupJourney, applyObservedSetupRunWork, readSetupFile, saveSetupFile, setupCloudflareUrl, type SetupAnswers } from '@myco/setup/answers.js';
 import { observeSetupJourneys, observeSetupRunWork, observeSetupStatus, setupExitCode } from '@myco/setup/observe.js';
 import { readDefaultDeployment } from '@myco/member/default-deployment.js';
-import { deploymentUrl, readRegistryEntryResult, registryEntryPath } from '@myco/member/registry.js';
+import { deploymentUrl, readDeploymentMembershipResult, readRegistryEntryResult, registryEntryPath } from '@myco/member/registry.js';
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { setupChecks } from '@myco/cli/member-doctor.js';
 import { conductSetup, type SetupDeps } from '@myco/setup/steps.js';
@@ -231,7 +231,7 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     if (!file.answers.role && !options.change) {
       const { guidedJourneys: journeys, failures, inferenceFailures } = observeSetupJourneys(home);
       const requireReadable = (unavailable: typeof failures): void => {
-        if (unavailable.length > 0 || inferenceFailures.length > 0) throw new Error(`${[...unavailable.map(fact => fact.id === 'runner.enrollment' ? `${fact.detail.replace(/\.$/, '')} or pass --run-work or --no-runner.` : fact.detail), ...inferenceFailures].join('\n')} Restore access, or pass --join, --create or --runner.`);
+        if (unavailable.length > 0 || inferenceFailures.length > 0) throw new Error(`${[...unavailable.map(fact => fact.detail), ...inferenceFailures].join('\n')} Restore access, or pass --join, --create or --runner.`);
       };
       requireReadable(failures.filter(fact => fact.id !== 'runner.enrollment'));
       const root = resolveMemberProjectRoot(file.answers.root ?? deps.cwd);
@@ -249,7 +249,7 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
         journey = journeys[index];
         answered = true;
       }
-      if (journey && journey.role !== 'join') requireReadable(failures);
+      if (journey ? journey.role !== 'join' : !answered) requireReadable(failures);
       if (journey) {
         if (answered) {
           const { runWork: _runWork, ...identity } = journey;
@@ -279,7 +279,7 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     validateCreationOptions(file.answers);
     if (file.answers.role === 'join') {
       file.answers.root ??= resolveMemberProjectRoot(deps.cwd);
-      if (!freshJoin && file.answers.runWork === undefined) applyObservedSetupRunWork(file, observeSetupRunWork(home, file.answers.url!));
+      if (file.answers.runWork === undefined && (!freshJoin || (!options.change && readDeploymentMembershipResult(file.answers.url!, home).status === 'present'))) applyObservedSetupRunWork(file, observeSetupRunWork(home, file.answers.url!));
     }
     if (file.answers.role === 'create') file.answers.root ??= statusRepository(deps.cwd ?? process.cwd());
     saveSetupFile(home, file);
