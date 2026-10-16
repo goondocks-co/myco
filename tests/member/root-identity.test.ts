@@ -847,3 +847,33 @@ it('a malformed held directory for this repository still fails closed', async ()
   await expect(optOut(root, null, { mycoHome, now: Date.now() })).rejects.toThrow('directory unavailable');
   expect(fs.readFileSync(dir, 'utf8')).toBe('own unavailable capture');
 });
+
+
+it.skipIf(process.platform !== 'win32')('windows-identity-diagnostic', () => {
+  const emit = (value: unknown) => { try { console.log('windows-identity-diagnostic ' + JSON.stringify(value)); } catch { /* Diagnostics are non-failing. */ } };
+  const errorText = (error: unknown): string => { try { return error instanceof Error ? error.message : String(error); } catch { return 'unavailable'; } };
+  const observe = (read: () => unknown): unknown => {
+    try { return read(); } catch (error) { return { error: errorText(error) }; }
+  };
+  const fileIdentity = (stat: { dev: number | bigint; ino: number | bigint }) => ({ dev: String(stat.dev), ino: String(stat.ino) });
+  try {
+    emit({ bun: process.versions.bun });
+    const long = path.join(base, 'WindowsIdentityDiagnostic', 'RepositoryLongName');
+    fs.mkdirSync(long, { recursive: true });
+    const short = observe(() => windowsShortPath(long));
+    const flipped = path.join(path.dirname(long), path.basename(long).replace(/[a-zA-Z]/, char => char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase()));
+    emit({ bun: process.versions.bun, long, short, flipped });
+    for (const spelling of [long, ...(typeof short === 'string' ? [short] : []), flipped]) {
+      const cache = new Map<string, { stamp: string; insensitive: boolean; volumeRoot?: string }>();
+      emit({
+        spelling,
+        native: observe(() => fs.realpathSync.native(spelling)),
+        generic: observe(() => fs.realpathSync(spelling)),
+        stat: observe(() => fileIdentity(fs.statSync(spelling))),
+        bigintStat: observe(() => fileIdentity(fs.statSync(spelling, { bigint: true }))),
+        bigintLstat: observe(() => fileIdentity(fs.lstatSync(spelling, { bigint: true }))),
+        probe: observe(() => ({ identity: canonicalRootIdentity(spelling, { caseCache: cache }), verdicts: [...cache.values()] })),
+      });
+    }
+  } catch (error) { emit({ diagnosticError: errorText(error) }); }
+});
