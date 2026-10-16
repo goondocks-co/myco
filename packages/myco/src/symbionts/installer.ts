@@ -1104,7 +1104,7 @@ export class SymbiontInstaller {
     return { problem: null, replaces: this.legacyHomes.filter((home) => texts.some((text) => text.includes(`${home}${path.sep}`))) };
   }
 
-  /** Pending logout destinations remain unchanged until logout finishes. */
+  /** Hold repair to a pending logout destination only while its membership is missing. */
   assertMemberProvisionAllowed(): void {
     const record = readProvisionRecordStrict(this.memberHomeDir());
     const target = this.expectedServerUrl ?? this.deploymentUrl ?? record?.serverUrl;

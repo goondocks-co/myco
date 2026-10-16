@@ -62,7 +62,7 @@ it('propagates unexpected retired-settings write failures instead of reporting a
   } finally { warn.mockRestore(); }
 });
 
-for (const pass of ['keep-current', 'refresh']) it(`reports an unwritable retired Copilot file and continues ${pass} for Claude`, () => {
+for (const pass of ['keep-current', 'refresh']) it.skipIf(process.platform === 'win32')(`reports an unwritable retired Copilot file and continues ${pass} for Claude`, () => {
   install('claude-code');
   const file = copilotFile(JSON.stringify({ [KEY]: VALUE }));
   const before = fs.readFileSync(file, 'utf8');
@@ -83,6 +83,29 @@ for (const pass of ['keep-current', 'refresh']) it(`reports an unwritable retire
     expect([...stderr.mock.calls, ...warn.mock.calls].filter(([line]) => String(line).includes(file))).toHaveLength(1);
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
   } finally { fs.chmodSync(path.dirname(file), 0o700); status.mockRestore(); stderr.mockRestore(); warn.mockRestore(); }
+});
+
+for (const code of ['EACCES', 'EPERM', 'EROFS', 'ENOSPC']) for (const pass of ['keep-current', 'refresh']) it(`continues ${pass} for Claude after a retired Copilot write answers ${code}`, () => {
+  install('claude-code');
+  const file = copilotFile(JSON.stringify({ [KEY]: VALUE }));
+  const before = fs.readFileSync(file, 'utf8');
+  const failure = Object.assign(new Error(`retired settings write: ${code}`), { code });
+  const original = SymbiontInstaller.prototype.reconcileRetiredHookSettings;
+  const migration = spyOn(SymbiontInstaller.prototype, 'reconcileRetiredHookSettings').mockImplementation(function(this: SymbiontInstaller, ...args) {
+    if (this.memberGlobalTargets().hooks === file) throw failure;
+    return original.apply(this, args);
+  });
+  const status = spyOn(SymbiontInstaller.prototype, 'memberRegistrationCurrent');
+  const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    if (pass === 'keep-current') {
+      expect(keepCurrent(memberHome, { binaryFound: () => true })?.harnesses).toContainEqual(expect.objectContaining({ id: 'claude-code', state: 'ready' }));
+    } else expect(runProvision(['--refresh'], { mycoHome: memberHome, cwd: home, stdout: () => {}, stderr: () => {} })).toBe(true);
+    expect(status.mock.contexts.some(installer => installer instanceof SymbiontInstaller && installer.memberGlobalTargets().hooks === hooksFile('claude-code'))).toBe(true);
+    expect([...stderr.mock.calls, ...warn.mock.calls].filter(([line]) => String(line).includes(file))).toHaveLength(1);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  } finally { migration.mockRestore(); status.mockRestore(); stderr.mockRestore(); warn.mockRestore(); }
 });
 
 it('propagates unexpected strict-reader errors instead of converting them to file refusals', () => {
