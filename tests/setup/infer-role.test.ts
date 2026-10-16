@@ -400,6 +400,49 @@ for (const enrolled of [false, true]) it(`resumes a re-typed join without a term
   expect(readSetupFile(home).answers.runWork).toBeUndefined();
 });
 
+for (const source of ['flag', 'role answer'] as const) it(`asks and saves a changed runner choice for an existing membership from ${source}`, async () => {
+  membership(FIRST);
+  saveSetupFile(home, { version: 1, answers: { role: 'join', url: FIRST, runWork: false }, consented: {} });
+  const ready = readyJoin();
+  let logins = 0;
+  expect(await run(['--change', ...(source === 'flag' ? ['--join', FIRST] : [])], { ...ready,
+    login: async () => { logins++; return false; },
+    ask: async question => {
+      questions.push(question);
+      if (question.includes('What should this machine do?')) return '2';
+      if (question.includes('What is your Myco')) return FIRST;
+      if (question.includes('Make this machine a runner?')) return 'yes';
+      expect(question).toContain('Approve this plan?');
+      return 'no';
+    },
+  })).toBe(2);
+  expect(questions.filter(question => question.includes('Make this machine a runner?'))).toHaveLength(1);
+  expect(questions).toHaveLength(source === 'flag' ? 2 : 4);
+  expect(errors.join('\n')).toContain('Plan declined');
+  expect(logins).toBe(0);
+  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: FIRST, runWork: true });
+});
+
+for (const damage of ['malformed', 'loose mode', 'wrong URL'] as const) it(`refuses a re-typed join over ${damage} membership before consulting runner enrollment`, async () => {
+  membership(FIRST);
+  const record = deploymentPath(FIRST, home);
+  if (damage === 'malformed') fs.writeFileSync(record, '{', { mode: 0o600 });
+  else if (damage === 'loose mode') fs.chmodSync(record, 0o644);
+  else fs.writeFileSync(record, JSON.stringify({ serverUrl: SECOND, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }), { mode: 0o600 });
+  fs.writeFileSync(runnerRecord(FIRST), '{', { mode: 0o600 });
+  const before = fs.readFileSync(record);
+  let logins = 0;
+  expect(await run(['--join', FIRST], { ...readyJoin(), login: async () => { logins++; return false; } })).toBe(2);
+  expect(questions).toEqual([]);
+  expect(logins).toBe(0);
+  expect(errors.join('\n')).toContain('machine.signin');
+  expect(errors.join('\n')).toContain('unavailable');
+  expect(errors.join('\n')).not.toContain('Runner record could not be read');
+  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: FIRST });
+  expect(readSetupFile(home).answers.runWork).toBeUndefined();
+  expect(fs.readFileSync(record)).toEqual(before);
+});
+
 it('names the only unreadable runner record before any prompt and permits an explicit join', async () => {
   const record = runnerRecord(SECOND);
   fs.writeFileSync(record, '{', { mode: 0o600 });

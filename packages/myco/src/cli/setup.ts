@@ -279,7 +279,7 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     validateCreationOptions(file.answers);
     if (file.answers.role === 'join') {
       file.answers.root ??= resolveMemberProjectRoot(deps.cwd);
-      if (file.answers.runWork === undefined && (!freshJoin || readDeploymentMembershipResult(file.answers.url!, home).status === 'present')) applyObservedSetupRunWork(file, observeSetupRunWork(home, file.answers.url!));
+      if (file.answers.runWork === undefined && (!freshJoin || (!options.change && readDeploymentMembershipResult(file.answers.url!, home).status === 'present'))) applyObservedSetupRunWork(file, observeSetupRunWork(home, file.answers.url!));
     }
     if (file.answers.role === 'create') file.answers.root ??= statusRepository(deps.cwd ?? process.cwd());
     saveSetupFile(home, file);
