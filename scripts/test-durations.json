@@ -165,7 +165,7 @@
     "tests/member/refresh.test.ts": 1927,
     "tests/member/refusal-permanence.test.ts": 147,
     "tests/member/registry-read-during-write.test.ts": 173,
-    "tests/member/registry-rollback.test.ts": 2000,
+    "tests/member/registry-rollback.test.ts": 4000,
     "tests/member/registry-split.test.ts": 587,
     "tests/member/registry.test.ts": 278,
     "tests/member/repository-ownership.test.ts": 3362,

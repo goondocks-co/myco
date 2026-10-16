@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -41,14 +41,65 @@ beforeEach(() => {
 afterEach(() => { fs.rmSync(base, { recursive: true, force: true }); });
 
 function previousHook() {
-  const source = 'import {readRegistryEntryResult,resolveCredential,autoJoinHold} from ' + JSON.stringify(previous)
-    + '; const root=' + JSON.stringify(alias) + ',mycoHome=' + JSON.stringify(home)
+  return hookAnswer('import {readRegistryEntryResult,resolveCredential,autoJoinHold} from ' + JSON.stringify(previous));
+}
+
+function currentHook() {
+  return hookAnswer('import {readRegistryEntryResult} from ' + JSON.stringify(path.resolve('packages/myco/src/member/registry.ts'))
+    + ';import {resolveCredential} from ' + JSON.stringify(path.resolve('packages/myco/src/member/credential.ts'))
+    + ';import {autoJoinHold} from ' + JSON.stringify(path.resolve('packages/myco/src/member/auto-join-hook.ts')));
+}
+
+function hookAnswer(imports: string) {
+  const source = imports + '; const root=' + JSON.stringify(alias) + ',mycoHome=' + JSON.stringify(home)
     + '; const env={MYCO_TEMPORARY_FOLDERS:' + JSON.stringify(path.join(base, 'excluded')) + '}; let held=null,queued=0;'
     + 'const result=readRegistryEntryResult(root,mycoHome); const credential=resolveCredential("registry",{cwd:root,mycoHome,env,claimsUnconnected:(at)=>{'
     + 'held=autoJoinHold({root:at,mycoHome,now:2,hookName:"session-end",agent:"claude-code",sessionId:"rollback",env,later:()=>queued++});return held!==null;}});'
     + 'console.log(JSON.stringify({status:result.status,server:credential?.serverUrl??null,held:held?.repo?.serverUrl??null,queued}));';
-  return JSON.parse(execFileSync(process.execPath, ['-e', source], { cwd: base, encoding: 'utf8' })) as { status: string; server: string | null; held: string | null; queued: number };
+  return JSON.parse(execFileSync(process.execPath, ['--tsconfig-override', path.resolve('tsconfig.json'), '-e', source], { cwd: base, encoding: 'utf8' })) as { status: string; server: string | null; held: string | null; queued: number };
 }
+
+function conflictingConnection() {
+  fs.writeFileSync(registryEntryPath(root, home), JSON.stringify({ ...binding(canonicalRootIdentity(root), 'proj_work'), version: 3, serverUrl: 'https://work.invalid' }), { mode: 0o600 });
+  expect(readRegistryEntryResult(root, home).status).toBe('unavailable');
+  return { ...binding(alias), token: 'P'.repeat(43), machineId: 'fake' };
+}
+
+function expectChosenOrConflict(answer: ReturnType<typeof currentHook>) {
+  expect(['unavailable', 'present']).toContain(answer.status);
+  expect([null, 'https://personal.invalid']).toContain(answer.server);
+  expect(answer.held).toBeNull();
+  expect(answer.queued).toBe(0);
+}
+
+it('a fresh concurrent hook never sees the rejected Deployment during conflict repair', () => {
+  const chosen = conflictingConnection();
+  const target = registryEntryPath(root, home);
+  const rename = fs.renameSync;
+  let observed = false;
+  const fault = spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+    if (String(to) === target) {
+      observed = true;
+      expectChosenOrConflict(currentHook());
+    }
+    return rename(from, to);
+  }) as typeof fs.renameSync);
+  try { writeRegistryEntry(chosen, { mycoHome: home, resolveConflict: true }); }
+  finally { fault.mockRestore(); }
+  expect(observed).toBe(true);
+  expect(currentHook().server).toBe('https://personal.invalid');
+});
+
+for (const edge of ['before', 'after']) it.skipIf(process.platform === 'win32')('SIGKILL ' + edge + ' conflict repair publication never exposes the rejected Deployment (POSIX termination required)', () => {
+  const chosen = conflictingConnection();
+  const source = 'import fs from "node:fs";import {writeRegistryEntry} from ' + JSON.stringify(path.resolve('packages/myco/src/member/registry.ts'))
+    + ';const target=' + JSON.stringify(registryEntryPath(root, home)) + ',rename=fs.renameSync;fs.renameSync=(from,to)=>{if(String(to)!==target)return rename(from,to);'
+    + (edge === 'after' ? 'rename(from,to);' : '') + 'process.kill(process.pid,"SIGKILL");};writeRegistryEntry('
+    + JSON.stringify(chosen) + ',{mycoHome:' + JSON.stringify(home) + ',resolveConflict:true});';
+  const killed = spawnSync(process.execPath, ['--tsconfig-override', path.resolve('tsconfig.json'), '-e', source], { cwd: base, encoding: 'utf8' });
+  expect(killed.signal).toBe('SIGKILL');
+  expectChosenOrConflict(currentHook());
+});
 
 it('the previous reader and automatic connection path fail closed after canonical migration', () => {
   expect(previousHook()).toEqual({ status: 'present', server: 'https://personal.invalid', held: null, queued: 0 });

@@ -10,7 +10,13 @@ export interface FilesystemWitness {
 function stamp(at: string, kind: FilesystemWitness['kind']): string {
   const stat = kind === 'directory' ? fs.statSync(at, { bigint: true }) : fs.lstatSync(at, { bigint: true });
   const identity = [stat.dev, stat.ino];
-  return (kind === 'root' ? identity : (kind === 'ancestor' || kind === 'directory')
+  if (kind === 'root') {
+    const birthtime = stat.birthtimeNs ?? 0n;
+    if (birthtime !== 0n) return [...identity, birthtime].join(':');
+    const parent = fs.lstatSync(path.dirname(at), { bigint: true });
+    return [...identity, birthtime, parent.mtimeNs, parent.ctimeNs].join(':');
+  }
+  return ((kind === 'ancestor' || kind === 'directory')
     ? [...identity, stat.mtimeNs, stat.ctimeNs]
     : [...identity, stat.size, stat.mode, stat.mtimeNs, stat.ctimeNs]).join(':');
 }

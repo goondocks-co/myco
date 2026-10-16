@@ -40,7 +40,7 @@ const KEY_HEX_CHARS = 16;
 const MIGRATION_STUB_VERSION = 0;
 const MIGRATION_STUB_KIND = 'canonical-root';
 const LEFT_STUB_KIND = 'left-root';
-const CANONICAL_PROOF_VERSION = 5;
+const CANONICAL_PROOF_VERSION = 6;
 
 /** A Deployment this machine holds a credential for. One per server URL, whatever number of projects are bound to it. */
 export interface DeploymentMembership {
@@ -406,10 +406,10 @@ function legacyRegistryKey(root: string): string {
   return crypto.createHash('sha256').update(path.resolve(root)).digest('hex').slice(0, KEY_HEX_CHARS);
 }
 
-type RootBindingFile = { file: string; binding: ProjectBinding; identity: string };
+type RootBindingFile = { file: string; binding: ProjectBinding; identity: string; witness?: FilesystemWitness };
 interface MigrationStub { version: typeof MIGRATION_STUB_VERSION; kind: typeof MIGRATION_STUB_KIND | typeof LEFT_STUB_KIND; root: string; displayRoot?: string }
 type MigrationStubFile = { file: string; stub: MigrationStub; witness: FilesystemWitness };
-type BindingRead = { ok: true; binding: ProjectBinding; identity: string }
+type BindingRead = { ok: true; binding: ProjectBinding; identity: string; witness?: FilesystemWitness }
   | { ok: false; reason: RegistryRefusal; stderrReason: RegistryRefusal; detail?: string; roots?: string[]; stub?: MigrationStub; witness?: FilesystemWitness };
 const bindingReadCache = new Map<string, { stamp: string; read: Extract<BindingRead, { ok: true }> }>();
 
@@ -455,7 +455,7 @@ function readBindingFile(file: string, name: string, mycoHome: string, directory
     if (stat.isFile()) {
       stamp = [stat.dev, stat.ino, stat.size, stat.mode, stat.mtimeNs, stat.ctimeNs].join(':');
       const cached = bindingReadCache.get(file);
-      if (cached?.stamp === stamp) return validateBinding(cached.read.binding, name, queried);
+      if (cached?.stamp === stamp) return validateBinding(cached.read.binding, name, queried, { at: file, kind: 'file', stamp });
     } else assertMemberPathContained(file, mycoHome);
   } catch (error) {
     const reason = (error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(file) ? 'missing' : 'unreadable';
@@ -468,12 +468,12 @@ function readBindingFile(file: string, name: string, mycoHome: string, directory
   if (!isBinding(read.value)) return malformed('not a registry entry');
   const binding = read.value;
   if (!isProjectId(binding.projectId)) return malformed('project id out of grammar');
-  const result = validateBinding(binding, name, queried);
+  const result = validateBinding(binding, name, queried, stamp === undefined ? undefined : { at: file, kind: 'file', stamp });
   if (stamp !== undefined && result.ok) bindingReadCache.set(file, { stamp, read: result });
   return result;
 }
 
-function validateBinding(binding: ProjectBinding, name: string, queried?: QueriedIdentity): BindingRead {
+function validateBinding(binding: ProjectBinding, name: string, queried?: QueriedIdentity, witness?: FilesystemWitness): BindingRead {
   const roots = [binding.root, ...(binding.displayRoot ? [binding.displayRoot] : [])];
   if (binding.version >= BINDING_FORMAT_VERSION && name !== legacyRegistryKey(binding.root) + '.json') {
     return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: 'root mismatch' };
@@ -484,7 +484,7 @@ function validateBinding(binding: ProjectBinding, name: string, queried?: Querie
     if (![legacyRegistryKey(identity), legacyRegistryKey(binding.root), legacyRegistryKey(binding.displayRoot ?? binding.root)].some(key => name === `${key}.json`)) {
       return { ok: false, reason: 'malformed', stderrReason: 'malformed', detail: 'root mismatch' };
     }
-    return { ok: true, binding, identity };
+    return { ok: true, binding, identity, witness };
   } catch (error) {
     return { ok: false, reason: 'unreadable', stderrReason: 'unreadable', detail: (error as NodeJS.ErrnoException).code ?? 'identity unavailable', roots };
   }
@@ -524,11 +524,12 @@ function certifyCanonicalRegistry(home: string): void {
   try {
     const snapshot = rootBindingFiles(home);
     if (snapshot.unavailable.length || snapshot.records.some(record => record.binding.version !== BINDING_FORMAT_VERSION
-      || record.binding.root !== record.identity || path.basename(record.file) !== `${legacyRegistryKey(record.identity)}.json`)) return;
+      || record.binding.root !== record.identity || record.witness === undefined || path.basename(record.file) !== `${legacyRegistryKey(record.identity)}.json`)) return;
     const identities = new Set(snapshot.records.map(record => record.identity));
     if (snapshot.stubs.some(record => record.stub.kind === MIGRATION_STUB_KIND && !identities.has(canonicalRootIdentity(record.stub.root)))) return;
     const stamp = registryStamp(home);
-    const witnesses = [...rootTopologyWitnesses(snapshot.records.map(record => record.binding.root)), ...snapshot.stubs.map(record => record.witness)];
+    const witnesses = [...rootTopologyWitnesses(snapshot.records.map(record => record.binding.root)),
+      ...snapshot.records.flatMap(record => record.witness ? [record.witness] : []), ...snapshot.stubs.map(record => record.witness)];
     if (snapshot.records.some(record => canonicalRootIdentity(record.binding.root) !== record.identity)
       || !filesystemWitnessesCurrent(witnesses) || registryStamp(home) !== stamp) return;
     writePrivateFileAtomic(canonicalProofPath(home), JSON.stringify({ version: CANONICAL_PROOF_VERSION, stamp, witnesses }));
@@ -553,7 +554,7 @@ function rootBindingFiles(mycoHome: string): { records: RootBindingFile[]; unava
   for (const name of names.filter(name => name.endsWith('.json'))) {
     const file = path.join(dir, name);
     const read = readBindingFile(file, name, mycoHome, true);
-    if (read.ok) records.push({ file, binding: read.binding, identity: read.identity });
+    if (read.ok) records.push({ file, binding: read.binding, identity: read.identity, witness: read.witness });
     else if (read.stub !== undefined && read.witness !== undefined) stubs.push({ file, stub: read.stub, witness: read.witness });
     else if (read.reason !== 'missing') {
       let roots = read.roots;
@@ -653,7 +654,6 @@ export function writeRegistryEntry(entry: RegistryEntry, opts: { mycoHome?: stri
     if (!opts.resolveConflict) migrateRootBindings(entry.root, mycoHome);
     invalidateCanonicalRegistry(mycoHome);
     const file = registryEntryPath(entry.root, mycoHome);
-    for (const record of snapshot?.records ?? []) if (record.identity === identity && record.file !== file) writeMigrationStub(record);
     pinLegacySpoolDestinationForProject(entry.projectId, mycoHome);
     const { membership, binding } = decompose(entry);
     // The membership is MERGED, never replaced. One membership serves every project

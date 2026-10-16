@@ -636,7 +636,16 @@ it('a cached binding follows an ancestor move instead of reporting a missing rep
   expect(readRegistryEntryResult(root, mycoHome).status).toBe('present');
 });
 
-for (const depth of [2, 3]) for (const operation of ['lookup', 'autoJoinHold']) {
+function freshRootIdentityProbe(repository: string, operation: 'lookup' | 'autoJoinHold') {
+  const source = 'import {readRegistryEntryResult} from ' + JSON.stringify(path.resolve('packages/myco/src/member/registry.ts'))
+    + '; import {autoJoinHold} from ' + JSON.stringify(path.resolve('packages/myco/src/member/auto-join-hook.ts'))
+    + '; const root=' + JSON.stringify(repository) + ',mycoHome=' + JSON.stringify(mycoHome)
+    + '; let queued=0; const result=' + (operation === 'lookup' ? 'readRegistryEntryResult(root,mycoHome)' : 'autoJoinHold({root,mycoHome,hookName:"session-end",agent:"claude-code",sessionId:"moved",now:2,env:{MYCO_TEMPORARY_FOLDERS:' + JSON.stringify(path.join(base, 'excluded')) + '},later:()=>queued++})')
+    + '; console.log(JSON.stringify({result,queued}));';
+  return JSON.parse(execFileSync(process.execPath, ['--tsconfig-override', path.resolve('tsconfig.json'), '-e', source], { cwd: base, encoding: 'utf8' }));
+}
+
+for (const depth of [2, 3]) for (const operation of ['lookup', 'autoJoinHold'] as const) {
   it('a fresh ' + operation + ' rejects a stale proof after an ancestor moves at depth ' + depth, () => {
     const ancestor = path.join(base, 'Move');
     const repository = path.join(ancestor, ...Array.from({ length: depth - 1 }, (_, index) => 'Group' + index), 'repo');
@@ -649,12 +658,7 @@ for (const depth of [2, 3]) for (const operation of ['lookup', 'autoJoinHold']) 
     fs.mkdirSync(path.dirname(moved));
     fs.renameSync(ancestor, moved);
     fs.symlinkSync(moved, ancestor, 'junction');
-    const source = 'import {readRegistryEntryResult} from ' + JSON.stringify(path.resolve('packages/myco/src/member/registry.ts'))
-      + '; import {autoJoinHold} from ' + JSON.stringify(path.resolve('packages/myco/src/member/auto-join-hook.ts'))
-      + '; const root=' + JSON.stringify(repository) + ',mycoHome=' + JSON.stringify(mycoHome)
-      + '; let queued=0; const result=' + (operation === 'lookup' ? 'readRegistryEntryResult(root,mycoHome)' : 'autoJoinHold({root,mycoHome,hookName:"session-end",agent:"claude-code",sessionId:"moved",now:2,env:{MYCO_TEMPORARY_FOLDERS:' + JSON.stringify(path.join(base, 'excluded')) + '},later:()=>queued++})')
-      + '; console.log(JSON.stringify({result,queued}));';
-    const answer = JSON.parse(execFileSync(process.execPath, ['--tsconfig-override', path.resolve('tsconfig.json'), '-e', source], { cwd: base, encoding: 'utf8' }));
+    const answer = freshRootIdentityProbe(repository, operation);
     if (operation === 'lookup') {
       expect(['present', 'unavailable']).toContain(answer.result.status);
       if (answer.result.status === 'present') expect(answer.result.entry.serverUrl).toBe('https://personal.invalid');
@@ -664,6 +668,39 @@ for (const depth of [2, 3]) for (const operation of ['lookup', 'autoJoinHold']) 
     expect(listPending({ mycoHome, now: 2 })).toEqual([]);
   });
 }
+
+for (const operation of ['lookup', 'autoJoinHold'] as const) it('a fresh ' + operation + ' rejects a stale proof after deletion and a same-name symlink replacement', () => {
+  const replacement = path.join(base, 'Replacement');
+  fs.mkdirSync(replacement);
+  execFileSync('git', ['init', '-q'], { cwd: replacement });
+  defaultWork();
+  writeRegistryEntry(entry(root), { mycoHome });
+  expect(fs.existsSync(path.join(mycoHome, 'member', 'registry-canonical'))).toBe(true);
+  fs.rmSync(root, { recursive: true });
+  fs.symlinkSync(replacement, root, 'junction');
+  const answer = freshRootIdentityProbe(root, operation);
+  if (operation === 'lookup') {
+    expect(['present', 'unavailable']).toContain(answer.result.status);
+    if (answer.result.status === 'present') expect(answer.result.entry.serverUrl).toBe('https://personal.invalid');
+  } else expect(answer.result).toBeNull();
+  expect(answer.queued).toBe(0);
+  expect(listJoinRequests(mycoHome)).toEqual([]);
+  expect(listPending({ mycoHome, now: 2 })).toEqual([]);
+});
+
+it('an in-place legacy binding rewrite invalidates the proof before an expanded-identity lookup', () => {
+  const expanded = path.join(base, 'expanded-name');
+  fs.mkdirSync(expanded);
+  const literal = canonicalRootIdentity(root);
+  writeRegistryEntry(entry(root), { mycoHome });
+  const file = registryEntryPath(root, mycoHome);
+  const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...value, version: 2, root: literal }));
+  const native = fs.realpathSync.native;
+  fs.realpathSync.native = ((at: fs.PathLike) => native(String(at) === literal ? expanded : at)) as typeof native;
+  try { expect(readRegistryEntryResult(expanded, mycoHome)).toMatchObject({ status: 'present', entry: { serverUrl: 'https://personal.invalid' } }); }
+  finally { fs.realpathSync.native = native; }
+});
 
 it('explicit connection replacement and leave resolve only the selected repository conflict', () => {
   oldBinding(root);

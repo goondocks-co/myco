@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'bun:test';
+import { afterEach, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -43,7 +43,42 @@ it('topology witnesses ignore directory metadata changes that preserve identity'
   const proof = rootTopologyWitnesses([root]);
   fs.writeFileSync(path.join(root, 'new-file'), 'data');
   expect(filesystemWitnessesCurrent(proof)).toBe(true);
-  expect(proof.every(witness => witness.stamp.split(':').length === 2)).toBe(true);
+});
+
+it('birthtime distinguishes a replaced component with a reused device and inode', () => {
+  const root = fixture();
+  const lstat = fs.lstatSync;
+  let birthtimeNs = 1n;
+  const probe = spyOn(fs, 'lstatSync').mockImplementation(((at: fs.PathLike) => {
+    const stat = lstat(at, { bigint: true });
+    return String(at) === root ? Object.assign(stat, { birthtimeNs }) : stat;
+  }) as typeof fs.lstatSync);
+  try {
+    const proof = rootTopologyWitnesses([root]);
+    expect(filesystemWitnessesCurrent(proof)).toBe(true);
+    birthtimeNs = 2n;
+    expect(filesystemWitnessesCurrent(proof)).toBe(false);
+  } finally { probe.mockRestore(); }
+});
+
+it('a component without birthtime uses its parent metadata to detect replacement', () => {
+  const parent = fixture();
+  const root = path.join(parent, 'repo');
+  fs.mkdirSync(root);
+  const lstat = fs.lstatSync;
+  let changed = false;
+  const probe = spyOn(fs, 'lstatSync').mockImplementation(((at: fs.PathLike) => {
+    const stat = lstat(at, { bigint: true });
+    if (String(at) === root) return Object.assign(stat, { birthtimeNs: 0n });
+    if (String(at) === parent && changed) return Object.assign(stat, { mtimeNs: stat.mtimeNs + 1n, ctimeNs: stat.ctimeNs + 1n });
+    return stat;
+  }) as typeof fs.lstatSync);
+  try {
+    const proof = rootTopologyWitnesses([root]);
+    expect(filesystemWitnessesCurrent(proof)).toBe(true);
+    changed = true;
+    expect(filesystemWitnessesCurrent(proof)).toBe(false);
+  } finally { probe.mockRestore(); }
 });
 
 it('metadata witnesses reject in-place edits and malformed derived witnesses', () => {
