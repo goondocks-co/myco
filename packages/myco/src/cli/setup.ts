@@ -246,8 +246,11 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
         answered = true;
       }
       if (journey) {
-        if (answered) file.answers = { ...file.answers, ...journey };
-        else applyObservedSetupJourney(file, journey);
+        if (answered) {
+          const { runWork: _runWork, ...identity } = journey;
+          file.answers = { ...file.answers, ...identity };
+        }
+        applyObservedSetupJourney(file, journey);
         validateCreationOptions(file.answers);
         out(bound === journey ? `This repository sends to ${journey.url}; continuing.` : `This machine ${setupJourneyWords(journey)}; continuing.`);
         saveSetupFile(home, file);

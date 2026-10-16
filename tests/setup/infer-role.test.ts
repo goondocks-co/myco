@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { run } from '@myco/cli/setup.js';
+import { parseSetupOptions, run } from '@myco/cli/setup.js';
 import { applyObservedSetupJourney, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
 import { deploymentPath, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { defaultDeploymentPath, readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
@@ -307,6 +307,43 @@ it('combines membership and runner records only for guided setup', async () => {
   expect(await run(['--no-runner'], deps())).toBe(2);
   expect(questions).toEqual([]);
   expect(readSetupFile(home).answers).toMatchObject({ runWork: false });
+});
+
+for (const runner of [undefined, FIRST, SECOND]) it(`observes runner choice only from enrollment at the joined Deployment: ${runner ?? 'none'}`, () => {
+  membership(FIRST);
+  if (runner) runnerRecord(runner);
+  const journey = observeSetupJourneys(home).guidedJourneys.find(journey => journey.role === 'join')!;
+  expect(journey.runWork).toBe(runner === FIRST);
+  const file = readSetupFile(home);
+  applyObservedSetupJourney(file, journey);
+  saveSetupFile(home, file);
+  expect(readSetupFile(home).answers.runWork).toBeUndefined();
+});
+
+for (const saved of [false, true]) for (const runWork of [false, true]) it(`retains ${saved ? 'saved' : 'flagged'} runner choice ${runWork} over observed enrollment`, () => {
+  const file = readSetupFile(home);
+  if (saved) {
+    saveSetupFile(home, { ...file, answers: { runWork } });
+    file.answers = readSetupFile(home).answers;
+  } else file.answers = parseSetupOptions([runWork ? '--run-work' : '--no-runner']).answers;
+  applyObservedSetupJourney(file, { role: 'join', url: FIRST, runWork: !runWork });
+  saveSetupFile(home, file);
+  expect(file.answers.runWork).toBe(runWork);
+  expect(readSetupFile(home).answers.runWork).toBe(runWork);
+});
+
+for (const enrolled of [false, true]) for (const choice of ['observed', 'flagged', 'saved'] as const) it(`keeps ${choice} runner choice separate from an answered Deployment choice with enrollment ${enrolled}`, async () => {
+  membership(FIRST); membership(SECOND);
+  if (enrolled) runnerRecord(FIRST);
+  if (choice === 'saved') saveSetupFile(home, { version: 1, answers: { runWork: !enrolled }, consented: {} });
+  expect(await run(choice === 'flagged' ? [enrolled ? '--no-runner' : '--run-work'] : [], { ...deps(), ask: async question => {
+    questions.push(question);
+    expect(question).toContain('Which Myco');
+    return '1';
+  } })).toBe(2);
+  expect(questions).toHaveLength(1);
+  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: FIRST });
+  expect(readSetupFile(home).answers.runWork).toBe(choice === 'observed' ? undefined : !enrolled);
 });
 
 it('asks the role instead of inferring guided creation for a fronted local Deployment', async () => {

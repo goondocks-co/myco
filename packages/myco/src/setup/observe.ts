@@ -290,7 +290,7 @@ export function observeSetupJourneys(home: string): { journeys: SetupAnswers[]; 
     }
   } catch (error) { unavailable('deployment.create', error instanceof Error ? error.message : String(error)); }
   for (const membership of memberships.memberships) journeys.push({ role: 'join', url: deploymentUrl(membership.serverUrl) });
-  const guidedJourneys = journeys.filter(journey => !manual.has(journey)).map(journey => ({ ...journey }));
+  const guidedJourneys = journeys.filter(journey => !manual.has(journey)).map(journey => ({ ...journey, ...(journey.role === 'join' ? { runWork: false } : {}) }));
   const runners = listRunnerRecordsResult(home);
   for (const runner of runners.records) {
     const url = deploymentUrl(runner.serverUrl);
