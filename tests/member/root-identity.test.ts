@@ -385,25 +385,25 @@ it('migration finds an old-keyed alias from another spelling and rekeys it while
   }) as typeof fs.renameSync);
   try { expect(readRegistryEntry(root, mycoHome)?.serverUrl).toBe('https://personal.invalid'); }
   finally { lockedWrite.mockRestore(); }
-  expect(fs.existsSync(old)).toBe(false);
+  expect(JSON.parse(fs.readFileSync(old, 'utf8'))).toMatchObject({ version: 0, kind: 'canonical-root' });
   const stored = JSON.parse(fs.readFileSync(registryEntryPath(root, mycoHome), 'utf8'));
   expect(stored.root).toBe(canonicalRootIdentity(root));
   expect(stored.displayRoot).toBe(alias);
 });
-it('a crash after the canonical write leaves both readable; the next read removes only the duplicate', () => {
+it('a crash after the canonical write leaves both readable; the next read replaces the duplicate with a stub', () => {
   const old = oldBinding(alias);
-  const unlink = fs.unlinkSync;
-  const crash = spyOn(fs, 'unlinkSync').mockImplementation((at) => {
-    if (String(at) === old) throw new Error('simulated crash after write');
-    return unlink(at);
-  });
+  const rename = fs.renameSync;
+  const crash = spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+    if (String(to) === old) throw new Error('simulated crash after write');
+    return rename(from, to);
+  }) as typeof fs.renameSync);
   try { expect(() => readRegistryEntry(root, mycoHome)).toThrow('simulated crash'); }
   finally { crash.mockRestore(); }
   expect(fs.existsSync(old)).toBe(true);
   expect(fs.existsSync(registryEntryPath(root, mycoHome))).toBe(true);
   expect(readRegistryEntryResult(alias, mycoHome).status).toBe('present');
   expect(readRegistryEntry(root, mycoHome)?.serverUrl).toBe('https://personal.invalid');
-  expect(fs.existsSync(old)).toBe(false);
+  expect(JSON.parse(fs.readFileSync(old, 'utf8'))).toMatchObject({ version: 0, kind: 'canonical-root' });
 });
 for (const disagreement of ['Deployment', 'Project']) {
   it('disagreeing ' + disagreement + ' alias bindings stay intact, appear in doctor/status, and cannot capture or auto-join', async () => {
@@ -532,7 +532,7 @@ it('a writer migrates a v1 alias binding before updating its Project', () => {
   ensureMemberDir(projectsDir(mycoHome), mycoHome);
   fs.writeFileSync(oldPath(alias), JSON.stringify({ ...entry(alias), version: 1 }), { mode: 0o600 });
   writeRegistryEntry(entry(root, 'https://personal.invalid', 'proj_updated'), { mycoHome });
-  expect(fs.existsSync(oldPath(alias))).toBe(false);
+  expect(JSON.parse(fs.readFileSync(oldPath(alias), 'utf8'))).toMatchObject({ version: 0, kind: 'canonical-root' });
   expect(readRegistryEntry(alias, mycoHome)?.projectId).toBe('proj_updated');
 });
 
@@ -714,6 +714,7 @@ it('an orphaned connection for this alias stays local and cannot throw through t
   const checks = await homeReport(mycoHome, { cwd: other, fetch: (async () => new Response('{}', { status: 503 })) as import('@myco/member/transport.js').FetchLike });
   for (const text of [lines.join('\n'), checks.map(check => check.detail).join('\n')]) {
     expect(text.match(/Saved Myco connection/g)).toHaveLength(1);
+    expect(text.match(/Saved opt-out/g)).toHaveLength(1);
     expect(text).toContain('myco member join');
   }
 });

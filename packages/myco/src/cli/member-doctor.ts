@@ -226,7 +226,7 @@ function leftRepositoryChecks(home: string): DoctorCheck[] {
 
 /** Local machine facts, independent of the current repository's binding. */
 export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Promise<DoctorCheck[]> {
-  const checks: DoctorCheck[] = autoJoinIdentityIssues(home).filter(issue => issue.kind === 'choice').map(issue => row('Repository connection', 'warn', issue.message));
+  const checks: DoctorCheck[] = autoJoinIdentityIssues(home).map(issue => row('Repository connection', 'warn', issue.message));
   const now = (deps.now ?? Date.now)();
   let runners: ReturnType<typeof listRunnerRecords> = [];
   try { runners = listRunnerRecords(home); }

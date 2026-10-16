@@ -1,0 +1,16 @@
+{
+  "commit": "a7bc645eaa4e4ca09bccbdd66c6262aceae6e377",
+  "bun": "1.4.0",
+  "bundle": "previous-member.mjs.txt",
+  "sha256": "6230ee7044969b4c09a418843c2ac00bbee76ad0c75f66496b871c36cb27983a",
+  "exports": {
+    "member/registry.ts": "readRegistryEntryResult",
+    "member/credential.ts": "resolveCredential",
+    "member/auto-join-hook.ts": "autoJoinHold"
+  },
+  "sourceSha256": {
+    "member/registry.ts": "6c5690783ea0de5d33d186b32e7da958964192417b54c8d0d367e7b422f2b6e4",
+    "member/credential.ts": "f6eafe196d4b343585e732a3a3dca938414f8eea060ea851f82514de444849cf",
+    "member/auto-join-hook.ts": "fa01de94f8a1c1ae7648f2ca9d7f0f430b9161e376e1b594f6222c1a29420c52"
+  }
+}
