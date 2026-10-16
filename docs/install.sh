@@ -805,7 +805,16 @@ main() {
         _legacy_dir="${BIN_DIR}/versions/${CURRENT_VERSION}"
       fi
       _legacy_copy="${_legacy_dir}/myco"
-      if ! mkdir -p "$_legacy_dir" || ! cp -p "${BIN_DIR}/myco" "${TMP_DIR}/myco.legacy" || ! mv "${TMP_DIR}/myco.legacy" "$_legacy_copy"; then
+      if ! mkdir -p "$_legacy_dir" || ! cp -p "${BIN_DIR}/myco" "${TMP_DIR}/myco.legacy"; then
+        error "Could not preserve the executable at ${BIN_DIR}/myco; nothing was replaced."
+        exit 1
+      fi
+      if [ "$($SHA_CMD "${TMP_DIR}/myco.legacy" | awk '{print $1}')" != "$_legacy_sha" ]; then
+        rm -f "${TMP_DIR}/myco.legacy"
+        error "The preservation copy does not match ${BIN_DIR}/myco; nothing was replaced."
+        exit 1
+      fi
+      if ! mv "${TMP_DIR}/myco.legacy" "$_legacy_copy"; then
         error "Could not preserve the executable at ${BIN_DIR}/myco; nothing was replaced."
         exit 1
       fi

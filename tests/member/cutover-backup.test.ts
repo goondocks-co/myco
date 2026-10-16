@@ -22,7 +22,7 @@ function fixture(platform: NodeJS.Platform = 'darwin') {
   write(unit.file, executable + ' daemon');
   const slot = (version: string, bytes = version) => { const file = path.join(home, 'bin', 'versions', version, path.basename(executable)); write(file, bytes); return file; };
   const backup = new CutoverBackup(path.join(home, 'backup'), 'cutover', platform);
-  const recipe = () => { backup.takeLegacyUnit(unit, identifyLegacyExecutable(unit)); backup.pruneUnchanged(); return fs.readFileSync(path.join(backup.dir, 'restore.md'), 'utf8'); };
+  const recipe = () => { backup.takeLegacyUnit(unit, identifyLegacyExecutable(unit, platform)); backup.pruneUnchanged(); return fs.readFileSync(path.join(backup.dir, 'restore.md'), 'utf8'); };
   return { home, executable, unit, slot, backup, recipe };
 }
 
@@ -38,11 +38,11 @@ describe('cutover executable recovery', () => {
     expect(result).not.toMatchObject({ source: one });
   });
 
-  it('rejects a changed preserved copy and uses the daemon-version slot ahead of ambiguous slots', () => {
+  it('searches other slots for the recorded digest instead of trusting a different daemon version', () => {
     const f = fixture(); const good = f.slot('1.4.8'); f.slot('1.4.9');
     const bad = path.join(f.home, 'bin', 'legacy', 'old', 'myco'); write(bad, 'changed');
-    write(path.join(f.home, LEGACY_EXECUTABLE_RECORD), JSON.stringify({ path: bad, sha256: '0'.repeat(64), version: '1.4.9', replaced_at: f.executable }));
-    write(path.join(f.home, 'service', 'daemon.json'), JSON.stringify({ version: '1.4.8' }));
+    write(path.join(f.home, LEGACY_EXECUTABLE_RECORD), JSON.stringify({ path: bad, sha256: digest(good), version: '1.4.8', replaced_at: f.executable }));
+    write(path.join(f.home, 'service', 'daemon.json'), JSON.stringify({ version: '1.4.9' }));
     expect(identifyLegacyExecutable(f.unit)).toMatchObject({ kind: 'saved', source: good, version: '1.4.8' });
     expect(f.recipe()).toContain('does not match its recorded checksum');
   });
@@ -99,11 +99,11 @@ esac
     expect(recipe).not.toContain('No saved Myco 1.x executable could be identified.');
   });
 
-  it('uses exactly one 1.x versioned slot ahead of an unclassified preserved copy', () => {
+  it('lists a versioned slot beside an unclassified preserved copy without choosing', () => {
     const f = fixture(); const slot = f.slot('1.4.8', 'identified 1.x version');
     const bytes = 'unclassified saved bytes'; const hash = crypto.createHash('sha256').update(bytes).digest('hex');
-    write(path.join(f.home, 'bin', 'legacy', hash, 'myco'), bytes);
-    expect(identifyLegacyExecutable(f.unit)).toMatchObject({ kind: 'saved', source: slot, version: '1.4.8' });
+    const preserved = path.join(f.home, 'bin', 'legacy', hash, 'myco'); write(preserved, bytes);
+    expect(identifyLegacyExecutable(f.unit)).toMatchObject({ kind: 'missing', candidates: [slot, preserved] });
   });
 
   it('uses the daemon-named slot ahead of an unclassified preserved copy', () => {
@@ -121,6 +121,111 @@ esac
     expect(recipe).toContain('does not match its recorded checksum');
     expect(recipe).toContain("version='1.4.8'");
     expect(recipe).not.toContain('latest Myco 1.4 release');
+  });
+
+  it.each([false, true])('never restores a modified stable-only preserved slot (daemon state %s)', (daemon) => {
+    const f = fixture(); const slot = f.slot('1.4.8', 'original 1.4 executable');
+    write(path.join(f.home, LEGACY_EXECUTABLE_RECORD), JSON.stringify({ path: slot, sha256: digest(slot), version: '1.4.8', replaced_at: f.executable }));
+    write(slot, 'MODIFIED after install');
+    if (daemon) write(path.join(f.home, 'service', 'daemon.json'), JSON.stringify({ version: '1.4.8' }));
+    expect(identifyLegacyExecutable(f.unit)).toMatchObject({ kind: 'missing', candidates: [], version: '1.4.8' });
+    const recipe = f.recipe();
+    expect(recipe).toContain("version='1.4.8'"); expect(recipe).not.toContain('- ' + slot);
+    expect(f.backup.all.some(entry => 'recovery' in entry && entry.recovery.kind === 'saved')).toBe(false);
+    const artifact = path.join(f.home, 'pinned-original'); write(artifact, 'original 1.4 executable');
+    const tools = path.join(f.home, 'tools');
+    write(path.join(tools, 'curl'), `#!/bin/sh
+url=""; out=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; --proto) shift 2 ;; -*) shift ;; *) url="$1"; shift ;; esac; done
+case "$url" in
+  *myco%2Fv1.4.8/SHA256SUMS) printf '%s  myco-darwin-${process.arch}\n' '${digest(artifact)}' > "$out" ;;
+  *myco%2Fv1.4.8/myco-darwin-*) cp '${artifact}' "$out" ;;
+  *) exit 97 ;;
+esac
+`);
+    const commands = [...recipe.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]).join('\n');
+    const undo = spawnSync('sh', ['-c', commands], { cwd: f.home, env: sandboxChildEnv(f.home, { PATH: tools + path.delimiter + process.env.PATH }), encoding: 'utf8' });
+    expect({ status: undo.status, stderr: undo.stderr }).toEqual({ status: 0, stderr: '' });
+    expect(fs.readFileSync(f.executable, 'utf8')).toBe('original 1.4 executable');
+  });
+
+  it.each(['daemon', 'record'])('reinstalls the %s version when only another version has a slot', (evidence) => {
+    const f = fixture(); f.slot('1.4.7');
+    write(path.join(f.home, evidence === 'daemon' ? 'service/daemon.json' : LEGACY_EXECUTABLE_RECORD), JSON.stringify({ version: '1.4.8', replaced_at: f.executable }));
+    expect(identifyLegacyExecutable(f.unit)).toMatchObject({ kind: 'missing', candidates: [], version: '1.4.8' });
+    expect(f.recipe()).toContain("version='1.4.8'");
+  });
+
+  it('never lists bytes that change between identification and backup verification', () => {
+    const f = fixture(); const slot = f.slot('1.4.8'); const recovery = identifyLegacyExecutable(f.unit);
+    write(slot, 'changed before backup'); f.backup.takeLegacyUnit(f.unit, recovery); f.backup.pruneUnchanged();
+    const recipe = fs.readFileSync(path.join(f.backup.dir, 'restore.md'), 'utf8');
+    expect(recipe).toContain('changed while it was being saved'); expect(recipe).toContain("version='1.4.8'");
+    expect(recipe).not.toContain('- ' + slot); expect(recipe).not.toContain('Choose the correct');
+  });
+
+  it.each(['A', 'A2', 'A3'])('leaves an identified 1.x executable in place in probe %s', (probe) => {
+    const f = fixture(); write(f.executable, 'intact 1.4.8');
+    if (probe !== 'A3') f.slot('1.4.7');
+    if (probe === 'A') f.slot('1.4.8', 'intact 1.4.8');
+    write(path.join(f.home, LEGACY_EXECUTABLE_RECORD), JSON.stringify({ sha256: digest(f.executable), version: '1.4.8', replaced_at: f.executable }));
+    const recipe = f.recipe(); expect(recipe).toContain('Myco 1.x executable is still in place at ' + f.executable);
+    expect(recipe).not.toContain('replaces Myco 2.0'); expect(recipe).not.toContain('Reinstall'); expect(recipe).not.toContain('Choose the correct');
+    expect(recipe).not.toContain('restore_binary'); expect(recipe).not.toContain('curl ');
+    const commands = [...recipe.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]).join('\n');
+    expect(spawnSync('sh', ['-c', commands], { cwd: f.home, env: sandboxChildEnv(f.home) }).status).toBe(0);
+    expect(fs.readFileSync(f.executable, 'utf8')).toBe('intact 1.4.8');
+  });
+
+  it('recognizes the still-present executable from a slot or hash-bound install marker', () => {
+    for (const evidence of ['slot', 'marker']) {
+      const f = fixture(); write(f.executable, 'intact 1.4.8');
+      if (evidence === 'slot') f.slot('1.4.8', 'intact 1.4.8');
+      else write(path.join(f.home, 'install.json'), JSON.stringify({ version: '1.4.8', bin: f.executable, binary_sha256: digest(f.executable) }));
+      expect(identifyLegacyExecutable(f.unit)).toMatchObject({ kind: 'present', version: '1.4.8' });
+    }
+  });
+
+  it('normalizes the replaced path and folds Windows casing and separators', () => {
+    for (const platform of ['darwin', 'win32'] as const) {
+      const f = fixture(platform); const copy = f.slot('1.4.8'); f.slot('1.4.9');
+      const replaced = path.dirname(f.executable) + '/nested/../' + path.basename(f.executable);
+      write(path.join(f.home, LEGACY_EXECUTABLE_RECORD), JSON.stringify({ path: copy, sha256: digest(copy), version: '1.4.8', replaced_at: platform === 'win32' ? replaced.toUpperCase().replaceAll('/', '\\') : replaced }));
+      expect(identifyLegacyExecutable(f.unit, platform)).toMatchObject({ kind: 'saved', source: copy });
+    }
+  });
+
+  it('contains shell failures and removes a failed restore copy temporary file', () => {
+    const f = fixture(); f.slot('1.4.8'); const recipe = f.recipe();
+    const fences = [...recipe.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]);
+    for (const fence of fences) { expect(fence.trim().startsWith('(\nset -e\n')).toBe(true); expect(fence.trim().endsWith(')')).toBe(true); }
+    const snippet = path.join(f.home, 'snippet.sh'); write(snippet, fences.join('\n'));
+    const tools = path.join(f.home, 'tools'); write(path.join(tools, 'cp'), '#!/bin/sh\necho fixture-copy-failure >&2\nexit 73\n');
+    const undo = spawnSync('sh', ['-c', '. "$1"; result=$?; case $- in *e*) exit 88 ;; esac; echo "parent-alive:$result"', 'sh', snippet], { cwd: f.home, env: sandboxChildEnv(f.home, { PATH: tools + path.delimiter + process.env.PATH }), encoding: 'utf8' });
+    expect(undo.status).toBe(0); expect(undo.stdout).toContain('parent-alive:73'); expect(undo.stderr).toContain('fixture-copy-failure');
+    expect(fs.readdirSync(path.dirname(f.executable)).filter(name => name.startsWith('.myco-restore-'))).toEqual([]);
+    expect(fs.readFileSync(f.executable, 'utf8')).toBe('2.0 executable');
+  });
+
+  it.each(['release', 'malformed', 'mismatch'])('reports reinstall %s failure without changing the caller shell', (failure) => {
+    const f = fixture();
+    if (failure !== 'release') write(path.join(f.home, 'service/daemon.json'), JSON.stringify({ version: '1.4.8' }));
+    const recipe = f.recipe(); const tools = path.join(f.home, 'tools');
+    write(path.join(tools, 'curl'), `#!/bin/sh
+url=""; out=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; --proto) shift 2 ;; -*) shift ;; *) url="$1"; shift ;; esac; done
+case "$url" in
+  *matching-refs*) printf '[]' ;;
+  */SHA256SUMS) printf '%s  myco-darwin-${process.arch}\n' '${failure === 'malformed' ? 'not-a-checksum' : '0'.repeat(64)}' > "$out" ;;
+  */myco-darwin-*) printf 'offline original artifact' > "$out" ;;
+  *) exit 97 ;;
+esac
+`);
+    const snippet = path.join(f.home, 'reinstall.sh'); write(snippet, [...recipe.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]).join('\n'));
+    const undo = spawnSync('sh', ['-c', '. "$1"; result=$?; case $- in *e*) exit 88 ;; esac; echo "parent-alive:$result"', 'sh', snippet], { cwd: f.home, env: sandboxChildEnv(f.home, { PATH: tools + path.delimiter + process.env.PATH }), encoding: 'utf8' });
+    expect(undo.status).toBe(0); expect(undo.stdout).toContain('parent-alive:1');
+    expect(undo.stderr).toContain(failure === 'release' ? 'No published Myco 1.4 release was found.' : failure === 'malformed' ? 'checksum is missing or malformed.' : 'checksum does not match.');
+    expect(fs.readFileSync(f.executable, 'utf8')).toBe('2.0 executable');
   });
 
   it.skipIf(PWSH === '')('stops the Windows restore recipe on a failed executable copy', () => {

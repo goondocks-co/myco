@@ -18,7 +18,7 @@ const release = (version: string, extra = {}) => ({
 });
 const beforeGa = [release('1.4.9'), release('1.4.10-beta.1'), release('2.0.0-alpha.10'), release('2.0.0-beta.2')];
 
-function select(releases: unknown[], opts: { channel?: string; current?: string; evidence?: 'marker' | 'slot' | 'unknown'; state?: 'member' | 'cutover' | 'symlink' | 'empty' | 'vault'; replace?: boolean; install?: string; joined?: boolean; probe?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string; refreshFailure?: boolean; failPreserve?: boolean; failRecord?: boolean } = {}) {
+function select(releases: unknown[], opts: { channel?: string; current?: string; evidence?: 'marker' | 'slot' | 'unknown'; state?: 'member' | 'cutover' | 'symlink' | 'empty' | 'vault'; replace?: boolean; install?: string; joined?: boolean; probe?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string; refreshFailure?: boolean; failPreserve?: boolean; truncatePreserve?: boolean; failRecord?: boolean } = {}) {
   const home = fs.mkdtempSync(path.join(root, 'home-'));
   const mycoHome = path.join(home, '.myco');
   const bin = path.join(home, 'bin');
@@ -83,9 +83,9 @@ int main(int argc, char **argv) {
   const linkBefore = opts.state === 'symlink' ? fs.readlinkSync(exe) : undefined;
   const file = path.join(home, 'install.ps1');
   fs.writeFileSync(file, SCRIPT);
-  const copyFailure = opts.failPreserve ? `function Copy-Item {
+  const copyFailure = opts.failPreserve || opts.truncatePreserve ? `function Copy-Item {
     param($Path, $Destination, [switch]$Force, $LiteralPath, $ErrorAction)
-    if ($Destination -like '*myco.legacy') { throw 'fixture preservation copy failure' }
+    if ($Destination -like '*myco.legacy') { ${opts.truncatePreserve ? "[System.IO.File]::WriteAllText($Destination, ''); return" : "throw 'fixture preservation copy failure'"} }
     if ($LiteralPath) { Microsoft.PowerShell.Management\\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Force }
     else { Microsoft.PowerShell.Management\\Copy-Item -Path $Path -Destination $Destination -Force }
   }` : '';
@@ -253,6 +253,14 @@ describe('the Windows installer', () => {
     const run = select(beforeGa, { current: '1.4.8', replace: true, install: '2.0.0-beta.2', failPreserve: true });
     expect(run.status).not.toBe(0); expect(run.out).toContain('Could not preserve');
     expect(fs.readFileSync(run.exe)).toEqual(run.before!);
+    expect(fs.existsSync(path.join(path.dirname(run.exe), 'versions', '2.0.0-beta.2'))).toBe(false);
+  });
+
+  it.skipIf(PWSH === '' || process.platform === 'win32')('never publishes a truncated Windows preservation copy into a slot', () => {
+    const run = select(beforeGa, { current: '1.4.8', replace: true, install: '2.0.0-beta.2', truncatePreserve: true });
+    expect(run.status).not.toBe(0); expect(run.out).toContain('does not match');
+    expect(fs.readFileSync(run.exe)).toEqual(run.before!);
+    expect(fs.existsSync(path.join(path.dirname(run.exe), 'versions', '1.4.8', 'myco.exe'))).toBe(false);
     expect(fs.existsSync(path.join(path.dirname(run.exe), 'versions', '2.0.0-beta.2'))).toBe(false);
   });
 

@@ -19,6 +19,7 @@ import { writePrivateFileAtomic } from './store.js';
 import type { MycoUnit } from './legacy-unit-files.js';
 
 export type LegacyExecutableRecovery =
+  | { kind: 'present'; version: string | null; warnings: string[] }
   | { kind: 'saved'; source: string; sha256: string; version: string | null; warnings: string[] }
   | { kind: 'missing'; candidates: string[]; version: string | null; warnings: string[] };
 
@@ -60,25 +61,40 @@ export function earlierCopyHolds(mycoHome: string, file: string): boolean {
 /** What a backup folder undoes: a cutover from 1.4, or a member provisioning of this machine's agents. */
 export type BackupPurpose = 'cutover' | 'provision';
 
+function executableBlock(commands: string[], windows: boolean): string[] {
+  return windows
+    ? ['```powershell', '& {', "$ErrorActionPreference = 'Stop'", ...commands, '}', '```']
+    : ['```sh', '(', 'set -e', ...commands, ')', '```'];
+}
+
+function replaceExecutableCommands(source: string, destination: string, preserveMode: boolean): string[] {
+  return [
+    'restore_binary=',
+    `trap 'if [ -n "$restore_binary" ]; then rm -f "$restore_binary"; fi' EXIT`,
+    `restore_binary=$(mktemp ${quote(path.join(path.dirname(destination), '.myco-restore-XXXXXX'))})`,
+    `cp ${preserveMode ? '-p ' : ''}${source} "$restore_binary"`,
+    ...(!preserveMode ? ['chmod +x "$restore_binary"'] : []),
+    `mv -f "$restore_binary" ${quote(destination)}`,
+  ];
+}
+
 function executableRecoveryRecipe(entries: readonly BackupEntry[], platform: NodeJS.Platform): string[] {
   const windows = platform === 'win32';
   const hashCommand = platform === 'linux' ? 'sha256sum' : 'shasum -a 256';
   return entries.flatMap(entry => {
     if (!('recovery' in entry)) return [];
     const { recovery, original } = entry;
+    if (recovery.kind === 'present') return [...recovery.warnings, `The Myco 1.x executable is still in place at ${original}. No executable recovery is needed.`, ''];
     const preface = [...recovery.warnings, `Restoring the saved executable replaces Myco 2.0 at ${original}.`];
     if (recovery.kind === 'saved') {
       const commands = windows ? [
         `if ((Get-FileHash -LiteralPath ${psQuote(recovery.source)} -Algorithm SHA256).Hash.ToLowerInvariant() -ne '${recovery.sha256}') { throw 'The saved executable checksum does not match.' }`,
         `Copy-Item -LiteralPath ${psQuote(recovery.source)} -Destination ${psQuote(original)} -Force -ErrorAction Stop`,
       ] : [
-        'set -e',
-        `test "$(${hashCommand} ${quote(recovery.source)} | awk '{print $1}')" = '${recovery.sha256}'`,
-        `restore_binary=$(mktemp ${quote(path.join(path.dirname(original), '.myco-restore-XXXXXX'))})`,
-        `cp -p ${quote(recovery.source)} "$restore_binary"`,
-        `mv -f "$restore_binary" ${quote(original)}`,
+        `test "$(${hashCommand} ${quote(recovery.source)} | awk '{print $1}')" = '${recovery.sha256}' || { echo 'The saved executable checksum does not match.' >&2; exit 1; }`,
+        ...replaceExecutableCommands(quote(recovery.source), original, true),
       ];
-      return [...preface, '', windows ? '```powershell' : '```sh', ...commands, '```', ''];
+      return [...preface, '', ...executableBlock(commands, windows), ''];
     }
     if (recovery.candidates.length > 0) {
       return [...preface, recovery.version ? `The recorded previous version is ${recovery.version}. Its executable could not be identified. Saved executable candidates:`
@@ -92,7 +108,6 @@ function executableRecoveryRecipe(entries: readonly BackupEntry[], platform: Nod
     const base = 'https://github.com/goondocks-co/myco/releases/download/myco%2Fv';
     const refs = 'https://api.github.com/repos/goondocks-co/myco/git/matching-refs/tags/myco/v1.4.';
     const commands = windows ? [
-      "$ErrorActionPreference = 'Stop'",
       ...(version ? [`$version = ${psQuote(version)}`] : [
         `$candidates = @(Invoke-RestMethod ${psQuote(refs)} | ForEach-Object { if ($_.ref -match '^refs/tags/myco/v(1[.]4[.][0-9]+)$') { $Matches[1] } } | Sort-Object { [Version]$_ } -Descending)`,
         '$version = $null',
@@ -113,7 +128,6 @@ function executableRecoveryRecipe(entries: readonly BackupEntry[], platform: Nod
       "if (-not $expected -or (Get-FileHash (Join-Path $download $asset) -Algorithm SHA256).Hash -ne $expected) { throw 'The downloaded executable checksum does not match.' }",
       `Copy-Item -LiteralPath (Join-Path $download $asset) -Destination ${psQuote(original)} -Force -ErrorAction Stop`,
     ] : [
-      'set -e',
       ...(version ? [`version=${quote(version)}`] : [
         'releases=$(mktemp -d)',
         `candidates=$(curl --proto '=https' --tlsv1.2 -fsSL ${quote(refs)} | grep -o '"refs/tags/myco/v1\\.4\\.[0-9]*"' | sed 's|"refs/tags/myco/v||;s|"||' | sort -t. -k3,3nr)`,
@@ -123,7 +137,7 @@ function executableRecoveryRecipe(entries: readonly BackupEntry[], platform: Nod
         '  case "$status" in 200) ;; 404) continue ;; *) echo "Could not find the latest Myco 1.4 release (HTTP $status)" >&2; exit 1 ;; esac',
         `  if grep -q '"prerelease"[[:space:]]*:[[:space:]]*false' "$releases/release.json" && grep -q '"draft"[[:space:]]*:[[:space:]]*false' "$releases/release.json"; then version=$candidate; break; fi`,
         'done',
-        'test -n "$version"',
+        `test -n "$version" || { echo 'No published Myco 1.4 release was found.' >&2; exit 1; }`,
       ]),
       'case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64|amd64) arch=x64 ;; *) echo "Unsupported architecture" >&2; exit 1 ;; esac',
       `asset=myco-${platform === 'linux' ? 'linux' : 'darwin'}-$arch`,
@@ -132,15 +146,12 @@ function executableRecoveryRecipe(entries: readonly BackupEntry[], platform: Nod
       "curl --proto '=https' --tlsv1.2 -fsSL \"$url/$asset\" -o \"$download/$asset\"",
       "curl --proto '=https' --tlsv1.2 -fsSL \"$url/SHA256SUMS\" -o \"$download/SHA256SUMS\"",
       `expected=$(awk -v name="$asset" '$2 == name || $2 == "*" name {print $1}' "$download/SHA256SUMS")`,
-      'test "${#expected}" -eq 64',
-      `test "$(${hashCommand} "$download/$asset" | awk '{print $1}')" = "$expected"`,
-      `restore_binary=$(mktemp ${quote(path.join(path.dirname(original), '.myco-restore-XXXXXX'))})`,
-      'cp "$download/$asset" "$restore_binary"',
-      'chmod +x "$restore_binary"',
-      `mv -f "$restore_binary" ${quote(original)}`,
+      `test "\${#expected}" -eq 64 || { echo 'The downloaded executable checksum is missing or malformed.' >&2; exit 1; }`,
+      `test "$(${hashCommand} "$download/$asset" | awk '{print $1}')" = "$expected" || { echo 'The downloaded executable checksum does not match.' >&2; exit 1; }`,
+      ...replaceExecutableCommands('"$download/$asset"', original, false),
     ];
     return [...preface, 'No saved Myco 1.x executable could be identified.', guidance, '',
-      windows ? '```powershell' : '```sh', ...commands, '```', ''];
+      ...executableBlock(commands, windows), ''];
   });
 }
 
@@ -166,23 +177,21 @@ export function restoreRecipe(entries: readonly BackupEntry[], purpose: BackupPu
     return [
       purpose === 'provision' ? '# Undo a Myco agent setup' : '# Undo a Myco cutover', '',
       'Stop anything using Myco 2.0 on this machine, then run in PowerShell:', '',
-      '```powershell', ...lines, '```', '', ...recovery,
-      ...(tasks.length > 0 ? ['```powershell', ...tasks, '```', ''] : []),
+      ...executableBlock(lines, windows), '', ...recovery,
+      ...(tasks.length > 0 ? [...executableBlock(tasks, windows), ''] : []),
       ...(tasks.length > 0 ? ['Task definitions retain their saved enable state. Start the restored task when ready.'] : []),
       ...(purpose === 'cutover' ? ['The 1.4 vaults were never changed; the Deployment keeps what was imported.'] : []), '',
     ].join('\n');
   }
   if (purpose === 'provision') {
-    return ['# Undo a Myco agent setup', '', 'Run, from any directory:', '', '```sh', ...lines, '```', ''].join('\n');
+    return ['# Undo a Myco agent setup', '', 'Run, from any directory:', '', ...executableBlock(lines, windows), ''].join('\n');
   }
   return [
     '# Undo a Myco cutover',
     '',
     'Stop anything using Myco 2.0 on this machine, then run, from any directory:',
     '',
-    '```sh',
-    ...lines,
-    '```',
+    ...executableBlock(lines, windows),
     '',
     ...recovery,
     'Then start the Myco 1.4 service again from its restored unit file, for example',
@@ -224,7 +233,7 @@ export class CutoverBackup {
         if (sha256(fs.readFileSync(source)) !== recovery.sha256) throw new Error('The executable changed while it was being saved.');
         recovery = { ...recovery, source };
       } catch (error) {
-        recovery = { kind: 'missing', candidates: [recovery.source], version: recovery.version,
+        recovery = { kind: 'missing', candidates: [], version: recovery.version,
           warnings: [...recovery.warnings, `Could not save the executable for undo: ${(error as Error).message}`] };
       }
     }

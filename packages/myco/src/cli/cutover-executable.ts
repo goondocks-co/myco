@@ -11,8 +11,17 @@ export const LEGACY_EXECUTABLE_RECORD = 'legacy-executable.json';
 const legacyVersion = (value: unknown): string | null =>
   typeof value === 'string' && valid(value) && value.startsWith('1.') ? value : null;
 
-export function identifyLegacyExecutable(unit: Pick<MycoUnit, 'executable' | 'home'>): LegacyExecutableRecovery {
+export function identifyLegacyExecutable(unit: Pick<MycoUnit, 'executable' | 'home'>, platform: NodeJS.Platform = process.platform): LegacyExecutableRecovery {
   const warnings: string[] = [];
+  const identity = (file: string): string => platform === 'win32' ? path.win32.resolve(file).toLowerCase() : path.resolve(file);
+  const hash = (file: string): string | null => {
+    try { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') warnings.push(`Could not read ${file}: ${(error as Error).message}`);
+      return null;
+    }
+  };
+  const currentHash = hash(unit.executable);
   const read = (file: string): Record<string, unknown> | null => {
     try {
       const value: unknown = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
@@ -25,59 +34,65 @@ export function identifyLegacyExecutable(unit: Pick<MycoUnit, 'executable' | 'ho
   const executableDir = path.dirname(unit.executable);
   const bin = path.basename(path.dirname(executableDir)) === 'versions' ? path.dirname(path.dirname(executableDir)) : executableDir;
   const record = unit.home ? read(path.join(unit.home, LEGACY_EXECUTABLE_RECORD)) : null;
-  let version: string | null = null;
-  if (record?.replaced_at === unit.executable) {
-    version = legacyVersion(record.version);
-    if (typeof record.path === 'string' && typeof record.sha256 === 'string' && /^[a-f0-9]{64}$/i.test(record.sha256)) {
-      const relative = path.relative(bin, record.path);
-      if (!relative.startsWith('..') && !path.isAbsolute(relative)) {
-        try {
-          const digest = crypto.createHash('sha256').update(fs.readFileSync(record.path)).digest('hex');
-          if (digest === record.sha256.toLowerCase()) return { kind: 'saved', source: record.path, sha256: digest, version, warnings };
-          warnings.push(`The saved executable at ${record.path} does not match its recorded checksum.`);
-        } catch (error) { warnings.push(`Could not read the saved executable at ${record.path}: ${(error as Error).message}`); }
+  const matchesRecord = typeof record?.replaced_at === 'string' && identity(record.replaced_at) === identity(unit.executable);
+  const recordedVersion = matchesRecord ? legacyVersion(record.version) : null;
+  const recordedHash = matchesRecord && typeof record.sha256 === 'string' && /^[a-f0-9]{64}$/i.test(record.sha256) ? record.sha256.toLowerCase() : null;
+  type Candidate = { source: string; sha256: string; version: string | null };
+  let recordedCopy: Candidate | null = null;
+  const rejected = new Set<string>();
+  if (recordedHash && typeof record?.path === 'string') {
+    const relative = path.relative(bin, record.path);
+    if (!relative.startsWith('..') && !path.isAbsolute(relative)) {
+      const digest = hash(record.path);
+      if (digest === recordedHash) recordedCopy = { source: record.path, sha256: digest, version: recordedVersion };
+      else {
+        rejected.add(identity(record.path));
+        warnings.push(`The saved executable at ${record.path} does not match its recorded checksum.`);
       }
     }
   }
-  const daemon = unit.home ? read(path.join(unit.home, 'service', 'daemon.json')) : null;
-  const daemonVersion = legacyVersion(daemon?.version);
-  version ??= daemonVersion;
-  const versions = path.join(bin, 'versions');
-  let names: string[] = [];
-  try { names = fs.readdirSync(versions); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') warnings.push(`Could not list saved executables at ${versions}: ${(error as Error).message}`);
+  if (currentHash && currentHash === recordedHash) return { kind: 'present', version: recordedVersion, warnings };
+  const marker = unit.home ? read(path.join(unit.home, 'install.json')) : null;
+  const installedVersion = legacyVersion(marker?.version);
+  if (currentHash && installedVersion && typeof marker?.bin === 'string' && identity(marker.bin) === identity(unit.executable)
+    && typeof marker.binary_sha256 === 'string' && marker.binary_sha256.toLowerCase() === currentHash) {
+    return { kind: 'present', version: installedVersion, warnings };
   }
-  const candidates = names.filter(name => legacyVersion(name) !== null).sort().flatMap(name => {
-    const file = path.join(versions, name, path.basename(unit.executable));
-    try { return fs.statSync(file).isFile() ? [file] : []; }
+  const list = (dir: string): string[] => {
+    try { return fs.readdirSync(dir).sort(); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') warnings.push(`Could not inspect ${file}: ${(error as Error).message}`);
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') warnings.push(`Could not list saved executables at ${dir}: ${(error as Error).message}`);
       return [];
     }
-  });
-  const preservedCandidates: string[] = [];
-  const preserved = path.join(bin, 'legacy');
-  try {
-    for (const hash of fs.readdirSync(preserved).filter(name => /^[a-f0-9]{64}$/i.test(name))) {
-      const file = path.join(preserved, hash, path.basename(unit.executable));
-      try {
-        if (crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') === hash.toLowerCase()) preservedCandidates.push(file);
-        else warnings.push(`The saved executable at ${file} does not match its directory checksum.`);
-      } catch (error) { warnings.push(`Could not inspect ${file}: ${(error as Error).message}`); }
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') warnings.push(`Could not list preserved executables at ${preserved}: ${(error as Error).message}`);
+  };
+  const candidates: Candidate[] = [];
+  for (const name of list(path.join(bin, 'versions')).filter(name => legacyVersion(name) !== null)) {
+    const source = path.join(bin, 'versions', name, path.basename(unit.executable));
+    if (rejected.has(identity(source))) continue;
+    const digest = hash(source);
+    if (digest) candidates.push({ source, sha256: digest, version: name });
   }
-  const daemonSlot = candidates.find(file => path.basename(path.dirname(file)) === daemonVersion);
-  const selected = daemonSlot
-    ?? (candidates.length === 1 ? candidates[0] : undefined);
-  if (selected) {
-    try {
-      const digest = crypto.createHash('sha256').update(fs.readFileSync(selected)).digest('hex');
-      return { kind: 'saved', source: selected, sha256: digest,
-        version: path.basename(path.dirname(selected)), warnings };
-    } catch (error) { warnings.push(`Could not read ${selected}: ${(error as Error).message}`); }
+  const currentSlot = candidates.find(candidate => candidate.sha256 === currentHash);
+  if (currentSlot) return { kind: 'present', version: currentSlot.version, warnings };
+  for (const name of list(path.join(bin, 'legacy')).filter(name => /^[a-f0-9]{64}$/i.test(name))) {
+    const source = path.join(bin, 'legacy', name, path.basename(unit.executable));
+    if (rejected.has(identity(source))) continue;
+    const digest = hash(source);
+    if (digest === name.toLowerCase()) candidates.push({ source, sha256: digest, version: null });
+    else if (digest) warnings.push(`The saved executable at ${source} does not match its directory checksum.`);
   }
-  return { kind: 'missing', candidates: [...candidates, ...preservedCandidates], version, warnings };
+  const daemonVersion = unit.home ? legacyVersion(read(path.join(unit.home, 'service', 'daemon.json'))?.version) : null;
+  const version = recordedVersion ?? daemonVersion;
+  const missing = (choices: Candidate[] = []): LegacyExecutableRecovery => ({ kind: 'missing', candidates: choices.map(candidate => candidate.source), version, warnings });
+  if (recordedHash) {
+    const selected = recordedCopy ?? candidates.find(candidate => candidate.sha256 === recordedHash);
+    return selected ? { kind: 'saved', ...selected, version: recordedVersion ?? selected.version, warnings } : missing();
+  }
+  if (version) {
+    if (recordedVersion && daemonVersion && recordedVersion !== daemonVersion) return missing();
+    const selected = candidates.find(candidate => candidate.version === version);
+    return selected ? { kind: 'saved', ...selected, warnings } : missing();
+  }
+  const selected = candidates.length === 1 && candidates[0].version ? candidates[0] : null;
+  return selected ? { kind: 'saved', ...selected, warnings } : missing(candidates);
 }

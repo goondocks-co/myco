@@ -361,6 +361,10 @@ try {
                 New-Item -ItemType Directory -Force -Path $legacyDir | Out-Null
                 $legacyTemp = Join-Path $tmpDir 'myco.legacy'
                 Copy-Item -LiteralPath $Exe -Destination $legacyTemp -Force
+                if ((Get-FileHash $legacyTemp -Algorithm SHA256).Hash.ToLowerInvariant() -ne $legacyHash) {
+                    Remove-Item -LiteralPath $legacyTemp -Force
+                    throw "The preservation copy does not match ${Exe}; nothing was replaced."
+                }
                 Move-Item -LiteralPath $legacyTemp -Destination $legacyCopy -Force
             } catch { throw "Could not preserve the executable at ${Exe}; nothing was replaced: $_" }
         }

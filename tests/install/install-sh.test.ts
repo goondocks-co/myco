@@ -539,6 +539,21 @@ exec '${cp}' "$@"
       expect(fs.existsSync(path.join(path.dirname(legacy.binary), 'versions', '2.0.0-beta.1'))).toBe(false);
     });
 
+    it.skipIf(!HAS_CC)('never publishes a truncated preservation copy into a legacy slot', () => {
+      const legacy = legacyHome({ binary: true }); const before = digest(legacy.binary);
+      const tools = toolbox(tmp('myco-install-truncated-copy-'), { jq: false });
+      const cp = resolveTestTool('cp')!; fs.unlinkSync(path.join(tools, 'cp'));
+      fs.writeFileSync(path.join(tools, 'cp'), `#!/bin/sh
+for arg in "$@"; do case "$arg" in */myco.legacy) : > "$arg"; exit 0 ;; esac; done
+exec '${cp}' "$@"
+`, { mode: 0o755 });
+      const run = install(legacy.home, FROM(), ['--replace-1.4'], tools);
+      expect(run.status).not.toBe(0); expect(run.out).toContain('does not match');
+      expect(digest(legacy.binary)).toBe(before);
+      expect(fs.existsSync(path.join(path.dirname(legacy.binary), 'versions', '1.4.8', 'myco'))).toBe(false);
+      expect(fs.existsSync(path.join(path.dirname(legacy.binary), 'versions', '2.0.0-beta.1'))).toBe(false);
+    });
+
     it.skipIf(!HAS_CC)('keeps the copy and install when the preservation record cannot be published', () => {
       const legacy = legacyHome({ binary: true }); const before = digest(legacy.binary);
       fs.mkdirSync(path.join(legacy.home, '.myco', 'legacy-executable.json'));
