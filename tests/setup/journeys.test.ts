@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+import { sandboxChildEnv, bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { run, parseSetupOptions } from '@myco/cli/setup.js';
 import { run as login } from '@myco/cli/login.js';
 import { runRunnerService } from '@myco/cli/runner-service.js';
@@ -1670,6 +1670,55 @@ async function deployment(target: 'native' | 'd1-adapter') {
 }
 
 describe('teammate journey (c)', () => {
+  it('runs the printed cutover remedy after login and member join without setup answers', async () => {
+    const server = await deployment('native');
+    const legacy = legacyFixtureHome(path.join(root, 'inferred-legacy'));
+    home = legacy.mycoHome;
+    project = legacy.projects[0]!.root;
+    for (const entry of legacy.projects) execFileSync('git', ['init', '-q', entry.root]);
+    closers.push(bindSandboxChildHome(root, legacy.env));
+    const transcript = path.join(process.env.CLAUDE_CONFIG_DIR!, 'projects', `-${rootSlug(project)}`, 'pending-transcript.jsonl');
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, JSON.stringify({ type: 'user', cwd: project, sessionId: 'pending-transcript', message: { content: 'Pending history ' + 'x'.repeat(5000) }, timestamp: new Date(Date.now() - 86_400_000).toISOString() }) + '\n');
+    const deps: SetupDeps = { ...base(), fetch: server.fetchImpl, sleep: async () => {},
+      cutoverDeps: { env: legacy.env, platform: 'darwin', unitDirs: [{ dir: legacy.agentsDir, scope: 'user' }],
+        stopDaemon: async () => 'none', launchctl: { run: async () => ({ stdout: 'Could not find service in domain', exitCode: 113 }) } },
+    };
+    expect(await login([URL], { ...deps, machineId: 'inferred-machine', provision: 'defer' })).toBe(true);
+    expect(await runJoin([URL, '--project', 'proj_1', '--no-worker', '--no-agents', '--root', project], deps)).not.toBeNull();
+    expect(fs.existsSync(setupFilePath(home))).toBe(false);
+    expect(await run(['--status'], deps)).toBe(3);
+    const remedy = lines.join('\n').match(/myco setup --cutover/)?.[0];
+    expect(remedy).toBe('myco setup --cutover');
+    lines = [];
+    expect(await run(remedy!.split(' ').slice(2), { ...deps, ask: async question => {
+      if (question.includes('What should this machine do?')) throw new Error('Role prompt must not be asked');
+      return null;
+    } })).toBe(2);
+    expect(lines.join('\n')).toContain('Myco 1.4 cutover preview');
+    expect(errors.join('\n')).toContain('no terminal');
+    expect(errors.join('\n')).not.toContain('Role prompt');
+    expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: URL });
+    expect(server.calls.filter(route => route === '/auth/device/start')).toHaveLength(1);
+  });
+
+  it('plain setup resumes login and member join without asking a role or repeating sign-in', async () => {
+    const server = await deployment('native');
+    const deps: SetupDeps = { ...base(), fetch: server.fetchImpl, sleep: async () => {},
+      ask: async question => {
+        if (question.includes('What should this machine do?') || question.includes('device approval')) throw new Error(`Unexpected prompt: ${question}`);
+        expect(question).toContain('Make this machine a runner?');
+        return 'no';
+      },
+    };
+    expect(await login([URL], { ...deps, machineId: 'plain-inferred-machine', provision: 'defer' })).toBe(true);
+    expect(await runJoin([URL, '--project', 'proj_1', '--no-worker', '--no-agents', '--root', project], deps)).not.toBeNull();
+    expect(fs.existsSync(setupFilePath(home))).toBe(false);
+    expect(await run([], deps)).toBe(0);
+    expect(errors).toEqual([]);
+    expect(server.calls.filter(route => route === '/auth/device/start')).toHaveLength(1);
+  });
+
   for (const target of ['native', 'd1-adapter'] as const) it(`joins as a fake GitHub teammate through ${target}, with no worker`, async () => {
     const server = await deployment(target);
     const platform = recordingPlatform();

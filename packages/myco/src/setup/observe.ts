@@ -20,7 +20,7 @@ import type { SetupAnswers } from '@myco/setup/answers.js';
 import { inspectLocal, type LocalLifecycleDeps } from '@myco/server/local-lifecycle.js';
 import { peekDeploymentRecord } from '@myco/server/cloudflare.js';
 import { cloudflareOwnerLinked, type CloudflareOwnerOptions } from '@myco/server/cloudflare-owner.js';
-import { peekLocalPaths } from '@myco/server/local.js';
+import { peekLocalPaths, readLocalRecord } from '@myco/server/local.js';
 
 export interface Observation {
   id: string;
@@ -260,31 +260,44 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
   return facts;
 }
 
-/** Status derives journeys from membership and runner records, independent of saved progress. */
-export async function observeSetupStatus(home: string, answers: SetupAnswers, deps: ObserveDeps = {}, selected = false): Promise<Observation[]> {
-  deps = { ...deps, legacyObserver: deps.legacyObserver ?? legacyConfirmationObserver() };
+/** Machine journeys come from Deployment creation, membership and runner records. */
+export function observeSetupJourneys(home: string): { journeys: SetupAnswers[]; failures: Observation[]; joinedDeployments: string[] } {
   const journeys: SetupAnswers[] = [];
   const failures: Observation[] = [];
   const unavailable = (id: string, detail: string): void => {
     failures.push({ id, scope: home, state: 'unavailable', detail });
   };
   const memberships = listDeploymentMembershipsResult(home);
-  if (!memberships.readable || memberships.unavailableEntries > 0) unavailable('machine.signin', 'Deployment memberships could not all be read. Inspect the membership files with myco doctor.');
+  if (!memberships.readable || memberships.unavailableEntries > 0) unavailable('machine.signin', `Deployment memberships could not all be read: ${memberships.unavailableFiles.join(', ')}. Inspect the membership files with myco doctor.`);
+  try {
+    const record = peekDeploymentRecord(home);
+    if (record !== null) journeys.push({ role: 'create', target: 'cloudflare', ...(record.url ? { url: deploymentUrl(record.url) } : {}) });
+  } catch (error) { unavailable('deployment.create', error instanceof Error ? error.message : String(error)); }
+  try {
+    const paths = peekLocalPaths(home);
+    if (fs.lstatSync(paths.root, { throwIfNoEntry: false }) !== undefined) {
+      const record = fs.existsSync(paths.recordFile) ? readLocalRecord(paths) : null;
+      journeys.push({ role: 'create', target: 'local', ...(record ? { url: record.origin ?? `http://127.0.0.1:${record.port}` } : {}) });
+    }
+  } catch (error) { unavailable('deployment.create', error instanceof Error ? error.message : String(error)); }
+  for (const membership of memberships.memberships) journeys.push({ role: 'join', url: deploymentUrl(membership.serverUrl) });
+  const runners = listRunnerRecordsResult(home);
+  for (const runner of runners.records) journeys.push({ role: 'runner', url: deploymentUrl(runner.serverUrl) });
+  for (const error of runners.errors) unavailable('runner.enrollment', `Runner record could not be read: ${error}. Run myco runner status.`);
+  return { journeys, failures, joinedDeployments: memberships.memberships.map(membership => deploymentUrl(membership.serverUrl)) };
+}
+
+/** Status derives journeys from observed machine state, independent of saved progress. */
+export async function observeSetupStatus(home: string, answers: SetupAnswers, deps: ObserveDeps = {}, selected = false): Promise<Observation[]> {
+  deps = { ...deps, legacyObserver: deps.legacyObserver ?? legacyConfirmationObserver() };
+  const observedJourneys = observeSetupJourneys(home);
+  const failures = selected ? observedJourneys.failures.filter(fact => fact.id === 'machine.signin') : observedJourneys.failures;
   const homeFact = (fact: Observation): Observation => fact.id === 'default'
-    ? { ...fact, joinedDeployments: memberships.memberships.map(membership => deploymentUrl(membership.serverUrl)) } : fact;
+    ? { ...fact, joinedDeployments: observedJourneys.joinedDeployments } : fact;
+  const journeys: SetupAnswers[] = [];
   if (selected && answers.role && (answers.url || answers.role === 'create')) journeys.push(answers);
   else {
-    try {
-      const record = peekDeploymentRecord(home);
-      if (record !== null) journeys.push({ role: 'create', target: 'cloudflare' });
-    } catch (error) { unavailable('deployment.create', error instanceof Error ? error.message : String(error)); }
-    try {
-      if (fs.lstatSync(peekLocalPaths(home).root, { throwIfNoEntry: false }) !== undefined) journeys.push({ role: 'create', target: 'local' });
-    } catch (error) { unavailable('deployment.create', error instanceof Error ? error.message : String(error)); }
-    for (const membership of memberships.memberships) journeys.push({ role: 'join', url: deploymentUrl(membership.serverUrl) });
-    const runners = listRunnerRecordsResult(home);
-    for (const runner of runners.records) journeys.push({ role: 'runner', url: deploymentUrl(runner.serverUrl) });
-    for (const error of runners.errors) unavailable('runner.enrollment', `Runner record could not be read: ${error}. Run myco runner status.`);
+    journeys.push(...observedJourneys.journeys);
     if (answers.role && (answers.url || answers.role === 'create') && !journeys.some(journey => journey.role === answers.role && (answers.role === 'create' ? journey.target === answers.target : journey.url === answers.url))) journeys.push(answers);
   }
   if (journeys.length === 0) {

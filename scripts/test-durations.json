@@ -704,6 +704,7 @@
     "tests/setup/agent-set.test.ts": 8045,
     "tests/setup/fixtures.test.ts": 2581,
     "tests/setup/github-signin.test.ts": 5502,
+    "tests/setup/infer-role.test.ts": 2500,
     "tests/setup/journeys.test.ts": 152629,
     "tests/setup/prompt.test.ts": 172,
     "tests/setup/sigkill-resume.test.ts": 112148,

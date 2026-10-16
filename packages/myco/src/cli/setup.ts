@@ -8,7 +8,8 @@ import { runGitAnswer } from '@myco/utils/git.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { runnerServerUrl, RUNNER_NAME_PATTERN } from '@myco/cli/runner-deps.js';
 import { readSetupFile, saveSetupFile, setupCloudflareUrl, type SetupAnswers } from '@myco/setup/answers.js';
-import { observeSetupStatus, setupExitCode } from '@myco/setup/observe.js';
+import { observeSetupJourneys, observeSetupStatus, setupExitCode } from '@myco/setup/observe.js';
+import { readDefaultDeployment } from '@myco/member/default-deployment.js';
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { setupChecks } from '@myco/cli/member-doctor.js';
 import { conductSetup, type SetupDeps } from '@myco/setup/steps.js';
@@ -225,6 +226,25 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     const migration = legacyMigrationState(home);
     if (migration.state === 'unavailable') throw new Error(`Legacy migration state unavailable: ${migration.detail}. Restore access, then run myco setup again.`);
     if (migration.state !== 'none' && migration.state !== 'moved') out(`Myco 1.4 sources found (${migration.state}). Setup will preview moving them after sign-in. No legacy binary is executed.`);
+    if (!file.answers.role && !options.change) {
+      const { journeys, failures } = observeSetupJourneys(home);
+      if (failures.length > 0) throw new Error(failures.map(fact => fact.detail).join('\n'));
+      const defaultUrl = journeys.length > 1 ? readDefaultDeployment(home, { strict: true })?.serverUrl : undefined;
+      let journey = journeys.length === 1 ? journeys[0] : journeys.find(journey => journey.role === 'join' && journey.url === defaultUrl);
+      if (!journey && journeys.length > 1) {
+        const choices = journeys.map((journey, index) => `${index + 1}) ${setupJourneyWords(journey)}`);
+        const answer = await askRequired(ask, `Which Myco should setup continue with?\n${choices.join('\n')}\n${journeys.length + 1}) Something else`, '--create cloudflare|local, --join <address> or --runner <address>');
+        const index = Number(answer) - 1;
+        if (!Number.isInteger(index) || index < 0 || index > journeys.length) throw new Error(`Choose a number from 1 to ${journeys.length + 1}; run myco setup --help for the available choices.`);
+        journey = journeys[index];
+      }
+      if (journey) {
+        file.answers = { ...file.answers, ...journey };
+        validateCreationOptions(file.answers);
+        out(`This machine ${setupJourneyWords(journey)}; continuing.`);
+        saveSetupFile(home, file);
+      }
+    }
     if (!file.answers.role) {
       const role = await askRequired(ask, 'What should this machine do? 1) Start a new Myco 2) Join a Myco 3) Run Myco’s work', '--create cloudflare|local, --join <address> or --runner <address>');
       if (!['1', '2', '3'].includes(role)) throw new Error('Choose 1, 2 or 3; run myco setup --help for the available choices.');
@@ -249,6 +269,12 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
     err(`myco setup: ${error instanceof Error ? error.message : String(error)}`);
     return args.includes('--status') ? 4 : 2;
   }
+}
+
+function setupJourneyWords(journey: SetupAnswers): string {
+  if (journey.role === 'join') return `joins ${journey.url}`;
+  if (journey.role === 'runner') return `runs Myco’s work for ${journey.url}`;
+  return journey.url ? `starts Myco at ${journey.url}` : journey.target === 'local' ? 'starts Myco on this machine' : 'starts Myco on Cloudflare';
 }
 
 /** Repository identity follows capture's common-directory rule without keeping a git verdict. */
