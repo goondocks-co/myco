@@ -787,6 +787,58 @@ main() {
     VERSION_DIR="${BIN_DIR}/versions/${VERSION}"
   fi
 
+  # Keep the replaced executable before publishing any 2.x binary.
+  if [ "$REPLACE_LEGACY" = 1 ] && [ "$HAS_BINARY" = 1 ] && [ "$LEGACY_INSTALL" = 0 ] && { [ "$CURRENT_MAJOR" = 1 ] || [ "$UNKNOWN_BINARY" = 1 ]; }; then
+    _legacy_sha="$($SHA_CMD "${BIN_DIR}/myco" | awk '{print $1}')"
+    if [ "${#_legacy_sha}" -ne 64 ] || printf '%s' "$_legacy_sha" | LC_ALL=C grep -q '[^a-fA-F0-9]'; then
+      error "Could not read the executable at ${BIN_DIR}/myco; nothing was replaced."
+      exit 1
+    fi
+    _legacy_copy=""
+    for slot in "${BIN_DIR}"/versions/1.*/myco "${BIN_DIR}"/legacy/*/myco; do
+      [ -f "$slot" ] || continue
+      if [ "$($SHA_CMD "$slot" | awk '{print $1}')" = "$_legacy_sha" ]; then _legacy_copy="$slot"; break; fi
+    done
+    if [ -z "$_legacy_copy" ]; then
+      _legacy_dir="${BIN_DIR}/legacy/${_legacy_sha}"
+      if [ "$CURRENT_MAJOR" = 1 ] && [ ! -e "${BIN_DIR}/versions/${CURRENT_VERSION}/myco" ] && [ ! -L "${BIN_DIR}/versions/${CURRENT_VERSION}/myco" ]; then
+        _legacy_dir="${BIN_DIR}/versions/${CURRENT_VERSION}"
+      fi
+      _legacy_copy="${_legacy_dir}/myco"
+      if ! mkdir -p "$_legacy_dir" || ! cp -p "${BIN_DIR}/myco" "${TMP_DIR}/myco.legacy"; then
+        error "Could not preserve the executable at ${BIN_DIR}/myco; nothing was replaced."
+        exit 1
+      fi
+      if [ "$($SHA_CMD "${TMP_DIR}/myco.legacy" | awk '{print $1}')" != "$_legacy_sha" ]; then
+        rm -f "${TMP_DIR}/myco.legacy"
+        error "The preservation copy does not match ${BIN_DIR}/myco; nothing was replaced."
+        exit 1
+      fi
+      if ! mv "${TMP_DIR}/myco.legacy" "$_legacy_copy"; then
+        error "Could not preserve the executable at ${BIN_DIR}/myco; nothing was replaced."
+        exit 1
+      fi
+    fi
+    if [ "$($SHA_CMD "$_legacy_copy" | awk '{print $1}')" != "$_legacy_sha" ]; then
+      error "The preserved executable does not match ${BIN_DIR}/myco; nothing was replaced."
+      exit 1
+    fi
+    _legacy_version=null
+    if [ "$CURRENT_MAJOR" = 1 ]; then _legacy_version="$(json_string "$CURRENT_VERSION")"; fi
+    if ! (
+      set -e
+      mkdir -p "$MYCO_HOME_DIR" || exit 1
+      MARKER_FILE="$(mktemp "${MYCO_HOME_DIR}/.legacy-executable-XXXXXX")" || exit 1
+      trap 'rm -f "$MARKER_FILE"' EXIT
+      printf '{\n  "path": %s,\n  "sha256": "%s",\n  "version": %s,\n  "replaced_at": %s\n}\n' \
+        "$(json_string "$_legacy_copy")" "$_legacy_sha" "$_legacy_version" "$(json_string "${BIN_DIR}/myco")" > "$MARKER_FILE" || exit 1
+      [ ! -d "${MYCO_HOME_DIR}/legacy-executable.json" ] || exit 1
+      mv -f "$MARKER_FILE" "${MYCO_HOME_DIR}/legacy-executable.json"
+    ); then
+      warn "Kept the previous executable at $_legacy_copy, but could not record it in ${MYCO_HOME_DIR}/legacy-executable.json. Keep that path for undo."
+    fi
+  fi
+
   # Versioned slot, then the stable path by temp+rename on the same filesystem:
   #   <bin>/versions/<version>/myco   and   <bin>/myco
   mkdir -p "${VERSION_DIR}"

@@ -52,6 +52,7 @@ import { IMPORT_PACE_PER_MINUTE, importUntilSettled, type ImportReport } from '.
 import { legacyDeletedSessionIds, readLegacyVault, legacyProjectImportComplete, legacyProjectRoots, legacySessionSplit, runLegacyImport, LEGACY_MAX_PER_AGENT, LEGACY_WINDOW_DAYS, type LegacyImportReport } from '../member/legacy-import.js';
 import { legacyVaultFiles } from '../member/home-role.js';
 import { backupVault, copyProblem, readVaultContent, type TableCounts } from '../member/legacy-backup.js';
+import { identifyLegacyExecutable } from './cutover-executable.js';
 import { CutoverBackup, cutoverBackupDir, earlierCopyHolds, MANIFEST_FILE, RESTORE_FILE } from '../member/cutover-backup.js';
 import { deploymentKeyFor, deploymentUrl, listDeploymentMemberships, listRegistryEntries, readRegistryEntryResult, readRegistryEntry, registryEntryPath, writeRegistryEntry, REGISTRY_VERSION, type DeploymentMembership } from '../member/registry.js';
 import { ensureMemberDir, ensurePrivateFile, memberRoot } from '../member/store.js';
@@ -627,7 +628,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       ...units.stop.map((unit): Action => ({
         would: `would stop and remove ${unit.label} (${unit.file}), the 1.4 daemon of ${unit.home}`, outcomes: [`unit ${unit.file}`],
         run: async () => {
-          backup.take(unit.file);
+          backup.takeLegacyUnit(unit, identifyLegacyExecutable(unit));
           await stopUnit(unit, platform, deps.launchctl, { runner: deps.schtasks, stopDaemon: deps.stopDaemon, sleep: deps.sleep, backupTask: (label, xml, previouslyDisabled) => { backup.scheduledTask(label, xml, previouslyDisabled); } });
           return { lines: [`stopped and removed ${unit.label} (${unit.file})`], made: fs.existsSync(unit.file) ? [] : [`unit ${unit.file}`] };
         },
