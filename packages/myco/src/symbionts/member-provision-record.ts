@@ -127,13 +127,22 @@ export function forgetProvision(mycoHome: string, agent: string): void {
 }
 
 /** Move only the leaving Deployment's provision record to the surviving default. */
-export function reconcileProvisionDeployment(mycoHome: string, leavingUrl: string, nextDefault: string | null): void {
+export function reconcileProvisionDeployment(mycoHome: string, leavingUrl: string, nextDefault: string | null, unreconciledAgents: readonly string[] = []): void {
   withProvisionLock(mycoHome, () => {
     const record = readProvisionRecord(mycoHome);
     if (record === null) return;
     const [held, leaving] = [record.serverUrl, leavingUrl].map((url) => deploymentUrl(normalizeMemberServerAddress(url)?.origin ?? url));
     if (held !== leaving) return;
-    if (nextDefault === null) fs.rmSync(provisionRecordPath(mycoHome), { force: true });
-    else writeProvisionRecord(mycoHome, { ...record, serverUrl: nextDefault }, { replace: true });
+    if (nextDefault !== null) {
+      writeProvisionRecord(mycoHome, { ...record, serverUrl: nextDefault }, { replace: true });
+      return;
+    }
+    const agents = record.agents.filter(agent => unreconciledAgents.includes(agent));
+    if (agents.length === 0) fs.rmSync(provisionRecordPath(mycoHome), { force: true });
+    else {
+      const retain = <V>(entries: Record<string, V> | undefined): Record<string, V> | undefined => entries === undefined ? undefined
+        : Object.fromEntries(Object.entries(entries).filter(([id]) => agents.includes(id)));
+      writeProvisionRecord(mycoHome, { ...record, agents, binaries: retain(record.binaries), pendingTrust: retain(record.pendingTrust) }, { replace: true });
+    }
   });
 }

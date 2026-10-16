@@ -7,8 +7,8 @@ import { confirmDestructive } from './confirm.js';
 import { isMemberHome, legacyVaultFiles } from '../member/home-role.js';
 import { LEGACY_MIGRATION_GUIDANCE } from '../member/migration-guidance.js';
 import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
-import { SymbiontInstaller } from '../symbionts/installer.js';
-import { readProvisionRecord } from '../symbionts/member-provision-record.js';
+import { MemberFileReconciliation, SymbiontInstaller } from '../symbionts/installer.js';
+import { forgetProvision, readProvisionRecord } from '../symbionts/member-provision-record.js';
 import { prepareMemberSkillRemoval, skillsFolder } from '../symbionts/member-skill-links.js';
 import { readDefaultDeployment } from '../member/default-deployment.js';
 import { sweepWorkerServices, type WorkerServiceDeps } from './worker-service.js';
@@ -203,26 +203,36 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
   const provision = readProvisionRecord(home);
   const memberOwned = isMemberHome(home) || provision !== null;
   const deployment = provision?.serverUrl ?? readDefaultDeployment(home)?.serverUrl ?? null;
-  const registrations = loadManifests().map(manifest => {
+  const reconciliation = new MemberFileReconciliation();
+  const { problems } = reconciliation;
+  const registrations = loadManifests().flatMap(manifest => {
     const installer = new SymbiontInstaller(manifest, home, resolvePackageRoot(), false, home).withoutProjectRoot();
     if (deployment !== null) installer.forDeployment(deployment);
-    const hooks = installer.inspectMemberHooks();
-    const mcp = installer.inspectMemberMcp();
-    if (!hooks.readable || mcp.some(entry => !entry.readable)) throw new Error(`Cannot read ${manifest.displayName}'s member registration; removal aborted.`);
-    const registered = hooks.member || mcp.some(entry => entry.carriesCredential);
-    if (registered) installer.assertMemberUninstallable();
-    const target = manifest.registration?.globalSkillsTarget;
-    const removeSkills = target && (memberOwned || registered) ? prepareMemberSkillRemoval(home, skillsFolder(target)) : () => {};
-    return { installer, registered, removeSkills };
+    const registration = reconciliation.attempt(manifest, () => {
+      installer.assertMemberFilesReadable();
+      const hooks = installer.inspectMemberHooks();
+      const mcp = installer.inspectMemberMcp();
+      if (!hooks.readable || mcp.some(entry => !entry.readable)) throw new Error(`Cannot read ${manifest.displayName}'s member registration; removal aborted.`);
+      const registered = hooks.member || mcp.some(entry => entry.carriesCredential);
+      if (registered) installer.assertMemberUninstallable();
+      const target = manifest.registration?.globalSkillsTarget;
+      const removeSkills = target && (memberOwned || registered) ? prepareMemberSkillRemoval(home, skillsFolder(target)) : () => {};
+      return { manifest, installer, registered, removeSkills };
+    });
+    return registration === null ? [] : [registration];
   });
   const remove = (): void => {
     assertUnchangedHome();
     const sweep = sweepWorkerServices({ ...deps.worker, mycoHome: home }, { onlyThisHome: true });
     for (const unit of sweep.kept) console.log(`Preserved ${unit.unitFile}: ${unit.reason}`);
-    for (const { installer, registered, removeSkills } of registrations) {
-      if (registered) installer.uninstallMemberRegistration();
-      removeSkills();
+    for (const { manifest, installer, registered, removeSkills } of registrations) {
+      reconciliation.attempt(manifest, () => {
+        if (registered) installer.uninstallMemberRegistration();
+        removeSkills();
+        if (provision?.agents.includes(manifest.name)) forgetProvision(home, manifest.name);
+      });
     }
+    if (problems.size > 0) return;
     if (purge && fs.existsSync(canonical)) {
       for (const entry of deletions.filter(entry => entry !== 'install.json')) {
         if (losses.length > 0 && entry === 'server') {
@@ -242,6 +252,13 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
       else remove();
     });
   } else remove();
+  for (const problem of problems.values()) console.warn(`myco remove: ${problem}`);
+  reconciliation.throwUnexpected();
+  if (problems.size > 0) {
+    console.warn('Member install was not fully removed; fix the reported files, then retry `myco remove`.');
+    process.exitCode = 1;
+    return;
+  }
   if (purge && fs.existsSync(canonical)) {
     assertUnchangedHome();
     const server = path.join(canonical, 'server');
