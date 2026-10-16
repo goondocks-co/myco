@@ -24,7 +24,7 @@ import { hookCommands, memberHookTemplate } from './member-hooks.js';
 import { CREDENTIAL_FLAG, SERVER_FLAG, type CredentialSource } from '../member/constants.js';
 import { parseCredentialFlag } from '../member/credential.js';
 import { admitMemberServerUrl, memberServerDialUrl } from '../member/server-url.js';
-import { deploymentUrl, listDeploymentMembershipsResult } from '../member/registry.js';
+import { deploymentUrl, listDeploymentMembershipsResult, readDeploymentMembershipResult } from '../member/registry.js';
 import { MCP_PATH } from '../plugins/spec.js';
 import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
 import { readRegistryEntry } from '../member/registry.js';
@@ -88,7 +88,7 @@ export class MemberPluginConflictError extends MemberProvisionConflictError { }
 export class MemberPendingLogoutError extends MemberMcpConflictError {
   constructor(agent: string, leaving: string) {
     const problem = `${agent} is waiting for \`myco logout ${leaving}\` to finish.`;
-    super(problem, `Fix the reported files, then retry \`myco logout ${leaving}\`.`, { repairAction: problem });
+    super(problem, `Run \`myco logout ${leaving}\` again; it names any file it still can't read.`, { repairAction: problem });
   }
 
   override get localRemedy(): string { return this.remedy; }
@@ -1108,8 +1108,12 @@ export class SymbiontInstaller {
   assertMemberProvisionAllowed(): void {
     const record = readProvisionRecordStrict(this.memberHomeDir());
     const target = this.expectedServerUrl ?? this.deploymentUrl ?? record?.serverUrl;
+    this.assertDeploymentLogoutFinished(target, record);
+  }
+
+  private assertDeploymentLogoutFinished(target: string | undefined, record = readProvisionRecordStrict(this.memberHomeDir())): void {
     const leaving = record?.pendingLogout?.[this.manifest.name]?.find(url => deploymentUrl(url) === deploymentUrl(target ?? ''));
-    if (leaving !== undefined) {
+    if (leaving !== undefined && readDeploymentMembershipResult(leaving, this.memberHomeDir()).status === 'missing') {
       throw new MemberPendingLogoutError(this.manifest.displayName, leaving);
     }
   }
@@ -1170,6 +1174,7 @@ export class SymbiontInstaller {
           const readable = memberships.readable && memberships.unavailableEntries === 0;
           const connected = memberships.memberships.some((membership) => deploymentUrl(membership.serverUrl) === other && !membership.refreshTerminal);
           if (readable && !connected) {
+            this.assertDeploymentLogoutFinished(other);
             const home = process.env.HOME ?? os.homedir();
             const file = mcpTarget.startsWith(home + path.sep) ? '~' + mcpTarget.slice(home.length) : mcpTarget;
             const serversKey = targetOverride?.serversKey ?? (reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : (reg?.mcpServersKey ?? 'mcpServers'));

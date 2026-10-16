@@ -534,6 +534,13 @@ export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageR
       const installer = globalInstaller(manifest, null, mycoHome, opts);
       try {
         installer.forDeployment(serverUrl).assertMemberProvisionAllowed();
+      } catch (error) {
+        if (!(error instanceof MemberPendingLogoutError)) throw error;
+        retiredSettingsProblems.add(manifest.name);
+        (opts.onInspectionError ?? console.warn)(error.message);
+        continue;
+      }
+      try {
         let backup: CutoverBackup | undefined;
         try {
           const migrated = installer.reconcileRetiredHookSettings(undefined, file => {
@@ -544,9 +551,7 @@ export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageR
         } finally { backup?.pruneUnchanged(); }
       } catch (error) {
         retiredSettingsProblems.add(manifest.name);
-        if (error instanceof MemberPendingLogoutError) (opts.onInspectionError ?? console.warn)(error.message);
-        else if (error instanceof MemberProvisionConflictError) installer.reportRetiredSettingsProblem(error, opts.onInspectionError);
-        else throw error;
+        installer.reportRetiredSettingsProblem(error, opts.onInspectionError);
       }
     }
     const before = readProvisionRecordStrict(mycoHome);

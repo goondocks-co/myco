@@ -62,6 +62,29 @@ it('propagates unexpected retired-settings write failures instead of reporting a
   } finally { warn.mockRestore(); }
 });
 
+for (const pass of ['keep-current', 'refresh']) it(`reports an unwritable retired Copilot file and continues ${pass} for Claude`, () => {
+  install('claude-code');
+  const file = copilotFile(JSON.stringify({ [KEY]: VALUE }));
+  const before = fs.readFileSync(file, 'utf8');
+  const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  const status = spyOn(SymbiontInstaller.prototype, 'memberRegistrationCurrent');
+  fs.chmodSync(path.dirname(file), 0o500);
+  try {
+    if (pass === 'keep-current') {
+      const result = keepCurrent(memberHome, { binaryFound: () => true });
+      expect(result?.harnesses).toContainEqual(expect.objectContaining({ id: 'claude-code', state: 'ready' }));
+    } else {
+      const lines: string[] = [];
+      expect(runProvision(['--refresh'], { mycoHome: memberHome, cwd: home, stdout: line => lines.push(line), stderr: line => lines.push(line) })).toBe(true);
+      expect(lines.join('\n')).not.toContain('waiting for');
+    }
+    expect(status.mock.contexts.some(installer => installer instanceof SymbiontInstaller && installer.memberGlobalTargets().hooks === hooksFile('claude-code'))).toBe(true);
+    expect([...stderr.mock.calls, ...warn.mock.calls].filter(([line]) => String(line).includes(file))).toHaveLength(1);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  } finally { fs.chmodSync(path.dirname(file), 0o700); status.mockRestore(); stderr.mockRestore(); warn.mockRestore(); }
+});
+
 it('propagates unexpected strict-reader errors instead of converting them to file refusals', () => {
   install('claude-code');
   const member = new SymbiontInstaller(manifest('claude-code'), home, resolvePackageRoot(), false, memberHome).withoutProjectRoot();

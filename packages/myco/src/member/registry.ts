@@ -21,6 +21,7 @@
  */
 import { markLeft, rootKeyFor } from './auto-join.js';
 import { pinLegacySpoolDestinationForProject } from './spool-migration.js';
+import { clearJoinedProvisionLogouts } from './provision-record.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -665,8 +666,7 @@ export function writeRegistryEntry(entry: RegistryEntry, opts: { mycoHome?: stri
     //
     // `joinedAt` is when this machine joined the DEPLOYMENT, which no one project's
     // binding knows, so an existing membership keeps the instant it already has.
-    const merged = mergeMembership(readDeploymentMembership(entry.serverUrl, mycoHome), membership);
-    writePrivateFileAtomic(deploymentPath(entry.serverUrl, mycoHome), `${JSON.stringify(merged, null, 2)}\n`);
+    writeDeploymentMembership(membership, { mycoHome, locked: true });
     writePrivateFileAtomic(file, `${JSON.stringify(binding, null, 2)}\n`);
     for (const predecessor of predecessors) if (predecessor !== file) {
       const record = snapshot?.records.find(record => record.file === predecessor);
@@ -703,6 +703,7 @@ export function writeDeploymentMembership(
     prepareRegistryDir(mycoHome);
     const merged = mergeMembership(readDeploymentMembership(membership.serverUrl, mycoHome), { version: REGISTRY_VERSION, ...membership });
     writePrivateFileAtomic(deploymentPath(membership.serverUrl, mycoHome), `${JSON.stringify(merged, null, 2)}\n`);
+    clearJoinedProvisionLogouts(mycoHome, deploymentUrl(membership.serverUrl));
   };
   if (opts.locked) write();
   else withRegistryLock(write, mycoHome);

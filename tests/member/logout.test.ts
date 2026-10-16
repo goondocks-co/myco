@@ -282,6 +282,63 @@ describe('Deployment-scoped logout', () => {
     } finally { rename.mockRestore(); }
   });
 
+  for (const repair of ['provision', 'provisionAgents', 'keep-current']) it(`repairs ${repair} after rejoining a partially logged-out Deployment without advising logout`, async () => {
+    join(A);
+    globalInstaller(A).install();
+    const file = globalInstaller(A).memberGlobalTargets().hooks!;
+    const clean = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '\ufeff' + clean);
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toHaveLength(1);
+    fs.unlinkSync(file);
+    join(A);
+    expect(readProvisionRecord(mycoHome)).toMatchObject({ serverUrl: A, agents: ['claude-code'] });
+    expect(readProvisionRecord(mycoHome)?.pendingLogout).toBeUndefined();
+    // Joined memberships admit repair while pending logout metadata remains.
+    recordProvision(mycoHome, { ...readProvisionRecord(mycoHome)!, pendingLogout: { 'claude-code': [A] } }, { replace: true });
+    const messages: string[] = [];
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(chunk => { messages.push(String(chunk)); return true; });
+    const warn = spyOn(console, 'warn').mockImplementation(line => { messages.push(String(line)); });
+    try {
+      if (repair === 'provision') {
+        const outcome = provisionGlobally('claude-code', null, mycoHome, { packageRoot: PKG, serverUrl: A, preserveOtherMemberTools: true });
+        expect(outcome.kind).toBe('provisioned');
+        if (outcome.kind !== 'unknown') messages.push(outcome.detail);
+      } else if (repair === 'provisionAgents') {
+        const outcome = provisionAgents(['claude-code'], mycoHome, A, null, { packageRoot: PKG, preserveOtherMemberTools: true });
+        expect(outcome.skipped).toEqual([]);
+        expect(outcome.provisioned).toEqual(['Claude Code']);
+      } else {
+        const result = keepCurrent(mycoHome, { packageRoot: PKG, binaryFound: () => true });
+        expect(result?.harnesses[0].state).toBe('ready');
+        messages.push(...result?.harnesses.map(fact => fact.action ?? '') ?? []);
+      }
+      expect(globalInstaller(A).inspectMemberHooks().member).toBe(true);
+      expect(messages.join('\n')).not.toContain('myco logout');
+      expect(readDeploymentMembership(A, mycoHome)).not.toBeNull();
+    } finally { stderr.mockRestore(); warn.mockRestore(); }
+  });
+
+  it('keeps pending cleanup advice specific when the record has moved to a survivor', async () => {
+    join(A); join(B);
+    recordDefaultDeployment(A, { mycoHome });
+    globalInstaller(A).install();
+    const file = globalInstaller(A).memberGlobalTargets().hooks!;
+    const clean = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '\ufeff' + clean);
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toHaveLength(1);
+    fs.writeFileSync(file, clean);
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const result = keepCurrent(mycoHome, { packageRoot: PKG, binaryFound: () => true });
+      expect(result?.serverUrl).toBe(B);
+      expect(result?.localActions?.['claude-code']).toContain('Run `myco logout ' + A + '` again; it names any file it still can\'t read.');
+      expect(result?.localActions?.['claude-code']).not.toContain('myco login');
+      expect(result?.localActions?.['claude-code']).not.toContain('mcpServers.myco');
+    } finally { stderr.mockRestore(); }
+    expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toEqual([]);
+    expect(readProvisionRecord(mycoHome)?.serverUrl).toBe(B);
+  });
+
   it('records the failed agent leaving destination beside the surviving default and clears it on retry', async () => {
     join(A); join(B);
     recordDefaultDeployment(A, { mycoHome });
