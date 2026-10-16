@@ -10,7 +10,7 @@ import { defaultDeploymentPath, readDefaultDeployment, recordDefaultDeployment }
 import { runnerRecordPath, newRunnerBearer } from '@myco/runner/runner-registry.js';
 import { writeDeploymentRecord } from '@myco/server/cloudflare.js';
 import { createLocalDeployment, DEFAULT_LOCAL_RECORD, peekLocalPaths } from '@myco/server/local.js';
-import { observeSetupJourneys, observeSetupStatus } from '@myco/setup/observe.js';
+import { observeSetupJourneys, observeSetupRunWork, observeSetupStatus } from '@myco/setup/observe.js';
 import type { SetupDeps } from '@myco/setup/steps.js';
 
 const FIRST = 'https://first.invalid';
@@ -306,12 +306,12 @@ for (const damaged of ['local', 'runner'] as const) it(`names the unreadable ${d
   if (damaged === 'local') {
     createLocalDeployment(DEFAULT_LOCAL_RECORD, { library: null, vec0: null }, peekLocalPaths(home));
     file = peekLocalPaths(home).recordFile;
-  } else file = runnerRecord(SECOND);
+  } else file = runnerRecord(FIRST);
   fs.writeFileSync(file, '{', { mode: 0o600 });
   expect(await run([], deps())).toBe(2);
   expect(questions).toEqual([]);
   expect(errors.join('\n')).toContain(file);
-  expect(errors.join('\n')).toContain('or pass --join, --create or --runner');
+  expect(errors.join('\n')).toContain(damaged === 'local' ? 'or pass --join, --create or --runner' : 'or pass --run-work or --no-runner');
   expect(readSetupFile(home).answers.role).toBeUndefined();
   if (damaged === 'local') {
     const facts = await observeSetupStatus(home, {}, { ...deps(), local: { native: { library: null, vec0: null }, service: { runner: () => { throw new Error('fixture service unavailable'); } } } });
@@ -321,7 +321,7 @@ for (const damaged of ['local', 'runner'] as const) it(`names the unreadable ${d
 
 it('combines membership and runner records only for guided setup', async () => {
   membership(FIRST); runnerRecord(FIRST);
-  expect(observeSetupJourneys(home).guidedJourneys).toEqual([{ role: 'join', url: FIRST, runWork: true }]);
+  expect(observeSetupJourneys(home).guidedJourneys).toEqual([{ role: 'join', url: FIRST }]);
   expect(observeSetupJourneys(home).journeys).toEqual([{ role: 'join', url: FIRST }, { role: 'runner', url: FIRST }]);
   const observed = await observeSetupStatus(home, {}, { ...deps(), worker: { home: scratch, runner: () => { throw new Error('fixture service unavailable'); } } });
   expect(observed.filter(fact => fact.id === 'journey')).toMatchObject([{ detail: 'join', deployment: FIRST }, { detail: 'runner', deployment: FIRST }]);
@@ -334,9 +334,10 @@ for (const runner of [undefined, FIRST, SECOND]) it(`observes runner choice only
   membership(FIRST);
   if (runner) runnerRecord(runner);
   const journey = observeSetupJourneys(home).guidedJourneys.find(journey => journey.role === 'join')!;
-  expect(journey.runWork).toBe(runner === FIRST);
+  const runWork = observeSetupRunWork(home, journey.url!);
+  expect(runWork).toBe(runner === FIRST);
   const file = readSetupFile(home);
-  applyObservedSetupJourney(file, journey);
+  applyObservedSetupJourney(file, { ...journey, runWork });
   saveSetupFile(home, file);
   expect(readSetupFile(home).answers.runWork).toBeUndefined();
 });
@@ -387,6 +388,45 @@ it('observes runner choice when resuming a saved explicit join', async () => {
   expect(readSetupFile(home).answers.runWork).toBeUndefined();
 });
 
+for (const source of ['flag', 'role answer', 'something else'] as const) for (const damaged of [false, true]) it(`asks and saves the runner choice once for a fresh join from ${source}, unrelated damage ${damaged}`, async () => {
+  if (damaged) fs.writeFileSync(runnerRecord(SECOND), '{', { mode: 0o600 });
+  if (source === 'something else') { membership(FIRST); membership(SECOND); }
+  const ready = readyJoin();
+  const first = await run(source === 'flag' ? ['--join', FIRST] : [], { ...ready,
+    login: async () => { membership(FIRST); return true; },
+    ask: async question => {
+      questions.push(question);
+      if (source === 'something else' && question.includes('Which Myco')) return '3';
+      if (source !== 'flag' && question.includes('What should this machine do?')) return '2';
+      if (source !== 'flag' && question.includes('What is your Myco')) return FIRST;
+      expect(question).toContain('Make this machine a runner?');
+      return 'no';
+    },
+  });
+  expect({ first, errors }).toEqual({ first: 0, errors: [] });
+  expect(questions.filter(question => question.includes('Make this machine a runner?'))).toHaveLength(1);
+  expect(questions).toHaveLength(source === 'flag' ? 1 : source === 'role answer' ? 3 : 4);
+  expect(readSetupFile(home).answers).toMatchObject({ role: 'join', url: FIRST, runWork: false });
+  questions = []; errors = [];
+  expect({ code: await run([], ready), errors, questions }).toEqual({ code: 0, errors: [], questions: [] });
+  expect(readSetupFile(home).answers.runWork).toBe(false);
+});
+
+for (const selection of ['saved', 'inferred', 'chooser'] as const) it(`ignores unrelated unreadable runner enrollment for a ${selection} join`, async () => {
+  membership(FIRST);
+  fs.writeFileSync(runnerRecord(SECOND), '{', { mode: 0o600 });
+  if (selection === 'saved') saveSetupFile(home, { version: 1, answers: { role: 'join', url: FIRST }, consented: {} });
+  if (selection === 'chooser') membership(SECOND);
+  const ready = readyJoin();
+  expect({ code: await run([], { ...ready, ask: async question => {
+    questions.push(question);
+    if (selection === 'chooser' && question.includes('Which Myco')) return '1';
+    throw new Error(`Unexpected prompt: ${question}`);
+  } }), errors }).toEqual({ code: 0, errors: [] });
+  expect(questions).toHaveLength(selection === 'chooser' ? 1 : 0);
+  expect(readSetupFile(home).answers.runWork).toBeUndefined();
+});
+
 it('refuses unreadable runner enrollment for a saved join before any prompt', async () => {
   membership(FIRST);
   runnerRecord(FIRST);
@@ -395,6 +435,7 @@ it('refuses unreadable runner enrollment for a saved join before any prompt', as
   saveSetupFile(home, { version: 1, answers: { role: 'join', url: FIRST }, consented: {} });
   expect(await run([], deps())).toBe(2);
   expect(errors.join('\n')).toContain(record);
+  expect(errors.join('\n')).toContain('or pass --run-work or --no-runner');
   expect(questions).toEqual([]);
   expect(readSetupFile(home).answers.runWork).toBeUndefined();
 });
