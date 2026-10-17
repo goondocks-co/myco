@@ -525,21 +525,21 @@ it.skipIf(process.platform !== 'win32')('Windows rolls back while a process exec
 }, 15_000);
 
 it('reports adoption and the repair action if clearing failure records fails', async () => {
-  const originalRename = fs.renameSync;
   const file = path.join(home, 'bin', 'adopt-failed.json');
-  const rename = spyOn(fs, 'renameSync').mockImplementation((source, dest) => {
-    if (dest === file) throw Object.assign(new Error('ENOSPC while clearing record'), { code: 'ENOSPC' });
-    originalRename(source, dest);
-  });
-  try {
-    const outcome = await updateBinary('manual', {}, deps);
-    expect(outcome.kind).toBe('adopted');
-    expect(fs.readFileSync(live, 'utf8')).toBe(to);
-    expect(outcome.warnings).toHaveLength(1);
-    expect(outcome.warnings![0]).toContain('could not clear');
-    expect(outcome.warnings![0]).toContain(file);
-    expect(outcome.warnings![0]).toContain('Delete or repair');
-  } finally { rename.mockRestore(); }
+  let writes = 0;
+  deps.failureRecordWriter = target => {
+    expect(target).toBe(file);
+    writes++;
+    throw Object.assign(new Error('ENOSPC while clearing record'), { code: 'ENOSPC' });
+  };
+  const outcome = await updateBinary('manual', {}, deps);
+  expect(writes).toBe(1);
+  expect(outcome.kind).toBe('adopted');
+  expect(fs.readFileSync(live, 'utf8')).toBe(to);
+  expect(outcome.warnings).toHaveLength(1);
+  expect(outcome.warnings![0]).toContain('could not clear');
+  expect(outcome.warnings![0]).toContain(file);
+  expect(outcome.warnings![0]).toContain('Delete or repair');
 });
 
 it('preserves Windows missing-executable recovery if failure bookkeeping also fails', async () => {
@@ -554,21 +554,22 @@ it('preserves Windows missing-executable recovery if failure bookkeeping also fa
     if (source === previous && dest === live) throw new Error('restore blocked');
     fs.renameSync(source, dest);
   } };
-  const originalRename = fs.renameSync;
-  const rename = spyOn(fs, 'renameSync').mockImplementation((source, dest) => {
-    if (dest === path.join(home, 'bin', 'adopt-failed.json')) throw Object.assign(new Error('ENOSPC recording failed version'), { code: 'ENOSPC' });
-    originalRename(source, dest);
-  });
-  try {
-    const outcome = await updateBinary('manual', {}, deps);
-    expect(outcome.kind).toBe('failed');
-    if (outcome.kind === 'failed') {
-      expect(outcome.reason).toContain('restore blocked');
-      expect(outcome.reason).toContain(`Recovery: move "${previous}" "${live}"`);
-    }
-    expect(fs.existsSync(live)).toBe(false);
-    expect(outcome.warnings![0]).toContain('ENOSPC recording failed version');
-  } finally { rename.mockRestore(); }
+  let writes = 0;
+  deps.failureRecordWriter = file => {
+    expect(file).toBe(path.join(home, 'bin', 'adopt-failed.json'));
+    writes++;
+    throw Object.assign(new Error('ENOSPC recording failed version'), { code: 'ENOSPC' });
+  };
+  const outcome = await updateBinary('manual', {}, deps);
+  expect(writes).toBe(1);
+  expect(outcome.kind).toBe('failed');
+  if (outcome.kind === 'failed') {
+    expect(outcome.reason).toContain('restore blocked');
+    expect(outcome.reason).toContain(`Recovery: move "${previous}" "${live}"`);
+  }
+  expect(fs.existsSync(live)).toBe(false);
+  expect(outcome.warnings).toHaveLength(1);
+  expect(outcome.warnings![0]).toContain('ENOSPC recording failed version');
 });
 
 it('does not denylist an operating-system refusal returned by the readiness probe', async () => {

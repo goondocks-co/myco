@@ -25,10 +25,10 @@ export function hasAdoptFailed(home: string, platform: NodeJS.Platform, version:
 }
 
 /** Record a failed release independently of staged-slot retention. */
-export function markAdoptFailed(home: string, platform: NodeJS.Platform, version: string, localAppData?: string): void {
+export function markAdoptFailed(home: string, platform: NodeJS.Platform, version: string, localAppData?: string, writeFile: typeof atomicWriteFileSync = atomicWriteFileSync): void {
   const file = failedVersionsPath(home);
   withFileLockSync(`${file}.lock`, () => {
-    atomicWriteFileSync(file, JSON.stringify([...new Set([...readFailedVersions(home), version])]) + '\n');
+    writeFile(file, JSON.stringify([...new Set([...readFailedVersions(home), version])]) + '\n');
   });
   const dir = versionDir(home, platform, version, localAppData);
   if (!fs.existsSync(dir)) return;
@@ -37,12 +37,12 @@ export function markAdoptFailed(home: string, platform: NodeJS.Platform, version
 }
 
 /** A verified adoption clears both durable and staged failure records. */
-export function clearAdoptFailed(home: string, platform: NodeJS.Platform, version: string, localAppData?: string): void {
+export function clearAdoptFailed(home: string, platform: NodeJS.Platform, version: string, localAppData?: string, writeFile: typeof atomicWriteFileSync = atomicWriteFileSync): void {
   const file = failedVersionsPath(home);
   const marker = path.join(versionDir(home, platform, version, localAppData), ADOPT_FAILED_MARKER);
   try {
     withFileLockSync(`${file}.lock`, () => {
-      atomicWriteFileSync(file, JSON.stringify(readFailedVersions(home).filter(failed => failed !== version)) + '\n');
+      writeFile(file, JSON.stringify(readFailedVersions(home).filter(failed => failed !== version)) + '\n');
     });
     fs.rmSync(marker, { force: true });
   } catch (error) {

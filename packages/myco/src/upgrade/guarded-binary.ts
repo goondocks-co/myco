@@ -8,6 +8,7 @@ import { resolveBinary, readLayeredPin } from '@myco/runtime/binary-resolution.j
 import { canonicalHomePath, defaultMycoHome, isDefaultMycoHome, resolveMycoHome } from '@myco/paths/home.js';
 import { readInstallMarker } from '@myco/install/managed-binary.js';
 import { placeExecutable, readyExecutable, ExecutableVerificationError } from '@myco/install/place-binary.js';
+import type { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { LifecycleLock, type LockHandle } from '@myco/utils/lifecycle-lock.js';
 import { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
 import { getPluginVersion } from '@myco/version.js';
@@ -38,6 +39,7 @@ export interface BinaryUpdateDeps {
   fetchReleases?: () => Promise<GitHubRelease[]>;
   stageBinary?: typeof stageBinary;
   stageDeps?: StageBinaryDeps;
+  failureRecordWriter?: typeof atomicWriteFileSync;
   placeBinary?: typeof placeExecutable;
   probeVersion?: (binary: string) => string | Promise<string>;
   currentVersion?: string;
@@ -134,8 +136,8 @@ function sweepLeftovers(binary: string, fileOps: BinaryFileOps, report: UpdateRe
 type BinaryUpdateOptions = { skipBinary?: boolean; targetVersion?: string | null; channel?: ReleaseChannel };
 type UpdateReport = { warnings: string[]; retainedPrevious: RetainedPrevious[] };
 
-function recordFailedVerification(home: string, platform: NodeJS.Platform, version: string, localAppData: string | undefined, report: UpdateReport): void {
-  try { markAdoptFailed(home, platform, version, localAppData); }
+function recordFailedVerification(home: string, platform: NodeJS.Platform, version: string, localAppData: string | undefined, report: UpdateReport, writeFile?: typeof atomicWriteFileSync): void {
+  try { markAdoptFailed(home, platform, version, localAppData, writeFile); }
   catch (error) { report.warnings.push(`Could not record the failed version ${version}: ${detail(error)}`); }
 }
 
@@ -182,7 +184,7 @@ async function performBinaryUpdate(
     if (failedBefore && !(caller === 'manual' && target !== null)) return { kind: 'skipped', reason: `version ${refs.targetVersion} failed an earlier update; retry with myco update ${refs.targetVersion}` };
     const staged = await (deps.stageBinary ?? stageBinary)({ refs, home, platform, localAppData }, deps.stageDeps ?? DEFAULT_BINARY_UPDATE_DEPS);
     if ('error' in staged) {
-      if (staged.verificationFailed) recordFailedVerification(home, platform, refs.targetVersion, localAppData, report);
+      if (staged.verificationFailed) recordFailedVerification(home, platform, refs.targetVersion, localAppData, report, deps.failureRecordWriter);
       return { kind: 'failed', reason: staged.error };
     }
     fs.mkdirSync(path.dirname(binary), { recursive: true });
@@ -196,7 +198,7 @@ async function performBinaryUpdate(
         });
         await verifyVersion(candidate, refs.targetVersion, probe);
       } catch (error) {
-        if (error instanceof ExecutableVerificationError) recordFailedVerification(home, platform, refs.targetVersion, localAppData, report);
+        if (error instanceof ExecutableVerificationError) recordFailedVerification(home, platform, refs.targetVersion, localAppData, report, deps.failureRecordWriter);
         return { kind: 'failed', reason: `prepare downloaded version: ${detail(error)}` };
       }
       const hadLive = fs.existsSync(binary);
@@ -227,18 +229,18 @@ async function performBinaryUpdate(
             fileOps.rmSync(binary, { force: true });
           }
         } catch (restoreError) {
-          if (verificationFailed) recordFailedVerification(home, platform, refs.targetVersion, localAppData, report);
+          if (verificationFailed) recordFailedVerification(home, platform, refs.targetVersion, localAppData, report, deps.failureRecordWriter);
           for (const file of [retired, failedLive]) if (file !== undefined) report.retainedPrevious.push({ path: file, reason: 'kept after failed recovery' });
           const recovery = fs.existsSync(binary) ? '' : ` No ${path.basename(binary)} is at ${binary}. Recovery: move "${previous}" "${binary}".`;
           return { kind: 'failed', reason: `${operation} failed (${detail(error)}); ${restoreOperation} failed (${detail(restoreError)}).${recovery}` };
         }
-        if (verificationFailed) recordFailedVerification(home, platform, refs.targetVersion, localAppData, report);
+        if (verificationFailed) recordFailedVerification(home, platform, refs.targetVersion, localAppData, report, deps.failureRecordWriter);
         const reason = `${operation} failed: ${detail(error)}`;
         retirePrevious([retired, failedLive], fileOps, report);
         return hadLive && verificationFailed ? { kind: 'rolled-back', version: current, reason }
           : { kind: 'failed', reason };
       }
-      try { clearAdoptFailed(home, platform, refs.targetVersion, localAppData); }
+      try { clearAdoptFailed(home, platform, refs.targetVersion, localAppData, deps.failureRecordWriter); }
       catch (error) { report.warnings.push(`Updated to ${refs.targetVersion}, but could not clear its failure records: ${detail(error)}`); }
       retirePrevious([retired], fileOps, report);
       return { kind: 'adopted', version: refs.targetVersion };
