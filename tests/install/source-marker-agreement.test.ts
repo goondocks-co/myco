@@ -51,7 +51,20 @@ function powershellRead(explicitChannel = false) {
   const start = installPs1.indexOf('if (Test-Path $Marker)');
   const end = installPs1.indexOf('# Ensure TLS 1.2 is enabled', start);
   const probe = path.join(root, 'marker-read.ps1');
-  fs.writeFileSync(probe, `$ErrorActionPreference = 'Stop'\n$Marker = '${path.join(home, 'install.json').replaceAll("'", "''")}'\n$InstallMarker = $null\n$Channel = '${explicitChannel ? 'stable' : ''}'\n$ChannelExplicit = ${explicitChannel ? '$true' : '$false'}\n${installPs1.slice(start, end)}\nWrite-Output $InstallMarker.version\n`);
+  fs.writeFileSync(probe, `$ErrorActionPreference = 'Stop'
+$PSStyle.OutputRendering = 'PlainText'
+$Marker = '${path.join(home, 'install.json').replaceAll("'", "''")}'
+$InstallMarker = $null
+$Channel = '${explicitChannel ? 'stable' : ''}'
+$ChannelExplicit = ${explicitChannel ? '$true' : '$false'}
+try {
+${installPs1.slice(start, end)}
+Write-Output $InstallMarker.version
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+`);
   return spawnSync('pwsh', ['-NoProfile', '-File', probe], { cwd: root, env: sandboxChildEnv(root), encoding: 'utf8' });
 }
 
