@@ -20,7 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { LifecycleLock, type LockHandle } from '../utils/lifecycle-lock.js';
-import { selfExec } from '../runtime/self-exec.js';
+import { resolveBinary } from '@myco/runtime/binary-resolution.js';
 import { spawnDetached, startedContained, type DetachedSpawn, type DetachedStart } from '../runtime/spawn-detached.js';
 import { ensureMemberDir } from './store.js';
 import { MemberSpool, spoolDirFor } from './spool.js';
@@ -144,11 +144,11 @@ function startHelper(opts: {
   if (!probe.acquired) return { kind: 'running', contained: probe.holder?.contained === true };
   probe.lock.release();
   if (!claimStart(paths.starting, now())) return { kind: 'starting', contained: readStartClaim(paths.starting)?.contained === true };
-  const self = selfExec();
-  const bucket = opts.projectId === JOIN_BUCKET ? ['--join'] : ['--project', opts.projectId, '--server', opts.serverUrl!];
-  const args = [...self.args, 'member', 'helper', ...bucket, '--home', opts.mycoHome, ...(opts.afterFailure ? ['--after-failure'] : [])];
   let start: DetachedStart;
   try {
+    const self = resolveBinary('member-helper', { kind: 'machine' }, { mycoHome: opts.mycoHome });
+    const bucket = opts.projectId === JOIN_BUCKET ? ['--join'] : ['--project', opts.projectId, '--server', opts.serverUrl!];
+    const args = [...self.args, 'member', 'helper', ...bucket, '--home', opts.mycoHome, ...(opts.afterFailure ? ['--after-failure'] : [])];
     start = (opts.spawn ?? spawnDetached)(self.path, args, { cwd: opts.mycoHome });
   } catch {
     // A start that threw started nothing: its claim must not hold the next kick off.

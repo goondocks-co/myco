@@ -42,6 +42,7 @@
     "tests/cli/member-connect.test.ts": 1158,
     "tests/cli/member-copy.test.ts": 242,
     "tests/cli/member-home-agreement.test.ts": 943,
+    "tests/cli/member-binary-current.test.ts": 3000,
     "tests/cli/member-keep-current.test.ts": 2643,
     "tests/cli/member-loopback-http.test.ts": 4829,
     "tests/cli/member-machine-verbs.test.ts": 1653,

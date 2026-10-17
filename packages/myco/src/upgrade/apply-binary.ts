@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import type { ReleaseFetch } from '@myco/upgrade/release-resolver.js';
 import { parseSha256Sum } from './release-assets.js';
 import {
   versionsDir,
@@ -35,8 +36,9 @@ async function download(
   destPath: string,
   headers: Record<string, string>,
   maxBytes: number,
+  fetchFn: ReleaseFetch,
 ): Promise<void> {
-  const res = await fetch(url, { headers, redirect: 'follow' });
+  const res = await fetchFn(url, { headers, redirect: 'follow' });
   if (!res.ok) {
     throw new Error(`download failed: ${res.status} ${res.statusText} (${url})`);
   }
@@ -112,13 +114,14 @@ function computeSha256(filePath: string): Promise<string> {
 export interface BinaryUpdateDepsOptions {
   /** Byte cap on one download. Defaults to `MAX_DOWNLOAD_BYTES`. */
   maxDownloadBytes?: number;
+  fetch?: ReleaseFetch;
 }
 
 /** The real download and hash for `stageBinary`, with the download capped at `maxDownloadBytes`. */
 export function createBinaryUpdateDeps(options: BinaryUpdateDepsOptions = {}): StageBinaryDeps {
   const maxBytes = options.maxDownloadBytes ?? MAX_DOWNLOAD_BYTES;
   return {
-    download: (url, destPath, headers = {}) => download(url, destPath, headers, maxBytes),
+    download: (url, destPath, headers = {}) => download(url, destPath, headers, maxBytes, options.fetch ?? globalThis.fetch),
     computeSha256,
   };
 }

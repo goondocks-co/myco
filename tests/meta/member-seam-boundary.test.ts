@@ -90,6 +90,7 @@ const ALLOWLIST: readonly string[] = [
   'runtime/binary-resolution.ts',
   'runtime/self-exec.ts',
   'install/managed-binary.ts',
+  'install/marker-reader.ts',
   'packages/myco/scripts/managed-paths.mjs',
   'packages/myco/scripts/home-role.mjs',
   // The member helper's detached start: `node:child_process` on POSIX, `CreateProcessW` through

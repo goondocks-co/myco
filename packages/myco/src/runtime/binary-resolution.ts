@@ -24,14 +24,38 @@ import path from 'node:path';
 import { managedBinDir, managedBinaryPath } from '../../scripts/managed-paths.mjs';
 import { isDefaultMycoHome, resolveMycoHome } from '../paths/home.js';
 import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
+import { readInstallMarker } from '@myco/install/marker-reader.js';
 import { selfExecOf } from './self-exec.js';
 import { checkPinTrust as checkPinTrustShared, readTrustedPin as readTrustedPinShared, PIN_MISSING_REASON } from '../paths/pin-trust.js';
+
+/** Capture an executable's file identity for comparison after atomic replacement. */
+export function captureExecutableIdentity(binary: string, platform: NodeJS.Platform = process.platform): (candidate: string) => boolean {
+  const started = fs.statSync(binary);
+  return candidate => {
+    const current = fs.statSync(candidate);
+    if (started.dev !== current.dev) return false;
+    if (platform !== 'win32' || (started.ino !== 0 && current.ino !== 0)) return started.ino === current.ino;
+    return started.ctimeMs === current.ctimeMs && started.birthtimeMs === current.birthtimeMs;
+  };
+}
+
+const matchesStartedExecutable = (() => {
+  try { return captureExecutableIdentity(process.execPath); }
+  catch (error) { return (_candidate: string): boolean => { throw error; }; }
+})();
+
+/** Whether the live path still names the executable captured during process initialization. */
+export function isRunningExecutable(binary: string): boolean {
+  return matchesStartedExecutable(binary);
+}
 
 /**
  * Resolution order per caller kind.
  *
  * - `self-exec` — commands Myco writes for later execution (hook commands, MCP
  *   configs): trusted pin → runnable managed binary → `process.execPath`.
+ * - `member-helper` — helpers running the installed binary or its previous
+ *   slot follow the live path; other builds retain their executable and entry.
  * - `self-exec-entry` — re-exec of the RUNNING code: `process.execPath` plus
  *   the dev-mode entry script when present. Never consults pin or managed:
  *   a re-exec must run the same code that is already running.
@@ -46,6 +70,7 @@ import { checkPinTrust as checkPinTrustShared, readTrustedPin as readTrustedPinS
  */
 export type ResolutionPolicy =
   | 'self-exec'
+  | 'member-helper'
   | 'self-exec-entry'
   | 'home-scoped-managed'
   | 'managed-destination'
@@ -176,6 +201,12 @@ export function bareCommandName(platform: NodeJS.Platform = process.platform): s
   return platform === 'win32' ? 'myco.exe' : 'myco';
 }
 
+/** The installed destination recorded by the installer, or the managed layout. */
+export function installedBinaryPath(mycoHome: string, env: ResolutionEnv = {}): string {
+  return readInstallMarker(mycoHome, true)?.bin
+    ?? resolveBinary('managed-destination', { kind: 'machine' }, { ...env, mycoHome }).path;
+}
+
 /** Resolve the binary for a call site's policy. See {@link ResolutionPolicy}. */
 export function resolveBinary(
   policy: ResolutionPolicy,
@@ -195,6 +226,19 @@ export function resolveBinary(
     case 'self-exec': {
       if (facts.pin) return done(facts.pin, 'pin');
       if (facts.managedRunnable) return done(facts.managedBinary, 'managed');
+      return done(execPath, 'last-resort');
+    }
+    case 'member-helper': {
+      const self = selfExecOf(execPath, 'argv1' in env ? env.argv1 : process.argv[1]);
+      if (self.args.length > 0) return done(self.path, 'last-resort', self.args);
+      let installed: string;
+      try { installed = installedBinaryPath(env.mycoHome ?? resolveMycoHome(), env); }
+      catch { return done(execPath, 'last-resort'); }
+      const previous = path.join(path.dirname(installed), platform === 'win32' ? 'myco.prev.exe' : 'myco.prev');
+      const identity = (binary: string) => platform === 'win32' ? path.resolve(binary).toLowerCase() : path.resolve(binary);
+      if (![installed, previous].some(binary => identity(binary) === identity(execPath))) return done(execPath, 'last-resort');
+      if (facts.pin) return done(facts.pin, 'pin');
+      if (isRunnableBinary(installed, env)) return done(installed, 'managed');
       return done(execPath, 'last-resort');
     }
     case 'self-exec-entry': {

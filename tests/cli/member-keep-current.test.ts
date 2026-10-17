@@ -544,7 +544,7 @@ function toolsHeldElsewhere(agent = 'claude-code'): string {
   return agent === 'claude-code' ? path.join(agentHome, '.claude.json') : config();
 }
 
-for (const agent of ['claude-code', 'codex']) it(`keeps ${agent}'s tools held by another member Deployment settled without provisioning`, async () => {
+for (const agent of ['claude-code', 'codex']) it(`keeps ${agent}'s tools held by another member Deployment settled while refreshing an older setup version`, async () => {
   const target = toolsHeldElsewhere(agent);
   const priorChecks = setupChecks(home);
   expect(priorChecks.some(check => check.detail.includes('use other.myco.example'))).toBe(true);
@@ -571,7 +571,7 @@ for (const agent of ['claude-code', 'codex']) it(`keeps ${agent}'s tools held by
     expect(stderr).toHaveBeenCalledTimes(1);
     expect(String(stderr.mock.calls[0]?.[0])).toContain('use other.myco.example');
     expect(String(stderr.mock.calls[0]?.[0])).not.toContain('member provision');
-    expect(install).not.toHaveBeenCalled();
+    expect(install).toHaveBeenCalledTimes(1);
     expect(harnessFiles().map(file => [file, fs.readFileSync(file, 'utf8'), fs.statSync(file).mtimeMs])).toEqual(before);
     const checks = setupChecks(home);
     expect(checks.every(check => check.status === 'ok')).toBe(true);
@@ -584,7 +584,7 @@ for (const agent of ['claude-code', 'codex']) it(`keeps ${agent}'s tools held by
     expect(fs.readFileSync(target, 'utf8')).toContain(OTHER_SERVER);
     fs.writeFileSync(target, fs.readFileSync(target, 'utf8').replaceAll(OTHER_SERVER, SERVER));
     expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].state).toBe('ready');
-    expect(install).not.toHaveBeenCalled();
+    expect(install).toHaveBeenCalledTimes(1);
   } finally { install.mockRestore(); stderr.mockRestore(); }
 });
 

@@ -10,7 +10,11 @@ myco update
 myco doctor
 ```
 
-Myco 2.0 updates on demand on member machines. A member installation runs no member update timer or local service. `--check` reports availability without replacing the binary or changing agent setup. `myco update` verifies the download, replaces the installed binary and refreshes global agent configuration, even when the binary is already current. Read its result for any remaining step, then start a new coding-agent session. Doctor checks the connection and setup and reports cached update information.
+Myco keeps itself current about once a day in the default home, when a coding session starts a helper with enough time to check. Skipped checks and failed attempts wait until the next day too. Run `myco member status` or `myco doctor` to see when it last checked and what happened.
+
+A member installation runs no member update timer or local service. To stop automatic replacement, use an explicitly managed installation in a non-default `MYCO_HOME` or a runtime pin selecting another binary; development builds also skip it. There is no automatic-update off setting, so these installations still record a skipped check about once a day. `--skip-binary` applies only to the manual command.
+
+`--check` reports availability without replacing the binary or changing agent setup. `myco update` verifies the download, replaces the installed binary and refreshes global agent configuration, even when the binary is already current. Read its result for any remaining step, then start a new coding-agent session. Doctor checks the connection and setup and reports cached update information.
 
 Binary updates support macOS, Linux and Windows. Myco checks the downloaded version before and after replacement and keeps the previous binary beside the installed one. If the replacement fails its check, the result says **update rolled back** and names the restored version. A version that failed verification is skipped on later automatic or channel updates; `myco update <version>` retries it explicitly and clears the failure after success. If an earlier version cannot be removed, the result names the retained file and why it was kept.
 

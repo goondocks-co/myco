@@ -14,9 +14,16 @@ import { helperPass } from '../member/helper-pass.js';
 import { kickWaitingProjects } from '../member/sweep.js';
 import { recordStartingJob, type DetachedSpawn } from '../runtime/spawn-detached.js';
 import type { FetchLike } from '../member/transport.js';
+import { attemptAutomaticUpdate, automaticUpdateWords } from '@myco/member/automatic-update-state.js';
+import { updateBinary, binaryUpdatePath, type BinaryUpdateDeps } from '@myco/upgrade/guarded-binary.js';
+import { refreshMemberSetup, MEMBER_REFRESH_TIMEOUT_MS } from '@myco/member/refresh-setup.js';
+import { readProvisionRecord } from '@myco/member/provision-record.js';
 import { keepCurrent, reportHarnesses } from '@myco/cli/member-keep-current.js';
 
 export { helperPass } from '../member/helper-pass.js';
+
+export const AUTOMATIC_UPDATE_MIN_BUDGET_MS = 30_000;
+export const AUTOMATIC_REFRESH_MIN_BUDGET_MS = MEMBER_REFRESH_TIMEOUT_MS / 4;
 
 export interface HelperVerbDeps {
   fetch?: FetchLike;
@@ -31,6 +38,9 @@ export interface HelperVerbDeps {
   /** The pass the helper runs (tests); the project's backlog delivery otherwise. */
   pass?: HelperPass;
   keepCurrent?: typeof keepCurrent;
+  updateBinary?: typeof updateBinary;
+  binaryUpdateDeps?: BinaryUpdateDeps;
+  refreshMember?: typeof refreshMemberSetup;
 }
 
 function flag(args: readonly string[], name: string): string | undefined {
@@ -67,6 +77,12 @@ async function helperPasses(projectId: string, serverUrl: string | undefined, my
   const started = now();
   const pass = deps.pass ?? (projectId === JOIN_BUCKET ? (await import('./member-auto-join.js')).joinPass(mycoHome, deps) : helperPass({ projectId, serverUrl: serverUrl! }, mycoHome, deps));
   let result: HelperRunResult;
+  let adoptedVersion: string | undefined;
+  const refreshAdopted = (deadline: number) => {
+    const remaining = deadline - now();
+    if (remaining < AUTOMATIC_REFRESH_MIN_BUDGET_MS) throw new Error('agent refresh deferred until a helper has enough time');
+    return (deps.refreshMember ?? refreshMemberSetup)(binaryUpdatePath(mycoHome, deps.binaryUpdateDeps), mycoHome, remaining);
+  };
   try {
     result = await runHelper({
       projectId,
@@ -80,7 +96,29 @@ async function helperPasses(projectId: string, serverUrl: string | undefined, my
       afterFailure,
       pass: async (deadline, options) => {
         let repaired: ReturnType<typeof keepCurrent> = null;
-        try { repaired = (deps.keepCurrent ?? keepCurrent)(mycoHome); } catch (error) {
+        let refreshedAdoption = false;
+        if (deadline - now() >= AUTOMATIC_UPDATE_MIN_BUDGET_MS) {
+          try {
+            const checked = await attemptAutomaticUpdate(mycoHome, now, async () => {
+              const outcome = await (deps.updateBinary ?? updateBinary)('automatic', {}, { ...deps.binaryUpdateDeps, home: mycoHome, deadline, now });
+              if (outcome.kind === 'adopted') {
+                adoptedVersion = outcome.version;
+                refreshedAdoption = true;
+              }
+              return outcome;
+            }, async () => { await refreshAdopted(deadline); });
+            if (checked !== null) {
+              process.stderr.write(`[myco] automatic update: ${automaticUpdateWords(checked.lastOutcome)}\n`);
+            }
+          } catch (error) {
+            process.stderr.write(`[myco] automatic update check failed: ${error instanceof Error ? error.message : String(error)}\n`);
+          }
+        }
+        try {
+          if (adoptedVersion !== undefined) {
+            if (!refreshedAdoption && readProvisionRecord(mycoHome)?.version !== adoptedVersion) await refreshAdopted(deadline);
+          } else repaired = (deps.keepCurrent ?? keepCurrent)(mycoHome);
+        } catch (error) {
           process.stderr.write(`[myco] keep-current failed: ${error instanceof Error ? error.message : String(error)}\n`);
         }
         const delivered = await pass(deadline, options);
