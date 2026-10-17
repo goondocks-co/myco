@@ -121,7 +121,7 @@ export type SourceIdentity = (request: Request) => string | null;
  * `store_quota` and `store_size` are the store's platform limits: a daily usage limit reached, or the database at its
  * maximum size. Both answer 503 and are retried; neither refuses a member's capture.
  */
-export type ErrorClass = 'parse' | 'store_quota' | 'store_size' | 'constraint' | 'schema' | 'db' | 'revoked' | 'unknown';
+export type ErrorClass = 'parse' | 'store_quota' | 'store_size' | 'constraint' | 'schema' | 'db' | 'revoked' | 'configuration' | 'rpc' | 'unknown';
 
 /**
  * A platform's recogniser for its own storage errors, consulted only after the

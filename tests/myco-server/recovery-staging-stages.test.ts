@@ -6,6 +6,7 @@
  * continuation are proven separately under wrangler dev.
  */
 import { expect, it } from 'bun:test';
+import { cloudflareProducerPorts, type StagingBucket } from '@myco-server-worker/platform/cloudflare/recovery-export.js';
 import {
   ADVANCING_STAGES, continueAttempt, freshScan, PRODUCER_LIMITS, reconcileUnconfirmed,
   type AttemptCheckpoint, type AttemptObject, type AttemptPart, type AttemptState, type CopyAnswer,
@@ -387,6 +388,39 @@ it('confirms a publication whose write settled late, without failing it and with
   const confirmed = await continueAttempt(state, held.port, limits);
   expect([confirmed.stage, confirmed.error, state.state.stage]).toEqual(['complete', undefined, 'complete']);
   expect(held.calls.writes).toEqual([STAGING_MANIFEST_FILE]);
+});
+
+it('keeps a completion manifest that lands late through the real Cloudflare port', async () => {
+  const clock = { now: 0 };
+  const held = await staged({ now: () => clock.now });
+  const state = await atCopy(held, clock);
+  const key = stagingPath(state.state.prefix, STAGING_MANIFEST_FILE);
+  const files = new Map<string, Uint8Array>([[key, new TextEncoder().encode(ADMITTED)]]);
+  let deliver: (() => void) | undefined;
+  const bucket = {
+    put: (name: string, body: Uint8Array) => new Promise<{ size: number }>(resolve => {
+      deliver = () => { files.set(name, body); resolve({ size: body.length }); };
+    }),
+    delete: async (name: string) => { files.delete(name); },
+    get: async (name: string) => {
+      const body = files.get(name);
+      return body === undefined ? null : { body: new Blob([new Uint8Array(body)]), text: async () => new TextDecoder().decode(body) };
+    },
+  } as unknown as StagingBucket;
+  const real = cloudflareProducerPorts({ accountId: 'a', databaseId: 'd', tables: ['t'], token: 'fixture' }, bucket, bucket);
+  const port = { ...held.port, writeStagingFile: real.writeStagingFile, readStagingFile: real.readStagingFile };
+  const limits = { ...PRODUCER_LIMITS, requestMs: 5, publishMs: 10 };
+  const first = await continueAttempt(state, port, limits);
+  expect(first.stage).toBe('copy');
+  expect(deliver).toBeDefined();
+  clock.now = 20;
+  expect((await continueAttempt(state, port, limits)).stage).toBe('unconfirmed');
+  deliver!();
+  await Bun.sleep(5);
+  expect(files.has(key)).toBe(true);
+  expect(JSON.parse(new TextDecoder().decode(files.get(key))).status).toBe('complete');
+  expect(await reconcileUnconfirmed({ ...state.state }, state, port, limits)).toBe('complete');
+  expect(state.state.stage).toBe('complete');
 });
 
 it('never claims a publication failed while a write of it may still land, and settles it once it reads back', async () => {

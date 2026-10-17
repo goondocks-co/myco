@@ -183,7 +183,7 @@ export async function recoveryScheduleOf(env: ServerEnv, now: number, held?: Rec
   }
   // Configured by the owner and unable to run: the producer's own words say why, and no attempt is started.
   if (!ready) {
-    return { ...idle, configured: true, idleCode: 'backup_not_ready', idleBecause: `automatic recovery cannot run: ${readiness.ready ? '' : readiness.reason}` };
+    return { ...idle, configured: true, idleCode: readiness.ready ? 'backup_not_ready' : readiness.code ?? 'backup_not_ready', idleBecause: `automatic recovery cannot run: ${readiness.ready ? '' : readiness.reason}` };
   }
 
   // An attempt still running is what the owner reads first: it is the Deployment's own backup in progress.

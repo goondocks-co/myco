@@ -116,6 +116,13 @@ export const classifyD1Error: ErrorClassifier = (message) => {
   return message.startsWith('D1_ERROR') ? 'db' : null;
 };
 
+/** Cloudflare admission failures are matched here; their text never enters telemetry. */
+export const classifyCloudflareError: ErrorClassifier = (message) => {
+  if (message === 'this Deployment carries no recovery export target') return 'configuration';
+  if (/could not be (cloned|serialized)|does not support serialization|RPC.*(canceled|cancelled|disconnected)/i.test(message)) return 'rpc';
+  return classifyD1Error(message);
+};
+
 export { classifyR2BlobFailure, R2_BAD_DIGEST_CODE } from './r2-digest.js';
 
 /**
@@ -150,7 +157,7 @@ export function cloudflarePlatform(bindings: CloudflareBindings, embeddingRuntim
         operatorNames: [],
       },
     ],
-    classifyError: classifyD1Error,
+    classifyError: classifyCloudflareError,
     classifyBlobFailure: classifyR2BlobFailure,
     jobBudget: CLOUDFLARE_JOB_BUDGET,
   };
@@ -179,7 +186,9 @@ function recoveryPort(bindings: CloudflareBindings): ServerEnv['recovery'] {
   const object = () => producer.get(producer.idFromName(PRODUCER_NAME));
   const configuration = boundRecoveryConfiguration(bindings);
   return {
-    admission: configuration.ok ? { ready: true } : { ready: false, reason: configuration.reason },
+    admission: !configuration.ok ? { ready: false, reason: configuration.reason }
+      : !bindings.RECOVERY_EXPORT_TOKEN ? { ready: false, code: 'backup_export_credential_missing', reason: 'automatic backups need an export credential; ask the server operator to configure it' }
+      : { ready: true },
     admit: async (admission) => object().admit(recoveryAdmissionWire(admission, bindings)),
     settleHold: (token) => object().settleHold(token),
     status: () => object().status(),

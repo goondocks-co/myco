@@ -1,8 +1,19 @@
 import { describe, it, expect } from 'bun:test';
-import { classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
-import { classify, emit, SchemaMismatchError } from '@myco-server-worker/telemetry.js';
+import { classifyCloudflareError, classifyD1Error } from '@myco-server-worker/platform/cloudflare/env.js';
+import { classify, emit, failureTelemetry, SchemaMismatchError } from '@myco-server-worker/telemetry.js';
 
 describe('telemetry', () => {
+  it('names admission failures with only fixed categories and allowlisted error names', () => {
+    expect(failureTelemetry(new Error('this Deployment carries no recovery export target'), classifyCloudflareError))
+      .toEqual({ error_class: 'configuration', error_reason: 'Error:configuration' });
+    expect(failureTelemetry(new Error('RPC disconnected https://secret.invalid/?token=secret'), classifyCloudflareError))
+      .toEqual({ error_class: 'rpc', error_reason: 'Error:rpc' });
+    expect(failureTelemetry(new Error('D1_ERROR: private detail'), classifyCloudflareError)).toEqual({ error_class: 'db', error_reason: 'Error:db' });
+    const hostile = new Error('https://secret.invalid/?token=secret');
+    hostile.name = 'Bearer secret';
+    expect(failureTelemetry(hostile, classifyCloudflareError)).toEqual({ error_class: 'unknown', error_reason: 'Unknown:unknown' });
+    expect(failureTelemetry('Bearer secret')).toEqual({ error_class: 'unknown', error_reason: 'Unknown:unknown' });
+  });
   it('classifies without echoing the message', () => {
     let captured = '';
     const orig = console.log;

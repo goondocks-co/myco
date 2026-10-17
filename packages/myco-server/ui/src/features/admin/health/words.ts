@@ -69,6 +69,7 @@ export function cadenceWords(schedule: RecoverySchedule, now: number): string {
   if (schedule.idleCode === 'backup_unsupported' || !schedule.supported) return RECOVERY_UNAVAILABLE_WORDS;
   if (schedule.idleCode === 'backup_off' || !schedule.configured) return 'Automatic recovery is off. Set “Back up every” in Settings to schedule it.';
   const every = `Every ${schedule.intervalHours} h.`;
+  if (schedule.idleCode === 'backup_export_credential_missing') return `${every} Backups can’t run: this server is missing its backup access key. Ask the server operator to add it.`;
   if (schedule.idleCode === 'backup_not_ready' || !schedule.ready) return `${every} It can’t run yet: this server is missing something it needs.`;
   if (schedule.idleCode === 'backup_in_progress' || schedule.idleCode === 'manual_backup_in_progress' || schedule.idleBecause !== null) return `${every} The next one waits for the attempt or backup in progress to end.`;
   if (schedule.dueAt === null) return every;
@@ -132,6 +133,7 @@ const PRODUCER_FAILURE_WORDS: Readonly<Record<string, string>> = {
 
 /** An attempt's stage, from the producer's closed set, in words. */
 const STAGE_WORDS: Readonly<Record<string, string>> = {
+  preparing: 'preparing the backup',
   export: 'exporting the database',
   download: 'downloading the export',
   inventory: 'checking what it downloaded',

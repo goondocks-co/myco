@@ -17,6 +17,7 @@ const CONFIGURATION = {
 const BOUND = {
   MYCO_RECOVERY_ACCOUNT_ID: CONFIGURATION.accountId, MYCO_RECOVERY_DATABASE_ID: CONFIGURATION.databaseId,
   MYCO_RECOVERY_CONFIGURATION: JSON.stringify(CONFIGURATION),
+  RECOVERY_EXPORT_TOKEN: 'local-fake-token',
 };
 const ADMISSION: RecoveryAdmission = {
   holdToken: 'token-1', tables: ['sessions'], schema: '[]', captured: { sessions: 'CREATE TABLE sessions (id TEXT)' }, startedBy: 'mem_owner',

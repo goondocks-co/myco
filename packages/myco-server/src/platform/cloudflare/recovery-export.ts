@@ -113,7 +113,7 @@ export interface ExportTarget {
 
 export interface StagingBucket {
   put(key: string, body: ReadableStream<Uint8Array> | Uint8Array, options?: { httpMetadata?: { contentType?: string }; sha256?: string }): Promise<{ size: number } | null>;
-  /** Releases one staged file. Retention is the only caller; a key absent already is not an error. */
+  /** Releases one staged file owned by a failed preparation or retention; an absent key is not an error. */
   delete(key: string): Promise<void>;
   get(key: string, options?: { range?: { offset: number; length: number } }): Promise<{ body: ReadableStream<Uint8Array>; size: number } | null>;
   head(key: string): Promise<{ size: number } | null>;
@@ -311,8 +311,9 @@ export function cloudflareProducerPorts(
     async storedSize(prefix) {
       return stored(async () => (await bucket.head(stagedSqlKey(prefix)))?.size ?? null);
     },
-    async writeStagingFile(prefix, name, body, _signal) {
-      await stored(() => bucket.put(`${prefix.replace(/\/$/, '')}/${name}`, new TextEncoder().encode(body), { httpMetadata: { contentType: 'application/json' } }));
+    async writeStagingFile(prefix, name, body) {
+      const key = `${prefix.replace(/\/$/, '')}/${name}`;
+      await stored(() => bucket.put(key, new TextEncoder().encode(body), { httpMetadata: { contentType: 'application/json' } }));
     },
     async readStagingFile(prefix, name, signal) {
       return stored(async () => {
