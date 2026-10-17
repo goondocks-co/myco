@@ -2,13 +2,13 @@
 
 A runner is a machine you choose to lend a signed-in coding agent to Myco. The Deployment stores sessions and queues work; registered runners claim that work and carry it out. A coding machine can capture sessions without being a runner. Running a Deployment does not enroll its host either.
 
-Use a machine that can reach the Deployment and stay available long enough to finish tasks. For a loopback Deployment, use the same machine. For Cloudflare, a runner can be elsewhere. Agent sign-ins stay on the runner; its registration is separate from a member's sign-in and does not enable capture.
+Use a machine that can reach the Deployment and stay available long enough to finish tasks. For a loopback Deployment, use the same machine. For Cloudflare, a runner can be elsewhere. Agent sign-ins use the runner machine by default; its registration is separate from a member's sign-in and does not enable capture.
 
 ## 1. Sign in to a coding agent on the runner
 
 Install a supported coding agent, such as Claude Code, Codex or OpenCode, and complete that agent's normal sign-in **on the runner machine**, under the account that will run the service. A login on your laptop does not sign in another machine. Check that the agent can actually run work with your subscription or provider access.
 
-In **Settings** → **Models and keys**, configure the model tiers for the agent you use. Codex and OpenCode need a model for each tier that tasks use. The **Sign in with** field offers **Server login** and **Worker login**. For a registered runner, use **Worker login** and sign in on its machine: a server-held login does not sign that runner in, and runner claims do not receive server-held provider keys.
+In **Settings** → **Models and keys**, configure the model tiers for the agent you use. Codex and OpenCode need a model for each tier that tasks use. The **Legacy workers sign in with** field applies only to legacy workers. Registered runners use their per-agent choices on **Runners** instead.
 
 In **Settings** → **Myco’s work**, **Preferred agent** and **Then try, in order** choose among the agents the runner offers. A listed model alone does not prove access or available quota.
 
@@ -37,6 +37,24 @@ The service starts at login and uses this account's agent sign-ins. Status shows
 Open **Runners** in the dashboard. It shows contact, readiness, current work, offered agents, version, release channel and update results. Open **Details** for agent sign-in reports and model information. If it is not ready, check its reported reason and run doctor on that machine.
 
 An owner or administrator can **Pause** a runner to let its current task finish while taking no new work, then **Resume** it. **Remove** revokes its authority immediately; it does not terminate the remote process. Unfinished work can retry on another runner after its assignment expires. To stop the local service while retaining registration, run `myco runner uninstall --server <address>` on that machine.
+
+## Use a stored API key
+
+For a machine without a subscription, install the agent and register the runner. In **Settings** → **Models and keys**, store the provider key, then open **Runners** and choose **Use the server’s stored key** for that runner’s agent. Claude Code and OpenCode use the Anthropic slot; Codex uses its own Codex (OpenAI) slot. Cursor uses the Cursor slot with a Cursor API key, as [Cursor’s CLI authentication documentation](https://cursor.com/docs/cli/reference/authentication) specifies. An Anthropic key cannot sign the Cursor CLI in.
+
+You can also request choices during registration:
+
+```bash
+myco runner register <address> --name <runner-name> --sign-in claude-code=stored,opencode=own
+```
+
+The device approval page names these choices. An administrator must approve them, and an unavailable stored key refuses approval. Omitted agents use the machine on a new runner; replacement registration also resets omitted agents to this machine’s sign-in. Request each stored key again so it appears in the new approval.
+
+Each agent defaults to **this machine’s sign-in**, including on existing runners. A subscription runner is never moved onto API billing by adding or changing a stored key. Only an explicit choice for that runner and agent enables the stored key. Changing one agent does not change another.
+
+The stored choice is unavailable when there is no usable key. If a chosen key is later removed, unreadable or of a kind that the agent cannot use, work waits for that credential; it never falls back to the machine’s sign-in. Claude Code accepts an Anthropic API key or subscription token; OpenCode and Cursor accept API keys only. Choose **Use this machine’s sign-in** to return deliberately to the machine’s account. Sign-in status still reports the machine’s own login, even when work uses a stored key.
+
+Legacy workers default to their machine’s sign-in. An explicitly saved **Legacy workers sign in with** choice can retain their supported server-key flow; it never changes a registered runner.
 
 ## Let Myco work
 

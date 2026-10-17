@@ -1,3 +1,4 @@
+import { parseRunnerCredentialChoices, type RunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 import { OWNER_UNCLAIMED, RUNNER_NEEDS_ADMIN, SIGN_IN_WAIT } from '@goondocks/myco-shared/setup-guidance';
 import { hostname as osHostname, platform } from 'node:os';
 import { getMachineId } from '../machine-id.js';
@@ -75,7 +76,7 @@ async function committedWith(serverUrl: string, candidate: string, metadata: { m
   }
 }
 
-export const REGISTER_USAGE = 'usage: myco runner register <host> [--name <name>] [--replace]';
+export const REGISTER_USAGE = 'usage: myco runner register <host> [--name <name>] [--replace] [--sign-in <agent>=own|stored,...]';
 
 /** Register this machine as a runner of the Deployment at `<host>`, and report whether it is registered. */
 export async function registerRunner(args: readonly string[], deps: RunnerCliDeps = {}): Promise<boolean> {
@@ -93,6 +94,15 @@ export async function registerRunner(args: readonly string[], deps: RunnerCliDep
   let name = named ?? defaultRunnerName((deps.hostname ?? osHostname)());
   if (!RUNNER_NAME_PATTERN.test(name)) return fail('a runner name is 1 to 64 letters, digits, dots, underscores or dashes');
 
+  let credentialChoices: RunnerCredentialChoices | undefined;
+  const signIn = flags.get('sign-in');
+  if (signIn !== undefined) {
+    const pairs = signIn.split(',').map(entry => entry.split('='));
+    if (pairs.some(pair => pair.length !== 2) || new Set(pairs.map(pair => pair[0])).size !== pairs.length)
+      return fail('--sign-in needs agent=own or agent=stored, separated by commas');
+    try { credentialChoices = parseRunnerCredentialChoices(JSON.stringify(Object.fromEntries(pairs))); }
+    catch { return fail('--sign-in needs a supported agent and own or stored'); }
+  }
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const replace = flags.get('replace') === 'true';
   const existing = readRunnerRecord(serverUrl, mycoHome);
@@ -129,7 +139,7 @@ export async function registerRunner(args: readonly string[], deps: RunnerCliDep
       const settled = await committedWith(serverUrl, pending.candidate, metadata, deps.fetch);
       if (settled.kind === 'committed') return commitContact(lock, pending.candidate, settled.contact);
       if (settled.kind === 'unknown') return fail(`could not tell whether the earlier registration completed (${settled.detail}); run myco runner register ${serverUrl} --name ${named ?? displayName}${replace ? ' --replace' : ''} again to settle it`);
-      grant = (replace && pending.replace !== true) || (named !== undefined && named !== displayName) ? null : resumableGrant(pending, now());
+      grant = (replace && pending.replace !== true) || (named !== undefined && named !== displayName) || (credentialChoices !== undefined && JSON.stringify(credentialChoices) !== JSON.stringify(pending.credentialChoices ?? {})) ? null : resumableGrant(pending, now());
       if (grant === null) {
         clearPending(lock);
         pending = null;
@@ -137,14 +147,14 @@ export async function registerRunner(args: readonly string[], deps: RunnerCliDep
       }
     }
     if (pending === null) {
-      pending = { kind: 'register', candidate: newRunnerBearer(), name: displayName, ...(replace ? { replace: true } : {}), startedAt: now() };
+      pending = { kind: 'register', candidate: newRunnerBearer(), name: displayName, ...(credentialChoices === undefined ? {} : { credentialChoices }), ...(replace ? { replace: true } : {}), startedAt: now() };
       stagePending(lock, pending, displayName);
     }
     const candidate = pending.candidate;
     const registration = pending;
 
     const retry = `myco runner register ${serverUrl} --name ${displayName}${replace ? ' --replace' : ''}`;
-    const flow = await runDeviceFlow(serverUrl, runnerRegistration(serverUrl, displayName, replace), { name: displayName, ...machine, candidate,
+    const flow = await runDeviceFlow(serverUrl, runnerRegistration(serverUrl, displayName, replace), { name: displayName, ...machine, candidate, ...(registration.credentialChoices === undefined ? {} : { credentialChoices: registration.credentialChoices }),
       ...(replace ? { replace: true, ...(isLiveRunner(held) ? { runnerId: held.runnerId } : {}) } : {}) },
       { fetch: deps.fetch, stdout: out, sleep: deps.sleep, clock: now },
       {

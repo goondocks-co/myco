@@ -198,8 +198,7 @@ export function harnessDetection(options: { detect: () => Promise<DetectedHarnes
 }
 
 /**
- * What a worker offers of what it detected: each logged-in harness a run can be
- * held on, and the rest named with why they are not offered, for the operator.
+ * Report installation and sign-in for agents that can be held to a run.
  */
 export function offerOf(detected: readonly DetectedHarness[]): { offered: OfferedHarness[]; withheld: string[] } {
   const holdable = (found: DetectedHarness): boolean => {

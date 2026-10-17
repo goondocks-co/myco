@@ -24,13 +24,19 @@
       "slot": "anthropic",
       "variables": [
         "ANTHROPIC_API_KEY"
+      ],
+      "accepts": [
+        "api-key"
       ]
     },
     "cursor": {
-      "provider": "anthropic",
-      "slot": "anthropic",
+      "provider": "cursor",
+      "slot": "cursor",
       "variables": [
-        "ANTHROPIC_API_KEY"
+        "CURSOR_API_KEY"
+      ],
+      "accepts": [
+        "api-key"
       ]
     },
     "antigravity": {
@@ -53,6 +59,11 @@
       "alsoUsedFor": null
     },
     {
+      "name": "cursor",
+      "label": "Cursor",
+      "alsoUsedFor": null
+    },
+    {
       "name": "openai",
       "label": "OpenAI",
       "alsoUsedFor": "embeddings, when the embedding provider is OpenAI"
@@ -71,6 +82,7 @@
   "SECRET_SLOT_NAMES": [
     "anthropic",
     "codex",
+    "cursor",
     "openai",
     "openrouter",
     "github"

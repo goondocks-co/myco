@@ -10,8 +10,7 @@ import { previewFleet, fleetTaskReason } from './fleet.js';
  * Project has turned its capability on. Every answer comes from the function the
  * dispatch, the clock or the claim decides by, never a copy.
  *
- * A stored login is never opened here: a server login counts as usable when the
- * agent's slot holds one. The claim alone opens it.
+ * Stored-login availability is a boolean from the secret store; no key reaches this reader.
  */
 import type { ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';

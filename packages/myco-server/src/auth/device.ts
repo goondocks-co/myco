@@ -1,3 +1,4 @@
+import { parseRunnerCredentialChoices, type RunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 import { tryNameMemberFromLogin } from './members-admin.js';
 import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
 import { hasLinkedAdmin } from './identity-link.js';
@@ -5,7 +6,7 @@ import type { PreparedStatement, RelationalStore, ServerEnv } from '../core/adap
 import type { OwnerContext } from '../context.js';
 import { toBase64Url } from '../base64.js';
 import { sha256Hex } from '../hash.js';
-import { badRequest, readJsonObject } from '../api/scope.js';
+import { badRequest, readJsonObject, withRunnerSignInRefusal } from '../api/scope.js';
 import { enrollmentInsert, ENROLLMENT_KEY_BYTES, ENROLLMENT_KEY_PATTERN, ENROLLMENT_IDENTITY_PATTERN, type Fragment } from './enrollment.js';
 import { joinMember } from './join.js';
 import { asMemberRole } from './roles.js';
@@ -35,6 +36,7 @@ interface DeviceRow {
   decided_by: string | null;
   subject: 'member' | 'runner';
   runner_name: string | null;
+  runner_credential_choices: string;
   replacing_runner_id: string | null;
 }
 
@@ -85,7 +87,7 @@ export async function handleDeviceStart(env: ServerEnv, request: Request, now: n
  */
 export async function handleRunnerDeviceStart(env: ServerEnv, request: Request, now: number, source: string): Promise<Response> {
   const body = await readJsonObject(request);
-  if (body === null || Object.keys(body).some(k => !['name', 'machineId', 'machineName', 'os', 'candidate', 'replace', 'runnerId'].includes(k))
+  if (body === null || Object.keys(body).some(k => !['name', 'machineId', 'machineName', 'os', 'candidate', 'replace', 'runnerId', 'credentialChoices'].includes(k))
     || (body.replace !== undefined && typeof body.replace !== 'boolean')
     || (body.runnerId !== undefined && (body.replace !== true || typeof body.runnerId !== 'string' || !ENROLLMENT_IDENTITY_PATTERN.test(body.runnerId)))
     || typeof body.name !== 'string' || !RUNNER_NAME_PATTERN.test(body.name)
@@ -93,6 +95,9 @@ export async function handleRunnerDeviceStart(env: ServerEnv, request: Request, 
     || typeof body.candidate !== 'string' || !RUNNER_TOKEN_PATTERN.test(body.candidate)) {
     return badRequest('name, machineId, machineName, os and candidate are required');
   }
+  let credentialChoices: RunnerCredentialChoices;
+  try { credentialChoices = parseRunnerCredentialChoices(JSON.stringify(body.credentialChoices === undefined ? {} : body.credentialChoices)); }
+  catch { return badRequest('choose this machine or a stored key for each named agent'); }
   const targets = body.replace === true ? (await env.db.prepare(`SELECT id FROM runners WHERE name = ? AND state <> 'removed'
     ${body.runnerId === undefined ? '' : 'AND id = ?'} LIMIT 2`).bind(body.name, ...(body.runnerId === undefined ? [] : [body.runnerId])).all<{ id: string }>()).results : [];
   if (body.replace === true && targets.length !== 1) return deviceError(targets.length === 0 ? 'runner_not_found' : 'runner_name_ambiguous', 409);
@@ -100,24 +105,24 @@ export async function handleRunnerDeviceStart(env: ServerEnv, request: Request, 
   const known = await env.db.prepare(`SELECT 1 AS one FROM device_requests WHERE candidate_hash = ?
     UNION ALL SELECT 1 FROM runner_credentials WHERE token_hash = ? LIMIT 1`).bind(candidateHash, candidateHash).first<{ one: number }>();
   if (known !== null) return badRequest('stage a fresh candidate');
-  return startDeviceRequest(env, request, now, source, { machineId: body.machineId, machineName: body.machineName, os: body.os, runner: { name: body.name, candidateHash, replacingId: targets[0]?.id ?? null } });
+  return startDeviceRequest(env, request, now, source, { machineId: body.machineId, machineName: body.machineName, os: body.os, runner: { name: body.name, candidateHash, credentialChoices, replacingId: targets[0]?.id ?? null } });
 }
 
 /** One device request of either subject, admitted under the shared per-source bounds. */
 async function startDeviceRequest(env: ServerEnv, request: Request, now: number, source: string,
-  device: { machineId: string; machineName: string; os: string; runner: { name: string; candidateHash: string; replacingId: string | null } | null }): Promise<Response> {
+  device: { machineId: string; machineName: string; os: string; runner: { name: string; candidateHash: string; credentialChoices: RunnerCredentialChoices; replacingId: string | null } | null }): Promise<Response> {
   if (!await hasLinkedAdmin(env.db)) return deviceError(AUTH_SETUP_CODES.noOwner, 409);
   const deviceCode = toBase64Url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_KEY_BYTES)));
   const userCode = newUserCode();
   const id = `en_device_${crypto.randomUUID()}`;
   const inserted = await env.db.prepare(`INSERT INTO device_requests
-    (id,device_hash,user_hash,machine_id,machine_name,os,source_ip,created_at,expires_at,interval_seconds,next_poll_at,subject,runner_name,candidate_hash,replacing_runner_id)
-    SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE
+    (id,device_hash,user_hash,machine_id,machine_name,os,source_ip,created_at,expires_at,interval_seconds,next_poll_at,subject,runner_name,candidate_hash,replacing_runner_id,runner_credential_choices)
+    SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE
       NOT EXISTS (SELECT 1 FROM device_requests WHERE source_ip = ? AND decision IS NULL AND expires_at > ? LIMIT 1 OFFSET ?)
       AND NOT EXISTS (SELECT 1 FROM device_requests WHERE source_ip = ? AND created_at > ? LIMIT 1 OFFSET ?)`)
     .bind(id, await sha256Hex(deviceCode), await sha256Hex(userCode.replace('-', '')),
       device.machineId, device.machineName, device.os, source, now, now + DEVICE_TTL_MS, DEVICE_POLL_SECONDS, now,
-      device.runner === null ? 'member' : 'runner', device.runner?.name ?? null, device.runner?.candidateHash ?? null, device.runner?.replacingId ?? null,
+      device.runner === null ? 'member' : 'runner', device.runner?.name ?? null, device.runner?.candidateHash ?? null, device.runner?.replacingId ?? null, JSON.stringify(device.runner?.credentialChoices ?? {}),
       source, now, DEVICE_PENDING_PER_SOURCE - 1, source, now - DEVICE_START_WINDOW_MS, DEVICE_STARTS_PER_MINUTE - 1).run();
   if (inserted.meta.changes !== 1) return deviceError('slow_down', 429, DEVICE_START_WINDOW_MS / 1000);
   const verificationUri = `${new URL(request.url).origin}/device`;
@@ -195,7 +200,7 @@ export async function handleDevicePreview(env: ServerEnv, ctx: OwnerContext): Pr
   if (row.decision !== null) return deviceError('request_finished', 409);
   const shared = { machineName: row.machine_name, os: row.os, ip: row.source_ip, approverIp: ctx.source,
     ageSeconds: Math.max(0, Math.floor((ctx.now - row.created_at) / 1000)), expiresAt: row.expires_at };
-  if (row.subject === 'runner') return Response.json({ ...shared, subject: 'runner', runnerName: row.runner_name, replacingRunnerId: row.replacing_runner_id, scope: 'runner' });
+  if (row.subject === 'runner') return Response.json({ ...shared, subject: 'runner', runnerName: row.runner_name, replacingRunnerId: row.replacing_runner_id, credentialChoices: parseRunnerCredentialChoices(row.runner_credential_choices), scope: 'runner' });
   const claim = await env.db.prepare('SELECT member_id FROM machine_claims WHERE machine_id = ?').bind(row.machine_id).first<{ member_id: string }>();
   return Response.json({ ...shared, subject: 'member', alreadyYours: claim?.member_id === ctx.member.id, scope: 'membership' });
 }
@@ -243,13 +248,13 @@ export async function handleDeviceApprove(env: ServerEnv, ctx: OwnerContext): Pr
  * bound to the candidate digest the request carries, commit with the decision while the approver's standing holds.
  * A member request is never approved here.
  */
-export async function handleRunnerDeviceApprove(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+export const handleRunnerDeviceApprove = withRunnerSignInRefusal(async (env: ServerEnv, ctx: OwnerContext): Promise<Response> => {
   const row = await requestByUserCode(env, ctx.request);
   if (row instanceof Response) return row;
-  const registered = await registerRunner(env.db, ctx.member.id, row.id, await sha256Hex(row.source_ip), ctx.now, row.replacing_runner_id ?? undefined);
+  const registered = await registerRunner(env.db, ctx.member.id, row.id, await sha256Hex(row.source_ip), ctx.now, row.replacing_runner_id ?? undefined, env.wrappingKey);
   if (registered === null) return deviceError('approval_refused', 409);
   return Response.json({ approved: true, runnerId: registered.runnerId });
-}
+});
 
 /** A decision is single-use and attributed; an expired request receives no decision. */
 export async function handleDeviceDeny(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

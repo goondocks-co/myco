@@ -276,15 +276,15 @@ describe('Settings, in five sections', () => {
     const leaf = 'agent.harnesses.claude-code.credential';
     const { sent } = server(base({
       '/api/settings': () => Response.json({ ...leaves(), leaves: leaves().leaves.map((row) => row.leaf === leaf
-        ? { ...row, effectiveValue: 'deployment', source: 'default' } : row) }),
+        ? { ...row, effective: 'deployment', effectiveValue: 'deployment', source: 'default' } : row) }),
       [`/api/settings/${leaf}`]: () => Response.json({ applied: true }),
     }));
     mount('/settings/models');
     const claude = within(await group('Claude Code tiers'));
-    expect(claude.getByLabelText('Sign in with')).toBeTruthy();
-    expect(statusOf(leaf)).toBe('Myco uses Server login (server default).');
-    fireEvent.click(claude.getByLabelText('Sign in with'));
-    fireEvent.click(await screen.findByRole('option', { name: 'Worker login' }));
+    expect(claude.getByLabelText('Legacy workers sign in with')).toBeTruthy();
+    expect(statusOf(leaf)).toBe('Myco uses The server’s stored key (server default).');
+    fireEvent.click(claude.getByLabelText('Legacy workers sign in with'));
+    fireEvent.click(await screen.findByRole('option', { name: 'This machine’s sign-in' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: `/api/settings/${leaf}`, body: { value: 'worker-login' } });
   });
@@ -891,10 +891,10 @@ describe('provider keys', () => {
     mount('/settings/models');
     const keys = await group('Keys');
     const row = (label: string) => within(keys).getByText(label).closest('[data-setting]')!.textContent ?? '';
-    expect(row('Codex (OpenAI)')).toContain('Codex uses this key for Myco’s work in place of the machine’s own sign-in');
+    expect(row('Codex (OpenAI)')).toContain('Codex uses this key only when explicitly chosen for Myco’s work');
     expect(row('OpenAI')).toContain('Used for embeddings, when the embedding provider is OpenAI.');
     expect(row('OpenAI')).not.toContain('Codex');
-    expect(row('Anthropic')).toContain('Claude Code, OpenCode and Cursor use this key');
+    expect(row('Anthropic')).toContain('Claude Code and OpenCode use this key');
     // Nothing reads the GitHub key: with none stored it is not offered.
     expect(within(keys).queryByText('GitHub')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Older keys' })).toBeNull();
@@ -1081,7 +1081,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     mount('/settings/models');
     await group('Codex tiers');
     expect(document.querySelector('[data-model-listing="codex"]')?.textContent)
-      .toBe('Models listed by your machines 1 h ago, each with its own sign-in to Codex. Runs sign in with the server login, which may offer different models.');
+      .toBe('Models listed by your machines 1 h ago, each with its own sign-in to Codex. Legacy workers use the server’s stored key, which may offer different models. Registered runners use their own choices on the Runners page.');
   });
 
   it('keeps a stored model no machine listed, and says so in plain words', async () => {

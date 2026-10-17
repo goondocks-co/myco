@@ -1,3 +1,5 @@
+import type { RunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
+import { harnessLabel } from '../lib/harness';
 import { ACCOUNT_UNLINKED, DEVICE_CODE_REFUSAL, DEVICE_MEMBERSHIP_REFUSAL, OWNER_UNCLAIMED } from '@goondocks/myco-shared/setup-guidance';
 import { useLocation } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
@@ -6,7 +8,7 @@ import { useMe } from '../hooks/use-me';
 import { ApiError, postJson, SignedOutError } from '../lib/api';
 import { pendingDeviceCode } from '../lib/pending-device';
 
-interface Preview { subject: 'member' | 'runner'; runnerName?: string; replacingRunnerId?: string | null; machineName: string; os: string; ip: string; approverIp: string; ageSeconds: number; alreadyYours?: boolean; scope: string; expiresAt: number }
+interface Preview { subject: 'member' | 'runner'; runnerName?: string; replacingRunnerId?: string | null; credentialChoices?: RunnerCredentialChoices; machineName: string; os: string; ip: string; approverIp: string; ageSeconds: number; alreadyYours?: boolean; scope: string; expiresAt: number }
 
 function refusal(error: unknown): string {
   if (error instanceof ApiError) {
@@ -80,8 +82,10 @@ export function Device() {
                     <FactRow term="Your IP address">{preview.approverIp}</FactRow>
                     <FactRow term="Requested">{preview.ageSeconds} seconds ago</FactRow>
                     <FactRow term="Code">{preview.code}</FactRow>
-                    <FactRow term="Access">A runner takes Myco’s queued work and runs it on that machine with its own signed-in agents. It is not a member: it cannot read project memory, capture sessions or administer the server.</FactRow>
+                    <FactRow term="Access">A runner takes Myco’s queued work and runs it on that machine with the agent sign-ins you approve. It is not a member: it cannot read project memory, capture sessions or administer the server.</FactRow>
+                    {Object.entries(preview.credentialChoices ?? {}).map(([agent, choice]) => <FactRow key={agent} term={`${harnessLabel(agent)} signs in with`}>{choice === 'stored' ? 'The server’s stored key' : 'This machine’s sign-in'}</FactRow>)}
                   </FactsPanel>
+                  <p className="t-body text-muted">Agents with no requested choice use this machine’s sign-in. Stored keys are shared with this runner only for agents explicitly approved here.</p>
                   <p className="t-body text-muted">Runner name, machine name and operating system are reported by the requesting machine.</p>
                   {preview.replacingRunnerId && <p className="t-body text-ink">This replacement keeps the runner’s history and ID. Approval ends its current registration and authority, including any assigned work; that work can retry after its assignment expires.</p>}
                   {preview.ip !== preview.approverIp && <p role="alert" className="t-body text-muted">The request IP differs from yours. Check that this is the machine you are registering, especially over SSH.</p>}

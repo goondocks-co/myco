@@ -42,15 +42,11 @@ export function harnessesReading(slot: SecretSlotName): string[] {
   return Object.entries(HARNESS_CREDENTIALS).filter(([, declared]) => declared.slot === slot).map(([id]) => id);
 }
 
-/**
- * What a slot is used for, in one sentence: the harness runs that read it, which
- * run under each worker's own login while it is empty, and anything else that
- * reads it. `label` names a harness by its id.
- */
+/** What a stored slot does when explicitly chosen for a run, plus its other declared uses. */
 export function slotUse(slot: SecretSlot, label: (harness: string) => string): string {
   const harnesses = harnessesReading(slot.name).map(label);
   const runs = harnesses.length === 0 ? null
-    : `${list(harnesses)} ${harnesses.length === 1 ? 'uses' : 'use'} this key for Myco’s work in place of the machine’s own sign-in; while it is empty ${harnesses.length === 1 ? 'it uses' : 'they use'} each machine’s own sign-in`;
+    : `${list(harnesses)} ${harnesses.length === 1 ? 'uses' : 'use'} this key only when explicitly chosen for Myco’s work. A runner defaults to its machine’s sign-in; choosing a stored key holds work if the key is unavailable`;
   const other = slot.alsoUsedFor === null ? null : `${runs === null ? 'Used' : 'Also used'} for ${slot.alsoUsedFor}`;
   const parts = [runs, other].filter((part): part is string => part !== null);
   return parts.length === 0 ? 'Nothing on this server reads it.' : `${parts.join('. ')}.`;

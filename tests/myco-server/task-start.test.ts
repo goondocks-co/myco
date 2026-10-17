@@ -102,7 +102,7 @@ describe('previewing a task started by hand', () => {
     expect(agree.executions[0]!.workers.map((worker) => worker.machineId).sort()).toEqual(['fixture', 'fixture-2']);
   });
 
-  it('counts a stored server login as usable without opening it, so a broken wrapping key never fails the preview', async () => {
+  it('holds an unreadable stored login without exposing a credential or failing the preview', async () => {
     const r = await rig({ 'worker.harness': 'codex', 'agent.reasoning_map.codex.default': 'gpt-6-sol', 'agent.harnesses.codex.credential': 'deployment' });
     await r.heard(['codex']);
     expect(await r.preview('extract-curate')).toMatchObject({ executions: [], heldBy: credentialUnavailable('codex') });
@@ -112,7 +112,7 @@ describe('previewing a task started by hand', () => {
       headers: { cookie: await ownerCookie(r.f.db, Date.now()), 'cf-connecting-ip': '1.2.3.4' },
     }), broken);
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ heldBy: null, executions: [{ harness: 'codex', model: 'gpt-6-sol' }] });
+    expect(await response.json()).toMatchObject({ heldBy: credentialUnavailable('codex'), executions: [], fleetWait: { reason: 'credential_unavailable' } });
   });
 
   it('names what a queued run would wait for while no worker could take it', async () => {

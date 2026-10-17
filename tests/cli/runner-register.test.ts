@@ -70,6 +70,17 @@ describe('myco runner register', () => {
   });
   const callsTo = (route: string): Call[] => calls.filter((c) => c.path === route);
 
+  it('requests explicit per-agent choices at registration and refuses unknown or repeated choices', async () => {
+    const fetchImpl = serverRoutes(call => call.path === '/auth/runner/start' ? Response.json(START) : registered(String(callsTo('/auth/runner/start')[0]!.body.candidate)));
+    expect(await run(['register', SERVER, '--name', NAME, '--sign-in', 'claude-code=stored,codex=own'], deps(fetchImpl))).toBe(true);
+    expect(callsTo('/auth/runner/start')[0]!.body.credentialChoices).toEqual({ 'claude-code': 'stored', codex: 'own' });
+    calls = [];
+    for (const value of ['unknown=stored', 'claude-code=automatic', 'claude-code=own,claude-code=stored']) {
+      expect(await run(['register', SERVER, '--sign-in', value], deps(fetchImpl))).toBe(false);
+      expect(calls).toEqual([]);
+    }
+  });
+
   it('prints the link, the code and the runner name, then publishes the record once approved', async () => {
     let polls = 0;
     const fetchImpl = serverRoutes((call) => {

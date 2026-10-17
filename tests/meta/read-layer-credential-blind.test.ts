@@ -43,9 +43,9 @@ const FORBIDDEN_IMPORT = [/\/auth\//, /cookie/i, /\/pipeline\.js/, /\/routes\.js
 /** The one ingest module a read may name: the wire's kind catalogue, pure data — never the write path beside it. */
 const ADMITTED_IMPORT = [/\/ingest\/kinds\.js$/];
 
-/** The secret store, and the one thing a read may take from it: whether a slot holds a value, read without opening it. */
+/** The secret store exposes only boolean presence and agent-login availability to reads. */
 const SECRET_STORE = join(SRC, 'core', 'secrets.ts');
-const SECRET_PRESENCE = new Set(['secretStored']);
+const SECRET_PRESENCE = new Set(['secretStored', 'harnessCredentialAvailable']);
 /** What opens a stored secret: a read reaching any of these could hand a decrypted login to a dashboard. */
 const OPENS_SECRET = /\b(?:openHarnessCredential|openProviderCredential|deploymentSecretStore)\s*\(|crypto\.subtle\.decrypt\b/;
 
@@ -73,7 +73,7 @@ describe('read layer', () => {
     expect(present).toEqual([...CORE_MODULES].sort());
   });
 
-  it('never reaches an opened secret: the store is read only through its presence check, at any depth', () => {
+  it('never receives an opened secret: the store exposes only boolean checks, at any depth', () => {
     const offenders: string[] = [];
     for (const start of tsFiles(READ_DIR)) {
       const via = new Map<string, string | null>([[start, null]]);

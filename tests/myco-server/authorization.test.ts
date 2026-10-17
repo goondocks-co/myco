@@ -121,6 +121,7 @@ describe('Deployment authorization policy', () => {
       ['GET', '/api/workers/legacy', 'legacy-worker', 'read', 'deployment', ['member'], ['owner', 'admin']],
       ['GET', '/api/setup', 'processed', 'read', 'deployment', ['member'], ['owner', 'admin', 'member']],
       ['GET', '/api/runners', 'runner', 'read', 'deployment', ['member'], ['owner', 'admin', 'member']],
+      ['POST', '/api/runners/{runnerId}/sign-in', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],
       ['POST', '/api/runners/{runnerId}/rename', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],
       ['POST', '/api/runners/{runnerId}/recredential', 'runner', 'admin', 'runner', ['member'], ['owner', 'admin']],
       ['POST', '/api/workers/legacy/{credentialId}/forget', 'legacy-worker', 'admin', 'deployment', ['member'], ['owner', 'admin']],

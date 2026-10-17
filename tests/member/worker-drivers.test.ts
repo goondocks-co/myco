@@ -42,14 +42,14 @@ describe('the harness manifest', () => {
     // that reads as a bad credential rather than as a wrong table.
     expect(Object.keys(HARNESS_CREDENTIALS).sort()).toEqual(HARNESSES.map((h) => h.id).sort());
     expect(Object.fromEntries(Object.entries(HARNESS_CREDENTIALS).map(([id, c]) => [id, c.provider]))).toEqual({
-      'claude-code': 'anthropic', codex: 'openai', opencode: 'anthropic', cursor: 'anthropic', antigravity: 'google',
+      'claude-code': 'anthropic', codex: 'openai', opencode: 'anthropic', cursor: 'cursor', antigravity: 'google',
     });
     for (const [id, declared] of Object.entries(HARNESS_CREDENTIALS)) {
       expect({ id, variables: declared.variables.length > 0 }).toEqual({ id, variables: true });
     }
     // Each harness reads a slot of its own use: Codex never reads the embedding provider's `openai` slot (#1212).
     expect(Object.fromEntries(Object.entries(HARNESS_CREDENTIALS).map(([id, c]) => [id, c.slot]))).toEqual({
-      'claude-code': 'anthropic', codex: 'codex', opencode: 'anthropic', cursor: 'anthropic', antigravity: null,
+      'claude-code': 'anthropic', codex: 'codex', opencode: 'anthropic', cursor: 'cursor', antigravity: null,
     });
   });
 

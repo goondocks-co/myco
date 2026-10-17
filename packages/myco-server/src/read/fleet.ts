@@ -1,17 +1,18 @@
 import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
-import type { FleetQueue, QueueReason } from '@goondocks/myco-shared/runner-fleet';
+import { runnerAgentLoginReady, runnerDisplay, type FleetQueue, type QueueReason } from '@goondocks/myco-shared/runner-fleet';
+import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { credentialUnavailable } from '@goondocks/myco-shared/run-holds';
 import type { ServerEnv } from '../core/adapters.js';
 import { readWorkerFleet, fleetReports, type WorkerFleetRow } from '../core/worker-contacts.js';
 import { claimSettings, previewSelection, type LoginStep } from '../core/worker-selection.js';
-import { secretStored } from '../core/secrets.js';
+import { harnessCredentialAvailable } from '../core/secrets.js';
 import { dispatchLoad } from '../core/runs.js';
 import { heldBy, readDispatchLimits, type DispatchLimits } from '../core/limits.js';
 
-/** Selection uses the claim's own profile and login rules; a runner never reads a Deployment key. */
+/** Selection uses the claim's profile and login rules and receives only stored-login availability. */
 export function previewFleet(env: ServerEnv, task: string, fleet: readonly WorkerFleetRow[], settings: ReadonlyMap<string, string>, includeBusy = false) {
-  return previewSelection(env, task, fleetReports(fleet, includeBusy), settings, report => {
-    const login: LoginStep<true> = async (harness, plan) => report.runner || plan.kind === 'worker-login' || await secretStored(env.db, plan.slot)
+  return previewSelection(env, task, fleetReports(fleet, includeBusy), settings, () => {
+    const login: LoginStep<true> = async (harness, plan) => plan.kind === 'worker-login' || await harnessCredentialAvailable(env.db, env.wrappingKey, harness)
       ? { login: true } : { reason: credentialUnavailable(harness) };
     return login;
   });
@@ -25,6 +26,7 @@ export async function fleetTaskReason(env: ServerEnv, task: string, fleet: reado
   if (ceiling !== null) reason = 'dispatch_ceiling';
   else if ((await previewFleet(env, task, fleet, settings)).executions.length > 0) reason = 'ready';
   else if ((await previewFleet(env, task, fleet, settings, true)).executions.length > 0) reason = 'capacity';
+  else if ((await previewFleet(env, task, fleet, settings)).heldBy?.startsWith('credential_unavailable:')) reason = 'credential_unavailable';
   else {
     const recent = fleet.filter(row => row.recent && (row.runner === null ? row.eligible : row.runner.state !== 'removed'));
     const potential = async (candidate: WorkerFleetRow) => (await previewFleet(env, task, [{ ...candidate, eligible: true,
@@ -72,10 +74,19 @@ export async function queueProjection(env: ServerEnv, fleet: readonly WorkerFlee
 }
 
 /** One fleet read supplies every registered runner, the compatibility inventory and queue readiness. */
-export async function readFleetProjection(env: ServerEnv, now: number) {
+export async function readFleetProjection(env: ServerEnv, now: number, includeStoredCredentials = false) {
   const fleet = await readWorkerFleet(env.db, now);
+  const storedCredentials = Object.fromEntries(await Promise.all(Object.keys(HARNESS_CREDENTIALS)
+    .map(async agent => [agent, await harnessCredentialAvailable(env.db, env.wrappingKey, agent)] as const)));
+  for (const row of fleet) {
+    const runner = row.runnerDetails;
+    if (runner === undefined || runner.readiness.state !== 'ready' || runner.offers === null
+      || runner.offers.some(offer => runnerAgentLoginReady(offer, runner.credentialChoices, storedCredentials))) continue;
+    runner.readiness = { state: 'unknown', code: 'credential_unavailable', reason: 'The chosen stored key is unavailable for this agent. Add a usable key in Settings or change its sign-in on Runners.', observedAt: now };
+    runner.display = runnerDisplay(runner);
+  }
   const queue = await queueProjection(env, fleet, now);
-  return { observedAt: now, fleet, queue,
+  return { observedAt: now, fleet, queue, ...(includeStoredCredentials ? { storedCredentials } : {}),
     runners: fleet.flatMap(row => row.runnerDetails === undefined ? [] : [row.runnerDetails]),
     legacyWorkers: fleet.filter(row => row.runner === null) };
 }

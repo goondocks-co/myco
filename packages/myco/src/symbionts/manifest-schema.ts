@@ -842,7 +842,7 @@ const RunnerManifestSchema = z.object({
   ]),
   credential: z.object({
     /** The provider the harness authenticates against: a harness is not a provider. */
-    provider: z.enum(['anthropic', 'openai', 'google']),
+    provider: z.enum(['anthropic', 'openai', 'google', 'cursor']),
     /**
      * The Deployment secret slot its runs read: a shared provider slot (`provider-slots.ts`), `own` for a slot of its
      * own named after the harness (labelled `ownSlotLabel`), or null where the Deployment holds none for it.

@@ -17,7 +17,7 @@ const RUNNER: RunnerRow = { id: 'rn_mini', name: 'homelab-mini', state: 'enabled
   lastResult: { fromVersion: '2.0.0-alpha.1', toVersion: '2.0.0-alpha.2', result: 'updated', at: NOW }, blockedVersion: null, updateState: null, updateRequest: null, busy: null };
 
 function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER,
-  options: { rows?: RunnerRow[]; legacy?: WorkerRow[]; fail?: boolean; route?: string; queue?: FleetQueue; previewName?: string; previewRunnerId?: string } = {}) {
+  options: { rows?: RunnerRow[]; legacy?: WorkerRow[]; fail?: boolean; route?: string; queue?: FleetQueue; previewName?: string; previewRunnerId?: string; storedCredentials?: Record<string, boolean> } = {}) {
   let runner = initial;
   const writes: string[] = [];
   let legacy = options.legacy ?? [];
@@ -29,7 +29,7 @@ function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER,
     if (path === '/api/members') return Response.json({ members: [] });
     if (path === '/api/projects') return Response.json({ projects: [] });
     if (path === '/api/status') return Response.json({ schema: { expected: 80, found: 80, matches: true }, capabilities: [], projects: [], workers: { available: true, fleet: legacy, runsQueued: 0, workersBusy: 0 } });
-    if (path === '/api/runners') return options.fail ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ observedAt: NOW, runners: options.rows ?? [runner], legacyWorkers: legacy, queue: options.queue ?? { observedAt: NOW, count: 0, oldestAt: null, reasons: [], nativeNeedsRunner: false } });
+    if (path === '/api/runners') return options.fail ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ observedAt: NOW, storedCredentials: options.storedCredentials ?? {}, runners: options.rows ?? [runner], legacyWorkers: legacy, queue: options.queue ?? { observedAt: NOW, count: 0, oldestAt: null, reasons: [], nativeNeedsRunner: false } });
     if (path === '/api/device/preview') return Response.json({ subject: 'runner', runnerName: options.previewName ?? 'homelab-mini', replacingRunnerId: options.previewRunnerId ?? 'rn_mini', machineName: 'Mini in the office', os: 'macOS', ip: '192.0.2.1', approverIp: '192.0.2.2', ageSeconds: 12, scope: 'runner', expiresAt: NOW + 60000 });
     if (path === '/api/runners/rn_mini/update') {
       writes.push(`${init?.method} ${path}`);
@@ -37,6 +37,12 @@ function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER,
       return Response.json({ requested: true, updateRequest: runner.updateRequest });
     }
     if (path.endsWith('/forget')) { writes.push(`${init?.method} ${path}`); legacy = []; return Response.json({ forgotten: true }); }
+    if (path === '/api/runners/rn_mini/sign-in') {
+      const body = JSON.parse(String(init?.body));
+      writes.push(`${init?.method} ${path} ${JSON.stringify(body)}`);
+      runner = { ...runner, credentialChoices: { ...runner.credentialChoices, [body.agent]: body.choice } };
+      return Response.json({ credentialChoices: runner.credentialChoices });
+    }
     if (path.startsWith('/api/runners/rn_mini/')) { writes.push(`${init?.method} ${path}`); return Response.json({ changed: true }); }
     return new Response(null, { status: 404 });
   }) as typeof fetch;
@@ -228,7 +234,7 @@ describe('Runners page', () => {
   });
 
   it('uses the shared distinct queue reasons and preserves the oldest waiting age', async () => {
-    for (const reason of ['capacity', 'no_runner', 'model_profile', 'settling', 'dispatch_ceiling', 'unavailable'] as const) {
+    for (const reason of ['capacity', 'no_runner', 'model_profile', 'credential_unavailable', 'settling', 'dispatch_ceiling', 'unavailable'] as const) {
       mount('member', RUNNER, { queue: { observedAt: NOW, count: 3, oldestAt: NOW - 18 * 60000, reasons: [{ reason, count: 3 }], nativeNeedsRunner: true } });
       await screen.findByText(QUEUE_REASON_WORDS[reason]);
       expect(screen.getByText(/3 runs waiting; oldest/).textContent).toContain('18m ago');
@@ -244,4 +250,31 @@ describe('Runners page', () => {
     expect(screen.getByText(/1 run waiting; oldest/).closest('[data-queue-warning]')?.getAttribute('data-tone')).toBe('urgent');
   });
 
+});
+
+describe('runner sign-in controls', () => {
+  it('shows the default machine choice and disables stored sign-in without a usable key', async () => {
+    mount('admin');
+    expect(await screen.findByText('Claude Code · Signs in with: this machine’s sign-in')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Use the server’s stored key' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('No stored key this agent can use.')).toBeTruthy();
+  });
+
+  it('saves the per-agent choice and renders the chosen stored key without displaying key material', async () => {
+    const writes = mount('admin', RUNNER, { storedCredentials: { 'claude-code': true } });
+    const stored = await screen.findByRole('button', { name: 'Use the server’s stored key' });
+    expect((stored as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(stored);
+    await screen.findByText('Claude Code · Signs in with: the server’s stored key');
+    expect(writes).toEqual(['POST /api/runners/rn_mini/sign-in {"agent":"claude-code","choice":"stored"}']);
+    fireEvent.click(screen.getByRole('button', { name: 'Use this machine’s sign-in' }));
+    await screen.findByText('Claude Code · Signs in with: this machine’s sign-in');
+  });
+
+  it('shows a member the choice with no editing controls', async () => {
+    mount('member', { ...RUNNER, credentialChoices: { 'claude-code': 'stored' } });
+    await screen.findByText('Claude Code · Signs in with: the server’s stored key');
+    expect(screen.queryByRole('button', { name: 'Use this machine’s sign-in' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Use the server’s stored key' })).toBeNull();
+  });
 });

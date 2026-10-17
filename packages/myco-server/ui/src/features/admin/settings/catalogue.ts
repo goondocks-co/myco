@@ -56,7 +56,7 @@ export interface LeafGroup {
   harness?: string;
 }
 
-const SIGN_IN_OPTIONS = { deployment: 'Server login', 'worker-login': 'Worker login' } as const;
+const SIGN_IN_OPTIONS = { deployment: 'The server’s stored key', 'worker-login': 'This machine’s sign-in' } as const;
 
 const tierWords = (tier: string): string => `${tier.charAt(0).toUpperCase()}${tier.slice(1)} tier`;
 
@@ -67,9 +67,9 @@ const profileFields = (harness: string): LeafField[] => [
     { leaf: `agent.effort_map.${harness}.${tier}`, label: `${tierWords(tier)} effort`, kind: 'select' as const,
       options: PROFILE_HARNESSES[harness]!.allowedEfforts, resettable: true },
   ]),
-  { leaf: `agent.harnesses.${harness}.credential`, label: 'Sign in with', kind: 'select',
+  { leaf: `agent.harnesses.${harness}.credential`, label: 'Legacy workers sign in with', kind: 'select',
     options: Object.keys(SIGN_IN_OPTIONS), optionLabels: SIGN_IN_OPTIONS, resettable: true,
-    note: 'Choose whose login the worker uses for Myco’s tasks.' },
+    note: 'Applies only to legacy workers. Each registered runner’s sign-in is chosen on the Runners page and takes precedence.' },
 ];
 
 export const LEAF_GROUPS: readonly LeafGroup[] = [

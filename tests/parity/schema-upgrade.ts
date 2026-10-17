@@ -163,7 +163,7 @@ export async function firstObservableOmission(statements: readonly string[], att
   throw new Error('no statement of the latest step changes the seeded fixture; seed data it touches');
 }
 
-export function seedReferencedTables(db: Database, statements: readonly string[]): string[] {
+export function seedReferencedTables(db: Database, statements: readonly string[], includeDescendants = true): string[] {
   const seedTable = (table: string, visiting: Set<string>): void => {
     if (table.includes('\0')) throw new Error(`unsupported D1 upgrade fixture table ${table}`);
     if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) return;
@@ -184,7 +184,7 @@ export function seedReferencedTables(db: Database, statements: readonly string[]
     for (const column of columns.filter((item) => (item.notnull || item.pk) && item.dflt_value === null)) {
       if (values.has(column.name) || (column.pk && /INT/i.test(column.type))) continue;
       const name = column.name;
-      const value = name === 'project_id' ? PROJECT_ID : name === 'agent_id' ? 'upgrade_agent'
+      const value = table === 'runners' && name === 'id' ? 'rn_upgrade' : name === 'project_id' ? PROJECT_ID : name === 'agent_id' ? 'upgrade_agent'
         : name === 'session_id' ? 'upgrade_session' : name === 'run_id' ? 'upgrade_run'
           : name === 'status' ? 'completed' : name === 'role' ? 'member'
             : name === 'state' ? 'draft' : name === 'confidence' ? 'high'
@@ -202,7 +202,8 @@ export function seedReferencedTables(db: Database, statements: readonly string[]
   for (const table of touched) seedTable(table, new Set());
   const candidateChildren = db.query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations'`).all() as Array<{ name: string }>;
   const visited = new Set<string>();
-  const queue = [...touched];
+  const queue = includeDescendants ? [...touched] : [];
+  if (!includeDescendants) return touched;
   while (queue.length > 0) {
     const parent = queue.shift()!;
     if (visited.has(parent)) continue;
@@ -227,7 +228,7 @@ export function seedPreviousSchema(databaseFile: string, statements: readonly st
       INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('upgrade_agent', 'upgrade', 'built-in', 1, 1);
       INSERT INTO agent_runs (project_id, id, agent_id, status, started_at) VALUES ('proj_parity', 'upgrade_run', 'upgrade_agent', 'completed', 1);
       INSERT INTO agent_run_events (project_id, run_id, event_type, recorded_at) VALUES ('proj_parity', 'upgrade_run', 'upgrade_child', 1);`);
-    return [...new Set(['projects', 'sessions', 'events', 'agents', 'agent_runs', 'agent_run_events', ...seedReferencedTables(db, statements)])];
+    return [...new Set(['projects', 'sessions', 'events', 'agents', 'agent_runs', 'agent_run_events', ...seedReferencedTables(db, statements, !statements.every(statement => /^\s*CREATE\b|^\s*ALTER\s+TABLE\s+\w+\s+ADD\s+COLUMN\b|^\s*INSERT OR REPLACE INTO schema_meta\b/i.test(statement)))])];
   } finally { db.close(); }
 }
 

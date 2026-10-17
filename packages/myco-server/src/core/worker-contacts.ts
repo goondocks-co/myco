@@ -1,3 +1,4 @@
+import { runnerAgentLoginReady, parseRunnerCredentialChoices, type RunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 /**
  * What each worker last reported about itself, and what the Deployment makes of it.
  *
@@ -29,6 +30,7 @@ import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile
 /** A harness a worker reports, as it reports it. `authenticated` is the worker's own probe, not a provider check. */
 export interface ReportedHarness {
   id: string;
+  installed?: boolean;
   authenticated: boolean;
   profile?: ProfileCapability;
 }
@@ -96,7 +98,7 @@ export interface WorkerFleetRow extends WorkerContact {
 
 function boundedOffers(offers: readonly ReportedHarness[]): ReportedHarness[] {
   return offers.slice(0, MAX_OFFERS).map((offer) => ({
-    id: offer.id.slice(0, MAX_ID), authenticated: offer.authenticated === true,
+    id: offer.id.slice(0, MAX_ID), ...(offer.installed === undefined ? {} : { installed: offer.installed === true }), authenticated: offer.authenticated === true,
     ...(offer.profile === undefined ? {} : { profile: offer.profile }),
   }));
 }
@@ -119,7 +121,7 @@ export function parseOffers(raw: unknown): ReportedHarness[] | null {
       const validProfile = profile !== null && typeof profile === 'object'
         && (profile.model === 'flag' || profile.model === 'config' || profile.model === 'none')
         && Array.isArray(profile.efforts) && profile.efforts.every((effort) => typeof effort === 'string');
-      offers.push({ id: offer.id, authenticated: offer.authenticated === true, ...(validProfile ? { profile } : {}) });
+      offers.push({ id: offer.id, ...(offer.installed === undefined ? {} : { installed: offer.installed === true }), authenticated: offer.authenticated === true, ...(validProfile ? { profile } : {}) });
     }
     return offers;
   } catch {
@@ -148,7 +150,7 @@ function unchanged(stored: WorkerContact | null, offers: readonly ReportedHarnes
 
 function sameOffers(left: readonly ReportedHarness[], right: readonly ReportedHarness[]): boolean {
   return left.length === right.length && left.every((offer, i) => offer.id === right[i]?.id
-    && offer.authenticated === right[i]?.authenticated && JSON.stringify(offer.profile) === JSON.stringify(right[i]?.profile));
+    && offer.installed === right[i]?.installed && offer.authenticated === right[i]?.authenticated && JSON.stringify(offer.profile) === JSON.stringify(right[i]?.profile));
 }
 
 /** One worker's stored observation, or null when it has never been recorded. */
@@ -375,9 +377,10 @@ function runnerReadiness(row: Record<string, unknown>, offers: ReportedHarness[]
     return { state: explicit, code: explicit, reason: String(row.readiness_reason), observedAt: Number(row.observed_at) };
   if (offers === null) return { state: 'unknown', code: 'unknown', reason: 'Agent sign-in and execution profiles are unavailable.',
     observedAt: row.updated_at == null ? null : Number(row.updated_at) };
-  if (!offers.some(offer => offer.authenticated)) return { state: 'unknown', code: 'not_signed_in', reason: 'Reported no signed-in eligible agent.',
+  const choices = parseRunnerCredentialChoices(String(row.credential_choices ?? '{}'));
+  if (!offers.some(offer => runnerAgentLoginReady(offer, choices))) return { state: 'unknown', code: 'not_signed_in', reason: 'Reported no signed-in eligible agent.',
     observedAt: row.updated_at == null ? null : Number(row.updated_at) };
-  return { state: 'ready', code: 'ready', reason: 'Reports a signed-in agent; provider access is untested.',
+  return { state: 'ready', code: 'ready', reason: 'Reports an agent with a chosen sign-in; provider access is untested.',
     observedAt: row.updated_at == null ? null : Number(row.updated_at) };
 }
 
@@ -399,7 +402,7 @@ async function readRunnerFleet(db: RelationalStore, now: number): Promise<Worker
     ORDER BY h.completed_at DESC, h.id DESC LIMIT 1)`;
   const { results } = await db.prepare(
     `SELECT r.id, r.name, r.state, r.revision, r.created_at, r.created_by_member, r.removed_at, r.labels,
-            r.last_contact_at, r.replacement_pending,
+            r.last_contact_at, r.replacement_pending, r.credential_choices,
             w.machine_id, w.os, COALESCE(u.current_version, w.version) AS version,
             w.offers, w.capabilities, w.last_reason, w.last_seen_at, w.updated_at,
             o.arch, o.availability, o.reason AS readiness_reason, o.observed_at,
@@ -446,6 +449,7 @@ async function readRunnerFleet(db: RelationalStore, now: number): Promise<Worker
       lastSeenAt: displaySeenAt || null, connected, busy, display: 'Never contacted',
       awaitingReplacement: Number(row.replacement_pending) === 1, updateMetadataUnavailable,
       lastAttempted, lastCompleted: terminal(row.last_completed), lastFailed: terminal(row.last_failed),
+      credentialChoices: parseRunnerCredentialChoices(String(row.credential_choices)),
       offers, offersObservedAt: offers === null || row.updated_at == null ? null : Number(row.updated_at),
       capabilities, labels: parseCapabilities(row.labels), preference: null,
       os: row.os == null ? null : String(row.os), arch: row.arch == null ? null : String(row.arch),
@@ -496,8 +500,8 @@ export function invalidateRunnerContacts(db: RelationalStore, runnerId: string):
 /** Fresh reports share control, capacity and readiness admission across every preview. */
 export function fleetReports(fleet: readonly WorkerFleetRow[], includeBusy = false) {
   return fleet.filter(row => row.recent && row.eligible && (includeBusy || row.busy === null)
-    && (row.runnerDetails === undefined || row.runnerDetails.readiness.state === 'ready'))
-    .map(row => ({ credentialId: row.credentialId, machineId: row.machineId, offers: row.offers ?? [], capabilities: row.capabilities ?? [], runner: row.runner !== null }));
+    && (row.runnerDetails === undefined || (row.runnerDetails.readiness.state === 'ready' || row.runnerDetails.readiness.code === 'credential_unavailable')))
+    .map(row => ({ credentialId: row.credentialId, machineId: row.machineId, offers: row.offers ?? [], capabilities: row.capabilities ?? [], runner: row.runner !== null, credentialChoices: row.runnerDetails?.credentialChoices }));
 }
 
 /** A machine's latest explicit offers, contact and run. */
@@ -595,7 +599,7 @@ export async function recentWorkerCapabilities(db: RelationalStore, now: number)
 }
 
 /** Recent offers and repository capabilities describe a task's fleet profile gap. */
-export async function recentWorkerReports(db: RelationalStore, now: number): Promise<Array<{ credentialId: string; machineId: string | null; offers: ReportedHarness[]; capabilities: string[]; runner: boolean }>> {
+export async function recentWorkerReports(db: RelationalStore, now: number): Promise<Array<{ credentialId: string; machineId: string | null; offers: ReportedHarness[]; capabilities: string[]; runner: boolean; credentialChoices?: RunnerCredentialChoices }>> {
   const since = now - CONTACT_RECENT_MS;
   const [{ results: members }, { results: runners }] = await Promise.all([
     db.prepare(`SELECT w.credential_id, COALESCE(w.machine_id, c.machine_id) AS machine_id, w.offers, w.capabilities
@@ -604,7 +608,7 @@ export async function recentWorkerReports(db: RelationalStore, now: number): Pro
       JOIN members m ON m.id = c.member_id
       WHERE w.last_seen_at >= ? AND c.revoked_at IS NULL AND c.expires_at > ? AND m.revoked_at IS NULL AND m.role = 'admin'`)
       .bind(since, now).all<Record<string, unknown>>(),
-    db.prepare(`SELECT w.runner_id, w.machine_id, w.offers, w.capabilities, w.updated_at,
+    db.prepare(`SELECT w.runner_id, w.machine_id, w.offers, w.capabilities, w.updated_at, r.credential_choices,
         o.availability, o.reason AS readiness_reason, o.observed_at, u.last_result
       FROM runner_contacts w INDEXED BY idx_runner_contacts_seen
       JOIN runners r ON r.id = w.runner_id
@@ -623,7 +627,7 @@ export async function recentWorkerReports(db: RelationalStore, now: number): Pro
     const { metadata } = storedUpdateMetadata(row.last_result);
     if (runnerReadiness(row, offers, true, metadata.updateState, now).state !== 'ready') return [];
     return [{ credentialId: String(row.runner_id), machineId: row.machine_id == null ? null : String(row.machine_id),
-      offers: offers ?? [], capabilities: parseCapabilities(row.capabilities) ?? [], runner: true }];
+      offers: offers ?? [], capabilities: parseCapabilities(row.capabilities) ?? [], runner: true, credentialChoices: parseRunnerCredentialChoices(String(row.credential_choices)) }];
   });
   return [...memberReports, ...runnerReports];
 }

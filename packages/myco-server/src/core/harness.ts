@@ -1,3 +1,4 @@
+import { runnerCredentialChoices } from '../auth/runners.js';
 import { emitLateHarnessError } from './run-postconditions.js';
 import type { HarnessStop } from '@goondocks/myco-shared/run-text';
 import type { MemberWriteActor } from '../auth/member-write-store.js';
@@ -837,9 +838,6 @@ const claimLogin = (env: ServerEnv): LoginStep<Record<string, string>> => async 
   return Object.keys(credentialEnv).length === 0 ? { reason: credentialUnavailable(harness) } : { login: credentialEnv };
 };
 
-/** A runner's run is always handed its harness's own sign-in on that runner: no stored login is opened for it. */
-const RUNNER_LOGIN: LoginStep<Record<string, string>> = async () => ({ login: {} });
-
 /** The executor a telemetry event names: a legacy worker's member credential, or a runner. */
 const workerTelemetry = (worker: WorkerPrincipal): { tokenId: string } | { runnerId: string } =>
   worker.kind === 'member' ? { tokenId: worker.tokenId } : { runnerId: worker.runnerId };
@@ -877,7 +875,8 @@ type SelectedExecution = { harness: string; profile: ExecutionProfile; credentia
 
 /** Resolve a task against one worker's offers in preference order, opening the chosen agent's login. */
 export async function selectWorkerExecution(env: ServerEnv, task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>, worker?: WorkerPrincipal): Promise<{ selected: SelectedExecution | null; reason: string | null }> {
-  const { selected, reason } = await selectExecution(env, task, offers, settings, worker?.kind === 'runner' ? RUNNER_LOGIN : claimLogin(env));
+  const choices = worker?.kind === 'runner' ? await runnerCredentialChoices(env.db, worker.runnerId) : undefined;
+  const { selected, reason } = await selectExecution(env, task, offers, settings, claimLogin(env), choices);
   return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, credentialEnv: selected.login }, reason };
 }
 
@@ -885,8 +884,8 @@ export async function selectWorkerExecution(env: ServerEnv, task: string, offers
 async function recordProfileHolds(env: ServerEnv, worker: { principal: WorkerPrincipal; harnesses: readonly OfferedHarness[]; capabilities?: readonly string[]; now: number }, settings: ReadonlyMap<string, string>): Promise<void> {
   const reports = (await recentWorkerReports(env.db, worker.now))
     .filter((report) => report.credentialId !== workerKey(worker.principal))
-    .map((report) => ({ offers: report.offers, capabilities: report.capabilities, runner: report.runner }));
-  reports.push({ offers: [...worker.harnesses], capabilities: [...(worker.capabilities ?? [])], runner: worker.principal.kind === 'runner' });
+    .map((report) => ({ offers: report.offers, capabilities: report.capabilities, runner: report.runner, credentialChoices: report.credentialChoices }));
+  reports.push({ offers: [...worker.harnesses], capabilities: [...(worker.capabilities ?? [])], runner: worker.principal.kind === 'runner', credentialChoices: worker.principal.kind === 'runner' ? await runnerCredentialChoices(env.db, worker.principal.runnerId) : undefined });
   for (const task of OUTCOME_TASKS) {
     const tierRefusal = taskTierRefusal(task, settings);
     if (tierRefusal !== null) {
@@ -900,7 +899,7 @@ async function recordProfileHolds(env: ServerEnv, worker: { principal: WorkerPri
 
 /** What `reports` would run `task` under at a claim now, or the holder a queued run of it waits under (`fleetSelection`). */
 export async function fleetExecution(env: ServerEnv, task: string, reports: readonly FleetReport[], settings: ReadonlyMap<string, string>): Promise<{ selected: SelectedExecution | null; holder: string }> {
-  const { selected, holder } = await fleetSelection(env, task, reports, settings, (report) => (report.runner === true ? RUNNER_LOGIN : claimLogin(env)));
+  const { selected, holder } = await fleetSelection(env, task, reports, settings, () => claimLogin(env));
   return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, credentialEnv: selected.login }, holder };
 }
 

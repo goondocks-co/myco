@@ -1,3 +1,5 @@
+import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
+import { setRunnerCredentialChoice } from '../auth/runners.js';
 import { isAdmin } from '../auth/roles.js';
 import { machinesOf } from '../read/machines.js';
 /**
@@ -17,7 +19,7 @@ import type { RunnerAvailability } from '@goondocks/myco-shared/runner-fleet';
 import { forgetLegacyWorker } from '../core/legacy-workers.js';
 import { parseRunnerUpdateReport, readRunnerUpdateRequest, requestRunnerUpdate, runnerUpdateReportStatements } from '../core/runner-updates.js';
 import { emit } from '../telemetry.js';
-import { ok, parseJsonObject, readJsonObject } from './scope.js';
+import { ok, parseJsonObject, readJsonObject, withRunnerSignInRefusal } from './scope.js';
 
 const REPORTED_ID = /^[A-Za-z0-9._-]{1,64}$/;
 const REPORTED_TEXT_MAX = 128;
@@ -71,7 +73,7 @@ export async function handleRunnerRotate(env: ServerEnv, ctx: RunnerContext): Pr
 
 /** Every runner with its state, last contact and live lease, for any member: read-only. */
 export async function handleListRunners(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const projection = await readFleetProjection(env, ctx.now);
+  const projection = await readFleetProjection(env, ctx.now, isAdmin(ctx.member.role));
   if (isAdmin(ctx.member.role)) return ok(projection);
   const own = await machinesOf(env.db, ctx.member.id);
   return ok({ ...projection, fleet: projection.fleet.filter(row => row.runner !== null || (row.machineId !== null && own.has(row.machineId))),
@@ -111,9 +113,18 @@ export async function handleRenameRunner(env: ServerEnv, ctx: OwnerContext): Pro
 }
 
 /** A replacement is approved on the existing identity through the same one-time device decision as registration. */
-export async function handleRecredentialRunner(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+export const handleRecredentialRunner = withRunnerSignInRefusal(async (env: ServerEnv, ctx: OwnerContext): Promise<Response> => {
   const row = await requestByUserCode(env, ctx.request);
   if (row instanceof Response) return row;
-  const result = await registerRunner(env.db, ctx.member.id, row.id, await sha256Hex(row.source_ip), ctx.now, ctx.params.runnerId ?? '');
+  const result = await registerRunner(env.db, ctx.member.id, row.id, await sha256Hex(row.source_ip), ctx.now, ctx.params.runnerId ?? '', env.wrappingKey);
   return result === null ? Response.json({ error: 'approval_refused' }, { status: 409 }) : ok({ approved: true, ...result });
-}
+});
+
+/** An administrator chooses the sign-in used for one runner's next runs of an agent. */
+export const handleRunnerCredentialChoice = withRunnerSignInRefusal(async (env: ServerEnv, ctx: OwnerContext): Promise<Response> => {
+  const body = await readJsonObject(ctx.request);
+  if (typeof body?.agent !== 'string' || !Object.hasOwn(HARNESS_CREDENTIALS, body.agent)
+    || (body.choice !== 'own' && body.choice !== 'stored')) return Response.json({ error: 'invalid_sign_in' }, { status: 400 });
+  const choices = await setRunnerCredentialChoice(env.db, env.wrappingKey, ctx.member.id, ctx.params.runnerId ?? '', body.agent, body.choice, ctx.now);
+  return choices === null ? Response.json({ error: 'not_found' }, { status: 404 }) : ok({ credentialChoices: choices });
+});

@@ -109,7 +109,11 @@ describe('the harness facts the manifests\' runner blocks hold', () => {
     expect(credentialEnvFor('claude-code', 'sk-ant-api-1')).toEqual({ ANTHROPIC_API_KEY: 'sk-ant-api-1' });
     expect(credentialEnvFor('codex', 'sk-1')).toEqual({ OPENAI_API_KEY: 'sk-1' });
     expect(credentialEnvFor('antigravity', 'k')).toEqual({});
-    expect(harnessesReading('anthropic')).toEqual(['claude-code', 'opencode', 'cursor']);
+    expect(credentialEnvFor('opencode', 'sk-ant-oat-fixture')).toEqual({});
+    expect(credentialEnvFor('cursor', 'sk-ant-oat-fixture')).toEqual({});
+    expect(credentialEnvFor('cursor', 'cursor-fixture-key')).toEqual({ CURSOR_API_KEY: 'cursor-fixture-key' });
+    expect(HARNESS_CREDENTIALS.cursor?.slot).toBe('cursor');
+    expect(harnessesReading('anthropic')).toEqual(['claude-code', 'opencode']);
   });
 
   it('name only a slot the Deployment stores, so a misspelt slot fails the generator rather than a run', () => {

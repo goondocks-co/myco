@@ -95,6 +95,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0085_v85.sql': 'c534f3ed2471b58db2cfd6cb60e4d624f2e2db052a9d424341f923d64a67e403',
   '0086_v86.sql': 'adb34a77e0dbb775b05406a6472572d0ce6e3559cd5a0dbf7fab26adf6a6919b',
   '0087_v87.sql': 'b6d34853a1bfb8fd1ee45da16f1405cc806b0549f1753443956e27964d892cf6',
+  '0088_v88.sql': '7b40d6a4ffee4576a0000e12255891bc03bb06bb324ac5fcedb606ab042c3a08',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -750,5 +751,24 @@ describe('versioned schema steps', () => {
       'prompt_batches', 'prompt_context_answers', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'run_reads', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'session_read_facts', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags', 'tool_calls', 'transcript_parser_state_chunks', 'transcript_segments', 'transcripts',
     ]);
+  });
+});
+
+describe('runner sign-in schema upgrade', () => {
+  it('defaults a populated v87 runner to its own sign-in on native and emitted D1 migrations', async () => {
+    for (const target of ['native', 'd1'] as const) {
+      const db = new Database(':memory:');
+      try {
+        const previous = SCHEMA_STEPS.filter(step => step.version <= 87);
+        if (target === 'native') await applySchemaSteps(sqliteD1(db), previous);
+        else for (const file of renderMigrationFiles().filter(file => file.name < '0088')) db.exec(file.sql);
+        db.run("INSERT INTO runners(id,name,created_at) VALUES ('rn_existing','existing',1)");
+        if (target === 'native') await applySchemaSteps(sqliteD1(db), SCHEMA_STEPS.filter(step => step.version > 87));
+        else db.exec(readFileSync(join(MIGRATIONS, '0088_v88.sql'), 'utf8'));
+        expect(db.query("SELECT name,credential_choices FROM runners WHERE id = 'rn_existing'").get())
+          .toEqual({ name: 'existing', credential_choices: '{}' });
+        expect(version(db)).toBe('88');
+      } finally { db.close(); }
+    }
   });
 });

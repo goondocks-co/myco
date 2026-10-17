@@ -17,6 +17,8 @@ export const latestD1Upgrade: ParityScenario = {
   async run(target) {
     expect(await target.sql("SELECT value FROM schema_meta WHERE key = 'version'"))
       .toEqual([{ value: String(SCHEMA_STEPS.at(-1)?.version) }]);
+    expect(await target.sql("SELECT credential_choices FROM runners WHERE id = 'rn_upgrade'"))
+      .toEqual([{ credential_choices: '{}' }]);
     expect(await target.sql('PRAGMA foreign_key_check')).toEqual([]);
     expect(await target.sql('PRAGMA quick_check')).toEqual([{ quick_check: 'ok' }]);
   },
