@@ -301,7 +301,8 @@ describe('automatic recovery on Health', () => {
     mount();
     const said = (await screen.findByTestId('recovery-cadence')).textContent ?? '';
     expect(said).toContain('this server is missing its backup access key');
-    expect(said).toContain('Ask the server operator to add it');
+    expect(said).toContain('myco server backup-credential --target cloudflare');
+    expect(said).toContain('on the machine that manages this server');
     expect(said).not.toContain('secret.invalid');
   });
 

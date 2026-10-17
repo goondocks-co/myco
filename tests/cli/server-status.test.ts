@@ -43,6 +43,7 @@ const runner: CommandRunner = {
     let stdout = '';
     if (text === '--version') stdout = '4.126.0';
     else if (text === 'whoami') stdout = 'OAuth fixture';
+    else if (text.startsWith('secret list')) stdout = '[]';
     else if (text.startsWith('deployments list')) stdout = `Version ID: ${worker}`;
     else if (text.startsWith('d1 execute')) {
       const sql = args[args.indexOf('--command') + 1] ?? '';

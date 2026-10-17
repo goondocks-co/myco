@@ -7,6 +7,7 @@ import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-con
 import { type CreatePlan, cloudflareUpdateLines, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { composeRetiredMessage, retiredComposeBundle } from '../server/targets.js';
 import { parseFlags } from './flags.js';
+import { BACKUP_CREDENTIAL_COMMAND, installBackupCredential } from '@myco/server/backup-credential.js';
 import path from 'node:path';
 import { ownerLinkNext } from '@goondocks/myco-shared/setup-guidance';
 import { resolveMycoHome } from '../paths/home.js';
@@ -123,6 +124,8 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           configuration and this machine's deployment record.
                                           --fleet sets how many runtimes the server may start at
                                           once; the next update deploys it.
+  backup-credential --target cloudflare   Add or rotate the backup access key using a hidden prompt or
+                                          piped stdin. Checks access before saving it on the server.
   github-app --existing --client-id <id> --client-secret-stdin --url <url> [--target local|cloudflare]
                                           Install an app you already own after regenerating its secret.
   github-app --url <https://…> [--org <name>] [--app-name <text>] [--target local|cloudflare]
@@ -223,7 +226,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
     process.exit(command === undefined ? 2 : 0);
   }
 
-  const { flags } = parseFlags(rest);
+  const { flags, positionals } = parseFlags(rest);
   const credentialLines = cloudflareCredentialLines();
   const emittedCredentials = new Set<string>();
   const report = (line: string): void => {
@@ -548,6 +551,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
         console.log(`${flags.has('fork') ? 'Fork' : 'Replacement'} deployed at ${restored.record.url}, schema ${restored.schemaVersion}, Worker ${restored.record.versionId}.`);
         console.log(flags.has('fork') ? `A new tenant was created. Copied credentials, invitations and agent access keys are inactive. ${REJOIN_HINT}` : 'The Deployment identity and carried live authority were retained. This is the same tenant.');
         console.log('Source data was preserved. Sign-in, attached workers and embedding readiness still require verification before cutover.');
+        console.log(`Automatic backups need a new backup access key for the restored database. Run \`${BACKUP_CREDENTIAL_COMMAND}\` using the same MYCO_HOME.`);
         if (flags.has('new-signin')) console.log(`Using the same MYCO_HOME (${resolveMycoHome()}), configure destination sign-in with: myco server github-app --target cloudflare --url ${restored.record.url} --name "Myco Recovery"`);
         return;
       }
@@ -588,6 +592,14 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
         nodeFs.writeFileSync(out, rendered, { mode: 0o600 });
         console.log(`Deploy config written to ${out}`);
       }
+      return;
+    }
+
+    if (command === 'backup-credential') {
+      if (positionals.length > 0 || [...flags.keys()].some((key) => key !== 'target')) fail('backup-credential accepts only --target cloudflare. Use the hidden prompt or pipe the key on stdin; never pass it as an argument.');
+      if (flags.get('target') !== 'cloudflare') fail('backup-credential needs --target cloudflare.');
+      await installBackupCredential({ runner: deps.runner, fetchImpl: deps.fetchImpl, readSecret: deps.readSecret });
+      console.log('Backup access key saved. Automatic backups can run now; when “Back up every” is set, the next one starts at the next due wake.');
       return;
     }
 

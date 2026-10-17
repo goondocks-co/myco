@@ -3,7 +3,7 @@
  * Deployment's own producer reads it back from, the one credential list, and what a restore says about what it carries.
  */
 import { describe, expect, it } from 'bun:test';
-import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
+import { HOSTED_RECOVERY_CREDENTIAL_NAMES, RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 import { boundRecoveryConfiguration } from '@myco-server-worker/platform/cloudflare/recovery-export.js';
 import { recoveryConfigurationOf } from '@myco/server/cloudflare-resources.js';
 import { renderDeployConfig } from '@myco/server/deploy-config.js';
@@ -58,6 +58,12 @@ describe('recoveryConfigurationOf', () => {
 });
 
 describe('credential names', () => {
+  it('names the hosted backup access key in the artifact recovery checklist', () => {
+    expect(HOSTED_RECOVERY_CREDENTIAL_NAMES).toEqual([...RECOVERY_CREDENTIAL_NAMES, 'RECOVERY_EXPORT_TOKEN']);
+    expect(credentialsReport(HOSTED_RECOVERY_CREDENTIAL_NAMES)).toContain('RECOVERY_EXPORT_TOKEN');
+    expect(LOCAL_SECRET_NAMES).not.toContain('RECOVERY_EXPORT_TOKEN');
+  });
+
   it('are one list: the native secrets file order is the recovery requirement', () => {
     expect(LOCAL_SECRET_NAMES).toBe(RECOVERY_CREDENTIAL_NAMES);
   });

@@ -382,6 +382,29 @@ describe('create', () => {
 });
 
 describe('update', () => {
+  it('reports an unreadable backup access check after completing the update', async () => {
+    const { home, options } = setup();
+    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: 'then', databaseId: DB_ID, storeId: STORE }, home);
+    const lines: string[] = [];
+    const result = await updateCloudflareDeployment({ ...options, runner: runner({ 'secret list': { code: 1, stderr: 'unavailable' } }), report: (line) => lines.push(line) });
+    expect(result.summary.record).toBe('updated');
+    expect(result.summary.worker).toBe('applied');
+    expect(lines.join('\n')).toContain('backup access key could not be checked');
+    expect(lines.join('\n')).toContain('myco server backup-credential --target cloudflare');
+  });
+
+  it('names the backup access command only when the deployed Worker lacks its key, without prompting', async () => {
+    const { home, options } = setup();
+    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: 'then', databaseId: DB_ID, storeId: STORE }, home);
+    for (const present of [false, true]) {
+      if (present) workerSecrets.add('RECOVERY_EXPORT_TOKEN');
+      const lines: string[] = [];
+      await updateCloudflareDeployment({ ...options, runner: runner(), report: (line) => lines.push(line) });
+      expect(lines.filter((line) => line.includes('myco server backup-credential --target cloudflare'))).toHaveLength(present ? 0 : 1);
+      expect(calls.some((call) => call.input !== undefined)).toBe(false);
+    }
+  });
+
   it('refuses without a record, and with one migrates then deploys through the rendered config', async () => {
     const { home, dir, options } = setup();
     await expect(updateCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(/no Cloudflare deployment record/);

@@ -8,7 +8,7 @@ import type {
   AttemptPart, ExportAnswer, PortFailure, ProducerPorts, RangeAnswer,
 } from '../../core/recovery-producer.js';
 import { PRODUCER_LIMITS, stagedSqlKey, TransientProducerFailure, type RecoveryAdmission } from '../../core/recovery-producer.js';
-import { readHostedRecoveryConfiguration, RECOVERY_CREDENTIAL_NAMES, STAGING_OBJECTS_DIRECTORY, stagingPath, type HostedRecoveryConfiguration } from '../../core/recovery-staging.js';
+import { readHostedRecoveryConfiguration, HOSTED_RECOVERY_CREDENTIAL_NAMES, STAGING_OBJECTS_DIRECTORY, stagingPath, type HostedRecoveryConfiguration } from '../../core/recovery-staging.js';
 import { discardStoredBody, streamStoredObject } from '../../core/stored-object.js';
 import { r2RefusedDigest } from './r2-digest.js';
 import { readD1ExportAnswer, transientExportStatus } from '@goondocks/myco-shared/d1-export';
@@ -66,7 +66,7 @@ export function boundRecoveryConfiguration(bindings: RecoveryConfigurationBindin
 
 /** What a hosted recovery records about an attempt: the Deployment's bound configuration with who started it, and every recovery credential name. */
 export function recordedAdmission(configuration: HostedRecoveryConfiguration, startedBy: string): { configuration: Record<string, unknown>; credentialsRequired: string[] } {
-  return { configuration: { ...configuration, startedBy }, credentialsRequired: [...RECOVERY_CREDENTIAL_NAMES] };
+  return { configuration: { ...configuration, startedBy }, credentialsRequired: [...HOSTED_RECOVERY_CREDENTIAL_NAMES] };
 }
 
 /**
