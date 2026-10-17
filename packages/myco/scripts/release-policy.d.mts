@@ -26,3 +26,7 @@ export function renderPowerShellReleaseSelector(): string;
 
 export function isDevelopmentVersion(version: string): boolean;
 export function isV2Version(version: string): boolean;
+
+export function isStampedSourceVersion(version: string): boolean;
+
+export { SOURCE_VERSION_PATTERN } from './install-marker-schema.mjs';

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { SOURCE_BUILD_REASON } from '@myco/install/installation.js';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readBinaryVersion } from '@myco/runtime/binary-version.js';
@@ -162,6 +163,7 @@ async function performBinaryUpdate(
   const platform = deps.platform ?? process.platform;
   const localAppData = deps.localAppData ?? process.env.LOCALAPPDATA;
   const runningVersion = deps.currentVersion ?? getPluginVersion();
+  if (caller === 'automatic' && isDevelopmentVersion(runningVersion)) return { kind: 'skipped', reason: SOURCE_BUILD_REASON };
   if (caller === 'automatic' && !automaticUpdatesEnabled(home)) return { kind: 'skipped', reason: 'automatic updates are turned off' };
   if (options.skipBinary) return { kind: 'skipped', reason: '--skip-binary requested' };
   if (isDevelopmentVersion(runningVersion)) return { kind: 'skipped', reason: 'development build' };
@@ -185,7 +187,7 @@ async function performBinaryUpdate(
       finally { budget.remaining(); }
     };
     const current = fs.existsSync(binary) ? await probe(binary) : runningVersion;
-    if (isDevelopmentVersion(current)) return { kind: 'skipped', reason: 'development build' };
+    if (isDevelopmentVersion(current)) return { kind: 'skipped', reason: caller === 'automatic' ? SOURCE_BUILD_REASON : 'development build' };
     if (!semver.valid(current)) throw new Error(`installed binary reported an invalid version: ${current}`);
     const channel = options.channel ?? effectiveUpdateChannel(home);
     const target = options.targetVersion ?? null;

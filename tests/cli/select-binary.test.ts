@@ -48,7 +48,7 @@ function makeFixture(options?: { sourceCheckout?: boolean; includeBinary?: boole
   const scriptPath = path.join(scriptsDir, 'select-binary.mjs');
   fs.copyFileSync(SCRIPT_SOURCE, scriptPath);
   // The npm tarball carries the shared path and release-policy modules.
-  for (const file of ['managed-paths.mjs', 'release-policy.mjs', 'home-role.mjs', 'install-marker.mjs']) {
+  for (const file of ['managed-paths.mjs', 'release-policy.mjs', 'install-marker-schema.mjs', 'home-role.mjs', 'install-marker.mjs']) {
     fs.copyFileSync(path.resolve('packages/myco/scripts', file), path.join(scriptsDir, file));
   }
 
