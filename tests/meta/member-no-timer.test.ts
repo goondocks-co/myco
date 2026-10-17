@@ -235,7 +235,8 @@ describe('the 2.0 member entry graph', () => {
 const SURVIVOR_VERBS: ReadonlyArray<{ need: string; verb: string; imports: string; names: string }> = [
   { need: 'symbiont detection', verb: 'cli/member-doctor.ts', imports: '../symbionts/detect.js', names: 'loadManifests' },
   { need: 'member setup refresh', verb: 'cli/update.ts', imports: '../member/refresh-setup.js', names: 'refreshMemberSetup' },
-  { need: 'the release check', verb: 'cli/update.ts', imports: '../upgrade/release-resolver.js', names: 'resolveMycoBinaryUpdateRefs' },
+  { need: 'the guarded binary update', verb: 'cli/update.ts', imports: '../upgrade/guarded-binary.js', names: 'updateBinary' },
+  { need: 'the release check', verb: 'upgrade/guarded-binary.ts', imports: './release-resolver.js', names: 'resolveMycoBinaryUpdateRefs' },
 ];
 
 describe('the machine-side survivors are on-demand verbs', () => {

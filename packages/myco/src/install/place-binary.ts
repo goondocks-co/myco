@@ -25,7 +25,10 @@ import path from 'node:path';
 const PROGRAM_PROBE_TIMEOUT_MS = 30_000;
 
 /** Whether a program runs, or why it does not. */
-export type ProgramProbe = { runs: true } | { runs: false; detail: string };
+export type ProgramProbe = { runs: true } | { runs: false; detail: string; error?: Error };
+
+/** A placed executable failed its readiness check. */
+export class ExecutableVerificationError extends Error {}
 
 /** Runs one command to completion, with what it printed; the default is the real platform, a test passes its own. */
 export type CommandRun = (command: string, args: readonly string[]) => { status: number | null; signal?: NodeJS.Signals | null; error?: Error; output?: string };
@@ -51,8 +54,9 @@ const failed = (result: ReturnType<CommandRun>): string | null => {
  * answers `--version`.
  */
 export function programRuns(file: string, run: CommandRun = platformRun): ProgramProbe {
-  const why = failed(run(file, ['--version']));
-  return why === null ? { runs: true } : { runs: false, detail: why };
+  const result = run(file, ['--version']);
+  const why = failed(result);
+  return why === null ? { runs: true } : { runs: false, detail: why, ...(result.error ? { error: result.error } : {}) };
 }
 
 /**
@@ -66,14 +70,19 @@ export function programRuns(file: string, run: CommandRun = platformRun): Progra
  */
 export function readyExecutable(file: string, platform: NodeJS.Platform = process.platform, run: CommandRun = platformRun): ProgramProbe {
   if (platform === 'win32') return { runs: true };
-  if (platform === 'darwin' && failed(run('codesign', ['--verify', '--strict', file])) !== null) {
-    const shown = run('codesign', ['-dv', file]).output ?? '';
+  const signature = platform === 'darwin' ? run('codesign', ['--verify', '--strict', file]) : undefined;
+  if (signature?.error) return { runs: false, detail: signature.error.message, error: signature.error };
+  if (signature !== undefined && failed(signature) !== null) {
+    const description = run('codesign', ['-dv', file]);
+    if (description.error) return { runs: false, detail: description.error.message, error: description.error };
+    const shown = description.output ?? '';
     if (!/^Signature=adhoc$/m.test(shown) && !/not signed at all/.test(shown)) {
       return { runs: false, detail: 'its signature does not verify, and it is not an ad hoc signature this machine may make again' };
     }
-    const signing = failed(run('codesign', ['--force', '--sign', '-', '--preserve-metadata=entitlements,identifier', file]))
-      ?? failed(run('codesign', ['--verify', '--strict', file]));
-    if (signing !== null) return { runs: false, detail: `its signature does not verify and could not be signed again (${signing})` };
+    const signed = run('codesign', ['--force', '--sign', '-', '--preserve-metadata=entitlements,identifier', file]);
+    const verified = failed(signed) === null ? run('codesign', ['--verify', '--strict', file]) : signed;
+    const signing = failed(verified);
+    if (signing !== null) return { runs: false, detail: `its signature does not verify and could not be signed again (${signing})`, ...(verified.error ? { error: verified.error } : {}) };
   }
   return programRuns(file, run);
 }
@@ -135,7 +144,10 @@ export function placeExecutable(
     if (platform !== 'win32') fs.chmodSync(tmp, 0o755);
     syncFile(tmp, platform);
     const probe = options.ready?.(tmp);
-    if (probe !== undefined && !probe.runs) throw new Error(`${src} does not run on this machine: ${probe.detail}`);
+    if (probe !== undefined && !probe.runs) {
+      if (probe.error && (probe.error as NodeJS.ErrnoException).code !== 'ETIMEDOUT') throw probe.error;
+      throw new ExecutableVerificationError(`${src} does not run on this machine: ${probe.detail}`);
+    }
     fs.renameSync(tmp, dest);
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });

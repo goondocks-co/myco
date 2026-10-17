@@ -21,7 +21,7 @@ import { ServerClient, classifyEventAnswer, type FetchLike } from '@myco/member/
 import { readHarnessActivity } from '@myco/symbionts/harness-activity.js';
 import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
 
-export const REPAIR_LOCK = 'keep-current.lock';
+export { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
 const REPORT_CAP_MS = 2_000;
 export const HARNESS_REPORT_WINDOW_MS = 8_000;
 

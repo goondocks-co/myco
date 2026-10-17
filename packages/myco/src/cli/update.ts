@@ -1,27 +1,10 @@
 /** `myco update` resolves, verifies and adopts a binary within the selected channel. */
 
-import semver from 'semver';
-import { selectChannelRelease, isV2Version } from '../../scripts/release-policy.mjs';
+import path from 'node:path';
 import { parseStrictFlags } from './args.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
-import {
-  resolveMycoBinaryUpdateRefs,
-  fetchMycoReleases,
-  type MycoReleaseResolverDeps,
-} from '../upgrade/release-resolver.js';
-import {
-  resolveAssetRefs,
-  resolveTargetTriple,
-  type GitHubRelease,
-  type AssetRefs,
-  type TargetTriple,
-} from '../upgrade/release-assets.js';
-import {
-  stageBinary,
-  adoptStaged,
-  DEFAULT_BINARY_UPDATE_DEPS,
-  type StageBinaryDeps,
-} from '../upgrade/apply-binary.js';
+import { updateBinary, admitsUpdate, resolveAssetRefsForTarget, type BinaryUpdateDeps } from '../upgrade/guarded-binary.js';
+import { claimSubsystem, readClaim, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import { resolveMycoPackageCheck } from '../upgrade/checker.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { readInstallMarker } from '../install/managed-binary.js';
@@ -40,6 +23,10 @@ export const UPDATE_HELP = `Usage: myco update [options] [<version>]
 Update this machine's Myco within its recorded release channel, then refresh
 member agent setup. Runners update only between runs. Never downgrades.
 
+A skipped binary update says why; agent setup still refreshes. A failed
+replacement restores the previous version and reports the rollback.
+Supports macOS, Linux and Windows.
+
 Alias: myco upgrade
 
 Arguments:
@@ -48,6 +35,8 @@ Arguments:
 Options:
   --now                        Update immediately (identical to bare \`myco update\`)
   --check                      Report available updates only — never adopt
+  --skip-binary                Keep this binary; still refresh agent setup
+  --claim                      Take responsibility for this machine's agent setup
   --target-version <version>   Update to this exact version (flag form)
   --channel <alpha|beta|stable>      Update on this channel, this run only
   -h, --help                   Show this help
@@ -55,42 +44,9 @@ Options:
 
 export { effectiveUpdateChannel } from '../upgrade/check-cache.js';
 
-function admitsUpdate(target: string, current: string, channel: ReleaseChannel): boolean {
-  if (!semver.valid(target) || !semver.valid(current) || !semver.gt(target, current)) return false;
-  return !isV2Version(current) || selectChannelRelease([{
-    tag_name: `myco/v${target}`, prerelease: semver.prerelease(target) !== null, assets: [],
-  }], channel, { currentVersion: current }) !== null;
-}
-
-// ---------------------------------------------------------------------------
-// Injectable deps (for testing — the real impls are the defaults)
-// ---------------------------------------------------------------------------
-
-export interface UpgradeDeps {
-  /** Inject the channel-latest resolver so tests can avoid network calls. */
-  resolveRefs?: (channel: ReleaseChannel, deps?: MycoReleaseResolverDeps) => Promise<AssetRefs | null>;
-  /** Inject the fetch-all-releases call for the exact-version path. */
-  fetchReleases?: () => Promise<GitHubRelease[]>;
-  /** Inject the stage function. */
-  stageBinary?: typeof stageBinary;
-  /** Inject stage-level deps (download/hash). */
-  stageDeps?: StageBinaryDeps;
-  /** Place a verified member binary without a local daemon. */
-  adoptStaged?: typeof adoptStaged;
-  /** Override the current version. */
-  currentVersion?: string;
-  /** Override myco home dir. */
-  home?: string;
-  /** Override the running platform. */
-  platform?: NodeJS.Platform;
-  /** Override %LOCALAPPDATA% (win32 only). */
-  localAppData?: string;
-  /** Override the managed binary destination. */
-  mycoBinary?: string;
+export interface UpgradeDeps extends BinaryUpdateDeps {
   /** Inject the update-check function (for positive --check tests). */
   checkFn?: typeof resolveMycoPackageCheck;
-  /** Resolve this machine's target triple (process.platform/arch by default). */
-  targetTriple?: () => TargetTriple;
   /** Whether the home is a member's (`member/home-role.ts`). */
   isMemberHome?: (home: string) => boolean;
   /** Refresh a member home's agent setup with the adopted binary. */
@@ -145,6 +101,8 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   const parsed = parseStrictFlags('myco update', flagOnlyArgs, [
     { name: '--now' },
     { name: '--check' },
+    { name: '--skip-binary' },
+    { name: '--claim' },
     { name: '--target-version', value: 'required' },
     { name: '--channel', value: 'required' },
     { name: '--help', aliases: ['-h'] },
@@ -185,24 +143,28 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
       ?? resolveBinary('managed-destination', { kind: 'machine' }, { mycoHome: home, platform: deps.platform }).path;
     try {
       await (deps.refreshMember ?? refreshMemberSetup)(binary, home);
-      console.log('Agents refreshed: yes.');
+      const claim = readClaim(SYMBIONT_CONFIG_SUBSYSTEM);
+      if (claim !== null && claim.owner !== path.resolve(home)) console.log(`Agents refreshed: no (global agent setup is managed by ${claim.owner}).`);
+      else console.log('Agents refreshed: yes.');
     } catch (error) {
       console.error(`Agents refreshed: no (${error instanceof Error ? error.message : String(error)}). Next: myco member provision --refresh`);
       process.exitCode = 1;
     }
   };
 
-  const finish = async (version: string, reason?: string): Promise<void> => {
-    console.log(`Myco: from ${currentVersion} to ${version} on channel ${channel}${reason ? ` (${reason})` : ''}.`);
-    await refresh();
-  };
+  if (!isCheck && parsed.has('--claim')) {
+    claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, path.resolve(home));
+    if (readClaim(SYMBIONT_CONFIG_SUBSYSTEM)?.owner !== path.resolve(home)) throw new Error('Could not take responsibility for this machine’s agent setup.');
+    console.log('This Myco home now manages this machine’s agent setup.');
+  }
 
   const runners = (deps.runnerRecords ?? listRunnerRecords)(home).filter(isLiveRunner).filter(record =>
     (deps.runnerServiceInstalled ?? ((serverUrl, mycoHome) => workerServiceInstalled(executorServiceTarget(serverUrl, { mycoHome, binaryPath: deps.mycoBinary, platform: deps.platform }, 'runner'))))(record.serverUrl, home));
   if (runners.length > 0) {
     const summaries = new Set<string>();
     const runner = deps.runRunner ?? (await import('./runner.js')).run;
-    for (const record of runners) {
+    if (parsed.has('--skip-binary')) console.log('Myco: binary update skipped (--skip-binary requested).');
+    for (const record of parsed.has('--skip-binary') ? [] : runners) {
       const selection = [...(channelArg ? ['--channel', channelArg] : []), ...(targetVersionArg ? ['--target-version', targetVersionArg] : [])];
       const ok = await runner(['update', '--server', record.serverUrl, ...(isCheck ? ['--check'] : []), ...selection], { mycoHome: home, stdout: line => {
         if (line.startsWith('Myco: ')) summaries.add(line.slice('Myco: '.length));
@@ -228,52 +190,18 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   // A channel override applies only to this invocation.
   if (channelArg) console.log(`Updating on the '${channelArg}' channel for this run; it is not saved.`);
 
-  // Resolve the selected release assets.
-  const refs = await resolveAssetRefsForTarget(targetVersionArg, channel, deps);
-  if (!targetVersionArg) recordUpdateCheck(home, channel, currentVersion, refs?.targetVersion ?? currentVersion);
-  if (!refs) {
-    if (targetVersionArg) {
-      console.error(`myco update: no release found for version ${targetVersionArg}`);
-      process.exit(1);
-    } else {
-      await finish(currentVersion, 'no newer eligible release');
-      return;
-    }
-  }
-
-  if (!admitsUpdate(refs.targetVersion, currentVersion, channel)) {
-    await finish(currentVersion, `channel target ${refs.targetVersion} is older or outside '${channel}'; staying put`);
-    return;
-  }
-
-  console.log(`Updating Myco ${currentVersion} → ${refs.targetVersion}…`);
-
-  const platform = deps.platform ?? (process.platform as NodeJS.Platform);
-  const localAppData = deps.localAppData ?? process.env.LOCALAPPDATA;
-
-  // Stage the binary (download → verify → stage under versions/<v>/).
-  console.log('  Downloading and verifying…');
-  const stageFn = deps.stageBinary ?? stageBinary;
-  const stageDeps = deps.stageDeps ?? DEFAULT_BINARY_UPDATE_DEPS;
-  const stageResult = await stageFn({ refs, home, platform, localAppData }, stageDeps);
-
-  if ('error' in stageResult) {
-    console.error(`myco update: stage failed — ${stageResult.error}`);
-    process.exit(1);
-  }
-
-  console.log(`  Staged ${stageResult.version} to ${stageResult.versionDir}`);
-
-  // Adopt the verified staged binary.
-  console.log('  Adopting…');
-
-  // Installed member binaries retain the destination recorded by their installer.
-  const mycoBinary = deps.mycoBinary
-    ?? readInstallMarker(home, true)?.bin
-    ?? resolveBinary('managed-destination', { kind: 'machine' }, { mycoHome: home, platform, localAppData }).path;
-  if (platform === 'win32') throw new Error('Myco 2.0 member binary updates on Windows are not supported yet; the installed binary is unchanged.');
-  await (deps.adoptStaged ?? adoptStaged)({ home, platform, localAppData, version: stageResult.version, destination: mycoBinary });
-  await finish(stageResult.version);
+  const outcome = await updateBinary('manual', { skipBinary: parsed.has('--skip-binary'), targetVersion: targetVersionArg, channel }, { ...deps, home, currentVersion });
+  if (outcome.kind === 'skipped') console.log(`Myco: binary update skipped (${outcome.reason}).`);
+  else if (outcome.kind === 'failed') {
+    console.error(`Myco: update failed (${outcome.reason}).`);
+    process.exitCode = 1;
+  } else if (outcome.kind === 'rolled-back') {
+    console.error(`Myco: update rolled back to ${outcome.version} (${outcome.reason}).`);
+    process.exitCode = 1;
+  } else console.log(`Myco: from ${currentVersion} to ${outcome.version} on channel ${channel}${outcome.kind === 'already-current' ? ` (${outcome.reason})` : ''}.`);
+  if ('retainedPrevious' in outcome) for (const retained of outcome.retainedPrevious ?? []) console.log(`Update files were kept at ${retained.path} (${retained.reason}).`);
+  for (const warning of outcome.warnings ?? []) console.log(warning);
+  await refresh();
 }
 
 // ---------------------------------------------------------------------------
@@ -326,31 +254,4 @@ async function runCheck(channel: ReleaseChannel, deps: UpgradeDeps, target: stri
       console.log(`  Latest: ${checkResult.latest_version}`);
     }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Asset ref resolution: channel-latest vs. exact-version
-// ---------------------------------------------------------------------------
-
-/** Resolve a named release or the newest eligible release for this machine. */
-async function resolveAssetRefsForTarget(
-  targetVersionArg: string | null,
-  channel: ReleaseChannel,
-  deps: UpgradeDeps,
-): Promise<AssetRefs | null> {
-  if (targetVersionArg) {
-    const fetchReleasesFn = deps.fetchReleases ?? defaultFetchReleases;
-    const releases = await fetchReleasesFn();
-    const release = releases.find((r) => r.tag_name === `myco/v${targetVersionArg}`);
-    if (!release) return null;
-    const triple = deps.targetTriple ? deps.targetTriple() : resolveTargetTriple();
-    return resolveAssetRefs(release, triple);
-  }
-
-  const resolveRefsFn = deps.resolveRefs ?? ((ch: ReleaseChannel) => resolveMycoBinaryUpdateRefs(ch, undefined, deps.currentVersion ?? getPluginVersion()));
-  return resolveRefsFn(channel);
-}
-
-async function defaultFetchReleases(): Promise<GitHubRelease[]> {
-  return fetchMycoReleases();
 }

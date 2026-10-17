@@ -1,14 +1,4 @@
-/**
- * The self-update binary primitives: download and verify a release asset into
- * its versioned slot (`stageBinary`), put a staged version on the managed path
- * (`adoptStaged`), put a prior version back (`restoreVersion`), and retire old
- * slots (`pruneVersions`). Every write of a binary goes through
- * `placeExecutable`, which swaps a synced temporary file in by one rename; a
- * download is staged only once it verifies against SHA256SUMS and runs on this
- * machine. The orchestrator (`orchestrator.ts`) owns stop, adopt, restart,
- * health watch and restore.
- */
-
+/** Downloads and verifies release binaries into versioned slots, and prunes retained slots. */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,10 +8,9 @@ import {
   versionsDir,
   versionDir,
   versionBinaryPath,
-  managedBinaryPath,
 } from '../install/managed-binary.js';
 import type { AssetRefs } from './release-assets.js';
-import { placeExecutable, readyExecutable, type ProgramProbe } from '../install/place-binary.js';
+import { placeExecutable, readyExecutable, ExecutableVerificationError, type ProgramProbe } from '../install/place-binary.js';
 
 // ---------------------------------------------------------------------------
 // Download size cap (DoS / availability guard)
@@ -178,6 +167,7 @@ export interface StageBinarySuccess {
 /** Result of a failed `stageBinary`. */
 export interface StageBinaryError {
   error: string;
+  verificationFailed?: boolean;
 }
 
 export type StageBinaryResult = StageBinarySuccess | StageBinaryError;
@@ -278,89 +268,11 @@ export async function stageBinary(
     try { fs.rmSync(vDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     return {
       error: `could not stage binary to ${vBinPath}: ${err instanceof Error ? err.message : String(err)} — staging aborted (stable binary untouched)`,
+      verificationFailed: err instanceof ExecutableVerificationError,
     };
   }
 
   return { versionDir: vDir, version: targetVersion };
-}
-
-// ---------------------------------------------------------------------------
-// adoptStaged deps
-// ---------------------------------------------------------------------------
-
-/**
- * Deps for `adoptStaged` (injectable for tests — no real fs ops needed in the
- * test environment beyond what the test directly writes).
- */
-export interface AdoptStagedDeps {
-  /** Hex SHA-256 of the file at `filePath` (kept symmetric with stageBinary). */
-  computeSha256?: (filePath: string) => Promise<string>;
-}
-
-/**
- * Copy the versioned binary into the managed path atomically through
- * `placeExecutable` (temp beside it, synced, `chmod 0o755` on non-win32, one
- * rename). The bytes were judged runnable when they were staged.
- *
- * CONTRACT:
- *   - Assumes the daemon is ALREADY stopped (Task 5 owns the stop).
- *   - Retains the version dir (so `restoreVersion` can use it).
- *   - Atomic: copy to a temp in the managed bin dir, then rename over the
- *     managed binary (same filesystem as `~/.myco/bin/`) so there is no
- *     window where the managed binary is absent.
- *   - On non-win32, chmod failure is FATAL (not best-effort): a non-executable
- *     managed binary would silently break daemon restarts. The tmp is cleaned
- *     and the error is rethrown so Task 5 can restore.
- *   - On win32, executability is not mode-based; chmod is skipped entirely.
- *
- * Throws on any fs failure (the caller — Task 5 — must handle this and
- * restore if needed).
- */
-export async function adoptStaged(
-  params: {
-    home: string;
-    platform: NodeJS.Platform;
-    version: string;
-    localAppData?: string;
-    destination?: string;
-  },
-  _deps: AdoptStagedDeps = {},
-): Promise<void> {
-  const { home, platform, version, localAppData } = params;
-
-  placeExecutable(
-    versionBinaryPath(home, platform, version, localAppData),
-    params.destination ?? managedBinaryPath(home, platform, localAppData),
-    { platform },
-  );
-}
-
-// ---------------------------------------------------------------------------
-// restoreVersion
-// ---------------------------------------------------------------------------
-
-/**
- * Copy the versioned binary for `version` back onto the managed binary path.
- *
- * This is the COPY-BACK primitive. Task 5 owns the daemon restart after a
- * restore. No cleanup of the version dir — the caller decides retention.
- *
- * Uses the same temp+rename approach as `adoptStaged` to keep the managed
- * binary never-absent during the restore. Same chmod and rename-failure
- * semantics as `adoptStaged`: on non-win32, chmod failure is fatal (tmp
- * cleaned, error rethrown); rename failure likewise cleans tmp and rethrows.
- */
-export async function restoreVersion(
-  home: string,
-  platform: NodeJS.Platform,
-  version: string,
-  localAppData?: string,
-): Promise<void> {
-  placeExecutable(
-    versionBinaryPath(home, platform, version, localAppData),
-    managedBinaryPath(home, platform, localAppData),
-    { platform },
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -376,7 +288,7 @@ export async function restoreVersion(
  *   - `current` is REQUIRED (the running version). Omitting it is a type error.
  *     This prevents the rollback-scenario foot-gun: during a rollback the
  *     running version is NOT the newest, so deriving current from semver order
- *     alone could delete the live version and make restoreVersion impossible.
+ *     alone could delete the retained slot for the live version.
  *   - `previous` is derived automatically (next-newest version strictly below
  *     `current` by semver, if any). It can also be overridden by the caller.
  *   - `keep` is floored at 2 (so `pruneVersions(…, 1)` behaves like `keep=2`).

@@ -30,8 +30,13 @@ int main(int argc, char **argv) {
   for (int i=1;i<argc;i++) fprintf(out, "%s%s", i>1 ? " " : "", argv[i]);
   fputs("\\n", out); fclose(out); return 0;
 }`);
-    const compiled = spawnSync('cc', ['-o', source, c], { encoding: 'utf8' });
+    const compiled = spawnSync('cc', ['-o', source, c], { cwd: root, encoding: 'utf8' });
     expect({ status: compiled.status, stderr: compiled.stderr }).toEqual({ status: 0, stderr: '' });
+    fs.mkdirSync(path.dirname(binary), { recursive: true });
+    const oldSource = path.join(root, 'old.c');
+    fs.writeFileSync(oldSource, fs.readFileSync(c, 'utf8').replace('2.1.0-alpha.1', current));
+    expect(spawnSync('cc', ['-o', binary, oldSource], { cwd: root, encoding: 'utf8' }).status).toBe(0);
+    const oldBytes = fs.readFileSync(binary);
     const asset = `myco-${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch}`;
     const sum = crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex');
     writeInstallMarker(home, { channel: 'alpha', source: 'curl', bin: binary });
@@ -45,10 +50,12 @@ int main(int argc, char **argv) {
         computeSha256: async file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'),
       },
     });
-    expect(spawnSync(binary, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('2.1.0-alpha.1');
+    const dev = current.startsWith('0.0.0');
+    expect(spawnSync(binary, ['--version'], { cwd: root, encoding: 'utf8' }).stdout.trim()).toBe(dev ? current : '2.1.0-alpha.1');
+    if (dev) expect(fs.readFileSync(binary)).toEqual(oldBytes);
     expect(fs.readFileSync(path.join(home, 'refresh.log'), 'utf8')).toBe('member provision --refresh\n');
     expect(JSON.parse(fs.readFileSync(path.join(home, 'install.json'), 'utf8')).channel).toBe('alpha');
-    expect(fs.readdirSync(home).sort()).toEqual(['bin', 'install.json', 'last-update-check.json', 'refresh.log']);
+    expect(fs.readdirSync(home).sort()).toEqual(['bin', 'install.json', ...(!dev ? ['last-update-check.json', 'member'] : []), 'refresh.log']);
     if (custom) expect(fs.existsSync(path.join(home, 'bin/myco'))).toBe(false);
   });
   it('does not stage an older or out-of-channel explicit version', async () => {
