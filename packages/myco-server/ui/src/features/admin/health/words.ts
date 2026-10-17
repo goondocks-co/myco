@@ -64,12 +64,14 @@ export function whenLabel(at: number, now: number): string {
 /** What a server that runs no automatic recovery says of it. */
 export const RECOVERY_UNAVAILABLE_WORDS = 'Automatic recovery doesn’t run on this server. Use Create backup above, or the operator backup procedure.';
 
+export const BACKUP_ACCESS_COMMAND = 'myco server backup-credential --target cloudflare';
+
 /** What the recovery schedule is doing, in one line an owner can act on. */
 export function cadenceWords(schedule: RecoverySchedule, now: number): string {
   if (schedule.idleCode === 'backup_unsupported' || !schedule.supported) return RECOVERY_UNAVAILABLE_WORDS;
   if (schedule.idleCode === 'backup_off' || !schedule.configured) return 'Automatic recovery is off. Set “Back up every” in Settings to schedule it.';
   const every = `Every ${schedule.intervalHours} h.`;
-  if (schedule.idleCode === 'backup_export_credential_missing') return `${every} Backups can’t run: this server is missing its backup access key. Ask the server operator to add it.`;
+  if (schedule.idleCode === 'backup_export_credential_missing') return `${every} Backups can’t run: this server is missing its backup access key. Ask the server operator to run ${BACKUP_ACCESS_COMMAND} on the machine that manages this server.`;
   if (schedule.idleCode === 'backup_not_ready' || !schedule.ready) return `${every} It can’t run yet: this server is missing something it needs.`;
   if (schedule.idleCode === 'backup_in_progress' || schedule.idleCode === 'manual_backup_in_progress' || schedule.idleBecause !== null) return `${every} The next one waits for the attempt or backup in progress to end.`;
   if (schedule.dueAt === null) return every;

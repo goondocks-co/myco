@@ -8,7 +8,7 @@ import {
 } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 import { renderDeployConfig } from './deploy-config.js';
-import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
+import { HOSTED_RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 import { recoveryHoldOf, recoveryHoldSql } from '@myco-server-worker/core/object-release.js';
 import { recoveryConfigurationOf } from './cloudflare-resources.js';
 import {
@@ -154,7 +154,7 @@ export async function backupCloudflareDeployment(
       }
       await buildSnapshotDatabase(file, sqlPath, before);
       releaseD1Export(exportContext);
-      return { configuration: { ...recorded }, credentialsRequired: [...RECOVERY_CREDENTIAL_NAMES] };
+      return { configuration: { ...recorded }, credentialsRequired: [...HOSTED_RECOVERY_CREDENTIAL_NAMES] };
     },
     blob: async (blob) => readBlob(blob.source, blob),
   }, options.report, options.retry);

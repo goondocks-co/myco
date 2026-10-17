@@ -11,6 +11,7 @@
  * prerequisites, and only on the operator's own machine.
  */
 import { randomBytes } from 'node:crypto';
+import { BACKUP_CREDENTIAL_COMMAND, BACKUP_CREDENTIAL_HINT, BACKUP_CREDENTIAL_NAME } from '@myco/server/backup-credential.js';
 import nodeFs from 'node:fs';
 const { mkdtempSync, rmSync } = nodeFs;
 import { tmpdir } from 'node:os';
@@ -359,6 +360,11 @@ export const updateCloudflareDeployment = cloudflareOperation(async (options: Li
       release: summary.releaseTarget, versionId: deployed.versionId, deployedAt: new Date().toISOString(),
     }, options.mycoHome);
     summary.record = 'updated';
+    try {
+      if (!(await workerSecretNames({ ...bareCommand(options), workerName: record.workerName })).includes(BACKUP_CREDENTIAL_NAME)) options.report?.(BACKUP_CREDENTIAL_HINT);
+    } catch {
+      options.report?.(`Update completed, but the backup access key could not be checked. Run \`${BACKUP_CREDENTIAL_COMMAND}\` on the machine that manages this server to check and replace it.`);
+    }
     return { versionId: deployed.versionId, summary };
   } catch (cause) {
     if (cause instanceof CloudflareAuthenticationError) {

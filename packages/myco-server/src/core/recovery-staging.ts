@@ -41,6 +41,9 @@ export interface RecoveryStagingManifest {
 export const RECOVERY_CREDENTIAL_NAMES = ['SECRET_WRAP_KEY', 'SESSION_SECRET', 'GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET'] as const;
 export type RecoveryCredentialName = typeof RECOVERY_CREDENTIAL_NAMES[number];
 
+/** Hosted artifacts also name the access key automatic backups need on a restored database. */
+export const HOSTED_RECOVERY_CREDENTIAL_NAMES = [...RECOVERY_CREDENTIAL_NAMES, 'RECOVERY_EXPORT_TOKEN'] as const;
+
 /** The names a hosted Deployment's recorded configuration always carries: where its data lives and what it binds. */
 export const HOSTED_CONFIGURATION_NAMES = [
   'accountId', 'databaseId', 'databaseName', 'workerName', 'bucketName', 'recoveryBucketName', 'vectorIndexName', 'wrapKeySecretName',

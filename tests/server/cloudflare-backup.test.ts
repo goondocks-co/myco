@@ -15,7 +15,7 @@ import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { recoveryHoldSql } from '@myco-server-worker/core/object-release.js';
 import { SCHEMA_QUERY } from '@myco/server/recovery-schema.js';
 import { recoveryConfigurationOf } from '@myco/server/cloudflare-resources.js';
-import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
+import { HOSTED_RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 import * as blobs from '@myco-server-worker/platform/bun/blobs.js';
 
 /** The production attempt bounds with no waits between attempts, so a test exercises the bound without sleeping. */
@@ -206,7 +206,7 @@ it('reconstructs FTS and triggers, preserves sequence high-water and exact value
     // The backup records the record's resolved recovery configuration and the version it runs, and every credential name.
     expect(result.snapshot!.configuration).toEqual({ ...recoveryConfigurationOf(f.record), versionId: f.record.versionId, deployedAt: f.record.deployedAt });
     expect(result.snapshot!.configuration.recoveryBucketName).toBe('myco-server-recovery');
-    expect(result.snapshot!.credentialsRequired).toEqual([...RECOVERY_CREDENTIAL_NAMES]);
+    expect(result.snapshot!.credentialsRequired).toEqual([...HOSTED_RECOVERY_CREDENTIAL_NAMES]);
     // The operator's provider token and the record's unrecognised private field are secret sentinels no manifest carries.
     const manifestText = fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8');
     for (const sentinel of ['fixture-private-value', 'fixture-operator-token']) expect(manifestText).not.toContain(sentinel);

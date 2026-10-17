@@ -8,7 +8,7 @@ import { cn } from '../../../lib/cn';
 import { HEALTH_ANCHORS, SETTINGS_SECTIONS } from '../../../routes/nav';
 import { AdminSection, RowCard } from '../AdminFrame';
 import {
-  attemptWords, availableWords, backupDate, cadenceWords, countsWords, latestWords, RECOVERY_UNAVAILABLE_WORDS, sizeLabel, whenLabel,
+  BACKUP_ACCESS_COMMAND, attemptWords, availableWords, backupDate, cadenceWords, countsWords, latestWords, RECOVERY_UNAVAILABLE_WORDS, sizeLabel, whenLabel,
 } from './words';
 
 const RECOVERY_PROCEDURE = 'https://github.com/goondocks-co/myco/blob/main/docs/architecture/deployment-recovery.md';
@@ -168,6 +168,7 @@ function RecoveryCard() {
   const attempt = producer?.attempt ?? null;
   const stage = producer?.stage ?? null;
   const form = producer?.form ?? 'staging';
+  const [cadenceBefore, cadenceAfter] = schedule === null ? [] : cadenceWords(schedule, now).split(BACKUP_ACCESS_COMMAND);
   return (
     <Card className="flex flex-col gap-s3" data-health-recovery="">
       <h3 className="t-h3 text-ink">Automatic recovery</h3>
@@ -187,7 +188,7 @@ function RecoveryCard() {
       {producer?.error === 'export_unsettled' && <ForgetUnsettledExport forgettableAt={producer.unsettledExport?.forgettableAt ?? null} now={now} />}
       {schedule !== null && (
         <>
-          <p className="t-body text-ink" data-testid="recovery-cadence">{cadenceWords(schedule, now)}</p>
+          <p className="t-body text-ink" data-testid="recovery-cadence">{cadenceBefore}{cadenceAfter !== undefined && <><code className="t-mono text-ink-2">{BACKUP_ACCESS_COMMAND}</code>{cadenceAfter}</>}</p>
           <p className="t-body text-muted" data-testid="recovery-latest">{latestWords(schedule, form)}</p>
           <p className={cn('t-body', schedule.available.state === 'staged' ? 'text-warn' : 'text-muted')} data-testid="recovery-available">
             {availableWords(schedule.available)}

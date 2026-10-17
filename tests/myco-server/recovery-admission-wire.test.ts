@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { openStagingManifest, type RecoveryAdmission } from '@myco-server-worker/core/recovery-producer.js';
-import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
+import { HOSTED_RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { admittedStarter, recoveryAdmissionWire, type RecoveryAdmissionWire } from '@myco-server-worker/platform/cloudflare/recovery-export.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -45,7 +45,7 @@ describe('the Cloudflare port', () => {
       expect(sent).toEqual([{
         ...ADMISSION,
         configuration: { ...CONFIGURATION, startedBy: 'mem_owner' },
-        credentialsRequired: [...RECOVERY_CREDENTIAL_NAMES],
+        credentialsRequired: [...HOSTED_RECOVERY_CREDENTIAL_NAMES],
       }]);
     } finally { e.sqlite.close(); }
   });
@@ -57,7 +57,7 @@ describe('the Cloudflare port', () => {
       target: 'cloudflare', locator: 'account/database', startedAt: 0, schema: { sha256: 'a'.repeat(64), bytes: 2 },
       configuration: wire.configuration!, credentialsRequired: wire.credentialsRequired!, bookmark: null,
     });
-    expect([manifest.configuration, manifest.credentialsRequired]).toEqual([{ ...CONFIGURATION, startedBy: 'mem_owner' }, [...RECOVERY_CREDENTIAL_NAMES]]);
+    expect([manifest.configuration, manifest.credentialsRequired]).toEqual([{ ...CONFIGURATION, startedBy: 'mem_owner' }, [...HOSTED_RECOVERY_CREDENTIAL_NAMES]]);
   });
 
   it('still sends an admission when the Worker cannot read its own configuration, recording nothing and saying why', async () => {

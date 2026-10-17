@@ -71,6 +71,32 @@ Hosted lifecycle, record and staging mutations share one operator lease. `server
 
 The Compose lifecycle target is retired; its held bundle and data are left untouched. Use the native target or plain server image. Owner-dashboard additive artifact restore uses the server backup core and is a separate operation. A successful restore command does not establish owner sign-in, attached-worker execution, semantic-search readiness or sustained operation. Acceptance still requires source-preserving recovery on the required targets, exact records and blob bytes, independent credential recovery and actual UI/MCP reads before an artifact can authorize a migration-bearing update.
 
+## Give a hosted server its automatic backup access key
+
+Automatic backups need a Cloudflare API token to export the server's D1 database. The Worker keeps it as the `RECOVERY_EXPORT_TOKEN` secret. D1 Time Travel is separate: it provides database recovery points within Cloudflare, and does not supply this key or copy the server's stored objects into a Myco recovery artifact.
+
+On the machine that manages this server, run `myco server status --target cloudflare` to identify its account and database. Use the same `MYCO_HOME` for the commands below as for its create/update commands.
+
+1. In the [Cloudflare dashboard](https://dash.cloudflare.com/profile/api-tokens), open **My Profile → API Tokens → Create Token → Custom token → Get started**. Give the token a name identifying this server's backups.
+2. Add just **Account → D1 → Edit**. The API calls this permission **D1 Write**; **D1 Read** alone cannot start an export. Under **Account Resources**, select **Include → Specific account → this server's account**. This account-level permission covers D1 databases in that account; it is not an export-only permission or a database-only scope. No Workers, R2, zone, or other permissions are needed on this backup token. Your operator's existing Wrangler credentials install the Worker secret separately.
+3. Review the summary, create the token, and copy it into the command's hidden prompt:
+
+   ```sh
+   myco server backup-credential --target cloudflare
+   ```
+
+   Piped stdin is supported too, for example from a password manager's secret-output command. Never put the token in a command argument or a shell history entry. Myco prints no token and writes no local copy.
+
+The command checks that Wrangler is ready before asking for the backup key, using the same identity check as other hosted commands. Wrangler credentials supplied through environment variables are checked when the secret is uploaded; an invalid or under-scoped operator credential can therefore fail after the schema check. The command uses the account and database in this machine's deployment record. Validation starts a small export of only the `schema_meta` table definition, then polls its bookmark if it is still running. It downloads nothing and stores the key only after validation succeeds, then confirms the secret's name. Cloudflare documents no side-effect-free export-permission probe: this small schema export can briefly pause database queries. A failed or unanswered check stores no key. The operator's export record names a probe before it starts and retains its bookmark while unfinished. Rerunning this command follows a recorded probe's bookmark to its end before starting a new check; it downloads no result. A start with no returned bookmark remains blocked through the one-hour cancellation margin, then rerunning clears it and starts a new check. A refused poll keeps the record for the next retry. A record of a full operator export still refuses a new check: resume it with `myco server backup --target cloudflare --to <dir>`, using its original backup directory.
+
+Set **Back up every** in Settings to enable the schedule. The next due wake can then start an automatic backup. `server update` prints the command whenever the deployed server lacks the key and never prompts for it.
+
+Before rotating, check **Health → Backups** and wait until no automatic backup attempt is in progress. This command cannot read the producer’s in-flight state through an existing operator read path; its local export record covers only exports started on this machine. Do not rotate during an automatic backup.
+
+To rotate, create a replacement token with the same permissions and run the same command again. After it confirms the replacement, revoke the old token in Cloudflare. Hosted artifacts record the credential name, never its value. After restoring into the same Cloudflare account, the kept account-wide key can be reused: run this command to validate it against the restored database and install it on the new Worker. A destination in a different account needs a token scoped to that account. The restore command prints this checklist step; automatic backups need it even when the key is reused.
+
+Permission and dashboard references: Cloudflare's [API token permissions](https://developers.cloudflare.com/fundamentals/api/reference/permissions/) and [Create API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/). Export request and polling fields: [D1 export API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/export/) and the installed Wrangler D1 export implementation (`node_modules/wrangler/wrangler-dist/cli.js`, `exportRemotely` / `pollExport`).
+
 ## Stored objects
 
 A blob row is keyed by its content, `(project_id, key)`. The stored object it registered carries the row's generation as well: `<project>/<sha256>~<generation>`, a UUID the upload's own reservation minted before any byte moved. Rows registered before schema 42 have no generation and name `<project>/<sha256>`. Nothing writes that name now: uploads never adopt bytes already in the store, and both restore paths name every restored blob under one fresh restore generation.

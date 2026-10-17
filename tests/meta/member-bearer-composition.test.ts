@@ -13,6 +13,7 @@ const MEMBER_COMPATIBILITY = 'member/constants.ts';
 
 /** Calls to APIs outside Myco, with what each talks to. Adding one is a reviewed act. */
 const FOREIGN: Readonly<Record<string, string>> = {
+  'server/backup-credential.ts': 'the Cloudflare D1 export API',
   'server/cloudflare.ts': 'the Cloudflare R2 object API',
   'upgrade/release-assets.ts': 'the GitHub release assets API',
 };

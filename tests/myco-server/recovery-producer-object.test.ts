@@ -13,7 +13,7 @@ import { PRODUCER_LIMITS, PRODUCER_STALL_MS, type RecoveryAdmission } from '@myc
 import { settleOpenHold } from '@myco-server-worker/core/recovery-hold.js';
 import { Stalled } from '@myco-server-worker/core/recovery-inventory.js';
 import { acquireRecoveryHold } from '@myco-server-worker/core/object-release.js';
-import { RECOVERY_CREDENTIAL_NAMES, STAGING_MANIFEST_FILE } from '@myco-server-worker/core/recovery-staging.js';
+import { HOSTED_RECOVERY_CREDENTIAL_NAMES, STAGING_MANIFEST_FILE } from '@myco-server-worker/core/recovery-staging.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
@@ -438,7 +438,7 @@ it('stages this Deployment\'s bound configuration, who started the attempt, and 
   const [manifestKey] = [...bodies.keys()].filter((key) => key.endsWith('/recovery.json'));
   const manifest = JSON.parse(bodies.get(manifestKey!)!);
   expect(manifest.configuration).toEqual({ ...RECORDED_CONFIGURATION, startedBy: 'mem_owner' });
-  expect(manifest.credentialsRequired).toEqual([...RECOVERY_CREDENTIAL_NAMES]);
+  expect(manifest.credentialsRequired).toEqual([...HOSTED_RECOVERY_CREDENTIAL_NAMES]);
   // The bound export credential is a runtime secret: no staged metadata carries it.
   for (const body of bodies.values()) expect(body).not.toContain('never-sent');
   // A restarted instance reads the same admission back from its own row.
@@ -480,7 +480,7 @@ it('stages an admission from a previous Worker under this object\'s own configur
   expect((await producer.admit(previous)).stage).toBe('export');
   const manifests = [...bodies.entries()].filter(([key]) => key.endsWith('/recovery.json')).map(([, body]) => JSON.parse(body));
   expect(manifests.map((manifest) => [manifest.configuration, manifest.credentialsRequired]))
-    .toEqual([[{ ...RECORDED_CONFIGURATION, startedBy: 'previous-owner' }, [...RECOVERY_CREDENTIAL_NAMES]]]);
+    .toEqual([[{ ...RECORDED_CONFIGURATION, startedBy: 'previous-owner' }, [...HOSTED_RECOVERY_CREDENTIAL_NAMES]]]);
 });
 
 it('answers a token replayed in the other wire shape with the attempt it first admitted, staging and relabelling nothing', async () => {
