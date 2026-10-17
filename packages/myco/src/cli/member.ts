@@ -4,7 +4,7 @@ import { askOnTerminal } from '@myco/setup/prompt.js';
 import semver from 'semver';
 import { isDevelopmentVersion } from '../../scripts/release-policy.mjs';
 import { readBinaryVersion, LIVE_MEMBER_VERSION_TIMEOUT_MS } from '@myco/runtime/binary-version.js';
-import { installedBinaryPath } from '@myco/runtime/binary-resolution.js';
+import { installedBinaryPath, isRunningExecutable } from '@myco/runtime/binary-resolution.js';
 import { selfExecOf } from '@myco/runtime/self-exec.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 /**
@@ -533,14 +533,17 @@ export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageR
   return withMemberRepair(mycoHome, 'myco member reconcile', () => {
     const runningVersion = getPluginVersion();
     if (!isDevelopmentVersion(runningVersion) && semver.valid(runningVersion) !== null && selfExecOf(process.execPath, process.argv[1]).args.length === 0) {
-      const live = installedBinaryPath(mycoHome);
-      if (fs.existsSync(live)) {
-        const liveVersion = readBinaryVersion(live, LIVE_MEMBER_VERSION_TIMEOUT_MS);
-        // A newer version at the same path denotes a replacement inode.
-        if (semver.valid(liveVersion) !== null && semver.gt(liveVersion, runningVersion)) {
-          (opts.onInspectionError ?? console.warn)(`Agent setup belongs to Myco ${liveVersion}, which is now installed; this older process leaves it alone.`);
-          return null;
+      try {
+        const live = installedBinaryPath(mycoHome);
+        if (fs.existsSync(live) && !isRunningExecutable(live)) {
+          const liveVersion = readBinaryVersion(live, LIVE_MEMBER_VERSION_TIMEOUT_MS);
+          if (semver.valid(liveVersion) !== null && semver.gt(liveVersion, runningVersion)) {
+            (opts.onInspectionError ?? console.warn)(`Agent setup belongs to Myco ${liveVersion}, which is now installed; this older process leaves it alone.`);
+            return null;
+          }
         }
+      } catch (error) {
+        (opts.onInspectionError ?? console.warn)(`The installed Myco version could not be checked (${error instanceof Error ? error.message : String(error)}); agent repair will continue using this build.`);
       }
     }
     const serverUrl = memberProvisionTarget(mycoHome, opts.serverUrl);

@@ -10,7 +10,7 @@ import { updateBudget } from '@myco/upgrade/update-budget.js';
 import { checkAutomaticUpdate } from '@myco/cli/doctor-member.js';
 import { homeReport } from '@myco/cli/member-doctor.js';
 import { keepCurrent } from '@myco/cli/member-keep-current.js';
-import { provisionGlobally, runProvision, runStatus } from '@myco/cli/member.js';
+import { provisionGlobally, provisionAgents, runProvision, runStatus } from '@myco/cli/member.js';
 import { readProvisionRecord, recordProvision } from '@myco/member/provision-record.js';
 import { writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { writeInstallMarker, managedBinaryPath } from '@myco/install/managed-binary.js';
@@ -49,7 +49,8 @@ function compiledProcess(executable: string) {
   const argv1 = process.argv[1];
   Object.defineProperty(process, 'execPath', { ...descriptor, value: executable });
   process.argv[1] = '/$bunfs/main';
-  return () => { Object.defineProperty(process, 'execPath', descriptor); process.argv[1] = argv1; };
+  const matches = spyOn(binaryResolution, 'isRunningExecutable').mockImplementation(binaryResolution.captureExecutableIdentity(executable));
+  return () => { matches.mockRestore(); Object.defineProperty(process, 'execPath', descriptor); process.argv[1] = argv1; };
 }
 const stateFile = () => path.join(home, 'member', 'keep-current.json');
 const args = () => ['--project', 'proj_fixture', '--server', SERVER, '--home', home];
@@ -374,7 +375,7 @@ it('keeps the Windows local app-data destination when the install marker is abse
   expect(binaryUpdatePath(unmarked, { platform: 'win32' })).toBe(managedBinaryPath(unmarked, 'win32', process.env.LOCALAPPDATA));
 });
 
-it.each([true, false])('an older helper preserves another helper’s adopted setup; refresh complete = %p', async complete => {
+it.each([true, false].flatMap(complete => [false, true].map(previous => ({ complete, previous }))))('an older helper preserves another helper’s adopted setup; refresh complete = $complete; previous slot = $previous', async ({ complete, previous }) => {
   setPluginVersion(TO);
   writeDeploymentMembership({ serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
   fs.writeFileSync(live, TO, { mode: 0o755 });
@@ -386,7 +387,13 @@ it.each([true, false])('an older helper preserves another helper’s adopted set
     await attemptAutomaticUpdate(home, now, async () => ({ kind: 'adopted', version: TO, reason: 'one agent still needs repair' }));
   }
   setPluginVersion(FROM);
-  const restoreProcess = compiledProcess(live);
+  fs.writeFileSync(live, FROM, { mode: 0o755 });
+  const executable = previous ? path.join(path.dirname(live), process.platform === 'win32' ? 'myco.prev.exe' : 'myco.prev') : live;
+  if (previous) fs.renameSync(live, executable);
+  const restoreProcess = compiledProcess(executable);
+  const replacement = path.join(root, 'replacement');
+  fs.writeFileSync(replacement, TO, { mode: 0o755 });
+  fs.renameSync(replacement, live);
   const probe = spyOn(binaryVersion, 'readBinaryVersion').mockReturnValue(TO);
   const install = spyOn(SymbiontInstaller.prototype, 'install');
   let delivered = false;
@@ -524,6 +531,7 @@ it.each([false, true])('the live older release repairs newer historical setup; n
     expect(keepCurrent(home, { binaryFound: () => true })).not.toBeNull();
     expect(install).toHaveBeenCalledTimes(1);
     expect(readProvisionRecord(home)?.version).toBe(FROM);
+    expect(probe).not.toHaveBeenCalled();
     expect(checkAutomaticUpdate(home).status).toBe('ok');
     const lines: string[] = [];
     runStatus(['--all'], { mycoHome: home, cwd: root, stdout: line => lines.push(line), stderr: () => {}, worker: { platform: 'linux', runner: recordingPlatform().runner } });
@@ -553,4 +561,96 @@ it('validates status arguments before printing the automatic update row and uses
   await attemptAutomaticUpdate(home, now, async () => ({ kind: 'skipped', reason: `runtime pin selects another binary: ${live}` }));
   expect(checkAutomaticUpdate(home).detail).toContain(`Another Myco build is selected for this machine (${live})`);
   expect(checkAutomaticUpdate(home).detail).not.toContain('runtime pin');
+});
+
+for (const route of ['keep-current', 'refresh', 'join-reconcile']) {
+  for (const fault of ['slow', 'non-zero', 'truncated', 'unreadable']) {
+    it(`a ${fault} installed binary check lets ${route} repair proceed with a diagnostic`, () => {
+      setPluginVersion(TO);
+      writeDeploymentMembership({ serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+      provisionGlobally('codex', null, home, { serverUrl: SERVER });
+      setPluginVersion(FROM);
+      const restoreProcess = compiledProcess(live);
+      const marker = path.join(home, 'install.json');
+      if (fault === 'truncated') fs.writeFileSync(marker, '{"channel":"alpha"');
+      if (fault === 'slow' || fault === 'non-zero') {
+        const replacement = path.join(root, 'unprobed-release');
+        fs.writeFileSync(replacement, 'fixture executable', { mode: 0o755 });
+        fs.renameSync(replacement, live);
+      }
+      const read = fs.readFileSync;
+      const denied = fault === 'unreadable' ? spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+        if (String(file) === marker) throw Object.assign(new Error('marker permission denied'), { code: 'EACCES' });
+        return Reflect.apply(read, fs, [file, ...rest]);
+      }) as typeof fs.readFileSync) : null;
+      const probe = spyOn(binaryVersion, 'readBinaryVersion').mockImplementation(() => {
+        if (fault === 'slow') throw Object.assign(new Error('version check timed out'), { code: 'ETIMEDOUT' });
+        throw new Error('version check exited 3');
+      });
+      const messages: string[] = [];
+      const err = spyOn(process.stderr, 'write').mockImplementation(((line: string) => { messages.push(String(line)); return true; }) as typeof process.stderr.write);
+      const warn = spyOn(console, 'warn').mockImplementation((line: unknown) => { messages.push(String(line)); });
+      const install = spyOn(SymbiontInstaller.prototype, 'install');
+      try {
+        if (route === 'keep-current') expect(keepCurrent(home, { binaryFound: () => true })?.ready).toContain('Codex');
+        else if (route === 'refresh') expect(runProvision(['--refresh'], { mycoHome: home, cwd: root, stdout: () => {}, stderr: () => {} })).toBe(true);
+        else expect(provisionAgents(['codex'], home, SERVER, null).skipped).toEqual([]);
+        expect(install).toHaveBeenCalledTimes(1);
+        expect(readProvisionRecord(home)?.version).toBe(FROM);
+        expect(messages.join('')).toContain('The installed Myco version could not be checked');
+        expect(messages.join('')).toContain('agent repair will continue using this build');
+        if (fault === 'slow' || fault === 'non-zero') expect(probe).toHaveBeenCalledWith(live, 2_000);
+        else {
+          expect(probe).not.toHaveBeenCalled();
+          expect(() => binaryUpdatePath(home)).toThrow();
+        }
+      } finally { install.mockRestore(); warn.mockRestore(); err.mockRestore(); probe.mockRestore(); denied?.mockRestore(); restoreProcess(); }
+    });
+  }
+}
+
+it('an unchanged live executable repairs repeated passes without starting a version probe', () => {
+  setPluginVersion(TO);
+  writeDeploymentMembership({ serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+  provisionGlobally('codex', null, home, { serverUrl: SERVER });
+  setPluginVersion(FROM);
+  const restoreProcess = compiledProcess(live);
+  const probe = spyOn(binaryVersion, 'readBinaryVersion').mockImplementation(() => { throw new Error('the running file needs no cold start'); });
+  const install = spyOn(SymbiontInstaller.prototype, 'install');
+  try {
+    expect(keepCurrent(home, { binaryFound: () => true })?.ready).toContain('Codex');
+    expect(keepCurrent(home, { binaryFound: () => true })?.ready).toContain('Codex');
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(probe).not.toHaveBeenCalled();
+    expect(readProvisionRecord(home)?.version).toBe(FROM);
+  } finally { install.mockRestore(); probe.mockRestore(); restoreProcess(); }
+});
+
+it('file identity uses device/inode and Windows file index or creation timestamps', () => {
+  const stat = fs.statSync;
+  const template = stat(live);
+  let current = { dev: 1, ino: 1, ctimeMs: 10, birthtimeMs: 10 };
+  const mockStat = spyOn(fs, 'statSync').mockImplementation(((file: fs.PathLike, ...rest: unknown[]) => {
+    if (String(file) === live) return Object.assign(Object.create(Object.getPrototypeOf(template)), template, current);
+    return Reflect.apply(stat, fs, [file, ...rest]);
+  }) as typeof fs.statSync);
+  try {
+    const posix = binaryResolution.captureExecutableIdentity(live, 'linux');
+    current = { ...current, ctimeMs: 20 };
+    expect(posix(live)).toBe(true);
+    current = { ...current, ino: 2 };
+    expect(posix(live)).toBe(false);
+    current = { ...current, dev: 2, ino: 1 };
+    expect(posix(live)).toBe(false);
+    const windows = binaryResolution.captureExecutableIdentity(live, 'win32');
+    current = { ...current, ino: 2 };
+    expect(windows(live)).toBe(false);
+    current = { dev: 1, ino: 0, ctimeMs: 30, birthtimeMs: 30 };
+    const fallback = binaryResolution.captureExecutableIdentity(live, 'win32');
+    expect(fallback(live)).toBe(true);
+    current = { ...current, ctimeMs: 31 };
+    expect(fallback(live)).toBe(false);
+    current = { ...current, ctimeMs: 30, birthtimeMs: 31 };
+    expect(fallback(live)).toBe(false);
+  } finally { mockStat.mockRestore(); }
 });

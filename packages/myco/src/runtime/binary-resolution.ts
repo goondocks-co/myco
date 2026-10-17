@@ -28,6 +28,27 @@ import { readInstallMarker } from '@myco/install/marker-reader.js';
 import { selfExecOf } from './self-exec.js';
 import { checkPinTrust as checkPinTrustShared, readTrustedPin as readTrustedPinShared, PIN_MISSING_REASON } from '../paths/pin-trust.js';
 
+/** Capture an executable's file identity for comparison after atomic replacement. */
+export function captureExecutableIdentity(binary: string, platform: NodeJS.Platform = process.platform): (candidate: string) => boolean {
+  const started = fs.statSync(binary);
+  return candidate => {
+    const current = fs.statSync(candidate);
+    if (started.dev !== current.dev) return false;
+    if (platform !== 'win32' || (started.ino !== 0 && current.ino !== 0)) return started.ino === current.ino;
+    return started.ctimeMs === current.ctimeMs && started.birthtimeMs === current.birthtimeMs;
+  };
+}
+
+const matchesStartedExecutable = (() => {
+  try { return captureExecutableIdentity(process.execPath); }
+  catch (error) { return (_candidate: string): boolean => { throw error; }; }
+})();
+
+/** Whether the live path still names the executable captured during process initialization. */
+export function isRunningExecutable(binary: string): boolean {
+  return matchesStartedExecutable(binary);
+}
+
 /**
  * Resolution order per caller kind.
  *
