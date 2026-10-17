@@ -24,7 +24,7 @@ it('lists the one update command with its channel and names its alias once in ea
   const update = help('update');
   expect(update).toBe(help('upgrade'));
   expect(update).toContain('Usage: myco update');
-  for (const flag of ['--check', '--channel', '--target-version']) expect(update).toContain(flag);
+  for (const flag of ['--check', '--channel', '--target-version', '--skip-binary', '--claim']) expect(update).toContain(flag);
   expect(update.match(/Alias: myco upgrade/g)).toHaveLength(1);
 });
 it('every listed top-level command has specific help before any vault or membership gate', () => {
@@ -34,4 +34,10 @@ it('every listed top-level command has specific help before any vault or members
     expect({ command, text }).not.toEqual({ command, text: expect.stringContaining('for the full command list') });
     expect(text.trim().length).toBeGreaterThan(`Usage: myco ${command} [args]`.length);
   }
+});
+
+it('documents Windows recovery when an interrupted update leaves no live executable', () => {
+  const guide = fs.readFileSync(path.resolve('docs/upgrade.md'), 'utf8');
+  expect(guide).toContain('if `myco.exe` is missing');
+  expect(guide).toContain('move "<bin-dir>\\myco.prev.exe" "<bin-dir>\\myco.exe"');
 });

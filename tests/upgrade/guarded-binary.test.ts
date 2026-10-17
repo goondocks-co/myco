@@ -49,12 +49,12 @@ it('exports no unguarded member adoption or copy-back operation', () => {
   expect(binaryPrimitives).not.toHaveProperty('restoreVersion');
 });
 
-for (const version of ['0.0.0-dev', '0.0.0-dev+fixture', '0.0.0']) it(`skips development build ${version} before resolving releases`, async () => {
-  deps.currentVersion = version;
+for (const installed of [false, true]) for (const version of ['0.0.0-dev', '0.0.0-dev+fixture', '0.0.0']) it(`skips ${installed ? 'installed' : 'running'} development build ${version} before resolving releases`, async () => {
+  if (installed) fs.writeFileSync(live, version); else deps.currentVersion = version;
   deps.resolveRefs = async () => { throw new Error('development build resolved releases'); };
   expect(await updateBinary('manual', {}, deps)).toEqual({ kind: 'skipped', reason: 'development build' });
   expect(stages).toBe(0);
-  expect(fs.readFileSync(live, 'utf8')).toBe(from);
+  expect(fs.readFileSync(live, 'utf8')).toBe(installed ? version : from);
 });
 
 it('explicit skip keeps the binary and never resolves a release', async () => {
@@ -85,7 +85,7 @@ it('denylists failed versions independently of version slots', async () => {
   markAdoptFailed(home, process.platform, to, deps.localAppData);
   pruneVersions(home, process.platform, 2, from, '1.9.9', deps.localAppData);
   expect(fs.existsSync(versionDir(home, process.platform, to, deps.localAppData))).toBe(false);
-  expect(await updateBinary('manual', {}, deps)).toEqual({ kind: 'skipped', reason: `version ${to} failed an earlier update` });
+  expect(await updateBinary('manual', {}, deps)).toEqual({ kind: 'skipped', reason: `version ${to} failed an earlier update; retry with myco update ${to}` });
   expect(stages).toBe(0);
   expect(fs.readFileSync(live, 'utf8')).toBe(from);
 });
@@ -142,7 +142,7 @@ for (const platform of ['linux', 'win32'] as const) it(`restores the previous by
     if (file === live && version === to) throw new Error('replacement failed');
     return version;
   };
-  expect(await updateBinary('manual', {}, deps)).toEqual({ kind: 'rolled-back', version: from, reason: 'replacement failed' });
+  expect(await updateBinary('manual', {}, deps)).toMatchObject({ kind: 'rolled-back', version: from, reason: expect.stringContaining('replacement failed') });
   expect(fs.readFileSync(live, 'utf8')).toBe(from);
   expect(hasAdoptFailed(home, platform, to, deps.localAppData)).toBe(true);
   if (process.platform !== 'win32') expect(fs.statSync(live).mode & 0o111).not.toBe(0);
@@ -230,7 +230,7 @@ for (const platform of ['linux', 'win32'] as const) it(`preserves an earlier bac
       fs.renameSync(source, dest);
     },
   };
-  expect(await updateBinary('manual', {}, deps)).toMatchObject({ kind: 'failed', reason: 'cannot secure backup' });
+  expect(await updateBinary('manual', {}, deps)).toMatchObject({ kind: 'failed', reason: expect.stringContaining('cannot secure backup') });
   expect(fs.readFileSync(live, 'utf8')).toBe(from);
   expect(fs.readFileSync(previous, 'utf8')).toBe('earlier backup');
 });
@@ -255,8 +255,8 @@ for (const [code, rollback] of [['EPERM', false], ['EIO', false], ['EIO', true]]
   expect(outcome.kind).toBe(rollback ? 'rolled-back' : 'adopted');
   if (outcome.kind === 'adopted' || outcome.kind === 'rolled-back') {
     expect(outcome.version).toBe(rollback ? from : to);
-    expect(outcome.retainedPrevious!.reason).toBe('cleanup failed');
-    expect(fs.readFileSync(outcome.retainedPrevious!.path, 'utf8')).toBe('earlier running version');
+    expect(outcome.retainedPrevious![0]!.reason).toContain('cleanup failed');
+    expect(fs.readFileSync(outcome.retainedPrevious![0]!.path, 'utf8')).toBe('earlier running version');
   }
   expect(fs.readFileSync(live, 'utf8')).toBe(rollback ? from : to);
   expect(fs.existsSync(previous)).toBe(!rollback);
@@ -354,4 +354,247 @@ it('refuses a 1.x release even from an injected resolver', async () => {
   deps.resolveRefs = async () => ({ targetVersion: '1.9.0', assetName: 'fixture', assetUrl: 'fixture', sha256sumsUrl: 'fixture' });
   expect((await updateBinary('manual', {}, deps)).kind).toBe('already-current');
   expect(stages).toBe(0);
+});
+
+for (const phase of ['placement', 'stage placement', 'swap', 'post-check'] as const) it(`does not denylist an environmental failure during ${phase}`, async () => {
+  const noSpace = () => { throw Object.assign(new Error('ENOSPC: no space left'), { code: 'ENOSPC' }); };
+  if (phase === 'placement') deps.placeBinary = noSpace;
+  if (phase === 'stage placement') {
+    delete deps.stageBinary;
+    deps.stageDeps = {
+      download: async (url, file) => fs.writeFileSync(file, url === 'sums' ? `${'a'.repeat(64)}  fixture\n` : 'fixture'),
+      computeSha256: async () => 'a'.repeat(64), ready: noSpace,
+    };
+    deps.resolveRefs = async () => ({ targetVersion: to, assetName: 'fixture', assetUrl: 'binary', sha256sumsUrl: 'sums' });
+  }
+  if (phase === 'swap') deps.fs = { ...fs, renameSync: (source, dest) => {
+    if (String(source).includes('.myco-update-') && dest === live) noSpace();
+    fs.renameSync(source, dest);
+  } };
+  if (phase === 'post-check') deps.probeVersion = file => {
+    const version = fs.readFileSync(file, 'utf8');
+    if (file === live && version === to) noSpace();
+    return version;
+  };
+  expect(await updateBinary('manual', {}, deps)).toMatchObject({ kind: 'failed', reason: expect.stringContaining('ENOSPC') });
+  expect(hasAdoptFailed(home, process.platform, to, deps.localAppData)).toBe(false);
+  expect(fs.readFileSync(live, 'utf8')).toBe(from);
+});
+
+it('allows only an explicit manual retry and clears both failed-version records after adoption', async () => {
+  const slot = versionDir(home, process.platform, to, deps.localAppData);
+  fs.mkdirSync(slot, { recursive: true });
+  markAdoptFailed(home, process.platform, to, deps.localAppData);
+  deps.targetTriple = () => 'darwin-arm64';
+  deps.fetchReleases = async () => [{ tag_name: `myco/v${to}`, prerelease: true, assets: [
+    { name: 'myco-darwin-arm64', browser_download_url: 'fixture' },
+    { name: 'SHA256SUMS', browser_download_url: 'sums' },
+  ] }];
+  for (const options of [{}, { targetVersion: to }]) expect((await updateBinary('automatic', options, deps)).kind).toBe('skipped');
+  expect((await updateBinary('manual', {}, deps)).kind).toBe('skipped');
+  expect(stages).toBe(0);
+  expect((await updateBinary('manual', { targetVersion: to }, deps)).kind).toBe('adopted');
+  expect(hasAdoptFailed(home, process.platform, to, deps.localAppData)).toBe(false);
+  expect(JSON.parse(fs.readFileSync(path.join(home, 'bin', 'adopt-failed.json'), 'utf8'))).not.toContain(to);
+  expect(fs.existsSync(path.join(slot, '.adopt-failed'))).toBe(false);
+});
+
+for (const contents of ['{"oops"', '{"versions":[]}']) it(`names the malformed failed-version file and its remedy: ${contents}`, async () => {
+  const file = path.join(home, 'bin', 'adopt-failed.json');
+  fs.writeFileSync(file, contents);
+  const outcome = await updateBinary('manual', {}, deps);
+  expect(outcome.kind).toBe('failed');
+  if (outcome.kind === 'failed') {
+    expect(outcome.reason).toContain(file);
+    expect(outcome.reason).toContain('Delete or repair');
+  }
+  expect(stages).toBe(0);
+  expect(fs.readFileSync(live, 'utf8')).toBe(from);
+});
+
+it('restores Windows previous bytes by renaming the held new exe aside', async () => {
+  deps.platform = 'win32';
+  let held = false;
+  deps.probeVersion = file => {
+    const version = fs.readFileSync(file, 'utf8');
+    if (file === live && version === to) { held = true; throw new Error('post-check failed'); }
+    return version;
+  };
+  deps.fs = { ...fs,
+    rmSync: (file, options) => {
+      if (held && (file === live || String(file).includes('.myco-retired-'))) throw Object.assign(new Error('held executable'), { code: 'EBUSY' });
+      fs.rmSync(file, options);
+    },
+    renameSync: (source, dest) => {
+      if (held && dest === live && fs.existsSync(live)) throw new Error('cannot rename over held executable');
+      fs.renameSync(source, dest);
+    },
+  };
+  const outcome = await updateBinary('manual', {}, deps);
+  expect(outcome.kind).toBe('rolled-back');
+  expect(fs.readFileSync(live, 'utf8')).toBe(from);
+  expect(hasAdoptFailed(home, 'win32', to, deps.localAppData)).toBe(true);
+  if (outcome.kind === 'rolled-back') {
+    expect(outcome.retainedPrevious).toHaveLength(1);
+    expect(fs.readFileSync(outcome.retainedPrevious![0]!.path, 'utf8')).toBe(to);
+  }
+});
+
+it('names both failed Windows renames and gives recovery when no live executable remains', async () => {
+  deps.platform = 'win32';
+  const previous = path.join(path.dirname(live), 'myco.prev.exe');
+  deps.fs = { ...fs, renameSync: (source, dest) => {
+    if (dest === live) throw Object.assign(new Error(source === previous ? 'restore blocked' : 'swap blocked'), { code: 'EBUSY' });
+    fs.renameSync(source, dest);
+  } };
+  const outcome = await updateBinary('manual', {}, deps);
+  expect(outcome.kind).toBe('failed');
+  if (outcome.kind === 'failed') {
+    expect(outcome.reason).toContain('swap blocked');
+    expect(outcome.reason).toContain(`rename ${previous} to ${live} failed (restore blocked)`);
+    expect(outcome.reason).toContain(`No ${path.basename(live)} is at ${live}`);
+    expect(outcome.reason).toContain(`Recovery: move "${previous}" "${live}"`);
+  }
+  expect(fs.existsSync(live)).toBe(false);
+  expect(fs.readFileSync(previous, 'utf8')).toBe(from);
+  expect(hasAdoptFailed(home, 'win32', to, deps.localAppData)).toBe(false);
+});
+
+it('runs static skip guards before attempting a busy lease', async () => {
+  const lease = LifecycleLock.acquire(path.join(home, 'member', REPAIR_LOCK));
+  expect(lease.acquired).toBe(true);
+  try {
+    expect(await updateBinary('manual', { skipBinary: true }, deps)).toEqual({ kind: 'skipped', reason: '--skip-binary requested' });
+    expect(await updateBinary('manual', {}, { ...deps, currentVersion: '0.0.0-dev' })).toEqual({ kind: 'skipped', reason: 'development build' });
+    expect(await updateBinary('automatic', {}, { ...deps, home: path.join(root, 'custom') })).toEqual({ kind: 'skipped', reason: 'this is not the default Myco home' });
+  } finally { if (lease.acquired) lease.lock.release(); }
+});
+
+it('sweeps stale update directories and unused retired files under the lease, retaining held files', async () => {
+  const directory = path.dirname(live);
+  const stale = path.join(directory, '.myco-update-stale');
+  const retired = path.join(directory, '.myco-retired-unused.exe');
+  const held = path.join(directory, '.myco-retired-held.exe');
+  fs.mkdirSync(stale); fs.writeFileSync(path.join(stale, 'myco'), 'stale');
+  fs.writeFileSync(retired, 'unused'); fs.writeFileSync(held, 'held');
+  deps.fs = { ...fs, rmSync: (file, options) => {
+    if (file === held) throw Object.assign(new Error('held'), { code: 'EBUSY' });
+    const lease = LifecycleLock.acquire(path.join(home, 'member', REPAIR_LOCK));
+    expect(lease.acquired).toBe(false);
+    if (lease.acquired) lease.lock.release();
+    fs.rmSync(file, options);
+  } };
+  const outcome = await updateBinary('manual', {}, deps);
+  expect(outcome.kind).toBe('adopted');
+  if ('retainedPrevious' in outcome) {
+    expect(outcome.retainedPrevious![0]!.path).toBe(held);
+    expect(outcome.retainedPrevious![0]!.reason).toContain('held');
+  } else throw new Error('missing retained-file report');
+  expect(fs.existsSync(stale)).toBe(false);
+  expect(fs.existsSync(retired)).toBe(false);
+  expect(fs.readFileSync(held, 'utf8')).toBe('held');
+});
+
+it.skipIf(process.platform !== 'win32')('Windows rolls back while a process executes the failed new exe', async () => {
+  fs.copyFileSync(process.execPath, live);
+  fs.copyFileSync(process.execPath, path.join(stage, 'myco.exe'));
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  let probes = 0;
+  deps.probeVersion = async file => {
+    if (file !== live) return to;
+    if (probes++ === 0) return from;
+    child = Bun.spawn([live, '-e', 'console.log("ready"); await Bun.sleep(60000)'], {
+      cwd: root, env: sandboxChildEnv(root, { LOCALAPPDATA: deps.localAppData! }), stdout: 'pipe', stderr: 'pipe',
+    });
+    if (typeof child.stdout === 'number' || child.stdout === undefined) throw new Error('missing child stdout');
+    const ready = await child.stdout.getReader().read();
+    expect(new TextDecoder().decode(ready.value)).toContain('ready');
+    throw new Error('post-check failed');
+  };
+  try {
+    const outcome = await updateBinary('manual', {}, deps);
+    expect(outcome.kind).toBe('rolled-back');
+    expect(child?.exitCode).toBeNull();
+    expect(fs.readFileSync(live)).toEqual(fs.readFileSync(process.execPath));
+    expect(hasAdoptFailed(home, 'win32', to, deps.localAppData)).toBe(true);
+    if (outcome.kind === 'rolled-back') {
+      expect(outcome.retainedPrevious).toHaveLength(1);
+      expect(fs.readFileSync(outcome.retainedPrevious![0]!.path)).toEqual(fs.readFileSync(process.execPath));
+    }
+  } finally { if (child) { child.kill(); await child.exited; } }
+}, 15_000);
+
+it('reports adoption and the repair action if clearing failure records fails', async () => {
+  const originalRename = fs.renameSync;
+  const file = path.join(home, 'bin', 'adopt-failed.json');
+  const rename = spyOn(fs, 'renameSync').mockImplementation((source, dest) => {
+    if (dest === file) throw Object.assign(new Error('ENOSPC while clearing record'), { code: 'ENOSPC' });
+    originalRename(source, dest);
+  });
+  try {
+    const outcome = await updateBinary('manual', {}, deps);
+    expect(outcome.kind).toBe('adopted');
+    expect(fs.readFileSync(live, 'utf8')).toBe(to);
+    expect(outcome.warnings).toHaveLength(1);
+    expect(outcome.warnings![0]).toContain('could not clear');
+    expect(outcome.warnings![0]).toContain(file);
+    expect(outcome.warnings![0]).toContain('Delete or repair');
+  } finally { rename.mockRestore(); }
+});
+
+it('preserves Windows missing-executable recovery if failure bookkeeping also fails', async () => {
+  deps.platform = 'win32';
+  const previous = path.join(path.dirname(live), 'myco.prev.exe');
+  deps.probeVersion = file => {
+    const version = fs.readFileSync(file, 'utf8');
+    if (file === live && version === to) throw new Error('post-check failed');
+    return version;
+  };
+  deps.fs = { ...fs, renameSync: (source, dest) => {
+    if (source === previous && dest === live) throw new Error('restore blocked');
+    fs.renameSync(source, dest);
+  } };
+  const originalRename = fs.renameSync;
+  const rename = spyOn(fs, 'renameSync').mockImplementation((source, dest) => {
+    if (dest === path.join(home, 'bin', 'adopt-failed.json')) throw Object.assign(new Error('ENOSPC recording failed version'), { code: 'ENOSPC' });
+    originalRename(source, dest);
+  });
+  try {
+    const outcome = await updateBinary('manual', {}, deps);
+    expect(outcome.kind).toBe('failed');
+    if (outcome.kind === 'failed') {
+      expect(outcome.reason).toContain('restore blocked');
+      expect(outcome.reason).toContain(`Recovery: move "${previous}" "${live}"`);
+    }
+    expect(fs.existsSync(live)).toBe(false);
+    expect(outcome.warnings![0]).toContain('ENOSPC recording failed version');
+  } finally { rename.mockRestore(); }
+});
+
+it('does not denylist an operating-system refusal returned by the readiness probe', async () => {
+  deps.placeBinary = (source, dest, options) => placeExecutable(source, dest, { ...options, ready: () => ({
+    runs: false, detail: 'permission denied', error: Object.assign(new Error('EACCES'), { code: 'EACCES' }),
+  }) });
+  expect((await updateBinary('manual', {}, deps)).kind).toBe('failed');
+  expect(fs.readFileSync(live, 'utf8')).toBe(from);
+  expect(hasAdoptFailed(home, process.platform, to, deps.localAppData)).toBe(false);
+});
+
+it('reports no nonexistent retained path when retiring the failed Windows executable fails', async () => {
+  deps.platform = 'win32';
+  deps.probeVersion = file => {
+    const version = fs.readFileSync(file, 'utf8');
+    if (file === live && version === to) throw new Error('post-check failed');
+    return version;
+  };
+  deps.fs = { ...fs, renameSync: (source, dest) => {
+    if (String(dest).includes('.myco-retired-')) throw new Error('rename failed executable blocked');
+    fs.renameSync(source, dest);
+  } };
+  const outcome = await updateBinary('manual', {}, deps);
+  expect(outcome.kind).toBe('failed');
+  if (outcome.kind === 'failed') expect(outcome.reason).toContain('rename failed executable');
+  expect(outcome.retainedPrevious).toBeUndefined();
+  expect(fs.readFileSync(live, 'utf8')).toBe(to);
+  expect(fs.readFileSync(path.join(path.dirname(live), 'myco.prev.exe'), 'utf8')).toBe(from);
 });

@@ -160,10 +160,11 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
 
   const runners = (deps.runnerRecords ?? listRunnerRecords)(home).filter(isLiveRunner).filter(record =>
     (deps.runnerServiceInstalled ?? ((serverUrl, mycoHome) => workerServiceInstalled(executorServiceTarget(serverUrl, { mycoHome, binaryPath: deps.mycoBinary, platform: deps.platform }, 'runner'))))(record.serverUrl, home));
-  if (runners.length > 0 && !parsed.has('--skip-binary')) {
+  if (runners.length > 0) {
     const summaries = new Set<string>();
     const runner = deps.runRunner ?? (await import('./runner.js')).run;
-    for (const record of runners) {
+    if (parsed.has('--skip-binary')) console.log('Myco: binary update skipped (--skip-binary requested).');
+    for (const record of parsed.has('--skip-binary') ? [] : runners) {
       const selection = [...(channelArg ? ['--channel', channelArg] : []), ...(targetVersionArg ? ['--target-version', targetVersionArg] : [])];
       const ok = await runner(['update', '--server', record.serverUrl, ...(isCheck ? ['--check'] : []), ...selection], { mycoHome: home, stdout: line => {
         if (line.startsWith('Myco: ')) summaries.add(line.slice('Myco: '.length));
@@ -198,7 +199,8 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
     console.error(`Myco: update rolled back to ${outcome.version} (${outcome.reason}).`);
     process.exitCode = 1;
   } else console.log(`Myco: from ${currentVersion} to ${outcome.version} on channel ${channel}${outcome.kind === 'already-current' ? ` (${outcome.reason})` : ''}.`);
-  if ('retainedPrevious' in outcome && outcome.retainedPrevious !== undefined) console.log(`An earlier version could not be removed (${outcome.retainedPrevious.reason}); kept at ${outcome.retainedPrevious.path}.`);
+  if ('retainedPrevious' in outcome) for (const retained of outcome.retainedPrevious ?? []) console.log(`Update files were kept at ${retained.path} (${retained.reason}).`);
+  for (const warning of outcome.warnings ?? []) console.log(warning);
   await refresh();
 }
 

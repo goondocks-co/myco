@@ -15,7 +15,7 @@ function readFailedVersions(home: string): string[] {
     return versions;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    throw error;
+    throw new Error(`Cannot read ${failedVersionsPath(home)}: ${error instanceof Error ? error.message : String(error)}. Delete or repair this file, then retry.`);
   }
 }
 
@@ -34,4 +34,18 @@ export function markAdoptFailed(home: string, platform: NodeJS.Platform, version
   if (!fs.existsSync(dir)) return;
   fs.writeFileSync(path.join(dir, ADOPT_FAILED_MARKER), `${new Date().toISOString()}
 `);
+}
+
+/** A verified adoption clears both durable and staged failure records. */
+export function clearAdoptFailed(home: string, platform: NodeJS.Platform, version: string, localAppData?: string): void {
+  const file = failedVersionsPath(home);
+  const marker = path.join(versionDir(home, platform, version, localAppData), ADOPT_FAILED_MARKER);
+  try {
+    withFileLockSync(`${file}.lock`, () => {
+      atomicWriteFileSync(file, JSON.stringify(readFailedVersions(home).filter(failed => failed !== version)) + '\n');
+    });
+    fs.rmSync(marker, { force: true });
+  } catch (error) {
+    throw new Error(`${error instanceof Error ? error.message : String(error)}. Delete or repair ${file} and remove ${marker}.`);
+  }
 }

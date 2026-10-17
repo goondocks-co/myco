@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
     if (dev) expect(fs.readFileSync(binary)).toEqual(oldBytes);
     expect(fs.readFileSync(path.join(home, 'refresh.log'), 'utf8')).toBe('member provision --refresh\n');
     expect(JSON.parse(fs.readFileSync(path.join(home, 'install.json'), 'utf8')).channel).toBe('alpha');
-    expect(fs.readdirSync(home).sort()).toEqual(['bin', 'install.json', ...(!dev ? ['last-update-check.json'] : []), 'member', 'refresh.log']);
+    expect(fs.readdirSync(home).sort()).toEqual(['bin', 'install.json', ...(!dev ? ['last-update-check.json', 'member'] : []), 'refresh.log']);
     if (custom) expect(fs.existsSync(path.join(home, 'bin/myco'))).toBe(false);
   });
   it('does not stage an older or out-of-channel explicit version', async () => {

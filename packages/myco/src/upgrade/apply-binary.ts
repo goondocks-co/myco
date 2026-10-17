@@ -10,7 +10,7 @@ import {
   versionBinaryPath,
 } from '../install/managed-binary.js';
 import type { AssetRefs } from './release-assets.js';
-import { placeExecutable, readyExecutable, type ProgramProbe } from '../install/place-binary.js';
+import { placeExecutable, readyExecutable, ExecutableVerificationError, type ProgramProbe } from '../install/place-binary.js';
 
 // ---------------------------------------------------------------------------
 // Download size cap (DoS / availability guard)
@@ -268,7 +268,7 @@ export async function stageBinary(
     try { fs.rmSync(vDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     return {
       error: `could not stage binary to ${vBinPath}: ${err instanceof Error ? err.message : String(err)} — staging aborted (stable binary untouched)`,
-      verificationFailed: true,
+      verificationFailed: err instanceof ExecutableVerificationError,
     };
   }
 

@@ -151,3 +151,39 @@ it('resolves an unmarked home channel from that home and preserves it in overrid
   });
   expect(output.join('\n')).toContain('myco update --target-version 2.0.0-beta.1 --channel beta');
 });
+
+it('skip-binary on a runner host still blocks agent refresh while an update is pending', async () => {
+  const { runnerUpdateStatePath } = await import('@myco/runner/update.js');
+  const file = runnerUpdateStatePath(home);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ version: 1, nextCheckAt: 0, lastCheckAt: null, latestVersion: null, failures: 0, requests: { fixture: { id: 'fixture', requestedAt: Date.now() } } }));
+  let refreshed = false;
+  await run(['--skip-binary'], {
+    home, currentVersion: '2.0.0-alpha.2', isMemberHome: () => true,
+    runnerRecords: () => [{ version: 1, serverUrl: 'https://fixture.invalid', runnerId: 'runner', name: 'fixture', token: 'fixture' }],
+    runnerServiceInstalled: () => true,
+    runRunner: async () => { throw new Error('skip requested a runner update'); },
+    refreshMember: async () => { refreshed = true; },
+  });
+  expect(refreshed).toBe(false);
+  expect(output.join('\n')).toContain('binary update skipped (--skip-binary requested)');
+  expect(output.join('\n')).toContain('Agents refreshed: no (runner update pending).');
+});
+
+it('names retained update directories in the cleanup outcome', async () => {
+  const events: string[] = [];
+  await run([], {
+    home, currentVersion: '2.0.0-alpha.2', isMemberHome: () => false,
+    resolveRefs: async () => refs('2.0.0-alpha.3'), stageBinary: prepareStage(events),
+    placeBinary: place(events), probeVersion: file => fs.readFileSync(file, 'utf8'),
+    fs: { ...fs, rmSync: (file, options) => {
+      if (String(file).includes('.myco-update-')) throw new Error('cleanup blocked');
+      fs.rmSync(file, options);
+    } },
+  });
+  expect(output.join('\n')).toContain('Update files were kept at');
+  expect(output.join('\n')).toContain('.myco-update-');
+  expect(output.join('\n')).toContain('cleanup blocked');
+  expect(output.join('\n')).not.toContain('An earlier version');
+  expect(process.exitCode ?? 0).toBe(0);
+});
