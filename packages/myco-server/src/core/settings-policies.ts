@@ -276,7 +276,7 @@ const executionProfiles: SettingPolicy = {
   async resolve(env) {
     const stored = await settingsWriter(env.db).leaves();
     return Object.fromEntries(executionProfiles.leaves.map((leaf) => {
-      const fallback = executionProfileLeafDefault(leaf, env.harnessCredentialSource)!;
+      const fallback = executionProfileLeafDefault(leaf)!;
       const held = stored[leaf];
       const violation = held === undefined ? null : held.malformed ? 'The stored value does not read' : leafRuleViolation(DEPLOYMENT_LEAF_SPECS[leaf]!, held.value);
       if (violation !== null) return [leaf, { effective: null, source: 'invalid', state: 'invalid', reason: `${violation}. Correct this setting or reset it.` }];

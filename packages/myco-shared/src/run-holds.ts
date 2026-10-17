@@ -86,6 +86,11 @@ export const noModelForTier = (harness: string, tier: string): string => profile
 export const sourceReadUnavailable = (harness: string): string => profileHold(sourceReadUnavailableHold, harness);
 export const credentialUnavailable = (harness: string): string => profileHold(credentialUnavailableHold, harness);
 
+/** Stored sign-in holds are visible only to readers allowed to administer agent sign-in. */
+export function visibleRunHolder(holder: string | null, includeSignIn: boolean): string | null {
+  return !includeSignIn && holder?.startsWith(prefixOf(credentialUnavailableHold)) ? 'worker' : holder;
+}
+
 /** The sentence for a holder a run names, or null when it names none this Deployment knows. */
 export function holdSentence(holder: string | null): string | null {
   if (holder !== null) {

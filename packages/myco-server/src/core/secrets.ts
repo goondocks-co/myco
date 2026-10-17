@@ -88,8 +88,6 @@ export class SecretOpenError extends Error {
 }
 
 export interface SecretStore {
-  /** Whether the selected agent can use its slot. Returns no credential or preview. */
-  usableFor(harness: string): Promise<boolean>;
   /** Seal `value` under the deployment's wrapping key and record who stored it, as `normalizeSecretValue` shapes it; throws `SecretValueError` for a value it refuses. */
   put(name: string, value: string, actor: string, nowMs: number): Promise<void>;
   /**
@@ -224,17 +222,6 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
   };
 
   return {
-    async usableFor(harness) {
-      const slot = HARNESS_CREDENTIALS[harness]?.slot;
-      if (slot == null) return false;
-      const r = await row(slot);
-      if (r === null) return false;
-      try { return Object.keys(credentialEnvFor(harness, await openRow(r))).length > 0; }
-      catch (error) {
-        if (error instanceof SecretOpenError || error instanceof SecretValueError) return false;
-        throw error;
-      }
-    },
     async put(name, raw, actor, nowMs) {
       const checked = normalizeSecretValue(raw);
       if (!checked.ok) throw new SecretValueError(checked.reason);
@@ -281,7 +268,29 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
   };
 }
 
+/** One request opens each stored slot at most once and receives only agent usability. */
+export function harnessCredentialAvailability(db: RelationalStore, wrappingKey: SecretWrappingKey): (harness: string) => Promise<boolean> {
+  const store = deploymentSecretStore(db, wrappingKey);
+  const slots = new Map<string, Promise<string | null>>();
+  return async harness => {
+    const slot = HARNESS_CREDENTIALS[harness]?.slot;
+    if (slot == null) return false;
+    let opened = slots.get(slot);
+    if (opened === undefined) {
+      opened = store.get(slot);
+      slots.set(slot, opened);
+    }
+    try {
+      const key = await opened;
+      return key !== null && Object.keys(credentialEnvFor(harness, key)).length > 0;
+    } catch (error) {
+      if (error instanceof SecretOpenError || error instanceof SecretValueError) return false;
+      throw error;
+    }
+  };
+}
+
 /** A read surface receives only whether the agent's stored login is usable. */
 export function harnessCredentialAvailable(db: RelationalStore, wrappingKey: SecretWrappingKey, harness: string): Promise<boolean> {
-  return deploymentSecretStore(db, wrappingKey).usableFor(harness);
+  return harnessCredentialAvailability(db, wrappingKey)(harness);
 }

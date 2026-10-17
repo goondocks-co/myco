@@ -1,3 +1,4 @@
+import { harnessCredentialAvailability } from './secrets.js';
 import { runnerCredentialChoices } from '../auth/runners.js';
 import { emitLateHarnessError } from './run-postconditions.js';
 import type { HarnessStop } from '@goondocks/myco-shared/run-text';
@@ -47,7 +48,7 @@ import { credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import type { ExecutionProfile, ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { taskTierRefusal } from './execution-profile.js';
 import {
-  capabilityOf, capabilityOn, CLAIM_SETTING_LEAVES, chooseHarness, claimSettings, DEFAULT_DISPATCH_TIMEOUT_SECONDS, fleetSelection, harnessPreference, RUNTIME_SERVED_TASKS, selectExecution, workerPreference,
+  capabilityOf, capabilityOn, CLAIM_SETTING_LEAVES, chooseHarness, claimSettings, DEFAULT_DISPATCH_TIMEOUT_SECONDS, fleetSelection, harnessPreference, RUNTIME_SERVED_TASKS, availableLogin, selectExecution, workerPreference,
   type FleetReport, type LoginStep, type OfferedHarness,
 } from './worker-selection.js';
 
@@ -876,7 +877,7 @@ type SelectedExecution = { harness: string; profile: ExecutionProfile; credentia
 /** Resolve a task against one worker's offers in preference order, opening the chosen agent's login. */
 export async function selectWorkerExecution(env: ServerEnv, task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>, worker?: WorkerPrincipal): Promise<{ selected: SelectedExecution | null; reason: string | null }> {
   const choices = worker?.kind === 'runner' ? await runnerCredentialChoices(env.db, worker.runnerId) : undefined;
-  const { selected, reason } = await selectExecution(env, task, offers, settings, claimLogin(env), choices);
+  const { selected, reason } = await selectExecution(task, offers, settings, claimLogin(env), choices);
   return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, credentialEnv: selected.login }, reason };
 }
 
@@ -886,21 +887,22 @@ async function recordProfileHolds(env: ServerEnv, worker: { principal: WorkerPri
     .filter((report) => report.credentialId !== workerKey(worker.principal))
     .map((report) => ({ offers: report.offers, capabilities: report.capabilities, runner: report.runner, credentialChoices: report.credentialChoices }));
   reports.push({ offers: [...worker.harnesses], capabilities: [...(worker.capabilities ?? [])], runner: worker.principal.kind === 'runner', credentialChoices: worker.principal.kind === 'runner' ? await runnerCredentialChoices(env.db, worker.principal.runnerId) : undefined });
+  const login = availableLogin(harnessCredentialAvailability(env.db, env.wrappingKey));
   for (const task of OUTCOME_TASKS) {
     const tierRefusal = taskTierRefusal(task, settings);
     if (tierRefusal !== null) {
       await recordTaskHolder(env.db, [task], ['worker', ...CAPABILITY_HOLDS], tierRefusal, true);
       continue;
     }
-    const { holder } = await fleetExecution(env, task, reports, settings);
+    const { holder } = await fleetExecution(env, task, reports, settings, login);
     await recordTaskHolder(env.db, [task], ['worker'], holder, true);
   }
 }
 
 /** What `reports` would run `task` under at a claim now, or the holder a queued run of it waits under (`fleetSelection`). */
-export async function fleetExecution(env: ServerEnv, task: string, reports: readonly FleetReport[], settings: ReadonlyMap<string, string>): Promise<{ selected: SelectedExecution | null; holder: string }> {
-  const { selected, holder } = await fleetSelection(env, task, reports, settings, () => claimLogin(env));
-  return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, credentialEnv: selected.login }, holder };
+export async function fleetExecution(env: ServerEnv, task: string, reports: readonly FleetReport[], settings: ReadonlyMap<string, string>,
+  login = availableLogin(harnessCredentialAvailability(env.db, env.wrappingKey))) {
+  return fleetSelection(task, reports, settings, () => login);
 }
 
 /** Whether a recent eligible worker can execute this repository task with its required profile and capabilities. */

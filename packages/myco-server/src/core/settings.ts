@@ -152,7 +152,7 @@ export const RETIRED_SECRET_SLOTS: ReadonlySet<string> = new Set(['github']);
 export const DEPLOYMENT_LEAVES: readonly string[] = Object.keys(DEPLOYMENT_LEAF_SPECS);
 
 /** The built-in value of one execution profile leaf on this Deployment. */
-export function executionProfileLeafDefault(leaf: string, _credentialSource: 'deployment' | 'worker-login'): { present: boolean; value: string | null } | null {
+export function executionProfileLeafDefault(leaf: string): { present: boolean; value: string | null } | null {
   const parts = leaf.split('.');
   const [scope, map, harness, tier] = parts;
   if (scope !== 'agent') return null;

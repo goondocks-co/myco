@@ -3,8 +3,10 @@ import type { RunnerBlockedVersion, RunnerUpdateRequest, RunnerUpdateResult, Run
 
 export type RunnerCredentialChoice = 'own' | 'stored';
 export type RunnerCredentialChoices = Readonly<Record<string, RunnerCredentialChoice>>;
+/** Null marks a persisted source this build cannot use. */
+export type StoredRunnerCredentialChoices = Readonly<Record<string, RunnerCredentialChoice | null>>;
 
-/** Missing agents use this machine's sign-in; malformed persisted choices refuse selection. */
+/** Input choices name only supported agents and explicit sign-in sources. */
 export function parseRunnerCredentialChoices(text: string): RunnerCredentialChoices {
   const value: unknown = JSON.parse(text);
   if (value === null || typeof value !== 'object' || Array.isArray(value)
@@ -12,9 +14,17 @@ export function parseRunnerCredentialChoices(text: string): RunnerCredentialChoi
   return value as RunnerCredentialChoices;
 }
 
+/** Persisted choices for agents absent from this build do not participate in selection. */
+export function storedRunnerCredentialChoices(text: string): StoredRunnerCredentialChoices {
+  const value: unknown = JSON.parse(text);
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid runner sign-in choices');
+  return Object.fromEntries(Object.entries(value).filter(([agent]) => Object.hasOwn(HARNESS_CREDENTIALS, agent))
+    .map(([agent, choice]) => [agent, choice === 'own' || choice === 'stored' ? choice : null]));
+}
+
 /** Stored sign-in admits a reported agent independently of its machine's authentication status. */
-export function runnerAgentLoginReady(offer: { id: string; authenticated: boolean; installed?: boolean }, choices?: RunnerCredentialChoices, storedAvailable?: Readonly<Record<string, boolean>>): boolean {
-  return offer.installed !== false && (choices?.[offer.id] === 'stored' ? storedAvailable === undefined || storedAvailable[offer.id] === true : offer.authenticated);
+export function runnerAgentLoginReady(offer: { id: string; authenticated: boolean; installed?: boolean }, choices?: StoredRunnerCredentialChoices, storedAvailable?: Readonly<Record<string, boolean>>): boolean {
+  return offer.installed !== false && choices?.[offer.id] !== null && (choices?.[offer.id] === 'stored' ? storedAvailable === undefined || storedAvailable[offer.id] === true : offer.authenticated);
 }
 
 export type RunnerDisplay = 'Busy' | 'Online' | 'Offline' | 'Never contacted' | 'Paused' | 'Removed' | 'Not ready';
@@ -31,7 +41,7 @@ export interface RunnerFleetRecord {
   lastAttempted: FleetRun | null; lastCompleted: FleetRun | null; lastFailed: FleetRun | null;
   offers: Array<{ id: string; installed?: boolean; authenticated: boolean; profile?: { model: string; efforts: readonly string[] } }> | null;
   offersObservedAt: number | null;
-  credentialChoices?: RunnerCredentialChoices;
+  credentialChoices?: StoredRunnerCredentialChoices;
   capabilities: string[] | null; labels: string[] | null; preference: string | null;
   os: string | null; arch: string | null; version: string | null;
   readiness: { state: RunnerAvailability; code?: RunnerAvailability | 'not_signed_in' | 'credential_unavailable' | 'updating' | 'registration'; reason: string; observedAt: number | null };
@@ -42,7 +52,7 @@ export interface RunnerFleetRecord {
   updateState: RunnerUpdateState | null; updateRequest: RunnerUpdateRequest | null;
 }
 
-export type QueueReason = 'capacity' | 'no_runner' | 'model_profile' | 'credential_unavailable' | 'settling' | 'dispatch_ceiling' | 'not_signed_in' | 'credential_unavailable' | 'updating' | 'paused' | 'registration' | 'ready' | 'unavailable';
+export type QueueReason = 'capacity' | 'no_runner' | 'model_profile' | 'credential_unavailable' | 'settling' | 'dispatch_ceiling' | 'not_signed_in' | 'updating' | 'paused' | 'registration' | 'ready' | 'unavailable';
 export interface FleetQueue {
   observedAt: number; count: number; oldestAt: number | null;
   reasons: Array<{ reason: QueueReason; count: number }>;

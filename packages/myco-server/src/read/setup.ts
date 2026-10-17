@@ -3,7 +3,9 @@ import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data'
 import { deploymentOwnerSql, linkedHumanAdminSql } from '../core/ownership.js';
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import { credentialLive } from '../db/liveness.js';
-import { fleetReports, readWorkerFleet } from '../core/worker-contacts.js';
+import { applyFleetSignInAvailability } from './fleet.js';
+import { readWorkerFleet } from '../core/worker-contacts.js';
+import { harnessCredentialAvailability } from '../core/secrets.js';
 import type { MachineScope } from './machines.js';
 import { MAX_WORK_WINDOW_MS } from './work.js';
 import { projectsFiltering } from './scope.js';
@@ -53,8 +55,9 @@ export async function readSetupProgress(env: ServerEnv, scope: MachineScope, now
     .first<{ signed_in: number; projects: number; live_capture: number; queued: number; enabled_runner: number }>();
   if (row === null) throw new Error('Setup observations unavailable');
   // Members receive only the queue boolean, with no runner inventory or outcome history.
-  const fleet = scope.all ? await readWorkerFleet(env.db, now) : [];
-  const runnersReady = scope.all ? fleetReports(fleet, true).filter(report => report.runner).length : null;
+  const fleet = scope.all ? (await readWorkerFleet(env.db, now, true)).filter(row => row.recent && row.eligible) : [];
+  if (scope.all) await applyFleetSignInAvailability(fleet, now, harnessCredentialAvailability(env.db, env.wrappingKey));
+  const runnersReady = scope.all ? fleet.filter(row => row.runner !== null && row.runnerDetails?.readiness.state === 'ready').length : null;
   const produced = scope.all ? await env.db.prepare(`SELECT EXISTS (SELECT 1 FROM agent_runs a INDEXED BY idx_agent_runs_retention
     WHERE a.resumable = 0 AND a.status IN ('completed', 'failed', 'skipped')
       AND COALESCE(a.completed_at, a.started_at) >= ? AND COALESCE(a.completed_at, a.started_at) <= ?
@@ -68,7 +71,7 @@ export async function readSetupProgress(env: ServerEnv, scope: MachineScope, now
     ...(repositoryRequirements.overflow ? { repositoriesOverflow: true } : {}),
     machines: { signedIn: row.signed_in }, projects: scope.all ? row.projects : Number(row.live_capture === 1), liveCapture: row.live_capture === 1,
     runnersReady, workProduced: produced?.produced === 1,
-    legacyWorkers: scope.all ? fleet.filter(worker => worker.runner === null && worker.eligible && worker.recent).length : null,
+    legacyWorkers: scope.all ? fleet.filter(worker => worker.runner === null).length : null,
     queuedWithoutRunner: row.queued === 1 && row.enabled_runner === 0,
   };
 }

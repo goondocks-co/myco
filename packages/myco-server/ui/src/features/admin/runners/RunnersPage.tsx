@@ -127,7 +127,7 @@ function RunnerCard({ runner, allowed, storedCredentials }: { runner: RunnerRow;
           ]} />
         </div>}
       </div>
-      {[...new Set([...(runner.offers?.map(offer => offer.id) ?? []), ...Object.keys(runner.credentialChoices ?? {})])].map(agent => <AgentSignIn key={agent} runner={runner} agent={agent}
+      {allowed && [...new Set([...(runner.offers?.map(offer => offer.id) ?? []), ...Object.keys(runner.credentialChoices ?? {})])].map(agent => <AgentSignIn key={agent} runner={runner} agent={agent}
         allowed={allowed && runner.state !== 'removed'} storedAvailable={storedCredentials[agent] === true} />)}
       {update.isError && <ErrorState error={update.error} onRetry={() => update.mutate()} />}
       <details className="mt-s3 border-t border-line pt-s3 t-small text-muted"><summary className="min-h-tap content-center cursor-pointer text-ink-2">Details</summary>
@@ -179,13 +179,14 @@ function RunnerCard({ runner, allowed, storedCredentials }: { runner: RunnerRow;
 
 function AgentSignIn({ runner, agent, allowed, storedAvailable }: { runner: RunnerRow; agent: string; allowed: boolean; storedAvailable: boolean }) {
   const client = useQueryClient();
-  const choice = runner.credentialChoices?.[agent] ?? 'own';
+  const choices = runner.credentialChoices ?? {};
+  const choice = Object.hasOwn(choices, agent) ? choices[agent] : 'own';
   const change = useMutation({
     mutationFn: (next: RunnerCredentialChoice) => postJson(`/api/runners/${encodeURIComponent(runner.id)}/sign-in`, { agent, choice: next }),
     onSuccess: () => refreshFleet(client),
   });
   return <div className="mt-s3 border-t border-line pt-s3 t-small" aria-label={`${harnessLabel(agent)} sign-in`}>
-    <p>{harnessLabel(agent)} · Signs in with: {choice === 'stored' ? 'the server’s stored key' : 'this machine’s sign-in'}</p>
+    <p>{harnessLabel(agent)} · {choice === null ? 'Choose how this agent signs in' : `Signs in with: ${choice === 'stored' ? 'the server’s stored key' : 'this machine’s sign-in'}`}</p>
     {allowed && <div className="mt-s2 flex flex-wrap items-center gap-s2">
       <Button size="sm" variant="secondary" disabled={choice === 'own' || change.isPending} onClick={() => change.mutate('own')}>Use this machine’s sign-in</Button>
       <Button size="sm" variant="secondary" disabled={!storedAvailable || choice === 'stored' || change.isPending} onClick={() => change.mutate('stored')}>Use the server’s stored key</Button>

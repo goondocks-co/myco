@@ -35,7 +35,7 @@ describe('settings retirement', () => {
   it('keeps the retired leaves out of the active contract and admits no unread leaf', () => {
     expect(SERVER_TEXT.length).toBeGreaterThan(100);
     expect(MEMBER_TEXT.length).toBeGreaterThan(50);
-    const unread = DEPLOYMENT_LEAVES.filter((leaf) => executionProfileLeafDefault(leaf, 'deployment') === null
+    const unread = DEPLOYMENT_LEAVES.filter((leaf) => executionProfileLeafDefault(leaf) === null
       && !namedLeaf(SERVER_TEXT, leaf) && !namedLeaf(MEMBER_TEXT, leaf)).sort();
     expect(unread).toEqual([]);
     expect([...RETIRED_LEAVES]).toEqual([]);

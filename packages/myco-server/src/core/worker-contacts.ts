@@ -1,4 +1,4 @@
-import { runnerAgentLoginReady, parseRunnerCredentialChoices, type RunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
+import { runnerAgentLoginReady, storedRunnerCredentialChoices, type StoredRunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 /**
  * What each worker last reported about itself, and what the Deployment makes of it.
  *
@@ -290,7 +290,7 @@ export async function recordWorkerContact(db: RelationalStore, contact: Paramete
  * an older client, or one recorded before this table existed — still appears,
  * as busy, with no contact time.
  */
-export async function readWorkerFleet(db: RelationalStore, now: number): Promise<WorkerFleetRow[]> {
+export async function readWorkerFleet(db: RelationalStore, now: number, includeSignIn = false): Promise<WorkerFleetRow[]> {
   const { results: memberRows } = await db.prepare(
     `WITH inventory AS (
        SELECT credential_id FROM worker_contacts
@@ -334,7 +334,7 @@ export async function readWorkerFleet(db: RelationalStore, now: number): Promise
     };
   });
   const heardAt = (row: WorkerFleetRow): number => (row.lastSeenAt > 0 ? row.lastSeenAt : row.busy?.leaseExpiresAt ?? 0);
-  return [...members, ...await readRunnerFleet(db, now)].sort((left, right) => heardAt(right) - heardAt(left));
+  return [...members, ...await readRunnerFleet(db, now, includeSignIn)].sort((left, right) => heardAt(right) - heardAt(left));
 }
 
 type UpdateMetadata = Pick<RunnerFleetRecord, 'lastResult' | 'blockedVersion' | 'updateState'>;
@@ -366,9 +366,9 @@ function storedUpdateMetadata(raw: unknown): { metadata: UpdateMetadata; unavail
     updateState: state as UpdateMetadata['updateState'] }, unavailable: false };
 }
 
-/** The claim path and fleet view use the same readiness admission without reading run history. */
+/** Runtime and admin readiness includes chosen sources; other readers use machine sign-in only. */
 function runnerReadiness(row: Record<string, unknown>, offers: ReportedHarness[] | null, credentialed: boolean,
-  updateState: UpdateMetadata['updateState'], now: number): RunnerFleetRecord['readiness'] {
+  updateState: UpdateMetadata['updateState'], now: number, includeSignIn = true): RunnerFleetRecord['readiness'] {
   if (!credentialed) return { state: 'unknown', code: 'registration', reason: 'No current authority to take new work. Approve replacement registration on this machine.', observedAt: now };
   if (updateState?.phase === 'updating' || updateState?.phase === 'probation')
     return { state: 'unknown', code: 'updating', reason: 'An update is holding new work until machine health is confirmed.', observedAt: updateState.since };
@@ -377,10 +377,10 @@ function runnerReadiness(row: Record<string, unknown>, offers: ReportedHarness[]
     return { state: explicit, code: explicit, reason: String(row.readiness_reason), observedAt: Number(row.observed_at) };
   if (offers === null) return { state: 'unknown', code: 'unknown', reason: 'Agent sign-in and execution profiles are unavailable.',
     observedAt: row.updated_at == null ? null : Number(row.updated_at) };
-  const choices = parseRunnerCredentialChoices(String(row.credential_choices ?? '{}'));
+  const choices = includeSignIn ? storedRunnerCredentialChoices(String(row.credential_choices ?? '{}')) : undefined;
   if (!offers.some(offer => runnerAgentLoginReady(offer, choices))) return { state: 'unknown', code: 'not_signed_in', reason: 'Reported no signed-in eligible agent.',
     observedAt: row.updated_at == null ? null : Number(row.updated_at) };
-  return { state: 'ready', code: 'ready', reason: 'Reports an agent with a chosen sign-in; provider access is untested.',
+  return { state: 'ready', code: 'ready', reason: includeSignIn ? 'Reports an agent with a chosen sign-in; provider access is untested.' : 'Reports a signed-in eligible agent; provider access is untested.',
     observedAt: row.updated_at == null ? null : Number(row.updated_at) };
 }
 
@@ -388,7 +388,7 @@ function runnerReadiness(row: Record<string, unknown>, offers: ReportedHarness[]
  * Every registered runner, keyed by its stable id: a rotation never makes a second row. A
  * runner is eligible while it is enabled and holds a credential of its current epoch.
  */
-async function readRunnerFleet(db: RelationalStore, now: number): Promise<WorkerFleetRow[]> {
+async function readRunnerFleet(db: RelationalStore, now: number, includeSignIn: boolean): Promise<WorkerFleetRow[]> {
   const latestAttempt = (condition: string, order: string) => `(SELECT json_object('runId', h.run_id, 'projectId', h.project_id,
     'projectName', (SELECT name FROM projects WHERE project_id = h.project_id),
     'task', (SELECT task FROM agent_runs WHERE project_id = h.project_id AND id = h.run_id),
@@ -437,7 +437,7 @@ async function readRunnerFleet(db: RelationalStore, now: number): Promise<Worker
       task: row.task == null ? null : String(row.task), at: Number(row.started_at), status: 'running', leaseExpiresAt: Number(row.lease_expires_at),
     };
     const { metadata, unavailable: updateMetadataUnavailable } = storedUpdateMetadata(row.last_result);
-    const readiness = runnerReadiness(row, offers, Number(row.credentialed) === 1, metadata.updateState, now);
+    const readiness = runnerReadiness(row, offers, Number(row.credentialed) === 1, metadata.updateState, now, includeSignIn);
     const terminal = (value: unknown): FleetRun | null => value == null ? null : JSON.parse(String(value)) as FleetRun;
     const lastAttempted = terminal(row.last_attempted);
     const displaySeenAt = Math.max(lastSeenAt, historicalContactAt, lastAttempted?.at ?? 0);
@@ -449,7 +449,7 @@ async function readRunnerFleet(db: RelationalStore, now: number): Promise<Worker
       lastSeenAt: displaySeenAt || null, connected, busy, display: 'Never contacted',
       awaitingReplacement: Number(row.replacement_pending) === 1, updateMetadataUnavailable,
       lastAttempted, lastCompleted: terminal(row.last_completed), lastFailed: terminal(row.last_failed),
-      credentialChoices: parseRunnerCredentialChoices(String(row.credential_choices)),
+      ...(includeSignIn ? { credentialChoices: storedRunnerCredentialChoices(String(row.credential_choices)) } : {}),
       offers, offersObservedAt: offers === null || row.updated_at == null ? null : Number(row.updated_at),
       capabilities, labels: parseCapabilities(row.labels), preference: null,
       os: row.os == null ? null : String(row.os), arch: row.arch == null ? null : String(row.arch),
@@ -599,7 +599,7 @@ export async function recentWorkerCapabilities(db: RelationalStore, now: number)
 }
 
 /** Recent offers and repository capabilities describe a task's fleet profile gap. */
-export async function recentWorkerReports(db: RelationalStore, now: number): Promise<Array<{ credentialId: string; machineId: string | null; offers: ReportedHarness[]; capabilities: string[]; runner: boolean; credentialChoices?: RunnerCredentialChoices }>> {
+export async function recentWorkerReports(db: RelationalStore, now: number): Promise<Array<{ credentialId: string; machineId: string | null; offers: ReportedHarness[]; capabilities: string[]; runner: boolean; credentialChoices?: StoredRunnerCredentialChoices }>> {
   const since = now - CONTACT_RECENT_MS;
   const [{ results: members }, { results: runners }] = await Promise.all([
     db.prepare(`SELECT w.credential_id, COALESCE(w.machine_id, c.machine_id) AS machine_id, w.offers, w.capabilities
@@ -627,7 +627,7 @@ export async function recentWorkerReports(db: RelationalStore, now: number): Pro
     const { metadata } = storedUpdateMetadata(row.last_result);
     if (runnerReadiness(row, offers, true, metadata.updateState, now).state !== 'ready') return [];
     return [{ credentialId: String(row.runner_id), machineId: row.machine_id == null ? null : String(row.machine_id),
-      offers: offers ?? [], capabilities: parseCapabilities(row.capabilities) ?? [], runner: true, credentialChoices: parseRunnerCredentialChoices(String(row.credential_choices)) }];
+      offers: offers ?? [], capabilities: parseCapabilities(row.capabilities) ?? [], runner: true, credentialChoices: storedRunnerCredentialChoices(String(row.credential_choices)) }];
   });
   return [...memberReports, ...runnerReports];
 }

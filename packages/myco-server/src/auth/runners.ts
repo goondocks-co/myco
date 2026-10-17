@@ -25,7 +25,7 @@ import { invalidateRunnerCatalogs } from '../core/model-catalogs.js';
 import { toBase64Url } from '../base64.js';
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { writeGuardBatch, writeGuardStore } from '../core/write-guard-store.js';
-import { parseRunnerCredentialChoices, type RunnerCredentialChoices, type RunnerCredentialChoice } from '@goondocks/myco-shared/runner-fleet';
+import { storedRunnerCredentialChoices, parseRunnerCredentialChoices, type StoredRunnerCredentialChoices, type RunnerCredentialChoices, type RunnerCredentialChoice } from '@goondocks/myco-shared/runner-fleet';
 import type { RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
 export type { RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
 import { readWorkerFleet, invalidateRunnerContacts } from '../core/worker-contacts.js';
@@ -276,7 +276,7 @@ export async function registerRunner(db: RelationalStore, approverId: string, re
   const requestedChoices = parseRunnerCredentialChoices(request.runner_credential_choices);
   const currentChoices = replacing === null ? {} : await runnerCredentialChoices(db, runnerId);
   const choices: RunnerCredentialChoices = { ...Object.fromEntries(Object.keys(currentChoices).map(agent => [agent, 'own' as const])), ...requestedChoices };
-  const signIns = await runnerSignInStatements(db, wrappingKey, approverId, runnerId, choices, currentChoices, replacing === null ? 1 : replacing.revision + 1, now);
+  const signIns = await runnerSignInStatements(db, wrappingKey, approverId, runnerId, choices, currentChoices, replacing === null ? 1 : replacing.revision + 1, now, replacing !== null);
   const assertion = (): PreparedStatement => db.prepare(`SELECT CASE WHEN ${PENDING_RUNNER_REQUEST} AND ${LIVE_RUNNER_ADMIN}${replacing === null ? ` AND EXISTS (SELECT 1 FROM device_requests WHERE id = ? AND replacing_runner_id IS NULL)` : ` AND EXISTS (SELECT 1 FROM runners r JOIN device_requests d ON d.id = ? AND d.runner_name = r.name
       WHERE r.id = ? AND r.revision = ? AND r.state <> 'removed' AND d.replacing_runner_id = r.id)`}
     THEN 1 ELSE json_extract('[]', ?) END AS admitted`).bind(requestId, now, approverId, ...(replacing === null ? [requestId] : [requestId, runnerId, replacing.revision]), REGISTRATION_REFUSED);
@@ -285,7 +285,7 @@ export async function registerRunner(db: RelationalStore, approverId: string, re
       ...(replacing === null ? [db.prepare(`INSERT INTO runners (id, name, state, credential_epoch, revision, labels, created_at, created_by_member, registration_id)
         SELECT ?, d.runner_name, 'enabled', 1, 1, '[]', ?, ?, d.id FROM device_requests d WHERE d.id = ? AND d.subject = 'runner'`)
         .bind(runnerId, now, approverId, requestId)] : [
-        db.prepare(`UPDATE runners SET credential_epoch = ?, revision = revision + 1, registration_id = ? WHERE id = ?`).bind(epoch, requestId, runnerId),
+        db.prepare(`UPDATE runners SET credential_epoch = ?, revision = revision + 1, registration_id = ?, credential_choices = '{}' WHERE id = ?`).bind(epoch, requestId, runnerId),
         db.prepare(`UPDATE runner_credentials SET revoked_at = ?, revoked_by = 'runner-recredentialed' WHERE runner_id = ? AND revoked_at IS NULL`).bind(now, runnerId),
         ...invalidateRunnerContacts(db, runnerId), invalidateRunnerCatalogs(db, runnerId), ...invalidateRunnerUpdates(db, runnerId),
       ]),
@@ -387,10 +387,10 @@ export async function renameRunner(db: RelationalStore, actorId: string, runnerI
 }
 
 /** Read the server-held sign-in choices of one registered runner. */
-export async function runnerCredentialChoices(db: RelationalStore, runnerId: string): Promise<RunnerCredentialChoices> {
+export async function runnerCredentialChoices(db: RelationalStore, runnerId: string): Promise<StoredRunnerCredentialChoices> {
   const row = await db.prepare('SELECT credential_choices FROM runners WHERE id = ?').bind(runnerId).first<{ credential_choices: string }>();
   if (row === null) throw new Error('runner not found');
-  return parseRunnerCredentialChoices(row.credential_choices);
+  return storedRunnerCredentialChoices(row.credential_choices);
 }
 
 
@@ -400,12 +400,12 @@ export class RunnerSignInUnavailable extends Error {
 
 /** Every sign-in mutation validates the requested sources before constructing its attributed writes. */
 async function runnerSignInStatements(db: RelationalStore, wrappingKey: SecretWrappingKey | undefined, actorId: string, runnerId: string,
-  choices: RunnerCredentialChoices, current: RunnerCredentialChoices, revision: number, now: number): Promise<PreparedStatement[]> {
+  choices: RunnerCredentialChoices, current: StoredRunnerCredentialChoices, revision: number, now: number, reset = false): Promise<PreparedStatement[]> {
   const admitted = parseRunnerCredentialChoices(JSON.stringify(choices));
   const statements: PreparedStatement[] = [];
   for (const [agent, choice] of Object.entries(admitted)) {
     if (choice === 'stored' && (wrappingKey === undefined || !await harnessCredentialAvailable(db, wrappingKey, agent))) throw new RunnerSignInUnavailable();
-    if ((current[agent] ?? 'own') === choice) continue;
+    if ((current[agent] === undefined ? 'own' : current[agent]) === choice && (!reset || choice === 'own')) continue;
     revision += 1;
     statements.push(
       db.prepare('UPDATE runners SET credential_choices = json_set(credential_choices, ?, ?), revision = revision + 1 WHERE id = ?')
@@ -419,7 +419,7 @@ async function runnerSignInStatements(db: RelationalStore, wrappingKey: SecretWr
 
 /** A sign-in change commits with current administrator authority and an immutable receipt. */
 export async function setRunnerCredentialChoice(db: RelationalStore, wrappingKey: SecretWrappingKey, actorId: string, runnerId: string,
-  agent: string, choice: RunnerCredentialChoice, now: number): Promise<RunnerCredentialChoices | null> {
+  agent: string, choice: RunnerCredentialChoice, now: number): Promise<StoredRunnerCredentialChoices | null> {
   const before = await readRunner(db, runnerId);
   if (before === null || before.state === 'removed') return null;
   const choices = await runnerCredentialChoices(db, runnerId);

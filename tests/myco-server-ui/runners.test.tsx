@@ -235,7 +235,7 @@ describe('Runners page', () => {
 
   it('uses the shared distinct queue reasons and preserves the oldest waiting age', async () => {
     for (const reason of ['capacity', 'no_runner', 'model_profile', 'credential_unavailable', 'settling', 'dispatch_ceiling', 'unavailable'] as const) {
-      mount('member', RUNNER, { queue: { observedAt: NOW, count: 3, oldestAt: NOW - 18 * 60000, reasons: [{ reason, count: 3 }], nativeNeedsRunner: true } });
+      mount('admin', RUNNER, { queue: { observedAt: NOW, count: 3, oldestAt: NOW - 18 * 60000, reasons: [{ reason, count: 3 }], nativeNeedsRunner: true } });
       await screen.findByText(QUEUE_REASON_WORDS[reason]);
       expect(screen.getByText(/3 runs waiting; oldest/).textContent).toContain('18m ago');
       expect(screen.getByText(/3 runs waiting; oldest/).closest('[data-queue-warning]')?.getAttribute('data-tone')).toBe('warn');
@@ -271,9 +271,16 @@ describe('runner sign-in controls', () => {
     await screen.findByText('Claude Code · Signs in with: this machine’s sign-in');
   });
 
-  it('shows a member the choice with no editing controls', async () => {
+  it('asks an administrator to choose again for an unrecognized persisted sign-in source', async () => {
+    mount('admin', { ...RUNNER, credentialChoices: { 'claude-code': null } });
+    expect(await screen.findByText('Claude Code · Choose how this agent signs in')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Use this machine’s sign-in' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('hides sign-in choices from members even when a response contains them', async () => {
     mount('member', { ...RUNNER, credentialChoices: { 'claude-code': 'stored' } });
-    await screen.findByText('Claude Code · Signs in with: the server’s stored key');
+    await screen.findByText('homelab-mini');
+    expect(screen.queryByText(/Signs in with:/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Use this machine’s sign-in' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Use the server’s stored key' })).toBeNull();
   });

@@ -1,8 +1,9 @@
+import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { expect } from 'bun:test';
 import { credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import { PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
-import { lit, MEMBER_ID, type ParityScenario } from '../harness.ts';
+import { lit, MEMBER_ID, SESSION_SECRET, type ParityScenario } from '../harness.ts';
 
 /** Runner claims, fleet holds and administration use the same explicit sign-in choice on both targets. */
 export const runnerSignIn: ParityScenario = {
@@ -10,6 +11,10 @@ export const runnerSignIn: ParityScenario = {
   dedicated: { timeoutMs: 240000 },
   async run(target) {
     const now = Date.now();
+    const memberId = 'mem_signin_reader';
+    const memberSub = '477101';
+    await target.sql(`INSERT INTO members(id,label,role,github_id,created_at) VALUES (${lit(memberId)},'Sign-in reader','member',${lit(memberSub)},${now})`);
+    const memberHeaders = { cookie: `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: target.deploymentId, sub: memberSub, login: 'reader', iat: now, exp: now + 3600000 })}`, 'cf-connecting-ip': '1.2.3.4' };
     const runnerId = 'rn_signin_parity';
     const credentialId = 'rc_signin_parity';
     const token = 'mycorun_' + 'p'.repeat(43);
@@ -49,6 +54,12 @@ export const runnerSignIn: ParityScenario = {
         const previewResponse = await fetch(`${target.url}/api/runners`, { headers: target.ownerHeaders() });
         expect(previewResponse.status).toBe(200);
         const projected = await previewResponse.json() as { queue: { reasons: Array<{ reason: string; count: number }> } };
+        const memberResponse = await fetch(`${target.url}/api/runners`, { headers: memberHeaders });
+        expect(memberResponse.status).toBe(200);
+        const member = await memberResponse.json() as { runners: Array<Record<string, unknown>>; queue: { reasons: Array<{ reason: string; count: number }> } };
+        expect(member.runners[0]).not.toHaveProperty('credentialChoices');
+        expect(JSON.stringify(member)).not.toContain('credential_unavailable');
+        expect(member.queue.reasons).toEqual([{ reason: 'ready', count: 1 }]);
         expect(projected.queue.reasons).toContainEqual({ reason: 'credential_unavailable', count: 1 });
       }
       await target.sql(`UPDATE member_credentials SET revoked_at = ${Date.now()} WHERE id = (SELECT dispatched_by FROM agent_runs WHERE id = ${lit(id)})`);
@@ -57,7 +68,11 @@ export const runnerSignIn: ParityScenario = {
     try {
       expect((await change('stored')).status).toBe(409);
       expect((await secret('PUT', key)).status).toBe(200);
+      await target.sql(`UPDATE runners SET credential_choices = '{"kiro":"stored"}' WHERE id = ${lit(runnerId)}`);
       await claim(true, null, {});
+      const unknownFleet = await fetch(`${target.url}/api/runners`, { headers: target.ownerHeaders() });
+      expect(unknownFleet.status).toBe(200);
+      expect(JSON.stringify(await unknownFleet.json())).not.toContain('kiro');
       expect((await change('stored')).status).toBe(200);
       await claim(false, null, credentialEnvFor('claude-code', key));
       expect((await secret('DELETE')).status).toBe(200);

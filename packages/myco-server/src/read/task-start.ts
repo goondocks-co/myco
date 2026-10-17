@@ -1,6 +1,7 @@
+import { visibleRunHolder } from '@goondocks/myco-shared/run-holds';
 import type { QueueReason } from '@goondocks/myco-shared/runner-fleet';
 import { readDispatchLimits } from '../core/limits.js';
-import { previewFleet, fleetTaskReason } from './fleet.js';
+import { fleetSelectionContext, previewFleet, fleetTaskReason } from './fleet.js';
 /**
  * What starting one task by hand in one Project would do right now, read before
  * anything is dispatched: every agent and model the workers heard from lately
@@ -74,24 +75,25 @@ async function startWorkers(db: RelationalStore, reports: ReadonlyArray<{ creden
 }
 
 /** Preview one task in one Project the caller may read, naming machines as `viewerId` may see them. */
-export async function readTaskStartPreview(env: ServerEnv, projectId: string, task: string, viewerId: string, now: number): Promise<TaskStartPreview> {
+export async function readTaskStartPreview(env: ServerEnv, projectId: string, task: string, viewerId: string, now: number, includeSignIn = false): Promise<TaskStartPreview> {
+  const selection = fleetSelectionContext(env, includeSignIn);
   const declaredSchedule = TASK_SCHEDULE[task] ?? null;
   const capability = capabilityOf(task);
   const [settings, fleet, leaves, live, on] = await Promise.all([
     claimSettings(env),
-    readWorkerFleet(env.db, now),
+    readWorkerFleet(env.db, now, includeSignIn),
     declaredSchedule === null ? Promise.resolve(null) : scheduleLeaves(env),
     hasLiveTaskRun(env.db, { projectId }, task),
     capability === null ? Promise.resolve(null) : capabilityOn(env.db, projectId, capability),
   ]);
   const reports = fleetReports(fleet);
-  const { executions, heldBy } = await previewFleet(env, task, fleet, settings);
+  const { executions, heldBy } = await previewFleet(env, task, fleet, settings, false, selection);
   const workers = await startWorkers(env.db, reports, viewerId, now, fleet);
   const condition = declaredSchedule === null || leaves === null ? undefined : scheduleFor(task, declaredSchedule, leaves.overrides).preCondition;
   const check = condition === undefined ? undefined : declared(PRE_CONDITIONS, condition);
   const readiness = condition === undefined || check === undefined ? null : { condition, met: await check({ db: env.db, projectId, now }) };
   return {
-    task, projectId, fleetWait: { reason: await fleetTaskReason(env, task, fleet, now, settings, await readDispatchLimits(env)), observedAt: now }, heldBy, workers: reports.length, readiness, live,
+    task, projectId, fleetWait: { reason: await fleetTaskReason(env, task, fleet, now, settings, await readDispatchLimits(env), undefined, selection), observedAt: now }, heldBy: visibleRunHolder(heldBy, includeSignIn), workers: reports.length, readiness, live,
     executions: executions.map((execution) => ({
       harness: execution.harness, tier: execution.profile.tier, model: execution.profile.model, effort: execution.profile.effort,
       workers: execution.credentialIds.map((id) => workers.get(id)!),

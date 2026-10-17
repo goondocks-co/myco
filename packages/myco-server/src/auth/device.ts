@@ -1,3 +1,4 @@
+import { isAdmin } from './roles.js';
 import { parseRunnerCredentialChoices, type RunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 import { tryNameMemberFromLogin } from './members-admin.js';
 import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
@@ -200,7 +201,7 @@ export async function handleDevicePreview(env: ServerEnv, ctx: OwnerContext): Pr
   if (row.decision !== null) return deviceError('request_finished', 409);
   const shared = { machineName: row.machine_name, os: row.os, ip: row.source_ip, approverIp: ctx.source,
     ageSeconds: Math.max(0, Math.floor((ctx.now - row.created_at) / 1000)), expiresAt: row.expires_at };
-  if (row.subject === 'runner') return Response.json({ ...shared, subject: 'runner', runnerName: row.runner_name, replacingRunnerId: row.replacing_runner_id, credentialChoices: parseRunnerCredentialChoices(row.runner_credential_choices), scope: 'runner' });
+  if (row.subject === 'runner') return Response.json({ ...shared, subject: 'runner', runnerName: row.runner_name, replacingRunnerId: row.replacing_runner_id, ...(isAdmin(ctx.member.role) ? { credentialChoices: parseRunnerCredentialChoices(row.runner_credential_choices) } : {}), scope: 'runner' });
   const claim = await env.db.prepare('SELECT member_id FROM machine_claims WHERE machine_id = ?').bind(row.machine_id).first<{ member_id: string }>();
   return Response.json({ ...shared, subject: 'member', alreadyYours: claim?.member_id === ctx.member.id, scope: 'membership' });
 }
