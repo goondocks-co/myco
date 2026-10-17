@@ -92,6 +92,8 @@ const ALLOWLIST: readonly string[] = [
   'install/managed-binary.ts',
   'install/marker-reader.ts',
   'packages/myco/scripts/managed-paths.mjs',
+  // Installation marker and update-preference publication; Node built-ins only.
+  'packages/myco/scripts/install-marker.mjs',
   'packages/myco/scripts/home-role.mjs',
   // The member helper's detached start: `node:child_process` on POSIX, `CreateProcessW` through
   // `bun:ffi` on Windows; it reaches nothing else.

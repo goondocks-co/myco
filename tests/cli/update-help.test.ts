@@ -24,6 +24,8 @@ it('lists the one update command with its channel and names its alias once in ea
   const update = help('update');
   expect(update).toBe(help('upgrade'));
   expect(update).toContain('Usage: myco update');
+  expect(update).toContain('Without an installed runner, an explicit version can step back.');
+  expect(update).toContain('Turn automatic member updates off or on; no update run');
   for (const flag of ['--check', '--channel', '--target-version', '--skip-binary', '--claim']) expect(update).toContain(flag);
   expect(update.match(/Alias: myco upgrade/g)).toHaveLength(1);
 });
@@ -40,4 +42,11 @@ it('documents Windows recovery when an interrupted update leaves no live executa
   const guide = fs.readFileSync(path.resolve('docs/upgrade.md'), 'utf8');
   expect(guide).toContain('if `myco.exe` is missing');
   expect(guide).toContain('move "<bin-dir>\\myco.prev.exe" "<bin-dir>\\myco.exe"');
+});
+
+it('explains that a runner keeps updating and enabling member updates takes effect at the next coding session', () => {
+  const guide = fs.readFileSync(path.resolve('docs/upgrade.md'), 'utf8');
+  expect(guide).toContain('An installed runner on the same machine keeps updating between runs even when automatic member updates are off.');
+  expect(guide).toContain('Turning updates on checks for an update at the next coding session with enough time.');
+  expect(guide).not.toContain('next helper pass due');
 });

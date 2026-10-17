@@ -70,6 +70,7 @@
     "tests/cli/server-port.test.ts": 189,
     "tests/cli/server-status.test.ts": 850,
     "tests/cli/tool.test.ts": 569,
+    "tests/cli/update-automatic.test.ts": 1000,
     "tests/cli/update-compiled.test.ts": 13180,
     "tests/cli/update-help.test.ts": 3685,
     "tests/cli/update-member-home.test.ts": 415,

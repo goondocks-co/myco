@@ -7,7 +7,7 @@ import { hasAdoptFailed, markAdoptFailed } from '@myco/upgrade/adopt-failed.js';
 import { pruneVersions } from '@myco/upgrade/apply-binary.js';
 import * as binaryPrimitives from '@myco/upgrade/apply-binary.js';
 import { placeExecutable } from '@myco/install/place-binary.js';
-import { writeInstallMarker, versionDir } from '@myco/install/managed-binary.js';
+import { writeAutomaticUpdatePreference, writeInstallMarker, versionDir } from '@myco/install/managed-binary.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
 import { bindSandboxChildHome, sandboxChildEnv } from '../../scripts/test-environment.mjs';
@@ -61,6 +61,27 @@ it('explicit skip keeps the binary and never resolves a release', async () => {
   deps.resolveRefs = async () => { throw new Error('explicit skip resolved releases'); };
   expect(await updateBinary('manual', { skipBinary: true }, deps)).toEqual({ kind: 'skipped', reason: '--skip-binary requested' });
   expect(stages).toBe(0);
+});
+
+it('off skips automatic updates before a lease, release resolution or download; manual updates still adopt', async () => {
+  writeAutomaticUpdatePreference(home, false);
+  let resolutions = 0;
+  let downloads = 0;
+  const acquire = spyOn(LifecycleLock, 'acquire');
+  const resolve = deps.resolveRefs!;
+  deps.resolveRefs = async channel => { resolutions++; return resolve(channel); };
+  deps.stageDeps = { download: async () => { downloads++; throw new Error('unexpected download'); }, computeSha256: async () => '' };
+  try {
+    expect(await updateBinary('automatic', {}, deps)).toEqual({ kind: 'skipped', reason: 'automatic updates are turned off' });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(resolutions).toBe(0);
+    expect(downloads).toBe(0);
+    expect(stages).toBe(0);
+  } finally { acquire.mockRestore(); }
+  expect((await updateBinary('manual', {}, deps)).kind).toBe('adopted');
+  expect(resolutions).toBe(1);
+  expect(stages).toBe(1);
+  expect(fs.readFileSync(live, 'utf8')).toBe(to);
 });
 
 it('skips a different project pin before resolving releases, while allowing a pin to this binary', async () => {

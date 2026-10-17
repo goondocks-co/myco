@@ -72,11 +72,11 @@ it('check reports only, never stages, adopts or refreshes, and stores a channel-
   expect(readUpdateNotice(home, '2.0.0-alpha.3')).toBeNull();
   expect(readUpdateNotice(home, '2.0.0-alpha.2', Date.now() + 25 * 60 * 60 * 1000)).toBeNull();
 });
-it('never stages an explicit older target, including a channel override', async () => {
+it('never stages an older channel-selected target', async () => {
   let staged = false;
-  await run(['--target-version', '2.0.0-alpha.1', '--channel', 'alpha'], {
+  await run(['--channel', 'alpha'], {
     home, currentVersion: '2.0.0-alpha.3', isMemberHome: () => false, targetTriple: () => 'darwin-arm64',
-    fetchReleases: async () => [{ tag_name: 'myco/v2.0.0-alpha.1', prerelease: true, assets: [] }],
+    resolveRefs: async () => refs('2.0.0-alpha.1'),
     stageBinary: async () => { staged = true; throw new Error('downgrade reached staging'); },
   });
   expect(staged).toBe(false);

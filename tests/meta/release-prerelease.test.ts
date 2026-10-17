@@ -152,7 +152,9 @@ describe('Myco 2.0 update guidance', () => {
     const memberGuide = docs.split('## Myco 1.4 updates')[0];
     expect(memberGuide).toContain('about once a day in the default home');
     expect(memberGuide).toContain('myco member status');
-    expect(memberGuide).toContain('There is no automatic-update off setting');
+    expect(memberGuide).toContain('myco update --automatic off');
+    expect(memberGuide).toContain('myco update --automatic on');
+    expect(memberGuide).not.toContain('There is no automatic-update off setting');
     expect(memberGuide).toContain('runs no member update timer or local service');
     expect(memberGuide).toContain('myco update --check');
     expect(memberGuide).toContain('myco update --channel beta');

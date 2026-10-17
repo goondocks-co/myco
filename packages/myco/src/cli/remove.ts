@@ -18,6 +18,7 @@ import { resolveLocalPaths } from '../server/local.js';
 import { legacyMigrationState } from '../member/legacy-migration.js';
 import { defaultSpec, serviceHomeOwnership, statusOfService } from '../server/service.js';
 import { readInstallMarker } from '../install/managed-binary.js';
+import { AUTOMATIC_UPDATE_PREFERENCE_FILE } from '../../scripts/install-marker.mjs';
 
 export const USAGE = `Usage: myco remove [--purge] [--allow-deployment-loss] [--yes]
 
@@ -41,7 +42,7 @@ interface RemoveDeps {
 
 const LEGACY_HOME_ENTRIES = ['groves', 'myco.db', 'config.yaml', 'myco.yaml', 'service'];
 export const MEMBER_HOME_PURGE_ENTRIES = [
-  'member', 'skills', 'bin', 'install.json', 'runtime.command', 'runtime.home', 'logs', 'runner', 'worker', 'server', 'installer-audit', 'setup.json', 'last-update-check.json',
+  'member', 'skills', 'bin', 'install.json', AUTOMATIC_UPDATE_PREFERENCE_FILE, 'runtime.command', 'runtime.home', 'logs', 'runner', 'worker', 'server', 'installer-audit', 'setup.json', 'last-update-check.json',
 ] as const;
 const DEPLOYMENT_LEASE_FILES = ['cloudflare.lock', 'local.lock'];
 
