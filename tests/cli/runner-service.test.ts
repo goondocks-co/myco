@@ -14,7 +14,10 @@ import { installWorkerService, listWorkerUnits, workerServiceSpec } from '@myco/
 import { recordingPlatform } from '../helpers/fake-service-manager.js';
 import { runnerUpdater } from '@myco/cli/runner-update.js';
 import { writeInstallMarker } from '@myco/install/managed-binary.js';
-import { workerLockPath } from '@myco/runner/instance.js';
+import { workerLockPath, workerHolder } from '@myco/runner/instance.js';
+import { readRunnerUpdateState } from '@myco/runner/update.js';
+import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
 
 const SERVER = 'https://runner.example';
 const TOKEN = `mycorun_${'r'.repeat(43)}`;
@@ -48,6 +51,68 @@ const deps = (os_: 'darwin' | 'linux' = 'darwin') => ({
 });
 
 describe('explicit runner service opt-in', () => {
+  it('publishes local-artifact support for the actual custom-lock owner before its first claim', async () => {
+    await enroll();
+    const scoped = deps('linux');
+    let claims = 0;
+    const stopping = new AbortController();
+    const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname === '/runners/contact') {
+        return Response.json({ persisted: true, runner: { id: 'runner-one', deploymentId: 'dep-one', name: 'mini', state: 'enabled' },
+          credential: { id: 'credential-one', expiresAt: 9999999, refreshAfter: 8888888 } }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
+      }
+      expect(new URL(request.url).pathname).toBe('/worker/claim');
+      claims++;
+      const holder = workerHolder(scoped.lockDir, SERVER);
+      expect(holder?.pid).toBe(process.pid);
+      expect(readRunnerUpdateState(mycoHome).runtimeCapabilities?.[SERVER]).toEqual({ pid: holder!.pid, lockStartedAt: holder!.startedAt, localArtifacts: true });
+      stopping.abort();
+      return Response.json({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 1 }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
+    }) as typeof globalThis.fetch;
+    expect(await run(['run', '--server', SERVER, '--once'], { ...scoped, fetch, signal: stopping.signal,
+      ownDeploymentUrls: async () => [], version: '0.0.0-dev+fixture.b1',
+    })).toBe(true);
+    expect(claims).toBe(1);
+    expect(workerHolder(scoped.lockDir, SERVER)).toBeNull();
+  });
+
+  for (const supported of [undefined, false, true]) it(`source adoption ${supported ? 'queues for a capable' : supported === false ? 'refuses a stale capability from a' : 'refuses an older'} busy runner`, async () => {
+    await enroll();
+    const scoped = deps('linux');
+    fs.mkdirSync(path.dirname(scoped.binaryPath), { recursive: true });
+    fs.writeFileSync(scoped.binaryPath, '#!/bin/sh\necho 2.0.0-alpha.2\n', { mode: 0o755 });
+    installWorkerService({ ...scoped, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
+    writeInstallMarker(mycoHome, { channel: 'alpha', source: 'curl', bin: scoped.binaryPath });
+    const candidate = path.join(root, 'candidate');
+    fs.writeFileSync(candidate, 'source candidate');
+    const held = LifecycleLock.acquire(workerLockPath(scoped.lockDir, SERVER), { command: 'fixture runner' });
+    if (!held.acquired) throw new Error('fixture runner lock unavailable');
+    const alias = Array.from({ length: 256 }, (_, i) => `https://alias-${i}.example`).find(url => workerLockPath(scoped.lockDir, url) < workerLockPath(scoped.lockDir, SERVER));
+    if (!alias) throw new Error('fixture preceding alias unavailable');
+    const aliasHeld = LifecycleLock.acquire(workerLockPath(scoped.lockDir, alias), { command: 'fixture alias' });
+    if (!aliasHeld.acquired) throw new Error('fixture alias lock unavailable');
+    aliasHeld.lock.update({ startedAt: 1 });
+    try {
+      if (supported !== undefined) {
+        const holder = workerHolder(scoped.lockDir, SERVER);
+        if (!holder) throw new Error('fixture runner holder unavailable');
+        runnerUpdater(SERVER, scoped, line => output.push(line)).recordRuntimeCapability({ ...holder, startedAt: holder.startedAt + (supported ? 0 : 1) });
+      }
+      expect(await run(['update', '--server', SERVER], { ...scoped,
+        ownDeploymentUrls: async () => [SERVER, alias],
+        sourceArtifact: { binaryPath: candidate, version: '0.0.0-dev+fixture.b2', checkout: root, commit: 'a'.repeat(40) },
+        update: { probe: () => ({ runs: true }) },
+      })).toBe(supported === true);
+      const queued = readRunnerUpdateState(mycoHome).requests?.[SERVER];
+      if (supported) expect(queued?.localCandidate?.version).toBe('0.0.0-dev+fixture.b2');
+      else {
+        expect(queued).toBeUndefined();
+        expect(output.join('\n')).toContain('stop it through its normal controls, then retry');
+      }
+    } finally { aliasHeld.lock.release(); held.lock.release(); }
+  });
+
   it('preflights in exactly the installed service PATH before starting it and preserves enrollment across a failed install', async () => {
     await enroll();
     const before = readRunnerRecord(SERVER, mycoHome);
@@ -197,11 +262,20 @@ describe('explicit runner service opt-in', () => {
     writeInstallMarker(mycoHome, { channel: 'alpha', source: 'curl', bin: deps(os_).binaryPath });
     const updater = runnerUpdater(SERVER, deps(os_), line => output.push(line));
     expect(updater.contactPayload()).toMatchObject({ currentVersion: '2.0.0-alpha.2', channel: 'alpha' });
+    const source = runnerUpdater(SERVER, { ...deps(os_), version: '0.0.0-dev+fixture.b2',
+      sourceArtifact: { binaryPath: path.join(root, 'candidate'), version: '0.0.0-dev+fixture.b2', checkout: root, commit: 'a'.repeat(40) },
+    }, line => output.push(line));
+    expect(source.contactPayload()).toMatchObject({ currentVersion: '2.0.0-alpha.2', channel: 'alpha' });
     const foreground = runnerUpdater(SERVER, { ...deps(os_), version: '2.0.0-alpha.3' }, line => output.push(line), true);
     foreground.onContact({ updateRequest: { id: 'foreground-request', requestedAt: 1000 } });
     expect(await foreground.idle()).toBe('continue');
     expect(foreground.contactPayload().lastResult).toMatchObject({ result: 'refused', reason: 'runner service is not installed' });
     expect(fs.readFileSync(serviceBinary, 'utf8')).toContain('2.0.0-alpha.2');
+    fs.writeFileSync(serviceBinary, '#!/bin/sh\nprintf "0.0.0-dev+fixture.b1\\n"\n', { mode: 0o755 });
+    const sourceInstalled = runnerUpdater(SERVER, { ...deps(os_), version: '0.0.0-dev+fixture.b2',
+      sourceArtifact: { binaryPath: path.join(root, 'candidate'), version: '0.0.0-dev+fixture.b2', checkout: root, commit: 'a'.repeat(40) },
+    }, line => output.push(line));
+    expect(sourceInstalled.contactPayload().currentVersion).toBe('0.0.0-dev+fixture.b1');
   });
   it('retirement names the exact legacy unit when path-prefixed addresses share a lock', async () => {
     const a = `${SERVER}/a`, b = `${SERVER}/b`;

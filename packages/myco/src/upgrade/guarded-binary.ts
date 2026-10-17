@@ -6,13 +6,14 @@ import { readBinaryVersion } from '@myco/runtime/binary-version.js';
 import semver from 'semver';
 import { isDevelopmentVersion, selectChannelRelease, isV2Version } from '../../scripts/release-policy.mjs';
 import { installedBinaryPath, readLayeredPin } from '@myco/runtime/binary-resolution.js';
-import { canonicalHomePath, defaultMycoHome, isDefaultMycoHome, resolveMycoHome } from '@myco/paths/home.js';
+import { canonicalHomePath, isDefaultMycoHome, resolveMycoHome } from '@myco/paths/home.js';
 import { readInstallMarker } from '@myco/install/managed-binary.js';
 import { automaticUpdatesEnabled } from '@myco/install/marker-reader.js';
 import { placeExecutable, readyExecutable, ExecutableVerificationError } from '@myco/install/place-binary.js';
+import { assertSourceAdoptionAllowed, validateSourceIntent, publishAdoptedMarker, restoreInstallMarker, beginBinaryPublication, finishBinaryPublication, acquireInstallationLease, recoverInterruptedBinaryPublication, RETIRED_BINARY_PREFIX } from '@myco/install/adoption.js';
+import { syncDirectoryForDurability } from '@myco/utils/sync-directory.js';
 import type { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
-import { LifecycleLock, type LockHandle } from '@myco/utils/lifecycle-lock.js';
-import { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
+import { readRunnerUpdateStateStrict } from '@myco/runner/update.js';
 import { getPluginVersion } from '@myco/version.js';
 import { stageBinary, createBinaryUpdateDeps, type StageBinaryDeps } from './apply-binary.js';
 import { resolveMycoBinaryUpdateRefs, fetchMycoReleases } from './release-resolver.js';
@@ -26,7 +27,6 @@ export const BINARY_UPDATE_WAIT_MS = 250;
 export const BINARY_VERSION_TIMEOUT_MS = 30_000;
 export const AUTOMATIC_DOWNLOAD_MIN_BUDGET_MS = 15_000;
 const UPDATE_DIRECTORY_PREFIX = '.myco-update-';
-const RETIRED_BINARY_PREFIX = '.myco-retired-';
 
 type RetainedPrevious = { path: string; reason: string };
 
@@ -47,6 +47,7 @@ export interface BinaryUpdateDeps extends UpdateDeadline {
   placeBinary?: typeof placeExecutable;
   probeVersion?: (binary: string) => string | Promise<string>;
   currentVersion?: string;
+  sourceBinary?: string;
   home?: string;
   platform?: NodeJS.Platform;
   localAppData?: string;
@@ -144,7 +145,7 @@ function sweepLeftovers(binary: string, fileOps: BinaryFileOps, report: UpdateRe
   }
 }
 
-type BinaryUpdateOptions = { skipBinary?: boolean; targetVersion?: string | null; channel?: ReleaseChannel };
+export type BinaryUpdateOptions = { skipBinary?: boolean; targetVersion?: string | null; channel?: ReleaseChannel; source?: { checkout: string; commit: string } };
 type UpdateReport = { warnings: string[]; retainedPrevious: RetainedPrevious[] };
 
 function recordFailedVerification(home: string, platform: NodeJS.Platform, version: string, localAppData: string | undefined, report: UpdateReport, writeFile?: typeof atomicWriteFileSync): void {
@@ -166,18 +167,25 @@ async function performBinaryUpdate(
   if (caller === 'automatic' && isDevelopmentVersion(runningVersion)) return { kind: 'skipped', reason: SOURCE_BUILD_REASON };
   if (caller === 'automatic' && !automaticUpdatesEnabled(home)) return { kind: 'skipped', reason: 'automatic updates are turned off' };
   if (options.skipBinary) return { kind: 'skipped', reason: '--skip-binary requested' };
-  if (isDevelopmentVersion(runningVersion)) return { kind: 'skipped', reason: 'development build' };
+  if (options.source && caller !== 'manual') return { kind: 'skipped', reason: SOURCE_BUILD_REASON };
   if (caller === 'automatic' && !isDefaultMycoHome(home)) return { kind: 'skipped', reason: 'this is not the default Myco home' };
-  const leases: LockHandle[] = [];
+  let lease: ReturnType<typeof acquireInstallationLease> | undefined;
   try {
-    const lockHomes = [...new Set([defaultMycoHome(), home].map(canonicalHomePath))];
-    for (const lockHome of lockHomes) {
-      const lease = LifecycleLock.acquire(path.join(lockHome, 'member', REPAIR_LOCK), { wait: true, timeoutMs: Math.min(BINARY_UPDATE_WAIT_MS, budget.remaining()), command: 'myco update binary' });
-      if (!lease.acquired) return { kind: caller === 'manual' ? 'failed' : 'skipped', reason: 'an update is running' };
-      leases.push(lease.lock);
-    }
+    if (options.source) validateSourceIntent(options.source.checkout, options.source.commit, runningVersion);
+    lease = acquireInstallationLease(home, { wait: true,
+      timeoutMs: () => Math.min(BINARY_UPDATE_WAIT_MS, budget.remaining()), command: 'myco update binary' });
+    if (!lease.acquired) return { kind: caller === 'manual' ? 'failed' : 'skipped', reason: 'an update is running' };
+    const runnerState = readRunnerUpdateStateStrict(home);
+    if (runnerState.metadataFailure !== undefined) return {
+      kind: caller === 'manual' ? 'failed' : 'skipped', reason: runnerState.metadataFailure.reason,
+    };
+    if (runnerState.transaction !== undefined) return {
+      kind: caller === 'manual' ? 'failed' : 'skipped', reason: 'a runner binary handoff is pending',
+    };
     const binary = binaryUpdatePath(home, deps);
     const fileOps = deps.fs ?? fs;
+    const previous = path.join(path.dirname(binary), platform === 'win32' ? 'myco.prev.exe' : 'myco.prev');
+    recoverInterruptedBinaryPublication(home, binary, platform, { fs: fileOps, onRetained: (file, reason) => report.retainedPrevious.push({ path: file, reason }) });
     sweepLeftovers(binary, fileOps, report);
     const pin = readLayeredPin({ kind: 'walk-up', from: deps.cwd ?? process.cwd() }, { mycoHome: home, platform });
     if (pin !== null && canonicalHomePath(pin.pin) !== canonicalHomePath(binary)) return { kind: 'skipped', reason: `runtime pin selects another binary: ${pin.pin}` };
@@ -186,26 +194,28 @@ async function performBinaryUpdate(
       try { return await (deps.probeVersion ?? (file => readBinaryVersion(file, Math.min(BINARY_VERSION_TIMEOUT_MS, budget.remaining()))))(binary); }
       finally { budget.remaining(); }
     };
+    if (options.source) assertSourceAdoptionAllowed(home, binary);
     const current = fs.existsSync(binary) ? await probe(binary) : runningVersion;
-    if (isDevelopmentVersion(current)) return { kind: 'skipped', reason: caller === 'automatic' ? SOURCE_BUILD_REASON : 'development build' };
+    if (caller === 'automatic' && (isDevelopmentVersion(current) || readInstallMarker(home, true)?.source === 'checkout')) return { kind: 'skipped', reason: SOURCE_BUILD_REASON };
     if (!semver.valid(current)) throw new Error(`installed binary reported an invalid version: ${current}`);
     const channel = options.channel ?? effectiveUpdateChannel(home);
     const target = options.targetVersion ?? null;
-    const refs = await resolveAssetRefsForTarget(target, channel, { ...deps, currentVersion: current });
-    if (target === null) recordUpdateCheck(home, channel, current, refs?.targetVersion ?? current);
+    const refs = options.source ? { targetVersion: runningVersion, assetUrl: '', sha256sumsUrl: '', assetName: '' }
+      : await resolveAssetRefsForTarget(target, channel, { ...deps, currentVersion: current });
+    if (!options.source && target === null) recordUpdateCheck(home, channel, current, refs?.targetVersion ?? current);
     if (refs === null) return target !== null
       ? { kind: 'failed', reason: `no release found for version ${target}` }
       : { kind: 'already-current', version: current, reason: 'no newer eligible release' };
-    if (!admitsUpdate(refs.targetVersion, current, channel, caller === 'manual' && target !== null)) return {
+    if (!options.source && !admitsUpdate(refs.targetVersion, current, channel, caller === 'manual' && target !== null)) return {
       kind: 'already-current', version: current, reason: target === null
         ? `channel target ${refs.targetVersion} is older or outside '${channel}'; staying put`
         : explicitUpdateRefusal(refs.targetVersion, current, channel),
     };
     const failedBefore = hasAdoptFailed(home, platform, refs.targetVersion, localAppData);
-    if (failedBefore && !(caller === 'manual' && target !== null)) return { kind: 'skipped', reason: `version ${refs.targetVersion} failed an earlier update; retry with myco update ${refs.targetVersion}` };
+    if (failedBefore && !(caller === 'manual' && (target !== null || options.source))) return { kind: 'skipped', reason: `version ${refs.targetVersion} failed an earlier update; retry with myco update ${refs.targetVersion}` };
     if (caller === 'automatic' && budget.remaining() < AUTOMATIC_DOWNLOAD_MIN_BUDGET_MS) return { kind: 'skipped', reason: 'not enough time remains to download an update' };
     budget.remaining();
-    const staged = await (deps.stageBinary ?? stageBinary)({ refs, home, platform, localAppData }, deps.stageDeps ?? { ...createBinaryUpdateDeps({ fetch: budget.fetch }), ready: file => readyExecutable(file, platform, budget.run) });
+    const staged = options.source ? { version: runningVersion, versionDir: '' } : await (deps.stageBinary ?? stageBinary)({ refs, home, platform, localAppData }, deps.stageDeps ?? { ...createBinaryUpdateDeps({ fetch: budget.fetch }), ready: file => readyExecutable(file, platform, budget.run) });
     budget.remaining();
     if ('error' in staged) {
       if (staged.verificationFailed) recordFailedVerification(home, platform, refs.targetVersion, localAppData, report, deps.failureRecordWriter);
@@ -215,10 +225,9 @@ async function performBinaryUpdate(
     fs.mkdirSync(path.dirname(binary), { recursive: true });
     const staging = fs.mkdtempSync(path.join(path.dirname(binary), UPDATE_DIRECTORY_PREFIX));
     const candidate = path.join(staging, path.basename(binary));
-    const previous = path.join(path.dirname(binary), platform === 'win32' ? 'myco.prev.exe' : 'myco.prev');
     try {
       try {
-        (deps.placeBinary ?? placeExecutable)(path.join(staged.versionDir, platform === 'win32' ? 'myco.exe' : 'myco'), candidate, {
+        (deps.placeBinary ?? placeExecutable)(options.source ? (deps.sourceBinary ?? process.execPath) : path.join(staged.versionDir, platform === 'win32' ? 'myco.exe' : 'myco'), candidate, {
           platform, ready: file => readyExecutable(file, platform, budget.run),
         });
         await verifyVersion(candidate, refs.targetVersion, probe);
@@ -227,15 +236,20 @@ async function performBinaryUpdate(
         return { kind: 'failed', reason: `prepare downloaded version: ${detail(error)}` };
       }
       budget.remaining();
+      const publication = beginBinaryPublication(home, binary, previous);
       const hadLive = fs.existsSync(binary);
       const retired = hadLive ? keepPrevious(binary, previous, staging, platform, fileOps) : undefined;
       let swapped = false;
       let operation = `rename ${candidate} to ${binary}`;
       try {
+        syncDirectoryForDurability(path.dirname(binary));
         fileOps.renameSync(candidate, binary);
         swapped = true;
+        syncDirectoryForDurability(path.dirname(binary));
         operation = `verify installed version at ${binary}`;
         await verifyVersion(binary, refs.targetVersion, probe);
+        operation = 'publish installed provenance';
+        publishAdoptedMarker(home, binary, refs.targetVersion, options.source ? { kind: 'checkout', ...options.source } : { kind: 'release' }, publication.marker);
       } catch (error) {
         const verificationFailed = error instanceof ExecutableVerificationError;
         let failedLive: string | undefined;
@@ -260,12 +274,16 @@ async function performBinaryUpdate(
           const recovery = fs.existsSync(binary) ? '' : ` No ${path.basename(binary)} is at ${binary}. Recovery: move "${previous}" "${binary}".`;
           return { kind: 'failed', reason: `${operation} failed (${detail(error)}); ${restoreOperation} failed (${detail(restoreError)}).${recovery}` };
         }
+        syncDirectoryForDurability(path.dirname(binary));
+        restoreInstallMarker(home, publication.marker);
+        finishBinaryPublication(home);
         if (verificationFailed) recordFailedVerification(home, platform, refs.targetVersion, localAppData, report, deps.failureRecordWriter);
         const reason = `${operation} failed: ${detail(error)}`;
         retirePrevious([retired, failedLive], fileOps, report);
         return hadLive && verificationFailed ? { kind: 'rolled-back', version: current, reason }
           : { kind: 'failed', reason };
       }
+      finishBinaryPublication(home);
       try { clearAdoptFailed(home, platform, refs.targetVersion, localAppData, deps.failureRecordWriter); }
       catch (error) { report.warnings.push(`Updated to ${refs.targetVersion}, but could not clear its failure records: ${detail(error)}`); }
       retirePrevious([retired], fileOps, report);
@@ -273,7 +291,7 @@ async function performBinaryUpdate(
     } finally { removeLeftover(staging, fileOps, report, true); }
   } catch (error) {
     return { kind: 'failed', reason: detail(error) };
-  } finally { for (const lease of leases.reverse()) lease.release(); }
+  } finally { if (lease?.acquired) lease.release(); }
 }
 
 /** Guards and verifies one binary replacement, releasing the lease before returning. */

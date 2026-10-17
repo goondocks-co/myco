@@ -4,8 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import semver from 'semver';
+import { isDevelopmentVersion } from '../../scripts/release-policy.mjs';
 import { RELEASE_CHANNELS, type ReleaseChannel } from '../constants/update.js';
 import { readInstallMarker, versionBinaryPath, versionsDir, type InstallMarker } from '../install/managed-binary.js';
+import { acquireInstallationLease, recoverInterruptedBinaryPublication, assertSourceAdoptionAllowed, validateSourceIntent } from '../install/adoption.js';
 import { validInstallMarker } from '../install/marker-reader.js';
 import { placeExecutable, type ProgramProbe } from '../install/place-binary.js';
 import { stageBinary, pruneVersions, DEFAULT_BINARY_UPDATE_DEPS, type StageBinaryDeps } from '../upgrade/apply-binary.js';
@@ -37,7 +39,10 @@ export type RunnerUpdateResult = UpdateReceipt['result'];
 export type RunnerUpdateReceipt = UpdateReceipt;
 export type RunnerUpdateContact = RunnerUpdateReport;
 export interface RunnerUpdateSelection { channel?: ReleaseChannel; targetVersion?: string }
+export interface RunnerLocalArtifactInput { binaryPath: string; version: string; checkout: string; commit: string }
+export interface RunnerLocalCandidate extends RunnerLocalArtifactInput { kind: 'local'; sha256: string; slot: string; platform: NodeJS.Platform }
 export interface RunnerUpdateRequest extends RunnerUpdateSelection { id: string; requestedAt: number; clearBlock?: boolean }
+type QueuedRunnerUpdate = RunnerUpdateRequest & { manual?: true; localCandidate?: RunnerLocalCandidate };
 interface RunnerUpdateTransaction {
   id: string;
   serverUrl: string;
@@ -49,6 +54,7 @@ interface RunnerUpdateTransaction {
   localAppData?: string;
   serviceSpec: ServiceSpec;
   installMarker: InstallMarker;
+  localCandidate?: RunnerLocalCandidate;
   ownerPid: number;
   startedAt: number;
   deadlineAt?: number;
@@ -62,7 +68,7 @@ interface RunnerUpdateTransaction {
   completedClaimAt?: number;
   startAttempts?: number;
   healthRefusal?: string;
-  phase: 'waiting' | 'adopted' | 'healthy' | 'probation' | 'rollback';
+  phase: 'waiting' | 'placing' | 'adopted' | 'healthy' | 'probation' | 'rollback';
   failureReason?: string;
   rollbackResult?: 'rolled_back' | 'failed';
 }
@@ -73,6 +79,8 @@ interface RunnerUpdateState {
   latestVersion: string | null;
   etag?: string;
   releaseChannel?: ReleaseChannel;
+  retiredCandidates?: RunnerLocalCandidate[];
+  runtimeCapabilities?: Record<string, { pid: number; lockStartedAt: number; localArtifacts: true }>;
   failures: number;
   failedVersions?: string[];
   blockedVersions?: Record<string, { until: number; reason: string }>;
@@ -82,12 +90,12 @@ interface RunnerUpdateState {
   cleanupFailures?: number;
   nextCleanupAt?: number;
   cleanupReason?: string;
-  requests?: Record<string, RunnerUpdateRequest & { manual?: true }>;
+  requests?: Record<string, QueuedRunnerUpdate>;
   lastResults?: Record<string, RunnerUpdateReceipt>;
   transaction?: RunnerUpdateTransaction;
   guardian?: ServiceSpec;
   cleanup?: { failedVersion?: string; currentVersion: string; previousVersion?: string; platform: NodeJS.Platform; localAppData?: string;
-    serverUrl?: string; fromVersion?: string; toVersion?: string; attemptId?: string };
+    serverUrl?: string; fromVersion?: string; toVersion?: string; attemptId?: string; localCandidate?: RunnerLocalCandidate };
 }
 
 export interface RunnerUpdateOptions {
@@ -125,9 +133,37 @@ const record = (value: unknown): value is Record<string, unknown> => typeof valu
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 const entriesMatch = (value: unknown, valid: (entry: Record<string, unknown>) => boolean): boolean =>
   record(value) && Object.values(value).every(entry => record(entry) && valid(entry));
+function localCandidatePath(home: string, candidate: RunnerLocalCandidate, platform: NodeJS.Platform): string {
+  return path.join(home, 'runner', 'candidates', candidate.slot, platform === 'win32' ? 'myco.exe' : 'myco');
+}
+function validLocalCandidate(value: unknown, home: string, platform: NodeJS.Platform): value is RunnerLocalCandidate {
+  if (!record(value) || value.kind !== 'local' || !['darwin', 'linux', 'win32'].includes(platform) || value.platform !== platform || typeof value.version !== 'string' || !semver.valid(value.version)
+    || typeof value.checkout !== 'string' || typeof value.commit !== 'string'
+    || typeof value.sha256 !== 'string' || value.sha256.length !== 64 || !/^[a-f0-9]{64}$/.test(value.sha256)
+    || typeof value.slot !== 'string' || value.slot.length !== 36 || !/^[a-f0-9-]{36}$/.test(value.slot)) return false;
+  try { validateSourceIntent(value.checkout, value.commit, value.version); } catch { return false; }
+  return value.binaryPath === localCandidatePath(home, value as unknown as RunnerLocalCandidate, platform);
+}
+export function probeRunnerLocalCandidate(candidate: RunnerLocalCandidate, file: string, probe: () => ProgramProbe): ProgramProbe {
+  assertRunnerLocalCandidate(candidate, file);
+  const ready = probe();
+  if (ready.runs) assertRunnerLocalCandidate(candidate, file);
+  return ready;
+}
+export function assertRunnerLocalCandidate(candidate: RunnerLocalCandidate, file = candidate.binaryPath): void {
+  if (crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== candidate.sha256) {
+    throw new Error('queued local runner candidate digest changed');
+  }
+}
 function decodeState(home: string): RunnerUpdateState {
   const file = statePath(home);
-  if (!fs.existsSync(file)) return freshState();
+  if (!fs.existsSync(file)) {
+    const directory = path.dirname(file);
+    if (fs.existsSync(directory) && fs.readdirSync(directory).some(name => name.startsWith(`${UPDATE_FILE}.quarantine-`))) {
+      throw new Error(`Runner update metadata recovery is incomplete at ${file}`);
+    }
+    return freshState();
+  }
   const state = JSON.parse(fs.readFileSync(file, 'utf8')) as RunnerUpdateState;
   const tx = state?.transaction;
   const guardian = state?.guardian;
@@ -139,6 +175,11 @@ function decodeState(home: string): RunnerUpdateState {
     || !(state.latestVersion === null || typeof state.latestVersion === 'string')
     || (state.etag !== undefined && typeof state.etag !== 'string')
     || (state.releaseChannel !== undefined && !RELEASE_CHANNELS.includes(state.releaseChannel))
+    || (state.retiredCandidates !== undefined && (!Array.isArray(state.retiredCandidates)
+      || state.retiredCandidates.some(candidate => !validLocalCandidate(candidate, home, candidate?.platform))))
+    || (state.runtimeCapabilities !== undefined && !entriesMatch(state.runtimeCapabilities, entry =>
+      Number.isSafeInteger(entry.pid) && typeof entry.pid === 'number' && entry.pid > 0
+      && finite(entry.lockStartedAt) && entry.lockStartedAt > 0 && entry.localArtifacts === true))
     || (state.attempts !== undefined && !entriesMatch(state.attempts, entry => typeof entry.id === 'string' && finite(entry.failures) && finite(entry.nextRetryAt)))
     || (state.blockedVersions !== undefined && !entriesMatch(state.blockedVersions, entry => finite(entry.until) && typeof entry.reason === 'string'))
     || (state.cleanupFailures !== undefined && !finite(state.cleanupFailures))
@@ -153,13 +194,15 @@ function decodeState(home: string): RunnerUpdateState {
       typeof tx.fromVersion !== 'string' || typeof tx.toVersion !== 'string' ||
       typeof tx.binaryPath !== 'string' || !path.isAbsolute(tx.binaryPath) ||
       typeof tx.home !== 'string' || path.resolve(tx.home) !== path.resolve(home) ||
-      !['waiting', 'adopted', 'healthy', 'probation', 'rollback'].includes(tx.phase) || !Number.isSafeInteger(tx.ownerPid) || tx.ownerPid < 1 ||
+      !['waiting', 'placing', 'adopted', 'healthy', 'probation', 'rollback'].includes(tx.phase) || !Number.isSafeInteger(tx.ownerPid) || tx.ownerPid < 1 ||
       !Number.isFinite(tx.startedAt) || tx.serviceSpec?.binaryPath !== tx.binaryPath ||
-      !validInstallMarker(tx.installMarker))) ||
+      !validInstallMarker(tx.installMarker)
+      || (tx.localCandidate !== undefined && (!validLocalCandidate(tx.localCandidate, home, tx.platform) || tx.localCandidate.version !== tx.toVersion)))) ||
     (cleanup !== undefined && ((cleanup.failedVersion !== undefined && !semver.valid(cleanup.failedVersion)) || !semver.valid(cleanup.currentVersion)
       || cleanup.failedVersion === cleanup.currentVersion || typeof cleanup.platform !== 'string'
       || (cleanup.localAppData !== undefined && typeof cleanup.localAppData !== 'string')
-      || (cleanup.previousVersion !== undefined && !semver.valid(cleanup.previousVersion)))) ||
+      || (cleanup.previousVersion !== undefined && !semver.valid(cleanup.previousVersion))
+      || (cleanup.localCandidate !== undefined && !validLocalCandidate(cleanup.localCandidate, home, cleanup.platform)))) ||
     (guardian !== undefined && (guardian.unit?.label !== expectedLabel || guardian.unit?.unitName !== expectedUnit ||
       guardian.unit?.args?.[0] !== 'runner' || guardian.unit?.args?.[1] !== '__apply-update' ||
       guardian.unit?.args?.[2] !== file || guardian.unit.args.length !== 3 ||
@@ -167,7 +210,8 @@ function decodeState(home: string): RunnerUpdateState {
     || (state.requests !== undefined && (typeof state.requests !== 'object' || state.requests === null || Object.values(state.requests).some(request =>
       typeof request?.id !== 'string' || !Number.isFinite(request.requestedAt)
       || (request.channel !== undefined && !RELEASE_CHANNELS.includes(request.channel))
-      || (request.targetVersion !== undefined && !semver.valid(request.targetVersion)))))
+      || (request.targetVersion !== undefined && !semver.valid(request.targetVersion))
+      || (request.localCandidate !== undefined && (request.manual !== true || !validLocalCandidate(request.localCandidate, home, request.localCandidate.platform))))))
     || (state.lastResults !== undefined && (typeof state.lastResults !== 'object' || state.lastResults === null || Object.values(state.lastResults).some(result =>
       typeof result?.fromVersion !== 'string' || typeof result.toVersion !== 'string' || !Number.isFinite(result.at)
       || !['updated', 'no_update', 'refused', 'rolled_back', 'failed'].includes(result.result)
@@ -264,7 +308,7 @@ async function releases(channel: ReleaseChannel, currentVersion: string, etag: s
   throw new Error(`GitHub release discovery exceeded ${MAX_RELEASE_PAGES} pages`);
 }
 
-/** One per-home OS unit runs a bounded handoff from the trusted current executable. */
+/** One per-home OS unit runs a bounded handoff from a verified executable. */
 export function runnerUpdateGuardianLabel(home: string): string {
   return `co.goondocks.myco-runner-update.${crypto.createHash('sha256').update(path.resolve(home)).digest('hex').slice(0, 16)}`;
 }
@@ -303,12 +347,25 @@ export function cleanupRunnerUpdateGuardian(home: string, platform: NodeJS.Platf
   try {
   let state = readState(home);
   if (state.transaction !== undefined) return 'deferred';
+  const hasGuardianWork = state.guardian !== undefined || state.cleanup !== undefined;
   if (state.guardian !== undefined) {
     if (state.guardian.unit.label !== runnerUpdateGuardianLabel(home)) throw new Error('runner update guardian belongs to another home');
     (deps.removeGuardian ?? ((spec, targetPlatform) => { uninstallService(spec, { platform: targetPlatform }); }))(state.guardian, platform);
     withState(home, next => { if (next.transaction === undefined) delete next.guardian; });
     state = readState(home);
   }
+  for (const retired of state.retiredCandidates ?? []) {
+    withState(home, next => {
+      if (next.transaction?.localCandidate?.slot === retired.slot
+        || Object.values(next.requests ?? {}).some(request => request.localCandidate?.slot === retired.slot)) {
+        throw new Error('retired runner candidate is still in use');
+      }
+      fs.rmSync(path.dirname(retired.binaryPath), { recursive: true, force: true });
+      next.retiredCandidates = next.retiredCandidates?.filter(candidate => candidate.slot !== retired.slot);
+      if (next.retiredCandidates?.length === 0) delete next.retiredCandidates;
+    });
+  }
+  if (!hasGuardianWork) return 'complete';
   const cleanup = state.cleanup;
   fs.rmSync(runnerUpdateGuardianBinary(home, platform), { force: true });
   if (cleanup === undefined) return 'complete';
@@ -320,6 +377,7 @@ export function cleanupRunnerUpdateGuardian(home: string, platform: NodeJS.Platf
     if (path.dirname(failedDir) !== root || path.basename(failedDir) !== cleanup.failedVersion) throw new Error('invalid runner update cleanup slot');
     fs.rmSync(failedDir, { recursive: true, force: true });
   }
+  if (cleanup.localCandidate) fs.rmSync(path.dirname(cleanup.localCandidate.binaryPath), { recursive: true, force: true });
   (deps.prune ?? pruneVersions)(home, cleanup.platform, 2, cleanup.currentVersion, cleanup.previousVersion, cleanup.localAppData);
   const retained = fs.existsSync(root) ? fs.readdirSync(root).filter(version =>
     semver.valid(version) !== null && fs.statSync(path.join(root, version)).isDirectory()) : [];
@@ -337,7 +395,9 @@ export interface RunnerUpdateController {
   acknowledgeHealthy(): void;
   recordClaim(completed?: boolean): void;
   recordHealthRefusal(reason: string): void;
+  recordRuntimeCapability(holder: { pid: number; startedAt: number }): void;
   queueManual(selection?: RunnerUpdateSelection): void;
+  queueLocal(input: RunnerLocalArtifactInput): void;
   check(selection?: RunnerUpdateSelection): Promise<RunnerUpdateContact>;
   /** Called only between runs; the from-version program holds claims for its bounded handoff. */
   idle(): Promise<'continue' | 'restart' | 'hold'>;
@@ -353,10 +413,11 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
   const backoff = (failures: number): number => Math.min(MAX_FAILURE_BACKOFF_MS, FAILURE_BACKOFF_MS * 2 ** Math.min(Math.max(failures - 1, 0), 5));
   let fault: RunnerUpdateReceipt | undefined;
   let reportedMetadataAt: number | undefined;
-  const channel = (): ReleaseChannel | null => {
+  const channel = (explicit = false): ReleaseChannel | null => {
     try {
       const marker = readInstallMarker(home, true);
-      if (marker === null || !RELEASE_CHANNELS.includes(marker.channel) || !semver.valid(currentVersion) || semver.major(currentVersion) < 2) return null;
+      if (marker === null || !RELEASE_CHANNELS.includes(marker.channel) || !semver.valid(currentVersion)
+        || (!explicit && (marker.source === 'checkout' || semver.major(currentVersion) < 2))) return null;
       return marker.channel;
     } catch (error) { log('runner update channel unavailable: ' + sanitizeRunnerUpdateReason(String(error))); return null; }
   };
@@ -409,9 +470,12 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     };
   };
   const contactPayload = (): RunnerUpdateContact => payload(read());
-  const cleanupGuardian = (): boolean => {
+  const cleanupGuardian = (installationHeld = false): boolean => {
+    const installation = installationHeld ? null : acquireInstallationLease(home, { command: 'myco runner update cleanup' });
+    if (installation?.acquired === false) return false;
+    try {
     const state = read();
-    if (state.guardian === undefined && state.cleanup === undefined) return true;
+    if (state.guardian === undefined && state.cleanup === undefined && !state.retiredCandidates?.length) return true;
     if (state.transaction !== undefined || now() < (state.nextCleanupAt ?? 0)) return false;
     try {
       return cleanupRunnerUpdateGuardian(home, platform, { removeGuardian: deps.removeGuardian, prune: deps.prune }) === 'complete';
@@ -430,6 +494,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       });
       return false;
     }
+    } finally { if (installation?.acquired) installation.release(); }
   };
   const clearBlocks = (state: RunnerUpdateState): void => {
     delete state.blockedVersions;
@@ -447,12 +512,16 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     if (raw === undefined) return;
     if (raw === null) { withState(home, state => { if (state.requests?.[serverUrl]?.manual !== true) delete state.requests?.[serverUrl]; }); return; }
     if (typeof raw !== 'object' || typeof (raw as RunnerUpdateRequest).id !== 'string' || !Number.isFinite((raw as RunnerUpdateRequest).requestedAt)) throw new Error('Deployment sent an invalid runner update request');
-    const request = raw as RunnerUpdateRequest;
+    const sent = raw as RunnerUpdateRequest;
+    const request: RunnerUpdateRequest = { id: sent.id, requestedAt: sent.requestedAt,
+      ...(sent.channel === undefined ? {} : { channel: sent.channel }),
+      ...(sent.targetVersion === undefined ? {} : { targetVersion: sent.targetVersion }),
+      ...(sent.clearBlock === undefined ? {} : { clearBlock: sent.clearBlock }) };
     withState(home, state => {
       if (state.lastResults?.[serverUrl]?.requestId === request.id || (state.transaction?.serverUrl === serverUrl && state.transaction.requestId === request.id)) return;
       const queued = state.requests?.[serverUrl];
       if (queued?.id === request.id) return;
-      if (queued === undefined || queued.requestedAt <= request.requestedAt) {
+      if (queued?.manual !== true && (queued === undefined || queued.requestedAt <= request.requestedAt)) {
         (state.requests ??= {})[serverUrl] = request;
         state.nextCheckAt = 0;
       }
@@ -492,28 +561,89 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       if (ownsTransaction(tx)) tx.healthRefusal = sanitizeRunnerUpdateReason(reason);
     });
   };
+  const recordRuntimeCapability = (holder: { pid: number; startedAt: number }): void => {
+    if (holder.pid !== process.pid || !finite(holder.startedAt) || holder.startedAt <= 0) {
+      throw new Error('runner update capability requires this process to hold the runner instance lock');
+    }
+    const previous = read().runtimeCapabilities?.[serverUrl];
+    if (previous?.pid === holder.pid && previous.lockStartedAt === holder.startedAt) return;
+    withState(home, state => {
+      (state.runtimeCapabilities ??= {})[serverUrl] = { pid: holder.pid, lockStartedAt: holder.startedAt, localArtifacts: true };
+    });
+  };
   const queueManual = (selection: RunnerUpdateSelection = {}): void => {
-    withState(home, state => { (state.requests ??= {})[serverUrl] = { id: crypto.randomUUID(), requestedAt: now(), manual: true, clearBlock: true, ...selection }; state.nextCheckAt = 0; });
+    withState(home, state => {
+      const prior = state.requests?.[serverUrl]?.localCandidate;
+      (state.requests ??= {})[serverUrl] = { id: crypto.randomUUID(), requestedAt: now(), manual: true, clearBlock: true, ...selection };
+      if (prior) (state.retiredCandidates ??= []).push(prior);
+      state.nextCheckAt = 0;
+    });
+  };
+  const queueLocal = (input: RunnerLocalArtifactInput): void => {
+    validateSourceIntent(input.checkout, input.commit, input.version);
+    const installation = acquireInstallationLease(home, { command: 'myco runner local update' });
+    if (!installation.acquired) throw new Error('another update holds the machine installation');
+    try {
+    const admitted = decodeState(home);
+    if (admitted.metadataFailure) throw new Error('runner update metadata requires recovery before binary adoption');
+    recoverInterruptedBinaryPublication(home, binaryPath, platform);
+    assertSourceAdoptionAllowed(home, binaryPath);
+    const held = LifecycleLock.acquire(path.join(home, 'runner', UPDATE_OPERATION_LOCK), { command: 'myco runner local update' });
+    if (!held.acquired) throw new Error('another runner update holds the machine binary');
+    try {
+      withState(home, state => {
+        if (state.transaction || state.guardian || state.cleanup) throw new Error('runner update already in progress');
+        if (input.version === currentVersion) throw new Error('local candidate must have a unique build version');
+        const probe = deps.probe ?? strictRunnerReleaseProbe;
+        const ready = probe(input.binaryPath, input.version, platform);
+        if (!ready.runs) throw new Error(ready.detail);
+        const candidate: RunnerLocalCandidate = { ...input, kind: 'local', platform, slot: crypto.randomUUID(),
+          sha256: crypto.createHash('sha256').update(fs.readFileSync(input.binaryPath)).digest('hex') };
+        candidate.binaryPath = localCandidatePath(home, candidate, platform);
+        fs.mkdirSync(path.dirname(candidate.binaryPath), { recursive: true, mode: 0o700 });
+        placeExecutable(input.binaryPath, candidate.binaryPath, { platform, ready: file => {
+          return probeRunnerLocalCandidate(candidate, file, () => probe(file, input.version, platform));
+        } });
+        const prior = state.requests?.[serverUrl]?.localCandidate;
+        (state.requests ??= {})[serverUrl] = { id: crypto.randomUUID(), requestedAt: now(), manual: true,
+          clearBlock: true, targetVersion: candidate.version, localCandidate: candidate };
+        state.nextCheckAt = 0;
+        if (prior) (state.retiredCandidates ??= []).push(prior);
+      });
+    } finally { held.lock.release(); }
+    } finally { installation.release(); }
   };
   const check = async (selection: RunnerUpdateSelection = {}): Promise<RunnerUpdateContact> => {
-    const releaseChannel = selection.channel ?? channel();
+    const releaseChannel = selection.channel ?? channel(true);
     if (releaseChannel === null) return contactPayload();
     const checked = await releases(releaseChannel, currentVersion, undefined, deps, selection.targetVersion);
     return { ...contactPayload(), channel: releaseChannel, latestVersion: checked.refs?.targetVersion ?? null, lastCheckAt: now() };
   };
-  const abandon = (tx: RunnerUpdateTransaction, reason: string, retainedVersion = tx.fromVersion): void => {
-    withState(home, state => {
-      if (state.transaction?.id !== tx.id) return;
-      (state.lastResults ??= {})[tx.serverUrl] = { fromVersion: tx.fromVersion, toVersion: tx.toVersion, result: 'failed', reason,
-        at: now(), ...(tx.requestId ? { requestId: tx.requestId } : {}), ...(tx.attemptId ? { attemptId: tx.attemptId } : {}) };
-      if (retainedVersion === tx.fromVersion) blockRunnerUpdateVersion(state, tx.toVersion, reason, now());
-      state.cleanup = { failedVersion: tx.toVersion, currentVersion: retainedVersion, platform: tx.platform,
-        ...(retainedVersion === tx.fromVersion ? {} : { previousVersion: tx.fromVersion }),
-        serverUrl: tx.serverUrl, fromVersion: tx.fromVersion, toVersion: tx.toVersion, attemptId: tx.attemptId,
-        ...(tx.localAppData ? { localAppData: tx.localAppData } : {}) };
-      delete state.transaction;
-    });
-    cleanupGuardian();
+  const abandon = (tx: RunnerUpdateTransaction, reason: string, retainedVersion = tx.fromVersion): boolean => {
+    if (tx.phase !== 'waiting') return false;
+    const installation = acquireInstallationLease(home, { command: 'myco runner cancel unplaced update' });
+    if (!installation.acquired) return false;
+    let abandoned = false;
+    try {
+      const observed = decodeState(home).transaction;
+      if (observed?.id !== tx.id || observed.phase !== 'waiting') return false;
+      if (!runnerCurrentReleaseProbe(binaryPath, retainedVersion, platform).runs) return false;
+      abandoned = withState(home, state => {
+        if (state.transaction?.id !== tx.id || state.transaction.phase !== 'waiting') return false;
+        (state.lastResults ??= {})[tx.serverUrl] = { fromVersion: tx.fromVersion, toVersion: tx.toVersion, result: 'failed', reason,
+          at: now(), ...(tx.requestId ? { requestId: tx.requestId } : {}), ...(tx.attemptId ? { attemptId: tx.attemptId } : {}) };
+        if (retainedVersion === tx.fromVersion) blockRunnerUpdateVersion(state, tx.toVersion, reason, now());
+        state.cleanup = { failedVersion: tx.toVersion, currentVersion: retainedVersion, platform: tx.platform,
+          ...(retainedVersion === tx.fromVersion ? {} : { previousVersion: tx.fromVersion }),
+          serverUrl: tx.serverUrl, fromVersion: tx.fromVersion, toVersion: tx.toVersion, attemptId: tx.attemptId,
+          ...(tx.localCandidate ? { localCandidate: tx.localCandidate } : {}),
+          ...(tx.localAppData ? { localAppData: tx.localAppData } : {}) };
+        delete state.transaction;
+        return true;
+      });
+    } finally { installation.release(); }
+    if (abandoned) cleanupGuardian();
+    return abandoned;
   };
   const recoverGuardian = (tx: RunnerUpdateTransaction): void => {
     if (now() - (tx.recoveryAt ?? tx.startedAt) < GUARDIAN_RECOVERY_MS) return;
@@ -527,28 +657,41 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     } catch (error) { log('runner update watcher recovery failed: ' + sanitizeRunnerUpdateReason(String(error))); }
   };
   const idle = async (): Promise<'continue' | 'restart' | 'hold'> => {
-    const state = read();
+    const state = decodeState(home);
+    if (state.metadataFailure) return 'continue';
     if (state.transaction) {
       const tx = state.transaction;
       if (tx.binaryPath !== binaryPath) return 'continue';
       if (!semver.valid(currentVersion)) return 'continue';
       if (currentVersion !== tx.fromVersion && currentVersion !== tx.toVersion) {
-        abandon(tx, 'runner update handoff superseded by installed version ' + currentVersion, currentVersion);
+        if (!abandon(tx, 'runner update handoff superseded by installed version ' + currentVersion, currentVersion)) recoverGuardian(tx);
         return 'continue';
       }
       if (currentVersion === tx.fromVersion && (now() >= (tx.deadlineAt ?? tx.startedAt + TX_DEADLINE_MS)
         || (tx.recoveryAttempts ?? 0) >= MAX_GUARDIAN_RECOVERIES)) {
-        abandon(tx, 'runner update handoff exceeded its bounded deadline');
-        return 'continue';
+        if (abandon(tx, 'runner update handoff exceeded its bounded deadline')) return 'continue';
       }
       recoverGuardian(tx);
       return currentVersion === tx.toVersion ? 'continue' : 'hold';
     }
-    if (!cleanupGuardian()) return 'continue';
+    const installation = acquireInstallationLease(home, { command: 'myco runner update installation' });
+    if (!installation.acquired) return 'continue';
+    let installationReleased = false;
+    try {
+    const admitted = decodeState(home);
+    if (admitted.transaction || admitted.metadataFailure) return 'continue';
+    recoverInterruptedBinaryPublication(home, binaryPath, platform);
+    if (!cleanupGuardian(true)) return 'continue';
     const request = state.requests?.[serverUrl];
     if (now() < state.nextCheckAt) return 'continue';
     const recordedChannel = channel();
-    const releaseChannel = request?.channel ?? recordedChannel;
+    const localCandidate = request?.localCandidate;
+    if (request?.manual !== true && (readInstallMarker(home, true)?.source === 'checkout' || isDevelopmentVersion(currentVersion))) {
+      withState(home, next => { schedule(next, now() + jitter(), request); if (request) report(next, 'refused', currentVersion,
+        'automatic updates skipped: this is a source build', request); });
+      return 'continue';
+    }
+    const releaseChannel = request?.channel ?? channel(request?.manual === true);
     const recordsAutomaticCandidate = request?.targetVersion === undefined && releaseChannel === recordedChannel;
     const installed = releaseChannel !== null && (deps.serviceInstalled ?? ((spec, targetPlatform) => fs.existsSync(servicePaths(spec, targetPlatform).unitFile)))(options.serviceSpec, platform);
     if (releaseChannel === null || !installed) {
@@ -559,11 +702,30 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     const held = LifecycleLock.acquire(path.join(home, 'runner', UPDATE_OPERATION_LOCK), { command: 'myco runner update operation' });
     if (!held.acquired) return 'continue';
     try {
-      const active = read();
-      if (active.transaction || active.guardian || active.cleanup) return 'continue';
+      const active = decodeState(home);
+      if (active.metadataFailure || active.transaction || active.guardian || active.cleanup || active.requests?.[serverUrl]?.id !== request?.id) return 'continue';
+      const current = runnerCurrentReleaseProbe(binaryPath, currentVersion, platform);
+      if (!current.runs) {
+        withState(home, next => {
+          report(next, 'refused', localCandidate?.version ?? currentVersion, 'installed runner changed before handoff: ' + current.detail, request);
+          schedule(next, now() + jitter(), request);
+        });
+        return 'continue';
+      }
+      if (localCandidate?.version === currentVersion) {
+        const retired = withState(home, next => {
+          if (next.requests?.[serverUrl]?.id !== request?.id) return false;
+          (next.retiredCandidates ??= []).push(localCandidate);
+          report(next, 'no_update', currentVersion, undefined, request);
+          schedule(next, now() + jitter(), request);
+          return true;
+        });
+        if (retired) cleanupGuardian(true);
+        return 'continue';
+      }
       if (request?.clearBlock) withState(home, clearBlocks);
       let refs: AssetRefs | null = null;
-      try {
+      if (!localCandidate) try {
         const cached = state.candidate?.channel === releaseChannel ? state.candidate.refs : null;
         const etag = recordsAutomaticCandidate && state.releaseChannel === releaseChannel && !request?.clearBlock ? state.etag : undefined;
         const found = await releases(releaseChannel, currentVersion, etag, deps, request?.targetVersion);
@@ -585,12 +747,12 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
         withState(home, next => { next.failures++; schedule(next, now() + backoff(next.failures), request); report(next, 'failed', currentVersion, String(error), request); });
         return 'continue';
       }
-      if (refs === null) return 'continue';
-      if (!semver.valid(currentVersion) || !semver.valid(refs.targetVersion) || semver.major(refs.targetVersion) < 2 || !semver.gt(refs.targetVersion, currentVersion)) {
+      if (!localCandidate && refs === null) return 'continue';
+      if (!localCandidate && (!semver.valid(currentVersion) || !semver.valid(refs!.targetVersion) || semver.major(refs!.targetVersion) < 2 || !semver.gt(refs!.targetVersion, currentVersion))) {
         if (request) withState(home, next => report(next, 'no_update', refs!.targetVersion, undefined, request));
         return 'continue';
       }
-      const version = refs.targetVersion;
+      const version = localCandidate?.version ?? refs!.targetVersion;
       const blocked = read().blockedVersions?.[version];
       if (blocked && blocked.until > now()) {
         withState(home, next => { schedule(next, Math.min(blocked.until, now() + jitter()), request); if (request) report(next, 'refused', version, blocked.reason, request); });
@@ -611,22 +773,33 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
         schedule(next, retry.nextRetryAt, request); report(next, 'refused', version, reason, request, retry.id);
       });
       const probe = deps.probe ?? strictRunnerReleaseProbe;
-      const staged = await (deps.stage ?? stageBinary)({ refs, home, platform, localAppData: options.localAppData }, {
+      if (localCandidate) assertSourceAdoptionAllowed(home, binaryPath);
+      if (localCandidate) {
+        assertRunnerLocalCandidate(localCandidate);
+        const ready = probe(localCandidate.binaryPath, version, platform);
+        if (!ready.runs) { refuse(ready.detail); return 'continue'; }
+      }
+      const staged = localCandidate ? { stagedPath: localCandidate.binaryPath } : await (deps.stage ?? stageBinary)({ refs: refs!, home, platform, localAppData: options.localAppData }, {
         ...(deps.stageDeps ?? DEFAULT_BINARY_UPDATE_DEPS), ready: file => probe(file, version, platform),
       });
       if ('error' in staged) { refuse(staged.error); return 'continue'; }
+      const live = runnerCurrentReleaseProbe(binaryPath, currentVersion, platform);
+      if (!live.runs) { refuse('installed runner changed before handoff: ' + live.detail); return 'continue'; }
       const previous = versionBinaryPath(home, platform, currentVersion, options.localAppData);
       const guardianPath = runnerUpdateGuardianBinary(home, platform);
       fs.mkdirSync(path.dirname(previous), { recursive: true });
       fs.mkdirSync(path.dirname(guardianPath), { recursive: true });
       try {
-        placeExecutable(binaryPath, previous, { platform, ready: () => ({ runs: true }) });
-        placeExecutable(binaryPath, guardianPath, { platform, ready: file => runnerCurrentReleaseProbe(file, currentVersion, platform) });
+        placeExecutable(binaryPath, previous, { platform, ready: file => runnerCurrentReleaseProbe(file, currentVersion, platform) });
+        placeExecutable(localCandidate?.binaryPath ?? binaryPath, guardianPath, { platform, ready: file => {
+          if (!localCandidate) return runnerCurrentReleaseProbe(file, currentVersion, platform);
+          return probeRunnerLocalCandidate(localCandidate, file, () => probe(file, version, platform));
+        } });
       } catch (error) { refuse('trusted current binary backup failed: ' + String(error)); return 'continue'; }
       const tx: RunnerUpdateTransaction = {
         id: crypto.randomUUID(), attemptId: attempt.id, serverUrl, fromVersion: currentVersion, toVersion: version,
         binaryPath, home, platform, ...(options.localAppData ? { localAppData: options.localAppData } : {}),
-        serviceSpec: options.serviceSpec, installMarker: readInstallMarker(home, true)!, ownerPid: process.pid, startedAt: now(),
+        serviceSpec: options.serviceSpec, ...(localCandidate ? { localCandidate } : {}), installMarker: readInstallMarker(home, true)!, ownerPid: process.pid, startedAt: now(),
         deadlineAt: now() + TX_DEADLINE_MS, recoveryAttempts: 0, ...(request ? { requestId: request.id } : {}), phase: 'waiting',
       };
       const guardian = runnerUpdateGuardianSpec(tx);
@@ -634,6 +807,8 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
         next.transaction = tx; next.guardian = guardian;
         if (request && next.requests?.[serverUrl]?.id === request.id) delete next.requests[serverUrl];
       });
+      installation.release();
+      installationReleased = true;
       try {
         const installedGuardian = (deps.installGuardian ?? ((spec, targetPlatform) => installService(spec, { platform: targetPlatform })))(guardian, platform);
         if (!installedGuardian.loaded || !installedGuardian.running) throw new Error(installedGuardian.detail ?? 'update guardian is not running');
@@ -642,15 +817,16 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       log('runner update ' + currentVersion + ' → ' + version + ' staged; handing service to the trusted update helper');
       return 'restart';
     } finally { held.lock.release(); }
+    } finally { if (!installationReleased) installation.release(); }
   };
   return {
     contactPayload: guard(contactPayload, () => payload(freshState())),
     onContact: guard(onContact, () => undefined), startup: guard(startup, () => undefined),
     acknowledgeHealthy: guard(acknowledgeHealthy, () => undefined), recordClaim: guard(recordClaim, () => undefined),
-    recordHealthRefusal: guard(recordHealthRefusal, () => undefined), queueManual,
+    recordHealthRefusal: guard(recordHealthRefusal, () => undefined), recordRuntimeCapability, queueManual, queueLocal,
     check, idle: guard(idle, async () => 'continue' as const),
   };
 }
 
-export { readState as readRunnerUpdateState, statePath as runnerUpdateStatePath, withState as withRunnerUpdateState };
+export { decodeState as readRunnerUpdateStateStrict, readState as readRunnerUpdateState, statePath as runnerUpdateStatePath, withState as withRunnerUpdateState };
 export type { RunnerUpdateState, RunnerUpdateTransaction };

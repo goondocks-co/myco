@@ -31,7 +31,7 @@ export {
  * `dir` is the `.myco` home directory (e.g. `~/.myco`).
  */
 export function writeInstallMarker(dir: string, marker: InstallMarker): void {
-  publishInstallMarker(dir, marker, (file, text) => atomicWriteFileSync(file, text, 'utf8'));
+  publishInstallMarker(dir, marker, (file, text) => atomicWriteFileSync(file, text, { durable: true, mode: 0o600 }));
 }
 
 export function writeAutomaticUpdatePreference(dir: string, enabled: boolean): void {

@@ -1,11 +1,13 @@
-import { afterAll, describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { runRunnerUpdateHelper, type RunnerUpdateHelperDeps } from '../../packages/myco/src/runner/update-helper.js';
 import { readRunnerUpdateState, runnerUpdateStatePath, strictRunnerReleaseProbe, withRunnerUpdateState, type RunnerUpdateTransaction } from '../../packages/myco/src/runner/update.js';
 import { versionBinaryPath, writeInstallMarker } from '../../packages/myco/src/install/managed-binary.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
+import { beginBinaryPublication, publishAdoptedMarker } from '../../packages/myco/src/install/adoption.js';
 import { placeExecutable } from '../../packages/myco/src/install/place-binary.js';
 import type { ServiceSpec } from '../../packages/myco/src/server/service.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
@@ -365,4 +367,117 @@ it('leaves member refresh pending after a healthy runner update without running 
     result: 'updated', reason: 'agents_refresh_pending',
   });
   expect(fs.readFileSync(f.binaryPath, 'utf8')).toContain(to);
+});
+
+it('restores binary and source marker after interrupted runner publication', async () => {
+  const f = fixture('interrupted-source-publication');
+  const sourceVersion = '0.0.0-dev+commit.bprevious';
+  const sourceMarker = { source: 'checkout' as const, channel: 'alpha' as const,
+    checkout: f.home, commit: 'a'.repeat(40), version: sourceVersion,
+    binary_sha256: crypto.createHash('sha256').update(fs.readFileSync(f.previous)).digest('hex'), bin: f.binaryPath };
+  withRunnerUpdateState(f.home, state => {
+    state.transaction!.phase = 'placing';
+    state.transaction!.installMarker = sourceMarker;
+  });
+  fs.copyFileSync(f.target, f.binaryPath);
+  writeInstallMarker(f.home, { channel: 'alpha', source: 'curl', bin: f.binaryPath, version: to });
+  await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps);
+  expect(fs.readFileSync(f.binaryPath)).toEqual(fs.readFileSync(f.previous));
+  expect(JSON.parse(fs.readFileSync(path.join(f.home, 'install.json'), 'utf8'))).toEqual(sourceMarker);
+  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]).toMatchObject({
+    result: 'failed', reason: 'runner binary publication was interrupted',
+  });
+});
+
+it('waits for a held Windows executable owner and stops its service before local placement', async () => {
+  const f = fixture('windows-held-source');
+  const version = '0.0.0-dev+commit.bwindows';
+  const slot = crypto.randomUUID();
+  const candidate = path.join(f.home, 'runner', 'candidates', slot, 'myco.exe');
+  fs.mkdirSync(path.dirname(candidate), { recursive: true });
+  fs.writeFileSync(candidate, `#!/bin/sh\nprintf '%s\\n' '${version}'\n`, { mode: 0o755 });
+  withRunnerUpdateState(f.home, state => {
+    state.transaction!.platform = 'win32';
+    state.transaction!.toVersion = version;
+    state.transaction!.localCandidate = {
+      kind: 'local', platform: 'win32', version, binaryPath: candidate, slot, checkout: f.home,
+      commit: 'a'.repeat(40), sha256: crypto.createHash('sha256').update(fs.readFileSync(candidate)).digest('hex'),
+    };
+  });
+  let ownerHeld = true;
+  let waits = 0;
+  let placed = false;
+  f.deps.alive = () => ownerHeld;
+  f.deps.wait = async () => {
+    expect(placed).toBe(false);
+    expect(f.stops).toBe(0);
+    if (++waits === 2) ownerHeld = false;
+  };
+  f.deps.place = (src, dest, opts) => {
+    expect(ownerHeld).toBe(false);
+    expect(f.stops).toBe(1);
+    expect(opts?.platform).toBe('win32');
+    placed = true;
+    placeExecutable(src, dest, { ...opts, platform: 'linux' });
+  };
+  f.deps.start = () => {
+    f.setRunning(true);
+    withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
+    return { unitFile: 'fixture', loaded: true, running: true, changed: true };
+  };
+  await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps);
+  expect(waits).toBe(2);
+  expect(placed).toBe(true);
+  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]).toMatchObject({
+    result: 'updated', toVersion: version,
+  });
+  expect(JSON.parse(fs.readFileSync(path.join(f.home, 'install.json'), 'utf8'))).toMatchObject({
+    source: 'checkout', version, binary_sha256: crypto.createHash('sha256').update(fs.readFileSync(f.binaryPath)).digest('hex'),
+  });
+});
+
+it('refuses a waiting handoff whose from-version no longer matches live bytes', async () => {
+  const f = fixture('stale-from-version');
+  fs.writeFileSync(f.binaryPath, `#!/bin/sh\nprintf '%s\\n' '2.0.0-alpha.9'\n`, { mode: 0o755 });
+  publishAdoptedMarker(f.home, f.binaryPath, '2.0.0-alpha.9', { kind: 'release' });
+  const bytes = fs.readFileSync(f.binaryPath);
+  const marker = fs.readFileSync(path.join(f.home, 'install.json'));
+  await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps);
+  expect(f.stops).toBe(0);
+  expect(f.starts).toBe(0);
+  expect(fs.readFileSync(f.binaryPath)).toEqual(bytes);
+  expect(fs.readFileSync(path.join(f.home, 'install.json'))).toEqual(marker);
+  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]).toMatchObject({ result: 'refused' });
+});
+
+it('recovers pending main publication before probing the waiting helper from-version', async () => {
+  const f = fixture('helper-main-publication-recovery');
+  const previous = path.join(path.dirname(f.binaryPath), 'myco.prev');
+  beginBinaryPublication(f.home, f.binaryPath, previous);
+  fs.renameSync(f.binaryPath, previous);
+  fs.writeFileSync(f.binaryPath, `#!/bin/sh\nprintf '%s\\n' '2.0.0-alpha.9'\n`, { mode: 0o755 });
+  f.deps.start = () => {
+    f.setRunning(true);
+    withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
+    return { unitFile: 'fixture', loaded: true, running: true, changed: true };
+  };
+  await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps);
+  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]).toMatchObject({ result: 'updated' });
+  expect(fs.readFileSync(f.binaryPath, 'utf8')).toContain(to);
+  expect(fs.existsSync(path.join(f.home, 'install-adoption.json'))).toBe(false);
+});
+
+it('releases the helper lock when installation lease acquisition throws', async () => {
+  const f = fixture('installation-acquire-throws');
+  const acquire = LifecycleLock.acquire;
+  const injected = spyOn(LifecycleLock, 'acquire').mockImplementation((file, options) => {
+    if (options?.command === 'myco runner update helper installation') throw new Error('installation lease unavailable');
+    return acquire(file, options);
+  });
+  try { await expect(runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps)).rejects.toThrow('installation lease unavailable'); }
+  finally { injected.mockRestore(); }
+  const retry = LifecycleLock.acquire(path.join(f.home, 'runner', '.update-helper.lock'));
+  expect(retry.acquired).toBe(true);
+  if (retry.acquired) retry.lock.release();
+  expect(readRunnerUpdateState(f.home).transaction?.phase).toBe('waiting');
 });
