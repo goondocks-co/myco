@@ -20,7 +20,7 @@ import { joinSentences } from '@myco/utils/sentences.js';
 import { readProvisionRecord, UnreadableProvisionRecordError } from '../symbionts/member-provision-record.js';
 import { missingMemberSkills } from '../symbionts/member-skill-links.js';
 import { getPluginVersion } from '../version.js';
-import { checkMemberMcpResolution, checkWorkerServices, formatCheck, type DoctorCheck } from './doctor-member.js';
+import { checkAutomaticUpdate, checkMemberMcpResolution, checkWorkerServices, formatCheck, type DoctorCheck } from './doctor-member.js';
 import { envOf, homeOf, membershipProblem, openDeployment, rootOf, type MemberVerbDeps } from './deployment-reader.js';
 import type { WorkerServiceDeps } from './worker-service.js';
 import { readDefaultDeployment } from '../member/default-deployment.js';
@@ -277,6 +277,7 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
         `${entry.root}: ${refusals.readable ? `${refusals.total} refused events; newest ${iso(refusals.latest)}; ${refusals.recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'refusal log unreadable'}. Run myco logs from that repository.`));
     }
   }
+  checks.push(checkAutomaticUpdate(home));
   checks.push(...leftRepositoryChecks(home), ...refusedHookChecks(home, now));
   if (listing.memberships.length > 0) checks.push(...setupChecks(home));
   if (readRegistryEntryResult(rootOf(deps), home).status === 'missing') checks.push(...captureChecks(rootOf(deps), home, deps.packageRoot ?? resolvePackageRoot(), listing.memberships.length > 0));

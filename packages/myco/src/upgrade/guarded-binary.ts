@@ -12,15 +12,17 @@ import type { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { LifecycleLock, type LockHandle } from '@myco/utils/lifecycle-lock.js';
 import { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
 import { getPluginVersion } from '@myco/version.js';
-import { stageBinary, DEFAULT_BINARY_UPDATE_DEPS, type StageBinaryDeps } from './apply-binary.js';
+import { stageBinary, createBinaryUpdateDeps, type StageBinaryDeps } from './apply-binary.js';
 import { resolveMycoBinaryUpdateRefs, fetchMycoReleases } from './release-resolver.js';
 import { resolveAssetRefs, resolveTargetTriple, type AssetRefs, type GitHubRelease, type TargetTriple } from './release-assets.js';
 import { recordUpdateCheck, effectiveUpdateChannel } from './check-cache.js';
 import { hasAdoptFailed, markAdoptFailed, clearAdoptFailed } from './adopt-failed.js';
+import { updateBudget, type UpdateDeadline } from '@myco/upgrade/update-budget.js';
 import type { ReleaseChannel } from '@myco/constants/update.js';
 
 export const BINARY_UPDATE_WAIT_MS = 250;
 export const BINARY_VERSION_TIMEOUT_MS = 30_000;
+export const AUTOMATIC_DOWNLOAD_MIN_BUDGET_MS = 15_000;
 const UPDATE_DIRECTORY_PREFIX = '.myco-update-';
 const RETIRED_BINARY_PREFIX = '.myco-retired-';
 
@@ -34,7 +36,7 @@ export type BinaryUpdateOutcome = (
   | { kind: 'rolled-back'; version: string; reason: string }
 ) & { warnings?: string[]; retainedPrevious?: RetainedPrevious[] };
 
-export interface BinaryUpdateDeps {
+export interface BinaryUpdateDeps extends UpdateDeadline {
   resolveRefs?: (channel: ReleaseChannel) => Promise<AssetRefs | null>;
   fetchReleases?: () => Promise<GitHubRelease[]>;
   stageBinary?: typeof stageBinary;
@@ -52,6 +54,12 @@ export interface BinaryUpdateDeps {
   fs?: Pick<typeof fs, 'linkSync' | 'renameSync' | 'rmSync'>;
 }
 
+/** The installed destination shared by replacement and post-update agent refresh. */
+export function binaryUpdatePath(home: string, deps: BinaryUpdateDeps = {}): string {
+  return deps.mycoBinary ?? readInstallMarker(home, true)?.bin
+    ?? resolveBinary('managed-destination', { kind: 'machine' }, { mycoHome: home, platform: deps.platform, localAppData: deps.localAppData ?? process.env.LOCALAPPDATA }).path;
+}
+
 export function admitsUpdate(target: string, current: string, channel: ReleaseChannel): boolean {
   if (!semver.valid(target) || !semver.valid(current) || !semver.gt(target, current) || !isV2Version(target)) return false;
   return !isV2Version(current) || selectChannelRelease([{
@@ -65,11 +73,14 @@ export async function resolveAssetRefsForTarget(target: string | null, channel: 
     const release = releases.find(release => release.tag_name === `myco/v${target}`);
     return release === undefined ? null : resolveAssetRefs(release, (deps.targetTriple ?? resolveTargetTriple)());
   }
-  return (deps.resolveRefs ?? (channel => resolveMycoBinaryUpdateRefs(channel, undefined, deps.currentVersion ?? getPluginVersion())))(channel);
+  return (deps.resolveRefs ?? (channel => resolveMycoBinaryUpdateRefs(channel, {
+    fetchReleases: () => fetchMycoReleases(updateBudget(deps).fetch),
+    targetTriple: deps.targetTriple ?? resolveTargetTriple,
+  }, deps.currentVersion ?? getPluginVersion())))(channel);
 }
 
-function probeVersion(binary: string): string {
-  const result = spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: BINARY_VERSION_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
+function probeVersion(binary: string, timeoutMs = BINARY_VERSION_TIMEOUT_MS): string {
+  const result = spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`version check exited ${result.status}${result.signal ? ` (${result.signal})` : ''}`);
   return result.stdout.trim();
@@ -147,6 +158,7 @@ async function performBinaryUpdate(
   deps: BinaryUpdateDeps,
   report: UpdateReport,
 ): Promise<BinaryUpdateOutcome> {
+  const budget = updateBudget(deps);
   const home = deps.home ?? resolveMycoHome();
   const platform = deps.platform ?? process.platform;
   const localAppData = deps.localAppData ?? process.env.LOCALAPPDATA;
@@ -158,17 +170,20 @@ async function performBinaryUpdate(
   try {
     const lockHomes = [...new Set([defaultMycoHome(), home].map(canonicalHomePath))];
     for (const lockHome of lockHomes) {
-      const lease = LifecycleLock.acquire(path.join(lockHome, 'member', REPAIR_LOCK), { wait: true, timeoutMs: BINARY_UPDATE_WAIT_MS, command: 'myco update binary' });
+      const lease = LifecycleLock.acquire(path.join(lockHome, 'member', REPAIR_LOCK), { wait: true, timeoutMs: Math.min(BINARY_UPDATE_WAIT_MS, budget.remaining()), command: 'myco update binary' });
       if (!lease.acquired) return { kind: caller === 'manual' ? 'failed' : 'skipped', reason: 'an update is running' };
       leases.push(lease.lock);
     }
-    const binary = deps.mycoBinary ?? readInstallMarker(home, true)?.bin
-      ?? resolveBinary('managed-destination', { kind: 'machine' }, { mycoHome: home, platform, localAppData }).path;
+    const binary = binaryUpdatePath(home, deps);
     const fileOps = deps.fs ?? fs;
     sweepLeftovers(binary, fileOps, report);
     const pin = readLayeredPin({ kind: 'walk-up', from: deps.cwd ?? process.cwd() }, { mycoHome: home, platform });
     if (pin !== null && canonicalHomePath(pin.pin) !== canonicalHomePath(binary)) return { kind: 'skipped', reason: `runtime pin selects another binary: ${pin.pin}` };
-    const probe = deps.probeVersion ?? probeVersion;
+    const probe = async (binary: string): Promise<string> => {
+      budget.remaining();
+      try { return await (deps.probeVersion ?? (file => probeVersion(file, Math.min(BINARY_VERSION_TIMEOUT_MS, budget.remaining()))))(binary); }
+      finally { budget.remaining(); }
+    };
     const current = fs.existsSync(binary) ? await probe(binary) : runningVersion;
     if (isDevelopmentVersion(current)) return { kind: 'skipped', reason: 'development build' };
     if (!semver.valid(current)) throw new Error(`installed binary reported an invalid version: ${current}`);
@@ -182,11 +197,15 @@ async function performBinaryUpdate(
     if (!admitsUpdate(refs.targetVersion, current, channel)) return { kind: 'already-current', version: current, reason: `channel target ${refs.targetVersion} is older or outside '${channel}'; staying put` };
     const failedBefore = hasAdoptFailed(home, platform, refs.targetVersion, localAppData);
     if (failedBefore && !(caller === 'manual' && target !== null)) return { kind: 'skipped', reason: `version ${refs.targetVersion} failed an earlier update; retry with myco update ${refs.targetVersion}` };
-    const staged = await (deps.stageBinary ?? stageBinary)({ refs, home, platform, localAppData }, deps.stageDeps ?? DEFAULT_BINARY_UPDATE_DEPS);
+    if (caller === 'automatic' && budget.remaining() < AUTOMATIC_DOWNLOAD_MIN_BUDGET_MS) return { kind: 'skipped', reason: 'not enough time remains to download an update' };
+    budget.remaining();
+    const staged = await (deps.stageBinary ?? stageBinary)({ refs, home, platform, localAppData }, deps.stageDeps ?? { ...createBinaryUpdateDeps({ fetch: budget.fetch }), ready: file => readyExecutable(file, platform, budget.run) });
+    budget.remaining();
     if ('error' in staged) {
       if (staged.verificationFailed) recordFailedVerification(home, platform, refs.targetVersion, localAppData, report, deps.failureRecordWriter);
       return { kind: 'failed', reason: staged.error };
     }
+    budget.remaining();
     fs.mkdirSync(path.dirname(binary), { recursive: true });
     const staging = fs.mkdtempSync(path.join(path.dirname(binary), UPDATE_DIRECTORY_PREFIX));
     const candidate = path.join(staging, path.basename(binary));
@@ -194,13 +213,14 @@ async function performBinaryUpdate(
     try {
       try {
         (deps.placeBinary ?? placeExecutable)(path.join(staged.versionDir, platform === 'win32' ? 'myco.exe' : 'myco'), candidate, {
-          platform, ready: file => readyExecutable(file, platform),
+          platform, ready: file => readyExecutable(file, platform, budget.run),
         });
         await verifyVersion(candidate, refs.targetVersion, probe);
       } catch (error) {
         if (error instanceof ExecutableVerificationError) recordFailedVerification(home, platform, refs.targetVersion, localAppData, report, deps.failureRecordWriter);
         return { kind: 'failed', reason: `prepare downloaded version: ${detail(error)}` };
       }
+      budget.remaining();
       const hadLive = fs.existsSync(binary);
       const retired = hadLive ? keepPrevious(binary, previous, staging, platform, fileOps) : undefined;
       let swapped = false;

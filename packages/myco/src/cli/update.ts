@@ -2,12 +2,10 @@
 
 import path from 'node:path';
 import { parseStrictFlags } from './args.js';
-import { resolveBinary } from '../runtime/binary-resolution.js';
-import { updateBinary, admitsUpdate, resolveAssetRefsForTarget, type BinaryUpdateDeps } from '../upgrade/guarded-binary.js';
+import { updateBinary, binaryUpdatePath, admitsUpdate, resolveAssetRefsForTarget, type BinaryUpdateDeps } from '../upgrade/guarded-binary.js';
 import { claimSubsystem, readClaim, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import { resolveMycoPackageCheck } from '../upgrade/checker.js';
 import { resolveMycoHome } from '../paths/home.js';
-import { readInstallMarker } from '../install/managed-binary.js';
 import { refreshMemberSetup } from '../member/refresh-setup.js';
 import { readRunnerUpdateState } from '../runner/update.js';
 import { isMemberHome } from '../member/home-role.js';
@@ -139,8 +137,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
       console.log('Agents refreshed: no (this home is not a member machine).');
       return;
     }
-    const binary = deps.mycoBinary ?? readInstallMarker(home, true)?.bin
-      ?? resolveBinary('managed-destination', { kind: 'machine' }, { mycoHome: home, platform: deps.platform }).path;
+    const binary = binaryUpdatePath(home, deps);
     try {
       await (deps.refreshMember ?? refreshMemberSetup)(binary, home);
       const claim = readClaim(SYMBIONT_CONFIG_SUBSYSTEM);

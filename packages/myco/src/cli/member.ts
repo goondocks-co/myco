@@ -1,6 +1,9 @@
 import { importSignInHistory, withSignInCapture } from './signin-capture.js';
 import { repositoryName } from '@myco/utils/git.js';
 import { askOnTerminal } from '@myco/setup/prompt.js';
+import semver from 'semver';
+import { readAutomaticUpdate } from '@myco/member/automatic-update-state.js';
+import { isDevelopmentVersion } from '../../scripts/release-policy.mjs';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 /**
  * `myco member <op>` — the member's own CLI: `join`/`leave` record and forget
@@ -24,7 +27,7 @@ import { hostname } from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { canonicalRootIdentity } from '../utils/git-files.js';
-import type { DoctorCheck } from './doctor-member.js';
+import { checkAutomaticUpdate, formatCheck, type DoctorCheck } from './doctor-member.js';
 import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome, type ResolvedMycoHome } from '../paths/home.js';
@@ -526,6 +529,11 @@ function provisionChosenAgent(agent: string, root: string | null, mycoHome: stri
 /** Reconcile fresh choices and owned registrations, and hold the repair lease through the operation. */
 export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageRoot?: string; serverUrl?: string; onInspectionError?: (message: string) => void; wait?: boolean }, fn: (record: ProvisionRecord, agents: string[], retiredSettingsProblems: ReadonlySet<string>) => T): T | null {
   return withMemberRepair(mycoHome, 'myco member reconcile', () => {
+    const runningVersion = getPluginVersion();
+    if (!isDevelopmentVersion(runningVersion) && semver.valid(runningVersion) !== null) {
+      const knownVersions = [readProvisionRecord(mycoHome)?.version, readAutomaticUpdate(mycoHome)?.lastOutcome.version];
+      if (knownVersions.some(version => version !== undefined && semver.valid(version) !== null && semver.gt(version, runningVersion))) return null;
+    }
     const serverUrl = memberProvisionTarget(mycoHome, opts.serverUrl);
     if (serverUrl === undefined) return null;
     const retiredSettingsProblems = new Set<string>();
@@ -1027,6 +1035,7 @@ export function backlogLines(projectId: string, backlog: BacklogReport): string[
  */
 export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): void {
   const out = deps.stdout ?? ((l) => process.stdout.write(`${l}\n`));
+  out(formatCheck(checkAutomaticUpdate(homeFor(deps))));
   const now = deps.now ?? Date.now;
   const err = deps.stderr ?? ((l: string) => process.stderr.write(`${l}\n`));
   const mycoHome = homeFor(deps);

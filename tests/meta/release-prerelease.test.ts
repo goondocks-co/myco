@@ -147,10 +147,12 @@ describe('a Myco 2.0 prerelease', () => {
 
 
 describe('Myco 2.0 update guidance', () => {
-  it('describes on-demand commands and scopes background-service guidance to 1.4', () => {
+  it('describes daily helper checks and manual commands without a member service', () => {
     const docs = fs.readFileSync(path.resolve('docs/upgrade.md'), 'utf8');
     const memberGuide = docs.split('## Myco 1.4 updates')[0];
-    expect(memberGuide).toContain('Myco 2.0 updates on demand');
+    expect(memberGuide).toContain('about once a day in the default home');
+    expect(memberGuide).toContain('myco member status');
+    expect(memberGuide).toContain('There is no automatic-update off setting');
     expect(memberGuide).toContain('runs no member update timer or local service');
     expect(memberGuide).toContain('myco update --check');
     expect(memberGuide).toContain('myco update --channel beta');

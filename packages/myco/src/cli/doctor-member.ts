@@ -1,4 +1,6 @@
 /** Member doctor checks and output formatting. */
+import { readProvisionRecord } from '@myco/member/provision-record.js';
+import { readAutomaticUpdate, automaticUpdateWords } from '@myco/member/automatic-update-state.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { findCorePackageRoot } from '@myco/utils/find-package-root.js';
@@ -355,4 +357,22 @@ export async function checkRuntimePin(): Promise<DoctorCheck | null> {
   } catch {
     return null;
   }
+}
+
+/** The last automatic attempt, including refusals and failures. */
+export function checkAutomaticUpdate(mycoHome: string): DoctorCheck {
+  let state: ReturnType<typeof readAutomaticUpdate>;
+  try { state = readAutomaticUpdate(mycoHome); }
+  catch (error) {
+    return { name: 'Automatic update', status: 'warn', fixable: false, detail: `could not read the last check: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const provision = state?.lastOutcome.kind === 'adopted' ? readProvisionRecord(mycoHome) : null;
+  const setupPending = provision !== null && provision.version !== state?.lastOutcome.version;
+  const setupFailed = state?.lastOutcome.kind === 'adopted' && state.lastOutcome.reason !== undefined;
+  return {
+    name: 'Automatic update', fixable: false,
+    status: state === null ? 'info' : setupFailed || setupPending || ['failed', 'rolled-back'].includes(state.lastOutcome.kind) ? 'warn' : 'ok',
+    detail: state === null ? 'not checked yet; the next helper pass with enough time checks for an update'
+      : `${new Date(state.lastAttemptAt).toISOString()}: ${automaticUpdateWords(state.lastOutcome)}${setupPending ? '; agents still need refreshing. Run myco member provision --refresh' : ''}`,
+  };
 }

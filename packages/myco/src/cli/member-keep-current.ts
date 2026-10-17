@@ -86,7 +86,7 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
           new SymbiontInstaller(manifest, mycoHome, deps.packageRoot ?? resolvePackageRoot(), false, mycoHome).withoutProjectRoot().forDeployment(record.serverUrl).assertMemberProvisionAllowed();
           const installed = installEvidence(manifest, deps.binaryFound ?? isBinaryOnPath);
           let status = installed ? memberHarnessStatus(id, mycoHome, record.serverUrl, deps) : { current: false };
-          if (installed && !status.current) {
+          if (installed && (!status.current || record.version !== getPluginVersion())) {
             const backup = provisionBackup(mycoHome);
             try {
               const outcome = provisionGlobally(id, null, mycoHome, { serverUrl: record.serverUrl, packageRoot: deps.packageRoot, backup, preserveOtherMemberTools: true });
