@@ -538,7 +538,7 @@ export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageR
         if (fs.existsSync(live) && !isRunningExecutable(live)) {
           const liveVersion = readBinaryVersion(live, LIVE_MEMBER_VERSION_TIMEOUT_MS);
           if (installedVersionSupersedes(liveVersion, runningVersion)) {
-            (opts.onInspectionError ?? console.warn)(`Agent setup belongs to Myco ${liveVersion}, which is now installed; this older process leaves it alone.`);
+            (opts.onInspectionError ?? console.warn)(`a different build of Myco is installed (${liveVersion}); this process leaves agent setup alone.`);
             return null;
           }
         }

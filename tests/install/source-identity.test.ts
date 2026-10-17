@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { stampDevelopmentVersion } from '../../packages/myco/scripts/build-single-target.mjs';
+import { stampDevelopmentVersion } from '../../packages/myco/scripts/install-marker-schema.mjs';
 import { isDevelopmentVersion, isStampedSourceVersion } from '../../packages/myco/scripts/release-policy.mjs';
 import { readInstallation } from '@myco/install/installation.js';
 import { readBinaryVersion, installedVersionSupersedes } from '@myco/runtime/binary-version.js';
@@ -35,7 +36,8 @@ beforeEach(() => {
 afterEach(() => { setPluginVersion(original); restore(); fs.rmSync(root, { recursive: true, force: true }); });
 
 function marker(source: 'checkout' | 'curl' | 'npm', digest: string | undefined = Bun.CryptoHasher.hash('sha256', fs.readFileSync(binary), 'hex')) {
-  const value = { source, prerelease: true, channel: 'alpha', bin: binary, version: source === 'checkout' ? version : '2.0.0-alpha.1', binary_sha256: digest,
+  const value = { source, channel: 'alpha', bin: binary,
+    ...(source === 'npm' ? {} : { prerelease: true, version: source === 'checkout' ? version : '2.0.0-alpha.1', binary_sha256: digest }),
     ...(source === 'checkout' ? { checkout: path.join(root, 'deleted-checkout'), commit } : {}) };
   fs.writeFileSync(path.join(home, 'install.json'), JSON.stringify(value));
   return value;
@@ -55,6 +57,25 @@ it('two stamps of the same commit produce distinct full source versions, includi
     expect(isStampedSourceVersion('0.0.0-dev+foo..b1')).toBe(false);
     expect(isStampedSourceVersion(stampDevelopmentVersion(''))).toBe(true);
   } finally { clock.mockRestore(); }
+});
+
+it('keeps a long git description and unique suffix below the producer identity limit', () => {
+  const stamp = stampDevelopmentVersion('myco/v2.0.0-alpha.10-123-g12345678');
+  expect(stamp.length).toBeLessThan(64);
+  expect(stamp).toStartWith('0.0.0-dev+2.0.0-alpha.10-123-g12345678.b');
+  expect(isStampedSourceVersion(stamp)).toBe(true);
+});
+
+it('runs the build script through absolute and symlinked paths', () => {
+  const script = path.resolve(import.meta.dir, '../../packages/myco/scripts/build-single-target.mjs');
+  const linked = path.join(root, 'build-single-target.mjs');
+  fs.symlinkSync(script, linked);
+  for (const entry of [script, linked]) {
+    const result = spawnSync('node', [entry], { cwd: root, env: { ...process.env, TARGET: 'bogus' }, encoding: 'utf8' });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('unknown TARGET="bogus"');
+  }
 });
 
 it('preserves the full executable version through probes and source comparisons', () => {
@@ -88,31 +109,59 @@ it('projects checkout origin from a hash-bound marker after the checkout is gone
   expect(readInstallation(home, '2.0.0', binary)).toMatchObject({ source: 'unknown', record: 'mismatch', checkout: null, commit: null });
   fs.writeFileSync(binary, 'different bytes');
   expect(readInstallation(home, version, binary)).toMatchObject({ record: 'mismatch', checkout: null, commit: null,
-    detail: 'Installation record does not match this binary' });
+    detail: 'This binary does not match the installed source build' });
   fs.writeFileSync(binary, `#!/bin/sh\nprintf '%s\\n' '${version}'\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(home, 'install.json'), JSON.stringify({ ...value, bin: path.join(root, 'different-binary') }));
-  expect(readInstallation(home, version, binary).detail).toBe('Installation record does not match this binary');
+  expect(readInstallation(home, version, binary).detail).toBe('This binary does not match the installed source build');
 });
 
-for (const source of ['curl', 'npm'] as const) it(`projects ${source} and reports stale or missing hashes without refusing release updates`, async () => {
+for (const source of ['curl', 'npm'] as const) it(`projects expected ${source} markers without a warning or refusing release updates`, async () => {
   marker(source);
-  expect(readInstallation(home, '2.0.0-alpha.1', binary)).toMatchObject({ source, record: 'matching', detail: '2.0.0-alpha.1' });
-  marker(source, 'f'.repeat(64));
-  expect(readInstallation(home, '2.0.0-alpha.1', binary)).toMatchObject({ source, record: 'mismatch', detail: expect.stringContaining('installation record version or hash is stale') });
+  setPluginVersion('2.0.0-alpha.1');
+  expect(readInstallation(home, '2.0.0-alpha.1', binary)).toMatchObject({ source, status: 'ok', detail: '2.0.0-alpha.1' });
+  expect(checkInstallation(home)).toMatchObject({ status: 'ok', detail: '2.0.0-alpha.1' });
+  const rows = await homeReport(home, { cwd: root, env: process.env, now: () => 1 });
+  expect(rows.find(row => row.name === 'Installation')).toMatchObject({ status: 'ok', detail: '2.0.0-alpha.1' });
+  const output: string[] = [];
+  runStatus([], { mycoHome: home, cwd: root, stdout: line => output.push(line) });
+  expect(output.join('\n')).not.toMatch(/installation record|hash/i);
   let resolved = false;
   expect(await updateBinary('manual', {}, { home, cwd: root, mycoBinary: binary, currentVersion: '2.0.0-alpha.1', probeVersion: () => '2.0.0-alpha.1',
     resolveRefs: async () => { resolved = true; return null; } })).toMatchObject({ kind: 'already-current' });
   expect(resolved).toBe(true);
-  const value = marker(source);
-  delete (value as { binary_sha256?: string }).binary_sha256;
-  fs.writeFileSync(path.join(home, 'install.json'), JSON.stringify(value));
-  expect(readInstallation(home, '2.0.0-alpha.1', binary)).toMatchObject({ record: 'unverified', detail: expect.stringContaining('hash is missing') });
-  value.version = '2.0.0-alpha.0';
-  fs.writeFileSync(path.join(home, 'install.json'), JSON.stringify(value));
-  const stale = readInstallation(home, '2.0.0-alpha.1', binary);
-  expect(stale.record).toBe('mismatch');
-  expect(stale.detail).toContain('version or hash is stale');
-  expect(stale.detail).toContain('hash is missing');
+});
+
+it('keeps stale curl provenance available for export without warning or refusing a release update', async () => {
+  marker('curl', 'f'.repeat(64));
+  setPluginVersion('2.0.0-alpha.2');
+  expect(readInstallation(home, '2.0.0-alpha.2', binary)).toMatchObject({ source: 'curl', record: 'mismatch', status: 'ok', detail: '2.0.0-alpha.2' });
+  expect(checkInstallation(home)).toMatchObject({ status: 'ok', detail: '2.0.0-alpha.2' });
+  const output: string[] = [];
+  runStatus([], { mycoHome: home, cwd: root, stdout: line => output.push(line) });
+  expect(output.join('\n')).not.toMatch(/installation record|hash/i);
+  let resolved = false;
+  expect(await updateBinary('manual', {}, { home, cwd: root, mycoBinary: binary, currentVersion: '2.0.0-alpha.2', probeVersion: () => '2.0.0-alpha.2',
+    resolveRefs: async () => { resolved = true; return null; } })).toMatchObject({ kind: 'already-current' });
+  expect(resolved).toBe(true);
+});
+
+it('reports an executable read failure while inspecting a release installation', () => {
+  marker('curl');
+  const read = fs.readFileSync;
+  const probe = spyOn(fs, 'readFileSync').mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+    if (args[0] === binary) throw new Error('fixture executable read failed');
+    return read(...args);
+  }) as typeof fs.readFileSync);
+  try {
+    expect(readInstallation(home, '2.0.0-alpha.2', binary)).toMatchObject({ record: 'unreadable', status: 'warn',
+      detail: '2.0.0-alpha.2; could not inspect this installation' });
+  } finally { probe.mockRestore(); }
+});
+
+it('checks the executable destination before reading its bytes', () => {
+  marker('checkout');
+  const otherBinary = path.join(root, 'missing-binary');
+  expect(readInstallation(home, version, otherBinary)).toMatchObject({ record: 'mismatch', status: 'warn' });
 });
 
 it('projects source and unknown origins from the running version when provenance is absent', () => {

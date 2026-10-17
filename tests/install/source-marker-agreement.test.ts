@@ -8,6 +8,7 @@ import { readInstallMarker } from '@myco/install/marker-reader.js';
 import { readRunnerUpdateState } from '@myco/runner/update.js';
 import { identifyLegacyExecutable } from '@myco/cli/cutover-executable.js';
 import { run as remove } from '@myco/cli/remove.js';
+import { validSourceInstallMarker } from '../../packages/myco/scripts/install-marker-schema.mjs';
 import { recordingPlatform } from '../helpers/fake-service-manager.js';
 import { sandboxChildEnv, bindSandboxChildHome, resolveTestTool } from '../../scripts/test-environment.mjs';
 
@@ -19,6 +20,13 @@ const sha = (bytes: string) => crypto.createHash('sha256').update(bytes).digest(
 const home = path.join(root, 'myco');
 const binary = path.join(home, 'bin', 'myco');
 const checkout = path.join(root, 'checkout');
+const windowsCheckout = 'C:\\Users\\builder\\Repos\\myco';
+const windowsUncCheckout = '\\\\builder\\source\\myco';
+const jqTool = resolveTestTool('jq');
+const pwshTool = resolveTestTool('pwsh');
+if (process.env.CI !== undefined && (!jqTool || !pwshTool)) {
+  throw new Error(`Source marker agreement requires jq and pwsh in CI (jq: ${Boolean(jqTool)}, pwsh: ${Boolean(pwshTool)})`);
+}
 const marker = () => ({ channel: 'stable', source: 'checkout', checkout, commit: 'a'.repeat(40),
   version: '0.0.0-dev+abcdef12.b1', binary_sha256: sha('source binary'), bin: binary, prerelease: true });
 const sources = ['checkout', 'curl', 'npm'] as const;
@@ -49,25 +57,39 @@ function powershellRead(explicitChannel = false) {
 
 describe('install marker reader agreement', () => {
   it('admits a hash-bound source checkout across TypeScript, shell and PowerShell', () => {
-    writeMarker(marker());
-    expect(readInstallMarker(home, true)).toMatchObject(marker());
-    for (const jq of [false, true]) {
-      if (jq && !resolveTestTool('jq')) continue;
-      expect(shellRead('marker', jq)).toMatchObject({ status: 0, stdout: 'stable\n' });
-      expect(shellRead('version', jq)).toMatchObject({ status: 0, stdout: `${marker().version}\n` });
-      expect(shellRead('binary_sha256', jq)).toMatchObject({ status: 0, stdout: `${marker().binary_sha256}\n` });
+    for (const sourceCheckout of [checkout, windowsCheckout, windowsUncCheckout]) {
+      const sourceMarker = { ...marker(), checkout: sourceCheckout };
+      writeMarker(sourceMarker);
+      expect(readInstallMarker(home, true)).toMatchObject(sourceMarker);
+      for (const jq of [false, true]) {
+        if (jq && !jqTool) continue;
+        expect(shellRead('marker', jq)).toMatchObject({ status: 0, stdout: 'stable\n' });
+        expect(shellRead('version', jq)).toMatchObject({ status: 0, stdout: `${marker().version}\n` });
+        expect(shellRead('binary_sha256', jq)).toMatchObject({ status: 0, stdout: `${marker().binary_sha256}\n` });
+      }
+      if (pwshTool) expect(powershellRead()).toMatchObject({ status: 0, stdout: `${marker().version}\n` });
     }
-    if (resolveTestTool('pwsh')) expect(powershellRead()).toMatchObject({ status: 0, stdout: `${marker().version}\n` });
+    expect(path.win32.normalize(checkout)).not.toBe(checkout);
+    expect(validSourceInstallMarker(marker(), path.win32)).toBe(true);
     const { prerelease: _prerelease, ...withoutPrerelease } = marker();
     writeMarker(withoutPrerelease);
     expect(readInstallMarker(home, true)?.source).toBe('checkout');
     expect(shellRead('marker', false).status).toBe(0);
-    if (resolveTestTool('jq')) expect(shellRead('marker', true).status).toBe(0);
-    if (resolveTestTool('pwsh')) expect(powershellRead().status).toBe(0);
+    if (jqTool) expect(shellRead('marker', true).status).toBe(0);
+    if (pwshTool) expect(powershellRead().status).toBe(0);
   });
 
   for (const [name, change] of [
     ['noncanonical checkout', { checkout: `${checkout}/../other` }], ['invalid channel', { channel: 'nope' }],
+    ['POSIX root', { checkout: '/' }], ['Windows root', { checkout: 'C:\\' }],
+    ['Windows dot segment', { checkout: 'C:\\Users\\builder\\..\\myco' }],
+    ['Windows current segment', { checkout: 'C:\\Users\\builder\\.\\myco' }],
+    ['Windows repeated separator', { checkout: 'C:\\Users\\\\builder\\myco' }],
+    ['Windows trailing separator', { checkout: `${windowsCheckout}\\` }],
+    ['UNC share root', { checkout: '\\\\builder\\source\\' }],
+    ['POSIX trailing separator', { checkout: `${checkout}/` }],
+    ['POSIX current segment', { checkout: `${checkout}/./myco` }],
+    ['POSIX repeated separator', { checkout: `${checkout}//myco` }],
     ['short commit', { commit: 'a'.repeat(39) }], ['release version', { version: '2.0.0+source' }],
     ['empty build id', { version: '0.0.0-dev+.b1' }], ['empty build segment', { version: '0.0.0-dev+abc..b1' }],
     ['version with newline', { version: `${marker().version}\n` }], ['short binary hash', { binary_sha256: 'b'.repeat(63) }],
@@ -77,17 +99,33 @@ describe('install marker reader agreement', () => {
       writeMarker({ ...marker(), ...change });
       expect(() => readInstallMarker(home, true)).toThrow('Invalid install marker');
       for (const jq of [false, true]) {
-        if (jq && !resolveTestTool('jq')) continue;
+        if (jq && !jqTool) continue;
         expect(shellRead('marker', jq).status).not.toBe(0);
       }
-      if (resolveTestTool('pwsh')) expect(powershellRead(name === 'invalid channel').status).not.toBe(0);
+      if (pwshTool) expect(powershellRead().status).not.toBe(0);
+  });
+
+  it('lets an explicit PowerShell channel bypass an invalid checkout marker', () => {
+    writeMarker({ ...marker(), channel: 'nope' });
+    if (pwshTool) {
+      expect(powershellRead()).toMatchObject({ status: 1, stderr: expect.stringContaining('Pass -Channel stable') });
+      expect(powershellRead(true)).toMatchObject({ status: 0, stdout: `${marker().version}\n` });
+    }
+  });
+
+  it('lets an explicit PowerShell channel recover from unreadable marker JSON', () => {
+    fs.writeFileSync(path.join(home, 'install.json'), '{"source":"checkout"');
+    if (pwshTool) {
+      expect(powershellRead()).toMatchObject({ status: 1, stderr: expect.stringContaining('Pass -Channel stable') });
+      expect(powershellRead(true)).toMatchObject({ status: 0, stdout: expect.stringContaining('using the explicit channel') });
+    }
   });
 
   it('rejects a numeric commit even when its printed form has forty hex digits', () => {
     const digits = '1'.repeat(40);
     fs.writeFileSync(path.join(home, 'install.json'), JSON.stringify({ ...marker(), commit: digits }).replace(`"commit":"${digits}"`, `"commit":${digits}`));
     expect(() => readInstallMarker(home, true)).toThrow('Invalid install marker');
-    if (resolveTestTool('pwsh')) expect(powershellRead().status).not.toBe(0);
+    if (pwshTool) expect(powershellRead().status).not.toBe(0);
   });
 
   it('keeps curl/npm strict acceptance and foreign-marker refusal', () => {
@@ -95,14 +133,14 @@ describe('install marker reader agreement', () => {
       writeMarker({ source, channel: 'stable', bin: binary });
       expect(readInstallMarker(home, true)?.source).toBe(source);
       expect(shellRead('marker', false)).toMatchObject({ status: 0, stdout: 'stable\n' });
-      if (resolveTestTool('jq')) expect(shellRead('marker', true).status).toBe(0);
-      if (resolveTestTool('pwsh')) expect(powershellRead().status).toBe(0);
+      if (jqTool) expect(shellRead('marker', true).status).toBe(0);
+      if (pwshTool) expect(powershellRead().status).toBe(0);
     }
     writeMarker({ source: 'other', channel: 'stable', bin: binary });
     expect(() => readInstallMarker(home, true)).toThrow('Invalid install marker');
     expect(shellRead('marker', false).status).toBe(0);
-    if (resolveTestTool('jq')) expect(shellRead('marker', true).status).toBe(0);
-    if (resolveTestTool('pwsh')) expect(powershellRead().status).toBe(0);
+    if (jqTool) expect(shellRead('marker', true).status).toBe(0);
+    if (pwshTool) expect(powershellRead().status).toBe(0);
   });
 
   it('decodes a source checkout in the runner journal and quarantines malformed source identity', () => {

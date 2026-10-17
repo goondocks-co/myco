@@ -1,6 +1,6 @@
 import path from 'node:path';
 import os from 'node:os';
-import { SOURCE_MARKER_SCHEMA } from '../../scripts/install-marker-schema.mjs';
+import { INSTALL_MARKER_SCHEMA } from '../../scripts/install-marker-schema.mjs';
 import { RUNTIME_HOME_FILENAME } from '../paths/home.js';
 
 /** npm registry base URL for Myco packages. */
@@ -58,7 +58,7 @@ export type UpdatePackageId = (typeof UPDATE_PACKAGES)[number]['id'];
 export const UPDATE_SCRIPT_DELAY_SECONDS = 2;
 
 /** Valid release channels. */
-export const RELEASE_CHANNELS = SOURCE_MARKER_SCHEMA.channels;
+export const RELEASE_CHANNELS = INSTALL_MARKER_SCHEMA.channels;
 export type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];
 
 /** Default release channel. */

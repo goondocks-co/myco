@@ -6,23 +6,15 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { stampDevelopmentVersion } from './install-marker-schema.mjs';
 import { signExecutable } from './sign-executable.mjs';
-
-const BUILD_ID_RANDOM_BYTES = 8;
 
 function detectHostTarget() {
   if (process.platform === 'darwin') return process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
   if (process.platform === 'linux') return process.arch === 'arm64' ? 'linux-arm64' : 'linux-x64';
   if (process.platform === 'win32') return 'windows-x64';
   return null;
-}
-
-/** Stamp each source artifact with its own full version identity. */
-export function stampDevelopmentVersion(description) {
-  const describe = description.replace(/^myco\/v/, '').replace(/[^0-9A-Za-z.-]/g, '').split('.').filter(Boolean).join('.') || 'unknown';
-  return `0.0.0-dev+${describe}.b${Date.now().toString(36)}${randomBytes(BUILD_ID_RANDOM_BYTES).toString('hex')}`;
 }
 
 function buildSingleTarget() {
@@ -100,4 +92,4 @@ function buildSingleTarget() {
 
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) buildSingleTarget();
+buildSingleTarget();

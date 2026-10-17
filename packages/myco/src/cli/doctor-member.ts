@@ -368,7 +368,7 @@ export async function checkRuntimePin(): Promise<DoctorCheck | null> {
 /** The installation record and running binary share one provenance projection. */
 export function checkInstallation(mycoHome: string): DoctorCheck {
   const installation = readInstallation(mycoHome);
-  return { name: 'Installation', status: ['mismatch', 'unreadable', 'unverified'].includes(installation.record) ? 'warn' : 'ok',
+  return { name: 'Installation', status: installation.status,
     detail: installation.detail, fixable: false };
 }
 

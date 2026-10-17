@@ -456,7 +456,7 @@ it.each([false, true].flatMap(source => [true, false].flatMap(complete => [false
     expect(readProvisionRecord(home)?.version).toBe(complete ? TO : FROM);
     expect(fs.readFileSync(config, 'utf8')).toBe(before);
     expect(probe).toHaveBeenCalledWith(live, 2_000);
-    expect(fs.readFileSync(helperLogPath(home), 'utf8')).toContain(`Agent setup belongs to Myco ${TO}, which is now installed; this older process leaves it alone.`);
+    expect(fs.readFileSync(helperLogPath(home), 'utf8')).toContain(`a different build of Myco is installed (${TO}); this process leaves agent setup alone.`);
   } finally { install.mockRestore(); probe.mockRestore(); restoreProcess(); }
 });
 

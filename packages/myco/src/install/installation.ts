@@ -15,6 +15,7 @@ export interface Installation {
   commit: string | null;
   record: 'matching' | 'mismatch' | 'unverified' | 'absent' | 'unreadable';
   detail: string;
+  status: 'ok' | 'warn';
 }
 
 const canonicalBinary = (file: string): string => {
@@ -28,35 +29,29 @@ export function readInstallation(home: string, version = getPluginVersion(), bin
   let record: Installation['record'] = 'absent';
   try { marker = readInstallMarker(home, true); }
   catch { record = 'unreadable'; }
-  let hashChecked = false;
   if (marker !== null) {
     record = 'unverified';
-    if (typeof marker.binary_sha256 === 'string' && /^[0-9a-f]{64}$/i.test(marker.binary_sha256)) {
-      try {
-        hashChecked = true;
+    try {
+      if (canonicalBinary(marker.bin) !== canonicalBinary(binary)) record = 'mismatch';
+      else if (typeof marker.binary_sha256 === 'string' && /^[0-9a-f]{64}$/i.test(marker.binary_sha256)) {
         const digest = crypto.createHash('sha256').update(fs.readFileSync(binary)).digest('hex');
-        record = digest === marker.binary_sha256.toLowerCase() && canonicalBinary(marker.bin) === canonicalBinary(binary) ? 'matching' : 'mismatch';
-      } catch { record = 'unreadable'; }
-    }
+        record = digest === marker.binary_sha256.toLowerCase() ? 'matching' : 'mismatch';
+      }
+    } catch { record = 'unreadable'; }
     const staleVersion = marker.version !== undefined && marker.version !== version;
-    if (staleVersion) record = 'mismatch';
+    if (staleVersion && record !== 'unreadable') record = 'mismatch';
   }
   const source = isDevelopmentVersion(version) ? 'checkout' : marker?.source === 'checkout' ? 'unknown' : marker?.source ?? 'unknown';
   const checkoutMarker = marker?.source === 'checkout' && record === 'matching' ? marker : null;
   const checkout = checkoutMarker?.checkout ?? null;
   const commit = checkoutMarker?.commit ?? null;
   const detail = marker?.source === 'checkout' && record === 'mismatch'
-    ? 'Installation record does not match this binary'
+    ? 'This binary does not match the installed source build'
     : source === 'checkout'
       ? checkoutMarker !== null ? `Source build from ${checkoutMarker.checkout}, commit ${checkoutMarker.commit.slice(0, SHORT_COMMIT_LENGTH)}` : `Source build ${version} (origin unknown)`
       : `${version}${source === 'unknown' ? ' (origin unknown)' : ''}`;
-  const warnings: string[] = [];
-  if (marker !== null && marker.source !== 'checkout') {
-    if (record === 'mismatch') warnings.push('installation record version or hash is stale');
-    if (marker.version === undefined) warnings.push('installation record version is missing');
-    if (!hashChecked) warnings.push('installation record hash is missing or could not be checked');
-  }
-  if (record === 'unreadable') warnings.push('installation record could not be checked');
-  const warning = warnings.length > 0 ? `; ${warnings.join('; ')}` : '';
-  return { source, version, checkout, commit, record, detail: detail + warning };
+  const status = record === 'unreadable'
+    || (marker?.source === 'checkout' && record !== 'matching') ? 'warn' : 'ok';
+  return { source, version, checkout, commit, record, status,
+    detail: record === 'unreadable' && status === 'warn' ? `${detail}; could not inspect this installation` : detail };
 }
