@@ -180,6 +180,12 @@ export function bareCommandName(platform: NodeJS.Platform = process.platform): s
   return platform === 'win32' ? 'myco.exe' : 'myco';
 }
 
+/** The installed destination recorded by the installer, or the managed layout. */
+export function installedBinaryPath(mycoHome: string, env: ResolutionEnv = {}): string {
+  return readInstallMarker(mycoHome, true)?.bin
+    ?? resolveBinary('managed-destination', { kind: 'machine' }, { ...env, mycoHome }).path;
+}
+
 /** Resolve the binary for a call site's policy. See {@link ResolutionPolicy}. */
 export function resolveBinary(
   policy: ResolutionPolicy,
@@ -204,7 +210,9 @@ export function resolveBinary(
     case 'member-helper': {
       const self = selfExecOf(execPath, 'argv1' in env ? env.argv1 : process.argv[1]);
       if (self.args.length > 0) return done(self.path, 'last-resort', self.args);
-      const installed = readInstallMarker(env.mycoHome ?? resolveMycoHome(), true)?.bin ?? facts.managedBinary;
+      let installed: string;
+      try { installed = installedBinaryPath(env.mycoHome ?? resolveMycoHome(), env); }
+      catch { return done(execPath, 'last-resort'); }
       const previous = path.join(path.dirname(installed), platform === 'win32' ? 'myco.prev.exe' : 'myco.prev');
       const identity = (binary: string) => platform === 'win32' ? path.resolve(binary).toLowerCase() : path.resolve(binary);
       if (![installed, previous].some(binary => identity(binary) === identity(execPath))) return done(execPath, 'last-resort');

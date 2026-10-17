@@ -5,6 +5,7 @@ import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import type { BinaryUpdateOutcome } from '@myco/upgrade/guarded-binary.js';
 
 export const AUTOMATIC_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+export const AUTOMATIC_UPDATE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 export interface AutomaticUpdateState {
   lastAttemptAt: number;
   lastOutcome: Pick<BinaryUpdateOutcome, 'kind'> & { version?: string; reason?: string };
@@ -40,7 +41,8 @@ export async function attemptAutomaticUpdate(
   try {
     const previous = readAutomaticUpdate(home);
     const lastAttemptAt = now();
-    if (previous !== null && lastAttemptAt - previous.lastAttemptAt < AUTOMATIC_UPDATE_INTERVAL_MS) return null;
+    if (previous !== null && previous.lastAttemptAt <= lastAttemptAt + AUTOMATIC_UPDATE_CLOCK_SKEW_MS
+      && lastAttemptAt - previous.lastAttemptAt < AUTOMATIC_UPDATE_INTERVAL_MS) return null;
     const write = (lastOutcome: AutomaticUpdateState['lastOutcome']) => {
       const state = { lastAttemptAt, lastOutcome };
       atomicWriteFileSync(statePath(home), JSON.stringify(state));
@@ -67,7 +69,12 @@ export async function attemptAutomaticUpdate(
 }
 
 export function automaticUpdateWords(outcome: AutomaticUpdateState['lastOutcome']): string {
-  const reason = outcome.reason?.replace(/[\r\n]+/g, ' ');
+  const rawReason = outcome.reason?.replace(/[\r\n]+/g, ' ');
+  const reason = rawReason?.startsWith('runtime pin selects another binary')
+    ? `Another Myco build is selected for this machine${rawReason.startsWith('runtime pin selects another binary: ') ? ` (${rawReason.slice('runtime pin selects another binary: '.length)})` : ''}`
+    : rawReason === 'development build' ? 'This is a development build'
+    : rawReason === 'this is not the default Myco home' ? 'This installation uses a separately managed Myco home'
+    : rawReason === 'an update is running' ? 'Another Myco update is in progress' : rawReason;
   switch (outcome.kind) {
     case 'adopted': return `updated to ${outcome.version}${reason ? `; ${reason}` : ''}`;
     case 'already-current': return `up to date at ${outcome.version}${reason ? ` (${reason})` : ''}`;

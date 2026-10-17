@@ -118,7 +118,7 @@ describe('a member\'s agent setup', () => {
     expect(refresh()).toBe(true);
     expect(fs.readFileSync(path.join(agentHome, '.codex', 'hooks.json'), 'utf8')).toBe(foreign);
     expect(out.join('\n')).toContain("Run myco doctor to check Codex's capture configuration");
-    expect(readProvisionRecord(home)).toMatchObject({ version: '2.0.0-beta.0', agents: ['claude-code', 'codex'] });
+    expect(readProvisionRecord(home)).toMatchObject({ version: getPluginVersion(), agents: ['claude-code', 'codex'] });
   });
 
   it('keeps an entirely failed refresh recorded for its next repair', () => {

@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { readBinaryVersion } from '@myco/runtime/binary-version.js';
 import semver from 'semver';
 import { isDevelopmentVersion, selectChannelRelease, isV2Version } from '../../scripts/release-policy.mjs';
-import { resolveBinary, readLayeredPin } from '@myco/runtime/binary-resolution.js';
+import { installedBinaryPath, readLayeredPin } from '@myco/runtime/binary-resolution.js';
 import { canonicalHomePath, defaultMycoHome, isDefaultMycoHome, resolveMycoHome } from '@myco/paths/home.js';
 import { readInstallMarker } from '@myco/install/managed-binary.js';
 import { placeExecutable, readyExecutable, ExecutableVerificationError } from '@myco/install/place-binary.js';
@@ -56,8 +56,7 @@ export interface BinaryUpdateDeps extends UpdateDeadline {
 
 /** The installed destination shared by replacement and post-update agent refresh. */
 export function binaryUpdatePath(home: string, deps: BinaryUpdateDeps = {}): string {
-  return deps.mycoBinary ?? readInstallMarker(home, true)?.bin
-    ?? resolveBinary('managed-destination', { kind: 'machine' }, { mycoHome: home, platform: deps.platform, localAppData: deps.localAppData ?? process.env.LOCALAPPDATA }).path;
+  return deps.mycoBinary ?? installedBinaryPath(home, { platform: deps.platform, localAppData: deps.localAppData ?? process.env.LOCALAPPDATA });
 }
 
 export function admitsUpdate(target: string, current: string, channel: ReleaseChannel): boolean {
@@ -77,13 +76,6 @@ export async function resolveAssetRefsForTarget(target: string | null, channel: 
     fetchReleases: () => fetchMycoReleases(updateBudget(deps).fetch),
     targetTriple: deps.targetTriple ?? resolveTargetTriple,
   }, deps.currentVersion ?? getPluginVersion())))(channel);
-}
-
-function probeVersion(binary: string, timeoutMs = BINARY_VERSION_TIMEOUT_MS): string {
-  const result = spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`version check exited ${result.status}${result.signal ? ` (${result.signal})` : ''}`);
-  return result.stdout.trim();
 }
 
 const detail = (error: unknown): string => error instanceof Error ? error.message : String(error);
@@ -181,7 +173,7 @@ async function performBinaryUpdate(
     if (pin !== null && canonicalHomePath(pin.pin) !== canonicalHomePath(binary)) return { kind: 'skipped', reason: `runtime pin selects another binary: ${pin.pin}` };
     const probe = async (binary: string): Promise<string> => {
       budget.remaining();
-      try { return await (deps.probeVersion ?? (file => probeVersion(file, Math.min(BINARY_VERSION_TIMEOUT_MS, budget.remaining()))))(binary); }
+      try { return await (deps.probeVersion ?? (file => readBinaryVersion(file, Math.min(BINARY_VERSION_TIMEOUT_MS, budget.remaining()))))(binary); }
       finally { budget.remaining(); }
     };
     const current = fs.existsSync(binary) ? await probe(binary) : runningVersion;

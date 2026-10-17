@@ -16,13 +16,14 @@ import { recordStartingJob, type DetachedSpawn } from '../runtime/spawn-detached
 import type { FetchLike } from '../member/transport.js';
 import { attemptAutomaticUpdate, automaticUpdateWords } from '@myco/member/automatic-update-state.js';
 import { updateBinary, binaryUpdatePath, type BinaryUpdateDeps } from '@myco/upgrade/guarded-binary.js';
-import { refreshMemberSetup } from '@myco/member/refresh-setup.js';
+import { refreshMemberSetup, MEMBER_REFRESH_TIMEOUT_MS } from '@myco/member/refresh-setup.js';
 import { readProvisionRecord } from '@myco/member/provision-record.js';
 import { keepCurrent, reportHarnesses } from '@myco/cli/member-keep-current.js';
 
 export { helperPass } from '../member/helper-pass.js';
 
 export const AUTOMATIC_UPDATE_MIN_BUDGET_MS = 30_000;
+export const AUTOMATIC_REFRESH_MIN_BUDGET_MS = MEMBER_REFRESH_TIMEOUT_MS / 4;
 
 export interface HelperVerbDeps {
   fetch?: FetchLike;
@@ -79,7 +80,7 @@ async function helperPasses(projectId: string, serverUrl: string | undefined, my
   let adoptedVersion: string | undefined;
   const refreshAdopted = (deadline: number) => {
     const remaining = deadline - now();
-    if (remaining <= 0) throw new Error('not enough time remains to refresh agents');
+    if (remaining < AUTOMATIC_REFRESH_MIN_BUDGET_MS) throw new Error('agent refresh deferred until a helper has enough time');
     return (deps.refreshMember ?? refreshMemberSetup)(binaryUpdatePath(mycoHome, deps.binaryUpdateDeps), mycoHome, remaining);
   };
   try {

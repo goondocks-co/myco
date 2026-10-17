@@ -138,7 +138,9 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
         }
         result.harnesses.push({ id, provisioned: true, state, ...(toolsDeployment === undefined ? {} : { toolsDeployment }), ...(ranAt === undefined ? {} : { ranAt }), ...(result.pendingTrust?.[id] === undefined ? {} : { hookRepairAt: result.pendingTrust[id].at }), ...(action === undefined ? {} : { action }) });
       }
-      if (result.harnesses.every((fact) => fact.state === 'ready' || fact.state === 'trust_required' || fact.state === 'held_elsewhere')) recordProvision(mycoHome, { serverUrl: record.serverUrl, agents: [], version: getPluginVersion() });
+      if (result.harnesses.length === 0 || result.harnesses.some(fact => fact.state === 'ready' || fact.state === 'trust_required' || fact.state === 'held_elsewhere')) {
+        recordProvision(mycoHome, { serverUrl: record.serverUrl, agents: [], version: getPluginVersion() });
+      }
       rememberState(mycoHome, result, retiredSettingsProblems);
       return result;
     });

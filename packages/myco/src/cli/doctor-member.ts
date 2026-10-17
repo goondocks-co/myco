@@ -1,6 +1,9 @@
 /** Member doctor checks and output formatting. */
 import { readProvisionRecord } from '@myco/member/provision-record.js';
 import { readAutomaticUpdate, automaticUpdateWords } from '@myco/member/automatic-update-state.js';
+import { installedBinaryPath } from '@myco/runtime/binary-resolution.js';
+import { readBinaryVersion, LIVE_MEMBER_VERSION_TIMEOUT_MS } from '@myco/runtime/binary-version.js';
+import { selfExec } from '@myco/runtime/self-exec.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { findCorePackageRoot } from '@myco/utils/find-package-root.js';
@@ -367,12 +370,23 @@ export function checkAutomaticUpdate(mycoHome: string): DoctorCheck {
     return { name: 'Automatic update', status: 'warn', fixable: false, detail: `could not read the last check: ${error instanceof Error ? error.message : String(error)}` };
   }
   const provision = state?.lastOutcome.kind === 'adopted' ? readProvisionRecord(mycoHome) : null;
-  const setupPending = provision !== null && provision.version !== state?.lastOutcome.version;
-  const setupFailed = state?.lastOutcome.kind === 'adopted' && state.lastOutcome.reason !== undefined;
+  let setupVersion = state?.lastOutcome.version;
+  if (state?.lastOutcome.kind === 'adopted' && selfExec().args.length === 0) {
+    try {
+      const live = installedBinaryPath(mycoHome);
+      if (fs.existsSync(live)) setupVersion = readBinaryVersion(live, LIVE_MEMBER_VERSION_TIMEOUT_MS);
+    } catch (error) {
+      return { name: 'Automatic update', status: 'warn', fixable: false, detail: `could not check the currently installed Myco version: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  const setupPending = provision !== null && provision.version !== setupVersion;
+  const setupFailed = state?.lastOutcome.kind === 'adopted' && state.lastOutcome.reason !== undefined && provision?.version !== setupVersion;
+  const outcome = state?.lastOutcome.kind === 'adopted' && !setupFailed && state.lastOutcome.reason !== undefined
+    ? { kind: 'adopted' as const, version: state.lastOutcome.version, reason: 'agent setup has since been checked; see individual agent status' } : state?.lastOutcome;
   return {
     name: 'Automatic update', fixable: false,
     status: state === null ? 'info' : setupFailed || setupPending || ['failed', 'rolled-back'].includes(state.lastOutcome.kind) ? 'warn' : 'ok',
     detail: state === null ? 'not checked yet; the next helper pass with enough time checks for an update'
-      : `${new Date(state.lastAttemptAt).toISOString()}: ${automaticUpdateWords(state.lastOutcome)}${setupPending ? '; agents still need refreshing. Run myco member provision --refresh' : ''}`,
+      : `${new Date(state.lastAttemptAt).toISOString()}: ${automaticUpdateWords(outcome ?? state.lastOutcome)}${setupPending ? '; agents still need refreshing. Run myco member provision --refresh' : ''}`,
   };
 }
