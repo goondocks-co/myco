@@ -3,13 +3,16 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { runRunnerUpdateHelper, type RunnerUpdateHelperDeps } from '../../packages/myco/src/runner/update-helper.js';
+import { runRunnerUpdateHelper, HELPER_INSTALLATION_WAIT_MS, type RunnerUpdateHelperDeps } from '../../packages/myco/src/runner/update-helper.js';
 import { readRunnerUpdateState, runnerUpdateStatePath, strictRunnerReleaseProbe, withRunnerUpdateState, type RunnerUpdateTransaction } from '../../packages/myco/src/runner/update.js';
 import { versionBinaryPath, writeInstallMarker } from '../../packages/myco/src/install/managed-binary.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
-import { beginBinaryPublication, publishAdoptedMarker } from '../../packages/myco/src/install/adoption.js';
+import { acquireInstallationLease, beginBinaryPublication, publishAdoptedMarker } from '../../packages/myco/src/install/adoption.js';
 import { placeExecutable } from '../../packages/myco/src/install/place-binary.js';
 import type { ServiceSpec } from '../../packages/myco/src/server/service.js';
+import { withManagedMemberHarnesses } from '@myco/cli/member.js';
+import { recordProvision } from '@myco/symbionts/member-provision-record.js';
+import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-helper-test-'));
@@ -480,4 +483,124 @@ it('releases the helper lock when installation lease acquisition throws', async 
   expect(retry.acquired).toBe(true);
   if (retry.acquired) retry.lock.release();
   expect(readRunnerUpdateState(f.home).transaction?.phase).toBe('waiting');
+});
+
+it('waits for a short installation collision and then completes the handoff', async () => {
+  const f = fixture('short-installation-collision');
+  const held = acquireInstallationLease(f.home);
+  if (!held.acquired) throw new Error('fixture lease unavailable');
+  let waits = 0;
+  f.deps.wait = async () => { waits++; held.release(); };
+  f.deps.start = () => {
+    f.setRunning(true);
+    withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
+    return { unitFile: 'fixture', loaded: true, running: true, changed: true };
+  };
+  try { await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps); }
+  finally { held.release(); }
+  expect(waits).toBe(1);
+  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]?.result).toBe('updated');
+});
+
+it('logs a bounded installation wait without ending the queued handoff', async () => {
+  const f = fixture('bounded-installation-wait');
+  const held = acquireInstallationLease(f.home);
+  if (!held.acquired) throw new Error('fixture lease unavailable');
+  let waited = 0;
+  const logs: string[] = [];
+  f.deps.wait = async ms => { waited += ms; };
+  f.deps.log = line => logs.push(line);
+  const start = f.deps.start!;
+  f.deps.start = (spec, platform) => {
+    const outcome = start(spec, platform);
+    withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
+    return outcome;
+  };
+  try { await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps); }
+  finally { held.release(); }
+  expect(waited).toBe(HELPER_INSTALLATION_WAIT_MS);
+  expect(logs).toEqual([expect.stringContaining('another Myco setup or update')]);
+  expect(readRunnerUpdateState(f.home).transaction?.phase).toBe('waiting');
+  expect(f.stops).toBe(0);
+});
+
+it('allows member provisioning during runner probation', async () => {
+  const f = fixture('provision-during-probation');
+  const restoreHome = bindSandboxChildHome(f.home);
+  writeDeploymentMembership({ serverUrl, token: 'fixture', machineId: 'member', joinedAt: 1, updatedAt: 1 }, { mycoHome: f.home });
+  recordProvision(f.home, { version: to, serverUrl, agents: [] });
+  let provisions = 0;
+  f.deps.start = () => {
+    f.setRunning(true);
+    withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'probation'; state.transaction!.contactAt = f.time; });
+    return { unitFile: 'fixture', loaded: true, running: true, changed: true };
+  };
+  f.deps.wait = async () => {
+    expect(readRunnerUpdateState(f.home).transaction?.phase).toBe('probation');
+    const result = withManagedMemberHarnesses(f.home, { serverUrl, wait: true, packageRoot: path.resolve('packages/myco') }, () => {
+      provisions++;
+      return 'provisioned';
+    });
+    expect(result).toBe('provisioned');
+    withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
+  };
+  try { await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps); }
+  finally { restoreHome(); }
+  expect(provisions).toBe(1);
+  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]?.result).toBe('updated');
+});
+
+it('rechecks checkout agreement after idle admission and before local helper placement', async () => {
+  const f = fixture('helper-checkout-recheck');
+  const version = '0.0.0-dev+commit.brechecked';
+  const slot = crypto.randomUUID();
+  const candidate = path.join(f.home, 'runner', 'candidates', slot, 'myco');
+  fs.mkdirSync(path.dirname(candidate), { recursive: true });
+  fs.writeFileSync(candidate, `#!/bin/sh\nprintf '%s\\n' '${version}'\n`, { mode: 0o755 });
+  const marker = { channel: 'alpha' as const, source: 'checkout' as const, bin: f.binaryPath,
+    checkout: f.home, commit: 'a'.repeat(40), version: '0.0.0-dev+commit.boriginal',
+    binary_sha256: crypto.createHash('sha256').update(fs.readFileSync(f.binaryPath)).digest('hex') };
+  writeInstallMarker(f.home, marker);
+  withRunnerUpdateState(f.home, state => {
+    state.transaction!.installMarker = marker;
+    state.transaction!.toVersion = version;
+    state.transaction!.localCandidate = { kind: 'local', platform: 'linux', version, slot, binaryPath: candidate,
+      checkout: f.home, commit: 'b'.repeat(40), sha256: crypto.createHash('sha256').update(fs.readFileSync(candidate)).digest('hex') };
+  });
+  fs.appendFileSync(f.binaryPath, '# changed bytes with the same version\n');
+  const bytes = fs.readFileSync(f.binaryPath);
+  f.deps.start = () => {
+    f.setRunning(true);
+    withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
+    return { unitFile: 'fixture', loaded: true, running: true, changed: true };
+  };
+  await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps);
+  expect(f.stops).toBe(0);
+  expect(f.starts).toBe(0);
+  expect(fs.readFileSync(f.binaryPath)).toEqual(bytes);
+  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]).toMatchObject({ result: 'refused', reason: expect.stringContaining('Run `myco update`') });
+});
+
+it('rechecks health after waiting to finish a runner update', async () => {
+  const f = fixture('finish-health-recheck');
+  let contender: { release(): void } | undefined;
+  f.deps.start = () => {
+    f.setRunning(true);
+    if (fs.readFileSync(f.binaryPath, 'utf8').includes(to)) {
+      withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
+      const held = acquireInstallationLease(f.home);
+      if (!held.acquired) throw new Error('helper kept the lease during service start');
+      contender = held;
+    }
+    return { unitFile: 'fixture', loaded: true, running: true, changed: true };
+  };
+  f.deps.wait = async () => {
+    withRunnerUpdateState(f.home, state => { state.transaction!.healthRefusal = 'contact refused while finishing'; });
+    contender?.release();
+    contender = undefined;
+  };
+  try { await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps); }
+  finally { contender?.release(); }
+  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]).toMatchObject({ result: 'rolled_back', reason: expect.stringContaining('contact refused') });
+  expect(fs.readFileSync(f.binaryPath)).toEqual(fs.readFileSync(f.previous));
 });

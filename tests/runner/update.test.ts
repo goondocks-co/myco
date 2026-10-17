@@ -4,9 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createRunnerUpdateController, readRunnerUpdateState, strictRunnerReleaseProbe, withRunnerUpdateState } from '../../packages/myco/src/runner/update.js';
+import { createRunnerUpdateController, cleanupRunnerUpdateGuardian, readRunnerUpdateState, strictRunnerReleaseProbe, withRunnerUpdateState, type RunnerUpdateDeps } from '../../packages/myco/src/runner/update.js';
 import { runRunnerUpdateHelper } from '../../packages/myco/src/runner/update-helper.js';
 import { writeInstallMarker, versionBinaryPath } from '../../packages/myco/src/install/managed-binary.js';
+import { atomicWriteFileSync } from '../../packages/myco/src/utils/atomic-write.js';
+import { LifecycleLock } from '../../packages/myco/src/utils/lifecycle-lock.js';
 import { placeExecutable } from '../../packages/myco/src/install/place-binary.js';
 import { runnerProgramVersion } from '../../packages/myco/src/runner/program.js';
 import { acquireInstallationLease, beginBinaryPublication, publishAdoptedMarker } from '../../packages/myco/src/install/adoption.js';
@@ -454,7 +456,7 @@ const sourceTo = '0.0.0-dev+commit.bsecond';
 const sourceCommit = 'a'.repeat(40);
 const digest = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const shellBinary = (file: string, version: string) => fs.writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' '${version}'\n`, { mode: 0o755 });
-function localFixture(label: string, currentVersion = from) {
+function localFixture(label: string, currentVersion = from, overrides: RunnerUpdateDeps = {}) {
   const f = fixture(label);
   shellBinary(f.binaryPath, currentVersion);
   if (currentVersion === sourceFrom) publishAdoptedMarker(f.home, f.binaryPath, currentVersion,
@@ -466,7 +468,7 @@ function localFixture(label: string, currentVersion = from) {
       now: () => 1000, random: () => 0, serviceInstalled: () => true,
       fetch: f.fetch, stageDeps: f.stageDeps, installGuardian, removeGuardian, spawnHelper: async () => {},
       targetTriple: () => `${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch}` as ReturnType<typeof import('../../packages/myco/src/upgrade/release-assets.js').resolveTargetTriple>,
-      probe: (file, version) => strictRunnerReleaseProbe(file, version, 'linux'),
+      probe: (file, version) => strictRunnerReleaseProbe(file, version, 'linux'), ...overrides,
     } });
   return { ...f, candidate, controller, queue: () => controller.queueLocal({
     binaryPath: candidate, version: sourceTo, checkout: f.home, commit: sourceCommit,
@@ -609,9 +611,11 @@ it('rejects a queued local journal digest with a trailing newline', () => {
 
 it('records local-artifact capability only for the current runtime lock owner', () => {
   const f = localFixture('runtime-capability');
-  expect(() => f.controller.recordRuntimeCapability({ pid: process.pid + 1, startedAt: 1000 })).toThrow('this process');
+  expect(() => f.controller.recordRuntimeCapability({ pid: process.pid + 1, startedAt: 1000 })).not.toThrow();
+  expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']?.reason).toContain('this process');
   expect(readRunnerUpdateState(f.home).runtimeCapabilities?.['https://deployment.invalid']).toBeUndefined();
-  expect(() => f.controller.recordRuntimeCapability({ pid: process.pid, startedAt: 0 })).toThrow('instance lock');
+  expect(() => f.controller.recordRuntimeCapability({ pid: process.pid, startedAt: 0 })).not.toThrow();
+  expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']?.reason).toContain('instance lock');
   f.controller.recordRuntimeCapability({ pid: process.pid, startedAt: 1000 });
   expect(readRunnerUpdateState(f.home).runtimeCapabilities?.['https://deployment.invalid']).toEqual({
     pid: process.pid, lockStartedAt: 1000, localArtifacts: true,
@@ -650,19 +654,19 @@ it('retains runtime capabilities for two runners sharing one home', () => {
   });
 });
 
-it.skipIf(process.platform === 'win32')('preserves a queued local candidate when replacement journal publication fails', () => {
-  const f = localFixture('queue-publication-failure');
+it('preserves a queued local candidate when replacement journal publication fails', () => {
+  let refusePublication = false;
+  const f = localFixture('queue-publication-failure', from, { statePublisher: (file, text, options) => {
+    if (refusePublication) throw new Error('injected journal publication failure');
+    atomicWriteFileSync(file, text, options);
+  } });
   f.queue();
   const before = fs.readFileSync(path.join(f.home, 'runner', 'update.json'));
   const prior = readRunnerUpdateState(f.home).requests!['https://deployment.invalid']!.localCandidate!;
   const bytes = fs.readFileSync(prior.binaryPath);
-  const rename = fs.renameSync;
-  const publish = spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
-    if (String(destination) === path.join(f.home, 'runner', 'update.json')) throw new Error('injected journal publication failure');
-    return rename(source, destination);
-  });
-  try { expect(() => f.queue()).toThrow('injected journal publication failure'); }
-  finally { publish.mockRestore(); }
+  refusePublication = true;
+  expect(() => f.queue()).toThrow('injected journal publication failure');
+  refusePublication = false;
   expect(fs.readFileSync(path.join(f.home, 'runner', 'update.json'))).toEqual(before);
   expect(fs.readFileSync(prior.binaryPath)).toEqual(bytes);
   expect(readRunnerUpdateState(f.home).requests!['https://deployment.invalid']!.localCandidate).toEqual(prior);
@@ -804,7 +808,7 @@ it('excludes local queueing and a helper while an automatic guarded update is st
   });
   try {
     await entered;
-    expect(() => f.queue()).toThrow('machine installation');
+    expect(() => f.queue()).toThrow('Myco is already updating');
     expect(readRunnerUpdateState(f.home).requests).toBeUndefined();
     const tx = {
       id: 'contending-helper', serverUrl: 'https://deployment.invalid', fromVersion: from, toVersion: to,
@@ -813,8 +817,9 @@ it('excludes local queueing and a helper while an automatic guarded update is st
       ownerPid: 12345, startedAt: 1000, phase: 'waiting' as const,
     };
     withRunnerUpdateState(f.home, state => { state.transaction = tx; });
+    let helperTime = 0;
     await runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
-      alive: () => false,
+      now: () => helperTime, wait: async ms => { helperTime += ms; }, alive: () => false,
       stop: () => { throw new Error('contending helper stopped the runner'); },
     });
     expect(readRunnerUpdateState(f.home).transaction).toEqual(tx);
@@ -824,7 +829,7 @@ it('excludes local queueing and a helper while an automatic guarded update is st
   finally { restore(); }
 });
 
-it('keeps the installation lease throughout helper health and admits the main updater after completion', async () => {
+it('uses the pending transaction to exclude binary updates during helper health', async () => {
   const f = localFixture('helper-health-exclusion');
   f.queue();
   expect(await f.controller.idle()).toBe('restart');
@@ -848,7 +853,7 @@ it('keeps the installation lease throughout helper health and admits the main up
     probe: (file, version) => strictRunnerReleaseProbe(file, version, 'linux'), removeGuardian,
     wait: async () => {
       waits++;
-      expect(await updateBinary('manual', {}, deps)).toMatchObject({ kind: 'failed', reason: 'an update is running' });
+      expect(await updateBinary('manual', {}, deps)).toMatchObject({ kind: 'failed', reason: 'a runner binary handoff is pending' });
       expect(resolutions).toBe(0);
       withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
     },
@@ -967,4 +972,174 @@ it('retains rollback authority when a controller with a superseded version sees 
   expect(await stale.idle()).toBe('continue');
   expect(readRunnerUpdateState(f.home).transaction).toMatchObject({ id: tx.id, phase: 'placing' });
   expect(readRunnerUpdateState(f.home).guardian).toBeDefined();
+});
+
+it('retires a queued source build when a manual release update replaces its request', () => {
+  const f = localFixture('manual-replaces-local');
+  f.queue();
+  const prior = readRunnerUpdateState(f.home).requests!['https://deployment.invalid']!.localCandidate!;
+  f.controller.queueManual();
+  expect(readRunnerUpdateState(f.home).retiredCandidates).toEqual([prior]);
+  expect(readRunnerUpdateState(f.home).requests!['https://deployment.invalid']!.localCandidate).toBeUndefined();
+  f.controller.startup();
+  expect(fs.existsSync(prior.binaryPath)).toBe(false);
+});
+
+it('preserves a queued local request when a newer remote request arrives', () => {
+  const f = localFixture('remote-preserves-local');
+  f.queue();
+  const request = readRunnerUpdateState(f.home).requests!['https://deployment.invalid']!;
+  f.controller.onContact({ updateRequest: { id: 'newer-remote-request', requestedAt: 2000, channel: 'alpha' } });
+  expect(readRunnerUpdateState(f.home).requests!['https://deployment.invalid']).toEqual(request);
+  expect(readRunnerUpdateState(f.home).retiredCandidates).toBeUndefined();
+  expect(fs.existsSync(request.localCandidate!.binaryPath)).toBe(true);
+});
+
+for (const pathCase of ['no-channel', 'no-service', 'installed-changed', 'blocked', 'probe-refused', 'probe-threw', 'backup-refused'] as const) {
+  it(`removes a queued local slot when its request ends at ${pathCase}`, async () => {
+    let refuse = false;
+    const f = localFixture('terminal-local-' + pathCase, from, {
+      serviceInstalled: () => pathCase !== 'no-service',
+      probe: (file, version) => {
+        if (refuse && pathCase === 'probe-threw') throw new Error('candidate probe failed');
+        if (refuse && (pathCase === 'probe-refused'
+          || (pathCase === 'backup-refused' && file.includes(path.join('runner', 'guardian'))))) {
+          return { runs: false, detail: 'candidate refused' };
+        }
+        return strictRunnerReleaseProbe(file, version, 'linux');
+      },
+    });
+    f.queue();
+    const request = readRunnerUpdateState(f.home).requests!['https://deployment.invalid']!;
+    const candidate = request.localCandidate!;
+    if (pathCase === 'no-channel') fs.rmSync(path.join(f.home, 'install.json'));
+    if (pathCase === 'installed-changed') shellBinary(f.binaryPath, '2.0.0-alpha.9');
+    if (pathCase === 'blocked') withRunnerUpdateState(f.home, state => {
+      state.requests!['https://deployment.invalid']!.clearBlock = false;
+      state.blockedVersions = { [sourceTo]: { until: 100_000, reason: 'blocked fixture' } };
+    });
+    refuse = true;
+    expect(await f.controller.idle()).toBe('continue');
+    const state = readRunnerUpdateState(f.home);
+    expect(state.lastResults?.['https://deployment.invalid']?.result).toBe('refused');
+    expect(state.requests?.['https://deployment.invalid']).toBeUndefined();
+    expect(state.transaction).toBeUndefined();
+    expect(state.retiredCandidates).toBeUndefined();
+    expect(fs.existsSync(candidate.binaryPath)).toBe(false);
+  });
+}
+
+it('sweeps only unreferenced UUID candidate directories', () => {
+  const f = localFixture('candidate-orphan-sweep');
+  f.queue();
+  const candidate = readRunnerUpdateState(f.home).requests!['https://deployment.invalid']!.localCandidate!;
+  const root = path.join(f.home, 'runner', 'candidates');
+  const orphan = path.join(root, crypto.randomUUID());
+  const foreign = path.join(root, 'user-files');
+  fs.mkdirSync(orphan);
+  fs.mkdirSync(foreign);
+  fs.writeFileSync(path.join(orphan, 'myco'), 'abandoned copy');
+  fs.writeFileSync(path.join(foreign, 'keep'), 'unmanaged');
+  fs.writeFileSync(path.join(root, 'keep'), 'unmanaged');
+  f.controller.startup();
+  expect(fs.existsSync(orphan)).toBe(false);
+  expect(fs.existsSync(candidate.binaryPath)).toBe(true);
+  expect(fs.readFileSync(path.join(foreign, 'keep'), 'utf8')).toBe('unmanaged');
+  expect(fs.readFileSync(path.join(root, 'keep'), 'utf8')).toBe('unmanaged');
+});
+
+for (const owner of ['retired', 'cleanup', 'request'] as const) {
+  for (const location of ['home', 'bin', 'wrong-name', 'wrong-slot'] as const) {
+    it(`refuses a ${owner} candidate at ${location} before removing anything`, () => {
+      const f = localFixture('candidate-confinement-' + owner + '-' + location);
+      f.queue();
+      const file = path.join(f.home, 'runner', 'update.json');
+      const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const candidate = state.requests['https://deployment.invalid'].localCandidate;
+      const sentinel = path.join(f.home, 'bin', 'keep');
+      fs.mkdirSync(path.dirname(sentinel), { recursive: true });
+      fs.writeFileSync(sentinel, 'retain bin');
+      fs.writeFileSync(path.join(f.home, 'keep'), 'retain home');
+      const invalid = { ...candidate, binaryPath: location === 'home' ? f.home
+        : location === 'bin' ? path.join(f.home, 'bin', 'myco')
+        : location === 'wrong-name' ? path.join(path.dirname(candidate.binaryPath), 'different-name')
+        : path.join(f.home, 'runner', 'candidates', crypto.randomUUID(), path.basename(candidate.binaryPath)) };
+      if (owner === 'retired') { delete state.requests; state.retiredCandidates = [invalid]; }
+      if (owner === 'cleanup') { delete state.requests; state.cleanup = { currentVersion: from, platform: process.platform, localCandidate: invalid }; }
+      if (owner === 'request') state.requests['https://deployment.invalid'].localCandidate = invalid;
+      const raw = JSON.stringify(state);
+      fs.writeFileSync(file, raw);
+      const removals = spyOn(fs, 'rmSync');
+      try {
+        expect(() => cleanupRunnerUpdateGuardian(f.home, process.platform)).toThrow('Invalid runner update record');
+        expect(removals).not.toHaveBeenCalled();
+      } finally { removals.mockRestore(); }
+      expect(fs.readFileSync(file, 'utf8')).toBe(raw);
+      expect(fs.readFileSync(sentinel, 'utf8')).toBe('retain bin');
+      expect(fs.readFileSync(path.join(f.home, 'keep'), 'utf8')).toBe('retain home');
+      expect(fs.existsSync(candidate.binaryPath)).toBe(true);
+    });
+  }
+}
+
+it('does not remove a retired candidate while a request still uses its slot', () => {
+  const f = localFixture('retired-still-requested');
+  f.queue();
+  const candidate = readRunnerUpdateState(f.home).requests!['https://deployment.invalid']!.localCandidate!;
+  withRunnerUpdateState(f.home, state => { state.retiredCandidates = [candidate]; });
+  expect(() => cleanupRunnerUpdateGuardian(f.home, process.platform)).toThrow('still in use');
+  expect(fs.existsSync(candidate.binaryPath)).toBe(true);
+  expect(readRunnerUpdateState(f.home).requests!['https://deployment.invalid']!.localCandidate).toEqual(candidate);
+});
+
+it('probes and copies a local build without holding the runner journal lock', () => {
+  let lockChecks = 0;
+  let f: ReturnType<typeof localFixture>;
+  const check = () => {
+    const held = LifecycleLock.acquire(path.join(f.home, 'runner', '.update.lock'));
+    expect(held.acquired).toBe(true);
+    if (held.acquired) held.lock.release();
+    lockChecks++;
+  };
+  f = localFixture('queue-short-journal-lock', from, { probe: (file, version) => {
+    check();
+    return strictRunnerReleaseProbe(file, version, 'linux');
+  } });
+  const copy = fs.copyFileSync;
+  const copying = spyOn(fs, 'copyFileSync').mockImplementation((source, dest, mode) => {
+    if (source === f.candidate) check();
+    copy(source, dest, mode);
+  });
+  try { f.queue(); } finally { copying.mockRestore(); }
+  expect(lockChecks).toBeGreaterThanOrEqual(3);
+});
+
+it('reports runtime capability publication failure without exiting the runner loop', () => {
+  let first = true;
+  const f = localFixture('runtime-capability-publish-failed', from, { statePublisher: (file, text, options) => {
+    if (first) { first = false; throw new Error('capability publication refused'); }
+    atomicWriteFileSync(file, text, options);
+  } });
+  expect(() => f.controller.recordRuntimeCapability({ pid: process.pid, startedAt: 1000 })).not.toThrow();
+  expect(readRunnerUpdateState(f.home).runtimeCapabilities).toBeUndefined();
+  expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']).toMatchObject({
+    result: 'failed', reason: expect.stringContaining('capability publication refused'),
+  });
+});
+
+it('preserves a newer manual request arriving while a local build is prepared', () => {
+  let requested = false;
+  let f: ReturnType<typeof localFixture>;
+  f = localFixture('queue-preserves-newer-request', from, { probe: (file, version) => {
+    if (!requested) {
+      requested = true;
+      f.controller.queueManual({ channel: 'beta' });
+    }
+    return strictRunnerReleaseProbe(file, version, 'linux');
+  } });
+  expect(() => f.queue()).toThrow('Another update was requested');
+  expect(readRunnerUpdateState(f.home).requests!['https://deployment.invalid']).toMatchObject({ channel: 'beta' });
+  f.controller.startup();
+  expect(fs.readdirSync(path.join(f.home, 'runner', 'candidates'))).toEqual([]);
+  expect(readRunnerUpdateState(f.home).requests!['https://deployment.invalid']).toMatchObject({ channel: 'beta' });
 });

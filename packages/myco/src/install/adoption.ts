@@ -7,7 +7,7 @@ import { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
 import { syncDirectoryForDurability } from '@myco/utils/sync-directory.js';
 import semver from 'semver';
 import { effectiveUpdateChannel } from '@myco/upgrade/check-cache.js';
-import { readInstallMarker, writeInstallMarker, type InstallMarker } from './managed-binary.js';
+import { readInstallMarker, writeInstallMarker, type InstallMarker, type InstallFilePublisher } from './managed-binary.js';
 import { validInstallMarker } from './marker-reader.js';
 import { isCanonicalCheckoutPath, SOURCE_VERSION_PATTERN } from '../../scripts/install-marker-schema.mjs';
 import { atomicWriteFileSync, durableRemovePathSync } from '@myco/utils/atomic-write.js';
@@ -51,13 +51,13 @@ export function validateSourceIntent(checkout: string, commit: string, version: 
 /** Only source adoption requires agreement with existing checkout provenance. */
 export function assertSourceAdoptionAllowed(home: string, binary: string): void {
   const marker = readInstallMarker(home, true);
-  if (marker?.source === 'checkout' && (!fs.existsSync(binary) || binarySha256(binary).toLowerCase() !== marker.binary_sha256.toLowerCase())) {
+  if (marker?.source === 'checkout' && fs.existsSync(binary) && binarySha256(binary).toLowerCase() !== marker.binary_sha256.toLowerCase()) {
     throw new Error('The installed source build has changed since installation. Run `myco update` to install a release, then adopt the source build again.');
   }
 }
 
 /** Publish provenance from the live, placed and signed executable. */
-export function publishAdoptedMarker(home: string, binary: string, version: string, source: AdoptionSource, previous: InstallMarker | null = readInstallMarker(home, true)): InstallMarker {
+export function publishAdoptedMarker(home: string, binary: string, version: string, source: AdoptionSource, previous: InstallMarker | null = readInstallMarker(home, true), publish?: InstallFilePublisher): InstallMarker {
   if (source.kind === 'checkout') validateSourceIntent(source.checkout, source.commit, version);
   const base = {
     channel: previous?.channel ?? effectiveUpdateChannel(home),
@@ -69,7 +69,7 @@ export function publishAdoptedMarker(home: string, binary: string, version: stri
   const marker: InstallMarker = source.kind === 'checkout'
     ? { ...base, source: 'checkout', checkout: source.checkout, commit: source.commit }
     : { ...base, source: previous?.source === 'npm' ? 'npm' : 'curl' };
-  writeInstallMarker(home, marker);
+  writeInstallMarker(home, marker, publish);
   return marker;
 }
 

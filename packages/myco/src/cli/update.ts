@@ -132,7 +132,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   if (sourceCheckout !== undefined || sourceCommit !== undefined) {
     if (sourceCheckout === undefined || sourceCommit === undefined) throw new Error('myco update: --source-checkout and --source-commit are required together');
     if (targetVersionArg !== null || ['--check', '--skip-binary', '--channel', '--automatic'].some(flag => parsed.has(flag))) {
-      throw new Error('myco update: source adoption cannot be combined with a version, --check, --skip-binary, --channel or --automatic');
+      throw new Error('myco update: installing a source build cannot be combined with a version, --check, --skip-binary, --channel or --automatic');
     }
     validateSourceIntent(sourceCheckout, sourceCommit, currentVersion);
     source = { checkout: sourceCheckout, commit: sourceCommit };
@@ -207,9 +207,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   }
 
   const runners = liveInstalledRunners(home, deps);
-  if (!source && !isCheck && !parsed.has('--skip-binary') && readInstallMarker(home)?.source === 'checkout') {
-    console.log('Replacing this source build with the selected channel release.');
-  }
+  const replacingSource = !source && readInstallMarker(home)?.source === 'checkout';
   if (runners.length > 0) {
     const summaries = new Set<string>();
     const runner = deps.runRunner ?? (await import('./runner.js')).run;
@@ -249,7 +247,13 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   } else if (outcome.kind === 'rolled-back') {
     console.error(`Myco: update rolled back to ${outcome.version} (${outcome.reason}).`);
     process.exitCode = 1;
-  } else console.log(`Myco: from ${currentVersion} to ${outcome.version} on channel ${channel}${outcome.kind === 'already-current' ? ` (${outcome.reason})` : ''}.`);
+  } else if (outcome.kind === 'adopted') {
+    if (replacingSource) console.log('Replacing this source build with the selected channel release.');
+    console.log(`Myco: from ${outcome.previousVersion} to ${outcome.version}${source ? ' (source build)' : ` on channel ${channel}`}.`);
+  } else if (replacingSource) {
+    console.log(`Myco: kept source build ${outcome.version}; no eligible release on the '${channel}' channel (${outcome.reason}).`);
+    console.log('Choose a release channel with `myco update --channel alpha`, `--channel beta` or `--channel stable`.');
+  } else console.log(`Myco: from ${currentVersion} to ${outcome.version} on channel ${channel} (${outcome.reason}).`);
   if ('retainedPrevious' in outcome) for (const retained of outcome.retainedPrevious ?? []) console.log(`Update files were kept at ${retained.path} (${retained.reason}).`);
   for (const warning of outcome.warnings ?? []) console.log(warning);
   if (targetVersionArg !== null && outcome.kind === 'adopted' && outcome.previousVersion !== undefined

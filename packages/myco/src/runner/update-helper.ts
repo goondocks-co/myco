@@ -9,6 +9,7 @@ import { startService, statusOfService, stopService, type ServiceOutcome, type S
 import { probeRunnerLocalCandidate, assertRunnerLocalCandidate, blockRunnerUpdateVersion, cleanupRunnerUpdateGuardian, readRunnerUpdateStateStrict as readRunnerUpdateState, runnerCurrentReleaseProbe, runnerUpdateStatePath, strictRunnerReleaseProbe, withRunnerUpdateState, type RunnerUpdateTransaction, type RunnerUpdateReceipt } from './update.js';
 import { LifecycleLock } from '../utils/lifecycle-lock.js';
 
+export const HELPER_INSTALLATION_WAIT_MS = 15_000;
 const OLD_EXIT_WAIT_MS = 60_000;
 const HEALTH_WAIT_MS = 90_000;
 const PROBATION_WAIT_MS = 5 * 60_000;
@@ -19,6 +20,7 @@ class HealthRollback extends Error {}
 class HandoffCanceled extends Error {}
 
 export interface RunnerUpdateHelperDeps {
+  log?: (line: string) => void;
   now?: () => number;
   wait?: (ms: number) => Promise<void>;
   alive?: (pid: number) => boolean;
@@ -77,8 +79,19 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
   const held = LifecycleLock.acquire(path.join(home, 'runner', '.update-helper.lock'), { command: 'myco runner update helper' });
   if (!held.acquired) return;
   try {
-  const installation = acquireInstallationLease(home, { command: 'myco runner update helper installation' });
-  if (!installation.acquired) return;
+  let installation: { release(): void } | undefined;
+  const releaseInstallation = (): void => { installation?.release(); installation = undefined; };
+  const holdInstallation = async (): Promise<boolean> => {
+    if (installation) return true;
+    for (let elapsed = 0; elapsed <= HELPER_INSTALLATION_WAIT_MS; elapsed += POLL_MS) {
+      const heldInstallation = acquireInstallationLease(home, { command: 'myco runner update helper installation' });
+      if (heldInstallation.acquired) { installation = heldInstallation; return true; }
+      if (elapsed < HELPER_INSTALLATION_WAIT_MS) await wait(POLL_MS);
+    }
+    (deps.log ?? console.warn)('Runner update is waiting for another Myco setup or update to finish. The update is still queued; retry after it finishes.');
+    return false;
+  };
+  if (!await holdInstallation()) return;
   try {
   const current = readRunnerUpdateState(home).transaction;
   if (current?.id !== tx?.id) throw new Error('Runner update handoff changed');
@@ -106,7 +119,8 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
   };
   const active = (phase: RunnerUpdateTransaction['phase']): void => assertPhase(readRunnerUpdateState(tx.home).transaction, phase);
   const rollbackActive = (): void => active('rollback');
-  const restore = (reason: string, result: 'rolled_back' | 'failed'): void => {
+  const restore = async (reason: string, result: 'rolled_back' | 'failed'): Promise<void> => {
+    if (!await holdInstallation()) throw new Error('Runner rollback is waiting for another Myco setup or update to finish.');
     stop(tx.serviceSpec, tx.platform);
     if (!stopped(tx.serviceSpec, tx.platform)) throw new Error('runner service did not stop for rollback');
     const ready = currentProbe(previous, tx.fromVersion, tx.platform);
@@ -128,14 +142,15 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
       next.transaction.failureReason = 'runner binary publication was interrupted';
       next.transaction.rollbackResult = 'failed';
     });
-    restore('runner binary publication was interrupted', 'failed');
+    await restore('runner binary publication was interrupted', 'failed');
     return;
   }
   if (current.phase === 'rollback') {
-    restore(current.failureReason ?? 'runner update is rolling back', current.rollbackResult ?? 'rolled_back');
+    await restore(current.failureReason ?? 'runner update is rolling back', current.rollbackResult ?? 'rolled_back');
     return;
   }
   let adopted = current.phase !== 'waiting';
+  if (adopted) releaseInstallation();
   let finished = false;
   try {
     if (current.phase === 'waiting') {
@@ -176,6 +191,8 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
         if (error instanceof HandoffCanceled || error instanceof AdoptionRefusal) throw error;
         throw new AdoptionRefusal(error instanceof Error ? error.message : String(error));
       }
+      releaseInstallation();
+      if (tx.installMarker.source === 'checkout' && !tx.localCandidate) console.log('Replacing this source build with the selected channel release.');
       active('adopted');
       withRunnerUpdateState(tx.home, (next) => { if (next.transaction?.id === tx.id) next.transaction.startAttempts = (next.transaction.startAttempts ?? 0) + 1; });
       const startedService = start(tx.serviceSpec, tx.platform);
@@ -197,9 +214,10 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
       if (observed.phase === 'healthy' || (observed.phase === 'probation' &&
         ((observed.completedClaimAt !== undefined && observed.completedClaimAt >= (observed.contactAt ?? 0))
           || (observed.firstClaimAt === undefined && now() - (observed.contactAt ?? healthStart) >= PROBATION_WAIT_MS)))) {
-        publishAdoptedMarker(tx.home, tx.binaryPath, tx.toVersion, tx.localCandidate
-          ? { kind: 'checkout', checkout: tx.localCandidate.checkout, commit: tx.localCandidate.commit }
-          : { kind: 'release' }, tx.installMarker);
+        if (!installation) {
+          if (!await holdInstallation()) return;
+          continue;
+        }
         const refreshPending = isMemberHome(tx.home);
         console.log(refreshPending
           ? 'Agents refreshed: no (interactive refresh pending). Next: myco update or myco member provision --refresh'
@@ -210,6 +228,7 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
         return;
       }
       if (observed.phase !== 'probation' && now() - healthStart >= HEALTH_WAIT_MS) throw new Error('updated runner did not make authenticated contact');
+      releaseInstallation();
       await wait(POLL_MS);
     }
   } catch (error) {
@@ -236,8 +255,8 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
       next.transaction.failureReason = reason;
       next.transaction.rollbackResult = result;
     });
-    restore(reason, result);
+    await restore(reason, result);
   }
-  } finally { installation.release(); }
+  } finally { releaseInstallation(); }
   } finally { held.lock.release(); }
 }

@@ -703,19 +703,20 @@ for (const platform of ['linux', 'win32'] as const) it(`restores binary and mark
   deps.platform = platform;
   expect((await adoptSource(sourceA)).kind).toBe('adopted');
   const oldMarker = fs.readFileSync(path.join(home, 'install.json'));
-  const rename = fs.renameSync;
   let failed = false;
-  const publish = spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
-    if (destination === path.join(home, 'install.json') && !failed) { failed = true; throw new Error('marker publication failed'); }
-    rename(source, destination);
-  });
-  try {
+  deps.markerPublisher = (file, text) => {
+    expect(file).toBe(path.join(home, 'install.json'));
+    expect(JSON.parse(text).version).toBe(sourceB);
+    failed = true;
+    throw new Error('marker publication failed');
+  };
+  {
     expect(await adoptSource(sourceB)).toMatchObject({ kind: 'failed', reason: expect.stringContaining('marker publication failed') });
     expect(failed).toBe(true);
     expect(fs.readFileSync(live, 'utf8')).toBe(sourceA);
     expect(fs.readFileSync(path.join(home, 'install.json'))).toEqual(oldMarker);
     expect(fs.existsSync(path.join(home, 'install-adoption.json'))).toBe(false);
-  } finally { publish.mockRestore(); }
+  }
 });
 
 for (const platform of ['linux', 'win32'] as const) for (const phase of ['before-backup', 'after-backup', 'after-swap', 'after-marker'] as const) it(`recovers interrupted ${phase} binary and marker publication on ${platform}`, async () => {
@@ -813,17 +814,20 @@ it('uses the native Windows held-executable handoff for a local source candidate
 it('leaves no live binary or marker when first-install provenance publication fails', async () => {
   fs.rmSync(live);
   fs.rmSync(path.join(home, 'install.json'));
-  const rename = fs.renameSync;
-  const publish = spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
-    if (destination === path.join(home, 'install.json')) throw new Error('cannot publish first marker');
-    rename(source, destination);
-  });
-  try {
+  let attempted = false;
+  deps.markerPublisher = (file, text) => {
+    expect(file).toBe(path.join(home, 'install.json'));
+    expect(JSON.parse(text).version).toBe(sourceA);
+    attempted = true;
+    throw new Error('cannot publish first marker');
+  };
+  {
     expect(await adoptSource(sourceA)).toMatchObject({ kind: 'failed', reason: expect.stringContaining('cannot publish first marker') });
     expect(fs.existsSync(live)).toBe(false);
     expect(fs.existsSync(path.join(home, 'install.json'))).toBe(false);
     expect(fs.existsSync(path.join(home, 'install-adoption.json'))).toBe(false);
-  } finally { publish.mockRestore(); }
+    expect(attempted).toBe(true);
+  }
 });
 
 for (const phase of ['waiting', 'placing', 'adopted', 'probation', 'rollback', 'healthy']) it(`preserves runner publication ownership during ${phase}`, async () => {
@@ -854,4 +858,59 @@ it('refuses a quarantined runner journal while its publication ownership is unkn
   expect(await updateBinary('manual', {}, deps)).toMatchObject({ kind: 'failed', reason: 'runner update metadata is unreadable' });
   expect(stages).toBe(0);
   expect(fs.readFileSync(live, 'utf8')).toBe(from);
+});
+
+it('repairs a checkout installation whose live binary is missing', async () => {
+  expect((await adoptSource(sourceA)).kind).toBe('adopted');
+  fs.rmSync(live);
+  expect((await adoptSource(sourceB)).kind).toBe('adopted');
+  expect(fs.readFileSync(live, 'utf8')).toBe(sourceB);
+  expect(JSON.parse(fs.readFileSync(path.join(home, 'install.json'), 'utf8')).version).toBe(sourceB);
+});
+
+it('restores prior provenance when marker durability fails after publication', async () => {
+  const { atomicWriteFileSync } = await import('@myco/utils/atomic-write.js');
+  expect((await adoptSource(sourceA)).kind).toBe('adopted');
+  const marker = fs.readFileSync(path.join(home, 'install.json'));
+  deps.markerPublisher = (file, text) => {
+    atomicWriteFileSync(file, text, { durable: true, mode: 0o600 });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).version).toBe(sourceB);
+    throw new Error('directory flush failed after publication');
+  };
+  expect(await adoptSource(sourceB)).toMatchObject({ kind: 'failed', reason: expect.stringContaining('directory flush failed') });
+  expect(fs.readFileSync(live, 'utf8')).toBe(sourceA);
+  expect(fs.readFileSync(path.join(home, 'install.json'))).toEqual(marker);
+});
+
+it('moves a held Windows executable aside before recovering an interrupted publication', async () => {
+  const { beginBinaryPublication, recoverInterruptedBinaryPublication } = await import('@myco/install/adoption.js');
+  deps.platform = 'win32';
+  expect((await adoptSource(sourceA)).kind).toBe('adopted');
+  const marker = fs.readFileSync(path.join(home, 'install.json'));
+  const previous = path.join(path.dirname(live), 'myco.prev.exe');
+  beginBinaryPublication(home, live, previous);
+  fs.copyFileSync(live, previous);
+  fs.writeFileSync(live, sourceB);
+  const held = fs.openSync(live, 'r');
+  let moved = false;
+  try {
+    recoverInterruptedBinaryPublication(home, live, 'win32', { fs: {
+      renameSync: (source, destination) => {
+        if (source === live) {
+          expect(String(destination)).toContain('.myco-retired-');
+          moved = true;
+        }
+        if (destination === live) {
+          expect(moved).toBe(true);
+          expect(fs.existsSync(live)).toBe(false);
+        }
+        fs.renameSync(source, destination);
+      },
+      rmSync: fs.rmSync,
+    } });
+    expect(moved).toBe(true);
+    expect(fs.readFileSync(held, 'utf8')).toBe(sourceB);
+    expect(fs.readFileSync(live, 'utf8')).toBe(sourceA);
+    expect(fs.readFileSync(path.join(home, 'install.json'))).toEqual(marker);
+  } finally { fs.closeSync(held); }
 });

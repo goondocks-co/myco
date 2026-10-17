@@ -199,6 +199,9 @@ const sourceArgs = () => ['--source-checkout', home, '--source-commit', sourceCo
 it('adopts the running source candidate before refreshing member setup', async () => {
   const candidate = path.join(home, 'source-candidate');
   fs.writeFileSync(candidate, sourceVersion);
+  const binary = path.join(home, 'bin', 'myco');
+  fs.mkdirSync(path.dirname(binary), { recursive: true });
+  fs.writeFileSync(binary, '2.0.0-alpha.2');
   const events: string[] = [];
   await run(sourceArgs(), {
     home, currentVersion: sourceVersion, sourceBinary: candidate, isMemberHome: () => true,
@@ -208,7 +211,8 @@ it('adopts the running source candidate before refreshing member setup', async (
   });
   expect(events).toEqual(['adopt', 'refresh']);
   expect(readInstallMarker(home, true)).toMatchObject({ source: 'checkout', checkout: home, commit: sourceCommit, version: sourceVersion });
-  expect(output.join('\n')).toContain(`to ${sourceVersion}`);
+  expect(output.join('\n')).toContain(`from 2.0.0-alpha.2 to ${sourceVersion} (source build)`);
+  expect(output.join('\n')).not.toContain('on channel');
   expect(output.join('\n')).toContain('Agents refreshed: yes.');
 });
 
@@ -311,4 +315,40 @@ it('prints setup after the first source install into a home without membership',
   });
   expect(readInstallMarker(home, true)).toMatchObject({ source: 'checkout', version: sourceVersion });
   expect(output.join('\n')).toContain('Next: myco setup');
+});
+
+
+it('keeps a source build when stable has no eligible 2.x release and explains channel selection', async () => {
+  const binary = path.join(home, 'bin', 'myco');
+  fs.mkdirSync(path.dirname(binary), { recursive: true });
+  fs.writeFileSync(binary, sourceVersion);
+  writeInstallMarker(home, { channel: 'stable', source: 'curl', bin: binary });
+  publishAdoptedMarker(home, binary, sourceVersion, { kind: 'checkout', checkout: home, commit: sourceCommit });
+  const before = fs.readFileSync(path.join(home, 'install.json'));
+  await run([], {
+    home, currentVersion: sourceVersion, isMemberHome: () => false,
+    fetch: (async () => Response.json([{ tag_name: 'myco/v1.4.99', prerelease: false, assets: [] },
+      { tag_name: 'myco/v2.0.0-alpha.3', prerelease: true, assets: [{ name: assetName(resolveTargetTriple()) }, { name: 'SHA256SUMS' }] }])) as typeof fetch,
+    probeVersion: file => fs.readFileSync(file, 'utf8'),
+    stageBinary: async () => { throw new Error('ineligible release reached staging'); },
+  });
+  expect(output.join('\n')).toContain(`kept source build ${sourceVersion}`);
+  expect(output.join('\n')).toContain('myco update --channel alpha');
+  expect(output.join('\n')).not.toContain('Replacing this source build');
+  expect(fs.readFileSync(path.join(home, 'install.json'))).toEqual(before);
+  expect(fs.readFileSync(binary, 'utf8')).toBe(sourceVersion);
+});
+
+it('does not announce source replacement when preparing a release fails', async () => {
+  const binary = path.join(home, 'bin', 'myco');
+  fs.mkdirSync(path.dirname(binary), { recursive: true });
+  fs.writeFileSync(binary, sourceVersion);
+  publishAdoptedMarker(home, binary, sourceVersion, { kind: 'checkout', checkout: home, commit: sourceCommit });
+  await run([], { home, currentVersion: sourceVersion, isMemberHome: () => false,
+    resolveRefs: async () => refs('2.0.0-alpha.3'), probeVersion: file => fs.readFileSync(file, 'utf8'),
+    stageBinary: async () => ({ error: 'download failed' }),
+  });
+  expect(output.join('\n')).toContain('download failed');
+  expect(output.join('\n')).not.toContain('Replacing this source build');
+  expect(process.exitCode).toBe(1);
 });

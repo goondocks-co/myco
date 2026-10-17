@@ -109,10 +109,12 @@ it('projects checkout origin from a hash-bound marker after the checkout is gone
   expect(readInstallation(home, '2.0.0', binary)).toMatchObject({ source: 'unknown', record: 'mismatch', checkout: null, commit: null });
   fs.writeFileSync(binary, 'different bytes');
   expect(readInstallation(home, version, binary)).toMatchObject({ record: 'mismatch', checkout: null, commit: null,
-    detail: 'This binary does not match the installed source build' });
+    detail: 'This binary does not match the installed source build. Run `myco update` to repair this installation' });
   fs.writeFileSync(binary, `#!/bin/sh\nprintf '%s\\n' '${version}'\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(home, 'install.json'), JSON.stringify({ ...value, bin: path.join(root, 'different-binary') }));
-  expect(readInstallation(home, version, binary).detail).toBe('This binary does not match the installed source build');
+  expect(readInstallation(home, version, binary).detail).toBe('This binary does not match the installed source build. Run `myco update` to repair this installation');
+  expect(checkInstallation(home)).toMatchObject({ status: 'warn',
+    detail: 'This binary does not match the installed source build. Run `myco update` to repair this installation' });
 });
 
 for (const source of ['curl', 'npm'] as const) it(`projects expected ${source} markers without a warning or refusing release updates`, async () => {

@@ -46,7 +46,7 @@ export function readInstallation(home: string, version = getPluginVersion(), bin
   const checkout = checkoutMarker?.checkout ?? null;
   const commit = checkoutMarker?.commit ?? null;
   const detail = marker?.source === 'checkout' && record === 'mismatch'
-    ? 'This binary does not match the installed source build'
+    ? 'This binary does not match the installed source build. Run `myco update` to repair this installation'
     : source === 'checkout'
       ? checkoutMarker !== null ? `Source build from ${checkoutMarker.checkout}, commit ${checkoutMarker.commit.slice(0, SHORT_COMMIT_LENGTH)}` : `Source build ${version} (origin unknown)`
       : `${version}${source === 'unknown' ? ' (origin unknown)' : ''}`;

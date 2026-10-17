@@ -34,6 +34,7 @@ const GUARDIAN_RECOVERY_MS = 30_000;
 const MAX_GUARDIAN_RECOVERIES = 2;
 const BLOCK_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const MAX_VERSION_ATTEMPTS = 20;
+const CANDIDATE_SLOT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export type RunnerUpdateResult = UpdateReceipt['result'];
 export type RunnerUpdateReceipt = UpdateReceipt;
@@ -123,6 +124,7 @@ export interface RunnerUpdateDeps {
   targetTriple?: typeof resolveTargetTriple;
   serviceInstalled?: (spec: ServiceSpec, platform: NodeJS.Platform) => boolean;
   prune?: typeof pruneVersions;
+  statePublisher?: typeof atomicWriteFileSync;
 }
 
 function statePath(home: string): string { return path.join(home, 'runner', UPDATE_FILE); }
@@ -140,9 +142,47 @@ function validLocalCandidate(value: unknown, home: string, platform: NodeJS.Plat
   if (!record(value) || value.kind !== 'local' || !['darwin', 'linux', 'win32'].includes(platform) || value.platform !== platform || typeof value.version !== 'string' || !semver.valid(value.version)
     || typeof value.checkout !== 'string' || typeof value.commit !== 'string'
     || typeof value.sha256 !== 'string' || value.sha256.length !== 64 || !/^[a-f0-9]{64}$/.test(value.sha256)
-    || typeof value.slot !== 'string' || value.slot.length !== 36 || !/^[a-f0-9-]{36}$/.test(value.slot)) return false;
+    || typeof value.slot !== 'string' || CANDIDATE_SLOT.exec(value.slot)?.[0] !== value.slot) return false;
   try { validateSourceIntent(value.checkout, value.commit, value.version); } catch { return false; }
   return value.binaryPath === localCandidatePath(home, value as unknown as RunnerLocalCandidate, platform);
+}
+function retireCandidate(state: RunnerUpdateState, candidate: RunnerLocalCandidate): void {
+  if (!state.retiredCandidates?.some(retired => retired.slot === candidate.slot)) (state.retiredCandidates ??= []).push(candidate);
+}
+function endRequest(state: RunnerUpdateState, url: string, id?: string): void {
+  const request = state.requests?.[url];
+  if (request === undefined || (id !== undefined && request.id !== id)) return;
+  if (request.localCandidate) retireCandidate(state, request.localCandidate);
+  delete state.requests![url];
+}
+function removeLocalCandidate(home: string, state: RunnerUpdateState, candidate: RunnerLocalCandidate, owner: 'retired' | 'cleanup'): void {
+  if (!validLocalCandidate(candidate, home, candidate.platform)) throw new Error('invalid runner local candidate path');
+  if (state.transaction?.localCandidate?.slot === candidate.slot
+    || Object.values(state.requests ?? {}).some(request => request.localCandidate?.slot === candidate.slot)
+    || (owner !== 'cleanup' && state.cleanup?.localCandidate?.slot === candidate.slot)) {
+    throw new Error('retired runner candidate is still in use');
+  }
+  fs.rmSync(path.dirname(localCandidatePath(home, candidate, candidate.platform)), { recursive: true, force: true });
+}
+function sweepLocalCandidates(home: string): void {
+  const held = LifecycleLock.acquire(path.join(home, 'runner', UPDATE_OPERATION_LOCK), { command: 'myco runner candidate cleanup' });
+  if (!held.acquired) return;
+  try {
+    const state = decodeState(home);
+    if (state.metadataFailure) throw new Error('runner update metadata requires recovery before candidate cleanup');
+    const referenced = new Set([
+      ...Object.values(state.requests ?? {}).flatMap(request => request.localCandidate ? [request.localCandidate.slot] : []),
+      ...(state.transaction?.localCandidate ? [state.transaction.localCandidate.slot] : []),
+      ...(state.cleanup?.localCandidate ? [state.cleanup.localCandidate.slot] : []),
+      ...(state.retiredCandidates ?? []).map(candidate => candidate.slot),
+    ]);
+    const root = path.join(home, 'runner', 'candidates');
+    if (!fs.existsSync(root)) return;
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || CANDIDATE_SLOT.exec(entry.name)?.[0] !== entry.name || referenced.has(entry.name)) continue;
+      fs.rmSync(path.join(root, entry.name), { recursive: true, force: true });
+    }
+  } finally { held.lock.release(); }
 }
 export function probeRunnerLocalCandidate(candidate: RunnerLocalCandidate, file: string, probe: () => ProgramProbe): ProgramProbe {
   assertRunnerLocalCandidate(candidate, file);
@@ -235,14 +275,14 @@ function readState(home: string): RunnerUpdateState {
   try { return decodeState(home); }
   catch { return withState(home, state => state); }
 }
-function writeState(home: string, state: RunnerUpdateState): void {
+function writeState(home: string, state: RunnerUpdateState, publisher = atomicWriteFileSync): void {
   const file = statePath(home);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   for (const result of Object.values(state.lastResults ?? {})) if (result.reason !== undefined) result.reason = sanitizeRunnerUpdateReason(result.reason);
   if (state.transaction?.failureReason !== undefined) state.transaction.failureReason = sanitizeRunnerUpdateReason(state.transaction.failureReason);
-  atomicWriteFileSync(file, `${JSON.stringify(state)}\n`, { mode: 0o600, durable: true });
+  publisher(file, `${JSON.stringify(state)}\n`, { mode: 0o600, durable: true });
 }
-function withState<T>(home: string, change: (state: RunnerUpdateState) => T): T {
+function withState<T>(home: string, change: (state: RunnerUpdateState) => T, publisher = atomicWriteFileSync): T {
   const dir = path.dirname(statePath(home));
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   let held = LifecycleLock.acquire(path.join(dir, UPDATE_LOCK), { command: 'myco runner update' });
@@ -255,7 +295,7 @@ function withState<T>(home: string, change: (state: RunnerUpdateState) => T): T 
   try {
     const state = recoverState(home);
     const result = change(state);
-    writeState(home, state);
+    writeState(home, state, publisher);
     return result;
   } finally { held.lock.release(); }
 }
@@ -345,26 +385,24 @@ export function cleanupRunnerUpdateGuardian(home: string, platform: NodeJS.Platf
   const held = LifecycleLock.acquire(path.join(home, 'runner', UPDATE_CLEANUP_LOCK), { command: 'myco runner update cleanup' });
   if (!held.acquired) return 'deferred';
   try {
-  let state = readState(home);
+  let state = decodeState(home);
+  if (state.metadataFailure) return 'deferred';
   if (state.transaction !== undefined) return 'deferred';
   const hasGuardianWork = state.guardian !== undefined || state.cleanup !== undefined;
   if (state.guardian !== undefined) {
     if (state.guardian.unit.label !== runnerUpdateGuardianLabel(home)) throw new Error('runner update guardian belongs to another home');
     (deps.removeGuardian ?? ((spec, targetPlatform) => { uninstallService(spec, { platform: targetPlatform }); }))(state.guardian, platform);
     withState(home, next => { if (next.transaction === undefined) delete next.guardian; });
-    state = readState(home);
+    state = decodeState(home);
   }
   for (const retired of state.retiredCandidates ?? []) {
     withState(home, next => {
-      if (next.transaction?.localCandidate?.slot === retired.slot
-        || Object.values(next.requests ?? {}).some(request => request.localCandidate?.slot === retired.slot)) {
-        throw new Error('retired runner candidate is still in use');
-      }
-      fs.rmSync(path.dirname(retired.binaryPath), { recursive: true, force: true });
+      removeLocalCandidate(home, next, retired, 'retired');
       next.retiredCandidates = next.retiredCandidates?.filter(candidate => candidate.slot !== retired.slot);
       if (next.retiredCandidates?.length === 0) delete next.retiredCandidates;
     });
   }
+  sweepLocalCandidates(home);
   if (!hasGuardianWork) return 'complete';
   const cleanup = state.cleanup;
   fs.rmSync(runnerUpdateGuardianBinary(home, platform), { force: true });
@@ -377,7 +415,7 @@ export function cleanupRunnerUpdateGuardian(home: string, platform: NodeJS.Platf
     if (path.dirname(failedDir) !== root || path.basename(failedDir) !== cleanup.failedVersion) throw new Error('invalid runner update cleanup slot');
     fs.rmSync(failedDir, { recursive: true, force: true });
   }
-  if (cleanup.localCandidate) fs.rmSync(path.dirname(cleanup.localCandidate.binaryPath), { recursive: true, force: true });
+  if (cleanup.localCandidate) removeLocalCandidate(home, decodeState(home), cleanup.localCandidate, 'cleanup');
   (deps.prune ?? pruneVersions)(home, cleanup.platform, 2, cleanup.currentVersion, cleanup.previousVersion, cleanup.localAppData);
   const retained = fs.existsSync(root) ? fs.readdirSync(root).filter(version =>
     semver.valid(version) !== null && fs.statSync(path.join(root, version)).isDirectory()) : [];
@@ -408,6 +446,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
   if (path.resolve(binaryPath) !== path.resolve(options.serviceSpec.binaryPath)) throw new Error('runner update binary does not match service binary');
   const platform = options.platform ?? process.platform;
   const deps = options.deps ?? {};
+  const changeState = <T>(change: (state: RunnerUpdateState) => T): T => withState(home, change, deps.statePublisher);
   const now = deps.now ?? Date.now;
   const jitter = (): number => CHECK_MIN_MS + Math.floor((deps.random ?? Math.random)() * CHECK_JITTER_MS);
   const backoff = (failures: number): number => Math.min(MAX_FAILURE_BACKOFF_MS, FAILURE_BACKOFF_MS * 2 ** Math.min(Math.max(failures - 1, 0), 5));
@@ -433,7 +472,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     const reason = sanitizeRunnerUpdateReason('runner update failed: ' + String(error));
     fault = { fromVersion: currentVersion, toVersion: currentVersion, result: 'failed', reason, at: now() };
     log(reason);
-    try { withState(home, state => { (state.lastResults ??= {})[serverUrl] = fault!; state.nextCheckAt = now() + FAILURE_BACKOFF_MS; }); fault = undefined; }
+    try { changeState(state => { (state.lastResults ??= {})[serverUrl] = fault!; state.nextCheckAt = now() + FAILURE_BACKOFF_MS; }); fault = undefined; }
     catch (writeError) { log('runner update failure could not be persisted: ' + sanitizeRunnerUpdateReason(String(writeError))); }
   };
   const guard = <A extends unknown[], R>(operation: (...args: A) => R, fallback: () => R): ((...args: A) => R) =>
@@ -450,7 +489,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       ...(reason === undefined ? {} : { reason: sanitizeRunnerUpdateReason(reason) }),
       ...(request === undefined ? {} : { requestId: request.id }), ...(attemptId === undefined ? {} : { attemptId }),
     };
-    if (request && state.requests?.[serverUrl]?.id === request.id) delete state.requests[serverUrl];
+    if (request) endRequest(state, serverUrl, request.id);
   };
   const payload = (state: RunnerUpdateState): RunnerUpdateContact => {
     const blocked = state.latestVersion === null ? undefined : state.blockedVersions?.[state.latestVersion];
@@ -475,14 +514,16 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     if (installation?.acquired === false) return false;
     try {
     const state = read();
-    if (state.guardian === undefined && state.cleanup === undefined && !state.retiredCandidates?.length) return true;
+    const candidateRoot = path.join(home, 'runner', 'candidates');
+    const hasSlots = fs.existsSync(candidateRoot) && fs.readdirSync(candidateRoot).length > 0;
+    if (state.guardian === undefined && state.cleanup === undefined && !state.retiredCandidates?.length && !hasSlots) return true;
     if (state.transaction !== undefined || now() < (state.nextCleanupAt ?? 0)) return false;
     try {
       return cleanupRunnerUpdateGuardian(home, platform, { removeGuardian: deps.removeGuardian, prune: deps.prune }) === 'complete';
     } catch (error) {
       const reason = sanitizeRunnerUpdateReason('runner update cleanup failed: ' + String(error));
       log(reason);
-      withState(home, next => {
+      changeState(next => {
         next.cleanupFailures = (next.cleanupFailures ?? 0) + 1;
         next.nextCleanupAt = now() + backoff(next.cleanupFailures);
         next.cleanupReason = reason;
@@ -510,18 +551,19 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
   const onContact = (body: Record<string, unknown>): void => {
     const raw = body.updateRequest;
     if (raw === undefined) return;
-    if (raw === null) { withState(home, state => { if (state.requests?.[serverUrl]?.manual !== true) delete state.requests?.[serverUrl]; }); return; }
+    if (raw === null) { changeState(state => { if (state.requests?.[serverUrl]?.manual !== true) endRequest(state, serverUrl); }); return; }
     if (typeof raw !== 'object' || typeof (raw as RunnerUpdateRequest).id !== 'string' || !Number.isFinite((raw as RunnerUpdateRequest).requestedAt)) throw new Error('Deployment sent an invalid runner update request');
     const sent = raw as RunnerUpdateRequest;
     const request: RunnerUpdateRequest = { id: sent.id, requestedAt: sent.requestedAt,
       ...(sent.channel === undefined ? {} : { channel: sent.channel }),
       ...(sent.targetVersion === undefined ? {} : { targetVersion: sent.targetVersion }),
       ...(sent.clearBlock === undefined ? {} : { clearBlock: sent.clearBlock }) };
-    withState(home, state => {
+    changeState(state => {
       if (state.lastResults?.[serverUrl]?.requestId === request.id || (state.transaction?.serverUrl === serverUrl && state.transaction.requestId === request.id)) return;
       const queued = state.requests?.[serverUrl];
       if (queued?.id === request.id) return;
       if (queued?.manual !== true && (queued === undefined || queued.requestedAt <= request.requestedAt)) {
+        endRequest(state, serverUrl);
         (state.requests ??= {})[serverUrl] = request;
         state.nextCheckAt = 0;
       }
@@ -529,7 +571,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
   };
   const startup = (): void => {
     read();
-    withState(home, state => {
+    changeState(state => {
       const tx = state.transaction;
       if (ownsTransaction(tx)) {
         if (tx.startedPid !== process.pid) tx.startAttempts = (tx.startAttempts ?? 0) + 1;
@@ -540,7 +582,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     cleanupGuardian();
   };
   const acknowledgeHealthy = (): void => {
-    withState(home, state => {
+    changeState(state => {
       const tx = state.transaction;
       if (ownsTransaction(tx) && ['adopted', 'probation', 'healthy'].includes(tx.phase)) {
         tx.phase = 'probation'; tx.startedPid = process.pid; tx.contactAt ??= now();
@@ -548,7 +590,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     });
   };
   const recordClaim = (completed = false): void => {
-    withState(home, state => {
+    changeState(state => {
       const tx = state.transaction;
       if (ownsTransaction(tx)) {
         tx.firstClaimAt ??= now();
@@ -557,7 +599,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     });
   };
   const recordHealthRefusal = (reason: string): void => {
-    withState(home, state => { const tx = state.transaction;
+    changeState(state => { const tx = state.transaction;
       if (ownsTransaction(tx)) tx.healthRefusal = sanitizeRunnerUpdateReason(reason);
     });
   };
@@ -567,48 +609,51 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     }
     const previous = read().runtimeCapabilities?.[serverUrl];
     if (previous?.pid === holder.pid && previous.lockStartedAt === holder.startedAt) return;
-    withState(home, state => {
+    changeState(state => {
       (state.runtimeCapabilities ??= {})[serverUrl] = { pid: holder.pid, lockStartedAt: holder.startedAt, localArtifacts: true };
     });
   };
   const queueManual = (selection: RunnerUpdateSelection = {}): void => {
-    withState(home, state => {
-      const prior = state.requests?.[serverUrl]?.localCandidate;
+    changeState(state => {
+      endRequest(state, serverUrl);
       (state.requests ??= {})[serverUrl] = { id: crypto.randomUUID(), requestedAt: now(), manual: true, clearBlock: true, ...selection };
-      if (prior) (state.retiredCandidates ??= []).push(prior);
       state.nextCheckAt = 0;
     });
   };
   const queueLocal = (input: RunnerLocalArtifactInput): void => {
     validateSourceIntent(input.checkout, input.commit, input.version);
     const installation = acquireInstallationLease(home, { command: 'myco runner local update' });
-    if (!installation.acquired) throw new Error('another update holds the machine installation');
+    if (!installation.acquired) throw new Error('Myco is already updating on this machine. Try again when it finishes.');
     try {
     const admitted = decodeState(home);
     if (admitted.metadataFailure) throw new Error('runner update metadata requires recovery before binary adoption');
     recoverInterruptedBinaryPublication(home, binaryPath, platform);
     assertSourceAdoptionAllowed(home, binaryPath);
     const held = LifecycleLock.acquire(path.join(home, 'runner', UPDATE_OPERATION_LOCK), { command: 'myco runner local update' });
-    if (!held.acquired) throw new Error('another runner update holds the machine binary');
+    if (!held.acquired) throw new Error('Another runner update is in progress. Try again when it finishes.');
     try {
-      withState(home, state => {
-        if (state.transaction || state.guardian || state.cleanup) throw new Error('runner update already in progress');
-        if (input.version === currentVersion) throw new Error('local candidate must have a unique build version');
-        const probe = deps.probe ?? strictRunnerReleaseProbe;
-        const ready = probe(input.binaryPath, input.version, platform);
-        if (!ready.runs) throw new Error(ready.detail);
-        const candidate: RunnerLocalCandidate = { ...input, kind: 'local', platform, slot: crypto.randomUUID(),
-          sha256: crypto.createHash('sha256').update(fs.readFileSync(input.binaryPath)).digest('hex') };
-        candidate.binaryPath = localCandidatePath(home, candidate, platform);
-        fs.mkdirSync(path.dirname(candidate.binaryPath), { recursive: true, mode: 0o700 });
-        placeExecutable(input.binaryPath, candidate.binaryPath, { platform, ready: file => {
-          return probeRunnerLocalCandidate(candidate, file, () => probe(file, input.version, platform));
-        } });
-        const prior = state.requests?.[serverUrl]?.localCandidate;
-        (state.requests ??= {})[serverUrl] = { id: crypto.randomUUID(), requestedAt: now(), manual: true,
+      const state = decodeState(home);
+      if (state.transaction || state.guardian || state.cleanup) throw new Error('runner update already in progress');
+      if (input.version === currentVersion) throw new Error('This build is already installed. Build Myco again before installing another source build.');
+      const probe = deps.probe ?? strictRunnerReleaseProbe;
+      const ready = probe(input.binaryPath, input.version, platform);
+      if (!ready.runs) throw new Error(ready.detail);
+      const candidate: RunnerLocalCandidate = { ...input, kind: 'local', platform, slot: crypto.randomUUID(),
+        sha256: crypto.createHash('sha256').update(fs.readFileSync(input.binaryPath)).digest('hex') };
+      candidate.binaryPath = localCandidatePath(home, candidate, platform);
+      fs.mkdirSync(path.dirname(candidate.binaryPath), { recursive: true, mode: 0o700 });
+      placeExecutable(input.binaryPath, candidate.binaryPath, { platform,
+        ready: file => probeRunnerLocalCandidate(candidate, file, () => probe(file, input.version, platform)),
+      });
+      changeState(next => {
+        if (next.transaction || next.guardian || next.cleanup || next.metadataFailure) throw new Error('runner update already in progress');
+        if (next.requests?.[serverUrl]?.id !== state.requests?.[serverUrl]?.id) {
+          throw new Error('Another update was requested while preparing this build. Retry if you still want to install it.');
+        }
+        endRequest(next, serverUrl);
+        (next.requests ??= {})[serverUrl] = { id: crypto.randomUUID(), requestedAt: now(), manual: true,
           clearBlock: true, targetVersion: candidate.version, localCandidate: candidate };
-        state.nextCheckAt = 0;
-        if (prior) (state.retiredCandidates ??= []).push(prior);
+        next.nextCheckAt = 0;
       });
     } finally { held.lock.release(); }
     } finally { installation.release(); }
@@ -628,7 +673,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       const observed = decodeState(home).transaction;
       if (observed?.id !== tx.id || observed.phase !== 'waiting') return false;
       if (!runnerCurrentReleaseProbe(binaryPath, retainedVersion, platform).runs) return false;
-      abandoned = withState(home, state => {
+      abandoned = changeState(state => {
         if (state.transaction?.id !== tx.id || state.transaction.phase !== 'waiting') return false;
         (state.lastResults ??= {})[tx.serverUrl] = { fromVersion: tx.fromVersion, toVersion: tx.toVersion, result: 'failed', reason,
           at: now(), ...(tx.requestId ? { requestId: tx.requestId } : {}), ...(tx.attemptId ? { attemptId: tx.attemptId } : {}) };
@@ -648,7 +693,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
   const recoverGuardian = (tx: RunnerUpdateTransaction): void => {
     if (now() - (tx.recoveryAt ?? tx.startedAt) < GUARDIAN_RECOVERY_MS) return;
     if ((tx.recoveryAttempts ?? 0) >= MAX_GUARDIAN_RECOVERIES) return;
-    withState(home, state => { if (state.transaction?.id === tx.id) { state.transaction.recoveryAt = now(); state.transaction.recoveryAttempts = (state.transaction.recoveryAttempts ?? 0) + 1; } });
+    changeState(state => { if (state.transaction?.id === tx.id) { state.transaction.recoveryAt = now(); state.transaction.recoveryAttempts = (state.transaction.recoveryAttempts ?? 0) + 1; } });
     try {
       const guardian = read().guardian;
       if (!guardian) throw new Error('update guardian is absent');
@@ -687,7 +732,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     const recordedChannel = channel();
     const localCandidate = request?.localCandidate;
     if (request?.manual !== true && (readInstallMarker(home, true)?.source === 'checkout' || isDevelopmentVersion(currentVersion))) {
-      withState(home, next => { schedule(next, now() + jitter(), request); if (request) report(next, 'refused', currentVersion,
+      changeState(next => { schedule(next, now() + jitter(), request); if (request) report(next, 'refused', currentVersion,
         'automatic updates skipped: this is a source build', request); });
       return 'continue';
     }
@@ -695,8 +740,9 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     const recordsAutomaticCandidate = request?.targetVersion === undefined && releaseChannel === recordedChannel;
     const installed = releaseChannel !== null && (deps.serviceInstalled ?? ((spec, targetPlatform) => fs.existsSync(servicePaths(spec, targetPlatform).unitFile)))(options.serviceSpec, platform);
     if (releaseChannel === null || !installed) {
-      withState(home, next => { schedule(next, now() + jitter(), request); if (request) report(next, 'refused', currentVersion,
+      changeState(next => { schedule(next, now() + jitter(), request); if (request) report(next, 'refused', currentVersion,
         releaseChannel === null ? 'runner has no installed 2.x release channel' : 'runner service is not installed', request); });
+      cleanupGuardian(true);
       return 'continue';
     }
     const held = LifecycleLock.acquire(path.join(home, 'runner', UPDATE_OPERATION_LOCK), { command: 'myco runner update operation' });
@@ -706,16 +752,15 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       if (active.metadataFailure || active.transaction || active.guardian || active.cleanup || active.requests?.[serverUrl]?.id !== request?.id) return 'continue';
       const current = runnerCurrentReleaseProbe(binaryPath, currentVersion, platform);
       if (!current.runs) {
-        withState(home, next => {
+        changeState(next => {
           report(next, 'refused', localCandidate?.version ?? currentVersion, 'installed runner changed before handoff: ' + current.detail, request);
           schedule(next, now() + jitter(), request);
         });
         return 'continue';
       }
       if (localCandidate?.version === currentVersion) {
-        const retired = withState(home, next => {
+        const retired = changeState(next => {
           if (next.requests?.[serverUrl]?.id !== request?.id) return false;
-          (next.retiredCandidates ??= []).push(localCandidate);
           report(next, 'no_update', currentVersion, undefined, request);
           schedule(next, now() + jitter(), request);
           return true;
@@ -723,14 +768,14 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
         if (retired) cleanupGuardian(true);
         return 'continue';
       }
-      if (request?.clearBlock) withState(home, clearBlocks);
+      if (request?.clearBlock) changeState(clearBlocks);
       let refs: AssetRefs | null = null;
       if (!localCandidate) try {
         const cached = state.candidate?.channel === releaseChannel ? state.candidate.refs : null;
         const etag = recordsAutomaticCandidate && state.releaseChannel === releaseChannel && !request?.clearBlock ? state.etag : undefined;
         const found = await releases(releaseChannel, currentVersion, etag, deps, request?.targetVersion);
         refs = found.unchanged ? cached : found.refs;
-        withState(home, next => {
+        changeState(next => {
           next.lastCheckAt = now(); schedule(next, now() + jitter(), request); next.failures = 0;
           if (recordsAutomaticCandidate) next.releaseChannel = releaseChannel;
           if (recordsAutomaticCandidate && !found.unchanged) {
@@ -744,40 +789,42 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
           catch (error) { log(`runner update notice cache could not be saved: ${sanitizeRunnerUpdateReason(String(error))}`); }
         }
       } catch (error) {
-        withState(home, next => { next.failures++; schedule(next, now() + backoff(next.failures), request); report(next, 'failed', currentVersion, String(error), request); });
+        changeState(next => { next.failures++; schedule(next, now() + backoff(next.failures), request); report(next, 'failed', currentVersion, String(error), request); });
         return 'continue';
       }
       if (!localCandidate && refs === null) return 'continue';
       if (!localCandidate && (!semver.valid(currentVersion) || !semver.valid(refs!.targetVersion) || semver.major(refs!.targetVersion) < 2 || !semver.gt(refs!.targetVersion, currentVersion))) {
-        if (request) withState(home, next => report(next, 'no_update', refs!.targetVersion, undefined, request));
+        if (request) changeState(next => report(next, 'no_update', refs!.targetVersion, undefined, request));
         return 'continue';
       }
       const version = localCandidate?.version ?? refs!.targetVersion;
       const blocked = read().blockedVersions?.[version];
       if (blocked && blocked.until > now()) {
-        withState(home, next => { schedule(next, Math.min(blocked.until, now() + jitter()), request); if (request) report(next, 'refused', version, blocked.reason, request); });
+        changeState(next => { schedule(next, Math.min(blocked.until, now() + jitter()), request); if (request) report(next, 'refused', version, blocked.reason, request); });
         return 'continue';
       }
       let attempt = read().attempts?.[version];
       if (attempt && now() < attempt.nextRetryAt) {
-        withState(home, next => { schedule(next, attempt!.nextRetryAt, request); });
+        changeState(next => { schedule(next, attempt!.nextRetryAt, request); });
         return 'continue';
       }
       if (!attempt) {
         attempt = { id: crypto.randomUUID(), failures: 0, nextRetryAt: 0 };
-        withState(home, next => { (next.attempts ??= {})[version] = attempt!; next.attempts = Object.fromEntries(Object.entries(next.attempts).slice(-MAX_VERSION_ATTEMPTS)); });
+        changeState(next => { (next.attempts ??= {})[version] = attempt!; next.attempts = Object.fromEntries(Object.entries(next.attempts).slice(-MAX_VERSION_ATTEMPTS)); });
       }
-      const refuse = (reason: string): void => withState(home, next => {
+      const refuse = (reason: string): void => changeState(next => {
         const retry = (next.attempts ??= {})[version] ?? attempt!;
         retry.failures++; retry.nextRetryAt = now() + backoff(retry.failures); next.attempts[version] = retry;
         schedule(next, retry.nextRetryAt, request); report(next, 'refused', version, reason, request, retry.id);
       });
       const probe = deps.probe ?? strictRunnerReleaseProbe;
-      if (localCandidate) assertSourceAdoptionAllowed(home, binaryPath);
       if (localCandidate) {
-        assertRunnerLocalCandidate(localCandidate);
-        const ready = probe(localCandidate.binaryPath, version, platform);
-        if (!ready.runs) { refuse(ready.detail); return 'continue'; }
+        try {
+          assertSourceAdoptionAllowed(home, binaryPath);
+          const ready = probeRunnerLocalCandidate(localCandidate, localCandidate.binaryPath,
+            () => probe(localCandidate.binaryPath, version, platform));
+          if (!ready.runs) { refuse(ready.detail); return 'continue'; }
+        } catch (error) { refuse(error instanceof Error ? error.message : String(error)); return 'continue'; }
       }
       const staged = localCandidate ? { stagedPath: localCandidate.binaryPath } : await (deps.stage ?? stageBinary)({ refs: refs!, home, platform, localAppData: options.localAppData }, {
         ...(deps.stageDeps ?? DEFAULT_BINARY_UPDATE_DEPS), ready: file => probe(file, version, platform),
@@ -803,7 +850,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
         deadlineAt: now() + TX_DEADLINE_MS, recoveryAttempts: 0, ...(request ? { requestId: request.id } : {}), phase: 'waiting',
       };
       const guardian = runnerUpdateGuardianSpec(tx);
-      withState(home, next => { if (next.transaction || next.guardian || next.cleanup) throw new Error('runner update already in progress');
+      changeState(next => { if (next.transaction || next.guardian || next.cleanup) throw new Error('runner update already in progress');
         next.transaction = tx; next.guardian = guardian;
         if (request && next.requests?.[serverUrl]?.id === request.id) delete next.requests[serverUrl];
       });
@@ -816,14 +863,14 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       } catch (error) { abandon(tx, 'update guardian start failed: ' + sanitizeRunnerUpdateReason(String(error))); return 'continue'; }
       log('runner update ' + currentVersion + ' → ' + version + ' staged; handing service to the trusted update helper');
       return 'restart';
-    } finally { held.lock.release(); }
+    } finally { held.lock.release(); if (!installationReleased) cleanupGuardian(true); }
     } finally { if (!installationReleased) installation.release(); }
   };
   return {
     contactPayload: guard(contactPayload, () => payload(freshState())),
     onContact: guard(onContact, () => undefined), startup: guard(startup, () => undefined),
     acknowledgeHealthy: guard(acknowledgeHealthy, () => undefined), recordClaim: guard(recordClaim, () => undefined),
-    recordHealthRefusal: guard(recordHealthRefusal, () => undefined), recordRuntimeCapability, queueManual, queueLocal,
+    recordHealthRefusal: guard(recordHealthRefusal, () => undefined), recordRuntimeCapability: guard(recordRuntimeCapability, () => undefined), queueManual, queueLocal,
     check, idle: guard(idle, async () => 'continue' as const),
   };
 }

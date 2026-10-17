@@ -7,7 +7,7 @@ import semver from 'semver';
 import { isDevelopmentVersion, selectChannelRelease, isV2Version } from '../../scripts/release-policy.mjs';
 import { installedBinaryPath, readLayeredPin } from '@myco/runtime/binary-resolution.js';
 import { canonicalHomePath, isDefaultMycoHome, resolveMycoHome } from '@myco/paths/home.js';
-import { readInstallMarker } from '@myco/install/managed-binary.js';
+import { readInstallMarker, type InstallFilePublisher } from '@myco/install/managed-binary.js';
 import { automaticUpdatesEnabled } from '@myco/install/marker-reader.js';
 import { placeExecutable, readyExecutable, ExecutableVerificationError } from '@myco/install/place-binary.js';
 import { assertSourceAdoptionAllowed, validateSourceIntent, publishAdoptedMarker, restoreInstallMarker, beginBinaryPublication, finishBinaryPublication, acquireInstallationLease, recoverInterruptedBinaryPublication, RETIRED_BINARY_PREFIX } from '@myco/install/adoption.js';
@@ -44,6 +44,7 @@ export interface BinaryUpdateDeps extends UpdateDeadline {
   stageBinary?: typeof stageBinary;
   stageDeps?: StageBinaryDeps;
   failureRecordWriter?: typeof atomicWriteFileSync;
+  markerPublisher?: InstallFilePublisher;
   placeBinary?: typeof placeExecutable;
   probeVersion?: (binary: string) => string | Promise<string>;
   currentVersion?: string;
@@ -233,7 +234,7 @@ async function performBinaryUpdate(
         await verifyVersion(candidate, refs.targetVersion, probe);
       } catch (error) {
         if (error instanceof ExecutableVerificationError) recordFailedVerification(home, platform, refs.targetVersion, localAppData, report, deps.failureRecordWriter);
-        return { kind: 'failed', reason: `prepare downloaded version: ${detail(error)}` };
+        return { kind: 'failed', reason: `prepare ${options.source ? 'source build' : 'downloaded version'}: ${detail(error)}` };
       }
       budget.remaining();
       const publication = beginBinaryPublication(home, binary, previous);
@@ -249,7 +250,7 @@ async function performBinaryUpdate(
         operation = `verify installed version at ${binary}`;
         await verifyVersion(binary, refs.targetVersion, probe);
         operation = 'publish installed provenance';
-        publishAdoptedMarker(home, binary, refs.targetVersion, options.source ? { kind: 'checkout', ...options.source } : { kind: 'release' }, publication.marker);
+        publishAdoptedMarker(home, binary, refs.targetVersion, options.source ? { kind: 'checkout', ...options.source } : { kind: 'release' }, publication.marker, deps.markerPublisher);
       } catch (error) {
         const verificationFailed = error instanceof ExecutableVerificationError;
         let failedLive: string | undefined;
