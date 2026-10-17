@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRunnerUpdateController, cleanupRunnerUpdateGuardian, readRunnerUpdateState, strictRunnerReleaseProbe, withRunnerUpdateState, type RunnerUpdateDeps } from '../../packages/myco/src/runner/update.js';
-import { runRunnerUpdateHelper } from '../../packages/myco/src/runner/update-helper.js';
+import { HELPER_INSTALLATION_WAIT_MS, runRunnerUpdateHelper } from '../../packages/myco/src/runner/update-helper.js';
 import { writeInstallMarker, versionBinaryPath } from '../../packages/myco/src/install/managed-binary.js';
 import { atomicWriteFileSync } from '../../packages/myco/src/utils/atomic-write.js';
 import { LifecycleLock } from '../../packages/myco/src/utils/lifecycle-lock.js';
@@ -820,9 +820,11 @@ it('excludes local queueing and a helper while an automatic guarded update is st
     let helperTime = 0;
     await runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
       now: () => helperTime, wait: async ms => { helperTime += ms; }, alive: () => false,
+      stopped: () => false, removeGuardian, log: () => {},
       stop: () => { throw new Error('contending helper stopped the runner'); },
     });
-    expect(readRunnerUpdateState(f.home).transaction).toEqual(tx);
+    expect(readRunnerUpdateState(f.home).transaction).toBeUndefined();
+    expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']?.result).toBe('refused');
     withRunnerUpdateState(f.home, state => { delete state.transaction; });
   } finally { releaseStage(); }
   try { expect((await main).kind).toBe('adopted'); }
@@ -1142,4 +1144,207 @@ it('preserves a newer manual request arriving while a local build is prepared', 
   f.controller.startup();
   expect(fs.readdirSync(path.join(f.home, 'runner', 'candidates'))).toEqual([]);
   expect(readRunnerUpdateState(f.home).requests!['https://deployment.invalid']).toMatchObject({ channel: 'beta' });
+});
+
+it('keeps the slot being copied when candidate cleanup contests the operation lock', () => {
+  const f = localFixture('candidate-copy-sweep-lock');
+  const copy = fs.copyFileSync;
+  let contested = 0;
+  const copying = spyOn(fs, 'copyFileSync').mockImplementation((source, dest, mode) => {
+    copy(source, dest, mode);
+    if (source === f.candidate) {
+      contested++;
+      expect(fs.existsSync(dest)).toBe(true);
+      expect(cleanupRunnerUpdateGuardian(f.home, process.platform)).toBe('complete');
+      expect(fs.existsSync(dest)).toBe(true);
+    }
+  });
+  try { f.queue(); } finally { copying.mockRestore(); }
+  expect(contested).toBeGreaterThan(0);
+  const candidate = readRunnerUpdateState(f.home).requests!['https://deployment.invalid']!.localCandidate!;
+  expect(fs.existsSync(candidate.binaryPath)).toBe(true);
+});
+
+it('rechecks a queued local digest before creating any handoff backups', async () => {
+  const f = localFixture('idle-local-digest', sourceFrom);
+  const original = fs.readFileSync(f.binaryPath);
+  const marker = fs.readFileSync(path.join(f.home, 'install.json'));
+  f.queue();
+  const candidate = readRunnerUpdateState(f.home).requests!['https://deployment.invalid']!.localCandidate!;
+  fs.appendFileSync(candidate.binaryPath, '# changed but still runnable\n');
+  expect(strictRunnerReleaseProbe(candidate.binaryPath, sourceTo, 'linux').runs).toBe(true);
+  expect(await f.controller.idle()).toBe('continue');
+  const state = readRunnerUpdateState(f.home);
+  expect(state.lastResults?.['https://deployment.invalid']).toMatchObject({
+    result: 'refused', reason: 'queued local runner candidate digest changed',
+  });
+  expect(state.transaction).toBeUndefined();
+  expect(state.guardian).toBeUndefined();
+  expect(fs.existsSync(versionBinaryPath(f.home, process.platform, sourceFrom))).toBe(false);
+  expect(fs.existsSync(candidate.binaryPath)).toBe(false);
+  expect(fs.readFileSync(f.binaryPath)).toEqual(original);
+  expect(fs.readFileSync(path.join(f.home, 'install.json'))).toEqual(marker);
+});
+
+async function exhaustedLocalFixture(label: string) {
+  let time = 1_000_000;
+  let recoveries = 0;
+  const f = localFixture(label, sourceFrom);
+  f.queue();
+  expect(await f.controller.idle()).toBe('restart');
+  const candidate = readRunnerUpdateState(f.home).transaction!.localCandidate!;
+  fs.copyFileSync(candidate.binaryPath, f.binaryPath);
+  publishAdoptedMarker(f.home, f.binaryPath, sourceTo, { kind: 'checkout', checkout: f.home, commit: sourceCommit });
+  withRunnerUpdateState(f.home, state => {
+    Object.assign(state.transaction!, { phase: 'adopted', recoveryAttempts: 2, recoveryAt: 1000, deadlineAt: 500_000 });
+  });
+  const controller = createRunnerUpdateController({ home: f.home, serverUrl: 'https://deployment.invalid',
+    binaryPath: f.binaryPath, currentVersion: sourceTo, serviceSpec: serviceSpec(f.binaryPath, f.home), log: () => {},
+    deps: { now: () => time, removeGuardian, installGuardian: () => { recoveries++; return installGuardian(); } } });
+  return { ...f, controller, advance: () => { time += 31_000; }, recoveries: () => recoveries };
+}
+
+it('finishes exhausted authenticated health without waiting for installation cleanup', async () => {
+  const f = await exhaustedLocalFixture('spent-healthy');
+  f.controller.acknowledgeHealthy();
+  f.controller.recordClaim(true);
+  const held = acquireInstallationLease(f.home);
+  expect(held.acquired).toBe(true);
+  try {
+    expect(await f.controller.idle()).toBe('continue');
+    expect(readRunnerUpdateState(f.home).transaction).toBeUndefined();
+    expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']?.result).toBe('updated');
+    expect(readRunnerUpdateState(f.home).cleanup).toBeDefined();
+  } finally { if (held.acquired) held.release(); }
+  f.controller.startup();
+  expect(readRunnerUpdateState(f.home).cleanup).toBeUndefined();
+  expect(fs.readFileSync(f.binaryPath, 'utf8')).toContain(sourceTo);
+});
+
+it('does not let a manual controller finish from another process historical health', async () => {
+  const f = await exhaustedLocalFixture('spent-historical-health');
+  withRunnerUpdateState(f.home, state => {
+    Object.assign(state.transaction!, { phase: 'healthy', contactAt: 2000, startedPid: process.pid, completedClaimAt: 3000 });
+  });
+  expect(await f.controller.idle()).toBe('continue');
+  expect(readRunnerUpdateState(f.home).transaction?.phase).toBe('healthy');
+  expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']).toBeUndefined();
+  expect(f.recoveries()).toBe(1);
+});
+
+for (const failure of ['no-contact', 'refused-contact', 'changed-marker'] as const) {
+  it(`retains rollback authority after exhausted ${failure}`, async () => {
+    const f = await exhaustedLocalFixture('spent-' + failure);
+    if (failure !== 'no-contact') {
+      f.controller.acknowledgeHealthy();
+      f.controller.recordClaim(true);
+    }
+    if (failure === 'refused-contact') f.controller.recordHealthRefusal('authentication refused');
+    if (failure === 'changed-marker') {
+      const marker = JSON.parse(fs.readFileSync(path.join(f.home, 'install.json'), 'utf8'));
+      marker.binary_sha256 = '0'.repeat(64);
+      fs.writeFileSync(path.join(f.home, 'install.json'), JSON.stringify(marker));
+    }
+    expect(await f.controller.idle()).toBe('hold');
+    expect(readRunnerUpdateState(f.home).transaction).toMatchObject({ phase: 'rollback', rollbackResult: 'rolled_back', recoveryAttempts: 3 });
+    expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']).toBeUndefined();
+    expect(f.recoveries()).toBe(1);
+    f.advance();
+    expect(await f.controller.idle()).toBe('hold');
+    expect(readRunnerUpdateState(f.home).transaction?.recoveryAttempts).toBe(4);
+    expect(f.recoveries()).toBe(2);
+  });
+}
+
+it('keeps probation and its open claim recoverable beyond the old guardian cap', async () => {
+  const f = await exhaustedLocalFixture('spent-open-claim');
+  f.controller.acknowledgeHealthy();
+  f.controller.recordClaim();
+  f.advance();
+  expect(await f.controller.idle()).toBe('continue');
+  expect(readRunnerUpdateState(f.home).transaction?.phase).toBe('probation');
+  expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']).toBeUndefined();
+  expect(f.recoveries()).toBe(1);
+  f.advance();
+  expect(await f.controller.idle()).toBe('continue');
+  expect(f.recoveries()).toBe(2);
+});
+
+it('automatically restores an exhausted rollback after installation contention outlasts its wait window', async () => {
+  const f = await exhaustedLocalFixture('spent-rollback-busy-free');
+  expect(await f.controller.idle()).toBe('hold');
+  expect(readRunnerUpdateState(f.home).transaction?.phase).toBe('rollback');
+  const held = acquireInstallationLease(f.home);
+  expect(held.acquired).toBe(true);
+  let released = false;
+  let elapsed = 0;
+  let stops = 0;
+  let placements = 0;
+  let running = true;
+  const currentBytes = fs.readFileSync(f.binaryPath);
+  try {
+    await runRunnerUpdateHelper(path.join(f.home, 'runner', 'update.json'), {
+      now: () => 2_000_000 + elapsed, alive: () => false, log: () => {}, removeGuardian,
+      wait: async ms => {
+        elapsed += ms;
+        expect(stops).toBe(0);
+        expect(placements).toBe(0);
+        expect(fs.readFileSync(f.binaryPath)).toEqual(currentBytes);
+        if (elapsed > HELPER_INSTALLATION_WAIT_MS) {
+          if (held.acquired) held.release();
+          released = true;
+        }
+      },
+      stopped: () => !running,
+      stop: () => { expect(released).toBe(true); stops++; running = false; },
+      place: (source, dest, options) => { expect(released).toBe(true); placements++; placeExecutable(source, dest, options); },
+      start: () => { running = true; return installGuardian(); },
+      probe: (file, version) => strictRunnerReleaseProbe(file, version, 'linux'),
+    });
+  } finally { if (!released && held.acquired) held.release(); }
+  expect(elapsed).toBeGreaterThan(HELPER_INSTALLATION_WAIT_MS);
+  expect(stops).toBe(1);
+  expect(placements).toBe(1);
+  expect(readRunnerUpdateState(f.home).transaction).toBeUndefined();
+  expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']?.result).toBe('rolled_back');
+  expect(fs.readFileSync(f.binaryPath, 'utf8')).toContain(sourceFrom);
+  expect(JSON.parse(fs.readFileSync(path.join(f.home, 'install.json'), 'utf8'))).toMatchObject({
+    source: 'checkout', version: sourceFrom, binary_sha256: digest(f.binaryPath),
+  });
+});
+
+it('rechecks spent no-contact rollback after fresh authenticated contact wins the state lock', async () => {
+  const f = await exhaustedLocalFixture('spent-fresh-contact');
+  const acquire = LifecycleLock.acquire;
+  let contested = false;
+  const acquiring = spyOn(LifecycleLock, 'acquire').mockImplementation((directory, options) => {
+    if (!contested && directory === path.join(f.home, 'runner', '.update.lock')) {
+      contested = true;
+      f.controller.acknowledgeHealthy();
+      f.controller.recordClaim(true);
+    }
+    return acquire(directory, options);
+  });
+  try { expect(await f.controller.idle()).toBe('continue'); }
+  finally { acquiring.mockRestore(); }
+  expect(contested).toBe(true);
+  expect(readRunnerUpdateState(f.home).transaction?.phase).toBe('probation');
+  expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']).toBeUndefined();
+  expect(await f.controller.idle()).toBe('continue');
+  expect(readRunnerUpdateState(f.home).transaction).toBeUndefined();
+  expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']?.result).toBe('updated');
+});
+
+it('recovers an adopted transaction with historical contact beyond the old guardian cap', async () => {
+  const f = await exhaustedLocalFixture('spent-adopted-contact');
+  withRunnerUpdateState(f.home, state => {
+    Object.assign(state.transaction!, { contactAt: 2000, startedPid: process.pid });
+  });
+  expect(await f.controller.idle()).toBe('continue');
+  expect(readRunnerUpdateState(f.home).transaction?.phase).toBe('adopted');
+  expect(readRunnerUpdateState(f.home).lastResults?.['https://deployment.invalid']).toBeUndefined();
+  expect(f.recoveries()).toBe(1);
+  f.advance();
+  expect(await f.controller.idle()).toBe('continue');
+  expect(f.recoveries()).toBe(2);
 });

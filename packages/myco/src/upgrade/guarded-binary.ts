@@ -288,7 +288,7 @@ async function performBinaryUpdate(
       try { clearAdoptFailed(home, platform, refs.targetVersion, localAppData, deps.failureRecordWriter); }
       catch (error) { report.warnings.push(`Updated to ${refs.targetVersion}, but could not clear its failure records: ${detail(error)}`); }
       retirePrevious([retired], fileOps, report);
-      return { kind: 'adopted', version: refs.targetVersion, previousVersion: current };
+      return { kind: 'adopted', version: refs.targetVersion, ...(hadLive ? { previousVersion: current } : {}) };
     } finally { removeLeftover(staging, fileOps, report, true); }
   } catch (error) {
     return { kind: 'failed', reason: detail(error) };

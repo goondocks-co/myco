@@ -1,4 +1,5 @@
 /** Runner update commands share the supervisor's release and binary handoff capability. */
+import { readInstallMarker } from '@myco/install/marker-reader.js';
 import { recordUpdateCheck } from '../upgrade/check-cache.js';
 import { getPluginVersion } from '../version.js';
 import fs from 'node:fs';
@@ -55,6 +56,7 @@ export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: 
   const record = readRunnerRecord(serverUrl, home);
   if (!isLiveRunner(record)) throw new Error(`this machine is not registered with ${serverUrl}; run \`myco runner register ${serverUrl}\` first`);
   const update = runnerUpdater(serverUrl, deps, out);
+  const leavingSource = deps.sourceArtifact === undefined && readInstallMarker(home)?.source === 'checkout';
   const summary = (suffix: string, checked?: ReturnType<RunnerUpdateController['contactPayload']>): void => {
     const status = checked ?? update.contactPayload();
     const transaction = readRunnerUpdateState(home).transaction;
@@ -91,6 +93,7 @@ export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: 
       }
     }
     queue();
+    if (leavingSource) out('Source build replacement with the selected channel release is queued; the binary stays unchanged until the runner is idle.');
     summary('queued; binary unchanged until the runner is idle');
     out(`Runner is busy; the update is queued for between runs. Next: myco runner status --server ${serverUrl}`);
     return true;
@@ -98,6 +101,7 @@ export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: 
   let result: Awaited<ReturnType<RunnerUpdateController['idle']>>;
   try { queue(); result = await update.idle(); } finally { instance.release(); }
   if (result === 'restart') {
+    if (leavingSource) out('Source build replacement with the selected channel release is staged; the runner handoff is pending.');
     summary('verified and staged; awaiting idle service handoff');
     out('Verified update staged; the service restarts after this command exits.');
     return true;

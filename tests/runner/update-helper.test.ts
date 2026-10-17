@@ -13,6 +13,8 @@ import type { ServiceSpec } from '../../packages/myco/src/server/service.js';
 import { withManagedMemberHarnesses } from '@myco/cli/member.js';
 import { recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
+import { updateBinary } from '@myco/upgrade/guarded-binary.js';
+import { runnerProgramVersion } from '@myco/runner/program.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-helper-test-'));
@@ -502,7 +504,7 @@ it('waits for a short installation collision and then completes the handoff', as
   expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]?.result).toBe('updated');
 });
 
-it('logs a bounded installation wait without ending the queued handoff', async () => {
+it('ends an unstarted handoff after a bounded installation wait and explains how to retry', async () => {
   const f = fixture('bounded-installation-wait');
   const held = acquireInstallationLease(f.home);
   if (!held.acquired) throw new Error('fixture lease unavailable');
@@ -519,8 +521,9 @@ it('logs a bounded installation wait without ending the queued handoff', async (
   try { await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps); }
   finally { held.release(); }
   expect(waited).toBe(HELPER_INSTALLATION_WAIT_MS);
-  expect(logs).toEqual([expect.stringContaining('another Myco setup or update')]);
-  expect(readRunnerUpdateState(f.home).transaction?.phase).toBe('waiting');
+  expect(logs).toEqual([expect.stringContaining('retry the update')]);
+  expect(readRunnerUpdateState(f.home).transaction).toBeUndefined();
+  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]?.result).toBe('refused');
   expect(f.stops).toBe(0);
 });
 
@@ -581,26 +584,123 @@ it('rechecks checkout agreement after idle admission and before local helper pla
   expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]).toMatchObject({ result: 'refused', reason: expect.stringContaining('Run `myco update`') });
 });
 
-it('rechecks health after waiting to finish a runner update', async () => {
-  const f = fixture('finish-health-recheck');
+async function nextMemberUpdate(f: ReturnType<typeof fixture>) {
+  const next = '2.0.0-alpha.3';
+  const staged = path.join(f.home, 'next-member-release');
+  fs.mkdirSync(staged, { recursive: true });
+  fs.writeFileSync(path.join(staged, 'myco'), `#!/bin/sh\nprintf '%s\\n' '${next}'\n`, { mode: 0o755 });
+  return updateBinary('manual', {}, { home: f.home, cwd: f.home, mycoBinary: f.binaryPath, platform: 'linux', currentVersion: runnerProgramVersion(f.binaryPath),
+    probeVersion: runnerProgramVersion,
+    resolveRefs: async () => ({ targetVersion: next, assetName: 'fixture', assetUrl: 'fixture', sha256sumsUrl: 'fixture' }),
+    stageBinary: async () => ({ version: next, versionDir: staged }),
+    placeBinary: (src, dest, options) => placeExecutable(src, dest, { ...options, ready: () => ({ runs: true }) }),
+  });
+}
+
+it('finishes healthy publication while installation stays busy and admits member updates afterward', async () => {
+  const f = fixture('finish-healthy-with-busy-lease');
   let contender: { release(): void } | undefined;
+  let time = 1000;
+  let waits = 0;
+  f.deps.now = () => time;
   f.deps.start = () => {
     f.setRunning(true);
-    if (fs.readFileSync(f.binaryPath, 'utf8').includes(to)) {
-      withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
-      const held = acquireInstallationLease(f.home);
-      if (!held.acquired) throw new Error('helper kept the lease during service start');
-      contender = held;
-    }
+    withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
+    const held = acquireInstallationLease(f.home);
+    if (!held.acquired) throw new Error('helper kept the lease during service start');
+    contender = held;
+    time += HELPER_INSTALLATION_WAIT_MS + 1;
     return { unitFile: 'fixture', loaded: true, running: true, changed: true };
   };
-  f.deps.wait = async () => {
-    withRunnerUpdateState(f.home, state => { state.transaction!.healthRefusal = 'contact refused while finishing'; });
-    contender?.release();
-    contender = undefined;
+  f.deps.wait = async () => { waits++; };
+  try {
+    await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps);
+    expect(waits).toBe(0);
+    expect(readRunnerUpdateState(f.home).transaction).toBeUndefined();
+    expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]?.result).toBe('updated');
+    expect(readRunnerUpdateState(f.home).cleanup).toBeDefined();
+  } finally { contender?.release(); }
+  expect(await nextMemberUpdate(f)).toMatchObject({ kind: 'adopted', version: '2.0.0-alpha.3' });
+});
+
+it('defers rollback while the installation is busy and restores the pair after access returns', async () => {
+  const f = fixture('busy-rollback-recovery');
+  fs.copyFileSync(f.target, f.binaryPath);
+  publishAdoptedMarker(f.home, f.binaryPath, to, { kind: 'release' });
+  withRunnerUpdateState(f.home, state => {
+    state.transaction!.phase = 'adopted';
+    state.transaction!.healthRefusal = 'updated runner authentication refused';
+    state.transaction!.recoveryAttempts = 2;
+  });
+  const marker = fs.readFileSync(path.join(f.home, 'install.json'));
+  const bytes = fs.readFileSync(f.binaryPath);
+  const held = acquireInstallationLease(f.home);
+  if (!held.acquired) throw new Error('fixture lease unavailable');
+  let waited = 0;
+  const logs: string[] = [];
+  let released = false;
+  f.deps.wait = async ms => {
+    waited += ms;
+    expect(f.stops).toBe(0);
+    expect(fs.readFileSync(f.binaryPath)).toEqual(bytes);
+    expect(fs.readFileSync(path.join(f.home, 'install.json'))).toEqual(marker);
+    expect(readRunnerUpdateState(f.home).transaction?.phase).toBe('rollback');
+    if (waited > HELPER_INSTALLATION_WAIT_MS) { held.release(); released = true; }
   };
-  try { await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps); }
-  finally { contender?.release(); }
-  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]).toMatchObject({ result: 'rolled_back', reason: expect.stringContaining('contact refused') });
+  f.deps.log = line => logs.push(line);
+  try {
+    await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps);
+    expect(released).toBe(true);
+    expect(waited).toBeGreaterThan(HELPER_INSTALLATION_WAIT_MS);
+    expect(logs).toEqual([expect.stringContaining('This helper will keep retrying')]);
+  } finally { held.release(); }
+  expect(readRunnerUpdateState(f.home).transaction).toBeUndefined();
+  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]?.result).toBe('rolled_back');
   expect(fs.readFileSync(f.binaryPath)).toEqual(fs.readFileSync(f.previous));
+  expect(JSON.parse(fs.readFileSync(path.join(f.home, 'install.json'), 'utf8'))).toEqual(f.tx.installMarker);
+  expect(await nextMemberUpdate(f)).toMatchObject({ kind: 'adopted', version: '2.0.0-alpha.3' });
+});
+
+it('finishes a restarted healthy transaction without waiting for installation access', async () => {
+  const f = fixture('healthy-restarted-busy');
+  fs.copyFileSync(f.target, f.binaryPath);
+  publishAdoptedMarker(f.home, f.binaryPath, to, { kind: 'release' });
+  withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'healthy'; });
+  const held = acquireInstallationLease(f.home);
+  if (!held.acquired) throw new Error('fixture lease unavailable');
+  let waits = 0;
+  f.deps.wait = async () => { waits++; };
+  try {
+    await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps);
+    expect(waits).toBe(0);
+    expect(readRunnerUpdateState(f.home).transaction).toBeUndefined();
+    expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]?.result).toBe('updated');
+  } finally { held.release(); }
+});
+
+it('keeps the helper as the retry owner while interrupted placement has no running service', async () => {
+  const f = fixture('stopped-placement-busy');
+  const marker = fs.readFileSync(path.join(f.home, 'install.json'));
+  fs.copyFileSync(f.target, f.binaryPath);
+  f.setRunning(false);
+  withRunnerUpdateState(f.home, state => { state.transaction!.phase = 'placing'; state.transaction!.recoveryAttempts = 2; });
+  const held = acquireInstallationLease(f.home);
+  if (!held.acquired) throw new Error('fixture lease unavailable');
+  let waited = 0;
+  f.deps.wait = async ms => {
+    waited += ms;
+    expect(f.starts).toBe(0);
+    expect(fs.readFileSync(f.binaryPath)).toEqual(fs.readFileSync(f.target));
+    expect(readRunnerUpdateState(f.home).transaction?.phase).toBe('placing');
+    if (waited > HELPER_INSTALLATION_WAIT_MS) held.release();
+  };
+  f.deps.log = () => {};
+  try { await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps); }
+  finally { held.release(); }
+  expect(waited).toBeGreaterThan(HELPER_INSTALLATION_WAIT_MS);
+  expect(f.starts).toBe(1);
+  expect(fs.readFileSync(f.binaryPath)).toEqual(fs.readFileSync(f.previous));
+  expect(fs.readFileSync(path.join(f.home, 'install.json'))).toEqual(marker);
+  expect(readRunnerUpdateState(f.home).transaction).toBeUndefined();
+  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]?.result).toBe('failed');
 });

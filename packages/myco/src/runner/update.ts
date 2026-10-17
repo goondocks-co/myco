@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import semver from 'semver';
+import { isMemberHome } from '../member/home-role.js';
 import { isDevelopmentVersion } from '../../scripts/release-policy.mjs';
 import { RELEASE_CHANNELS, type ReleaseChannel } from '../constants/update.js';
 import { readInstallMarker, versionBinaryPath, versionsDir, type InstallMarker } from '../install/managed-binary.js';
@@ -32,6 +33,7 @@ const PROBE_TIMEOUT_MS = 30_000;
 const TX_DEADLINE_MS = 3 * 60 * 1000;
 const GUARDIAN_RECOVERY_MS = 30_000;
 const MAX_GUARDIAN_RECOVERIES = 2;
+export const RUNNER_UPDATE_PROBATION_MS = 5 * 60_000;
 const BLOCK_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const MAX_VERSION_ATTEMPTS = 20;
 const CANDIDATE_SLOT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -97,6 +99,38 @@ interface RunnerUpdateState {
   guardian?: ServiceSpec;
   cleanup?: { failedVersion?: string; currentVersion: string; previousVersion?: string; platform: NodeJS.Platform; localAppData?: string;
     serverUrl?: string; fromVersion?: string; toVersion?: string; attemptId?: string; localCandidate?: RunnerLocalCandidate };
+}
+
+function hasAuthenticatedContact(tx: RunnerUpdateTransaction): boolean {
+  return finite(tx.contactAt) && finite(tx.startedPid) && Number.isSafeInteger(tx.startedPid) && tx.startedPid > 0;
+}
+export function runnerUpdateHealthReady(tx: RunnerUpdateTransaction, at: number): boolean {
+  return tx.healthRefusal === undefined && (tx.phase === 'healthy' || (tx.phase === 'probation' && finite(tx.contactAt)
+    && ((finite(tx.completedClaimAt) && tx.completedClaimAt >= tx.contactAt)
+      || (tx.firstClaimAt === undefined && at - tx.contactAt >= RUNNER_UPDATE_PROBATION_MS))));
+}
+export function finishRunnerUpdate(tx: RunnerUpdateTransaction, result: RunnerUpdateReceipt['result'], reason: string | undefined, at: number): boolean {
+  return withState(tx.home, state => {
+    if (state.transaction?.id !== tx.id) return false;
+    if (result === 'updated' && !runnerUpdateHealthReady(state.transaction, at)) {
+      throw new Error('runner update health changed before completion');
+    }
+    (state.lastResults ??= {})[tx.serverUrl] = {
+      ...(tx.requestId ? { requestId: tx.requestId } : {}), ...(tx.attemptId ? { attemptId: tx.attemptId } : {}),
+      fromVersion: tx.fromVersion, toVersion: tx.toVersion, result, ...(reason ? { reason } : {}), at,
+    };
+    if (result === 'rolled_back') blockRunnerUpdateVersion(state, tx.toVersion, reason ?? 'updated runner failed health', at);
+    state.cleanup = {
+      currentVersion: result === 'updated' ? tx.toVersion : tx.fromVersion,
+      ...(result === 'updated' ? { previousVersion: tx.fromVersion } : { failedVersion: tx.toVersion }),
+      ...(tx.localCandidate ? { localCandidate: tx.localCandidate } : {}),
+      platform: tx.platform, serverUrl: tx.serverUrl, fromVersion: tx.fromVersion, toVersion: tx.toVersion,
+      ...(tx.attemptId ? { attemptId: tx.attemptId } : {}),
+      ...(tx.localAppData ? { localAppData: tx.localAppData } : {}),
+    };
+    delete state.transaction;
+    return true;
+  });
 }
 
 export interface RunnerUpdateOptions {
@@ -451,6 +485,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
   const jitter = (): number => CHECK_MIN_MS + Math.floor((deps.random ?? Math.random)() * CHECK_JITTER_MS);
   const backoff = (failures: number): number => Math.min(MAX_FAILURE_BACKOFF_MS, FAILURE_BACKOFF_MS * 2 ** Math.min(Math.max(failures - 1, 0), 5));
   let fault: RunnerUpdateReceipt | undefined;
+  let authenticatedTransactionId: string | undefined;
   let reportedMetadataAt: number | undefined;
   const channel = (explicit = false): ReleaseChannel | null => {
     try {
@@ -582,11 +617,13 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     cleanupGuardian();
   };
   const acknowledgeHealthy = (): void => {
-    changeState(state => {
+    authenticatedTransactionId = changeState(state => {
       const tx = state.transaction;
       if (ownsTransaction(tx) && ['adopted', 'probation', 'healthy'].includes(tx.phase)) {
         tx.phase = 'probation'; tx.startedPid = process.pid; tx.contactAt ??= now();
+        return tx.id;
       }
+      return undefined;
     });
   };
   const recordClaim = (completed = false): void => {
@@ -692,7 +729,8 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
   };
   const recoverGuardian = (tx: RunnerUpdateTransaction): void => {
     if (now() - (tx.recoveryAt ?? tx.startedAt) < GUARDIAN_RECOVERY_MS) return;
-    if ((tx.recoveryAttempts ?? 0) >= MAX_GUARDIAN_RECOVERIES) return;
+    const needsRecovery = tx.phase !== 'waiting';
+    if (!needsRecovery && (tx.recoveryAttempts ?? 0) >= MAX_GUARDIAN_RECOVERIES) return;
     changeState(state => { if (state.transaction?.id === tx.id) { state.transaction.recoveryAt = now(); state.transaction.recoveryAttempts = (state.transaction.recoveryAttempts ?? 0) + 1; } });
     try {
       const guardian = read().guardian;
@@ -716,8 +754,48 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
         || (tx.recoveryAttempts ?? 0) >= MAX_GUARDIAN_RECOVERIES)) {
         if (abandon(tx, 'runner update handoff exceeded its bounded deadline')) return 'continue';
       }
+      if (ownsTransaction(tx) && (tx.recoveryAttempts ?? 0) >= MAX_GUARDIAN_RECOVERIES
+        && !['placing', 'rollback'].includes(tx.phase)) {
+        const authenticated = hasAuthenticatedContact(tx);
+        const healthy = authenticated && tx.startedPid === process.pid && authenticatedTransactionId === tx.id
+          && runnerUpdateHealthReady(tx, now());
+        let pairMatches = false;
+        if (healthy) {
+          try {
+            const marker = readInstallMarker(home, true);
+            pairMatches = runnerCurrentReleaseProbe(binaryPath, tx.toVersion, platform).runs
+              && marker !== null && path.resolve(marker.bin) === path.resolve(binaryPath) && marker.version === tx.toVersion
+              && marker.binary_sha256?.toLowerCase() === crypto.createHash('sha256').update(fs.readFileSync(binaryPath)).digest('hex');
+          } catch (error) { log('runner update health verification failed: ' + sanitizeRunnerUpdateReason(String(error))); }
+          if (pairMatches && finishRunnerUpdate(tx, 'updated', isMemberHome(home) ? 'agents_refresh_pending' : undefined, now())) {
+            cleanupGuardian();
+            return 'continue';
+          }
+        }
+        const expiredWithoutContact = !authenticated && now() >= (tx.deadlineAt ?? tx.startedAt + TX_DEADLINE_MS);
+        if (tx.healthRefusal !== undefined || expiredWithoutContact || (healthy && !pairMatches)) {
+          const rollingBack = changeState(next => {
+            const observed = next.transaction;
+            if (observed?.id !== tx.id || ['placing', 'rollback'].includes(observed.phase)) return false;
+            const stillExpired = !hasAuthenticatedContact(observed) && now() >= (observed.deadlineAt ?? observed.startedAt + TX_DEADLINE_MS);
+            const invalidHealthyPair = healthy && !pairMatches && runnerUpdateHealthReady(observed, now());
+            if (observed.healthRefusal === undefined && !stillExpired && !invalidHealthyPair) return false;
+            observed.phase = 'rollback';
+            observed.failureReason = observed.healthRefusal !== undefined
+              ? 'updated runner contact was refused: ' + observed.healthRefusal
+              : 'runner update could not confirm authenticated health after guardian recovery';
+            observed.rollbackResult = 'rolled_back';
+            return true;
+          });
+          if (rollingBack) {
+            const rollback = decodeState(home).transaction;
+            if (rollback?.id === tx.id) recoverGuardian(rollback);
+            return 'hold';
+          }
+        }
+      }
       recoverGuardian(tx);
-      return currentVersion === tx.toVersion ? 'continue' : 'hold';
+      return ['placing', 'rollback'].includes(tx.phase) ? 'hold' : currentVersion === tx.toVersion ? 'continue' : 'hold';
     }
     const installation = acquireInstallationLease(home, { command: 'myco runner update installation' });
     if (!installation.acquired) return 'continue';

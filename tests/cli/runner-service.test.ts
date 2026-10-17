@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { run } from '@myco/cli/runner.js';
+import { run as updateMachine } from '@myco/cli/update.js';
 import { run as worker } from '@myco/cli/worker.js';
 import { legacyExecutors, legacyWorkerInventory, preflightRunnerService, runnerServiceContact, LEGACY_WORKER_WORDS, RUNNER_IDENTITY_REMAINS } from '@myco/cli/runner-service.js';
 import { publishRunnerRecord, readRunnerRecord, recordRunnerContact, withRunnerLock, RUNNER_RECORD_VERSION } from '@myco/runner/runner-registry.js';
@@ -13,6 +14,7 @@ import { sweepWorkerServices } from '@myco/cli/worker-service.js';
 import { installWorkerService, listWorkerUnits, workerServiceSpec } from '@myco/runner/service.js';
 import { recordingPlatform } from '../helpers/fake-service-manager.js';
 import { runnerUpdater } from '@myco/cli/runner-update.js';
+import { publishAdoptedMarker } from '@myco/install/adoption.js';
 import { writeInstallMarker } from '@myco/install/managed-binary.js';
 import { workerLockPath, workerHolder } from '@myco/runner/instance.js';
 import { readRunnerUpdateState } from '@myco/runner/update.js';
@@ -111,6 +113,31 @@ describe('explicit runner service opt-in', () => {
         expect(output.join('\n')).toContain('stop it through its normal controls, then retry');
       }
     } finally { aliasHeld.lock.release(); held.lock.release(); }
+  });
+
+  it('announces queued source replacement while the installed runner is busy', async () => {
+    await enroll();
+    await member();
+    const scoped = deps('linux');
+    fs.mkdirSync(path.dirname(scoped.binaryPath), { recursive: true });
+    fs.writeFileSync(scoped.binaryPath, '#!/bin/sh\necho 0.0.0-dev+fixture.b1\n', { mode: 0o755 });
+    installWorkerService({ ...scoped, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
+    publishAdoptedMarker(mycoHome, scoped.binaryPath, '0.0.0-dev+fixture.b1',
+      { kind: 'checkout', checkout: root, commit: 'a'.repeat(40) });
+    const before = fs.readFileSync(scoped.binaryPath);
+    const held = LifecycleLock.acquire(workerLockPath(scoped.lockDir, SERVER), { command: 'fixture busy runner' });
+    if (!held.acquired) throw new Error('fixture runner lock unavailable');
+    const print = spyOn(console, 'log').mockImplementation((line: unknown) => output.push(String(line)));
+    try {
+      await updateMachine([], { home: mycoHome, currentVersion: '0.0.0-dev+fixture.b1',
+        runnerRecords: () => [readRunnerRecord(SERVER, mycoHome)!], runnerServiceInstalled: () => true, isMemberHome: () => true,
+        runRunner: (args, cliDeps) => run(args, { ...scoped, ...cliDeps, ownDeploymentUrls: async () => [SERVER] }),
+        refreshMember: async () => { throw new Error('pending runner update refreshed member setup'); },
+      });
+      expect(output).toContain('Source build replacement with the selected channel release is queued; the binary stays unchanged until the runner is idle.');
+      expect(readRunnerUpdateState(mycoHome).requests?.[SERVER]?.manual).toBe(true);
+      expect(fs.readFileSync(scoped.binaryPath)).toEqual(before);
+    } finally { print.mockRestore(); held.lock.release(); }
   });
 
   it('preflights in exactly the installed service PATH before starting it and preserves enrollment across a failed install', async () => {

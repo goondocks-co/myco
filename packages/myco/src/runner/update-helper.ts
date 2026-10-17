@@ -2,17 +2,16 @@
 import { isMemberHome } from '../member/home-role.js';
 import path from 'node:path';
 import { placeExecutable } from '../install/place-binary.js';
-import { acquireInstallationLease, recoverInterruptedBinaryPublication, assertSourceAdoptionAllowed, publishAdoptedMarker, restoreInstallMarker } from '../install/adoption.js';
+import { acquireInstallationLease, recoverInterruptedBinaryPublication, assertSourceAdoptionAllowed, publishAdoptedMarker, restoreInstallMarker, pendingBinaryPublication } from '../install/adoption.js';
 import { versionBinaryPath } from '../install/managed-binary.js';
 import { pruneVersions } from '../upgrade/apply-binary.js';
 import { startService, statusOfService, stopService, type ServiceOutcome, type ServiceSpec } from '../server/service.js';
-import { probeRunnerLocalCandidate, assertRunnerLocalCandidate, blockRunnerUpdateVersion, cleanupRunnerUpdateGuardian, readRunnerUpdateStateStrict as readRunnerUpdateState, runnerCurrentReleaseProbe, runnerUpdateStatePath, strictRunnerReleaseProbe, withRunnerUpdateState, type RunnerUpdateTransaction, type RunnerUpdateReceipt } from './update.js';
+import { probeRunnerLocalCandidate, assertRunnerLocalCandidate, finishRunnerUpdate, runnerUpdateHealthReady, cleanupRunnerUpdateGuardian, readRunnerUpdateStateStrict as readRunnerUpdateState, runnerCurrentReleaseProbe, runnerUpdateStatePath, strictRunnerReleaseProbe, withRunnerUpdateState, type RunnerUpdateTransaction } from './update.js';
 import { LifecycleLock } from '../utils/lifecycle-lock.js';
 
 export const HELPER_INSTALLATION_WAIT_MS = 15_000;
 const OLD_EXIT_WAIT_MS = 60_000;
 const HEALTH_WAIT_MS = 90_000;
-const PROBATION_WAIT_MS = 5 * 60_000;
 const POLL_MS = 500;
 
 class AdoptionRefusal extends Error {}
@@ -37,28 +36,6 @@ const defaultAlive = (pid: number): boolean => {
 };
 const defaultWait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-function receipt(tx: RunnerUpdateTransaction, result: RunnerUpdateReceipt['result'], reason: string | undefined, at: number): RunnerUpdateReceipt {
-  return { ...(tx.requestId ? { requestId: tx.requestId } : {}), ...(tx.attemptId ? { attemptId: tx.attemptId } : {}),
-    fromVersion: tx.fromVersion, toVersion: tx.toVersion,
-    result, ...(reason ? { reason } : {}), at };
-}
-
-function finish(tx: RunnerUpdateTransaction, result: RunnerUpdateReceipt['result'], reason: string | undefined, at: number): void {
-  withRunnerUpdateState(tx.home, (state) => {
-    if (state.transaction?.id !== tx.id) throw new Error(`runner update ${tx.id} lost its transaction`);
-    (state.lastResults ??= {})[tx.serverUrl] = receipt(tx, result, reason, at);
-    if (result === 'rolled_back') blockRunnerUpdateVersion(state, tx.toVersion, reason ?? 'updated runner failed health', at);
-    state.cleanup = {
-      currentVersion: result === 'updated' ? tx.toVersion : tx.fromVersion,
-      ...(result === 'updated' ? { previousVersion: tx.fromVersion } : { failedVersion: tx.toVersion }),
-      ...(tx.localCandidate ? { localCandidate: tx.localCandidate } : {}),
-      platform: tx.platform, serverUrl: tx.serverUrl, fromVersion: tx.fromVersion, toVersion: tx.toVersion,
-      ...(tx.attemptId ? { attemptId: tx.attemptId } : {}),
-      ...(tx.localAppData ? { localAppData: tx.localAppData } : {}),
-    };
-    delete state.transaction;
-  });
-}
 /** Called only by the hidden CLI verb under the update guardian service. */
 export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelperDeps = {}): Promise<void> {
   const now = deps.now ?? Date.now;
@@ -81,23 +58,49 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
   try {
   let installation: { release(): void } | undefined;
   const releaseInstallation = (): void => { installation?.release(); installation = undefined; };
-  const holdInstallation = async (): Promise<boolean> => {
+  const holdInstallation = async (keepRetrying = false): Promise<boolean> => {
     if (installation) return true;
-    for (let elapsed = 0; elapsed <= HELPER_INSTALLATION_WAIT_MS; elapsed += POLL_MS) {
+    let warned = false;
+    for (let elapsed = 0; ; elapsed += POLL_MS) {
       const heldInstallation = acquireInstallationLease(home, { command: 'myco runner update helper installation' });
       if (heldInstallation.acquired) { installation = heldInstallation; return true; }
-      if (elapsed < HELPER_INSTALLATION_WAIT_MS) await wait(POLL_MS);
+      if (elapsed >= HELPER_INSTALLATION_WAIT_MS && !warned) {
+        const phase = readRunnerUpdateState(home).transaction?.phase;
+        (deps.log ?? console.warn)(keepRetrying
+          ? `Runner ${phase === 'rollback' || phase === 'placing' ? 'rollback' : 'recovery'} is waiting for another Myco setup or update to finish. This helper will keep retrying until installation access is available.`
+          : 'Runner replacement has not started because another Myco setup or update is busy. The installed binary is unchanged; retry the update after it finishes.');
+        if (!keepRetrying) return false;
+        warned = true;
+      }
+      if (readRunnerUpdateState(home).transaction?.id !== tx?.id) throw new HandoffCanceled('runner update handoff was canceled');
+      await wait(POLL_MS);
     }
-    (deps.log ?? console.warn)('Runner update is waiting for another Myco setup or update to finish. The update is still queued; retry after it finishes.');
-    return false;
   };
-  if (!await holdInstallation()) return;
   try {
   const current = readRunnerUpdateState(home).transaction;
   if (current?.id !== tx?.id) throw new Error('Runner update handoff changed');
-  if (tx !== undefined) recoverInterruptedBinaryPublication(tx.home, tx.binaryPath, tx.platform);
-  if (tx === undefined) { cleanupRunnerUpdateGuardian(home, process.platform, deps); return; }
+  const cleanup = (): void => {
+    const heldCleanup = acquireInstallationLease(home, { command: 'myco runner update cleanup' });
+    if (!heldCleanup.acquired) return;
+    try { cleanupRunnerUpdateGuardian(home, tx?.platform ?? process.platform, deps); }
+    finally { heldCleanup.release(); }
+  };
+  if (tx === undefined) { cleanup(); return; }
   if (current === undefined) throw new Error('Runner update handoff disappeared');
+  const previousPublication = path.join(path.dirname(tx.binaryPath), tx.platform === 'win32' ? 'myco.prev.exe' : 'myco.prev');
+  const pending = pendingBinaryPublication(tx.home, tx.binaryPath, previousPublication);
+  if (['waiting', 'placing', 'rollback'].includes(current.phase) || pending !== null) {
+    if (!await holdInstallation(pending !== null || current.phase !== 'waiting')) {
+      if (stopped(tx.serviceSpec, tx.platform)) {
+        const resumed = start(tx.serviceSpec, tx.platform);
+        if (!resumed.running) throw new Error(resumed.detail ?? 'original runner service did not restart');
+      }
+      finishRunnerUpdate(tx, 'refused', 'Another Myco setup or update is busy; the installed binary was kept. Retry this update after it finishes.', now());
+      cleanup();
+      return;
+    }
+    recoverInterruptedBinaryPublication(tx.home, tx.binaryPath, tx.platform);
+  }
 
   const target = tx.localCandidate?.binaryPath ?? versionBinaryPath(tx.home, tx.platform, tx.toVersion, tx.localAppData);
   const previous = versionBinaryPath(tx.home, tx.platform, tx.fromVersion, tx.localAppData);
@@ -120,7 +123,7 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
   const active = (phase: RunnerUpdateTransaction['phase']): void => assertPhase(readRunnerUpdateState(tx.home).transaction, phase);
   const rollbackActive = (): void => active('rollback');
   const restore = async (reason: string, result: 'rolled_back' | 'failed'): Promise<void> => {
-    if (!await holdInstallation()) throw new Error('Runner rollback is waiting for another Myco setup or update to finish.');
+    if (!await holdInstallation(true)) return;
     stop(tx.serviceSpec, tx.platform);
     if (!stopped(tx.serviceSpec, tx.platform)) throw new Error('runner service did not stop for rollback');
     const ready = currentProbe(previous, tx.fromVersion, tx.platform);
@@ -132,8 +135,9 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
     restoreInstallMarker(tx.home, tx.installMarker);
     const restored = start(tx.serviceSpec, tx.platform);
     if (!restored.running) throw new Error(restored.detail ?? 'restored runner service did not start');
-    finish(tx, result, reason, now());
-    cleanupRunnerUpdateGuardian(tx.home, tx.platform, deps);
+    finishRunnerUpdate(tx, result, reason, now());
+    releaseInstallation();
+    cleanup();
   };
   if (current.phase === 'placing') {
     withRunnerUpdateState(tx.home, next => {
@@ -211,20 +215,14 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
       if (observed.healthRefusal) throw new HealthRollback(`updated runner contact was refused: ${observed.healthRefusal}`);
       if (observed.startedPid !== undefined && !alive(observed.startedPid)) throw new HealthRollback('updated runner exited during health probation');
       if (stopped(tx.serviceSpec, tx.platform)) throw new HealthRollback('updated runner service stopped during health probation');
-      if (observed.phase === 'healthy' || (observed.phase === 'probation' &&
-        ((observed.completedClaimAt !== undefined && observed.completedClaimAt >= (observed.contactAt ?? 0))
-          || (observed.firstClaimAt === undefined && now() - (observed.contactAt ?? healthStart) >= PROBATION_WAIT_MS)))) {
-        if (!installation) {
-          if (!await holdInstallation()) return;
-          continue;
-        }
+      if (runnerUpdateHealthReady(observed, now())) {
         const refreshPending = isMemberHome(tx.home);
         console.log(refreshPending
           ? 'Agents refreshed: no (interactive refresh pending). Next: myco update or myco member provision --refresh'
           : 'Agents refreshed: no (this home is not a member machine).');
-        finish(tx, 'updated', refreshPending ? 'agents_refresh_pending' : undefined, now());
+        finishRunnerUpdate(tx, 'updated', refreshPending ? 'agents_refresh_pending' : undefined, now());
         finished = true;
-        cleanupRunnerUpdateGuardian(tx.home, tx.platform, deps);
+        cleanup();
         return;
       }
       if (observed.phase !== 'probation' && now() - healthStart >= HEALTH_WAIT_MS) throw new Error('updated runner did not make authenticated contact');
@@ -243,9 +241,10 @@ export async function runRunnerUpdateHelper(file: string, deps: RunnerUpdateHelp
         const resumed = start(tx.serviceSpec, tx.platform);
         if (!resumed.running) throw new Error(resumed.detail ?? 'original runner service did not restart');
       }
-      finish(tx, error instanceof AdoptionRefusal ? 'refused' : 'failed', reason, now());
+      finishRunnerUpdate(tx, error instanceof AdoptionRefusal ? 'refused' : 'failed', reason, now());
       finished = true;
-      cleanupRunnerUpdateGuardian(tx.home, tx.platform, deps);
+      releaseInstallation();
+      cleanup();
       return;
     }
     const result = error instanceof HealthRollback ? 'rolled_back' : 'failed';

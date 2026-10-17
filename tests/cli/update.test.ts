@@ -39,9 +39,15 @@ const place = (events: string[]) => (source: string, dest: string) => {
   events.push('adopt');
   placeExecutable(source, dest);
 };
+const installedBinary = (version: string) => {
+  const binary = path.join(home, 'bin', 'myco');
+  fs.mkdirSync(path.dirname(binary), { recursive: true });
+  fs.writeFileSync(binary, version);
+};
 const refs = (version: string) => ({ targetVersion: version, assetName: 'myco-darwin-arm64', assetUrl: 'fixture', sha256sumsUrl: 'sums' });
 it('upgrade is exactly the update operation', () => { expect(alias).toBe(run); });
 it('verifies and adopts before refreshing agents and reports the recorded channel', async () => {
+  installedBinary('2.0.0-alpha.2');
   const events: string[] = [];
   await run([], {
     home, currentVersion: '2.0.0-alpha.2', isMemberHome: () => true,
@@ -117,6 +123,7 @@ it('checks the exact requested version rather than a newer channel release, with
 });
 
 for (const mode of ['registered-but-uninstalled member', 'foreground-only runner']) it(`updates the binary on a ${mode} without delegating to a missing service`, async () => {
+  installedBinary('2.0.0-alpha.2');
   const events: string[] = [];
   await run([], {
     home, currentVersion: '2.0.0-alpha.2', isMemberHome: () => mode.includes('member'),
@@ -314,6 +321,8 @@ it('prints setup after the first source install into a home without membership',
     probeVersion: file => fs.readFileSync(file, 'utf8'), placeBinary: place([]),
   });
   expect(readInstallMarker(home, true)).toMatchObject({ source: 'checkout', version: sourceVersion });
+  expect(output.join('\n')).toContain(`Installed ${sourceVersion} (source build)`);
+  expect(output.join('\n')).not.toContain('from ');
   expect(output.join('\n')).toContain('Next: myco setup');
 });
 

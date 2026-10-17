@@ -249,7 +249,8 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
     process.exitCode = 1;
   } else if (outcome.kind === 'adopted') {
     if (replacingSource) console.log('Replacing this source build with the selected channel release.');
-    console.log(`Myco: from ${outcome.previousVersion} to ${outcome.version}${source ? ' (source build)' : ` on channel ${channel}`}.`);
+    const change = outcome.previousVersion === undefined ? `Installed ${outcome.version}` : `from ${outcome.previousVersion} to ${outcome.version}`;
+    console.log(`Myco: ${change}${source ? ' (source build)' : ` on channel ${channel}`}.`);
   } else if (replacingSource) {
     console.log(`Myco: kept source build ${outcome.version}; no eligible release on the '${channel}' channel (${outcome.reason}).`);
     console.log('Choose a release channel with `myco update --channel alpha`, `--channel beta` or `--channel stable`.');
