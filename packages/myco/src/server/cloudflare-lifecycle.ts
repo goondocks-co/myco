@@ -24,6 +24,7 @@ import {
   cloudflareStatus,
   cloudflareSchemaVersion,
   deploymentRecordPath,
+  peekDeploymentRecordPath,
   deleteWorker,
   deployWorker,
   rollbackWorker,
@@ -37,6 +38,7 @@ import {
   deployedWorkerSecretNames,
   putStoreSecret,
   putWorkerSecretValue,
+  missingDeploymentRecordMessage,
   readDeploymentRecord,
   storeSecretNames,
   workerSecretNames,
@@ -164,7 +166,7 @@ async function planIn(options: LifecycleOptions & { url?: string }, configDir: s
     versionId: null, deployedAt: new Date(0).toISOString(), databaseId: existing?.databaseId ?? '00000000-0000-0000-0000-000000000000',
     storeId: storeId ?? '0'.repeat(32), ...(options.url ?? existing?.url ? { url: (options.url ?? existing?.url)! } : {}),
   };
-  const config = Bun.TOML.parse(renderDeployConfig(planned)) as Record<string, unknown>;
+  const config = Bun.TOML.parse(renderDeployConfig(planned, peekDeploymentRecordPath(options.mycoHome))) as Record<string, unknown>;
   const list = (value: unknown): Array<Record<string, unknown>> => (Array.isArray(value) ? value as Array<Record<string, unknown>> : []);
   const bindings = [
     ...list(config.d1_databases).map((b) => `d1 ${String(b.binding)}`),
@@ -329,7 +331,7 @@ export const updateCloudflareDeployment = cloudflareOperation(async (options: Li
   } };
   try {
     let record = readDeploymentRecord(options.mycoHome);
-    if (record === null) throw new Error('no Cloudflare deployment record on this machine; `myco server create --target cloudflare` provisions one');
+    if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} \`myco server create --target cloudflare --account-id <id>\` provisions one.`);
     summary.releaseBefore = record.release;
     await preflight(options);
     if (options.accountId !== record.accountId) throw new Error('schema update refused: selected account does not match the deployment record');
@@ -388,7 +390,7 @@ export const updateCloudflareDeployment = cloudflareOperation(async (options: Li
 export const rollbackCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions & { versionId?: string; message?: string }): Promise<{ versionId: string }> => {
   await preflight(options);
   const record = readDeploymentRecord(options.mycoHome);
-  if (record === null) throw new Error('no Cloudflare deployment record on this machine; nothing to roll back');
+  if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Nothing to roll back.`);
   const target = options.versionId ?? record.versionId ?? '';
   if (target === '') throw new Error('no version to roll back to: pass --version <id> (`wrangler deployments list` names them)');
   await rollbackWorker({ ...bareCommand(options), workerName: record.workerName, versionId: target, message: options.message ?? 'myco server rollback' });
@@ -430,7 +432,7 @@ export async function cloudflareDeploymentStatus(options: LifecycleOptions): Pro
 export const destroyCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions): Promise<{ kept: string[] }> => {
   await preflight(options);
   const record = readDeploymentRecord(options.mycoHome);
-  if (record === null) throw new Error('no Cloudflare deployment record on this machine; nothing to destroy');
+  if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Nothing to destroy.`);
   const resources = cloudflareResources(record);
   await deleteWorker({ ...bareCommand(options), workerName: record.workerName });
   return { kept: [`d1 ${record.databaseName}`, `r2 ${record.bucketName}`, `r2 ${resources.recoveryBucketName}`, `vectorize ${resources.vectorIndexName}`, 'secrets store', 'the deployment record'] };

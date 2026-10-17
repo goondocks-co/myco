@@ -19,7 +19,7 @@ import { assertRecoveryTenantChoice, prepareRecoveredTenant, type RecoveryTenant
 import { restoreCloudflareDatabase } from './cloudflare-recovery-database.js';
 import { stageCloudflareDeploy, stageCloudflareRecoveryBootstrap } from './cloudflare-stage.js';
 import {
-  assertWranglerReady, ensureCommandDir, readDeploymentRecord, writeDeploymentRecord,
+  assertWranglerReady, deploymentRecordPath, ensureCommandDir, readDeploymentRecord, writeDeploymentRecord,
   ensureDatabase, ensureBucket, ensureVectorIndexResource, ensureVectorIndexFilters, ensureSecretsStore,
   cloudflareObjectStore, assertCloudflareWorkerAbsent, putStoreSecret, putWorkerSecretValue, putWorkerSecrets, deployWorker,
   cloudflareSchemaUpdateSchema, type CloudflareFetch, type DeploymentRecord,
@@ -56,7 +56,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
   source: string; secretsFile: string; newSignIn?: boolean; tenantMode?: RecoveryTenantMode; sourceRetired?: boolean; native?: NativeSqlite; fetch?: CloudflareFetch;
 }): Promise<{ record: DeploymentRecord; schemaVersion: number; rebuildEmbeddings: true }> => {
   assertRecoveryTenantChoice(options.tenantMode, options.sourceRetired);
-  if (readDeploymentRecord(options.mycoHome) !== null) throw new Error('hosted recovery requires a fresh MYCO_HOME without a Cloudflare Deployment record');
+  if (readDeploymentRecord(options.mycoHome) !== null) throw new Error(`Cloudflare Deployment record already exists at ${deploymentRecordPath(options.mycoHome)}. Hosted recovery requires a fresh MYCO_HOME without a Cloudflare Deployment record.`);
   const root = ensureCommandDir(options.mycoHome);
   const journalFile = path.join(root, 'recovery.json');
   const journalEntry = fs.lstatSync(journalFile, { throwIfNoEntry: false });

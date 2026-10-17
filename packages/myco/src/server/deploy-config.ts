@@ -56,10 +56,10 @@ const STAGED_ENTRY_LINES = [
 
 /** Raised when the record cannot feed the renderer; names every missing fact. */
 export class DeployConfigIncomplete extends Error {
-  constructor(readonly missing: readonly string[]) {
+  constructor(readonly missing: readonly string[], recordPath: string) {
     super(
       `the deployment record is missing ${missing.join(', ')}. `
-      + 'Add the field(s) to ~/.myco/server/cloudflare/record.json (databaseId: the D1 UUID from '
+      + `Add the field(s) to ${recordPath} (databaseId: the D1 UUID from `
       + '`wrangler d1 list`; storeId: from `wrangler secrets-store store list --remote`).',
     );
     this.name = 'DeployConfigIncomplete';
@@ -67,30 +67,30 @@ export class DeployConfigIncomplete extends Error {
 }
 
 /** The routes block for a record whose URL is a custom domain; a workers.dev URL needs none. */
-function routesLine(url: string | undefined): string | null {
+function routesLine(url: string | undefined, recordPath: string): string | null {
   if (url === undefined) return null;
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error(`the deployment record's url is not a URL: ${JSON.stringify(url)} (~/.myco/server/cloudflare/record.json)`);
+    throw new Error(`the deployment record's url is not a URL: ${JSON.stringify(url)} (${recordPath})`);
   }
   if (parsed.port !== '') {
-    throw new Error(`the deployment record's url carries a port (${parsed.host}); a Cloudflare custom domain has none (~/.myco/server/cloudflare/record.json)`);
+    throw new Error(`the deployment record's url carries a port (${parsed.host}); a Cloudflare custom domain has none (${recordPath})`);
   }
   if (parsed.hostname.endsWith('.workers.dev')) return null;
   return `routes = [ { pattern = "${parsed.hostname}", custom_domain = true } ]`;
 }
 
 /** The deploy config for this record: the committed base with the record's account, routes, database id, and secrets store. */
-export function renderDeployConfig(record: DeploymentRecord): string {
+export function renderDeployConfig(record: DeploymentRecord, recordPath: string): string {
   const resources = cloudflareResources(record);
   const missing: string[] = [];
   if (record.databaseId === undefined || record.databaseId === '') missing.push('databaseId');
-  if (missing.length > 0) throw new DeployConfigIncomplete(missing);
+  if (missing.length > 0) throw new DeployConfigIncomplete(missing, recordPath);
 
   const header = [`account_id = "${record.accountId}"`];
-  const routes = routesLine(record.url);
+  const routes = routesLine(record.url, recordPath);
   if (routes !== null) header.push(routes);
 
   if (!WRANGLER_TEMPLATE.includes(SOURCE_ENTRY_LINE)) {
@@ -116,7 +116,7 @@ export function renderDeployConfig(record: DeploymentRecord): string {
     ].join('\n');
   }
   if (record.fleet !== undefined && (!Number.isInteger(record.fleet) || record.fleet < 1)) {
-    throw new Error(`the deployment record's fleet is not a whole number of runtimes: ${JSON.stringify(record.fleet)} (~/.myco/server/cloudflare/record.json)`);
+    throw new Error(`the deployment record's fleet is not a whole number of runtimes: ${JSON.stringify(record.fleet)} (${recordPath})`);
   }
   // What the Worker is told about itself: the origin the clock's runs call back to, the fleet the dispatcher counts
   // against, and the one database a recovery export may name. Each is the record's, never a request's.
