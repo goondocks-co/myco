@@ -9,12 +9,32 @@ import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryA
 import { drainObjectReleases, releaseBlobs } from '@myco-server-worker/core/object-release.js';
 import { acquireOperatorHold, recoveryHoldRelease, settleOperatorHold } from '@myco-server-worker/core/recovery-hold.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { admitRecoveryExport } from '@myco-server-worker/core/recovery-admission.js';
 
 const OWNER = { member: { id: 'mem_machine_1' }, now: 1_000 } as never;
 
 const idle: RecoveryProducerStatus = {
   attempt: null, stage: 'idle', form: 'staging', startedAt: null, recoverable: false, staged: null, export: null, error: null, transientSpent: 0, stagedSchema: null,
 };
+
+it('classifies an unanswered admission through its platform and emits no exception text', async () => {
+  const env = sqliteEnv();
+  const held = producer();
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = line => { lines.push(String(line)); };
+  try {
+    const outcome = await admitRecoveryExport({ ...env.serverEnv, recovery: {
+      ...held.port, admit: async () => { throw new Error('this Deployment carries no recovery export target'); },
+    } }, 1_000, { kind: 'schedule' });
+    expect(outcome.outcome).toBe('unanswered');
+    expect(lines.map(line => JSON.parse(line)).find(event => event.kind === 'recovery_admission_unanswered')).toEqual({
+      kind: 'recovery_admission_unanswered', error_class: 'configuration', error_reason: 'Error:configuration',
+    });
+    expect(lines.join('\n')).not.toContain('carries no recovery export target');
+    expect(await recoveryHoldRelease({ ...env.serverEnv, recovery: held.port }, 2_000)).toBe(1);
+  } finally { console.log = log; env.sqlite.close(); }
+});
 
 function producer() {
   const seen: RecoveryAdmission[] = [];
@@ -39,6 +59,8 @@ function producer() {
         return settlement;
       },
       status: async () => status,
+      pendingStagingPrunes: async () => 0,
+      pruneStagings: async () => ({ releasedFiles: 0, releasedStagings: 0, refused: null, pending: 0 }),
       noteSchemaDrift: async () => { throw new Error('a status read must not mutate an attempt'); },
     },
   };
@@ -219,7 +241,7 @@ it('reads no Cloudflare binding in the owner route: the platform adapter decides
 });
 
 it('answers settlement from the attempt stage: advancing is open, resting is closed, none is retired', () => {
-  for (const stage of ['export', 'download', 'inventory', 'copy'] as const) expect(settlementOf({ id: 1, stage }).state).toBe('open');
+  for (const stage of ['preparing', 'export', 'download', 'inventory', 'copy'] as const) expect(settlementOf({ id: 1, stage }).state).toBe('open');
   for (const stage of ['downloaded', 'complete', 'unconfirmed', 'failed'] as const) expect(settlementOf({ id: 1, stage }).state).toBe('closed');
   expect(settlementOf(null)).toEqual({ state: 'retired' });
 });

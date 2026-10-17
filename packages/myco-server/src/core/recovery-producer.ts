@@ -31,13 +31,13 @@ import {
  * claims neither a published staging nor a failed one.
  */
 export type AttemptStage =
-  | 'export' | 'download' | 'inventory' | 'copy' | 'downloaded' | 'complete' | 'unconfirmed' | 'failed';
+  | 'preparing' | 'export' | 'download' | 'inventory' | 'copy' | 'downloaded' | 'complete' | 'unconfirmed' | 'failed';
 
 /**
  * The stages a continuation may advance. One list, so the checkpoint's own query, the admission refusal and the
  * dispatch cannot drift apart, and an attempt at `downloaded` or `complete` is picked up by none of them.
  */
-export const ADVANCING_STAGES = ['export', 'download', 'inventory', 'copy'] as const;
+export const ADVANCING_STAGES = ['preparing', 'export', 'download', 'inventory', 'copy'] as const;
 
 /** The advancing stages as a SQL list, for a store that keeps attempts in its own table. */
 export const ADVANCING_STAGES_SQL = ADVANCING_STAGES.map((stage) => `'${stage}'`).join(', ');
@@ -1130,9 +1130,8 @@ export interface AttemptPublication {
 }
 
 /**
- * Stages the capture, then records the attempt through `record`. The record is the publication: a staging write that
- * fails, or an interruption before it, leaves no attempt at all, so no continuation can advance one whose schema and
- * manifest are not both staged.
+ * Stages the capture, then publishes it through `record`. The caller owns preparation and cleanup; a continuation
+ * may advance the attempt only after its schema and manifest are both staged.
  */
 export async function publishAttempt(
   ports: ProducerPorts, input: AttemptPublication, record: (admission: AdmittedManifest) => void,
@@ -1276,15 +1275,6 @@ export function settlementOf(attempt: { id: number; stage: AttemptStage } | null
     : { state: 'closed', attempt: attempt.id, stage: attempt.stage };
 }
 
-/** Raised inside the producer's admission for a hold token already retired; admission answers `holdRetired` instead. */
-export class HoldRetired extends Error {
-  constructor() {
-    super('the recovery hold this admission named is already retired; start the export again');
-    this.name = 'HoldRetired';
-  }
-}
-
-/** Starting and inspecting this Deployment's producer, as a target supplies it. The credential stays in the target. */
 /** What forgetting an unsettled export did: which it forgot, or that none is recorded, or which attempt refused it. */
 export type ForgetUnsettledOutcome =
   | { forgotten: { attempt: number; requestedAt: number } | null }

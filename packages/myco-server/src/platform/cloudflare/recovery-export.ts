@@ -311,8 +311,10 @@ export function cloudflareProducerPorts(
     async storedSize(prefix) {
       return stored(async () => (await bucket.head(stagedSqlKey(prefix)))?.size ?? null);
     },
-    async writeStagingFile(prefix, name, body, _signal) {
-      await stored(() => bucket.put(`${prefix.replace(/\/$/, '')}/${name}`, new TextEncoder().encode(body), { httpMetadata: { contentType: 'application/json' } }));
+    async writeStagingFile(prefix, name, body, signal) {
+      const key = `${prefix.replace(/\/$/, '')}/${name}`;
+      await stored(() => bucket.put(key, new TextEncoder().encode(body), { httpMetadata: { contentType: 'application/json' } }));
+      if (signal?.aborted) await stored(() => bucket.delete(key));
     },
     async readStagingFile(prefix, name, signal) {
       return stored(async () => {

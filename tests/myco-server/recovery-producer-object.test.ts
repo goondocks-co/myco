@@ -6,14 +6,14 @@
  */
 import { issueRecoveryForget } from '@myco-server-worker/core/recovery-forget.js';
 import { MemberWriteRefused } from '@myco-server-worker/auth/member-write-store.js';
-import { afterAll, expect, it } from 'bun:test';
+import { afterAll, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { RecoveryProducer } from '@myco-server-worker/platform/cloudflare/recovery-producer-object.js';
 import { PRODUCER_LIMITS, PRODUCER_STALL_MS, type RecoveryAdmission } from '@myco-server-worker/core/recovery-producer.js';
 import { settleOpenHold } from '@myco-server-worker/core/recovery-hold.js';
 import { Stalled } from '@myco-server-worker/core/recovery-inventory.js';
 import { acquireRecoveryHold } from '@myco-server-worker/core/object-release.js';
-import { RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
+import { RECOVERY_CREDENTIAL_NAMES, STAGING_MANIFEST_FILE } from '@myco-server-worker/core/recovery-staging.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
@@ -36,6 +36,7 @@ function storage(sql: Database, signed: { delete?: (key: string) => Promise<bool
 interface Doubles {
   abort?: () => Promise<void>;
   deleteSigned?: (key: string) => Promise<boolean>;
+  deleteStaged?: (key: string) => Promise<void>;
 }
 
 /** The configuration a deployment record renders for this producer's own bindings. */
@@ -57,7 +58,7 @@ function producerOver(
   sql: Database, writes: string[], put?: (key: string, body: Uint8Array) => Promise<{ size: number }>, doubles: Doubles = {},
   bindings: Record<string, string | undefined> = {},
 ) {
-  const ctx = { storage: storage(sql, { delete: doubles.deleteSigned }) };
+  const ctx = { storage: storage(sql, { delete: doubles.deleteSigned }), waitUntil: (_work: Promise<unknown>) => undefined };
   const authority = sqliteEnv();
   const env = {
     MYCO_DB: authority.db,
@@ -66,6 +67,7 @@ function producerOver(
     ...bindings,
     RECOVERY_EXPORT_TOKEN: 'never-sent', BUCKET: { get: async () => null },
     RECOVERY_BUCKET: {
+      delete: doubles.deleteStaged ?? (async () => undefined),
       put: put ?? (async (key: string, body: Uint8Array) => { writes.push(key); return { size: body.length }; }),
       resumeMultipartUpload: () => ({ abort: doubles.abort ?? (async () => undefined) }),
     },
@@ -134,13 +136,155 @@ it('bounds an admission whose staging write never settles: the gate is released,
   const hanging = (_key: string, body: Uint8Array) => new Promise<{ size: number }>((resolve) => { late.push(() => resolve({ size: body.length })); });
   const producer = producerOver(sql, [], hanging);
   await expect(producer.admit(admission('token-hung'), { requestMs: 50 })).rejects.toBeInstanceOf(Stalled);
-  // Settlement is not queued behind the hung write: it answers, and retires the token no attempt carries.
-  expect(await producer.settleHold('token-hung')).toEqual({ state: 'retired' });
+  // A failed publication carries its hold and its start; settlement is not queued behind the hung write.
+  expect(await producer.settleHold('token-hung')).toEqual({ state: 'closed', attempt: 1, stage: 'failed' });
   for (const land of late) land();
   await Bun.sleep(10);
-  expect(sql.query('SELECT COUNT(*) AS n FROM attempts').get()).toEqual({ n: 0 });
-  expect((await producer.admit(admission('token-hung'))).holdRetired).toBe(true);
+  expect((await producer.pruneStagings({ keep: 2, protect: [], budget: 3 })).pending).toBe(0);
+  expect(sql.query('SELECT stage, payload_pruned_at IS NOT NULL AS pruned FROM attempts').get()).toEqual({ stage: 'failed', pruned: 1 });
+  expect((await producer.admit(admission('token-hung'))).stage).toBe('failed');
   sql.close();
+});
+
+it('removes a staging write that lands after admission timed out', async () => {
+  const sql = new Database(':memory:');
+  const files = new Map<string, Uint8Array>();
+  let land: (() => void) | undefined;
+  const producer = producerOver(sql, [], (key, body) => new Promise(resolve => {
+    land = () => { files.set(key, body); resolve({ size: body.length }); };
+  }), { deleteStaged: async key => { files.delete(key); } });
+  try {
+    await expect(producer.admit(admission('late-file'), { requestMs: 20 })).rejects.toBeInstanceOf(Stalled);
+    expect(files.size).toBe(0);
+    land!();
+    await Bun.sleep(10);
+    expect(files.size).toBe(0);
+    expect((await producer.status()).stage).toBe('failed');
+  } finally { sql.close(); }
+});
+
+it('rearms durable cleanup if a late staging write lands and its delete fails', async () => {
+  const sql = new Database(':memory:');
+  const files = new Map<string, Uint8Array>();
+  let late = false;
+  let land: (() => void) | undefined;
+  const producer = producerOver(sql, [], (key, body) => new Promise(resolve => {
+    land = () => { late = true; files.set(key, body); resolve({ size: body.length }); };
+  }), { deleteStaged: async key => {
+    if (late) throw new Error('delete refused https://secret.invalid');
+    files.delete(key);
+  } });
+  try {
+    await expect(producer.admit(admission('late-refusal'), { requestMs: 20 })).rejects.toBeInstanceOf(Stalled);
+    expect(sql.query('SELECT payload_pruned_at IS NOT NULL AS pruned FROM attempts').get()).toEqual({ pruned: 0 });
+    land!();
+    await Bun.sleep(10);
+    const restarted = producerOver(sql, [], undefined, { deleteStaged: async key => { files.delete(key); } });
+    expect(await restarted.pendingStagingPrunes({ keep: 2, protect: [] })).toBe(1);
+    expect((await restarted.pruneStagings({ keep: 2, protect: [], budget: 3 })).pending).toBe(0);
+    expect(files.size).toBe(0);
+  } finally { sql.close(); }
+});
+
+it('keeps unresolved staging writes owned across a restart and retries files that arrive afterward', async () => {
+  const sql = new Database(':memory:');
+  const files = new Map<string, Uint8Array>();
+  const producer = producerOver(sql, [], () => new Promise(() => {}));
+  try {
+    await expect(producer.admit(admission('unsettled-write'), { requestMs: 20 })).rejects.toBeInstanceOf(Stalled);
+    const restarted = producerOver(sql, [], undefined, { deleteStaged: async key => { files.delete(key); } });
+    expect((await restarted.pruneStagings({ keep: 2, protect: [], budget: 3 })).pending).toBe(1);
+    const prefix = (sql.query('SELECT prefix FROM attempts').get() as { prefix: string }).prefix;
+    files.set(`${prefix}/schema.json`, new Uint8Array([1]));
+    expect((await restarted.pruneStagings({ keep: 2, protect: [], budget: 3 })).pending).toBe(1);
+    expect(files.size).toBe(0);
+    expect(sql.query('SELECT payload_pruned_at FROM attempts').get()).toEqual({ payload_pruned_at: null });
+  } finally { sql.close(); }
+});
+
+it('rechecks files when a late write settles during a cleanup pass', async () => {
+  const sql = new Database(':memory:');
+  const files = new Map<string, Uint8Array>();
+  let land: (() => void) | undefined;
+  let late = false;
+  const producer = producerOver(sql, [], (key, body) => {
+    if (!key.endsWith(`/${STAGING_MANIFEST_FILE}`)) { files.set(key, body); return Promise.resolve({ size: body.length }); }
+    return new Promise(resolve => { land = () => { late = true; files.set(key, body); resolve({ size: body.length }); }; });
+  }, { deleteStaged: async key => {
+    if (key.endsWith(`/${STAGING_MANIFEST_FILE}`)) {
+      if (late) throw new Error('late delete refused');
+      files.delete(key);
+      land!();
+      return;
+    }
+    files.delete(key);
+  } });
+  try {
+    await expect(producer.admit(admission('cleanup-race'), { requestMs: 20 })).rejects.toBeInstanceOf(Stalled);
+    expect(files.size).toBe(1);
+    const restarted = producerOver(sql, [], undefined, { deleteStaged: async key => { files.delete(key); } });
+    expect(await restarted.pendingStagingPrunes({ keep: 2, protect: [] })).toBe(1);
+    expect((await restarted.pruneStagings({ keep: 2, protect: [], budget: 3 })).pending).toBe(0);
+    expect(files.size).toBe(0);
+  } finally { sql.close(); }
+});
+
+it('retains failed publication cleanup across a restart and never removes another attempt payload', async () => {
+  const sql = new Database(':memory:');
+  const files = new Map<string, Uint8Array>();
+  let fail = false;
+  const put = async (key: string, body: Uint8Array) => {
+    if (fail && key.endsWith('/recovery.json')) throw new TypeError('staging unavailable');
+    files.set(key, body);
+    return { size: body.length };
+  };
+  const clock = spyOn(Date, 'now').mockReturnValue(1_790_000_000_000);
+  try {
+    const producer = producerOver(sql, [], put, { deleteStaged: async () => { throw new Error('delete refused'); } });
+    const first = await producer.admit(admission('first'));
+    sql.run("UPDATE attempts SET stage = 'complete' WHERE id = ?", [first.attempt]);
+    const retained = [...files.keys()];
+    fail = true;
+    await expect(producer.admit(admission('failed'))).rejects.toThrow('staging unavailable');
+    expect((await producer.status()).stage).toBe('failed');
+    expect(files.size).toBe(retained.length + 1);
+    const restarted = producerOver(sql, [], put, { deleteStaged: async key => { files.delete(key); } });
+    expect(await restarted.pendingStagingPrunes({ keep: 2, protect: [] })).toBe(1);
+    expect((await restarted.pruneStagings({ keep: 2, protect: [], budget: 3 })).pending).toBe(0);
+    expect([...files.keys()]).toEqual(retained);
+    expect(await restarted.settleHold('failed')).toEqual({ state: 'closed', attempt: 2, stage: 'failed' });
+  } finally { clock.mockRestore(); sql.close(); }
+});
+
+it('records ownership before staging and settles an interrupted preparation across a restart', async () => {
+  const sql = new Database(':memory:');
+  const files = new Map<string, Uint8Array>();
+  const producer = producerOver(sql, [], async (key, body) => {
+    expect(sql.query('SELECT stage FROM attempts').get()).toEqual({ stage: 'preparing' });
+    files.set(key, body);
+    return { size: body.length };
+  });
+  try {
+    const admitted = await producer.admit(admission('interrupted'));
+    sql.run("UPDATE attempts SET stage = 'preparing', admission = NULL, last_progress_at = 0 WHERE id = ?", [admitted.attempt]);
+    const restarted = producerOver(sql, [], undefined, { deleteStaged: async key => { files.delete(key); } });
+    expect((await restarted.continue()).attempt).toBeNull();
+    expect((await restarted.status()).stage).toBe('failed');
+    expect(files.size).toBe(0);
+    expect(await restarted.settleHold('interrupted')).toEqual({ state: 'closed', attempt: 1, stage: 'failed' });
+  } finally { sql.close(); }
+});
+
+it('commits preparation failure and cleanup ownership together', async () => {
+  const sql = new Database(':memory:');
+  const producer = producerOver(sql, [], async () => { throw new TypeError('staging refused'); });
+  sql.exec(`CREATE TRIGGER require_cleanup_ownership BEFORE UPDATE OF stage ON attempts
+    WHEN OLD.stage = 'preparing' AND NEW.stage = 'failed' AND NEW.prune_started_at IS NULL
+    BEGIN SELECT RAISE(ABORT, 'failed preparation has no cleanup owner'); END`);
+  try {
+    await expect(producer.admit(admission('atomic-failure'))).rejects.toThrow('staging refused');
+    expect(sql.query('SELECT stage, prune_started_at IS NOT NULL AS owned FROM attempts').get()).toEqual({ stage: 'failed', owned: 1 });
+  } finally { sql.close(); }
 });
 
 it('fails an attempt that commits no checkpoint for the stall bound, durably, and refuses the late writes of a step that outlived it', async () => {

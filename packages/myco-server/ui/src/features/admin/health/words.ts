@@ -132,6 +132,7 @@ const PRODUCER_FAILURE_WORDS: Readonly<Record<string, string>> = {
 
 /** An attempt's stage, from the producer's closed set, in words. */
 const STAGE_WORDS: Readonly<Record<string, string>> = {
+  preparing: 'preparing the backup',
   export: 'exporting the database',
   download: 'downloading the export',
   inventory: 'checking what it downloaded',

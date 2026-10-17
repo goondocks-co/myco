@@ -41,6 +41,15 @@ export function classify(err: unknown, platform?: ErrorClassifier): ErrorClass {
   return platform?.(message) ?? 'unknown';
 }
 
+const SAFE_ERROR_NAMES = new Set(['Error', 'TypeError', 'SyntaxError', 'RangeError', 'AbortError', 'TimeoutError', 'DataCloneError', 'Stalled']);
+
+/** Error telemetry carries only an allowlisted name and a classifier, never exception text. */
+export function failureTelemetry(error: unknown, platform?: ErrorClassifier): { error_class: ErrorClass; error_reason: string } {
+  const category = classify(error, platform);
+  const name = error instanceof Error && SAFE_ERROR_NAMES.has(error.name) ? error.name : 'Unknown';
+  return { error_class: category, error_reason: `${name}:${category}` };
+}
+
 /**
  * How a blob store put failed: the received bytes did not match the declared
  * digest, or something else. Every store reports a mismatch in its own wording,

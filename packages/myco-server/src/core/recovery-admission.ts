@@ -13,7 +13,7 @@ import { captureSchema, exportedTables, recoverableVirtualTables } from './recov
 import { capturedDefinitions, type RecoveryProducerStatus, type TableDefinitions } from './recovery-producer.js';
 import { openHoldForAdmission } from './recovery-hold.js';
 import { within } from './recovery-inventory.js';
-import { classify, emit } from '../telemetry.js';
+import { failureTelemetry, emit } from '../telemetry.js';
 
 /** How long an admission may take to answer: its staging writes are bounded inside the producer, well within this. */
 export const ADMISSION_MS = 120_000;
@@ -97,7 +97,7 @@ export async function admitRecoveryExport(env: ServerEnv, now: number, actor: Ad
     captured: captured.captured,
     startedBy: actorLabel(actor),
   }), ADMISSION_MS, () => Date.now()).catch((error: unknown) => {
-    emit({ kind: 'recovery_admission_unanswered', error_class: classify(error) });
+    emit({ kind: 'recovery_admission_unanswered', ...failureTelemetry(error, env.platform?.classifyError) });
     return null;
   });
   if (status === null) return { outcome: 'unanswered' };
