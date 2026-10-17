@@ -1,4 +1,6 @@
 /** Channel eligibility and numeric SemVer ordering, shared with the generated POSIX installer. */
+import { SOURCE_VERSION_PATTERN } from './install-marker-schema.mjs';
+export { SOURCE_VERSION_PATTERN };
 export const RELEASE_POLICY = {
   versionPattern: '^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-(alpha|beta|rc)[.](0|[1-9][0-9]*))?$',
   developmentPattern: '^0[.]0[.]0(-dev)?([+][0-9A-Za-z.-]+)?$',
@@ -16,6 +18,11 @@ export const RELEASE_POLICY = {
 /** Placeholder builds belong to the 2.0 source tree and update only explicitly. */
 export function isDevelopmentVersion(version) {
   return new RegExp(RELEASE_POLICY.developmentPattern).test(version);
+}
+
+/** A compiled source artifact carries a unique build suffix. */
+export function isStampedSourceVersion(version) {
+  return new RegExp(SOURCE_VERSION_PATTERN).exec(version)?.[0] === version;
 }
 
 export function isV2Version(version) {

@@ -562,7 +562,7 @@ test('Git plugin versions survive npm sync, and preparation updates every commit
   const scratch = mkdtempSync(join(tmpdir(), 'myco-release-codegen-'));
   try {
     for (const file of ['scripts/sync-package-versions.mjs', 'scripts/prepare-plugin-release.mjs',
-      'packages/myco/package.json', 'packages/myco/plugin-version.json', 'packages/myco/scripts/release-policy.mjs',
+      'packages/myco/package.json', 'packages/myco/plugin-version.json', 'packages/myco/scripts/release-policy.mjs', 'packages/myco/scripts/install-marker-schema.mjs',
       'packages/myco/scripts/gen-plugin-bundle.ts', 'packages/myco/scripts/codegen-bundle.mjs',
       'packages/myco/src/plugins/spec.ts', 'packages/myco/skills', 'packages/myco/evals']) {
       const destination = join(scratch, file);

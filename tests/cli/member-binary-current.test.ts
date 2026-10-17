@@ -59,6 +59,7 @@ const pass = (deps: HelperVerbDeps = {}) => runHelperVerb(args(), {
 });
 let binaryDeps: BinaryUpdateDeps;
 beforeEach(() => {
+  setPluginVersion(FROM);
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-daily-update-'));
   restore = bindSandboxChildHome(root);
   home = path.join(root, '.myco');
@@ -306,6 +307,7 @@ it.each([false, true])('an adopted version refreshes in the same pass; peer clai
 });
 
 it('version-only drift reprovisions even when hooks and tools are already current', async () => {
+  setPluginVersion(TO);
   writeDeploymentMembership({ serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
   provisionGlobally('codex', null, home, { serverUrl: SERVER });
   recordProvision(home, { version: FROM, serverUrl: SERVER, agents: ['codex'] });
@@ -419,7 +421,9 @@ it('keeps the Windows local app-data destination when the install marker is abse
   expect(binaryUpdatePath(unmarked, { platform: 'win32' })).toBe(managedBinaryPath(unmarked, 'win32', process.env.LOCALAPPDATA));
 });
 
-it.each([true, false].flatMap(complete => [false, true].map(previous => ({ complete, previous }))))('an older helper preserves another helper’s adopted setup; refresh complete = $complete; previous slot = $previous', async ({ complete, previous }) => {
+it.each([false, true].flatMap(source => [true, false].flatMap(complete => [false, true].map(previous => ({ source, complete, previous })))) )('an older helper preserves another helper’s adopted setup; source = $source; refresh complete = $complete; previous slot = $previous', async ({ source, complete, previous }) => {
+  const FROM = source ? '0.0.0-dev+fixture.bolder' : '2.0.0-alpha.2';
+  const TO = source ? '0.0.0-dev+fixture.bnewer' : '2.0.0-alpha.3';
   setPluginVersion(TO);
   writeDeploymentMembership({ serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
   fs.writeFileSync(live, TO, { mode: 0o755 });

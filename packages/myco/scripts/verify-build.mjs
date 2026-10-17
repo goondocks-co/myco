@@ -13,6 +13,7 @@
 // that loop lives in the workflow, not here.
 
 import fs from 'node:fs';
+import { isStampedSourceVersion } from './release-policy.mjs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -55,13 +56,10 @@ try {
 } catch (err) {
   fail(`cannot probe binary --version (${binaryPath}): ${err.message}`);
 }
-// Dev builds stamp the git description (`0.0.0-dev+<describe>`) into the binary
-// while package.json keeps the placeholder — build-single-target.mjs restores it
-// after compile. Accept that; require an exact match only for release builds
-// (where sync-package-versions has written a concrete version into package.json).
+// Source binaries require a stamped build identity; release binaries require the exact manifest version.
 const versionOk =
   bakedVersion === expectedVersion ||
-  (expectedVersion === DEV_VERSION_PLACEHOLDER && bakedVersion.startsWith(`${DEV_VERSION_PLACEHOLDER}+`));
+  (expectedVersion === DEV_VERSION_PLACEHOLDER && isStampedSourceVersion(bakedVersion));
 if (!versionOk) {
   fail(
     `binary version mismatch — package.json says ${expectedVersion} but ` +

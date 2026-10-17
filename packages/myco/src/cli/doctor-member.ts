@@ -1,4 +1,6 @@
 /** Member doctor checks and output formatting. */
+import { readInstallation, SOURCE_BUILD_REASON } from '@myco/install/installation.js';
+import { isDevelopmentVersion } from '../../scripts/release-policy.mjs';
 import { readProvisionRecord } from '@myco/member/provision-record.js';
 import { readAutomaticUpdate, automaticUpdateWords } from '@myco/member/automatic-update-state.js';
 import { readAutomaticUpdatePreference } from '@myco/install/marker-reader.js';
@@ -363,8 +365,18 @@ export async function checkRuntimePin(): Promise<DoctorCheck | null> {
   }
 }
 
+/** The installation record and running binary share one provenance projection. */
+export function checkInstallation(mycoHome: string): DoctorCheck {
+  const installation = readInstallation(mycoHome);
+  return { name: 'Installation', status: ['mismatch', 'unreadable', 'unverified'].includes(installation.record) ? 'warn' : 'ok',
+    detail: installation.detail, fixable: false };
+}
+
 /** The last automatic attempt, including refusals and failures. */
 export function checkAutomaticUpdate(mycoHome: string): DoctorCheck {
+  if (isDevelopmentVersion(getPluginVersion())) return {
+    name: 'Automatic update', status: 'ok', fixable: false, detail: `Skipped: ${SOURCE_BUILD_REASON}`,
+  };
   const preference = readAutomaticUpdatePreference(mycoHome);
   if (preference.error !== undefined) return {
     name: 'Automatic update', status: 'warn', fixable: false,

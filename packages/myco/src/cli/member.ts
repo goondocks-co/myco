@@ -2,8 +2,7 @@ import { importSignInHistory, withSignInCapture } from './signin-capture.js';
 import { repositoryName } from '@myco/utils/git.js';
 import { askOnTerminal } from '@myco/setup/prompt.js';
 import semver from 'semver';
-import { isDevelopmentVersion } from '../../scripts/release-policy.mjs';
-import { readBinaryVersion, LIVE_MEMBER_VERSION_TIMEOUT_MS } from '@myco/runtime/binary-version.js';
+import { readBinaryVersion, installedVersionSupersedes, LIVE_MEMBER_VERSION_TIMEOUT_MS } from '@myco/runtime/binary-version.js';
 import { installedBinaryPath, isRunningExecutable } from '@myco/runtime/binary-resolution.js';
 import { selfExecOf } from '@myco/runtime/self-exec.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
@@ -29,7 +28,8 @@ import { hostname } from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { canonicalRootIdentity } from '../utils/git-files.js';
-import { checkAutomaticUpdate, formatCheck, type DoctorCheck } from './doctor-member.js';
+import { readInstallation } from '@myco/install/installation.js';
+import { checkInstallation, checkAutomaticUpdate, formatCheck, type DoctorCheck } from './doctor-member.js';
 import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
 import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome, type ResolvedMycoHome } from '../paths/home.js';
@@ -532,12 +532,12 @@ function provisionChosenAgent(agent: string, root: string | null, mycoHome: stri
 export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageRoot?: string; serverUrl?: string; onInspectionError?: (message: string) => void; wait?: boolean }, fn: (record: ProvisionRecord, agents: string[], retiredSettingsProblems: ReadonlySet<string>) => T): T | null {
   return withMemberRepair(mycoHome, 'myco member reconcile', () => {
     const runningVersion = getPluginVersion();
-    if (!isDevelopmentVersion(runningVersion) && semver.valid(runningVersion) !== null && selfExecOf(process.execPath, process.argv[1]).args.length === 0) {
+    if (semver.valid(runningVersion) !== null && selfExecOf(process.execPath, process.argv[1]).args.length === 0) {
       try {
         const live = installedBinaryPath(mycoHome);
         if (fs.existsSync(live) && !isRunningExecutable(live)) {
           const liveVersion = readBinaryVersion(live, LIVE_MEMBER_VERSION_TIMEOUT_MS);
-          if (semver.valid(liveVersion) !== null && semver.gt(liveVersion, runningVersion)) {
+          if (installedVersionSupersedes(liveVersion, runningVersion)) {
             (opts.onInspectionError ?? console.warn)(`Agent setup belongs to Myco ${liveVersion}, which is now installed; this older process leaves it alone.`);
             return null;
           }
@@ -1056,6 +1056,7 @@ export function runStatus(args: readonly string[], deps: MemberCliDeps = {}): vo
     return;
   }
   const selection = registrySelection(args, deps);
+  out(formatCheck(checkInstallation(mycoHome)));
   out(formatCheck(checkAutomaticUpdate(mycoHome)));
   for (const entry of selection.entries) {
     const facts = projectDiagnostics(entry, mycoHome, now());
@@ -1171,10 +1172,10 @@ export async function runExport(args: readonly string[], deps: MemberCliDeps = {
     (await checkMemberMcpResolution(path.join(checkRoot, '.myco'), { ...(deps.env ?? process.env), MYCO_HOME: mycoHome }, { registryRead: 'strict' }))
       .map((check) => toFacts(check, checkRoot))));
   const checks = [...new Map([...machineChecks, ...projectChecks.flat()].map((check) => [JSON.stringify(check), check])).values()];
-  out(JSON.stringify(memberDiagnostics({
+  out(JSON.stringify({ ...memberDiagnostics({
     mycoHome, now: (deps.now ?? Date.now)(), entries, missedCapture, heldDestinations,
     selection: { root, scope: all ? 'all' : 'root' }, registry, missedCaptureStore, checks,
-  }), null, 2));
+  }), installation: readInstallation(mycoHome) }, null, 2));
 }
 
 /**

@@ -6,8 +6,11 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { randomBytes } from 'node:crypto';
 import { signExecutable } from './sign-executable.mjs';
+
+const BUILD_ID_RANDOM_BYTES = 8;
 
 function detectHostTarget() {
   if (process.platform === 'darwin') return process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
@@ -16,85 +19,85 @@ function detectHostTarget() {
   return null;
 }
 
-const target = process.env.TARGET ?? detectHostTarget();
-if (!target) {
-  process.stderr.write(`[build:binary] no TARGET and host platform ${process.platform}-${process.arch} is unsupported\n`);
-  process.exit(2);
+/** Stamp each source artifact with its own full version identity. */
+export function stampDevelopmentVersion(description) {
+  const describe = description.replace(/^myco\/v/, '').replace(/[^0-9A-Za-z.-]/g, '').split('.').filter(Boolean).join('.') || 'unknown';
+  return `0.0.0-dev+${describe}.b${Date.now().toString(36)}${randomBytes(BUILD_ID_RANDOM_BYTES).toString('hex')}`;
 }
 
-const VALID = new Set(['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64', 'windows-x64']);
-if (!VALID.has(target)) {
-  process.stderr.write(`[build:binary] unknown TARGET="${target}" (valid: ${[...VALID].join(', ')})\n`);
-  process.exit(2);
-}
+function buildSingleTarget() {
+  const target = process.env.TARGET ?? detectHostTarget();
+  if (!target) {
+    process.stderr.write(`[build:binary] no TARGET and host platform ${process.platform}-${process.arch} is unsupported\n`);
+    process.exit(2);
+  }
 
-const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const entry = path.join(pkgRoot, 'src', 'entries', `cli.${target}.ts`);
-if (!fs.existsSync(entry)) {
-  process.stderr.write(`[build:binary] missing entry: ${entry}\n`);
-  process.exit(1);
-}
+  const VALID = new Set(['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64', 'windows-x64']);
+  if (!VALID.has(target)) {
+    process.stderr.write(`[build:binary] unknown TARGET="${target}" (valid: ${[...VALID].join(', ')})\n`);
+    process.exit(2);
+  }
 
-const pkgPath = path.join(pkgRoot, 'package.json');
-const pkgRaw = fs.readFileSync(pkgPath, 'utf-8');
-const pkgJson = JSON.parse(pkgRaw);
+  const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const entry = path.join(pkgRoot, 'src', 'entries', `cli.${target}.ts`);
+  if (!fs.existsSync(entry)) {
+    process.stderr.write(`[build:binary] missing entry: ${entry}\n`);
+    process.exit(1);
+  }
 
-// The per-target entry embeds `pkg.version` at compile time via
-// `setPluginVersion(pkg.version)`, so the binary's reported version is whatever
-// package.json says when bun compiles it. Releases get a concrete version
-// written here by scripts/sync-package-versions.mjs before the build; dev builds
-// carry the `0.0.0-dev` placeholder. For dev, stamp the git description so a
-// locally-built / dogfood binary reports the ACTUAL checkout (e.g.
-// `0.0.0-dev+1.2.0-1-g430a7e7b`) instead of the bare placeholder. Temporarily
-// rewrite package.json for the compile, then restore the exact original bytes in
-// `finally`. Keep the format identical to the runtime fallback in src/version.ts.
-const DEV_VERSION_PLACEHOLDER = '0.0.0-dev';
-let stampedPkg = false;
-if (pkgJson.version === DEV_VERSION_PLACEHOLDER) {
-  const described = spawnSync(
-    'git',
-    ['describe', '--tags', '--always', '--dirty', '--match', 'myco/v*'],
-    { cwd: pkgRoot, encoding: 'utf-8' },
-  );
-  const raw = described.status === 0 ? (described.stdout ?? '').trim() : '';
-  if (raw) {
-    const describe = raw.replace(/^myco\/v/, '').replace(/[^0-9A-Za-z.-]/g, '');
-    fs.writeFileSync(pkgPath, `${JSON.stringify({ ...pkgJson, version: `${DEV_VERSION_PLACEHOLDER}+${describe}` }, null, 2)}\n`);
+  const pkgPath = path.join(pkgRoot, 'package.json');
+  const pkgRaw = fs.readFileSync(pkgPath, 'utf-8');
+  const pkgJson = JSON.parse(pkgRaw);
+
+  // The compiled entry embeds the temporary package version; the manifest keeps its original bytes.
+  const DEV_VERSION_PLACEHOLDER = '0.0.0-dev';
+  let stampedPkg = false;
+  if (pkgJson.version === DEV_VERSION_PLACEHOLDER) {
+    const described = spawnSync(
+      'git',
+      ['describe', '--tags', '--always', '--match', 'myco/v*'],
+      { cwd: pkgRoot, encoding: 'utf-8' },
+    );
+    const description = described.status === 0 ? (described.stdout ?? '').trim() : '';
+    fs.writeFileSync(pkgPath, `${JSON.stringify({ ...pkgJson, version: stampDevelopmentVersion(description) }, null, 2)}\n`);
     stampedPkg = true;
   }
+  const mycoVersion = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version;
+
+  // Compile the binary directly into its per-platform npm package
+  // (`packages/myco-<target>/bin/`). The core package's postinstall then uses
+  // `require.resolve('@goondocks/myco-<target>/bin/<bin>')` to locate it at
+  // runtime. Workspace symlinks make this work in monorepo dev too.
+  const platformPkgDir = path.resolve(pkgRoot, '..', `myco-${target}`);
+  const outputDir = path.join(platformPkgDir, 'bin');
+  fs.mkdirSync(outputDir, { recursive: true });
+  const binaryName = target.startsWith('windows-') ? 'myco.exe' : 'myco';
+  const outfile = path.join(outputDir, binaryName);
+
+  // Bun's `-baseline` x64 variant omits modern SIMD (AVX2). Required to run
+  // under Windows-on-ARM x64 emulation (pre-24H2 lacks AVX2) and on older x64
+  // CPUs. Opt in with BASELINE=1; native x64 hardware uses the default build.
+  const bunTarget = process.env.BASELINE === '1' ? `bun-${target}-baseline` : `bun-${target}`;
+
+  process.stdout.write(`[build:binary] ${target} (${bunTarget}) -> ${outfile} (version ${mycoVersion})\n`);
+  let status = 1;
+  try {
+    const result = spawnSync(
+      'bun',
+      // `--splitting` makes every dynamic import a chunk the binary reads only when it is reached: a hook loads its own
+      // chunk (`entries/dispatch.ts`) and never parses the rest of the CLI.
+      ['build', '--compile', '--splitting', '--minify', `--target=${bunTarget}`, entry, '--outfile', outfile],
+      { stdio: 'inherit', cwd: pkgRoot, env: process.env },
+    );
+    status = result.status ?? 1;
+    if (status === 0) signExecutable({ target, outfile });
+  } finally {
+    // Restore the exact original package.json bytes so the working tree (and any
+    // release-stamped version) is never left mutated by a dev build.
+    if (stampedPkg) fs.writeFileSync(pkgPath, pkgRaw);
+  }
+  process.exit(status);
+
 }
-const mycoVersion = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version;
 
-// Compile the binary directly into its per-platform npm package
-// (`packages/myco-<target>/bin/`). The core package's postinstall then uses
-// `require.resolve('@goondocks/myco-<target>/bin/<bin>')` to locate it at
-// runtime. Workspace symlinks make this work in monorepo dev too.
-const platformPkgDir = path.resolve(pkgRoot, '..', `myco-${target}`);
-const outputDir = path.join(platformPkgDir, 'bin');
-fs.mkdirSync(outputDir, { recursive: true });
-const binaryName = target.startsWith('windows-') ? 'myco.exe' : 'myco';
-const outfile = path.join(outputDir, binaryName);
-
-// Bun's `-baseline` x64 variant omits modern SIMD (AVX2). Required to run
-// under Windows-on-ARM x64 emulation (pre-24H2 lacks AVX2) and on older x64
-// CPUs. Opt in with BASELINE=1; native x64 hardware uses the default build.
-const bunTarget = process.env.BASELINE === '1' ? `bun-${target}-baseline` : `bun-${target}`;
-
-process.stdout.write(`[build:binary] ${target} (${bunTarget}) -> ${outfile} (version ${mycoVersion})\n`);
-let status = 1;
-try {
-  const result = spawnSync(
-    'bun',
-    // `--splitting` makes every dynamic import a chunk the binary reads only when it is reached: a hook loads its own
-    // chunk (`entries/dispatch.ts`) and never parses the rest of the CLI.
-    ['build', '--compile', '--splitting', '--minify', `--target=${bunTarget}`, entry, '--outfile', outfile],
-    { stdio: 'inherit', cwd: pkgRoot, env: process.env },
-  );
-  status = result.status ?? 1;
-  if (status === 0) signExecutable({ target, outfile });
-} finally {
-  // Restore the exact original package.json bytes so the working tree (and any
-  // release-stamped version) is never left mutated by a dev build.
-  if (stampedPkg) fs.writeFileSync(pkgPath, pkgRaw);
-}
-process.exit(status);
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) buildSingleTarget();
