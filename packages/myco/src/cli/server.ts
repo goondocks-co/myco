@@ -7,7 +7,7 @@ import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-con
 import { type CreatePlan, cloudflareUpdateLines, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { composeRetiredMessage, retiredComposeBundle } from '../server/targets.js';
 import { parseFlags } from './flags.js';
-import { BACKUP_CREDENTIAL_COMMAND, installBackupCredential } from '@myco/server/backup-credential.js';
+import { BACKUP_CREDENTIAL_COMMAND, BackupCredentialCancelled, installBackupCredential } from '@myco/server/backup-credential.js';
 import path from 'node:path';
 import { ownerLinkNext } from '@goondocks/myco-shared/setup-guidance';
 import { resolveMycoHome } from '../paths/home.js';
@@ -551,7 +551,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
         console.log(`${flags.has('fork') ? 'Fork' : 'Replacement'} deployed at ${restored.record.url}, schema ${restored.schemaVersion}, Worker ${restored.record.versionId}.`);
         console.log(flags.has('fork') ? `A new tenant was created. Copied credentials, invitations and agent access keys are inactive. ${REJOIN_HINT}` : 'The Deployment identity and carried live authority were retained. This is the same tenant.');
         console.log('Source data was preserved. Sign-in, attached workers and embedding readiness still require verification before cutover.');
-        console.log(`Automatic backups need a new backup access key for the restored database. Run \`${BACKUP_CREDENTIAL_COMMAND}\` using the same MYCO_HOME.`);
+        console.log(`Automatic backups need a backup access key validated for the restored database. Reuse the kept account-wide key in the same account, or create a key for a different account. Run \`${BACKUP_CREDENTIAL_COMMAND}\` using the same MYCO_HOME.`);
         if (flags.has('new-signin')) console.log(`Using the same MYCO_HOME (${resolveMycoHome()}), configure destination sign-in with: myco server github-app --target cloudflare --url ${restored.record.url} --name "Myco Recovery"`);
         return;
       }
@@ -645,6 +645,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
     console.log(SERVER_HELP);
     process.exit(2);
   } catch (err) {
+    if (err instanceof BackupCredentialCancelled) { console.log(err.message); process.exit(130); }
     if (err instanceof RegistrationRefused || err instanceof WranglerNotReady) fail(err.message);
     if (err instanceof DeployConfigIncomplete) fail(err.message);
     if (err instanceof LocalDeploymentAbsent || err instanceof LocalRecordUnreadable) fail(err.message);

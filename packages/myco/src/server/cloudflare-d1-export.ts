@@ -36,6 +36,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
+import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { readD1ExportAnswer, type D1ExportReading } from '@goondocks/myco-shared/d1-export';
 import { ObjectReadError, transientApiCode, transientStatus } from './object-read.js';
 import type { CloudflareFetch, OperatorLogin } from './cloudflare.js';
@@ -141,6 +142,7 @@ const API_ORIGIN = 'https://api.cloudflare.com';
 /** The export this machine has running against one database, as it records it. */
 const recordSchema = z.object({
   databaseId: z.string(),
+  purpose: z.literal('credential-probe').optional(),
   /** The tables the export was asked for, which every poll after it repeats. */
   tables: z.array(z.string()),
   /** The export's bookmark, or null for an export whose starting request has had no answer that names one. */
@@ -288,6 +290,79 @@ function writeRecord(file: string, record: ExportRecord | AdmissionRecord): void
   try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
 }
 
+export interface D1ExportProbeOptions {
+  recordDir: string;
+  databaseId: string;
+  request: (bookmark: string | null) => Promise<D1ExportReading>;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const PROBE_POLLS = 30;
+export const D1_EXPORT_PROBE_TABLES = ['schema_meta'] as const;
+const PROBE_WAIT = 'Wait for Cloudflare’s small schema export to end, then resume the operator backup to settle its record before rerunning.';
+
+/** Record a schema-only credential probe before sending it, retaining every unresolved outcome. */
+export const probeD1Export = d1ExportOperation(async (options: D1ExportProbeOptions): Promise<void> => {
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const file = exportRecordPath(options.recordDir, options.databaseId);
+  const held = readRecord(file, D1_EXPORT_CANCEL_MARGIN_MS);
+  if (held !== null) throw new Error('An earlier database export is still recorded on this machine. No backup access check was started. Wait for it to end and resume the operator backup to settle its record before rerunning.');
+  let current: ExportRecord = { databaseId: options.databaseId, purpose: 'credential-probe', tables: [...D1_EXPORT_PROBE_TABLES],
+    bookmark: null, startedAt: now(), lastPolledAt: now(), schema: '' };
+  writeRecord(file, current);
+  for (let poll = 0; poll <= PROBE_POLLS; poll += 1) {
+    if (poll > 0) await sleep(D1_EXPORT_POLL_MS);
+    const answer = await options.request(current.bookmark);
+    if (answer.kind === 'complete' || answer.kind === 'ended') {
+      fs.rmSync(file, { force: true });
+      if (answer.kind === 'complete') return;
+      throw new Error('Cloudflare ended the backup access check without completing it. No key was stored. Check Health for a running backup before retrying.');
+    }
+    const refused = answer.kind === 'refused-login' || (answer.kind === 'unknown' && (answer.status === 401 || answer.status === 403));
+    if (refused) {
+      if (poll === 0) fs.rmSync(file, { force: true });
+      throw new Error(`Cloudflare refused this backup access key. No key was stored. Use Account → D1 → Edit for the account that manages this server.${poll > 0 ? ` ${PROBE_WAIT}` : ''}`);
+    }
+    if (answer.kind === 'unknown') {
+      if (answer.bookmark !== null) {
+        current = { ...current, bookmark: answer.bookmark, lastPolledAt: now() };
+        writeRecord(file, current);
+      }
+      throw new Error(answer.transient
+        ? `Cloudflare didn’t answer the backup access check. No key was stored. Try later. ${PROBE_WAIT}`
+        : `Cloudflare did not confirm the backup access check. No key was stored. Check Health for a running backup. ${PROBE_WAIT}`);
+    }
+    current = { ...current, bookmark: answer.bookmark, lastPolledAt: now() };
+    writeRecord(file, current);
+  }
+  throw new Error(`The backup access check is still running past its budget. No key was stored. ${PROBE_WAIT}`);
+});
+
+/** Serialize a database's export record across operator processes. */
+function withD1ExportRecord<T>(context: { recordDir: string; databaseId: string }, operation: () => Promise<T>): Promise<T>;
+function withD1ExportRecord<T>(context: { recordDir: string; databaseId: string }, operation: () => T): T;
+function withD1ExportRecord<T>(context: { recordDir: string; databaseId: string }, operation: () => T | Promise<T>): T | Promise<T> {
+  const lockPath = path.join(context.recordDir, `.${path.basename(exportRecordPath(context.recordDir, context.databaseId))}.lock`);
+  const entry = fs.lstatSync(lockPath, { throwIfNoEntry: false });
+  if (entry !== undefined && !entry.isFile()) throw new Error('Database export lock must be a regular file');
+  const held = LifecycleLock.acquire(lockPath, { command: 'myco server D1 export' });
+  if (!held.acquired) throw new Error('Another database export operation is in progress on this machine; no second export was started.');
+  try {
+    const result = operation();
+    if (result instanceof Promise) return result.finally(() => held.lock.release());
+    held.lock.release();
+    return result;
+  } catch (error) { held.lock.release(); throw error; }
+}
+
+function d1ExportOperation<Options extends { recordDir: string; databaseId: string }, Result>(
+  operation: (options: Options) => Promise<Result>,
+): (options: Options) => Promise<Result> {
+  return async (options) => withD1ExportRecord(options, () => operation(options));
+}
+
 /** The size and SHA-256 of a file, read through once. */
 async function digestOf(file: string): Promise<{ bytes: number; sha256: string }> {
   const hash = createHash('sha256');
@@ -324,7 +399,7 @@ function exporter(context: D1ExportContext) {
    * The credential is refreshed and the request sent again once where the API refused it, since a refused credential
    * is refused before the request does anything.
    */
-  const ask = async (tables: readonly string[], bookmark: string | null, beforeRetry?: () => void): Promise<D1ExportReading> => {
+  const ask = async (tables: readonly string[], bookmark: string | null, beforeRetry?: () => void, schemaOnly = false): Promise<D1ExportReading> => {
     for (let attempt = 0; ; attempt += 1) {
       const used = context.login.current();
       const headers = new Headers(await used);
@@ -335,7 +410,7 @@ function exporter(context: D1ExportContext) {
       try {
         response = await fetchApi(endpoint, {
           method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(D1_EXPORT_REQUEST_MS),
-          body: JSON.stringify({ output_format: 'polling', dump_options: { tables: [...tables] }, ...(bookmark === null ? {} : { current_bookmark: bookmark }) }),
+          body: JSON.stringify({ output_format: 'polling', dump_options: { tables: [...tables], ...(schemaOnly ? { no_data: true } : {}) }, ...(bookmark === null ? {} : { current_bookmark: bookmark }) }),
         });
       } catch (error) {
         return { kind: 'unknown', bookmark, cause: 'http', status: null, transient: true, detail: `the request did not reach Cloudflare: ${(error as Error).message}` };
@@ -364,7 +439,7 @@ function exporter(context: D1ExportContext) {
     for (;;) {
       let read: D1ExportReading | undefined;
       for (let attempt = 1; ; attempt += 1) {
-        read = await ask(current.tables, current.bookmark);
+        read = await ask(current.tables, current.bookmark, undefined, current.purpose === 'credential-probe');
         if (read.kind === 'running' || read.kind === 'complete' || read.kind === 'ended') break;
         // Nothing here ends the export: it stays recorded, and is asked after again.
         if (attempt >= D1_EXPORT_POLL_ATTEMPTS) {
@@ -567,7 +642,7 @@ function exporter(context: D1ExportContext) {
     if (now() - recorded.lastPolledAt >= marginMs) {
       // Asked after once more where it can be: one still running is followed, and only one Cloudflare says ended, or
       // no longer answers for, is taken to run no longer.
-      const read = recorded.bookmark === null ? null : await ask(recorded.tables, recorded.bookmark);
+      const read = recorded.bookmark === null ? null : await ask(recorded.tables, recorded.bookmark, undefined, recorded.purpose === 'credential-probe');
       if (read?.kind !== 'running') {
         context.report?.(`The D1 export this machine recorded ${iso(recorded.startedAt)} was last answered for ${iso(recorded.lastPolledAt)}, `
           + `over ${Math.round(marginMs / 60_000)} min ago; Cloudflare no longer runs it, so its record is cleared`);
@@ -580,6 +655,10 @@ function exporter(context: D1ExportContext) {
     if (recorded.bookmark === null) throw new D1ExportUnsettled(recorded, 'the answer to that request was lost', marginMs);
     context.report?.(`Resuming the D1 export this machine started ${iso(recorded.startedAt)} before starting another`);
     const { record, ended } = await follow(recorded);
+    if (record.purpose === 'credential-probe') {
+      fs.rmSync(file, { force: true });
+      return null;
+    }
     // Its result is a snapshot only while it is recent enough to be one; the caller holds it to the schema it reads.
     if (ended.kind === 'complete' && now() - record.startedAt < boundMs) {
       const result = await download(record.tables, record.bookmark, ended.signedUrl);
@@ -639,6 +718,7 @@ function exporter(context: D1ExportContext) {
 
   /** Give up the result this machine holds: the record and the SQL it names. */
   const release = (): void => {
+    if (readRecord(file, marginMs)?.purpose === 'credential-probe') throw new Error('An unfinished backup access check stays recorded until it is settled.');
     fs.rmSync(file, { force: true });
     fs.rmSync(context.output, { force: true });
   };
@@ -653,9 +733,9 @@ function exporter(context: D1ExportContext) {
  * answered and may still run, `D1ExportUnfinished` for one still running past its bound, and a transient
  * `ObjectReadError` where Cloudflare did not answer for it; each leaves the export recorded.
  */
-export async function settleD1Export(context: D1ExportContext): Promise<SettledExport | null> {
+export const settleD1Export = d1ExportOperation(async (context: D1ExportContext): Promise<SettledExport | null> => {
   return exporter(context).settle();
-}
+});
 
 /**
  * Export `tables` to `output`, never beside another export this machine may have running, and within the bound.
@@ -664,7 +744,7 @@ export async function settleD1Export(context: D1ExportContext): Promise<SettledE
  * when the export outlives its bound, `D1ExportFailed` when Cloudflare ends it without a result, and a transient
  * `ObjectReadError` for a poll or download that did not land; the export stays recorded through all but the third.
  */
-export async function exportD1(options: D1ExportOptions): Promise<void> {
+export const exportD1 = d1ExportOperation(async (options: D1ExportOptions): Promise<void> => {
   const steps = exporter(options);
   const settled = options.settled !== undefined ? options.settled : await steps.settle();
   if (settled !== null) {
@@ -676,14 +756,14 @@ export async function exportD1(options: D1ExportOptions): Promise<void> {
     steps.release();
   }
   await steps.start(options.tables, options.schema);
-}
+});
 
 /**
  * Give up the export result this machine holds for the database, once the snapshot built from it is saved: the record
  * and the SQL. Until then a retry takes the result again rather than exporting.
  */
 export function releaseD1Export(context: D1ExportContext): void {
-  exporter(context).release();
+  withD1ExportRecord(context, () => exporter(context).release());
 }
 
 /**
@@ -691,13 +771,15 @@ export function releaseD1Export(context: D1ExportContext): void {
  * under it can use the result any longer. A result kept under another hold, and an export still running, stay.
  */
 export function releaseKeptD1Export(recordDir: string, databaseId: string, holdToken: string): void {
-  D1ExportStartBudget.release(recordDir, databaseId, holdToken);
-  const file = exportRecordPath(recordDir, databaseId);
-  let recorded: ExportRecord | null;
-  try { recorded = readRecord(file, D1_EXPORT_CANCEL_MARGIN_MS); } catch { return; }
-  if (recorded === null || recorded.downloaded !== true || recorded.holdToken !== holdToken) return;
-  fs.rmSync(file, { force: true });
-  fs.rmSync(exportResultPath(recordDir, databaseId), { force: true });
+  withD1ExportRecord({ recordDir, databaseId }, () => {
+    D1ExportStartBudget.release(recordDir, databaseId, holdToken);
+    const file = exportRecordPath(recordDir, databaseId);
+    let recorded: ExportRecord | null;
+    try { recorded = readRecord(file, D1_EXPORT_CANCEL_MARGIN_MS); } catch { return; }
+    if (recorded === null || recorded.downloaded !== true || recorded.holdToken !== holdToken) return;
+    fs.rmSync(file, { force: true });
+    fs.rmSync(exportResultPath(recordDir, databaseId), { force: true });
+  });
 }
 
 /** How many times one read of the database is sent, and the pause before each retry: `D1_QUERY_BACKOFF_MS[n]` precedes attempt n + 2. */

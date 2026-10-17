@@ -5,7 +5,8 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { run } from '@myco/cli/server.js';
 import { installBackupCredential, readBackupCredential } from '@myco/server/backup-credential.js';
-import { writeDeploymentRecord } from '@myco/server/cloudflare.js';
+import { ensureCommandDir, writeDeploymentRecord, type CloudflareFetch, type OperatorLogin } from '@myco/server/cloudflare.js';
+import { exportD1, exportRecordPath, exportResultPath, probeD1Export, releaseD1Export, settleD1Export } from '@myco/server/cloudflare-d1-export.js';
 import type { CommandRunner, RunOptions } from '@myco/server/runner.js';
 
 const TOKEN = 'synthetic-backup-access-key';
@@ -23,6 +24,7 @@ let previousHome: string | undefined;
 let stored: boolean;
 let confirm: boolean;
 let reads: number;
+let exitCode: number | undefined;
 
 function record(databaseId: string | null = DATABASE) {
   writeDeploymentRecord({ accountId: ACCOUNT, databaseId: databaseId ?? undefined, workerName: 'fixture-worker', databaseName: 'fixture-db', bucketName: 'fixture-blobs', versionId: null, deployedAt: '2026-10-16T00:00:00Z' }, root);
@@ -36,9 +38,10 @@ beforeEach(() => {
   stored = false;
   confirm = true;
   reads = 0;
+  exitCode = undefined;
   console.log = console.error = (...parts) => { logs.push(parts.map(String).join(' ')); };
   process.stdout.write = process.stderr.write = ((chunk: string | Uint8Array) => { logs.push(String(chunk)); return true; }) as typeof process.stdout.write;
-  process.exit = (() => { throw new Error('fixture exit'); }) as typeof process.exit;
+  process.exit = ((code?: number) => { exitCode = code; throw new Error('fixture exit'); }) as typeof process.exit;
 });
 afterEach(() => {
   console.log = original.log;
@@ -63,6 +66,7 @@ const runner: CommandRunner = { async run(command, args, options) {
     events.push('confirm');
     return { code: 0, stdout: JSON.stringify(stored && confirm ? [{ name: 'RECOVERY_EXPORT_TOKEN' }] : []), stderr: '' };
   }
+  if (args.includes('whoami')) return { code: 0, stdout: 'OAuth fixture', stderr: '' };
   expect(args).toEqual(['--no-install', 'wrangler', '--version']);
   return { code: 0, stdout: '4.149.0', stderr: '' };
 } };
@@ -141,7 +145,6 @@ it('stores nothing when either export admission or its bookmark poll refuses val
 
 it('withholds private diagnostics from validation, storage and confirmation failures', async () => {
   record();
-  await drive([], probe([new Error(TOKEN)]));
   for (const step of ['put', 'list']) {
     events.length = 0;
     await drive([], probe(), { async run(command, args, options) {
@@ -149,7 +152,166 @@ it('withholds private diagnostics from validation, storage and confirmation fail
       return runner.run(command, args, options);
     } });
   }
+  events.length = 0;
+  await drive([], probe([new Error(TOKEN)]));
   assertPrivate();
+});
+
+it('refuses signed-out Wrangler before reading the key or making an export request', async () => {
+  record();
+  const output = await drive([], probe(), { async run(command, args, options) {
+    if (args.includes('whoami')) return { code: 1, stdout: TOKEN, stderr: TOKEN };
+    return runner.run(command, args, options);
+  } });
+  expect(output).toContain('signed in to no Cloudflare account');
+  expect(reads).toBe(0);
+  expect(events).toHaveLength(0);
+  expect(fs.existsSync(exportRecordPath(ensureCommandDir(root), DATABASE))).toBe(false);
+  assertPrivate();
+});
+
+it.each(['put', 'list'])('preserves the safe Wrangler authentication refusal during secret %s', async (step) => {
+  record();
+  const output = await drive([], probe(), { async run(command, args, options) {
+    if (args.includes(step)) return { code: 1, stdout: TOKEN, stderr: `Authentication error [code: 10000] ${TOKEN}` };
+    return runner.run(command, args, options);
+  } });
+  expect(output).toContain('Authentication error [code: 10000]');
+  expect(output).toContain('Workers Scripts Edit');
+  expect(output).not.toContain('Run the command again');
+  assertPrivate();
+});
+
+it('prints cancellation with a distinct exit before starting an export', async () => {
+  record();
+  const cancelled = new Error(TOKEN);
+  cancelled.name = 'ExitPromptError';
+  try {
+    await run(['backup-credential', '--target', 'cloudflare'], { runner, fetchImpl: probe(), readSecret: async () => { throw cancelled; } });
+  } catch (error) { if (!(error instanceof Error) || error.message !== 'fixture exit') throw error; }
+  expect(logs.join('\n')).toBe('Cancelled; nothing was stored.');
+  expect(exitCode).toBe(130);
+  expect(events).toHaveLength(0);
+  assertPrivate();
+});
+
+it.each([401, 403, 429, 503])('words a %s validation refusal by its cause', async (status) => {
+  record();
+  const output = await drive([], probe([Response.json({ success: false, errors: [{ code: status === 401 ? 10000 : 7403, message: TOKEN }] }, { status })]));
+  expect(output).toContain('No key was stored');
+  if (status === 401 || status === 403) expect(output).toContain('Account → D1 → Edit');
+  else {
+    expect(output).toContain('Cloudflare didn’t answer');
+    expect(output).toContain('Try later');
+    expect(output).not.toContain('Account → D1 → Edit');
+  }
+  expect(events).not.toContain('store');
+  assertPrivate();
+});
+
+const exportContext = (fetch: CloudflareFetch) => ({
+  accountId: ACCOUNT, databaseId: DATABASE, recordDir: ensureCommandDir(root), output: exportResultPath(ensureCommandDir(root), DATABASE), fetch,
+  login: { current: async () => new Headers(), headers: async () => new Headers(), refused: () => {} } satisfies OperatorLogin,
+});
+
+it('refuses a recorded operator export without changing its bytes or starting a probe', async () => {
+  record();
+  const file = exportRecordPath(ensureCommandDir(root), DATABASE);
+  const held = JSON.stringify({ databaseId: DATABASE, tables: ['sessions'], bookmark: 'operator-bookmark', startedAt: Date.now(), lastPolledAt: Date.now(), schema: 'fixture-schema' });
+  fs.writeFileSync(file, held);
+  expect(await drive()).toContain('An earlier database export is still recorded');
+  expect(events).toHaveLength(0);
+  expect(fs.readFileSync(file, 'utf8')).toBe(held);
+  assertPrivate();
+});
+
+it('persists intent before an unanswered start and blocks another probe or full export', async () => {
+  record();
+  const file = exportRecordPath(ensureCommandDir(root), DATABASE);
+  const fetchImpl: typeof fetch = Object.assign(async () => {
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ purpose: 'credential-probe', bookmark: null });
+    throw new Error(TOKEN);
+  }, { preconnect: () => {} });
+  expect(await drive([], fetchImpl)).toContain('Cloudflare didn’t answer');
+  expect(await drive()).toContain('An earlier database export is still recorded');
+  const context = exportContext(async () => { throw new Error('must not start another export'); });
+  await expect(exportD1({ ...context, tables: ['sessions'], schema: 'fixture' })).rejects.toThrow('had no answer');
+  expect(stored).toBe(false);
+  assertPrivate();
+});
+
+it('retains the probe bookmark on a poll failure and settles it before a full export, without downloading its result', async () => {
+  record();
+  const running = Response.json({ success: true, result: { at_bookmark: BOOKMARK } });
+  const output = await drive([], probe([running, new Error(TOKEN)]));
+  expect(output).toContain('Wait for Cloudflare’s small schema export to end');
+  const file = exportRecordPath(ensureCommandDir(root), DATABASE);
+  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ purpose: 'credential-probe', bookmark: BOOKMARK });
+  const requests: string[] = [];
+  const context = exportContext(async (url, init) => {
+    if (url === 'https://full.invalid/sql') { requests.push('full-download'); return new Response('-- full snapshot\n', { headers: { 'content-length': '17' } }); }
+    const body = JSON.parse(String(init.body));
+    if (body.current_bookmark === BOOKMARK) {
+      requests.push('probe-poll');
+      expect(body.dump_options).toEqual({ tables: ['schema_meta'], no_data: true });
+      return Response.json({ success: true, result: { status: 'complete', result: { signed_url: 'https://never-download.invalid/probe' } } });
+    }
+    requests.push('full-start');
+    expect(body.current_bookmark).toBeUndefined();
+    expect(body.dump_options).toEqual({ tables: ['sessions'] });
+    return Response.json({ success: true, result: { status: 'complete', result: { signed_url: 'https://full.invalid/sql' } } });
+  });
+  await exportD1({ ...context, tables: ['sessions'], schema: 'fixture' });
+  expect(requests).toEqual(['probe-poll', 'full-start', 'full-download']);
+  expect(fs.readFileSync(context.output, 'utf8')).toBe('-- full snapshot\n');
+  assertPrivate();
+});
+
+it('keeps an over-budget probe recorded and words the wait without blaming permissions', async () => {
+  record();
+  let requests = 0;
+  const waits: number[] = [];
+  const fetchImpl: typeof fetch = Object.assign(async () => {
+    requests += 1;
+    return Response.json({ success: true, result: { at_bookmark: BOOKMARK } });
+  }, { preconnect: () => {} });
+  await expect(installBackupCredential({ mycoHome: root, runner, fetchImpl, readSecret: secret, probeClock: { sleep: async (ms) => { waits.push(ms); } } })).rejects.toThrow('still running past its budget');
+  expect(requests).toBe(31);
+  expect(waits).toEqual(Array(30).fill(2000));
+  expect(JSON.parse(fs.readFileSync(exportRecordPath(ensureCommandDir(root), DATABASE), 'utf8')).bookmark).toBe(BOOKMARK);
+  let polls = 0;
+  const context = exportContext(async (_url, init) => {
+    expect(JSON.parse(String(init.body)).current_bookmark).toBe(BOOKMARK);
+    polls += 1;
+    return Response.json({ success: true, result: { at_bookmark: BOOKMARK } });
+  });
+  await expect(settleD1Export({ ...context, boundMs: 0 })).rejects.toThrow('no second export was started');
+  expect(polls).toBe(1);
+  expect(stored).toBe(false);
+  assertPrivate();
+});
+
+it('serializes a pending probe with every operator export mutation', async () => {
+  record();
+  let begin!: () => void;
+  const started = new Promise<void>((resolve) => { begin = resolve; });
+  let finish!: () => void;
+  const pending = new Promise<void>((resolve) => { finish = resolve; });
+  const recordDir = ensureCommandDir(root);
+  const checking = probeD1Export({ recordDir, databaseId: DATABASE, request: async () => {
+    begin();
+    await pending;
+    return { kind: 'complete', bookmark: null, signedUrl: 'https://not-downloaded.invalid' };
+  } });
+  await started;
+  const context = exportContext(async () => { throw new Error('no competing request'); });
+  try {
+    await expect(probeD1Export({ recordDir, databaseId: DATABASE, request: async () => { throw new Error('no second probe'); } })).rejects.toThrow('Another database export operation');
+    await expect(exportD1({ ...context, tables: ['sessions'], schema: 'fixture' })).rejects.toThrow('Another database export operation');
+    await expect(settleD1Export(context)).rejects.toThrow('Another database export operation');
+    expect(() => releaseD1Export(context)).toThrow('Another database export operation');
+  } finally { finish(); await checking; }
+  expect(fs.existsSync(exportRecordPath(recordDir, DATABASE))).toBe(false);
 });
 
 it('requires confirmation by name before announcing that backups can run', async () => {

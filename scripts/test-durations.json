@@ -63,7 +63,7 @@
     "tests/cli/runner-update-compiled.test.ts": 799,
     "tests/cli/runtime-redirect.test.ts": 555,
     "tests/cli/select-binary.test.ts": 362,
-    "tests/cli/server-backup-credential.test.ts": 6000,
+    "tests/cli/server-backup-credential.test.ts": 36000,
     "tests/cli/server-github-app.test.ts": 446,
     "tests/cli/server-owner-copy.test.ts": 189,
     "tests/cli/server-port.test.ts": 189,

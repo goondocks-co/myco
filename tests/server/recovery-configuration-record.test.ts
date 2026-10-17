@@ -3,6 +3,8 @@
  * Deployment's own producer reads it back from, the one credential list, and what a restore says about what it carries.
  */
 import { describe, expect, it } from 'bun:test';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { HOSTED_RECOVERY_CREDENTIAL_NAMES, RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 import { boundRecoveryConfiguration } from '@myco-server-worker/platform/cloudflare/recovery-export.js';
 import { recoveryConfigurationOf } from '@myco/server/cloudflare-resources.js';
@@ -62,6 +64,10 @@ describe('credential names', () => {
     expect(HOSTED_RECOVERY_CREDENTIAL_NAMES).toEqual([...RECOVERY_CREDENTIAL_NAMES, 'RECOVERY_EXPORT_TOKEN']);
     expect(credentialsReport(HOSTED_RECOVERY_CREDENTIAL_NAMES)).toContain('RECOVERY_EXPORT_TOKEN');
     expect(LOCAL_SECRET_NAMES).not.toContain('RECOVERY_EXPORT_TOKEN');
+    const docs = fs.readFileSync(fileURLToPath(new URL('../../docs/architecture/deployment-recovery.md', import.meta.url)), 'utf8');
+    expect(docs).toContain('the kept account-wide key can be reused');
+    expect(docs).toContain('different account needs a token scoped to that account');
+    expect(docs).toContain('Do not rotate during an automatic backup');
   });
 
   it('are one list: the native secrets file order is the recovery requirement', () => {
