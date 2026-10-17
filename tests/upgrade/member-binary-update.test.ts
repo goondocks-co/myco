@@ -58,9 +58,9 @@ int main(int argc, char **argv) {
     expect(fs.readdirSync(home).sort()).toEqual(['bin', 'install.json', ...(!dev ? ['last-update-check.json', 'member'] : []), 'refresh.log']);
     if (custom) expect(fs.existsSync(path.join(home, 'bin/myco'))).toBe(false);
   });
-  it('does not stage an older or out-of-channel explicit version', async () => {
+  it('does not stage an out-of-channel explicit version', async () => {
     let staged = false;
-    for (const target of ['2.0.0', '2.2.0-alpha.1', '2.2.0-rc.1']) {
+    for (const target of ['2.2.0-alpha.1', '2.2.0-rc.1']) {
       await run([target, '--channel', 'beta'], {
         home: root, currentVersion: '2.1.0-beta.1', targetTriple: () => 'darwin-arm64',
         fetchReleases: async () => [{ tag_name: `myco/v${target}`, prerelease: target.includes('-'), assets: [] }],

@@ -14,7 +14,7 @@ import { LocalVolume } from '@myco/server/local-volume.js';
 import { resolveLocalPaths } from '@myco/server/local.js';
 import { spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { writeInstallMarker } from '@myco/install/managed-binary.js';
+import { writeAutomaticUpdatePreference, writeInstallMarker } from '@myco/install/managed-binary.js';
 import { runnerRecordPath } from '@myco/runner/runner-registry.js';
 import { readVaultContent } from '@myco/member/legacy-backup.js';
 import { retiredVerbMessage } from '@myco/cli/retired-verbs.js';
@@ -81,6 +81,17 @@ function member(): void {
 }
 
 describe('member-only remove', () => {
+  for (const purge of [false, true]) it(`${purge ? 'purges' : 'preserves'} this installation's automatic update preference`, async () => {
+    member();
+    writeAutomaticUpdatePreference(home, false);
+    const preference = path.join(home, 'install-update.json');
+    const before = fs.readFileSync(preference, 'utf8');
+    await run(purge ? ['--purge', '--yes'] : ['--yes'], deps());
+    expect(process.exitCode).toBe(0);
+    expect(fs.existsSync(preference)).toBe(!purge);
+    if (!purge) expect(fs.readFileSync(preference, 'utf8')).toBe(before);
+  });
+
   it('retains a registered agent after repeated retired-settings parse refusals', async () => {
     member();
     const cursor = new SymbiontInstaller(loadManifests().find(manifest => manifest.name === 'cursor')!, home, resolvePackageRoot(), false, home).withoutProjectRoot().forDeployment(SERVER);

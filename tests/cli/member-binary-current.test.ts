@@ -13,7 +13,7 @@ import { keepCurrent } from '@myco/cli/member-keep-current.js';
 import { provisionGlobally, provisionAgents, runProvision, runStatus } from '@myco/cli/member.js';
 import { readProvisionRecord, recordProvision } from '@myco/member/provision-record.js';
 import { writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
-import { writeInstallMarker, managedBinaryPath } from '@myco/install/managed-binary.js';
+import { writeAutomaticUpdatePreference, writeInstallMarker, managedBinaryPath } from '@myco/install/managed-binary.js';
 import { placeExecutable } from '@myco/install/place-binary.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
@@ -117,6 +117,33 @@ it('serializes the due check across overlapping project helpers', async () => {
   expect(second).toBeNull();
   release();
   expect((await first)?.lastOutcome.kind).toBe('already-current');
+});
+
+it('off records one skip a day without network and doctor/status show how to turn it on', async () => {
+  writeAutomaticUpdatePreference(home, false);
+  let resolved = 0;
+  let staged = 0;
+  const deps = { ...binaryDeps,
+    resolveRefs: async () => { resolved++; return null; },
+    stageBinary: async () => { staged++; return { error: 'unexpected download' }; },
+  };
+  await pass({ binaryUpdateDeps: deps });
+  const first = readAutomaticUpdate(home);
+  expect(first?.lastOutcome).toEqual({ kind: 'skipped', reason: 'automatic updates are turned off' });
+  clock++;
+  await pass({ binaryUpdateDeps: deps });
+  expect(readAutomaticUpdate(home)).toEqual(first);
+  expect(resolved).toBe(0);
+  expect(staged).toBe(0);
+  const check = checkAutomaticUpdate(home);
+  expect(check).toMatchObject({ status: 'ok', detail: 'off; run myco update --automatic on to turn automatic updates on' });
+  expect((await homeReport(home, {
+    cwd: root, now, fetch: async () => Response.json({}), worker: { platform: 'linux', runner: recordingPlatform().runner, ownDeploymentUrls: async () => [] },
+  })).find(row => row.name === 'Automatic update')).toEqual(check);
+  const lines: string[] = [];
+  runStatus(['--all'], { mycoHome: home, cwd: root, now, worker: { platform: 'linux', runner: recordingPlatform().runner }, stdout: line => lines.push(line), stderr: () => {} });
+  expect(lines.join('\n')).toContain(check.detail);
+  expect(check.detail).not.toContain(new Date(first!.lastAttemptAt).toISOString());
 });
 
 it('updates before repair acquires its non-reentrant lease', async () => {
@@ -331,6 +358,23 @@ it.each([FROM, TO, null])('shows a failed same-pass agent refresh with provision
   expect(checkAutomaticUpdate(home)).toMatchObject({
     status: version === TO ? 'ok' : 'warn', detail: expect.stringContaining(version === TO ? 'agent setup has since been checked' : 'configuration fixture is unwritable'),
   });
+});
+
+it.each([FROM, TO, null])('keeps pending agent refresh visible while automatic updates are off, provision version %p', async version => {
+  if (version !== null) recordProvision(home, { version, serverUrl: SERVER, agents: ['codex'] });
+  await attemptAutomaticUpdate(home, now, async () => ({ kind: 'adopted', version: TO }), async () => { throw new Error('fixture agent refresh failed'); });
+  writeAutomaticUpdatePreference(home, false);
+  const check = checkAutomaticUpdate(home);
+  expect(check.status).toBe(version === TO ? 'ok' : 'warn');
+  expect(check.detail).toStartWith('off; run myco update --automatic on');
+  expect(check.detail.includes('agents still need refreshing. Run myco member provision --refresh')).toBe(version !== TO);
+  expect(check.detail).not.toContain(new Date(clock).toISOString());
+  expect((await homeReport(home, {
+    cwd: root, now, fetch: async () => Response.json({}), worker: { platform: 'linux', runner: recordingPlatform().runner, ownDeploymentUrls: async () => [] },
+  })).find(row => row.name === 'Automatic update')).toEqual(check);
+  const lines: string[] = [];
+  runStatus(['--all'], { mycoHome: home, cwd: root, now, worker: { platform: 'linux', runner: recordingPlatform().runner }, stdout: line => lines.push(line), stderr: () => {} });
+  expect(lines.join('\n')).toContain(check.detail);
 });
 
 it('does not start a download with too little time after release discovery', async () => {

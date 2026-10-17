@@ -14,7 +14,7 @@
 import type { InstallMarker } from '@myco/install/marker-reader.js';
 export { readInstallMarker, type InstallMarker } from '@myco/install/marker-reader.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { writeInstallMarker as publishInstallMarker } from '../../scripts/install-marker.mjs';
+import { writeInstallMarker as publishInstallMarker, writeAutomaticUpdatePreference as publishAutomaticUpdatePreference } from '../../scripts/install-marker.mjs';
 
 export {
   managedBinDir,
@@ -32,4 +32,8 @@ export {
  */
 export function writeInstallMarker(dir: string, marker: InstallMarker): void {
   publishInstallMarker(dir, marker, (file, text) => atomicWriteFileSync(file, text, 'utf8'));
+}
+
+export function writeAutomaticUpdatePreference(dir: string, enabled: boolean): void {
+  publishAutomaticUpdatePreference(dir, enabled, (file, text) => atomicWriteFileSync(file, text, 'utf8'));
 }
