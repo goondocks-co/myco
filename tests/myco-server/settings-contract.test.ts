@@ -235,7 +235,7 @@ function profileCases(): Record<string, BehaviorCase> {
     out[`agent.harnesses.${harness}.credential`] = {
       consumer: at(harnessModule, selectWorkerExecution), invalidHolds: true, observe,
       setup: () => [...TIER_TASK.default, ...modelFor(harness, 'default')],
-      value: (target) => target === 'cloudflare' ? 'worker-login' : 'deployment', invalid: () => 'nobody',
+      value: () => 'deployment', invalid: () => 'nobody',
     };
   }
   return out;

@@ -866,6 +866,7 @@
     "member dispatch: a member starts tasks up to its daily ceiling, reads capabilities, and is refused what an admin alone does": 12000,
     "recall gold set: real prompts served through the shipped path hold to the recorded baseline": 108000,
     "embedding switch: search answers by meaning at every step and moves only once the new model covers every source": 56000,
-    "model lists: a machine's list is kept, replaced, answered to Settings and forgotten once stale": 10000
+    "model lists: a machine's list is kept, replaced, answered to Settings and forgotten once stale": 10000,
+    "runners: explicit per-agent stored sign-in, own default and unavailable credential holds": 60000
   }
 }

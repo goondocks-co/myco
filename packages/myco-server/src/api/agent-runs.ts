@@ -1,6 +1,6 @@
 import { emit, classify } from '../telemetry.js';
 import { readWorkerFleet } from '../core/worker-contacts.js';
-import { fleetTaskReason } from '../read/fleet.js';
+import { fleetSelectionContext, fleetTaskReason } from '../read/fleet.js';
 import { claimSettings } from '../core/worker-selection.js';
 import { readDispatchLimits } from '../core/limits.js';
 import type { QueueReason } from '@goondocks/myco-shared/runner-fleet';
@@ -12,6 +12,7 @@ import type { QueueReason } from '@goondocks/myco-shared/runner-fleet';
  * run nothing, and 404 is a project this caller may not see — never the
  * other way round.
  */
+import { isAdmin } from '../auth/roles.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { listReports } from '../core/runs.js';
@@ -67,8 +68,8 @@ export async function handleProjectRuns(env: ServerEnv, ctx: OwnerContext): Prom
   const until = instantParam(ctx.url, 'until');
   if (until instanceof Response) return until;
   if (since !== undefined && until !== undefined && since >= until) return badRequest('since must be before until');
-  const answer = await listRuns(env.db, scope, ctx.now, ctx.member.id, { ...page, status, task, since, until });
-  const waits = await fleetWaits(env, answer.rows.filter(row => row.status === 'queued').map(row => row.task), ctx.now);
+  const answer = await listRuns(env.db, scope, ctx.now, ctx.member.id, { ...page, status, task, since, until, includeSignIn: isAdmin(ctx.member.role) });
+  const waits = await fleetWaits(env, answer.rows.filter(row => row.status === 'queued').map(row => row.task), ctx.now, isAdmin(ctx.member.role));
   return ok({ ...answer, rows: answer.rows.map(row => row.status === 'queued' ? { ...row, fleetWait: waits.get(row.task) } : row) });
 }
 
@@ -86,11 +87,11 @@ export async function handleProjectRun(env: ServerEnv, ctx: OwnerContext): Promi
   if (callsCursor !== null) callsUrl.searchParams.set('cursor', callsCursor);
   const calls = paging(callsUrl);
   if (calls instanceof Response) return calls;
-  const detail = await getRunDetail(env.db, scope, runId, ctx.now, ctx.member.id, calls);
+  const detail = await getRunDetail(env.db, scope, runId, ctx.now, ctx.member.id, { ...calls, includeSignIn: isAdmin(ctx.member.role) });
   if (detail === null) return notFound();
   const subject = await memberSubject(env.db, ctx.member.id, 'http');
   const canCancel = await authorizeHttp(env, RUN_CANCEL_POLICY, subject, { params: { projectId: scope.projectId, runId } });
-  const waits = await fleetWaits(env, detail.run.status === 'queued' ? [detail.run.task] : [], ctx.now);
+  const waits = await fleetWaits(env, detail.run.status === 'queued' ? [detail.run.task] : [], ctx.now, isAdmin(ctx.member.role));
   const answer: DashboardRunDetail = { ...detail, run: { ...detail.run, ...(detail.run.status === 'queued' ? { fleetWait: waits.get(detail.run.task) } : {}), canCancel,
     cancelReason: canCancel ? null : 'Only the member who requested this run or an administrator can cancel it.' } };
   return ok({ ...answer, reports: await listReports(env.db, scope, runId), ...await runReads(env.db, scope, runId), projectId: scope.projectId });
@@ -123,12 +124,13 @@ export async function handleProjectRunSteps(env: ServerEnv, ctx: OwnerContext): 
 }
 
 /** One read supplies the current wait for all queued tasks on a page. */
-async function fleetWaits(env: ServerEnv, tasks: readonly (string | null)[], now: number) {
+async function fleetWaits(env: ServerEnv, tasks: readonly (string | null)[], now: number, includeSignIn: boolean) {
   const waits = new Map<string | null, { reason: QueueReason; observedAt: number }>();
   if (tasks.length === 0) return waits;
   try {
-  const [fleet, settings, limits] = await Promise.all([readWorkerFleet(env.db, now), claimSettings(env), readDispatchLimits(env)]);
-  for (const task of new Set(tasks)) waits.set(task, { reason: task === null ? 'unavailable' : await fleetTaskReason(env, task, fleet, now, settings, limits), observedAt: now });
+  const selection = fleetSelectionContext(env, includeSignIn);
+  const [fleet, settings, limits] = await Promise.all([readWorkerFleet(env.db, now, includeSignIn), claimSettings(env), readDispatchLimits(env)]);
+  for (const task of new Set(tasks)) waits.set(task, { reason: task === null ? 'unavailable' : await fleetTaskReason(env, task, fleet, now, settings, limits, undefined, selection), observedAt: now });
   } catch (error) {
     emit({ kind: 'fleet_read_failed', errorClass: classify(error) });
     for (const task of new Set(tasks)) waits.set(task, { reason: 'unavailable', observedAt: now });

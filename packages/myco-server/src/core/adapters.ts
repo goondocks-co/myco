@@ -261,8 +261,6 @@ export interface ServerEnv {
   /** What the embedding policy resolves against: absent, the platform's target with no embedding binding of its own. */
   embeddingPlatform?: EmbeddingPlatform;
   platform: PlatformDescriptor;
-  /** Built-in source for harness credentials, supplied by the deployment target. */
-  harnessCredentialSource: 'deployment' | 'worker-login';
   db: RelationalStore;
   blobs: BlobStore;
   sourceLimit: RateLimiter;

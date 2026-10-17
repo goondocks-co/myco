@@ -8,6 +8,8 @@ export function schemaObjects(db: Database): Array<{ type: string; name: string;
   return db.query(`SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name <> 'd1_migrations' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY type, name`).all() as Array<{ type: string; name: string; sql: string }>;
 }
 
+const RUNNER_SIGN_IN_SCHEMA_VERSION = 88;
+
 const sqlIdentifier = (name: string): string => `"${name.replaceAll('"', '""')}"`;
 
 export class UpgradeStateMismatchError extends Error {}
@@ -163,7 +165,7 @@ export async function firstObservableOmission(statements: readonly string[], att
   throw new Error('no statement of the latest step changes the seeded fixture; seed data it touches');
 }
 
-export function seedReferencedTables(db: Database, statements: readonly string[]): string[] {
+export function seedReferencedTables(db: Database, statements: readonly string[], includeDescendants = true): string[] {
   const seedTable = (table: string, visiting: Set<string>): void => {
     if (table.includes('\0')) throw new Error(`unsupported D1 upgrade fixture table ${table}`);
     if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) return;
@@ -184,7 +186,7 @@ export function seedReferencedTables(db: Database, statements: readonly string[]
     for (const column of columns.filter((item) => (item.notnull || item.pk) && item.dflt_value === null)) {
       if (values.has(column.name) || (column.pk && /INT/i.test(column.type))) continue;
       const name = column.name;
-      const value = name === 'project_id' ? PROJECT_ID : name === 'agent_id' ? 'upgrade_agent'
+      const value = table === 'runners' && name === 'id' ? 'rn_upgrade' : name === 'project_id' ? PROJECT_ID : name === 'agent_id' ? 'upgrade_agent'
         : name === 'session_id' ? 'upgrade_session' : name === 'run_id' ? 'upgrade_run'
           : name === 'status' ? 'completed' : name === 'role' ? 'member'
             : name === 'state' ? 'draft' : name === 'confidence' ? 'high'
@@ -200,6 +202,7 @@ export function seedReferencedTables(db: Database, statements: readonly string[]
   };
   const touched = referencedExistingTables(db, statements);
   for (const table of touched) seedTable(table, new Set());
+  if (!includeDescendants) return touched;
   const candidateChildren = db.query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations'`).all() as Array<{ name: string }>;
   const visited = new Set<string>();
   const queue = [...touched];
@@ -217,7 +220,7 @@ export function seedReferencedTables(db: Database, statements: readonly string[]
   return [...visited];
 }
 
-export function seedPreviousSchema(databaseFile: string, statements: readonly string[]): string[] {
+export function seedPreviousSchema(databaseFile: string, statements: readonly string[], version: number): string[] {
   const db = new Database(databaseFile);
   try {
     db.exec('PRAGMA foreign_keys = ON');
@@ -227,7 +230,7 @@ export function seedPreviousSchema(databaseFile: string, statements: readonly st
       INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('upgrade_agent', 'upgrade', 'built-in', 1, 1);
       INSERT INTO agent_runs (project_id, id, agent_id, status, started_at) VALUES ('proj_parity', 'upgrade_run', 'upgrade_agent', 'completed', 1);
       INSERT INTO agent_run_events (project_id, run_id, event_type, recorded_at) VALUES ('proj_parity', 'upgrade_run', 'upgrade_child', 1);`);
-    return [...new Set(['projects', 'sessions', 'events', 'agents', 'agent_runs', 'agent_run_events', ...seedReferencedTables(db, statements)])];
+    return [...new Set(['projects', 'sessions', 'events', 'agents', 'agent_runs', 'agent_run_events', ...seedReferencedTables(db, statements, version !== RUNNER_SIGN_IN_SCHEMA_VERSION)])];
   } finally { db.close(); }
 }
 

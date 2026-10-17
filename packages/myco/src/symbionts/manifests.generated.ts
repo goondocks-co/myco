@@ -2149,10 +2149,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "sourceReads": "unheld"
       },
       "credential": {
-        "provider": "anthropic",
-        "slot": "anthropic",
+        "provider": "cursor",
+        "slot": "own",
+        "ownSlotLabel": "Cursor",
         "variables": [
-          "ANTHROPIC_API_KEY"
+          "CURSOR_API_KEY"
+        ],
+        "accepts": [
+          "api-key"
         ]
       },
       "profile": {
@@ -2488,6 +2492,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "slot": "anthropic",
         "variables": [
           "ANTHROPIC_API_KEY"
+        ],
+        "accepts": [
+          "api-key"
         ]
       },
       "profile": {

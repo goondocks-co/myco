@@ -1,3 +1,4 @@
+import { visibleRunHolder } from '@goondocks/myco-shared/run-holds';
 import { parseRepositoryFailure, parseHarnessStop, LATE_HARNESS_ERROR_NOTE, type HarnessStop } from '@goondocks/myco-shared/run-text';
 import { type RepositoryFailure } from '@goondocks/myco-shared/repository';
 import { heldPartition } from '../core/embedding/policy.js';
@@ -200,6 +201,7 @@ export interface RunDetail {
 }
 
 export interface RunFilters {
+  includeSignIn?: boolean;
   status?: string;
   task?: string;
   agentId?: string;
@@ -261,7 +263,7 @@ function workerOf(row: Record<string, unknown>, ownNames: ReadonlyMap<string, st
   };
 }
 
-function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, string>): RunListRow {
+function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, string>, includeSignIn = false): RunListRow {
   // Terminal runs have no current worker lease.
   const ended = isTerminalRunStatus(row.status);
   return {
@@ -285,7 +287,7 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
     resumeStatus: text(row.resume_status),
     failed: flag(row.failed),
     queuedAt: num(row.queued_at),
-    heldBy: text(row.held_by),
+    heldBy: visibleRunHolder(text(row.held_by), includeSignIn),
     position: num(row.position),
     replaced: flag(row.replaced),
     replaces: text(row.replaces),
@@ -300,11 +302,11 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
   };
 }
 
-function toDetailRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, string>): RunDetailRow {
+function toDetailRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, string>, includeSignIn: boolean): RunDetailRow {
   const repositoryFailure = parseRepositoryFailure({ code: row.repository_failure_code, summary: row.repository_failure_summary });
   const harnessStop = parseHarnessStop(typeof row.harness_stop === 'string' ? JSON.parse(row.harness_stop) : null);
   return {
-    ...toListRow(row, ownNames),
+    ...toListRow(row, ownNames, includeSignIn),
     ...(harnessStop === null ? {} : { harnessStop }),
     ...(row.ended_note === LATE_HARNESS_ERROR_NOTE ? { endedNote: LATE_HARNESS_ERROR_NOTE } : {}),
     instruction: typeof row.instruction === 'string' ? redactSecrets(row.instruction) : null,
@@ -393,7 +395,7 @@ export async function listRuns(db: RelationalStore, scope: ReadScope, nowMs: num
   const outcomes = outcome.read(counts);
   return {
     cursor: listed.cursor,
-    rows: listed.rows.map((r) => ({ ...toListRow(r, ownNames), outcome: outcomes.get(r.id as string)! })),
+    rows: listed.rows.map((r) => ({ ...toListRow(r, ownNames, opts.includeSignIn), outcome: outcomes.get(r.id as string)! })),
   };
 }
 
@@ -535,7 +537,7 @@ export async function getRunSteps(db: RelationalStore, scope: ReadScope, runId: 
 }
 
 /** One run inside the scope with its phases and the calls it made, its machine named as of `nowMs`, or null — including when the run exists under another project. */
-export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId: string, nowMs: number, viewerId: string, calls: { limit?: number; cursor?: string } = {}): Promise<RunDetail | null> {
+export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId: string, nowMs: number, viewerId: string, calls: { limit?: number; cursor?: string; includeSignIn?: boolean } = {}): Promise<RunDetail | null> {
   const [[found], ownNames] = await Promise.all([db.batch([
     db.prepare(`SELECT ${DETAIL_COLUMNS} FROM agent_runs WHERE project_id = ? AND id = ?`).bind(scope.projectId, runId),
   ]), ownMachineNames(db, viewerId, nowMs)]);
@@ -553,7 +555,7 @@ export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId:
   ]);
   const latest = attempts.rows.at(-1);
   return {
-    run: toDetailRow(row, ownNames), phases: phasesOf(text(row.checkpoints)), toolCalls: callPage.rows,
+    run: toDetailRow(row, ownNames, calls.includeSignIn === true), phases: phasesOf(text(row.checkpoints)), toolCalls: callPage.rows,
     toolCallCoverage: { total: callPage.total, failed: callPage.failed, cursor: callPage.cursor },
     source: typeof row.source_branch === 'string' && typeof row.source_commit === 'string' ? { branch: row.source_branch, commit: row.source_commit } : null,
     map: currentMap === null ? null : {

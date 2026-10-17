@@ -30,7 +30,7 @@ import { runRunnerUpdateHelper } from '../runner/update-helper.js';
 export const RUNNER_HELP = `myco runner — run a Deployment's queued tasks on this machine's harnesses
 
 Usage:
-  myco runner register <host> [--name <name>] [--replace]
+  myco runner register <host> [--name <name>] [--replace] [--sign-in <agent>=own|stored,...]
                                   Register this machine as a runner of the Deployment.
   myco runner run [--server <url>] [--once] [--harness <id>]...
                                   Claim and drive the Deployment's runs in this terminal.

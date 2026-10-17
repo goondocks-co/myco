@@ -125,7 +125,6 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
       SESSION_SECRET: config.SESSION_SECRET,
     },
     platform: bunPlatform(config),
-    harnessCredentialSource: 'worker-login',
     ...(config.harnessLaunch === undefined ? {} : { harnessLaunch: config.harnessLaunch }),
     ...(config.recovery === undefined ? {} : { recovery: config.recovery }),
     ...(config.sqlite === undefined || config.sqlite === null ? {} : { storeMaintenance: sqliteStoreMaintenance(config.sqlite) }),

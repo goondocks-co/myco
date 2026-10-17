@@ -1,3 +1,4 @@
+import { HARNESS_CREDENTIALS, credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import type { RelationalStore, SecretWrappingKey } from './adapters.js';
 import { emit } from '../telemetry.js';
 import { fromBase64, toBase64 } from '../base64.js';
@@ -81,6 +82,11 @@ export class SecretValueError extends Error {
   }
 }
 
+/** A stored credential cannot be opened under the Deployment's current wrapping key. */
+export class SecretOpenError extends Error {
+  constructor() { super('stored credential is unreadable'); this.name = 'SecretOpenError'; }
+}
+
 export interface SecretStore {
   /** Seal `value` under the deployment's wrapping key and record who stored it, as `normalizeSecretValue` shapes it; throws `SecretValueError` for a value it refuses. */
   put(name: string, value: string, actor: string, nowMs: number): Promise<void>;
@@ -147,11 +153,14 @@ async function seal(key: CryptoKey, name: string, value: string): Promise<{ ciph
  * nothing ever has to be pasted twice for the store to catch up.
  */
 async function open(key: CryptoKey, row: SecretRow): Promise<string> {
-  const opened = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: fromBase64(row.iv), additionalData: encoder.encode(row.name) },
-    key,
-    fromBase64(row.ciphertext),
-  );
+  let opened: ArrayBuffer;
+  try {
+    opened = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: fromBase64(row.iv), additionalData: encoder.encode(row.name) },
+      key,
+      fromBase64(row.ciphertext),
+    );
+  } catch { throw new SecretOpenError(); }
   const checked = normalizeSecretValue(decoder.decode(opened));
   if (!checked.ok) throw new SecretValueError(checked.reason);
   return checked.value;
@@ -178,6 +187,13 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
     return imported;
   };
 
+  const openRow = async (r: SecretRow): Promise<string> => {
+    let importedKey: CryptoKey;
+    try { importedKey = await key(); }
+    catch { throw new SecretOpenError(); }
+    return open(importedKey, r);
+  };
+
   const row = (name: string): Promise<SecretRow | null> => db
     .prepare(`SELECT name, ciphertext, iv, key_version, updated_at, updated_by FROM deployment_secrets WHERE name = ?`)
     .bind(name)
@@ -198,7 +214,7 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
       // The mask is derived here rather than stored. A stored preview would put the
       // first and last characters of every credential back into the table this
       // design exists to keep them out of.
-      maskedValue = maskSecret(await open(await key(), r));
+      maskedValue = maskSecret(await openRow(r));
     } catch {
       readable = false;
     }
@@ -223,7 +239,7 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
 
     async get(name) {
       const r = await row(name);
-      return r === null ? null : open(await key(), r);
+      return r === null ? null : openRow(r);
     },
 
     async describe(name) {
@@ -250,4 +266,31 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
       return { deleted };
     },
   };
+}
+
+/** One request opens each stored slot at most once and receives only agent usability. */
+export function harnessCredentialAvailability(db: RelationalStore, wrappingKey: SecretWrappingKey): (harness: string) => Promise<boolean> {
+  const store = deploymentSecretStore(db, wrappingKey);
+  const slots = new Map<string, Promise<string | null>>();
+  return async harness => {
+    const slot = HARNESS_CREDENTIALS[harness]?.slot;
+    if (slot == null) return false;
+    let opened = slots.get(slot);
+    if (opened === undefined) {
+      opened = store.get(slot);
+      slots.set(slot, opened);
+    }
+    try {
+      const key = await opened;
+      return key !== null && Object.keys(credentialEnvFor(harness, key)).length > 0;
+    } catch (error) {
+      if (error instanceof SecretOpenError || error instanceof SecretValueError) return false;
+      throw error;
+    }
+  };
+}
+
+/** A read surface receives only whether the agent's stored login is usable. */
+export function harnessCredentialAvailable(db: RelationalStore, wrappingKey: SecretWrappingKey, harness: string): Promise<boolean> {
+  return harnessCredentialAvailability(db, wrappingKey)(harness);
 }

@@ -1,3 +1,4 @@
+import { RunnerSignInUnavailable } from '../auth/runners.js';
 import type { RelationalStore } from '../core/adapters.js';
 import type { DashboardMember } from '../auth/identity-link.js';
 import { MAX_NAMED_PROJECTS, type ProjectSet, type ReadScope } from '../read/scope.js';
@@ -96,3 +97,12 @@ export function parseJsonObject(body: string): Record<string, unknown> | null {
 export async function readJsonObject(request: Request): Promise<Record<string, unknown> | null> {
   try { return parseJsonObject(await request.text()); } catch { return null; }
 }
+
+/** Every runner sign-in surface reports an unavailable chosen key as the same actionable refusal. */
+export const withRunnerSignInRefusal = <A extends unknown[]>(handler: (...args: A) => Promise<Response>) => async (...args: A): Promise<Response> => {
+  try { return await handler(...args); }
+  catch (error) {
+    if (error instanceof RunnerSignInUnavailable) return Response.json({ error: 'credential_unavailable' }, { status: 409 });
+    throw error;
+  }
+};

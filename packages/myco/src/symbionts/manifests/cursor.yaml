@@ -137,9 +137,11 @@ runner:
   # outside it.
   asking: { kind: run-home, env: CURSOR_CONFIG_DIR, sourceReads: unheld }
   credential:
-    provider: anthropic
-    slot: anthropic
-    variables: [ANTHROPIC_API_KEY]
+    provider: cursor
+    slot: own
+    ownSlotLabel: Cursor
+    variables: [CURSOR_API_KEY]
+    accepts: [api-key]
   profile:
     models: { low: null, default: null, high: null }
     efforts: { low: low, default: medium, high: high }

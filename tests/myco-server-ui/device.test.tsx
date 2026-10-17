@@ -187,7 +187,7 @@ describe('device approval page', () => {
     globalThis.fetch = (async input => {
       const url = String(input); calls.push(url);
       if (url === '/auth/me') return Response.json({ ...ME, member: { ...ME.member, role: 'admin' } });
-      if (url === '/api/device/preview') return Response.json({ ...PREVIEW, subject: 'runner', runnerName: 'homelab-mini', replacingRunnerId: 'rn_mini', scope: 'runner' });
+      if (url === '/api/device/preview') return Response.json({ ...PREVIEW, subject: 'runner', runnerName: 'homelab-mini', replacingRunnerId: 'rn_mini', credentialChoices: { 'claude-code': 'stored', codex: 'own' }, scope: 'runner' });
       return Response.json({ approved: true });
     }) as typeof fetch;
     mount();
@@ -197,6 +197,9 @@ describe('device approval page', () => {
     expect(await screen.findByRole('heading', { name: 'Replace registration for homelab-mini' })).toBeTruthy();
     expect(screen.getByText(/keeps the runner’s history and ID/)).toBeTruthy();
     expect(screen.getByText(/ends its current registration and authority/)).toBeTruthy();
+    expect(screen.getByText('Claude Code signs in with')).toBeTruthy();
+    expect(screen.getByText('The server’s stored key')).toBeTruthy();
+    expect(screen.getByText('Codex signs in with')).toBeTruthy();
     expect(screen.getByText('SSH laptop')).toBeTruthy();
     expect(screen.getByText('linux')).toBeTruthy();
     expect(screen.getByText('192.0.2.10')).toBeTruthy();

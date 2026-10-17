@@ -243,7 +243,7 @@ describe('settings API', () => {
         });
         expect(initial.find((entry) => entry.leaf === `agent.effort_map.${harness}.${tier}`)).toMatchObject({ configured: false, effectiveValue: efforts[tier], source: 'default' });
       }
-      expect(initial.find((entry) => entry.leaf === `agent.harnesses.${harness}.credential`)).toMatchObject({ configured: false, effectiveValue: 'deployment', source: 'default' });
+      expect(initial.find((entry) => entry.leaf === `agent.harnesses.${harness}.credential`)).toMatchObject({ configured: false, effectiveValue: 'worker-login', source: 'default' });
     }
     const leaf = 'agent.reasoning_map.claude-code.low';
     const row = async () => ((await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>)
@@ -358,7 +358,7 @@ describe('provider credentials through the surface', () => {
     const text = await listed.text();
     expect(text).not.toContain(ANTHROPIC);
     const secrets = (JSON.parse(text) as { secrets: Array<Record<string, unknown>> }).secrets;
-    expect(secrets.map((s) => s.name)).toEqual(['anthropic', 'codex', 'openai', 'openrouter', 'github']);
+    expect(secrets.map((s) => s.name)).toEqual(['anthropic', 'codex', 'cursor', 'openai', 'openrouter', 'github']);
     expect(secrets.find((s) => s.name === 'openai')).toMatchObject({ configured: false, maskedValue: null });
   });
 

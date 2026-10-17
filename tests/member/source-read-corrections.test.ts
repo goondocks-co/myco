@@ -228,7 +228,7 @@ describe('source containment corrections', () => {
     const events = [];
     for await (const event of acpDriver('cursor').run({ ...spec, mcpConfigPath: join(spec.scratchDir, 'mcp.json') }, new AbortController().signal)) events.push(event);
     expect(events).toEqual([{ kind: 'ended', stop: 'error', code: 'launch_failed', detail: 'source_read_unavailable:cursor' }]);
-    const result = await selectExecution({ harnessCredentialSource: 'worker-login' }, 'vault-seed', [{ id: 'cursor', authenticated: true, profile: { model: 'none', efforts: [] } }], new Map(), async () => { throw new Error('unbounded source harness must not open a login'); });
+    const result = await selectExecution('vault-seed', [{ id: 'cursor', authenticated: true, profile: { model: 'none', efforts: [] } }], new Map(), async () => { throw new Error('unbounded source harness must not open a login'); });
     expect(result).toEqual({ selected: null, reason: 'source_read_unavailable:cursor' });
   });
   it('OpenCode uses the checkout cwd for default searches and carries the standing instruction', async () => {

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { FleetQueue, FleetRun } from '@goondocks/myco-shared/runner-fleet';
+import type { FleetQueue, FleetRun, RunnerCredentialChoice, RunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 import { Button, ConfirmDialog, ErrorState, Input, MoreMenu, StatusChip } from '../../../design';
 import { permissionOf, useMe } from '../../../hooks/use-me';
 import { fetchJson, postJson, type RunnerRow, type WorkerRow } from '../../../lib/api';
@@ -15,7 +15,7 @@ import { LegacyWorker, refreshFleet } from './LegacyWorker';
 import { QueueWarning } from './QueueWarning';
 
 const RUNNERS_KEY = ['runners'] as const;
-interface FleetAnswer { observedAt: number; runners: RunnerRow[]; legacyWorkers: WorkerRow[]; queue: FleetQueue }
+interface FleetAnswer { observedAt: number; runners: RunnerRow[]; legacyWorkers: WorkerRow[]; queue: FleetQueue; storedCredentials?: Record<string, boolean> }
 
 /** Every machine entrusted with Myco's work, with observations separated from server controls and assignments. */
 export function RunnersPage() {
@@ -28,12 +28,12 @@ export function RunnersPage() {
       {runners.isError && <><ErrorState error={runners.error} onRetry={() => void runners.refetch()} /><p className="t-small text-muted">Machine and queue information is unavailable. Last check failed {formatRelative(runners.errorUpdatedAt)}.{runners.data !== undefined ? ` Last successful read ${formatRelative(runners.data.observedAt)}; the rows below are stale.` : ' Last successful read unavailable.'}</p></>}
       {runners.isPending && <p className="t-body text-muted">Loading machines…</p>}
       {runners.data !== undefined && !runners.isError && <QueueWarning queue={runners.data.queue} />}
-      <AdminSection id="runners" title="Registered runners" description="A runner is a machine you’ve chosen to run Myco’s work. Its agent sign-ins stay on that machine.">
+      <AdminSection id="runners" title="Registered runners" description="A runner is a machine you’ve chosen to run Myco’s work. Each agent uses this machine’s sign-in by default. You can choose the server’s stored key for an agent.">
         {permission.allowed && <Button size="sm" onClick={() => setSetup(!setup)}>Add runner</Button>}
-        {setup && <div className="rounded-card border border-line p-s4 t-small text-ink-2"><p>On the machine you want to use, run <code>myco runner register {window.location.origin}</code>. Open its device approval link, review the machine and approve it. If this machine has a legacy worker, let its assigned work finish and run <code>myco worker uninstall --server {window.location.origin}</code> on that machine. Then run <code>myco runner install</code> on that machine to start at login.</p><p className="mt-s2">Sign in to a supported coding agent on that machine first. Myco reports its sign-in; a model listing does not prove provider access.</p></div>}
+        {setup && <div className="rounded-card border border-line p-s4 t-small text-ink-2"><p>On the machine you want to use, run <code>myco runner register {window.location.origin}</code>. Open its device approval link, review the machine and approve it. If this machine has a legacy worker, let its assigned work finish and run <code>myco worker uninstall --server {window.location.origin}</code> on that machine. Then run <code>myco runner install</code> on that machine to start at login.</p><p className="mt-s2">Install a supported coding agent on that machine. Sign in there, or choose a stored key below after registration. Myco reports its sign-in; a model listing does not prove provider access.</p></div>}
         {runners.data?.runners.length === 0 && !runners.isError && <p className="t-body text-muted">No runners are registered. Add a machine to run Myco’s work.</p>}
         <div className="flex flex-col gap-s4">
-          {runners.data?.runners.map((runner) => <RunnerCard key={runner.id} runner={runner} allowed={permission.allowed && !runners.isError} />)}
+          {runners.data?.runners.map((runner) => <RunnerCard key={runner.id} runner={runner} allowed={permission.allowed && !runners.isError} storedCredentials={runners.data?.storedCredentials ?? {}} />)}
         </div>
       </AdminSection>
       <AdminSection id="legacy-workers" title={LEGACY_WORKER_LABEL} description="These machines can also run Myco’s work. Register each machine, let its work finish, then uninstall its legacy worker before installing the runner service.">
@@ -64,6 +64,7 @@ function outcome(runner: RunnerRow): string {
       case 'registration': return 'Waiting for registration approval';
       case 'user_active': return 'Waiting until the machine is idle';
       case 'incompatible': return 'Agent needs an update';
+      case 'credential_unavailable': return 'The chosen stored key is unavailable';
       case 'not_signed_in': return 'No signed-in agent';
     }
     if (runner.offers?.length === 0 || runner.offers?.every(offer => !offer.authenticated)) return 'No signed-in agent';
@@ -75,10 +76,10 @@ function outcome(runner: RunnerRow): string {
   return 'Waiting for its next check';
 }
 
-interface DevicePreview { subject: 'member' | 'runner'; runnerName?: string; replacingRunnerId?: string | null; machineName: string; os: string; ip: string; approverIp: string; ageSeconds: number; scope: string; expiresAt: number }
+interface DevicePreview { credentialChoices?: RunnerCredentialChoices; subject: 'member' | 'runner'; runnerName?: string; replacingRunnerId?: string | null; machineName: string; os: string; ip: string; approverIp: string; ageSeconds: number; scope: string; expiresAt: number }
 
 type Control = 'rename' | 'pause' | 'resume' | 'remove' | 'recredential';
-function RunnerCard({ runner, allowed }: { runner: RunnerRow; allowed: boolean }) {
+function RunnerCard({ runner, allowed, storedCredentials }: { runner: RunnerRow; allowed: boolean; storedCredentials: Record<string, boolean> }) {
   const client = useQueryClient();
   const [control, setControl] = useState<Control | null>(null);
   const [value, setValue] = useState('');
@@ -126,6 +127,8 @@ function RunnerCard({ runner, allowed }: { runner: RunnerRow; allowed: boolean }
           ]} />
         </div>}
       </div>
+      {allowed && [...new Set([...(runner.offers?.map(offer => offer.id) ?? []), ...Object.keys(runner.credentialChoices ?? {})])].map(agent => <AgentSignIn key={agent} runner={runner} agent={agent}
+        allowed={allowed && runner.state !== 'removed'} storedAvailable={storedCredentials[agent] === true} />)}
       {update.isError && <ErrorState error={update.error} onRetry={() => update.mutate()} />}
       <details className="mt-s3 border-t border-line pt-s3 t-small text-muted"><summary className="min-h-tap content-center cursor-pointer text-ink-2">Details</summary>
         <div className="mt-s3 flex flex-col gap-s2 break-words">
@@ -135,7 +138,7 @@ function RunnerCard({ runner, allowed }: { runner: RunnerRow; allowed: boolean }
             <RunFact label="Last attempted" run={runner.lastAttempted} />
           </>}
           {runner.busy && <><RunFact label="Current task" run={runner.busy} /><p>Assignment valid until {new Date(runner.busy.leaseExpiresAt).toLocaleString()}.</p></>}
-          {runner.offers === null ? <p>Agent sign-in status unavailable.</p> : runner.offers.length === 0 ? <p>No agents reported.</p> : <div>{runner.offers.map(offer => <p key={offer.id}>{harnessLabel(offer.id)} · {offer.authenticated ? 'Signed in' : 'Signed out'}{offer.profile && ` · ${offer.profile.model === 'none' ? 'Default model' : 'Model selection available'} · effort choices: ${offer.profile.efforts.join(', ') || 'none reported'}`}</p>)}<span title="A listed model does not confirm provider access or quota." aria-label="Provider access information">ⓘ</span></div>}
+          {runner.offers === null ? <p>Agent sign-in status unavailable.</p> : runner.offers.length === 0 ? <p>No agents reported.</p> : <div>{runner.offers.map(offer => <p key={offer.id}>{harnessLabel(offer.id)} · {offer.installed === false ? 'Not installed' : offer.authenticated ? 'Signed in' : 'Signed out'}{offer.profile && ` · ${offer.profile.model === 'none' ? 'Default model' : 'Model selection available'} · effort choices: ${offer.profile.efforts.join(', ') || 'none reported'}`}</p>)}<span title="A listed model does not confirm provider access or quota." aria-label="Provider access information">ⓘ</span></div>}
           {runner.models?.map(model => <p key={model.harness}>{harnessLabel(model.harness)} models: {model.available ? model.source ?? 'source unavailable' : 'listing unavailable'} · listed {formatRelative(model.fetchedAt)} · received {formatRelative(model.receivedAt)} · {model.fresh ? 'recent listing' : 'stale listing'}</p>)}
           {(runner.capabilities?.length || runner.labels?.length || runner.preference) && <p>{runner.capabilities?.length ? `Capabilities: ${runner.capabilities.join(', ')}. ` : ''}{runner.labels?.length ? `Labels: ${runner.labels.join(', ')}. ` : ''}{runner.preference ? `Preference: ${runner.preference}.` : ''}</p>}
           {runner.lastReason !== null && runner.lastReason in REASON_WORDS && <p>Last check for work: {REASON_WORDS[runner.lastReason as keyof typeof REASON_WORDS]}.</p>}
@@ -164,6 +167,7 @@ function RunnerCard({ runner, allowed }: { runner: RunnerRow; allowed: boolean }
           {inspect.isError && <p role="alert" className="text-bad">{inspect.error.message}</p>}
           {preview?.code === value && <>
             <p>Request: {preview.subject === 'runner' ? `Runner named ${preview.runnerName ?? 'unnamed'}` : 'Member sign-in'}</p>
+            {Object.entries(preview.credentialChoices ?? {}).map(([agent, choice]) => <p key={agent}>{harnessLabel(agent)} signs in with: {choice === 'stored' ? 'the server’s stored key' : 'this machine’s sign-in'}</p>)}
             <p>Machine: {preview.machineName}</p><p>Operating system: {preview.os}</p><p>Request source: {preview.ip}</p><p>Your IP address: {preview.approverIp}</p>
             {preview.subject !== 'runner' || preview.runnerName !== runner.name || preview.replacingRunnerId !== runner.id ? <p role="alert" className="text-bad">This request does not match {runner.name}. Start a replacement request for this runner.</p> : <p>Approving ends the current registration, including its assigned work. The replacement keeps this runner’s history and ID.</p>}
           </>}
@@ -171,4 +175,23 @@ function RunnerCard({ runner, allowed }: { runner: RunnerRow; allowed: boolean }
       </ConfirmDialog>
     </article>
   );
+}
+
+function AgentSignIn({ runner, agent, allowed, storedAvailable }: { runner: RunnerRow; agent: string; allowed: boolean; storedAvailable: boolean }) {
+  const client = useQueryClient();
+  const choices = runner.credentialChoices ?? {};
+  const choice = Object.hasOwn(choices, agent) ? choices[agent] : 'own';
+  const change = useMutation({
+    mutationFn: (next: RunnerCredentialChoice) => postJson(`/api/runners/${encodeURIComponent(runner.id)}/sign-in`, { agent, choice: next }),
+    onSuccess: () => refreshFleet(client),
+  });
+  return <div className="mt-s3 border-t border-line pt-s3 t-small" aria-label={`${harnessLabel(agent)} sign-in`}>
+    <p>{harnessLabel(agent)} · {choice === null ? 'Choose how this agent signs in' : `Signs in with: ${choice === 'stored' ? 'the server’s stored key' : 'this machine’s sign-in'}`}</p>
+    {allowed && <div className="mt-s2 flex flex-wrap items-center gap-s2">
+      <Button size="sm" variant="secondary" disabled={choice === 'own' || change.isPending} onClick={() => change.mutate('own')}>Use this machine’s sign-in</Button>
+      <Button size="sm" variant="secondary" disabled={!storedAvailable || choice === 'stored' || change.isPending} onClick={() => change.mutate('stored')}>Use the server’s stored key</Button>
+      {!storedAvailable && <span className="text-muted">No stored key this agent can use.</span>}
+    </div>}
+    {change.isError && <ErrorState error={change.error} onRetry={() => change.reset()} />}
+  </div>;
 }

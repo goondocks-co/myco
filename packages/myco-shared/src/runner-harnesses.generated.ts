@@ -141,6 +141,9 @@ export const RUNNER_HARNESSES = [
       "slot": "anthropic",
       "variables": [
         "ANTHROPIC_API_KEY"
+      ],
+      "accepts": [
+        "api-key"
       ]
     },
     "profile": {
@@ -207,10 +210,13 @@ export const RUNNER_HARNESSES = [
       "sourceReads": "unheld"
     },
     "credential": {
-      "provider": "anthropic",
-      "slot": "anthropic",
+      "provider": "cursor",
+      "slot": "cursor",
       "variables": [
-        "ANTHROPIC_API_KEY"
+        "CURSOR_API_KEY"
+      ],
+      "accepts": [
+        "api-key"
       ]
     },
     "profile": {
@@ -301,5 +307,9 @@ export const RUNNER_OWN_SLOTS = [
   {
     "name": "codex",
     "label": "Codex (OpenAI)"
+  },
+  {
+    "name": "cursor",
+    "label": "Cursor"
   }
 ] as const;

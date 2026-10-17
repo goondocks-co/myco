@@ -1,3 +1,4 @@
+import { parseRunnerCredentialChoices, type RunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 /**
  * The local runner record: the single writer of `<MYCO_HOME>/runner/d-<deployment-key>/runner.json`.
  *
@@ -40,6 +41,7 @@ export interface PendingRegister {
   candidate: string;
   /** The name the registration asks for. */
   name?: string;
+  credentialChoices?: RunnerCredentialChoices;
   replace?: boolean;
   deviceCode?: string;
   userCode?: string;
@@ -120,6 +122,10 @@ function parsePending(file: string, value: unknown): RunnerPending {
     return pending as unknown as PendingRotate;
   }
   if (pending.kind !== 'register') throw new RunnerRecordError(file, 'pending kind is neither register nor rotate');
+  if (pending.credentialChoices !== undefined) {
+    try { parseRunnerCredentialChoices(JSON.stringify(pending.credentialChoices)); }
+    catch { throw new RunnerRecordError(file, 'pending agent sign-in choices are invalid'); }
+  }
   if (pending.replace !== undefined && typeof pending.replace !== 'boolean') throw new RunnerRecordError(file, 'pending replace is not a boolean');
   for (const field of ['deviceCode', 'userCode'] as const) {
     if (pending[field] !== undefined && !isString(pending[field])) throw new RunnerRecordError(file, `pending ${field} is not a string`);

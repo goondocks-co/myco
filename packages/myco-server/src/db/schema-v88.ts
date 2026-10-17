@@ -1,0 +1,14 @@
+/** Each runner's agent sign-ins default to its machine and retain attributed changes. */
+export const V88_STATEMENTS: readonly string[] = [
+  `ALTER TABLE device_requests ADD COLUMN runner_credential_choices TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(runner_credential_choices) AND json_type(runner_credential_choices) = 'object')`,
+  `ALTER TABLE runners ADD COLUMN credential_choices TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(credential_choices) AND json_type(credential_choices) = 'object')`,
+  `CREATE TABLE IF NOT EXISTS runner_signin_audit (
+    id TEXT PRIMARY KEY, runner_id TEXT NOT NULL REFERENCES runners(id),
+    actor_member TEXT NOT NULL REFERENCES members(id), agent TEXT NOT NULL,
+    choice TEXT NOT NULL CHECK (choice IN ('own','stored')), revision INTEGER NOT NULL, at INTEGER NOT NULL,
+    UNIQUE (runner_id, revision)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_runner_signin_audit_actor ON runner_signin_audit(actor_member)`,
+  `CREATE TRIGGER IF NOT EXISTS runner_signin_audit_immutable BEFORE UPDATE ON runner_signin_audit BEGIN
+    SELECT RAISE(ABORT, 'runner sign-in audit is immutable'); END`,
+];

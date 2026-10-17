@@ -1,9 +1,10 @@
+import { runnerAgentLoginReady } from '@goondocks/myco-shared/runner-fleet';
 import { describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from '../support/fenced-fs.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWorker } from '@myco/runner/loop.js';
-import { HARNESS_DETECTION_MAX_MS, harnessDetection, type DetectedHarness } from '@myco/runner/detect.js';
+import { HARNESS_DETECTION_MAX_MS, harnessDetection, offerOf, type DetectedHarness } from '@myco/runner/detect.js';
 import { SUSPEND_SLACK_MS } from '@myco/runner/wake.js';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
@@ -186,4 +187,15 @@ describe('worker detection snapshots', () => {
     expect(await detection.read()).toEqual(detected);
     expect(probes).toBe(2);
   });
+});
+
+it('reports absent and signed-out agents while stored sign-in admits only installed agents', () => {
+  const { offered } = offerOf([
+    { id: 'claude-code', installed: true, authenticated: false },
+    { id: 'codex', installed: false, authenticated: false },
+  ]);
+  expect(offered.map(offer => ({ id: offer.id, installed: offer.installed, authenticated: offer.authenticated })))
+    .toEqual([{ id: 'claude-code', installed: true, authenticated: false }, { id: 'codex', installed: false, authenticated: false }]);
+  expect(runnerAgentLoginReady(offered[0]!, { 'claude-code': 'stored' })).toBe(true);
+  expect(runnerAgentLoginReady(offered[1]!, { codex: 'stored' })).toBe(false);
 });

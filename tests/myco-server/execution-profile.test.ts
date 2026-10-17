@@ -76,9 +76,19 @@ describe('task execution profiles', () => {
     }
   });
 
-  it('honours the effective hosted credential default and holds a missing or unsupported server login', async () => {
+  it('uses the machine by default and honours only an explicit legacy server login', async () => {
     for (const configured of [false, true]) {
       const r = await rig(false);
+      if (!configured) {
+        r.env.SECRET_WRAP_KEY = { get: async () => btoa('p'.repeat(32)) };
+        await deploymentSecretStore(r.db, r.serverEnv.wrappingKey).put('anthropic', 'sk-ant-api-fixture', 'mem_worker', NOW);
+        r.queue('own_default');
+        const claimed = await r.claim();
+        expect(claimed.claimed).toBe(true);
+        if (!claimed.claimed) throw new Error('own sign-in claim refused');
+        expect(claimed.run.credentialEnv).toEqual({});
+        continue;
+      }
       if (configured) await r.writer.setLeaf('agent.harnesses.claude-code.credential', 'deployment', 'mem_worker', NOW);
       r.queue('missing_credential');
       expect(await r.claim()).toMatchObject({ claimed: false });
@@ -90,6 +100,7 @@ describe('task execution profiles', () => {
     r.env.SECRET_WRAP_KEY = { get: async () => btoa('p'.repeat(32)) };
     await deploymentSecretStore(r.db, r.serverEnv.wrappingKey).put('anthropic', 'sk-ant-oat01-fixture', 'mem_worker', NOW);
     await r.writer.setLeaf('agent.reasoning_map.opencode.default', 'anthropic/claude-sonnet-fixture', 'mem_worker', NOW);
+    await r.writer.setLeaf('agent.harnesses.opencode.credential', 'deployment', 'mem_worker', NOW);
     r.queue('unsupported_login');
     const open = { id: 'opencode', authenticated: true, profile: { model: 'config' as const, efforts: ['medium'] } };
     expect(await r.claim([open])).toMatchObject({ claimed: false });

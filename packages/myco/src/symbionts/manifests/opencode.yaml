@@ -116,6 +116,7 @@ runner:
     provider: anthropic
     slot: anthropic
     variables: [ANTHROPIC_API_KEY]
+    accepts: [api-key]
   profile:
     models: { low: null, default: null, high: null }
     efforts: { low: low, default: medium, high: high }

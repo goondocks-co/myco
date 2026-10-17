@@ -68,7 +68,7 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
     readFact('transcriptBacklog', () => pendingTranscripts(env.db)),
     readFact('projects', () => listVisibleProjects(env.db, ctx.member, { includeArchived: true })),
     readFact('workers', async () => {
-      const projection = await readFleetProjection(env, ctx.now);
+      const projection = await readFleetProjection(env, ctx.now, isAdmin(ctx.member.role));
       return { available: true, workersBusy: projection.fleet.filter(row => row.busy !== null).length, runsQueued: projection.queue.count, recentWithinMs: CONTACT_RECENT_MS, ...projection, fleet: projection.fleet.filter(row => row.runner !== null || visibleMachines([row]).length > 0), legacyWorkers: visibleMachines(projection.legacyWorkers) };
     }),
     readFact('capture', async () => visibleMachines(await captureRecency(env.db, ctx.now, ctx.member.id))),

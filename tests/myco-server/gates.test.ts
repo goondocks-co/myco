@@ -1525,6 +1525,7 @@ describe('gates', () => {
       'runner POST /runners/contact',
       'runner POST /runners/rotate',
       'session:member GET /api/runners',
+      'session:admin POST /api/runners/{runnerId}/sign-in',
       'session:admin POST /api/runners/{runnerId}/rename',
       'session:admin POST /api/runners/{runnerId}/recredential',
       'session:admin POST /api/workers/legacy/{credentialId}/forget',

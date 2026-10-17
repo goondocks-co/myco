@@ -168,7 +168,7 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       fs.writeFileSync(configPath, config.replace(/^migrations_dir = .*$/m, `migrations_dir = ${JSON.stringify(previousDir)}`) + configTail);
       await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir]);
       const previousFile = localD1File(persistDir);
-      const touched = seedPreviousSchema(previousFile, step.statements);
+      const touched = seedPreviousSchema(previousFile, step.statements, step.version);
       const previous = new Database(previousFile);
       const previousRows = tableRows(previous, touched);
       previous.close();

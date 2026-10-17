@@ -1,6 +1,6 @@
 import type { RelationalStore, SecretWrappingKey } from './adapters.js';
 import type { SecretSlotName } from '@goondocks/myco-shared/secret-slots';
-import { deploymentSecretStore } from './secrets.js';
+import { deploymentSecretStore, SecretOpenError, SecretValueError } from './secrets.js';
 
 /** Fixed-provider clients open only their own Deployment credential slot. */
 export function openProviderCredential(db: RelationalStore, key: SecretWrappingKey, provider: 'anthropic' | 'openai' | 'openrouter'): Promise<string | null> {
@@ -13,10 +13,11 @@ export async function providerCredentialReady(db: RelationalStore, key: SecretWr
   return described.configured && described.readable;
 }
 
-/**
- * The key a harness's runs read from the slot `HARNESS_CREDENTIALS` names for it, and from no other: an empty slot
- * answers null, and the run uses the worker's own login.
- */
-export function openHarnessCredential(db: RelationalStore, key: SecretWrappingKey, slot: SecretSlotName): Promise<string | null> {
-  return deploymentSecretStore(db, key).get(slot);
+/** Open only the selected agent's slot; empty or unreadable credentials hold its run. */
+export async function openHarnessCredential(db: RelationalStore, key: SecretWrappingKey, slot: SecretSlotName): Promise<string | null> {
+  try { return await deploymentSecretStore(db, key).get(slot); }
+  catch (error) {
+    if (error instanceof SecretOpenError || error instanceof SecretValueError) return null;
+    throw error;
+  }
 }

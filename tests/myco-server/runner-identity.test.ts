@@ -1,3 +1,8 @@
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
+import { credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
+import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { fleetExecution } from '@myco-server-worker/core/harness.js';
+import { claimSettings } from '@myco-server-worker/core/worker-selection.js';
 import { readTaskStartPreview } from '@myco-server-worker/read/task-start.js';
 import { readFleetProjection } from '@myco-server-worker/read/fleet.js';
 /**
@@ -69,7 +74,7 @@ function rig(options: { onSql?: (sql: string) => void; deploymentId?: string } =
   };
   const asRunner = (token: string, path: string, body: unknown = {}) => post(path, body, { authorization: `Bearer ${token}`, ...PROTOCOL });
   const json = async (res: Response | Promise<Response>): Promise<Json> => await (await res).json() as Json;
-  const start = async (name = 'mini', candidate = bearer(), replace = false): Promise<Json> => ({ candidate, ...await json(post('/auth/runner/start', { name, machineId: `rm_${crypto.randomUUID()}`, machineName: 'Mac mini', os: 'darwin', candidate, ...(replace ? { replace: true } : {}) })) });
+  const start = async (name = 'mini', candidate = bearer(), replace = false, credentialChoices?: Record<string, string>): Promise<Json> => ({ candidate, ...await json(post('/auth/runner/start', { name, machineId: `rm_${crypto.randomUUID()}`, machineName: 'Mac mini', os: 'darwin', candidate, ...(credentialChoices === undefined ? {} : { credentialChoices }), ...(replace ? { replace: true } : {}) })) });
   const poll = (deviceCode: string) => json(post('/auth/runner/poll', { device_code: deviceCode }));
   /** Start, approve as the owner and poll: a registered runner and its bearer. */
   const register = async (name = 'mini') => {
@@ -1204,4 +1209,243 @@ describe('forgetting a retired legacy worker', () => {
       expect(r.row('SELECT COUNT(*) AS n FROM legacy_worker_audit')).toEqual({ n: 0 });
     } finally { r.e.sqlite.close(); }
   });
+});
+
+describe('runner agent sign-in choice', () => {
+  it('uses stored credentials for a signed-out agent and keeps an own runner on its machine despite server Settings', async () => {
+    const r = rig();
+    try {
+      r.e.env.SECRET_WRAP_KEY = { get: async () => btoa('k'.repeat(32)) };
+      const key = 'sk-ant-api-fixture-runner-only';
+      await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey).put('anthropic', key, OWNER, r.now());
+      const { runnerId, token } = await r.register();
+      await settingsWriter(r.e.db).setLeaf('agent.harnesses.claude-code.credential', 'deployment', OWNER, r.now());
+      expect(r.row('SELECT credential_choices FROM runners WHERE id = ?', runnerId)).toEqual({ credential_choices: '{}' });
+      await r.queueTitling();
+      const own = await r.claim(token);
+      expect(own.claimed).toBe(true);
+      expect(own.run.credentialEnv).toEqual({});
+      await expireLeases(r.e.serverEnv, r.now() + WORKER_LEASE_MS + 1);
+      const change = await r.asSession(`/api/runners/${runnerId}/sign-in`, { agent: 'claude-code', choice: 'stored' });
+      expect(change.status).toBe(200);
+      expect(await change.json()).toMatchObject({ credentialChoices: { 'claude-code': 'stored' } });
+      await r.queueTitling();
+      const absent = OFFERED.map(offer => ({ ...offer, authenticated: false, installed: false }));
+      const absentClaim = await r.json(r.asRunner(token, '/worker/claim', { harnesses: absent, capabilities: WORKER_CAPABILITIES }));
+      expect(absentClaim.claimed).toBe(false);
+      expect(absentClaim.run).toBeUndefined();
+      const signedOut = OFFERED.map(offer => ({ ...offer, authenticated: false, installed: true }));
+      const answer = await r.json(r.asRunner(token, '/worker/claim', { harnesses: signedOut, capabilities: WORKER_CAPABILITIES }));
+      expect(answer.claimed).toBe(true);
+      expect(answer.run.credentialEnv).toEqual(credentialEnvFor('claude-code', key));
+      const report = { offers: signedOut, capabilities: WORKER_CAPABILITIES, runner: true, credentialChoices: { 'claude-code': 'stored' as const } };
+      const fleet = await fleetExecution(r.e.serverEnv, 'title-summary', [report], await claimSettings(r.e.serverEnv));
+      expect(fleet.holder).toBe('worker');
+      expect(fleet.selected?.login).toBe(true);
+      expect(fleet.selected).not.toHaveProperty('credentialEnv');
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('holds stored choices with missing, incompatible or unreadable keys without falling back; fleet agrees', async () => {
+    for (const state of ['missing', 'incompatible', 'unreadable'] as const) {
+      const r = rig();
+      try {
+        r.e.env.SECRET_WRAP_KEY = { get: async () => btoa('k'.repeat(32)) };
+        const { runnerId, token } = await r.register();
+        const agent = state === 'incompatible' ? 'opencode' : 'claude-code';
+        await settingsWriter(r.e.db).setLeaf('agent.reasoning_map.opencode.low', 'anthropic/claude-fixture', OWNER, r.now());
+        r.e.sqlite.run('UPDATE runners SET credential_choices = ? WHERE id = ?', [JSON.stringify({ [agent]: 'stored' }), runnerId]);
+        if (state !== 'missing') await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey)
+          .put('anthropic', state === 'incompatible' ? 'sk-ant-oat-fixture' : 'sk-ant-api-fixture', OWNER, r.now());
+        if (state === 'unreadable') r.e.sqlite.run("UPDATE deployment_secrets SET ciphertext = 'corrupt'");
+        const offers = [{ ...offeredHarness(agent), authenticated: true }];
+        await r.queueTitling();
+        expect(await r.json(r.asRunner(token, '/worker/claim', { harnesses: offers, capabilities: WORKER_CAPABILITIES })))
+          .toMatchObject({ claimed: false, reason: 'no_harness' });
+        const held = `credential_unavailable:${agent}`;
+        expect(r.row("SELECT held_by FROM agent_runs WHERE status = 'queued'")).toEqual({ held_by: held });
+        expect(await fleetExecution(r.e.serverEnv, 'title-summary',
+          [{ offers, capabilities: WORKER_CAPABILITIES, runner: true, credentialChoices: { [agent]: 'stored' } }],
+          await claimSettings(r.e.serverEnv))).toEqual({ selected: null, holder: held });
+        const preview = await readTaskStartPreview(r.env, 'proj_1', 'title-summary', OWNER, r.now(), true);
+        expect(JSON.stringify(preview)).toContain(held);
+        const response = await r.asSession('/api/runners', {}, OWNER_SUB, 'GET');
+        const projection = await response.json() as { runners: Array<{ readiness: { code: string } }> };
+        expect(projection.runners[0]?.readiness.code).toBe('credential_unavailable');
+        expect(JSON.stringify(projection)).not.toContain('sk-ant-');
+      } finally { r.e.sqlite.close(); }
+    }
+  });
+
+  it('keeps sign-in choices and unavailable keys private across member fleet, previews, runs and approvals', async () => {
+    const r = rig();
+    try {
+      const { runnerId, token } = await r.register();
+      r.e.sqlite.run('UPDATE runners SET credential_choices = ? WHERE id = ?', [JSON.stringify({ 'claude-code': 'stored' }), runnerId]);
+      await r.queueTitling();
+      await r.claim(token);
+      const id = String(r.row("SELECT id FROM agent_runs WHERE status = 'queued'")!.id);
+      const held = 'credential_unavailable:claude-code';
+      const admin = await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'));
+      expect(admin.runners[0].credentialChoices).toEqual({ 'claude-code': 'stored' });
+      expect(admin.runners[0].readiness.code).toBe('credential_unavailable');
+      expect(admin.queue.reasons).toContainEqual({ reason: 'credential_unavailable', count: 1 });
+      for (const route of ['/api/runners', '/api/status']) {
+        const member = await r.json(r.asSession(route, {}, MEMBER_SUB, 'GET'));
+        const projection = route === '/api/status' ? member.workers : member;
+        expect(projection.runners[0]).not.toHaveProperty('credentialChoices');
+        expect(projection.fleet[0].runnerDetails).not.toHaveProperty('credentialChoices');
+        expect(projection.runners[0].readiness.code).toBe('ready');
+        expect(projection.queue.reasons).toEqual([{ reason: 'ready', count: 1 }]);
+        expect(JSON.stringify(member)).not.toContain('credential_unavailable');
+        expect(member).not.toHaveProperty('storedCredentials');
+      }
+      for (const route of ['/api/tasks/start?project=proj_1&task=canopy-map', '/api/projects/proj_1/runs', `/api/projects/proj_1/runs/${id}`]) {
+        const memberResponse = await r.asSession(route, {}, MEMBER_SUB, 'GET');
+        expect(memberResponse.status).toBe(200);
+        const member = await r.json(memberResponse);
+        expect(JSON.stringify(member)).not.toContain('credential_unavailable');
+        const admin = await r.json(r.asSession(route, {}, OWNER_SUB, 'GET'));
+        expect(JSON.stringify(admin)).toContain(held);
+      }
+      expect((await r.asSession('/api/diagnostics', {}, MEMBER_SUB, 'GET')).status).toBe(403);
+      const pending = await r.start('approval-mini', undefined, false, { 'claude-code': 'stored' });
+      const preview = { user_code: pending.user_code };
+      expect(await r.json(r.asSession('/api/device/preview', preview, OWNER_SUB))).toHaveProperty('credentialChoices');
+      expect(await r.json(r.asSession('/api/device/preview', preview, MEMBER_SUB))).not.toHaveProperty('credentialChoices');
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('ignores unknown persisted agents without blocking another runner or the fleet', async () => {
+    const r = rig();
+    try {
+      const stale = await r.register('future-mini');
+      await r.claim(stale.token);
+      r.e.sqlite.run('UPDATE runners SET credential_choices = ? WHERE id = ?', [JSON.stringify({ kiro: 'stored', 'claude-code': 'future-source' }), stale.runnerId]);
+      const current = await r.register('current-mini');
+      await r.queueTitling();
+      const response = await r.asRunner(current.token, '/worker/claim', { harnesses: OFFERED, capabilities: WORKER_CAPABILITIES });
+      expect(response.status).toBe(200);
+      const claimed = await response.json() as Json;
+      expect(claimed.claimed).toBe(true);
+      expect(claimed.run.credentialEnv).toEqual({});
+      const fleet = await r.asSession('/api/runners', {}, OWNER_SUB, 'GET');
+      expect(fleet.status).toBe(200);
+      const rows = await fleet.json() as Json;
+      expect(rows.runners.find((row: Json) => row.id === stale.runnerId).credentialChoices).toEqual({ 'claude-code': null });
+      await r.queueTitling();
+      const staleClaim = await r.claim(stale.token);
+      expect(staleClaim.claimed).toBe(false);
+      const replacement = await r.start('future-mini', undefined, true);
+      expect((await r.asSession('/api/device/approve-runner', { user_code: replacement.user_code })).status).toBe(200);
+      expect(JSON.parse(String(r.row('SELECT credential_choices FROM runners WHERE id = ?', stale.runnerId)!.credential_choices))).toEqual({ 'claude-code': 'own' });
+      r.e.sqlite.run('UPDATE runners SET credential_choices = ? WHERE id = ?', [JSON.stringify({ 'claude-code': 'future-source' }), stale.runnerId]);
+      expect((await r.asSession(`/api/runners/${stale.runnerId}/sign-in`, { agent: 'claude-code', choice: 'own' })).status).toBe(200);
+      expect(JSON.parse(String(r.row('SELECT credential_choices FROM runners WHERE id = ?', stale.runnerId)!.credential_choices))).toEqual({ 'claude-code': 'own' });
+      expect((await r.asSession(`/api/runners/${stale.runnerId}/sign-in`, { agent: 'kiro', choice: 'stored' })).status).toBe(400);
+      expect(await r.start('invalid-choice', undefined, false, { kiro: 'stored' })).toHaveProperty('error');
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('memoizes slot availability for a fleet request and opens no fleet credentials for members', async () => {
+    const r = rig();
+    try {
+      r.e.env.SECRET_WRAP_KEY = { get: async () => btoa('k'.repeat(32)) };
+      await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey).put('anthropic', 'sk-ant-api-fixture', OWNER, r.now());
+      for (const name of ['stored-a', 'stored-b']) {
+        const runner = await r.register(name);
+        await r.asSession(`/api/runners/${runner.runnerId}/sign-in`, { agent: 'claude-code', choice: 'stored' });
+        await r.json(r.asRunner(runner.token, '/worker/claim', { harnesses: OFFERED.map(offer => ({ ...offer, authenticated: false })), capabilities: WORKER_CAPABILITIES }));
+      }
+      expect(await r.json(r.asSession('/api/setup', {}, OWNER_SUB, 'GET'))).toHaveProperty('runnersReady', 2);
+      expect(await r.json(r.asSession('/api/setup', {}, MEMBER_SUB, 'GET'))).toHaveProperty('runnersReady', null);
+      const own = await r.register('own-mini');
+      const decrypt = spyOn(crypto.subtle, 'decrypt');
+      try {
+        await r.queueTitling();
+        const claimed = await r.claim(own.token);
+        expect(claimed.claimed).toBe(true);
+        expect(claimed.run.credentialEnv).toEqual({});
+        expect(decrypt).toHaveBeenCalledTimes(1);
+        decrypt.mockClear();
+        expect((await r.asSession('/api/runners', {}, OWNER_SUB, 'GET')).status).toBe(200);
+        expect(decrypt).toHaveBeenCalledTimes(1);
+        decrypt.mockClear();
+        expect((await r.asSession('/api/runners', {}, MEMBER_SUB, 'GET')).status).toBe(200);
+        expect(decrypt).not.toHaveBeenCalled();
+      } finally { decrypt.mockRestore(); }
+      await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey).delete('anthropic', OWNER, r.now());
+      expect(await r.json(r.asSession('/api/setup', {}, OWNER_SUB, 'GET'))).toHaveProperty('runnersReady', 1);
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('admits only administrators, refuses unusable stored choices and records an attributed change without key material', async () => {
+    const r = rig();
+    try {
+      r.e.env.SECRET_WRAP_KEY = { get: async () => btoa('k'.repeat(32)) };
+      const { runnerId } = await r.register();
+      const path = `/api/runners/${runnerId}/sign-in`;
+      const body = { agent: 'claude-code', choice: 'stored' };
+      expect((await r.asSession(path, body, MEMBER_SUB)).status).toBe(403);
+      expect((await r.asSession(path, body)).status).toBe(409);
+      expect((await r.asSession(path, { ...body, choice: 'automatic' })).status).toBe(400);
+      expect((await r.asSession(path, { agent: 'unknown', choice: 'own' })).status).toBe(400);
+      await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey).put('anthropic', 'sk-ant-api-fixture', OWNER, r.now());
+      const before = await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'));
+      expect(before.storedCredentials).toMatchObject({ 'claude-code': true, opencode: true, cursor: false });
+      expect((await r.asSession(path, body, ADMIN_SUB)).status).toBe(200);
+      expect(r.row('SELECT actor_member,agent,choice,revision FROM runner_signin_audit WHERE runner_id = ?', runnerId))
+        .toEqual({ actor_member: ADMIN, agent: 'claude-code', choice: 'stored', revision: 2 });
+      expect((await r.asSession(path, body)).status).toBe(200);
+      expect(r.row('SELECT COUNT(*) AS n FROM runner_signin_audit')).toEqual({ n: 1 });
+      await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey).put('anthropic', 'sk-ant-oat-fixture', OWNER, r.now());
+      const after = await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'));
+      expect(after.storedCredentials).toMatchObject({ 'claude-code': true, opencode: false, cursor: false });
+      for (const route of ['/api/runners', '/api/status']) {
+        const memberRead = await r.json(r.asSession(route, {}, MEMBER_SUB, 'GET'));
+        expect(JSON.stringify(memberRead)).not.toContain('storedCredentials');
+      }
+      expect(JSON.stringify(after)).not.toContain('sk-ant-');
+      expect((await r.asSession(path, { ...body, choice: 'own' })).status).toBe(200);
+    } finally { r.e.sqlite.close(); }
+  });
+});
+
+it('approves registration sign-ins together, displays the requested sources and refuses every choice when one key is unavailable', async () => {
+  const r = rig();
+  try {
+    r.e.env.SECRET_WRAP_KEY = { get: async () => btoa('k'.repeat(32)) };
+    await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey).put('anthropic', 'sk-ant-api-fixture', OWNER, r.now());
+    const choices = { 'claude-code': 'stored', codex: 'stored' };
+    const started = await r.start('stored-mini', undefined, false, choices);
+    const preview = await r.json(r.asSession('/api/device/preview', { user_code: started.user_code }));
+    expect(preview.credentialChoices).toEqual(choices);
+    const refused = await r.asSession('/api/device/approve-runner', { user_code: started.user_code });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: 'credential_unavailable' });
+    expect(r.row("SELECT COUNT(*) AS n FROM runners")).toEqual({ n: 0 });
+    expect(r.row("SELECT COUNT(*) AS n FROM runner_signin_audit")).toEqual({ n: 0 });
+    await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey).put('codex', 'sk-openai-fixture', OWNER, r.now());
+    const approved = await r.json(r.asSession('/api/device/approve-runner', { user_code: started.user_code }));
+    expect(approved.approved).toBe(true);
+    expect(r.row('SELECT credential_choices,revision FROM runners WHERE id = ?', approved.runnerId))
+      .toEqual({ credential_choices: JSON.stringify(choices), revision: 3 });
+    expect(r.e.sqlite.query('SELECT agent,choice,actor_member FROM runner_signin_audit ORDER BY revision').all())
+      .toEqual([{ agent: 'claude-code', choice: 'stored', actor_member: OWNER }, { agent: 'codex', choice: 'stored', actor_member: OWNER }]);
+    const retained = await r.start('stored-mini', undefined, true, choices);
+    expect((await r.asSession('/api/device/approve-runner', { user_code: retained.user_code })).status).toBe(200);
+    expect(r.row('SELECT credential_choices FROM runners WHERE id = ?', approved.runnerId))
+      .toEqual({ credential_choices: JSON.stringify(choices) });
+    expect(r.e.sqlite.query('SELECT agent,choice FROM runner_signin_audit WHERE runner_id = ? ORDER BY revision DESC LIMIT 2').all(approved.runnerId))
+      .toEqual([{ agent: 'codex', choice: 'stored' }, { agent: 'claude-code', choice: 'stored' }]);
+    const next = await r.start('stored-mini', undefined, true);
+    const approval = await r.json(r.asSession('/api/device/approve-runner', { user_code: next.user_code }));
+    expect(approval.runnerId).toBe(approved.runnerId);
+    expect(r.row('SELECT credential_choices FROM runners WHERE id = ?', approved.runnerId))
+      .toEqual({ credential_choices: JSON.stringify({ 'claude-code': 'own', codex: 'own' }) });
+    await r.queueTitling();
+    const replacement = await r.claim(next.candidate);
+    expect(replacement.claimed).toBe(true);
+    expect(replacement.run.credentialEnv).toEqual({});
+  } finally { r.e.sqlite.close(); }
 });

@@ -74,11 +74,7 @@ describe('migrateOnly', () => {
 
   it('applies only the steps a partially-migrated volume is behind', () => {
     const path = join(scratch(), 'myco.sqlite');
-    const total = migrateOnly(path);
-
-    // Wind the stamp back one step; only that step should re-apply.
-    const sqlite = new Database(path);
-    sqlite.query(`UPDATE schema_meta SET value = ? WHERE key = 'version'`).run(String(total - 1));
+    const sqlite = migrateTo(path, SCHEMA_STEPS.at(-1)!.version - 1);
     sqlite.close();
 
     expect(migrateOnly(path)).toBe(1);

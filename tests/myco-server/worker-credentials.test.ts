@@ -96,7 +96,7 @@ describe('the credential a claim hands a worker', () => {
     expect(await f.claimUnder('claude-code', NOW + 1)).toEqual({ ANTHROPIC_API_KEY: API_KEY });
     expect(await f.claimUnder('codex', NOW + 2)).toEqual({ OPENAI_API_KEY: CODEX_KEY });
     expect(await f.claimUnder('opencode', NOW + 3)).toEqual({ ANTHROPIC_API_KEY: API_KEY });
-    expect(credentialEnvFor('cursor', API_KEY)).toEqual({ ANTHROPIC_API_KEY: API_KEY });
+    expect(credentialEnvFor('cursor', 'cursor-fixture-key')).toEqual({ CURSOR_API_KEY: 'cursor-fixture-key' });
   });
 
   it('never hands a Codex run the key stored for embeddings, and hands it the key stored for Codex runs (#1212)', async () => {
