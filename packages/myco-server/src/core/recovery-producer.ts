@@ -1252,7 +1252,7 @@ export interface RecoveryAdmission {
 }
 
 /** Whether the producer can record a complete configuration for a new attempt, and why not when it cannot. */
-export type RecoveryAdmissionReadiness = { ready: true } | { ready: false; reason: string };
+export type RecoveryAdmissionReadiness = { ready: true } | { ready: false; reason: string; code?: 'backup_export_credential_missing' };
 
 /**
  * What a recovery hold's attempt says about it, read and decided in one step of the producer that owns attempts:

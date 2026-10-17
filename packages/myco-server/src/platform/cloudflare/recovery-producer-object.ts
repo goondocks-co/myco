@@ -55,7 +55,7 @@ interface AttemptRow {
   database_bytes: number | null; copy_started_at: number | null; completed_at: number | null; admission: string | null;
   hold_token: string | null; last_progress_at: number | null;
   prune_started_at: number | null; prune_cursor: number; payload_pruned_at: number | null;
-  staging_writes: number; staging_revision: number;
+  staging_writes: number; staging_revision: number; staging_recheck_until: number | null;
 }
 
 interface ObjectRow {
@@ -106,6 +106,7 @@ const ADDED_COLUMNS: readonly [string, string][] = [
   ['export_absent_at', 'INTEGER'],
   ['staging_writes', 'INTEGER NOT NULL DEFAULT 0'],
   ['staging_revision', 'INTEGER NOT NULL DEFAULT 0'],
+  ['staging_recheck_until', 'INTEGER'],
 ];
 
 /** Columns holding a list or a record are written as JSON text, so one update path serves every field. */
@@ -134,6 +135,15 @@ const stateOf = (row: AttemptRow): AttemptState => ({
   // An attempt admitted before admissions were recorded carries none.
   admission: row.admission === null ? null : JSON.parse(row.admission) as AttemptState['admission'],
 });
+
+/** Terminalization and payload cleanup ownership commit together for each interrupted preparation. */
+function stopPreparations(sql: SqlStorage, now: number, attempt?: number): number[] {
+  return (sql.exec(
+    `UPDATE attempts SET stage = 'failed', error = 'internal', last_progress_at = ?, prune_started_at = ?
+       WHERE stage = 'preparing'${attempt === undefined ? '' : ' AND id = ?'} RETURNING id`,
+    now, now, ...(attempt === undefined ? [] : [attempt]),
+  ).toArray() as unknown as { id: number }[]).map(row => row.id);
+}
 
 export class RecoveryProducer extends DurableObject<CloudflareBindings> {
   /** One mutation of this attempt at a time, and one continuation shared by the wakes that overlap it. */
@@ -167,6 +177,12 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
     for (const [name, declaration] of ADDED_COLUMNS) {
       if (!held.has(name)) ctx.storage.sql.exec(`ALTER TABLE attempts ADD COLUMN ${name} ${declaration}`);
     }
+    // A replacement instance owns no earlier in-flight writes. Recheck their files through one request window.
+    ctx.storage.sql.exec(
+      `UPDATE attempts SET staging_writes = 0, staging_recheck_until = ?, prune_cursor = 0, payload_pruned_at = NULL
+         WHERE staging_writes > 0`, Date.now() + PRODUCER_LIMITS.requestMs,
+    );
+    stopPreparations(ctx.storage.sql, Date.now());
     // One attempt per hold token, ever: an admission replayed with a token some attempt already carries answers that
     // attempt. Attempts admitted before tokens existed carry none and are not constrained.
     ctx.storage.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_attempts_hold_token ON attempts (hold_token) WHERE hold_token IS NOT NULL');
@@ -322,14 +338,6 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       await within(() => reconcileUnconfirmed(stateOf(resting), this.checkpoint(), ports), limits.requestMs, Date.now).catch(() => undefined);
     }
     const locator = this.locator();
-    const target = this.target(admission.tables);
-    // What the staging records about this Deployment comes from its own bindings, read once by the one reader, whatever
-    // configuration the wire carries. A new attempt from a Worker that could not record its configuration, or one this
-    // object cannot record, stages nothing.
-    if (admission.unrecordable !== undefined) throw new Error(admission.unrecordable);
-    const bound = boundRecoveryConfiguration(this.env);
-    if (!bound.ok) throw new Error(bound.reason);
-    const { configuration, credentialsRequired } = recordedAdmission(bound.configuration, admittedStarter(admission));
     const now = Math.max(Date.now(), (this.row('1 = 1')?.started_at ?? 0) + 1);
     const prefix = `staging/${now}`;
     const bytes = new TextEncoder().encode(admission.schema);
@@ -338,34 +346,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       sha256: [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join(''),
       bytes: bytes.byteLength,
     };
-    const unbounded = cloudflareProducerPorts(target, this.bucket(), this.env.BUCKET, { testRoutes: this.env.HARNESS_LAUNCH_MODE === 'record' });
-    // Admission holds this object's gate. A late staging write removes its file after observing the expired signal.
-    const ports = {
-      ...unbounded,
-      writeStagingFile: (prefix: string, name: string, body: string) =>
-        within((signal) => {
-          this.ctx.storage.sql.exec('UPDATE attempts SET staging_writes = staging_writes + 1 WHERE id = ?', attempt.id);
-          const writing = unbounded.writeStagingFile(prefix, name, body, signal).finally(() => {
-            this.ctx.storage.sql.exec(
-              `UPDATE attempts SET staging_writes = staging_writes - 1, staging_revision = staging_revision + 1,
-                 prune_cursor = CASE WHEN stage = 'failed' THEN 0 ELSE prune_cursor END,
-                 payload_pruned_at = CASE WHEN stage = 'failed' THEN NULL ELSE payload_pruned_at END WHERE id = ?`, attempt.id,
-            );
-          }).catch((error: unknown) => {
-            if (signal.aborted) {
-              emit({ kind: 'recovery_late_staging_cleanup_failed', ...failureTelemetry(error) });
-            }
-            throw error;
-          });
-          // Late failures are reported above or by admission; the write keeps its cleanup alive past the deadline.
-          this.ctx.waitUntil(writing.then(() => undefined, () => undefined));
-          return writing;
-        }, limits.requestMs, Date.now),
-    };
     const scan: ScanProgress = freshScan();
-    // The admission is recorded in the attempt's own row, so it is held to what a row takes before anything is staged.
-    const recorded = JSON.stringify({ configuration, credentialsRequired });
-    if (recorded.length > CHECKPOINT_STATEMENT_CHARS) throw new Error('a recovery admission is too large to record');
     const attempt = this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec(
         `INSERT INTO attempts (stage, prefix, locator, started_at, tables, schema_sha256, schema_bytes, captured, defined, scan, scan_bytes, hold_token, last_progress_at)
@@ -377,6 +358,39 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       return this.row('hold_token = ?', admission.holdToken)!;
     });
     try {
+      const target = this.target(admission.tables);
+      if (admission.unrecordable !== undefined) throw new Error(admission.unrecordable);
+      const bound = boundRecoveryConfiguration(this.env);
+      if (!bound.ok) throw new Error(bound.reason);
+      const { configuration, credentialsRequired } = recordedAdmission(bound.configuration, admittedStarter(admission));
+      const recorded = JSON.stringify({ configuration, credentialsRequired });
+      if (recorded.length > CHECKPOINT_STATEMENT_CHARS) throw new Error('a recovery admission is too large to record');
+      const unbounded = cloudflareProducerPorts(target, this.bucket(), this.env.BUCKET, { testRoutes: this.env.HARNESS_LAUNCH_MODE === 'record' });
+      // Admission holds this object's gate. A late staging write removes its file after observing the expired signal.
+      const ports = {
+        ...unbounded,
+        writeStagingFile: (prefix: string, name: string, body: string) =>
+          within((signal) => {
+            this.ctx.storage.sql.exec('UPDATE attempts SET staging_writes = staging_writes + 1 WHERE id = ?', attempt.id);
+            const writing = unbounded.writeStagingFile(prefix, name, body, signal).then(async () => {
+              if (signal.aborted) await within(() => this.bucket().delete(stagingPath(prefix, name)), limits.requestMs, Date.now);
+            }).finally(() => {
+              this.ctx.storage.sql.exec(
+                `UPDATE attempts SET staging_writes = MAX(0, staging_writes - 1), staging_revision = staging_revision + 1,
+                   prune_cursor = CASE WHEN stage = 'failed' THEN 0 ELSE prune_cursor END,
+                   payload_pruned_at = CASE WHEN stage = 'failed' THEN NULL ELSE payload_pruned_at END WHERE id = ?`, attempt.id,
+              );
+            }).catch((error: unknown) => {
+              if (signal.aborted) {
+                emit({ kind: 'recovery_staging_settlement_failed', ...failureTelemetry(error) });
+              }
+              throw error;
+            });
+            // Late failures are reported above or by admission; the write keeps its cleanup alive past the deadline.
+            this.ctx.waitUntil(writing.then(() => undefined, () => undefined));
+            return writing;
+          }, limits.requestMs, Date.now),
+      };
       await publishAttempt(ports, {
         prefix, target: STAGING_TARGET, locator, startedAt: now, schema, schemaText: admission.schema,
         configuration, credentialsRequired,
@@ -416,12 +430,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
 
   /** A preparation left without its publication settles as failed; retention owns every file it may have written. */
   private async failPreparation(attempt: number): Promise<void> {
-    const now = Date.now();
-    const changed = this.ctx.storage.sql.exec(
-      `UPDATE attempts SET stage = 'failed', error = 'internal', last_progress_at = ?, prune_started_at = ?
-         WHERE id = ? AND stage = 'preparing' RETURNING id`, now, now, attempt,
-    ).toArray().length;
-    if (changed === 0) return;
+    if (stopPreparations(this.ctx.storage.sql, Date.now(), attempt).length === 0) return;
     await this.prune({ keep: 0, protect: [], budget: FIXED_STAGING_FILES.length }, [attempt]);
   }
 
@@ -618,6 +627,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       if (releasedFiles >= budget || refused !== null) break;
       const row = this.row('id = ?', id);
       if (row === null) continue;
+      const passStartedAt = Date.now();
       try {
         let spent = false;
         let cursor = row.prune_cursor;
@@ -638,8 +648,8 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
         }
         if (spent) break;
         const current = this.row('id = ?', id)!;
-        // Unsettled writes retain cleanup ownership; a settlement during this pass requires a fresh pass over its files.
-        if (current.staging_writes > 0 || current.staging_revision !== row.staging_revision) {
+        // Live writes and the restart request window retain ownership; a settlement requires a fresh file pass.
+        if (current.staging_writes > 0 || current.staging_revision !== row.staging_revision || (current.staging_recheck_until ?? 0) > passStartedAt) {
           sql.exec('UPDATE attempts SET prune_cursor = 0 WHERE id = ?', id);
           continue;
         }

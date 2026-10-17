@@ -70,13 +70,12 @@ async function capturedSchema(env: ServerEnv): Promise<{ text: string; tables: s
  */
 export async function admitRecoveryExport(env: ServerEnv, now: number, actor: AdmissionActor): Promise<AdmissionOutcome> {
   if (env.recovery === undefined) return { outcome: 'unavailable' };
-  const captured = await capturedSchema(env);
-  if ('message' in captured) return { outcome: 'refused', message: captured.message };
-
   // The hold opens before the export is admitted, so nothing the snapshot names is released while the attempt
   // runs. A producer that cannot record this Deployment's configuration opens none, while an attempt already
   // running is still answered.
   const readiness = env.recovery.admission;
+  const captured = readiness.ready ? await capturedSchema(env) : null;
+  if (captured !== null && 'message' in captured) return { outcome: 'refused', message: captured.message };
   const hold = await openHoldForAdmission(env, now, readiness.ready);
   if ('deferred' in hold) return { outcome: 'deferred', since: hold.deferred };
   if ('refused' in hold) {
@@ -86,6 +85,8 @@ export async function admitRecoveryExport(env: ServerEnv, now: number, actor: Ad
     if (hold.held === 'unverified') return { outcome: 'hold-unverified' };
     return { outcome: 'running', status: await env.recovery.status() };
   }
+
+  if (captured === null) return { outcome: 'configuration-unavailable', message: 'the recovery configuration is unavailable' };
 
   // Bounded: an admission that does not answer keeps its hold, and the release job settles it later against the
   // attempts.

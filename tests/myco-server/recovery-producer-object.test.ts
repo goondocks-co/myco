@@ -16,6 +16,8 @@ import { acquireRecoveryHold } from '@myco-server-worker/core/object-release.js'
 import { RECOVERY_CREDENTIAL_NAMES, STAGING_MANIFEST_FILE } from '@myco-server-worker/core/recovery-staging.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { runTick } from '@myco-server-worker/core/tick.js';
+import { recoveryScheduleOf } from '@myco-server-worker/core/recovery-schedule.js';
 
 function storage(sql: Database, signed: { delete?: (key: string) => Promise<boolean> } = {}) {
   return {
@@ -186,20 +188,44 @@ it('rearms durable cleanup if a late staging write lands and its delete fails', 
   } finally { sql.close(); }
 });
 
-it('keeps unresolved staging writes owned across a restart and retries files that arrive afterward', async () => {
+it('finishes cleanup after a restart and releases the sleep assertion after the request window', async () => {
   const sql = new Database(':memory:');
   const files = new Map<string, Uint8Array>();
   const producer = producerOver(sql, [], () => new Promise(() => {}));
+  let clock: ReturnType<typeof spyOn> | undefined;
+  let crossWindow = false;
   try {
     await expect(producer.admit(admission('unsettled-write'), { requestMs: 20 })).rejects.toBeInstanceOf(Stalled);
-    const restarted = producerOver(sql, [], undefined, { deleteStaged: async key => { files.delete(key); } });
-    expect((await restarted.pruneStagings({ keep: 2, protect: [], budget: 3 })).pending).toBe(1);
+    const now = Date.now();
+    clock = spyOn(Date, 'now').mockReturnValue(now);
+    const restarted = producerOver(sql, [], undefined, { deleteStaged: async key => {
+      files.delete(key);
+      if (crossWindow && key.endsWith('/schema.json')) {
+        files.set(key, new Uint8Array([1]));
+        clock!.mockReturnValue(now + PRODUCER_LIMITS.requestMs + 1);
+        crossWindow = false;
+      }
+    } });
+    expect(sql.query('SELECT staging_writes FROM attempts').get()).toEqual({ staging_writes: 0 });
+    const env = { ...authorityStores.get(restarted)!.serverEnv, recovery: {
+      ...serverEnvFromBindings({ RECOVERY: { idFromName: (name: string) => name, get: () => restarted }, RECOVERY_BUCKET: {} } as never).recovery!,
+    } };
+    expect((await runTick(env, now, { wake: 'clock' })).heldBy).toBe('recovery:prune');
     const prefix = (sql.query('SELECT prefix FROM attempts').get() as { prefix: string }).prefix;
     files.set(`${prefix}/schema.json`, new Uint8Array([1]));
+    clock.mockReturnValue(now + PRODUCER_LIMITS.requestMs - 1);
+    crossWindow = true;
+    // A pass begun inside the window cannot finish cleanup, even if its deletes answer after expiry.
     expect((await restarted.pruneStagings({ keep: 2, protect: [], budget: 3 })).pending).toBe(1);
+    expect(files.size).toBe(1);
+    clock.mockReturnValue(now + PRODUCER_LIMITS.requestMs + 1);
+    expect((await restarted.pruneStagings({ keep: 2, protect: [], budget: 3 })).pending).toBe(0);
     expect(files.size).toBe(0);
-    expect(sql.query('SELECT payload_pruned_at FROM attempts').get()).toEqual({ payload_pruned_at: null });
-  } finally { sql.close(); }
+    expect(sql.query('SELECT payload_pruned_at IS NOT NULL AS pruned FROM attempts').get()).toEqual({ pruned: 1 });
+    expect(await restarted.pendingStagingPrunes({ keep: 2, protect: [] })).toBe(0);
+    const tick = await runTick(env, Date.now(), { wake: 'clock' });
+    expect([tick.state, tick.heldBy]).toEqual(['deep_sleep', null]);
+  } finally { clock?.mockRestore(); sql.close(); }
 });
 
 it('rechecks files when a late write settles during a cleanup pass', async () => {
@@ -229,7 +255,7 @@ it('rechecks files when a late write settles during a cleanup pass', async () =>
   } finally { sql.close(); }
 });
 
-it('retains failed publication cleanup across a restart and never removes another attempt payload', async () => {
+it('never removes another attempt payload when a failed admission cleans up its own files', async () => {
   const sql = new Database(':memory:');
   const files = new Map<string, Uint8Array>();
   let fail = false;
@@ -240,16 +266,16 @@ it('retains failed publication cleanup across a restart and never removes anothe
   };
   const clock = spyOn(Date, 'now').mockReturnValue(1_790_000_000_000);
   try {
-    const producer = producerOver(sql, [], put, { deleteStaged: async () => { throw new Error('delete refused'); } });
+    const producer = producerOver(sql, [], put, { deleteStaged: async key => { files.delete(key); } });
     const first = await producer.admit(admission('first'));
     sql.run("UPDATE attempts SET stage = 'complete' WHERE id = ?", [first.attempt]);
     const retained = [...files.keys()];
     fail = true;
     await expect(producer.admit(admission('failed'))).rejects.toThrow('staging unavailable');
     expect((await producer.status()).stage).toBe('failed');
-    expect(files.size).toBe(retained.length + 1);
+    expect([...files.keys()]).toEqual(retained);
     const restarted = producerOver(sql, [], put, { deleteStaged: async key => { files.delete(key); } });
-    expect(await restarted.pendingStagingPrunes({ keep: 2, protect: [] })).toBe(1);
+    expect(await restarted.pendingStagingPrunes({ keep: 2, protect: [] })).toBe(0);
     expect((await restarted.pruneStagings({ keep: 2, protect: [], budget: 3 })).pending).toBe(0);
     expect([...files.keys()]).toEqual(retained);
     expect(await restarted.settleHold('failed')).toEqual({ state: 'closed', attempt: 2, stage: 'failed' });
@@ -268,10 +294,38 @@ it('records ownership before staging and settles an interrupted preparation acro
     const admitted = await producer.admit(admission('interrupted'));
     sql.run("UPDATE attempts SET stage = 'preparing', admission = NULL, last_progress_at = 0 WHERE id = ?", [admitted.attempt]);
     const restarted = producerOver(sql, [], undefined, { deleteStaged: async key => { files.delete(key); } });
-    expect((await restarted.continue()).attempt).toBeNull();
     expect((await restarted.status()).stage).toBe('failed');
+    expect(await restarted.pendingStagingPrunes({ keep: 2, protect: [] })).toBe(1);
+    expect((await restarted.continue()).attempt).toBeNull();
+    await restarted.pruneStagings({ keep: 2, protect: [], budget: 3 });
     expect(files.size).toBe(0);
     expect(await restarted.settleHold('interrupted')).toEqual({ state: 'closed', attempt: 1, stage: 'failed' });
+  } finally { sql.close(); }
+});
+
+it.each([
+  ['empty tables', { tables: [] }, 'names no tables'],
+  ['unrecordable configuration', { unrecordable: 'configuration unavailable' }, 'configuration unavailable'],
+  ['oversize admission', { startedBy: 'x'.repeat(600_000) }, 'too large to record'],
+])('retains %s admission failures for cadence and closes their holds', async (_label, fields, message) => {
+  const sql = new Database(':memory:');
+  const writes: string[] = [];
+  const producer = producerOver(sql, writes);
+  try {
+    await expect(producer.admit({ ...admission('early-failure'), ...fields })).rejects.toThrow(message);
+    expect(writes).toEqual([]);
+    expect(await producer.settleHold('early-failure')).toEqual({ state: 'closed', attempt: 1, stage: 'failed' });
+    expect((await producer.status()).staged).toBeNull();
+    const fixture = authorityStores.get(producer)!;
+    fixture.sqlite.run("INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('backup.auto_interval_hours', '6', 1, 'mem_machine_1')");
+    const env = { ...fixture.serverEnv, recovery: {
+      ...serverEnvFromBindings({ RECOVERY: { idFromName: (name: string) => name, get: () => producer }, RECOVERY_BUCKET: {} } as never).recovery!,
+      admission: { ready: true as const },
+    } };
+    const status = await producer.status();
+    const schedule = await recoveryScheduleOf(env, status.startedAt! + 60_000);
+    expect(schedule.due).toBe(false);
+    expect(schedule.dueAt).toBe(status.startedAt! + 6 * 60 * 60 * 1_000);
   } finally { sql.close(); }
 });
 
@@ -413,8 +467,8 @@ it.each([
   const refusing = producerOver(fresh, freshWrites, undefined, {}, bindings);
   await expect(refusing.admit(admission('token-new'))).rejects.toThrow(/recovery configuration/);
   expect(freshWrites).toEqual([]);
-  expect((await refusing.status()).attempt).toBeNull();
-  expect((await refusing.settleHold('token-new')).state).toBe('retired');
+  expect(await refusing.status()).toMatchObject({ attempt: 1, stage: 'failed', staged: null });
+  expect(await refusing.settleHold('token-new')).toEqual({ state: 'closed', attempt: 1, stage: 'failed' });
 });
 
 it('stages an admission from a previous Worker under this object\'s own configuration, keeping who started it', async () => {
@@ -461,6 +515,7 @@ it.each([
   const first = await configured.admit(admission('token-carried'));
   expect(await configured.settleHold('token-retired')).toEqual({ state: 'retired' });
   const staged = writes.length;
+  let refused = 0;
   for (const object of [configured, producerOver(sql, writes, undefined, {}, bindings)]) {
     const e = sqliteEnv();
     try {
@@ -475,10 +530,10 @@ it.each([
       expect((await port.admit(admission('token-retired'))).holdRetired).toBe(true);
       // With an attempt advancing, a fresh token is answered with that attempt's progress; once it rests, it is refused.
       sql.run("UPDATE attempts SET stage = 'downloaded' WHERE id = ?", [first.attempt]);
-      await expect(port.admit(admission(`token-fresh-${writes.length}`))).rejects.toThrow(/recovery configuration/);
+      await expect(port.admit(admission(`token-fresh-${++refused}`))).rejects.toThrow(/recovery configuration/);
       sql.run("UPDATE attempts SET stage = 'export' WHERE id = ?", [first.attempt]);
       expect(writes.length).toBe(staged);
-      expect(sql.query('SELECT COUNT(*) AS n FROM attempts').get()).toEqual({ n: 1 });
+      expect(sql.query('SELECT COUNT(*) AS n FROM attempts').get()).toEqual({ n: 1 + refused });
     } finally { e.sqlite.close(); }
   }
   sql.close();

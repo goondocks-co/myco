@@ -76,7 +76,7 @@ it('workerd: a missing export credential reports unavailable and repeated alarms
   try {
     for (let wake = 0; wake < 2; wake++) {
       const observed = await d.alarm();
-      expect(observed.schedule).toMatchObject({ ready: false, due: false, idleCode: 'backup_not_ready' });
+      expect(observed.schedule).toMatchObject({ ready: false, due: false, idleCode: 'backup_export_credential_missing' });
       expect(observed.schedule.idleBecause).toContain('export credential');
       expect(observed.writes).toEqual([]);
       expect(observed.events.filter(event => event.kind === 'recovery_admission_unanswered')).toEqual([]);

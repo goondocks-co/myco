@@ -291,6 +291,20 @@ describe('automatic recovery on Health', () => {
     expect(said).not.toContain('recovery configuration');
   });
 
+  it('names the missing backup access key and who can add it', async () => {
+    server({
+      '/api/recovery/exports': () => Response.json(RECOVERY({
+        ...recoveryBase, intervalHours: 24, ready: false, due: false,
+        idleCode: 'backup_export_credential_missing', idleBecause: 'operator detail https://secret.invalid',
+      })),
+    });
+    mount();
+    const said = (await screen.findByTestId('recovery-cadence')).textContent ?? '';
+    expect(said).toContain('this server is missing its backup access key');
+    expect(said).toContain('Ask the server operator to add it');
+    expect(said).not.toContain('secret.invalid');
+  });
+
   it('never calls a staging recoverable, at any state', () => {
     for (const available of [
       { state: 'none' as const },

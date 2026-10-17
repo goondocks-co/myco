@@ -187,7 +187,7 @@ function recoveryPort(bindings: CloudflareBindings): ServerEnv['recovery'] {
   const configuration = boundRecoveryConfiguration(bindings);
   return {
     admission: !configuration.ok ? { ready: false, reason: configuration.reason }
-      : !bindings.RECOVERY_EXPORT_TOKEN ? { ready: false, reason: 'automatic backups need an export credential; ask the server operator to configure it' }
+      : !bindings.RECOVERY_EXPORT_TOKEN ? { ready: false, code: 'backup_export_credential_missing', reason: 'automatic backups need an export credential; ask the server operator to configure it' }
       : { ready: true },
     admit: async (admission) => object().admit(recoveryAdmissionWire(admission, bindings)),
     settleHold: (token) => object().settleHold(token),
