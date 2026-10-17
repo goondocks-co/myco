@@ -19,7 +19,7 @@ myco update --automatic off
 myco update --automatic on
 ```
 
-These commands save the choice for this installation and do nothing else. Turning updates on makes the next helper pass due. When off, `myco member status` and `myco doctor` show that choice; the helper records a skipped check about once a day without contacting the release service. Manual updates still work. A missing or unreadable setting means on; doctor reports an unreadable setting.
+These commands save the choice for this installation without running an update. Turning updates on checks for an update at the next coding session with enough time. When off, `myco member status` and `myco doctor` show that choice; the helper records a skipped check about once a day without contacting the release service. Manual updates still work. A missing or unreadable setting means on; doctor reports an unreadable setting.
 
 A member installation runs no member update timer or local service. Automatic replacement also skips a non-default `MYCO_HOME`, a runtime pin selecting another binary, or a development build. `--skip-binary` applies only to the manual command.
 
@@ -46,6 +46,8 @@ This does not change the recorded channel. An explicit channel on a repeat insta
 ## Update runners
 
 Installed runners check for releases and update themselves **between runs**, within their recorded channel. In **Runners**, an owner or administrator can choose **Update now** when a connected runner reports an available update. A busy runner finishes its run first. The page shows its version, channel and last update result.
+
+An installed runner on the same machine keeps updating between runs even when automatic member updates are off.
 
 On the runner machine, `myco update` also queues the service's update between runs. For checks and recovery details, see [Runner updates](runners.md#updates-between-runs). On a machine that both captures and runs tasks, an update handoff can leave agent refresh pending; finish with an interactive `myco update` or `myco member provision --refresh` after the handoff.
 

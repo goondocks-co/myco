@@ -15,9 +15,9 @@ const statePath = (home: string) => path.join(home, 'member', 'keep-current.json
 const PREFERENCE_WAIT_MS = 15_000;
 
 /** Save the installation preference and make an enabled check due under the helper's lease. */
-export function setAutomaticUpdates(home: string, enabled: boolean): void {
+export function setAutomaticUpdates(home: string, enabled: boolean, waitMs = PREFERENCE_WAIT_MS): void {
   const acquired = LifecycleLock.acquire(`${statePath(home)}.lock`, {
-    command: 'myco update --automatic', wait: true, timeoutMs: PREFERENCE_WAIT_MS,
+    command: 'myco update --automatic', wait: true, timeoutMs: waitMs,
   });
   if (!acquired.acquired) throw new Error('An automatic update is running; try again when it finishes.');
   try {

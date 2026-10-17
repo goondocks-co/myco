@@ -360,6 +360,23 @@ it.each([FROM, TO, null])('shows a failed same-pass agent refresh with provision
   });
 });
 
+it.each([FROM, TO, null])('keeps pending agent refresh visible while automatic updates are off, provision version %p', async version => {
+  if (version !== null) recordProvision(home, { version, serverUrl: SERVER, agents: ['codex'] });
+  await attemptAutomaticUpdate(home, now, async () => ({ kind: 'adopted', version: TO }), async () => { throw new Error('fixture agent refresh failed'); });
+  writeAutomaticUpdatePreference(home, false);
+  const check = checkAutomaticUpdate(home);
+  expect(check.status).toBe(version === TO ? 'ok' : 'warn');
+  expect(check.detail).toStartWith('off; run myco update --automatic on');
+  expect(check.detail.includes('agents still need refreshing. Run myco member provision --refresh')).toBe(version !== TO);
+  expect(check.detail).not.toContain(new Date(clock).toISOString());
+  expect((await homeReport(home, {
+    cwd: root, now, fetch: async () => Response.json({}), worker: { platform: 'linux', runner: recordingPlatform().runner, ownDeploymentUrls: async () => [] },
+  })).find(row => row.name === 'Automatic update')).toEqual(check);
+  const lines: string[] = [];
+  runStatus(['--all'], { mycoHome: home, cwd: root, now, worker: { platform: 'linux', runner: recordingPlatform().runner }, stdout: line => lines.push(line), stderr: () => {} });
+  expect(lines.join('\n')).toContain(check.detail);
+});
+
 it('does not start a download with too little time after release discovery', async () => {
   let staged = 0;
   await pass({ binaryUpdateDeps: {

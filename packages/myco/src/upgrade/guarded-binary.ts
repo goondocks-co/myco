@@ -67,6 +67,12 @@ export function admitsUpdate(target: string, current: string, channel: ReleaseCh
   }], channel, allowOlder ? {} : { currentVersion: current }) !== null;
 }
 
+export function explicitUpdateRefusal(target: string, current: string, channel: ReleaseChannel): string {
+  if (!semver.valid(target) || !isV2Version(target) || isDevelopmentVersion(target)) return `version ${target} is not a Myco 2.x release; staying put`;
+  if (semver.valid(current) && semver.eq(target, current)) return `version ${target} is already installed; staying put`;
+  return `version ${target} is outside '${channel}'; staying put`;
+}
+
 export async function resolveAssetRefsForTarget(target: string | null, channel: ReleaseChannel, deps: BinaryUpdateDeps): Promise<AssetRefs | null> {
   if (target !== null) {
     const releases = await (deps.fetchReleases ?? fetchMycoReleases)();
@@ -188,7 +194,11 @@ async function performBinaryUpdate(
     if (refs === null) return target !== null
       ? { kind: 'failed', reason: `no release found for version ${target}` }
       : { kind: 'already-current', version: current, reason: 'no newer eligible release' };
-    if (!admitsUpdate(refs.targetVersion, current, channel, caller === 'manual' && target !== null)) return { kind: 'already-current', version: current, reason: `channel target ${refs.targetVersion} is older or outside '${channel}'; staying put` };
+    if (!admitsUpdate(refs.targetVersion, current, channel, caller === 'manual' && target !== null)) return {
+      kind: 'already-current', version: current, reason: target === null
+        ? `channel target ${refs.targetVersion} is older or outside '${channel}'; staying put`
+        : explicitUpdateRefusal(refs.targetVersion, current, channel),
+    };
     const failedBefore = hasAdoptFailed(home, platform, refs.targetVersion, localAppData);
     if (failedBefore && !(caller === 'manual' && target !== null)) return { kind: 'skipped', reason: `version ${refs.targetVersion} failed an earlier update; retry with myco update ${refs.targetVersion}` };
     if (caller === 'automatic' && budget.remaining() < AUTOMATIC_DOWNLOAD_MIN_BUDGET_MS) return { kind: 'skipped', reason: 'not enough time remains to download an update' };

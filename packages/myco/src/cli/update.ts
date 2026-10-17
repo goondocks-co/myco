@@ -5,10 +5,10 @@ import semver from 'semver';
 import { automaticUpdatesEnabled } from '@myco/install/marker-reader.js';
 import { setAutomaticUpdates } from '@myco/member/automatic-update-state.js';
 import { parseStrictFlags } from './args.js';
-import { updateBinary, binaryUpdatePath, admitsUpdate, resolveAssetRefsForTarget, type BinaryUpdateDeps } from '../upgrade/guarded-binary.js';
+import { updateBinary, binaryUpdatePath, admitsUpdate, explicitUpdateRefusal, resolveAssetRefsForTarget, type BinaryUpdateDeps } from '../upgrade/guarded-binary.js';
 import { claimSubsystem, readClaim, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import { resolveMycoPackageCheck } from '../upgrade/checker.js';
-import { resolveMycoHome } from '../paths/home.js';
+import { isDefaultMycoHome, resolveMycoHome } from '../paths/home.js';
 import { refreshMemberSetup } from '../member/refresh-setup.js';
 import { readRunnerUpdateState } from '../runner/update.js';
 import { isMemberHome } from '../member/home-role.js';
@@ -23,7 +23,7 @@ export const UPDATE_HELP = `Usage: myco update [options] [<version>]
 
 Update this machine's Myco within its recorded release channel, then refresh
 member agent setup. Runners update only between runs. Channel updates never
-downgrade; an explicit version can step back.
+downgrade. Without an installed runner, an explicit version can step back.
 
 A skipped binary update says why; agent setup still refreshes. A failed
 replacement restores the previous version and reports the rollback.
@@ -41,7 +41,7 @@ Options:
   --claim                      Take responsibility for this machine's agent setup
   --target-version <version>   Update to this exact version (flag form)
   --channel <alpha|beta|stable>      Update on this channel, this run only
-  --automatic <off|on>         Turn automatic updates off or on; do nothing else
+  --automatic <off|on>         Turn automatic member updates off or on; no update run
   -h, --help                   Show this help
 `;
 
@@ -57,6 +57,12 @@ export interface UpgradeDeps extends BinaryUpdateDeps {
   runnerRecords?: typeof listRunnerRecords;
   runRunner?: typeof import('./runner.js').run;
   runnerServiceInstalled?: (serverUrl: string, home: string) => boolean;
+  automaticUpdateWaitMs?: number;
+}
+
+function liveInstalledRunners(home: string, deps: UpgradeDeps) {
+  return (deps.runnerRecords ?? listRunnerRecords)(home).filter(isLiveRunner).filter(record =>
+    (deps.runnerServiceInstalled ?? ((serverUrl, mycoHome) => workerServiceInstalled(executorServiceTarget(serverUrl, { mycoHome, binaryPath: deps.mycoBinary, platform: deps.platform }, 'runner'))))(record.serverUrl, home));
 }
 
 // ---------------------------------------------------------------------------
@@ -124,8 +130,16 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
       console.error('myco update: --automatic cannot be combined with a version or other update options');
       process.exit(1);
     }
-    setAutomaticUpdates(deps.home ?? resolveMycoHome(), automatic === 'on');
+    const home = deps.home ?? resolveMycoHome();
+    setAutomaticUpdates(home, automatic === 'on', deps.automaticUpdateWaitMs);
     console.log(`Automatic updates are turned ${automatic}.`);
+    if (automatic === 'off') {
+      try {
+        if (liveInstalledRunners(home, deps).length > 0) console.log('Installed runners still update themselves between runs within their recorded release channel.');
+      } catch (error) {
+        console.warn(`Could not check whether installed runners will keep updating: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     return;
   }
 
@@ -151,9 +165,10 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
 
   // The install marker owns the default release channel.
   const channel: ReleaseChannel = (channelArg as ReleaseChannel | undefined) ?? effectiveUpdateChannel(home);
+  const memberHome = () => (deps.isMemberHome ?? isMemberHome)(home);
 
   const refresh = async (): Promise<void> => {
-    if (!(deps.isMemberHome ?? isMemberHome)(home)) {
+    if (!memberHome()) {
       console.log('Agents refreshed: no (this home is not a member machine).');
       return;
     }
@@ -175,8 +190,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
     console.log('This Myco home now manages this machine’s agent setup.');
   }
 
-  const runners = (deps.runnerRecords ?? listRunnerRecords)(home).filter(isLiveRunner).filter(record =>
-    (deps.runnerServiceInstalled ?? ((serverUrl, mycoHome) => workerServiceInstalled(executorServiceTarget(serverUrl, { mycoHome, binaryPath: deps.mycoBinary, platform: deps.platform }, 'runner'))))(record.serverUrl, home));
+  const runners = liveInstalledRunners(home, deps);
   if (runners.length > 0) {
     const summaries = new Set<string>();
     const runner = deps.runRunner ?? (await import('./runner.js')).run;
@@ -219,7 +233,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   if ('retainedPrevious' in outcome) for (const retained of outcome.retainedPrevious ?? []) console.log(`Update files were kept at ${retained.path} (${retained.reason}).`);
   for (const warning of outcome.warnings ?? []) console.log(warning);
   if (targetVersionArg !== null && outcome.kind === 'adopted' && outcome.previousVersion !== undefined
-    && semver.lt(outcome.version, outcome.previousVersion) && automaticUpdatesEnabled(home)) {
+    && semver.lt(outcome.version, outcome.previousVersion) && automaticUpdatesEnabled(home) && isDefaultMycoHome(home) && memberHome()) {
     console.log('Automatic updates will move this machine forward again; run `myco update --automatic off` to stay on this version.');
   }
   await refresh();
@@ -238,7 +252,7 @@ async function runCheck(channel: ReleaseChannel, deps: UpgradeDeps, target: stri
     const refs = await resolveAssetRefsForTarget(target, channel, deps);
     if (refs === null) throw new Error(`myco update --check: no release found for version ${target}`);
     const eligible = admitsUpdate(refs.targetVersion, currentVersion, channel, true);
-    console.log(`Myco: from ${currentVersion} to ${eligible ? refs.targetVersion : currentVersion} on channel ${channel} (check only${eligible ? '' : '; target is older or outside the channel; staying put'}).`);
+    console.log(`Myco: from ${currentVersion} to ${eligible ? refs.targetVersion : currentVersion} on channel ${channel} (check only${eligible ? '' : `; ${explicitUpdateRefusal(refs.targetVersion, currentVersion, channel)}`}).`);
     console.log('Agents refreshed: no (check only).');
     if (eligible) console.log(`Run \`myco update --target-version ${target}${channelFlag}\` to apply.`);
     return;
