@@ -2,7 +2,7 @@ import { password } from '@inquirer/prompts';
 import type { Readable } from 'node:stream';
 import { readD1ExportAnswer } from '@goondocks/myco-shared/d1-export';
 import { cloudflareOperation } from '@myco/server/cloudflare-operation.js';
-import { assertWranglerReady, CloudflareAuthenticationError, ensureCommandDir, putWorkerSecretValue, readDeploymentRecord, workerSecretNames } from '@myco/server/cloudflare.js';
+import { assertWranglerReady, CloudflareAuthenticationError, ensureCommandDir, putWorkerSecretValue, missingDeploymentRecordMessage, readDeploymentRecord, workerSecretNames } from '@myco/server/cloudflare.js';
 import { D1_EXPORT_PROBE_TABLES, probeD1Export, type D1ExportProbeOptions } from '@myco/server/cloudflare-d1-export.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 
@@ -63,7 +63,7 @@ export const installBackupCredential = cloudflareOperation(async (options: {
   probeClock?: Pick<D1ExportProbeOptions, 'now' | 'sleep'>;
 }): Promise<void> => {
   const record = readDeploymentRecord(options.mycoHome);
-  if (record === null) throw new Error('No Cloudflare deployment record on this machine. Run this command on the machine that manages the server.');
+  if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Run this command on the machine that manages the server.`);
   if (!record.accountId || !record.databaseId) throw new Error('This Cloudflare deployment record is missing its account or database id. No backup access key was read or stored.');
   const target = { accountId: record.accountId, workerName: record.workerName, runner: options.runner, configDir: ensureCommandDir(options.mycoHome) };
   await assertWranglerReady({ runner: options.runner, cwd: target.configDir });

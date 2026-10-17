@@ -12,7 +12,7 @@ import nodeFs from 'node:fs';
 const { existsSync, readFileSync, mkdirSync } = nodeFs;
 import path from 'node:path';
 import { z } from 'zod';
-import { resolveMycoHome } from '../paths/home.js';
+import { defaultMycoHome, resolveMycoHome, resolveMycoHomeWithSource } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
 import { CommandFailed, jsonDocument, runOrThrow, systemRunner, type CommandRunner, type CommandResult } from './runner.js';
 import { cloudflareResources } from './cloudflare-resources.js';
@@ -1044,6 +1044,21 @@ export function peekDeploymentRecord(mycoHome = resolveMycoHome()): DeploymentRe
     }
   }
   return null;
+}
+
+/** Describe the record lookup and, for a resolved home, the rule that chose it. */
+export function missingDeploymentRecordMessage(mycoHome?: string): string {
+  const resolved = mycoHome === undefined ? resolveMycoHomeWithSource() : { home: mycoHome, source: 'explicit' as const };
+  const home = resolved.home;
+  const sentences = [`No Cloudflare Deployment record in ${deploymentRecordPath(home)}.`];
+  if (resolved.source === 'env') sentences.push('This home comes from MYCO_HOME.');
+  else if (resolved.source === 'project-pin' || resolved.source === 'machine-pin') {
+    sentences.push(`This home comes from the pin ${resolved.pinPath}.`);
+  } else if (resolved.source === 'default') sentences.push('This is the default home.');
+  if (path.resolve(home) !== path.resolve(defaultMycoHome())) {
+    sentences.push('If the server is managed from another Myco home, run the command with MYCO_HOME set to that home.');
+  }
+  return sentences.join(' ');
 }
 
 export function readDeploymentRecord(mycoHome = resolveMycoHome()): DeploymentRecord | null {

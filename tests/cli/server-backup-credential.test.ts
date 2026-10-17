@@ -20,7 +20,7 @@ const original = { log: console.log, error: console.error, exit: process.exit };
 const originalStdout = process.stdout.write;
 const originalStderr = process.stderr.write;
 let root: string;
-let previousHome: string | undefined;
+let previousEnv: Record<string, string | undefined>;
 let stored: boolean;
 let confirm: boolean;
 let reads: number;
@@ -32,8 +32,13 @@ function record(databaseId: string | null = DATABASE) {
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cli-backup-credential-'));
-  previousHome = process.env.MYCO_HOME;
-  process.env.MYCO_HOME = root;
+  const env = { HOME: path.join(root, 'home'), MYCO_HOME: root, TMPDIR: path.join(root, 'tmp'),
+    CODEX_HOME: path.join(root, 'codex'), CLAUDE_CONFIG_DIR: path.join(root, 'claude'), XDG_CONFIG_HOME: path.join(root, 'config') };
+  previousEnv = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(env)) {
+    fs.mkdirSync(value, { recursive: true });
+    process.env[key] = value;
+  }
   logs.length = calls.length = events.length = 0;
   stored = false;
   confirm = true;
@@ -49,7 +54,9 @@ afterEach(() => {
   process.exit = original.exit;
   process.stdout.write = originalStdout;
   process.stderr.write = originalStderr;
-  if (previousHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = previousHome;
+  for (const [key, value] of Object.entries(previousEnv)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -411,7 +418,9 @@ it('accepts an immediate complete export without requiring or polling a bookmark
 });
 
 it('refuses missing or incomplete records before reading a key or contacting Cloudflare', async () => {
-  expect(await drive()).toContain('No Cloudflare deployment record on this machine');
+  const output = await drive();
+  expect(output).toContain(`No Cloudflare Deployment record in ${path.join(root, 'server', 'cloudflare', 'record.json')}.`);
+  expect(output).toContain('This home comes from MYCO_HOME.');
   record(null);
   expect(await drive()).toContain('missing its account or database id');
   expect(reads).toBe(0);
@@ -434,4 +443,27 @@ it('refuses an empty or multiline key before sending any export request', async 
   }
   expect(events).toHaveLength(0);
   assertPrivate();
+});
+
+it('names the machine pin and alternate home when the backup record is missing', async () => {
+  delete process.env.MYCO_HOME;
+  const defaultHome = path.join(process.env.HOME!, '.myco');
+  fs.mkdirSync(defaultHome, { recursive: true });
+  const pin = path.join(defaultHome, 'runtime.home');
+  const pinnedHome = path.join(root, 'pinned');
+  fs.writeFileSync(pin, pinnedHome, { mode: 0o600 });
+  const output = await drive();
+  expect(output).toContain(path.join(pinnedHome, 'server', 'cloudflare', 'record.json'));
+  expect(output).toContain(`This home comes from the pin ${pin}.`);
+  expect(output).toContain('MYCO_HOME set to that home');
+  expect(reads).toBe(0);
+});
+
+it('names the default home without suggesting a home override', async () => {
+  delete process.env.MYCO_HOME;
+  const output = await drive();
+  expect(output).toContain(path.join(process.env.HOME!, '.myco', 'server', 'cloudflare', 'record.json'));
+  expect(output).toContain('This is the default home.');
+  expect(output).not.toContain('MYCO_HOME set to that home');
+  expect(reads).toBe(0);
 });

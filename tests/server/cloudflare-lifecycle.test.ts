@@ -407,7 +407,7 @@ describe('update', () => {
 
   it('refuses without a record, and with one migrates then deploys through the rendered config', async () => {
     const { home, dir, options } = setup();
-    await expect(updateCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(/no Cloudflare deployment record/);
+    await expect(updateCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(join(home, 'server', 'cloudflare', 'record.json'));
     writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: 'then', databaseId: DB_ID, storeId: STORE }, home);
     const updated = await updateCloudflareDeployment({ ...options, runner: runner() });
     expect(updated.versionId).toBe('16a2423e-af96-4310-b61b-4e2b5fd1310b');
@@ -445,7 +445,7 @@ describe('rollback', () => {
 
   it('defaults to the record version, and refuses when neither the flag nor the record names one', async () => {
     const { home, options } = setup();
-    await expect(rollbackCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(/no Cloudflare deployment record/);
+    await expect(rollbackCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(join(home, 'server', 'cloudflare', 'record.json'));
     writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: 'then', databaseId: DB_ID }, home);
     await expect(rollbackCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(/no version to roll back to/);
     writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: VERSION, deployedAt: 'then', databaseId: DB_ID }, home);

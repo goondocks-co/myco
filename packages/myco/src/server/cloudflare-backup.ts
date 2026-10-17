@@ -4,7 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import {
   cloudflareBlobReader, D1_STATEMENT_TIMEOUT_MS, ensureCommandDir, operatorLogin, queryCloudflareDatabase, runCloudflareStatement,
-  readDeploymentRecord, type CloudflareOptions, type CloudflareFetch, type DeploymentRecord, type OperatorObjectTimeouts, type OperatorNetworkRetry,
+  missingDeploymentRecordMessage, readDeploymentRecord, type CloudflareOptions, type CloudflareFetch, type DeploymentRecord, type OperatorObjectTimeouts, type OperatorNetworkRetry,
 } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 import { renderDeployConfig } from './deploy-config.js';
@@ -83,7 +83,7 @@ function cloudflareRecoveryHold(provider: CloudflareOptions & { databaseName: st
  */
 export function cloudflareRecoveryHoldOf(options: LifecycleOptions & { fetch?: CloudflareFetch }): RecoveryHoldOwner {
   const record = readDeploymentRecord(options.mycoHome);
-  if (record === null) throw new Error('No Cloudflare Deployment record exists on this machine');
+  if (record === null) throw new Error(missingDeploymentRecordMessage(options.mycoHome));
   if (record.accountId !== options.accountId) throw new Error('this account does not match the Cloudflare Deployment record');
   const configDir = ensureCommandDir(options.mycoHome);
   const config = renderDeployConfig(record);
@@ -105,7 +105,7 @@ export async function backupCloudflareDeployment(
   },
 ): Promise<RecoveryManifest> {
   const record = readDeploymentRecord(options.mycoHome);
-  if (record === null) throw new Error('No Cloudflare Deployment record exists on this machine');
+  if (record === null) throw new Error(missingDeploymentRecordMessage(options.mycoHome));
   if (record.accountId !== options.accountId) throw new Error('backup account does not match the Cloudflare Deployment record');
   // One capture of the record names the export, renders its config and is what the artifact records.
   const config = renderDeployConfig(record);

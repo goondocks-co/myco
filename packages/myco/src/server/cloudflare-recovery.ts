@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
+import { resolveMycoHome } from '@myco/paths/home.js';
 import { z } from 'zod';
 import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
@@ -56,7 +57,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
   source: string; secretsFile: string; newSignIn?: boolean; tenantMode?: RecoveryTenantMode; sourceRetired?: boolean; native?: NativeSqlite; fetch?: CloudflareFetch;
 }): Promise<{ record: DeploymentRecord; schemaVersion: number; rebuildEmbeddings: true }> => {
   assertRecoveryTenantChoice(options.tenantMode, options.sourceRetired);
-  if (readDeploymentRecord(options.mycoHome) !== null) throw new Error('hosted recovery requires a fresh MYCO_HOME without a Cloudflare Deployment record');
+  if (readDeploymentRecord(options.mycoHome) !== null) throw new Error(`Cloudflare Deployment record already exists in ${options.mycoHome ?? resolveMycoHome()}. Hosted recovery requires a fresh MYCO_HOME without a Cloudflare Deployment record.`);
   const root = ensureCommandDir(options.mycoHome);
   const journalFile = path.join(root, 'recovery.json');
   const journalEntry = fs.lstatSync(journalFile, { throwIfNoEntry: false });
