@@ -11,6 +11,8 @@ import { WRANGLER_TEMPLATE } from '@myco/server/wrangler-template.js';
 import { DeployConfigIncomplete, FREE_TIER_SURFACES, migrationLedger, parityWranglerConfig, renderDeployConfig, undeletableClasses } from '@myco/server/deploy-config.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 
+const RECORD_FILE = '/fixture/server/cloudflare/record.json';
+
 const SHIPPED = fileURLToPath(new URL('../../packages/myco-server/wrangler.toml', import.meta.url));
 
 const record = (over: Partial<DeploymentRecord> = {}): DeploymentRecord => ({
@@ -37,7 +39,7 @@ describe('wrangler template', () => {
     // The rendered config is what deploys, so it is what is checked: the
     // template alone misses the vector bindings and the store block the
     // renderer appends.
-    const rendered = renderDeployConfig(record({ databaseId: 'd1-uuid', storeId: 'store-1', url: 'https://myco.example.com' }));
+    const rendered = renderDeployConfig(record({ databaseId: 'd1-uuid', storeId: 'store-1', url: 'https://myco.example.com' }), RECORD_FILE);
     const headers = (text: string) => [...text.matchAll(/^(\[\[?[a-z0-9_.]+\]?\])$/gm)].map((m) => m[1]!);
     // Nothing ships that is not on the list, in the committed base or in what
     // a deploy actually reads.
@@ -63,7 +65,7 @@ describe('renderDeployConfig', () => {
       workerName: 'recovery-worker', databaseName: 'recovery-database', databaseId: 'recovery-id',
       bucketName: 'recovery-blobs', vectorIndexName: 'recovery-vectors',
       storeId: 'recovery-store', wrapKeySecretName: 'recovery-wrap-key',
-    })));
+    }), RECORD_FILE));
     expect(config).toMatchObject({
       name: 'recovery-worker',
       d1_databases: [{ binding: 'MYCO_DB', database_name: 'recovery-database', database_id: 'recovery-id', migrations_dir: 'migrations' }],
@@ -78,11 +80,11 @@ describe('renderDeployConfig', () => {
       ratelimits: [{ name: 'SOURCE_LIMIT' }, { name: 'TOKEN_LIMIT' }],
     });
     expect(config).not.toHaveProperty('routes');
-    expect(() => renderDeployConfig(record({ databaseId: 'recovery-id', bucketName: 'bad"\nname="other' }))).toThrow();
+    expect(() => renderDeployConfig(record({ databaseId: 'recovery-id', bucketName: 'bad"\nname="other' }), RECORD_FILE)).toThrow();
   });
 
   it('renders the account, custom-domain route, database id, and secrets store from the record', () => {
-    const config = renderDeployConfig(record({ url: 'https://myco.example.com', databaseId: 'd1-uuid', storeId: 'store-1' }));
+    const config = renderDeployConfig(record({ url: 'https://myco.example.com', databaseId: 'd1-uuid', storeId: 'store-1' }), RECORD_FILE);
     const lines = config.split('\n');
     expect(lines[0]).toBe(`account_id = "${'a'.repeat(32)}"`);
     expect(lines[1]).toBe('routes = [ { pattern = "myco.example.com", custom_domain = true } ]');
@@ -94,26 +96,26 @@ describe('renderDeployConfig', () => {
   });
 
   it('tells the Worker the fleet and the origin the record names, and refuses a fleet that is not a count', () => {
-    const config = renderDeployConfig(record({ url: 'https://myco.example.com', databaseId: 'd1-uuid', fleet: 3 }));
+    const config = renderDeployConfig(record({ url: 'https://myco.example.com', databaseId: 'd1-uuid', fleet: 3 }), RECORD_FILE);
     expect(config).toContain('[vars]');
     expect(config).toContain('MYCO_ORIGIN = "https://myco.example.com"');
     expect(config).toContain('MYCO_FLEET = "3"');
     expect(config.match(/^\[vars\]$/gm)).toHaveLength(1);
     // With no URL and no fleet the Worker is still told the one database a recovery export may name, and the
     // configuration a recovery records, and nothing else.
-    const bare = renderDeployConfig(record({ databaseId: 'd1-uuid' }));
+    const bare = renderDeployConfig(record({ databaseId: 'd1-uuid' }), RECORD_FILE);
     expect(bare).toContain('MYCO_RECOVERY_DATABASE_ID = "d1-uuid"');
     expect(bare).toContain('MYCO_RECOVERY_CONFIGURATION = ');
     expect(bare).not.toContain('MYCO_ORIGIN');
     expect(bare).not.toContain('MYCO_FLEET');
-    expect(() => renderDeployConfig(record({ databaseId: 'd1-uuid', fleet: 0 }))).toThrow(/fleet/);
-    expect(() => renderDeployConfig(record({ databaseId: 'd1-uuid', fleet: 2.5 }))).toThrow(/fleet/);
+    expect(() => renderDeployConfig(record({ databaseId: 'd1-uuid', fleet: 0 }), RECORD_FILE)).toThrow(/fleet/);
+    expect(() => renderDeployConfig(record({ databaseId: 'd1-uuid', fleet: 2.5 }), RECORD_FILE)).toThrow(/fleet/);
   });
 
   it('runs the carried bundle, alone in its own directory, with wrangler bundling nothing and sweeping nothing', () => {
     // `no_bundle` turns `find_additional_modules` on by default, which would
     // carry the staged dashboard and migrations into the Worker script.
-    const config = renderDeployConfig(record({ databaseId: 'd1-uuid' }));
+    const config = renderDeployConfig(record({ databaseId: 'd1-uuid' }), RECORD_FILE);
     expect(config).toContain('main = "worker/worker.js"');
     expect(config).toContain('no_bundle = true');
     expect(config).toContain('find_additional_modules = false');
@@ -123,16 +125,16 @@ describe('renderDeployConfig', () => {
   });
 
   it('renders no route for a workers.dev URL and no store block without a store id', () => {
-    const config = renderDeployConfig(record({ url: 'https://myco.example.workers.dev', databaseId: 'd1-uuid' }));
+    const config = renderDeployConfig(record({ url: 'https://myco.example.workers.dev', databaseId: 'd1-uuid' }), RECORD_FILE);
     expect(config).not.toContain('routes =');
     expect(config.split('\n')[1]).toBe('name = "myco-server"');
     expect(config).not.toContain('\nstore_id =');
   });
 
   it('refuses a record without the database id, naming the missing field', () => {
-    expect(() => renderDeployConfig(record())).toThrow(DeployConfigIncomplete);
+    expect(() => renderDeployConfig(record(), RECORD_FILE)).toThrow(DeployConfigIncomplete);
     try {
-      renderDeployConfig(record());
+      renderDeployConfig(record(), RECORD_FILE);
     } catch (err) {
       expect((err as DeployConfigIncomplete).missing).toEqual(['databaseId']);
       expect((err as Error).message).toContain('databaseId');
@@ -177,7 +179,7 @@ describe('parityWranglerConfig', () => {
     // removing the entry that created it.
     expect(undeletableClasses(WRANGLER_TEMPLATE)).toEqual([]);
     expect(undeletableClasses(parityWranglerConfig())).toEqual([]);
-    expect(undeletableClasses(renderDeployConfig(record({ databaseId: 'd1-uuid' })))).toEqual([]);
+    expect(undeletableClasses(renderDeployConfig(record({ databaseId: 'd1-uuid' }), RECORD_FILE))).toEqual([]);
     // The shape it exists to refuse.
     expect(undeletableClasses('[[migrations]]\ntag = "v9"\ndeleted_classes = [ "Gone" ]')).toEqual(['Gone']);
   });

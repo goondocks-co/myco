@@ -80,7 +80,7 @@ export function stageCloudflareDeploy(record: DeploymentRecord, mycoHome?: strin
 function stage(record: DeploymentRecord, mycoHome?: string): StagedDeploy {
   // Rendered before the directory is touched: a record that cannot address its
   // own database refuses here, with the previous stage still intact.
-  const config = renderDeployConfig(record);
+  const config = renderDeployConfig(record, deploymentRecordPath(mycoHome));
 
   const dir = stagingDir(mycoHome);
   rmSync(dir, { recursive: true, force: true });

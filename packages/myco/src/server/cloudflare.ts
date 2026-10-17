@@ -12,7 +12,7 @@ import nodeFs from 'node:fs';
 const { existsSync, readFileSync, mkdirSync } = nodeFs;
 import path from 'node:path';
 import { z } from 'zod';
-import { resolveMycoHome } from '../paths/home.js';
+import { resolveMycoHome, resolveMycoHomeWithSource } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
 import { CommandFailed, jsonDocument, runOrThrow, systemRunner, type CommandRunner, type CommandResult } from './runner.js';
 import { cloudflareResources } from './cloudflare-resources.js';
@@ -1011,7 +1011,7 @@ export function peekCommandDir(mycoHome = resolveMycoHome()): string {
   return path.dirname(peekDeploymentRecordPath(mycoHome));
 }
 
-function peekDeploymentRecordPath(mycoHome: string): string {
+export function peekDeploymentRecordPath(mycoHome = resolveMycoHome()): string {
   const current = path.join(mycoHome, 'server', 'cloudflare', 'record.json');
   const legacy = path.join(mycoHome, 'server', 'cloudflare.json');
   return existsSync(current) || !existsSync(legacy) ? current : legacy;
@@ -1044,6 +1044,21 @@ export function peekDeploymentRecord(mycoHome = resolveMycoHome()): DeploymentRe
     }
   }
   return null;
+}
+
+/** Describe the record lookup and, for a resolved home, the rule that chose it. */
+export function missingDeploymentRecordMessage(mycoHome?: string): string {
+  const resolved = mycoHome === undefined ? resolveMycoHomeWithSource() : { home: mycoHome, source: 'explicit' as const };
+  let home: string;
+  try { home = nodeFs.realpathSync.native(resolved.home); }
+  catch { home = path.resolve(resolved.home); }
+  const sentences = [`No Cloudflare Deployment record at ${peekDeploymentRecordPath(home)}.`];
+  if (resolved.source === 'env') sentences.push('This home comes from MYCO_HOME (set in your environment or by a runtime pin).');
+  else if (resolved.source === 'project-pin' || resolved.source === 'machine-pin') {
+    sentences.push(`This home comes from the pin ${resolved.pinPath}.`);
+  } else if (resolved.source === 'default') sentences.push('This is the default home.');
+  sentences.push('If the server is managed from another Myco home, run the command with MYCO_HOME set to that home.');
+  return sentences.join(' ');
 }
 
 export function readDeploymentRecord(mycoHome = resolveMycoHome()): DeploymentRecord | null {

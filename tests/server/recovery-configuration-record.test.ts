@@ -13,6 +13,8 @@ import { LOCAL_SECRET_NAMES } from '@myco/server/local.js';
 import { credentialsReport, restoredFleet } from '@myco/server/recovery-bundle.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 
+const RECORD_FILE = '/fixture/server/cloudflare/record.json';
+
 const minimal: DeploymentRecord = {
   accountId: 'fixture-account', workerName: 'fixture-worker', databaseName: 'fixture-db', bucketName: 'fixture-blobs',
   versionId: 'fixture-version', deployedAt: '2026-09-17T00:00:00.000Z', databaseId: 'fixture-database',
@@ -24,7 +26,7 @@ const full: DeploymentRecord = {
 
 /** The bindings a rendered deploy config gives the Worker. */
 const renderedVars = (record: DeploymentRecord): Record<string, string> =>
-  (Bun.TOML.parse(renderDeployConfig(record)) as { vars: Record<string, string> }).vars;
+  (Bun.TOML.parse(renderDeployConfig(record, RECORD_FILE)) as { vars: Record<string, string> }).vars;
 
 describe('recoveryConfigurationOf', () => {
   it('records the resolved resource names, including the derived recovery store and default index and secret', () => {

@@ -12,7 +12,7 @@ import { executorServiceTarget } from '@myco/cli/worker-service.js';
 import { harnessDirectories, workerServiceStatus, workerServiceUnit, workerServiceSpec } from '@myco/runner/service.js';
 import { servicePaths } from '@myco/server/service.js';
 import { openBrowser } from '@goondocks/myco-shared';
-import { assertWranglerReady, ensureCommandDir, peekCommandDir, operatorLogin, listAccounts, peekDeploymentRecord, WranglerNotSignedIn, type OperatorLogin } from '@myco/server/cloudflare.js';
+import { assertWranglerReady, missingDeploymentRecordMessage, ensureCommandDir, peekCommandDir, operatorLogin, listAccounts, peekDeploymentRecord, WranglerNotSignedIn, type OperatorLogin } from '@myco/server/cloudflare.js';
 import { createCloudflareDeployment, planCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
 import { cloudflareOwnerLinked, setupCloudflareOwner } from '@myco/server/cloudflare-owner.js';
 import { registerGitHubApp, defaultAppName, hasPendingSignIn, type RegisterOptions, type SignInTarget } from '@myco/server/github-app.js';
@@ -235,7 +235,7 @@ async function conductLegacy(ctx: Context): Promise<void> {
 const signInTarget = (ctx: Context): SignInTarget => {
   if (!isCloudflare(ctx)) return { kind: 'local', paths: peekLocalPaths(ctx.home) };
   const record = peekDeploymentRecord(ctx.home);
-  if (!record) throw new Error('No Cloudflare Deployment recorded; run myco setup again to create it.');
+  if (!record) throw new Error(`${missingDeploymentRecordMessage(ctx.home)} Run myco setup again to create it.`);
   return { kind: 'cloudflare', record, mycoHome: ctx.home };
 };
 async function signInOptions(ctx: Context): Promise<RegisterOptions> {

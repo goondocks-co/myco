@@ -11,7 +11,7 @@
  */
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { setupFirstOwner } from '@myco-server-worker/core/first-owner.js';
-import { assertWranglerReady, ensureCommandDir, peekCommandDir, operatorLogin, readDeploymentRecord, type CloudflareFetch, type OperatorLogin } from './cloudflare.js';
+import { assertWranglerReady, ensureCommandDir, peekCommandDir, operatorLogin, missingDeploymentRecordMessage, readDeploymentRecord, type CloudflareFetch, type OperatorLogin } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
 import { d1OperatorStore } from './d1-operator-store.js';
@@ -41,7 +41,7 @@ export interface CloudflareOwnerOptions extends LifecycleOptions {
 /** Issues the hosted Deployment's first administrator link; a retry before the link is used replaces it. */
 export const setupCloudflareOwner = cloudflareOperation(async (options: CloudflareOwnerOptions): Promise<{ memberId: string; url: string; expiresAt: number }> => {
   const record = readDeploymentRecord(options.mycoHome);
-  if (record === null) throw new Error('No Cloudflare Deployment record exists on this machine; `myco server create --target cloudflare --account-id <id>` provisions one');
+  if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} \`myco server create --target cloudflare --account-id <id>\` provisions one.`);
   if (record.accountId !== options.accountId) throw new Error('this account does not match the Cloudflare Deployment record');
   if (record.url === undefined || record.url === '') throw new Error('the Cloudflare Deployment record names no URL; run `myco server update --target cloudflare` to record it');
   if (record.databaseId === undefined) throw new Error('the Cloudflare Deployment record names no database; run `myco server create --target cloudflare` again to finish provisioning');

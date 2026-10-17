@@ -2186,3 +2186,20 @@ describe('observation and consent contracts', () => {
     expect(snapshot(home)).toEqual(before);
   });
 });
+
+it('names the missing Cloudflare record if it disappears before sign-in setup', async () => {
+  const server = ownerDeployment(root, home, 'cloudflare');
+  closers.push(server.close);
+  let removed = false;
+  const deps: SetupDeps = { ...base(), ...server.deps, ask: async () => 'yes', stdout: line => {
+    lines.push(line);
+    if (line.includes('Register a GitHub sign-in app named')) {
+      fs.rmSync(path.join(home, 'server', 'cloudflare', 'record.json'));
+      removed = true;
+    }
+  } };
+  expect(await run(['--create', 'cloudflare', '--account-id', ACCOUNT, '--url', HOSTED_URL, '--no-agents', '--no-runner'], deps)).toBe(2);
+  expect(removed).toBe(true);
+  expect(errors.at(-1)).toContain(`No Cloudflare Deployment record at ${path.join(home, 'server', 'cloudflare', 'record.json')}.`);
+  expect(errors.at(-1)).toContain('Run myco setup again to create it.');
+});

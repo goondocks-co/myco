@@ -118,7 +118,7 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
       if (record && answers.accountId && record.accountId !== answers.accountId) throw new Error('Selected Cloudflare account does not match the Deployment record; keep its --account-id.');
       const complete = record?.databaseId && record.storeId && record.versionId && record.url;
       answers.url = observedUrl = record?.url;
-      add('deployment.create', record === null ? 'absent' : complete ? 'complete' : 'incomplete', record === null ? 'No Cloudflare Deployment recorded.' : complete ? 'Cloudflare Deployment recorded.' : 'Cloudflare creation is incomplete.', answers.accountId ?? home);
+      add('deployment.create', record === null ? 'absent' : complete ? 'complete' : 'incomplete', record === null ? 'Not created yet.' : complete ? 'Cloudflare Deployment recorded.' : 'Cloudflare creation is incomplete.', answers.accountId ?? home);
       if (complete && deps.checkRemote && !deps.status) await read('deployment.owner', async () => {
         const linked = await cloudflareOwnerLinked({ ...deps.cloudflare, mycoHome: home, accountId: record.accountId });
         add('deployment.owner', linked ? 'complete' : 'incomplete', linked ? 'linked' : 'Owner linking remains.');

@@ -30,7 +30,7 @@ import { PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { LocalVolume } from '@myco/server/local-volume.js';
 import { withCloudflareOperation } from '@myco/server/cloudflare-operation.js';
-import { deploymentRecordPath, putWorkerSecrets, readDeploymentRecord, writeDeploymentRecord, type DeploymentRecord } from './cloudflare.js';
+import { missingDeploymentRecordMessage, deploymentRecordPath, putWorkerSecrets, readDeploymentRecord, writeDeploymentRecord, type DeploymentRecord } from './cloudflare.js';
 import type { CommandRunner } from './runner.js';
 import { configureLocalSignIn, localDeploymentPresent, readLocalSecrets, resolveLocalPaths, type LocalDeploymentPaths } from './local.js';
 import { composeRetiredMessage, retiredComposeBundle } from './targets.js';
@@ -426,7 +426,7 @@ export function resolveSignInTarget(named: string | undefined, mycoHome?: string
     return { kind: 'local', paths: localPaths };
   }
   if (named === 'cloudflare') {
-    if (record === null) throw new RegistrationRefused('no Cloudflare Deployment record on this machine');
+    if (record === null) throw new RegistrationRefused(missingDeploymentRecordMessage(mycoHome));
     return { kind: 'cloudflare', record, mycoHome };
   }
   if (named !== undefined) throw new RegistrationRefused(`--target must be local or cloudflare, and is ${JSON.stringify(named)}`);

@@ -2,7 +2,7 @@ import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import nodeFs from 'node:fs';
 import { CommandFailed, type CommandRunner } from '../server/runner.js';
 import { discardSignInPending, registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
-import { WranglerNotReady, cloudflareCredentialLines, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
+import { WranglerNotReady, missingDeploymentRecordMessage, cloudflareCredentialLines, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, writeDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
 import { type CreatePlan, cloudflareUpdateLines, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { composeRetiredMessage, retiredComposeBundle } from '../server/targets.js';
@@ -422,7 +422,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
     }
 
     if (command === 'status' && target() === 'cloudflare') {
-      if (readDeploymentRecord() === null) { console.log('No Cloudflare Deployment record. myco server create --target cloudflare provisions one.'); return; }
+      if (readDeploymentRecord() === null) { console.log(`${missingDeploymentRecordMessage()} myco server create --target cloudflare --account-id <id> provisions one.`); return; }
       const status = (await cloudflareDeploymentStatus(cloudflareOptions()))!;
       console.log('\nCloudflare Deployment');
       console.log(`  Worker:     ${status.record.workerName} (account ${status.record.accountId})`);
@@ -575,7 +575,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
 
     if (command === 'config') {
       let record = readDeploymentRecord();
-      if (record === null) fail(`no Cloudflare deployment record on this machine (${deploymentRecordPath()}).`);
+      if (record === null) fail(missingDeploymentRecordMessage());
       const fleetFlag = flags.get('fleet');
       if (fleetFlag !== undefined) {
         const fleet = Number(fleetFlag);
@@ -584,7 +584,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
         writeDeploymentRecord(record);
         console.log(`Fleet set to ${fleet} runtime${fleet === 1 ? '' : 's'}; the next \`server update\` deploys it.`);
       }
-      const rendered = renderDeployConfig(record);
+      const rendered = renderDeployConfig(record, deploymentRecordPath());
       const out = flags.get('out');
       if (out === undefined || out === '' || out === 'true') {
         process.stdout.write(rendered);
