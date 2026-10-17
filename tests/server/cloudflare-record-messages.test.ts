@@ -165,12 +165,21 @@ it.each(['backup', 'hold', 'stage'] as const)('passes the explicit home record p
 });
 
 
-it('names the missing record in a read-only setup observation', async () => {
+it('describes uncreated Cloudflare setup without an error hint', async () => {
   const home = path.join(root, 'uncreated-home');
   const facts = await observeSetup(home, { role: 'create', target: 'cloudflare' },
     { status: true, agents: () => [], legacyHomeDir: process.env.HOME, legacyHomes: [] });
   expect(facts.find(fact => fact.id === 'deployment.create')).toMatchObject({
-    state: 'absent', detail: expect.stringContaining(path.join(home, 'server', 'cloudflare', 'record.json')),
+    state: 'absent', detail: 'Not created yet.',
   });
   expect(fs.existsSync(home)).toBe(false);
+});
+
+
+it('keeps the missing-record diagnostic when a home component is a regular file', () => {
+  const file = path.join(root, 'file');
+  fs.writeFileSync(file, 'fixture');
+  const home = path.join(file, 'sub');
+  expect(() => fs.realpathSync.native(home)).toThrow();
+  expect(missingDeploymentRecordMessage(home)).toContain(`No Cloudflare Deployment record at ${path.join(home, 'server', 'cloudflare', 'record.json')}.`);
 });

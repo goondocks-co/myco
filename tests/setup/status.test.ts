@@ -516,3 +516,15 @@ it('reports current capture and stale-blocked tools with the delete-then-refresh
     expect(lines.find(line => line.startsWith('Agent hooks:'))).toContain('Out of date');
   } finally { restore(); }
 });
+
+
+it('reports an uncreated Cloudflare home without a MYCO_HOME hint', async () => {
+  const freshHome = path.join(scratch, 'fresh-home');
+  expect(await run(['--status', '--create', 'cloudflare'], {
+    ...deps(), mycoHome: freshHome, agents: () => [], legacyHomeDir: path.join(scratch, 'person'), legacyHomes: [],
+  })).toBe(3);
+  const text = lines.join('\n');
+  expect(text).toContain('Not created yet.');
+  expect(text).not.toContain('MYCO_HOME');
+  expect(fs.existsSync(freshHome)).toBe(false);
+});

@@ -1051,10 +1051,7 @@ export function missingDeploymentRecordMessage(mycoHome?: string): string {
   const resolved = mycoHome === undefined ? resolveMycoHomeWithSource() : { home: mycoHome, source: 'explicit' as const };
   let home: string;
   try { home = nodeFs.realpathSync.native(resolved.home); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    home = path.resolve(resolved.home);
-  }
+  catch { home = path.resolve(resolved.home); }
   const sentences = [`No Cloudflare Deployment record at ${peekDeploymentRecordPath(home)}.`];
   if (resolved.source === 'env') sentences.push('This home comes from MYCO_HOME (set in your environment or by a runtime pin).');
   else if (resolved.source === 'project-pin' || resolved.source === 'machine-pin') {

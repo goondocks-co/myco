@@ -74,7 +74,7 @@ A deploy runs entirely out of `~/.myco/server/cloudflare/deploy/`, which the bin
 | `worker/worker.js` | `BUNDLED_WORKER`, built by wrangler from `packages/myco-server/src` |
 | `ui/dist/**` | `BUNDLED_SERVER_UI`, the Deployment dashboard |
 | `migrations/*.sql` | `renderMigrationFiles()`, rendered from `SCHEMA_STEPS` |
-| `wrangler.deploy.toml` | `renderDeployConfig(record)` |
+| `wrangler.deploy.toml` | `renderDeployConfig(record, recordPath)` |
 
 `packages/myco/src/server/cloudflare-stage.ts` is the single writer of that directory. Do not add a second one, and do not hand a deploy a path an operator typed.
 

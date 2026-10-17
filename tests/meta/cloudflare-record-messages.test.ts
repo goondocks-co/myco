@@ -12,8 +12,13 @@ function sources(directory: string): string[] {
   });
 }
 
+const customMessage = /no\s+(?:\w+\s+)*cloudflare\s+deployment\s+record\b|record exists on this machine/i;
+
 it('keeps missing Cloudflare record sentences in the shared message owner', () => {
-  const customMessage = /no\s+(?:\w+\s+)*cloudflare\s+deployment\s+record|record exists on this machine/i;
   expect(sources(sourceRoot).filter(file => file !== owner && customMessage.test(fs.readFileSync(file, 'utf8')))
     .map(file => path.relative(sourceRoot, file))).toEqual([]);
+});
+
+it('allows the absent-record status wording', () => {
+  expect(customMessage.test('No Cloudflare Deployment recorded.')).toBe(false);
 });
