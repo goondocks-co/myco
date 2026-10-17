@@ -6,10 +6,12 @@ import { run, UPDATE_HELP, type UpgradeDeps } from '@myco/cli/update.js';
 import { automaticUpdatesEnabled, readAutomaticUpdatePreference } from '@myco/install/marker-reader.js';
 import { readInstallMarker, writeInstallMarker } from '@myco/install/managed-binary.js';
 import { attemptAutomaticUpdate, readAutomaticUpdate } from '@myco/member/automatic-update-state.js';
+import { getPluginVersion, setPluginVersion } from '@myco/version.js';
 import { checkAutomaticUpdate } from '@myco/cli/doctor-member.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 
+const originalVersion = getPluginVersion();
 let root: string;
 let home: string;
 let restore: () => void;
@@ -19,6 +21,7 @@ let error: ReturnType<typeof spyOn>;
 const markerFile = () => path.join(home, 'install.json');
 const preferenceFile = () => path.join(home, 'install-update.json');
 beforeEach(() => {
+  setPluginVersion('2.0.0-alpha.3');
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-automatic-'));
   restore = bindSandboxChildHome(root);
   home = path.join(root, '.myco');
@@ -28,6 +31,7 @@ beforeEach(() => {
   error = spyOn(console, 'error').mockImplementation((...args) => { output.push(args.join(' ')); });
 });
 afterEach(() => {
+  setPluginVersion(originalVersion);
   log.mockRestore(); error.mockRestore(); restore(); process.exitCode = 0;
   fs.rmSync(root, { recursive: true, force: true });
 });

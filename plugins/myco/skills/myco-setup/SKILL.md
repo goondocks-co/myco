@@ -19,9 +19,9 @@ The plugin supplies skills and remote tools. Installing the binary adds session 
 
 ## 1. Verify or install the binary
 
-Before invoking any Myco command, read the installation's `install.json` (normally `~/.myco/install.json`, or under `MYCO_HOME`). Require a `bin` matching the executable you intend to run. For a curl install, require a 2.x `version` and a `binary_sha256` matching that file. For an npm install whose marker lacks those fields, read the installed `@goondocks/myco` and platform package metadata without executing either binary: require matching 2.x versions and a hash match between the platform package's binary and the marker's `bin`. This applies to commands on `PATH` and binaries outside it.
+Before invoking any Myco command, read the installation's `install.json` (normally `~/.myco/install.json`, or under `MYCO_HOME`). Require a `bin` matching the executable you intend to run. For a curl install, require a 2.x `version` and a `binary_sha256` matching that file. For an npm install whose marker lacks those fields, read the installed `@goondocks/myco` and platform package metadata without executing either binary: require matching 2.x versions and a hash match between the platform package's binary and the marker's `bin`. A source install uses `source: "checkout"`, a canonical `checkout` path, the full `commit` SHA, a development `version` (`0.0.0-dev+<describe>.b<id>`) and `binary_sha256`. Verify its hash and `bin`; this is a supported source build even though its version is below 2.x. The checkout need not still exist. This applies to commands on `PATH` and binaries outside it.
 
-If the marker is missing, unreadable, older, or does not match, inspect files without executing the binary. Use the installer's preview and obtain consent before replacing 1.4 with `--replace-1.4`.
+If the marker is missing, unreadable, names an older release, or does not match, inspect files without executing the binary. Use the installer's preview and obtain consent before replacing 1.4 with `--replace-1.4`.
 
 Once verified, run `myco version`; use the verified absolute `bin` path if it is outside `PATH`.
 

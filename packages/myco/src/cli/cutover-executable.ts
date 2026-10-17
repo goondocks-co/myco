@@ -5,6 +5,8 @@ import path from 'node:path';
 import { valid } from 'semver';
 import type { LegacyExecutableRecovery } from '@myco/member/cutover-backup.js';
 import type { MycoUnit } from '@myco/member/legacy-unit-files.js';
+import { validInstallMarker } from '@myco/install/marker-reader.js';
+import { isStampedSourceVersion } from '../../scripts/release-policy.mjs';
 
 export const LEGACY_EXECUTABLE_RECORD = 'legacy-executable.json';
 
@@ -55,7 +57,8 @@ export function identifyLegacyExecutable(unit: Pick<MycoUnit, 'executable' | 'ho
   if (currentHash && currentHash === recordedHash) return { kind: 'present', version: recordedVersion, warnings };
   const marker = unit.home ? read(path.join(unit.home, 'install.json')) : null;
   const installedVersion = legacyVersion(marker?.version);
-  const markerMatchesCurrent = Boolean(currentHash && typeof marker?.bin === 'string' && identity(marker.bin) === identity(unit.executable)
+  const markerMatchesCurrent = Boolean(currentHash && (marker?.source !== 'checkout' || validInstallMarker(marker))
+    && typeof marker?.bin === 'string' && identity(marker.bin) === identity(unit.executable)
     && typeof marker.binary_sha256 === 'string' && marker.binary_sha256.toLowerCase() === currentHash);
   if (installedVersion && markerMatchesCurrent) {
     return { kind: 'present', version: installedVersion, warnings };
@@ -68,7 +71,7 @@ export function identifyLegacyExecutable(unit: Pick<MycoUnit, 'executable' | 'ho
     }
   };
   const versionNames = list(path.join(bin, 'versions'));
-  const currentIs2 = Boolean(currentHash && (markerMatchesCurrent && versionInMajor(marker?.version, 2)
+  const currentIs2 = Boolean(currentHash && (markerMatchesCurrent && (versionInMajor(marker?.version, 2) || (marker?.source === 'checkout' && typeof marker.version === 'string' && isStampedSourceVersion(marker.version)))
     || versionNames.filter(name => versionInMajor(name, 2)).some(name => hash(path.join(bin, 'versions', name, path.basename(unit.executable))) === currentHash)));
   const candidates: Candidate[] = [];
   for (const name of versionNames.filter(name => legacyVersion(name) !== null)) {

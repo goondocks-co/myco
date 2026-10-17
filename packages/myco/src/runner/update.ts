@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import semver from 'semver';
 import { RELEASE_CHANNELS, type ReleaseChannel } from '../constants/update.js';
 import { readInstallMarker, versionBinaryPath, versionsDir, type InstallMarker } from '../install/managed-binary.js';
+import { validInstallMarker } from '../install/marker-reader.js';
 import { placeExecutable, type ProgramProbe } from '../install/place-binary.js';
 import { stageBinary, pruneVersions, DEFAULT_BINARY_UPDATE_DEPS, type StageBinaryDeps } from '../upgrade/apply-binary.js';
 import { assetName, githubHeaders, mycoReleasesApiUrl, pickRelease, resolveAssetRefs, resolveTargetTriple, type AssetRefs, type GitHubRelease } from '../upgrade/release-assets.js';
@@ -154,8 +155,7 @@ function decodeState(home: string): RunnerUpdateState {
       typeof tx.home !== 'string' || path.resolve(tx.home) !== path.resolve(home) ||
       !['waiting', 'adopted', 'healthy', 'probation', 'rollback'].includes(tx.phase) || !Number.isSafeInteger(tx.ownerPid) || tx.ownerPid < 1 ||
       !Number.isFinite(tx.startedAt) || tx.serviceSpec?.binaryPath !== tx.binaryPath ||
-      !RELEASE_CHANNELS.includes(tx.installMarker?.channel) || !['curl', 'npm'].includes(tx.installMarker?.source) ||
-      typeof tx.installMarker?.bin !== 'string' || !path.isAbsolute(tx.installMarker.bin))) ||
+      !validInstallMarker(tx.installMarker))) ||
     (cleanup !== undefined && ((cleanup.failedVersion !== undefined && !semver.valid(cleanup.failedVersion)) || !semver.valid(cleanup.currentVersion)
       || cleanup.failedVersion === cleanup.currentVersion || typeof cleanup.platform !== 'string'
       || (cleanup.localAppData !== undefined && typeof cleanup.localAppData !== 'string')
