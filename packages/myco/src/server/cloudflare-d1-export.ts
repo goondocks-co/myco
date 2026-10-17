@@ -300,44 +300,53 @@ export interface D1ExportProbeOptions {
 
 const PROBE_POLLS = 30;
 export const D1_EXPORT_PROBE_TABLES = ['schema_meta'] as const;
-const PROBE_WAIT = 'Wait for Cloudflare’s small schema export to end, then resume the operator backup to settle its record before rerunning.';
+const PROBE_WAIT = 'Wait for Cloudflare’s small schema export to end, then rerun `myco server backup-credential --target cloudflare`.';
 
 /** Record a schema-only credential probe before sending it, retaining every unresolved outcome. */
 export const probeD1Export = d1ExportOperation(async (options: D1ExportProbeOptions): Promise<void> => {
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const file = exportRecordPath(options.recordDir, options.databaseId);
+  const follow = async (record: ExportRecord, starting: boolean): Promise<'complete' | 'ended'> => {
+    let current = record;
+    for (let poll = starting ? 0 : 1; poll <= PROBE_POLLS; poll += 1) {
+      if (poll > 0) await sleep(D1_EXPORT_POLL_MS);
+      const answer = await options.request(current.bookmark);
+      if (answer.kind === 'complete' || answer.kind === 'ended') {
+        fs.rmSync(file, { force: true });
+        return answer.kind;
+      }
+      const refused = answer.kind === 'refused-login' || (answer.kind === 'unknown' && (answer.status === 401 || answer.status === 403));
+      if (refused) {
+        if (poll === 0) fs.rmSync(file, { force: true });
+        throw new Error(`Cloudflare refused this backup access key. No key was stored. Use Account → D1 → Edit for the account that manages this server.${poll > 0 ? ` ${PROBE_WAIT}` : ''}`);
+      }
+      if (answer.kind === 'unknown') {
+        if (answer.bookmark !== null) {
+          current = { ...current, bookmark: answer.bookmark, lastPolledAt: now() };
+          writeRecord(file, current);
+        }
+        throw new Error(answer.transient
+          ? `Cloudflare didn’t answer the backup access check. No key was stored. Try later. ${PROBE_WAIT}`
+          : `Cloudflare did not confirm the backup access check. No key was stored. Check Health for a running backup. ${PROBE_WAIT}`);
+      }
+      current = { ...current, bookmark: answer.bookmark, lastPolledAt: now() };
+      writeRecord(file, current);
+    }
+    throw new Error(`The backup access check is still running past its budget. No key was stored. ${PROBE_WAIT}`);
+  };
   const held = readRecord(file, D1_EXPORT_CANCEL_MARGIN_MS);
-  if (held !== null) throw new Error('An earlier database export is still recorded on this machine. No backup access check was started. Wait for it to end and resume the operator backup to settle its record before rerunning.');
-  let current: ExportRecord = { databaseId: options.databaseId, purpose: 'credential-probe', tables: [...D1_EXPORT_PROBE_TABLES],
+  if (held !== null) {
+    if (held.purpose !== 'credential-probe') throw new Error('An earlier database export is still recorded on this machine. No backup access check was started. Run `myco server backup --target cloudflare --to <dir>` with its original backup directory to resume it before rerunning.');
+    if (held.bookmark === null) {
+      if (now() - held.lastPolledAt < D1_EXPORT_CANCEL_MARGIN_MS) throw new Error(`An earlier backup access check is still recorded on this machine with no bookmark. No new check was started. ${PROBE_WAIT}`);
+      fs.rmSync(file, { force: true });
+    } else await follow(held, false);
+  }
+  const current: ExportRecord = { databaseId: options.databaseId, purpose: 'credential-probe', tables: [...D1_EXPORT_PROBE_TABLES],
     bookmark: null, startedAt: now(), lastPolledAt: now(), schema: '' };
   writeRecord(file, current);
-  for (let poll = 0; poll <= PROBE_POLLS; poll += 1) {
-    if (poll > 0) await sleep(D1_EXPORT_POLL_MS);
-    const answer = await options.request(current.bookmark);
-    if (answer.kind === 'complete' || answer.kind === 'ended') {
-      fs.rmSync(file, { force: true });
-      if (answer.kind === 'complete') return;
-      throw new Error('Cloudflare ended the backup access check without completing it. No key was stored. Check Health for a running backup before retrying.');
-    }
-    const refused = answer.kind === 'refused-login' || (answer.kind === 'unknown' && (answer.status === 401 || answer.status === 403));
-    if (refused) {
-      if (poll === 0) fs.rmSync(file, { force: true });
-      throw new Error(`Cloudflare refused this backup access key. No key was stored. Use Account → D1 → Edit for the account that manages this server.${poll > 0 ? ` ${PROBE_WAIT}` : ''}`);
-    }
-    if (answer.kind === 'unknown') {
-      if (answer.bookmark !== null) {
-        current = { ...current, bookmark: answer.bookmark, lastPolledAt: now() };
-        writeRecord(file, current);
-      }
-      throw new Error(answer.transient
-        ? `Cloudflare didn’t answer the backup access check. No key was stored. Try later. ${PROBE_WAIT}`
-        : `Cloudflare did not confirm the backup access check. No key was stored. Check Health for a running backup. ${PROBE_WAIT}`);
-    }
-    current = { ...current, bookmark: answer.bookmark, lastPolledAt: now() };
-    writeRecord(file, current);
-  }
-  throw new Error(`The backup access check is still running past its budget. No key was stored. ${PROBE_WAIT}`);
+  if (await follow(current, true) === 'ended') throw new Error('Cloudflare ended the backup access check without completing it. No key was stored. Check Health for a running backup before retrying.');
 });
 
 /** Serialize a database's export record across operator processes. */

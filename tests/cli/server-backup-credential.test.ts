@@ -6,7 +6,7 @@ import { Readable } from 'node:stream';
 import { run } from '@myco/cli/server.js';
 import { installBackupCredential, readBackupCredential } from '@myco/server/backup-credential.js';
 import { ensureCommandDir, writeDeploymentRecord, type CloudflareFetch, type OperatorLogin } from '@myco/server/cloudflare.js';
-import { exportD1, exportRecordPath, exportResultPath, probeD1Export, releaseD1Export, settleD1Export } from '@myco/server/cloudflare-d1-export.js';
+import { D1_EXPORT_CANCEL_MARGIN_MS, exportD1, exportRecordPath, exportResultPath, probeD1Export, releaseD1Export, settleD1Export } from '@myco/server/cloudflare-d1-export.js';
 import type { CommandRunner, RunOptions } from '@myco/server/runner.js';
 
 const TOKEN = 'synthetic-backup-access-key';
@@ -143,6 +143,18 @@ it('stores nothing when either export admission or its bookmark poll refuses val
   assertPrivate();
 });
 
+it.each([401, 403])('retains the record and bookmark when a %s refuses a poll after the start', async (status) => {
+  record();
+  const running = Response.json({ success: true, result: { at_bookmark: BOOKMARK } });
+  const denied = Response.json({ success: false, errors: [{ code: 10000, message: TOKEN }] }, { status });
+  expect(await drive([], probe([running, denied]))).toContain('Account → D1 → Edit');
+  expect(JSON.parse(fs.readFileSync(exportRecordPath(ensureCommandDir(root), DATABASE), 'utf8'))).toMatchObject({
+    purpose: 'credential-probe', bookmark: BOOKMARK,
+  });
+  expect(events).toEqual(['start', 'poll']);
+  assertPrivate();
+});
+
 it('withholds private diagnostics from validation, storage and confirmation failures', async () => {
   record();
   for (const step of ['put', 'list']) {
@@ -219,7 +231,9 @@ it('refuses a recorded operator export without changing its bytes or starting a 
   const file = exportRecordPath(ensureCommandDir(root), DATABASE);
   const held = JSON.stringify({ databaseId: DATABASE, tables: ['sessions'], bookmark: 'operator-bookmark', startedAt: Date.now(), lastPolledAt: Date.now(), schema: 'fixture-schema' });
   fs.writeFileSync(file, held);
-  expect(await drive()).toContain('An earlier database export is still recorded');
+  const output = await drive();
+  expect(output).toContain('An earlier database export is still recorded');
+  expect(output).toContain('myco server backup --target cloudflare --to <dir>');
   expect(events).toHaveLength(0);
   expect(fs.readFileSync(file, 'utf8')).toBe(held);
   assertPrivate();
@@ -233,10 +247,74 @@ it('persists intent before an unanswered start and blocks another probe or full 
     throw new Error(TOKEN);
   }, { preconnect: () => {} });
   expect(await drive([], fetchImpl)).toContain('Cloudflare didn’t answer');
-  expect(await drive()).toContain('An earlier database export is still recorded');
+  expect(await drive()).toContain('An earlier backup access check is still recorded');
   const context = exportContext(async () => { throw new Error('must not start another export'); });
   await expect(exportD1({ ...context, tables: ['sessions'], schema: 'fixture' })).rejects.toThrow('had no answer');
   expect(stored).toBe(false);
+  assertPrivate();
+});
+
+function savedProbe(bookmark: string | null, lastPolledAt: number) {
+  const file = exportRecordPath(ensureCommandDir(root), DATABASE);
+  fs.writeFileSync(file, JSON.stringify({ databaseId: DATABASE, purpose: 'credential-probe', tables: ['schema_meta'],
+    bookmark, startedAt: lastPolledAt, lastPolledAt, schema: '' }));
+  return file;
+}
+
+it('clears a bookmark-less probe past the cancellation margin and validates with a new probe', async () => {
+  record();
+  const now = Date.now();
+  const file = savedProbe(null, now - D1_EXPORT_CANCEL_MARGIN_MS - 1);
+  const complete = Response.json({ success: true, result: { status: 'complete', result: { signed_url: 'https://not-downloaded.invalid' } } });
+  await installBackupCredential({ mycoHome: root, runner, fetchImpl: probe([complete]), readSecret: secret,
+    probeClock: { now: () => now, sleep: async () => {} } });
+  expect(events).toEqual(['start', 'store', 'confirm']);
+  expect(fs.existsSync(file)).toBe(false);
+  assertPrivate();
+});
+
+it.each([0, D1_EXPORT_CANCEL_MARGIN_MS + 1])('follows a recorded probe aged %s ms to its end before validating with a new probe', async (age) => {
+  record();
+  const now = Date.now();
+  const file = savedProbe('held-bookmark', now - age);
+  const bookmarks: Array<string | null> = [];
+  const fetchImpl: typeof fetch = Object.assign(async (url: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(url)).toBe(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/d1/database/${DATABASE}/export`);
+    expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
+    const body = JSON.parse(String(init?.body));
+    expect(body.dump_options).toEqual({ no_data: true, tables: ['schema_meta'] });
+    const bookmark: string | null = body.current_bookmark ?? null;
+    bookmarks.push(bookmark);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).bookmark).toBe(bookmark);
+    if (bookmarks.length === 1) return Response.json({ success: true, result: { at_bookmark: 'continued-bookmark' } });
+    if (bookmarks.length === 3) return Response.json({ success: true, result: { at_bookmark: BOOKMARK } });
+    return Response.json({ success: true, result: { status: 'complete', result: { signed_url: 'https://never-download.invalid' } } });
+  }, { preconnect: () => {} });
+  await installBackupCredential({ mycoHome: root, runner, fetchImpl, readSecret: secret,
+    probeClock: { now: () => now, sleep: async () => {} } });
+  expect(bookmarks).toEqual(['held-bookmark', 'continued-bookmark', null, BOOKMARK]);
+  expect(events).toEqual(['store', 'confirm']);
+  expect(fs.existsSync(file)).toBe(false);
+  assertPrivate();
+});
+
+it.each([401, 403])('keeps a recorded probe when its resumed poll is refused with %s', async (status) => {
+  record();
+  const now = Date.now();
+  const file = savedProbe(BOOKMARK, now - D1_EXPORT_CANCEL_MARGIN_MS - 1);
+  const before = fs.readFileSync(file, 'utf8');
+  const bookmarks: unknown[] = [];
+  const fetchImpl: typeof fetch = Object.assign(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    bookmarks.push(body.current_bookmark);
+    expect(body.dump_options).toEqual({ no_data: true, tables: ['schema_meta'] });
+    return Response.json({ success: false, errors: [{ code: 10000, message: TOKEN }] }, { status });
+  }, { preconnect: () => {} });
+  await expect(installBackupCredential({ mycoHome: root, runner, fetchImpl, readSecret: secret,
+    probeClock: { now: () => now, sleep: async () => {} } })).rejects.toThrow('Account → D1 → Edit');
+  expect(bookmarks).toEqual([BOOKMARK]);
+  expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  expect(events).toHaveLength(0);
   assertPrivate();
 });
 
