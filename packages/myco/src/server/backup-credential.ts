@@ -63,7 +63,7 @@ export const installBackupCredential = cloudflareOperation(async (options: {
   probeClock?: Pick<D1ExportProbeOptions, 'now' | 'sleep'>;
 }): Promise<void> => {
   const record = readDeploymentRecord(options.mycoHome);
-  if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Run this command on the machine that manages the server.`);
+  if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} No backup access key was read or stored.`);
   if (!record.accountId || !record.databaseId) throw new Error('This Cloudflare deployment record is missing its account or database id. No backup access key was read or stored.');
   const target = { accountId: record.accountId, workerName: record.workerName, runner: options.runner, configDir: ensureCommandDir(options.mycoHome) };
   await assertWranglerReady({ runner: options.runner, cwd: target.configDir });

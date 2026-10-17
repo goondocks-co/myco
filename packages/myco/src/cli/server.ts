@@ -422,7 +422,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
     }
 
     if (command === 'status' && target() === 'cloudflare') {
-      if (readDeploymentRecord() === null) { console.log(`${missingDeploymentRecordMessage()} myco server create --target cloudflare provisions one.`); return; }
+      if (readDeploymentRecord() === null) { console.log(`${missingDeploymentRecordMessage()} myco server create --target cloudflare --account-id <id> provisions one.`); return; }
       const status = (await cloudflareDeploymentStatus(cloudflareOptions()))!;
       console.log('\nCloudflare Deployment');
       console.log(`  Worker:     ${status.record.workerName} (account ${status.record.accountId})`);
@@ -584,7 +584,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
         writeDeploymentRecord(record);
         console.log(`Fleet set to ${fleet} runtime${fleet === 1 ? '' : 's'}; the next \`server update\` deploys it.`);
       }
-      const rendered = renderDeployConfig(record);
+      const rendered = renderDeployConfig(record, deploymentRecordPath());
       const out = flags.get('out');
       if (out === undefined || out === '' || out === 'true') {
         process.stdout.write(rendered);

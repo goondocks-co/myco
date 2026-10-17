@@ -2,6 +2,8 @@ import { expect, it } from 'bun:test';
 import { renderDeployConfig } from '@myco/server/deploy-config.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 
+const RECORD_FILE = '/fixture/server/cloudflare/record.json';
+
 const record = (suffix: string): DeploymentRecord => ({
   accountId: 'fixture-account', workerName: `myco-${suffix}`, databaseName: `db-${suffix}`,
   databaseId: `${suffix.repeat(32).slice(0, 32)}`, bucketName: `blobs-${suffix}`,
@@ -17,7 +19,7 @@ interface RenderedBindings {
   secrets_store_secrets: Array<{ binding: string; store_id: string; secret_name: string }>;
 }
 
-const bindings = (suffix: string): RenderedBindings => Bun.TOML.parse(renderDeployConfig(record(suffix))) as unknown as RenderedBindings;
+const bindings = (suffix: string): RenderedBindings => Bun.TOML.parse(renderDeployConfig(record(suffix), RECORD_FILE)) as unknown as RenderedBindings;
 
 it('renders two Deployment records to distinct D1, R2, Vectorize and secret bindings', () => {
   const a = bindings('a');

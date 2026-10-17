@@ -744,3 +744,11 @@ describe('what the CLI prints when this machine is not ready', () => {
     expect(refused.said).toContain('CLOUDFLARE_API_TOKEN');
   });
 });
+
+
+it('names the explicit record file when a read-only plan rejects its URL', async () => {
+  const home = freshHome();
+  await expect(planCloudflareDeployment({ mycoHome: home, accountId: ACCOUNT, url: 'invalid-url', runner: runner() }))
+    .rejects.toThrow(join(home, 'server', 'cloudflare', 'record.json'));
+  expect(readdirSync(home)).toEqual([]);
+});

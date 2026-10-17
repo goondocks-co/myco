@@ -18,7 +18,7 @@ import { legacyCaptureGuidance } from '@myco/cli/legacy-capture.js';
 import { observeLegacyStrayHistory } from '@myco/member/legacy-strays.js';
 import type { SetupAnswers } from '@myco/setup/answers.js';
 import { inspectLocal, type LocalLifecycleDeps } from '@myco/server/local-lifecycle.js';
-import { peekDeploymentRecord } from '@myco/server/cloudflare.js';
+import { missingDeploymentRecordMessage, peekDeploymentRecord } from '@myco/server/cloudflare.js';
 import { cloudflareOwnerLinked, type CloudflareOwnerOptions } from '@myco/server/cloudflare-owner.js';
 import { peekLocalPaths, readLocalRecord } from '@myco/server/local.js';
 
@@ -118,7 +118,7 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
       if (record && answers.accountId && record.accountId !== answers.accountId) throw new Error('Selected Cloudflare account does not match the Deployment record; keep its --account-id.');
       const complete = record?.databaseId && record.storeId && record.versionId && record.url;
       answers.url = observedUrl = record?.url;
-      add('deployment.create', record === null ? 'absent' : complete ? 'complete' : 'incomplete', record === null ? 'No Cloudflare Deployment recorded.' : complete ? 'Cloudflare Deployment recorded.' : 'Cloudflare creation is incomplete.', answers.accountId ?? home);
+      add('deployment.create', record === null ? 'absent' : complete ? 'complete' : 'incomplete', record === null ? missingDeploymentRecordMessage(home) : complete ? 'Cloudflare Deployment recorded.' : 'Cloudflare creation is incomplete.', answers.accountId ?? home);
       if (complete && deps.checkRemote && !deps.status) await read('deployment.owner', async () => {
         const linked = await cloudflareOwnerLinked({ ...deps.cloudflare, mycoHome: home, accountId: record.accountId });
         add('deployment.owner', linked ? 'complete' : 'incomplete', linked ? 'linked' : 'Owner linking remains.');

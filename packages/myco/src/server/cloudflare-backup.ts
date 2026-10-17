@@ -3,7 +3,7 @@ import { D1ExportStartBudget, exportD1, exportResultPath, queryD1, releaseD1Expo
 import path from 'node:path';
 import { z } from 'zod';
 import {
-  cloudflareBlobReader, D1_STATEMENT_TIMEOUT_MS, ensureCommandDir, operatorLogin, queryCloudflareDatabase, runCloudflareStatement,
+  deploymentRecordPath, cloudflareBlobReader, D1_STATEMENT_TIMEOUT_MS, ensureCommandDir, operatorLogin, queryCloudflareDatabase, runCloudflareStatement,
   missingDeploymentRecordMessage, readDeploymentRecord, type CloudflareOptions, type CloudflareFetch, type DeploymentRecord, type OperatorObjectTimeouts, type OperatorNetworkRetry,
 } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
@@ -86,7 +86,7 @@ export function cloudflareRecoveryHoldOf(options: LifecycleOptions & { fetch?: C
   if (record === null) throw new Error(missingDeploymentRecordMessage(options.mycoHome));
   if (record.accountId !== options.accountId) throw new Error('this account does not match the Cloudflare Deployment record');
   const configDir = ensureCommandDir(options.mycoHome);
-  const config = renderDeployConfig(record);
+  const config = renderDeployConfig(record, deploymentRecordPath(options.mycoHome));
   const configFile = path.join(configDir, 'wrangler.recovery-hold.toml');
   fs.writeFileSync(configFile, config, { mode: 0o600 });
   const databaseName = z.object({ d1_databases: z.array(z.object({ binding: z.string(), database_id: z.string() })) })
@@ -108,7 +108,7 @@ export async function backupCloudflareDeployment(
   if (record === null) throw new Error(missingDeploymentRecordMessage(options.mycoHome));
   if (record.accountId !== options.accountId) throw new Error('backup account does not match the Cloudflare Deployment record');
   // One capture of the record names the export, renders its config and is what the artifact records.
-  const config = renderDeployConfig(record);
+  const config = renderDeployConfig(record, deploymentRecordPath(options.mycoHome));
   const recorded = recordedConfiguration(record);
   const bindings = z.object({ d1_databases: z.array(z.object({ binding: z.string(), database_id: z.string() })) })
     .parse(Bun.TOML.parse(config)).d1_databases.filter((binding) => binding.database_id === record.databaseId);

@@ -419,8 +419,10 @@ it('accepts an immediate complete export without requiring or polling a bookmark
 
 it('refuses missing or incomplete records before reading a key or contacting Cloudflare', async () => {
   const output = await drive();
-  expect(output).toContain(`No Cloudflare Deployment record in ${path.join(root, 'server', 'cloudflare', 'record.json')}.`);
-  expect(output).toContain('This home comes from MYCO_HOME.');
+  expect(output).toContain(`No Cloudflare Deployment record at ${path.join(root, 'server', 'cloudflare', 'record.json')}.`);
+  expect(output).toContain('This home comes from MYCO_HOME (set in your environment or by a runtime pin).');
+  expect(output).toContain('No backup access key was read or stored.');
+  expect(output).not.toContain('machine that manages the server');
   record(null);
   expect(await drive()).toContain('missing its account or database id');
   expect(reads).toBe(0);
@@ -459,11 +461,11 @@ it('names the machine pin and alternate home when the backup record is missing',
   expect(reads).toBe(0);
 });
 
-it('names the default home without suggesting a home override', async () => {
+it('names the default home and suggests an explicit home override', async () => {
   delete process.env.MYCO_HOME;
   const output = await drive();
   expect(output).toContain(path.join(process.env.HOME!, '.myco', 'server', 'cloudflare', 'record.json'));
   expect(output).toContain('This is the default home.');
-  expect(output).not.toContain('MYCO_HOME set to that home');
+  expect(output).toContain('MYCO_HOME set to that home');
   expect(reads).toBe(0);
 });
