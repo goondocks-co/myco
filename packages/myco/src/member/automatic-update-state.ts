@@ -3,6 +3,7 @@ import path from 'node:path';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import type { BinaryUpdateOutcome } from '@myco/upgrade/guarded-binary.js';
+import { writeAutomaticUpdatePreference } from '@myco/install/managed-binary.js';
 
 export const AUTOMATIC_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 export const AUTOMATIC_UPDATE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
@@ -11,6 +12,19 @@ export interface AutomaticUpdateState {
   lastOutcome: Pick<BinaryUpdateOutcome, 'kind'> & { version?: string; reason?: string };
 }
 const statePath = (home: string) => path.join(home, 'member', 'keep-current.json');
+const PREFERENCE_WAIT_MS = 15_000;
+
+/** Save the installation preference and make an enabled check due under the helper's lease. */
+export function setAutomaticUpdates(home: string, enabled: boolean): void {
+  const acquired = LifecycleLock.acquire(`${statePath(home)}.lock`, {
+    command: 'myco update --automatic', wait: true, timeoutMs: PREFERENCE_WAIT_MS,
+  });
+  if (!acquired.acquired) throw new Error('An automatic update is running; try again when it finishes.');
+  try {
+    if (enabled) fs.rmSync(statePath(home), { force: true });
+    writeAutomaticUpdatePreference(home, enabled);
+  } finally { acquired.lock.release(); }
+}
 
 /** Missing or damaged scheduling state is due on the next helper pass. */
 export function readAutomaticUpdate(home: string): AutomaticUpdateState | null {

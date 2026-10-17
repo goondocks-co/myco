@@ -1,6 +1,7 @@
 /** Member doctor checks and output formatting. */
 import { readProvisionRecord } from '@myco/member/provision-record.js';
 import { readAutomaticUpdate, automaticUpdateWords } from '@myco/member/automatic-update-state.js';
+import { readAutomaticUpdatePreference } from '@myco/install/marker-reader.js';
 import { installedBinaryPath } from '@myco/runtime/binary-resolution.js';
 import { readBinaryVersion, LIVE_MEMBER_VERSION_TIMEOUT_MS } from '@myco/runtime/binary-version.js';
 import { selfExec } from '@myco/runtime/self-exec.js';
@@ -364,6 +365,15 @@ export async function checkRuntimePin(): Promise<DoctorCheck | null> {
 
 /** The last automatic attempt, including refusals and failures. */
 export function checkAutomaticUpdate(mycoHome: string): DoctorCheck {
+  const preference = readAutomaticUpdatePreference(mycoHome);
+  if (preference.error !== undefined) return {
+    name: 'Automatic update', status: 'warn', fixable: false,
+    detail: `on (default); could not read the automatic update setting: ${preference.error}`,
+  };
+  if (!preference.enabled) return {
+    name: 'Automatic update', status: 'ok', fixable: false,
+    detail: 'off; run myco update --automatic on to turn automatic updates on',
+  };
   let state: ReturnType<typeof readAutomaticUpdate>;
   try { state = readAutomaticUpdate(mycoHome); }
   catch (error) {

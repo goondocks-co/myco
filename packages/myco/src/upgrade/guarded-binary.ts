@@ -7,6 +7,7 @@ import { isDevelopmentVersion, selectChannelRelease, isV2Version } from '../../s
 import { installedBinaryPath, readLayeredPin } from '@myco/runtime/binary-resolution.js';
 import { canonicalHomePath, defaultMycoHome, isDefaultMycoHome, resolveMycoHome } from '@myco/paths/home.js';
 import { readInstallMarker } from '@myco/install/managed-binary.js';
+import { automaticUpdatesEnabled } from '@myco/install/marker-reader.js';
 import { placeExecutable, readyExecutable, ExecutableVerificationError } from '@myco/install/place-binary.js';
 import type { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { LifecycleLock, type LockHandle } from '@myco/utils/lifecycle-lock.js';
@@ -32,7 +33,7 @@ export type BinaryUpdateOutcome = (
   | { kind: 'skipped'; reason: string }
   | { kind: 'failed'; reason: string }
   | { kind: 'already-current'; version: string; reason: string }
-  | { kind: 'adopted'; version: string }
+  | { kind: 'adopted'; version: string; previousVersion?: string }
   | { kind: 'rolled-back'; version: string; reason: string }
 ) & { warnings?: string[]; retainedPrevious?: RetainedPrevious[] };
 
@@ -59,11 +60,11 @@ export function binaryUpdatePath(home: string, deps: BinaryUpdateDeps = {}): str
   return deps.mycoBinary ?? installedBinaryPath(home, { platform: deps.platform, localAppData: deps.localAppData ?? process.env.LOCALAPPDATA });
 }
 
-export function admitsUpdate(target: string, current: string, channel: ReleaseChannel): boolean {
-  if (!semver.valid(target) || !semver.valid(current) || !semver.gt(target, current) || !isV2Version(target)) return false;
+export function admitsUpdate(target: string, current: string, channel: ReleaseChannel, allowOlder = false): boolean {
+  if (!semver.valid(target) || !semver.valid(current) || !(allowOlder ? !semver.eq(target, current) : semver.gt(target, current)) || !isV2Version(target)) return false;
   return !isV2Version(current) || selectChannelRelease([{
     tag_name: `myco/v${target}`, prerelease: semver.prerelease(target) !== null, assets: [],
-  }], channel, { currentVersion: current }) !== null;
+  }], channel, allowOlder ? {} : { currentVersion: current }) !== null;
 }
 
 export async function resolveAssetRefsForTarget(target: string | null, channel: ReleaseChannel, deps: BinaryUpdateDeps): Promise<AssetRefs | null> {
@@ -155,6 +156,7 @@ async function performBinaryUpdate(
   const platform = deps.platform ?? process.platform;
   const localAppData = deps.localAppData ?? process.env.LOCALAPPDATA;
   const runningVersion = deps.currentVersion ?? getPluginVersion();
+  if (caller === 'automatic' && !automaticUpdatesEnabled(home)) return { kind: 'skipped', reason: 'automatic updates are turned off' };
   if (options.skipBinary) return { kind: 'skipped', reason: '--skip-binary requested' };
   if (isDevelopmentVersion(runningVersion)) return { kind: 'skipped', reason: 'development build' };
   if (caller === 'automatic' && !isDefaultMycoHome(home)) return { kind: 'skipped', reason: 'this is not the default Myco home' };
@@ -186,7 +188,7 @@ async function performBinaryUpdate(
     if (refs === null) return target !== null
       ? { kind: 'failed', reason: `no release found for version ${target}` }
       : { kind: 'already-current', version: current, reason: 'no newer eligible release' };
-    if (!admitsUpdate(refs.targetVersion, current, channel)) return { kind: 'already-current', version: current, reason: `channel target ${refs.targetVersion} is older or outside '${channel}'; staying put` };
+    if (!admitsUpdate(refs.targetVersion, current, channel, caller === 'manual' && target !== null)) return { kind: 'already-current', version: current, reason: `channel target ${refs.targetVersion} is older or outside '${channel}'; staying put` };
     const failedBefore = hasAdoptFailed(home, platform, refs.targetVersion, localAppData);
     if (failedBefore && !(caller === 'manual' && target !== null)) return { kind: 'skipped', reason: `version ${refs.targetVersion} failed an earlier update; retry with myco update ${refs.targetVersion}` };
     if (caller === 'automatic' && budget.remaining() < AUTOMATIC_DOWNLOAD_MIN_BUDGET_MS) return { kind: 'skipped', reason: 'not enough time remains to download an update' };
@@ -255,7 +257,7 @@ async function performBinaryUpdate(
       try { clearAdoptFailed(home, platform, refs.targetVersion, localAppData, deps.failureRecordWriter); }
       catch (error) { report.warnings.push(`Updated to ${refs.targetVersion}, but could not clear its failure records: ${detail(error)}`); }
       retirePrevious([retired], fileOps, report);
-      return { kind: 'adopted', version: refs.targetVersion };
+      return { kind: 'adopted', version: refs.targetVersion, previousVersion: current };
     } finally { removeLeftover(staging, fileOps, report, true); }
   } catch (error) {
     return { kind: 'failed', reason: detail(error) };

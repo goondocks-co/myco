@@ -13,7 +13,7 @@ import { keepCurrent } from '@myco/cli/member-keep-current.js';
 import { provisionGlobally, provisionAgents, runProvision, runStatus } from '@myco/cli/member.js';
 import { readProvisionRecord, recordProvision } from '@myco/member/provision-record.js';
 import { writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
-import { writeInstallMarker, managedBinaryPath } from '@myco/install/managed-binary.js';
+import { writeAutomaticUpdatePreference, writeInstallMarker, managedBinaryPath } from '@myco/install/managed-binary.js';
 import { placeExecutable } from '@myco/install/place-binary.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
@@ -117,6 +117,33 @@ it('serializes the due check across overlapping project helpers', async () => {
   expect(second).toBeNull();
   release();
   expect((await first)?.lastOutcome.kind).toBe('already-current');
+});
+
+it('off records one skip a day without network and doctor/status show how to turn it on', async () => {
+  writeAutomaticUpdatePreference(home, false);
+  let resolved = 0;
+  let staged = 0;
+  const deps = { ...binaryDeps,
+    resolveRefs: async () => { resolved++; return null; },
+    stageBinary: async () => { staged++; return { error: 'unexpected download' }; },
+  };
+  await pass({ binaryUpdateDeps: deps });
+  const first = readAutomaticUpdate(home);
+  expect(first?.lastOutcome).toEqual({ kind: 'skipped', reason: 'automatic updates are turned off' });
+  clock++;
+  await pass({ binaryUpdateDeps: deps });
+  expect(readAutomaticUpdate(home)).toEqual(first);
+  expect(resolved).toBe(0);
+  expect(staged).toBe(0);
+  const check = checkAutomaticUpdate(home);
+  expect(check).toMatchObject({ status: 'ok', detail: 'off; run myco update --automatic on to turn automatic updates on' });
+  expect((await homeReport(home, {
+    cwd: root, now, fetch: async () => Response.json({}), worker: { platform: 'linux', runner: recordingPlatform().runner, ownDeploymentUrls: async () => [] },
+  })).find(row => row.name === 'Automatic update')).toEqual(check);
+  const lines: string[] = [];
+  runStatus(['--all'], { mycoHome: home, cwd: root, now, worker: { platform: 'linux', runner: recordingPlatform().runner }, stdout: line => lines.push(line), stderr: () => {} });
+  expect(lines.join('\n')).toContain(check.detail);
+  expect(check.detail).not.toContain(new Date(first!.lastAttemptAt).toISOString());
 });
 
 it('updates before repair acquires its non-reentrant lease', async () => {

@@ -12,7 +12,16 @@ myco doctor
 
 Myco keeps itself current about once a day in the default home, when a coding session starts a helper with enough time to check. Skipped checks and failed attempts wait until the next day too. Run `myco member status` or `myco doctor` to see when it last checked and what happened.
 
-A member installation runs no member update timer or local service. To stop automatic replacement, use an explicitly managed installation in a non-default `MYCO_HOME` or a runtime pin selecting another binary; development builds also skip it. There is no automatic-update off setting, so these installations still record a skipped check about once a day. `--skip-binary` applies only to the manual command.
+Automatic member updates are on by default. To turn them off or back on:
+
+```bash
+myco update --automatic off
+myco update --automatic on
+```
+
+These commands save the choice for this installation and do nothing else. Turning updates on makes the next helper pass due. When off, `myco member status` and `myco doctor` show that choice; the helper records a skipped check about once a day without contacting the release service. Manual updates still work. A missing or unreadable setting means on; doctor reports an unreadable setting.
+
+A member installation runs no member update timer or local service. Automatic replacement also skips a non-default `MYCO_HOME`, a runtime pin selecting another binary, or a development build. `--skip-binary` applies only to the manual command.
 
 `--check` reports availability without replacing the binary or changing agent setup. `myco update` verifies the download, replaces the installed binary and refreshes global agent configuration, even when the binary is already current. Read its result for any remaining step, then start a new coding-agent session. Doctor checks the connection and setup and reports cached update information.
 
@@ -24,7 +33,7 @@ A development build or a runtime pin selecting another binary reports **binary u
 
 Agent setup runs after the binary step, including a skipped update or rollback. When another Myco home manages this machine's agent configuration, its global hooks, MCP entries and skill links are preserved. To explicitly transfer responsibility to this home, run `myco update --claim`. `--check` never takes responsibility or refreshes agents.
 
-The installer records a release channel. **Stable** selects stable releases; **beta** includes beta and stable; **alpha** includes alpha, beta and stable. Updates choose the newest eligible version and keep your current build when the available one is older. A fresh installer chooses an available 2.x stable release, then beta, then alpha when no later release phase exists.
+The installer records a release channel. **Stable** selects stable releases; **beta** includes beta and stable; **alpha** includes alpha, beta and stable. Channel updates choose the newest eligible version and keep your current build when the available one is older. An explicit `myco update <version>` can step back to an older eligible version. To stay there, run `myco update --automatic off`; otherwise automatic updates will move this machine forward again. A fresh installer chooses an available 2.x stable release, then beta, then alpha when no later release phase exists.
 
 To use another channel for one update:
 
