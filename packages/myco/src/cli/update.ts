@@ -2,7 +2,8 @@
 
 import path from 'node:path';
 import semver from 'semver';
-import { automaticUpdatesEnabled } from '@myco/install/marker-reader.js';
+import { automaticUpdatesEnabled, readInstallMarker } from '@myco/install/marker-reader.js';
+import { validateSourceIntent } from '@myco/install/adoption.js';
 import { setAutomaticUpdates } from '@myco/member/automatic-update-state.js';
 import { parseStrictFlags } from './args.js';
 import { updateBinary, binaryUpdatePath, admitsUpdate, explicitUpdateRefusal, resolveAssetRefsForTarget, type BinaryUpdateDeps } from '../upgrade/guarded-binary.js';
@@ -42,6 +43,8 @@ Options:
   --target-version <version>   Update to this exact version (flag form)
   --channel <alpha|beta|stable>      Update on this channel, this run only
   --automatic <off|on>         Turn automatic member updates off or on; no update run
+  --source-checkout <path>     Adopt this running source build from an absolute checkout
+  --source-commit <commit>     Record its full 40-hex commit (requires --source-checkout)
   -h, --help                   Show this help
 `;
 
@@ -82,7 +85,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   //   - Any remaining token that doesn't start with '-' is a positional.
   //
   // We rebuild the flag-only token list and collect the first positional.
-  const VALUE_FLAGS = new Set(['--target-version', '--channel', '--automatic']);
+  const VALUE_FLAGS = new Set(['--target-version', '--channel', '--automatic', '--source-checkout', '--source-commit']);
   const flagOnlyArgs: string[] = [];
   let positionalVersion: string | null = null;
 
@@ -115,11 +118,25 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
     { name: '--target-version', value: 'required' },
     { name: '--channel', value: 'required' },
     { name: '--automatic', value: 'required' },
+    { name: '--source-checkout', value: 'required' },
+    { name: '--source-commit', value: 'required' },
     { name: '--help', aliases: ['-h'] },
   ], UPDATE_HELP);
 
   // --target-version wins over positional.
   const targetVersionArg = parsed.value('--target-version') ?? positionalVersion;
+  const sourceCheckout = parsed.value('--source-checkout');
+  const sourceCommit = parsed.value('--source-commit');
+  const currentVersion = deps.currentVersion ?? getPluginVersion();
+  let source: { checkout: string; commit: string } | undefined;
+  if (sourceCheckout !== undefined || sourceCommit !== undefined) {
+    if (sourceCheckout === undefined || sourceCommit === undefined) throw new Error('myco update: --source-checkout and --source-commit are required together');
+    if (targetVersionArg !== null || ['--check', '--skip-binary', '--channel', '--automatic'].some(flag => parsed.has(flag))) {
+      throw new Error('myco update: installing a source build cannot be combined with a version, --check, --skip-binary, --channel or --automatic');
+    }
+    validateSourceIntent(sourceCheckout, sourceCommit, currentVersion);
+    source = { checkout: sourceCheckout, commit: sourceCommit };
+  }
   const automatic = parsed.value('--automatic');
   if (automatic !== undefined) {
     if (automatic !== 'off' && automatic !== 'on') {
@@ -161,7 +178,6 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
 
   const isCheck = parsed.has('--check');
   const home = deps.home ?? resolveMycoHome();
-  const currentVersion = deps.currentVersion ?? getPluginVersion();
 
   // The install marker owns the default release channel.
   const channel: ReleaseChannel = (channelArg as ReleaseChannel | undefined) ?? effectiveUpdateChannel(home);
@@ -191,13 +207,15 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   }
 
   const runners = liveInstalledRunners(home, deps);
+  const replacingSource = !source && readInstallMarker(home)?.source === 'checkout';
   if (runners.length > 0) {
     const summaries = new Set<string>();
     const runner = deps.runRunner ?? (await import('./runner.js')).run;
     if (parsed.has('--skip-binary')) console.log('Myco: binary update skipped (--skip-binary requested).');
     for (const record of parsed.has('--skip-binary') ? [] : runners) {
       const selection = [...(channelArg ? ['--channel', channelArg] : []), ...(targetVersionArg ? ['--target-version', targetVersionArg] : [])];
-      const ok = await runner(['update', '--server', record.serverUrl, ...(isCheck ? ['--check'] : []), ...selection], { mycoHome: home, stdout: line => {
+      const ok = await runner(['update', '--server', record.serverUrl, ...(isCheck ? ['--check'] : []), ...selection], { mycoHome: home,
+        ...(source ? { sourceArtifact: { binaryPath: deps.sourceBinary ?? process.execPath, version: currentVersion, ...source } } : {}), stdout: line => {
         if (line.startsWith('Myco: ')) summaries.add(line.slice('Myco: '.length));
         else console.log(line);
       } });
@@ -221,7 +239,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   // A channel override applies only to this invocation.
   if (channelArg) console.log(`Updating on the '${channelArg}' channel for this run; it is not saved.`);
 
-  const outcome = await updateBinary('manual', { skipBinary: parsed.has('--skip-binary'), targetVersion: targetVersionArg, channel }, { ...deps, home, currentVersion });
+  const outcome = await updateBinary('manual', { skipBinary: parsed.has('--skip-binary'), targetVersion: targetVersionArg, channel, source }, { ...deps, home, currentVersion });
   if (outcome.kind === 'skipped') console.log(`Myco: binary update skipped (${outcome.reason}).`);
   else if (outcome.kind === 'failed') {
     console.error(`Myco: update failed (${outcome.reason}).`);
@@ -229,7 +247,14 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   } else if (outcome.kind === 'rolled-back') {
     console.error(`Myco: update rolled back to ${outcome.version} (${outcome.reason}).`);
     process.exitCode = 1;
-  } else console.log(`Myco: from ${currentVersion} to ${outcome.version} on channel ${channel}${outcome.kind === 'already-current' ? ` (${outcome.reason})` : ''}.`);
+  } else if (outcome.kind === 'adopted') {
+    if (replacingSource) console.log('Replacing this source build with the selected channel release.');
+    const change = outcome.previousVersion === undefined ? `Installed ${outcome.version}` : `from ${outcome.previousVersion} to ${outcome.version}`;
+    console.log(`Myco: ${change}${source ? ' (source build)' : ` on channel ${channel}`}.`);
+  } else if (replacingSource) {
+    console.log(`Myco: kept source build ${outcome.version}; no eligible release on the '${channel}' channel (${outcome.reason}).`);
+    console.log('Choose a release channel with `myco update --channel alpha`, `--channel beta` or `--channel stable`.');
+  } else console.log(`Myco: from ${currentVersion} to ${outcome.version} on channel ${channel} (${outcome.reason}).`);
   if ('retainedPrevious' in outcome) for (const retained of outcome.retainedPrevious ?? []) console.log(`Update files were kept at ${retained.path} (${retained.reason}).`);
   for (const warning of outcome.warnings ?? []) console.log(warning);
   if (targetVersionArg !== null && outcome.kind === 'adopted' && outcome.previousVersion !== undefined
@@ -237,6 +262,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
     console.log('Automatic updates will move this machine forward again; run `myco update --automatic off` to stay on this version.');
   }
   await refresh();
+  if (source && outcome.kind === 'adopted' && !memberHome()) console.log('Next: myco setup');
 }
 
 // ---------------------------------------------------------------------------

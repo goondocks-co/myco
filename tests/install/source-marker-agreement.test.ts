@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { readInstallMarker } from '@myco/install/marker-reader.js';
+import { publishAdoptedMarker, assertSourceAdoptionAllowed } from '@myco/install/adoption.js';
 import { readRunnerUpdateState } from '@myco/runner/update.js';
 import { identifyLegacyExecutable } from '@myco/cli/cutover-executable.js';
 import { run as remove } from '@myco/cli/remove.js';
@@ -69,6 +70,52 @@ Write-Output $InstallMarker.version
 }
 
 describe('install marker reader agreement', () => {
+  it('agrees on live-byte markers after source and release adoption and keeps update preferences', () => {
+    fs.mkdirSync(path.dirname(binary), { recursive: true });
+    const preference = path.join(home, 'install-update.json');
+    fs.writeFileSync(preference, '{"automaticUpdates":false}');
+    for (const previousSource of sources) {
+      writeMarker({ ...installedMarker(previousSource), version: previousSource === 'checkout' ? marker().version : 'stale', binary_sha256: '0'.repeat(64), extra: 'discard' });
+      fs.writeFileSync(binary, 'new source binary');
+      const source = publishAdoptedMarker(home, binary, '0.0.0-dev+fixture.b2', { kind: 'checkout', checkout, commit: 'b'.repeat(40) });
+      fs.writeFileSync(binary, 'new release binary');
+      const release = publishAdoptedMarker(home, binary, '2.0.1', { kind: 'release' });
+      for (const adopted of [source, release]) {
+        writeMarker(adopted);
+        expect(readInstallMarker(home, true)).toEqual(adopted);
+        expect(adopted.binary_sha256).toBe(sha(adopted.source === 'checkout' ? 'new source binary' : 'new release binary'));
+        expect(adopted).not.toHaveProperty('extra');
+        for (const jq of [false, true]) {
+          if (jq && !jqTool) continue;
+          expect(shellRead('marker', jq)).toMatchObject({ status: 0, stdout: 'stable\n' });
+          expect(shellRead('version', jq)).toMatchObject({ status: 0, stdout: `${adopted.version}\n` });
+          expect(shellRead('source', jq)).toMatchObject({ status: 0, stdout: `${adopted.source}\n` });
+          expect(shellRead('binary_sha256', jq)).toMatchObject({ status: 0, stdout: `${adopted.binary_sha256}\n` });
+        }
+        if (pwshTool) expect(powershellRead()).toMatchObject({ status: 0, stdout: `${adopted.version}\n` });
+      }
+      expect(release.source).toBe('curl');
+      expect(release).not.toHaveProperty('checkout');
+      expect(release).not.toHaveProperty('commit');
+      expect(fs.readFileSync(preference, 'utf8')).toBe('{"automaticUpdates":false}');
+    }
+  });
+
+  it('refuses a mismatching checkout only for source adoption and accepts stale release records', () => {
+    fs.mkdirSync(path.dirname(binary), { recursive: true });
+    fs.writeFileSync(binary, 'different bytes');
+    writeMarker(marker());
+    expect(() => assertSourceAdoptionAllowed(home, binary)).toThrow('Run `myco update`');
+    expect(() => publishAdoptedMarker(home, binary, '2.0.1', { kind: 'release' })).not.toThrow();
+    for (const source of ['curl', 'npm'] as const) {
+      writeMarker({ ...installedMarker(source), version: 'stale', binary_sha256: '0'.repeat(64) });
+      expect(() => assertSourceAdoptionAllowed(home, binary)).not.toThrow();
+      const repaired = publishAdoptedMarker(home, binary, '2.0.1', { kind: 'release' });
+      expect(repaired.source).toBe(source);
+      expect(repaired.binary_sha256).toBe(sha('different bytes'));
+    }
+  });
+
   it('admits a hash-bound source checkout across TypeScript, shell and PowerShell', () => {
     for (const sourceCheckout of [checkout, windowsCheckout, windowsUncCheckout]) {
       const sourceMarker = { ...marker(), checkout: sourceCheckout };
