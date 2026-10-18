@@ -11,14 +11,21 @@ import { readInstallMarker } from '@myco/install/marker-reader.js';
 import { readUpdateNotice } from '@myco/upgrade/check-cache.js';
 import { resolveMycoPackageCheck } from '@myco/upgrade/checker.js';
 import { assetName, resolveTargetTriple } from '@myco/upgrade/release-assets.js';
+import { globalFetchDouble } from '../helpers/global-fetch.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 
+let network: ReturnType<typeof spyOn<typeof globalThis, 'fetch'>>;
+let exit: ReturnType<typeof spyOn<typeof process, 'exit'>>;
 let home: string;
 let restore: () => void;
 let output: string[];
 let log: ReturnType<typeof spyOn>;
 let error: ReturnType<typeof spyOn>;
 beforeEach(() => {
+  exit = spyOn(process, 'exit').mockImplementation(code => { throw new Error(`process.exit(${code})`); });
+  network = spyOn(globalThis, 'fetch').mockImplementation(globalFetchDouble(async input => {
+    throw new Error(`Unexpected real network call: ${String(input)}`);
+  }));
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-update-command-'));
   restore = bindSandboxChildHome(home);
   output = [];
@@ -26,7 +33,14 @@ beforeEach(() => {
   error = spyOn(console, 'error').mockImplementation((...args) => { output.push(args.join(' ')); });
   writeInstallMarker(home, { channel: 'alpha', source: 'curl', bin: path.join(home, 'bin', 'myco') });
 });
-afterEach(() => { log.mockRestore(); error.mockRestore(); restore(); process.exitCode = 0; fs.rmSync(home, { recursive: true, force: true }); });
+afterEach(() => {
+  const calls = network.mock.calls.slice();
+  network.mockRestore();
+  exit.mockRestore();
+  log.mockRestore(); error.mockRestore(); restore(); process.exitCode = 0;
+  fs.rmSync(home, { recursive: true, force: true });
+  expect(calls).toEqual([]);
+});
 const prepareStage = (events: string[]) => async () => {
   events.push('verify');
   const versionDir = path.join(home, 'release');
@@ -382,4 +396,36 @@ it('does not announce source replacement when preparing a release fails', async 
   expect(output.join('\n')).toContain('download failed');
   expect(output.join('\n')).not.toContain('Replacing this source build');
   expect(process.exitCode).toBe(1);
+});
+
+for (const args of [[], ['--target-version', '2.0.0-alpha.3'], ['--check'], ['--check', '--target-version', '2.0.0-alpha.3']]) {
+  it(`uses the injected fetch for release selection: ${args.join(' ') || 'channel update'}`, async () => {
+    let requests = 0;
+    installedBinary('2.0.0-alpha.2');
+    await run(args, {
+      home, currentVersion: '2.0.0-alpha.2', isMemberHome: () => false,
+      fetch: async () => {
+        requests++;
+        return Response.json([{ tag_name: 'myco/v2.0.0-alpha.3', prerelease: true, assets: [
+          { name: assetName(resolveTargetTriple()), browser_download_url: 'fixture' },
+          { name: 'SHA256SUMS', browser_download_url: 'sums' },
+        ] }]);
+      },
+      stageBinary: prepareStage([]), placeBinary: place([]), probeVersion: file => fs.readFileSync(file, 'utf8'),
+    });
+    expect(requests).toBe(1);
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(output.join('\n')).toContain('from 2.0.0-alpha.2 to 2.0.0-alpha.3');
+  });
+}
+
+it('uses the injected release list for channel selection', async () => {
+  let requests = 0;
+  await run([], {
+    home, currentVersion: '2.0.0-alpha.2', isMemberHome: () => false,
+    fetchReleases: async () => { requests++; return []; },
+  });
+  expect(requests).toBe(1);
+  expect(process.exitCode ?? 0).toBe(0);
+  expect(output.join('\n')).toContain('no newer eligible release');
 });

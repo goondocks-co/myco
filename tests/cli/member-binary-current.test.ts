@@ -261,6 +261,21 @@ it('passes the remaining deadline to actual network requests', async () => {
   } finally { fetch.mockRestore(); }
 });
 
+it('passes the remaining deadline to an injected transport', async () => {
+  let requests = 0;
+  const injected = async (_input: RequestInfo | URL, init?: RequestInit) => {
+    requests++;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    expect(init?.signal?.aborted).toBe(false);
+    return new Response('fixture');
+  };
+  const budget = updateBudget({ fetch: injected, deadline: clock + 2000, now });
+  await budget.fetch('https://fixture.invalid');
+  clock += 2001;
+  expect(() => budget.fetch('https://fixture.invalid')).toThrow('ran out of time');
+  expect(requests).toBe(1);
+});
+
 it.each([false, true])('an adopted version refreshes in the same pass; peer claim = %p', async peer => {
   setPluginVersion(FROM);
   writeDeploymentMembership({ serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });

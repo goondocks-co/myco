@@ -9,6 +9,7 @@ import { parseStrictFlags } from './args.js';
 import { updateBinary, binaryUpdatePath, admitsUpdate, explicitUpdateRefusal, resolveAssetRefsForTarget, type BinaryUpdateDeps } from '../upgrade/guarded-binary.js';
 import { claimSubsystem, readClaim, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import { resolveMycoPackageCheck } from '../upgrade/checker.js';
+import { updateBudget } from '../upgrade/update-budget.js';
 import { isDefaultMycoHome, resolveMycoHome } from '../paths/home.js';
 import { refreshMemberSetup } from '../member/refresh-setup.js';
 import { readRunnerUpdateState } from '../runner/update.js';
@@ -297,6 +298,7 @@ async function runCheck(channel: ReleaseChannel, deps: UpgradeDeps, target: stri
       // installed_version: use current as proxy (CLI doesn't track the npm install path
       // separately from the running binary)
       currentVersion,
+      updateBudget(deps).fetch,
     );
   } catch (err) {
     console.error(

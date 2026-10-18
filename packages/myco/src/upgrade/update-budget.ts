@@ -11,6 +11,7 @@ export class UpdateDeadlineExceeded extends Error {
 }
 
 export interface UpdateDeadline {
+  fetch?: ReleaseFetch;
   deadline?: number;
   now?: () => number;
 }
@@ -30,8 +31,8 @@ export function updateBudget(options: UpdateDeadline = {}) {
     return { status: result.status, signal: result.signal, error: result.error, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
   };
   const fetch: ReleaseFetch = (input, init) => options.deadline === undefined
-    ? globalThis.fetch(input, init)
-    : globalThis.fetch(input, {
+    ? (options.fetch ?? globalThis.fetch)(input, init)
+    : (options.fetch ?? globalThis.fetch)(input, {
     ...init, signal: AbortSignal.any([
       ...(init?.signal ? [init.signal] : []),
       AbortSignal.timeout(Math.max(1, Math.min(MAX_TIMEOUT_MS, Math.floor(remaining())))),
