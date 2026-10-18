@@ -1,4 +1,6 @@
 import { importSignInHistory, withSignInCapture } from './signin-capture.js';
+import { scanLegacyRegistrations } from '@myco/member/legacy-registration-files.js';
+import { findingOwnedBinary } from '@myco/symbionts/registration-takeover.js';
 import { repositoryName } from '@myco/utils/git.js';
 import { askOnTerminal } from '@myco/setup/prompt.js';
 import semver from 'semver';
@@ -481,7 +483,9 @@ export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, o
 /** Chosen agents, including surviving owned registrations absent from the provision record. */
 export function managedMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string; onInspectionError?: (message: string) => void } = {}): string[] {
   const uncaptured = uncapturableMemberHarnesses(mycoHome, opts);
-  const recorded = (readProvisionRecordStrict(mycoHome)?.agents ?? []).filter(agent => !uncaptured.has(agent));
+  const record = readProvisionRecordStrict(mycoHome);
+  const recorded = (record?.agents ?? []).filter(agent => !uncaptured.has(agent));
+  if (record?.discoverAgents === false) return recorded;
   return [...new Set([...recorded, ...registeredMemberHarnesses(mycoHome, serverUrl, { ...opts, exclude: recorded })])].sort();
 }
 
@@ -587,7 +591,7 @@ export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageR
 export function memberHarnessStatus(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): { current: boolean; currentExceptStaleTools?: boolean; toolsDeployment?: string; stale?: string[] } {
   const manifest = loadManifests().find((candidate) => candidate.name === agent);
   if (manifest === undefined) return { current: false };
-  const installer = globalInstaller(manifest, null, mycoHome, opts).forDeployment(serverUrl).preservingOtherMemberTools();
+  const installer = globalInstaller(manifest, null, mycoHome, opts).takingOverManagedEntries().forDeployment(serverUrl).preservingOtherMemberTools();
   installer.assertMemberProvisionAllowed();
   return inspectMemberHarness(installer, manifest, mycoHome, installer.scanMemberRegistrations());
 }
@@ -611,7 +615,7 @@ export function provisionGlobally(
 ): ProvisionOutcome {
   const manifest = loadManifests().find((m) => m.name === agent);
   if (!manifest) return { kind: 'unknown' };
-  const installer = globalInstaller(manifest, root, mycoHome, opts);
+  const installer = globalInstaller(manifest, root, mycoHome, opts).takingOverManagedEntries();
   if (opts.serverUrl !== undefined) installer.forDeployment(opts.serverUrl);
   if (opts.preserveOtherMemberTools) installer.preservingOtherMemberTools();
   // Every agent file this may write is copied first; `restore.md` beside the copies puts back what the person had.
@@ -665,7 +669,7 @@ export function previewGlobalProvision(
 ): OwnershipPreview {
   const manifest = loadManifests().find((m) => m.name === agent);
   if (!manifest) return { kind: 'unknown' };
-  const installer = globalInstaller(manifest, root, mycoHome, opts);
+  const installer = globalInstaller(manifest, root, mycoHome, opts).takingOverManagedEntries();
   if (!installer.capturesAsMember()) return { kind: 'uncaptured', displayName: manifest.displayName };
   if (opts.preserveOtherMemberTools) installer.preservingOtherMemberTools();
   const scan = installer.scanMemberRegistrations();
@@ -767,7 +771,21 @@ export function provisionBackup(mycoHome: string): CutoverBackup {
  * none on its own. A record of agents set up before is kept as it is.
  */
 export function recordNoAgents(mycoHome: string, serverUrl: string): void {
-  if (readProvisionRecord(mycoHome) === null) recordProvision(mycoHome, { version: getPluginVersion(), serverUrl, agents: [] }, { replace: true });
+  if (readProvisionRecord(mycoHome) === null) recordProvision(mycoHome, { version: getPluginVersion(), serverUrl, agents: [], discoverAgents: false }, { replace: true });
+}
+
+/** Explicit claim unions this home's choices with the prior owner's; absent prior choices use detected managed entries. */
+export function claimMemberAgents(mycoHome: string, previousOwner?: string): void {
+  withMemberRepair(mycoHome, 'myco update --claim', () => {
+    const serverUrl = memberProvisionTarget(mycoHome);
+    if (serverUrl === undefined) throw new Error('No unambiguous joined Deployment is available for agent setup; run myco member provision --server <url>.');
+    const previous = previousOwner === undefined ? null : readProvisionRecord(previousOwner);
+    const scan = scanLegacyRegistrations({ homeDir: process.env.HOME ?? path.dirname(defaultMycoHome()), legacyHomes: [], ownHome: mycoHome, allClaudeProjects: true });
+    if (scan.unreadable.length > 0) throw new Error(`Could not inspect agent setup: ${scan.unreadable.map(entry => `${entry.file}: ${entry.reason}`).join('; ')}`);
+    const managed = new Set(scan.findings.filter(finding => findingOwnedBinary(finding) !== undefined).map(finding => finding.location.agent));
+    const inherited = previous?.agents.length ? previous.agents : detectMachineInstalledSymbionts().filter(manifest => managed.has(manifest.name)).map(manifest => manifest.name);
+    recordProvision(mycoHome, { version: getPluginVersion(), serverUrl, agents: inherited, discoverAgents: true });
+  }, { wait: true });
 }
 
 /** The lines a sign-in or a provisioning reports for `found`: what was set up, and each agent left alone with why. */
@@ -839,7 +857,12 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     if (repaired !== null) {
       if (repaired.harnesses.length === 0) out('No agent is set up for Myco on this machine; `myco member provision` sets them up.');
       if (repaired.ready.length > 0) out(`Capture is set up for ${repaired.ready.join(', ')}.`);
+      for (const notice of repaired.notices ?? []) out(notice);
       for (const harness of repaired.harnesses) if (harness.action !== undefined) out(repaired.localActions?.[harness.id] ?? harness.action);
+      if (repaired.harnesses.some(harness => ['repair_failed', 'unwritable', 'binary_missing'].includes(harness.state))) {
+        process.exitCode = 1;
+        return false;
+      }
     }
     return true;
   }

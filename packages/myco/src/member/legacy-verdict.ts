@@ -8,7 +8,7 @@ export type Verdict = 'member' | 'legacy' | 'foreign' | 'stale';
 export const MYCO_PLUGIN_FILE_MARKER = 'myco:plugin-marker';
 export const MEMBER_PLUGIN_MARKER = '// myco:member-plugin';
 
-function commandWords(command: string): { env: Record<string, string>; words: string[] } {
+export function commandWords(command: string): { env: Record<string, string>; words: string[] } {
   const words = command.trim().match(/"[^"]*"|'[^']*'|\S+/g)?.map((w) => w.replace(/^["']|["']$/g, '')) ?? [];
   const env: Record<string, string> = {};
   while (words.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
@@ -40,7 +40,7 @@ export function staleCommandBinary(command: string): string | undefined {
   return staleBinary(words[0], env.MYCO_HOME);
 }
 
-function mcpCommand(entry: unknown): { binary?: string; home?: string; helper?: string } {
+export function mcpCommand(entry: unknown): { binary?: string; home?: string; helper?: string } {
   const record = (entry && typeof entry === 'object' && !Array.isArray(entry) ? entry : {}) as Record<string, unknown>;
   const env = [record.env, record.environment].find((v) => v && typeof v === 'object' && !Array.isArray(v)) as Record<string, unknown> | undefined;
   const command = Array.isArray(record.command) ? record.command[0] : record.command;
@@ -86,7 +86,7 @@ export function mcpVerdict(entry: unknown, legacyHomes: readonly string[]): Verd
   return verdictFor(binary, home, legacyHomes);
 }
 
-function pluginBinaries(content: string): string[] {
+export function pluginBinaries(content: string): string[] {
   return [...content.matchAll(/["'`]([^"'`\r\n]+\/bin\/(?:versions\/[^/"'`]+\/)?myco(?:\.exe)?)["'`]|([^\s"'`=(]+\/bin\/(?:versions\/[^/\s]+\/)?myco(?:\.exe)?)\b/g)].map((m) => m[1] ?? m[2]);
 }
 

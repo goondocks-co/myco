@@ -29,6 +29,7 @@ export interface KeepCurrentResult {
   serverUrl: string;
   harnesses: ProvisionedHarnessFact[];
   ready: string[];
+  notices?: string[];
   localActions?: Record<string, string>;
   pendingTrust?: ProvisionRecord['pendingTrust'];
 }
@@ -92,6 +93,7 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
               const outcome = provisionGlobally(id, null, mycoHome, { serverUrl: record.serverUrl, packageRoot: deps.packageRoot, backup, preserveOtherMemberTools: true });
               if (outcome.kind === 'refused') throw Object.assign(new Error(outcome.detail), { code: outcome.code });
               if (outcome.kind === 'unknown') throw new Error('This build cannot provision the harness');
+              if (outcome.stale?.length) (result.notices ??= []).push(...outcome.stale);
             } finally { backup.pruneUnchanged(); }
             status = memberHarnessStatus(id, mycoHome, record.serverUrl, deps);
             if (!status.current) {

@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: claim takeover fixture-HOME matrix, Bun 1.4.0 darwin-arm64; conservative 15000ms including twice measured runtime and startup",
     "local: PR1889 correction ensure-deps canonical npm test, Bun 1.4.0 darwin-arm64; 21000ms covers twice the measured file duration plus startup",
     "local: PR1888 correction 1 source-install 14207ms, Bun 1.4.0 darwin-arm64; 2x runtime plus startup rounded to 30000ms",
     "local: canonical root focused npm test, Bun 1.4.0, darwin-arm64; 2x measured file duration plus startup",
@@ -796,7 +797,8 @@
     "tests/server/cloudflare-record-messages.test.ts": 4000,
     "tests/meta/cloudflare-record-messages.test.ts": 1000,
     "tests/install/source-identity.test.ts": 2000,
-    "tests/install/source-marker-agreement.test.ts": 52000
+    "tests/install/source-marker-agreement.test.ts": 52000,
+    "tests/member/claim-takeover.test.ts": 15000
   },
   "parity": {
     "D1: latest migration upgrades seeded previous schema to expected state": 45000,

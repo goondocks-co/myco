@@ -19,6 +19,7 @@ import { recordUpdateCheck, effectiveUpdateChannel } from '../upgrade/check-cach
 import { workerServiceInstalled } from '../runner/service.js';
 import { executorServiceTarget } from './worker-service.js';
 import { RELEASE_CHANNELS, type ReleaseChannel } from '../constants/update.js';
+import { readProvisionRecord } from '@myco/member/provision-record.js';
 
 export const UPDATE_HELP = `Usage: myco update [options] [<version>]
 
@@ -189,12 +190,21 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
       console.log('Agents refreshed: no (this home is not a member machine).');
       return;
     }
+    const owner = readClaim(SYMBIONT_CONFIG_SUBSYSTEM);
+    if (owner !== null && owner.owner !== path.resolve(home)) {
+      console.log(`Agents refreshed: no (global agent setup is managed by ${owner.owner}).`);
+      return;
+    }
     const binary = binaryUpdatePath(home, deps);
     try {
       await (deps.refreshMember ?? refreshMemberSetup)(binary, home);
       const claim = readClaim(SYMBIONT_CONFIG_SUBSYSTEM);
       if (claim !== null && claim.owner !== path.resolve(home)) console.log(`Agents refreshed: no (global agent setup is managed by ${claim.owner}).`);
-      else console.log('Agents refreshed: yes.');
+      else {
+        const record = readProvisionRecord(home);
+        if (record?.agents.length === 0) console.log('Agents refreshed: no (no agents selected for this home; run myco member provision to set them up).');
+        else console.log('Agents refreshed: yes.');
+      }
     } catch (error) {
       console.error(`Agents refreshed: no (${error instanceof Error ? error.message : String(error)}). Next: myco member provision --refresh`);
       process.exitCode = 1;
@@ -202,9 +212,14 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   };
 
   if (!isCheck && parsed.has('--claim')) {
+    const previous = readClaim(SYMBIONT_CONFIG_SUBSYSTEM);
     claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, path.resolve(home));
     if (readClaim(SYMBIONT_CONFIG_SUBSYSTEM)?.owner !== path.resolve(home)) throw new Error('Could not take responsibility for this machine’s agent setup.');
     console.log('This Myco home now manages this machine’s agent setup.');
+    if (memberHome()) {
+      const { claimMemberAgents } = await import('./member.js');
+      claimMemberAgents(home, previous?.owner === path.resolve(home) ? undefined : previous?.owner);
+    }
   }
 
   const runners = liveInstalledRunners(home, deps);

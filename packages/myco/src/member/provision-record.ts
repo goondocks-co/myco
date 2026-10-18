@@ -17,6 +17,8 @@ export interface ProvisionRecord {
   serverUrl: string;
   /** The agents provisioning set up, by manifest name. */
   agents: string[];
+  /** Ordinary refresh may recover surviving registrations unless the user explicitly chose no agents. */
+  discoverAgents?: boolean;
   /** The binary each harness's last successful registration names. */
   binaries?: Record<string, string>;
   /** Hook trust actions waiting to reach the Deployment. */
@@ -60,7 +62,7 @@ function readProvisionRecordFile(mycoHome: string, strict: boolean): ProvisionRe
     const valid = (entry: [string, unknown]): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(url => typeof url === 'string');
     if (strict && value.pendingLogout !== undefined && (entries === null || !entries.every(valid))) return null;
     const pendingLogout = entries === null ? undefined : Object.fromEntries(entries.filter(valid));
-    return { version: value.version, serverUrl: value.serverUrl, agents: value.agents.filter((a): a is string => typeof a === 'string'), ...(binaries === undefined ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined ? {} : { pendingLogout }), at: Number(value.at ?? 0) };
+    return { version: value.version, serverUrl: value.serverUrl, agents: value.agents.filter((a): a is string => typeof a === 'string'), ...(value.discoverAgents === false ? { discoverAgents: false } : {}), ...(binaries === undefined ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined ? {} : { pendingLogout }), at: Number(value.at ?? 0) };
   } catch {
     return null;
   }
@@ -82,8 +84,9 @@ function writeProvisionRecord(mycoHome: string, record: Omit<ProvisionRecord, 'a
   const binaries = { ...(!opts.replace && before !== null ? before.binaries : {}), ...record.binaries };
   const pendingTrust = record.pendingTrust ?? (!opts.replace && before !== null ? before.pendingTrust : undefined);
   const pendingLogout = record.pendingLogout ?? (!opts.replace && before !== null ? before.pendingLogout : undefined);
-  const next: ProvisionRecord = { version: record.version, serverUrl: record.serverUrl, agents: [...new Set([...kept, ...record.agents])].sort(), ...(Object.keys(binaries).length === 0 ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined || Object.keys(pendingLogout).length === 0 ? {} : { pendingLogout }), at: record.at ?? Date.now() };
-  if (record.at === undefined && before !== null && before.version === next.version && before.serverUrl === next.serverUrl && JSON.stringify(before.agents) === JSON.stringify(next.agents) && JSON.stringify(before.binaries) === JSON.stringify(next.binaries) && JSON.stringify(before.pendingTrust) === JSON.stringify(next.pendingTrust) && JSON.stringify(before.pendingLogout) === JSON.stringify(next.pendingLogout)) return before;
+  const discoverAgents = record.discoverAgents ?? (record.agents.length > 0 ? true : !opts.replace ? before?.discoverAgents : undefined);
+  const next: ProvisionRecord = { version: record.version, serverUrl: record.serverUrl, agents: [...new Set([...kept, ...record.agents])].sort(), ...(discoverAgents === false ? { discoverAgents: false } : {}), ...(Object.keys(binaries).length === 0 ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined || Object.keys(pendingLogout).length === 0 ? {} : { pendingLogout }), at: record.at ?? Date.now() };
+  if (record.at === undefined && before !== null && before.version === next.version && before.serverUrl === next.serverUrl && before.discoverAgents === next.discoverAgents && JSON.stringify(before.agents) === JSON.stringify(next.agents) && JSON.stringify(before.binaries) === JSON.stringify(next.binaries) && JSON.stringify(before.pendingTrust) === JSON.stringify(next.pendingTrust) && JSON.stringify(before.pendingLogout) === JSON.stringify(next.pendingLogout)) return before;
   fs.mkdirSync(path.dirname(provisionRecordPath(mycoHome)), { recursive: true, mode: 0o700 });
   atomicWriteFileSync(provisionRecordPath(mycoHome), `${JSON.stringify(next, null, 2)}\n`);
   return next;

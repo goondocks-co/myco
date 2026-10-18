@@ -1,3 +1,4 @@
+import { findingOwnedBinary, ownedHookBinary, ownedMcpBinary, ownedPluginBinary, mayTakeOverBinary } from '@myco/symbionts/registration-takeover.js';
 import { toolsStayOnDeploymentGuidance } from '@goondocks/myco-shared/setup-guidance';
 import { joinSentences } from '@myco/utils/sentences.js';
 import { MYCO_MCP_SERVER_NAME, rawHasMycoOwnershipSignal } from '@myco/member/registration-ownership.js';
@@ -225,7 +226,7 @@ function hookCommandsIn(raw: string): string[] {
   }
 }
 
-export type MemberRegistrationScan = ReadonlyArray<LegacyFinding & { target: string }>;
+export type MemberRegistrationScan = ReadonlyArray<LegacyFinding & { target: string; replacementBinary?: string }>;
 
 export interface InstallResult {
   hooks: boolean;
@@ -533,6 +534,7 @@ export class SymbiontInstaller {
           if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
           const bag = candidate as Record<string, unknown>;
           this.withWritableMcpEntry(bag[MYCO_MCP_SERVER_NAME], () => {
+            if (this.takeOverManagedEntries && !this.takesOver(ownedMcpBinary(bag[MYCO_MCP_SERVER_NAME]))) return;
             delete bag[MYCO_MCP_SERVER_NAME];
             if (Object.keys(bag).length === 0) delete data[candidateKey];
           });
@@ -768,6 +770,21 @@ export class SymbiontInstaller {
   }
 
   private legacyHomes: readonly string[] = [];
+  private takeOverManagedEntries = false;
+
+  takingOverManagedEntries(): this {
+    this.takeOverManagedEntries = true;
+    return this;
+  }
+
+  private takesOver(binary: string | undefined): boolean {
+    return binary !== this.binaryPath() && this.takeOverManagedEntries && mayTakeOverBinary(binary, this.memberHomeDir());
+  }
+
+  private takesOverFinding(finding: LegacyFinding & { replacementBinary?: string }): boolean {
+    return this.takesOver(finding.replacementBinary ?? findingOwnedBinary(finding));
+  }
+
   private leavingDeployment: string | undefined;
   private expectedServerUrl: string | undefined;
   private deploymentUrl: string | undefined;
@@ -897,11 +914,11 @@ export class SymbiontInstaller {
 
   scanMemberRegistrations(): MemberRegistrationScan {
     return scanLegacyRegistrations({ homeDir: process.env.HOME ?? os.homedir(), legacyHomes: this.legacyHomes, ownHome: this.memberHomeDir(), allClaudeProjects: true })
-      .findings.filter((finding) => finding.verdict === 'stale' && finding.location.agent === this.manifest.name).map((finding) => ({ ...finding, target: throughLink(finding.file) }));
+      .findings.filter(finding => finding.location.agent === this.manifest.name).map(finding => ({ ...finding, target: throughLink(finding.file), replacementBinary: findingOwnedBinary(finding) })).filter(finding => finding.verdict === 'stale' || this.takesOverFinding(finding));
   }
 
   private blocksRegistration(target: string | null, surface: 'hooks' | 'mcp' | 'settings', scan: MemberRegistrationScan): boolean {
-    return scan.some(finding => finding.target === target && (surface === 'hooks' ? this.isMemberPluginFile() : surface === 'mcp'
+    return scan.some(finding => !this.takesOverFinding(finding) && finding.target === target && (surface === 'hooks' ? this.isMemberPluginFile() : surface === 'mcp'
       && finding.location.kind === 'mcp' && finding.serversPath?.length === 1
       && finding.serversPath[0] === (this.manifest.registration?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : this.manifest.registration?.mcpServersKey ?? 'mcpServers')));
   }
@@ -913,15 +930,21 @@ export class SymbiontInstaller {
 
   staleRegistrationMessages(scan: MemberRegistrationScan): string[] {
     const blocked = this.blockedRegistrations(scan);
-    return scan.map(finding => staleRegistrationWords(finding, this.manifest.displayName, blocked.includes(finding)));
+    return scan.flatMap(finding => {
+      if (this.takesOverFinding(finding)) {
+        const target = finding.location.kind === 'mcp' ? this.memberMcpTargetPath() : this.resolveAbsoluteTarget('hooks');
+        return finding.target === target ? [`${this.manifest.displayName}: replaced Myco entry in ${finding.file}: ${finding.keyPath ?? finding.subject}; binary ${finding.replacementBinary}.`] : [];
+      }
+      return [staleRegistrationWords(finding, this.manifest.displayName, blocked.includes(finding))];
+    });
   }
 
   private managesHook(command: string): boolean {
-    return isMycoHookCommand(command) && commandVerdict(command, this.legacyHomes) !== 'stale';
+    return isMycoHookCommand(command) && (this.takesOver(ownedHookBinary(command)) || commandVerdict(command, this.legacyHomes) !== 'stale');
   }
 
   private withWritableMcpEntry<T>(entry: unknown, write: () => T): T | undefined {
-    return mcpVerdict(entry, this.legacyHomes) === 'stale' ? undefined : write();
+    return !this.takesOver(ownedMcpBinary(entry)) && mcpVerdict(entry, this.legacyHomes) === 'stale' ? undefined : write();
   }
 
   private writeRegistrationTarget(target: string | null, surface: 'hooks' | 'mcp' | 'settings', scan: MemberRegistrationScan, write: (target: string) => boolean): boolean {
@@ -1134,7 +1157,7 @@ export class SymbiontInstaller {
         const content = this.readMemberFile(target);
         if (content !== null) {
           const verdict = pluginFileVerdict(content, this.legacyHomes, memberHome);
-          const replaceable = verdict === 'stale' || verdict === 'member' || (verdict === 'legacy' && this.legacyHomes.length > 0);
+          const replaceable = this.takesOver(ownedPluginBinary(content)) || verdict === 'stale' || verdict === 'member' || (verdict === 'legacy' && this.legacyHomes.length > 0);
           if (!replaceable) {
             throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation.`, captureHolderNext(content.includes(MEMBER_PLUGIN_MARKER) || content.includes(CREDENTIAL_FLAG) ? 'member' : verdict));
           }
@@ -1142,7 +1165,7 @@ export class SymbiontInstaller {
       } else {
         const settings = this.readMcpFile(target, false);
         const commands = hookCommands(settings?.hooks)
-          .filter((command) => rawHasMycoOwnershipSignal(command) && commandVerdict(command, this.legacyHomes) !== 'stale' && !(this.legacyHomes.length > 0 && commandVerdict(command, this.legacyHomes) === 'legacy'));
+          .filter((command) => !this.takesOver(ownedHookBinary(command)) && rawHasMycoOwnershipSignal(command) && commandVerdict(command, this.legacyHomes) !== 'stale' && !(this.legacyHomes.length > 0 && commandVerdict(command, this.legacyHomes) === 'legacy'));
         const foreign = commands.find((command) => parseCredentialFlag(command.split(/\s+/)) !== 'registry' || !ownBinaries.some((binary) => command.startsWith(`${binary} `)));
         if (foreign !== undefined) {
           throw new MemberProvisionConflictError(`Global hooks at ${target} belong to another installation (\`${foreign}\`).`, captureHolderNext(commandVerdict(foreign, this.legacyHomes)));
@@ -1157,6 +1180,7 @@ export class SymbiontInstaller {
     if (existing === null) return;
     if (this.blocksRegistration(mcpTarget, 'mcp', scan)) return;
     return this.withWritableMcpEntry(existing, () => {
+      if (this.takesOver(ownedMcpBinary(existing))) return;
       const desired = this.renderMemberMcp('registry')?.[MYCO_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
       const helperKey = reg?.memberMcpHeadersHelperKey;
       const helper = helperKey && typeof existing[helperKey] === 'string' ? existing[helperKey] as string : null;

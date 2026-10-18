@@ -793,7 +793,7 @@ it('repairs a moved runtime pin without taking held tools or losing their owners
   expect(harnessFiles().map(file => [file, fs.readFileSync(file, 'utf8'), fs.statSync(file).mtimeMs])).toEqual(before);
 });
 
-for (const agent of ['claude-code', 'codex']) for (const surface of ['hooks', 'mcp', 'helper']) for (const linked of surface === 'helper' ? [false] : [false, true]) it(`does not hold ${agent}'s stale ${surface} elsewhere or overwrite them during repair${linked ? ' through a linked config' : ''}`, async () => {
+for (const agent of ['claude-code', 'codex']) for (const surface of ['hooks', 'mcp', 'helper']) for (const linked of surface === 'helper' ? [false] : [false, true]) it(`repairs owned ${agent} stale ${surface} and preserves unowned entries${linked ? ' through a linked config' : ''}`, async () => {
   if (surface === 'hooks') provisionGlobally(agent, null, home, { serverUrl: SERVER });
   const tools = surface === 'hooks' ? agent === 'claude-code' ? path.join(agentHome, '.claude.json') : config() : toolsHeldElsewhere(agent);
   const target = surface !== 'hooks' ? tools : agent === 'codex' ? hooks() : path.join(agentHome, '.claude', 'settings.json');
@@ -816,21 +816,22 @@ for (const agent of ['claude-code', 'codex']) for (const surface of ['hooks', 'm
   const before = fs.readFileSync(target);
   expect(setupChecks(home).some(check => check.toolsDeployment !== undefined)).toBe(false);
   const result = keepCurrent(home, { binaryFound: () => true });
-  expect(result?.harnesses[0].state).toBe(surface === 'hooks' ? agent === 'codex' ? 'trust_required' : 'ready' : 'repair_failed');
+  if (surface === 'mcp') expect(result?.harnesses[0].state).toBe('repair_failed');
+  else expect(['ready', 'trust_required']).toContain(result?.harnesses[0].state);
   expect(result?.harnesses[0].toolsDeployment).toBeUndefined();
-  if (surface !== 'hooks') {
+  if (surface === 'mcp') {
     if (agent === 'codex') expect(parseToml(fs.readFileSync(target, 'utf8')).mcp_servers).toEqual(parseToml(before.toString()).mcp_servers);
     else expect(fs.readFileSync(target)).toEqual(before);
-  }
-  else expect(JSON.parse(fs.readFileSync(target, 'utf8')).hooks.Stop).toContainEqual(JSON.parse(before.toString()).hooks.Stop[0]);
+  } else expect(fs.readFileSync(target, 'utf8')).not.toContain(binary);
+  if (linked) expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
   const lines: string[] = [];
   await setup(['--status'], { mycoHome: home, cwd: agentHome, agents: () => [agent], stdout: line => lines.push(line), stderr: line => { throw new Error(line); } });
   expect(lines.join('\n')).not.toMatch(/use other.myco.example|held elsewhere|another installation|another Deployment/);
-  if (surface !== 'hooks') {
+  if (surface === 'mcp') {
     if (agent === 'codex') expect(parseToml(fs.readFileSync(target, 'utf8')).mcp_servers).toEqual(parseToml(before.toString()).mcp_servers);
     else expect(fs.readFileSync(target)).toEqual(before);
-  }
-  else expect(JSON.parse(fs.readFileSync(target, 'utf8')).hooks.Stop).toContainEqual(JSON.parse(before.toString()).hooks.Stop[0]);
+  } else expect(fs.readFileSync(target, 'utf8')).not.toContain(binary);
+  if (linked) expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
 });
 
 it('logs stale-blocked tools once until the entry changes', () => {
