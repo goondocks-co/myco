@@ -34,7 +34,7 @@ export const MACHINE_RUNTIME_COMMAND_FILENAME = 'runtime.command';
  * Filename for the runtime home pin — a sibling of `runtime.command` in the
  * SAME (project or machine) dir. A plaintext, single-line, absolute home path
  * that redirects MYCO_HOME for that scope, routing the CLI, hooks, MCP, and
- * symbiont capture plugins at a non-default daemon (e.g. a dogfood `~/.myco-dev`).
+ * symbiont capture plugins at the selected non-default home.
  * Read under the same G7 trust check as `runtime.command`.
  */
 export const MACHINE_RUNTIME_HOME_FILENAME = RUNTIME_HOME_FILENAME;

@@ -14,28 +14,21 @@ it('finishes checks before building even under make -j', () => {
     expect({ status: result.status, stderr: result.stderr.replace(/^.*warning:.*\n/gm, '') }).toEqual({ status: 0, stderr: '' });
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
-it.each([false, true])('keeps the dogfood binary safe through a wrapper symlink (failed probe: %s)', (fails) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-dev-install-'));
-  const home = path.join(root, 'home');
-  const binary = path.join(home, '.myco-dev/bin/myco');
-  const wrapper = path.join(home, '.local/bin/myco-dev');
-  const built = path.join(root, 'packages/myco-fixture/bin/myco');
-  const content = `#!/bin/sh\n${fails ? 'exit 1' : 'echo fixture-version'}\n`;
-  try {
-    for (const file of [binary, wrapper, built]) fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.copyFileSync(source, path.join(root, 'Makefile'));
-    fs.writeFileSync(binary, 'original binary');
-    fs.symlinkSync(binary, wrapper);
-    fs.writeFileSync(built, content, { mode: 0o755 });
-    const result = spawnSync('make', ['dev-install', 'HOST_TARGET=fixture', `HOME=${home}`, `PWD=${root}`], { cwd: root, env: sandboxChildEnv(root, { HOME: home }), encoding: 'utf8' });
-    expect(fs.readFileSync(binary, 'utf8')).toBe(fails ? 'original binary' : content);
-    expect(fs.existsSync(binary + '.new')).toBe(false);
-    if (fails) {
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain('failed its --version probe');
-    } else {
-      expect(result.status).toBe(0);
-      expect(fs.lstatSync(wrapper).isSymbolicLink()).toBe(false);
-    }
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+
+const retiredTargets = /\bdev-(?:wrapper|install|link(?:-worktree)?|deploy|unlink(?:-worktree)?|build(?:-windows)?)\b/;
+const guidanceRoots = ['AGENTS.md', 'CONTRIBUTING.md', 'docs', '.agents/skills', 'packages/myco/skills'];
+
+function guidanceFiles(entry: string): string[] {
+  const stat = fs.lstatSync(entry);
+  if (stat.isSymbolicLink()) return [];
+  return stat.isDirectory()
+    ? fs.readdirSync(entry).flatMap(name => guidanceFiles(path.join(entry, name)))
+    : [entry];
+}
+
+it('keeps retired dogfood targets out of the Makefile and published guidance', () => {
+  const files = [source, ...guidanceRoots.flatMap(guidanceFiles)];
+  const matches = files.flatMap(file => fs.readFileSync(file, 'utf8').split('\n')
+    .flatMap((line, index) => retiredTargets.test(line) ? [`${path.relative(process.cwd(), file)}:${index + 1}: ${line}`] : []));
+  expect(matches).toEqual([]);
 });

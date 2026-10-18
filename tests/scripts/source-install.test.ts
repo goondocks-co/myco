@@ -232,7 +232,7 @@ it('preserves shell rc symlinks and modes, and leaves settings intact when publi
   } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
 });
 
-it('shares preparation with the retained development build and verifies one compilation without tests', () => {
+it('prepares and verifies one source compilation without tests', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-source-recipe-'));
   try {
     const plan = spawnSync('make', ['-n', 'source-build'], { cwd: repo, env: sandboxChildEnv(root), encoding: 'utf8' });
@@ -240,7 +240,6 @@ it('shares preparation with the retained development build and verifies one comp
     for (const command of ['build-libsqlite3-target.sh', 'build:ui', 'npm run codegen', 'build-single-target.mjs', 'verify-build.mjs']) expect(plan.stdout).toContain(command);
     expect(plan.stdout.match(/build-single-target.mjs/g)?.length).toBe(1);
     expect(plan.stdout).not.toMatch(/npm (test|run test)/);
-    expect(fs.readFileSync(path.join(repo, 'Makefile'), 'utf8')).toContain('dev-build: source-build');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

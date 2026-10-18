@@ -236,7 +236,6 @@
     "tests/meta/daemon-start-boundary.test.ts": 17041,
     "tests/meta/darwin-distribution-gate.test.ts": 463,
     "tests/meta/dashboard-import-boundary.test.ts": 164,
-    "tests/meta/dev-wrapper.test.ts": 523,
     "tests/meta/doc-slash-commands.test.ts": 97,
     "tests/meta/docs-cli-accuracy.test.ts": 521,
     "tests/meta/documented-skill-targets.test.ts": 95,

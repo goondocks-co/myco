@@ -139,9 +139,9 @@ function readAbsolutePin(filePath: string): string | null {
 /**
  * This project's Myco home, in the binary's precedence (`src/paths/home.ts`):
  * an explicit `MYCO_HOME`, then a trusted project `runtime.home` pin found by
- * walking up from `directory`, then the machine pin, then `~/.myco`. A dogfood
- * project pinned to `~/.myco-dev` therefore writes and reads there without any
- * environment. Identity is the home, never a path this file guesses.
+ * walking up from `directory`, then the machine pin, then `~/.myco`. A pinned
+ * project reads and writes its selected home without an environment override.
+ * Identity is the home, never a path this file guesses.
  *
  * The plugin resolves the home to FIND the binary, so it cannot ask the binary
  * for it; the two implementations are held to the same answers over one

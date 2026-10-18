@@ -237,7 +237,7 @@ describe('dependency preparation', () => {
     expect(f.calls()).toEqual([]);
   });
 
-  it.each(['source-build-windows', 'dev-build-windows'])('selects MinGW before any recipe in make %s', target => {
+  it.each(['source-build-windows'])('selects MinGW before any recipe in make %s', target => {
     const f = fixture();
     f.env.CC = 'no-such-mingw-gcc';
     const result = f.make([target]);

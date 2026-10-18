@@ -149,7 +149,7 @@ export function runLaunchPreamble(
 /**
  * True when `pin` should be exec'd rather than handled in-process.
  *
- * A bare pin with no path separator (e.g. `myco-dev`) is a PATH-resolved alias
+ * A bare pin with no path separator (e.g. `myco-other`) is a PATH-resolved alias
  * — the documented `runtime.command` alias contract (hook-guard alias tests).
  * We can't cheaply prove whether it resolves to this same binary, so we exec it
  * and let the `MYCO_TRAMPOLINED` loop guard stop a self-alias from recursing.
@@ -179,8 +179,8 @@ function realpathOr(p: string, realpathSync: (p: string) => string): string {
  * Resolve a pin to a runnable executable on Windows.
  *
  * `execFileSync` with `shell: false` does NOT apply PATHEXT, so a bare alias
- * (`myco-dev`) or an extensionless absolute path that only exists as
- * `myco-dev.cmd` ENOENTs — which, for a hook, is swallowed as exit(0) and the
+ * (`myco-other`) or an extensionless absolute path that only exists as
+ * `myco-other.cmd` ENOENTs — which, for a hook, is swallowed as exit(0) and the
  * pinned project's capture goes dark. We replicate the shell's PATHEXT search
  * here so the pin reaches its real `.cmd`/`.exe` shim.
  *

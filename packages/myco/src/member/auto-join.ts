@@ -369,7 +369,7 @@ export function silentRepository(root: string, opts: { mycoHome: string; env?: N
   if (temporaryFolders(env).some((dir) => within(at, real(dir)))) return true;
   if (AGENT_HOMES.some((dir) => within(at, path.join(home, dir)))) return true;
   if (within(at, real(opts.mycoHome))) return true;
-  // Every Myco home directly under the home folder: `~/.myco`, `~/.myco-dev`, and the like.
+  // Every Myco home directly under the home folder: the default home and any separately named homes.
   const rel = path.relative(home, at);
   return !rel.startsWith('..') && !path.isAbsolute(rel) && rel.split(path.sep)[0]!.startsWith('.myco');
 }
