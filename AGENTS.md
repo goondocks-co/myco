@@ -28,6 +28,7 @@ Myco captures project memory and serves it back through context injection, MCP t
 - Session ID is the durable key. Do not tie persistent state to hook lifecycle events.
 - Write paths must be additive and idempotent. Do not overwrite or delete accumulated vault history casually.
 - Maintain one canonical source of truth per concern. Derived files, stubs, and mirrors should stay thin and point back to it.
+- One identity per thing, minted once. Every record that refers to a captured thing (a session, prompt, tool call, plan) MUST store that thing's canonical id, assigned at one point. Two minters for one thing are a defect: MUST NOT link records after the fact by matching content hashes, timestamps, ordering or other heuristics. A reference that resolves to nothing is a bug, and the invariant needs a gate that fails when it does.
 - License is **Apache 2.0** (relicensed from MIT on 2026-04-29), applied repo-wide via `LICENSE` + `NOTICE` (© Goondocks Consulting LLC). Per-file headers are optional and not enforced. Do not introduce GPL- or AGPL-licensed dependencies.
 
 ## Non-Negotiable Rules
@@ -36,6 +37,7 @@ Myco captures project memory and serves it back through context injection, MCP t
 - Verify before asserting state. Before claiming which project/grove/daemon/database something belongs to — or that two of them share state — run the command that proves it and report only what the output shows. A URL slug, an injected memory, or a helper run in isolation is a hypothesis, not proof; label it as such until checked.
 - Never build a claim on an unverified claim. If a step was a guess, verify it before it becomes the premise for the next conclusion.
 - Prefer extending existing patterns over one-off patches.
+- No workarounds. Fix a defect where it originates, as a pattern the next case gets for free. MUST NOT compensate downstream for a broken invariant: a read-time join that rebuilds a link the writer never recorded, a fallback or retry that hides a wrong result, a special case for one caller. When the source fix is large, say so and plan it; do not ship the workaround in the meantime.
 - Plans are guideposts, not scripts: reconcile a plan's code against the current code before writing, and when a step would duplicate an existing surface or fight an existing pattern, follow the plan's intent and the existing pattern — surface the deviation, do not transcribe literally into a violation. Reviewers MUST check pattern-fit and duplication, not just fidelity to the plan.
 - Prefer established architectural patterns like Vertical Slice Architecture, CLEAN architecture, CQRS, Dependency Injection, etc. when they are appropriate.
 - Keep code DRY. Extract helpers or shared patterns when they remove real duplication.
