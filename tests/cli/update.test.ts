@@ -15,12 +15,14 @@ import { globalFetchDouble } from '../helpers/global-fetch.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 
 let network: ReturnType<typeof spyOn<typeof globalThis, 'fetch'>>;
+let exit: ReturnType<typeof spyOn<typeof process, 'exit'>>;
 let home: string;
 let restore: () => void;
 let output: string[];
 let log: ReturnType<typeof spyOn>;
 let error: ReturnType<typeof spyOn>;
 beforeEach(() => {
+  exit = spyOn(process, 'exit').mockImplementation(code => { throw new Error(`process.exit(${code})`); });
   network = spyOn(globalThis, 'fetch').mockImplementation(globalFetchDouble(async input => {
     throw new Error(`Unexpected real network call: ${String(input)}`);
   }));
@@ -34,6 +36,7 @@ beforeEach(() => {
 afterEach(() => {
   const calls = network.mock.calls.slice();
   network.mockRestore();
+  exit.mockRestore();
   log.mockRestore(); error.mockRestore(); restore(); process.exitCode = 0;
   fs.rmSync(home, { recursive: true, force: true });
   expect(calls).toEqual([]);

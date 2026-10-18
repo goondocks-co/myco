@@ -1,7 +1,6 @@
 /** `myco update` resolves, verifies and adopts a binary within the selected channel. */
 
 import path from 'node:path';
-import { updateBudget } from '@myco/upgrade/update-budget.js';
 import semver from 'semver';
 import { automaticUpdatesEnabled, readInstallMarker } from '@myco/install/marker-reader.js';
 import { validateSourceIntent } from '@myco/install/adoption.js';
@@ -10,6 +9,7 @@ import { parseStrictFlags } from './args.js';
 import { updateBinary, binaryUpdatePath, admitsUpdate, explicitUpdateRefusal, resolveAssetRefsForTarget, type BinaryUpdateDeps } from '../upgrade/guarded-binary.js';
 import { claimSubsystem, readClaim, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import { resolveMycoPackageCheck } from '../upgrade/checker.js';
+import { updateBudget } from '../upgrade/update-budget.js';
 import { isDefaultMycoHome, resolveMycoHome } from '../paths/home.js';
 import { refreshMemberSetup } from '../member/refresh-setup.js';
 import { readRunnerUpdateState } from '../runner/update.js';
