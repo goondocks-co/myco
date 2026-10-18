@@ -201,7 +201,9 @@ for (const entry of [{ url: 'https://unrelated.example/mcp' }, { command: 'fixtu
 it('reports no agents and why when an explicit claim finds no managed setup', async () => {
   for (const file of configs) fs.unlinkSync(file);
   const said = await claim();
-  expect(said).toContain('Agents refreshed: no (no agents selected for this home');
+  expect(said).toContain('Agents refreshed: no.');
+  expect(said.match(/No agent is set up/g)).toHaveLength(1);
+  expect(said.match(/myco member provision/g)).toHaveLength(1);
   expect(said).not.toContain('Agents refreshed: yes');
   expect(readProvisionRecord(newHome)?.agents).toEqual([]);
 });

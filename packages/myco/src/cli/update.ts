@@ -202,7 +202,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
       if (claim !== null && claim.owner !== path.resolve(home)) console.log(`Agents refreshed: no (global agent setup is managed by ${claim.owner}).`);
       else {
         const record = readProvisionRecord(home);
-        if (record?.agents.length === 0) console.log('Agents refreshed: no (no agents selected for this home; run myco member provision to set them up).');
+        if (record?.agents.length === 0) console.log('Agents refreshed: no.');
         else console.log('Agents refreshed: yes.');
       }
     } catch (error) {
