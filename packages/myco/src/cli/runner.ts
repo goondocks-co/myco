@@ -15,7 +15,7 @@ import { CLAIM_IDLE_POLL_MS, runWorker } from '../runner/loop.js';
 import { sameProgram } from '../runner/program.js';
 import { getPluginVersion } from '../version.js';
 import { workerLogLine } from '../runner/log.js';
-import { workerLockDir } from '../runner/instance.js';
+import { workerHolder, workerLockDir } from '../runner/instance.js';
 import { isLiveRunner, listRunnerRecords, readRunnerRecord, recordRunnerContact, runnerDir } from '../runner/runner-registry.js';
 import { rotateRunnerCredential, runnerRenewer } from '../runner/runner-rotation.js';
 import { RUNNER_CONTACT_PATH } from '../runner/runner-routes.js';
@@ -122,13 +122,14 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
   const stopping = deps.signal === undefined ? new AbortController() : null;
   if (stopping !== null) for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { stopping.abort(); });
 
+  const instanceLockDir = deps.lockDir ?? workerLockDir(deps.home);
   const outcome = await runWorker({
     serverUrl,
     token: tokenReader(serverUrl, mycoHome, log),
     renew: runnerRenewer(serverUrl, { mycoHome, fetch: deps.fetch, now: deps.now, notify: log }),
     compatibilityPath: RUNNER_CONTACT_PATH,
     detection: { credentialBytes: false },
-    lockDir: deps.lockDir ?? workerLockDir(deps.home),
+    lockDir: instanceLockDir,
     deploymentId: record.deploymentId,
     deploymentUrls: await executionDeploymentUrls(serverUrl, { ...deps, mycoHome }),
     stillCurrent: sameProgram(deps.binaryPath ?? process.execPath, undefined, undefined, log),
@@ -149,7 +150,12 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
         offerBusyLogged = true;
       } else offerBusyLogged = false;
     },
-    onIdle: async () => { const outcome = await updater.idle(); return outcome === 'continue' ? undefined : outcome; },
+    onIdle: async () => {
+      const holder = workerHolder(instanceLockDir, serverUrl);
+      if (holder !== null) updater.recordRuntimeCapability(holder);
+      const outcome = await updater.idle();
+      return outcome === 'continue' ? undefined : outcome;
+    },
     onClaim: () => updater.recordClaim(),
     onClaimCompleted: () => updater.recordClaim(true),
     runRoot: path.join(dir, RUNS_DIRNAME),

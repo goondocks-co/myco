@@ -454,6 +454,20 @@ exec '${mv}' "$@"
     expect(fs.existsSync(path.join(invalid, '.myco/bin/myco'))).toBe(false);
   });
 
+  it.skipIf(!HAS_CC)('announces replacement of a recorded source build with a release', () => {
+    const home = freshHome();
+    const fresh = install(home, FROM());
+    expect(fresh.status).toBe(0);
+    expect(fresh.out).not.toContain('Replacing this source build');
+    const markerFile = path.join(home, '.myco', 'install.json');
+    const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8'));
+    fs.writeFileSync(markerFile, JSON.stringify({ ...marker, source: 'checkout', checkout: home, commit: 'a'.repeat(40), version: '0.0.0-dev+fixture.b1' }));
+    const replaced = install(home, FROM());
+    expect(replaced.status).toBe(0);
+    expect(replaced.out).toContain('Replacing this source build with the selected channel release.');
+    expect(JSON.parse(fs.readFileSync(markerFile, 'utf8')).source).toBe('curl');
+  });
+
   describe('on a machine with Myco 1.4', () => {
     it('keeps the preview channel in its explicit replacement command', () => {
       const legacy = legacyHome({ binary: true });

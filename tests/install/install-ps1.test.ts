@@ -18,7 +18,7 @@ const release = (version: string, extra = {}) => ({
 });
 const beforeGa = [release('1.4.9'), release('1.4.10-beta.1'), release('2.0.0-alpha.10'), release('2.0.0-beta.2')];
 
-function select(releases: unknown[], opts: { channel?: string; current?: string; evidence?: 'marker' | 'slot' | 'unknown'; state?: 'member' | 'cutover' | 'symlink' | 'empty' | 'vault'; replace?: boolean; install?: string; joined?: boolean; probe?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string; refreshFailure?: boolean; failPreserve?: boolean; truncatePreserve?: boolean; failRecord?: boolean } = {}) {
+function select(releases: unknown[], opts: { channel?: string; current?: string; sourceCheckout?: boolean; evidence?: 'marker' | 'slot' | 'unknown'; state?: 'member' | 'cutover' | 'symlink' | 'empty' | 'vault'; replace?: boolean; install?: string; joined?: boolean; probe?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string; refreshFailure?: boolean; failPreserve?: boolean; truncatePreserve?: boolean; failRecord?: boolean } = {}) {
   const home = fs.mkdtempSync(path.join(root, 'home-'));
   const mycoHome = path.join(home, '.myco');
   const bin = path.join(home, 'bin');
@@ -30,7 +30,8 @@ function select(releases: unknown[], opts: { channel?: string; current?: string;
     const target = opts.state === 'symlink' ? path.join(home, 'existing-2.x') : exe;
     fs.writeFileSync(target, opts.state === 'empty' ? '' : `#!/bin/sh\necho executed > '${executed}'\necho ${opts.current}\n`, { mode: 0o755 });
     if (opts.state === 'symlink') fs.symlinkSync(target, exe, 'file');
-    if ((opts.evidence ?? 'marker') === 'marker') fs.writeFileSync(path.join(mycoHome, 'install.json'), JSON.stringify({ channel: opts.channel ?? 'stable', version: opts.current, bin: exe, binary_sha256: crypto.createHash('sha256').update(fs.readFileSync(exe)).digest('hex') }));
+    if ((opts.evidence ?? 'marker') === 'marker') fs.writeFileSync(path.join(mycoHome, 'install.json'), JSON.stringify({ channel: opts.channel ?? 'stable', version: opts.current, bin: exe, binary_sha256: crypto.createHash('sha256').update(fs.readFileSync(exe)).digest('hex'),
+      ...(opts.sourceCheckout ? { source: 'checkout', checkout: home, commit: 'a'.repeat(40) } : {}) }));
     if (opts.evidence === 'slot' || opts.stale) {
       const slot = path.join(bin, 'versions', opts.current, 'myco.exe');
       fs.mkdirSync(path.dirname(slot), { recursive: true });
@@ -107,6 +108,13 @@ int main(int argc, char **argv) {
 }
 
 describe('the Windows installer', () => {
+  it.skipIf(PWSH === '' || process.platform === 'win32')('announces replacement of a recorded source build with a release', () => {
+    const replaced = select([release('2.0.0')], { current: '0.0.0-dev+fixture.b1', sourceCheckout: true, install: '2.0.0' });
+    expect(replaced.status).toBe(0);
+    expect(replaced.out).toContain('Replacing this source build with the selected channel release.');
+    expect(JSON.parse(fs.readFileSync(path.join(replaced.mycoHome, 'install.json'), 'utf8')).source).toBe('curl');
+  });
+
   it.skipIf(PWSH === '')('fresh default chooses beta before alpha, then stable after GA', () => {
     expect(select(beforeGa).out).toContain('Found: myco/v2.0.0-beta.2');
     expect(select([...beforeGa, release('2.1.0-alpha.99')]).out).toContain('Found: myco/v2.0.0-beta.2');

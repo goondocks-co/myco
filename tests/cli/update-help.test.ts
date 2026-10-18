@@ -26,7 +26,7 @@ it('lists the one update command with its channel and names its alias once in ea
   expect(update).toContain('Usage: myco update');
   expect(update).toContain('Without an installed runner, an explicit version can step back.');
   expect(update).toContain('Turn automatic member updates off or on; no update run');
-  for (const flag of ['--check', '--channel', '--target-version', '--skip-binary', '--claim']) expect(update).toContain(flag);
+  for (const flag of ['--check', '--channel', '--target-version', '--skip-binary', '--claim', '--source-checkout', '--source-commit']) expect(update).toContain(flag);
   expect(update.match(/Alias: myco upgrade/g)).toHaveLength(1);
 });
 it('every listed top-level command has specific help before any vault or membership gate', () => {

@@ -25,13 +25,17 @@ export {
   managedSkillsDir,
 } from '../../scripts/managed-paths.mjs';
 
+export type InstallFilePublisher = (file: string, text: string) => void;
+
+const durableInstallPublisher: InstallFilePublisher = (file, text) => atomicWriteFileSync(file, text, { durable: true, mode: 0o600 });
+
 /**
  * Writes the install marker to `<dir>/install.json`.
  *
  * `dir` is the `.myco` home directory (e.g. `~/.myco`).
  */
-export function writeInstallMarker(dir: string, marker: InstallMarker): void {
-  publishInstallMarker(dir, marker, (file, text) => atomicWriteFileSync(file, text, 'utf8'));
+export function writeInstallMarker(dir: string, marker: InstallMarker, publish: InstallFilePublisher = durableInstallPublisher): void {
+  publishInstallMarker(dir, marker, publish);
 }
 
 export function writeAutomaticUpdatePreference(dir: string, enabled: boolean): void {

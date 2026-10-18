@@ -221,7 +221,7 @@ cleanup() {
 # Decode a page once; ignored strings never accumulate in the tokenizer.
 decode_json() {
   _json_mode="$2"; _json_key="channel"
-  case "$2" in version|bin|binary_sha256) _json_mode=marker; _json_key="$2" ;; esac
+  case "$2" in version|bin|binary_sha256|source) _json_mode=marker; _json_key="$2" ;; esac
   if command -v jq >/dev/null 2>&1; then
     if [ "$_json_mode" = marker ]; then
       jq -esr --arg key "$_json_key" '
@@ -784,6 +784,9 @@ main() {
   # -------------------------------------------------------------------------
   # Fetch, verify, place atomically
   # -------------------------------------------------------------------------
+  if [ -f "$MYCO_HOME_DIR/install.json" ] && [ "$(decode_json "$MYCO_HOME_DIR/install.json" source)" = checkout ]; then
+    info "Replacing this source build with the selected channel release."
+  fi
   mkdir -p "$BIN_DIR"
   TMP_DIR="$(mktemp -d "${BIN_DIR}/.myco-install-XXXXXX")"
 

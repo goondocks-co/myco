@@ -50,12 +50,11 @@ int main(int argc, char **argv) {
         computeSha256: async file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'),
       },
     });
-    const dev = current.startsWith('0.0.0');
-    expect(spawnSync(binary, ['--version'], { cwd: root, encoding: 'utf8' }).stdout.trim()).toBe(dev ? current : '2.1.0-alpha.1');
-    if (dev) expect(fs.readFileSync(binary)).toEqual(oldBytes);
+    expect(spawnSync(binary, ['--version'], { cwd: root, encoding: 'utf8' }).stdout.trim()).toBe('2.1.0-alpha.1');
+    expect(fs.readFileSync(path.join(path.dirname(binary), 'myco.prev'))).toEqual(oldBytes);
     expect(fs.readFileSync(path.join(home, 'refresh.log'), 'utf8')).toBe('member provision --refresh\n');
     expect(JSON.parse(fs.readFileSync(path.join(home, 'install.json'), 'utf8')).channel).toBe('alpha');
-    expect(fs.readdirSync(home).sort()).toEqual(['bin', 'install.json', ...(!dev ? ['last-update-check.json', 'member'] : []), 'refresh.log']);
+    expect(fs.readdirSync(home).sort()).toEqual(['bin', 'install.json', 'last-update-check.json', 'member', 'refresh.log']);
     if (custom) expect(fs.existsSync(path.join(home, 'bin/myco'))).toBe(false);
   });
   it('does not stage an out-of-channel explicit version', async () => {

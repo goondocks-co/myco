@@ -319,6 +319,9 @@ $tmpExe  = Join-Path $tmpDir $Asset
 $tmpSums = Join-Path $tmpDir "SHA256SUMS"
 
 try {
+    if ($InstallMarker -and $InstallMarker.source -eq 'checkout') {
+        Write-Host 'Replacing this source build with the selected channel release.' -ForegroundColor Cyan
+    }
     Write-Host "Downloading $Asset..." -ForegroundColor Cyan
     Invoke-GhDownload -Url "$dlBase/$Asset"      -OutFile $tmpExe
     Invoke-GhDownload -Url "$dlBase/SHA256SUMS"  -OutFile $tmpSums
