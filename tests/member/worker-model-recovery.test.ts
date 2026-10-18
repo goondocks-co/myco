@@ -44,7 +44,8 @@ it('recovers a crashed real model-listing allocation after its harness group is 
 const fs = require('node:fs');
 const path = require('node:path');
 fs.writeFileSync(path.join(process.env.CODEX_HOME, 'auth-copy.json'), 'synthetic-retained-provider-key');
-fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({cwd:process.cwd(),pid:process.pid,home:process.env.CODEX_HOME}));
+fs.writeFileSync(${JSON.stringify(ready)} + '.tmp', JSON.stringify({cwd:process.cwd(),pid:process.pid,home:process.env.CODEX_HOME}));
+fs.renameSync(${JSON.stringify(ready)} + '.tmp', ${JSON.stringify(ready)});
 setInterval(() => {}, 1000);
 `, { mode: 0o755 });
     const script = join(lane, 'worker.ts');

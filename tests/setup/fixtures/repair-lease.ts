@@ -17,7 +17,10 @@ if (mode === 'hold') {
 } else if (mode === 'remove') {
   const acquire = LifecycleLock.acquire;
   LifecycleLock.acquire = (file, opts) => {
-    if (opts?.command === 'myco member provision --remove') fs.writeFileSync(signal, JSON.stringify({ wait: opts.wait }));
+    if (opts?.command === 'myco member provision --remove') {
+      fs.writeFileSync(`${signal}.tmp`, JSON.stringify({ wait: opts.wait }));
+      fs.renameSync(`${signal}.tmp`, signal);
+    }
     return acquire(file, opts);
   };
   if (!runProvision(['codex', '--remove'], { mycoHome: home, cwd: process.cwd() })) process.exitCode = 2;
