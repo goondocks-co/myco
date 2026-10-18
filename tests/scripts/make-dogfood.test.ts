@@ -15,20 +15,38 @@ it('finishes checks before building even under make -j', () => {
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-const retiredTargets = /\bdev-(?:wrapper|install|link(?:-worktree)?|deploy|unlink(?:-worktree)?|build(?:-windows)?)\b/;
-const guidanceRoots = ['AGENTS.md', 'CONTRIBUTING.md', 'docs', '.agents/skills', 'packages/myco/skills'];
+const retiredDogfood = /\bdev-(?:wrapper|install|link(?:-worktree)?|deploy|unlink(?:-worktree)?|build(?:-windows)?)\b|\bmyco-dev\b/;
+const guidanceRoots = ['Makefile', 'AGENTS.md', 'CONTRIBUTING.md', 'docs', '.agents/skills', 'packages/myco/skills', 'plugins/myco/README.md'];
+const excludedGuidance = [':(exclude)CHANGELOG.md', ':(exclude)**/fixtures/**', ':(exclude)scripts/win-*.ps1'];
 
-function guidanceFiles(entry: string): string[] {
-  const stat = fs.lstatSync(entry);
-  if (stat.isSymbolicLink()) return [];
-  return stat.isDirectory()
-    ? fs.readdirSync(entry).flatMap(name => guidanceFiles(path.join(entry, name)))
-    : [entry];
+function retiredGuidanceReferences(root: string): string[] {
+  const listed = spawnSync('git', ['ls-files', '-z', '--', ...guidanceRoots, ...excludedGuidance], { cwd: root, encoding: 'utf8' });
+  if (listed.error) throw listed.error;
+  if (listed.status !== 0) throw new Error(listed.stderr);
+  return listed.stdout.split('\0').filter(Boolean).flatMap(file => fs.readFileSync(path.join(root, file), 'utf8').split('\n')
+    .flatMap((line, index) => retiredDogfood.test(line) ? [`${file}:${index + 1}: ${line}`] : []));
 }
 
-it('keeps retired dogfood targets out of the Makefile and published guidance', () => {
-  const files = [source, ...guidanceRoots.flatMap(guidanceFiles)];
-  const matches = files.flatMap(file => fs.readFileSync(file, 'utf8').split('\n')
-    .flatMap((line, index) => retiredTargets.test(line) ? [`${path.relative(process.cwd(), file)}:${index + 1}: ${line}`] : []));
-  expect(matches).toEqual([]);
+it('keeps retired dogfood targets and wrapper wording out of tracked published guidance', () => {
+  expect(retiredGuidanceReferences(process.cwd())).toEqual([]);
+});
+
+it('ignores untracked plans while checking tracked guidance', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-guidance-tracked-'));
+  try {
+    const env = sandboxChildEnv(root);
+    const git = (args: string[]) => {
+      const result = spawnSync('git', args, { cwd: root, env, encoding: 'utf8' });
+      expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
+    };
+    git(['init', '-q']);
+    fs.mkdirSync(path.join(root, 'docs/superpowers'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.gitignore'), 'docs/superpowers/\n');
+    fs.writeFileSync(path.join(root, 'docs/superpowers/plan.md'), 'Run make dev-link.\n');
+    fs.writeFileSync(path.join(root, 'docs/configuration.md'), 'Run make source-install.\n');
+    git(['add', 'docs/configuration.md']);
+    expect(retiredGuidanceReferences(root)).toEqual([]);
+    fs.writeFileSync(path.join(root, 'docs/configuration.md'), 'Run make dev-link.\n');
+    expect(retiredGuidanceReferences(root)).toEqual(['docs/configuration.md:1: Run make dev-link.']);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

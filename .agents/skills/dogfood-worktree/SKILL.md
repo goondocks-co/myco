@@ -25,7 +25,7 @@ mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/cwd"
 )
 ```
 
-Inspect the reported home and installation provenance before attributing state. A directly run artifact has unknown installation origin until it has been installed. This recipe creates no repository pins or personal configuration.
+Inspect the reported home and installation provenance before attributing state. A directly run artifact has unknown installation origin until it has been installed. This recipe creates no repository pins or personal configuration. To stop an old repository pin selecting another install, remove that repository’s `.myco/runtime.home` and `.myco/runtime.command` files.
 
 To test installation, retain those scratch variables and cwd for the binary, and invoke `ALLOW_WORKTREE_INSTALL=1 make -C /absolute/worktree source-install`. Installation builds and verifies once, then the candidate's updater copies it into the selected home's managed destination. Worktree installation requires that explicit opt-in. Use `make source-install` for a deliberate personal source install; plain `myco update` returns it to the selected channel release.
 
