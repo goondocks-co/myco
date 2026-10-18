@@ -77,13 +77,14 @@ export function explicitUpdateRefusal(target: string, current: string, channel: 
 }
 
 export async function resolveAssetRefsForTarget(target: string | null, channel: ReleaseChannel, deps: BinaryUpdateDeps): Promise<AssetRefs | null> {
+  const fetchReleases = deps.fetchReleases ?? (() => fetchMycoReleases(updateBudget(deps).fetch));
   if (target !== null) {
-    const releases = await (deps.fetchReleases ?? fetchMycoReleases)();
+    const releases = await fetchReleases();
     const release = releases.find(release => release.tag_name === `myco/v${target}`);
     return release === undefined ? null : resolveAssetRefs(release, (deps.targetTriple ?? resolveTargetTriple)());
   }
   return (deps.resolveRefs ?? (channel => resolveMycoBinaryUpdateRefs(channel, {
-    fetchReleases: () => fetchMycoReleases(updateBudget(deps).fetch),
+    fetchReleases,
     targetTriple: deps.targetTriple ?? resolveTargetTriple,
   }, deps.currentVersion ?? getPluginVersion())))(channel);
 }
