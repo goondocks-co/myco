@@ -36,6 +36,7 @@ export function reconcileProvisionAgents(mycoHome: string, provision: Pick<Provi
     const agents = [...new Set([...(before?.agents ?? []).filter(agent => !uncapturable.has(agent) || (before?.pendingLogout?.[agent]?.length ?? 0) > 0), ...provision.discovered])].sort();
     return {
       agents, version: before?.version ?? provision.version, serverUrl: before?.serverUrl ?? provision.serverUrl,
+      discoverAgents: before?.discoverAgents,
       ...retainedProvisionMetadata(before, agents),
     };
   }, { strict: true });

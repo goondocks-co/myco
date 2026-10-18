@@ -180,7 +180,7 @@ describe('myco member provision', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
   });
 
-  it('preserves a stale hook in an outdated member hook group while refreshing capture', () => {
+  it('replaces a marked stale hook in an outdated member hook group while refreshing capture', () => {
     join();
     provisionGlobally('claude-code', root, mycoHome, { serverUrl: SERVER });
     const file = path.join(agentHome, '.claude', 'settings.json');
@@ -194,7 +194,7 @@ describe('myco member provision', () => {
     provisionGlobally('claude-code', root, mycoHome, { serverUrl: SERVER });
     const after = JSON.parse(fs.readFileSync(file, 'utf8'));
     const remaining = after.hooks.Stop.flatMap((group: { hooks: unknown[] }) => group.hooks);
-    expect(remaining.filter((hook: unknown) => JSON.stringify(hook) === bytes)).toHaveLength(1);
+    expect(remaining.filter((hook: unknown) => JSON.stringify(hook) === bytes)).toHaveLength(0);
     expect(remaining.filter((hook: { command: string }) => hook.command !== stale.command)).toEqual(current.hooks.Stop.flatMap((group: { hooks: unknown[] }) => group.hooks));
     expect(new SymbiontInstaller(loadManifests().find(m => m.name === 'claude-code')!, root, resolvePackageRoot(), false, mycoHome).forDeployment(SERVER).memberRegistrationCurrent()).toBe(true);
   });
@@ -378,6 +378,8 @@ for (const holder of ['hook', 'same-url'] as const) it(`keeps another 2.0 ${hold
   const foreignHome = path.join(agentHome, 'other-myco');
   fs.mkdirSync(foreignHome);
   const foreignBinary = path.join(foreignHome, 'bin', 'myco');
+  fs.mkdirSync(path.dirname(foreignBinary));
+  fs.writeFileSync(foreignBinary, 'fixture');
   fs.writeFileSync(file, original.replaceAll(encodedBinary, JSON.stringify(foreignBinary).slice(1, -1)).replaceAll(currentBinary, foreignBinary));
   const before = fs.readFileSync(file, 'utf8');
   const refused = await provision(['codex']);
