@@ -88,3 +88,10 @@ capabilities:
       pathField: command
       extract: shell-arg
       readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
+
+# How this agent's prompts are named: by their position in Pi's session file. The extension's prompt hook input
+# carries no per-submission key, so a context answer names no prompt.
+promptIdentity:
+  kind: transcript-only
+  scheme: offset-v1
+  evidence: tests/fixtures/prompt-identity/pi-user-prompt-submit.json

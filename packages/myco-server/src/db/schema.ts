@@ -44,6 +44,7 @@ import { V84_STATEMENTS } from './schema-v84.js';
 import { V85_STATEMENTS } from './schema-v85.js';
 import { V86_STATEMENTS } from './schema-v86.js';
 import { V88_STATEMENTS } from './schema-v88.js';
+import { ASK_PROTOCOLS, PROMPT_SCOPE_REASONS } from '@goondocks/myco-shared/prompt-identity';
 import { V87_STATEMENTS } from './schema-v87.js';
 
 import { projectIdGrammar, PROJECT_ID_GRAMMAR } from './project-id.js';
@@ -1867,9 +1868,126 @@ const V74_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_recovery_forget_commands_actor ON recovery_forget_commands(actor_id)`,
 ];
 
+const inList = (values: readonly string[]): string => values.map((v) => `'${v}'`).join(', ');
+const SCOPE_REASONS = inList(PROMPT_SCOPE_REASONS);
+
+/** A random RFC 4122 version-4 id in SQL: what a row written without one, by the copy below or a restored older backup, is given. */
+export const SQL_UUID4 = `(lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-'
+  || substr('89ab', 1 + (abs(random()) % 4), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6))))`;
+
+/**
+ * What every receipt and answer records of the prompt it names: the prompt whose text selected it (`prompt_id`, or
+ * `scope_reason` where the ask named none, never both), how the ask named it (`ask_protocol`), the ask's own instant on
+ * the member's clock (`asked_at`), and where the answer reached the agent: `delivered_at`, with the prompt that carried
+ * it or why that prompt had no name.
+ */
+const IDENTITY_COLUMNS = `
+     prompt_id              TEXT,
+     scope_reason           TEXT CHECK (scope_reason IN (${SCOPE_REASONS})),
+     ask_protocol           TEXT NOT NULL DEFAULT 'legacy' CHECK (ask_protocol IN (${inList(ASK_PROTOCOLS)})),
+     asked_at               INTEGER,
+     delivered_at           INTEGER,
+     delivered_prompt_id    TEXT,
+     delivered_scope_reason TEXT CHECK (delivered_scope_reason IN (${SCOPE_REASONS})),`;
+const IDENTITY_CHECKS = `
+     CHECK ((prompt_id IS NULL) = (scope_reason IS NOT NULL)),
+     CHECK (CASE WHEN delivered_at IS NULL THEN delivered_prompt_id IS NULL AND delivered_scope_reason IS NULL
+                 ELSE (delivered_prompt_id IS NULL) = (delivered_scope_reason IS NOT NULL) END)`;
+
+const RECEIPTS_V89_BODY = `(
+     project_id  TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     session_id  TEXT NOT NULL,
+     id          TEXT NOT NULL DEFAULT ${SQL_UUID4},${IDENTITY_COLUMNS}
+     prompt_hash TEXT NOT NULL,
+     spore_ids   TEXT NOT NULL,
+     plan_ids    TEXT,
+     created_at  INTEGER NOT NULL,
+     PRIMARY KEY (project_id, session_id, id),
+     UNIQUE (project_id, session_id, prompt_hash),${IDENTITY_CHECKS})`;
+const RECEIPT_V17_BODY = `(
+     project_id  TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),
+     session_id  TEXT NOT NULL,
+     prompt_id   TEXT NOT NULL,
+     prompt_hash TEXT NOT NULL,
+     spore_ids   TEXT NOT NULL,
+     plan_ids    TEXT,
+     created_at  INTEGER NOT NULL,
+     PRIMARY KEY (project_id, session_id, prompt_hash))`;
+const RECEIPT_COLUMNS = 'project_id, session_id, prompt_id, prompt_hash, spore_ids, plan_ids, created_at';
+
+const ANSWERS_V89_BODY = `(
+     project_id    TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
+     session_id    TEXT NOT NULL,
+     id            TEXT NOT NULL,${IDENTITY_COLUMNS}
+     outcome       TEXT NOT NULL CHECK (outcome IN ('served', 'empty')),
+     context_chars INTEGER NOT NULL CHECK (context_chars >= 0),
+     parts         TEXT NOT NULL,
+     skipped       TEXT NOT NULL,
+     failures      TEXT NOT NULL,
+     selection     TEXT NOT NULL,
+     created_at    INTEGER NOT NULL,
+     PRIMARY KEY (project_id, session_id, id),${IDENTITY_CHECKS})`;
+const ANSWER_V84_BODY = `(
+     project_id TEXT NOT NULL, session_id TEXT NOT NULL, prompt_id TEXT NOT NULL, id TEXT NOT NULL,
+     outcome TEXT NOT NULL, context_chars INTEGER NOT NULL, parts TEXT NOT NULL, skipped TEXT NOT NULL,
+     failures TEXT NOT NULL, selection TEXT NOT NULL, created_at INTEGER NOT NULL,
+     PRIMARY KEY (project_id, session_id, prompt_id, id))`;
+const ANSWER_COLUMNS = 'project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, selection, created_at';
+
+/** The schema_meta key the receipt copy records the rows it could not keep under, as a count. */
+export const RECEIPT_COLLISIONS_META_KEY = 'v89_receipt_identity_collisions';
+
+/**
+ * Schema v89: one prompt identity. Receipts (`spore_injections`) and answers (`prompt_context_answers`) gain the
+ * identity columns above, and each keeps a minted text id of its own as its primary key: a receipt's id travels to the
+ * member and back on the delivery event. A receipt keeps its once-per-session rule on the prompt's text hash and is
+ * once per named prompt (`idx_spore_injections_prompt`); an answer records every ask, retries included, with no
+ * uniqueness on either. Every existing row is `legacy` and keeps the prompt id it names.
+ *
+ * SQLite cannot make a key column nullable in place, so both tables are rebuilt: the rows go to a holding table, the
+ * table is dropped and created again under its own name with its indexes, and the rows come back. A receipt that
+ * names a prompt another receipt of its session already names cannot be kept under the new rule; the copy keeps the
+ * earlier one and records how many it could not keep under `RECEIPT_COLLISIONS_META_KEY`. A guard fails the step
+ * unless every answer came back. Re-running the step is its recovery: a holding table is refreshed from whichever
+ * table stands, and a table a torn run dropped is created again empty before it is read.
+ *
+ * `transcripts.parsed_through_at` is the latest dated line a parse has read, on the clock that wrote the transcript.
+ */
+const V89_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS spore_injections ${RECEIPT_V17_BODY}`,
+  `CREATE TABLE IF NOT EXISTS _v89_receipt_rows ${RECEIPT_V17_BODY}`,
+  `INSERT OR REPLACE INTO _v89_receipt_rows (${RECEIPT_COLUMNS}) SELECT ${RECEIPT_COLUMNS} FROM spore_injections`,
+  `DROP TABLE spore_injections`,
+  `CREATE TABLE IF NOT EXISTS spore_injections ${RECEIPTS_V89_BODY}`,
+  `CREATE INDEX IF NOT EXISTS idx_spore_injections_session ON spore_injections (project_id, session_id, created_at)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_spore_injections_prompt ON spore_injections (project_id, session_id, prompt_id) WHERE prompt_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_spore_injections_delivered ON spore_injections (project_id, session_id, delivered_prompt_id) WHERE delivered_prompt_id IS NOT NULL`,
+  `INSERT OR IGNORE INTO spore_injections (${RECEIPT_COLUMNS}) SELECT ${RECEIPT_COLUMNS} FROM _v89_receipt_rows ORDER BY created_at, rowid`,
+  `INSERT OR REPLACE INTO schema_meta (key, value)
+     SELECT '${RECEIPT_COLLISIONS_META_KEY}', CAST((SELECT COUNT(*) FROM _v89_receipt_rows) - (SELECT COUNT(*) FROM spore_injections) AS TEXT)`,
+  `DROP TABLE _v89_receipt_rows`,
+
+  `CREATE TABLE IF NOT EXISTS prompt_context_answers ${ANSWER_V84_BODY}`,
+  `CREATE TABLE IF NOT EXISTS _v89_answer_rows ${ANSWER_V84_BODY}`,
+  `INSERT OR REPLACE INTO _v89_answer_rows (${ANSWER_COLUMNS}) SELECT ${ANSWER_COLUMNS} FROM prompt_context_answers`,
+  `DROP TABLE prompt_context_answers`,
+  `CREATE TABLE IF NOT EXISTS prompt_context_answers ${ANSWERS_V89_BODY}`,
+  `CREATE INDEX IF NOT EXISTS idx_prompt_context_answers_created ON prompt_context_answers (project_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_prompt_context_answers_prompt ON prompt_context_answers (project_id, session_id, prompt_id, created_at)`,
+  `INSERT INTO prompt_context_answers (${ANSWER_COLUMNS}) SELECT ${ANSWER_COLUMNS} FROM _v89_answer_rows`,
+  `DROP TABLE IF EXISTS _v89_guard_answers_kept`,
+  `CREATE TABLE _v89_guard_answers_kept (ok INTEGER NOT NULL CHECK (ok = 1))`,
+  `INSERT INTO _v89_guard_answers_kept (ok)
+     SELECT CASE WHEN (SELECT COUNT(*) FROM prompt_context_answers) = (SELECT COUNT(*) FROM _v89_answer_rows) THEN 1 ELSE 0 END`,
+  `DROP TABLE _v89_guard_answers_kept`,
+  `DROP TABLE _v89_answer_rows`,
+
+  `ALTER TABLE transcripts ADD COLUMN parsed_through_at INTEGER`,
+];
+
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
 
-export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS), withStamp(43, V43_STATEMENTS), withStamp(44, V44_STATEMENTS), withStamp(45, V45_STATEMENTS), withStamp(46, V46_STATEMENTS), withStamp(47, V47_STATEMENTS), withStamp(48, V48_STATEMENTS), withStamp(49, V49_STATEMENTS), withStamp(50, V50_STATEMENTS), withStamp(51, V51_STATEMENTS), withStamp(52, V52_STATEMENTS), withStamp(53, V53_STATEMENTS), withStamp(54, V54_STATEMENTS), withStamp(55, V55_STATEMENTS), withStamp(56, V56_STATEMENTS), withStamp(57, V57_STATEMENTS), withStamp(58, V58_STATEMENTS), withStamp(59, V59_STATEMENTS), withStamp(60, V60_STATEMENTS), withStamp(61, V61_STATEMENTS), withStamp(62, V62_STATEMENTS), withStamp(63, V63_STATEMENTS), withStamp(64, V64_STATEMENTS), withStamp(65, V65_STATEMENTS), withStamp(66, V66_STATEMENTS), withStamp(67, V67_STATEMENTS), withStamp(68, V68_STATEMENTS), withStamp(69, V69_STATEMENTS), withStamp(70, V70_STATEMENTS), withStamp(71, V71_STATEMENTS.map((statement) => statement.replace(/[ \t]+$/gm, ''))), withStamp(72, V72_STATEMENTS), withStamp(73, V73_STATEMENTS), withStamp(74, V74_STATEMENTS), withStamp(75, V75_STATEMENTS), withStamp(76, V76_STATEMENTS), withStamp(77, V77_STATEMENTS), withStamp(78, V78_STATEMENTS), withStamp(79, V79_STATEMENTS), withStamp(80, V80_STATEMENTS), withStamp(81, V81_STATEMENTS), withStamp(82, V82_STATEMENTS), withStamp(83, V83_STATEMENTS), withStamp(84, V84_STATEMENTS), withStamp(85, V85_STATEMENTS), withStamp(86, V86_STATEMENTS), withStamp(87, V87_STATEMENTS), withStamp(88, V88_STATEMENTS)];
+export const SCHEMA_STEPS: readonly SchemaStep[] = [withStamp(1, V1_STATEMENTS), withStamp(2, V2_STATEMENTS), withStamp(3, V3_STATEMENTS), withStamp(4, V4_STATEMENTS), withStamp(5, V5_STATEMENTS), withStamp(6, V6_STATEMENTS), withStamp(7, V7_STATEMENTS), withStamp(8, V8_STATEMENTS), withStamp(9, V9_STATEMENTS), withStamp(10, V10_STATEMENTS), withStamp(11, V11_STATEMENTS), withStamp(12, V12_STATEMENTS), withStamp(13, V13_STATEMENTS), withStamp(14, V14_STATEMENTS), withStamp(15, V15_STATEMENTS), withStamp(16, V16_STATEMENTS), withStamp(17, V17_STATEMENTS), withStamp(18, V18_STATEMENTS), withStamp(19, V19_STATEMENTS), withStamp(20, V20_STATEMENTS), withStamp(21, V21_STATEMENTS), withStamp(22, V22_STATEMENTS), withStamp(23, V23_STATEMENTS), withStamp(24, V24_STATEMENTS), withStamp(25, V25_STATEMENTS), withStamp(26, V26_STATEMENTS), withStamp(27, V27_STATEMENTS), withStamp(28, V28_STATEMENTS), withStamp(29, V29_STATEMENTS), withStamp(30, V30_STATEMENTS), withStamp(31, V31_STATEMENTS), withStamp(32, V32_STATEMENTS), withStamp(33, V33_STATEMENTS), withStamp(34, V34_STATEMENTS), withStamp(35, V35_STATEMENTS), withStamp(36, V36_STATEMENTS), withStamp(37, V37_STATEMENTS), withStamp(38, V38_STATEMENTS), withStamp(39, V39_STATEMENTS), withStamp(40, V40_STATEMENTS), withStamp(41, V41_STATEMENTS), withStamp(42, V42_STATEMENTS), withStamp(43, V43_STATEMENTS), withStamp(44, V44_STATEMENTS), withStamp(45, V45_STATEMENTS), withStamp(46, V46_STATEMENTS), withStamp(47, V47_STATEMENTS), withStamp(48, V48_STATEMENTS), withStamp(49, V49_STATEMENTS), withStamp(50, V50_STATEMENTS), withStamp(51, V51_STATEMENTS), withStamp(52, V52_STATEMENTS), withStamp(53, V53_STATEMENTS), withStamp(54, V54_STATEMENTS), withStamp(55, V55_STATEMENTS), withStamp(56, V56_STATEMENTS), withStamp(57, V57_STATEMENTS), withStamp(58, V58_STATEMENTS), withStamp(59, V59_STATEMENTS), withStamp(60, V60_STATEMENTS), withStamp(61, V61_STATEMENTS), withStamp(62, V62_STATEMENTS), withStamp(63, V63_STATEMENTS), withStamp(64, V64_STATEMENTS), withStamp(65, V65_STATEMENTS), withStamp(66, V66_STATEMENTS), withStamp(67, V67_STATEMENTS), withStamp(68, V68_STATEMENTS), withStamp(69, V69_STATEMENTS), withStamp(70, V70_STATEMENTS), withStamp(71, V71_STATEMENTS.map((statement) => statement.replace(/[ \t]+$/gm, ''))), withStamp(72, V72_STATEMENTS), withStamp(73, V73_STATEMENTS), withStamp(74, V74_STATEMENTS), withStamp(75, V75_STATEMENTS), withStamp(76, V76_STATEMENTS), withStamp(77, V77_STATEMENTS), withStamp(78, V78_STATEMENTS), withStamp(79, V79_STATEMENTS), withStamp(80, V80_STATEMENTS), withStamp(81, V81_STATEMENTS), withStamp(82, V82_STATEMENTS), withStamp(83, V83_STATEMENTS), withStamp(84, V84_STATEMENTS), withStamp(85, V85_STATEMENTS), withStamp(86, V86_STATEMENTS), withStamp(87, V87_STATEMENTS), withStamp(88, V88_STATEMENTS), withStamp(89, V89_STATEMENTS)];
 
 /** Every statement of every step, in application order. */
 export const SCHEMA_DDL: readonly string[] = SCHEMA_STEPS.flatMap((s) => s.statements);

@@ -17,6 +17,7 @@
  * rather than two.
  */
 import { utf8, uuidv5 } from '../../hash.js';
+import { canonicalPromptId, type ClaudePromptShape, type OffsetPromptNamespace } from '@goondocks/myco-shared/prompt-identity';
 import { MAX_ID_CHARS, MAX_PAYLOAD_BYTES } from '../envelope.js';
 import { kindSpec, type Payload } from '../kinds.js';
 
@@ -152,6 +153,8 @@ export interface TranscriptParser {
    * miss the ones it does.
    */
   planTags: readonly string[];
+  /** The field of a line holding its own time, where it is not `timestamp`. */
+  lineTimeField?: string;
   /** Async to the extent the id derivations are: a parser reads no store and touches no clock. */
   parse(input: ParserInput): Promise<DerivedEvent[]>;
 }
@@ -166,20 +169,26 @@ export interface TranscriptParser {
  * passed the bare value would derive a different id for the same prompt and the
  * two paths would each write their own row.
  */
-export const promptIdFor = (sessionId: string, shape: string, value: string): Promise<string> =>
-  uuidv5('queued-prompt', sessionId, `${shape}|${value}`);
+export const promptIdFor = async (sessionId: string, shape: ClaudePromptShape, value: string): Promise<string> =>
+  canonicalPromptId(uuidv5, { scheme: 'claude-v1', sessionId, shape, key: value });
+/** A prompt id a transcript names by its byte position, under its parser's own prompt namespace. */
+export const promptIdAtOffset = async (namespace: OffsetPromptNamespace, sessionId: string, offset: number): Promise<string> =>
+  canonicalPromptId(uuidv5, { scheme: 'offset-v1', namespace, sessionId, offset });
 /** A plan key a member also derives for a plan-tag envelope at a position in the session. Parts and their order are the member's (`planKeyForTag`, `packages/myco/src/member/envelope.ts:99`). */
 export const planKeyForTag = (sessionId: string, tag: string, position: number): Promise<string> => uuidv5('plan-tag', sessionId, tag, String(position));
 /** An id for a record the member has no derivation for: the transcript and the byte that produced it. */
 export const offsetIdFor = (kind: string, transcriptId: string, offset: number): Promise<string> => uuidv5(kind, transcriptId, String(offset));
 
+/** The instant a line's own time field carries, never ahead of the server's clock; null for a line that carries none. */
+export function datedAt(raw: unknown, now: number): number | null {
+  if (typeof raw !== 'string') return null;
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) || parsed < 0 ? null : Math.min(parsed, now);
+}
+
 /** A line's own instant, never ahead of the server's clock. An undated line takes `undatedAt`, else `now`, clamped the same way. */
 export function lineTime(value: Record<string, unknown>, now: number, undatedAt?: number): number {
-  const undated = Math.min(undatedAt ?? now, now);
-  const raw = value.timestamp;
-  if (typeof raw !== 'string') return undated;
-  const parsed = Date.parse(raw);
-  return Number.isNaN(parsed) || parsed < 0 ? undated : Math.min(parsed, now);
+  return datedAt(value.timestamp, now) ?? Math.min(undatedAt ?? now, now);
 }
 
 /** The text of a content field that is either a plain string or an array of typed blocks. */

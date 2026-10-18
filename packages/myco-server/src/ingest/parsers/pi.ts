@@ -18,11 +18,11 @@
  */
 import { uuidv5 } from '../../hash.js';
 import {
-  callForResult, parserContinuation, blocksOf, isBlock, lineTime, offsetIdFor, plansInText, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
+  callForResult, promptIdAtOffset, parserContinuation, blocksOf, isBlock, lineTime, offsetIdFor, plansInText, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
-const promptIdAt = (sessionId: string, offset: number): Promise<string> => uuidv5('pi-prompt', sessionId, String(offset));
+const promptIdAt = (sessionId: string, offset: number): Promise<string> => promptIdAtOffset('pi-prompt', sessionId, offset);
 const toolCallIdFor = (sessionId: string, callId: string): Promise<string> => uuidv5('tool-call', sessionId, callId);
 
 /** Context messages this extension delivers; never a turn of the conversation. */

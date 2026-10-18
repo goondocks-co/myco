@@ -149,7 +149,7 @@ describe('the capability gate', () => {
     const { db, sqlite } = store();
     await insertSpore(db, SCOPE, spore('sp1'));
     const shut = await compose(db, { capabilityOn: false, text: PLANNING_PROMPT });
-    expect(shut).toEqual({ context: '', parts: [], skipped: ['capability'] });
+    expect(shut).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['capability'] });
     expect(sessionRows(sqlite)).toEqual([]);
     expect(sqlite.query(`SELECT COUNT(*) c FROM spore_injections`).get()).toEqual({ c: 0 });
   });
@@ -166,7 +166,7 @@ describe('the plan nudge', () => {
     expect(first.skipped).toEqual(['spores:disabled']);
 
     const again = await compose(db, { leaves: sporesOff, text: `${PLANNING_PROMPT} again`, promptId: 'p2' });
-    expect(again).toEqual({ context: '', parts: [], skipped: ['spores:disabled', 'plan-nudge:repeat'] });
+    expect(again).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['spores:disabled', 'plan-nudge:repeat'] });
 
     expect(sessionRows(sqlite)).toEqual([{ project_id: SCOPE.projectId, session_id: SESSION, kind: 'plan-nudge', created_at: NOW }]);
   });
@@ -210,7 +210,7 @@ describe('the composed block', () => {
     const first = await compose(db, { promptId: 'p1' });
     expect(first.parts).toEqual([{ kind: 'spores', sporeIds: ['a', 'b'], planIds: [] }]);
     const repeat = await compose(db, { promptId: 'p2' });
-    expect(repeat).toEqual({ context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:no_intent'] });
+    expect(repeat).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:no_intent'] });
   });
 
   it('names the record\'s own gate when the pool still holds a spore the prompt content already spent', async () => {
@@ -225,7 +225,7 @@ describe('the composed block', () => {
 
   it('answers an empty block for a Project holding nothing to serve', async () => {
     const { db } = store();
-    expect(await compose(db)).toEqual({ context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:no_intent'] });
+    expect(await compose(db)).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:no_intent'] });
   });
 
   it('names a contributor that failed and serves the rest', async () => {
@@ -243,7 +243,7 @@ describe('the composed block', () => {
     const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
       const answer = await composePromptContext(db, OTHER, ON, true, { sessionId: SESSION, promptId: 'failed', text: PROMPT, now: NOW }, async () => { throw new RangeError('private provider text'); });
-      expect(answer).toEqual({ context: '', parts: [], skipped: ['spores', 'plan-nudge:no_intent'] });
+      expect(answer).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['spores', 'plan-nudge:no_intent'] });
       expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({ kind: 'recall_contributor_failed', projectId: OTHER.projectId, sessionId: SESSION, promptId: 'failed', contributor: 'spores', error: 'parse', operation: 'embed' });
       const rows = sqlite.query('SELECT project_id, session_id, prompt_id, outcome, context_chars, parts, skipped, failures FROM prompt_context_answers').all();
       expect(rows).toEqual([{ project_id: OTHER.projectId, session_id: SESSION, prompt_id: 'failed', outcome: 'empty', context_chars: 0, parts: '[]', skipped: JSON.stringify(answer.skipped), failures: JSON.stringify([{ contributor: 'spores', error: 'parse', operation: 'embed' }]) }]);
@@ -289,7 +289,7 @@ describe('the composed block', () => {
       sqlite.exec(`CREATE TRIGGER injection_unavailable BEFORE INSERT ON spore_injections
         WHEN NEW.project_id = 'proj_two' BEGIN SELECT RAISE(ABORT, 'fixture constraint failed'); END`);
       const answer = await compose(db, { scope: OTHER });
-      expect(answer).toEqual({ context: '', parts: [], skipped: ['spores', 'plan-nudge:no_intent'] });
+      expect(answer).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['spores', 'plan-nudge:no_intent'] });
       expect(sqlite.query('SELECT project_id, failures FROM prompt_context_answers').all()).toEqual([
         { project_id: OTHER.projectId, failures: '[{"contributor":"spores","error":"constraint","operation":"record"}]' },
       ]);
@@ -805,7 +805,7 @@ describe('POST /context/prompt', () => {
     const response = await worker.fetch(post(token, { sessionId: 's1', promptId: 'p1', text: PLANNING_PROMPT }), e.env);
     const answer = await response.json();
     expect(contextTiming(response).total).toBeGreaterThanOrEqual(0);
-    expect(answer).toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'] });
+    expect(answer).toEqual({ persisted: true, answerId: expect.any(String), context: '', parts: [], skipped: ['capability'] });
   });
 
   it('reports only total when the prompt is too short for recall', async () => {
@@ -877,7 +877,7 @@ describe('POST /context/prompt', () => {
     expect(String(first.context).length).toBeLessThanOrEqual(PROMPT_CONTEXT_MAX_CHARS);
 
     const second = await (await worker.fetch(post(token, { sessionId: 's1', promptId: 'p2', text: `${PLANNING_PROMPT} once more` }), e.env)).json();
-    expect(second).toEqual({ persisted: true, context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:repeat'] });
+    expect(second).toEqual({ persisted: true, answerId: expect.any(String), context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:repeat'] });
   });
 
   it('keeps one Project\'s records out of another\'s answer', async () => {

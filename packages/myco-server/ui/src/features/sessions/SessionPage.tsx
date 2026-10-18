@@ -8,7 +8,7 @@ import { PlanLine } from '../knowledge/PlanLine';
 import { releaseStateLabel, shortRef } from '../../components/release/release-labels';
 import { useSpores } from '../../hooks/use-intelligence';
 import { useIsAdmin, useMe } from '../../hooks/use-me';
-import { UNTITLED_REASON_TEXT, useTurns, useSession, useSessionChildren, type PlanRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
+import { SESSION_ANSWER_KIND_PREFIX, UNTITLED_REASON_TEXT, useTurns, useSession, useSessionChildren, type ContextInjectionRow, type PlanRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
 import { ApiError } from '../../lib/api';
 import { memberLabel } from '../../lib/member-name';
@@ -133,6 +133,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
             <span>{count(counts.prompts, 'prompt')}</span>
           </p>
           <Summary session={session} untitled={answer.untitled ?? null} live={live} />
+          <SessionContext projectId={projectId} sessionId={session.sessionId} />
         </header>
 
         <div className="flex min-w-0 max-w-measure flex-col gap-s8 lg:col-start-1 lg:row-start-2">
@@ -168,6 +169,25 @@ function Sep() {
   return <span aria-hidden>·</span>;
 }
 
+
+/**
+ * What Myco served the session as a whole, read from its session-level context records: the start block, and the
+ * context that reached no prompt the conversation shows.
+ */
+function SessionContext({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+  const records = useSessionChildren<ContextInjectionRow>(projectId, sessionId, 'context-injections');
+  if (records.isPending) return null;
+  if (records.error) return <p className="t-small text-muted" data-session-context="">Myco’s session context could not be read.</p>;
+  const start = records.rows.some((record) => record.kind === 'cortex');
+  const unattached = records.rows.filter((record) => record.kind.startsWith(SESSION_ANSWER_KIND_PREFIX)).length;
+  if (!start && unattached === 0) return null;
+  return (
+    <ul className="flex flex-col gap-s1 t-small text-muted" data-session-context="">
+      {start && <li>Myco sent the session start block</li>}
+      {unattached > 0 && <li>Myco added context {count(unattached, 'time')}{records.hasMore ? ' or more' : ''} in this session</li>}
+    </ul>
+  );
+}
 
 /** The summary as the page's lead, or why there is none yet. */
 function Summary({ session, untitled, live }: { session: SessionRow; untitled: SessionResponse['untitled'] | null; live: boolean }) {

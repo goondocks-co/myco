@@ -62,9 +62,15 @@ function requestFor(sessionId: string, ask: ContextAsk): { path: string; body: R
     case 'subagent':
       return { path: SESSION_PATH, body: { sessionId, kind: 'subagent', agentId: ask.agentId, agentType: ask.agentType } };
     case 'prompt':
-      return { path: PROMPT_PATH, body: { sessionId, promptId: ask.promptId, text: ask.text } };
+      return { path: PROMPT_PATH, body: { sessionId, promptId: ask.promptId, scopeReason: ask.scopeReason, identity: ask.identity, at: ask.at, text: ask.text } };
   }
 }
+
+/** How a log line names the prompt an ask is for: its id, or why it names none. */
+const promptNamed = (ask: Extract<ContextAsk, { kind: 'prompt' }>): string => terminalText(ask.promptId ?? `(${ask.scopeReason ?? 'unnamed'})`);
+
+/** A row id the Deployment answered with, when it answered one. */
+const rowId = (value: unknown): string | undefined => (typeof value === 'string' && value.length > 0 ? value : undefined);
 
 /** Every session holding an ask, the kicking sessions' oldest asks first. */
 function sessionsWithAsks(spool: MemberSpool): Array<{ sessionId: string; asks: ContextAsk[] }> {
@@ -103,7 +109,7 @@ export async function prefetchContext(opts: {
         budget: subRequestBudget(opts.budget, CONTEXT_CAP_MS, now()),
       }));
       if (answer.class === 'refused' && refusalPermanent(answer.code)) {
-        const who = ask.kind === 'prompt' ? `prompt ${terminalText(ask.promptId)}` : `(${ask.kind})`;
+        const who = ask.kind === 'prompt' ? `prompt ${promptNamed(ask)}` : `(${ask.kind})`;
         process.stderr.write(`${promptContextLogPrefix(opts.serverUrl, spool.projectId)}session ${terminalText(sessionId)} ${who} refused: ${terminalText(answer.code)}\n`);
         settleAsk(spool, sessionId, ask, now());
         continue;
@@ -111,7 +117,7 @@ export async function prefetchContext(opts: {
       if (answer.class !== 'acked') {
         // Not answered now: the ask stays, and so do the rest, for the next pass.
         const prefix = ask.kind === 'prompt' ? promptContextLogPrefix(opts.serverUrl, spool.projectId) : '[myco] helper: ';
-        const who = ask.kind === 'prompt' ? `prompt ${terminalText(ask.promptId)}` : `(${ask.kind})`;
+        const who = ask.kind === 'prompt' ? `prompt ${promptNamed(ask)}` : `(${ask.kind})`;
         process.stderr.write(`${prefix}context for ${terminalText(sessionId)} ${who} not served (${terminalText(answer.class)})\n`);
         report.stoppedBy = 'unanswered';
         return report;
@@ -121,9 +127,14 @@ export async function prefetchContext(opts: {
       const context = typeof body.context === 'string' ? body.context : '';
       const skipped = Array.isArray(body.skipped) ? body.skipped.filter((s): s is string => typeof s === 'string') : [];
       if (ask.kind === 'prompt') {
-        writeSessionContext(spool.dir, opts.mycoHome, sessionId, { version: 1, prompt: { context, promptId: ask.promptId, skipped, at: now() } });
+        const receiptId = rowId(body.receiptId);
+        const answerId = rowId(body.answerId);
+        writeSessionContext(spool.dir, opts.mycoHome, sessionId, { version: 1, prompt: {
+          context, ...(ask.promptId === undefined ? {} : { promptId: ask.promptId }), askedAt: ask.at,
+          ...(receiptId === undefined ? {} : { receiptId }), ...(answerId === undefined ? {} : { answerId }), skipped, at: now(),
+        } });
         const reasons = skipped.map((reason) => terminalText(reason)).join(', ');
-        process.stderr.write(`${promptContextLogPrefix(opts.serverUrl, spool.projectId)}session ${terminalText(sessionId)} prompt ${terminalText(ask.promptId)} answered ${context.length > 0 ? 'with context' : 'empty'}; skipped: ${reasons || 'none'}\n`);
+        process.stderr.write(`${promptContextLogPrefix(opts.serverUrl, spool.projectId)}session ${terminalText(sessionId)} prompt ${promptNamed(ask)} answered ${context.length > 0 ? 'with context' : 'empty'}; skipped: ${reasons || 'none'}\n`);
       } else {
         const kind: SessionBlockKind = ask.kind;
         updateProjectContext(spool.dir, opts.mycoHome, (cache) => {

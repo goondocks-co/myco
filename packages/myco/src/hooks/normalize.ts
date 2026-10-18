@@ -13,6 +13,7 @@ import { HOOK_CONFIG, type HookConfigEntry } from './hook-config.generated.js';
 import { readSymbiontFlag } from './symbiont-flag.js';
 import type { HookFieldPath } from '../symbionts/adapter.js';
 import { getAtPath } from '../utils/dot-path.js';
+import { normalizePromptKey } from '@goondocks/myco-shared/prompt-identity';
 
 /** Canonical hook input with normalized field names. */
 export interface NormalizedHookInput {
@@ -25,6 +26,8 @@ export interface NormalizedHookInput {
   toolName?: string;
   toolInput?: unknown;
   toolOutput?: unknown;
+  /** The harness's own key for this submission, at the field its manifest's `promptIdentity.hookKey` names; absent when the harness sent none. */
+  promptKey?: string;
   /** The full raw input for any fields not covered by the mapping. */
   raw: Record<string, unknown>;
 }
@@ -36,6 +39,7 @@ export const NO_AGENT = '';
 interface HookSymbiont {
   name: string;
   hookFields: HookConfigEntry['hookFields'];
+  promptKeyField?: string;
 }
 
 /** Cached identity for the detected agent — resolved once per process. */
@@ -54,7 +58,7 @@ function detectManifest(): HookSymbiont | null {
   if (cachedManifest !== undefined) return cachedManifest;
   const name = readSymbiontFlag(process.argv);
   const entry = name === undefined ? undefined : HOOK_CONFIG[name];
-  cachedManifest = entry === undefined ? null : { name: name!, hookFields: entry.hookFields };
+  cachedManifest = entry === undefined ? null : { name: name!, hookFields: entry.hookFields, promptKeyField: entry.promptIdentity.hookKey };
   return cachedManifest;
 }
 
@@ -105,6 +109,7 @@ export function normalizeHookInput(input: Record<string, unknown>): NormalizedHo
     ?? sessionIdFromTranscriptPath
     ?? sessionIdFromEnv
     ?? process.env.MYCO_SESSION_ID;
+  const promptKey = manifest.promptKeyField === undefined ? undefined : normalizePromptKey(getAtPath(input, manifest.promptKeyField));
 
   return {
     agent: manifest.name,
@@ -115,6 +120,7 @@ export function normalizeHookInput(input: Record<string, unknown>): NormalizedHo
     toolName: getFirstAtPath(input, fields.toolName) as string | undefined,
     toolInput: getFirstAtPath(input, fields.toolInput),
     toolOutput: getFirstAtPath(input, fields.toolOutput),
+    ...(promptKey === undefined ? {} : { promptKey }),
     raw: input,
   };
 }

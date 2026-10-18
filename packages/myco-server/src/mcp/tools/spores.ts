@@ -19,7 +19,6 @@
  */
 import { consolidateSpores, countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore, type ResolutionAction, type SporeProvenance, type SporeRow, type SporeStatus } from '../../core/spores.js';
 import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags } from '../../core/spore-writes.js';
-import { latestPromptId } from '../../read/sessions.js';
 import { extractionSourceSession } from '../../read/prompts.js';
 import { promptInSession } from '../../read/turns.js';
 import { EXTRACTION_TASK } from '../../core/task-catalogue.js';
@@ -55,7 +54,7 @@ async function sourceOf(input: ToolInput, ctx: ToolContext, scope: ReadScope): P
   const session = await sessionOf(ctx, scope, input, TOOL);
   if (!session.ok) return session;
   if (input.prompt_id !== undefined && (promptId === undefined || session.sessionId === null || !(await promptInSession(ctx.env.db, scope, session.sessionId, promptId)))) return failure('prompt_id not found');
-  return { ...session, promptId: promptId ?? (session.sessionId === null ? null : await latestPromptId(ctx.env.db, scope, session.sessionId)) };
+  return { ...session, promptId: promptId ?? null };
 }
 
 const PROVENANCE_KINDS: ReadonlySet<string> = new Set(['pr', 'commit']);

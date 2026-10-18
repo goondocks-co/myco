@@ -7,6 +7,7 @@ import { assertMemberTranscriptDestination } from './transcript-routing.js';
  * transcript, stamped with the invocation's time, deduplicated by `state.prompts`. A transcript with no prompt in it
  * yet leaves the request for the next pass.
  */
+import { canonicalPromptId } from '@goondocks/myco-shared/prompt-identity';
 import fs from 'node:fs';
 import { SymbiontRegistry } from '../symbionts/registry.js';
 import { deriveId, promptEvent } from './envelope.js';
@@ -49,7 +50,7 @@ export function backfillTranscriptPrompts(spool: MemberSpool, now: () => number)
     const events = prompts.flatMap((text, position) => {
       const hash = sha256Text(text);
       if (state.prompts[hash] || captured.some(([h]) => h === hash)) return [];
-      const promptId = deriveId('transcript-prompt', sessionId, String(position));
+      const promptId = canonicalPromptId(deriveId, { scheme: 'member-transcript-v1', sessionId, position });
       captured.push([hash, promptId]);
       return [promptEvent(ctx, { promptId, text })];
     });

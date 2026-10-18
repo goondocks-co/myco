@@ -59,7 +59,7 @@ const BOUND_FIELDS: Record<keyof typeof BOUNDS, [string, string] | [string, stri
 /**
  * What the worker judges final about a record's own shape, per member
  * protocol: the channels, and per kind its required fields, its enum values
- * and its exactly-one and at-most-one pairs; and the kinds a member ships.
+ * and its exactly-one, at-most-one and further field pairs; and the kinds a member ships.
  * A kind a Deployment does not know is held rather than dropped, so a member
  * shipping one before its Deployment knows it holds that session's capture. A record outside any of them is
  * refused `invalid_field` and dropped, never held. A member that widens one of
@@ -80,11 +80,13 @@ const FINAL_SHAPE_BY_PROTOCOL: Record<number, { memberKinds: readonly string[]; 
       'attachment', 'compaction.post', 'compaction.pre', 'error', 'notification', 'plan', 'prompt', 'response', 'session.end',
       'session.start', 'stop.failure', 'subagent.start', 'subagent.stop', 'task.completed', 'tool.failure', 'tool.use', 'transcript.segment',
     ],
-    featureKinds: ['turn'],
+    featureKinds: ['context.delivered', 'turn'],
     channels: ['cli', 'http', 'import'],
     kinds: {
       'attachment': { required: ['attachmentId', 'blob'], enums: {} },
       'compaction.post': { required: [], enums: {}, atMostOne: ['summary', 'blob'] },
+      'context.delivered': { required: [], enums: { renderedScopeReason: ['absent_key', 'scheme', 'steering', 'transcript_only'] },
+        pairs: [{ fields: ['receiptId', 'answerId'], rule: 'at-least-one' }, { fields: ['renderedIn', 'renderedScopeReason'], rule: 'exactly-one' }] },
       'compaction.pre': { required: [], enums: {}, atMostOne: ['summary', 'blob'] },
       'error': { required: ['message'], enums: {} },
       'notification': { required: ['message'], enums: {} },
@@ -112,7 +114,7 @@ function finalShape(): unknown {
     const enums = Object.fromEntries(Object.entries(spec.fields)
       .flatMap(([field, f]) => (f.bound.type === 'enum' ? [[field, [...f.bound.values].sort()] as const] : []))
       .sort(([a], [b]) => a.localeCompare(b)));
-    return [spec.name, { required, enums, ...(spec.exactlyOne ? { exactlyOne: [...spec.exactlyOne] } : {}), ...(spec.atMostOne ? { atMostOne: [...spec.atMostOne] } : {}) }];
+    return [spec.name, { required, enums, ...(spec.exactlyOne ? { exactlyOne: [...spec.exactlyOne] } : {}), ...(spec.atMostOne ? { atMostOne: [...spec.atMostOne] } : {}), ...(spec.pairs ? { pairs: spec.pairs.map((p) => ({ fields: [...p.fields], rule: p.rule })) } : {}) }];
   }));
   return { channels: [...SERVER_CHANNELS].sort(), kinds };
 }

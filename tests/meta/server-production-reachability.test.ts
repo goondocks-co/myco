@@ -14,6 +14,7 @@ const NON_SERVING_MODULES: Readonly<Record<string, string>> = {
   'platform/bun/native.ts': 'type declarations consumed by native storage bootstrap',
   'core/first-owner.ts': 'operator bootstrap: packages/myco/src/server/local-owner.ts and cloudflare-owner.ts',
   'core/recovered-tenant.ts': 'operator recovery: packages/myco/src/server/local-recovery.ts and cloudflare-recovery.ts',
+  'read/prompt-reference-invariant.ts': 'operator query: the prompt-reference invariant, run read-only against a Deployment',
 };
 
 function productionClosure() {

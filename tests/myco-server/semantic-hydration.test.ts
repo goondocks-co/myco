@@ -179,7 +179,7 @@ for (const target of ['bun', 'workerd-d1'] as const) {
         return statement;
       } };
       await db.prepare("DELETE FROM spore_injections WHERE project_id='proj_1'").run();
-      expect(await selectSporesForPrompt(fromOracle, SCOPE, leaves, true, input, async () => semantic(matches))).toEqual(selection);
+      expect(await selectSporesForPrompt(fromOracle, SCOPE, leaves, true, input, async () => semantic(matches))).toEqual({ ...selection, receiptId: expect.any(String) });
     } finally { sqlite.close(); await mf?.dispose(); }
   }, 60_000);
 }

@@ -92,20 +92,28 @@ function Measures({ report }: { report: KpiReport }) {
     <div className="flex flex-col gap-s4">
       <div className="grid gap-s3 sm:grid-cols-2 lg:grid-cols-3">
         <MeasureStat
-          label="Prompts that arrived with context"
-          note="The share of prompts this server had already answered with something: a spore, a plan nudge, or the session’s instructions."
+          label="Prompts that received context"
+          note="The share of prompts that reached the agent carrying something this server prepared: spores or a plan reminder. A machine that has not updated reports no deliveries, so its prompts count as receiving none."
           measure={report.contextPresent}
           format={percent}
           unit="prompt"
           noSample="No prompts have reached this server yet."
         />
         <MeasureStat
-          label="Prompts served a spore"
-          note="The share of prompts that carried at least one spore."
+          label="Prompts that received a spore"
+          note="The share of prompts that reached the agent carrying at least one spore."
           measure={report.sporeServeRate}
           format={percent}
           unit="prompt"
           noSample="No prompts have reached this server yet."
+        />
+        <MeasureStat
+          label="Sessions that started with project context"
+          note="The share of sessions this server sent its session start block."
+          measure={report.sessionStartPresent}
+          format={percent}
+          unit="session"
+          noSample="No sessions have been captured yet."
         />
         <MeasureStat
           label="Myco calls per prompt"

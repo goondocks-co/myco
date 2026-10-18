@@ -33,7 +33,7 @@ import { MAX_PAYLOAD_BYTES, parseEnvelope } from './envelope.js';
 import { envelopeHash, planEventWrite, type EventWrite, type IngestResult } from './events.js';
 import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
-import { isBlock, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput } from './parsers/index.js';
+import { datedAt, isBlock, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput } from './parsers/index.js';
 import { resolvePresentedDates } from './projections.js';
 import { LEGACY_REPLY_LINES_PER_READ, legacyReplies, preserveLegacyReplies } from './legacy-replies.js';
 import { parserCheckpointStatements, readParserCheckpoint, terminalCheckpointBatch } from './parser-checkpoint.js';
@@ -431,6 +431,28 @@ function datedByPosition(lines: readonly ParsedLine[], held: readonly HeldSegmen
 }
 
 /**
+ * The latest instant a line before each cursor carries in its own time field, on the clock that wrote the transcript:
+ * null where none of them is dated, so a line dated by the Deployment's own clock is never counted.
+ */
+function latestDatedBefore(lines: readonly ParsedLine[], field: string, now: number): (to: number) => number | null {
+  const offsets: number[] = [];
+  const latest: (number | null)[] = [];
+  let running: number | null = null;
+  for (const line of lines) {
+    const at = datedAt(line.value[field], now);
+    if (at !== null && (running === null || at > running)) running = at;
+    offsets.push(line.offset);
+    latest.push(running);
+  }
+  return (to) => {
+    let lo = 0;
+    let hi = offsets.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (offsets[mid]! < to) lo = mid + 1; else hi = mid; }
+    return lo === 0 ? null : latest[lo - 1]!;
+  };
+}
+
+/**
  * Move a cursor no held segment covers to the first byte that is still held,
  * or to the end when none is. The bytes between are gone and nothing can read
  * them; stopping would leave the transcript unable to take the segments that
@@ -802,6 +824,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     return checkpoint;
   };
   lines = null;
+  const datedThrough = latestDatedBefore(input.lines, parser.lineTimeField ?? 'timestamp', now);
   const ctx = { projectId: target.projectId, machineId: target.machineId, tokenId: target.tokenId, bodyBytes: 0, now, writeOrigin: 'server' as const };
 
   let derived = 0;
@@ -831,10 +854,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     const checkpoint = await stateAt(to);
     return parserCheckpointStatements(env.db, target, to, checkpoint, transcriptMeta, chunkedState, (context) => env.db
       .prepare(`UPDATE transcripts SET parse_segment_lines = CASE WHEN ? >= parsed_offset THEN ? ELSE NULL END, parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?,
+                   parsed_through_at = CASE WHEN ? >= parsed_offset AND ? IS NOT NULL THEN MAX(COALESCE(parsed_through_at, 0), ?) ELSE parsed_through_at END,
                    fidelity = COALESCE(fidelity, ?), open_prompt_id = CASE WHEN ? >= parsed_offset THEN ? ELSE open_prompt_id END, parser_context = CASE WHEN ? >= parsed_offset THEN ? ELSE parser_context END,
                    parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
                  WHERE project_id = ? AND transcript_id = ?${guard}`)
-      .bind(to, linesBehind(to), to, now, PARSER_VERSION, parser.fidelity, to, openPrompt, to, context,
+      .bind(to, linesBehind(to), to, now, PARSER_VERSION, to, datedThrough(to), datedThrough(to), parser.fidelity, to, openPrompt, to, context,
         target.projectId, target.transcriptId, ...guardParams));
   };
   // Whether the cursor's advance rode the last group's batch and applied there.

@@ -82,11 +82,25 @@ export interface PlanRow { planKey: string; promptId: string | null; title: stri
 /** `promptId` names the prompt an attachment accompanies, when the capture named one; the session page shows the image under that prompt. */
 export interface AttachmentRow { attachmentId: string; promptId: string | null; blobKey: string; mediaType: string; byteSize: number; description: string | null; createdAt: number; orderedAt: number }
 
-export interface ContextInjectionRow { kind: string; createdAt: number; orderedAt: number }
+/**
+ * A record of what Myco served the session as a whole: a session-level block (`kind` names it: `cortex` for the start,
+ * `cortex:<agent>` for a sub-agent's, `plan-nudge`), or an answer no named prompt received (`kind` is
+ * `context:<answer id>`), with `delivery` saying whether it reached the agent on a prompt that has no name, or was
+ * never reported delivered.
+ */
+export interface ContextInjectionRow { kind: string; createdAt: number; orderedAt: number; delivery: 'unnamed_prompt' | 'not_delivered' | null }
+
+/** The prefix of an answer row's `kind` in the session's context records. */
+export const SESSION_ANSWER_KIND_PREFIX = 'context:';
 
 const CONTEXT_INJECTION_QUERY: ChildQuery<Omit<ContextInjectionRow, 'orderedAt'>> = {
-  table: 'session_injections', columns: 'kind, created_at', idColumn: 'kind', orderColumn: 'created_at',
-  map: (r) => ({ kind: r.kind as string, createdAt: r.created_at as number }),
+  table: `(SELECT project_id, session_id, kind, created_at, NULL AS delivery FROM session_injections
+     UNION ALL
+     SELECT project_id, session_id, '${SESSION_ANSWER_KIND_PREFIX}' || id AS kind, created_at,
+       CASE WHEN delivered_at IS NULL THEN 'not_delivered' ELSE 'unnamed_prompt' END AS delivery
+       FROM prompt_context_answers WHERE outcome = 'served' AND delivered_prompt_id IS NULL)`,
+  columns: 'kind, created_at, delivery', idColumn: 'kind', orderColumn: 'created_at',
+  map: (r) => ({ kind: r.kind as string, createdAt: r.created_at as number, delivery: (r.delivery as ContextInjectionRow['delivery']) ?? null }),
 };
 
 export const PROMPT_QUERY: ChildQuery<Omit<PromptRow, 'orderedAt'>> = {

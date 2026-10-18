@@ -53,6 +53,10 @@ const MECHANISM_ALLOWED: Readonly<Record<string, string>> = {
     'The confirmation explicitly promises that forgetting cannot revoke capture access',
   'features/admin/settings/catalogue.ts:agent.harnesses. … .credential':
     'A setting key assembled for the API, never shown as page copy',
+  'myco-shared/prompt-identity.ts:harness-key':
+    'A prompt identity kind a manifest declares, matched by code and never rendered on a page',
+  'myco-shared/capture-rules.generated.ts:harness-key':
+    'The same declared kind, carried in the generated capture rules and never rendered on a page',
   'myco-shared/member-protocol.ts:ask a Deployment admin for an invitation for your existing member':
     'REJOIN_HINT is the CLI\'s line, printed in a terminal; the dashboard imports only the controls it names',
   'myco-shared/member-protocol.ts:A machine belongs to one member of a Deployment: every home on it signs in as the same machine':

@@ -1,12 +1,23 @@
 import type { CaptureRule } from './capture-rule-schema.js';
 import { getAtPath } from './dot-path.js';
 import { ANY_AGENT_RULES_HARNESS } from './any-agent-rules.generated.js';
+import type { PromptIdentityDeclaration } from './prompt-identity.js';
 
 export interface CaptureRuleBundle {
   name: string;
   rules: readonly CaptureRule[];
   displayEnvelopeTags?: readonly string[];
   transcriptTimestamps?: 'recorded' | 'synthetic';
+  /** How the agent's prompts are named, from its manifest's `promptIdentity`. */
+  promptIdentity: PromptIdentityDeclaration;
+}
+
+/** What rule evaluation reads of a bundle. */
+export type RuleSource = Pick<CaptureRuleBundle, 'name' | 'rules'>;
+
+/** The prompt identity an agent declares, or undefined for an agent no manifest names. */
+export function promptIdentityOf(bundles: readonly CaptureRuleBundle[], agent: string | null): PromptIdentityDeclaration | undefined {
+  return bundles.find((bundle) => bundle.name === agent)?.promptIdentity;
 }
 
 export function sourceTimestampsRecorded(bundles: readonly CaptureRuleBundle[], agent: string | null): boolean {
@@ -50,7 +61,7 @@ export type SessionStartDecision =
   | { action: 'pass' }
   | { action: 'drop'; reason?: string };
 
-export function evaluatePromptRules(bundles: readonly CaptureRuleBundle[], detectedAgent: string, ctx: UserPromptRuleContext): UserPromptDecision {
+export function evaluatePromptRules(bundles: readonly RuleSource[], detectedAgent: string, ctx: UserPromptRuleContext): UserPromptDecision {
   for (const bundle of bundles) {
     for (const rule of bundle.rules) {
       if (rule.event !== 'user_prompt' || !scopePermits(rule, bundle.name, detectedAgent) || !whenMatches(rule, ctx)) continue;
@@ -60,7 +71,7 @@ export function evaluatePromptRules(bundles: readonly CaptureRuleBundle[], detec
   return { action: 'pass', prompt: ctx.prompt };
 }
 
-export function evaluateStartRules(bundles: readonly CaptureRuleBundle[], detectedAgent: string, ctx: SessionStartRuleContext): SessionStartDecision {
+export function evaluateStartRules(bundles: readonly RuleSource[], detectedAgent: string, ctx: SessionStartRuleContext): SessionStartDecision {
   const promptCtx: UserPromptRuleContext = { prompt: '', transcriptPath: ctx.transcriptPath, transcriptMeta: ctx.transcriptMeta };
   for (const bundle of bundles) {
     for (const rule of bundle.rules) {

@@ -3,6 +3,7 @@ import { utf8 } from '../hash.js';
 import { AHEAD_OF_CLOCK, aheadOfClock, ID_GRAMMAR, MAX_ID_CHARS, MAX_PAYLOAD_BYTES, type Refused } from './envelope.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES, TURN_KIND, TURN_PHASES } from '@goondocks/myco-shared/member-protocol';
+import { CONTEXT_DELIVERED_KIND, PROMPT_SCOPE_REASONS } from '@goondocks/myco-shared/prompt-identity';
 
 /** Ceilings every bound of its type states; each is a real limit, never the language's. */
 export const MAX_TIME_MS = 4_102_444_800_000;
@@ -33,8 +34,8 @@ export type Bound =
   | { type: 'stringArray'; maxItems: number; maxItem: number }
   | { type: 'json'; maxBytes: number };
 
-/** What an id-bounded field names: the row the event itself keys, a prompt row it points at, or a grouping every member mints for itself. Every id field declares one, so a field naming a prompt cannot enter the catalogue unmarked. */
-export type IdRole = 'key' | 'prompt' | 'group';
+/** What an id-bounded field names: the row the event itself keys, a prompt row it points at, a grouping every member mints for itself, or a context record the Deployment served. Every id field declares one, so a field naming a prompt cannot enter the catalogue unmarked. */
+export type IdRole = 'key' | 'prompt' | 'group' | 'served';
 
 export interface FieldSpec {
   bound: Bound;
@@ -54,6 +55,8 @@ export interface KindSpec {
   exactlyOne?: readonly [string, string];
   /** A pair of fields of which at most one may be present. */
   atMostOne?: readonly [string, string];
+  /** Further pairs of fields, each of which must hold exactly one, or at least one, of its two. */
+  pairs?: readonly { fields: readonly [string, string]; rule: 'exactly-one' | 'at-least-one' }[];
   /** The projection target, or 'raw' when the kind is stored in the log only. */
   projection: 'raw' | 'sessions' | 'prompt_batches' | 'tool_calls' | 'responses' | 'plans' | 'attachments' | 'transcript_segments';
 }
@@ -194,6 +197,22 @@ export const KINDS: readonly KindSpec[] = [
   { name: 'task.completed', fields: { message: str(4096), data: json() }, projection: 'raw' },
   { name: 'notification', fields: { message: str(4096, undefined, true), level: str(64), data: json() }, projection: 'raw' },
   { name: 'error', fields: { message: str(4096, undefined, true), level: str(64), data: json() }, projection: 'raw' },
+  /**
+   * Advertised (`MEMBER_FEATURES`): a member ships it only to a Deployment that names `prompt-identity`. The hook that
+   * rendered a cached answer names the receipt and answer rows it rendered, and the prompt it reached or why that has
+   * no name; its effect is on those rows (`core/injection.ts`, `core/recall.ts`).
+   */
+  {
+    name: CONTEXT_DELIVERED_KIND,
+    fields: {
+      receiptId: id('served'),
+      answerId: id('served'),
+      renderedIn: promptRef(),
+      renderedScopeReason: { bound: { type: 'enum', values: PROMPT_SCOPE_REASONS } },
+    },
+    pairs: [{ fields: ['receiptId', 'answerId'], rule: 'at-least-one' }, { fields: ['renderedIn', 'renderedScopeReason'], rule: 'exactly-one' }],
+    projection: 'raw',
+  },
   /** Advertised (`MEMBER_FEATURES`): a member ships it only to a Deployment that names `turn`. Its effect is on the session's working state (`ingest/turns.ts`). */
   { name: TURN_KIND, fields: { phase: { bound: { type: 'enum', values: TURN_PHASES }, required: true }, promptId: promptRef() }, projection: 'raw' },
 ];
@@ -295,6 +314,10 @@ export function parsePayload(spec: KindSpec, payload: unknown, now: number): Pay
   if (spec.atMostOne) {
     const [a, b] = spec.atMostOne;
     if (raw[a] !== undefined && raw[b] !== undefined) return refused(`at most one of ${a} or ${b} is allowed`);
+  }
+  for (const { fields: [a, b], rule } of spec.pairs ?? []) {
+    if (rule === 'exactly-one' && (raw[a] === undefined) === (raw[b] === undefined)) return refused(`exactly one of ${a} or ${b} is required`);
+    if (rule === 'at-least-one' && raw[a] === undefined && raw[b] === undefined) return refused(`at least one of ${a} or ${b} is required`);
   }
   return { ok: true, value: raw };
 }

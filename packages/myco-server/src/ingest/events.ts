@@ -7,7 +7,10 @@ import { parseEnvelope, type CaptureEnvelope, type Refused } from './envelope.js
 import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
 import { pendingSearchBlobs } from '../core/search-index.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
-import { planKind, projectLive, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
+import { planKind, projectLive, RAW_ROW_GATE, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
+import { receiptDeliveredStatement, type Delivery } from '../core/injection.js';
+import { answerDeliveredStatement } from '../core/recall.js';
+import { CONTEXT_DELIVERED_KIND, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { ALWAYS, credentialLive } from './live-credential.js';
 import { endsTurn, endTurnStatement, startTurnFromEventStatement, turnStartFrom } from './turns.js';
 import { prepareArchiveBundle,discardArchiveBundle } from '../core/archive-bundle.js';
@@ -66,6 +69,24 @@ async function contentHashOf(spec: KindSpec, p: Payload): Promise<string | null>
 function spilledKey(spec: KindSpec, p: Payload): string | null {
   const pair = spec.exactlyOne ?? spec.atMostOne;
   return pair && pair[1] === 'blob' && typeof p.blob === 'string' ? (p.blob as string) : null;
+}
+
+/**
+ * A delivery's effect on the rows it names, through the modules that own them: each is marked delivered at the event's
+ * own instant, in its own session, once, and only when this request stored the event.
+ */
+function deliveryStatements(db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, p: Payload): PreparedStatement[] {
+  if (e.kind !== CONTEXT_DELIVERED_KIND) return [];
+  const gate = { sql: RAW_ROW_GATE, params: [ctx.projectId, e.eventId, ctx.nonce] };
+  const to = (id: string): Delivery => ({
+    projectId: ctx.projectId, sessionId: e.sessionId, id, at: e.createdAt,
+    promptId: typeof p.renderedIn === 'string' ? p.renderedIn : null,
+    scopeReason: typeof p.renderedScopeReason === 'string' ? p.renderedScopeReason as PromptScopeReason : null,
+  });
+  return [
+    ...(typeof p.receiptId === 'string' ? [receiptDeliveredStatement(db, to(p.receiptId), gate)] : []),
+    ...(typeof p.answerId === 'string' ? [answerDeliveredStatement(db, to(p.answerId), gate)] : []),
+  ];
 }
 
 /** Stores one event in a single transaction. The raw insert carries every admission precondition — the credential still live (`credentialLive`; never a volume: capture is not refused for the bytes a credential has stored), the shared checks derived from the catalogue and the kind's declared identities (session identity, the continued rows the kind names, referenced blobs present, referenced prompts owned by this machine — in that order) and the kind's own — so a refused event leaves no row and no count; the byte count, the session receipt, and the kind's projections apply only to the raw row this request wrote, named by a per-request nonce; same-batch reads decide the response. A stored event is read through its session's machine, so a duplicate or a conflict is answered only to the machine that wrote it and another machine's event id is refused like any other unstored one. */
@@ -199,7 +220,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
       WHERE project_id = ? AND session_id = ?
         AND EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)`)
     .bind(ctx.now, ctx.projectId, e.sessionId, ctx.projectId, e.eventId, write.nonce)];
-  const incidental = [...(plan.incidental ?? []), ...turnEnd, ...turnStart, ...liveCapture];
+  const incidental = [...(plan.incidental ?? []), ...turnEnd, ...turnStart, ...liveCapture, ...deliveryStatements(db, write, e, p)];
   const statements: PreparedStatement[] = [raw, counted, receipt, ...priors, ...plan.projections, ...incidental, stored, admitted, ...shared, ...plan.reads];
 
   const interpret = (results: BatchResult[]): IngestResult => {

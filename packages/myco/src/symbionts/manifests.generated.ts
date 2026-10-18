@@ -325,6 +325,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "tokenScope": "unverified"
         }
       }
+    },
+    "promptIdentity": {
+      "kind": "transcript-only",
+      "scheme": "member-transcript-v1"
     }
   },
   {
@@ -980,6 +984,12 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "tokenScope": "attempt"
         }
       }
+    },
+    "promptIdentity": {
+      "kind": "harness-key",
+      "scheme": "claude-v1",
+      "hookKey": "prompt_id",
+      "transcriptKey": "promptId"
     }
   },
   {
@@ -1158,7 +1168,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ]
     },
-    "hooks": {}
+    "hooks": {},
+    "promptIdentity": {
+      "kind": "stamped",
+      "scheme": "stamp-or-offset-v1"
+    }
   },
   {
     "name": "codex",
@@ -1639,6 +1653,11 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "tokenScope": "attempt"
         }
       }
+    },
+    "promptIdentity": {
+      "kind": "transcript-only",
+      "scheme": "offset-v1",
+      "evidence": "tests/fixtures/prompt-identity/codex-user-prompt-submit.json"
     }
   },
   {
@@ -1944,6 +1963,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "transcript"
         ]
       }
+    },
+    "promptIdentity": {
+      "scheme": "hook-mint-v1"
     }
   },
   {
@@ -2326,6 +2348,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "tokenScope": "unverified"
         }
       }
+    },
+    "promptIdentity": {
+      "kind": "transcript-only",
+      "scheme": "offset-v1"
     }
   },
   {
@@ -2696,6 +2722,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           ]
         }
       }
+    },
+    "promptIdentity": {
+      "kind": "stamped",
+      "scheme": "stamp-or-offset-v1"
     }
   },
   {
@@ -2825,7 +2855,12 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ]
     },
-    "hooks": {}
+    "hooks": {},
+    "promptIdentity": {
+      "kind": "transcript-only",
+      "scheme": "offset-v1",
+      "evidence": "tests/fixtures/prompt-identity/pi-user-prompt-submit.json"
+    }
   },
   {
     "name": "windsurf",
@@ -2948,6 +2983,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "transcript"
         ]
       }
+    },
+    "promptIdentity": {
+      "scheme": "hook-mint-v1"
     }
   }
 ] as const;

@@ -34,7 +34,8 @@
  */
 import type { ErrorClassifier, RelationalStore } from './adapters.js';
 import type { ContextTimings } from './context-timing.js';
-import { INJECTION_LEAVES, InjectionFailure, emptyInjectionCounts, injectionLeaves, selectSporesForPrompt, type InjectionCounts, type InjectionLeaves, type InjectionSkip } from './injection.js';
+import { INJECTION_LEAVES, InjectionFailure, emptyInjectionCounts, injectionLeaves, selectSporesForPrompt, type AskNaming, type Delivery, type InjectionCounts, type InjectionLeaves, type InjectionSkip } from './injection.js';
+import type { PreparedStatement } from './adapters.js';
 import type { SemanticSearch } from '../read/embedding.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingTexts } from './settings.js';
 import { sha256Hex } from '../hash.js';
@@ -183,6 +184,9 @@ export interface PromptContext {
   context: string;
   parts: PromptContextPart[];
   skipped: RecallSkip[];
+  /** The receipt and the answer rows this ask wrote, each named only when its write succeeded: what a delivery names. */
+  receiptId?: string;
+  answerId?: string;
 }
 
 /** A failed contributor's coded cause; no prompt body or arbitrary error text is retained. */
@@ -194,7 +198,7 @@ export interface RecallFailure {
 
 /** Isolates a contributor and records its failure before the remaining contributors run. */
 async function contribute<T>(
-  identity: { projectId: string; sessionId: string; promptId?: string },
+  identity: { projectId: string; sessionId: string; promptId?: string | null },
   contributor: RecallFailure['contributor'],
   skipped: RecallSkip[],
   failures: RecallFailure[],
@@ -214,29 +218,42 @@ async function contribute<T>(
   }
 }
 
-/** Appends the answer under the prompt that asked, before capture has necessarily recorded that prompt. */
+/**
+ * Appends the answer under the prompt that asked, before capture has necessarily recorded that prompt, and names the
+ * row it wrote: an answer whose write failed names none.
+ */
 async function recordPromptAnswer(
   db: RelationalStore,
-  identity: { projectId: string; sessionId: string; promptId: string },
+  identity: { projectId: string; sessionId: string; promptId: string | null },
+  naming: AskNaming,
   answer: PromptContext,
   failures: readonly RecallFailure[],
   selection: InjectionCounts,
   now: number,
   classifyError?: ErrorClassifier,
 ): Promise<PromptContext> {
+  const answerId = crypto.randomUUID();
   try {
     await db.prepare(`INSERT INTO prompt_context_answers
-      (project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, selection, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(identity.projectId, identity.sessionId, identity.promptId, crypto.randomUUID(),
+      (project_id, session_id, id, prompt_id, scope_reason, ask_protocol, asked_at, outcome, context_chars, parts, skipped, failures, selection, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(identity.projectId, identity.sessionId, answerId, naming.promptId, naming.scopeReason, naming.askProtocol, naming.askedAt,
         answer.context.length > 0 ? 'served' : 'empty', answer.context.length,
         JSON.stringify(answer.parts.map((part) => part.kind === 'spores'
           ? { kind: part.kind, sporeCount: part.sporeIds.length, planCount: part.planIds.length } : part)),
         JSON.stringify(answer.skipped), JSON.stringify(failures), JSON.stringify(selection), now).run();
   } catch (error) {
     emit({ kind: 'recall_answer_unrecorded', ...identity, error: classify(error, classifyError) });
+    return answer;
   }
-  return answer;
+  return { ...answer, answerId };
+}
+
+/** Mark one answer delivered, once: the same rule a receipt's delivery follows (`receiptDeliveredStatement`). */
+export function answerDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
+  return db.prepare(`UPDATE prompt_context_answers SET delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?
+      WHERE project_id = ? AND session_id = ? AND id = ? AND delivered_at IS NULL AND ${gate.sql}`)
+    .bind(d.at, d.promptId, d.scopeReason, d.projectId, d.sessionId, d.id, ...gate.params);
 }
 
 export const PROMPT_ANSWER_RETENTION_SQL = `DELETE FROM prompt_context_answers WHERE rowid IN (
@@ -306,14 +323,16 @@ export async function composePromptContext(
   scope: ReadScope,
   leaves: RecallLeaves,
   capabilityOn: boolean,
-  input: { sessionId: string; promptId: string; text: string; now: number },
+  input: { sessionId: string; text: string; now: number } & Partial<AskNaming>,
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   classifyError?: ErrorClassifier,
   timings?: ContextTimings,
 ): Promise<PromptContext> {
-  const identity = { projectId: scope.projectId, sessionId: input.sessionId, promptId: input.promptId };
+  const naming: AskNaming = { promptId: input.promptId ?? null, scopeReason: input.scopeReason ?? null, askProtocol: input.askProtocol ?? 'legacy', askedAt: input.askedAt ?? null };
+  const identity = { projectId: scope.projectId, sessionId: input.sessionId, promptId: naming.promptId };
   let counts = emptyInjectionCounts();
-  if (!capabilityOn) return recordPromptAnswer(db, identity, { context: '', parts: [], skipped: ['capability'] }, [], counts, input.now, classifyError);
+  let receiptId: string | undefined;
+  if (!capabilityOn) return recordPromptAnswer(db, identity, naming, { context: '', parts: [], skipped: ['capability'] }, [], counts, input.now, classifyError);
 
   const skipped: RecallSkip[] = [];
   const failures: RecallFailure[] = [];
@@ -321,7 +340,7 @@ export async function composePromptContext(
   const spores = await contribute<Contribution | null>(identity, 'spores', skipped, failures, async () => {
     const selection = await selectSporesForPrompt(db, scope, leaves.injection, capabilityOn, {
       sessionId: input.sessionId,
-      promptId: input.promptId,
+      ...naming,
       promptHash: await sha256Hex(input.text),
       prompt: input.text,
       now: input.now,
@@ -330,6 +349,7 @@ export async function composePromptContext(
       throw error;
     });
     counts = selection.counts;
+    receiptId = selection.receiptId;
     if (selection.skipped !== null) skipped.push(`spores:${selection.skipped}`);
     else if (selection.context.length > 0) {
       return { part: { kind: 'spores', sporeIds: selection.items.filter((i) => i.kind === 'spore').map((i) => i.id), planIds: selection.items.filter((i) => i.kind === 'plan').map((i) => i.id) }, text: selection.context };
@@ -347,10 +367,12 @@ export async function composePromptContext(
 
   const kept = partsWithinBound([nudge, spores].filter((c): c is Contribution => c !== null));
 
-  return recordPromptAnswer(db, identity, {
+  return recordPromptAnswer(db, identity, naming, {
     context: kept.map((c) => c.text).join(JOIN),
     parts: kept.map((c) => c.part),
     skipped,
+    // A receipt whose part the bound dropped never reaches the agent, so no delivery may name it.
+    ...(receiptId === undefined || !kept.some((c) => c.part.kind === 'spores') ? {} : { receiptId }),
   }, failures, counts, input.now, classifyError);
 }
 
