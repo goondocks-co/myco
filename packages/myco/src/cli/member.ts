@@ -615,7 +615,8 @@ export function provisionGlobally(
 ): ProvisionOutcome {
   const manifest = loadManifests().find((m) => m.name === agent);
   if (!manifest) return { kind: 'unknown' };
-  const installer = globalInstaller(manifest, root, mycoHome, opts).takingOverManagedEntries();
+  const installer = globalInstaller(manifest, root, mycoHome, opts);
+  if (!opts.legacyHomes?.length) installer.takingOverManagedEntries();
   if (opts.serverUrl !== undefined) installer.forDeployment(opts.serverUrl);
   if (opts.preserveOtherMemberTools) installer.preservingOtherMemberTools();
   // Every agent file this may write is copied first; `restore.md` beside the copies puts back what the person had.
@@ -669,7 +670,8 @@ export function previewGlobalProvision(
 ): OwnershipPreview {
   const manifest = loadManifests().find((m) => m.name === agent);
   if (!manifest) return { kind: 'unknown' };
-  const installer = globalInstaller(manifest, root, mycoHome, opts).takingOverManagedEntries();
+  const installer = globalInstaller(manifest, root, mycoHome, opts);
+  if (!opts.legacyHomes?.length) installer.takingOverManagedEntries();
   if (!installer.capturesAsMember()) return { kind: 'uncaptured', displayName: manifest.displayName };
   if (opts.preserveOtherMemberTools) installer.preservingOtherMemberTools();
   const scan = installer.scanMemberRegistrations();

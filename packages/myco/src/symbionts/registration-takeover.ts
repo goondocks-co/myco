@@ -18,7 +18,9 @@ export function ownedMcpBinary(entry: unknown): string | undefined {
   const { binary, helper } = mcpCommand(entry);
   if (helper !== undefined) {
     const words = commandWords(helper).words;
-    if (mycoBinary(words[0]) && words[1] === 'member' && words[2] === 'mcp-headers') return words[0];
+    const credential = words.indexOf(CREDENTIAL_FLAG);
+    const managed = rawHasMycoOwnershipSignal(helper) || credential > 2 && words[credential + 1] === 'registry';
+    if (managed && mycoBinary(words[0]) && words[1] === 'member' && words[2] === 'mcp-headers') return words[0];
   }
   if (entry && typeof entry === 'object') {
     const server = entry as Record<string, unknown>;

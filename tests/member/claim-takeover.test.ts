@@ -172,12 +172,13 @@ for (const peerClaim of [false, true]) it(`leaves another live home alone with p
   for (const [file, raw] of originals) expect(fs.readFileSync(file, 'utf8')).toBe(raw);
 });
 
-for (const entry of [{ url: 'https://unrelated.example/mcp' }, { command: 'fixture', args: ['mcp'] }]) it(`preserves unowned hooks and MCP slot ${JSON.stringify(entry)} under an explicit claim`, () => {
+for (const entry of [{ url: 'https://unrelated.example/mcp' }, { command: 'fixture', args: ['mcp'] }, { url: SERVER + '/mcp', headersHelper: 'fixture' }]) it(`preserves unowned hooks and MCP slot ${JSON.stringify(entry)} under an explicit claim`, () => {
   const hooks = path.join(home, '.claude', 'settings.json');
   const tools = path.join(home, '.claude.json');
   const unowned = `${binary(oldHome)} hook stop`;
   put(hooks, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: unowned }] }] } }));
   if ('command' in entry) entry.command = binary(oldHome);
+  if ('headersHelper' in entry) entry.headersHelper = `${binary(oldHome)} member mcp-headers --server ${SERVER}`;
   put(tools, JSON.stringify({ mcpServers: { myco: entry } }));
   claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, newHome);
   const before = fs.readFileSync(tools, 'utf8');
@@ -195,4 +196,32 @@ it('reports no agents and why when an explicit claim finds no managed setup', as
   expect(said).toContain('Agents refreshed: no (no agents selected for this home');
   expect(said).not.toContain('Agents refreshed: yes');
   expect(readProvisionRecord(newHome)?.agents).toEqual([]);
+});
+
+it('removes an owned same-home alternate MCP key while preserving an unowned alternate', async () => {
+  await claim();
+  const file = path.join(home, '.claude.json');
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  data.servers = { myco: structuredClone(data.mcpServers.myco) };
+  data.mcp = { myco: { command: 'unrelated-tool' } };
+  put(file, JSON.stringify(data));
+  const found = provisionAgents(['claude-code'], newHome, SERVER, null);
+  expect(found.skipped).toEqual([]);
+  const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+  expect(after.servers).toBeUndefined();
+  expect(after.mcp.myco).toEqual({ command: 'unrelated-tool' });
+  expect(after.mcpServers.myco.headersHelper).toContain(binary(newHome));
+});
+
+it('reports only rewritten global entries beside a read-only Claude project override', async () => {
+  const file = path.join(home, '.claude.json');
+  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const folder = path.join(root, 'project-override');
+  const entry = structuredClone(data.mcpServers.myco);
+  data.projects = { [folder]: { mcpServers: { myco: entry } } };
+  put(file, JSON.stringify(data));
+  const said = await claim();
+  expect(JSON.parse(fs.readFileSync(file, 'utf8')).projects[folder].mcpServers.myco).toEqual(entry);
+  expect(said).not.toContain(`projects.${folder}.mcpServers.myco`);
+  expect(said).toContain(`replaced Myco entry in ${file}: mcpServers.myco`);
 });

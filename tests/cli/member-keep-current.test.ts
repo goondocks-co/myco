@@ -52,6 +52,7 @@ afterEach(() => {
   } finally {
     for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     fs.rmSync(agentHome, { recursive: true, force: true });
+    process.exitCode = 0;
   }
 });
 

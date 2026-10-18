@@ -534,7 +534,9 @@ export class SymbiontInstaller {
           if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
           const bag = candidate as Record<string, unknown>;
           this.withWritableMcpEntry(bag[MYCO_MCP_SERVER_NAME], () => {
-            if (this.takeOverManagedEntries && !this.takesOver(ownedMcpBinary(bag[MYCO_MCP_SERVER_NAME]))) return;
+            const binary = ownedMcpBinary(bag[MYCO_MCP_SERVER_NAME]);
+            const legacy = this.legacyHomes.length > 0 && mcpVerdict(bag[MYCO_MCP_SERVER_NAME], this.legacyHomes) === 'legacy';
+            if (this.takeOverManagedEntries && binary !== this.binaryPath() && !this.takesOver(binary) && !legacy) return;
             delete bag[MYCO_MCP_SERVER_NAME];
             if (Object.keys(bag).length === 0) delete data[candidateKey];
           });
@@ -933,7 +935,7 @@ export class SymbiontInstaller {
     return scan.flatMap(finding => {
       if (this.takesOverFinding(finding)) {
         const target = finding.location.kind === 'mcp' ? this.memberMcpTargetPath() : this.resolveAbsoluteTarget('hooks');
-        return finding.target === target ? [`${this.manifest.displayName}: replaced Myco entry in ${finding.file}: ${finding.keyPath ?? finding.subject}; binary ${finding.replacementBinary}.`] : [];
+        return finding.target === target && (finding.serversPath === undefined || finding.serversPath.length === 1) ? [`${this.manifest.displayName}: replaced Myco entry in ${finding.file}: ${finding.keyPath ?? finding.subject}; binary ${finding.replacementBinary}.`] : [];
       }
       return [staleRegistrationWords(finding, this.manifest.displayName, blocked.includes(finding))];
     });
