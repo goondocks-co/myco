@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: PR1888 correction 1 source-install 14207ms, Bun 1.4.0 darwin-arm64; 2x runtime plus startup rounded to 30000ms",
     "local: canonical root focused npm test, Bun 1.4.0, darwin-arm64; 2x measured file duration plus startup",
     "local: PR5 correction full npm test, Bun 1.4.0, darwin-arm64",
     "local: PR5 correction native + Cloudflare parity, Bun 1.4.0; conservative recorded CI parity floors retained",
@@ -656,6 +657,7 @@
     "tests/scripts/run-bun-tests-guards.test.ts": 168839,
     "tests/scripts/run-test-command.test.ts": 2111,
     "tests/scripts/smoke-worker-service.test.ts": 164,
+    "tests/scripts/source-install.test.ts": 30000,
     "tests/scripts/test-shards.test.ts": 2492,
     "tests/scripts/test-temp-root.test.ts": 132,
     "tests/server/backup-cli.test.ts": 2398,

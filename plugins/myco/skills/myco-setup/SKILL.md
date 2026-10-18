@@ -25,7 +25,7 @@ If the marker is missing, unreadable, names an older release, or does not match,
 
 Once verified, run `myco version`; use the verified absolute `bin` path if it is outside `PATH`.
 
-For a source install on macOS/Linux, run `make source-install` from the checkout. It builds and verifies the candidate, installs through its guarded updater into the selected home's managed destination, and establishes PATH. A worktree requires `ALLOW_WORKTREE_INSTALL=1 make source-install`. Personal source installs create no pins or wrapper. Plain `myco update` installs the selected channel release; run `make source-install` to return to source. On Windows, install an artifact cross-built on macOS/Linux using its own `update --source-checkout <build-machine-checkout> --source-commit <40-hex-commit>`; see the repository's `CONTRIBUTING.md` for the cross-build recipe.
+For a source install on macOS/Linux, run `make source-install` from the checkout. It builds and checks Myco, then installs it where `myco update` would (`<home>/bin/myco`) and adds it to PATH. A worktree requires `ALLOW_WORKTREE_INSTALL=1 make source-install`. Personal source installs create no pins or wrapper. Plain `myco update` installs the selected channel release; run `make source-install` to return to source. On Windows, install an artifact cross-built on macOS/Linux using its own `update --source-checkout <build-machine-checkout> --source-commit <40-hex-commit>`; see the repository's `CONTRIBUTING.md` for the cross-build recipe.
 
 Before installing, explain the binary destination and global agent configuration changes and obtain the user's consent. On macOS and Linux:
 

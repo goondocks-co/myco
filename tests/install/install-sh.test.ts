@@ -73,7 +73,7 @@ const digest = (file: string) => crypto.createHash('sha256').update(fs.readFileS
 
 interface Run { status: number | null; out: string; home: string }
 
-function install(home: string, env: Record<string, string>, args: string[] = [], toolPath?: string): Run {
+function install(home: string, env: Record<string, string>, args: string[] = [], toolPath?: string, stdin = false): Run {
   if (!env.MYCO_INSTALL_FROM && !mockedToolPaths.has(toolPath ?? '')) throw new Error('TEST SAFETY: installer requires an offline source or mocked curl');
   if (env.MYCO_BIN_DIR !== undefined) assertTestPath(home, path.resolve(home, env.MYCO_BIN_DIR), 'MYCO_BIN_DIR');
   if (env.MYCO_INSTALL_FROM) {
@@ -83,8 +83,9 @@ function install(home: string, env: Record<string, string>, args: string[] = [],
       throw new Error('TEST SAFETY: installer accepts only generated stand-in binaries');
     }
   }
-  const result = spawnSync('sh', [SCRIPT, ...args], {
+  const result = spawnSync('sh', stdin ? ['-s', '--', ...args] : [SCRIPT, ...args], {
     cwd: home,
+    ...(stdin ? { input: fs.readFileSync(SCRIPT, 'utf8') } : {}),
     env: sandboxChildEnv(home, { PATH: toolPath ?? offlineTools, ...env }, {}), encoding: 'utf8', timeout: 90_000,
   });
   if (result.error) throw result.error;
@@ -271,6 +272,33 @@ describe('the Myco 2.0 installer', () => {
     const marker = JSON.parse(fs.readFileSync(path.join(home, '.myco/install.json'), 'utf8'));
     expect(path.isAbsolute(marker.bin)).toBe(true);
     expect(fs.realpathSync(marker.bin)).toBe(path.join(home, 'tools/myco'));
+  });
+
+  it.skipIf(!HAS_CC).each(['read-only-directory', 'stale-repair-link'] as const)('stdin install finishes PATH setup when owned-link repair is unavailable (%s)', kind => {
+    const home = freshHome();
+    const bin = path.join(home, '.local/bin');
+    const link = path.join(bin, 'myco');
+    const owned = '../../.myco/bin/myco';
+    fs.mkdirSync(bin, { recursive: true });
+    fs.symlinkSync(owned, link);
+    if (kind === 'read-only-directory') fs.chmodSync(bin, 0o555);
+    else fs.symlinkSync('/stale/repair-target', link + '.myco-new');
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const run = install(home, FROM(), [], undefined, true);
+        expect(run.status, run.out).toBe(0);
+        expect(run.out).toContain('left owned link untouched: ' + link);
+        expect(run.out).toContain('installed to');
+        expect(run.out).toContain('myco setup');
+        expect(run.out).toContain('Open a new shell');
+        expect(fs.readlinkSync(link)).toBe(owned);
+        for (const rc of ['.zshenv', '.zprofile', '.profile']) {
+          expect(fs.readFileSync(path.join(home, rc), 'utf8').match(/export PATH=/g)?.length).toBe(1);
+        }
+      }
+      if (kind === 'stale-repair-link') expect(fs.readlinkSync(link + '.myco-new')).toBe('/stale/repair-target');
+      expect(fs.readdirSync(bin).filter(name => name.startsWith('myco.repair-'))).toEqual([]);
+    } finally { fs.chmodSync(bin, 0o755); }
   });
 
   it.skipIf(!HAS_CC)('preserves a recorded channel unless the environment or flag explicitly changes it', () => {

@@ -30,6 +30,7 @@ function fixture() {
   fs.mkdirSync(path.dirname(binary), { recursive: true });
   fs.writeFileSync(binary, `#!${resolveTestTool('node')}\nconst fs=require('fs'),path=require('path');
 if(process.argv[2]==='--version'){console.log('0.0.0-dev+fixture.b1');process.exit(0)}
+if(process.env.MYCO_FIXTURE_SOURCE_REFUSAL==='1'){console.error('Myco: source adoption refused by fixture');process.exit(1)}
 fs.writeFileSync(path.join(process.env.HOME,'called.json'),JSON.stringify({args:process.argv.slice(2),cwd:process.cwd()}));
 const home=process.env.MYCO_HOME; fs.mkdirSync(path.join(home,'bin'),{recursive:true});
 const bin=fs.existsSync(path.join(home,'install.json'))?JSON.parse(fs.readFileSync(path.join(home,'install.json'))).bin:path.join(home,'bin/myco');
@@ -90,6 +91,7 @@ it('refuses worktree installation before building and admits the explicit opt-in
     const refused = f.install(worktree);
     expect(refused.status).not.toBe(0);
     expect(refused.stderr).toContain('ALLOW_WORKTREE_INSTALL=1');
+    expect(refused.stderr).not.toMatch(/\bat .*:\d+:\d+|Node\.js v|throw new Error/);
     expect(fs.existsSync(path.join(worktree, 'built'))).toBe(false);
     expect(fs.existsSync(f.env.MYCO_HOME!)).toBe(false);
     const accepted = f.install(worktree, { ALLOW_WORKTREE_INSTALL: '1' });
@@ -108,11 +110,67 @@ it.each(['file', 'link', 'owned-link'] as const)('preserves foreign paths and re
     const owned = path.join(f.home, '.myco/bin/myco');
     if (kind === 'file') fs.writeFileSync(link, 'foreign bytes');
     else fs.symlinkSync(kind === 'owned-link' ? owned : '/foreign/myco', link);
+    const existingRepair = link + '.repair-fixed';
+    fs.mkdirSync(existingRepair);
+    fs.writeFileSync(path.join(existingRepair, 'keep'), 'unrelated bytes');
     const result = f.install();
     expect(result.status, result.stderr).toBe(0);
     if (kind === 'file') expect(fs.readFileSync(link, 'utf8')).toBe('foreign bytes');
     else expect(fs.readlinkSync(link)).toBe(kind === 'owned-link' ? path.join(f.env.MYCO_HOME!, 'bin/myco') : '/foreign/myco');
     if (kind !== 'owned-link') expect(result.stderr).toContain('left foreign');
+    expect(fs.readFileSync(path.join(existingRepair, 'keep'), 'utf8')).toBe('unrelated bytes');
+    expect(fs.readdirSync(path.dirname(link)).filter(name => name.startsWith('myco.repair-'))).toEqual(['myco.repair-fixed']);
+  } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+});
+
+it.each(['read-only-directory', 'stale-repair-link'] as const)('finishes PATH setup when owned-link repair is unavailable (%s)', kind => {
+  const f = fixture();
+  const bin = path.join(f.home, '.local/bin');
+  const link = path.join(bin, 'myco');
+  const owned = path.join(f.home, '.myco/bin/myco');
+  f.env.MYCO_HOME = path.join(f.home, 'selected-home');
+  try {
+    fs.mkdirSync(bin, { recursive: true });
+    fs.symlinkSync(owned, link);
+    if (kind === 'read-only-directory') fs.chmodSync(bin, 0o555);
+    else fs.symlinkSync('/stale/repair-target', link + '.myco-new');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = f.install();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toContain('left owned link untouched: ' + link);
+      expect(result.stdout).toContain('Open a new shell');
+      expect(fs.readlinkSync(link)).toBe(owned);
+      for (const rc of ['.zshenv', '.zprofile', '.profile']) {
+        expect(fs.readFileSync(path.join(f.home, rc), 'utf8').match(/export PATH=/g)?.length).toBe(1);
+      }
+    }
+    if (kind === 'stale-repair-link') expect(fs.readlinkSync(link + '.myco-new')).toBe('/stale/repair-target');
+    expect(fs.readdirSync(bin).filter(name => name.startsWith('myco.repair-'))).toEqual([]);
+  } finally { fs.chmodSync(bin, 0o755); fs.rmSync(f.root, { recursive: true, force: true }); }
+});
+
+it('prints a failed candidate command without a Node stack and leaves PATH setup unstarted', () => {
+  const f = fixture();
+  try {
+    const result = f.install(f.checkout, { MYCO_FIXTURE_SOURCE_REFUSAL: '1' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('source adoption refused by fixture');
+    expect(result.stderr).toContain('source installation did not finish');
+    expect(result.stderr).not.toMatch(/\bat .*:\d+:\d+|Node\.js v|throw new Error/);
+    expect(fs.existsSync(path.join(f.home, '.zshenv'))).toBe(false);
+  } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+});
+
+it('surfaces Git failure output without a Node stack', () => {
+  const f = fixture();
+  try {
+    fs.renameSync(path.join(f.checkout, '.git'), path.join(f.checkout, '.git-hidden'));
+    const result = f.install();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('not a git repository');
+    expect(result.stderr).toContain('source installation did not finish');
+    expect(result.stderr).not.toMatch(/\bat .*:\d+:\d+|Node\.js v|throw new Error/);
+    expect(fs.existsSync(path.join(f.home, '.zshenv'))).toBe(false);
   } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
 });
 

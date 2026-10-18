@@ -74,7 +74,9 @@ Generated files belong in the same commit as their sources. Skill trigger eval c
 
 Development sessions are real project history. Preserve capture continuity and avoid destructive vault operations.
 
-Run `make source-install` from a checkout to build and verify Myco, then install it through the candidate binary's guarded updater into the selected home's managed destination. It prepares vendor SQLite, the Deployment UI and generated carriers; it does not run tests. Open a new shell after installation to use `myco` on PATH. First installs print `myco setup`. Source builds keep their checkout and commit provenance; automatic updates leave them in place. Plain `myco update` installs the selected channel release, and `make source-install` switches back to source. No runtime pins or wrapper are created.
+Run `make source-install` from a checkout to build and check Myco, then install it where `myco update` would (`<home>/bin/myco`) and add it to PATH. It prepares SQLite, the dashboard and bundled files; it does not run tests. Open a new shell after installation to use `myco` on PATH. First installs print `myco setup`. Source builds keep their checkout and commit provenance; automatic updates leave them in place. Plain `myco update` installs the selected channel release, and `make source-install` switches back to source. No runtime pins or wrapper are created.
+
+Using a different `MYCO_HOME` repoints the shell PATH block to that home and attempts to repoint Myco's shared `~/.local/bin/myco` link.
 
 Installing from a Git worktree requires `ALLOW_WORKTREE_INSTALL=1 make source-install`. For isolated testing, use `make source-build` and the absolute artifact path with scratch homes and a scratch cwd, as described in the `dogfood-worktree` skill. Run `make build` and smoke-test changes before submitting them. A member has no capture daemon; restart only isolated processes you started.
 

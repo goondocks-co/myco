@@ -76,8 +76,19 @@ myco_setup_path() (
     case "$target" in
       "$binary"|"$HOME/.myco/bin/myco"|../../.myco/bin/myco)
         if [ "$target" != "$binary" ]; then
-          ln -s "$binary" "$link.myco-new"
-          mv -f "$link.myco-new" "$link"
+          repair=
+          # A legacy repair path can belong to an in-flight installer.
+          if [ ! -e "$link.myco-new" ] && [ ! -L "$link.myco-new" ] \
+            && repair=$(mktemp -d "$link.repair-XXXXXX") \
+            && ln -s "$binary" "$repair/myco" \
+            && mv -f "$repair/myco" "$link"; then
+            :
+          else
+            printf 'Myco: left owned link untouched: %s -> %s; could not repair it. PATH setup will continue.\n' "$link" "$target" >&2
+          fi
+          if [ -n "$repair" ] && ! rm -rf "$repair"; then
+            printf 'Myco: could not remove link repair directory: %s\n' "$repair" >&2
+          fi
         fi ;;
       *) printf 'Myco: left foreign link untouched: %s -> %s\n' "$link" "$target" >&2 ;;
     esac
