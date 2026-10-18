@@ -59,6 +59,7 @@ it('builds once, uses the candidate updater, establishes fresh login PATH and st
     expect(result.stdout).toContain('Open a new shell');
     const rcFiles = ['.profile', '.zshenv', '.zprofile'];
     const before = rcFiles.map(file => fs.readFileSync(path.join(f.home, file), 'utf8'));
+    for (const content of before) expect(content.match(/export PATH=/g)?.length).toBe(1);
     expect(f.install().status).toBe(0);
     expect(rcFiles.map(file => fs.readFileSync(path.join(f.home, file), 'utf8'))).toEqual(before);
     for (const shell of ['bash', 'zsh']) {
@@ -150,6 +151,29 @@ it.each(['default', 'machine-pin', 'environment', 'recorded-destination'] as con
   } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
 });
 
+it('preserves shell rc symlinks and modes, and leaves settings intact when publication fails', () => {
+  const f = fixture();
+  try {
+    const target = path.join(f.home, 'zsh-settings');
+    const rc = path.join(f.home, '.zshenv');
+    fs.writeFileSync(target, 'export UNRELATED_SETTING=retained\n', { mode: 0o600 });
+    fs.symlinkSync(target, rc);
+    expect(f.install().status).toBe(0);
+    expect(fs.readlinkSync(rc)).toBe(target);
+    expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+    const before = fs.readFileSync(target);
+    const tools = path.join(f.root, 'tools');
+    fs.mkdirSync(tools);
+    fs.writeFileSync(path.join(tools, 'mv'), '#!/bin/sh\nexit 71\n', { mode: 0o755 });
+    f.env.MYCO_HOME = path.join(f.home, 'next-home');
+    const failed = f.install(f.checkout, { PATH: tools + path.delimiter + f.env.PATH });
+    expect(failed.status).not.toBe(0);
+    expect(fs.readFileSync(target)).toEqual(before);
+    expect(fs.readlinkSync(rc)).toBe(target);
+    expect(fs.readdirSync(f.home).filter(name => name.startsWith('.myco-path-') || name.startsWith('.myco-original-'))).toEqual([]);
+  } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+});
+
 it('shares preparation with the retained development build and verifies one compilation without tests', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-source-recipe-'));
   try {
@@ -160,6 +184,33 @@ it('shares preparation with the retained development build and verifies one comp
     expect(plan.stdout).not.toMatch(/npm (test|run test)/);
     expect(fs.readFileSync(path.join(repo, 'Makefile'), 'utf8')).toContain('dev-build: source-build');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it('reconciles older installer blocks and follows the selected home across A to B to A', () => {
+  const f = fixture();
+  try {
+    const legacy = `export UNRELATED_SETTING=retained\n\n# Added by the Myco installer.\ncase ":$PATH:" in\n  *":${f.home}/old/bin:"*) ;;\n  *) export PATH="${f.home}/old/bin:$PATH" ;;\nesac\n`;
+    for (const rc of ['.profile', '.zshenv', '.zprofile']) fs.writeFileSync(path.join(f.home, rc), legacy);
+    const a = path.join(f.home, 'a');
+    const b = path.join(f.home, 'b');
+    for (const home of [a, b, a]) {
+      f.env.MYCO_HOME = home;
+      const result = f.install();
+      expect(result.status, result.stderr).toBe(0);
+      for (const rc of ['.profile', '.zshenv', '.zprofile']) {
+        const content = fs.readFileSync(path.join(f.home, rc), 'utf8');
+        expect(content).toContain('export UNRELATED_SETTING=retained\n');
+        expect(content).not.toContain('/old/bin');
+        expect(content.match(/export PATH=/g)?.length).toBe(1);
+      }
+      for (const shell of ['bash', 'zsh']) {
+        const executable = resolveTestTool(shell) ?? (fs.existsSync('/bin/' + shell) ? '/bin/' + shell : null);
+        if (!executable) continue;
+        expect(f.run(executable, ['-l', '-c', 'command -v myco; echo "$UNRELATED_SETTING"'], f.home,
+          { PATH: '/usr/bin:/bin', ZDOTDIR: f.home }).stdout.trim()).toBe(path.join(home, 'bin/myco') + '\nretained');
+      }
+    }
+  } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
 });
 
 });

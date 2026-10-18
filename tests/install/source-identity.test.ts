@@ -107,7 +107,7 @@ it('projects checkout origin from a hash-bound marker after the checkout is gone
   expect(readInstallation(home, version, binary)).toMatchObject({ source: 'checkout', record: 'matching', checkout: value.checkout, commit,
     detail: `Source build from ${value.checkout}, commit 12345678` });
   expect(readInstallation(home, '2.0.0', binary)).toMatchObject({ source: 'unknown', record: 'mismatch', checkout: null, commit: null });
-  const remedy = `This binary does not match the installed source build. Run \`make source-install\` in ${value.checkout}. Running \`myco update\` instead installs the selected channel release.`;
+  const remedy = `This binary does not match the installed source build. Run \`make source-install\` in ${value.checkout} on the macOS/Linux build machine; on Windows, install its cross-built artifact. Running \`myco update\` instead installs the selected channel release.`;
   fs.writeFileSync(binary, 'different bytes');
   expect(readInstallation(home, version, binary)).toMatchObject({ record: 'mismatch', checkout: null, commit: null,
     detail: remedy });

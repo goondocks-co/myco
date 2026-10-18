@@ -96,16 +96,58 @@ myco_setup_path() (
     case "$rc" in
       "$HOME/.zshrc"|"$HOME/.bashrc") [ -f "$rc" ] || continue ;;
     esac
-    if [ -f "$rc" ] && grep -qFx "$path_line" "$rc"; then continue; fi
+    destination=$rc
+    hops=0
+    max_rc_links=40
+    while [ -L "$destination" ]; do
+      hops=$((hops + 1))
+      if [ "$hops" -gt "$max_rc_links" ]; then printf 'Myco: shell rc symlink cycle: %s\n' "$rc" >&2; exit 1; fi
+      target=$(readlink "$destination")
+      case "$target" in /*) destination=$target ;; *) destination="${destination%/*}/$target" ;; esac
+    done
+    if [ -e "$destination" ] && [ ! -f "$destination" ]; then printf 'Myco: shell rc is not a file: %s\n' "$rc" >&2; exit 1; fi
+    edited=$(mktemp "${destination%/*}/.myco-path-XXXXXX")
+    original=
+    trap 'rm -f "$edited" "$original"' EXIT
+    original=$(mktemp "${destination%/*}/.myco-original-XXXXXX")
+    existed=0
+    if [ -f "$destination" ]; then
+      existed=1
+      cp -p "$destination" "$original"
+      cp -p "$original" "$edited"
+      awk '
+        $0 == "# myco:path:start" { if (owned) exit 1; owned=1; next }
+        $0 == "# myco:path:end" { if (!owned) exit 1; owned=0; next }
+        owned { next }
+        $0 == "# Added by Myco." || $0 == "# Added by the Myco installer." {
+          count=0
+          for (i=1; i<=4 && (getline line)>0; i++) saved[++count]=line
+          if (count == 4 && saved[1] == "case \":$PATH:\" in" && saved[2] ~ /^  \*/ && saved[3] ~ /^  \*\) export PATH=/ && saved[4] == "esac") next
+          print
+          for (i=1; i<=count; i++) print saved[i]
+          next
+        }
+        { print }
+        END { if (owned) exit 1 }
+      ' "$original" > "$edited"
+    fi
     {
-      printf '\n# Added by Myco.\n'
+      printf '# myco:path:start\n# Added by Myco.\n'
       # $PATH is evaluated when the shell reads its startup file.
       # shellcheck disable=SC2016
       printf 'case ":$PATH:" in\n'
       printf "  *:'%s':*) ;;\n" "$quoted_bin"
       printf '%s\n' "$path_line"
-      printf 'esac\n'
-    } >> "$rc"
+      printf 'esac\n# myco:path:end\n'
+    } >> "$edited"
+    if { [ "$existed" = 1 ] && ! cmp -s "$original" "$destination"; } \
+      || { [ "$existed" = 0 ] && { [ -e "$destination" ] || [ -L "$destination" ]; }; }; then
+      printf 'Myco: shell rc changed during PATH setup; retry: %s\n' "$rc" >&2
+      exit 1
+    fi
+    if [ "$existed" = 0 ] || ! cmp -s "$edited" "$destination"; then mv -f "$edited" "$destination"; fi
+    rm -f "$edited" "$original"
+    trap - EXIT
   done
   printf 'Myco command: %s\nOpen a new shell to use myco on PATH.\n' "$binary"
 )

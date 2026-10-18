@@ -46,7 +46,7 @@ export function readInstallation(home: string, version = getPluginVersion(), bin
   const checkout = checkoutMarker?.checkout ?? null;
   const commit = checkoutMarker?.commit ?? null;
   const detail = marker?.source === 'checkout' && record === 'mismatch'
-    ? `This binary does not match the installed source build. Run \`make source-install\` in ${marker.checkout}. Running \`myco update\` instead installs the selected channel release.`
+    ? `This binary does not match the installed source build. Run \`make source-install\` in ${marker.checkout} on the macOS/Linux build machine; on Windows, install its cross-built artifact. Running \`myco update\` instead installs the selected channel release.`
     : source === 'checkout'
       ? checkoutMarker !== null ? `Source build from ${checkoutMarker.checkout}, commit ${checkoutMarker.commit.slice(0, SHORT_COMMIT_LENGTH)}` : `Source build ${version} (origin unknown)`
       : `${version}${source === 'unknown' ? ' (origin unknown)' : ''}`;
