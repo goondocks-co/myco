@@ -47,6 +47,12 @@ for (const mode of ['member', 'runner', 'both']) it(`compiled myco update --chec
   expect(checked).toContain('Agents refreshed: no (check only)');
   expect(hash(installed)).toBe(before);
   const updated = invoke(installed, 'update');
+  const expectNoAgents = (output: string) => {
+    expect(output).toContain('Agents refreshed: no.');
+    expect(output).not.toContain('Agents refreshed: yes');
+    expect(output.match(/No agent is set up/g)).toHaveLength(1);
+    expect(output.match(/myco member provision/g)).toHaveLength(1);
+  };
   expect(updated).toContain(`from ${from} to ${to} on channel alpha`);
   expect(updated.match(/Myco: from/g)).toHaveLength(1);
   if (mode !== 'member') {
@@ -55,9 +61,9 @@ for (const mode of ['member', 'runner', 'both']) it(`compiled myco update --chec
     const handoff = invoke(installed, 'finish-handoff');
     if (mode === 'both') {
       expect(handoff).toContain('interactive refresh pending');
-      expect(invoke(installed, 'update')).toContain('Agents refreshed: yes');
+      expectNoAgents(invoke(installed, 'update'));
     }
-  } else expect(updated).toContain('Agents refreshed: yes');
+  } else expectNoAgents(updated);
   expect(invoke(installed, '--version').trim()).toBe(to);
   expect(hash(installed)).toBe(hash(release));
   if (mode !== 'runner') expect(JSON.parse(fs.readFileSync(path.join(env.MYCO_HOME!, 'member', 'provisioned.json'), 'utf8')).version).toBe(to);

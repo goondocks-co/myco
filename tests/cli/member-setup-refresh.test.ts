@@ -115,7 +115,7 @@ describe('a member\'s agent setup', () => {
   it('keeps provisioned harnesses recorded when another installation refuses their repair', () => {
     recordProvision(home, { version: '2.0.0-beta.0', serverUrl: SERVER, agents: ['claude-code', 'codex'] });
     const foreign = foreignCodexHooks();
-    expect(refresh()).toBe(true);
+    expect(refresh()).toBe(false);
     expect(fs.readFileSync(path.join(agentHome, '.codex', 'hooks.json'), 'utf8')).toBe(foreign);
     expect(out.join('\n')).toContain("Run myco doctor to check Codex's capture configuration");
     expect(readProvisionRecord(home)).toMatchObject({ version: getPluginVersion(), agents: ['claude-code', 'codex'] });
@@ -124,7 +124,7 @@ describe('a member\'s agent setup', () => {
   it('keeps an entirely failed refresh recorded for its next repair', () => {
     recordProvision(home, { version: '2.0.0-beta.0', serverUrl: SERVER, agents: ['codex'] });
     foreignCodexHooks();
-    expect(refresh()).toBe(true);
+    expect(refresh()).toBe(false);
     expect(readProvisionRecord(home)).toMatchObject({ version: '2.0.0-beta.0', agents: ['codex'] });
     expect(setupChecks(home)[0].status).toBe('warn');
   });

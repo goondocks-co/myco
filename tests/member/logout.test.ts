@@ -77,7 +77,7 @@ beforeEach(() => {
     return Response.json({ persisted: true, revoked: 1 });
   } };
 });
-afterEach(() => { restore(); fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { restore(); fs.rmSync(root, { recursive: true, force: true }); process.exitCode = 0; });
 
 describe('Deployment-scoped logout', () => {
   for (const agent of ['codex', 'claude-code']) it(`fails ${agent} MCP deletion after visiting every manifest and retains retry ownership`, async () => {
@@ -209,6 +209,7 @@ describe('Deployment-scoped logout', () => {
         expect(result?.ready).toEqual([]);
       } else if (repair === 'refresh') {
         await memberCli(['provision', '--refresh'], { mycoHome, packageRoot: PKG, cwd: root, stdout: message => messages.push(message), stderr: message => messages.push(message) });
+        expect(process.exitCode).toBe(1);
       } else if (repair === 'provision') {
         const outcome = provisionGlobally('claude-code', null, mycoHome, { packageRoot: PKG, serverUrl: A });
         expect(outcome.kind).toBe('refused');
