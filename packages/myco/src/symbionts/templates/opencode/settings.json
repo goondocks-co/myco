@@ -1,8 +1,7 @@
 {
   "permission": {
     "bash": {
-      "myco *": "allow",
-      "myco-dev *": "allow"
+      "myco *": "allow"
     }
   }
 }

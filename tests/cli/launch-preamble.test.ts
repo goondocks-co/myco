@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import path from 'node:path';
+import os from 'node:os';
 import { runLaunchPreamble, type LaunchPreambleDeps } from '@myco/cli/launch-preamble.js';
 import { PROJECT_DIR_ENV_VARS } from '@myco/cli/launch-preamble.generated.js';
 import { readStdin, setBufferedStdin } from '@myco/hooks/read-stdin.js';
@@ -101,7 +102,7 @@ function withInjectedFd0(buf: Buffer | null, deps: LaunchPreambleDeps): LaunchPr
 
 const SAVED_ENV = { ...process.env };
 /** Every variable the preamble reads before a hook runs: the manifests' project directories among them. */
-const PREAMBLE_ENV = ['MYCO_AGENT_SESSION', 'MYCO_TRAMPOLINED', ...Object.values(PROJECT_DIR_ENV_VARS), 'MYCO_PROJECT_ROOT'];
+const PREAMBLE_ENV = ['MYCO_HOME', 'MYCO_AGENT_SESSION', 'MYCO_TRAMPOLINED', ...Object.values(PROJECT_DIR_ENV_VARS), 'MYCO_PROJECT_ROOT'];
 beforeEach(() => {
   for (const k of PREAMBLE_ENV) delete process.env[k];
 });
@@ -229,6 +230,15 @@ describe('runLaunchPreamble — Antigravity stdin', () => {
 });
 
 describe('runLaunchPreamble — pin re-exec', () => {
+  it('passes the caller home to the pinned command', () => {
+    const home = path.join(os.tmpdir(), 'caller-home');
+    process.env.MYCO_HOME = home;
+    const h = makeHarness({ pin: '/opt/other/bin/myco' });
+    expect(() => runLaunchPreamble('hook', ['session-start', '--symbiont', 'claude-code'], h.deps)).toThrow(/exit\(0\)/);
+    expect(h.execCalls).toHaveLength(1);
+    expect(h.execCalls[0].options.env?.MYCO_HOME).toBe(home);
+  });
+
   it('re-execs when the pin resolves to a different absolute path', () => {
     const h = makeHarness({
       pin: '/opt/myco-dev/bin/myco',

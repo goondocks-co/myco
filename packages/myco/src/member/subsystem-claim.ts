@@ -3,7 +3,7 @@
  * on this machine" marker written into a machine-global shared claims area.
  *
  * Two daemons can run on one machine — two independent installs in two homes
- * (`~/.myco` and a dogfood `~/.myco-dev`). For machine-global work that both
+ * (the default home and a non-default home). For machine-global work that both
  * would otherwise perform — today: rewriting global agent/symbiont configs —
  * they'd fight, each clobbering the other's binary path on its next tick. A
  * claim lets the operator declare which daemon owns the subsystem so the peer
@@ -25,7 +25,7 @@
  *
  * **Shared storage via `resolveClaimsHome()`**: claims are stored under
  * `resolveClaimsHome()/claims/`, the default home's (`~/.myco`) for every home
- * on the machine, so a dogfood home (`~/.myco-dev`) and the released install
+ * on the machine, so a non-default home and the default install
  * read and write one area however a process reached its home. The OWNER token
  * is always the per-daemon home path (`daemonIdentity`), never the claims home.
  *
@@ -71,8 +71,8 @@ export interface ClaimDeps {
  * The machine-global location for subsystem claims: the canonical default home (`~/.myco`, under the user's home
  * directory), whatever home this process runs under.
  *
- * Every home on a machine reads and writes the one claims area: the released install's `~/.myco` and a dogfood
- * `~/.myco-dev` alike, whether a process reaches its home through `MYCO_HOME`, a project's `.myco/runtime.home` pin or
+ * Every home on a machine reads and writes the one claims area: the default home and any
+ * non-default home alike, whether a process reaches its home through `MYCO_HOME`, a project's `.myco/runtime.home` pin or
  * the machine pin. No environment variable moves it: a variable a launch script sets is lost the moment a verb is
  * reached another way (a pin that names the binary itself), and a home that reads claims from its own directory
  * thinks it owns the machine's global configuration (#1561 plan §6.3).

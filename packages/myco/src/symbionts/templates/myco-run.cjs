@@ -39,9 +39,8 @@ try { process.chdir(path.resolve(__dirname, '..')); } catch { /* best effort */ 
 //
 // `~/.myco/runtime.command` is the source of truth — a one-line plain-text
 // file holding either a PATH-resolvable name (the default for globally-
-// installed users is the file's absence) or an absolute path to a managed/
-// dev binary (what `make dev-link` writes; what the beta-channel installer
-// writes). Absolute paths bypass PATH entirely, which matters because GUI-
+// installed users is the file's absence) or an absolute command path.
+// Absolute paths bypass PATH entirely, which matters because GUI-
 // launched agents (Cursor, Claude Code desktop, etc.) run under macOS
 // launchd and inherit a minimal PATH that typically doesn't include
 // `~/.local/bin`.
@@ -51,7 +50,7 @@ try { process.chdir(path.resolve(__dirname, '..')); } catch { /* best effort */ 
 //
 // `runtime.home` sits beside the winning `runtime.command` in the same dir: a
 // plaintext, single-line, absolute home path. When present and trusted it sets
-// MYCO_HOME before exec so a project pinned to a dev home (`~/.myco-dev`)
+// MYCO_HOME before exec so a project pinned to a non-default home
 // reaches the matching daemon. Shares the winning-pin dir and the G7 trust
 // check below — identical to the CLI shim's runtime-redirect.cjs.
 //

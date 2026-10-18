@@ -3,8 +3,7 @@
 // Looks up `runtime.command` in two scopes, in order:
 //
 //   1. **Project**: walk up from cwd looking for `<dir>/.myco/runtime.command`.
-//      Written by `make dev-link` so dev-mode applies only when the user is
-//      working inside the dogfood project — not machine-wide.
+//      Selects a command only while working inside the pinned project.
 //   2. **Machine**: `~/.myco/runtime.command` (honoring `MYCO_HOME`).
 //      Written by the beta-channel installer to redirect every CLI invocation
 //      on the host into the managed runtime under `~/.myco/runtime/`.
@@ -105,7 +104,7 @@ function expandHome(value) {
 
 /**
  * Read the `runtime.home` pin that sits beside the winning `runtime.command`
- * file. A project pinned to a dev home (`~/.myco-dev`) writes both files in the
+ * file. A project pinned to a non-default home keeps both files in the
  * same `.myco/` dir; the home pin is the sibling of the command pin so it
  * inherits the SAME winning-layer resolution and the SAME G7 trust check.
  *
@@ -170,7 +169,7 @@ function maybeRedirect(selfPath, env = process.env, startDir = process.cwd()) {
   }
 
   // A trusted `runtime.home` beside the winning command pin redirects this
-  // invocation's home to a non-default daemon (e.g. a dogfood `~/.myco-dev`).
+  // invocation's home to the selected non-default home.
   // Absent → leave MYCO_HOME as-is (prod default). Untrusted → refused inside
   // readRuntimeHomeBeside, same as an untrusted runtime.command.
   //
@@ -178,8 +177,7 @@ function maybeRedirect(selfPath, env = process.env, startDir = process.cwd()) {
   // order the binary's own resolver applies (`src/paths/home.ts`) and the order
   // the plugin snippet applies: explicit beats implicit at every layer, so one
   // project cannot send the CLI to one home and its in-process plugin to
-  // another. A `make dev-link` contributor exports nothing, so the pin still
-  // decides for them.
+  // another. With no environment override, the pin selects the home.
   const inheritedHome = (env.MYCO_HOME || '').trim();
   const pinnedHome = inheritedHome
     ? null

@@ -237,10 +237,10 @@ describe('dependency preparation', () => {
     expect(f.calls()).toEqual([]);
   });
 
-  it.each(['source-build-windows', 'dev-build-windows'])('selects MinGW before any recipe in make %s', target => {
+  it('selects MinGW before any recipe in make source-build-windows', () => {
     const f = fixture();
     f.env.CC = 'no-such-mingw-gcc';
-    const result = f.make([target]);
+    const result = f.make(['source-build-windows']);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('no-such-mingw-gcc is required');
     expect(result.stderr).toContain('Install MinGW');
