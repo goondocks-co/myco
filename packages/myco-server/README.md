@@ -22,8 +22,7 @@ Read the [2.0 architecture](../../docs/architecture/myco-2.0.md) and [Actors & b
 From the repository root:
 
 ```bash
-npm ci
-npm ci --prefix packages/myco-server/ui
+make install
 npm run check:workers
 npm run check:ui -w @goondocks/myco-server
 npm run build:ui -w @goondocks/myco-server

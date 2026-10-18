@@ -3,11 +3,14 @@
 .DEFAULT_GOAL := build
 
 HOST_TARGET = $(shell node -e "process.stdout.write(process.platform + '-' + (process.arch === 'arm64' ? 'arm64' : 'x64'))")
+NODE_ENGINE = $(shell sed -n 's/.*"node":[[:space:]]*"\([^"]*\)".*/\1/p' packages/myco/package.json)
+BUN_NOTICE_SHOWN_ON_ENTRY := $(MYCO_BUN_NOTICE_SHOWN)
+export MYCO_BUN_NOTICE_SHOWN := 1
 
 .PHONY: deps
 deps:
-	@command -v node >/dev/null 2>&1 || { echo 'Myco: Node.js >=20 with npm is required. Install from https://nodejs.org/.' >&2; exit 1; }
-	node scripts/ensure-deps.mjs $(if $(filter source-build-windows dev-build-windows,$(MAKECMDGOALS)),--windows)
+	@command -v node >/dev/null 2>&1 || { echo 'Myco: Node.js $(NODE_ENGINE) with npm is required. Install from https://nodejs.org/.' >&2; exit 1; }
+	@MYCO_BUN_NOTICE_SHOWN="$(BUN_NOTICE_SHOWN_ON_ENTRY)" node scripts/ensure-deps.mjs $(if $(filter source-build-windows dev-build-windows,$(MAKECMDGOALS)),--windows)
 
 build: check-fast
 	$(MAKE) build-only

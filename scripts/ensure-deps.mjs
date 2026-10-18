@@ -35,17 +35,26 @@ function requireExecutable(tool, remedy) {
   if (!available) throw new Error(`${tool} is required. ${remedy}`);
 }
 
-export function checkTools(root, windows = false) {
+function versionParts(value) {
+  const match = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].*)?$/.exec(value);
+  if (!match) throw new Error(`Invalid Node.js version: ${value}`);
+  return match.slice(1).map(part => Number(part ?? 0));
+}
+
+export function checkTools(root, { windows = false, uiOnly = false } = {}) {
   const floor = readJson(path.join(root, 'packages/myco/package.json')).engines.node;
-  const minimum = Number(floor.replace('>=', ''));
+  if (!floor.startsWith('>=')) throw new Error(`Expected a minimum Node.js engines floor, found ${floor}.`);
+  const minimum = versionParts(floor.slice(2).trim());
   const node = requireTool('node', `Install Node.js ${floor} with npm from https://nodejs.org/.`);
-  if (Number(node.replace(/^v/, '').split('.')[0]) < minimum) {
+  const difference = versionParts(node).map((part, index) => part - minimum[index]).find(part => part !== 0) ?? 0;
+  if (difference < 0) {
     throw new Error(`Node.js ${floor} is required (found ${node}). Install it from https://nodejs.org/.`);
   }
   requireExecutable('npm', 'Install Node.js with npm from https://nodejs.org/.');
+  if (uiOnly) return;
   const bun = requireTool('bun', 'Install Bun: curl -fsSL https://bun.sh/install | bash');
   const pin = fs.readFileSync(path.join(root, '.bun-version'), 'utf8').trim();
-  if (bun !== pin) console.error(`Notice: Bun ${bun} differs from .bun-version (${pin}); continuing.`);
+  if (bun !== pin && process.env.MYCO_BUN_NOTICE_SHOWN !== '1') console.error(`Notice: Bun ${bun} differs from .bun-version (${pin}); continuing.`);
   requireExecutable('bash', 'Install Bash with your package manager.');
   const target = windows ? 'windows-x64' : `${process.platform}-${process.arch === 'arm64' ? 'arm64' : 'x64'}`;
   const native = command('bash', [path.join(root, 'packages/myco/scripts/check-native-build-tools.sh'), target]);
@@ -57,7 +66,32 @@ function identity(entry) {
   return JSON.stringify([entry.version, entry.resolved, entry.integrity, entry.link === true]);
 }
 
-export function staleReason(root) {
+function allows(values, current) {
+  return !values.includes(`!${current}`) && (values.includes(current) || values.includes('any') || values.every(value => value.startsWith('!')));
+}
+
+let hostLibc;
+function libc() {
+  if (process.platform !== 'linux') return undefined;
+  if (hostLibc === undefined) {
+    const report = process.report.getReport();
+    hostLibc = report.header.glibcVersionRuntime ? 'glibc'
+      : report.sharedObjects.some(file => /(?:libc\.musl-|ld-musl-)/.test(file)) ? 'musl' : null;
+  }
+  return hostLibc;
+}
+
+const currentHost = { os: process.platform, cpu: process.arch, get libc() { return libc(); } };
+
+function mayOmit(entry, host) {
+  if (!entry.optional) return false;
+  if (!entry.os && !entry.cpu && !entry.libc) return true;
+  return (entry.os && !allows(entry.os, host.os))
+    || (entry.cpu && !allows(entry.cpu, host.cpu))
+    || (entry.libc && host.libc !== null && !allows(entry.libc, host.libc));
+}
+
+export function staleReason(root, host = currentHost) {
   if (!fs.existsSync(path.join(root, 'node_modules'))) return 'packages missing';
   let installed;
   try { installed = readJson(path.join(root, 'node_modules/.package-lock.json')).packages; }
@@ -71,8 +105,7 @@ export function staleReason(root) {
     if (!name) continue;
     const present = installed[name];
     if (!present) {
-      // npm may omit optional packages and their transitive dependencies.
-      if (entry.optional) continue;
+      if (mayOmit(entry, host)) continue;
       return 'packages out of date';
     }
     if (identity(entry) !== identity(present) || !fs.existsSync(path.join(root, name))) return 'packages out of date';
@@ -99,7 +132,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const args = process.argv.slice(2);
     if (args.some(arg => !['--ui', '--windows'].includes(arg))) throw new Error('Usage: node scripts/ensure-deps.mjs [--ui] [--windows]');
-    checkTools(repo, args.includes('--windows'));
+    checkTools(repo, { windows: args.includes('--windows'), uiOnly: args.includes('--ui') });
     ensureDeps(repo, args.includes('--ui'));
   } catch (error) {
     console.error(`Myco: ${error.message}`);

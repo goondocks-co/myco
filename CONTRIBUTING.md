@@ -14,7 +14,7 @@ cd myco
 make source-build
 ```
 
-Make prepares workspace and dashboard packages automatically, running `npm ci` only for an install root whose installed tree differs from its lockfile. This also recognizes installs made with plain `npm ci` or `npm install`. Use `make install` to prepare packages without building. Direct dashboard `build:ui` and `check:ui` scripts use the same check.
+Make reinstalls the workspace or dashboard packages only when they no longer match the committed lockfile. This also recognizes installs made with plain `npm ci` or `npm install`. Use `make install` to prepare packages without building. Direct dashboard `build:ui` and `check:ui` scripts use the same check and require only Node and npm.
 
 The documentation site is built separately and is explicitly excluded from Make's preparation. Install its dependencies before running its scripts:
 
