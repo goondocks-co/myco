@@ -80,14 +80,18 @@ For local development:
 
 - All five platform packages are workspaces, symlinked into
   `node_modules/@goondocks/` by `npm install`.
-- The binary for the host target is written into
-  `packages/myco-<host>/bin/myco` by `make dev-link` (which invokes
-  `scripts/build-single-target.mjs`).
-- After the binary lands, `make dev-link` re-runs
-  `scripts/select-binary.mjs` so `vendor/resolved.json` is populated for
-  callers that go through `bin/myco.cjs`. (Bench dev typically reaches
-  the binary via `~/.local/bin/myco-dev`, the direct symlink, but tools
-  that go through the npm bin shim need `resolved.json`.)
+- `make source-build` prepares native SQLite, the UI and generated carriers,
+  then writes and verifies `packages/myco-<host>/bin/myco` without installing.
+- `make source-install` uses that build path once, then runs the candidate's
+  guarded source update into the selected home's managed binary destination.
+  It establishes PATH and records checkout/commit provenance without pins or
+  a wrapper. Worktree installs require `ALLOW_WORKTREE_INSTALL=1`.
+- Plain `myco update` installs the selected channel release; another
+  `make source-install` returns to source. Automatic updates skip source builds.
+- Isolated worktree tests invoke the absolute artifact path from a scratch cwd
+  with scratch home variables, including Windows `LOCALAPPDATA`; see the
+  `dogfood-worktree` skill. Windows installs use an artifact cross-built on
+  macOS/Linux, as described in [Contributing](../../CONTRIBUTING.md#source-builds-on-windows).
 - Before the binary is built, `select-binary.mjs` detects the
   source checkout (presence of `packages/myco/src/`) and exits 0 with a
   warning rather than failing the postinstall — so a clean `npm ci` on

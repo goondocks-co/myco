@@ -13,11 +13,10 @@ Myco captures project memory and serves it back through context injection, MCP t
 
 - We develop Myco using Myco. The member sends project capture to its Deployment.
 - Development sessions are real Project history. Preserve capture spools and Deployment data.
-- After changing hooks or member code, run `make build` and smoke-test the compiled binary with an isolated home. From the main checkout, `make dev-deploy` refreshes the shared dogfood binary; its hooks load that binary on their next invocation. In a worktree, use the isolated runtime pin described below.
+- After changing hooks or member code, run `make build` and smoke-test the compiled binary with an isolated home. Use `make source-build` to prepare native assets, the Deployment UI, generated carriers and a verified host binary without installing it.
 - A native Deployment or registered runner keeps its running executable until its own process is restarted. Restart only the isolated process under test; preserve shared capture continuity.
-- Use `make dev-link` only from the main checkout; it rewrites shared `~/.local/bin/myco-*` symlinks.
-- In git worktrees, use `make dev-link-worktree`; it builds the worktree binary and writes a worktree-local `.myco/runtime.command` pointing at it, without changing shared symlinks. Hooks and CLI route to the worktree build; MCP is served by the Deployment; member routing still resolves the project root via `git-common-dir`. See the `dogfood-worktree` skill for caveats (explicit member home, vendor-asset build requirements).
-- `make dev-unlink` removes shared dev symlinks and `.myco/runtime.command`; `make dev-unlink-worktree` removes only the worktree runtime pin.
+- Personal source installs use `make source-install`: build once, verify, then let the candidate's guarded updater install into the selected home's managed destination and establish PATH. Worktree installation requires `ALLOW_WORKTREE_INSTALL=1`. Source installs create no runtime pins or wrapper; plain `myco update` returns to the selected channel release.
+- For worktree tests, follow the `dogfood-worktree` skill: use an absolute artifact path, scratch home variables (including `LOCALAPPDATA`) and a scratch cwd. Restart only isolated processes you started. `make dev-unlink-worktree` removes existing worktree pins.
 - `make worktree-sweep` retires worktrees and branches whose PR has merged. Run it whenever; it holds anything it cannot prove is finished. To preserve a worktree whose PR merged but whose build output is still evidence, put a `.worktree-keep` file in it.
 
 ## Core Invariants

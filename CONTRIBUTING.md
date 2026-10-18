@@ -74,9 +74,21 @@ Generated files belong in the same commit as their sources. Skill trigger eval c
 
 Development sessions are real project history. Preserve capture continuity and avoid destructive vault operations.
 
-From the **main checkout**, `make dev-link` builds and installs the shared development binary. From a **Git worktree**, use `make dev-link-worktree`: it builds the worktree binary and writes a local runtime pin without replacing shared symlinks. See the `dogfood-worktree` skill before using it; worktrees can share capture storage, so schema changes need care.
+Run `make source-install` from a checkout to build and check Myco, then install it where `myco update` would (`<home>/bin/myco`) and add it to PATH. It prepares SQLite, the dashboard and bundled files; it does not run tests. Open a new shell after installation to use `myco` on PATH. First installs print `myco setup`. Source builds keep their checkout and commit provenance; automatic updates leave them in place. Plain `myco update` installs the selected channel release, and `make source-install` switches back to source. No runtime pins or wrapper are created.
 
-Do not run `make dev-link` from a worktree. Prefer not to restart the shared daemon from a worktree. For retained hook or daemon changes, follow AGENTS.md's build and restart guidance. A member-only 2.0 machine has no capture daemon to restart.
+Using a different `MYCO_HOME` repoints the shell PATH block to that home and attempts to repoint Myco's shared `~/.local/bin/myco` link.
+
+Installing from a Git worktree requires `ALLOW_WORKTREE_INSTALL=1 make source-install`. For isolated testing, use `make source-build` and the absolute artifact path with scratch homes and a scratch cwd, as described in the `dogfood-worktree` skill. Run `make build` and smoke-test changes before submitting them. A member has no capture daemon; restart only isolated processes you started.
+
+### Source builds on Windows
+
+Build the Windows artifact on macOS or Linux with `make source-build-windows`. Record `git rev-parse --show-toplevel` and `git rev-parse HEAD` on that build machine. Copy `packages/myco-windows-x64/bin/myco.exe` to Windows, then run it in PowerShell using the recorded checkout path and full commit:
+
+```powershell
+& 'C:\scratch\myco.exe' update --source-checkout '/absolute/path/on/build-machine/myco' --source-commit '<40-hex-commit>'
+```
+
+The cross-built executable installs through the native Windows held-executable handoff into `%LOCALAPPDATA%\Myco\bin`, with state in the selected Myco home. This is a cross-build workflow; building natively in PowerShell is outside its scope. For isolated Windows tests, set `HOME`, `USERPROFILE`, `MYCO_HOME` and `LOCALAPPDATA` to scratch directories before invoking the artifact.
 
 ## Pull requests and releases
 
