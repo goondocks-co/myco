@@ -932,13 +932,25 @@ export class SymbiontInstaller {
 
   staleRegistrationMessages(scan: MemberRegistrationScan): string[] {
     const blocked = this.blockedRegistrations(scan);
-    return scan.flatMap(finding => {
-      if (this.takesOverFinding(finding)) {
-        const target = finding.location.kind === 'mcp' ? this.memberMcpTargetPath() : this.resolveAbsoluteTarget('hooks');
-        return finding.target === target && (finding.serversPath === undefined || finding.serversPath.length === 1) ? [`${this.manifest.displayName}: replaced Myco entry in ${finding.file}: ${finding.keyPath ?? finding.subject}; binary ${finding.replacementBinary}.`] : [];
+    const replacements = new Map<string, { file: string; surface: string; count: number; binaries: Set<string> }>();
+    const notices = scan.flatMap(finding => {
+      const target = finding.location.kind === 'mcp' ? this.memberMcpTargetPath() : this.resolveAbsoluteTarget('hooks');
+      const globalEntry = finding.serversPath === undefined || finding.serversPath.length === 1;
+      if (this.takesOverFinding(finding) && finding.target === target && globalEntry) {
+        const surface = finding.location.kind === 'mcp' ? 'tools entry' : finding.keyPath === 'plugin' ? 'plugin' : 'hook';
+        const key = `${finding.file}\0${surface}`;
+        const group = replacements.get(key) ?? { file: finding.file, surface, count: 0, binaries: new Set<string>() };
+        group.count++;
+        group.binaries.add(finding.replacementBinary!);
+        replacements.set(key, group);
+        return [];
       }
-      return [staleRegistrationWords(finding, this.manifest.displayName, blocked.includes(finding))];
+      return finding.verdict === 'stale' ? [staleRegistrationWords(finding, this.manifest.displayName, blocked.includes(finding))] : [];
     });
+    const home = process.env.HOME ?? os.homedir();
+    const displayPath = (file: string) => file.startsWith(home + path.sep) ? '~' + file.slice(home.length) : file;
+    const replaced = [...replacements.values()].map(group => `${this.manifest.displayName}: replaced ${group.count} Myco ${group.surface === 'tools entry' && group.count !== 1 ? 'tools entries' : group.surface + (group.count === 1 ? '' : 's')} in ${displayPath(group.file)} (were ${[...group.binaries].map(displayPath).join(', ')}).`);
+    return [...replaced, ...notices];
   }
 
   private managesHook(command: string): boolean {
@@ -958,14 +970,15 @@ export class SymbiontInstaller {
     const target = this.resolveAbsoluteTarget('hooks');
     if (target !== null && fs.existsSync(target)) {
       if (this.isMemberPluginFile()) {
-        if (!this.blocksRegistration(target, 'hooks', scan) && fs.readFileSync(target, 'utf8').includes(MEMBER_PLUGIN_MARKER)) return true;
-      } else if (hookCommands(this.readMcpFile(target, false)?.hooks).some((command) => this.managesHook(command) && parseCredentialFlag(command.split(/\s+/)) === 'registry')) return true;
+        const content = fs.readFileSync(target, 'utf8');
+        if (!this.blocksRegistration(target, 'hooks', scan) && !this.takesOver(ownedPluginBinary(content)) && content.includes(MEMBER_PLUGIN_MARKER)) return true;
+      } else if (hookCommands(this.readMcpFile(target, false)?.hooks).some((command) => !this.takesOver(ownedHookBinary(command)) && this.managesHook(command) && parseCredentialFlag(command.split(/\s+/)) === 'registry')) return true;
     }
     const mcp = this.memberMcpTargetPath();
     if (mcp === null) return false;
     const toml = this.manifest.registration?.mcpFormat === 'toml';
     const existing = this.mycoServerIn(mcp, toml, toml ? TOML_MCP_SERVERS_KEY : (this.manifest.registration?.mcpServersKey ?? 'mcpServers'));
-    return existing !== null && this.withWritableMcpEntry(existing, () => this.isMemberMcpServer(existing)) === true;
+    return existing !== null && !this.takesOver(ownedMcpBinary(existing)) && this.withWritableMcpEntry(existing, () => this.isMemberMcpServer(existing)) === true;
   }
 
   memberRegistrationCurrent(scan = this.scanMemberRegistrations(), allowStaleTools = false): boolean {
@@ -1398,7 +1411,17 @@ export class SymbiontInstaller {
 
       let raw = original;
       for (const [name, def] of Object.entries(template)) {
-        raw = buildTomlMcpSection(raw, name, def as Record<string, unknown>);
+        const desired = def as Record<string, unknown>;
+        const existing = this.mycoServerIn(targetPath, true, TOML_MCP_SERVERS_KEY);
+        const sameKeys = existing !== null && Object.keys(existing).length === Object.keys(desired).length
+          && Object.keys(existing).every(key => key in desired);
+        const changes = Object.entries(desired).filter(([key, value]) => !isDeepStrictEqual(existing?.[key], value));
+        const section = `${TOML_MCP_SERVERS_KEY}.${name}`;
+        const canonicalLines = changes.every(([key]) => readTomlSectionKeyLine(raw, section, key)?.trim() === `${key} = ${JSON.stringify(existing?.[key])}`);
+        const scalarValues = Object.values(desired).every(value => value === null || typeof value !== 'object' || Array.isArray(value));
+        raw = sameKeys && scalarValues && canonicalLines
+          ? upsertTomlSectionKeys(raw, section, Object.fromEntries(changes))
+          : buildTomlMcpSection(raw, name, desired);
       }
 
       // Idempotency (mirrors installMcpJson): skip the write when the upsert

@@ -119,7 +119,7 @@ describe('myco login sets up the agents on this machine', () => {
     expect(read(path.join(codexDir, 'hooks.json')) ?? '').toContain('--credential registry');
   });
 
-  it('sets up capture beside a stale hook and reports that nothing else is affected', async () => {
+  it('replaces a stale managed hook from a removed home and reports the replacement', async () => {
     fs.mkdirSync(claudeDir, { recursive: true });
     fs.mkdirSync(codexDir, { recursive: true });
     const file = path.join(claudeDir, 'settings.json');
@@ -128,10 +128,9 @@ describe('myco login sets up the agents on this machine', () => {
     fs.writeFileSync(file, stale);
     const rig = unjoinedRig();
     expect(await run([await invite(rig)], deps(rig))).toBe(true);
-    expect(JSON.parse(read(file)!).hooks.Stop).toContainEqual(JSON.parse(stale).hooks.Stop[0]);
+    expect(read(file)).not.toContain(binary);
     expect(read(file)).toContain('--credential registry');
-    expect(out.join('\n')).toContain(`Claude Code: stale Myco entry in ${file}: a Stop hook; binary ${binary} is missing.`);
-    expect(out.join('\n')).toContain('nothing else is affected. You may delete it.');
+    expect(out.join('\n')).toContain('Claude Code: replaced 1 Myco hook in ~/.claude/settings.json');
     expect(out.join('\n')).toContain('Capture is set up for Claude Code, Codex.');
     expect(out.join('\n')).not.toContain('Skipped Claude Code');
     expect(out.join('\n')).not.toMatch(/another installation|held elsewhere/);

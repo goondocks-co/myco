@@ -470,7 +470,7 @@ function globalInstaller(
 export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string; exclude?: string[]; onInspectionError?: (message: string) => void } = {}): string[] {
   return loadManifests().filter((manifest) => !opts.exclude?.includes(manifest.name)).flatMap((manifest) => {
     try {
-      const installer = globalInstaller(manifest, null, mycoHome, opts).forDeployment(serverUrl).preservingOtherMemberTools();
+      const installer = globalInstaller(manifest, null, mycoHome, opts).takingOverManagedEntries().forDeployment(serverUrl).preservingOtherMemberTools();
       return installer.capturesAsMember() && installer.memberRegistrationPresent() ? [manifest.name] : [];
     } catch (error) {
       if (!(error instanceof MemberProvisionConflictError)) throw error;
@@ -861,7 +861,7 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
       if (repaired.ready.length > 0) out(`Capture is set up for ${repaired.ready.join(', ')}.`);
       for (const notice of repaired.notices ?? []) out(notice);
       for (const harness of repaired.harnesses) if (harness.action !== undefined) out(repaired.localActions?.[harness.id] ?? harness.action);
-      if (repaired.harnesses.some(harness => ['repair_failed', 'unwritable', 'binary_missing'].includes(harness.state))) {
+      if (repaired.harnesses.some(harness => ['repair_failed', 'unwritable'].includes(harness.state))) {
         process.exitCode = 1;
         return false;
       }

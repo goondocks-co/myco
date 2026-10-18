@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { rawHasMycoOwnershipSignal } from '../member/registration-ownership.js';
-import { commandWords, mcpCommand, pluginBinaries, MEMBER_PLUGIN_MARKER } from './legacy-verdict.js';
+import { commandWords, mcpCommand, pluginBinaries, staleBinary, MEMBER_PLUGIN_MARKER } from './legacy-verdict.js';
 import { readClaim, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
 import type { LegacyFinding } from '../member/legacy-registration-files.js';
 import { CREDENTIAL_FLAG } from '../member/constants.js';
@@ -43,8 +43,5 @@ export function findingOwnedBinary(finding: LegacyFinding): string | undefined {
 export function mayTakeOverBinary(binary: string | undefined, home: string): boolean {
   if (binary === undefined) return false;
   if (readClaim(SYMBIONT_CONFIG_SUBSYSTEM)?.owner === path.resolve(home)) return true;
-  try { fs.statSync(binary); return false; } catch (error) {
-    if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return true;
-    throw error;
-  }
+  return staleBinary(binary) !== undefined;
 }

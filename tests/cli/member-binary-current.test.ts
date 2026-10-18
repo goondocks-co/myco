@@ -76,7 +76,7 @@ beforeEach(() => {
     stageBinary: async () => { throw new Error('no download allowed'); },
   };
 });
-afterEach(() => { setPluginVersion(originalVersion); restore(); fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { setPluginVersion(originalVersion); restore(); fs.rmSync(root, { recursive: true, force: true }); process.exitCode = 0; });
 
 it('attempts once per day across helper passes and treats corrupt state as due', async () => {
   let attempts = 0;
@@ -553,7 +553,8 @@ it('one broken harness leaves healthy harnesses provisioned once and a manual re
   setPluginVersion(TO);
   const install = spyOn(SymbiontInstaller.prototype, 'install');
   try {
-    expect(runProvision(['--refresh'], { mycoHome: home, cwd: root, stdout: () => {}, stderr: () => {} })).toBe(true);
+    expect(runProvision(['--refresh'], { mycoHome: home, cwd: root, stdout: () => {}, stderr: () => {} })).toBe(false);
+    expect(process.exitCode).toBe(1);
     keepCurrent(home, { binaryFound: () => true });
     const last = keepCurrent(home, { binaryFound: () => true });
     expect(install).toHaveBeenCalledTimes(1);

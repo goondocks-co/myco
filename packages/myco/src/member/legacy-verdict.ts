@@ -28,7 +28,7 @@ function absent(file: string, home = false): boolean {
   }
 }
 
-function staleBinary(binary: string | undefined, home?: string): string | undefined {
+export function staleBinary(binary: string | undefined, home?: string): string | undefined {
   if (binary === undefined || !path.isAbsolute(binary)) return;
   const inferred = binary.match(MANAGED_BINARY_HOME)?.[1];
   const homes = [home, inferred].filter((value): value is string => value !== undefined);
