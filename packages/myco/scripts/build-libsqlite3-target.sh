@@ -20,6 +20,9 @@ if [[ -z "$TARGET" ]]; then
   exit 2
 fi
 
+source "$(dirname "${BASH_SOURCE[0]}")/check-native-build-tools.sh"
+check_native_build_tools "${TARGET}"
+
 # Pinned to match sqlite3 release at time of migration. Bump deliberately.
 SQLITE_YEAR=2026
 SQLITE_VERSION=3530000
@@ -59,27 +62,25 @@ SRC="${AMALGAMATION_DIR}/sqlite3.c"
 case "${TARGET}" in
   darwin-arm64)
     OUT="${TARGET_DIR}/libsqlite3.dylib"
-    clang -shared -dynamiclib -arch arm64 -install_name @rpath/libsqlite3.dylib \
+    "${COMPILER}" -shared -dynamiclib -arch arm64 -install_name @rpath/libsqlite3.dylib \
       "${COMMON_FLAGS[@]}" "${SRC}" -o "${OUT}"
     ;;
   darwin-x64)
     OUT="${TARGET_DIR}/libsqlite3.dylib"
-    clang -shared -dynamiclib -arch x86_64 -install_name @rpath/libsqlite3.dylib \
+    "${COMPILER}" -shared -dynamiclib -arch x86_64 -install_name @rpath/libsqlite3.dylib \
       "${COMMON_FLAGS[@]}" "${SRC}" -o "${OUT}"
     ;;
   linux-x64)
     OUT="${TARGET_DIR}/libsqlite3.so"
-    gcc -shared -fPIC "${COMMON_FLAGS[@]}" "${SRC}" -ldl -lpthread -lm -o "${OUT}"
+    "${COMPILER}" -shared -fPIC "${COMMON_FLAGS[@]}" "${SRC}" -ldl -lpthread -lm -o "${OUT}"
     ;;
   linux-arm64)
     OUT="${TARGET_DIR}/libsqlite3.so"
-    : "${CC:=aarch64-linux-gnu-gcc}"
-    "${CC}" -shared -fPIC "${COMMON_FLAGS[@]}" "${SRC}" -ldl -lpthread -lm -o "${OUT}"
+    "${COMPILER}" -shared -fPIC "${COMMON_FLAGS[@]}" "${SRC}" -ldl -lpthread -lm -o "${OUT}"
     ;;
   windows-x64)
     OUT="${TARGET_DIR}/libsqlite3.dll"
-    : "${CC:=x86_64-w64-mingw32-gcc}"
-    "${CC}" -shared "${COMMON_FLAGS[@]}" "${SRC}" -o "${OUT}"
+    "${COMPILER}" -shared "${COMMON_FLAGS[@]}" "${SRC}" -o "${OUT}"
     ;;
   *)
     echo "Unknown target: ${TARGET}" >&2
