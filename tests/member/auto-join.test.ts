@@ -579,7 +579,18 @@ describe('what a machine sends about a repository', () => {
     expect(sent.length).toBeGreaterThanOrEqual(2);
     for (const body of sent) {
       expect(Object.keys(body).every((k) => ['rootKey', 'label', 'remote', 'reason', 'state', 'held', 'sessions'].includes(k))).toBe(true);
-      const text = JSON.stringify(body);
+      const { rootKey, ...metadata } = body;
+      expect(rootKey).toMatch(/^[0-9a-f]{32}$/);
+      if (typeof body.remote === 'string') {
+        const remote = new URL(body.remote);
+        expect(remote.protocol).toBe('https:');
+        expect(remote.username).toBe('');
+        expect(remote.password).toBe('');
+        expect(remote.port).toBe('');
+        expect(remote.hostname).toBe('github.com');
+        expect(['https://github.com/acme/widget', 'https://github.com/acme/gadget']).toContain(body.remote);
+      }
+      const text = JSON.stringify(metadata);
       for (const forbidden of [base, os.homedir(), 'ghp_secret', 'deploy:', '8443']) expect(text).not.toContain(forbidden);
     }
     expect(rig.env.sqlite.query(`SELECT remote FROM project_remotes ORDER BY remote`).all()).toEqual([{ remote: 'github.com/acme/widget' }]);

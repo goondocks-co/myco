@@ -1,6 +1,7 @@
 /** `myco update` resolves, verifies and adopts a binary within the selected channel. */
 
 import path from 'node:path';
+import { updateBudget } from '@myco/upgrade/update-budget.js';
 import semver from 'semver';
 import { automaticUpdatesEnabled, readInstallMarker } from '@myco/install/marker-reader.js';
 import { validateSourceIntent } from '@myco/install/adoption.js';
@@ -297,6 +298,7 @@ async function runCheck(channel: ReleaseChannel, deps: UpgradeDeps, target: stri
       // installed_version: use current as proxy (CLI doesn't track the npm install path
       // separately from the running binary)
       currentVersion,
+      updateBudget(deps).fetch,
     );
   } catch (err) {
     console.error(

@@ -144,9 +144,13 @@ describe('members and invitations', () => {
     const e = sqliteEnv();
     await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const res = await worker.fetch(await asOwner(e.db, '/api/members'), { ...e.env, ...OWNER_ENV });
-    const raw = await res.text();
-    expect(raw).not.toContain('583231');
-    const { members } = JSON.parse(raw) as { members: { id: string; linked: boolean; liveCredentials: number }[] };
+    const { members } = await res.json() as { members: { id: string; linked: boolean; liveCredentials: number }[] };
+    for (const member of members) {
+      expect(Object.keys(member).sort()).toEqual([
+        'awaitingAdmission', 'createdAt', 'effectiveRole', 'id', 'label', 'linked', 'liveCredentials',
+        'revokedAt', 'revokedBy', 'role', 'roleRevision', 'system',
+      ]);
+    }
     expect(members.find((m) => m.id === 'mem_machine_1')).toMatchObject({ linked: true, liveCredentials: 1 });
     expect(members.find((m) => m.id === 'mem_machine_2')).toMatchObject({ linked: false, liveCredentials: 0 });
   });
