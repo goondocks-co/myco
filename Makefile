@@ -1,38 +1,44 @@
 .PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install prepare-build source-build source-install dev-build dev-install dev-link dev-deploy dev-wrapper dev-unlink dev-unlink-worktree worktree-sweep dev-build-windows source-build-windows
 
-HOST_TARGET := $(shell node -e "process.stdout.write(process.platform + '-' + (process.arch === 'arm64' ? 'arm64' : 'x64'))")
+.DEFAULT_GOAL := build
+
+HOST_TARGET = $(shell node -e "process.stdout.write(process.platform + '-' + (process.arch === 'arm64' ? 'arm64' : 'x64'))")
+
+.PHONY: deps
+deps:
+	@command -v node >/dev/null 2>&1 || { echo 'Myco: Node.js >=20 with npm is required. Install from https://nodejs.org/.' >&2; exit 1; }
+	node scripts/ensure-deps.mjs $(if $(filter source-build-windows dev-build-windows,$(MAKECMDGOALS)),--windows)
 
 build: check-fast
 	$(MAKE) build-only
 build-all: check-all
 	$(MAKE) build-only
 build-fast: build
-build-only:
+build-only: deps
 	npm run build
 build-rebuild: rebuild build
-rebuild:
+rebuild: deps
 	npm rebuild
 check-fast: lint test-fast
 check-all: lint test-all
 check: check-all
-lint:
+lint: deps
 	npm run lint
 test: test-fast
-test-fast:
+test-fast: deps
 	npm run test:fast
-test-all:
+test-all: deps
 	npm test
-test-integration:
+test-integration: deps
 	npm run test:integration
-watch:
+watch: deps
 	npm run build:watch
 clean:
 	rm -rf packages/myco/dist packages/myco-shared/dist
-install:
-	npm install
+install: deps
 
 # Native assets and generated carriers required by the compiled product.
-prepare-build:
+prepare-build: deps
 	bash packages/myco/scripts/build-libsqlite3-target.sh $(HOST_TARGET)
 	npm run build:ui -w @goondocks/myco
 	cd packages/myco && npm run codegen
@@ -41,7 +47,7 @@ source-build: prepare-build
 	cd packages/myco && TARGET=$(HOST_TARGET) node scripts/build-single-target.mjs
 	cd packages/myco && node scripts/verify-build.mjs
 
-source-install:
+source-install: deps
 	node --import tsx scripts/source-install.ts
 
 # Build a member/server binary without registering or restarting a service.
@@ -79,14 +85,14 @@ dev-unlink:
 dev-unlink-worktree:
 	@rm -f $(PWD)/.myco/runtime.command $(PWD)/.myco/runtime.home $(PWD)/.myco/runtime-exec
 
-worktree-sweep:
+worktree-sweep: deps
 	@node scripts/worktree-sweep.mjs $(ARGS)
 
 
 # Cross-compile the same member/server product for a Windows development machine.
 dev-build-windows: source-build-windows
 
-source-build-windows:
+source-build-windows: deps
 	npm run build:ui -w @goondocks/myco
 	cd packages/myco && npm run codegen
 	npm i --no-save --force sqlite-vec-windows-x64 @vscode/ripgrep-win32-x64
