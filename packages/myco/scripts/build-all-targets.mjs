@@ -7,8 +7,7 @@
 // Prereqs: each target's libsqlite3 artifact must already exist under
 // `vendor-src/libsqlite3/<target>/` and the matching sqlite-vec platform
 // sub-package must be installed in node_modules. In CI, the workflow takes
-// care of both. Locally, this script only makes sense for the host target
-// (dev-link already wires that path).
+// care of both. Use `make source-build` for a local host build.
 
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
