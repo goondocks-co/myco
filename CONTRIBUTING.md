@@ -6,18 +6,19 @@ For installing and using Myco, start at [Join a Myco](docs/quickstart.md). This 
 
 ## Set up a checkout
 
-Install Node and npm for the build tooling, and the Bun version pinned in [.bun-version](.bun-version) for the runtime and tests. CI's setup is in [.github/actions/ci-setup/action.yml](.github/actions/ci-setup/action.yml).
+Install Node.js >=20 with npm, Bun (the version pinned in [.bun-version](.bun-version) is recommended), curl, unzip and a C compiler: `xcode-select --install` on macOS, or `apt install build-essential` on Debian/Ubuntu. Windows cross-builds also need MinGW (`brew install mingw-w64` or `apt install gcc-mingw-w64-x86-64`). Make checks these tools before building; a different Bun version prints a notice and continues. CI's setup is in [.github/actions/ci-setup/action.yml](.github/actions/ci-setup/action.yml).
 
 ```bash
 git clone https://github.com/goondocks-co/myco.git
 cd myco
-npm ci
+make source-build
 ```
 
-The server dashboard and documentation site have their own dependencies. Install them when working on those surfaces:
+Make reinstalls the workspace or dashboard packages only when they no longer match the committed lockfile. This also recognizes installs made with plain `npm ci` or `npm install`. Use `make install` to prepare packages without building. Direct dashboard `build:ui` and `check:ui` scripts use the same check and require only Node and npm.
+
+The documentation site is built separately and is explicitly excluded from Make's preparation. Install its dependencies before running its scripts:
 
 ```bash
-npm ci --prefix packages/myco-server/ui
 npm ci --prefix docs
 ```
 

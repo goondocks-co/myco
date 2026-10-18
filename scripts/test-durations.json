@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: PR1889 correction ensure-deps canonical npm test, Bun 1.4.0 darwin-arm64; 21000ms covers twice the measured file duration plus startup",
     "local: PR1888 correction 1 source-install 14207ms, Bun 1.4.0 darwin-arm64; 2x runtime plus startup rounded to 30000ms",
     "local: canonical root focused npm test, Bun 1.4.0, darwin-arm64; 2x measured file duration plus startup",
     "local: PR5 correction full npm test, Bun 1.4.0, darwin-arm64",
@@ -653,6 +654,7 @@
     "tests/runtime/bundled-path.test.ts": 97,
     "tests/runtime/spawn-detached.test.ts": 157,
     "tests/scripts/check-test-shards.test.ts": 42189,
+    "tests/scripts/ensure-deps.test.ts": 21000,
     "tests/scripts/make-dogfood.test.ts": 455,
     "tests/scripts/run-bun-tests-guards.test.ts": 168839,
     "tests/scripts/run-test-command.test.ts": 2111,

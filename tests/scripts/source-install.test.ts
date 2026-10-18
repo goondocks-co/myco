@@ -25,7 +25,7 @@ function fixture() {
   fs.mkdirSync(path.join(checkout, 'packages/myco'), { recursive: true });
   for (const dir of ['src', 'scripts']) fs.symlinkSync(path.join(repo, 'packages/myco', dir), path.join(checkout, 'packages/myco', dir), 'dir');
   fs.symlinkSync(path.join(repo, 'node_modules'), path.join(checkout, 'node_modules'), 'dir');
-  fs.writeFileSync(path.join(checkout, 'Makefile'), `include ${repo}/Makefile\nprepare-build:\n\t@echo prepare >> built\nsource-build:\n\t@echo build-and-verify >> built\n`);
+  fs.writeFileSync(path.join(checkout, 'Makefile'), `include ${repo}/Makefile\ndeps:\n\t@node -e ""\nprepare-build:\n\t@echo prepare >> built\nsource-build:\n\t@echo build-and-verify >> built\n`);
   const binary = path.join(checkout, `packages/myco-${target}/bin/myco`);
   fs.mkdirSync(path.dirname(binary), { recursive: true });
   fs.writeFileSync(binary, `#!${resolveTestTool('node')}\nconst fs=require('fs'),path=require('path');
