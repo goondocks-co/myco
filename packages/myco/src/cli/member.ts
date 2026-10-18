@@ -1247,10 +1247,8 @@ type PinOutcome =
  * The pin names a machine-local absolute path. Git's clone-local exclude
  * file must ignore it before the pin is created.
  *
- * A pin naming a DIFFERENT home is never overwritten: it is the record of
- * another install (a `make dev-link` dogfood pin, say) and rewriting it would
- * move every hook, every `myco` command and the MCP server in that project to a
- * home its operator did not choose. The caller reports the conflict instead.
+ * A trusted pin selecting another install is never overwritten. The caller
+ * reports the conflict and preserves the operator's selected home.
  */
 function pinProjectHome(root: string, mycoHome: string): PinOutcome {
   const pinPath = path.join(root, '.myco', RUNTIME_HOME_FILENAME);
