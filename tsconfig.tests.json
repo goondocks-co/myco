@@ -20,6 +20,7 @@
     "packages/myco/src/**/*",
     "packages/myco-shared/src/**/*",
     "tests/**/*.ts",
+    "scripts/source-install.ts",
     "scripts/smoke-member-global.ts",
     "scripts/smoke-worker-run.ts",
     "scripts/smoke-worker-service.ts"

@@ -230,7 +230,7 @@ async function main() {
   const binaryName = process.platform === 'win32' ? 'myco.exe' : 'myco';
 
   // Source-checkout escape hatch: during local dev (`npm ci` in the monorepo)
-  // the platform package's `bin/` directory is empty until `make dev-link` (or
+  // the platform package's `bin/` directory is empty until `make source-build` (or
   // an explicit `npm run build:binary`) compiles the host-target binary into
   // it. Detect that state via the presence of `src/`, and exit 0 with a hint
   // so monorepo installs don't trip postinstall.
@@ -243,7 +243,7 @@ async function main() {
     if (isSourceCheckout) {
       process.stderr.write(
         `[myco] No platform binary found in ${platformPkg}/bin/${binaryName}. ` +
-        `Skipping postinstall in source checkout (expected before \`make dev-link\`).\n`,
+        `Skipping postinstall in source checkout (expected before \`make source-build\`).\n`,
       );
       process.exit(0);
     }

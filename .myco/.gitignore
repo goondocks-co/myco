@@ -1,8 +1,7 @@
 # Per-user, per-machine config overrides
 local.yaml
 
-# Project-scope runtime pins written by `make dev-link`. Per-machine,
-# never committed.
+# Per-machine runtime overrides; never committed.
 runtime.command
 runtime.home
 runtime-exec

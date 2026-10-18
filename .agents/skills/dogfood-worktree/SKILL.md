@@ -5,12 +5,30 @@ description: Build and smoke-test Myco member or server changes from an isolated
 
 # Dogfood a worktree
 
-`make dev-build` builds vendor SQLite, the Deployment UI, generated bundles and the host binary. `make build` runs checks and builds without restarting a service.
+Build with `make source-build` from the checkout. It prepares vendor SQLite, the Deployment UI and generated carriers, then compiles and verifies the host binary. `make build` runs the repository checks and builds; run it before finishing a change.
 
-For a project-local runtime override, `make dev-link-worktree` writes `.myco/runtime.command`, `.myco/runtime.home` and a wrapper pointing at that worktree's binary. It leaves shared command links alone. `make dev-unlink-worktree` removes those pins.
+Run the absolute artifact path from a scratch cwd with every home inside scratch. On macOS/Linux, choose your lane's scratch root and use:
 
-Set `HOME`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME`, `MYCO_HOME` and `TMPDIR` inside your scratch directory for tests. Run any Myco command from that scratch directory. An explicit `MYCO_HOME` wins over the wrapper's default dev home; verify `myco doctor` and `myco member status` before attributing capture to a Deployment.
+```bash
+artifact="$(pwd)/packages/myco-$(node -p 'process.platform + "-" + process.arch')/bin/myco"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/myco-worktree-XXXXXX")"
+mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/cwd"
+(
+  export HOME="$scratch/home" USERPROFILE="$scratch/home"
+  export CODEX_HOME="$HOME/.codex" CLAUDE_CONFIG_DIR="$HOME/.claude"
+  export XDG_CONFIG_HOME="$HOME/.config" MYCO_HOME="$HOME/.myco"
+  export LOCALAPPDATA="$HOME/AppData/Local" TMPDIR="$scratch/tmp"
+  cd "$scratch/cwd"
+  "$artifact" --version
+  "$artifact" doctor
+  "$artifact" member status
+)
+```
 
-A member has no daemon or local vault. Hooks load the binary per invocation; a native Deployment and a registered runner each keep their running executable until their own process restarts. Restart only an isolated process you started. Agent work runs on registered runners.
+Inspect the reported home and installation provenance before attributing state. A directly run artifact has unknown installation origin until it has been installed. This recipe creates no repository pins or personal configuration. `make dev-unlink-worktree` removes existing worktree pins.
 
-Use injected service runners for lifecycle tests. A per-user service manager ignores `HOME`, so sandbox homes alone do not isolate service registration.
+To test installation, retain those scratch variables and cwd for the binary, and invoke `ALLOW_WORKTREE_INSTALL=1 make -C /absolute/worktree source-install`. Installation builds and verifies once, then the candidate's updater copies it into the selected home's managed destination. Worktree installation requires that explicit opt-in. Use `make source-install` for a deliberate personal source install; plain `myco update` returns it to the selected channel release.
+
+A member has no daemon or local vault. Hooks load the installed binary per invocation; a native Deployment and a registered runner keep their executable until their process restarts. Use local Deployments and injected service runners for tests. A per-user service manager ignores `HOME`; scratch homes alone do not isolate service registration. Stop only processes you started and verify none remains before finishing.
+
+For Windows, cross-build on macOS/Linux, copy the `.exe`, and install it using the recorded build-machine checkout and commit. See [Contributing](../../../CONTRIBUTING.md#source-builds-on-windows). Set Windows `USERPROFILE` and `LOCALAPPDATA` inside scratch as well as the other home variables, and run from a scratch cwd.

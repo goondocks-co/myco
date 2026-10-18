@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { renderReleaseSelector, renderPowerShellReleaseSelector } from './release-policy.mjs';
 import { renderJqSourceMarkerValidator, renderAwkSourceMarkerValidator, renderPowerShellSourceMarkerValidator } from './render-install-marker-schema.mjs';
 const generated = [
+  ['install-path', [['install.sh', () => fs.readFileSync(new URL('./install-path.sh', import.meta.url), 'utf8')]]],
   ['release-selector', [['install.sh', renderReleaseSelector], ['install.ps1', renderPowerShellReleaseSelector]]],
   ['source-marker-jq', [['install.sh', renderJqSourceMarkerValidator]]],
   ['source-marker-awk', [['install.sh', renderAwkSourceMarkerValidator]]],

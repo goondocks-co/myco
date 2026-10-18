@@ -26,6 +26,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+import { managedBinaryPath } from '../../packages/myco/scripts/managed-paths.mjs';
+import { writeInstallMarker } from '@myco/install/managed-binary.js';
+import crypto from 'node:crypto';
 
 const REPO_ROOT = path.resolve(import.meta.dirname ?? __dirname, '..', '..');
 const SNIPPET = path.join(REPO_ROOT, 'packages/myco/src/symbionts/templates/_shared/plugin-helpers.ts.snippet');
@@ -143,6 +146,28 @@ const expectShimAgrees = (dir: string, env: { HOME: string; MYCO_HOME?: string }
 };
 
 describe('plugin snippet and binary home resolution agree', () => {
+  it('selects a source installation from the home without command or home pins', () => {
+    const fakeHome = tmpdir('myco-source-homedir-');
+    const project = tmpdir('myco-source-project-');
+    const home = path.join(fakeHome, '.myco');
+    const binary = managedBinaryPath(home, process.platform, path.join(fakeHome, 'AppData', 'Local'));
+    fs.mkdirSync(path.dirname(binary), { recursive: true });
+    fs.writeFileSync(binary, 'source artifact', { mode: 0o755 });
+    writeInstallMarker(home, { channel: 'stable', source: 'checkout', bin: binary, prerelease: true,
+      checkout: project, commit: 'a'.repeat(40), version: '0.0.0-dev+fixture.b1',
+      binary_sha256: crypto.createHash('sha256').update(fs.readFileSync(binary)).digest('hex') });
+    expectAgreed(resolveBoth([project], { HOME: fakeHome })[0], home);
+    const driver = path.join(tmpdir('myco-source-driver-'), 'driver.ts');
+    fs.writeFileSync(driver, driverScript().replace('process.stdout.write(JSON.stringify(answers));',
+      'process.stdout.write(resolveMycoBinary(process.argv[2]));'));
+    expect(execFileSync(process.execPath, [driver, project], { cwd: project, encoding: 'utf8',
+      env: sandboxChildEnv(fixtureRoot, { HOME: fakeHome, MYCO_HOME: home, LOCALAPPDATA: path.join(fakeHome, 'AppData', 'Local') }),
+    })).toBe(binary);
+    for (const dir of [home, path.join(project, '.myco')]) {
+      for (const name of ['runtime.command', 'runtime.home']) expect(fs.existsSync(path.join(dir, name))).toBe(false);
+    }
+  });
+
   it('agree on the project pin, a nested directory under it, and no pin at all', () => {
     const fakeHome = tmpdir('myco-agree-homedir-');
     const pinnedHome = tmpdir('myco-agree-pinned-');

@@ -26,8 +26,9 @@ Update this machine's Myco within its recorded release channel, then refresh
 member agent setup. Runners update only between runs. Channel updates never
 downgrade. Without an installed runner, an explicit version can step back.
 
-A skipped binary update says why; agent setup still refreshes. A failed
-replacement restores the previous version and reports the rollback.
+A skipped release update says why; agent setup still refreshes. A refused
+source install exits before refresh. A failed replacement restores the previous
+version and reports the rollback.
 Supports macOS, Linux and Windows.
 
 Alias: myco upgrade
@@ -240,7 +241,10 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
   if (channelArg) console.log(`Updating on the '${channelArg}' channel for this run; it is not saved.`);
 
   const outcome = await updateBinary('manual', { skipBinary: parsed.has('--skip-binary'), targetVersion: targetVersionArg, channel, source }, { ...deps, home, currentVersion });
-  if (outcome.kind === 'skipped') console.log(`Myco: binary update skipped (${outcome.reason}).`);
+  if (outcome.kind === 'skipped') {
+    console.log(`Myco: binary update skipped (${outcome.reason}).`);
+    if (source) { process.exitCode = 1; return; }
+  }
   else if (outcome.kind === 'failed') {
     console.error(`Myco: update failed (${outcome.reason}).`);
     process.exitCode = 1;

@@ -1,4 +1,4 @@
-.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install dev-build dev-install dev-link dev-deploy dev-wrapper dev-link-worktree dev-unlink dev-unlink-worktree worktree-sweep dev-build-windows
+.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install prepare-build source-build source-install dev-build dev-install dev-link dev-deploy dev-wrapper dev-unlink dev-unlink-worktree worktree-sweep dev-build-windows source-build-windows
 
 HOST_TARGET := $(shell node -e "process.stdout.write(process.platform + '-' + (process.arch === 'arm64' ? 'arm64' : 'x64'))")
 
@@ -31,12 +31,21 @@ clean:
 install:
 	npm install
 
-# Build a member/server binary without registering or restarting a service.
-dev-build:
+# Native assets and generated carriers required by the compiled product.
+prepare-build:
 	bash packages/myco/scripts/build-libsqlite3-target.sh $(HOST_TARGET)
 	npm run build:ui -w @goondocks/myco
 	cd packages/myco && npm run codegen
+
+source-build: prepare-build
 	cd packages/myco && TARGET=$(HOST_TARGET) node scripts/build-single-target.mjs
+	cd packages/myco && node scripts/verify-build.mjs
+
+source-install:
+	node --import tsx scripts/source-install.ts
+
+# Build a member/server binary without registering or restarting a service.
+dev-build: source-build
 	cd packages/myco && node scripts/select-binary.mjs
 
 dev-wrapper:
@@ -67,13 +76,6 @@ dev-unlink:
 	@rm -f $(HOME)/.local/bin/myco-dev
 	@rm -f $(PWD)/.myco/runtime.command $(PWD)/.myco/runtime.home
 
-dev-link-worktree: dev-build
-	@mkdir -p $(PWD)/.myco
-	@$(MAKE) -s dev-wrapper OUT="$(PWD)/.myco/runtime-exec" WRAPPED="$(PWD)/packages/myco-$(HOST_TARGET)/bin/myco"
-	@printf '%s/.myco/runtime-exec\n' "$(PWD)" > $(PWD)/.myco/runtime.command
-	@printf '%s/.myco-dev\n' "$(HOME)" > $(PWD)/.myco/runtime.home
-	@chmod 0644 $(PWD)/.myco/runtime.home
-
 dev-unlink-worktree:
 	@rm -f $(PWD)/.myco/runtime.command $(PWD)/.myco/runtime.home $(PWD)/.myco/runtime-exec
 
@@ -82,7 +84,9 @@ worktree-sweep:
 
 
 # Cross-compile the same member/server product for a Windows development machine.
-dev-build-windows:
+dev-build-windows: source-build-windows
+
+source-build-windows:
 	npm run build:ui -w @goondocks/myco
 	cd packages/myco && npm run codegen
 	npm i --no-save --force sqlite-vec-windows-x64 @vscode/ripgrep-win32-x64

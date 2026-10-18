@@ -32,8 +32,7 @@ export function resolveMachineRuntimeCommandPath(mycoHome = resolveMycoHome()): 
  *
  * The walk must stay a filesystem walk — not a git-vault resolution — because
  * a git worktree's vault resolves to the MAIN repo root, which would skip a
- * worktree-local pin written by `make dev-link-worktree` and route dogfood
- * hooks to the wrong binary.
+ * worktree-local runtime override and route hooks to the wrong binary.
  */
 export function resolveRuntimePinForCwd(cwd: string): string | null {
   return readLayeredPin({ kind: 'walk-up', from: cwd })?.pin ?? null;

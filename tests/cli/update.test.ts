@@ -225,6 +225,7 @@ it('adopts the running source candidate before refreshing member setup', async (
 
 it('routes a source candidate through the installed runner owner', async () => {
   const candidate = path.join(home, 'candidate');
+  const { withRunnerUpdateState } = await import('@myco/runner/update.js');
   let queued = false;
   await run(sourceArgs(), {
     home, currentVersion: sourceVersion, sourceBinary: candidate,
@@ -234,11 +235,17 @@ it('routes a source candidate through the installed runner owner', async () => {
       expect(args).toEqual(['update', '--server', 'https://fixture.invalid']);
       expect(deps?.sourceArtifact).toEqual({ binaryPath: candidate, version: sourceVersion, checkout: home, commit: sourceCommit });
       queued = true;
+      withRunnerUpdateState(home, state => {
+        state.requests = { fixture: { id: 'fixture', requestedAt: Date.now() } };
+      });
+      deps?.stdout?.('Myco: source replacement queued; waiting for the runner to become idle');
       return true;
     },
     placeBinary: () => { throw new Error('source candidate bypassed runner'); },
   });
   expect(queued).toBe(true);
+  expect(output.join('\n')).toContain('source replacement queued');
+  expect(output.join('\n')).toContain('Agents refreshed: no (runner update pending).');
 });
 
 it('refuses incomplete or conflicting source intents before updating', async () => {
@@ -310,6 +317,21 @@ it('keeps adopted source provenance on refresh failure and retries setup without
   expect(events).toEqual(['adopt']);
   expect(refreshes).toBe(2);
   expect(output.join('\n')).toContain('Agents refreshed: yes.');
+});
+
+it('fails an explicit source install refused by a retained runtime command pin without refreshing agents', async () => {
+  const candidate = path.join(home, 'source-candidate');
+  fs.writeFileSync(candidate, sourceVersion);
+  const pin = path.join(home, 'runtime.command');
+  fs.writeFileSync(pin, path.join(home, 'another-binary') + '\n', { mode: 0o600 });
+  let refreshed = false;
+  await run(sourceArgs(), { home, cwd: home, currentVersion: sourceVersion, sourceBinary: candidate,
+    isMemberHome: () => true, refreshMember: async () => { refreshed = true; } });
+  expect(process.exitCode).toBe(1);
+  expect(output.join('\n')).toContain('runtime pin selects another binary');
+  expect(refreshed).toBe(false);
+  expect(fs.readFileSync(pin, 'utf8')).toBe(path.join(home, 'another-binary') + '\n');
+  expect(readInstallMarker(home, true)?.source).toBe('curl');
 });
 
 it('prints setup after the first source install into a home without membership', async () => {
