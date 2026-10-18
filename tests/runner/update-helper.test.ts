@@ -527,6 +527,25 @@ it('ends an unstarted handoff after a bounded installation wait and explains how
   expect(f.stops).toBe(0);
 });
 
+it('restarts a stopped runner when an unstarted handoff exhausts its installation wait', async () => {
+  const f = fixture('bounded-wait-stopped-runner');
+  f.setRunning(false);
+  const bytes = fs.readFileSync(f.binaryPath);
+  const held = acquireInstallationLease(f.home);
+  if (!held.acquired) throw new Error('fixture lease unavailable');
+  let waited = 0;
+  f.deps.wait = async ms => { waited += ms; };
+  f.deps.log = () => {};
+  try { await runRunnerUpdateHelper(runnerUpdateStatePath(f.home), f.deps); }
+  finally { held.release(); }
+  expect(waited).toBe(HELPER_INSTALLATION_WAIT_MS);
+  expect(f.starts).toBe(1);
+  expect(f.stops).toBe(0);
+  expect(fs.readFileSync(f.binaryPath)).toEqual(bytes);
+  expect(readRunnerUpdateState(f.home).transaction).toBeUndefined();
+  expect(readRunnerUpdateState(f.home).lastResults?.[serverUrl]?.result).toBe('refused');
+});
+
 it('allows member provisioning during runner probation', async () => {
   const f = fixture('provision-during-probation');
   const restoreHome = bindSandboxChildHome(f.home);

@@ -107,7 +107,7 @@ it('projects checkout origin from a hash-bound marker after the checkout is gone
   expect(readInstallation(home, version, binary)).toMatchObject({ source: 'checkout', record: 'matching', checkout: value.checkout, commit,
     detail: `Source build from ${value.checkout}, commit 12345678` });
   expect(readInstallation(home, '2.0.0', binary)).toMatchObject({ source: 'unknown', record: 'mismatch', checkout: null, commit: null });
-  const remedy = `This binary does not match the installed source build. Rerun the source install from its original built executable (\`<source-binary> update --source-checkout <absolute-checkout> --source-commit <full-commit>\`), using that build's checkout and commit. Running \`myco update\` instead installs the selected channel release.`;
+  const remedy = `This binary does not match the installed source build. Run \`make source-install\` in ${value.checkout}. Running \`myco update\` instead installs the selected channel release.`;
   fs.writeFileSync(binary, 'different bytes');
   expect(readInstallation(home, version, binary)).toMatchObject({ record: 'mismatch', checkout: null, commit: null,
     detail: remedy });
@@ -118,16 +118,12 @@ it('projects checkout origin from a hash-bound marker after the checkout is gone
     detail: remedy });
 });
 
-it('asks for the original candidate metadata after an interrupted adoption, not the previous marker provenance', () => {
+it('offers rebuilding the recorded checkout after an interrupted adoption', () => {
   const previous = marker('checkout');
   fs.writeFileSync(binary, `#!/bin/sh\nprintf '%s\\n' '${next}'\n`, { mode: 0o755 });
   const installation = readInstallation(home, next, binary);
   expect(installation).toMatchObject({ record: 'mismatch', checkout: null, commit: null });
-  expect(installation.detail).toContain('from its original built executable');
-  expect(installation.detail).toContain('<source-binary> update --source-checkout <absolute-checkout> --source-commit <full-commit>');
-  expect(installation.detail).toContain("using that build's checkout and commit");
-  expect(installation.detail).not.toContain(previous.checkout);
-  expect(installation.detail).not.toContain(commit);
+  expect(installation.detail).toContain('Run `make source-install` in ' + previous.checkout);
   expect(installation.detail).toContain('`myco update` instead installs the selected channel release');
 });
 

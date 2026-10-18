@@ -1,5 +1,5 @@
 // Build a single target via TARGET env var — used by CI matrix, Makefile
-// dev-link, and the plain `npm run build` local flow. Defaults to the host
+// source builds, and the plain `npm run build` local flow. Defaults to the host
 // platform when TARGET is unset so local builds don't need all five targets
 // staged. No shell interpolation.
 

@@ -39,7 +39,7 @@ const mockedToolPaths = new Set<string>();
 function toolbox(dir: string, opts: { jq: boolean; curl?: string }): string {
   fs.mkdirSync(dir, { recursive: true });
   const tools = ['sh', 'env', 'uname', 'mktemp', 'sed', 'grep', 'awk', 'sort', 'head', 'tail', 'cut', 'tr', 'cat', 'rm', 'mkdir', 'mv', 'cp', 'chmod', 'sleep', 'kill', 'date',
-    'cmp', 'sha256sum', 'shasum', 'codesign', 'xattr', 'perl', ...(opts.jq ? ['jq'] : [])];
+    'ln', 'readlink', 'cmp', 'sha256sum', 'shasum', 'codesign', 'xattr', 'perl', ...(opts.jq ? ['jq'] : [])];
   for (const tool of tools) {
     const found = resolveTestTool(tool);
     if (found) fs.symlinkSync(found, path.join(dir, tool));
@@ -252,9 +252,9 @@ describe('the Myco 2.0 installer', () => {
     const home = freshHome();
     const run = install(home, FROM());
     expect(run.status).toBe(0);
-    expect(files(home)).toEqual(['.myco/bin/myco', '.myco/bin/versions/2.0.0-beta.1/myco', '.myco/install.json', '.zshenv']);
+    expect(files(home)).toEqual(['.myco/bin/myco', '.myco/bin/versions/2.0.0-beta.1/myco', '.myco/install.json', '.profile', '.zprofile', '.zshenv']);
     expect(spawnSync(path.join(home, '.myco', 'bin', 'myco'), ['--version'], { cwd: home, env: sandboxChildEnv(home), encoding: 'utf8' }).stdout.trim()).toBe('2.0.0-beta.1');
-    expect(fs.readFileSync(path.join(home, '.zshenv'), 'utf8')).toContain(`export PATH="${path.join(home, '.myco', 'bin')}:$PATH"`);
+    expect(fs.readFileSync(path.join(home, '.zshenv'), 'utf8')).toContain(`export PATH='${path.join(home, '.myco', 'bin')}':$PATH`);
     expect(run.out).toContain('Myco 2.0.0-beta.1 installed to');
     expect(run.out).toContain("  Run:\n    myco setup\n  It guides you through starting your own Myco, joining one, or running\n  Myco's work on an always-on machine (a runner).");
     expect(run.out).not.toContain('cutover');
@@ -426,7 +426,7 @@ exec '${mv}' "$@"
     const home = freshHome();
     fs.writeFileSync(path.join(home, '.bash_profile'), '# mine\n');
     expect(install(home, FROM()).status).toBe(0);
-    expect(fs.readFileSync(path.join(home, '.bash_profile'), 'utf8')).toContain(`export PATH="${path.join(home, '.myco', 'bin')}:$PATH"`);
+    expect(fs.readFileSync(path.join(home, '.bash_profile'), 'utf8')).toContain(`export PATH='${path.join(home, '.myco', 'bin')}':$PATH`);
   });
 
   it.skipIf(!HAS_CC)('launch checks isolate every configuration home under the probe home', () => {

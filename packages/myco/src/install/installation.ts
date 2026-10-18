@@ -46,7 +46,7 @@ export function readInstallation(home: string, version = getPluginVersion(), bin
   const checkout = checkoutMarker?.checkout ?? null;
   const commit = checkoutMarker?.commit ?? null;
   const detail = marker?.source === 'checkout' && record === 'mismatch'
-    ? `This binary does not match the installed source build. Rerun the source install from its original built executable (\`<source-binary> update --source-checkout <absolute-checkout> --source-commit <full-commit>\`), using that build's checkout and commit. Running \`myco update\` instead installs the selected channel release.`
+    ? `This binary does not match the installed source build. Run \`make source-install\` in ${marker.checkout}. Running \`myco update\` instead installs the selected channel release.`
     : source === 'checkout'
       ? checkoutMarker !== null ? `Source build from ${checkoutMarker.checkout}, commit ${checkoutMarker.commit.slice(0, SHORT_COMMIT_LENGTH)}` : `Source build ${version} (origin unknown)`
       : `${version}${source === 'unknown' ? ' (origin unknown)' : ''}`;
