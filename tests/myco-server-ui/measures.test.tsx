@@ -25,6 +25,7 @@ const report = (over: Record<string, unknown> = {}) => ({
   since: 0,
   contextPresent: { value: null, sampleSize: 0 },
   sporeServeRate: { value: null, sampleSize: 0 },
+  sessionStartPresent: { value: null, sampleSize: 0 },
   callsPerPrompt: { value: null, sampleSize: 0 },
   callsPerPromptByHarness: [],
   planReadsPerSession: { value: null, sampleSize: 0 },
@@ -138,13 +139,14 @@ describe('the measures on Health', () => {
         callsPerPromptByHarness: [{ harness: 'claude-code', value: 1.5, sampleSize: 8, calls: 12 }],
         planReadsPerSession: { value: 0.5, sampleSize: 4 },
         firstInjectionMs: { value: 90_000, sampleSize: 2 },
+        sessionStartPresent: { value: 0.75, sampleSize: 4 },
       })),
     }));
     mount('/measures');
     const rendered = await tiles();
 
-    // Six measures, and every one of them carries a sample line the reader can see.
-    expect(rendered).toHaveLength(6);
+    // Seven measures, and every one of them carries a sample line the reader can see.
+    expect(rendered).toHaveLength(7);
     for (const tile of rendered) {
       expect({ label: tile.label, hasSample: /^n = [\d,]+ \w+s?$/.test(tile.sample), visible: tile.sampleVisible })
         .toEqual({ label: tile.label, hasSample: true, visible: true });
@@ -165,8 +167,8 @@ describe('the measures on Health', () => {
     }));
     mount('/measures');
     const byLabel = new Map((await tiles()).map((t) => [t.label, t]));
-    expect(byLabel.get('Prompts that arrived with context')).toEqual({
-      label: 'Prompts that arrived with context', value: '63%', sample: 'n = 8 prompts', sampleVisible: true, noSample: false,
+    expect(byLabel.get('Prompts that received context')).toEqual({
+      label: 'Prompts that received context', value: '63%', sample: 'n = 8 prompts', sampleVisible: true, noSample: false,
     });
     expect(byLabel.get('Time to first context')).toEqual({
       label: 'Time to first context', value: '1m 30s', sample: 'n = 1 machine', sampleVisible: true, noSample: false,
@@ -232,14 +234,14 @@ describe('the measures on Health', () => {
     await screen.findAllByTestId('measure-tile');
     await pick('Window', 'Last 7 days');
     await waitFor(() => expect(requested).toContain('/api/kpis?window=7'));
-    await waitFor(async () => expect(new Map((await tiles()).map((t) => [t.label, t])).get('Prompts that arrived with context')!.sample).toBe('n = 2 prompts'));
+    await waitFor(async () => expect(new Map((await tiles()).map((t) => [t.label, t])).get('Prompts that received context')!.sample).toBe('n = 2 prompts'));
     cleanup();
 
     // A link carries its window: the old address with one lands on it.
     const again = server(base({ '/api/kpis?window=90': () => Response.json(report({ windowDays: 90, contextPresent: { value: 1, sampleSize: 9 } })) }));
     mount('/measures?window=90');
     const byLabel = new Map((await tiles()).map((t) => [t.label, t]));
-    expect(byLabel.get('Prompts that arrived with context')!.sample).toBe('n = 9 prompts');
+    expect(byLabel.get('Prompts that received context')!.sample).toBe('n = 9 prompts');
     expect(again.requested).toContain('/api/kpis?window=90');
     expect(again.requested).not.toContain('/api/kpis?window=30');
   });

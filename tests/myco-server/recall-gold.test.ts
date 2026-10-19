@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'bun:test';
 import { EMBEDDING_TEXT_CHARS } from '@myco-server-worker/core/embedding/provider.js';
 import { INJECTION_TARGET_ITEMS, selectSporesForPrompt } from '@myco-server-worker/core/injection.js';
+import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { loadRecallFixture, seedStatements } from '../parity/recall/fixture.ts';
 import { UnknownFixtureText } from '../parity/recall/lookup.ts';
 import { compareToBaseline, describeComparison, mustNotRegressions, scoreCase, summarize, summarizeMustNot, withTarget, type GoldCase, type RecallBaseline } from '../parity/recall/score.ts';
@@ -77,7 +78,7 @@ describe('model-relative prompt selection on frozen gold geometry', () => {
       const answers = [];
       for (const c of gold.cases) {
         const answer = await selectSporesForPrompt(db, scope, { enabled: true, maxPerPrompt: 7 }, true,
-          { sessionId: c.id, promptId: c.id, promptHash: c.id, prompt: c.prompt, now: 1 }, async () => semantic);
+          { sessionId: c.id, admission: sessionWriteAdmission({ projectId: scope.projectId, machineId: 'machine_1' }, c.id), promptId: c.id, promptHash: c.id, prompt: c.prompt, now: 1 }, async () => semantic);
         answers.push({ id: c.id, items: answer.items.map(i => ({ id: i.id, kind: i.kind })), counts: answer.counts });
       }
       return answers;

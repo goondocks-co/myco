@@ -40,7 +40,7 @@ it('D1 session contributions are attributed once and opening 500 turns stays wit
     const prepare = measured.db.prepare.bind(measured.db);
     measured.db.prepare = sql => { statements++; return prepare(sql); };
     const scope = { projectId: 'project' };
-    expect(await sessionTurnContexts(measured.db, scope, 'session')).toEqual({ 'prompt-1': { start: true, subagents: 1 } });
+    expect(await sessionTurnContexts(measured.db, scope, 'session')).toEqual({ 'prompt-1': { subagents: 1 } });
     expect(await toolUsage(measured.db, scope, 'session')).toEqual([{ toolName: 'Read', count: 500 }]);
     const headerReads = measured.reads();
     expect(headerReads).toBeLessThan(2_000);

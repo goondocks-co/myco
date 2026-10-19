@@ -34,13 +34,17 @@
  */
 import type { ErrorClassifier, RelationalStore } from './adapters.js';
 import type { ContextTimings } from './context-timing.js';
-import { INJECTION_LEAVES, InjectionFailure, emptyInjectionCounts, injectionLeaves, selectSporesForPrompt, type InjectionCounts, type InjectionLeaves, type InjectionSkip } from './injection.js';
+import { INJECTION_LEAVES, InjectionFailure, emptyInjectionCounts, injectionLeaves, selectSporesForPrompt, type AskNaming, type Delivery, type InjectionCounts, type InjectionLeaves, type InjectionSkip } from './injection.js';
+import type { PreparedStatement } from './adapters.js';
 import type { SemanticSearch } from '../read/embedding.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingTexts } from './settings.js';
 import { sha256Hex } from '../hash.js';
 import type { ReadScope } from '../read/scope.js';
+import type { SessionWriteAdmission } from '../ingest/projections.js';
+import type { Refusal } from '../telemetry.js';
 import { classify, emit, type ErrorClass } from '../telemetry.js';
 import { BLOCK_JOIN, projectLine, sessionInjectionKind, type SessionContextRequest, type SessionContextIdentity } from '@goondocks/myco-shared/recall';
+import type { DeliveredSessionRecord } from '@goondocks/myco-shared/prompt-identity';
 export { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 
 /** The most text one prompt is served. A part that would cross it is dropped whole. */
@@ -124,22 +128,27 @@ export async function readRecallLeaves(db: RelationalStore): Promise<RecallLeave
 }
 
 /**
- * Records that this session has been served `kind`, and answers whether the
- * record is new. A second call for the same (project, session, kind) answers
- * false, and the caller serves nothing.
+ * The outcome of recording that a session is served `kind`: a new record, a `repeat` of one the session already holds
+ * (the caller serves nothing), or the session's admission refusing the write (the caller answers the refusal).
  */
+export type SessionRecordWrite = { outcome: 'recorded' } | { outcome: 'repeat' } | { outcome: 'refused'; refusal: Refusal };
+
+/** Records that this session has been served `kind`, once per (project, session, kind). */
 export async function recordSessionInjection(
   db: RelationalStore,
   scope: ReadScope,
   sessionId: string,
   kind: string,
   now: number,
-): Promise<boolean> {
+  admission: SessionWriteAdmission,
+): Promise<SessionRecordWrite> {
   const written = await db
-    .prepare(`INSERT OR IGNORE INTO session_injections (project_id, session_id, kind, created_at) VALUES (?, ?, ?, ?)`)
-    .bind(scope.projectId, sessionId, kind, now)
+    .prepare(`INSERT OR IGNORE INTO session_injections (project_id, session_id, kind, created_at) SELECT ?, ?, ?, ? WHERE ${admission.admission.sql}`)
+    .bind(scope.projectId, sessionId, kind, now, ...admission.admission.params)
     .run();
-  return written.meta.changes === 1;
+  if (written.meta.changes === 1) return { outcome: 'recorded' };
+  const refusal = await admission.refusal(db);
+  return refusal === null ? { outcome: 'repeat' } : { outcome: 'refused', refusal };
 }
 
 /** What one part of a served block is, named so a reader knows what it carries. */
@@ -153,7 +162,7 @@ export type SessionContextPart =
   | { kind: 'instructions' };
 
 /** Why the nudge stood down when nothing went wrong. */
-export type NudgeSkip = 'off' | 'no_intent' | 'repeat';
+export type NudgeSkip = 'off' | 'no_intent' | 'repeat' | 'unwritable';
 
 /** Why the instructions stood down when nothing went wrong. */
 export type CortexSkip = 'off' | 'empty';
@@ -183,6 +192,13 @@ export interface PromptContext {
   context: string;
   parts: PromptContextPart[];
   skipped: RecallSkip[];
+  /** The receipt and the answer rows this ask wrote, each named only when its write succeeded: what a delivery names. */
+  receiptId?: string;
+  answerId?: string;
+  /** The session record the served block carried (the plan nudge), by its key: what a delivery names so it outlives this answer. */
+  sessionRecord?: DeliveredSessionRecord;
+  /** Why the session's admission held the answer back: nothing is recorded for it, and nothing is served. */
+  refusal?: Refusal;
 }
 
 /** A failed contributor's coded cause; no prompt body or arbitrary error text is retained. */
@@ -194,7 +210,7 @@ export interface RecallFailure {
 
 /** Isolates a contributor and records its failure before the remaining contributors run. */
 async function contribute<T>(
-  identity: { projectId: string; sessionId: string; promptId?: string },
+  identity: { projectId: string; sessionId: string; promptId?: string | null },
   contributor: RecallFailure['contributor'],
   skipped: RecallSkip[],
   failures: RecallFailure[],
@@ -214,29 +230,71 @@ async function contribute<T>(
   }
 }
 
-/** Appends the answer under the prompt that asked, before capture has necessarily recorded that prompt. */
+/**
+ * Appends the answer under the prompt that asked, before capture has necessarily recorded that prompt, and names the
+ * row it wrote: an answer whose write failed names none, and one the session's admission held back serves nothing.
+ */
 async function recordPromptAnswer(
   db: RelationalStore,
-  identity: { projectId: string; sessionId: string; promptId: string },
+  identity: { projectId: string; sessionId: string; promptId: string | null },
+  naming: AskNaming,
+  admission: SessionWriteAdmission,
   answer: PromptContext,
   failures: readonly RecallFailure[],
   selection: InjectionCounts,
   now: number,
   classifyError?: ErrorClassifier,
 ): Promise<PromptContext> {
+  const answerId = crypto.randomUUID();
+  let unrecorded: ErrorClass;
   try {
-    await db.prepare(`INSERT INTO prompt_context_answers
-      (project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, selection, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(identity.projectId, identity.sessionId, identity.promptId, crypto.randomUUID(),
+    const written = await db.prepare(`INSERT INTO prompt_context_answers
+      (project_id, session_id, id, prompt_id, scope_reason, ask_protocol, asked_at, receipt_id, outcome, context_chars, parts, skipped, failures, selection, created_at)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${admission.admission.sql}`)
+      .bind(identity.projectId, identity.sessionId, answerId, naming.promptId, naming.scopeReason, naming.askProtocol, naming.askedAt, answer.receiptId ?? null,
         answer.context.length > 0 ? 'served' : 'empty', answer.context.length,
         JSON.stringify(answer.parts.map((part) => part.kind === 'spores'
           ? { kind: part.kind, sporeCount: part.sporeIds.length, planCount: part.planIds.length } : part)),
-        JSON.stringify(answer.skipped), JSON.stringify(failures), JSON.stringify(selection), now).run();
+        JSON.stringify(answer.skipped), JSON.stringify(failures), JSON.stringify(selection), now, ...admission.admission.params).run();
+    if (written.meta.changes === 1) return { ...answer, answerId };
+    const refusal = await admission.refusal(db);
+    if (refusal !== null) return { context: '', parts: [], skipped: answer.skipped, refusal };
+    unrecorded = 'unknown';
   } catch (error) {
-    emit({ kind: 'recall_answer_unrecorded', ...identity, error: classify(error, classifyError) });
+    unrecorded = classify(error, classifyError);
   }
+  emit({ kind: 'recall_answer_unrecorded', ...identity, error: unrecorded });
   return answer;
+}
+
+/** Mark one answer delivered, once: the same rule a receipt's delivery follows (`receiptDeliveredStatement`). */
+export function answerDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
+  return db.prepare(`UPDATE prompt_context_answers SET delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?
+      WHERE project_id = ? AND session_id = ? AND id = ? AND delivered_at IS NULL AND ${gate.sql}`)
+    .bind(d.at, d.promptId, d.scopeReason, d.projectId, d.sessionId, d.id, ...gate.params);
+}
+
+/**
+ * Mark a session's record delivered by its key, once: the record outlives the answer that carried it, so a delivery
+ * reported after that answer is pruned still lands.
+ */
+export function sessionRecordDeliveredStatement(db: RelationalStore, d: Omit<Delivery, 'id'> & { record: DeliveredSessionRecord }, gate: { sql: string; params: unknown[] }): PreparedStatement {
+  return db.prepare(`UPDATE session_injections SET delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?
+      WHERE project_id = ? AND session_id = ? AND kind = ? AND delivered_at IS NULL AND ${gate.sql}`)
+    .bind(d.at, d.promptId, d.scopeReason, d.projectId, d.sessionId, d.record, ...gate.params);
+}
+
+/**
+ * Mark the session's plan nudge delivered through the answer that carried it, once: how a delivery from a member that
+ * names only the answer reaches the nudge's record, while that answer is held.
+ */
+export function planNudgeDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
+  return db.prepare(`UPDATE session_injections SET delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?
+      WHERE project_id = ? AND session_id = ? AND kind = 'plan-nudge' AND delivered_at IS NULL
+        AND EXISTS (SELECT 1 FROM prompt_context_answers a, json_each(a.parts)
+                     WHERE a.project_id = ? AND a.session_id = ? AND a.id = ? AND json_extract(json_each.value, '$.kind') = 'plan-nudge')
+        AND ${gate.sql}`)
+    .bind(d.at, d.promptId, d.scopeReason, d.projectId, d.sessionId, d.projectId, d.sessionId, d.id, ...gate.params);
 }
 
 export const PROMPT_ANSWER_RETENTION_SQL = `DELETE FROM prompt_context_answers WHERE rowid IN (
@@ -259,6 +317,8 @@ export interface RecallSessionBlock {
    * Deployment keeps it under.
    */
   kind: string;
+  /** Why the session's admission held the block's record back: nothing is recorded, and nothing is served. */
+  refusal?: Refusal;
 }
 
 /** One contributor's part and the text it puts into the served block. */
@@ -306,14 +366,16 @@ export async function composePromptContext(
   scope: ReadScope,
   leaves: RecallLeaves,
   capabilityOn: boolean,
-  input: { sessionId: string; promptId: string; text: string; now: number },
+  input: { sessionId: string; text: string; now: number; admission: SessionWriteAdmission } & Partial<AskNaming>,
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   classifyError?: ErrorClassifier,
   timings?: ContextTimings,
 ): Promise<PromptContext> {
-  const identity = { projectId: scope.projectId, sessionId: input.sessionId, promptId: input.promptId };
+  const naming: AskNaming = { promptId: input.promptId ?? null, scopeReason: input.scopeReason ?? null, askProtocol: input.askProtocol ?? 'legacy', askedAt: input.askedAt ?? null };
+  const identity = { projectId: scope.projectId, sessionId: input.sessionId, promptId: naming.promptId };
   let counts = emptyInjectionCounts();
-  if (!capabilityOn) return recordPromptAnswer(db, identity, { context: '', parts: [], skipped: ['capability'] }, [], counts, input.now, classifyError);
+  let receiptId: string | undefined;
+  if (!capabilityOn) return recordPromptAnswer(db, identity, naming, input.admission, { context: '', parts: [], skipped: ['capability'] }, [], counts, input.now, classifyError);
 
   const skipped: RecallSkip[] = [];
   const failures: RecallFailure[] = [];
@@ -321,15 +383,17 @@ export async function composePromptContext(
   const spores = await contribute<Contribution | null>(identity, 'spores', skipped, failures, async () => {
     const selection = await selectSporesForPrompt(db, scope, leaves.injection, capabilityOn, {
       sessionId: input.sessionId,
-      promptId: input.promptId,
+      ...naming,
       promptHash: await sha256Hex(input.text),
       prompt: input.text,
       now: input.now,
+      admission: input.admission,
     }, resolveSemantic, timings).catch((error: unknown) => {
       if (error instanceof InjectionFailure) counts = error.counts;
       throw error;
     });
     counts = selection.counts;
+    receiptId = selection.receiptId;
     if (selection.skipped !== null) skipped.push(`spores:${selection.skipped}`);
     else if (selection.context.length > 0) {
       return { part: { kind: 'spores', sporeIds: selection.items.filter((i) => i.kind === 'spore').map((i) => i.id), planIds: selection.items.filter((i) => i.kind === 'plan').map((i) => i.id) }, text: selection.context };
@@ -340,17 +404,23 @@ export async function composePromptContext(
   const nudge = await contribute<Contribution | null>(identity, 'plan-nudge', skipped, failures, async () => {
     if (!leaves.planNudge) skipped.push('plan-nudge:off');
     else if (!detectsPlanIntent(input.text)) skipped.push('plan-nudge:no_intent');
-    else if (!(await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now))) skipped.push('plan-nudge:repeat');
-    else return { part: { kind: 'plan-nudge' }, text: PLAN_INTENT_NUDGE };
+    else {
+      const nudge = await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now, input.admission);
+      if (nudge.outcome === 'recorded') return { part: { kind: 'plan-nudge' }, text: PLAN_INTENT_NUDGE };
+      skipped.push(nudge.outcome === 'repeat' ? 'plan-nudge:repeat' : 'plan-nudge:unwritable');
+    }
     return null;
   }, classifyError);
 
   const kept = partsWithinBound([nudge, spores].filter((c): c is Contribution => c !== null));
 
-  return recordPromptAnswer(db, identity, {
+  return recordPromptAnswer(db, identity, naming, input.admission, {
     context: kept.map((c) => c.text).join(JOIN),
     parts: kept.map((c) => c.part),
     skipped,
+    // A receipt whose part the bound dropped never reaches the agent, so no delivery may name it; so too the nudge's record.
+    ...(receiptId === undefined || !kept.some((c) => c.part.kind === 'spores') ? {} : { receiptId }),
+    ...(kept.some((c) => c.part.kind === 'plan-nudge') ? { sessionRecord: 'plan-nudge' as const } : {}),
   }, failures, counts, input.now, classifyError);
 }
 
@@ -396,9 +466,10 @@ export async function composeSessionContext(
   input: SessionContextRequest & { now: number },
   /**
    * `preview`: compose the block and record nothing, so no session is held to have been served it. What a member
-   * asks for when it joins a project, to have the block cached before its first session starts.
+   * asks for when it joins a project, to have the block cached before its first session starts. A block that is
+   * recorded carries the session's write admission.
    */
-  opts: { preview?: boolean; classifyError?: ErrorClassifier } = {},
+  opts: ({ preview: true } | { preview?: false; admission: SessionWriteAdmission }) & { classifyError?: ErrorClassifier },
 ): Promise<RecallSessionBlock> {
   const recordKind = sessionInjectionKind(input);
   const skipped: RecallSkip[] = [];
@@ -430,8 +501,10 @@ export async function composeSessionContext(
   const kept = partsWithinBound(contributions, SESSION_CONTEXT_MAX_CHARS);
   if (kept.length === 0) return { context: '', parts: [], skipped, kind: recordKind };
 
-  if (opts.preview !== true && !await recordSessionInjection(db, scope, input.sessionId, recordKind, input.now)) {
-    return { context: '', parts: [], skipped: [...skipped, 'repeat'], kind: recordKind };
+  if (opts.preview !== true) {
+    const record = await recordSessionInjection(db, scope, input.sessionId, recordKind, input.now, opts.admission);
+    if (record.outcome === 'refused') return { context: '', parts: [], skipped, kind: recordKind, refusal: record.refusal };
+    if (record.outcome === 'repeat') return { context: '', parts: [], skipped: [...skipped, 'repeat'], kind: recordKind };
   }
   return {
     context: kept.map((c) => c.text).join(JOIN),

@@ -49,6 +49,8 @@ it('counts an omitted prerequisite SQL rejection as a detected mutation', () => 
     const omitted = 'CREATE TABLE "next table" (id TEXT PRIMARY KEY)';
     expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: no such table: next table'), omitted)).toBe(true);
     expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: no such table: different table'), omitted)).toBe(false);
+    // As Wrangler prints it: the store's code after the name, in terminal colours.
+    expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: \u001b[31m✘ \u001b[1mno such table: next table: SQLITE_ERROR\u001b[0m'), omitted)).toBe(true);
     expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: SQLITE_ERROR: near "X": syntax error'), omitted)).toBe(false);
     expect(isLocalMigrationSqlFailure(new Error('wrangler d1 migrations apply exited 1: not authorized: SQLITE_AUTH'), omitted)).toBe(false);
     expect(isLocalMigrationSqlFailure(new Error('spawn wrangler ENOENT'), omitted)).toBe(false);

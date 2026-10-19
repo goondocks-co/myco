@@ -417,3 +417,10 @@ runner:
       launchFallback: resolved-config
       provider: { kind: session-config, default: openai }
       tokenScope: attempt
+
+# How this agent's prompts are named: by their position in the rollout. The prompt hook's `turn_id` names a turn,
+# not one submission, so a context answer names no prompt.
+promptIdentity:
+  kind: transcript-only
+  scheme: offset-v1
+  evidence: tests/fixtures/prompt-identity/codex-user-prompt-submit.json

@@ -19,6 +19,7 @@ import type { PromptOrigin } from '../hooks/capture-rules.js';
 import { MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES } from './constants.js';
 
 export type { MemberKind } from '@goondocks/myco-shared/member-protocol';
+import { CONTEXT_DELIVERED_KIND, type DeliveredSessionRecord, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { filesNamedByToolInput, TURN_KIND, type PlanStatus, type TranscriptRole, type TurnPhase, type WireKind, type WirePromptOrigin } from '@goondocks/myco-shared/member-protocol';
 export type { TranscriptRole } from '@goondocks/myco-shared/member-protocol';
 export type { WireKind } from '@goondocks/myco-shared/member-protocol';
@@ -110,7 +111,6 @@ export const planKeyForPath = (projectId: string, planPath: string): string => d
 export const planKeyForTag = (sessionId: string, tag: string, position: number): string => deriveId('plan-tag', sessionId, tag, String(position));
 /** A plan a person pasted inside a tag envelope in a prompt, keyed by the prompt: the Deployment's parse counts positions over assistant text only, so this key never meets one it derives. */
 export const planKeyForPromptTag = (sessionId: string, tag: string, promptId: string): string => deriveId('plan-tag', sessionId, tag, 'prompt', promptId);
-export const queuedPromptIdFor = (sessionId: string, attachmentUuid: string): string => deriveId('queued-prompt', sessionId, attachmentUuid);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -331,6 +331,15 @@ export function subagentStopEvent(ctx: EnvelopeContext, input: NormalizedHookInp
  */
 export function turnEvent(ctx: EnvelopeContext, opts: { phase: TurnPhase; promptId?: string }): OutboundEvent {
   return envelope(ctx, TURN_KIND, { phase: opts.phase, promptId: opts.promptId });
+}
+
+/**
+ * That this hook rendered a cached context answer into its prompt: the receipt and answer rows the Deployment wrote for
+ * it, and the prompt it reached, or why that prompt has no name. An advertised kind: build it only for a Deployment
+ * that names the `prompt-identity` feature.
+ */
+export function contextDeliveredEvent(ctx: EnvelopeContext, facts: { receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord; renderedIn?: string; renderedScopeReason?: PromptScopeReason }): OutboundEvent {
+  return envelope(ctx, CONTEXT_DELIVERED_KIND, { ...facts });
 }
 
 export function compactionEvent(ctx: EnvelopeContext, phase: 'pre' | 'post', input: NormalizedHookInput): OutboundEvent {

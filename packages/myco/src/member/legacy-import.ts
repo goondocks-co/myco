@@ -34,6 +34,7 @@
  *
  * The vault is opened read-only and is never written.
  */
+import { canonicalPromptId } from '@goondocks/myco-shared/prompt-identity';
 import { countImportCause, importCause, importProgress, importRefusals } from './import-feedback.js';
 import { memoizedRepositoryName } from '@myco/utils/git.js';
 import { defaultMembership } from './default-deployment.js';
@@ -326,7 +327,7 @@ export function legacyVaultCompletionIdentities(project: LegacyProject, machineI
   const recordIds = grouping.groups.flatMap(group => [
     ...(group.title === null ? [] : [legacyId(project.projectId, 'session.title', group.sessionId)]),
     ...project.prompts.filter(prompt => !transcriptSessions.has(group.sessionId) && prompt.sessionId === group.promptsFrom).flatMap(prompt => [
-      ...(prompt.text === null ? [] : [legacyId(project.projectId, 'prompt', prompt.id)]),
+      ...(prompt.text === null ? [] : [legacyPromptId(project.projectId, prompt.id)]),
       ...(prompt.response === null ? [] : [legacyId(project.projectId, 'response', prompt.id)]),
     ]),
   ]).concat(project.plans.filter(plan => plan.content !== null && plan.sessionId !== null
@@ -340,7 +341,7 @@ export function legacyContentSessionIds(project: LegacyProject, machineId: strin
   return legacySourceGrouping(project, machineId, mycoHome).groups.filter(group =>
     project.prompts.some(prompt => prompt.sessionId === group.promptsFrom && (prompt.text !== null || prompt.response !== null))).map(group => group.sessionId);
 }
-export const legacyPromptId = (projectId: string, promptId: string): string => legacyId(projectId, 'prompt', promptId);
+export const legacyPromptId = (projectId: string, promptId: string): string => canonicalPromptId(deriveId, { scheme: 'legacy-v1', projectId, legacyId: promptId });
 
 /** The key a vault plan takes: the member's key for its file, the tool's key for its logical key, else one derived from its row. */
 export function legacyPlanKey(projectId: string, root: string | null, plan: LegacyPlan): { planKey: string; originPath?: string } {

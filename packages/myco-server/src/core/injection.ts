@@ -11,10 +11,13 @@
  * exclusion set and a UNIQUE content hash, and the two rules hold to different
  * strengths:
  *
- * **A prompt's content is served once per session — structural.** The primary
- * key is `(project_id, session_id, prompt_hash)` and the insert is
- * `INSERT OR IGNORE`, so a prompt resubmitted with the same text serves nothing
- * a second time whatever the caller does.
+ * **A prompt's content is served once per session — structural.** The row is
+ * unique on `(project_id, session_id, prompt_hash)` and on the prompt it names,
+ * and the insert is `INSERT OR IGNORE`, so a prompt resubmitted with the same
+ * text, or an ask naming a prompt already served, serves nothing a second time
+ * whatever the caller does. Each row carries a minted id of its own, which the
+ * member reports back when the context reaches the agent
+ * (`receiptDeliveredStatement`).
  *
  * **A spore already served is out of the pool as of the last committed
  * record.** The exclusion set is a read, not a constraint: two prompts of one
@@ -29,7 +32,8 @@
  *
  * Relevance uses Mutual Proximity over the current semantic candidates.
  */
-import type { RelationalStore } from './adapters.js';
+import type { PreparedStatement, RelationalStore } from './adapters.js';
+import type { AskProtocol, PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { settingTexts } from './settings.js';
 import { listSporesByIds, type SporeRow } from './spores.js';
 import { getPlan } from '../read/plans.js';
@@ -40,6 +44,7 @@ import { EmbeddingUnavailable } from './embedding/provider.js';
 import { cosineSimilarity, VECTOR_QUERY_LIMIT } from './embedding/vectors.js';
 import type { ContextTimings, ContextTimingStage } from './context-timing.js';
 import { settledAll } from './settled.js';
+import type { SessionWriteAdmission } from '../ingest/projections.js';
 
 /** A prompt shorter than this carries too little to serve against. */
 export const MIN_PROMPT_CHARS = 10;
@@ -107,7 +112,7 @@ export interface InjectionLeaves {
 }
 
 /** Why the selector served nothing. Null means it served what it selected. */
-export type InjectionSkip = 'capability' | 'disabled' | 'short_prompt' | 'zero_max' | 'repeat' | 'empty' | 'no_semantic' | 'provider_unavailable';
+export type InjectionSkip = 'capability' | 'disabled' | 'short_prompt' | 'zero_max' | 'repeat' | 'duplicate_prompt' | 'unwritable' | 'empty' | 'no_semantic' | 'provider_unavailable';
 
 /** Counts at each selector stage, including matches rejected by the receipt join or metadata post-filter. */
 export interface InjectionCounts {
@@ -134,6 +139,39 @@ export interface InjectionSelection {
   context: string;
   skipped: InjectionSkip | null;
   counts: InjectionCounts;
+  /** The receipt this selection wrote, when it wrote one. */
+  receiptId?: string;
+}
+
+/**
+ * How an ask named the prompt whose text selects: its id, or why it names none (never both), the protocol it came by,
+ * and its own instant on the member's clock.
+ */
+export interface AskNaming {
+  promptId: string | null;
+  scopeReason: PromptScopeReason | null;
+  askProtocol: AskProtocol;
+  askedAt: number | null;
+}
+
+/** Where a rendered answer reached the agent: the delivery event's instant, and the prompt that carried it or why it has no name. */
+export interface Delivery {
+  projectId: string;
+  sessionId: string;
+  id: string;
+  at: number;
+  promptId: string | null;
+  scopeReason: PromptScopeReason | null;
+}
+
+/**
+ * Mark one receipt delivered, once: the first delivery wins and a repeat changes nothing. Scoped to the delivering
+ * session, so a delivery names only its own session's rows; `gate` is the caller's condition on the write that carries it.
+ */
+export function receiptDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
+  return db.prepare(`UPDATE spore_injections SET delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?
+      WHERE project_id = ? AND session_id = ? AND id = ? AND delivered_at IS NULL AND ${gate.sql}`)
+    .bind(d.at, d.promptId, d.scopeReason, d.projectId, d.sessionId, d.id, ...gate.params);
 }
 
 /** The selector operation that failed, with the original error retained for classification. */
@@ -152,7 +190,8 @@ async function duringInjection<T>(operation: InjectionFailure['operation'], coun
 }
 
 export interface InjectionRecord {
-  promptId: string;
+  /** The prompt whose text selected the record; null where the ask named none. */
+  promptId: string | null;
   promptHash: string;
   sporeIds: string[];
   planIds: string[];
@@ -264,7 +303,7 @@ export async function injectionsForSession(db: RelationalStore, scope: ReadScope
     .prepare(`SELECT prompt_id, prompt_hash, spore_ids, plan_ids, created_at FROM spore_injections
                WHERE project_id = ? AND session_id = ? ORDER BY created_at DESC`)
     .bind(scope.projectId, sessionId)
-    .all<{ prompt_id: string; prompt_hash: string; spore_ids: string; plan_ids: string | null; created_at: number }>();
+    .all<{ prompt_id: string | null; prompt_hash: string; spore_ids: string; plan_ids: string | null; created_at: number }>();
   return results.map((r) => ({ promptId: r.prompt_id, promptHash: r.prompt_hash, sporeIds: parseIds(r.spore_ids), planIds: parseIds(r.plan_ids ?? ''), createdAt: r.created_at }));
 }
 
@@ -326,7 +365,7 @@ export async function selectSporesForPrompt(
   scope: ReadScope,
   leaves: InjectionLeaves,
   capabilityOn: boolean,
-  input: { sessionId: string; promptId: string; promptHash: string; prompt: string; now: number },
+  input: { sessionId: string; promptHash: string; prompt: string; now: number; admission: SessionWriteAdmission } & Partial<AskNaming>,
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   timings?: ContextTimings,
 ): Promise<InjectionSelection> {
@@ -410,13 +449,23 @@ export async function selectSporesForPrompt(
   if (served.length === 0) return nothing('empty');
 
   const idsOf = (kind: InjectionItem['kind']): string[] => served.filter((i) => i.kind === kind).map((i) => i.id);
+  const receiptId = crypto.randomUUID();
+  const promptId = input.promptId ?? null;
   const written = await duringInjection('record', counts, () => db
-    .prepare(`INSERT OR IGNORE INTO spore_injections (project_id, session_id, prompt_id, prompt_hash, spore_ids, plan_ids, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .bind(scope.projectId, input.sessionId, input.promptId, input.promptHash,
-      JSON.stringify(idsOf('spore')), JSON.stringify(idsOf('plan')), input.now)
+    .prepare(`INSERT OR IGNORE INTO spore_injections
+                (project_id, session_id, id, prompt_id, scope_reason, ask_protocol, asked_at, prompt_hash, spore_ids, plan_ids, created_at)
+              SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${input.admission.admission.sql}`)
+    .bind(scope.projectId, input.sessionId, receiptId, promptId, input.scopeReason ?? null, input.askProtocol ?? 'legacy', input.askedAt ?? null,
+      input.promptHash, JSON.stringify(idsOf('spore')), JSON.stringify(idsOf('plan')), input.now, ...input.admission.admission.params)
     .run());
-  if (written.meta.changes !== 1) return nothing('repeat');
+  if (written.meta.changes !== 1) {
+    if (await duringInjection('record', counts, () => input.admission.refusal(db)) !== null) return nothing('unwritable');
+    // Which rule held the insert back: a receipt for this text already, or one for this prompt id.
+    const named = promptId === null ? null : await duringInjection('record', counts, () => db
+      .prepare(`SELECT 1 AS held FROM spore_injections WHERE project_id = ? AND session_id = ? AND prompt_id = ? AND prompt_hash <> ?`)
+      .bind(scope.projectId, input.sessionId, promptId, input.promptHash).first<{ held: number }>());
+    return nothing(named === null ? 'repeat' : 'duplicate_prompt');
+  }
 
-  return { items: served, context: renderInjectionContext(served, ordered.length > served.length), skipped: null, counts };
+  return { items: served, context: renderInjectionContext(served, ordered.length > served.length), skipped: null, counts, receiptId };
 }

@@ -91,9 +91,12 @@ export const sessionTurns: ParityScenario = {
     const childAudit = await owner<{ answers: { id: string }[] }>(`${base}/turns/${p3}`);
     expect(childAudit.body.answers.map(a => a.id)).toEqual(['child-answer']);
     expect((await owner<{ answers: unknown[] }>(`${base}/turns/${p2}`)).body.answers).toEqual([]);
-    const sessionAudit = await owner<{ turnContexts: Record<string, { start: boolean; subagents: number }>; metrics: { tools: { toolName: string; count: number }[]; tokens: null } }>(base);
-    expect(sessionAudit.body.turnContexts[p1]).toEqual({ start: true, subagents: 0 });
-    expect(sessionAudit.body.turnContexts[p3]).toEqual({ start: false, subagents: 1 });
+    const sessionAudit = await owner<{ turnContexts: Record<string, { subagents: number }>; metrics: { tools: { toolName: string; count: number }[]; tokens: null } }>(base);
+    // The start block is the session's, listed with the session's own context; a turn carries its sub-agent preambles.
+    expect(sessionAudit.body.turnContexts[p1]).toBeUndefined();
+    expect(sessionAudit.body.turnContexts[p3]).toEqual({ subagents: 1 });
+    const sessionContext = await owner<{ rows: { kind: string }[] }>(`${base}/context-injections`);
+    expect(sessionContext.body.rows.map((r) => r.kind)).toContain('cortex');
     expect(sessionAudit.body.metrics).toMatchObject({ tools: [{ toolName: 'Bash', count: 1 }, { toolName: 'Edit', count: 1 }, { toolName: 'Read', count: 1 }], tokens: null });
 
     const undated = session + '-undated';

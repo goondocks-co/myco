@@ -371,7 +371,7 @@ describe('the session reading page', () => {
       { toolCallId: 't1', promptId: P1, toolName: 'Write', mycoTool: null, mycoOp: null, inputPreview: 'x'.repeat(20), inputBytes: 190_000, inputTruncated: true, inputBlobKey: null, outputPreview: 'wrote it', outputBlobKey: null, success: false, errorMessage: 'disk full', durationMs: 42, filesAffected: '["/repo/a.ts"]', createdAt: NOW - 2000, orderedAt: NOW - 2000 },
     ]),
     '/api/projects/x/sessions/s1/plans': () => page([]),
-    '/api/projects/x/sessions/s1/context-injections': () => page([{ kind: 'cortex', createdAt: NOW - HOUR, orderedAt: NOW - HOUR }]),
+    '/api/projects/x/sessions/s1/context-injections': () => page([{ kind: 'cortex', createdAt: NOW - HOUR, orderedAt: NOW - HOUR, delivery: null }]),
     '/api/projects/x/sessions/s1/attachments': () => page([
       { attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW },
       { attachmentId: 'a3', promptId: '00000000-0000-7000-8000-000000000009', blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 10, description: 'on a steering prompt', createdAt: NOW, orderedAt: NOW },
@@ -947,11 +947,11 @@ describe('the session reading page', () => {
     const prompt = (id: string, origin: string, text: string, parentPromptId: string | null = null) => ({ promptId: id, origin, text, parentPromptId, promptKind: null, threadLabel: null, blobKey: null, createdAt: NOW - 3000 });
     const empty = { responses: [], attachments: [], plans: [], children: [], injection: null };
     const { requested } = server(routes({
-      '/api/projects/x/sessions/s1': () => detail({ endedAt: NOW - 20 * MINUTE }, { turnContexts: { [P1]: { start: true, subagents: 0 }, [P2]: { start: false, subagents: 1 } }, metrics: { tools: [{ toolName: 'Read', count: 3 }], tokens: null } }),
+      '/api/projects/x/sessions/s1': () => detail({ endedAt: NOW - 20 * MINUTE }, { turnContexts: { [P2]: { subagents: 1 } }, metrics: { tools: [{ toolName: 'Read', count: 3 }], tokens: null } }),
       '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn()]),
       [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({ ...empty,
         prompt: prompt(P1, 'user', '<command-name>/fork</command-name><command-args></command-args>'),
-        context: { start: true, subagents: 0 }, metrics: { tools: [{ toolName: 'Read', count: 2 }], durationMs: 1234, tokens: null },
+        metrics: { tools: [{ toolName: 'Read', count: 2 }], durationMs: 1234, tokens: null },
         injection: { sporeIds: ['sp1'], spores: [{ id: 'sp1', observationType: 'decision', preview: 'Shared read path' }], planIds: ['plan1'], plans: [{ planKey: 'plan1', title: 'Session audit plan' }], createdAt: NOW },
         answers: [{ id: 'empty-answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores:empty'], failures: [], selection: { ...emptyInjectionCounts(), sporeRawMatches: 12 }, createdAt: NOW }, { id: 'answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores', 'plan-nudge:no_intent'], failures: [{ contributor: 'spores', error: 'store_quota', operation: 'hydrate_spores' }], selection: emptyInjectionCounts(), createdAt: NOW }],
         children: [
@@ -961,20 +961,20 @@ describe('the session reading page', () => {
             body: { ...empty, prompt: prompt(P3, 'user', 'Also check the steering context', P1), metrics: { tools: [{ toolName: 'Write', count: 1 }], durationMs: 750, tokens: null }, answers: [{ id: 'steering-answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores:short_prompt'], failures: [], selection: emptyInjectionCounts(), createdAt: NOW }] } },
         ],
       }),
-      [`/api/projects/x/sessions/s1/turns/${P2}`]: () => Response.json({ ...empty, prompt: prompt(P2, 'agent_dispatch', 'Review the change', P1), context: { start: false, subagents: 1 }, metrics: { tools: [{ toolName: 'Read', count: 1 }], durationMs: 500, tokens: null } }),
+      [`/api/projects/x/sessions/s1/turns/${P2}`]: () => Response.json({ ...empty, prompt: prompt(P2, 'agent_dispatch', 'Review the change', P1), context: { subagents: 1 }, metrics: { tools: [{ toolName: 'Read', count: 1 }], durationMs: 500, tokens: null } }),
       [`/api/projects/x/sessions/s1/turns/${P3}`]: () => Response.json({ ...empty, prompt: prompt(P3, 'user', 'Also check the steering context', P1), metrics: { tools: [{ toolName: 'Write', count: 1 }], durationMs: 750, tokens: null }, answers: [{ id: 'steering-answer', outcome: 'empty', contextChars: 0, parts: [], skipped: ['spores:short_prompt'], failures: [], selection: {}, createdAt: NOW }] }),
     }));
     mount('/p/x/sessions/s1');
     const parent = await screen.findByTestId(`turn-${P1}`);
-    await within(parent).findByText('Myco sent the session start block');
+    // The session start block is the session's: the header says so, and no prompt carries it.
+    await screen.findByText('Myco sent the session start block');
+    expect(within(parent).queryByText('Myco sent the session start block')).toBeNull();
     expect(within(parent).getByText('Ran /fork')).toBeTruthy();
     expect(within(parent).queryByRole('button', { name: 'Ran /fork' })).toBeNull();
     expect(within(parent).queryByText('/fork')).toBeNull();
     expect(within(parent).queryByRole('button', { name: 'Command arguments' })).toBeNull();
     expect(within(parent).getByText('Read × 2')).toBeTruthy();
     expect(within(parent).getAllByText(/Prompt to last reply/).length).toBeGreaterThan(0);
-    fireEvent.click(within(parent).getByRole('button', { name: 'Myco sent the session start block' }));
-    expect(within(parent).getByText(/original text is not retained/)).toBeTruthy();
     fireEvent.click(within(parent).getByRole('button', { name: 'Myco context lookup failed' }));
     expect(within(parent).getAllByText(/Memory lookup failed/)).toHaveLength(1);
     fireEvent.click(within(parent).getAllByRole('button', { name: 'Myco prepared no context' })[0]!);

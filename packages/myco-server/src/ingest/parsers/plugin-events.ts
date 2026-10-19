@@ -17,6 +17,8 @@
  * produced it — the turn is still the user's work, and dropping it loses a
  * prompt at the moment capture is already degraded.
  */
+import { canonicalPromptId } from '@goondocks/myco-shared/prompt-identity';
+import { uuidv5 } from '../../hash.js';
 import {
   parserContinuation, lineTime, offsetIdFor, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type Fidelity, type ParsedLine, type ParserInput, type TranscriptParser,
@@ -81,7 +83,9 @@ export function pluginEventsParser(options: {
   return {
     agent,
     fidelity,
+    promptGeneration: 1,
     planTags,
+    lineTimeField: 'at',
     async parse(input: ParserInput): Promise<DerivedEvent[]> {
       const events: DerivedEvent[] = [];
       let promptId = input.openPromptId;
@@ -99,7 +103,7 @@ export function pluginEventsParser(options: {
         if (type === 'prompt') {
           const text = typeof line.text === 'string' ? strip(line.text) : '';
           if (text.trim() === '') continue;
-          const named = str(line.promptId) ?? await offsetIdFor('prompt', input.sessionId, offset);
+          const named = await canonicalPromptId(uuidv5, { scheme: 'stamp-or-offset-v1', sessionId: input.sessionId, stamp: str(line.promptId), offset });
           promptId = named;
           events.push({
             kind: 'prompt',
@@ -120,11 +124,11 @@ export function pluginEventsParser(options: {
           if (text.trim() === '') continue;
           events.push({
             kind: 'response',
-            payload: { responseId: await offsetIdFor('response', input.sessionId, offset), promptId, text },
+            payload: { responseId: await offsetIdFor('response', input.sessionId, offset), promptId: str(line.promptId) ?? promptId, text },
             createdAt,
             offset,
           });
-          const plans = await plansInText(text, planTags, input.sessionId, { promptId, offset, createdAt }, planPosition);
+          const plans = await plansInText(text, planTags, input.sessionId, { promptId: str(line.promptId) ?? promptId, offset, createdAt }, planPosition);
           events.push(...plans.events);
           planPosition = plans.next;
           continue;
@@ -139,7 +143,7 @@ export function pluginEventsParser(options: {
             kind: failed ? 'tool.failure' : 'tool.use',
             payload: {
               toolCallId: await offsetIdFor('tool-call', input.sessionId, offset),
-              promptId,
+              promptId: str(line.promptId) ?? promptId,
               toolName: name.slice(0, 64),
               input: toolInput(line.input) ?? {},
               output,

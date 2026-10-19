@@ -95,10 +95,11 @@ function schemaDirs(): string[] {
 }
 
 /**
- * The tables the live schemas create and keep. A table a schema file also DROPs
- * is scaffolding of a migration step — a grammar probe created and dropped inside
- * one step — and is no data class; the exclusion reads the DROP statement, never
- * a name pattern.
+ * The tables the live schemas create and keep. A table a schema file DROPs after
+ * it last creates it is scaffolding of a migration step — a grammar probe or a
+ * holding table created and dropped inside one step — and is no data class; one
+ * the file creates again after its last DROP is rebuilt and stays. The exclusion
+ * reads the statements and their order, never a name pattern.
  */
 function dataClasses(): string[] {
   const created = new Set<string>();
@@ -110,7 +111,9 @@ function dataClasses(): string[] {
       else if (entry.name.endsWith('.ts') && entry.name !== MIGRATION_CHAIN) {
         const src = read(full);
         for (const m of src.matchAll(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${TABLE_NAME}`, 'g'))) created.add(m[1]);
-        for (const m of src.matchAll(new RegExp(`DROP TABLE (?:IF EXISTS )?${TABLE_NAME}`, 'g'))) dropped.add(m[1]);
+        for (const m of src.matchAll(new RegExp(`DROP TABLE (?:IF EXISTS )?${TABLE_NAME}`, 'g'))) {
+          if (!new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${m[1]}\\b`).test(src.slice(m.index))) dropped.add(m[1]);
+        }
       }
     }
   };
@@ -378,9 +381,7 @@ const UNANSWERED_KEPT_ROWS: Readonly<Record<string, string>> = {};
  * KEEP and NEW rows in a section a live registry owns that no registry produces, each with why. Each is a capability
  * the registries cannot see yet, and leaves this list when one can.
  */
-const UNPRODUCED_ROWS: Readonly<Record<string, string>> = {
-  '7.6 member_credentials': "the Deployment's member credentials, held in the server's own migrations rather than a src/db schema file",
-};
+const UNPRODUCED_ROWS: Readonly<Record<string, string>> = {};
 
 describe('feature-preservation ledger completeness', () => {
   it('owns the guided setup command on the member surface', () => {

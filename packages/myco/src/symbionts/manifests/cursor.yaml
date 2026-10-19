@@ -194,3 +194,8 @@ runner:
       launchFallback: none
       provider: { kind: unavailable }
       tokenScope: unverified
+
+# How this agent's prompts are named: by their position in the transcript. No prompt hook is wired.
+promptIdentity:
+  kind: transcript-only
+  scheme: offset-v1

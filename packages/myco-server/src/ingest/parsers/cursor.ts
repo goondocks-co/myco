@@ -20,11 +20,11 @@
  */
 import { uuidv5 } from '../../hash.js';
 import {
-  isBlock, lineTime, str, textOf,
+  isBlock, lineTime, promptIdAtOffset, str, textOf,
   type DerivedEvent, type ParserInput, type ReplyPart, type TranscriptParser,
 } from './index.js';
 
-const promptIdAt = (sessionId: string, offset: number): Promise<string> => uuidv5('cursor-prompt', sessionId, String(offset));
+const promptIdAt = (sessionId: string, offset: number): Promise<string> => promptIdAtOffset('cursor-prompt', sessionId, offset);
 const responseIdAt = (sessionId: string, offset: number): Promise<string> => uuidv5('response', sessionId, String(offset));
 
 /** The line that closes a turn. */
@@ -52,6 +52,7 @@ export function responseTextOf(text: string): string {
 export const cursorParser: TranscriptParser = {
   agent: 'cursor',
   fidelity: 'no_tool_results',
+  promptGeneration: 1,
   planTags: [],
   endsTurn: (value) => value.type === TURN_ENDED,
 

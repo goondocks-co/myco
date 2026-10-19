@@ -1,5 +1,5 @@
 /**
- * The six measures the Deployment reports about itself, each with the sample
+ * The measures the Deployment reports about itself, each with the sample
  * behind it.
  *
  * Every measure here is derived from rows the Deployment already holds — prompts,
@@ -48,10 +48,12 @@ export interface KpiReport {
   windowDays: number | null;
   /** The earliest stamp a row may carry to be counted, or null for all of them. */
   since: number | null;
-  /** Prompts that arrived carrying context this Deployment served, as a share of every prompt. */
+  /** Prompts that received context this Deployment prepared, as a share of every prompt. */
   contextPresent: Measure;
-  /** Prompts served at least one observation, as a share of every prompt. */
+  /** Prompts that received at least one observation, as a share of every prompt. */
   sporeServeRate: Measure;
+  /** Sessions served a session start block, as a share of every session. */
+  sessionStartPresent: Measure;
   /** Myco tool calls per prompt across the Deployment, with the per-harness split behind it. */
   callsPerPrompt: Measure;
   callsPerPromptByHarness: HarnessMeasure[];
@@ -115,31 +117,22 @@ const countOf = async (db: RelationalStore, sql: string, params: readonly unknow
 };
 
 /**
- * Prompts the Deployment served context for.
- *
- * Two records answer this, and they are counted differently on purpose.
- *
- * `spore_injections` names the prompt it served, so it credits that prompt and no
- * other. `session_injections` is at-most-once per (project, session, kind) — a
- * session start burns its record once and every later prompt of the session finds
- * it. Counting a session record against every prompt after it would make the
- * measure saturate: a Deployment serving instructions at session start would read
- * near 100% and one serving nothing near 0%, whatever happened at each prompt,
- * which is a configuration flag wearing a percentage.
- *
- * A session record therefore credits ONE prompt: the earliest in that session
- * stamped at or after the record. That is the prompt the block actually reached;
- * the prompts after it were served nothing by that record and are counted as
- * such, so the measure moves with what each prompt received.
+ * Prompts that received context the Deployment prepared: a receipt, or the session's plan nudge, whose delivery named
+ * the prompt. These are the durable records of what a served answer carried, so the count outlives the answers'
+ * retention. A selection never delivered, a delivery to a prompt that has no name, and a member that reports no
+ * deliveries count for no prompt. A session's start block is a session's, counted over sessions
+ * (`SESSIONS_STARTED_WITH_BLOCK`).
  */
 const SERVED_PROMPTS = `
   EXISTS (SELECT 1 FROM spore_injections i
-           WHERE i.project_id = p.project_id AND i.session_id = p.session_id AND i.prompt_id = p.prompt_id)
-  OR EXISTS (SELECT 1 FROM session_injections s
-              WHERE s.project_id = p.project_id AND s.session_id = p.session_id AND s.created_at <= p.created_at
-                AND p.created_at = (SELECT MIN(f.created_at) FROM prompt_batches f
-                                     WHERE f.project_id = s.project_id AND f.session_id = s.session_id
-                                       AND f.created_at >= s.created_at))`;
+           WHERE i.project_id = p.project_id AND i.session_id = p.session_id AND i.delivered_prompt_id = p.prompt_id)
+  OR EXISTS (SELECT 1 FROM session_injections j
+              WHERE j.project_id = p.project_id AND j.session_id = p.session_id AND j.kind = 'plan-nudge'
+                AND j.delivered_prompt_id = p.prompt_id)`;
+
+/** Sessions the Deployment served a session start block. */
+const SESSIONS_STARTED_WITH_BLOCK = `EXISTS (SELECT 1 FROM session_injections j
+  WHERE j.project_id = sessions.project_id AND j.session_id = sessions.session_id AND j.kind = 'cortex')`;
 
 /** The tool calls that count as reaching Myco at all. */
 const MYCO_CALL = `c.myco_tool IS NOT NULL`;
@@ -165,7 +158,7 @@ async function promptMeasures(db: RelationalStore, since: number | null): Promis
                   WHERE ${w.sql} AND EXISTS (
                     SELECT 1 FROM spore_injections i
                      WHERE i.project_id = p.project_id AND i.session_id = p.session_id
-                       AND i.prompt_id = p.prompt_id AND i.spore_ids <> '[]')`, w.params),
+                       AND i.delivered_prompt_id = p.prompt_id AND i.spore_ids <> '[]')`, w.params),
   ]);
   return { prompts, served, withSpores };
 }
@@ -239,10 +232,11 @@ export async function readKpis(db: RelationalStore, opts: { windowDays: number |
   const sessionWindow = windowClause('first_received_at', since);
   const callWindow = windowClause('c.created_at', since);
 
-  const [{ prompts, served, withSpores }, byHarness, sessions, planReads, mycoCalls, firstInjections] = await Promise.all([
+  const [{ prompts, served, withSpores }, byHarness, sessions, startedWithBlock, planReads, mycoCalls, firstInjections] = await Promise.all([
     promptMeasures(db, since),
     harnessSplit(db, since),
     countOf(db, `SELECT COUNT(*) AS n FROM sessions WHERE ${sessionWindow.sql}`, sessionWindow.params),
+    countOf(db, `SELECT COUNT(*) AS n FROM sessions WHERE ${sessionWindow.sql} AND ${SESSIONS_STARTED_WITH_BLOCK}`, sessionWindow.params),
     countOf(db, `SELECT COUNT(*) AS n FROM tool_calls c WHERE ${callWindow.sql} AND ${PLAN_READ}`, callWindow.params),
     countOf(db, `SELECT COUNT(*) AS n FROM tool_calls c WHERE ${callWindow.sql} AND ${MYCO_CALL}`, callWindow.params),
     firstInjectionSamples(db, since),
@@ -253,6 +247,7 @@ export async function readKpis(db: RelationalStore, opts: { windowDays: number |
     since,
     contextPresent: share(served, prompts),
     sporeServeRate: share(withSpores, prompts),
+    sessionStartPresent: share(startedWithBlock, sessions),
     callsPerPrompt: rate(mycoCalls, prompts),
     callsPerPromptByHarness: byHarness,
     planReadsPerSession: rate(planReads, sessions),

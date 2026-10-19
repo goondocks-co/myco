@@ -21,8 +21,11 @@ import { parseSessionContextIdentity } from '@goondocks/myco-shared/recall';
 import { resolveSemanticSearch } from '../core/search.js';
 import { settingsWriter } from '../core/settings.js';
 import { classify, emit, refusal } from '../telemetry.js';
-import { startTurnStatement, turnStartedAt } from '../ingest/turns.js';
+import { startTurnStatement, turnStartedAt, turnStartedAtAsk } from '../ingest/turns.js';
 import { refused } from '../ingest/events.js';
+import { sessionWriteAdmission } from '../ingest/projections.js';
+import type { AskNaming } from '../core/injection.js';
+import { ASK_IDENTITY_MARKER, isPromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { MAX_REMOTE_CHARS, normalizeRemote, recordProjectRemote } from '../core/remotes.js';
 
 const MAX_SESSION_CHARS = 384;
@@ -53,12 +56,12 @@ const BAD_BODY = refusal('body is not an object', 'parse');
  * write that fails, or cannot be deferred, is reported and leaves the answer as it is; the session then reads as
  * working only while its receipts are recent.
  */
-export function noteTurnStarted(env: ServerEnv, ctx: RouteContext, sessionId: string, promptId: string): void {
+export function noteTurnStarted(env: ServerEnv, ctx: RouteContext, sessionId: string, promptId: string | null, askedAt: number | null = null): void {
   const unrecorded = (err: unknown) => emit({ kind: 'turn_start_unrecorded', projectId: ctx.projectId, tokenId: ctx.tokenId, error: classify(err) });
   try {
     env.afterResponse(async () => {
       try {
-        const at = turnStartedAt(promptId, ctx.now);
+        const at = askedAt !== null ? turnStartedAtAsk(askedAt, ctx.now) : promptId === null ? null : turnStartedAt(promptId, ctx.now);
         if (at !== null) await startTurnStatement(env.db, { projectId: ctx.projectId, sessionId, machineId: ctx.machineId, at }).run();
       } catch (err) {
         unrecorded(err);
@@ -69,26 +72,56 @@ export function noteTurnStarted(env: ServerEnv, ctx: RouteContext, sessionId: st
   }
 }
 
+/** The ask's own instant, where it names one: a non-negative safe integer of milliseconds on the member's clock. */
+const instant = (v: unknown): number | null => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null);
+
+/**
+ * How an ask names its prompt. A `v1` ask (`identity` is the marker) carries its own instant and exactly one of the
+ * prompt's id and why it names none; an ask without the marker is an older member's, which names the id its hook
+ * minted and is recorded as sent.
+ */
+function askNaming(body: Record<string, unknown>): { ok: true; naming: AskNaming } | { ok: false; reason: string } {
+  const promptId = str(body.promptId, MAX_PROMPT_ID_CHARS);
+  const askedAt = instant(body.at);
+  if (body.identity === undefined) {
+    return promptId === null ? { ok: false, reason: 'prompt context requires sessionId, promptId and text' }
+      : { ok: true, naming: { promptId, scopeReason: null, askProtocol: 'legacy', askedAt } };
+  }
+  if (body.identity !== ASK_IDENTITY_MARKER) return { ok: false, reason: `prompt context names identity ${ASK_IDENTITY_MARKER} or none` };
+  if (askedAt === null) return { ok: false, reason: 'a prompt context ask with identity names its own instant (at)' };
+  const scopeReason = body.scopeReason === undefined ? null : isPromptScopeReason(body.scopeReason) ? body.scopeReason : undefined;
+  if (scopeReason === undefined) return { ok: false, reason: 'prompt context scopeReason is not a reason recorded here' };
+  if ((promptId === null) === (scopeReason === null)) return { ok: false, reason: 'a prompt context ask with identity names promptId or scopeReason, not both' };
+  return { ok: true, naming: { promptId, scopeReason, askProtocol: 'v1', askedAt } };
+}
+
 export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);
   if (!body) return Response.json(refused(ctx, BAD_BODY));
 
   const sessionId = str(body.sessionId, MAX_SESSION_CHARS);
-  const promptId = str(body.promptId, MAX_PROMPT_ID_CHARS);
   const text = promptText(body.text);
-  if (sessionId === null || promptId === null || text === null) {
-    return Response.json(refused(ctx, refusal('prompt context requires sessionId, promptId and text', 'parse')));
+  const named = askNaming(body);
+  if (sessionId === null || text === null || !named.ok) {
+    return Response.json(refused(ctx, refusal(named.ok ? 'prompt context requires sessionId, promptId and text' : named.reason, 'parse')));
   }
-
-  // Registered first and never awaited: the turn opens whatever becomes of the compose below.
-  noteTurnStarted(env, ctx, sessionId, promptId);
+  const { naming } = named;
+  // Registered first and never awaited: the turn opens whatever becomes of the compose below. It opens only a turn of a
+  // session this machine holds (`startTurnStatement`).
+  noteTurnStarted(env, ctx, sessionId, naming.promptId, naming.askProtocol === 'v1' ? naming.askedAt : null);
+  // Records naming a session are written only by the machine that holds it, as its events are: read here, and held
+  // again on every write the compose below makes.
+  const admission = sessionWriteAdmission(ctx, sessionId);
+  const unwritable = await admission.refusal(env.db);
+  if (unwritable !== null) return Response.json(refused(ctx, unwritable));
   const [leaves, capabilityOn] = await Promise.all([
     readRecallLeaves(env.db),
     settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),
   ]);
   const served = await composePromptContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, {
-    sessionId, promptId, text, now: ctx.now,
+    sessionId, text, now: ctx.now, admission, ...naming,
   }, () => resolveSemanticSearch(env), env.platform?.classifyError, ctx.contextTimings);
+  if (served.refusal !== undefined) return Response.json(refused(ctx, served.refusal));
   return Response.json({ persisted: true, ...served });
 }
 
@@ -108,6 +141,11 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
         : 'session context requires sessionId and kind "start" or "subagent"';
     return Response.json(refused(ctx, refusal(reason, 'parse')));
   }
+  // A block is recorded only for a session this machine may write, as its events are: read here, and held again on
+  // the record's own write. A preview records nothing.
+  const admission = preview || sessionId === null ? null : sessionWriteAdmission(ctx, sessionId);
+  const unwritable = admission === null ? null : await admission.refusal(env.db);
+  if (unwritable !== null) return Response.json(refused(ctx, unwritable));
 
   // A session start is where a member first names its repository, and the
   // binding is what lets a later tool call address this Project by remote.
@@ -134,9 +172,11 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
     settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),
   ]);
   const [served, machine] = await Promise.all([
-    composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, { sessionId: sessionId ?? '', ...identity, now: ctx.now }, { preview, classifyError: env.platform?.classifyError }),
+    composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, { sessionId: sessionId ?? '', ...identity, now: ctx.now },
+      { ...(admission === null ? { preview: true as const } : { admission }), classifyError: env.platform?.classifyError }),
     // The machine's own settings, where the member asking claims it; a machine keeps them from its session start.
     machineBlockFor(env.db, ctx.memberId, ctx.machineId, ctx),
   ]);
+  if (served.refusal !== undefined) return Response.json(refused(ctx, served.refusal));
   return Response.json({ persisted: true, ...served, ...(machine === null ? {} : { machine }) });
 }

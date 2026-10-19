@@ -5,6 +5,7 @@ import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
 import { PROVIDER_SLOT_NAMES } from '@goondocks/myco-shared/provider-slots';
 import { STEP_KINDS } from '@goondocks/myco-shared/worker-steps';
 import { PATTERNED_DIAGNOSTIC_CODES } from '@goondocks/myco-shared/run-text';
+import { DECLARABLE_SCHEMES, PROMPT_ID_SCHEMES, type PromptIdentityDeclaration, type PromptIdentityKind } from '@goondocks/myco-shared/prompt-identity';
 export type { CaptureRule } from '@goondocks/myco-shared/capture-rule-schema';
 
 /** Schema describing where user prompts live in an agent's transcript. */
@@ -924,6 +925,49 @@ const HookFieldPathSchema = z.union([
  * behaviour it was meant to configure never arriving. Refusing at codegen
  * turns that into a build failure that names the key.
  */
+/**
+ * How the agent's prompts are named (`@goondocks/myco-shared/prompt-identity`). `kind` is declared for an agent whose
+ * transcript the Deployment parses; an agent whose hooks write its turn rows is `hook-owned`, derived from
+ * `capabilities.turnRowSource` and never restated. `harness-key` names where the key sits on both sides. `evidence`
+ * names, for a `transcript-only` agent that has a prompt hook, a hook-input fixture showing that hook carries no
+ * per-submission key.
+ */
+const PromptIdentitySchema = z.object({
+  kind: z.enum(['harness-key', 'stamped', 'transcript-only']).optional(),
+  scheme: z.enum(DECLARABLE_SCHEMES),
+  hookKey: z.string().min(1).optional(),
+  transcriptKey: z.string().min(1).optional(),
+  evidence: z.string().min(1).optional(),
+}).strict();
+export type PromptIdentityManifest = z.infer<typeof PromptIdentitySchema>;
+
+type TurnRowSource = 'hook' | 'transcript';
+
+/** The declaration a manifest's block and turn-row source make together, or why the two disagree. */
+export function resolvePromptIdentity(
+  block: PromptIdentityManifest | undefined, turnRowSource: TurnRowSource,
+): { ok: true; declaration: PromptIdentityDeclaration } | { ok: false; reason: string } {
+  if (block === undefined) {
+    return turnRowSource === 'hook'
+      ? { ok: true, declaration: { kind: 'hook-owned', scheme: 'hook-mint-v1' } }
+      : { ok: false, reason: 'an agent whose transcript writes its turn rows declares promptIdentity' };
+  }
+  const kind: PromptIdentityKind | undefined = block.kind ?? (turnRowSource === 'hook' ? 'hook-owned' : undefined);
+  if (kind === undefined) return { ok: false, reason: 'an agent whose transcript writes its turn rows declares promptIdentity.kind' };
+  if ((kind === 'harness-key' || kind === 'stamped') && turnRowSource !== 'transcript') {
+    return { ok: false, reason: `promptIdentity.kind ${kind} requires capabilities.turnRowSource: transcript` };
+  }
+  if (!(PROMPT_ID_SCHEMES[block.scheme].kinds as readonly PromptIdentityKind[]).includes(kind)) {
+    return { ok: false, reason: `scheme ${block.scheme} does not name ${kind} prompts` };
+  }
+  const keyed = block.hookKey !== undefined && block.transcriptKey !== undefined;
+  if (kind === 'harness-key' ? !keyed : block.hookKey !== undefined || block.transcriptKey !== undefined) {
+    return { ok: false, reason: 'promptIdentity.hookKey and transcriptKey are declared together, for a harness-key agent only' };
+  }
+  if (block.evidence !== undefined && kind !== 'transcript-only') return { ok: false, reason: 'promptIdentity.evidence is declared for a transcript-only agent only' };
+  return { ok: true, declaration: { kind, scheme: block.scheme, ...(keyed ? { hookKey: block.hookKey, transcriptKey: block.transcriptKey } : {}) } };
+}
+
 export const SymbiontManifestSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -1013,7 +1057,11 @@ export const SymbiontManifestSchema = z.object({
   hooks: HooksManifestSchema.optional(),
   /** What a worker needs to run this harness for the Deployment; absent for a harness no worker runs. */
   runner: RunnerManifestSchema.optional(),
-}).strict().refine(
+  promptIdentity: PromptIdentitySchema.optional(),
+}).strict().superRefine((m, ctx) => {
+  const resolved = resolvePromptIdentity(m.promptIdentity, m.capabilities?.turnRowSource ?? 'hook');
+  if (!resolved.ok) ctx.addIssue({ code: 'custom', message: resolved.reason, path: ['promptIdentity'] });
+}).refine(
   (m) => {
     const reads = m.capabilities?.canopyReadTools ?? [];
     const paths = m.capabilities?.pathBearingTools ?? [];

@@ -13,7 +13,7 @@ import { uuidv5 } from '../../hash.js';
 import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import {
-  callForResult, parserContinuation, blocksOf, isBlock, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
+  callForResult, promptIdAtOffset, parserContinuation, blocksOf, isBlock, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParsedLine, type ParserInput, type ReplyPart, type TranscriptParser,
 } from './index.js';
 
@@ -33,7 +33,7 @@ function codexText(content: unknown): string {
     .join('\n\n');
 }
 
-const promptIdAt = (sessionId: string, offset: number): Promise<string> => uuidv5('codex-prompt', sessionId, String(offset));
+const promptIdAt = (sessionId: string, offset: number): Promise<string> => promptIdAtOffset('codex-prompt', sessionId, offset);
 const responseIdAt = (sessionId: string, offset: number): Promise<string> => uuidv5('response', sessionId, String(offset));
 const toolCallIdFor = (sessionId: string, callId: string): Promise<string> => uuidv5('tool-call', sessionId, callId);
 
@@ -54,6 +54,7 @@ export const codexParser: TranscriptParser = {
   // This parser reads function and custom calls with string or content-array outputs.
   // Other tool-call shapes require the member's PostToolUse capture.
   fidelity: 'no_tool_results',
+  promptGeneration: 1,
   planTags: ['proposed_plan'],
   headerContext: codexHeaderContext,
 

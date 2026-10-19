@@ -179,7 +179,7 @@ async function readTurnBodies(db: RelationalStore, scope: ReadScope, sessionId: 
     (SELECT json_object('sporeIds', i.spore_ids, 'createdAt', i.created_at, 'planIds', json(COALESCE(i.plan_ids, '[]')),
       'plans', json((SELECT json_group_array(json_object('planKey', p.plan_key, 'title', p.title))
         FROM plans p WHERE p.project_id = i.project_id AND p.plan_key IN (SELECT value FROM json_each(i.plan_ids)))))
-      FROM spore_injections i WHERE i.project_id = pb.project_id AND i.session_id = pb.session_id AND i.prompt_id = pb.prompt_id
+      FROM spore_injections i WHERE i.project_id = pb.project_id AND i.session_id = pb.session_id AND i.delivered_prompt_id = pb.prompt_id
       ORDER BY +i.created_at DESC LIMIT 1) AS injection,
     (SELECT agent FROM sessions s WHERE s.project_id = pb.project_id AND s.session_id = pb.session_id) AS agent
     FROM (SELECT value AS wanted_prompt FROM json_each(?)) wanted CROSS JOIN prompt_batches pb
@@ -271,7 +271,8 @@ export interface PromptAnswer {
   skipped: string[]; failures: Array<{ contributor: string; error: string; operation?: string }>;
   selection: Record<string, number>;
 }
-export interface TurnContext { start: boolean; subagents: number }
+/** What a turn's prompt carried beyond its own answers: the sub-agent preambles prepared under it. */
+export interface TurnContext { subagents: number }
 
 const ANSWER_QUERY = {
   table: 'prompt_context_answers', idColumn: 'id', orderColumn: 'created_at',
@@ -301,12 +302,12 @@ export function toolUsageSql(byPrompt: boolean, correlated = false): string {
 
 const SUBAGENT_CONTEXT_PREFIX = 'cortex:';
 
-/** Receipt attribution is computed once for a session, using retained identities. */
+/** Sub-agent preamble attribution is computed once for a session, using retained identities. A session's start block is the session's, read with its other session-level records (`read/children.ts`). */
 export async function sessionTurnContexts(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<Record<string, TurnContext>> {
   const [prompts, receipts, agents] = await Promise.all([
-    db.prepare('SELECT prompt_id, thread_id, parent_prompt_id, origin FROM prompt_batches WHERE project_id = ? AND session_id = ? ORDER BY created_at, prompt_id')
-      .bind(scope.projectId, sessionId).all<{ prompt_id: string; thread_id: string | null; parent_prompt_id: string | null; origin: string }>(),
-    db.prepare("SELECT kind FROM session_injections WHERE project_id = ? AND session_id = ? AND (kind = 'cortex' OR kind LIKE 'cortex:%')")
+    db.prepare('SELECT prompt_id, thread_id FROM prompt_batches WHERE project_id = ? AND session_id = ? ORDER BY created_at, prompt_id')
+      .bind(scope.projectId, sessionId).all<{ prompt_id: string; thread_id: string | null }>(),
+    db.prepare("SELECT kind FROM session_injections WHERE project_id = ? AND session_id = ? AND kind LIKE 'cortex:%'")
       .bind(scope.projectId, sessionId).all<{ kind: string }>(),
     db.prepare("SELECT json_extract(payload, '$.subagentId') AS agent, json_extract(payload, '$.parentPromptId') AS parent FROM events WHERE project_id = ? AND session_id = ? AND kind = 'subagent.start'")
       .bind(scope.projectId, sessionId).all<{ agent: string; parent: string }>(),
@@ -315,10 +316,8 @@ export async function sessionTurnContexts(db: RelationalStore, scope: ReadScope,
   const firstByThread = new Map<string, string>();
   for (const p of prompts.results) if (p.thread_id !== null && !firstByThread.has(p.thread_id)) firstByThread.set(p.thread_id, p.prompt_id);
   const parents = new Map(agents.results.map(a => [a.agent, a.parent]));
-  const first = prompts.results.find(p => p.parent_prompt_id === null && p.origin === 'user')?.prompt_id;
-  const add = (id: string): TurnContext => contexts[id] ??= { start: false, subagents: 0 };
+  const add = (id: string): TurnContext => contexts[id] ??= { subagents: 0 };
   for (const receipt of receipts.results) {
-    if (receipt.kind === 'cortex') { if (first !== undefined) add(first).start = true; continue; }
     const id = receipt.kind.slice(SUBAGENT_CONTEXT_PREFIX.length);
     const prompt = firstByThread.get(id) ?? firstByThread.get(await uuidv5('thread', id)) ?? parents.get(await uuidv5('subagent', sessionId, id));
     if (prompt !== undefined && prompts.results.some(p => p.prompt_id === prompt)) add(prompt).subagents++;

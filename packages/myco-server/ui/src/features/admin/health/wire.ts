@@ -25,6 +25,7 @@ export interface KpiReport {
   since: number | null;
   contextPresent: Measure;
   sporeServeRate: Measure;
+  sessionStartPresent: Measure;
   callsPerPrompt: Measure;
   callsPerPromptByHarness: HarnessMeasure[];
   planReadsPerSession: Measure;
