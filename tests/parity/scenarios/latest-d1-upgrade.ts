@@ -17,8 +17,10 @@ export const latestD1Upgrade: ParityScenario = {
   async run(target) {
     expect(await target.sql("SELECT value FROM schema_meta WHERE key = 'version'"))
       .toEqual([{ value: String(SCHEMA_STEPS.at(-1)?.version) }]);
-    expect(await target.sql("SELECT credential_choices FROM runners WHERE id = 'rn_upgrade'"))
-      .toEqual([{ credential_choices: '{}' }]);
+    // The latest step rebuilds the receipts: the seeded one survives as a legacy receipt with an id of its own.
+    const receipts = await target.sql("SELECT id, prompt_id, ask_protocol FROM spore_injections WHERE session_id = 'upgrade_session'");
+    expect(receipts.map(({ prompt_id, ask_protocol }) => ({ prompt_id, ask_protocol }))).toEqual([{ prompt_id: 'upgrade_spore_injections', ask_protocol: 'legacy' }]);
+    expect(String(receipts[0]?.id)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(await target.sql('PRAGMA foreign_key_check')).toEqual([]);
     expect(await target.sql('PRAGMA quick_check')).toEqual([{ quick_check: 'ok' }]);
   },

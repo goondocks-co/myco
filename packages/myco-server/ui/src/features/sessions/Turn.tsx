@@ -163,7 +163,7 @@ export interface TurnProps {
   agent?: string | null;
   steering?: boolean;
   initial?: TurnChild;
-  contexts?: Record<string, { start: boolean; subagents: number }>;
+  contexts?: Record<string, { subagents: number }>;
 }
 
 /**
@@ -210,7 +210,6 @@ export const Turn = memo(function Turn({ projectId, sessionId, turn, scrollTo = 
               <ToolUsageLine tools={body.metrics.tools} />
               {turn.origin === 'agent_dispatch' && <span>Sub-agent tokens not recorded</span>}
             </div>}
-            {context?.start && <Contribution label="Myco sent the session start block" />}
             {(context?.subagents ?? 0) > 0 && <Contribution label={`Myco prepared ${count(context!.subagents, 'sub-agent preamble')}`} />}
             <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="answers" initial={body.answers ?? []} cursor={body.cursors?.answers} rowKey={(row) => row.id} label="context answers">
               {(rows) => rows.map((answer) => <ContextAnswer key={answer.id} answer={answer} />)}

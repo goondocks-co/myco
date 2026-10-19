@@ -21,6 +21,7 @@ import path from 'node:path';
 import { featuresNamed, featureAdvertised as headerAdvertises, type MemberFeature } from '@goondocks/myco-shared/member-protocol';
 import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
 import { BLOCK_JOIN, projectLine, withoutProjectLine } from '@goondocks/myco-shared/recall';
+import type { ASK_IDENTITY_MARKER, DeliveredSessionRecord, PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { deploymentFeaturesPath, deploymentsDir, deploymentUrl, listRegistryEntriesResult, type RegistryEntry } from './registry.js';
 import { spoolDirFor } from './spool.js';
 import { ensureMemberDir, ensurePrivateFile, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
@@ -57,8 +58,12 @@ export interface ProjectContextCache {
 
 export interface SessionContextCache {
   version: typeof CACHE_VERSION;
-  /** What the Deployment served for the session's latest prompt, rendered on the next one. */
-  prompt?: CachedBlock & { promptId: string; skipped?: string[] };
+  /**
+   * What the Deployment served for the session's latest prompt, rendered on the next one: the ask's own instant
+   * (`askedAt`), the prompt it named, the receipt and answer rows the Deployment wrote for it, where it wrote them, and
+   * the session record its block carried (`sessionRecord`).
+   */
+  prompt?: CachedBlock & { promptId?: string; askedAt?: number; receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord; skipped?: string[] };
 }
 
 /** What a hook asks the helper to fetch for its session: kept in session state until the helper has asked. */
@@ -66,7 +71,11 @@ export type ContextAsk =
   | { kind: 'start'; remote?: string; remoteFrom?: string; at: number }
   | { kind: 'compact'; compaction: number; remote?: string; remoteFrom?: string; at: number }
   | { kind: 'subagent'; agentId?: string; agentType?: string; at: number }
-  | { kind: 'prompt'; promptId: string; text: string; at: number };
+  /**
+   * A `v1` ask (`identity` set) names its prompt by the id the agent's declaration derives, or says why it names none
+   * (`scopeReason`); an ask without the marker comes from an older hook and names the id that hook minted.
+   */
+  | { kind: 'prompt'; promptId?: string; scopeReason?: PromptScopeReason; identity?: typeof ASK_IDENTITY_MARKER; text: string; at: number };
 
 /** The most of a prompt's text a recall request carries: the search reads its head, and a request stays small. */
 export const PROMPT_ASK_MAX_CHARS = 16_384;

@@ -206,3 +206,8 @@ hooks:
   # sequence for this single event — matching pre-refactor behavior.
   Stop:
     phases: [response, transcript]
+
+# How this agent's prompts are named: the prompt hook mints the id for the rows it writes (`hook-owned`, from
+# `capabilities.turnRowSource`).
+promptIdentity:
+  scheme: hook-mint-v1

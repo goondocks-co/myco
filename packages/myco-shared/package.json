@@ -92,6 +92,10 @@
       "import": "./dist/capture-rules.js",
       "types": "./dist/capture-rules.d.ts"
     },
+    "./prompt-identity": {
+      "import": "./dist/prompt-identity.js",
+      "types": "./dist/prompt-identity.d.ts"
+    },
     "./capture-rules-data": {
       "import": "./dist/capture-rules.generated.js",
       "types": "./dist/capture-rules.generated.d.ts"

@@ -50,6 +50,7 @@ const FIXTURES: Record<string, { payload: Record<string, unknown>; table: string
   'task.completed': { payload: { message: 'done', data: { id: 't1' } }, table: null },
   notification: { payload: { message: 'hey', level: 'info' }, table: null },
   turn: { payload: { phase: 'start', promptId: uuid(2) }, table: null },
+  'context.delivered': { payload: { receiptId: uuid(4), answerId: uuid(5), renderedIn: uuid(2) }, table: null },
   error: { payload: { message: 'bad', data: { stack: 's' } }, table: null },
 };
 
@@ -69,7 +70,7 @@ async function upload(env: ReturnType<typeof sqliteEnv>, token: string, bytes: U
 const FULL_PROJECTION_STATEMENTS = 20;
 const REQUIRED_ONLY_PROJECTION_STATEMENTS = 18;
 /** Every field carrying the prompt-reference marker across the catalogue. */
-const PROMPT_REFERENCE_MARKERS = 10;
+const PROMPT_REFERENCE_MARKERS = 11;
 /** Every blob-key field of the catalogue as `kind.field`, pinned by name; the absent-key admission gate drives each one. */
 const BLOB_KEY_FIELDS = [
   'attachment.blob', 'compaction.post.blob', 'compaction.pre.blob', 'plan.blob', 'prompt.blob',
@@ -77,10 +78,10 @@ const BLOB_KEY_FIELDS = [
   'transcript.segment.blob',
 ];
 /** Cost-gate pins: the exact count of distinct statements it drives, and a floor on the index steps it inspects on project-scoped tables. */
-const PLANNED_STATEMENTS = 64;
+const PLANNED_STATEMENTS = 67;
 const MIN_INDEX_STEPS = 60;
 /** Every id-bounded field across the catalogue, by the role it declares. */
-const ID_ROLES = { key: 7, prompt: 10, group: 1 };
+const ID_ROLES = { key: 7, prompt: 11, group: 1, served: 2 };
 /** Every field carrying the time bound across the catalogue: `session.start.startedAt` and `session.end.endedAt`. */
 const ORDERING_FIELDS = 2;
 /** The projection families whose identity row carries `machine_id` are owned by that row; every other keyed table routes ownership through its session. Pinned from the catalogue's projection family, independent of the plan's own `owner`, so a flipped owner is caught by name. */

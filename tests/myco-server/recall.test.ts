@@ -16,6 +16,7 @@ import {
   PROMPT_ANSWER_RETENTION_DAYS, PROMPT_ANSWER_RETENTION_SQL,
   type Contribution, type RecallLeaves, type RecallSkip, type SessionContextKind,
 } from '@myco-server-worker/core/recall.js';
+import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { insertSpore, type SporeInsert } from '@myco-server-worker/core/spores.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -37,6 +38,8 @@ import * as plans from '@myco-server-worker/read/plans.js';
 import { agentRunRetention, JOB_BATCH } from '@myco-server-worker/core/jobs-run.js';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
+/** The admission a write by this rig's machine carries; a session no machine holds yet is writable. */
+const admit = (projectId: string, sessionId: string) => sessionWriteAdmission({ projectId, machineId: 'machine_1' }, sessionId);
 
 const SCOPE: ReadScope = { projectId: 'proj_one' };
 const OTHER: ReadScope = { projectId: 'proj_two' };
@@ -105,6 +108,7 @@ const compose = (
   over: Partial<{ leaves: RecallLeaves; capabilityOn: boolean; scope: ReadScope; sessionId: string; promptId: string; text: string; now: number }> = {},
 ) => composePromptContext(db, over.scope ?? SCOPE, over.leaves ?? ON, over.capabilityOn ?? true, {
   sessionId: over.sessionId ?? SESSION,
+  admission: admit((over.scope ?? SCOPE).projectId, over.sessionId ?? SESSION),
   promptId: over.promptId ?? 'p1',
   text: over.text ?? PROMPT,
   now: over.now ?? NOW,
@@ -149,7 +153,7 @@ describe('the capability gate', () => {
     const { db, sqlite } = store();
     await insertSpore(db, SCOPE, spore('sp1'));
     const shut = await compose(db, { capabilityOn: false, text: PLANNING_PROMPT });
-    expect(shut).toEqual({ context: '', parts: [], skipped: ['capability'] });
+    expect(shut).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['capability'] });
     expect(sessionRows(sqlite)).toEqual([]);
     expect(sqlite.query(`SELECT COUNT(*) c FROM spore_injections`).get()).toEqual({ c: 0 });
   });
@@ -166,7 +170,7 @@ describe('the plan nudge', () => {
     expect(first.skipped).toEqual(['spores:disabled']);
 
     const again = await compose(db, { leaves: sporesOff, text: `${PLANNING_PROMPT} again`, promptId: 'p2' });
-    expect(again).toEqual({ context: '', parts: [], skipped: ['spores:disabled', 'plan-nudge:repeat'] });
+    expect(again).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['spores:disabled', 'plan-nudge:repeat'] });
 
     expect(sessionRows(sqlite)).toEqual([{ project_id: SCOPE.projectId, session_id: SESSION, kind: 'plan-nudge', created_at: NOW }]);
   });
@@ -188,8 +192,8 @@ describe('the plan nudge', () => {
     expect(sessionRows(sqlite).map((r) => [r.project_id, r.session_id])).toEqual([
       [SCOPE.projectId, 'sess_a'], [SCOPE.projectId, 'sess_b'], [OTHER.projectId, 'sess_a'],
     ]);
-    expect(await recordSessionInjection(db, SCOPE, 'sess_a', 'plan-nudge', NOW)).toBe(false);
-    expect(await recordSessionInjection(db, SCOPE, 'sess_a', 'cortex', NOW)).toBe(true);
+    expect(await recordSessionInjection(db, SCOPE, 'sess_a', 'plan-nudge', NOW, admit(SCOPE.projectId, 'sess_a'))).toEqual({ outcome: 'repeat' });
+    expect(await recordSessionInjection(db, SCOPE, 'sess_a', 'cortex', NOW, admit(SCOPE.projectId, 'sess_a'))).toEqual({ outcome: 'recorded' });
   });
 });
 
@@ -210,7 +214,7 @@ describe('the composed block', () => {
     const first = await compose(db, { promptId: 'p1' });
     expect(first.parts).toEqual([{ kind: 'spores', sporeIds: ['a', 'b'], planIds: [] }]);
     const repeat = await compose(db, { promptId: 'p2' });
-    expect(repeat).toEqual({ context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:no_intent'] });
+    expect(repeat).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:no_intent'] });
   });
 
   it('names the record\'s own gate when the pool still holds a spore the prompt content already spent', async () => {
@@ -225,7 +229,7 @@ describe('the composed block', () => {
 
   it('answers an empty block for a Project holding nothing to serve', async () => {
     const { db } = store();
-    expect(await compose(db)).toEqual({ context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:no_intent'] });
+    expect(await compose(db)).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:no_intent'] });
   });
 
   it('names a contributor that failed and serves the rest', async () => {
@@ -242,8 +246,8 @@ describe('the composed block', () => {
     const { db, sqlite } = store();
     const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
-      const answer = await composePromptContext(db, OTHER, ON, true, { sessionId: SESSION, promptId: 'failed', text: PROMPT, now: NOW }, async () => { throw new RangeError('private provider text'); });
-      expect(answer).toEqual({ context: '', parts: [], skipped: ['spores', 'plan-nudge:no_intent'] });
+      const answer = await composePromptContext(db, OTHER, ON, true, { sessionId: SESSION, admission: admit(OTHER.projectId, SESSION), promptId: 'failed', text: PROMPT, now: NOW }, async () => { throw new RangeError('private provider text'); });
+      expect(answer).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['spores', 'plan-nudge:no_intent'] });
       expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toContainEqual({ kind: 'recall_contributor_failed', projectId: OTHER.projectId, sessionId: SESSION, promptId: 'failed', contributor: 'spores', error: 'parse', operation: 'embed' });
       const rows = sqlite.query('SELECT project_id, session_id, prompt_id, outcome, context_chars, parts, skipped, failures FROM prompt_context_answers').all();
       expect(rows).toEqual([{ project_id: OTHER.projectId, session_id: SESSION, prompt_id: 'failed', outcome: 'empty', context_chars: 0, parts: '[]', skipped: JSON.stringify(answer.skipped), failures: JSON.stringify([{ contributor: 'spores', error: 'parse', operation: 'embed' }]) }]);
@@ -256,7 +260,7 @@ describe('the composed block', () => {
     const { db, sqlite } = store();
     const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
-      await composePromptContext(db, OTHER, ON, true, { sessionId: SESSION, promptId: 'quota', text: PROMPT, now: NOW }, async () => {
+      await composePromptContext(db, OTHER, ON, true, { sessionId: SESSION, admission: admit(OTHER.projectId, SESSION), promptId: 'quota', text: PROMPT, now: NOW }, async () => {
         throw new Error("D1_ERROR: exceeded D1's free tier daily row read limit");
       }, classifyD1Error);
       expect(sqlite.query('SELECT failures FROM prompt_context_answers').get()).toEqual({ failures: '[{"contributor":"spores","error":"store_quota","operation":"embed"}]' });
@@ -289,7 +293,7 @@ describe('the composed block', () => {
       sqlite.exec(`CREATE TRIGGER injection_unavailable BEFORE INSERT ON spore_injections
         WHEN NEW.project_id = 'proj_two' BEGIN SELECT RAISE(ABORT, 'fixture constraint failed'); END`);
       const answer = await compose(db, { scope: OTHER });
-      expect(answer).toEqual({ context: '', parts: [], skipped: ['spores', 'plan-nudge:no_intent'] });
+      expect(answer).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['spores', 'plan-nudge:no_intent'] });
       expect(sqlite.query('SELECT project_id, failures FROM prompt_context_answers').all()).toEqual([
         { project_id: OTHER.projectId, failures: '[{"contributor":"spores","error":"constraint","operation":"record"}]' },
       ]);
@@ -338,7 +342,7 @@ describe('prompt selection diagnostics', () => {
     const query = semantic.vectors.query;
     semantic.vectors.query = async (partition, options) => (await query(partition, options)).map((hit, i) =>
       options.filters?.type === 'plan' ? { ...hit, score: 0.95 } : { ...hit, score: i / 1000 });
-    const ask = (promptId: string, resolve = async () => semantic) => composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, promptId, text: PROMPT, now: NOW }, resolve);
+    const ask = (promptId: string, resolve = async () => semantic) => composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId, text: PROMPT, now: NOW }, resolve);
     try {
       await ask('no-hits', async () => ({ ...semantic, vectors: { ...semantic.vectors, query: async () => [] } }));
       expect(selectionOf(sqlite, 'no-hits')).toEqual(emptyInjectionCounts());
@@ -360,7 +364,7 @@ describe('prompt selection diagnostics', () => {
     seedPlan(sqlite);
     const semantic = await semanticRecall(db, SCOPE)();
     try {
-      await composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, promptId: 'metadata', text: PROMPT, now: NOW }, async () => ({
+      await composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'metadata', text: PROMPT, now: NOW }, async () => ({
         ...semantic, vectors: { ...semantic.vectors, query: async (partition, options) => (await semantic.vectors.query(partition, { ...options, filters: { type: 'plan' } })).map(h => ({ ...h, score: -0.9 })) },
       }));
       expect(selectionOf(sqlite, 'metadata')).toMatchObject({ sporeRawMatches: 1, sporeJoined: 1, sporeHits: 0, sporeCalibrated: 0, sporeScored: 0, sporeRelevant: 0, planHits: 1, planEligible: 1, planCalibrated: 0, planCalibration: 'insufficient', planScored: 0, planRelevant: 0, planHydrated: 0, budgetKept: 0 });
@@ -387,7 +391,7 @@ describe('prompt selection diagnostics', () => {
     } };
     const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
-      await composePromptContext(failingDb, SCOPE, ON, true, { sessionId: SESSION, promptId: 'partial-join', text: PROMPT, now: NOW }, async () => semantic);
+      await composePromptContext(failingDb, SCOPE, ON, true, { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'partial-join', text: PROMPT, now: NOW }, async () => semantic);
       expect(selectionOf(sqlite, 'partial-join')).toMatchObject({ sporeRawMatches: 100, sporeJoined: 90, sporeHits: 90, sporeHydrated: 0, budgetKept: 0 });
       expect(sqlite.query('SELECT failures FROM prompt_context_answers').get()).toEqual({ failures: '[{"contributor":"spores","error":"unknown","operation":"candidates"}]' });
     } finally { log.mockRestore(); sqlite.close(); }
@@ -416,7 +420,7 @@ describe('prompt selection diagnostics', () => {
     const log = spyOn(console, 'log').mockImplementation(() => {});
     let answered = false;
     try {
-      const answer = composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, promptId: 'settled', text: PROMPT, now: NOW }, async () => semantic, undefined, timings)
+      const answer = composePromptContext(db, SCOPE, ON, true, { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'settled', text: PROMPT, now: NOW }, async () => semantic, undefined, timings)
         .then((body) => { answered = true; return body; });
       await pendingStarted;
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -454,7 +458,7 @@ describe('prompt selection diagnostics', () => {
     const log = spyOn(console, 'log').mockImplementation(() => {});
     let answered = false;
     try {
-      const answer = composePromptContext(broken, SCOPE, ON, true, { sessionId: SESSION, promptId: 'hydrate-failure', text: PROMPT, now: NOW }, async () => semantic, undefined, timings)
+      const answer = composePromptContext(broken, SCOPE, ON, true, { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'hydrate-failure', text: PROMPT, now: NOW }, async () => semantic, undefined, timings)
         .then((body) => { answered = true; return body; });
       await calibrationStarted;
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -473,7 +477,7 @@ describe('prompt selection diagnostics', () => {
     const semantic = await semanticRecall(db, SCOPE)();
     const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
-      const input = { sessionId: SESSION, text: PROMPT, now: NOW };
+      const input = { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), text: PROMPT, now: NOW };
       expect((await composePromptContext(db, SCOPE, ON, true, { ...input, promptId: 'unconfigured' }, async () => null)).skipped).toContain('spores:no_semantic');
       expect((await composePromptContext(db, SCOPE, ON, true, { ...input, promptId: 'unavailable' }, async () => ({ ...semantic, provider: { ...semantic.provider, embed: async () => { throw new EmbeddingUnavailable('private provider text'); } } }))).skipped).toContain('spores:provider_unavailable');
       await composePromptContext(db, SCOPE, ON, true, { ...input, promptId: 'throw' }, async () => ({ ...semantic, provider: { ...semantic.provider, embed: async () => { throw new RangeError('private provider text'); } } }));
@@ -561,7 +565,7 @@ const forSession = (
   agentId: over.agentId,
   agentType: over.agentType,
   now: over.now ?? NOW,
-});
+}, { admission: admit((over.scope ?? SCOPE).projectId, over.sessionId ?? SESSION) });
 
 /** An empty block for a start, with the gates it closed on. */
 const emptyStart = (skipped: RecallSkip[]) => ({ context: '', parts: [], skipped, kind: 'cortex' });
@@ -805,7 +809,7 @@ describe('POST /context/prompt', () => {
     const response = await worker.fetch(post(token, { sessionId: 's1', promptId: 'p1', text: PLANNING_PROMPT }), e.env);
     const answer = await response.json();
     expect(contextTiming(response).total).toBeGreaterThanOrEqual(0);
-    expect(answer).toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'] });
+    expect(answer).toEqual({ persisted: true, answerId: expect.any(String), context: '', parts: [], skipped: ['capability'] });
   });
 
   it('reports only total when the prompt is too short for recall', async () => {
@@ -877,7 +881,7 @@ describe('POST /context/prompt', () => {
     expect(String(first.context).length).toBeLessThanOrEqual(PROMPT_CONTEXT_MAX_CHARS);
 
     const second = await (await worker.fetch(post(token, { sessionId: 's1', promptId: 'p2', text: `${PLANNING_PROMPT} once more` }), e.env)).json();
-    expect(second).toEqual({ persisted: true, context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:repeat'] });
+    expect(second).toEqual({ persisted: true, answerId: expect.any(String), context: '', parts: [], skipped: ['spores:empty', 'plan-nudge:repeat'] });
   });
 
   it('keeps one Project\'s records out of another\'s answer', async () => {

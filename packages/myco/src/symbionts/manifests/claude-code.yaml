@@ -488,3 +488,12 @@ runner:
           - { variable: CLAUDE_CODE_USE_FOUNDRY, provider: foundry }
         unknownIfSet: [ANTHROPIC_BASE_URL, CLAUDE_CODE_CLIENT_DATA_URL]
       tokenScope: attempt
+
+# How this agent's prompts are named (`@goondocks/myco-shared/prompt-identity`). The hook's `prompt_id` is the
+# transcript's `promptId`, so the hook and the Deployment's parse derive one id through `claude-v1`. A hook input
+# with no `prompt_id` names no prompt: its context answer is session-scoped.
+promptIdentity:
+  kind: harness-key
+  scheme: claude-v1
+  hookKey: prompt_id
+  transcriptKey: promptId

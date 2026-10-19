@@ -58,6 +58,8 @@ const ALLOWLIST: readonly string[] = [
   'packages/myco-shared/src/any-agent-rules.generated.ts',
   'packages/myco-shared/src/dot-path.ts',
   'packages/myco-shared/src/member-protocol.ts',
+  // The one prompt-id derivation and the identity vocabulary both sides share: no imports, no I/O.
+  'packages/myco-shared/src/prompt-identity.ts',
   'packages/myco-shared/src/harness-health.ts',
   'packages/myco-shared/src/run-control.ts',
   // The shape of a session id 1.4 minted, which the legacy import and the Deployment both recognise.

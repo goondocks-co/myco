@@ -29,6 +29,7 @@
       "@goondocks/myco-shared/agent-config": ["../myco-shared/src/agent-config.ts"],
       "@goondocks/myco-shared/capture-rule-schema": ["../myco-shared/src/capture-rule-schema.ts"],
       "@goondocks/myco-shared/capture-rules": ["../myco-shared/src/capture-rules.ts"],
+      "@goondocks/myco-shared/prompt-identity": ["../myco-shared/src/prompt-identity.ts"],
       "@goondocks/myco-shared/capture-rules-data": ["../myco-shared/src/capture-rules.generated.ts"],
       "@goondocks/myco-shared/resume-commands-data": ["../myco-shared/src/resume-commands.generated.ts"],
       "@goondocks/myco-shared/session-ids": ["../myco-shared/src/session-ids.ts"],

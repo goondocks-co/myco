@@ -6,7 +6,11 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
     "name": "antigravity",
     "rules": [],
     "displayEnvelopeTags": [],
-    "transcriptTimestamps": "recorded"
+    "transcriptTimestamps": "recorded",
+    "promptIdentity": {
+      "kind": "transcript-only",
+      "scheme": "member-transcript-v1"
+    }
   },
   {
     "name": "claude-code",
@@ -168,7 +172,13 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
       "timestamp",
       "pasted_content"
     ],
-    "transcriptTimestamps": "recorded"
+    "transcriptTimestamps": "recorded",
+    "promptIdentity": {
+      "kind": "harness-key",
+      "scheme": "claude-v1",
+      "hookKey": "prompt_id",
+      "transcriptKey": "promptId"
+    }
   },
   {
     "name": "cline",
@@ -203,7 +213,11 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
       }
     ],
     "displayEnvelopeTags": [],
-    "transcriptTimestamps": "recorded"
+    "transcriptTimestamps": "recorded",
+    "promptIdentity": {
+      "kind": "stamped",
+      "scheme": "stamp-or-offset-v1"
+    }
   },
   {
     "name": "codex",
@@ -348,13 +362,21 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
       }
     ],
     "displayEnvelopeTags": [],
-    "transcriptTimestamps": "recorded"
+    "transcriptTimestamps": "recorded",
+    "promptIdentity": {
+      "kind": "transcript-only",
+      "scheme": "offset-v1"
+    }
   },
   {
     "name": "copilot",
     "rules": [],
     "displayEnvelopeTags": [],
-    "transcriptTimestamps": "recorded"
+    "transcriptTimestamps": "recorded",
+    "promptIdentity": {
+      "kind": "hook-owned",
+      "scheme": "hook-mint-v1"
+    }
   },
   {
     "name": "cursor",
@@ -381,24 +403,40 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
       "additional_data",
       "pasted_content"
     ],
-    "transcriptTimestamps": "synthetic"
+    "transcriptTimestamps": "synthetic",
+    "promptIdentity": {
+      "kind": "transcript-only",
+      "scheme": "offset-v1"
+    }
   },
   {
     "name": "opencode",
     "rules": [],
     "displayEnvelopeTags": [],
-    "transcriptTimestamps": "recorded"
+    "transcriptTimestamps": "recorded",
+    "promptIdentity": {
+      "kind": "stamped",
+      "scheme": "stamp-or-offset-v1"
+    }
   },
   {
     "name": "pi",
     "rules": [],
     "displayEnvelopeTags": [],
-    "transcriptTimestamps": "recorded"
+    "transcriptTimestamps": "recorded",
+    "promptIdentity": {
+      "kind": "transcript-only",
+      "scheme": "offset-v1"
+    }
   },
   {
     "name": "windsurf",
     "rules": [],
     "displayEnvelopeTags": [],
-    "transcriptTimestamps": "recorded"
+    "transcriptTimestamps": "recorded",
+    "promptIdentity": {
+      "kind": "hook-owned",
+      "scheme": "hook-mint-v1"
+    }
   }
 ] as const;

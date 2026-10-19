@@ -109,7 +109,7 @@ describe('the measures route', () => {
     expect(status).toBe(200);
     expect(Object.keys(body).sort()).toEqual([
       'callsPerPrompt', 'callsPerPromptByHarness', 'contextPresent',
-      'firstInjectionMs', 'planReadsPerSession', 'recallQuality', 'since', 'sporeServeRate', 'windowDays',
+      'firstInjectionMs', 'planReadsPerSession', 'recallQuality', 'sessionStartPresent', 'since', 'sporeServeRate', 'windowDays',
     ]);
     expect(body.windowDays).toBe(7);
     // Every measure answers the pair; none answers a bare number.

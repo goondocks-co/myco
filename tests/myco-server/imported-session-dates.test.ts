@@ -105,7 +105,7 @@ async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max
       projectId: t.project_id as string, transcriptId: t.transcript_id as string, sessionId: t.session_id as string,
       machineId: t.machine_id as string, tokenId: t.token_id as string, agent: t.agent as string,
       size: t.size as number, parsedOffset: before, fidelity: null,
-      openPromptId: (t.open_prompt_id as string | null) ?? null,
+      openPromptId: (t.open_prompt_id as string | null) ?? null, promptIdentityStale: false,
       parserContext: typeof t.parser_context === 'string' ? JSON.parse(t.parser_context) : null,
       imported: t.imported_at !== null && t.imported_at !== undefined,
     }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });

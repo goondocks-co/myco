@@ -12,6 +12,7 @@ interface TestSymbiont {
   configDir: string;
   pluginRootEnvVar: string;
   hookFields: Record<string, unknown>;
+  promptIdentity?: Record<string, unknown>;
 }
 
 /** Replace the mocked generated config with entries for the given symbionts. */
@@ -26,6 +27,7 @@ function setHookConfig(symbionts: TestSymbiont[]): void {
       planDirs: [],
       planTags: [],
       capabilities: { preToolUseInjection: false, sessionStartInjection: false, subagentStartInjection: false },
+      promptIdentity: m.promptIdentity ?? { kind: 'hook-owned', scheme: 'hook-mint-v1' },
     };
   }
 }
@@ -39,7 +41,10 @@ const FIELDS = {
   toolInput: 'tool_input',
   toolOutput: ['tool_output', 'tool_response'],
 };
-const claudeManifest = { name: 'claude-code', configDir: '.claude', pluginRootEnvVar: 'CLAUDE_PLUGIN_ROOT', hookFields: FIELDS };
+const claudeManifest = {
+  name: 'claude-code', configDir: '.claude', pluginRootEnvVar: 'CLAUDE_PLUGIN_ROOT', hookFields: FIELDS,
+  promptIdentity: { kind: 'harness-key', scheme: 'claude-v1', hookKey: 'prompt_id', transcriptKey: 'promptId' },
+};
 const codexManifest = { name: 'codex', configDir: '.codex', pluginRootEnvVar: 'CODEX_PLUGIN_ROOT', hookFields: FIELDS };
 const windsurfManifest = { name: 'windsurf', configDir: '.windsurf', pluginRootEnvVar: 'WINDSURF_PLUGIN_ROOT', hookFields: { ...FIELDS, sessionId: 'trajectory_id' } };
 const geminiManifest = { name: 'gemini', configDir: '.gemini', pluginRootEnvVar: 'GEMINI_PLUGIN_ROOT', hookFields: { ...FIELDS, sessionIdEnv: 'GEMINI_SESSION_ID' } };
@@ -108,6 +113,16 @@ describe('normalizeHookInput', () => {
       expect(normalizeHookInput(raw)).toEqual({
         agent: 'claude-code', sessionId: 's1', transcriptPath: '/t', lastResponse: 'r', prompt: 'p', toolName: 'Bash', toolInput: { command: 'ls' }, toolOutput: 'out', raw,
       });
+    });
+
+    it('maps the prompt key a harness-key declaration names, and none for an agent that declares none', () => {
+      named('claude-code');
+      expect(normalizeHookInput({ session_id: 's1', prompt_id: ' k1 ' }).promptKey).toBe('k1');
+      expect('promptKey' in normalizeHookInput({ session_id: 's1' })).toBe(false);
+      expect('promptKey' in normalizeHookInput({ session_id: 's1', prompt_id: 42 })).toBe(false);
+      _resetManifestCache();
+      named('codex');
+      expect('promptKey' in normalizeHookInput({ session_id: 's1', prompt_id: 'k1' })).toBe(false);
     });
 
     it('reads a structured tool result delivered under tool_response', () => {

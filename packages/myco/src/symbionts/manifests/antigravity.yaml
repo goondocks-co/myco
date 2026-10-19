@@ -204,3 +204,8 @@ runner:
       launchFallback: none
       provider: { kind: unavailable }
       tokenScope: unverified
+
+# How this agent's prompts are named: the member reads them from the harness transcript by position.
+promptIdentity:
+  kind: transcript-only
+  scheme: member-transcript-v1

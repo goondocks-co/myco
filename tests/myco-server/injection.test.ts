@@ -12,6 +12,7 @@ import {
   itemsWithinBudget, MAX_LINE_TOKENS, MIN_PROMPT_CHARS, renderInjectionContext, selectSporesForPrompt,
   type InjectionItem, type InjectionLeaves,
 } from '@myco-server-worker/core/injection.js';
+import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { insertSpore, type SporeInsert } from '@myco-server-worker/core/spores.js';
 import { OBSERVATION_TYPES } from '@myco-server-worker/core/spores.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -19,6 +20,8 @@ import type { ReadScope } from '@myco-server-worker/read/scope.js';
 import { semanticRecall } from './helpers/semantic-recall.js';
 import * as plans from '@myco-server-worker/read/plans.js';
 import { cosineSimilarity } from '@myco-server-worker/core/embedding/vectors.js';
+/** The admission a write by this rig's machine carries; a session no machine holds yet is writable. */
+const admit = (projectId: string, sessionId: string) => sessionWriteAdmission({ projectId, machineId: 'machine_1' }, sessionId);
 
 const SCOPE: ReadScope = { projectId: 'proj_one' };
 const OTHER: ReadScope = { projectId: 'proj_two' };
@@ -51,6 +54,7 @@ const spore = (id: string, over: Partial<SporeInsert> = {}): SporeInsert => ({
 const select = (db: RelationalStore, over: Partial<{ leaves: InjectionLeaves; capabilityOn: boolean; scope: ReadScope; promptId: string; promptHash: string; prompt: string; sessionId: string; now: number }> = {}) =>
   selectSporesForPrompt(db, over.scope ?? SCOPE, over.leaves ?? ON, over.capabilityOn ?? true, {
     sessionId: over.sessionId ?? SESSION,
+    admission: admit((over.scope ?? SCOPE).projectId, over.sessionId ?? SESSION),
     promptId: over.promptId ?? 'p1',
     promptHash: over.promptHash ?? 'hash_1',
     prompt: over.prompt ?? PROMPT,
@@ -166,7 +170,7 @@ describe('the record', () => {
     const semantic = await semanticRecall(db, SCOPE)();
     sqlite.exec('UPDATE embedding_receipts SET neighbor_mean = NULL, neighbor_std = NULL');
     const ask = () => selectSporesForPrompt(db, SCOPE, ON, true, {
-      sessionId: SESSION, promptId: 'new-prompt', promptHash: 'same', prompt: PROMPT, now: NOW,
+      sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'new-prompt', promptHash: 'same', prompt: PROMPT, now: NOW,
     }, async () => semantic);
     expect((await ask()).skipped).toBe('empty');
     expect(rows(sqlite)).toEqual([]);
@@ -243,7 +247,7 @@ describe('plan selection', () => {
     semantic.vectors.query = async (partition, options) => (await query(partition, options)).map(h => ({ ...h, score: 0.95 }));
     const get = spyOn(semantic.vectors, 'get');
     try {
-      const answer = await selectSporesForPrompt(db, SCOPE, ON, true, { sessionId: SESSION, promptId: 'small', promptHash: 'small', prompt: PROMPT, now: NOW }, async () => semantic);
+      const answer = await selectSporesForPrompt(db, SCOPE, ON, true, { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'small', promptHash: 'small', prompt: PROMPT, now: NOW }, async () => semantic);
       expect(answer.items).toEqual([]);
       expect(answer.counts).toMatchObject({ planHits: size, planEligible: size, planCalibration: 'insufficient', planCalibrated: 0, planCalibrationFailed: 0, planScored: 0 });
       expect(get).not.toHaveBeenCalled();
@@ -263,7 +267,7 @@ describe('plan selection', () => {
     semantic.vectors.query = async (partition, options) => (await query(partition, options)).map(h => ({ ...h, score: 0.52 }));
     try {
       const answer = await selectSporesForPrompt(db, SCOPE, ON, true, {
-        sessionId: SESSION, promptId: 'reconnect', promptHash: 'reconnect',
+        sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'reconnect', promptHash: 'reconnect',
         prompt: 'Keep pending transcript batches intact when the member reconnects and retries delivery.', now: NOW,
       }, async () => semantic);
       expect(answer.items).toEqual([]);
@@ -321,7 +325,7 @@ describe('plan selection', () => {
     } };
     try {
       const answer = await selectSporesForPrompt(recallDb, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
-        { sessionId: SESSION, promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
+        { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
       const expected = ['capture', 'receipts'];
       expect(answer.items.map(i => i.id)).toEqual(expected);
       expect(answer.context).toContain('Preserve pending transcript batches during member reconnect');
@@ -335,7 +339,7 @@ describe('plan selection', () => {
       const completed = spyOn(plans, 'getPlan').mockResolvedValue({ ...row!, status: 'completed' });
       try {
         const changed = await selectSporesForPrompt(db, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
-          { sessionId: 'changed', promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
+          { sessionId: 'changed', admission: admit(SCOPE.projectId, 'changed'), promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
         expect(completed).toHaveBeenCalledTimes(expected.length);
         expect(changed.counts).toMatchObject({ planRelevant: expected.length, planHydrated: 0, budgetKept: 0 });
         expect(changed.items).toEqual([]);
@@ -358,7 +362,7 @@ describe('plan selection', () => {
       receipts.has(h.id) ? { ...h, score: receipts.get(h.id) === 'capture' ? 0.85 : 0.1 } : h);
     const get = spyOn(semantic.vectors, 'get').mockRejectedValue(new Error('plan vector service unavailable'));
     try {
-      const answer = await selectSporesForPrompt(db, SCOPE, ON, true, { sessionId: SESSION, promptId: 'degraded', promptHash: 'degraded', prompt: PROMPT, now: NOW }, async () => semantic);
+      const answer = await selectSporesForPrompt(db, SCOPE, ON, true, { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'degraded', promptHash: 'degraded', prompt: PROMPT, now: NOW }, async () => semantic);
       expect(get).toHaveBeenCalledTimes(1);
       expect(answer.items.map(i => i.id)).toEqual(['remember']);
       expect(answer.counts).toMatchObject({ sporeRelevant: 1, sporeHydrated: 1, planCalibrationFailed: 1, planCalibration: 'insufficient', planCalibrated: 0, planRelevant: 0, budgetKept: 1 });
@@ -376,7 +380,7 @@ describe('plan selection', () => {
     const semantic = await semanticRecall(db, SCOPE)();
     const keys = new Map((sqlite.query('SELECT id, record_id FROM embedding_receipts WHERE type = \'plan\'').all() as Array<{ id: string; record_id: string }>).map(r => [r.id, r.record_id]));
     const ask = (sessionId: string) => selectSporesForPrompt(db, SCOPE, ON, true, {
-      sessionId, promptId: 'plans', promptHash: 'plans', prompt: PROMPT, now: NOW,
+      sessionId, admission: admit(SCOPE.projectId, sessionId), promptId: 'plans', promptHash: 'plans', prompt: PROMPT, now: NOW,
     }, async () => ({ ...semantic, vectors: { ...semantic.vectors,
       query: async (partition, options) => (await semantic.vectors.query(partition, options)).map(h =>
         keys.has(h.id) ? { ...h, score: keys.get(h.id) === 'unrelated' ? 0.1 : 0.95 } : h),

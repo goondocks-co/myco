@@ -60,9 +60,9 @@ export const plans: ParityScenario = {
     // An MCP save by the same path converges on the member's key and, updating, leaves the prompt the row names.
     const saved = await mcp({ op: 'save', session_id: session, source_path: path, content: '- [x] one\n- [ ] two', project: target.projectId });
     expect([saved.ok, saved.id, saved.prompt_id]).toEqual([true, key, p1]);
-    // A fresh plan names the session's latest prompt.
+    // A fresh plan saved without a prompt names none.
     const fresh = await mcp({ op: 'save', session_id: session, plan_key: `parity-${stamp}`, content: 'fresh', project: target.projectId });
-    expect([fresh.ok, fresh.prompt_id]).toEqual([true, p2]);
+    expect([fresh.ok, fresh.prompt_id]).toEqual([true, null]);
 
     // The owner's status edit names its member and stamps after the row.
     const base = `/api/projects/${target.projectId}/sessions/${session}`;

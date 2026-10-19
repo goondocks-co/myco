@@ -119,7 +119,7 @@ async function expectReadingPage(page: Page, viewport: ViewportName, role: 'admi
   await expect(page.locator('[data-outcome-run="unrecorded"]')).toHaveCount(2);
   await expect(page.getByRole('list', { name: 'Conversation' }).getByRole('listitem').first()).toBeVisible();
   const conversation = page.getByRole('list', { name: 'Conversation', exact: true });
-  await expect(conversation.getByText('Myco sent the session start block')).toBeVisible();
+  await expect(page.locator('[data-session-context]').getByText('Myco sent the session start block')).toBeVisible();
   await expect(conversation.getByText('Myco prepared 1 sub-agent preamble')).toBeVisible();
   await expect(conversation.getByText('Sub-agent tokens not recorded')).toBeVisible();
   await expect(conversation).not.toContainText('<subagent_notification>');

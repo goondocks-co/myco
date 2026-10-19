@@ -142,8 +142,8 @@ export interface SessionState {
   hookAt?: number;
   /** When the session's end hook ran: nothing of its transcript waits on a turn's end after it. */
   endedAt?: number;
-  /** The prompt whose served context a prompt of this session has rendered: each answer is rendered once. */
-  renderedPrompt?: string;
+  /** The instant of the ask whose served context a prompt of this session last rendered: each answer is rendered once. */
+  renderedAsk?: number;
   updatedAt: number;
   /** Loss dispositions queued by the current receipt mutation, flushed before that receipt is committed. */
   pendingLosses?: CaptureLoss[];

@@ -5,7 +5,11 @@
  *
  *   user       a prompt when it declares `promptId` and is not `isMeta`; the
  *              same record shape also carries tool RESULTS, which name no
- *              prompt and must never become one.
+ *              prompt and must never become one. A delegated agent's line
+ *              (`isSidechain`) and a teammate's or agent's message envelope
+ *              carry the lead's current `promptId` and are not the lead's
+ *              prompt: each is its own prompt, keyed on the record's `uuid`,
+ *              from an agent.
  *   attachment a queued command — text at `attachment.prompt`, deduped on the
  *              record's own `uuid`.
  *   assistant  `message.content` blocks: `text` is the reply, `tool_use` is a
@@ -16,6 +20,7 @@
  * a result or a declared terminal outcome.
  */
 import { uuidv5 } from '../../hash.js';
+import type { ClaudePromptShape } from '@goondocks/myco-shared/prompt-identity';
 import {
   callForResult, parserContinuation, blocksOf, isBlock, lineTime, ownedLines, plansInText, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
   type ReplyPart, type DerivedEvent, type ParserInput, type TranscriptParser,
@@ -37,9 +42,22 @@ const namesPrompt = (v: Record<string, unknown>): boolean =>
   && str(v.promptId) !== undefined
   && blocksOf((v.message as Record<string, unknown> | undefined)?.content).every((b) => b.type !== 'tool_result');
 
+/** The envelope prefixes of the message shapes the manifest keys on a record's own `uuid` (`capture.prompts.shapes`). */
+export const AGENT_MESSAGE_SHAPES: ReadonlyArray<readonly [ClaudePromptShape, string]> = [
+  ['agent_message', '<agent-message'], ['teammate_message', '<teammate-message'],
+];
+
+/** Which shape a prompt-naming user record is: the person's own prompt, or a line another agent put under its key. */
+function promptShape(v: Record<string, unknown>, text: string): ClaudePromptShape {
+  if (v.isSidechain === true) return 'sidechain';
+  const opening = text.trimStart();
+  return AGENT_MESSAGE_SHAPES.find(([, prefix]) => opening.startsWith(prefix))?.[0] ?? 'user_prompt';
+}
+
 export const claudeCodeParser: TranscriptParser = {
   agent: 'claude-code',
   fidelity: 'full',
+  promptGeneration: 2,
   planTags: ['ultraplan'],
   continuation: { parentSessionIdPath: 'session_id', markerPaths: ['isCompactSummary'] },
 
@@ -75,9 +93,11 @@ export const claudeCodeParser: TranscriptParser = {
       if (type === 'user' && namesPrompt(value)) {
         await flushReply();
         const text = textOf(message?.content);
-        if (text.trim() !== '') {
-          promptId = await promptIdFor(sessionId, 'user_prompt', str(value.promptId)!);
-          events.push({ kind: 'prompt', payload: { promptId, text, origin: 'user', promptKind: 'user_prompt' }, createdAt, offset });
+        const shape = promptShape(value, text);
+        const key = shape === 'user_prompt' ? str(value.promptId) : str(value.uuid);
+        if (text.trim() !== '' && key !== undefined) {
+          promptId = await promptIdFor(sessionId, shape, key);
+          events.push({ kind: 'prompt', payload: { promptId, text, origin: shape === 'user_prompt' ? 'user' : 'agent_dispatch', promptKind: shape }, createdAt, offset });
         }
         continue;
       }

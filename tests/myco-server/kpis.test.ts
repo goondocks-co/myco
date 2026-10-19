@@ -29,7 +29,8 @@ interface Rig {
   session: (id: string, opts?: { project?: string; tokenId?: string; agent?: string | null; at?: number }) => void;
   prompt: (id: string, sessionId: string, opts?: { project?: string; at?: number }) => void;
   call: (id: string, sessionId: string, opts?: { project?: string; at?: number; tool?: string | null; op?: string | null }) => void;
-  sporeInjection: (sessionId: string, promptId: string, sporeIds: string[], opts?: { project?: string; at?: number }) => void;
+  /** A receipt selected with `promptId`'s text and delivered to `deliveredTo` (that same prompt unless named; null for none). */
+  sporeInjection: (sessionId: string, promptId: string, sporeIds: string[], opts?: { project?: string; at?: number; deliveredTo?: string | null }) => void;
   sessionInjection: (sessionId: string, kind: string, opts?: { project?: string; at?: number }) => void;
   credential: (id: string, opts?: { lineage?: string; startedAt?: number }) => void;
 }
@@ -76,9 +77,10 @@ function rig(): Rig {
     },
     sporeInjection: (sessionId, promptId, sporeIds, opts = {}) => {
       const at = opts.at ?? NOW;
-      sqlite.query(`INSERT INTO spore_injections (project_id, session_id, prompt_id, prompt_hash, spore_ids, plan_ids, created_at)
-                    VALUES (?, ?, ?, ?, ?, '[]', ?)`)
-        .run(opts.project ?? PROJECT, sessionId, promptId, `ph_${promptId}`, JSON.stringify(sporeIds), at);
+      const deliveredTo = opts.deliveredTo === undefined ? promptId : opts.deliveredTo;
+      sqlite.query(`INSERT INTO spore_injections (project_id, session_id, prompt_id, ask_protocol, asked_at, prompt_hash, spore_ids, plan_ids, created_at, delivered_at, delivered_prompt_id)
+                    VALUES (?, ?, ?, 'v1', ?, ?, ?, '[]', ?, ?, ?)`)
+        .run(opts.project ?? PROJECT, sessionId, promptId, at, `ph_${promptId}`, JSON.stringify(sporeIds), at, deliveredTo === null ? null : at, deliveredTo);
     },
     sessionInjection: (sessionId, kind, opts = {}) => {
       sqlite.query(`INSERT INTO session_injections (project_id, session_id, kind, created_at) VALUES (?, ?, ?, ?)`)
@@ -110,19 +112,19 @@ describe('the measures', () => {
     });
   });
 
-  it('credits a session record to one prompt rather than to every prompt after it', async () => {
+  it('counts a session start block over the sessions it reached, and credits it to no prompt', async () => {
     const r = rig();
     r.session('s1');
     r.prompt('p1', 's1', { at: NOW + 1 });
     r.prompt('p2', 's1', { at: NOW + 2 });
     r.prompt('p3', 's1', { at: NOW + 3 });
     r.prompt('p4', 's1', { at: NOW + 4 });
-    // One session-start record, stamped before every prompt of the session. It
-    // reached p1 and nothing else, so a measure that credited all four would
-    // saturate to 1.0 on any configured Deployment.
+    // A session start block is the session's: it reaches the session, not a prompt of it.
     r.sessionInjection('s1', 'cortex', { at: NOW });
+    r.session('s2');
     const report = await all(r.db);
-    expect(report.contextPresent).toEqual({ value: 0.25, sampleSize: 4 });
+    expect(report.contextPresent).toEqual({ value: 0, sampleSize: 4 });
+    expect(report.sessionStartPresent).toEqual({ value: 0.5, sampleSize: 2 });
   });
 
   it('counts a prompt served an observation on its own, beside the one the session record reached', async () => {
@@ -133,21 +135,24 @@ describe('the measures', () => {
     r.prompt('p3', 's1', { at: NOW + 3 });
     r.prompt('p4', 's1', { at: NOW + 4 });
     r.sessionInjection('s1', 'cortex', { at: NOW });
-    // p3 receives spores of its own, so two of the four prompts got something.
+    // p3 receives spores of its own, so one of the four prompts got something.
     r.sporeInjection('s1', 'p3', ['sp1']);
     const report = await all(r.db);
-    expect(report.contextPresent).toEqual({ value: 0.5, sampleSize: 4 });
+    expect(report.contextPresent).toEqual({ value: 0.25, sampleSize: 4 });
     expect(report.sporeServeRate).toEqual({ value: 0.25, sampleSize: 4 });
   });
 
-  it('does not credit a prompt with a session record stamped after it, and credits the first prompt that follows it', async () => {
+  it('credits the prompt a receipt was delivered to, never the one whose text selected it, and none for a receipt never delivered', async () => {
     const r = rig();
     r.session('s1');
     r.prompt('p1', 's1', { at: NOW - 10_000 });
     r.prompt('p2', 's1', { at: NOW });
-    r.sessionInjection('s1', 'plan-intent-nudge', { at: NOW - 5_000 });
+    r.prompt('p3', 's1', { at: NOW + 1 });
+    r.sporeInjection('s1', 'p1', ['sp1'], { deliveredTo: 'p2' });
+    r.sporeInjection('s1', 'p3', ['sp2'], { deliveredTo: null });
     const report = await all(r.db);
-    expect(report.contextPresent).toEqual({ value: 0.5, sampleSize: 2 });
+    expect(report.contextPresent).toEqual({ value: 1 / 3, sampleSize: 3 });
+    expect(report.sporeServeRate).toEqual({ value: 1 / 3, sampleSize: 3 });
   });
 
   it('reads a record naming no spore as context served and as a measured zero, not an absent sample', async () => {

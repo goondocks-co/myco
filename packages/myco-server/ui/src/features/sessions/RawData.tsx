@@ -2,7 +2,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { ActionLink, Disclosure, ErrorState, ExternalLink, FactRow, FactsPanel, LoadingState, ShowMore } from '../../design';
 import {
   blobUrl, processedBodyUrl, PROMPT_ORIGINS, RENDERABLE_IMAGE_TYPES, useSessionChildren, useTranscript, useTurns,
-  type AttachmentRow, type ContextInjectionRow, type TranscriptRecord, type TurnRow,
+  SESSION_ANSWER_KIND_PREFIX, type AttachmentRow, type ContextInjectionRow, type TranscriptRecord, type TurnRow,
 } from '../../hooks/use-sessions';
 import { formatBytes } from '../../lib/format';
 import { ApiError } from '../../lib/api';
@@ -108,7 +108,11 @@ function Transcripts({ projectId, sessionId, now }: { projectId: string; session
   );
 }
 
-function contextLabel(kind: string): string {
+function contextLabel(record: ContextInjectionRow): string {
+  const kind = record.kind;
+  if (kind.startsWith(SESSION_ANSWER_KIND_PREFIX)) {
+    return record.delivery === 'unnamed_prompt' ? 'Context that reached the agent on a prompt not shown here' : 'Context prepared for a prompt but not reported as reaching the agent';
+  }
   if (kind === 'cortex') return 'At the session’s start';
   if (kind === 'plan-nudge') return 'A reminder to keep its plan';
   if (kind.startsWith('cortex-compact:')) return `After the conversation was compacted (${kind.slice('cortex-compact:'.length)})`;
@@ -127,7 +131,7 @@ function ContextHistory({ projectId, sessionId, now }: { projectId: string; sess
         <ul aria-label="Context records" className="flex flex-col divide-y divide-line rounded-card border border-line bg-surface-1">
           {context.rows.map((record) => (
             <li key={`${record.kind}/${record.createdAt}`} className="flex flex-wrap items-baseline justify-between gap-s2 px-s4 py-s2 t-small">
-              <span className="text-ink-2">{contextLabel(record.kind)}</span>
+              <span className="text-ink-2">{contextLabel(record)}</span>
               <time dateTime={new Date(record.createdAt).toISOString()} className="text-muted">{dateTime(record.createdAt, now)}</time>
             </li>
           ))}

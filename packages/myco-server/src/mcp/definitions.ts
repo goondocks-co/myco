@@ -280,7 +280,7 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
         },
         "prompt_id": {
           "type": "string",
-          "description": "For op: \"save\" creating a plan: the prompt it came from, captured by this machine; defaults to the session's latest prompt. Ignored on update — the plan keeps the prompt it names."
+          "description": "For op: \"save\" creating a plan: the prompt it came from, captured by this machine; a plan saved without one names no prompt. Ignored on update — the plan keeps the prompt it names."
         },
         "limit": {
           "type": "number",

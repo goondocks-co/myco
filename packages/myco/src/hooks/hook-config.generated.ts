@@ -7,6 +7,7 @@
 // a build step. tests/meta/hook-config-generated-fresh.test.ts fails when
 // this file drifts from the manifests or hook templates.
 
+import type { PromptIdentityDeclaration } from '@goondocks/myco-shared/prompt-identity';
 import type {
   CapturePrompts,
   CaptureRule,
@@ -57,6 +58,8 @@ export interface HookConfigEntry {
   promptsFromTranscript?: boolean;
   /** A session start whose payload `field` equals `equals` continues one compacted. */
   compactionStart?: { field: string; equals: string };
+  /** How this symbiont's prompts are named; see the manifest schema's `promptIdentity`. */
+  promptIdentity: PromptIdentityDeclaration;
 }
 
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
@@ -100,6 +103,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "postToolUseInjection": false,
       "turnRowSource": "hook",
       "transcriptFidelity": "full"
+    },
+    "promptIdentity": {
+      "kind": "transcript-only",
+      "scheme": "member-transcript-v1"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -168,6 +175,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "postToolUseInjection": false,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
+    },
+    "promptIdentity": {
+      "kind": "harness-key",
+      "scheme": "claude-v1",
+      "hookKey": "prompt_id",
+      "transcriptKey": "promptId"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -432,6 +445,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
+    "promptIdentity": {
+      "kind": "stamped",
+      "scheme": "stamp-or-offset-v1"
+    },
     "transcriptDiscovery": {
       "roots": [
         "@memberHome/member/transcripts"
@@ -532,6 +549,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "postToolUseInjection": false,
       "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results"
+    },
+    "promptIdentity": {
+      "kind": "transcript-only",
+      "scheme": "offset-v1"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -786,6 +807,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "turnRowSource": "hook",
       "transcriptFidelity": "full"
     },
+    "promptIdentity": {
+      "kind": "hook-owned",
+      "scheme": "hook-mint-v1"
+    },
     "transcriptDiscovery": {
       "roots": [
         "~/.copilot/session-state"
@@ -859,6 +884,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results"
     },
+    "promptIdentity": {
+      "kind": "transcript-only",
+      "scheme": "offset-v1"
+    },
     "transcriptDiscovery": {
       "roots": [
         "~/.cursor/projects"
@@ -925,6 +954,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
+    "promptIdentity": {
+      "kind": "stamped",
+      "scheme": "stamp-or-offset-v1"
+    },
     "transcriptDiscovery": {
       "roots": [
         "@memberHome/member/transcripts"
@@ -970,6 +1003,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "postToolUseInjection": false,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
+    },
+    "promptIdentity": {
+      "kind": "transcript-only",
+      "scheme": "offset-v1"
     },
     "transcriptDiscovery": {
       "roots": [
@@ -1033,6 +1070,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "postToolUseInjection": false,
       "turnRowSource": "hook",
       "transcriptFidelity": "full"
+    },
+    "promptIdentity": {
+      "kind": "hook-owned",
+      "scheme": "hook-mint-v1"
     },
     "transcriptDiscovery": {
       "roots": [

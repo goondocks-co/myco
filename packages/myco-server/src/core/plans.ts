@@ -14,7 +14,6 @@ import { SERVER_PROTOCOL } from '../constants.js';
 import { utf8, uuidv5 } from '../hash.js';
 import { ingestEvent } from '../ingest/events.js';
 import { getPlan, PLAN_STATUS_MESSAGE, setPlanStatus, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../read/plans.js';
-import { latestPromptId } from '../read/sessions.js';
 import type { ReadScope } from '../read/scope.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 
@@ -41,7 +40,7 @@ export interface SavePlanInput {
   sourcePath?: string;
   planKey?: string;
   tags?: string[];
-  /** The prompt the plan came from; the session's latest when absent. Must belong to the caller's own machine. */
+  /** The prompt the plan came from; a plan saved without one names no prompt. Must belong to the caller's own machine. */
   promptId?: string;
 }
 
@@ -69,7 +68,7 @@ export async function savePlan(env: ServerEnv, member: SavingMember, scope: Read
   const blob = text === null ? existing?.blobKey ?? null : null;
   if (text === null && blob === null) return { ok: false, error: 'content is required when creating a new plan' };
   const tags = input.tags ?? existing?.tags ?? [];
-  const promptId = existing === null ? input.promptId ?? (await latestPromptId(env.db, scope, input.sessionId)) ?? undefined : undefined;
+  const promptId = existing === null ? input.promptId : undefined;
   const payload: Record<string, unknown> = {
     planKey,
     promptId,

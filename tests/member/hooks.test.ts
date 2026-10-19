@@ -10,6 +10,7 @@
  * session.end; Cursor adds tool.use and tool.failure, which its transcript
  * cannot carry. No retired daemon route is ever dialled.
  */
+import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -247,11 +248,12 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
   it('captures a plan a person pasted in a tag envelope, keyed by the prompt so it never meets a key the parse derives, and never one a runtime injected', async () => {
     const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
     await run('session-start', { transcript_path: tx, cwd: '/work/repo' });
-    await run('user-prompt-submit', { transcript_path: tx, prompt: 'Approved:\n<ultraplan>\n# Pasted\n\n- [ ] do it\n</ultraplan>' });
-    // The id the hook minted travels on the recall request; the plan is keyed by it.
+    await run('user-prompt-submit', { transcript_path: tx, prompt: 'Approved:\n<ultraplan>\n# Pasted\n\n- [ ] do it\n</ultraplan>', prompt_id: 'k-pasted' });
+    // The prompt's id is the one the transcript's parse derives, so the plan is keyed by it and names it.
     const asked = JSON.parse(fetchSpy.requests.find((r) => r.path === '/context/prompt')!.body!) as { promptId: string };
+    expect(asked.promptId).toBe(await promptIdFor(session, 'user_prompt', 'k-pasted'));
     const row = rig.env.sqlite.query('SELECT plan_key, title, content, status, origin_path, prompt_id FROM plans').get() as Record<string, unknown>;
-    expect(row).toEqual({ plan_key: planKeyForPromptTag(session, 'ultraplan', asked.promptId), title: 'Pasted', content: '# Pasted\n\n- [ ] do it', status: 'active', origin_path: 'transcript:ultraplan', prompt_id: null });
+    expect(row).toEqual({ plan_key: planKeyForPromptTag(session, 'ultraplan', asked.promptId), title: 'Pasted', content: '# Pasted\n\n- [ ] do it', status: 'active', origin_path: 'transcript:ultraplan', prompt_id: asked.promptId });
     expect(rig.rows('prompt_batches')).toBe(0);
     await run('user-prompt-submit', { transcript_path: tx, prompt: '<system-reminder>quoting <ultraplan>\n# Quoted\n</ultraplan></system-reminder>' });
     // The same plan pasted again is one plan.

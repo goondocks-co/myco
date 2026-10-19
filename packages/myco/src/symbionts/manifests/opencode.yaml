@@ -190,3 +190,9 @@ runner:
       provider: { kind: model-prefix }
       tokenScope: unverified
       lastResponseVersions: [1.18.21, 1.18.29]
+
+# How this agent's prompts are named: the prompt hook mints the id and the plugin stamps it on the transcript
+# lines it writes; a line no hook answered for is named by its position.
+promptIdentity:
+  kind: stamped
+  scheme: stamp-or-offset-v1

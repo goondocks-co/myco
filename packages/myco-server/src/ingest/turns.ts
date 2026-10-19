@@ -73,6 +73,14 @@ export function turnStartedAt(promptId: string, nowMs: number): number | null {
 }
 
 /**
+ * When the turn an ask opens started, in the member's clock: the ask's own instant, or null when it is more than
+ * `MAX_CLOCK_SKEW_MS` from the Deployment's clock either way, under the same bound a prompt id's instant is held to.
+ */
+export function turnStartedAtAsk(askedAt: number, nowMs: number): number | null {
+  return Number.isSafeInteger(askedAt) && Math.abs(askedAt - nowMs) <= MAX_CLOCK_SKEW_MS ? askedAt : null;
+}
+
+/**
  * Open a session's turn at `at`, on the machine that holds the session, when no turn end at or after `at` has reached
  * the Deployment: a stamp arriving after its own turn's end opens nothing. The session's recorded end is weighed where
  * the turn is read (`read/sessions.ts`): a turn older than it is no turn, and a session resumed after it is working

@@ -35,7 +35,7 @@ export const recall: ParityScenario = {
       expect(`cortex ${enabled}: ${res.status}`).toBe(`cortex ${enabled}: 200`);
     };
 
-    interface Served { persisted?: boolean; context?: string; parts?: Array<{ kind: string; sporeIds?: string[] }>; skipped?: string[]; kind?: string }
+    interface Served { persisted?: boolean; context?: string; parts?: Array<{ kind: string; sporeIds?: string[] }>; skipped?: string[]; kind?: string; answerId?: string }
     const served = async (sessionId: string, promptId: string, text: string): Promise<Served> => {
       const res = await fetch(`${target.url}/context/prompt`, {
         method: 'POST',
@@ -183,8 +183,9 @@ export const recall: ParityScenario = {
     // text rather than the name every write has to carry.
     await admit(false);
     const withdrawn = `parity-recall-off-${stamp}`;
-    expect(await served(withdrawn, crypto.randomUUID(), planning))
-      .toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'] });
+    // The answer is recorded, and names the row it wrote.
+    const shut = await served(withdrawn, crypto.randomUUID(), planning);
+    expect({ ...shut, answerId: typeof shut.answerId }).toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'], answerId: 'string' });
     const atStartOff = await servedAtStart(withdrawn);
     expect({ parts: atStartOff.parts?.map((p) => p.kind), skipped: atStartOff.skipped, kind: atStartOff.kind })
       .toEqual({ parts: ['project'], skipped: ['capability'], kind: 'cortex' });
@@ -209,8 +210,9 @@ export const recall: ParityScenario = {
     try {
       const archived = await owner<{ capabilities: Record<string, boolean> }>(`/api/projects/${target.projectId}/capabilities`);
       expect(archived.body.capabilities).toEqual({ cortex: false, canopy: false, vault_evolution: false });
-      expect(await served(`archived-${stamp}`, crypto.randomUUID(), planning))
-        .toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'] });
+      const archivedAnswer = await served(`archived-${stamp}`, crypto.randomUUID(), planning);
+      expect({ ...archivedAnswer, answerId: typeof archivedAnswer.answerId })
+        .toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'], answerId: 'string' });
     } finally {
       await target.sql(`UPDATE projects SET archived_at = NULL WHERE project_id = ${lit(target.projectId)}`);
     }

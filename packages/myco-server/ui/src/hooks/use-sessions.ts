@@ -61,7 +61,7 @@ export interface SessionResponse {
   untitled?: UntitledReason | null;
   counts: SessionCounts;
   metrics?: { tools: ToolUsage[]; tokens: number | null; durationMs?: number | null };
-  turnContexts?: Record<string, { start: boolean; subagents: number }>;
+  turnContexts?: Record<string, { subagents: number }>;
   /** Whether the session's work is released, or null when it has no release state. */
   release?: ReleaseStatus | null;
   /** What came of the session: the runs that read it or wrote from it, and the spores written from it. */
@@ -180,7 +180,11 @@ export interface TranscriptResponse {
 }
 
 export type SessionChild = 'prompts' | 'tool-calls' | 'responses' | 'plans' | 'attachments' | 'context-injections';
-export interface ContextInjectionRow { kind: string; createdAt: number; orderedAt: number }
+/** A record of what Myco served the session as a whole; see the Deployment's `read/children.ts`. */
+export interface ContextInjectionRow { kind: string; createdAt: number; orderedAt: number; delivery: 'unnamed_prompt' | 'not_delivered' | null }
+
+/** The prefix of an answer no named prompt received, in a session's context records. */
+export const SESSION_ANSWER_KIND_PREFIX = 'context:';
 
 /** The origins a prompt can carry on the wire. A person's own prompts are `user`; the rest are what a runtime injected around them. */
 export const PROMPT_ORIGINS = ['user', 'system', 'agent_dispatch', 'hook_injected', 'unknown'] as const;
@@ -251,7 +255,7 @@ export interface TurnDetail {
   injection: TurnInjection | null;
   children: TurnChild[];
   metrics?: { tools: ToolUsage[]; durationMs: number | null; tokens: null };
-  context?: { start: boolean; subagents: number };
+  context?: { subagents: number };
   answers?: PromptAnswer[];
   cursors?: Record<TurnCollection, string | null>;
 }

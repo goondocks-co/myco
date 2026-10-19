@@ -27,13 +27,16 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
       };
       const appendReply = async (event: DerivedEvent): Promise<void> => {
         const part = { text: String(event.payload.text), offset: event.offset, createdAt: event.createdAt };
+        // A reply is one prompt's: a line naming another prompt than the reply held starts its own.
+        const promptId = typeof event.payload.promptId === 'string' ? event.payload.promptId : undefined;
+        if (state.reply !== undefined && state.reply.promptId !== promptId) await flushReply();
         const bound = responseBound();
         const bytes = textBytes(part.text);
         if (state.reply !== undefined && (state.reply.chars + REPLY_SEPARATOR.length + part.text.length > bound.chars
           || state.reply.bytes + textBytes(REPLY_SEPARATOR) + bytes > bound.bytes)) await flushReply();
         const kept = part.text.length > bound.chars || bytes > bound.bytes ? replyChunks([part])[0] : part;
         if (kept === undefined) return;
-        if (state.reply === undefined) state.reply = { parts: [], promptId: typeof event.payload.promptId === 'string' ? event.payload.promptId : undefined, chars: 0, bytes: 0 };
+        if (state.reply === undefined) state.reply = { parts: [], promptId, chars: 0, bytes: 0 };
         if (state.reply.parts.length > 0) {
           state.reply.chars += REPLY_SEPARATOR.length;
           state.reply.bytes += textBytes(REPLY_SEPARATOR);

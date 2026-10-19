@@ -1,3 +1,5 @@
+import { CONTEXT_DELIVERED_KIND, PROMPT_IDENTITY_FEATURE } from './prompt-identity.js';
+
 /** How long a member can spend a GitHub identity link. */
 export const IDENTITY_LINK_TTL_MS = 15 * 60 * 1000;
 
@@ -53,7 +55,7 @@ export type MemberKind = (typeof MEMBER_KINDS)[number];
 export const FEATURES_HEADER = 'x-myco-features';
 /** Repository labels in session.start require this advertised optional field. */
 export const PROJECT_NAME_FEATURE = 'project-name';
-export const MEMBER_FEATURES = ['turn', PROJECT_NAME_FEATURE] as const;
+export const MEMBER_FEATURES = ['turn', PROJECT_NAME_FEATURE, PROMPT_IDENTITY_FEATURE] as const;
 export type MemberFeature = (typeof MEMBER_FEATURES)[number];
 
 /** Machine settings revisions are exchanged only by members and Deployments advertising this feature. */
@@ -107,7 +109,7 @@ export function resolveMachineSetting(leaf: MachineSettingLeaf, value: unknown):
 export const TURN_KIND = 'turn';
 
 /** The event kinds enabled by features that introduce a kind. */
-export const FEATURE_KINDS = { turn: TURN_KIND } as const satisfies Readonly<Partial<Record<MemberFeature, string>>>;
+export const FEATURE_KINDS = { turn: TURN_KIND, [PROMPT_IDENTITY_FEATURE]: CONTEXT_DELIVERED_KIND } as const satisfies Readonly<Partial<Record<MemberFeature, string>>>;
 export type FeatureKind = (typeof FEATURE_KINDS)[keyof typeof FEATURE_KINDS];
 
 /** Every kind a member's envelope may name: one it ships to any Deployment, or one a Deployment advertises. */

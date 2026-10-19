@@ -11,8 +11,8 @@ import { ID_GRAMMAR, ENVELOPE_FIELDS } from '@myco-server-worker/ingest/envelope
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
 import { normalizeHookInput, _resetManifestCache } from '@myco/hooks/normalize.js';
 import {
-  attachmentEvent, compactionEvent, deriveId, errorEvent, homeRelativePath, mintId, notificationEvent, planEvent, planKeyForTag,
-  promptEvent, queuedPromptIdFor, responseEvent, sessionEndEvent, sessionStartEvent, stopFailureEvent, subagentIdFor,
+  attachmentEvent, compactionEvent, contextDeliveredEvent, deriveId, errorEvent, homeRelativePath, mintId, notificationEvent, planEvent, planKeyForTag,
+  promptEvent, responseEvent, sessionEndEvent, sessionStartEvent, stopFailureEvent, subagentIdFor,
   subagentStartEvent, subagentStopEvent, taskCompletedEvent, toolFailureEvent, toolUseEvent, transcriptSegmentEvent, turnEvent, wireOrigin,
   type EnvelopeContext, type OutboundEvent, type WireKind,
 } from '@myco/member/envelope.js';
@@ -82,6 +82,7 @@ describe('member envelope — every kind through the worker', () => {
     { kind: 'transcript.segment', build: () => transcriptSegmentEvent(ctx(), { transcriptId: `tx_${'a'.repeat(32)}`, baseOffset: 0, blobSource: stager.stage(new TextEncoder().encode('{"type":"user"}\n'), 'text/plain; charset=utf-8'), originPath: '/fixture/t.jsonl' }) },
     { kind: 'session.end', build: () => sessionEndEvent(ctx(), { endedAt: Date.now() }) },
     { kind: 'turn', build: () => turnEvent(ctx(), { phase: 'start', promptId }) },
+    { kind: 'context.delivered', build: () => contextDeliveredEvent(ctx(), { answerId: mintId(), renderedIn: promptId }) },
   ];
 
   it('covers every kind of the server catalogue exactly once', () => {
@@ -211,8 +212,7 @@ describe('member envelope — field rules', () => {
   it('derives deterministic ids in the server id grammar and mints fresh ones', () => {
     expect(subagentIdFor('s', 'a')).toBe(subagentIdFor('s', 'a'));
     expect(subagentIdFor('s', 'a')).not.toBe(subagentIdFor('s', 'b'));
-    expect(queuedPromptIdFor('s', 'u')).not.toBe(subagentIdFor('s', 'u'));
-    for (const id of [deriveId('x'), subagentIdFor('s', 'a'), planKeyForTag('s', 'ultraplan', 1), queuedPromptIdFor('s', 'u'), mintId()]) {
+    for (const id of [deriveId('x'), subagentIdFor('s', 'a'), planKeyForTag('s', 'ultraplan', 1), mintId()]) {
       expect(ID_GRAMMAR.test(id)).toBe(true);
     }
     expect(mintId()).not.toBe(mintId());
@@ -247,8 +247,7 @@ describe('member envelope — field rules', () => {
     expect(await rig.postEvent(real.envelope)).toMatchObject({ persisted: true });
   });
 
-  it('queued prompts and subagents derive the same id on a second machine', () => {
-    expect(queuedPromptIdFor('sess', 'att-1')).toBe(deriveId('queued-prompt', 'sess', 'att-1'));
+  it('subagents derive the same id on a second machine', () => {
     expect(subagentStartEvent(ctx(), input({ agent_id: 'A' })).envelope.payload.subagentId).toBe(subagentIdFor(SESSION, 'A'));
   });
 });

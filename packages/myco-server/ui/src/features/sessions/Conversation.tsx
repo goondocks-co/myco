@@ -8,7 +8,7 @@ import { Turn } from './Turn';
 export const PERSON_ONLY: readonly PromptOrigin[] = ['user'];
 
 /** A conversation opens at its newest page and reads earlier turns on request. A named turn is read independently. */
-export function Conversation({ projectId, sessionId, agent = null, contexts }: { projectId: string; sessionId: string; agent?: string | null; contexts?: Record<string, { start: boolean; subagents: number }> }) {
+export function Conversation({ projectId, sessionId, agent = null, contexts }: { projectId: string; sessionId: string; agent?: string | null; contexts?: Record<string, { subagents: number }> }) {
   const [showAll, setShowAll] = useState(false);
   const toggleId = useId();
   const turns = useTurns(projectId, sessionId, showAll ? PROMPT_ORIGINS : PERSON_ONLY);

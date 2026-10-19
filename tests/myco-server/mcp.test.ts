@@ -159,7 +159,7 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_spores', { op: 'obsolete', id: 'nope', reason: 'r' })).result).toEqual({ ok: false, error: 'spore_id not found' });
   });
 
-  it('files a spore under the session the caller names, with that session\'s latest prompt, and answers one refusal for every id the caller\'s machine does not hold', async () => {
+  it('files a spore under the session the caller names, naming no prompt unless the caller names one, and answers one refusal for every id the caller\'s machine does not hold', async () => {
     const { call, sqlite, t1, t2 } = await setup();
     sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
       VALUES ('proj_1', 'sess_mine', 'machine_1', ?, 1000, 1000)`).run(t1.tokenId);
@@ -171,7 +171,7 @@ describe('POST /mcp', () => {
     prompt.run('p_last', 'e2', 2_000, 2_000, t1.tokenId, 2_000);
 
     const saved = (await call(t1.token, 'myco_spores', { op: 'save', type: 'decision', content: 'named', session_id: 'sess_mine' })).result;
-    expect(sqlite.query(`SELECT session_id, prompt_id FROM spores WHERE id = ?`).get(saved.id)).toEqual({ session_id: 'sess_mine', prompt_id: 'p_last' });
+    expect(sqlite.query(`SELECT session_id, prompt_id FROM spores WHERE id = ?`).get(saved.id)).toEqual({ session_id: 'sess_mine', prompt_id: null });
 
     const refusal = { ok: false, error: 'session_id not found' };
     expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'decision', content: 'x', session_id: 'sess_nowhere' })).result).toEqual(refusal);
@@ -202,7 +202,7 @@ describe('POST /mcp', () => {
 
     const merged = (await call(t1.token, 'myco_spores', { op: 'consolidate', source_spore_ids: [a.id, b.id], consolidated_content: 'wisdom', observation_type: 'wisdom', session_id: 'sess_mine' })).result;
     expect(merged.sources_consolidated).toBe(2);
-    expect(sqlite.query(`SELECT session_id, prompt_id FROM spores WHERE id = ?`).get(merged.new_spore_id)).toEqual({ session_id: 'sess_mine', prompt_id: 'p_only' });
+    expect(sqlite.query(`SELECT session_id, prompt_id FROM spores WHERE id = ?`).get(merged.new_spore_id)).toEqual({ session_id: 'sess_mine', prompt_id: null });
     expect(sqlite.query(`SELECT session_id, COUNT(*) c FROM resolution_events WHERE new_spore_id = ? GROUP BY session_id`).get(merged.new_spore_id)).toEqual({ session_id: 'sess_mine', c: 2 });
 
     const third = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'c' })).result;
@@ -234,14 +234,14 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', content: 'c' })).result).toEqual({ ok: false, error: 'source_path or plan_key is required when creating a new plan' });
   });
 
-  it('names the prompt a plan came from — the caller\'s own, else the session\'s latest — refuses a prompt another machine captured, and lands a tags-only update on identical content', async () => {
+  it('names the prompt a plan came from only when the caller names it, refuses a prompt another machine captured, and lands a tags-only update on identical content', async () => {
     const { call, sqlite, env, t1, t2 } = await setup();
     const p1 = '00000000-0000-7000-8000-000000000101';
     const p2 = '00000000-0000-7000-8000-000000000102';
     await worker.fetch(new Request('https://s/events', { method: 'POST', headers: memberHeaders(t1.token), body: JSON.stringify(envelope({ sessionId: 'sess_a', createdAt: 100, payload: { promptId: p1, text: 'one', origin: 'user' } })) }), env);
     await worker.fetch(new Request('https://s/events', { method: 'POST', headers: memberHeaders(t1.token), body: JSON.stringify(envelope({ eventId: '00000000-0000-7000-8000-000000000110', sessionId: 'sess_a', createdAt: 200, payload: { promptId: p2, text: 'two', origin: 'user' } })) }), env);
-    const latest = (await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'latest', content: 'c' })).result;
-    expect([latest.ok, latest.prompt_id]).toEqual([true, p2]);
+    const unnamed = (await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'latest', content: 'c' })).result;
+    expect([unnamed.ok, unnamed.prompt_id]).toEqual([true, null]);
     const named = (await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'named', content: 'c', prompt_id: p1 })).result;
     expect([named.ok, named.prompt_id]).toEqual([true, p1]);
     const foreign = (await call(t2.token, 'myco_plans', { op: 'save', session_id: 'sess_b', plan_key: 'foreign', content: 'c', prompt_id: p1 })).result;

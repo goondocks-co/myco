@@ -41,7 +41,7 @@ async function parse(text: string, agent: string) {
     VALUES ('proj_1', 'tx_recovery', 0, ?, ?, 'segment', ?, ?, ?)`, [bytes.length, key, NOW, NOW, tokenId]);
   const target = {
     projectId: 'proj_1', transcriptId: 'tx_recovery', sessionId: 'resumed', machineId: 'machine_1',
-    tokenId, agent, size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null, imported: false,
+    tokenId, agent, size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, imported: false,
   };
   const diagnostics: unknown[] = [];
   const log = console.log;

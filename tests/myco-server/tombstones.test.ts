@@ -265,6 +265,7 @@ describe('a deleted session takes no further writes', () => {
       notification: { message: 'm' },
       error: { message: 'm' },
       turn: { phase: 'start' },
+      'context.delivered': { answerId: uuid(69), renderedIn: uuid(60) },
     };
 
     let n = 100;

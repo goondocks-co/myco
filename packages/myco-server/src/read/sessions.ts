@@ -689,15 +689,6 @@ export async function projectHoldsSession(db: RelationalStore, scope: ReadScope,
   return row !== null;
 }
 
-/** The session's latest prompt — the one a write that names the session records as its origin — or null when the session holds none. */
-export async function latestPromptId(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<string | null> {
-  const row = await db
-    .prepare(`SELECT prompt_id FROM prompt_batches WHERE project_id = ? AND session_id = ? ORDER BY created_at DESC, prompt_id DESC LIMIT 1`)
-    .bind(scope.projectId, sessionId)
-    .first<{ prompt_id: string }>();
-  return row?.prompt_id ?? null;
-}
-
 /** The session's titling stamp as it stands, or null when the project holds no such session. */
 const titlingStamp = (db: RelationalStore, projectId: string, sessionId: string) =>
   db.prepare(`SELECT titled_at FROM sessions WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ titled_at: number | null }>();

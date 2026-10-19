@@ -12,6 +12,7 @@ import { assertMemberTranscriptDestination } from './transcript-routing.js';
  * session lineage. An agent the Deployment parses has none of that derived
  * here: the parse is the one writer of its turns.
  */
+import { canonicalPromptId } from '@goondocks/myco-shared/prompt-identity';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,7 +28,7 @@ import type { TranscriptTurn } from '../symbionts/adapter.js';
 import { canStartRequest, clippedRequestBudget, type HookBudget } from './budget.js';
 import { refusalPermanent, TRANSCRIPT_HEAD_HASH_BYTES, TRANSCRIPT_SLICE_BYTES, type MemberCode } from './constants.js';
 import {
-  attachmentEvent, deriveId, planEvent, planKeyForTag, promptEvent, queuedPromptIdFor, transcriptSegmentEvent, TEXT_MEDIA_TYPE,
+  attachmentEvent, deriveId, planEvent, planKeyForTag, promptEvent, transcriptSegmentEvent, TEXT_MEDIA_TYPE,
   type EnvelopeContext, type OutboundEvent, type TranscriptRole,
 } from './envelope.js';
 import { clearRefusalRetry, deferAfterRefusal, readSessionState, updateSessionState, type SessionState, type TranscriptPointer } from './session-state.js';
@@ -201,7 +202,7 @@ export function deriveTranscriptCapture(ctx: EnvelopeContext, transcriptPath: st
   records.forEach((record, position) => {
     const hash = sha256Text(record.text);
     if (state.prompts[hash]) return;
-    const promptId = record.dedupeKey ? queuedPromptIdFor(sessionId, record.dedupeKey) : deriveId('transcript-prompt', sessionId, String(position));
+    const promptId = canonicalPromptId(deriveId, { scheme: 'member-transcript-v1', sessionId, dedupeKey: record.dedupeKey, position });
     events.push(promptEvent(ctx, { promptId, text: record.text, origin: record.origin }));
     capturedPrompts.push([hash, promptId]);
   });

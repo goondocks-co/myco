@@ -93,3 +93,8 @@ hooks:
     phases: [response]
   post_cascade_response_with_transcript:
     phases: [transcript]
+
+# How this agent's prompts are named: the prompt hook mints the id for the rows it writes (`hook-owned`, from
+# `capabilities.turnRowSource`).
+promptIdentity:
+  scheme: hook-mint-v1

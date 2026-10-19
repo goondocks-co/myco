@@ -1,7 +1,7 @@
 /**
  * Session deletion retains its identity and tombstone, clears its title and
- * summary, and removes captured projections and the record of which runs read
- * it. Saved knowledge, the runs themselves and other sessions remain. Reads
+ * summary, and removes captured projections, the context served to it and the
+ * record of which runs read it. A spore kept from it names no prompt of it. Saved knowledge, the runs themselves and other sessions remain. Reads
  * exclude tombstones; ingestion refuses subsequent capture and import for the
  * same session ID. Unreferenced blobs are freed in bounded pages.
  */
@@ -14,7 +14,8 @@ import { emit } from '../telemetry.js';
 /** The tables a session's derived rows live in, each carrying `session_id` itself. */
 export const DERIVED_TABLES = [
   'archive_bundles', 'raw_archive_refs', 'registered_content_proofs', 'storage_cleanup_queue', 'content_scan_checkpoints',
-  'transcripts', 'attachments', 'plans', 'responses', 'tool_calls', 'prompt_batches', 'events',
+  'transcripts', 'attachments', 'plans', 'responses', 'tool_calls', 'spore_injections', 'prompt_context_answers', 'session_injections',
+  'prompt_batches', 'events',
 ] as const;
 
 /**
@@ -113,6 +114,9 @@ export async function tombstoneSession(
       .bind(projectId, sessionId, reason ?? null, nowMs, by),
     env.db.prepare(`UPDATE sessions SET title = NULL, summary = NULL, titled_at = NULL, titled_by = NULL
       WHERE project_id = ? AND session_id = ? AND (title IS NOT NULL OR summary IS NOT NULL OR titled_at IS NOT NULL OR titled_by IS NOT NULL)`).bind(projectId, sessionId),
+    // A spore outlives its session and stops naming a prompt the deletion removes; it runs before the prompts go.
+    env.db.prepare(`UPDATE spores SET prompt_id = NULL
+      WHERE project_id = ? AND prompt_id IN (SELECT prompt_id FROM prompt_batches WHERE project_id = ? AND session_id = ?)`).bind(projectId, projectId, sessionId),
   ];
   const statements = [
     ...metadata,
