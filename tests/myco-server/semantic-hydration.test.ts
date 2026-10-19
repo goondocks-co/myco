@@ -8,6 +8,7 @@ import { notTombstonedSql } from '@myco-server-worker/core/tombstones.js';
 import { inListChunks } from '@myco-server-worker/read/scope.js';
 import { SEARCH_PREVIEW_CHARS } from '@goondocks/myco-shared/search-types';
 import { selectSporesForPrompt } from '@myco-server-worker/core/injection.js';
+import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { seededSqlite, sqliteD1 } from './helpers/d1.js';
 import { measuredStore } from './helpers/read-budget.js';
 
@@ -167,7 +168,7 @@ for (const target of ['bun', 'workerd-d1'] as const) {
       const expected = (await Promise.all(['spore', 'plan', 'session'].map((type) => oracle(db, matches, { type })))).flat()
         .sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, 100);
       expect(search.map(({ id, preview }) => ({ id, preview }))).toEqual(expected.map((row) => ({ id: row.record_id, preview: row.text.slice(0, SEARCH_PREVIEW_CHARS) })));
-      const input = { sessionId: 'session', promptId: 'recall', promptHash: 'recall', prompt: 'fixture prompt for recall', now: 2000 };
+      const input = { sessionId: 'session', admission: sessionWriteAdmission({ projectId: SCOPE.projectId, machineId: 'machine' }, 'session'), promptId: 'recall', promptHash: 'recall', prompt: 'fixture prompt for recall', now: 2000 };
       const leaves = { enabled: true, maxPerPrompt: 3 };
       const selection = await selectSporesForPrompt(db, SCOPE, leaves, true, input, async () => semantic(matches));
       const fromOracle: RelationalStore = { ...db, prepare: (sql) => {

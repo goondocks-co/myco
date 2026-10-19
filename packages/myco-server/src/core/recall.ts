@@ -40,6 +40,8 @@ import type { SemanticSearch } from '../read/embedding.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingTexts } from './settings.js';
 import { sha256Hex } from '../hash.js';
 import type { ReadScope } from '../read/scope.js';
+import type { SessionWriteAdmission } from '../ingest/projections.js';
+import type { Refusal } from '../telemetry.js';
 import { classify, emit, type ErrorClass } from '../telemetry.js';
 import { BLOCK_JOIN, projectLine, sessionInjectionKind, type SessionContextRequest, type SessionContextIdentity } from '@goondocks/myco-shared/recall';
 export { sessionInjectionKind } from '@goondocks/myco-shared/recall';
@@ -126,8 +128,8 @@ export async function readRecallLeaves(db: RelationalStore): Promise<RecallLeave
 
 /**
  * Records that this session has been served `kind`, and answers whether the
- * record is new. A second call for the same (project, session, kind) answers
- * false, and the caller serves nothing.
+ * record is new. A second call for the same (project, session, kind), or one the
+ * session's admission holds back, answers false, and the caller serves nothing.
  */
 export async function recordSessionInjection(
   db: RelationalStore,
@@ -135,10 +137,11 @@ export async function recordSessionInjection(
   sessionId: string,
   kind: string,
   now: number,
+  admission: SessionWriteAdmission,
 ): Promise<boolean> {
   const written = await db
-    .prepare(`INSERT OR IGNORE INTO session_injections (project_id, session_id, kind, created_at) VALUES (?, ?, ?, ?)`)
-    .bind(scope.projectId, sessionId, kind, now)
+    .prepare(`INSERT OR IGNORE INTO session_injections (project_id, session_id, kind, created_at) SELECT ?, ?, ?, ? WHERE ${admission.admission.sql}`)
+    .bind(scope.projectId, sessionId, kind, now, ...admission.admission.params)
     .run();
   return written.meta.changes === 1;
 }
@@ -187,6 +190,8 @@ export interface PromptContext {
   /** The receipt and the answer rows this ask wrote, each named only when its write succeeded: what a delivery names. */
   receiptId?: string;
   answerId?: string;
+  /** Why the session's admission held the answer back: nothing is recorded for it, and nothing is served. */
+  refusal?: Refusal;
 }
 
 /** A failed contributor's coded cause; no prompt body or arbitrary error text is retained. */
@@ -220,12 +225,13 @@ async function contribute<T>(
 
 /**
  * Appends the answer under the prompt that asked, before capture has necessarily recorded that prompt, and names the
- * row it wrote: an answer whose write failed names none.
+ * row it wrote: an answer whose write failed names none, and one the session's admission held back serves nothing.
  */
 async function recordPromptAnswer(
   db: RelationalStore,
   identity: { projectId: string; sessionId: string; promptId: string | null },
   naming: AskNaming,
+  admission: SessionWriteAdmission,
   answer: PromptContext,
   failures: readonly RecallFailure[],
   selection: InjectionCounts,
@@ -233,20 +239,25 @@ async function recordPromptAnswer(
   classifyError?: ErrorClassifier,
 ): Promise<PromptContext> {
   const answerId = crypto.randomUUID();
+  let unrecorded: ErrorClass;
   try {
-    await db.prepare(`INSERT INTO prompt_context_answers
-      (project_id, session_id, id, prompt_id, scope_reason, ask_protocol, asked_at, outcome, context_chars, parts, skipped, failures, selection, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(identity.projectId, identity.sessionId, answerId, naming.promptId, naming.scopeReason, naming.askProtocol, naming.askedAt,
+    const written = await db.prepare(`INSERT INTO prompt_context_answers
+      (project_id, session_id, id, prompt_id, scope_reason, ask_protocol, asked_at, receipt_id, outcome, context_chars, parts, skipped, failures, selection, created_at)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${admission.admission.sql}`)
+      .bind(identity.projectId, identity.sessionId, answerId, naming.promptId, naming.scopeReason, naming.askProtocol, naming.askedAt, answer.receiptId ?? null,
         answer.context.length > 0 ? 'served' : 'empty', answer.context.length,
         JSON.stringify(answer.parts.map((part) => part.kind === 'spores'
           ? { kind: part.kind, sporeCount: part.sporeIds.length, planCount: part.planIds.length } : part)),
-        JSON.stringify(answer.skipped), JSON.stringify(failures), JSON.stringify(selection), now).run();
+        JSON.stringify(answer.skipped), JSON.stringify(failures), JSON.stringify(selection), now, ...admission.admission.params).run();
+    if (written.meta.changes === 1) return { ...answer, answerId };
+    const refusal = await admission.refusal(db);
+    if (refusal !== null) return { context: '', parts: [], skipped: answer.skipped, refusal };
+    unrecorded = 'unknown';
   } catch (error) {
-    emit({ kind: 'recall_answer_unrecorded', ...identity, error: classify(error, classifyError) });
-    return answer;
+    unrecorded = classify(error, classifyError);
   }
-  return { ...answer, answerId };
+  emit({ kind: 'recall_answer_unrecorded', ...identity, error: unrecorded });
+  return answer;
 }
 
 /** Mark one answer delivered, once: the same rule a receipt's delivery follows (`receiptDeliveredStatement`). */
@@ -254,6 +265,19 @@ export function answerDeliveredStatement(db: RelationalStore, d: Delivery, gate:
   return db.prepare(`UPDATE prompt_context_answers SET delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?
       WHERE project_id = ? AND session_id = ? AND id = ? AND delivered_at IS NULL AND ${gate.sql}`)
     .bind(d.at, d.promptId, d.scopeReason, d.projectId, d.sessionId, d.id, ...gate.params);
+}
+
+/**
+ * Mark the session's plan nudge delivered with the answer that carried it, once. The session's record of the nudge
+ * outlives that answer, and so does its delivery.
+ */
+export function planNudgeDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
+  return db.prepare(`UPDATE session_injections SET delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?
+      WHERE project_id = ? AND session_id = ? AND kind = 'plan-nudge' AND delivered_at IS NULL
+        AND EXISTS (SELECT 1 FROM prompt_context_answers a, json_each(a.parts)
+                     WHERE a.project_id = ? AND a.session_id = ? AND a.id = ? AND json_extract(json_each.value, '$.kind') = 'plan-nudge')
+        AND ${gate.sql}`)
+    .bind(d.at, d.promptId, d.scopeReason, d.projectId, d.sessionId, d.projectId, d.sessionId, d.id, ...gate.params);
 }
 
 export const PROMPT_ANSWER_RETENTION_SQL = `DELETE FROM prompt_context_answers WHERE rowid IN (
@@ -323,7 +347,7 @@ export async function composePromptContext(
   scope: ReadScope,
   leaves: RecallLeaves,
   capabilityOn: boolean,
-  input: { sessionId: string; text: string; now: number } & Partial<AskNaming>,
+  input: { sessionId: string; text: string; now: number; admission: SessionWriteAdmission } & Partial<AskNaming>,
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   classifyError?: ErrorClassifier,
   timings?: ContextTimings,
@@ -332,7 +356,7 @@ export async function composePromptContext(
   const identity = { projectId: scope.projectId, sessionId: input.sessionId, promptId: naming.promptId };
   let counts = emptyInjectionCounts();
   let receiptId: string | undefined;
-  if (!capabilityOn) return recordPromptAnswer(db, identity, naming, { context: '', parts: [], skipped: ['capability'] }, [], counts, input.now, classifyError);
+  if (!capabilityOn) return recordPromptAnswer(db, identity, naming, input.admission, { context: '', parts: [], skipped: ['capability'] }, [], counts, input.now, classifyError);
 
   const skipped: RecallSkip[] = [];
   const failures: RecallFailure[] = [];
@@ -344,6 +368,7 @@ export async function composePromptContext(
       promptHash: await sha256Hex(input.text),
       prompt: input.text,
       now: input.now,
+      admission: input.admission,
     }, resolveSemantic, timings).catch((error: unknown) => {
       if (error instanceof InjectionFailure) counts = error.counts;
       throw error;
@@ -360,14 +385,14 @@ export async function composePromptContext(
   const nudge = await contribute<Contribution | null>(identity, 'plan-nudge', skipped, failures, async () => {
     if (!leaves.planNudge) skipped.push('plan-nudge:off');
     else if (!detectsPlanIntent(input.text)) skipped.push('plan-nudge:no_intent');
-    else if (!(await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now))) skipped.push('plan-nudge:repeat');
+    else if (!(await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now, input.admission))) skipped.push('plan-nudge:repeat');
     else return { part: { kind: 'plan-nudge' }, text: PLAN_INTENT_NUDGE };
     return null;
   }, classifyError);
 
   const kept = partsWithinBound([nudge, spores].filter((c): c is Contribution => c !== null));
 
-  return recordPromptAnswer(db, identity, naming, {
+  return recordPromptAnswer(db, identity, naming, input.admission, {
     context: kept.map((c) => c.text).join(JOIN),
     parts: kept.map((c) => c.part),
     skipped,
@@ -418,9 +443,10 @@ export async function composeSessionContext(
   input: SessionContextRequest & { now: number },
   /**
    * `preview`: compose the block and record nothing, so no session is held to have been served it. What a member
-   * asks for when it joins a project, to have the block cached before its first session starts.
+   * asks for when it joins a project, to have the block cached before its first session starts. A block that is
+   * recorded carries the session's write admission.
    */
-  opts: { preview?: boolean; classifyError?: ErrorClassifier } = {},
+  opts: ({ preview: true } | { preview?: false; admission: SessionWriteAdmission }) & { classifyError?: ErrorClassifier },
 ): Promise<RecallSessionBlock> {
   const recordKind = sessionInjectionKind(input);
   const skipped: RecallSkip[] = [];
@@ -452,7 +478,7 @@ export async function composeSessionContext(
   const kept = partsWithinBound(contributions, SESSION_CONTEXT_MAX_CHARS);
   if (kept.length === 0) return { context: '', parts: [], skipped, kind: recordKind };
 
-  if (opts.preview !== true && !await recordSessionInjection(db, scope, input.sessionId, recordKind, input.now)) {
+  if (opts.preview !== true && !await recordSessionInjection(db, scope, input.sessionId, recordKind, input.now, opts.admission)) {
     return { context: '', parts: [], skipped: [...skipped, 'repeat'], kind: recordKind };
   }
   return {

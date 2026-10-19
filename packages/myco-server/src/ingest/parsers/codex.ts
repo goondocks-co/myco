@@ -54,6 +54,7 @@ export const codexParser: TranscriptParser = {
   // This parser reads function and custom calls with string or content-array outputs.
   // Other tool-call shapes require the member's PostToolUse capture.
   fidelity: 'no_tool_results',
+  promptGeneration: 1,
   planTags: ['proposed_plan'],
   headerContext: codexHeaderContext,
 

@@ -23,7 +23,7 @@ import { settingsWriter } from '../core/settings.js';
 import { classify, emit, refusal } from '../telemetry.js';
 import { startTurnStatement, turnStartedAt, turnStartedAtAsk } from '../ingest/turns.js';
 import { refused } from '../ingest/events.js';
-import { sessionWriteRefusal } from '../ingest/projections.js';
+import { sessionWriteAdmission } from '../ingest/projections.js';
 import type { AskNaming } from '../core/injection.js';
 import { ASK_IDENTITY_MARKER, isPromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { MAX_REMOTE_CHARS, normalizeRemote, recordProjectRemote } from '../core/remotes.js';
@@ -109,16 +109,19 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
   // Registered first and never awaited: the turn opens whatever becomes of the compose below. It opens only a turn of a
   // session this machine holds (`startTurnStatement`).
   noteTurnStarted(env, ctx, sessionId, naming.promptId, naming.askProtocol === 'v1' ? naming.askedAt : null);
-  // Records naming a session are written only by the machine that holds it, as its events are.
-  const unwritable = await sessionWriteRefusal(env.db, ctx, sessionId);
+  // Records naming a session are written only by the machine that holds it, as its events are: read here, and held
+  // again on every write the compose below makes.
+  const admission = sessionWriteAdmission(ctx, sessionId);
+  const unwritable = await admission.refusal(env.db);
   if (unwritable !== null) return Response.json(refused(ctx, unwritable));
   const [leaves, capabilityOn] = await Promise.all([
     readRecallLeaves(env.db),
     settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),
   ]);
   const served = await composePromptContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, {
-    sessionId, text, now: ctx.now, ...naming,
+    sessionId, text, now: ctx.now, admission, ...naming,
   }, () => resolveSemanticSearch(env), env.platform?.classifyError, ctx.contextTimings);
+  if (served.refusal !== undefined) return Response.json(refused(ctx, served.refusal));
   return Response.json({ persisted: true, ...served });
 }
 
@@ -164,7 +167,8 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
     settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),
   ]);
   const [served, machine] = await Promise.all([
-    composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, { sessionId: sessionId ?? '', ...identity, now: ctx.now }, { preview, classifyError: env.platform?.classifyError }),
+    composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, { sessionId: sessionId ?? '', ...identity, now: ctx.now },
+      { ...(preview || sessionId === null ? { preview: true as const } : { admission: sessionWriteAdmission(ctx, sessionId) }), classifyError: env.platform?.classifyError }),
     // The machine's own settings, where the member asking claims it; a machine keeps them from its session start.
     machineBlockFor(env.db, ctx.memberId, ctx.machineId, ctx),
   ]);

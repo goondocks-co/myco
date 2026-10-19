@@ -1919,6 +1919,7 @@ const ANSWERS_V89_BODY = `(
      project_id    TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
      session_id    TEXT NOT NULL,
      id            TEXT NOT NULL,${IDENTITY_COLUMNS}
+     receipt_id    TEXT,
      outcome       TEXT NOT NULL CHECK (outcome IN ('served', 'empty')),
      context_chars INTEGER NOT NULL CHECK (context_chars >= 0),
      parts         TEXT NOT NULL,
@@ -1952,6 +1953,11 @@ export const RECEIPT_COLLISIONS_META_KEY = 'v89_receipt_identity_collisions';
  * table stands, and a table a torn run dropped is created again empty before it is read.
  *
  * `transcripts.parsed_through_at` is the latest dated line a parse has read, on the clock that wrote the transcript.
+ * `transcripts.prompt_generation` is the prompt generation of the parser that wrote the checkpoint; a checkpoint
+ * that records none is generation 1.
+ *
+ * An answer names the receipt it carried (`receipt_id`). A session's record of a block (`session_injections`) gains
+ * the delivery columns, so the plan nudge's delivery outlives the answer that carried it.
  */
 const V89_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS spore_injections ${RECEIPT_V17_BODY}`,
@@ -1960,6 +1966,7 @@ const V89_STATEMENTS: readonly string[] = [
   `DROP TABLE spore_injections`,
   `CREATE TABLE IF NOT EXISTS spore_injections ${RECEIPTS_V89_BODY}`,
   `CREATE INDEX IF NOT EXISTS idx_spore_injections_session ON spore_injections (project_id, session_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_spore_injections_created ON spore_injections (project_id, created_at)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_spore_injections_prompt ON spore_injections (project_id, session_id, prompt_id) WHERE prompt_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS idx_spore_injections_delivered ON spore_injections (project_id, session_id, delivered_prompt_id) WHERE delivered_prompt_id IS NOT NULL`,
   `INSERT OR IGNORE INTO spore_injections (${RECEIPT_COLUMNS}) SELECT ${RECEIPT_COLUMNS} FROM _v89_receipt_rows ORDER BY created_at, rowid`,
@@ -1974,6 +1981,7 @@ const V89_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS prompt_context_answers ${ANSWERS_V89_BODY}`,
   `CREATE INDEX IF NOT EXISTS idx_prompt_context_answers_created ON prompt_context_answers (project_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_prompt_context_answers_prompt ON prompt_context_answers (project_id, session_id, prompt_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_prompt_context_answers_receipt ON prompt_context_answers (project_id, session_id, receipt_id)`,
   `INSERT INTO prompt_context_answers (${ANSWER_COLUMNS}) SELECT ${ANSWER_COLUMNS} FROM _v89_answer_rows`,
   `DROP TABLE IF EXISTS _v89_guard_answers_kept`,
   `CREATE TABLE _v89_guard_answers_kept (ok INTEGER NOT NULL CHECK (ok = 1))`,
@@ -1983,6 +1991,10 @@ const V89_STATEMENTS: readonly string[] = [
   `DROP TABLE _v89_answer_rows`,
 
   `ALTER TABLE transcripts ADD COLUMN parsed_through_at INTEGER`,
+  `ALTER TABLE transcripts ADD COLUMN prompt_generation INTEGER`,
+  `ALTER TABLE session_injections ADD COLUMN delivered_at INTEGER`,
+  `ALTER TABLE session_injections ADD COLUMN delivered_prompt_id TEXT`,
+  `ALTER TABLE session_injections ADD COLUMN delivered_scope_reason TEXT CHECK (delivered_scope_reason IN (${SCOPE_REASONS}))`,
 ];
 
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */

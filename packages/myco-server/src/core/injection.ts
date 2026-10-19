@@ -44,6 +44,7 @@ import { EmbeddingUnavailable } from './embedding/provider.js';
 import { cosineSimilarity, VECTOR_QUERY_LIMIT } from './embedding/vectors.js';
 import type { ContextTimings, ContextTimingStage } from './context-timing.js';
 import { settledAll } from './settled.js';
+import type { SessionWriteAdmission } from '../ingest/projections.js';
 
 /** A prompt shorter than this carries too little to serve against. */
 export const MIN_PROMPT_CHARS = 10;
@@ -111,7 +112,7 @@ export interface InjectionLeaves {
 }
 
 /** Why the selector served nothing. Null means it served what it selected. */
-export type InjectionSkip = 'capability' | 'disabled' | 'short_prompt' | 'zero_max' | 'repeat' | 'duplicate_prompt' | 'empty' | 'no_semantic' | 'provider_unavailable';
+export type InjectionSkip = 'capability' | 'disabled' | 'short_prompt' | 'zero_max' | 'repeat' | 'duplicate_prompt' | 'unwritable' | 'empty' | 'no_semantic' | 'provider_unavailable';
 
 /** Counts at each selector stage, including matches rejected by the receipt join or metadata post-filter. */
 export interface InjectionCounts {
@@ -364,7 +365,7 @@ export async function selectSporesForPrompt(
   scope: ReadScope,
   leaves: InjectionLeaves,
   capabilityOn: boolean,
-  input: { sessionId: string; promptHash: string; prompt: string; now: number } & Partial<AskNaming>,
+  input: { sessionId: string; promptHash: string; prompt: string; now: number; admission: SessionWriteAdmission } & Partial<AskNaming>,
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   timings?: ContextTimings,
 ): Promise<InjectionSelection> {
@@ -453,11 +454,12 @@ export async function selectSporesForPrompt(
   const written = await duringInjection('record', counts, () => db
     .prepare(`INSERT OR IGNORE INTO spore_injections
                 (project_id, session_id, id, prompt_id, scope_reason, ask_protocol, asked_at, prompt_hash, spore_ids, plan_ids, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+              SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${input.admission.admission.sql}`)
     .bind(scope.projectId, input.sessionId, receiptId, promptId, input.scopeReason ?? null, input.askProtocol ?? 'legacy', input.askedAt ?? null,
-      input.promptHash, JSON.stringify(idsOf('spore')), JSON.stringify(idsOf('plan')), input.now)
+      input.promptHash, JSON.stringify(idsOf('spore')), JSON.stringify(idsOf('plan')), input.now, ...input.admission.admission.params)
     .run());
   if (written.meta.changes !== 1) {
+    if (await duringInjection('record', counts, () => input.admission.refusal(db)) !== null) return nothing('unwritable');
     // Which rule held the insert back: a receipt for this text already, or one for this prompt id.
     const named = promptId === null ? null : await duringInjection('record', counts, () => db
       .prepare(`SELECT 1 AS held FROM spore_injections WHERE project_id = ? AND session_id = ? AND prompt_id = ? AND prompt_hash <> ?`)

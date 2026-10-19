@@ -7,7 +7,12 @@ import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { composePromptContext, type RecallLeaves } from '@myco-server-worker/core/recall.js';
+import { composePromptContext, PROMPT_ANSWER_RETENTION_DAYS, prunePromptAnswers, type RecallLeaves } from '@myco-server-worker/core/recall.js';
+import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
+import { listContextInjections } from '@myco-server-worker/read/children.js';
+import { readKpis } from '@myco-server-worker/read/kpis.js';
+import { spyOn } from 'bun:test';
+import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { danglingPromptReferences, danglingReferenceSql, PROMPT_REFERENCE_KINDS } from '@myco-server-worker/read/prompt-reference-invariant.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
@@ -78,7 +83,7 @@ describe('the rows an answer names', () => {
     const db = e.db;
     for (const id of ['a', 'b', 'c', 'd', 'e', 'f']) e.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, importance, created_at, embedded) VALUES ('proj_1', ?, 'agent_1', 'decision', 'active', ?, 5, 1, 0)`, [id, `selector fact ${id}`]);
     const compose = (promptId: string, text: string) => composePromptContext(db, { projectId: 'proj_1' }, ON, true,
-      { sessionId: SESSION, text, now: NOW, promptId, scopeReason: null, askProtocol: 'v1', askedAt: NOW }, semanticRecall(db, { projectId: 'proj_1' }));
+      { sessionId: SESSION, admission: sessionWriteAdmission({ projectId: 'proj_1', machineId: 'machine_1' }, SESSION), text, now: NOW, promptId, scopeReason: null, askProtocol: 'v1', askedAt: NOW }, semanticRecall(db, { projectId: 'proj_1' }));
     const first = await compose(uuid(1), PROMPT);
     expect(rows(e.sqlite, `SELECT id, prompt_id FROM spore_injections`)).toEqual([{ id: first.receiptId, prompt_id: uuid(1) }]);
     expect(rows(e.sqlite, `SELECT id FROM prompt_context_answers`)).toEqual([{ id: first.answerId }]);
@@ -88,6 +93,59 @@ describe('the rows an answer names', () => {
     const reused = await compose(uuid(1), `${PROMPT} again`);
     expect({ receipt: reused.receiptId, duplicate: reused.skipped.includes('spores:duplicate_prompt') }).toEqual({ receipt: undefined, duplicate: true });
     expect(rows(e.sqlite, `SELECT COUNT(*) AS n FROM prompt_context_answers`)).toEqual([{ n: 3 }]);
+  });
+});
+
+describe('a session that becomes unwritable while its answer is composed', () => {
+  async function composeWhile(change: (m: Awaited<ReturnType<typeof member>>) => Promise<void>) {
+    const m = await member();
+    m.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', ?, 'machine_1', ?, 1, 1)`, [SESSION, m.ctx.tokenId]);
+    for (const id of ['a', 'b', 'c']) m.e.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, importance, created_at, embedded) VALUES ('proj_1', ?, 'agent_1', 'decision', 'active', ?, 5, 1, 0)`, [id, `selector fact ${id}`]);
+    const admission = sessionWriteAdmission({ projectId: 'proj_1', machineId: 'machine_1' }, SESSION);
+    expect(await admission.refusal(m.e.db)).toBeNull();
+    const semantic = await semanticRecall(m.e.db, { projectId: 'proj_1' })();
+    const embedding = { ...semantic, provider: { ...semantic.provider, embed: async (text: string) => { const values = await semantic.provider.embed(text); await change(m); return values; } } };
+    const answer = await composePromptContext(m.e.db, { projectId: 'proj_1' }, { ...ON, planNudge: true }, true,
+      { sessionId: SESSION, admission, text: `${PROMPT}, and plan the next step`, now: NOW, promptId: uuid(1), scopeReason: null, askProtocol: 'v1', askedAt: NOW }, async () => embedding);
+    const written = Object.fromEntries(['spore_injections', 'prompt_context_answers', 'session_injections'].map((table) => [table, rows(m.e.sqlite, `SELECT 1 FROM ${table} WHERE session_id = ?`, SESSION).length]));
+    return { answer, written };
+  }
+
+  it('writes no receipt and no answer for a session deleted during the embedding, and names why', async () => {
+    const { answer, written } = await composeWhile(async (m) => {
+      await tombstoneSession(m.e.serverEnv, { projectId: 'proj_1' }, SESSION, 'mem_machine_1', NOW);
+    });
+    expect(written).toEqual({ spore_injections: 0, prompt_context_answers: 0, session_injections: 0 });
+    expect(answer).toMatchObject({ context: '', parts: [], refusal: { classifier: 'session_tombstoned' } });
+    expect(answer.skipped).toContain('spores:unwritable');
+    expect({ receiptId: answer.receiptId, answerId: answer.answerId }).toEqual({ receiptId: undefined, answerId: undefined });
+  });
+
+  it('writes no receipt and no answer for a session another machine claimed during the embedding', async () => {
+    const { answer, written } = await composeWhile(async (m) => {
+      m.e.sqlite.run(`UPDATE sessions SET machine_id = 'machine_2' WHERE project_id = 'proj_1' AND session_id = ?`, [SESSION]);
+    });
+    expect(written).toEqual({ spore_injections: 0, prompt_context_answers: 0, session_injections: 0 });
+    expect(answer).toMatchObject({ context: '', refusal: { classifier: 'identity_mismatch' } });
+    expect(answer.skipped).toContain('spores:unwritable');
+  });
+
+  it('answers the refusal over the route when the session is deleted after the route admitted it', async () => {
+    const { e, token, ctx } = await member();
+    e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', ?, 'machine_1', ?, 1, 1)`, [SESSION, ctx.tokenId]);
+    // The plan nudge's record is the compose's first write; the session is deleted the moment it lands.
+    e.sqlite.run(`CREATE TRIGGER deleted_mid_compose AFTER INSERT ON session_injections BEGIN
+      INSERT INTO session_tombstones (project_id, session_id, created_at, created_by) VALUES (NEW.project_id, NEW.session_id, 1, 'm'); END`);
+    const answer = await (await worker.fetch(ask(token, { sessionId: SESSION, promptId: uuid(1), identity: 1, at: NOW, text: 'let us write the implementation plan for the selector' }), e.env)).json() as Record<string, unknown>;
+    expect(answer).toMatchObject({ persisted: false, code: 'session_tombstoned' });
+    expect(rows(e.sqlite, `SELECT 1 FROM prompt_context_answers`)).toEqual([]);
+  });
+
+  it('writes the receipt, the answer and the session record for a session that stays writable', async () => {
+    const { answer, written } = await composeWhile(async () => {});
+    expect(written).toEqual({ spore_injections: 1, prompt_context_answers: 1, session_injections: 1 });
+    expect(answer).toMatchObject({ receiptId: expect.any(String), answerId: expect.any(String) });
+    expect(answer.refusal).toBeUndefined();
   });
 });
 
@@ -128,53 +186,122 @@ describe('a delivery', () => {
   });
 });
 
+describe('what outlives the answers', () => {
+  const DAY = 86_400_000;
+  async function served(opts: { db?: (db: RelationalStore) => RelationalStore; text?: string; planNudge?: boolean } = {}) {
+    const m = await member();
+    m.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', ?, 'machine_1', ?, 1, 1)`, [SESSION, m.ctx.tokenId]);
+    for (const id of ['a', 'b', 'c']) m.e.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, importance, created_at, embedded) VALUES ('proj_1', ?, 'agent_1', 'decision', 'active', ?, 5, 1, 0)`, [id, `selector fact ${id}`]);
+    const db = opts.db?.(m.e.db) ?? m.e.db;
+    const answer = await composePromptContext(db, { projectId: 'proj_1' }, { ...ON, planNudge: opts.planNudge ?? false }, true,
+      { sessionId: SESSION, admission: sessionWriteAdmission({ projectId: 'proj_1', machineId: 'machine_1' }, SESSION), text: opts.text ?? PROMPT, now: NOW, promptId: uuid(1), scopeReason: null, askProtocol: 'v1', askedAt: NOW },
+      semanticRecall(m.e.db, { projectId: 'proj_1' }));
+    const deliver = (n: number, payload: Record<string, unknown>) =>
+      ingestEvent(m.e.db, m.ctx, envelope({ eventId: uuid(300 + n), sessionId: SESSION, kind: 'context.delivered', createdAt: NOW, payload }));
+    const sessionLevel = async () => (await listContextInjections(m.e.db, { projectId: 'proj_1' }, SESSION)).rows
+      .filter((row) => row.kind.startsWith('context:')).map(({ kind, delivery }) => ({ kind, delivery }));
+    const prune = async () => {
+      for (const table of ['prompt_context_answers', 'spore_injections', 'session_injections', 'prompt_batches']) m.e.sqlite.run(`UPDATE ${table} SET created_at = created_at - ?`, [(PROMPT_ANSWER_RETENTION_DAYS + 1) * DAY]);
+      return prunePromptAnswers(m.e.db, NOW - PROMPT_ANSWER_RETENTION_DAYS * DAY, 100);
+    };
+    return { ...m, answer, deliver, sessionLevel, prune };
+  }
+
+  it('credits a prompt delivered only the plan nudge after its answer is pruned', async () => {
+    const s = await served({ text: 'let us write the implementation plan for the selector', planNudge: true });
+    expect(s.answer.parts.map((p) => p.kind)).toContain('plan-nudge');
+    s.e.sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', ?, ?, 'e2', 'user', 'h', ?, ?, 't', ?)`, [uuid(2), SESSION, NOW, NOW, NOW]);
+    // The nudge alone: the receipt this answer carried is set aside, so only the nudge can credit the prompt.
+    s.e.sqlite.run(`DELETE FROM spore_injections`);
+    expect(await s.deliver(1, { answerId: s.answer.answerId, renderedIn: uuid(2) })).toMatchObject({ persisted: true });
+    const present = async () => (await readKpis(s.e.db, { windowDays: null, now: NOW })).contextPresent;
+    expect(await present()).toEqual({ value: 1, sampleSize: 1 });
+    expect(await s.prune()).toBe(1);
+    expect(rows(s.e.sqlite, `SELECT 1 FROM prompt_context_answers`)).toEqual([]);
+    expect(await present()).toEqual({ value: 1, sampleSize: 1 });
+  });
+
+  it('lists one row for an answer and the receipt it carried, and the receipt alone once the answer is pruned', async () => {
+    const s = await served();
+    expect({ receipt: typeof s.answer.receiptId, answer: typeof s.answer.answerId }).toEqual({ receipt: 'string', answer: 'string' });
+    expect(await s.sessionLevel()).toEqual([{ kind: `context:${s.answer.answerId}`, delivery: 'not_delivered' }]);
+    await s.prune();
+    expect(await s.sessionLevel()).toEqual([{ kind: `context:${s.answer.receiptId}`, delivery: 'not_delivered' }]);
+  });
+
+  it('lists the receipt of an answer whose write failed, and its delivery to a prompt with no name', async () => {
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const s = await served({ db: (db) => ({ ...db, prepare: (sql) => {
+        if (sql.startsWith('INSERT INTO prompt_context_answers')) throw new Error('answer store unavailable');
+        return db.prepare(sql);
+      } }) });
+      expect({ receipt: typeof s.answer.receiptId, answer: typeof s.answer.answerId }).toEqual({ receipt: 'string', answer: 'undefined' });
+      expect(await s.sessionLevel()).toEqual([{ kind: `context:${s.answer.receiptId}`, delivery: 'not_delivered' }]);
+      await s.deliver(1, { receiptId: s.answer.receiptId, renderedScopeReason: 'absent_key' });
+      expect(await s.sessionLevel()).toEqual([{ kind: `context:${s.answer.receiptId}`, delivery: 'unnamed_prompt' }]);
+    } finally { log.mockRestore(); }
+  });
+});
+
 describe('the prompt-reference invariant', () => {
+  /** Instants on the member's clock, a minute before now and `ms` after that. */
+  const at = (ms: number) => NOW - 60_000 + ms;
+
   async function seeded() {
     const { e } = await member();
     const transcript = (session: string, opts: { through: number; caughtUp?: boolean }) => e.sqlite.run(`INSERT INTO transcripts
       (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, segment_count, first_received_at, last_received_at, token_id, role, parsed_through_at)
       VALUES ('proj_1', ?, ?, 'machine_1', 'claude-code', 100, ?, 1, 1, 1, 't', 'primary', ?)`, [`tx_${session}`, session, opts.caughtUp === false ? 50 : 100, opts.through]);
-    const receipt = (session: string, n: number, over: Record<string, unknown> = {}) => {
-      const row = { project_id: 'proj_1', session_id: session, id: uuid(n), prompt_id: uuid(n), scope_reason: null, ask_protocol: 'v1', asked_at: 100, prompt_hash: `h${n}`, spore_ids: '[]', created_at: NOW, ...over };
-      e.sqlite.run(`INSERT INTO spore_injections (${Object.keys(row).join(', ')}) VALUES (${Object.keys(row).map(() => '?').join(', ')})`, Object.values(row) as never[]);
-    };
-    return { e, transcript, receipt };
+    const insert = (table: string, row: Record<string, unknown>) =>
+      e.sqlite.run(`INSERT INTO ${table} (${Object.keys(row).join(', ')}) VALUES (${Object.keys(row).map(() => '?').join(', ')})`, Object.values(row) as never[]);
+    const naming = (session: string, n: number, over: Record<string, unknown>) =>
+      ({ project_id: 'proj_1', session_id: session, id: uuid(n), prompt_id: uuid(n), scope_reason: null, ask_protocol: 'v1', asked_at: at(100), created_at: NOW, ...over });
+    const receipt = (session: string, n: number, over: Record<string, unknown> = {}) =>
+      insert('spore_injections', { ...naming(session, n, over), prompt_hash: `h${n}`, spore_ids: '[]' });
+    const answer = (session: string, n: number, over: Record<string, unknown> = {}) =>
+      insert('prompt_context_answers', { ...naming(session, n, over), outcome: 'served', context_chars: 1, parts: '[]', skipped: '[]', failures: '[]', selection: '{}' });
+    /** One receipt and one answer naming the same prompts. */
+    const both = (session: string, n: number, over: Record<string, unknown> = {}) => { receipt(session, n, over); answer(session, n + 1000, { prompt_id: uuid(n), ...over }); };
+    return { e, transcript, receipt, answer, both };
   }
 
-  it('counts a named prompt the session does not hold once its transcript was read past the ask', async () => {
+  it('counts a receipt\'s and an answer\'s named prompt the session does not hold, once its transcript was read past the ask', async () => {
     const s = await seeded();
-    s.transcript('read', { through: 200 });
-    s.receipt('read', 1);
-    s.receipt('read', 2, { delivered_at: 150, delivered_prompt_id: uuid(99) });
-    expect(await danglingPromptReferences(s.e.db, 0)).toEqual({ receipt_selected: 2, answer_selected: 0, receipt_delivered: 1, answer_delivered: 0 });
+    s.transcript('read', { through: at(200) });
+    s.both('read', 1);
+    s.both('read', 2, { delivered_at: at(150), delivered_prompt_id: uuid(99) });
+    expect(await danglingPromptReferences(s.e.db, 0)).toEqual({ receipt_selected: 2, answer_selected: 2, receipt_delivered: 1, answer_delivered: 1 });
     s.e.sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at)
       VALUES ('proj_1', ?, 'read', 'e1', 'user', 'h', 1, 1, 't', 1), ('proj_1', ?, 'read', 'e2', 'user', 'h', 1, 1, 't', 1)`, [uuid(1), uuid(99)]);
-    expect(await danglingPromptReferences(s.e.db, 0)).toEqual({ receipt_selected: 1, answer_selected: 0, receipt_delivered: 0, answer_delivered: 0 });
+    expect(await danglingPromptReferences(s.e.db, 0)).toEqual({ receipt_selected: 1, answer_selected: 1, receipt_delivered: 0, answer_delivered: 0 });
   });
 
   it('counts nothing in flight, legacy, session-scoped, deleted, or before the bound', async () => {
     const s = await seeded();
-    s.transcript('early', { through: 50 });
-    s.receipt('early', 1);
-    s.transcript('behind', { through: 200, caughtUp: false });
-    s.receipt('behind', 2);
-    s.transcript('legacy', { through: 200 });
-    s.receipt('legacy', 3, { ask_protocol: 'legacy' });
-    s.receipt('legacy', 4, { prompt_id: null, scope_reason: 'absent_key' });
-    s.transcript('gone', { through: 200 });
-    s.receipt('gone', 5);
+    s.transcript('early', { through: at(50) });
+    s.both('early', 1, { delivered_at: at(150), delivered_prompt_id: uuid(91) });
+    s.transcript('behind', { through: at(200), caughtUp: false });
+    s.both('behind', 2, { delivered_at: at(150), delivered_prompt_id: uuid(92) });
+    s.transcript('legacy', { through: at(200) });
+    s.both('legacy', 3, { ask_protocol: 'legacy', delivered_at: at(150), delivered_prompt_id: uuid(93) });
+    s.both('legacy', 4, { prompt_id: null, scope_reason: 'absent_key' });
+    s.transcript('gone', { through: at(200) });
+    s.both('gone', 5, { delivered_at: at(150), delivered_prompt_id: uuid(95) });
     s.e.sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, created_at, created_by) VALUES ('proj_1', 'gone', 1, 'm')`);
-    s.transcript('old', { through: 200 });
-    s.receipt('old', 6, { created_at: 1 });
+    s.transcript('old', { through: at(200) });
+    s.both('old', 6, { created_at: 1, delivered_at: at(150), delivered_prompt_id: uuid(96) });
     expect(await danglingPromptReferences(s.e.db, 2)).toEqual({ receipt_selected: 0, answer_selected: 0, receipt_delivered: 0, answer_delivered: 0 });
   });
 
-  it('is one statement per kind of reference, each served by an index rather than a scan of a reference table', () => {
+  it('is one statement per kind of reference, each a range over its references by Project and an index for every lookup', () => {
     const sqlite = new Database(':memory:');
     for (const step of SCHEMA_STEPS) for (const statement of step.statements) sqlite.run(statement);
     for (const kind of PROMPT_REFERENCE_KINDS) {
-      const plan = (sqlite.query(`EXPLAIN QUERY PLAN ${danglingReferenceSql(kind)}`).all(0) as { detail: string }[]).map((r) => r.detail).join('\n');
-      expect({ kind, scans: plan.split('\n').filter((d) => /^SCAN (p|t|x)\b/.test(d)) }).toEqual({ kind, scans: [] });
+      const plan = (sqlite.query(`EXPLAIN QUERY PLAN ${danglingReferenceSql(kind)}`).all(0) as { detail: string }[]).map((r) => r.detail);
+      // The Projects drive it; every reference table and every correlated lookup is searched, none scanned.
+      expect({ kind, scans: plan.filter((d) => /^SCAN /.test(d) && !/^SCAN pr\b/.test(d)) }).toEqual({ kind, scans: [] });
+      expect({ kind, driving: plan.some((d) => /^SEARCH r USING (COVERING )?INDEX idx_\w+_created \(project_id=\? AND created_at>\?\)$/.test(d)) }).toEqual({ kind, driving: true });
     }
   });
 });

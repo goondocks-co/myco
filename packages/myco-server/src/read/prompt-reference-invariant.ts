@@ -9,8 +9,9 @@
  * `legacy` asks, session-scoped ones and history before the identity columns are excluded by construction.
  *
  * One statement per kind of reference: the hosted store caps a compound select at five terms. Each is bounded to rows
- * created at or after the bound instant (`from`), and read through `idx_spore_injections_session`/`idx_prompt_context_answers_created`
- * and the prompt table's own key. Run read-only against a Deployment with that one bound parameter.
+ * created at or after the bound instant (`from`), read Project by Project as a range over
+ * `idx_spore_injections_created`/`idx_prompt_context_answers_created`, and checked against the prompt table's own key.
+ * Run read-only against a Deployment with that one bound parameter.
  */
 import type { RelationalStore } from '../core/adapters.js';
 
@@ -27,8 +28,8 @@ const REFERENCES: Record<PromptReferenceKind, { table: string; prompt: string; a
 /** The statement counting one kind's dangling references created at or after its one parameter. */
 export function danglingReferenceSql(kind: PromptReferenceKind): string {
   const { table, prompt, at } = REFERENCES[kind];
-  return `SELECT COUNT(*) AS n FROM ${table} r
-    WHERE r.created_at >= ? AND r.ask_protocol = 'v1' AND r.${prompt} IS NOT NULL AND r.${at} IS NOT NULL
+  return `SELECT COUNT(*) AS n FROM projects pr CROSS JOIN ${table} r
+    WHERE r.project_id = pr.project_id AND r.created_at >= ? AND r.ask_protocol = 'v1' AND r.${prompt} IS NOT NULL AND r.${at} IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = r.project_id AND t.session_id = r.session_id)
       AND EXISTS (SELECT 1 FROM transcripts x WHERE x.project_id = r.project_id AND x.session_id = r.session_id
                     AND x.role = 'primary' AND x.parsed_offset = x.size AND x.parsed_through_at > r.${at})

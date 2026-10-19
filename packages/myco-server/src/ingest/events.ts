@@ -9,7 +9,7 @@ import { pendingSearchBlobs } from '../core/search-index.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { planKind, projectLive, RAW_ROW_GATE, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { receiptDeliveredStatement, type Delivery } from '../core/injection.js';
-import { answerDeliveredStatement } from '../core/recall.js';
+import { answerDeliveredStatement, planNudgeDeliveredStatement } from '../core/recall.js';
 import { CONTEXT_DELIVERED_KIND, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { ALWAYS, credentialLive } from './live-credential.js';
 import { endsTurn, endTurnStatement, startTurnFromEventStatement, turnStartFrom } from './turns.js';
@@ -85,7 +85,7 @@ function deliveryStatements(db: RelationalStore, ctx: WriteContext, e: CaptureEn
   });
   return [
     ...(typeof p.receiptId === 'string' ? [receiptDeliveredStatement(db, to(p.receiptId), gate)] : []),
-    ...(typeof p.answerId === 'string' ? [answerDeliveredStatement(db, to(p.answerId), gate)] : []),
+    ...(typeof p.answerId === 'string' ? [answerDeliveredStatement(db, to(p.answerId), gate), planNudgeDeliveredStatement(db, to(p.answerId), gate)] : []),
   ];
 }
 

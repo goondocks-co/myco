@@ -84,9 +84,10 @@ export interface AttachmentRow { attachmentId: string; promptId: string | null; 
 
 /**
  * A record of what Myco served the session as a whole: a session-level block (`kind` names it: `cortex` for the start,
- * `cortex:<agent>` for a sub-agent's, `plan-nudge`), or an answer no named prompt received (`kind` is
- * `context:<answer id>`), with `delivery` saying whether it reached the agent on a prompt that has no name, or was
- * never reported delivered.
+ * `cortex:<agent>` for a sub-agent's, `plan-nudge`), or context no named prompt received (`kind` is `context:<row
+ * id>`): an answer, or a receipt no answer names, which outlives the answers' retention. `delivery` says whether it
+ * reached the agent on a prompt that has no name, or has no reported delivery. Only asks that name their prompt
+ * (`v1`) are reported delivered, so an older member's records are not listed here.
  */
 export interface ContextInjectionRow { kind: string; createdAt: number; orderedAt: number; delivery: 'unnamed_prompt' | 'not_delivered' | null }
 
@@ -98,7 +99,13 @@ const CONTEXT_INJECTION_QUERY: ChildQuery<Omit<ContextInjectionRow, 'orderedAt'>
      UNION ALL
      SELECT project_id, session_id, '${SESSION_ANSWER_KIND_PREFIX}' || id AS kind, created_at,
        CASE WHEN delivered_at IS NULL THEN 'not_delivered' ELSE 'unnamed_prompt' END AS delivery
-       FROM prompt_context_answers WHERE outcome = 'served' AND delivered_prompt_id IS NULL)`,
+       FROM prompt_context_answers WHERE outcome = 'served' AND ask_protocol = 'v1' AND delivered_prompt_id IS NULL
+     UNION ALL
+     SELECT r.project_id, r.session_id, '${SESSION_ANSWER_KIND_PREFIX}' || r.id AS kind, r.created_at,
+       CASE WHEN r.delivered_at IS NULL THEN 'not_delivered' ELSE 'unnamed_prompt' END AS delivery
+       FROM spore_injections r WHERE r.ask_protocol = 'v1' AND r.delivered_prompt_id IS NULL
+         AND NOT EXISTS (SELECT 1 FROM prompt_context_answers a
+                          WHERE a.project_id = r.project_id AND a.session_id = r.session_id AND a.receipt_id = r.id))`,
   columns: 'kind, created_at, delivery', idColumn: 'kind', orderColumn: 'created_at',
   map: (r) => ({ kind: r.kind as string, createdAt: r.created_at as number, delivery: (r.delivery as ContextInjectionRow['delivery']) ?? null }),
 };

@@ -186,18 +186,30 @@ export function sharedChecks(spec: KindSpec, ctx: WriteContext, e: CaptureEnvelo
 }
 
 /**
- * Why a machine may not write a record naming this session outside an event, or null when it may: the same tombstone
- * and session-ownership checks every event is admitted by, read rather than placed on an insert. A session not yet
- * held is writable, as a first event's is.
+ * What a record naming a session, written outside an event, is admitted by: the same tombstone and session-ownership
+ * checks every event is admitted by. `admission` sits on the write itself, so a session deleted or claimed while the
+ * request composes takes no row; `refusal` reads why a write is held back, or null when it may land.
+ * A session not yet held is writable, as a first event's is.
  */
-export async function sessionWriteRefusal(db: RelationalStore, ctx: Pick<WriteContext, 'projectId' | 'machineId'>, sessionId: string): Promise<Refusal | null> {
+export interface SessionWriteAdmission {
+  admission: Fragment;
+  refusal(db: RelationalStore): Promise<Refusal | null>;
+}
+
+export function sessionWriteAdmission(ctx: Pick<WriteContext, 'projectId' | 'machineId'>, sessionId: string): SessionWriteAdmission {
   const write = { ...ctx, tokenId: '', now: 0, nonce: '', actor: null };
-  for (const check of [notTombstoned(write, sessionId), owned(write, { table: 'sessions', keyColumn: 'session_id', key: sessionId, owner: 'row' })]) {
-    const row = await db.prepare(check.read.sql).bind(...check.read.params).first<Record<string, unknown>>();
-    const refused = check.refusal(row ?? undefined);
-    if (refused !== null) return refused;
-  }
-  return null;
+  const checks = [notTombstoned(write, sessionId), owned(write, { table: 'sessions', keyColumn: 'session_id', key: sessionId, owner: 'row' })];
+  return {
+    admission: { sql: checks.map((check) => `(${check.admission.sql})`).join(' AND '), params: checks.flatMap((check) => check.admission.params) },
+    async refusal(db) {
+      for (const check of checks) {
+        const row = await db.prepare(check.read.sql).bind(...check.read.params).first<Record<string, unknown>>();
+        const refused = check.refusal(row ?? undefined);
+        if (refused !== null) return refused;
+      }
+      return null;
+    },
+  };
 }
 
 const rawOnly = (): KindPlan => ({ identities: [], admission: [], projections: [], reads: [], refusal: () => NOT_STORED });

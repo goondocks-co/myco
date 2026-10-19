@@ -27,6 +27,7 @@ import { taskFactsKey } from '@myco-server-worker/core/runs.js';
 import { backfillTitles, titlingBackfillPolicy } from '@myco-server-worker/core/titling.js';
 import { CLAIM_SETTING_LEAVES, dispatchTask, selectWorkerExecution, type OfferedHarness } from '@myco-server-worker/core/harness.js';
 import { composePromptContext, composeSessionContext, readRecallLeaves } from '@myco-server-worker/core/recall.js';
+import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { mapInputHash, readMapSettings } from '@myco-server-worker/core/canopy.js';
 import { reconcileReleaseProvenance, releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
 import { agentRunRetention, JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
@@ -195,7 +196,7 @@ const sessionParts = async (r: Rig, kind: 'start' | 'subagent') =>
     { kind, sessionId: `s_${crypto.randomUUID()}`, agentId: 'sub', now: NOW }, { preview: true })).parts.map((p) => p.kind);
 const promptSkips = async (r: Rig, text: string) =>
   (await composePromptContext(r.env.db, { projectId: 'proj_1' }, await readRecallLeaves(r.env.db), true,
-    { sessionId: `s_${crypto.randomUUID()}`, promptId: 'p', text, now: NOW })).skipped.concat();
+    ((sessionId) => ({ sessionId, admission: sessionWriteAdmission({ projectId: 'proj_1', machineId: 'machine_1' }, sessionId), promptId: 'p', text, now: NOW }))(`s_${crypto.randomUUID()}`))).skipped.concat();
 const retentionRows = Array.from({ length: 20 }, (_, i) => ({ id: `b${i}`, created_at: NOW - i * DAY, pinned: 0 }));
 
 async function memberStatus(r: Rig): Promise<unknown> {

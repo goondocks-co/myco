@@ -32,7 +32,7 @@ import { utf8, uuidv5 } from '../hash.js';
 import { MAX_PAYLOAD_BYTES, parseEnvelope } from './envelope.js';
 import { envelopeHash, planEventWrite, type EventWrite, type IngestResult } from './events.js';
 import { idFields, kindSpec } from './kinds.js';
-import { parserFor } from './parsers/registry.js';
+import { PARSERS, parserFor } from './parsers/registry.js';
 import { datedAt, isBlock, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput } from './parsers/index.js';
 import { resolvePresentedDates } from './projections.js';
 import { LEGACY_REPLY_LINES_PER_READ, legacyReplies, preserveLegacyReplies } from './legacy-replies.js';
@@ -160,6 +160,20 @@ const RETRY_STOPPED = `parse_error <> '${AWAITING_BYTES}' AND COALESCE(json_extr
  */
 export const PENDING_TRANSCRIPTS = `parsed_offset < size AND (parse_error IS NULL OR parser_version < ? OR (${RETRY_STOPPED}) OR (parse_error = '${AWAITING_BYTES}' AND size > COALESCE(parse_awaited_size, -1)))`;
 
+/** Each parser's prompt generation, over a `transcripts` row's agent; an agent no parser reads has none. */
+const PROMPT_GENERATION = `CASE agent ${Object.values(PARSERS).map((parser) => {
+  if (!/^[a-z0-9-]+$/.test(parser.agent) || !Number.isSafeInteger(parser.promptGeneration)) throw new Error(`parser ${parser.agent} names no SQL-safe agent and generation`);
+  return `WHEN '${parser.agent}' THEN ${parser.promptGeneration}`;
+}).join(' ')} END`;
+
+/**
+ * A checkpoint that carries a prompt forward (a turn open at its cursor, or calls or a reply unfinished) written by a
+ * parser of another prompt generation. Resumed, it would go on naming that prompt as the parser that wrote it did, so
+ * a pass reads it again from its start instead (`repairCursors`).
+ */
+const PROMPT_IDENTITY_STALE = `(parsed_offset > 0 AND COALESCE(prompt_generation, 1) <> ${PROMPT_GENERATION}
+  AND (open_prompt_id IS NOT NULL OR json_extract(parser_context, '$.mycoParserUnfinished') = 1))`;
+
 /** A member's turn end covers the retained reply's source instants. */
 const TURN_ENDED = `EXISTS (SELECT 1 FROM sessions s WHERE s.project_id = transcripts.project_id
   AND s.session_id = transcripts.session_id AND s.working_since IS NULL AND s.last_turn_end_at IS NOT NULL
@@ -194,6 +208,8 @@ interface ParseTarget {
   fidelity: string | null;
   /** The turn open where the cursor stands, recorded by the pass that stopped there. */
   openPromptId: string | null;
+  /** The checkpoint carries a prompt forward under another prompt generation than its parser's (`PROMPT_IDENTITY_STALE`). */
+  promptIdentityStale: boolean;
   parserContext?: Record<string, unknown> | null;
   parserContextJson?: string | null;
   lastReceivedAt?: number;
@@ -289,7 +305,7 @@ export function laneSelectionSql(lane: Lane, limit = 1, now = Date.now()): strin
              ORDER BY base_offset LIMIT ${TRANSCRIPT_PARSE_SEGMENTS_PER_READ})`;
   return `SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at, parse_segment_lines, last_received_at,
                  (SELECT ended_at FROM sessions s WHERE s.project_id = transcripts.project_id AND s.session_id = transcripts.session_id) AS session_ended_at,
-                 ${TURN_ENDED} AS turn_ended,
+                 ${TURN_ENDED} AS turn_ended, ${PROMPT_IDENTITY_STALE} AS prompt_identity_stale,
                  (${segments}) AS segments
             FROM (SELECT * FROM transcripts WHERE (${PENDING_TRANSCRIPTS}) AND ${LANE_ORDER[lane].where} AND NOT ${TOMBSTONED}
               UNION ALL SELECT * FROM transcripts WHERE (${terminalWorkSql(now)}) AND ${LANE_ORDER[lane].where} AND NOT ${TOMBSTONED}) AS transcripts
@@ -319,6 +335,7 @@ function targetOf(row: Record<string, unknown>): ParseTarget {
     parsedOffset: (row.parsed_offset as number | null) ?? 0,
     fidelity: (row.fidelity as string | null) ?? null,
     openPromptId: (row.open_prompt_id as string | null) ?? null,
+    promptIdentityStale: row.prompt_identity_stale === 1,
     parserContext: contextFromStored(row.parser_context),
     parserContextJson: (row.parser_context as string | null) ?? null,
     lastReceivedAt: row.last_received_at as number | undefined,
@@ -632,6 +649,9 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       .bind(now, PARSER_VERSION, target.projectId, target.transcriptId).run();
     return { derived: 0, calls: 1, nextOffset: target.size, failure: null };
   }
+  if (target.promptIdentityStale) {
+    return { derived: 0, calls: await repairCursors(env.db, { sql: 'project_id = ? AND transcript_id = ?', params: [target.projectId, target.transcriptId] }), nextOffset: null, failure: null };
+  }
 
   // `calls` counts what THIS pass spends; the caller adds its own selection.
   let calls = 0;
@@ -856,10 +876,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       .prepare(`UPDATE transcripts SET parse_segment_lines = CASE WHEN ? >= parsed_offset THEN ? ELSE NULL END, parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?,
                    parsed_through_at = CASE WHEN ? >= parsed_offset AND ? IS NOT NULL THEN MAX(COALESCE(parsed_through_at, 0), ?) ELSE parsed_through_at END,
                    fidelity = COALESCE(fidelity, ?), open_prompt_id = CASE WHEN ? >= parsed_offset THEN ? ELSE open_prompt_id END, parser_context = CASE WHEN ? >= parsed_offset THEN ? ELSE parser_context END,
+                   prompt_generation = CASE WHEN ? >= parsed_offset THEN ? ELSE prompt_generation END,
                    parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
                  WHERE project_id = ? AND transcript_id = ?${guard}`)
       .bind(to, linesBehind(to), to, now, PARSER_VERSION, to, datedThrough(to), datedThrough(to), parser.fidelity, to, openPrompt, to, context,
-        target.projectId, target.transcriptId, ...guardParams));
+        to, parser.promptGeneration, target.projectId, target.transcriptId, ...guardParams));
   };
   // Whether the cursor's advance rode the last group's batch and applied there.
   let advanced = false;
@@ -1025,12 +1046,22 @@ const REREAD_CONTEXT = `json_set(COALESCE(parser_context, '{}'), '$.mycoLegacyRe
 
 /** Rewind intact older recordings once; absent source bytes become named repair omissions. */
 async function prepareParserRepairs(db: RelationalStore): Promise<number> {
+  return repairCursors(db, { sql: repairCandidateSql(), params: [PARSER_VERSION] });
+}
+
+/**
+ * Rewind the cursors `where` selects to their first byte, where the bytes before them are all held, under the reread
+ * rules (`REREAD_CONTEXT`); a cursor whose bytes are not all held stays and its repair is recorded as an omission. A
+ * cursor whose checkpoint carries a prompt forward under another prompt generation (`PROMPT_IDENTITY_STALE`) that
+ * cannot be rewound resumes with no turn open, under its parser's generation.
+ */
+async function repairCursors(db: RelationalStore, where: { sql: string; params: unknown[] }): Promise<number> {
   const { results } = await db.prepare(`SELECT project_id, transcript_id, parser_version, parsed_offset, parser_context,
     (${FIRST_HELD_BYTE}) AS first_held,
     (SELECT COALESCE(SUM(MIN(length, transcripts.parsed_offset - base_offset)), 0) FROM (${HELD_PREFIX_SOURCE})
-      WHERE base_offset < transcripts.parsed_offset) AS held_prefix_bytes FROM transcripts WHERE ${repairCandidateSql()} AND NOT ${TOMBSTONED}
+      WHERE base_offset < transcripts.parsed_offset) AS held_prefix_bytes FROM transcripts WHERE ${where.sql} AND NOT ${TOMBSTONED}
     ORDER BY parser_version, project_id, transcript_id LIMIT ${TRANSCRIPT_REPAIRS_PER_WAKE}`)
-    .bind(PARSER_VERSION).all<{ project_id: string; transcript_id: string; parser_version: number; parsed_offset: number; parser_context: string | null; first_held: number | null; held_prefix_bytes: number }>();
+    .bind(...where.params).all<{ project_id: string; transcript_id: string; parser_version: number; parsed_offset: number; parser_context: string | null; first_held: number | null; held_prefix_bytes: number }>();
   if (results.length === 0) return 1;
   const repairs = results.map((row) => ({ row, status: row.first_held === null ? 'raw_absent'
     : row.first_held > 0 ? 'raw_prefix_pruned' : row.held_prefix_bytes !== row.parsed_offset ? 'raw_gap' : 'replaying' }));
@@ -1040,6 +1071,8 @@ async function prepareParserRepairs(db: RelationalStore): Promise<number> {
       ? `parsed_offset = 0, parse_segment_lines = 0, open_prompt_id = NULL, parse_error = NULL, parse_failed_at = NULL,
           parse_awaited_size = NULL, parser_context = json_set(${REREAD_CONTEXT}, '$.mycoParserRepair', json(?))`
       : `parser_version = ${PARSER_VERSION},
+          open_prompt_id = CASE WHEN ${PROMPT_IDENTITY_STALE} THEN NULL ELSE open_prompt_id END,
+          prompt_generation = CASE WHEN ${PROMPT_IDENTITY_STALE} THEN ${PROMPT_GENERATION} ELSE prompt_generation END,
           parse_failed_at = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_failed_at END,
           parse_awaited_size = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_awaited_size END,
           parse_error = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_error END,

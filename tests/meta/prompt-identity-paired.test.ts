@@ -47,6 +47,11 @@ async function assertSelectedThenDelivered(r: IdentityRig, sessionId: string, fi
   expect(delivered?.injection?.spores.length).toBeGreaterThan(0);
   expect(r.rows(`SELECT prompt_id, tool_name FROM tool_calls WHERE session_id = ?`, sessionId)).toEqual([{ prompt_id: first, tool_name: expect.any(String) }]);
   expect(r.rows(`SELECT prompt_id FROM responses WHERE session_id = ? ORDER BY created_at`, sessionId).map((p) => p.prompt_id)).toEqual([first, second]);
+  // The invariant reads every one of these references: the parse read the transcript to its end, past each ask and delivery.
+  const [reach] = r.rows(`SELECT MIN(x.parsed_through_at > (SELECT MAX(MAX(COALESCE(asked_at, 0), COALESCE(delivered_at, 0))) FROM (
+      SELECT asked_at, delivered_at FROM spore_injections WHERE session_id = ? UNION ALL SELECT asked_at, delivered_at FROM prompt_context_answers WHERE session_id = ?))
+      AND x.parsed_offset = x.size) AS past FROM transcripts x WHERE x.session_id = ? AND x.role = 'primary'`, sessionId, sessionId, sessionId);
+  expect(reach).toEqual({ past: 1 });
   expect(await danglingPromptReferences(db, 0)).toEqual({ receipt_selected: 0, answer_selected: 0, receipt_delivered: 0, answer_delivered: 0 });
 }
 
@@ -57,24 +62,26 @@ const PAIRED: Record<string, (r: IdentityRig) => Promise<void>> = {
   'claude-code': async (r) => {
     const sessionId = 's-identity-claude';
     const [k1, k2] = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
-    const at = (s: number) => `2026-10-18T10:00:0${s}.000Z`;
-    const transcript = lines([
-      { type: 'user', promptId: k1, message: { content: FIRST }, uuid: 'u1', timestamp: at(1), sessionId },
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'Reading the setting.' }, { type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: '/repo/retention.ts' } }] }, uuid: 'a1', timestamp: at(2), sessionId },
-      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'thirty days' }] }, uuid: 'r1', timestamp: at(3), sessionId },
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'Thirty days.' }], stop_reason: 'end_turn' }, uuid: 'a2', timestamp: at(4), sessionId },
-      { type: 'user', promptId: k2, message: { content: SECOND }, uuid: 'u2', timestamp: at(5), sessionId },
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'Plans are kept until archived.' }], stop_reason: 'end_turn' }, uuid: 'a3', timestamp: at(6), sessionId },
-    ]);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-identity-claude-'));
     const file = path.join(dir, `${sessionId}.jsonl`);
-    fs.writeFileSync(file, transcript);
+    fs.writeFileSync(file, '');
     const common = { session_id: sessionId, transcript_path: file, cwd: '/repo' };
     const hook = { helpers: 'run' as const, fetch: r.fetch.fetch };
     await runHook('session-start', { ...common, hook_event_name: 'SessionStart' }, hook);
     await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', prompt: FIRST, prompt_id: k1 }, hook);
     const second = await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', prompt: SECOND, prompt_id: k2 }, hook);
     expect(second.stdout).toContain(`${RELEVANT_WORD} window keeps thirty days`);
+    // The agent writes its transcript as the turns run: after each ask and delivery, on the same clock.
+    const written = Date.now();
+    const at = (s: number) => new Date(written + s * 1000).toISOString();
+    fs.writeFileSync(file, lines([
+      { type: 'user', promptId: k1, message: { content: FIRST }, uuid: 'u1', timestamp: at(1), sessionId },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Reading the setting.' }, { type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: '/repo/retention.ts' } }] }, uuid: 'a1', timestamp: at(2), sessionId },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'thirty days' }] }, uuid: 'r1', timestamp: at(3), sessionId },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Thirty days.' }], stop_reason: 'end_turn' }, uuid: 'a2', timestamp: at(4), sessionId },
+      { type: 'user', promptId: k2, message: { content: SECOND }, uuid: 'u2', timestamp: at(5), sessionId },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Plans are kept until archived.' }], stop_reason: 'end_turn' }, uuid: 'a3', timestamp: at(6), sessionId },
+    ]));
     await runHook('stop', { ...common, hook_event_name: 'Stop', last_assistant_message: 'Plans are kept until archived.' }, hook);
     await runHook('session-end', { ...common, hook_event_name: 'SessionEnd' }, hook);
     await r.parse();
@@ -102,7 +109,9 @@ async function stampedCase(r: IdentityRig, agent: string, harness: { session: (i
   const secondRun = await runHook('user-prompt-submit', { ...common, prompt: SECOND }, hook);
   expect(secondRun.stdout).toContain(`${RELEVANT_WORD} window keeps thirty days`);
   const second = promptIdOf(secondRun.stdout);
-  const at = (s: number) => `2026-10-18T11:00:0${s}.000Z`;
+  // The plugin writes its transcript as the turns run: after each ask and delivery, on the same clock.
+  const written = Date.now();
+  const at = (s: number) => new Date(written + s * 1000).toISOString();
   await r.storeTranscript({
     transcriptId: `tx_${(agent === 'cline' ? 'c' : 'd').repeat(32)}`, sessionId, agent, text: lines([
       { v: 1, type: 'session', sessionId, agent, cwd: '/repo', at: at(0) },

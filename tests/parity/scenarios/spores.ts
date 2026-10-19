@@ -3,9 +3,10 @@ import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '..
 
 /**
  * Spores on both targets: a member's save naming its session carries that
- * session and its latest prompt, a supersede reads as lineage in both
+ * session and the prompt it names, a supersede reads as lineage in both
  * directions through the tool and through the owner route, and the record of
- * what a prompt was served reaches the session explorer under that prompt.
+ * what a prompt was served reaches the session explorer under the prompt that
+ * carried it.
  */
 export const spores: ParityScenario = {
   name: 'spores: session and prompt on a save, lineage both ways, the injection under its turn',
@@ -39,11 +40,11 @@ export const spores: ParityScenario = {
     await post(session, 'prompt', { promptId: p1, text: `What did we settle on ${stamp}`, origin: 'user' }, stamp + 1);
     await post(session, 'prompt', { promptId: p2, text: 'and carry on with it', origin: 'user' }, stamp + 2);
 
-    // A save naming the session carries that session and its latest prompt.
-    const first = await mcp({ op: 'save', type: 'decision', content: `recency is the selector ${stamp}`, session_id: session, project: target.projectId });
+    // A save naming the session and a prompt carries both; one naming no prompt names none.
+    const first = await mcp({ op: 'save', type: 'decision', content: `recency is the selector ${stamp}`, session_id: session, prompt_id: p1, project: target.projectId });
     const oldId = String(first.id);
     const saved = (await target.sql(`SELECT session_id, prompt_id, status FROM spores WHERE id = ${lit(oldId)}`))[0]!;
-    expect([saved.session_id, saved.prompt_id, saved.status]).toEqual([session, p2, 'active']);
+    expect([saved.session_id, saved.prompt_id, saved.status]).toEqual([session, p1, 'active']);
 
     // A session the caller's machine does not hold is one refusal, whatever the cause.
     const refused = await mcp({ op: 'save', type: 'decision', content: 'nowhere', session_id: `no-such-${stamp}`, project: target.projectId });
@@ -52,6 +53,7 @@ export const spores: ParityScenario = {
     // A supersede reads as lineage from both ends, through the tool and the owner route.
     const second = await mcp({ op: 'save', type: 'decision', content: `recency with a cap ${stamp}`, session_id: session, project: target.projectId });
     const newId = String(second.id);
+    expect((await target.sql(`SELECT prompt_id FROM spores WHERE id = ${lit(newId)}`))[0]!.prompt_id).toBeNull();
     expect(await mcp({ op: 'supersede', old_spore_id: oldId, new_spore_id: newId, reason: 'narrowed', session_id: session, project: target.projectId }))
       .toEqual({ old_spore: oldId, new_spore: newId, status: 'superseded' });
 
@@ -66,19 +68,19 @@ export const spores: ParityScenario = {
     const replacement = await owner<{ supersededBy: string[]; supersedes: string[] }>(`/api/projects/${target.projectId}/spores/${newId}`);
     expect([replacement.body.supersededBy, replacement.body.supersedes]).toEqual([[], [oldId]]);
 
-    // The record of what a prompt was served reaches the turn body under that prompt.
-    await target.sql(`INSERT INTO spore_injections (project_id, session_id, prompt_id, prompt_hash, spore_ids, created_at)
-      VALUES (${lit(target.projectId)}, ${lit(session)}, ${lit(p1)}, ${lit(`ph-${stamp}`)}, ${lit(JSON.stringify([newId]))}, ${stamp + 3})`);
+    // The record of what a prompt's text selected reaches the turn body under the prompt that carried it.
+    await target.sql(`INSERT INTO spore_injections (id, project_id, session_id, prompt_id, prompt_hash, spore_ids, ask_protocol, asked_at, delivered_at, delivered_prompt_id, created_at)
+      VALUES (${lit(crypto.randomUUID())}, ${lit(target.projectId)}, ${lit(session)}, ${lit(p1)}, ${lit(`ph-${stamp}`)}, ${lit(JSON.stringify([newId]))}, 'v1', ${stamp + 3}, ${stamp + 4}, ${lit(p2)}, ${stamp + 3})`);
 
     interface Turn { injection: { sporeIds: string[]; createdAt: number; spores: { id: string; observationType: string; preview: string }[] } | null }
     const base = `/api/projects/${target.projectId}/sessions/${session}`;
-    const served = await owner<Turn>(`${base}/turns/${p1}`);
+    const served = await owner<Turn>(`${base}/turns/${p2}`);
     expect(served.status).toBe(200);
     expect(served.body.injection?.sporeIds).toEqual([newId]);
     expect(served.body.injection?.createdAt).toBe(stamp + 3);
     expect(served.body.injection?.spores).toEqual([{ id: newId, observationType: 'decision', preview: `recency with a cap ${stamp}` }]);
 
-    // A prompt with no record answers null rather than an empty shape.
-    expect((await owner<Turn>(`${base}/turns/${p2}`)).body.injection).toBeNull();
+    // The selecting prompt, delivered nothing, answers null rather than an empty shape.
+    expect((await owner<Turn>(`${base}/turns/${p1}`)).body.injection).toBeNull();
   },
 };

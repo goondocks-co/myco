@@ -117,16 +117,18 @@ const countOf = async (db: RelationalStore, sql: string, params: readonly unknow
 };
 
 /**
- * Prompts that received context the Deployment prepared: a receipt or an answer whose delivery named the prompt. A
- * selection never delivered, a delivery to a prompt that has no name, and a member that reports no deliveries count
- * for no prompt. A session's start block is a session's, counted over sessions (`SESSIONS_STARTED_WITH_BLOCK`).
+ * Prompts that received context the Deployment prepared: a receipt, or the session's plan nudge, whose delivery named
+ * the prompt. These are the durable records of what a served answer carried, so the count outlives the answers'
+ * retention. A selection never delivered, a delivery to a prompt that has no name, and a member that reports no
+ * deliveries count for no prompt. A session's start block is a session's, counted over sessions
+ * (`SESSIONS_STARTED_WITH_BLOCK`).
  */
 const SERVED_PROMPTS = `
   EXISTS (SELECT 1 FROM spore_injections i
            WHERE i.project_id = p.project_id AND i.session_id = p.session_id AND i.delivered_prompt_id = p.prompt_id)
-  OR EXISTS (SELECT 1 FROM prompt_context_answers a
-              WHERE a.project_id = p.project_id AND a.session_id = p.session_id AND a.delivered_prompt_id = p.prompt_id
-                AND a.outcome = 'served')`;
+  OR EXISTS (SELECT 1 FROM session_injections j
+              WHERE j.project_id = p.project_id AND j.session_id = p.session_id AND j.kind = 'plan-nudge'
+                AND j.delivered_prompt_id = p.prompt_id)`;
 
 /** Sessions the Deployment served a session start block. */
 const SESSIONS_STARTED_WITH_BLOCK = `EXISTS (SELECT 1 FROM session_injections j

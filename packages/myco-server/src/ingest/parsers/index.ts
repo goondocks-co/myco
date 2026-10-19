@@ -155,6 +155,12 @@ export interface TranscriptParser {
   planTags: readonly string[];
   /** The field of a line holding its own time, where it is not `timestamp`. */
   lineTimeField?: string;
+  /**
+   * The generation of how this parser derives a prompt's identity from a record. Raised when a record this parser
+   * read before now names a different prompt: a checkpoint written under another generation that carries a prompt
+   * forward is read again from its start (`parse.ts`).
+   */
+  promptGeneration: number;
   /** Async to the extent the id derivations are: a parser reads no store and touches no clock. */
   parse(input: ParserInput): Promise<DerivedEvent[]>;
 }

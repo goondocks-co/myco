@@ -56,6 +56,7 @@ function argumentsOf(value: unknown): Record<string, unknown> {
 export const piParser: TranscriptParser = {
   agent: 'pi',
   fidelity: 'full',
+  promptGeneration: 1,
   planTags: [],
 
   async parse(input: ParserInput): Promise<DerivedEvent[]> {

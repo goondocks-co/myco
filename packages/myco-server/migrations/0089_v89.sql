@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS spore_injections (
 
 CREATE INDEX IF NOT EXISTS idx_spore_injections_session ON spore_injections (project_id, session_id, created_at);
 
+CREATE INDEX IF NOT EXISTS idx_spore_injections_created ON spore_injections (project_id, created_at);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_spore_injections_prompt ON spore_injections (project_id, session_id, prompt_id) WHERE prompt_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_spore_injections_delivered ON spore_injections (project_id, session_id, delivered_prompt_id) WHERE delivered_prompt_id IS NOT NULL;
@@ -86,6 +88,7 @@ CREATE TABLE IF NOT EXISTS prompt_context_answers (
      delivered_at           INTEGER,
      delivered_prompt_id    TEXT,
      delivered_scope_reason TEXT CHECK (delivered_scope_reason IN ('absent_key', 'steering', 'scheme', 'transcript_only')),
+     receipt_id    TEXT,
      outcome       TEXT NOT NULL CHECK (outcome IN ('served', 'empty')),
      context_chars INTEGER NOT NULL CHECK (context_chars >= 0),
      parts         TEXT NOT NULL,
@@ -102,6 +105,8 @@ CREATE INDEX IF NOT EXISTS idx_prompt_context_answers_created ON prompt_context_
 
 CREATE INDEX IF NOT EXISTS idx_prompt_context_answers_prompt ON prompt_context_answers (project_id, session_id, prompt_id, created_at);
 
+CREATE INDEX IF NOT EXISTS idx_prompt_context_answers_receipt ON prompt_context_answers (project_id, session_id, receipt_id);
+
 INSERT INTO prompt_context_answers (project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, selection, created_at) SELECT project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, selection, created_at FROM _v89_answer_rows;
 
 DROP TABLE IF EXISTS _v89_guard_answers_kept;
@@ -116,5 +121,13 @@ DROP TABLE _v89_guard_answers_kept;
 DROP TABLE _v89_answer_rows;
 
 ALTER TABLE transcripts ADD COLUMN parsed_through_at INTEGER;
+
+ALTER TABLE transcripts ADD COLUMN prompt_generation INTEGER;
+
+ALTER TABLE session_injections ADD COLUMN delivered_at INTEGER;
+
+ALTER TABLE session_injections ADD COLUMN delivered_prompt_id TEXT;
+
+ALTER TABLE session_injections ADD COLUMN delivered_scope_reason TEXT CHECK (delivered_scope_reason IN ('absent_key', 'steering', 'scheme', 'transcript_only'));
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '89');

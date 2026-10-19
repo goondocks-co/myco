@@ -11,6 +11,7 @@ export function schemaObjects(db: Database): Array<{ type: string; name: string;
 const RUNNER_SIGN_IN_SCHEMA_VERSION = 88;
 
 const sqlIdentifier = (name: string): string => `"${name.replaceAll('"', '""')}"`;
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export class UpgradeStateMismatchError extends Error {}
 export class UnobservableMigrationMutationError extends Error {}
@@ -27,7 +28,12 @@ export function tableRows(db: Database, tables: string[]): Record<string, string
   return Object.fromEntries(tables.map((table) => {
     const exists = db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
     if (!exists) return [table, '<absent>'];
-    const rows = db.query(`SELECT * FROM ${sqlIdentifier(table)}`).all().map((row) => JSON.stringify(row)).sort();
+    // A column the store fills from a random default holds a different value on every application; it is compared by
+    // its shape, and every other column by its value.
+    const minted = (db.query(`PRAGMA table_info(${sqlIdentifier(table)})`).all() as Array<{ name: string; dflt_value: string | null }>)
+      .filter((column) => /\brandomblob\(/i.test(column.dflt_value ?? '')).map((column) => column.name);
+    const rows = (db.query(`SELECT * FROM ${sqlIdentifier(table)}`).all() as Record<string, unknown>[]).map((row) => JSON.stringify(Object.fromEntries(Object.entries(row)
+      .map(([name, value]) => [name, minted.includes(name) && typeof value === 'string' && UUID_V4.test(value) ? '<minted uuid v4>' : value])))).sort();
     return [table, JSON.stringify(rows)];
   }));
 }
@@ -94,7 +100,8 @@ export function referencedExistingTables(db: Database, statements: readonly stri
   const owners = new Map(objects.map((item) => [item.name.toLowerCase(), item.tbl_name]));
   const tables = new Set<string>();
   for (const statement of statements) {
-    const resolved = sqlIdentifiers(statement).map((name) => owners.get(name.toLowerCase()))
+    // A foreign key's target is a parent the statement names, not a table it changes; the seed reaches parents through their children.
+    const resolved = sqlIdentifiers(statement.replace(/\bREFERENCES\s+("[^"]*"|\w+)/gi, '')).map((name) => owners.get(name.toLowerCase()))
       .filter((owner): owner is string => owner !== undefined && tableNames.has(owner.toLowerCase())
         && owner !== 'schema_meta' && owner !== 'd1_migrations' && !owner.startsWith('_cf_'));
     if (resolved.length === 0 && /^\s*(?:DROP\s+(?:INDEX|TRIGGER)|ALTER\s+TABLE|UPDATE|DELETE\s+FROM)/i.test(statement)) {
@@ -129,11 +136,12 @@ function omittedObject(statement: string): { kind: string; name: string } | unde
 export function isLocalMigrationSqlFailure(error: unknown, omittedStatement: string): boolean {
   if (!(error instanceof Error) || !/^wrangler d1 migrations apply exited [1-9]\d*:/m.test(error.message)) return false;
   const omitted = omittedObject(omittedStatement);
-  const missing = /\bno such (table|column|index|trigger|view):[ \t]*([^\r\n]+)/i.exec(error.message);
+  // The store names the object and then its own code (`no such table: t: SQLITE_ERROR`), in terminal colours.
+  const missing = /\bno such (table|column|index|trigger|view):[ \t]*([^\r\n]+)/i.exec(error.message.replace(/\u001b\[[0-9;]*m/g, ''));
   if (omitted === undefined || missing === null) return false;
   const missingKind = missing[1]!.toLowerCase();
   if (missingKind !== omitted.kind && !(omitted.kind === 'view' && missingKind === 'table')) return false;
-  const missingName = missing[2]!.trim().replace(/[.;]$/, '').replace(/^(["`\[])(.*)(["`\]])$/, '$2');
+  const missingName = missing[2]!.replace(/:\s*SQLITE_[A-Z_]+\b.*$/, '').trim().replace(/[.;]$/, '').replace(/^(["`\[])(.*)(["`\]])$/, '$2');
   return missingName.toLowerCase() === omitted.name.toLowerCase();
 }
 
@@ -184,9 +192,10 @@ export function seedReferencedTables(db: Database, statements: readonly string[]
       values.set(fk.from, parent[parentKey]);
     }
     for (const column of columns.filter((item) => (item.notnull || item.pk) && item.dflt_value === null)) {
-      if (values.has(column.name) || (column.pk && /INT/i.test(column.type))) continue;
+      // Only a lone INTEGER PRIMARY KEY is the rowid, which the store assigns.
+      if (values.has(column.name) || (column.pk && /^INTEGER$/i.test(column.type) && columns.filter((item) => item.pk > 0).length === 1)) continue;
       const name = column.name;
-      const value = table === 'runners' && name === 'id' ? 'rn_upgrade' : name === 'project_id' ? PROJECT_ID : name === 'agent_id' ? 'upgrade_agent'
+      const value = table === 'runners' && name === 'id' ? 'rn_upgrade' : table === 'prompt_context_answers' && name === 'outcome' ? 'served' : name === 'chunk_index' ? 0 : name === 'project_id' ? PROJECT_ID : name === 'agent_id' ? 'upgrade_agent'
         : name === 'session_id' ? 'upgrade_session' : name === 'run_id' ? 'upgrade_run'
           : name === 'status' ? 'completed' : name === 'role' ? 'member'
             : name === 'state' ? 'draft' : name === 'confidence' ? 'high'

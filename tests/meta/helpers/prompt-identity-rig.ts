@@ -33,6 +33,8 @@ export interface IdentityRig {
   parse(): Promise<void>;
   /** Store bytes as a transcript's only segment, as a member's shipped transcript lands. */
   storeTranscript(opts: { transcriptId: string; sessionId: string; agent: string; text: string; role?: 'primary' | 'subagent' }): Promise<void>;
+  /** Store bytes as the next segment of a transcript already stored, as a member's next shipment lands. */
+  appendTranscript(opts: { transcriptId: string; text: string }): Promise<void>;
   rows(sql: string, ...params: unknown[]): Record<string, unknown>[];
 }
 
@@ -84,6 +86,18 @@ export async function identityRig(opts: { relevant?: number; background?: number
         VALUES (?, ?, ?, 'machine_1', ?, ?, 1, ?, ?, ?, ?)`, [TEST_PROJECT_ID, transcriptId, sessionId, agent, bytes.length, now, now, rig.tokenId, role]);
       sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)`, [TEST_PROJECT_ID, transcriptId, bytes.length, key, `seg-${transcriptId}`, now, now, rig.tokenId]);
+    },
+    async appendTranscript({ transcriptId, text }) {
+      const bytes = utf8(text);
+      const key = await sha256HexOf(bytes);
+      const now = Date.now();
+      const { size } = sqlite.query(`SELECT size FROM transcripts WHERE project_id = ? AND transcript_id = ?`).get(TEST_PROJECT_ID, transcriptId) as { size: number };
+      const objectKey = registerBlob(sqlite, { projectId: TEST_PROJECT_ID, key, size: bytes.length, tokenId: rig.tokenId, receivedAt: now });
+      await rig.env.bucket.put(objectKey, new Blob([bytes]).stream());
+      sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [TEST_PROJECT_ID, transcriptId, size, bytes.length, key, `seg-${transcriptId}-${size}`, now, now, rig.tokenId]);
+      sqlite.run(`UPDATE transcripts SET size = size + ?, segment_count = segment_count + 1, last_received_at = ? WHERE project_id = ? AND transcript_id = ?`,
+        [bytes.length, now, TEST_PROJECT_ID, transcriptId]);
     },
     rows: (sql, ...params) => sqlite.query(sql).all(...(params as never[])) as Record<string, unknown>[],
   };
