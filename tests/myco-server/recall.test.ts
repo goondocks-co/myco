@@ -192,8 +192,8 @@ describe('the plan nudge', () => {
     expect(sessionRows(sqlite).map((r) => [r.project_id, r.session_id])).toEqual([
       [SCOPE.projectId, 'sess_a'], [SCOPE.projectId, 'sess_b'], [OTHER.projectId, 'sess_a'],
     ]);
-    expect(await recordSessionInjection(db, SCOPE, 'sess_a', 'plan-nudge', NOW, admit(SCOPE.projectId, 'sess_a'))).toBe(false);
-    expect(await recordSessionInjection(db, SCOPE, 'sess_a', 'cortex', NOW, admit(SCOPE.projectId, 'sess_a'))).toBe(true);
+    expect(await recordSessionInjection(db, SCOPE, 'sess_a', 'plan-nudge', NOW, admit(SCOPE.projectId, 'sess_a'))).toEqual({ outcome: 'repeat' });
+    expect(await recordSessionInjection(db, SCOPE, 'sess_a', 'cortex', NOW, admit(SCOPE.projectId, 'sess_a'))).toEqual({ outcome: 'recorded' });
   });
 });
 

@@ -21,7 +21,7 @@ import path from 'node:path';
 import { featuresNamed, featureAdvertised as headerAdvertises, type MemberFeature } from '@goondocks/myco-shared/member-protocol';
 import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
 import { BLOCK_JOIN, projectLine, withoutProjectLine } from '@goondocks/myco-shared/recall';
-import type { ASK_IDENTITY_MARKER, PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
+import type { ASK_IDENTITY_MARKER, DeliveredSessionRecord, PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { deploymentFeaturesPath, deploymentsDir, deploymentUrl, listRegistryEntriesResult, type RegistryEntry } from './registry.js';
 import { spoolDirFor } from './spool.js';
 import { ensureMemberDir, ensurePrivateFile, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
@@ -60,9 +60,10 @@ export interface SessionContextCache {
   version: typeof CACHE_VERSION;
   /**
    * What the Deployment served for the session's latest prompt, rendered on the next one: the ask's own instant
-   * (`askedAt`), the prompt it named, and the receipt and answer rows the Deployment wrote for it, where it wrote them.
+   * (`askedAt`), the prompt it named, the receipt and answer rows the Deployment wrote for it, where it wrote them, and
+   * the session record its block carried (`sessionRecord`).
    */
-  prompt?: CachedBlock & { promptId?: string; askedAt?: number; receiptId?: string; answerId?: string; skipped?: string[] };
+  prompt?: CachedBlock & { promptId?: string; askedAt?: number; receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord; skipped?: string[] };
 }
 
 /** What a hook asks the helper to fetch for its session: kept in session state until the helper has asked. */

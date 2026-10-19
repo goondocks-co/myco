@@ -77,6 +77,17 @@ export interface ParserState {
   repair?: { version: number; fromVersion: number; status: 'replaying' | 'raw_absent' | 'raw_prefix_pruned' | 'raw_gap' };
 }
 
+/**
+ * A continuation resumed under another prompt generation without the bytes behind its cursor: every prompt it carries
+ * is named by the earlier rule, so each is dropped. Pending calls and a held reply keep everything else, so a later
+ * result still closes its call and the reply still lands, each naming no prompt.
+ */
+export function withoutPrompts(state: ParserState): void {
+  for (const call of Object.values(state.pending ?? {})) delete call.promptId;
+  if (state.reply !== undefined) delete state.reply.promptId;
+  if (state.legacyReplies !== undefined) delete state.legacyReplies.promptId;
+}
+
 /** A declared complete transcript records calls whose results never arrived. */
 export function unfinishedCalls(pending: Iterable<PendingCall>, errorMessage = 'tool call has no result in the transcript'): DerivedEvent[] {
   return [...pending].map((call) => ({

@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
+import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { identityRig, type IdentityRig } from './helpers/prompt-identity-rig.js';
 
 const FIXTURES = path.join(import.meta.dir, '..', 'fixtures', 'claude-siblings');
@@ -87,5 +88,36 @@ describe('a checkpoint written under the previous sibling classification', () =>
     expect(r.rows(`SELECT prompt_id FROM responses WHERE session_id = ? AND text = 'No breaking change found.'`, SESSION)).toEqual([{ prompt_id: null }]);
     expect(r.rows(`SELECT parsed_offset = size AS caught_up, prompt_generation, json_extract(parser_context, '$.mycoParserRepair.status') AS repair FROM transcripts WHERE transcript_id = ?`, t.transcriptId))
       .toEqual([{ caught_up: 1, prompt_generation: 2, repair: 'raw_prefix_pruned' }]);
+  });
+
+  it('drops the person\'s prompt from a call still waiting on its result when the bytes before the cursor are gone', async () => {
+    const r = await identityRig({ relevant: 0, background: 0 });
+    r.rig.env.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+      VALUES ('proj_1', ?, 'machine_1', ?, 1, 1)`, [SESSION, r.rig.tokenId]);
+    const at = (s: number) => `2026-10-18T09:01:0${s}.000Z`;
+    const call = `${JSON.stringify({ parentUuid: '0a1b2c3d-0000-4000-8000-000000000101', isSidechain: true, agentId: 'a4f1c2e9', type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_read_1', name: 'Read', input: { file_path: 'src/retention.ts' } }], stop_reason: 'tool_use' },
+      uuid: '0a1b2c3d-0000-4000-8000-000000000201', timestamp: at(1), sessionId: SESSION })}\n`;
+    const result = `${JSON.stringify({ parentUuid: '0a1b2c3d-0000-4000-8000-000000000201', isSidechain: true, agentId: 'a4f1c2e9', type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_read_1', content: 'thirty days' }] },
+      uuid: '0a1b2c3d-0000-4000-8000-000000000202', timestamp: at(2), sessionId: SESSION })}\n`;
+    await r.storeTranscript({ transcriptId: t.transcriptId, sessionId: SESSION, agent: 'claude-code', text: sidechainLine + call, role: t.role });
+    // One live pass: the call stays pending in the checkpoint, waiting on its result.
+    await parseTranscripts(r.rig.env.serverEnv, Date.now());
+    const person = await promptIdFor(SESSION, 'user_prompt', KEY);
+    const sidechain = await promptIdFor(SESSION, 'sidechain', '0a1b2c3d-0000-4000-8000-000000000101');
+    expect(r.rows(`SELECT json_extract(parser_context, '$.mycoParserState.pending.toolu_read_1.promptId') AS pending FROM transcripts WHERE transcript_id = ?`, t.transcriptId))
+      .toEqual([{ pending: sidechain }]);
+    // What the previous parser stored and checkpointed: the line and its pending call under the person's id.
+    r.rig.env.sqlite.run(`UPDATE prompt_batches SET prompt_id = ?, origin = 'user', prompt_kind = 'user_prompt' WHERE session_id = ? AND prompt_id = ?`, [person, SESSION, sidechain]);
+    r.rig.env.sqlite.run(`UPDATE transcripts SET open_prompt_id = ?, prompt_generation = NULL,
+      parser_context = json_set(parser_context, '$.mycoParserState.pending.toolu_read_1.promptId', ?) WHERE transcript_id = ?`, [person, person, t.transcriptId]);
+    r.rig.env.sqlite.run(`DELETE FROM transcript_segments WHERE transcript_id = ? AND base_offset = 0`, [t.transcriptId]);
+    await r.appendTranscript({ transcriptId: t.transcriptId, text: result });
+    await r.parse();
+    expect(r.rows(`SELECT prompt_id, tool_name, success FROM tool_calls WHERE session_id = ?`, SESSION)).toEqual([{ prompt_id: null, tool_name: 'Read', success: 1 }]);
+    expect(r.rows(`SELECT parsed_offset = size AS caught_up, prompt_generation, json_extract(parser_context, '$.mycoParserRepair.status') AS repair,
+      json_type(parser_context, '$.mycoParserPromptsDropped') AS mark FROM transcripts WHERE transcript_id = ?`, t.transcriptId))
+      .toEqual([{ caught_up: 1, prompt_generation: 2, repair: 'raw_prefix_pruned', mark: null }]);
   });
 });

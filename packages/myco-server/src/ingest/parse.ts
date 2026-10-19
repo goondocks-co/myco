@@ -33,7 +33,7 @@ import { MAX_PAYLOAD_BYTES, parseEnvelope } from './envelope.js';
 import { envelopeHash, planEventWrite, type EventWrite, type IngestResult } from './events.js';
 import { idFields, kindSpec } from './kinds.js';
 import { PARSERS, parserFor } from './parsers/registry.js';
-import { datedAt, isBlock, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput } from './parsers/index.js';
+import { datedAt, isBlock, withoutPrompts, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput } from './parsers/index.js';
 import { resolvePresentedDates } from './projections.js';
 import { LEGACY_REPLY_LINES_PER_READ, legacyReplies, preserveLegacyReplies } from './legacy-replies.js';
 import { parserCheckpointStatements, readParserCheckpoint, terminalCheckpointBatch } from './parser-checkpoint.js';
@@ -169,8 +169,13 @@ const PROMPT_GENERATION = `CASE agent ${Object.values(PARSERS).map((parser) => {
 /**
  * A checkpoint that carries a prompt forward (a turn open at its cursor, or calls or a reply unfinished) written by a
  * parser of another prompt generation. Resumed, it would go on naming that prompt as the parser that wrote it did, so
- * a pass reads it again from its start instead (`repairCursors`).
+ * a pass reads it again from its start instead (`repairCursors`). Where the bytes before its cursor are gone, it
+ * resumes with no turn open and is marked `PROMPTS_DROPPED`: the next pass drops every prompt its continuation carries
+ * (`withoutPrompts`), and the checkpoint that pass writes holds no mark.
  */
+const PROMPTS_DROPPED = 'mycoParserPromptsDropped';
+/** A stored context without one of its keys. */
+const withoutKey = (context: Record<string, unknown>, key: string): Record<string, unknown> => Object.fromEntries(Object.entries(context).filter(([name]) => name !== key));
 const PROMPT_IDENTITY_STALE = `(parsed_offset > 0 AND COALESCE(prompt_generation, 1) <> ${PROMPT_GENERATION}
   AND (open_prompt_id IS NOT NULL OR json_extract(parser_context, '$.mycoParserUnfinished') = 1))`;
 
@@ -754,7 +759,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   if (continued !== undefined && !isBlock(continued)) throw new Error('Stored parser continuation is not an object');
   const transcriptMeta = stored?.mycoParserMeta !== undefined
     ? (isBlock(stored.mycoParserMeta) ? stored.mycoParserMeta : undefined)
-    : stored === null || stored === undefined || failureOnlyContext ? parser.headerContext?.(windowLines) : continued === undefined ? stored : undefined;
+    : stored === null || stored === undefined || failureOnlyContext ? parser.headerContext?.(windowLines) : continued === undefined ? withoutKey(stored, PROMPTS_DROPPED) : undefined;
   if (recoveringHeader) {
     await env.db.prepare('UPDATE transcripts SET parser_context = ? WHERE project_id = ? AND transcript_id = ?')
       .bind(JSON.stringify(transcriptMeta), target.projectId, target.transcriptId).run();
@@ -765,6 +770,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   const chunkedState = continued?.chunked === true;
   const initialState: ParserState = chunkedState ? await readParserCheckpoint(env.db, target, continued?.digest) : structuredClone(continued ?? {});
   if (isBlock(stored?.mycoParserRepair)) initialState.repair = stored.mycoParserRepair as ParserState['repair'];
+  if (stored?.[PROMPTS_DROPPED] === 1) withoutPrompts(initialState);
   if (chunkedState) calls += 1;
   if (typeof stored?.mycoLegacyResponseUntil === 'number') initialState.legacyReplies = { until: stored.mycoLegacyResponseUntil };
   if (initialState.legacyReplies !== undefined && lines.length > LEGACY_REPLY_LINES_PER_READ) {
@@ -1057,11 +1063,11 @@ async function prepareParserRepairs(db: RelationalStore): Promise<number> {
  */
 async function repairCursors(db: RelationalStore, where: { sql: string; params: unknown[] }): Promise<number> {
   const { results } = await db.prepare(`SELECT project_id, transcript_id, parser_version, parsed_offset, parser_context,
-    (${FIRST_HELD_BYTE}) AS first_held,
+    ${PROMPT_IDENTITY_STALE} AS prompt_identity_stale, (${FIRST_HELD_BYTE}) AS first_held,
     (SELECT COALESCE(SUM(MIN(length, transcripts.parsed_offset - base_offset)), 0) FROM (${HELD_PREFIX_SOURCE})
       WHERE base_offset < transcripts.parsed_offset) AS held_prefix_bytes FROM transcripts WHERE ${where.sql} AND NOT ${TOMBSTONED}
     ORDER BY parser_version, project_id, transcript_id LIMIT ${TRANSCRIPT_REPAIRS_PER_WAKE}`)
-    .bind(...where.params).all<{ project_id: string; transcript_id: string; parser_version: number; parsed_offset: number; parser_context: string | null; first_held: number | null; held_prefix_bytes: number }>();
+    .bind(...where.params).all<{ project_id: string; transcript_id: string; parser_version: number; parsed_offset: number; parser_context: string | null; prompt_identity_stale: number; first_held: number | null; held_prefix_bytes: number }>();
   if (results.length === 0) return 1;
   const repairs = results.map((row) => ({ row, status: row.first_held === null ? 'raw_absent'
     : row.first_held > 0 ? 'raw_prefix_pruned' : row.held_prefix_bytes !== row.parsed_offset ? 'raw_gap' : 'replaying' }));
@@ -1070,13 +1076,12 @@ async function repairCursors(db: RelationalStore, where: { sql: string; params: 
     const mutations = status === 'replaying'
       ? `parsed_offset = 0, parse_segment_lines = 0, open_prompt_id = NULL, parse_error = NULL, parse_failed_at = NULL,
           parse_awaited_size = NULL, parser_context = json_set(${REREAD_CONTEXT}, '$.mycoParserRepair', json(?))`
-      : `parser_version = ${PARSER_VERSION},
-          open_prompt_id = CASE WHEN ${PROMPT_IDENTITY_STALE} THEN NULL ELSE open_prompt_id END,
-          prompt_generation = CASE WHEN ${PROMPT_IDENTITY_STALE} THEN ${PROMPT_GENERATION} ELSE prompt_generation END,
+      : `parser_version = ${PARSER_VERSION},${row.prompt_identity_stale === 1 ? `
+          open_prompt_id = NULL, prompt_generation = ${PROMPT_GENERATION},` : ''}
           parse_failed_at = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_failed_at END,
           parse_awaited_size = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_awaited_size END,
           parse_error = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_error END,
-          parser_context = json_set(COALESCE(parser_context, '{}'), '$.mycoParserRepair', json(?))`;
+          parser_context = json_set(COALESCE(parser_context, '{}'), '$.mycoParserRepair', json(?)${row.prompt_identity_stale === 1 ? `, '$.${PROMPTS_DROPPED}', 1` : ''})`;
     return db.prepare(`UPDATE transcripts SET ${mutations} WHERE project_id = ? AND transcript_id = ?
       AND parser_version = ? AND parsed_offset = ? AND parser_context IS ?`)
       .bind(repair, row.project_id, row.transcript_id, row.parser_version, row.parsed_offset, row.parser_context);

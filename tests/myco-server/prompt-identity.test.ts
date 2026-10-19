@@ -7,7 +7,7 @@ import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { composePromptContext, PROMPT_ANSWER_RETENTION_DAYS, prunePromptAnswers, type RecallLeaves } from '@myco-server-worker/core/recall.js';
+import { composePromptContext, composeSessionContext, PROMPT_ANSWER_RETENTION_DAYS, prunePromptAnswers, type RecallLeaves } from '@myco-server-worker/core/recall.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { listContextInjections } from '@myco-server-worker/read/children.js';
 import { readKpis } from '@myco-server-worker/read/kpis.js';
@@ -74,6 +74,49 @@ describe('a context ask names its prompt', () => {
     const answer = await (await worker.fetch(ask(token, { sessionId: SESSION, promptId: uuid(1), identity: 1, at: NOW, text: PROMPT }), e.env)).json() as Record<string, unknown>;
     expect(answer).toMatchObject({ persisted: false, code: 'identity_mismatch' });
     expect(rows(e.sqlite, `SELECT 1 FROM prompt_context_answers`)).toEqual([]);
+  });
+});
+
+describe('a session block for a session this machine may not write', () => {
+  const start = (token: string) => new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ sessionId: SESSION, kind: 'start' }) });
+
+  it('answers a deleted session\'s start with the refusal, and records no block', async () => {
+    const { e, token, ctx } = await member();
+    e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', ?, 'machine_1', ?, 1, 1)`, [SESSION, ctx.tokenId]);
+    await tombstoneSession(e.serverEnv, { projectId: 'proj_1' }, SESSION, 'mem_machine_1', NOW);
+    const answer = await (await worker.fetch(start(token), e.env)).json() as Record<string, unknown>;
+    expect(answer).toMatchObject({ persisted: false, code: 'session_tombstoned' });
+    expect(rows(e.sqlite, `SELECT 1 FROM session_injections`)).toEqual([]);
+  });
+
+  it('answers a start for a session another machine holds with the refusal', async () => {
+    const { e, token } = await member();
+    e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', ?, 'machine_2', 'other', 1, 1)`, [SESSION]);
+    const answer = await (await worker.fetch(start(token), e.env)).json() as Record<string, unknown>;
+    expect(answer).toMatchObject({ persisted: false, code: 'identity_mismatch' });
+    expect(rows(e.sqlite, `SELECT 1 FROM session_injections`)).toEqual([]);
+  });
+
+  it('answers the refusal over the route when the session is deleted after the route admitted it', async () => {
+    const { e, token, ctx } = await member();
+    e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', ?, 'machine_1', ?, 1, 1)`, [SESSION, ctx.tokenId]);
+    // The repository binding is the route's first write after its read; the session is deleted the moment it lands.
+    e.sqlite.run(`CREATE TRIGGER deleted_after_admission AFTER INSERT ON project_remotes BEGIN
+      INSERT INTO session_tombstones (project_id, session_id, created_at, created_by) VALUES ('proj_1', '${SESSION}', 1, 'm'); END`);
+    const res = await worker.fetch(new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(token),
+      body: JSON.stringify({ sessionId: SESSION, kind: 'start', remote: 'https://github.com/example/repo.git' }) }), e.env);
+    expect(await res.json()).toMatchObject({ persisted: false, code: 'session_tombstoned' });
+    expect(rows(e.sqlite, `SELECT 1 FROM session_injections`)).toEqual([]);
+  });
+
+  it('names the refusal, not a repeat, when the record\'s own write is held back', async () => {
+    const { e, ctx } = await member();
+    e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', ?, 'machine_1', ?, 1, 1)`, [SESSION, ctx.tokenId]);
+    const admission = sessionWriteAdmission({ projectId: 'proj_1', machineId: 'machine_1' }, SESSION);
+    await tombstoneSession(e.serverEnv, { projectId: 'proj_1' }, SESSION, 'mem_machine_1', NOW);
+    const block = await composeSessionContext(e.db, { projectId: 'proj_1' }, ON, true, { sessionId: SESSION, kind: 'start', now: NOW }, { admission });
+    expect(block).toMatchObject({ context: '', parts: [], refusal: { classifier: 'session_tombstoned' } });
+    expect(block.skipped).not.toContain('repeat');
   });
 });
 
@@ -207,7 +250,7 @@ describe('what outlives the answers', () => {
     return { ...m, answer, deliver, sessionLevel, prune };
   }
 
-  it('credits a prompt delivered only the plan nudge after its answer is pruned', async () => {
+  it('credits a prompt delivered only the plan nudge after its answer is pruned, from a member that names only the answer', async () => {
     const s = await served({ text: 'let us write the implementation plan for the selector', planNudge: true });
     expect(s.answer.parts.map((p) => p.kind)).toContain('plan-nudge');
     s.e.sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', ?, ?, 'e2', 'user', 'h', ?, ?, 't', ?)`, [uuid(2), SESSION, NOW, NOW, NOW]);
@@ -219,6 +262,18 @@ describe('what outlives the answers', () => {
     expect(await s.prune()).toBe(1);
     expect(rows(s.e.sqlite, `SELECT 1 FROM prompt_context_answers`)).toEqual([]);
     expect(await present()).toEqual({ value: 1, sampleSize: 1 });
+  });
+
+  it('credits a prompt the plan nudge was delivered to when the delivery arrives after its answer was pruned', async () => {
+    const s = await served({ text: 'let us write the implementation plan for the selector', planNudge: true });
+    expect(s.answer.sessionRecord).toBe('plan-nudge');
+    s.e.sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at) VALUES ('proj_1', ?, ?, 'e2', 'user', 'h', ?, ?, 't', ?)`, [uuid(2), SESSION, NOW, NOW, NOW]);
+    s.e.sqlite.run(`DELETE FROM spore_injections`);
+    expect(await s.prune()).toBe(1);
+    // The member renders the cached answer long after: it reports the answer and the record it carried.
+    expect(await s.deliver(1, { answerId: s.answer.answerId, sessionRecord: s.answer.sessionRecord, renderedIn: uuid(2) })).toMatchObject({ persisted: true });
+    expect(rows(s.e.sqlite, `SELECT delivered_prompt_id, delivered_at IS NOT NULL AS delivered FROM session_injections WHERE kind = 'plan-nudge'`)).toEqual([{ delivered_prompt_id: uuid(2), delivered: 1 }]);
+    expect((await readKpis(s.e.db, { windowDays: null, now: NOW })).contextPresent).toEqual({ value: 1, sampleSize: 1 });
   });
 
   it('lists one row for an answer and the receipt it carried, and the receipt alone once the answer is pruned', async () => {

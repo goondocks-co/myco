@@ -11,7 +11,7 @@ import { HOOK_CONFIG } from './hook-config.generated.js';
 import { transcriptWritesTurnRows } from './turn-rows.js';
 import {
   ASK_IDENTITY_MARKER, canonicalPromptId, hookPromptRequest, PROMPT_IDENTITY_FEATURE,
-  type PromptIdentityDeclaration, type PromptScopeReason,
+  type DeliveredSessionRecord, type PromptIdentityDeclaration, type PromptScopeReason,
 } from '@goondocks/myco-shared/prompt-identity';
 
 /**
@@ -66,16 +66,16 @@ function promptAsk(naming: PromptNaming, text: string, at: number): ContextAsk {
  * asks with each prompt's text, and the next prompt renders the answer. Each answer is rendered once, keyed on the
  * instant of the ask it answered: while no newer one arrives (the Deployment unreachable, say), the prompts after it
  * are served the line alone. `rendered` names the ask whose answer this prompt rendered, and the receipt and answer
- * rows that answer named, recorded with its records.
+ * rows and the session record that answer named, recorded with its records.
  */
-function withServed(spoolDir: string, sessionId: string, response: HookResponse): { response: HookResponse; rendered?: { ask: number; receiptId?: string; answerId?: string } } {
+function withServed(spoolDir: string, sessionId: string, response: HookResponse): { response: HookResponse; rendered?: { ask: number; receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord } } {
   const served = readSessionContext(spoolDir, sessionId).prompt;
   if (served === undefined || served.context.length === 0) return { response };
   const ask = served.askedAt ?? served.at;
   if (readSessionState(spoolDir, sessionId).renderedAsk === ask) return { response };
   return {
     response: { ...response, additionalContext: `${response.additionalContext}\n\n${served.context}` },
-    rendered: { ask, receiptId: served.receiptId, answerId: served.answerId },
+    rendered: { ask, receiptId: served.receiptId, answerId: served.answerId, sessionRecord: served.sessionRecord },
   };
 }
 
@@ -151,9 +151,10 @@ export async function main(opts: HookMainOptions = {}) {
     const served = withServed(spool.dir, sessionId, { ...response, ...(promptId === undefined ? {} : { promptId }) });
     // The rows the rendered answer named, reported where they reached the agent, in the append that records the render.
     const delivered = served.rendered;
-    if (naming.version === 'v1' && delivered !== undefined && (delivered.receiptId !== undefined || delivered.answerId !== undefined)) {
+    if (naming.version === 'v1' && delivered !== undefined
+      && (delivered.receiptId !== undefined || delivered.answerId !== undefined || delivered.sessionRecord !== undefined)) {
       events.push(contextDeliveredEvent(ctx, {
-        receiptId: delivered.receiptId, answerId: delivered.answerId,
+        receiptId: delivered.receiptId, answerId: delivered.answerId, sessionRecord: delivered.sessionRecord,
         ...(naming.shared ? { renderedIn: naming.promptId } : { renderedScopeReason: naming.scopeReason }),
       }));
     }

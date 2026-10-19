@@ -135,3 +135,11 @@ export const ASK_IDENTITY_MARKER = 1;
 export const PROMPT_IDENTITY_FEATURE = 'prompt-identity';
 /** The event a hook that rendered a cached answer sends, naming the rows it rendered by their ids. */
 export const CONTEXT_DELIVERED_KIND = 'context.delivered';
+/**
+ * The session records an answer can carry, each named by its key within the session: what a delivery names so the
+ * record outlives the answer that carried it.
+ */
+export const DELIVERED_SESSION_RECORDS = ['plan-nudge'] as const;
+export type DeliveredSessionRecord = (typeof DELIVERED_SESSION_RECORDS)[number];
+export const isDeliveredSessionRecord = (value: unknown): value is DeliveredSessionRecord =>
+  (DELIVERED_SESSION_RECORDS as readonly unknown[]).includes(value);

@@ -141,6 +141,11 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
         : 'session context requires sessionId and kind "start" or "subagent"';
     return Response.json(refused(ctx, refusal(reason, 'parse')));
   }
+  // A block is recorded only for a session this machine may write, as its events are: read here, and held again on
+  // the record's own write. A preview records nothing.
+  const admission = preview || sessionId === null ? null : sessionWriteAdmission(ctx, sessionId);
+  const unwritable = admission === null ? null : await admission.refusal(env.db);
+  if (unwritable !== null) return Response.json(refused(ctx, unwritable));
 
   // A session start is where a member first names its repository, and the
   // binding is what lets a later tool call address this Project by remote.
@@ -168,9 +173,10 @@ export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): P
   ]);
   const [served, machine] = await Promise.all([
     composeSessionContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, { sessionId: sessionId ?? '', ...identity, now: ctx.now },
-      { ...(preview || sessionId === null ? { preview: true as const } : { admission: sessionWriteAdmission(ctx, sessionId) }), classifyError: env.platform?.classifyError }),
+      { ...(admission === null ? { preview: true as const } : { admission }), classifyError: env.platform?.classifyError }),
     // The machine's own settings, where the member asking claims it; a machine keeps them from its session start.
     machineBlockFor(env.db, ctx.memberId, ctx.machineId, ctx),
   ]);
+  if (served.refusal !== undefined) return Response.json(refused(ctx, served.refusal));
   return Response.json({ persisted: true, ...served, ...(machine === null ? {} : { machine }) });
 }

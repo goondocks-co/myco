@@ -9,8 +9,8 @@ import { pendingSearchBlobs } from '../core/search-index.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { planKind, projectLive, RAW_ROW_GATE, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { receiptDeliveredStatement, type Delivery } from '../core/injection.js';
-import { answerDeliveredStatement, planNudgeDeliveredStatement } from '../core/recall.js';
-import { CONTEXT_DELIVERED_KIND, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
+import { answerDeliveredStatement, planNudgeDeliveredStatement, sessionRecordDeliveredStatement } from '../core/recall.js';
+import { CONTEXT_DELIVERED_KIND, isDeliveredSessionRecord, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { ALWAYS, credentialLive } from './live-credential.js';
 import { endsTurn, endTurnStatement, startTurnFromEventStatement, turnStartFrom } from './turns.js';
 import { prepareArchiveBundle,discardArchiveBundle } from '../core/archive-bundle.js';
@@ -78,14 +78,20 @@ function spilledKey(spec: KindSpec, p: Payload): string | null {
 function deliveryStatements(db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, p: Payload): PreparedStatement[] {
   if (e.kind !== CONTEXT_DELIVERED_KIND) return [];
   const gate = { sql: RAW_ROW_GATE, params: [ctx.projectId, e.eventId, ctx.nonce] };
-  const to = (id: string): Delivery => ({
-    projectId: ctx.projectId, sessionId: e.sessionId, id, at: e.createdAt,
+  const delivered: Omit<Delivery, 'id'> = {
+    projectId: ctx.projectId, sessionId: e.sessionId, at: e.createdAt,
     promptId: typeof p.renderedIn === 'string' ? p.renderedIn : null,
     scopeReason: typeof p.renderedScopeReason === 'string' ? p.renderedScopeReason as PromptScopeReason : null,
-  });
+  };
+  const to = (id: string): Delivery => ({ ...delivered, id });
+  // The session record by its own key; from a member that names only the answer, through the answer while it is held.
+  const record = isDeliveredSessionRecord(p.sessionRecord)
+    ? [sessionRecordDeliveredStatement(db, { ...delivered, record: p.sessionRecord }, gate)]
+    : typeof p.answerId === 'string' ? [planNudgeDeliveredStatement(db, to(p.answerId), gate)] : [];
   return [
     ...(typeof p.receiptId === 'string' ? [receiptDeliveredStatement(db, to(p.receiptId), gate)] : []),
-    ...(typeof p.answerId === 'string' ? [answerDeliveredStatement(db, to(p.answerId), gate), planNudgeDeliveredStatement(db, to(p.answerId), gate)] : []),
+    ...(typeof p.answerId === 'string' ? [answerDeliveredStatement(db, to(p.answerId), gate)] : []),
+    ...record,
   ];
 }
 

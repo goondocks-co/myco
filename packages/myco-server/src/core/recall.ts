@@ -44,6 +44,7 @@ import type { SessionWriteAdmission } from '../ingest/projections.js';
 import type { Refusal } from '../telemetry.js';
 import { classify, emit, type ErrorClass } from '../telemetry.js';
 import { BLOCK_JOIN, projectLine, sessionInjectionKind, type SessionContextRequest, type SessionContextIdentity } from '@goondocks/myco-shared/recall';
+import type { DeliveredSessionRecord } from '@goondocks/myco-shared/prompt-identity';
 export { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 
 /** The most text one prompt is served. A part that would cross it is dropped whole. */
@@ -127,10 +128,12 @@ export async function readRecallLeaves(db: RelationalStore): Promise<RecallLeave
 }
 
 /**
- * Records that this session has been served `kind`, and answers whether the
- * record is new. A second call for the same (project, session, kind), or one the
- * session's admission holds back, answers false, and the caller serves nothing.
+ * The outcome of recording that a session is served `kind`: a new record, a `repeat` of one the session already holds
+ * (the caller serves nothing), or the session's admission refusing the write (the caller answers the refusal).
  */
+export type SessionRecordWrite = { outcome: 'recorded' } | { outcome: 'repeat' } | { outcome: 'refused'; refusal: Refusal };
+
+/** Records that this session has been served `kind`, once per (project, session, kind). */
 export async function recordSessionInjection(
   db: RelationalStore,
   scope: ReadScope,
@@ -138,12 +141,14 @@ export async function recordSessionInjection(
   kind: string,
   now: number,
   admission: SessionWriteAdmission,
-): Promise<boolean> {
+): Promise<SessionRecordWrite> {
   const written = await db
     .prepare(`INSERT OR IGNORE INTO session_injections (project_id, session_id, kind, created_at) SELECT ?, ?, ?, ? WHERE ${admission.admission.sql}`)
     .bind(scope.projectId, sessionId, kind, now, ...admission.admission.params)
     .run();
-  return written.meta.changes === 1;
+  if (written.meta.changes === 1) return { outcome: 'recorded' };
+  const refusal = await admission.refusal(db);
+  return refusal === null ? { outcome: 'repeat' } : { outcome: 'refused', refusal };
 }
 
 /** What one part of a served block is, named so a reader knows what it carries. */
@@ -157,7 +162,7 @@ export type SessionContextPart =
   | { kind: 'instructions' };
 
 /** Why the nudge stood down when nothing went wrong. */
-export type NudgeSkip = 'off' | 'no_intent' | 'repeat';
+export type NudgeSkip = 'off' | 'no_intent' | 'repeat' | 'unwritable';
 
 /** Why the instructions stood down when nothing went wrong. */
 export type CortexSkip = 'off' | 'empty';
@@ -190,6 +195,8 @@ export interface PromptContext {
   /** The receipt and the answer rows this ask wrote, each named only when its write succeeded: what a delivery names. */
   receiptId?: string;
   answerId?: string;
+  /** The session record the served block carried (the plan nudge), by its key: what a delivery names so it outlives this answer. */
+  sessionRecord?: DeliveredSessionRecord;
   /** Why the session's admission held the answer back: nothing is recorded for it, and nothing is served. */
   refusal?: Refusal;
 }
@@ -268,8 +275,18 @@ export function answerDeliveredStatement(db: RelationalStore, d: Delivery, gate:
 }
 
 /**
- * Mark the session's plan nudge delivered with the answer that carried it, once. The session's record of the nudge
- * outlives that answer, and so does its delivery.
+ * Mark a session's record delivered by its key, once: the record outlives the answer that carried it, so a delivery
+ * reported after that answer is pruned still lands.
+ */
+export function sessionRecordDeliveredStatement(db: RelationalStore, d: Omit<Delivery, 'id'> & { record: DeliveredSessionRecord }, gate: { sql: string; params: unknown[] }): PreparedStatement {
+  return db.prepare(`UPDATE session_injections SET delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?
+      WHERE project_id = ? AND session_id = ? AND kind = ? AND delivered_at IS NULL AND ${gate.sql}`)
+    .bind(d.at, d.promptId, d.scopeReason, d.projectId, d.sessionId, d.record, ...gate.params);
+}
+
+/**
+ * Mark the session's plan nudge delivered through the answer that carried it, once: how a delivery from a member that
+ * names only the answer reaches the nudge's record, while that answer is held.
  */
 export function planNudgeDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
   return db.prepare(`UPDATE session_injections SET delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?
@@ -300,6 +317,8 @@ export interface RecallSessionBlock {
    * Deployment keeps it under.
    */
   kind: string;
+  /** Why the session's admission held the block's record back: nothing is recorded, and nothing is served. */
+  refusal?: Refusal;
 }
 
 /** One contributor's part and the text it puts into the served block. */
@@ -385,8 +404,11 @@ export async function composePromptContext(
   const nudge = await contribute<Contribution | null>(identity, 'plan-nudge', skipped, failures, async () => {
     if (!leaves.planNudge) skipped.push('plan-nudge:off');
     else if (!detectsPlanIntent(input.text)) skipped.push('plan-nudge:no_intent');
-    else if (!(await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now, input.admission))) skipped.push('plan-nudge:repeat');
-    else return { part: { kind: 'plan-nudge' }, text: PLAN_INTENT_NUDGE };
+    else {
+      const nudge = await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now, input.admission);
+      if (nudge.outcome === 'recorded') return { part: { kind: 'plan-nudge' }, text: PLAN_INTENT_NUDGE };
+      skipped.push(nudge.outcome === 'repeat' ? 'plan-nudge:repeat' : 'plan-nudge:unwritable');
+    }
     return null;
   }, classifyError);
 
@@ -396,8 +418,9 @@ export async function composePromptContext(
     context: kept.map((c) => c.text).join(JOIN),
     parts: kept.map((c) => c.part),
     skipped,
-    // A receipt whose part the bound dropped never reaches the agent, so no delivery may name it.
+    // A receipt whose part the bound dropped never reaches the agent, so no delivery may name it; so too the nudge's record.
     ...(receiptId === undefined || !kept.some((c) => c.part.kind === 'spores') ? {} : { receiptId }),
+    ...(kept.some((c) => c.part.kind === 'plan-nudge') ? { sessionRecord: 'plan-nudge' as const } : {}),
   }, failures, counts, input.now, classifyError);
 }
 
@@ -478,8 +501,10 @@ export async function composeSessionContext(
   const kept = partsWithinBound(contributions, SESSION_CONTEXT_MAX_CHARS);
   if (kept.length === 0) return { context: '', parts: [], skipped, kind: recordKind };
 
-  if (opts.preview !== true && !await recordSessionInjection(db, scope, input.sessionId, recordKind, input.now, opts.admission)) {
-    return { context: '', parts: [], skipped: [...skipped, 'repeat'], kind: recordKind };
+  if (opts.preview !== true) {
+    const record = await recordSessionInjection(db, scope, input.sessionId, recordKind, input.now, opts.admission);
+    if (record.outcome === 'refused') return { context: '', parts: [], skipped, kind: recordKind, refusal: record.refusal };
+    if (record.outcome === 'repeat') return { context: '', parts: [], skipped: [...skipped, 'repeat'], kind: recordKind };
   }
   return {
     context: kept.map((c) => c.text).join(JOIN),

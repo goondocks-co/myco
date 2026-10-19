@@ -37,7 +37,7 @@ type Ask = { promptId?: string; scopeReason?: string; identity?: number; at?: nu
  * The rig, with the prompt route answered by a Deployment that names `features` and writes the rows it names: every
  * other route reaches the rig's own worker, which delivers the hooks' events.
  */
-function serving(features: string, rows: (n: number) => { receiptId?: string; answerId?: string } = (n) => ({ receiptId: `00000000-0000-4000-8000-00000000000${n}`, answerId: `00000000-0000-4000-8000-0000000000a${n}` })) {
+function serving(features: string, rows: (n: number) => { receiptId?: string; answerId?: string; sessionRecord?: string } = (n) => ({ receiptId: `00000000-0000-4000-8000-00000000000${n}`, answerId: `00000000-0000-4000-8000-0000000000a${n}` })) {
   const asked: Ask[] = [];
   const fetch: FetchLike = async (input, init) => {
     const req = new Request(input, init);
@@ -111,6 +111,19 @@ describe('a Claude Code prompt under prompt-identity', () => {
     expect(second.stdout).toContain('Recalled for: first');
     expect(third.stdout).toContain('Recalled for: second');
     expect(delivered(sessionId).map((d) => d.answerId)).toEqual(['00000000-0000-4000-8000-0000000000a1', '00000000-0000-4000-8000-0000000000a2']);
+  });
+
+  it('reports the session record an answer carried, by its key, beside the answer', async () => {
+    const sessionId = 'sess-nudge';
+    const tx = transcript(sessionId);
+    const served = serving(features, (n) => ({ answerId: `00000000-0000-4000-8000-0000000000a${n}`, sessionRecord: 'plan-nudge' }));
+    await runHook('session-start', { session_id: sessionId, transcript_path: tx, hook_event_name: 'SessionStart' }, { helpers: 'run', fetch: served.fetch });
+    const k2 = '22222222-2222-4222-8222-222222222222';
+    await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'let us plan it', prompt_id: '11111111-1111-4111-8111-111111111111' }, { helpers: 'run', fetch: served.fetch });
+    await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'go on', prompt_id: k2 }, { helpers: 'run', fetch: served.fetch });
+    expect(delivered(sessionId)).toEqual([{
+      answerId: '00000000-0000-4000-8000-0000000000a1', sessionRecord: 'plan-nudge', renderedIn: await promptIdFor(sessionId, 'user_prompt', k2),
+    }]);
   });
 
   it('reports nothing for an answer that names no row', async () => {

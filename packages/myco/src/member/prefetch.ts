@@ -17,6 +17,7 @@
 import { cacheMachineSettings, machineSettingsHeaders, beginMachineSettingsRequest } from './machine-settings.js';
 import { canStartRequest, subRequestBudget, type HookBudget } from './budget.js';
 import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { isDeliveredSessionRecord } from '@goondocks/myco-shared/prompt-identity';
 import { beginFeatureRequest, featureCacheDiagnostic, cacheDeploymentFeatures, cachedDeploymentFeatures, readProjectContext, updateProjectContext, writeSessionContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
 import { terminalText } from '@myco/utils/terminal-text.js';
 import { promptContextLogPrefix } from './context-diagnostics.js';
@@ -131,7 +132,8 @@ export async function prefetchContext(opts: {
         const answerId = rowId(body.answerId);
         writeSessionContext(spool.dir, opts.mycoHome, sessionId, { version: 1, prompt: {
           context, ...(ask.promptId === undefined ? {} : { promptId: ask.promptId }), askedAt: ask.at,
-          ...(receiptId === undefined ? {} : { receiptId }), ...(answerId === undefined ? {} : { answerId }), skipped, at: now(),
+          ...(receiptId === undefined ? {} : { receiptId }), ...(answerId === undefined ? {} : { answerId }),
+          ...(isDeliveredSessionRecord(body.sessionRecord) ? { sessionRecord: body.sessionRecord } : {}), skipped, at: now(),
         } });
         const reasons = skipped.map((reason) => terminalText(reason)).join(', ');
         process.stderr.write(`${promptContextLogPrefix(opts.serverUrl, spool.projectId)}session ${terminalText(sessionId)} prompt ${promptNamed(ask)} answered ${context.length > 0 ? 'with context' : 'empty'}; skipped: ${reasons || 'none'}\n`);

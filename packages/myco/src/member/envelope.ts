@@ -19,7 +19,7 @@ import type { PromptOrigin } from '../hooks/capture-rules.js';
 import { MEMBER_ID_NAMESPACE, MEMBER_INLINE_TEXT_MAX_BYTES } from './constants.js';
 
 export type { MemberKind } from '@goondocks/myco-shared/member-protocol';
-import { CONTEXT_DELIVERED_KIND, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
+import { CONTEXT_DELIVERED_KIND, type DeliveredSessionRecord, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { filesNamedByToolInput, TURN_KIND, type PlanStatus, type TranscriptRole, type TurnPhase, type WireKind, type WirePromptOrigin } from '@goondocks/myco-shared/member-protocol';
 export type { TranscriptRole } from '@goondocks/myco-shared/member-protocol';
 export type { WireKind } from '@goondocks/myco-shared/member-protocol';
@@ -338,7 +338,7 @@ export function turnEvent(ctx: EnvelopeContext, opts: { phase: TurnPhase; prompt
  * it, and the prompt it reached, or why that prompt has no name. An advertised kind: build it only for a Deployment
  * that names the `prompt-identity` feature.
  */
-export function contextDeliveredEvent(ctx: EnvelopeContext, facts: { receiptId?: string; answerId?: string; renderedIn?: string; renderedScopeReason?: PromptScopeReason }): OutboundEvent {
+export function contextDeliveredEvent(ctx: EnvelopeContext, facts: { receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord; renderedIn?: string; renderedScopeReason?: PromptScopeReason }): OutboundEvent {
   return envelope(ctx, CONTEXT_DELIVERED_KIND, { ...facts });
 }
 
