@@ -116,6 +116,59 @@ describe('the session pages', () => {
   });
 });
 
+describe('a session\'s plans', () => {
+  async function plans() {
+    const h = await harness();
+    h.session('proj_1', 's1', NOW);
+    h.session('proj_1', 's2', NOW);
+    const plan = (session: string, key: string, title: string, status: string, at: number, project = 'proj_1') =>
+      h.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
+                    VALUES (?, ?, ?, ?, 'm1', ?, 'body', ?, ?, ?, ?, 'tok_1', ?)`, [project, key, session, `e_${key}`, title, `h_${key}`, status, at, at, at]);
+    return { ...h, plan };
+  }
+  const keys = (body: Record<string, unknown>) => (body.rows as { planKey: string }[]).map((r) => r.planKey);
+
+  it('narrows to one status and a text in the title, inside the session only', async () => {
+    const { get, plan } = await plans();
+    plan('s1', 'k_done_match', 'Ship the search box', 'completed', NOW + 1);
+    plan('s1', 'k_open_match', 'Search the plans', 'active', NOW + 2);
+    plan('s1', 'k_done_other', 'Tidy the docs', 'completed', NOW + 3);
+    plan('s2', 'k_elsewhere', 'Search elsewhere', 'completed', NOW + 4);
+    plan('s1', 'k_other_project', 'Search in another project', 'completed', NOW + 5, 'proj_2');
+    const base = '/api/projects/proj_1/sessions/s1/plans';
+    expect(keys((await get(base)).body)).toEqual(['k_done_match', 'k_open_match', 'k_done_other']);
+    expect(keys((await get(`${base}?status=completed`)).body)).toEqual(['k_done_match', 'k_done_other']);
+    expect(keys((await get(`${base}?q=SEARCH`)).body)).toEqual(['k_done_match', 'k_open_match']);
+    expect(keys((await get(`${base}?status=completed&q=search`)).body)).toEqual(['k_done_match']);
+    // The body is not searched here, and `%` is matched as text.
+    expect(keys((await get(`${base}?q=body`)).body)).toEqual([]);
+    expect(keys((await get(`${base}?q=${encodeURIComponent('%')}`)).body)).toEqual([]);
+  });
+
+  it('finds a match beyond the first page, and pages the filtered set by its cursor', async () => {
+    const { get, plan } = await plans();
+    for (let i = 0; i < 5; i += 1) plan('s1', `k_noise_${i}`, `Noise ${i}`, 'active', NOW + i);
+    plan('s1', 'k_late_a', 'Late match one', 'abandoned', NOW + 10);
+    plan('s1', 'k_late_b', 'Late match two', 'abandoned', NOW + 11);
+    const base = '/api/projects/proj_1/sessions/s1/plans';
+    expect(keys((await get(`${base}?limit=2`)).body)).toEqual(['k_noise_0', 'k_noise_1']);
+    const first = (await get(`${base}?limit=1&q=late`)).body;
+    expect(keys(first)).toEqual(['k_late_a']);
+    const second = (await get(`${base}?limit=1&q=late&cursor=${encodeURIComponent(first.cursor as string)}`)).body;
+    expect([keys(second), second.cursor]).toEqual([['k_late_b'], null]);
+    expect(keys((await get(`${base}?limit=1&status=abandoned`)).body)).toEqual(['k_late_a']);
+  });
+
+  it('refuses a status the catalogue does not hold, and the other children ignore the plan filters', async () => {
+    const { get, plan } = await plans();
+    plan('s1', 'k1', 'One', 'active', NOW);
+    for (const status of ['all', 'done', '']) {
+      expect((await get(`/api/projects/proj_1/sessions/s1/plans?status=${status}`)).status).toBe(400);
+    }
+    expect((await get('/api/projects/proj_1/sessions/s1/prompts?status=bogus&q=x')).status).toBe(200);
+  });
+});
+
 describe('a project\'s name', () => {
   it('is renamed by the owner, archived or not, under the creation grammar, and 404 names only an absent project', async () => {
     const { get, patch, sqlite } = await harness();

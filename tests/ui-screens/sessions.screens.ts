@@ -28,6 +28,8 @@ const ROLES = [
 
 /** The session whose reading page the checks open, by its title. */
 const OUTCOME_TITLE = 'Flaky test port collision fixed';
+/** A session with a plan: the one the filter-bar plan came out of. */
+const PLAN_SESSION_TITLE = 'Search box height made uniform on list pages';
 /** The live session is untitled; it is headed by the first thing the person typed. */
 const LIVE_HEADING = 'Run the canopy parity scenarios on both targets';
 
@@ -106,8 +108,8 @@ async function expectReadingPage(page: Page, viewport: ViewportName, role: 'admi
   } else {
     await outcome.scrollIntoViewIfNeeded();
   }
-  // Two spores Myco's runs wrote, and the one an agent saved later to replace one of them.
-  await expect(outcome.getByRole('list', { name: 'Spores from this session' }).getByRole('listitem')).toHaveCount(3);
+  // Two spores Myco's runs wrote, and the one an agent saved later to replace one of them, listed on the Spores tab.
+  await expect(outcome.getByRole('link', { name: '3 spores from this session →' })).toHaveAttribute('href', /\/sessions\/[^/?]+\?tab=spores$/);
   const runs = outcome.getByRole('list', { name: 'Myco’s work on this session' }).getByRole('listitem');
   await expect(runs).toHaveCount(4);
   await expect(outcome.locator('[data-outcome-run="read"]', { hasText: 'Myco learned 1 spore from it' })).toContainText('Read it at');
@@ -243,6 +245,102 @@ test.describe('Sessions', () => {
       await context.close();
     }
   });
+
+  /** The checks every state of a session's list passes, and its picture. */
+  async function expectListState(page: Page, viewport: ViewportName, shot: string): Promise<void> {
+    await page.waitForLoadState('networkidle');
+    await expectFits(page, viewport);
+    await expectNoRawIds(page);
+    await expectAxeClean(page);
+    await shoot(page, shot, viewport, 'light');
+  }
+
+  for (const viewport of ['desktop', 'phone'] as const) {
+    test(`a session's spores and plans tabs ${viewport}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the sessions are the fixture’s');
+      const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode: 'light', cookie: screensEnv('ownerCookie') });
+      try {
+        await watch.navigate(() => openTable(page, viewport));
+        await watch.navigate(() => openOutcomeSession(page));
+        const tabs = page.getByRole('tablist', { name: 'What the session holds' });
+        await expect(tabs.getByRole('tab')).toHaveText(['Conversation', 'Spores', 'Plans']);
+
+        // Spores: every one the session produced, a row each, the type above its line and its status under it.
+        await tabs.getByRole('tab', { name: 'Spores' }).click();
+        await expect(page).toHaveURL(/\?tab=spores$/);
+        const spores = page.getByRole('list', { name: 'Spores' }).getByRole('listitem');
+        await expect(spores).toHaveCount(3);
+        await expect(spores.filter({ hasText: 'Gotcha' })).toHaveCount(2);
+        await expect(spores.filter({ hasText: 'Replaced' })).toHaveCount(1);
+        await expect(page.getByText('Showing 3 of 3 spores')).toBeVisible();
+        // A divider under every row but the last.
+        const dividers = await spores.evaluateAll((items) => items.map((item) => getComputedStyle(item.firstElementChild!).borderBottomWidth));
+        expect(dividers).toEqual(['1px', '1px', '0px']);
+        await expectListState(page, viewport, 'session-spores');
+
+        await page.getByRole('button', { name: 'Type: Every type' }).click();
+        await page.getByRole('option', { name: 'Gotchas' }).click();
+        await expect(page).toHaveURL(/\?tab=spores&type=gotcha$/);
+        await expect(spores).toHaveCount(2);
+        await expectListState(page, viewport, 'session-spores-filtered');
+
+        await page.getByRole('button', { name: 'Type: Gotchas' }).click();
+        await page.getByRole('option', { name: 'Decisions' }).click();
+        await expect(page.getByText('No spores in this session match this filter.')).toBeVisible();
+        await expectListState(page, viewport, 'session-spores-none-match');
+
+        // Another tab opens without the filter, and a session with no plans says so.
+        await tabs.getByRole('tab', { name: 'Plans' }).click();
+        await expect(page).toHaveURL(/\?tab=plans$/);
+        await expect(page.getByText('No plans were captured in this session.')).toBeVisible();
+        await expect(page.getByRole('combobox', { name: 'Status' })).toHaveText('Every status');
+        await expectListState(page, viewport, 'session-plans-empty');
+
+        // A spore's row opens the spore.
+        await tabs.getByRole('tab', { name: 'Spores' }).click();
+        await watch.navigate(async () => {
+          await spores.filter({ hasText: 'Fix' }).getByRole('link').click();
+          await expect(page).toHaveURL(/\/spores\/[^/?]+$/);
+        });
+        await expect(page.getByText('A test that reserves a fixed port races the server’s ephemeral fallback', { exact: false }).first()).toBeVisible();
+
+        // Plans: a session that wrote one lists it with its status words, filters by status and title, and opens it.
+        await watch.navigate(async () => {
+          await page.goto(new URL('/sessions', page.url()).href);
+          await expect(page.getByRole('heading', { level: 1, name: 'Sessions' })).toBeVisible();
+        });
+        await page.locator('[data-table="Sessions"]').getByRole('link', { name: PLAN_SESSION_TITLE }).click();
+        await expect(page.getByRole('heading', { level: 1 })).toHaveText(PLAN_SESSION_TITLE);
+        await tabs.getByRole('tab', { name: 'Plans' }).click();
+        const plans = page.getByRole('list', { name: 'Plans' }).getByRole('listitem');
+        await expect(plans).toHaveCount(1);
+        await expect(plans.first()).toContainText('Open');
+        await expect(plans.first()).toContainText('One filter bar on every list page');
+        await expect(plans.first()).toContainText('0 of 3 items done');
+        await expectListState(page, viewport, 'session-plans');
+
+        await page.getByRole('searchbox', { name: 'Search plans' }).fill('filter bar');
+        await expect(page).toHaveURL(/\?tab=plans&q=filter\+bar$/);
+        await page.getByRole('combobox', { name: 'Status' }).click();
+        await page.getByRole('option', { name: 'Done', exact: true }).click();
+        await expect(page.getByText('No plans in this session match this filter.')).toBeVisible();
+        await expectListState(page, viewport, 'session-plans-none-match');
+        await page.getByRole('combobox', { name: 'Status' }).click();
+        await page.getByRole('option', { name: 'Open', exact: true }).click();
+        await expect(plans).toHaveCount(1);
+        await expectListState(page, viewport, 'session-plans-filtered');
+
+        await watch.navigate(async () => {
+          await plans.first().getByRole('link').click();
+          await expect(page).toHaveURL(/\/plans\/[^/?]+$/);
+        });
+        await expect(page.getByRole('heading', { level: 1 })).toHaveText('One filter bar on every list page');
+        expectQuiet(watch);
+      } finally {
+        await context.close();
+      }
+    });
+  }
 
   for (const viewport of ['desktop', 'phone'] as const) {
     test(`an admin's session actions ${viewport}`, async ({ browser }) => {

@@ -246,6 +246,21 @@ export function Specimen() {
             </DayGroup>
           </Card>
           <ShowMore shown={3} total={34} noun="sessions" onMore={() => undefined} />
+          <Card padding="flush" className="overflow-hidden" data-specimen-kicker="">
+            <ListRow
+              to="/spores/one"
+              leading={<time className="flex w-s12 flex-col t-meta tabular-nums text-muted sm:w-time-col"><span>Oct 18</span><span>17:20</span></time>}
+              kicker={<TypeChip>Gotcha</TypeChip>}
+              title="A reserved test port races the ephemeral fallback"
+              meta="Current"
+            />
+            <ListRow
+              leading={<time className="flex w-s12 flex-col t-meta tabular-nums text-muted sm:w-time-col"><span>Oct 16</span><span>09:40</span></time>}
+              kicker={<TypeChip>Done</TypeChip>}
+              title="Run Myco from source"
+              meta="3 of 3 items done"
+            />
+          </Card>
         </Section>
 
         <Section id="tabs" kicker="Primitives" title="Tabs">

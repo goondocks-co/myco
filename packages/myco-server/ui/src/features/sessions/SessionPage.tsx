@@ -2,13 +2,14 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Breadcrumbs, CopyButton, EmptyState, ErrorState, FactRow, FactsPanel, ItemLink, Link, LoadingState, ShowMore, StatusChip, Tabs, TabsContent, TabsList, TabsTrigger, TypeChip,
+  ANY, Breadcrumbs, CopyButton, ErrorState, FactRow, FactsPanel, Link, LoadingState, StatusChip, Tabs, TabsContent, TabsList, TabsTrigger, type SelectOption,
 } from '../../design';
-import { PlanLine } from '../knowledge/PlanLine';
+import { planPagePath } from '../../hooks/use-knowledge';
+import { PLAN_COLUMNS, planStatusWord, planTitle, progressWords, SPORE_TYPES, sporeStatusWord, sporeTypePlural } from '../knowledge/words';
 import { releaseStateLabel, shortRef } from '../../components/release/release-labels';
-import { useSpores } from '../../hooks/use-intelligence';
+import { useSporePages } from '../../hooks/use-intelligence';
 import { useIsAdmin, useMe } from '../../hooks/use-me';
-import { SESSION_ANSWER_KIND_PREFIX, UNTITLED_REASON_TEXT, useTurns, useSession, useSessionChildren, type ContextInjectionRow, type PlanRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
+import { SESSION_ANSWER_KIND_PREFIX, UNTITLED_REASON_TEXT, useSession, useSessionChildren, type ContextInjectionRow, type PlanRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
 import { ApiError } from '../../lib/api';
 import { memberLabel } from '../../lib/member-name';
@@ -20,17 +21,25 @@ import { isLive } from '../today/timeline';
 import { ago, dayHeading, workPlace } from '../today/words';
 import { ToolUsageLine } from './Usage';
 import { formatElapsed } from '../../lib/format';
-import { Conversation, PERSON_ONLY } from './Conversation';
+import { Conversation } from './Conversation';
 import { RawData, isRawSection } from './RawData';
 import { SessionActions } from './SessionActions';
+import { EVENT_TYPE_KEY, SessionEventList, useSessionEventFilters, type SessionEventRow } from './SessionEventList';
 import { WhatCameOfIt } from './WhatCameOfIt';
 import { agentName, count, dateTime, memberName, sporeLine, sporeTypeWord, spanWords } from './words';
 
 const TABS = ['conversation', 'spores', 'plans'] as const;
 type Tab = (typeof TABS)[number];
 
-/** How many of a session's spores its Spores tab lists; the count says how many there are. */
-const SESSION_SPORE_LIMIT = 100;
+const SPORE_TYPE_OPTIONS: readonly SelectOption[] = [
+  { value: ANY, label: 'Every type' },
+  ...SPORE_TYPES.map((type) => ({ value: type, label: sporeTypePlural(type) })),
+];
+
+const PLAN_STATUS_OPTIONS: readonly SelectOption[] = [
+  { value: ANY, label: 'Every status' },
+  ...PLAN_COLUMNS.map((status) => ({ value: status, label: planStatusWord(status) })),
+];
 
 export interface SessionPageProps {
   projectId: string;
@@ -87,7 +96,8 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
   const setTab = (next: string) => {
     const copy = new URLSearchParams(params);
     if (next === 'conversation') copy.delete('tab'); else copy.set('tab', next);
-    copy.delete('raw');
+    // A filter belongs to the list it was set on, never to the tab opened next.
+    for (const key of ['raw', 'q', EVENT_TYPE_KEY]) copy.delete(key);
     setParams(copy, { replace: true });
   };
   const raw = params.get('raw');
@@ -96,7 +106,6 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
   const started = session.startedAt ?? session.firstReceivedAt;
   const name = projectName ?? 'A project';
   const sporesHref = `?${new URLSearchParams({ tab: 'spores' })}`;
-  const typed = useTurns(projectId, session.sessionId, PERSON_ONLY);
   useFollowLive(projectId, session);
 
   return (
@@ -139,9 +148,9 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
         <div className="flex min-w-0 max-w-measure flex-col gap-s8 lg:col-start-1 lg:row-start-2">
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList aria-label="What the session holds">
-              <TabsTrigger value="conversation" count={typed.hasMore || typed.isPending ? undefined : typed.rows.length}>Conversation</TabsTrigger>
-              <TabsTrigger value="spores" count={outcome.spores.total}>Spores</TabsTrigger>
-              <TabsTrigger value="plans" count={counts.plans}>Plans</TabsTrigger>
+              <TabsTrigger value="conversation">Conversation</TabsTrigger>
+              <TabsTrigger value="spores">Spores</TabsTrigger>
+              <TabsTrigger value="plans">Plans</TabsTrigger>
             </TabsList>
             <TabsContent value="conversation">
               <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} />
@@ -248,43 +257,56 @@ function Facts({ answer, projectId, projectName, now, live, actions }: { answer:
 
 /** Every spore this session produced, whatever its status: a spore another has since replaced still came out of this one. */
 function SessionSpores({ projectId, sessionId, now }: { projectId: string; sessionId: string; now: number }) {
-  const spores = useSpores(projectId, { session: sessionId, limit: SESSION_SPORE_LIMIT });
-  if (spores.isPending) return <LoadingState label="Loading the spores" count={3} />;
-  if (spores.error) return <ErrorState error={spores.error} onRetry={() => void spores.refetch()} />;
-  const rows = spores.data.spores;
-  const total = spores.data.total;
-  if (rows.length === 0) return <EmptyState title="No spores were saved from this session yet." />;
+  const filters = useSessionEventFilters();
+  const spores = useSporePages(projectId, { session: sessionId, ...(filters.type === null ? {} : { type: filters.type }), q: filters.q });
+  const rows = spores.rows.map((spore): SessionEventRow => ({
+    key: spore.id,
+    at: spore.createdAt,
+    kind: sporeTypeWord(spore.observationType),
+    title: sporeLine({ agentLine: spore.agentLine ?? null, content: spore.content }),
+    detail: sporeStatusWord(spore.status),
+    to: projectPath(projectId, `/spores/${encodeURIComponent(spore.id)}`),
+  }));
   return (
-    <div className="flex flex-col gap-s3">
-      {total > rows.length && <p className="t-small text-muted">The {rows.length} newest of {count(total, 'spore')}.</p>}
-      <ul aria-label="Spores" className="flex flex-col divide-y divide-line rounded-card border border-line bg-surface-1">
-        {rows.map((spore) => (
-          <li key={spore.id} className="flex flex-col gap-s1 px-s4 py-s3">
-            <span className="flex flex-wrap items-center gap-s2 t-meta text-muted">
-              <TypeChip>{sporeTypeWord(spore.observationType)}</TypeChip>
-              {spore.status !== 'active' && <StatusChip tone={spore.status === 'superseded' ? 'warn' : 'neutral'}>{sporeTypeWord(spore.status)}</StatusChip>}
-              <time dateTime={new Date(spore.createdAt).toISOString()}>{dateTime(spore.createdAt, now)}</time>
-            </span>
-            <ItemLink to={projectPath(projectId, `/spores/${encodeURIComponent(spore.id)}`)} className="w-fit t-body text-ink">
-              {sporeLine({ agentLine: spore.agentLine ?? null, content: spore.content })}
-            </ItemLink>
-          </li>
-        ))}
-      </ul>
-    </div>
+    <SessionEventList
+      filters={filters}
+      read={{ ...spores, rows }}
+      noun="spores"
+      searchLabel="Search spores"
+      placeholder="Search what the spores say"
+      typeLabel="Type"
+      typeOptions={SPORE_TYPE_OPTIONS}
+      emptyTitle="No spores were saved from this session yet."
+      loadingLabel="Loading the spores"
+      now={now}
+    />
   );
 }
 
 /** The session's plans, each leading to its own page. */
 function SessionPlans({ projectId, sessionId, now }: { projectId: string; sessionId: string; now: number }) {
-  const plans = useSessionChildren<PlanRow>(projectId, sessionId, 'plans');
-  if (plans.isPending) return <LoadingState label="Loading the plans" count={2} />;
-  if (plans.error) return <ErrorState error={plans.error} onRetry={plans.retry} />;
-  if (plans.rows.length === 0) return <EmptyState title="No plans were captured in this session." />;
+  const filters = useSessionEventFilters();
+  const plans = useSessionChildren<PlanRow>(projectId, sessionId, 'plans', { ...(filters.type === null ? {} : { status: filters.type }), q: filters.q });
+  const rows = plans.rows.map((plan): SessionEventRow => ({
+    key: plan.planKey,
+    at: plan.updatedAt,
+    kind: planStatusWord(plan.status),
+    title: planTitle(plan),
+    detail: [progressWords(plan.progress), plan.originPath].filter((part) => part !== null).join(' · ') || undefined,
+    to: planPagePath(projectId, { planKey: plan.planKey }),
+  }));
   return (
-    <div className="flex flex-col gap-s3">
-      {plans.rows.map((plan) => <PlanLine key={plan.planKey} projectId={projectId} plan={plan} now={now} />)}
-      {plans.hasMore && <ShowMore shown={plans.rows.length} noun="plans" onMore={plans.more} pending={plans.isFetchingMore} hasMore />}
-    </div>
+    <SessionEventList
+      filters={filters}
+      read={{ ...plans, rows }}
+      noun="plans"
+      searchLabel="Search plans"
+      placeholder="Search plan titles"
+      typeLabel="Status"
+      typeOptions={PLAN_STATUS_OPTIONS}
+      emptyTitle="No plans were captured in this session."
+      loadingLabel="Loading the plans"
+      now={now}
+    />
   );
 }

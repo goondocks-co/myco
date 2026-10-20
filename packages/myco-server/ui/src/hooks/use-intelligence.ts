@@ -1,4 +1,5 @@
-import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
+import { type UseQueryOptions, useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 
 export interface SporeRow {
@@ -25,6 +26,9 @@ export interface SporeRow {
 
 export interface SporesResponse {
   spores: SporeRow[];
+  /** Continues after this page's last spore; null when none follows. */
+  cursor: string | null;
+  /** How many spores the filters matched as the page was read: a figure to show, never where paging ends. */
   total: number;
   maxPage: number;
 }
@@ -54,6 +58,8 @@ export interface SporeFilters {
   session?: string;
   limit?: number;
   offset?: number;
+  /** Continues after the spore a previous page's `cursor` names; never beside `offset`. */
+  cursor?: string;
 }
 
 function sporeQuery(filters: SporeFilters): string {
@@ -64,6 +70,7 @@ function sporeQuery(filters: SporeFilters): string {
   if (filters.q !== undefined && filters.q !== '') params.set('q', filters.q);
   if (filters.session !== undefined && filters.session !== '') params.set('session', filters.session);
   if (filters.offset !== undefined && filters.offset > 0) params.set('offset', String(filters.offset));
+  if (filters.cursor !== undefined) params.set('cursor', filters.cursor);
   return params.toString();
 }
 
@@ -75,6 +82,33 @@ export function useSpores(projectId: string, filters: SporeFilters = {}, options
     queryFn: ({ signal }) => fetchJson<SporesResponse>(`${project(projectId)}/spores?${query}`, signal),
     ...options,
   });
+}
+
+/**
+ * The same read as `useSpores`, a page at a time: `more()` continues after the last spore shown, by the cursor the
+ * page answered, and the read ends when a page answers none. A spore written meanwhile neither repeats a row nor ends
+ * the walk early; `total` is the latest page's count, to show.
+ */
+export function useSporePages(projectId: string, filters: Omit<SporeFilters, 'offset' | 'cursor'> = {}) {
+  const limit = filters.limit ?? SPORE_PAGE_SIZE;
+  const query = useInfiniteQuery({
+    queryKey: ['spores', projectId, 'pages', sporeQuery({ ...filters, limit })],
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam, signal }) => fetchJson<SporesResponse>(`${project(projectId)}/spores?${sporeQuery({ ...filters, limit, ...(pageParam === null ? {} : { cursor: pageParam }) })}`, signal),
+    getNextPageParam: (last) => last.cursor ?? undefined,
+  });
+  const rows = useMemo(() => query.data?.pages.flatMap((page) => page.spores) ?? [], [query.data]);
+  return {
+    rows,
+    total: query.data?.pages.at(-1)?.total,
+    isPending: query.isPending,
+    error: query.error,
+    hasMore: query.hasNextPage,
+    isFetchingMore: query.isFetchingNextPage,
+    // A page already on its way is joined, never asked for again.
+    more: () => { void query.fetchNextPage({ cancelRefetch: false }); },
+    retry: () => { void query.refetch(); },
+  };
 }
 
 /** One spore with its lineage in both directions. */

@@ -1,7 +1,7 @@
-import { ActionLink, Card, ItemLink, StatusChip, TypeChip } from '../../design';
-import { shortDay, whenWithTime } from '../today/words';
+import { ActionLink, Card, ItemLink, StatusChip } from '../../design';
+import { whenWithTime } from '../today/words';
 import type { SessionOutcome, SessionRun } from './wire';
-import { count, readWords, runHeadline, runProgress, sporeLine, sporeTypeWord } from './words';
+import { count, readWords, runHeadline, runProgress } from './words';
 
 export interface WhatCameOfItProps {
   projectId: string;
@@ -9,15 +9,16 @@ export interface WhatCameOfItProps {
   /** Whether the session is still open: Myco learns from a session once it ends. */
   open: boolean;
   now: number;
-  /** Where "All N spores" leads: the session's Spores tab. */
+  /** Where the spore count leads: the session's Spores tab. */
   sporesHref: string;
 }
 
 
 /**
- * What came of a session: the spores written from it and the runs of Myco's
- * that read it or wrote from it. A run the Deployment holds no record of
- * reading the session says so; it never reads as a run that read nothing.
+ * What came of a session: how many spores were written from it, one link from
+ * the Spores tab that lists them, and the runs of Myco's that read it or wrote
+ * from it. A run the Deployment holds no record of reading the session says so;
+ * it never reads as a run that read nothing.
  */
 export function WhatCameOfIt({ projectId, outcome, open, now, sporesHref }: WhatCameOfItProps) {
   const { runs, spores } = outcome;
@@ -25,43 +26,13 @@ export function WhatCameOfIt({ projectId, outcome, open, now, sporesHref }: What
   const empty = runs.length === 0 && spores.total === 0;
   return (
     <Card data-outcome="" className="flex flex-col gap-s3">
-      <div className="flex items-baseline gap-s2">
-        <h2 className="t-h3 text-ink">What came of it</h2>
-        {spores.total > 0 && <span className="t-small text-muted">{count(spores.total, 'spore')}</span>}
-      </div>
+      <h2 className="t-h3 text-ink">What came of it</h2>
       {empty && (
         <p className="t-small text-muted" data-outcome-empty="">
           {open ? 'Nothing yet. Myco learns from a session once it ends.' : 'Nothing yet. Myco hasn’t learned anything from this session.'}
         </p>
       )}
-      {spores.items.length > 0 && (
-        <ul aria-label="Spores from this session" className="flex flex-col gap-s2">
-          {spores.items.map((spore) => (
-            <li key={spore.id} className="flex min-w-0 items-baseline gap-s2 t-small">
-              <TypeChip>{sporeTypeWord(spore.observationType)}</TypeChip>
-              {spore.agentLine !== null && spore.agentLine.trim() !== '' ? (
-                <ItemLink to={`${project}/spores/${encodeURIComponent(spore.id)}`} className="text-ink-2 hover:text-ink">
-                  {sporeLine({ agentLine: spore.agentLine, content: '' })}
-                </ItemLink>
-              ) : (
-                // A spore written without its one line is named by its type and the day it was saved.
-                <ItemLink
-                  to={`${project}/spores/${encodeURIComponent(spore.id)}`}
-                  aria-label={`${sporeTypeWord(spore.observationType)} from ${shortDay(spore.createdAt, now)}`}
-                  className="text-ink-2 hover:text-ink"
-                >
-                  {shortDay(spore.createdAt, now)}
-                </ItemLink>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      {spores.total > spores.items.length && (
-        <ActionLink to={sporesHref}>
-          All {count(spores.total, 'spore')} →
-        </ActionLink>
-      )}
+      {spores.total > 0 && <ActionLink to={sporesHref}>{count(spores.total, 'spore')} from this session →</ActionLink>}
       {runs.length > 0 && (
         <ul aria-label="Myco’s work on this session" className="flex flex-col gap-s3 border-t border-line pt-s3">
           {runs.map((run) => <RunLine key={run.runId} run={run} project={project} now={now} />)}
@@ -70,7 +41,6 @@ export function WhatCameOfIt({ projectId, outcome, open, now, sporesHref }: What
     </Card>
   );
 }
-
 function RunLine({ run, project, now }: { run: SessionRun; project: string; now: number }) {
   const progress = runProgress(run.status);
   const at = run.completedAt ?? run.startedAt;
