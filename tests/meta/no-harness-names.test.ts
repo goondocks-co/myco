@@ -109,21 +109,18 @@ function namesAKey(literal: Node): boolean {
 }
 
 /**
- * `cursor` as the key a page continues by: an object literal's own key (a request option, a tool's schema property) when no
- * other key of that object names a harness, or one of at least two names in a list that names no other harness. A compared,
- * switched or assigned `'cursor'`, and a key of a per-harness map, stay harness names.
+ * `cursor` as the key a page continues by, declared where a request or a tool states its parameters: the key of a schema
+ * property, an object literal that is the value of a `properties` key and whose own value is an object literal. A `cursor`
+ * anywhere else (compared, switched on, listed, keyed in a map, assigned) stays a harness name.
  */
 function namesAPaginationKey(literal: Node): boolean {
   if (textOf(literal) !== 'cursor') return false;
-  const parent = literal.parent;
-  if (parent?.kind === SyntaxKind.PropertyAssignment && (parent as unknown as { name: Node }).name === literal) {
-    return new Set(harnessKeys(parent.parent!).map(textOf)).size < 2;
-  }
-  if (parent?.kind === SyntaxKind.ArrayLiteralExpression && parent.parent?.kind === SyntaxKind.AsExpression) {
-    const elements = (parent as unknown as { elements: readonly Node[] }).elements;
-    return elements.length >= 2 && elements.every((element) => element === literal || !(isStringish(element.kind) && NAMES.has(textOf(element))));
-  }
-  return false;
+  const property = literal.parent;
+  if (property?.kind !== SyntaxKind.PropertyAssignment) return false;
+  const { name, initializer } = property as unknown as { name: Node; initializer: Node };
+  if (name !== literal || initializer.kind !== SyntaxKind.ObjectLiteralExpression) return false;
+  const schema = property.parent?.parent;
+  return schema?.kind === SyntaxKind.PropertyAssignment && nameText((schema as unknown as { name: Node }).name) === 'properties';
 }
 
 /** The harness names an object literal's own keys spell, identifier and string keys alike. */
@@ -231,16 +228,16 @@ describe('cursor as a pagination key (G7)', () => {
     return namings(tree!);
   };
 
-  it('does not name a harness where cursor is a request option, a schema property or a query parameter', async () => {
+  it('does not name a harness where cursor is a schema property or a query parameter', async () => {
     expect(await read('pagination-keys.ts')).toEqual([]);
   }, 60_000);
 
-  it('still names the harness where cursor is compared, switched on, listed beside another harness, keyed in a per-harness map or assigned', async () => {
+  it('still names the harness where cursor is compared, switched on, listed, aliased, keyed in a map or a schema-shaped object outside properties, or assigned', async () => {
     const hits = await read('harness-branches.ts');
-    expect(hits.map((hit) => hit.replace(/^\d+: /, '')).sort()).toEqual([
-      'string "claude-code"', 'string "codex"', 'string "cursor"', 'string "cursor"', 'string "cursor"', 'string "cursor"', 'string "cursor"',
-    ]);
-    // Every line that names the Cursor harness is reported: the comparison, the case, the list, the per-harness map and the value.
-    expect(hits.filter((hit) => hit.endsWith('"cursor"')).map((hit) => Number.parseInt(hit, 10))).toEqual([2, 6, 11, 13, 15]);
+    // The comparison, the case, the list beside another harness, the per-harness map, the value, the alias list, the lone-key map,
+    // and a schema-shaped object or a nested one outside a `properties` key: each line names the Cursor harness.
+    const cursorLines = hits.filter((hit) => hit.endsWith('"cursor"')).map((hit) => Number.parseInt(hit, 10));
+    expect(cursorLines).toEqual([2, 6, 11, 13, 15, 17, 20, 23, 26]);
+    expect(hits.filter((hit) => !hit.endsWith('"cursor"'))).toEqual(['11: string "claude-code"', '13: string "codex"']);
   }, 60_000);
 });
