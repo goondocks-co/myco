@@ -1,3 +1,4 @@
+let observedOrder = 0;
 import { offeredHarness } from './helpers/offered-harness.js';
 /**
  * Who reaches the worker control plane, and what it answers.
@@ -126,7 +127,7 @@ describe('the worker control plane', () => {
 });
 
 describe('the models a machine lists', () => {
-  const listed = (harness: string, models: unknown[], fetchedAt = Date.now() - 1_000) => ({ catalog: { harness, source: { kind: 'exchange', command: 'codex app-server' }, signIn: 'worker-login', fetchedAt, models } });
+  const listed = (harness: string, models: unknown[], fetchedAt = Date.now() - 1_000) => ({ catalog: { observedOrder: ++observedOrder, harness, source: { kind: 'exchange', command: 'codex app-server' }, signIn: 'worker-login', fetchedAt, models } });
   const stored = (r: Awaited<ReturnType<typeof rig>>) => r.e.sqlite.query(`SELECT machine_id, harness, catalog, resolutions FROM worker_model_catalogs ORDER BY machine_id, harness`).all() as Array<{ machine_id: string; harness: string; catalog: string; resolutions: string }>;
   const settings = async (r: Awaited<ReturnType<typeof rig>>, sub?: string) => {
     const res = await worker.fetch(new Request('https://s/api/settings', { headers: { cookie: await ownerCookie(r.e.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' } }), { ...r.e.env, ...OWNER_ENV });
@@ -179,7 +180,7 @@ describe('the models a machine lists', () => {
     const admin = await r.member('mem_admin', 'admin');
     await r.json(post(admin, '/worker/models', listed('opencode', [{ id: 'openrouter/~anthropic/claude-opus-latest', label: 'openrouter/~anthropic/claude-opus-latest', provider: 'openrouter' }])));
     expect((await settings(r)).models).toEqual([{
-      harness: 'opencode', source: { kind: 'exchange', command: 'codex app-server' }, signIn: 'worker-login', fetchedAt: expect.any(Number), receivedAt: expect.any(Number),
+      harness: 'opencode', source: { kind: 'exchange', command: 'codex app-server' }, signIn: 'worker-login', fetchedAt: expect.any(Number), receivedAt: expect.any(Number), observedOrder: expect.any(Number),
       models: [{ id: 'openrouter/~anthropic/claude-opus-latest', label: 'openrouter/~anthropic/claude-opus-latest', provider: 'openrouter' }],
     }]);
     const member = await settings(r, MEMBER_SUB);
@@ -191,7 +192,7 @@ describe('the models a machine lists', () => {
     const admin = await r.member('mem_admin', 'admin');
     const unsigned = listed('codex', []);
     delete (unsigned.catalog as { signIn?: string }).signIn;
-    for (const body of [listed('cursor', [{ id: 'gpt-6' }]), listed('no-such-agent', []), unsigned, { catalog: { harness: 'codex', source: { kind: 'exchange', command: 'codex' }, signIn: 'worker-login', models: [] } }, {}]) {
+    for (const body of [listed('cursor', [{ id: 'gpt-6' }]), listed('no-such-agent', []), unsigned, { catalog: { observedOrder: ++observedOrder, harness: 'codex', source: { kind: 'exchange', command: 'codex' }, signIn: 'worker-login', models: [] } }, {}]) {
       expect((await r.json(post(admin, '/worker/models', body))).body).toEqual({ persisted: true, recorded: false, reason: expect.any(String) });
     }
     expect(stored(r)).toEqual([]);

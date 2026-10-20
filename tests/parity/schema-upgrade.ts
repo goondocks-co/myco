@@ -243,7 +243,7 @@ export function seedPreviousSchema(databaseFile: string, statements: readonly st
       INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, parser_version, first_received_at, last_received_at, token_id)
         VALUES ('proj_parity', 'upgrade_transcript_read', 'upgrade_session', 'upgrade_machine', 'codex', 10, 10, 5, 1, 1, 'upgrade_token'),
                ('proj_parity', 'upgrade_transcript_unread', 'upgrade_session', 'upgrade_machine', 'codex', 10, 0, 0, 1, 1, 'upgrade_token');`);
-    return [...new Set(['projects', 'sessions', 'events', 'agents', 'agent_runs', 'agent_run_events', 'transcripts', ...seedReferencedTables(db, statements, version !== RUNNER_SIGN_IN_SCHEMA_VERSION)])];
+    return [...new Set(['projects', 'sessions', 'events', 'agents', 'agent_runs', 'agent_run_events', 'transcripts', ...seedReferencedTables(db, [...statements, 'SELECT 1 FROM prompt_batches'], version !== RUNNER_SIGN_IN_SCHEMA_VERSION)])];
   } finally { db.close(); }
 }
 

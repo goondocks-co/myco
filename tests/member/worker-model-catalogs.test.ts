@@ -116,7 +116,9 @@ describe('reporting what was listed', () => {
 
   it('waits for a stopped listing to dispose before shutdown settles', async () => {
     let disposed = false;
+    let order = 0;
     const reporter = modelCatalogs({
+      issueOrder: (floor = 0) => (order = Math.max(order, floor) + 1),
       harnesses: ['codex'], clock: () => 1, log: () => {},
       list: (_ids, signal) => new Promise((resolve) => {
         signal.addEventListener('abort', () => {
@@ -134,7 +136,9 @@ describe('reporting what was listed', () => {
     let completeOld: (value: HarnessListing[]) => void = () => {};
     let oldSignal: AbortSignal | undefined;
     const sent: string[] = [];
+    let order = 0;
     const reporter = modelCatalogs({
+      issueOrder: (floor = 0) => (order = Math.max(order, floor) + 1),
       harnesses: ['codex'], clock: () => 1, log: () => {},
       list: (ids, signal) => {
         if (ids.includes('codex')) {
@@ -164,7 +168,9 @@ describe('reporting what was listed', () => {
     const sent: string[] = [];
     const lines: string[] = [];
     let listings = 0;
+    let order = 0;
     const reporter = modelCatalogs({
+      issueOrder: (floor = 0) => (order = Math.max(order, floor) + 1),
       harnesses: ['codex', 'opencode'],
       list: async () => { listings += 1; return listed; },
       send: async (c) => { sent.push(c.harness); return answers.shift() ?? ANSWERED; },
@@ -212,7 +218,9 @@ describe('reporting what was listed', () => {
   });
 
   it('holds up no caller: due answers before a listing or a report does', () => {
+    let order = 0;
     const reporter = modelCatalogs({
+      issueOrder: (floor = 0) => (order = Math.max(order, floor) + 1),
       harnesses: ['codex'], list: () => new Promise(() => {}), send: () => new Promise(() => {}), log: () => {}, clock: () => 0,
     });
     const started = performance.now();
@@ -351,4 +359,33 @@ describe('a listing starts its harness as a run on the machine\'s own login star
       expect(listed?.ok === true ? listed.catalog.models.length : listed).toBe(MAX_LISTING_PAGES);
     });
   });
+});
+
+it('keeps a listing stamp on transport retry and relists above a refused server order', async () => {
+  let issued = 0;
+  let listings = 0;
+  const sent: ModelCatalog[] = [];
+  const reporter = modelCatalogs({
+    harnesses: ['codex'], clock: () => 10, log: () => {},
+    issueOrder: (floor = 0) => (issued = Math.max(issued, floor) + 1),
+    list: async () => [{ ok: true, catalog: { harness: 'codex', source: { kind: 'exchange', command: 'list' }, signIn: 'worker-login', fetchedAt: 1, models: [{ id: 'gpt-6', label: String(++listings) }] } }],
+    send: async catalog => {
+      sent.push(catalog);
+      if (sent.length === 1) return { kind: 'unreachable', detail: 'offline' };
+      return { kind: 'answered', body: { persisted: true, recorded: sent.length > 2, observedOrder: sent.length === 2 ? 100 : catalog.observedOrder },
+        accounting: true, executionProfile: true, profileOutcome: true, modelCatalog: true, steps: true };
+    },
+  });
+  try {
+    reporter.due(); await Bun.sleep(5);
+    reporter.due(); await Bun.sleep(5);
+    reporter.due(); await Bun.sleep(5);
+    expect(sent[0]).toBe(sent[1]);
+    expect(sent[0]!.observedOrder).toBe(1);
+    reporter.due(); await Bun.sleep(5);
+    reporter.due(); await Bun.sleep(5);
+    expect(sent[2]!.observedOrder).toBe(101);
+    expect(sent[2]!.models[0]!.label).toBe('2');
+    expect(listings).toBe(2);
+  } finally { await reporter.stop(); }
 });

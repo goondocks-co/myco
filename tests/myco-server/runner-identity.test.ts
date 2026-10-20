@@ -1,3 +1,4 @@
+let updateOrder = 0;
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
@@ -724,7 +725,24 @@ describe('the review corrections', () => {
 });
 
 describe('runner update commands', () => {
-  const report = (at: number, lastResult?: Record<string, unknown>) => ({ channel: 'alpha', currentVersion: '2.0.0-alpha.2', latestVersion: '2.0.0-alpha.3', lastCheckAt: at, ...(lastResult === undefined ? {} : { lastResult }) });
+  it('returns the stored order for stale, duplicate and legacy metadata while keeping contact version', async () => {
+    const r = rig();
+    try {
+      const { token, runnerId } = await r.register();
+      const update = { observedOrder: 2, channel: 'alpha', currentVersion: '2.0.0-alpha.2', latestVersion: null, lastCheckAt: r.now() };
+      expect(await r.json(r.asRunner(token, '/runners/contact', { version: update.currentVersion, update }))).toMatchObject({ updateRecorded: true, observedOrder: 2 });
+      for (const observedOrder of [1, 2, undefined]) {
+        expect(await r.json(r.asRunner(token, '/runners/contact', { version: '2.0.0-alpha.1', update: { ...update, observedOrder, currentVersion: '2.0.0-alpha.1' } })))
+          .toMatchObject({ persisted: true, updateRecorded: false, observedOrder: 2 });
+      }
+      expect(r.row('SELECT current_version, observed_order FROM runner_update_reports WHERE runner_id = ?', runnerId))
+        .toEqual({ current_version: update.currentVersion, observed_order: 2 });
+      expect(r.row('SELECT version FROM runner_contacts WHERE runner_id = ?', runnerId)).toEqual({ version: '2.0.0-alpha.1' });
+    } finally { r.e.sqlite.close(); }
+  });
+
+
+  const report = (at: number, lastResult?: Record<string, unknown>) => ({ observedOrder: ++updateOrder, channel: 'alpha', currentVersion: '2.0.0-alpha.2', latestVersion: '2.0.0-alpha.3', lastCheckAt: at, ...(lastResult === undefined ? {} : { lastResult }) });
 
   it('declares administration, refuses a member, audits each acceptance and delivers one command until its matching outcome', async () => {
     const route = ROUTES.find((entry) => entry.path === '/api/runners/{runnerId}/update');
@@ -832,14 +850,14 @@ describe('runner update commands', () => {
       expect(reason).not.toMatch(/[\p{C}\p{Zl}\p{Zp}]/u);
       expect(await r.json(r.asRunner(token, '/runners/contact', { update: report(r.now(), { ...lastResult, at: 'invalid' }) }))).toMatchObject({ persisted: true });
       const retained = await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'));
-      expect(retained.runners[0].lastResult).toEqual(listed.runners[0].lastResult);
+      expect(retained.runners[0].lastResult).toBeNull();
       expect(logs.mock.calls.some(([line]) => String(line).includes('runner_update_metadata') && String(line).includes('lastResult'))).toBe(true);
       await r.queueTitling();
       expect(await r.claim(token)).toMatchObject({ claimed: true });
     } finally { logs.mockRestore(); r.e.sqlite.close(); }
   });
 
-  it('deduplicates one attempted result across delivery timestamps and projects holds separately from legacy receipts', async () => {
+  it('deduplicates outcome audit while projecting each complete stamped observation', async () => {
     const r = rig();
     try {
       const { token, runnerId } = await r.register();
@@ -854,11 +872,11 @@ describe('runner update commands', () => {
       expect((await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'))).runners[0]).toMatchObject({ lastResult: { attemptId: 'attempt_stable' }, blockedVersion, updateState });
       expect(await r.json(r.asSession(`/api/runners/${runnerId}/update`, {}))).toMatchObject({ requested: true, updateRequest: { clearBlock: true } });
       await r.asRunner(token, '/runners/contact', { update: report(r.now()) });
-      expect((await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'))).runners[0]).toMatchObject({ lastResult: { attemptId: 'attempt_stable' }, blockedVersion: null, updateState: null });
+      expect((await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'))).runners[0]).toMatchObject({ lastResult: null, blockedVersion: null, updateState: null });
       r.e.sqlite.run('UPDATE runner_update_reports SET last_result = ? WHERE runner_id = ?', [JSON.stringify(lastResult), runnerId]);
       expect((await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'))).runners[0]).toMatchObject({ lastResult, blockedVersion: null, updateState: null });
-      await r.asRunner(token, '/runners/contact', { update: report(r.now(), { ...lastResult, at: lastResult.at - 1, reason: 'Stale receipt' }) });
-      expect((await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'))).runners[0]).toMatchObject({ lastResult, blockedVersion: null, updateState: null });
+      await r.asRunner(token, '/runners/contact', { update: report(r.now(), { ...lastResult, at: lastResult.at - 1, reason: 'Current observation' }) });
+      expect((await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'))).runners[0]).toMatchObject({ lastResult: { ...lastResult, at: lastResult.at - 1, reason: 'Current observation' }, blockedVersion: null, updateState: null });
     } finally { r.e.sqlite.close(); }
   });
 
@@ -974,7 +992,7 @@ describe('shared runner fleet projection', () => {
     const r = rig();
     try {
       const runner = await r.register();
-      await r.asRunner(runner.token, '/runners/contact', { arch: 'arm64', availability: 'ready', update: { channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now() } });
+      await r.asRunner(runner.token, '/runners/contact', { arch: 'arm64', availability: 'ready', update: { observedOrder: ++updateOrder, channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now() } });
       await r.queueTitling();
       const run = (await r.claim(runner.token)).run;
       const replacement = await r.start('mini', bearer(), true);
@@ -982,7 +1000,7 @@ describe('shared runner fleet projection', () => {
       const listed = await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'));
       expect(listed.runners[0]).toMatchObject({ display: 'Offline', awaitingReplacement: true, busy: null, offers: null, arch: null, version: null, channel: null, models: [], lastAttempted: { runId: run.id } });
       expect((await r.asRunner(runner.token, '/worker/lease', { projectId: 'proj_1', runId: run.id, attemptId: run.attemptId })).status).toBe(401);
-      await r.asRunner(replacement.candidate, '/runners/contact', { availability: 'ready', arch: 'arm64', update: { channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now(), updateState: { phase: 'probation', since: r.now() } } });
+      await r.asRunner(replacement.candidate, '/runners/contact', { availability: 'ready', arch: 'arm64', update: { observedOrder: ++updateOrder, channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now(), updateState: { phase: 'probation', since: r.now() } } });
       expect((await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'))).runners[0]).toMatchObject({ display: 'Not ready', readiness: { state: 'unknown' } });
       await r.asSession(`/api/runners/${runner.runnerId}/remove`, {});
       expect((await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'))).runners[0]).toMatchObject({ display: 'Removed', busy: null, lastAttempted: { runId: run.id } });
@@ -1058,7 +1076,7 @@ describe('shared runner fleet projection', () => {
     const r = rig();
     try {
       const bad = await r.register('bad-update');
-      await r.asRunner(bad.token, '/runners/contact', { update: { channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now() } });
+      await r.asRunner(bad.token, '/runners/contact', { update: { observedOrder: ++updateOrder, channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now() } });
       r.e.sqlite.run(`UPDATE runner_update_reports SET last_result = '[1]' WHERE runner_id = ?`, [bad.runnerId]);
       await r.queueTitling();
       expect((await r.claim(bad.token)).claimed).toBe(true);
@@ -1094,7 +1112,7 @@ describe('shared runner fleet projection', () => {
     const r = rig();
     try {
       const runner = await r.register();
-      await r.asRunner(runner.token, '/runners/contact', { update: { channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now() } });
+      await r.asRunner(runner.token, '/runners/contact', { update: { observedOrder: ++updateOrder, channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now() } });
       const pending = await r.start('mini', bearer(), true);
       for (const action of ['rename', 'pause', 'resume', 'remove', 'recredential', 'update']) {
         const res = await r.asSession(`/api/runners/${runner.runnerId}/${action}`, action === 'rename' ? { name: 'renamed' } : action === 'recredential' ? { user_code: pending.user_code } : {}, MEMBER_SUB);
@@ -1136,9 +1154,9 @@ describe('shared runner fleet projection', () => {
       await r.asSession(`/api/runners/${runner.runnerId}/pause`, {});
       expect((await read()).queue).toMatchObject({ reasons: [{ reason: 'paused', count: 1 }], nativeNeedsRunner: true });
       await r.asSession(`/api/runners/${runner.runnerId}/resume`, {});
-      await r.asRunner(runner.token, '/runners/contact', { update: { channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now(), updateState: { phase: 'probation', since: r.now() } } });
+      await r.asRunner(runner.token, '/runners/contact', { update: { observedOrder: ++updateOrder, channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now(), updateState: { phase: 'probation', since: r.now() } } });
       expect((await read()).queue.reasons).toEqual([{ reason: 'updating', count: 1 }]);
-      await r.asRunner(runner.token, '/runners/contact', { update: { channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now(), updateState: null } });
+      await r.asRunner(runner.token, '/runners/contact', { update: { observedOrder: ++updateOrder, channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now(), updateState: null } });
       r.e.sqlite.run(`UPDATE runner_contacts SET offers = '[]' WHERE runner_id = ?`, [runner.runnerId]);
       expect((await read()).queue.reasons).toEqual([{ reason: 'not_signed_in', count: 1 }]);
       r.e.sqlite.run(`UPDATE agent_runs SET task = 'canopy-map' WHERE status = 'queued'`);

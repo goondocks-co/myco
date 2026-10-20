@@ -1,3 +1,6 @@
+import { isReportOrder } from '@goondocks/myco-shared/report-order';
+import { deploymentKeyFor } from '@myco/member/registry.js';
+import { issueReportOrder } from '@myco/utils/order-stamp.js';
 /** Runner-owned release checks and an idle-only, durable binary handoff. */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -76,6 +79,8 @@ interface RunnerUpdateTransaction {
   rollbackResult?: 'rolled_back' | 'failed';
 }
 interface RunnerUpdateState {
+  reports?: Record<string, RunnerUpdateContact>;
+  reportFloors?: Record<string, number>;
   version: 1;
   nextCheckAt: number;
   lastCheckAt: number | null;
@@ -247,6 +252,8 @@ function decodeState(home: string): RunnerUpdateState {
   if (state?.version !== 1 || !Number.isFinite(state.nextCheckAt) || !Number.isFinite(state.failures)
     || !(state.lastCheckAt === null || Number.isFinite(state.lastCheckAt))
     || !(state.latestVersion === null || typeof state.latestVersion === 'string')
+    || (state.reports !== undefined && !entriesMatch(state.reports, entry => isReportOrder(entry.observedOrder)))
+    || (state.reportFloors !== undefined && (!record(state.reportFloors) || !Object.values(state.reportFloors).every(isReportOrder)))
     || (state.etag !== undefined && typeof state.etag !== 'string')
     || (state.releaseChannel !== undefined && !RELEASE_CHANNELS.includes(state.releaseChannel))
     || (state.retiredCandidates !== undefined && (!Array.isArray(state.retiredCandidates)
@@ -543,7 +550,18 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       ...(updateState === undefined ? {} : { updateState }),
     };
   };
-  const contactPayload = (): RunnerUpdateContact => payload(read());
+  const contactPayload = (): RunnerUpdateContact => changeState(state => {
+    const floor = state.reportFloors?.[serverUrl];
+    const observedOrder = issueReportOrder(home, deploymentKeyFor(serverUrl), floor);
+    const observed = payload(state);
+    const previous = state.reports?.[serverUrl];
+    const { observedOrder: previousOrder, ...previousBody } = previous ?? {};
+    if (floor === undefined && previousOrder !== undefined && JSON.stringify(previousBody) === JSON.stringify(observed)) return previous!;
+    const report = { ...observed, observedOrder };
+    (state.reports ??= {})[serverUrl] = report;
+    if (state.reportFloors) delete state.reportFloors[serverUrl];
+    return report;
+  });
   const cleanupGuardian = (installationHeld = false): boolean => {
     const installation = installationHeld ? null : acquireInstallationLease(home, { command: 'myco runner update cleanup' });
     if (installation?.acquired === false) return false;
@@ -584,6 +602,14 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     state.nextCheckAt = pending && pending.id !== request?.id ? 0 : at;
   };
   const onContact = (body: Record<string, unknown>): void => {
+    if (body.updateRecorded === false && isReportOrder(body.observedOrder)) {
+      const floor = body.observedOrder;
+      changeState(state => {
+        if ((state.reports?.[serverUrl]?.observedOrder ?? 0) <= floor) {
+          (state.reportFloors ??= {})[serverUrl] = Math.max(state.reportFloors?.[serverUrl] ?? 0, floor);
+        }
+      });
+    }
     const raw = body.updateRequest;
     if (raw === undefined) return;
     if (raw === null) { changeState(state => { if (state.requests?.[serverUrl]?.manual !== true) endRequest(state, serverUrl); }); return; }

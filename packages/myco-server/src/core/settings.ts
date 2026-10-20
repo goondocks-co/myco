@@ -617,17 +617,18 @@ export async function heldPartitions(db: RelationalStore) {
 
 /** The stored embedding leaves as one write reads and conditions on them: each parsed, with the stamp of its last write. */
 async function embeddingRows(db: RelationalStore): Promise<{ stored: StoredEmbedding; stamps: Map<string, string> }> {
-  const { results } = await db.prepare(`SELECT leaf, value, updated_at, updated_by FROM deployment_settings WHERE leaf IN (${EMBEDDING_SELECTION_LEAVES.map(() => '?').join(', ')})`)
-    .bind(...EMBEDDING_SELECTION_LEAVES).all<{ leaf: EmbeddingSelectionLeaf; value: string; updated_at: number; updated_by: string }>();
+  const { results } = await db.prepare(`SELECT leaf, value, ${REVISION_SQL} AS revision FROM deployment_settings WHERE leaf IN (${EMBEDDING_SELECTION_LEAVES.map(() => '?').join(', ')})`)
+    .bind(...EMBEDDING_SELECTION_LEAVES).all<{ leaf: EmbeddingSelectionLeaf; value: string; revision: string }>();
   const stored: StoredEmbedding = {};
   for (const row of results) {
     try { stored[row.leaf] = JSON.parse(row.value); } catch (error) { if (!(error instanceof SyntaxError)) throw error; stored[row.leaf] = { malformed: row.value }; }
   }
-  return { stored, stamps: new Map(results.map((row) => [row.leaf, `${row.updated_at}:${row.updated_by}`])) };
+  return { stored, stamps: new Map(results.map((row) => [row.leaf, row.revision])) };
 }
 
 /** A stored leaf's stamp, or `absent`, in SQL. Bound as: the leaf. */
-const STAMP_SQL = `COALESCE((SELECT updated_at || ':' || updated_by FROM deployment_settings WHERE leaf = ?), 'absent')`;
+const REVISION_SQL = `COALESCE(write_id, updated_at || ':' || updated_by)`;
+const STAMP_SQL = `COALESCE((SELECT ${REVISION_SQL} FROM deployment_settings WHERE leaf = ?), 'absent')`;
 
 /** Why a candidate embedding selection, with `changes` the parts a write names, cannot be stored on the target; or what it resolves to. */
 function judgeEmbeddingCandidate(candidate: StoredEmbedding, changes: StoredEmbedding, target: DeploymentTarget, leaf: string): { refusal: SettingsRefusal } | { refusal: null; resolved: ReturnType<typeof resolveEmbedding> } {
@@ -694,16 +695,16 @@ async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | un
   const refusal = selectionChangeRefusal(resolveEmbedding(before, target).selection, resolved.selection, held);
   if (refusal !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: refusal } };
 
-  const ours = `${nowMs}:${actor}`;
+  const ours = crypto.randomUUID();
   const removed = new Set(parts.filter(([, value]) => value === undefined).map(([part]) => part));
   const unchanged = EMBEDDING_SELECTION_LEAVES.map((part) => `${STAMP_SQL} IN (?, ?${removed.has(part) ? ", 'absent'" : ''})`).join(' AND ')
     + ` AND NOT ${SWITCH_STANDS_SQL}`
     + (held.length === 0 ? ' AND NOT EXISTS (SELECT 1 FROM embedding_receipts WHERE ready >= 0)' : '');
   const unchangedBinds = EMBEDDING_SELECTION_LEAVES.flatMap((part) => [part, stamps.get(part) ?? 'absent', ours]);
   const statements = parts.flatMap(([part, value]) => value !== undefined
-    ? [db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) SELECT ?, ?, ?, ? WHERE ${unchanged}
-        ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
-      .bind(part, JSON.stringify(value), nowMs, actor, ...unchangedBinds)]
+    ? [db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by, write_id) SELECT ?, ?, ?, ?, ? WHERE ${unchanged}
+        ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by, write_id = excluded.write_id`)
+      .bind(part, JSON.stringify(value), nowMs, actor, ours, ...unchangedBinds)]
     : stamps.has(part) ? [
       db.prepare(`DELETE FROM deployment_settings WHERE leaf = ? AND ${unchanged}`).bind(part, ...unchangedBinds),
       db.prepare(`INSERT INTO deployment_setting_resets (leaf, reset_at, reset_by) SELECT ?, ?, ? WHERE ${unchanged}
@@ -728,9 +729,9 @@ export async function writeSwitchedEmbedding(
   const statements = EMBEDDING_SELECTION_LEAVES.flatMap((part) => {
     const value = choice[part];
     if (value !== undefined) {
-      return [db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) SELECT ?, ?, ?, ? WHERE ${condition.sql}
-        ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
-        .bind(part, JSON.stringify(value), nowMs, actor, ...condition.params)];
+      return [db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by, write_id) SELECT ?, ?, ?, ?, ? WHERE ${condition.sql}
+        ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by, write_id = excluded.write_id`)
+        .bind(part, JSON.stringify(value), nowMs, actor, crypto.randomUUID(), ...condition.params)];
     }
     return stamps.has(part) ? [
       db.prepare(`DELETE FROM deployment_settings WHERE leaf = ? AND ${condition.sql}`).bind(part, ...condition.params),
@@ -841,17 +842,17 @@ export function settingsWriter(
           const target = leaf === 'retention.transcripts' && value === 0 ? leaf : 'retention.raw_days';
           const other = target === 'retention.raw_days' ? 'retention.transcripts' : 'retention.raw_days';
           await db.batch([
-            db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES(?,?,?,?)
-              ON CONFLICT(leaf) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by`)
-              .bind(target,JSON.stringify(value),nowMs,actor),
+            db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by,write_id) VALUES(?,?,?,?,?)
+              ON CONFLICT(leaf) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by,write_id=excluded.write_id`)
+              .bind(target,JSON.stringify(value),nowMs,actor,crypto.randomUUID()),
             db.prepare('DELETE FROM deployment_settings WHERE leaf=?').bind(other),resetRecord(other,actor,nowMs),
           ]);
           await rearm({leaf:target});return {applied:true};
         }
         await db
-          .prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
-                    ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
-          .bind(leaf, JSON.stringify(leaf === 'agent.tasks' ? preserveRetiredTaskOverrides(value, previous) : value), nowMs, actor)
+          .prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by, write_id) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by, write_id = excluded.write_id`)
+          .bind(leaf, JSON.stringify(leaf === 'agent.tasks' ? preserveRetiredTaskOverrides(value, previous) : value), nowMs, actor, crypto.randomUUID())
           .run();
         await rearm({ leaf });
         return { applied: true };
@@ -908,9 +909,9 @@ export function settingsWriter(
         if (JSON.stringify(cleaned) === JSON.stringify(stored)) return { applied: true };
         const detail = leafRuleViolation(DEPLOYMENT_LEAF_SPECS[leaf]!, cleaned, stored);
         if (detail !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
-        const written = await db.prepare(`UPDATE deployment_settings SET value = ?, updated_at = ?, updated_by = ?
+        const written = await db.prepare(`UPDATE deployment_settings SET value = ?, updated_at = ?, updated_by = ?, write_id = ?
           WHERE leaf = ? AND value = ? AND updated_at = ? AND updated_by = ?`)
-          .bind(JSON.stringify(cleaned), nowMs, actor, leaf, current.value, current.updated_at, current.updated_by).run();
+          .bind(JSON.stringify(cleaned), nowMs, actor, crypto.randomUUID(), leaf, current.value, current.updated_at, current.updated_by).run();
         if (written.meta.changes !== 1) return { applied: false, refusal: { reason: 'conflict', leaf } };
         await rearm({ leaf });
         return { applied: true };
@@ -948,22 +949,22 @@ export function settingsWriter(
         const tierPath = `${taskPath}.reasoningLevel`;
         const seed = tier === null ? {} : { [task]: { reasoningLevel: tier } };
         const changed = tier === null
-          ? await db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
+          ? await db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by, write_id) VALUES (?, ?, ?, ?, ?)
               ON CONFLICT(leaf) DO UPDATE SET value = CASE
                 WHEN json_type(deployment_settings.value, ?) IS NULL THEN deployment_settings.value
                 WHEN json_type(deployment_settings.value, ?) != 'object' THEN json_remove(deployment_settings.value, ?)
                 WHEN (SELECT COUNT(*) FROM json_each(json_remove(deployment_settings.value, ?), ?)) = 0
                   THEN json_remove(json_remove(deployment_settings.value, ?), ?)
                 ELSE json_remove(deployment_settings.value, ?) END,
-                updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
-            .bind(leaf, JSON.stringify(seed), nowMs, actor, taskPath, taskPath, taskPath, tierPath, taskPath, tierPath, taskPath, tierPath).run()
-          : await db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
+                updated_at = excluded.updated_at, updated_by = excluded.updated_by, write_id = excluded.write_id`)
+            .bind(leaf, JSON.stringify(seed), nowMs, actor, crypto.randomUUID(), taskPath, taskPath, taskPath, tierPath, taskPath, tierPath, taskPath, tierPath).run()
+          : await db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by, write_id) VALUES (?, ?, ?, ?, ?)
               ON CONFLICT(leaf) DO UPDATE SET value = CASE
                 WHEN json_type(deployment_settings.value, ?) IS NOT NULL AND json_type(deployment_settings.value, ?) != 'object'
                   THEN json_set(deployment_settings.value, ?, json(?))
                 ELSE json_set(deployment_settings.value, ?, ?) END,
-                updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
-            .bind(leaf, JSON.stringify(seed), nowMs, actor, taskPath, taskPath, taskPath, JSON.stringify({ reasoningLevel: tier }), tierPath, tier).run();
+                updated_at = excluded.updated_at, updated_by = excluded.updated_by, write_id = excluded.write_id`)
+            .bind(leaf, JSON.stringify(seed), nowMs, actor, crypto.randomUUID(), taskPath, taskPath, taskPath, JSON.stringify({ reasoningLevel: tier }), tierPath, tier).run();
         if (changed.meta.changes !== 1) throw new Error('task tier write did not change one settings row');
         await rearm({ leaf });
         return { applied: true };

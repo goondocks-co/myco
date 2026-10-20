@@ -130,7 +130,10 @@ export async function handleResolveMemberProject(env: ServerEnv, ctx: Credential
     return miss(resolved.reason, detail);
   }
   // A repository with no remote keeps the project it is given, so its next resolve joins the same one.
-  if (remote === null) await connectMachineRoot(env.db, ctx.machineId, rootKey, resolved.projectId, ctx.memberId, ctx.now);
+  if (remote === null) {
+    const written = await connectMachineRoot(env.db, ctx.machineId, rootKey, resolved.projectId, ctx.memberId, ctx.now);
+    if (!written.applied) return Response.json({ persisted: false, code: written.reason, reason: written.detail ?? 'the connections changed; retry the edit' }, { status: written.reason === 'conflict' ? 409 : 400 });
+  }
   await clearUncapturedStatement(env.db, ctx.machineId, rootKey).run();
   if (resolved.created) emit({ kind: 'project_created', projectId: resolved.projectId, actor: ctx.memberId });
   return ok({ persisted: true, projectId: resolved.projectId, name: resolved.name, created: resolved.created } satisfies RepositoryAnswer);
@@ -169,8 +172,10 @@ export async function handleUncapturedState(env: ServerEnv, ctx: CredentialConte
   }
   if (state === 'left') {
     // Left on the machine: nothing is asked of "Needs you", and the machine is no longer told to connect it.
-    const [cleared, untold] = [await clearUncapturedStatement(env.db, ctx.machineId, rootKey).run(), await disconnectMachineRoot(env.db, ctx.machineId, rootKey, ctx.memberId, ctx.now)];
-    return ok({ persisted: cleared.meta.changes > 0 || untold });
+    const untold = await disconnectMachineRoot(env.db, ctx.machineId, rootKey, ctx.memberId, ctx.now);
+    if (!untold.applied) return Response.json({ persisted: false, code: untold.reason, reason: untold.detail ?? 'the connections changed; retry the edit' }, { status: untold.reason === 'conflict' ? 409 : 400 });
+    const cleared = await clearUncapturedStatement(env.db, ctx.machineId, rootKey).run();
+    return ok({ persisted: cleared.meta.changes > 0 || untold.changed });
   }
   const written = state === 'connected'
     ? await clearUncapturedStatement(env.db, ctx.machineId, rootKey).run()

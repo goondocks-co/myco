@@ -148,7 +148,7 @@ describe('the dashboard', () => {
     expect(await connectMachineRoot(r.fixture.db, 'machine_2', KEY_B, 'proj_1', PRINCIPAL.id, Date.now())).toEqual({ applied: false, reason: 'absent' });
     expect(r.fixture.sqlite.query(`SELECT COUNT(*) AS n FROM machine_settings WHERE machine_id = 'machine_2' AND leaf = 'capture.connect_roots'`).get()).toEqual({ n: 0 });
     expect(await connectMachineRoot(r.fixture.db, 'machine_2', KEY_B, 'proj_1', MEMBER_PRINCIPAL.id, Date.now())).toEqual({ applied: true });
-    expect(await disconnectMachineRoot(r.fixture.db, 'machine_2', KEY_B, PRINCIPAL.id, Date.now())).toBe(false);
+    expect(await disconnectMachineRoot(r.fixture.db, 'machine_2', KEY_B, PRINCIPAL.id, Date.now())).toEqual({ applied: false, reason: 'absent' });
     expect(r.fixture.sqlite.query(`SELECT value FROM machine_settings WHERE machine_id = 'machine_2' AND leaf = 'capture.connect_roots'`).get())
       .toEqual({ value: JSON.stringify({ [KEY_B]: 'proj_1' }) });
   });

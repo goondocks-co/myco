@@ -523,7 +523,7 @@ it.each(['revoked','demoted'] as const)('refuses a raw-window edit when its acto
     sqlite.run(fault==='revoked'?"UPDATE members SET revoked_at=1 WHERE id='mem_machine_1'":"UPDATE members SET role='member' WHERE id='mem_machine_1'");
   }});
   try{
-    f.sqlite.run("INSERT INTO deployment_settings VALUES('retention.transcripts','30',1,'historic')");
+    f.sqlite.run("INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES('retention.transcripts','30',1,'historic')");
     armed=true;
     const response=await worker.fetch(await put(f.db, '/api/settings/retention.raw_days',{value:90}),{...f.env,...OWNER_ENV});
     expect(response.status).toBe(403);

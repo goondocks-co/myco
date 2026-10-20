@@ -334,3 +334,31 @@ describe('B. reconciliation seams', () => {
     expect(seamViolations(fixtureFile(name)).map((found) => found.replace(/^\S+ /, ''))).toContain(violation);
   });
 });
+
+import { upsertOccurrences, validateUpserts } from './server-upsert-inventory.js';
+import { RECONCILED_UPSERTS } from './server-upsert-manifest.js';
+
+describe('server reconciliation upsert contract', () => {
+  it('declares every conflict-update occurrence, including fragments and repeated tables', () => {
+    const root = path.join(REPO, 'packages/myco-server/src');
+    const occurrences = fs.readdirSync(root, { recursive: true })
+      .map(String).filter(file => file.endsWith('.ts'))
+      .flatMap(file => upsertOccurrences(file, fs.readFileSync(path.join(root, file), 'utf8')));
+    expect(validateUpserts(occurrences, RECONCILED_UPSERTS)).toEqual([]);
+  });
+
+  it('detects extra occurrences in an existing owner, a new owner and unresolved SQL', () => {
+    const sql = 'INSERT INTO records(id) VALUES (?) ON CONFLICT(id) DO UPDATE SET id=excluded.id';
+    const source = `function write() { db.prepare(\`${sql}\`); }`;
+    const manifest = { 'fixture.ts#write': [{ tables: ['records'], order: 'writer-revision' as const }] };
+    expect(validateUpserts(upsertOccurrences('fixture.ts', source), manifest)).toEqual([]);
+    for (const mutant of [
+      source.replace('db.prepare', `db.prepare(\`${sql}\`); db.prepare`),
+      source + `function other() { db.prepare(\`${sql}\`); }`,
+      source.replace('INSERT INTO records', 'INSERT INTO other_records'),
+    ]) expect(validateUpserts(upsertOccurrences('fixture.ts', mutant), manifest).length).toBeGreaterThan(0);
+    const fragment = upsertOccurrences('fragment.ts', 'const SQL = "ON CONFLICT(id) DO UPDATE SET id=excluded.id";');
+    expect(validateUpserts(fragment, {} ).length).toBeGreaterThan(0);
+    expect(validateUpserts(fragment, { 'fragment.ts#<module>': [{ tables: ['records'], order: 'keyed-immutable' }] })).toEqual([]);
+  });
+});

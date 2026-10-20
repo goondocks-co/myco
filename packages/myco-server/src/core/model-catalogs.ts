@@ -8,6 +8,7 @@
  * and a claim reads the claiming machine's resolutions from it. The lease sweep forgets the rest. A catalog is the
  * worker's own listing of its machine, made with the machine's own login, never evidence that a provider accepts a request.
  */
+import { isReportOrder } from '@goondocks/myco-shared/report-order';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { MODEL_CATALOG_FRESH_MS, parseModelCatalog, type ModelCatalog } from '@goondocks/myco-shared/execution-profile';
 import { readMachineOffers } from './worker-contacts.js';
@@ -35,15 +36,20 @@ const resolutionsOf = (catalog: ModelCatalog): Record<string, string> =>
 /** Store the catalog a machine's worker reported, replacing the one the machine last reported for the same harness. */
 export async function recordModelCatalog(
   db: RelationalStore, report: { owner: CatalogOwner; catalog: ModelCatalog; now: number },
-): Promise<void> {
+): Promise<{ recorded: boolean; observedOrder: number | null }> {
   const { catalog, owner } = report;
   const [table, key] = owner.kind === 'machine' ? ['worker_model_catalogs', 'machine_id'] : ['runner_model_catalogs', 'runner_id'];
-  await db.prepare(
-    `INSERT INTO ${table} (${key}, harness, catalog, resolutions, fetched_at, received_at)
-     VALUES (?, ?, ?, ?, ?, ?)
+  const recorded = isReportOrder(catalog.observedOrder) ? await db.prepare(
+    `INSERT INTO ${table} (${key}, harness, catalog, resolutions, fetched_at, received_at, observed_order)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (${key}, harness) DO UPDATE SET
-       catalog = excluded.catalog, resolutions = excluded.resolutions, fetched_at = excluded.fetched_at, received_at = excluded.received_at`,
-  ).bind(owner.kind === 'machine' ? owner.machineId : owner.runnerId, catalog.harness, JSON.stringify(catalog), JSON.stringify(resolutionsOf(catalog)), catalog.fetchedAt, report.now).run();
+       catalog = excluded.catalog, resolutions = excluded.resolutions, fetched_at = excluded.fetched_at, received_at = excluded.received_at,
+       observed_order = excluded.observed_order
+       WHERE excluded.observed_order IS NOT NULL AND (${table}.observed_order IS NULL OR excluded.observed_order > ${table}.observed_order)`,
+  ).bind(owner.kind === 'machine' ? owner.machineId : owner.runnerId, catalog.harness, JSON.stringify(catalog), JSON.stringify(resolutionsOf(catalog)), catalog.fetchedAt, report.now, catalog.observedOrder).run() : null;
+  const held = await db.prepare(`SELECT observed_order FROM ${table} WHERE ${key} = ? AND harness = ?`)
+    .bind(owner.kind === 'machine' ? owner.machineId : owner.runnerId, catalog.harness).first<{ observed_order: number | null }>();
+  return { recorded: recorded?.meta.changes === 1, observedOrder: held?.observed_order ?? null };
 }
 
 /** A stored row as a catalog, or null where it no longer reads as one; a reader states that it does not know rather than guess. */

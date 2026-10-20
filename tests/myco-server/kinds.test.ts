@@ -347,7 +347,7 @@ describe('kind catalogue', () => {
     expect(count(e.sqlite, 'tags')).toBe(0);
   });
 
-  it('keeps a plan\'s prompt and administrator: a create names its prompt, an update without one keeps it, identical content leaves the stamp, and a newer capture clears the administrator', async () => {
+  it('keeps a plan\'s prompt and administrator: a create names its prompt, an update without one keeps it, identical content advances the rank, and changed content clears the administrator', async () => {
     const e = sqliteEnv();
     const t = await member(e);
     await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(90), payload: { promptId: uuid(91), text: 'hi', origin: 'user' } })), e.env);
@@ -355,10 +355,11 @@ describe('kind catalogue', () => {
     expect(await json(await worker.fetch(memberPost(t.token, create), e.env))).toEqual({ persisted: true, projected: true });
     const row = () => e.sqlite.query(`SELECT prompt_id, updated_by, status, content, event_id, updated_at FROM plans`).get() as Record<string, unknown>;
     expect(row()).toEqual({ prompt_id: uuid(91), updated_by: null, status: 'active', content: 'one', event_id: uuid(92), updated_at: 1_000 });
-    // Identical content, title and status: the row keeps its stamp and its event.
+    // Identical content advances its accepted rank and retains administrator attribution.
+    e.sqlite.run("UPDATE plans SET updated_by = 'mem_x', updated_at = 1500 WHERE plan_key = ?", [uuid(93)]);
     const same = envelope({ eventId: uuid(94), createdAt: 2_000, kind: 'plan', payload: { planKey: uuid(93), title: 'p', content: 'one' } });
     expect(await json(await worker.fetch(memberPost(t.token, same), e.env))).toEqual({ persisted: true, projected: true });
-    expect(row()).toMatchObject({ event_id: uuid(92), updated_at: 1_000 });
+    expect(row()).toMatchObject({ event_id: uuid(94), updated_at: 2_000, updated_by: 'mem_x' });
     // An administrative edit names its member; a newer capture with new content clears it and keeps the prompt the row already names.
     e.sqlite.run(`UPDATE plans SET status = 'completed', updated_by = 'mem_x', updated_at = 2_500 WHERE plan_key = ?`, [uuid(93)]);
     const newer = envelope({ eventId: uuid(95), createdAt: 3_000, kind: 'plan', payload: { planKey: uuid(93), content: 'two' } });

@@ -1,3 +1,4 @@
+import { isReportOrder } from '@goondocks/myco-shared/report-order';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { LIVE_RUNNER_ADMIN } from '../auth/runners.js';
 import { CONTACT_RECENT_MS } from './worker-contacts.js';
@@ -23,12 +24,14 @@ export type RunnerUpdateMetadataIssue = { field: 'update' | 'lastResult' | 'bloc
 export function parseRunnerUpdateReport(value: unknown, issue: (issue: RunnerUpdateMetadataIssue) => void = () => {}): RunnerUpdateReport | null {
   if (!object(value) || !(value.channel === null || value.channel === 'stable' || value.channel === 'beta' || value.channel === 'alpha') || !isRunnerUpdateText(value.currentVersion, MAX_VERSION)
     || !(value.latestVersion === null || isRunnerUpdateText(value.latestVersion, MAX_VERSION))
-    || !(value.lastCheckAt === null || timestamp(value.lastCheckAt))) {
+    || !(value.lastCheckAt === null || timestamp(value.lastCheckAt))
+    || (value.observedOrder !== undefined && !isReportOrder(value.observedOrder))) {
     issue({ field: 'update', disposition: 'dropped' });
     return null;
   }
   const report: RunnerUpdateReport = { channel: value.channel as RunnerUpdateReport['channel'], currentVersion: value.currentVersion,
-    latestVersion: value.latestVersion as string | null, lastCheckAt: value.lastCheckAt };
+    latestVersion: value.latestVersion as string | null, lastCheckAt: value.lastCheckAt,
+    ...(value.observedOrder === undefined ? {} : { observedOrder: value.observedOrder as number }) };
   const reason = (text: string, field: RunnerUpdateMetadataIssue['field']) => {
     const sanitized = sanitizeRunnerUpdateReason(text);
     if (text !== sanitized) issue({ field, disposition: 'sanitized' });
@@ -61,11 +64,8 @@ export function parseRunnerUpdateReport(value: unknown, issue: (issue: RunnerUpd
   return report;
 }
 
-/** One metadata envelope carries current holds independently of the newest outcome receipt. */
+/** One metadata envelope carries the result and holds from one observation. */
 export const RUNNER_UPDATE_REPORT_FORMAT = 'runner-update-report/1';
-const STORED_RESULT = `CASE WHEN json_extract(runner_update_reports.last_result, '$.format') = '${RUNNER_UPDATE_REPORT_FORMAT}'
-  THEN json_extract(runner_update_reports.last_result, '$.lastResult') ELSE runner_update_reports.last_result END`;
-
 export async function readRunnerUpdateRequest(db: RelationalStore, runnerId: string): Promise<RunnerUpdateRequest | null> {
   const request = await db.prepare('SELECT id, requested_at AS requestedAt FROM runner_update_requests WHERE runner_id = ?').bind(runnerId).first<Omit<RunnerUpdateRequest, 'clearBlock'>>();
   return request === null ? null : { ...request, clearBlock: true };
@@ -74,15 +74,12 @@ export async function readRunnerUpdateRequest(db: RelationalStore, runnerId: str
 /** The contact's metadata, one immutable outcome receipt, and the matching command acknowledgment commit together. */
 export async function runnerUpdateReportStatements(db: RelationalStore, runnerId: string, report: RunnerUpdateReport): Promise<PreparedStatement[]> {
   const result = report.lastResult;
-  const statements = [db.prepare(`INSERT INTO runner_update_reports (runner_id, channel, current_version, latest_version, last_check_at, last_result)
-    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(runner_id) DO UPDATE SET channel = excluded.channel, current_version = excluded.current_version,
-      latest_version = excluded.latest_version, last_check_at = excluded.last_check_at,
-      last_result = json_set(excluded.last_result, '$.lastResult', json(CASE
-        WHEN json_extract(excluded.last_result, '$.lastResult') IS NOT NULL AND ((${STORED_RESULT}) IS NULL
-          OR json_extract(excluded.last_result, '$.lastResult.at') >= json_extract((${STORED_RESULT}), '$.at'))
-        THEN json_extract(excluded.last_result, '$.lastResult') ELSE (${STORED_RESULT}) END))`)
+  const statements = isReportOrder(report.observedOrder) ? [db.prepare(`INSERT INTO runner_update_reports (runner_id, channel, current_version, latest_version, last_check_at, last_result, observed_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(runner_id) DO UPDATE SET channel = excluded.channel, current_version = excluded.current_version,
+      latest_version = excluded.latest_version, last_check_at = excluded.last_check_at, last_result = excluded.last_result, observed_order = excluded.observed_order
+      WHERE excluded.observed_order IS NOT NULL AND (runner_update_reports.observed_order IS NULL OR excluded.observed_order > runner_update_reports.observed_order)`)
     .bind(runnerId, report.channel, report.currentVersion, report.latestVersion, report.lastCheckAt,
-      JSON.stringify({ format: RUNNER_UPDATE_REPORT_FORMAT, lastResult: result ?? null, blockedVersion: report.blockedVersion ?? null, updateState: report.updateState ?? null }))];
+      JSON.stringify({ format: RUNNER_UPDATE_REPORT_FORMAT, lastResult: result ?? null, blockedVersion: report.blockedVersion ?? null, updateState: report.updateState ?? null }), report.observedOrder)] : [];
   if (result !== undefined) {
     const id = await sha256Hex(JSON.stringify(result.attemptId === undefined
       ? [runnerId, result.requestId ?? null, result.at, result.fromVersion, result.toVersion, result.result]
@@ -92,6 +89,11 @@ export async function runnerUpdateReportStatements(db: RelationalStore, runnerId
     if (result.requestId !== undefined) statements.push(db.prepare('DELETE FROM runner_update_requests WHERE runner_id = ? AND id = ?').bind(runnerId, result.requestId));
   }
   return statements;
+}
+
+export async function readRunnerUpdateOrder(db: RelationalStore, runnerId: string): Promise<number | null> {
+  return (await db.prepare('SELECT observed_order FROM runner_update_reports WHERE runner_id = ?')
+    .bind(runnerId).first<{ observed_order: number | null }>())?.observed_order ?? null;
 }
 
 const UPDATE_REFUSED = '$[myco_runner_update_refused]';
