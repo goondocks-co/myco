@@ -98,6 +98,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0088_v88.sql': '7b40d6a4ffee4576a0000e12255891bc03bb06bb324ac5fcedb606ab042c3a08',
   '0089_v89.sql': 'a2e8b73fdd1b05be584e33dad00ea7b4bce99956723f5ecbb3bbced2aaaed725',
   '0090_v90.sql': '3283a9899503b34a9ef1128212165eb5fe0b162ed8841b958f333024166f30cc',
+  '0091_v91.sql': '5f3a0e653c1d30f456423c0e4a38cd1c08ea2ecd812443096d52b5c10defca28',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -734,7 +735,7 @@ describe('versioned schema steps', () => {
           : t === 'raw_archive_refs' && c.name === 'source_kind' ? "'transcript'"
           : t === 'raw_archive_refs' && c.name === 'disposition' ? "'hot'"
           : t === 'prompt_context_answers' && c.name === 'outcome' ? "'empty'"
-          : c.name === 'scope_reason' || c.name.startsWith('delivered_') ? 'NULL' : c.name === 'ask_protocol' ? "'v1'"
+          : c.name === 'scope_reason' || c.name.startsWith('delivered_') || c.name === 'claim' ? 'NULL' : c.name === 'ask_protocol' ? "'v1'"
           : t === 'archive_bundles' && (c.name === 'version' || c.name === 'entry_count') ? '1' : c.type === 'INTEGER' ? '0' : `'x'`));
         sqlite.query(`INSERT INTO ${t} (${names.join(', ')}) VALUES (${values.join(', ')})`).run();
       };
@@ -751,7 +752,7 @@ describe('versioned schema steps', () => {
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
-      'prompt_batches', 'prompt_context_answers', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'run_reads', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'session_read_facts', 'session_tombstones',
+      'prompt_batches', 'prompt_context_answers', 'prompt_identity_conflicts', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'run_reads', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'session_read_facts', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags', 'tool_calls', 'transcript_parser_state_chunks', 'transcript_segments', 'transcripts',
     ]);
   });

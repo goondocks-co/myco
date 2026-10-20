@@ -21,6 +21,10 @@
  * different question from the other four.
  */
 import type { RelationalStore } from '../core/adapters.js';
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
+
+/** The agents this build declares a prompt identity for: a transcript of one left unpinned is a scheme conflict. */
+const DECLARED_AGENTS: readonly string[] = CAPTURE_RULE_BUNDLES.map((bundle) => bundle.name);
 import { recallQuality, caseCount } from '../evals/recall-baseline.js';
 
 /** A measured value and the number of rows behind it. A sample of zero carries a null value. */
@@ -67,6 +71,33 @@ export interface KpiReport {
    * (`evals/recall-baseline.ts`, #1154); the window does not apply, and the sample is the number of cases.
    */
   recallQuality: Measure;
+  /**
+   * Per harness, what its transcripts' parse kept without naming it the usual way: counts, never links. `sampleSize`
+   * is the prompts parsed under a scheme that records where each prompt's identity comes from.
+   */
+  promptIdentity: PromptIdentityCounts[];
+}
+
+/** One harness's prompt identity counts over the window (`KpiReport.promptIdentity`). */
+export interface PromptIdentityCounts {
+  harness: string;
+  sampleSize: number;
+  /** A line of a shape the parse does not know, or a turn opener whose fields name no known class. */
+  unrecognized: number;
+  /** A record that claimed a key carrying none of the fields that name who opened a turn. */
+  unmarked: number;
+  /** A turn opener whose fields name two different classes. */
+  openerConflict: number;
+  /** A record whose fields contradict how its transcript is registered (a delegated agent's or the session's own). */
+  contractViolation: number;
+  /** A later submission that reused a key an earlier one owns. */
+  reused: number;
+  /** A prompt id a second source tried to name, refused (`prompt_identity_conflicts`). */
+  identityConflicts: number;
+  /** A transcript left unpinned, and so not read: its session's transcripts need two schemes. */
+  schemeConflicts: number;
+  /** A context answer whose receipt is skipped: another receipt already names its prompt id. */
+  duplicatePromptSkips: number;
 }
 
 /** The windows the surface offers. `null` is every row the Deployment holds. */
@@ -226,13 +257,56 @@ async function firstInjectionSamples(db: RelationalStore, since: number | null):
     .sort((a, b) => a - b);
 }
 
+const IDENTITY_KINDS = { unrecognized: 'unrecognized', unmarked: 'unmarked', openerConflict: 'opener_conflict', contractViolation: 'contract_violation' } as const;
+
+/** The prompt identity counts per harness (`KpiReport.promptIdentity`), each a count over stored rows. */
+async function promptIdentityCounts(db: RelationalStore, since: number | null): Promise<PromptIdentityCounts[]> {
+  const claimed = windowClause('p.created_at', since);
+  const refused = windowClause('c.created_at', since);
+  const answered = windowClause('a.created_at', since);
+  const registered = windowClause('t.first_received_at', since);
+  const kinds = Object.values(IDENTITY_KINDS).map((kind) => `SUM(p.prompt_kind = '${kind}') AS "${kind}"`).join(', ');
+  const [rows, conflicts, unpinned, duplicates] = await Promise.all([
+    db.prepare(`SELECT ${HARNESS_OF('p')} AS harness, COUNT(*) AS n, ${kinds}, SUM(p.claim = 'reused') AS reused
+        FROM projects pr CROSS JOIN prompt_batches p WHERE p.project_id = pr.project_id AND p.claim IS NOT NULL AND ${claimed.sql} GROUP BY harness`)
+      .bind(...claimed.params).all<Record<string, number | string>>(),
+    db.prepare(`SELECT ${HARNESS_OF('c')} AS harness, COUNT(*) AS n FROM projects pr CROSS JOIN prompt_identity_conflicts c
+        WHERE c.project_id = pr.project_id AND ${refused.sql} GROUP BY harness`).bind(...refused.params).all<{ harness: string; n: number }>(),
+    db.prepare(`SELECT t.agent AS harness, COUNT(*) AS n FROM transcripts t WHERE t.prompt_identity_scheme IS NULL
+        AND t.agent IN (${DECLARED_AGENTS.map(() => '?').join(', ')}) AND ${registered.sql} GROUP BY t.agent`)
+      .bind(...DECLARED_AGENTS, ...registered.params).all<{ harness: string; n: number }>(),
+    db.prepare(`SELECT ${HARNESS_OF('a')} AS harness, COUNT(*) AS n FROM prompt_context_answers a
+        WHERE ${answered.sql} AND EXISTS (SELECT 1 FROM json_each(a.skipped) j WHERE j.value = 'spores:duplicate_prompt') GROUP BY harness`)
+      .bind(...answered.params).all<{ harness: string; n: number }>(),
+  ]);
+  const byHarness = new Map<string, PromptIdentityCounts>();
+  const of = (harness: string): PromptIdentityCounts => {
+    let counts = byHarness.get(harness);
+    if (counts === undefined) {
+      counts = { harness, sampleSize: 0, unrecognized: 0, unmarked: 0, openerConflict: 0, contractViolation: 0, reused: 0, identityConflicts: 0, schemeConflicts: 0, duplicatePromptSkips: 0 };
+      byHarness.set(harness, counts);
+    }
+    return counts;
+  };
+  for (const row of rows.results) {
+    const counts = of(String(row.harness));
+    counts.sampleSize = Number(row.n);
+    counts.reused = Number(row.reused ?? 0);
+    for (const [field, kind] of Object.entries(IDENTITY_KINDS)) counts[field as keyof typeof IDENTITY_KINDS] = Number(row[kind] ?? 0);
+  }
+  for (const row of conflicts.results) of(row.harness).identityConflicts = row.n;
+  for (const row of unpinned.results) of(row.harness).schemeConflicts = row.n;
+  for (const row of duplicates.results) of(row.harness).duplicatePromptSkips = row.n;
+  return [...byHarness.values()].sort((a, b) => b.sampleSize - a.sampleSize || a.harness.localeCompare(b.harness));
+}
+
 /** Every measure, over the window a caller asked for. */
 export async function readKpis(db: RelationalStore, opts: { windowDays: number | null; now: number }): Promise<KpiReport> {
   const since = opts.windowDays === null ? null : opts.now - opts.windowDays * 86_400_000;
   const sessionWindow = windowClause('first_received_at', since);
   const callWindow = windowClause('c.created_at', since);
 
-  const [{ prompts, served, withSpores }, byHarness, sessions, startedWithBlock, planReads, mycoCalls, firstInjections] = await Promise.all([
+  const [{ prompts, served, withSpores }, byHarness, sessions, startedWithBlock, planReads, mycoCalls, firstInjections, identity] = await Promise.all([
     promptMeasures(db, since),
     harnessSplit(db, since),
     countOf(db, `SELECT COUNT(*) AS n FROM sessions WHERE ${sessionWindow.sql}`, sessionWindow.params),
@@ -240,6 +314,7 @@ export async function readKpis(db: RelationalStore, opts: { windowDays: number |
     countOf(db, `SELECT COUNT(*) AS n FROM tool_calls c WHERE ${callWindow.sql} AND ${PLAN_READ}`, callWindow.params),
     countOf(db, `SELECT COUNT(*) AS n FROM tool_calls c WHERE ${callWindow.sql} AND ${MYCO_CALL}`, callWindow.params),
     firstInjectionSamples(db, since),
+    promptIdentityCounts(db, since),
   ]);
 
   return {
@@ -253,5 +328,6 @@ export async function readKpis(db: RelationalStore, opts: { windowDays: number |
     planReadsPerSession: rate(planReads, sessions),
     firstInjectionMs: { value: median(firstInjections), sampleSize: firstInjections.length },
     recallQuality: { value: recallQuality, sampleSize: caseCount },
+    promptIdentity: identity,
   };
 }

@@ -31,7 +31,11 @@ const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const MEMBER_ENTRIES = ['hooks/**', 'member/**', 'runner/**', 'cli/member-dispatch.ts', 'cli/member-verbs.ts'];
 const WHOLE_PACKAGES = [path.join(REPO_ROOT, 'packages', 'myco-shared', 'src'), path.join(REPO_ROOT, 'packages', 'myco-server', 'src')];
 
-/** The registries that exist to be per-harness: transcript adapters and parsers, plugin host templates, worker drivers, and the manifest data, its loader and what it generates. */
+/**
+ * The registries that exist to be per-harness: transcript adapters and parsers, plugin host templates, worker drivers,
+ * and the manifest data, its loader and what it generates, including a shipped schema step frozen as the manifest data
+ * it ran with.
+ */
 const REGISTRIES: readonly RegExp[] = [
   /^packages\/myco\/src\/member\/legacy-registration-data\.ts$/,
   /^packages\/myco\/src\/symbionts\/(claude-code|codex|cursor|copilot|windsurf|antigravity)\.ts$/,
@@ -41,6 +45,7 @@ const REGISTRIES: readonly RegExp[] = [
   /^packages\/myco\/src\/runner\/drivers\//,
   /^packages\/myco-server\/src\/ingest\/parsers\//,
   /\.generated\.ts$/,
+  /^packages\/myco-server\/src\/db\/schema-v90\.ts$/,
 ];
 
 /** Files that name a harness outside the registries: none. A new one fails by name. */

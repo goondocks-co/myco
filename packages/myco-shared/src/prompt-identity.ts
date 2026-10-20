@@ -18,11 +18,18 @@ export type PromptIdentityKind = (typeof PROMPT_IDENTITY_KINDS)[number];
  * Every derivation a prompt id has ever been made by, with the kinds it serves. `minted` ids are the hook's own random
  * ids. `generation` is the revision of a scheme's derivation a parser checkpoint records; it is fixed, and a changed
  * derivation is a new scheme. `granularity: 'turn'` names a harness key that names a turn, of which only the opener is
- * one submission.
+ * one submission. `hookIdentity` names the scheme a hook derives this scheme's key-named prompts by, where the two
+ * derive the same id for them: a hook names its prompt under that scheme, and a transcript pinned to this one shares it.
  */
 export const PROMPT_ID_SCHEMES = {
   /** Claude Code: the hook's `prompt_id` is the transcript's `promptId`; a queued command keys on its record's uuid. */
   'claude-v1': { kinds: ['harness-key'], derivation: 'derived', generation: 2 },
+  /**
+   * Claude Code, every record kept: the first claimant of a `promptId` owns it under claude-v1's id, and every other
+   * prompt-shaped record (a later submission reusing the key, another agent's line, a compaction summary) is keyed on
+   * its own thread and uuid (`parsers/claude-code.ts`).
+   */
+  'claude-v2': { kinds: ['harness-key'], derivation: 'derived', generation: 1, hookIdentity: 'claude-v1' },
   /** A transcript the Deployment parses by line position: Codex before its turn key, Cursor and Pi. */
   'offset-v1': { kinds: ['transcript-only'], derivation: 'derived', generation: 1 },
   /** A plugin-written transcript carrying the hook's stamped id, or its line position where no hook answered: OpenCode and Cline. */
@@ -40,7 +47,7 @@ export const PROMPT_ID_SCHEMES = {
   /** The hook's own time-ordered id, for an agent whose hooks write its turn rows. */
   'hook-mint-v1': { kinds: ['hook-owned'], derivation: 'minted', generation: 1 },
 } as const satisfies Record<string, {
-  kinds: readonly PromptIdentityKind[]; derivation: 'derived' | 'minted'; generation: number; granularity?: 'turn';
+  kinds: readonly PromptIdentityKind[]; derivation: 'derived' | 'minted'; generation: number; granularity?: 'turn'; hookIdentity?: string;
 }>;
 export type PromptIdScheme = keyof typeof PROMPT_ID_SCHEMES;
 export const PROMPT_ID_SCHEME_NAMES = Object.keys(PROMPT_ID_SCHEMES) as PromptIdScheme[];
@@ -48,9 +55,16 @@ export const isPromptIdScheme = (value: unknown): value is PromptIdScheme =>
   typeof value === 'string' && Object.hasOwn(PROMPT_ID_SCHEMES, value);
 /** Whether a scheme's harness key names a turn rather than one submission. */
 export const turnGrained = (scheme: PromptIdScheme): boolean => 'granularity' in PROMPT_ID_SCHEMES[scheme];
+/** The scheme a hook names a prompt of this scheme under: its `hookIdentity`, or the scheme itself. */
+export const hookScheme = (scheme: PromptIdScheme): PromptIdScheme => {
+  const entry = PROMPT_ID_SCHEMES[scheme];
+  return 'hookIdentity' in entry && isPromptIdScheme(entry.hookIdentity) ? entry.hookIdentity : scheme;
+};
+/** The schemes a hook names a prompt under: every scheme that is its own `hookScheme`. */
+export const HOOK_NAMED_SCHEMES: readonly PromptIdScheme[] = PROMPT_ID_SCHEME_NAMES.filter((scheme) => hookScheme(scheme) === scheme);
 
 /** The schemes a manifest may declare as its agent's current one. */
-export const DECLARABLE_SCHEMES = ['claude-v1', 'offset-v1', 'stamp-or-offset-v1', 'codex-turn-v1', 'member-transcript-v1', 'hook-mint-v1'] as const satisfies readonly PromptIdScheme[];
+export const DECLARABLE_SCHEMES = ['claude-v1', 'claude-v2', 'offset-v1', 'stamp-or-offset-v1', 'codex-turn-v1', 'member-transcript-v1', 'hook-mint-v1'] as const satisfies readonly PromptIdScheme[];
 export type DeclarableScheme = (typeof DECLARABLE_SCHEMES)[number];
 
 /** The prompt namespaces the offset-named parsers derive under, one per parser. */
@@ -61,12 +75,29 @@ export type OffsetPromptNamespace = (typeof OFFSET_PROMPT_NAMESPACES)[number];
 export const CLAUDE_PROMPT_SHAPES = ['user_prompt', 'queued_command', 'agent_message', 'teammate_message', 'sidechain'] as const;
 export type ClaudePromptShape = (typeof CLAUDE_PROMPT_SHAPES)[number];
 
+/**
+ * What a claude-v2 id is derived from: the `promptId` its first claimant owns, a queued command's record uuid, or any
+ * other kept record's thread (`agentId`, or `main` for the session's own transcript) and uuid.
+ */
+export type ClaudeRecordKey = { owner: string } | { queued: string } | { thread: string; uuid: string };
+/** The thread of a record in the session's own transcript rather than a delegated agent's. */
+export const MAIN_THREAD = 'main';
+
+/**
+ * How a parsed prompt row holds its harness key: it owns the key, or it is a later submission reusing an owned key,
+ * another line carrying the key, or harness context that is no submission.
+ */
+export const PROMPT_CLAIMS = ['owner', 'reused', 'sibling', 'context'] as const;
+export type PromptClaim = (typeof PROMPT_CLAIMS)[number];
+export const isPromptClaim = (value: unknown): value is PromptClaim => (PROMPT_CLAIMS as readonly unknown[]).includes(value);
+
 /** Where one submission sits in its Codex turn: the turn's opener, or a later one by its acceptance order or line position. */
 export type TurnSubmission = { opener: true } | { order: number } | { offset: number };
 
 /** One derivation request, by scheme. */
 export type PromptIdRequest =
   | { scheme: 'claude-v1'; sessionId: string; shape: ClaudePromptShape; key: string }
+  | { scheme: 'claude-v2'; sessionId: string; record: ClaudeRecordKey }
   | { scheme: 'offset-v1'; namespace: OffsetPromptNamespace; sessionId: string; offset: number }
   | { scheme: 'stamp-or-offset-v1'; sessionId: string; stamp?: string; offset: number }
   | { scheme: 'codex-turn-v1'; sessionId: string; turnId: string; submission: TurnSubmission }
@@ -87,6 +118,9 @@ export function canonicalPromptId<R>(hash: PromptIdHasher<R>, request: PromptIdR
   switch (request.scheme) {
     case 'claude-v1':
       return hash('queued-prompt', request.sessionId, `${request.shape}|${request.key}`);
+    case 'claude-v2':
+      return hash('queued-prompt', request.sessionId, 'owner' in request.record ? `user_prompt|${request.record.owner}`
+        : 'queued' in request.record ? `queued_command|${request.record.queued}` : `record|${request.record.thread}|${request.record.uuid}`);
     case 'offset-v1':
       return hash(request.namespace, request.sessionId, String(request.offset));
     case 'stamp-or-offset-v1':
@@ -151,7 +185,8 @@ export interface PromptIdentityDeclaration {
 export function hookPromptRequest(declaration: PromptIdentityDeclaration, sessionId: string, key: string | undefined): PromptIdRequest | null {
   if (declaration.kind !== 'harness-key' || key === undefined) return null;
   switch (declaration.scheme) {
-    case 'claude-v1': return { scheme: 'claude-v1', sessionId, shape: 'user_prompt', key };
+    case 'claude-v1':
+    case 'claude-v2': return { scheme: 'claude-v1', sessionId, shape: 'user_prompt', key };
     case 'codex-turn-v1': return { scheme: 'codex-turn-v1', sessionId, turnId: key, submission: { opener: true } };
     default: return null;
   }

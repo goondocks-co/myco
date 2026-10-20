@@ -31,6 +31,7 @@ const report = (over: Record<string, unknown> = {}) => ({
   planReadsPerSession: { value: null, sampleSize: 0 },
   firstInjectionMs: { value: null, sampleSize: 0 },
   recallQuality: { value: null, sampleSize: 0 },
+  promptIdentity: [],
   ...over,
 });
 
@@ -216,6 +217,26 @@ describe('the measures on Health', () => {
       ['Unknown agent', '0', '0.00', 'n = 1 prompt'],
       ['Codex', '4', '—', 'n = 0 prompts'],
     ]);
+  });
+
+  it('counts, per agent, the transcript lines not named the usual way, and links none of them', async () => {
+    const counts = { unrecognized: 0, unmarked: 0, openerConflict: 0, contractViolation: 0, reused: 0, identityConflicts: 0, schemeConflicts: 0, duplicatePromptSkips: 0 };
+    server(base({
+      '/api/kpis?window=30': () => Response.json(report({
+        promptIdentity: [
+          { harness: 'claude-code', sampleSize: 12, ...counts, reused: 9, unrecognized: 1 },
+          { harness: 'codex', sampleSize: 3, ...counts },
+        ],
+      })),
+    }));
+    mount('/measures');
+    const list = await screen.findByLabelText('Prompt naming counts by agent');
+    const rows = [...list.querySelectorAll('[data-identity-agent]')].map((row) => [...row.querySelectorAll('[data-cell]')].map((cell) => cell.textContent));
+    expect(rows).toEqual([
+      ['Claude Code', 'n = 12 prompts', '1 line of a shape Myco does not know', '9 prompts reusing an earlier prompt\u2019s id'],
+      ['Codex', 'n = 3 prompts', 'Every line was named the usual way.'],
+    ]);
+    expect(list.querySelectorAll('a')).toHaveLength(0);
   });
 
   it('says there is nothing to split when the window holds no prompt', async () => {

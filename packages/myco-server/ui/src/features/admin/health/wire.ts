@@ -31,6 +31,21 @@ export interface KpiReport {
   planReadsPerSession: Measure;
   firstInjectionMs: Measure;
   recallQuality: Measure;
+  promptIdentity: PromptIdentityCounts[];
+}
+
+/** One agent's counts of transcript lines its parse kept without naming them the usual way. Counts only. */
+export interface PromptIdentityCounts {
+  harness: string;
+  sampleSize: number;
+  unrecognized: number;
+  unmarked: number;
+  openerConflict: number;
+  contractViolation: number;
+  reused: number;
+  identityConflicts: number;
+  schemeConflicts: number;
+  duplicatePromptSkips: number;
 }
 
 /** `GET /api/backups`: one backup the index records. */

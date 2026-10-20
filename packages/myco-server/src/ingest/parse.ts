@@ -33,9 +33,10 @@ import { MAX_PAYLOAD_BYTES, parseEnvelope } from './envelope.js';
 import { envelopeHash, planEventWrite, type EventWrite, type IngestResult } from './events.js';
 import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
-import { SCHEME_GENERATION_SQL, schemeGeneration } from './prompt-scheme.js';
+import { declaredScheme, SCHEME_GENERATION_SQL, schemeGeneration } from './prompt-scheme.js';
 import { isPromptIdScheme, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
-import { datedAt, isBlock, withoutPrompts, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput } from './parsers/index.js';
+import { datedAt, isBlock, promptOwners, withoutPrompts, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput, type PromptOwners, type TranscriptParser } from './parsers/index.js';
+import type { TranscriptRole } from '@goondocks/myco-shared/member-protocol';
 import { resolvePresentedDates } from './projections.js';
 import { LEGACY_REPLY_LINES_PER_READ, legacyReplies, preserveLegacyReplies } from './legacy-replies.js';
 import { parserCheckpointStatements, readParserCheckpoint, terminalCheckpointBatch } from './parser-checkpoint.js';
@@ -207,8 +208,10 @@ interface ParseTarget {
   size: number;
   parsedOffset: number;
   fidelity: string | null;
-  /** The transcript's pinned prompt identity scheme; null for one that names no agent this Deployment declares. */
+  /** The transcript's pinned prompt identity scheme; null for one that names no agent this Deployment declares, or one its group could not be admitted to. */
   scheme: PromptIdScheme | null;
+  /** How the transcript is registered; absent where the selection did not read it. */
+  role?: TranscriptRole;
   /** The turn open where the cursor stands, recorded by the pass that stopped there. */
   openPromptId: string | null;
   /** The checkpoint carries a prompt forward under another prompt generation than its parser's (`PROMPT_IDENTITY_STALE`). */
@@ -306,7 +309,7 @@ export function laneSelectionSql(lane: Lane, limit = 1, now = Date.now()): strin
   const segments = `SELECT json_group_array(json_object('base_offset', base_offset, 'length', length, 'blob_key', blob_key, 'created_at', created_at, 'object_key', object_key))
       FROM (${segmentSource('transcripts.project_id','transcripts.transcript_id','transcripts.parsed_offset')}
              ORDER BY base_offset LIMIT ${TRANSCRIPT_PARSE_SEGMENTS_PER_READ})`;
-  return `SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, prompt_identity_scheme, open_prompt_id, parser_context, imported_at, parse_segment_lines, last_received_at,
+  return `SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, role, size, parsed_offset, fidelity, prompt_identity_scheme, open_prompt_id, parser_context, imported_at, parse_segment_lines, last_received_at,
                  (SELECT ended_at FROM sessions s WHERE s.project_id = transcripts.project_id AND s.session_id = transcripts.session_id) AS session_ended_at,
                  ${TURN_ENDED} AS turn_ended, ${PROMPT_IDENTITY_STALE} AS prompt_identity_stale,
                  (${segments}) AS segments
@@ -338,6 +341,7 @@ function targetOf(row: Record<string, unknown>): ParseTarget {
     parsedOffset: (row.parsed_offset as number | null) ?? 0,
     fidelity: (row.fidelity as string | null) ?? null,
     scheme: isPromptIdScheme(row.prompt_identity_scheme) ? row.prompt_identity_scheme : null,
+    ...(row.role === 'subagent' || row.role === 'primary' ? { role: row.role } : {}),
     openPromptId: (row.open_prompt_id as string | null) ?? null,
     promptIdentityStale: row.prompt_identity_stale === 1,
     parserContext: contextFromStored(row.parser_context),
@@ -365,12 +369,12 @@ async function finalizePass(db: RelationalStore, target: ParseTarget, statement:
 
 /** A content-free description of the record where reading stopped. */
 export interface ParseDiagnostic {
-  branch: 'malformed_lines' | 'event_not_stored' | 'no_progress' | 'event_refused' | 'blob_absent' | 'record_too_large' | 'scheme_unread';
+  branch: 'malformed_lines' | 'event_not_stored' | 'no_progress' | 'event_refused' | 'blob_absent' | 'record_too_large' | 'scheme_unread' | 'scheme_conflict';
   offset: number;
   lineKind: string;
 }
 
-const FAILURE_BRANCHES = new Set(['malformed_lines', 'event_not_stored', 'no_progress', 'event_refused', 'blob_absent', 'record_too_large', 'scheme_unread']);
+const FAILURE_BRANCHES = new Set(['malformed_lines', 'event_not_stored', 'no_progress', 'event_refused', 'blob_absent', 'record_too_large', 'scheme_unread', 'scheme_conflict']);
 const LINE_KINDS = new Set(['user', 'assistant', 'attachment', 'session_meta', 'turn_context', 'event_msg', 'response_item', 'system', 'progress']);
 function lineKind(line: ParsedLine | undefined): string {
   if (line === undefined) return 'unknown';
@@ -654,10 +658,12 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     return { derived: 0, calls: 1, nextOffset: target.size, failure: null };
   }
   // A transcript is read only by the derivation it is pinned to; one pinned to a scheme its parser does not derive
-  // stops where it stands rather than naming its prompts another way.
+  // stops where it stands rather than naming its prompts another way. A declared agent's transcript with no pin is one
+  // its session's group of transcripts could not be admitted to a single scheme for (`prompt-scheme.ts`).
   const scheme = target.scheme;
   if (scheme === null || !parser.schemes.includes(scheme)) {
-    await stop(env.db, target, 'parse', now, undefined, { branch: 'scheme_unread', offset: target.parsedOffset, lineKind: 'unknown' });
+    const branch = scheme === null && declaredScheme(target.agent) !== null ? 'scheme_conflict' : 'scheme_unread';
+    await stop(env.db, target, 'parse', now, undefined, { branch, offset: target.parsedOffset, lineKind: 'unknown' });
     return { derived: 0, calls: 1, nextOffset: null, failure: 'parse' };
   }
   if (target.promptIdentityStale) {
@@ -784,7 +790,9 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     lines = lines.slice(0, LEGACY_REPLY_LINES_PER_READ);
   }
   const state: ParserState = structuredClone(initialState);
-  const input = { lines, sessionId: target.sessionId, scheme, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state,
+  const owners = await storedOwners(env.db, target, parser, lines, scheme, () => { calls += 1; });
+  const input = { lines, sessionId: target.sessionId, scheme, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state, owners,
+    ...(target.role === undefined ? {} : { role: target.role }),
     terminal: terminalOnly || (limits.completeFile && windowEnd === target.size) ? terminalRule(target, now, limits) : undefined };
   const parsedEvents = await parser.parse(input);
   const heldReplies = await legacyReplies(env.db, target.projectId, target.transcriptId, parsedEvents, initialState, () => { calls += 1; });
@@ -1322,4 +1330,33 @@ export async function parseTranscripts(env: ServerEnv, now: number, options: Par
   }
   const more = (await pendingTranscripts(env.db, now)).transcripts > 0;
   return { changed: derived, more };
+}
+
+/** Owner ids read per statement: under the bound-parameter ceiling with the project and session bound beside them. */
+const OWNERS_PER_READ = 90;
+
+/**
+ * The stored owner of each harness key a window's records could claim (`TranscriptParser.claimKeys`), read before the
+ * parse and handed to it read-only: every parse of the window, and every replay of a prefix of it, decides against the
+ * same owners.
+ */
+async function storedOwners(db: RelationalStore, target: ParseTarget, parser: TranscriptParser, lines: readonly ParsedLine[], scheme: PromptIdScheme,
+  counted: () => void): Promise<PromptOwners | undefined> {
+  const keys = await parser.claimKeys?.(lines, scheme, target.sessionId);
+  if (keys === undefined || keys.size === 0) return undefined;
+  const byId = new Map([...keys].map(([key, id]) => [id, key]));
+  const ids = [...byId.keys()];
+  const owners: [string, { thread: string; record: string }][] = [];
+  for (let at = 0; at < ids.length; at += OWNERS_PER_READ) {
+    const chunk = ids.slice(at, at + OWNERS_PER_READ);
+    const { results } = await db.prepare(`SELECT prompt_id, source_thread, source_record FROM prompt_batches
+        WHERE project_id = ? AND prompt_id IN (${chunk.map(() => '?').join(', ')}) AND session_id = ? AND claim = 'owner'`)
+      .bind(target.projectId, ...chunk, target.sessionId).all<{ prompt_id: string; source_thread: string | null; source_record: string | null }>();
+    counted();
+    for (const row of results) {
+      const key = byId.get(row.prompt_id);
+      if (key !== undefined && row.source_record !== null) owners.push([key, { thread: row.source_thread ?? '', record: row.source_record }]);
+    }
+  }
+  return promptOwners(owners);
 }

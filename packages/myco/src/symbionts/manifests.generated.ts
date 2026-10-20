@@ -431,16 +431,6 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "event": "user_prompt",
           "scope": "this_agent",
           "when": {
-            "prompt_starts_with": "<command-message>"
-          },
-          "action": "drop",
-          "reason": "claude-code-slash-command-dispatch",
-          "trim": true
-        },
-        {
-          "event": "user_prompt",
-          "scope": "this_agent",
-          "when": {
             "prompt_starts_with": "<command-name>"
           },
           "action": "drop",
@@ -527,6 +517,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       ],
       "displayEnvelopeTags": [
+        "command-message",
         "command-args",
         "command-contents",
         "timestamp",
@@ -987,9 +978,10 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "promptIdentity": {
       "kind": "harness-key",
-      "scheme": "claude-v1",
+      "scheme": "claude-v2",
       "hookKey": "prompt_id",
-      "transcriptKey": "promptId"
+      "transcriptKey": "promptId",
+      "readBeforePin": "claude-v1"
     }
   },
   {

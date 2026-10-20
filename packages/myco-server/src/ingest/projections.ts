@@ -8,10 +8,11 @@ import { PROJECT_ARCHIVED } from './projects.js';
 import { NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 import { IMPORT_DISABLED, importEnabledChecks } from '../core/import-policy.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
+import { isPromptClaim } from '@goondocks/myco-shared/prompt-identity';
 import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
 import { toolInputPreview } from '../core/tool-input.js';
 import { bundlePublicationStatements, type PreparedBundle } from '../core/archive-bundle.js';
-import { declaredScheme } from './prompt-scheme.js';
+import { admittedScheme } from './prompt-scheme.js';
 
 export interface PreparedToolInput {
   key: string;
@@ -441,14 +442,18 @@ const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
 /** A prompt row: inserted once, then merged by events that rank higher in the total order (client time, then the smaller event id, so ties are decided the same way in any delivery order) — the highest-ranked event supplies every merged column, an absent field included, so no other event fills one; `ended_at` comes from the earliest response of the same machine, so a response another machine posted before the prompt existed never sets it. */
 const prompt = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
   const blob = p.blob as string | undefined;
+  // The source of a parsed prompt's identity is the parse's to state; a prompt from anywhere else carries none.
+  const source = e.producer.adapter === TRANSCRIPT_PARSE_ADAPTER && isPromptClaim(p.claim)
+    ? { claim: p.claim, key: opt(p.sourceKey), thread: opt(p.sourceThread), record: opt(p.sourceRecord) }
+    : { claim: null, key: null, thread: null, record: null };
   const newer = '(excluded.updated_at > prompt_batches.updated_at OR (excluded.updated_at = prompt_batches.updated_at AND excluded.event_id < prompt_batches.event_id))';
   return {
     identities: [],
     admission: [],
     projections: [
       db.prepare(`INSERT INTO prompt_batches
-          (project_id, prompt_id, session_id, event_id, parent_prompt_id, thread_id, thread_label, origin, prompt_kind, text, blob_key, content_hash, prompt_key_hash, created_at, updated_at, ended_at, token_id, received_at)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          (project_id, prompt_id, session_id, event_id, parent_prompt_id, thread_id, thread_label, origin, prompt_kind, text, blob_key, content_hash, prompt_key_hash, claim, source_key, source_thread, source_record, created_at, updated_at, ended_at, token_id, received_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                (SELECT MIN(r.created_at) FROM responses r JOIN sessions s ON s.project_id = r.project_id AND s.session_id = r.session_id
                  WHERE r.project_id = ? AND r.prompt_id = ? AND s.machine_id IS ?), ?, ?
          WHERE ${RAW_ROW_GATE}
@@ -461,20 +466,31 @@ const prompt = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
           ended_at = COALESCE(prompt_batches.ended_at, excluded.ended_at),
           created_at = MIN(prompt_batches.created_at, excluded.created_at),
           updated_at = MAX(prompt_batches.updated_at, excluded.updated_at)
-        WHERE excluded.content_hash = prompt_batches.content_hash`)
+        WHERE excluded.content_hash = prompt_batches.content_hash AND excluded.source_key IS prompt_batches.source_key
+          AND excluded.source_thread IS prompt_batches.source_thread AND excluded.source_record IS prompt_batches.source_record`)
         .bind(ctx.projectId, p.promptId, e.sessionId, e.eventId, opt(p.parentPromptId), opt(p.threadId), opt(p.threadLabel), p.origin, opt(p.promptKind),
-              opt(p.text), opt(blob), contentHash, opt(p.promptKeyHash), e.createdAt, e.createdAt, ctx.projectId, p.promptId, ctx.machineId, ctx.tokenId, ctx.now,
+              opt(p.text), opt(blob), contentHash, opt(p.promptKeyHash), source.claim, source.key, source.thread, source.record, e.createdAt, e.createdAt, ctx.projectId, p.promptId, ctx.machineId, ctx.tokenId, ctx.now,
               ...rawGateParams(ctx, e)),
       ...reopensSession(db, ctx, e, p),
     ],
     // A turn a member shipped can take a session's lifecycle out of an import's
     // hands; one the parse derived cannot, and runs nothing.
-    incidental: p.origin !== 'user' || e.producer.adapter === TRANSCRIPT_PARSE_ADAPTER ? []
-      : [resolvePresentedDates(db, ctx.projectId, e.sessionId, { sql: RAW_ROW_GATE, params: rawGateParams(ctx, e) })],
-    reads: [db.prepare(`SELECT content_hash FROM prompt_batches WHERE project_id = ? AND prompt_id = ?`).bind(ctx.projectId, p.promptId)],
+    incidental: [
+      // A prompt id another source already holds: the second derivation is refused, and recorded once.
+      ...(source.claim === null ? [] : [db.prepare(`INSERT OR IGNORE INTO prompt_identity_conflicts
+          (project_id, session_id, prompt_id, source_key, source_thread, source_record, created_at)
+        SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${RAW_ROW_GATE} AND EXISTS (SELECT 1 FROM prompt_batches s WHERE s.project_id = ? AND s.prompt_id = ?
+          AND NOT (s.source_key IS ? AND s.source_thread IS ? AND s.source_record IS ?))`)
+        .bind(ctx.projectId, e.sessionId, p.promptId, source.key ?? '', source.thread ?? '', source.record ?? '', e.createdAt, ...rawGateParams(ctx, e),
+          ctx.projectId, p.promptId, source.key, source.thread, source.record)]),
+      ...(p.origin !== 'user' || e.producer.adapter === TRANSCRIPT_PARSE_ADAPTER ? []
+        : [resolvePresentedDates(db, ctx.projectId, e.sessionId, { sql: RAW_ROW_GATE, params: rawGateParams(ctx, e) })]),
+    ],
+    reads: [db.prepare(`SELECT content_hash, source_key, source_thread, source_record FROM prompt_batches WHERE project_id = ? AND prompt_id = ?`).bind(ctx.projectId, p.promptId)],
     refusal: () => NOT_STORED,
     conflict: (rows) => {
-      const row = rows[0]?.[0] as { content_hash: string } | undefined;
+      const row = rows[0]?.[0] as { content_hash: string; source_key: string | null; source_thread: string | null; source_record: string | null } | undefined;
+      if (row && (row.source_key !== source.key || row.source_thread !== source.thread || row.source_record !== source.record)) return 'prompt id is held by another source record';
       if (row && row.content_hash !== contentHash) return 'prompt text differs from the stored prompt';
       return 'prompt did not apply';
     },
@@ -660,6 +676,7 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
   // which is today's behaviour on every member.
   const headMatches = `NOT EXISTS (SELECT 1 FROM transcripts WHERE project_id = ? AND transcript_id = ? AND head_hash IS NOT NULL AND ? IS NOT NULL AND head_hash <> ?)`;
   const segmentWritten = 'EXISTS (SELECT 1 FROM transcript_segments WHERE project_id = ? AND transcript_id = ? AND base_offset = ? AND event_id = ?)';
+  const admitted = admittedScheme(ctx.projectId, e.sessionId, opt(p.agent) as string | null);
   const owned = (rows: ReadRows): { size: number; segment_count: number } | null => {
     const transcript = rows[0]?.[0] as { size: number; segment_count: number; machine_id: string } | undefined;
     return transcript && transcript.machine_id === ctx.machineId ? transcript : null;
@@ -679,14 +696,15 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
       // `imported_at` is the lane of the NEWEST segment, not of the first: a
       // session imported and then continued live is live work, and a COALESCE
       // would leave it in the backfill lane for the rest of its life. The prompt
-      // identity scheme is written by the insert alone (`prompt-scheme.ts`).
+      // identity scheme is written by the insert alone, admitted into its
+      // session's group of the agent's transcripts (`prompt-scheme.ts`).
       db.prepare(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, origin_path, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id, imported_at, prompt_identity_scheme)
-          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ? WHERE ${RAW_ROW_GATE} AND ${segmentWritten}
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ${admitted.sql} WHERE ${RAW_ROW_GATE} AND ${segmentWritten}
           ON CONFLICT (project_id, transcript_id) DO UPDATE SET size = excluded.size, segment_count = transcripts.segment_count + 1,
             last_received_at = excluded.last_received_at, head_hash = COALESCE(transcripts.head_hash, excluded.head_hash),
             imported_at = excluded.imported_at`)
         .bind(ctx.projectId, transcriptId, e.sessionId, ctx.machineId, opt(p.agent), opt(p.originPath), opt(p.role) ?? 'primary', headHash, size, ctx.now, ctx.now, ctx.tokenId,
-              e.channel === 'import' ? ctx.now : null, declaredScheme(opt(p.agent) as string | null),
+              e.channel === 'import' ? ctx.now : null, ...admitted.params,
               ...rawGateParams(ctx, e), ctx.projectId, transcriptId, baseOffset, e.eventId),
       db.prepare(`UPDATE sessions SET agent = COALESCE(agent, ?) WHERE project_id = ? AND session_id = ?
           AND ${RAW_ROW_GATE} AND ${segmentWritten}`)

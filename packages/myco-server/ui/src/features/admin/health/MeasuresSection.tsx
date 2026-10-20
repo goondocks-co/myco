@@ -6,7 +6,7 @@ import { formatElapsed } from '../../../lib/format';
 import { harnessLabel } from '../../../lib/harness';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { AdminSection } from '../AdminFrame';
-import type { KpiReport, Measure } from './wire';
+import type { KpiReport, Measure, PromptIdentityCounts } from './wire';
 import { countOf, percent, perUnit, sampleWords } from './words';
 
 interface MeasureProps {
@@ -170,6 +170,55 @@ function Measures({ report }: { report: KpiReport }) {
           </>
         )}
       </Card>
+      <PromptIdentityCard rows={report.promptIdentity} />
     </div>
+  );
+}
+
+/** What each count on the identity card is, in the words the card says it in. */
+const IDENTITY_COUNTS: ReadonlyArray<readonly [keyof Omit<PromptIdentityCounts, 'harness' | 'sampleSize'>, string, string]> = [
+  ['unrecognized', 'line', 'of a shape Myco does not know'],
+  ['unmarked', 'prompt', 'with no record of who opened it'],
+  ['openerConflict', 'prompt', 'whose record names two openers'],
+  ['contractViolation', 'line', 'that contradicts its transcript'],
+  ['reused', 'prompt', 'reusing an earlier prompt\u2019s id'],
+  ['identityConflicts', 'line', 'refused a second name'],
+  ['schemeConflicts', 'transcript', 'not read: its session needs two schemes'],
+  ['duplicatePromptSkips', 'context answer', 'not recorded against a prompt already named'],
+];
+
+/**
+ * How the agents' transcripts named their prompts: counts of what a parse kept without naming it the usual way. A
+ * nonzero count says a format moved or a rare case happened; the card names no session or line.
+ */
+function PromptIdentityCard({ rows }: { rows: readonly PromptIdentityCounts[] }) {
+  return (
+    <Card className="flex flex-col gap-s3" data-health-identity="">
+      <h3 className="t-h3 text-ink">Transcript lines Myco could not name the usual way</h3>
+      {rows.length === 0 ? (
+        <p className="t-small text-muted">No transcript in this window was parsed under a scheme that records how each prompt is named.</p>
+      ) : (
+        <ul aria-label="Prompt naming counts by agent" className="flex flex-col divide-y divide-line">
+          {rows.map((row) => {
+            const nonzero = IDENTITY_COUNTS.filter(([field]) => row[field] > 0);
+            return (
+              <li key={row.harness} className="flex flex-col gap-s1 py-s2" data-identity-agent="">
+                <span className="flex flex-wrap items-baseline justify-between gap-x-s4">
+                  <span className="t-body font-medium text-ink" data-cell="agent">{harnessLabel(row.harness)}</span>
+                  <span className="t-meta text-faint" data-cell="sample">n = {countOf(row.sampleSize, 'prompt')}</span>
+                </span>
+                {nonzero.length === 0 ? <span className="t-small text-muted" data-cell="none">Every line was named the usual way.</span> : (
+                  <span className="flex flex-wrap gap-x-s4 gap-y-s1 t-small text-muted">
+                    {nonzero.map(([field, unit, words]) => (
+                      <span key={field} data-cell={field}><span className="tabular-nums text-ink-2">{countOf(row[field], unit)}</span> {words}</span>
+                    ))}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Card>
   );
 }
