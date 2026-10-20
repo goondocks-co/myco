@@ -20,6 +20,7 @@
  * A rule whose read fails is named in `unavailable` and the others still answer, so one unreadable fact never hides
  * the rest, and an empty list with nothing unavailable means nothing needs anyone.
  */
+import { readPromptReferenceHealth, type PromptReferenceHealth } from '../read/prompt-reference-health.js';
 import { repositoriesNeeded } from '../read/repository-requirements.js';
 import type { ServerEnv } from './adapters.js';
 import { CAPABILITY_HOLDS } from '@goondocks/myco-shared/run-holds';
@@ -66,6 +67,7 @@ export type AttentionItem =
   | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string }
   | { kind: 'runs_without_audit'; tone: 'warn'; projectId: string; runs: number; closed: number; since: number; latestAt: number; runId: string }
   | { kind: 'search_index_behind'; tone: 'warn'; pendingBlobs: number; pendingSince: number | null; failedUpdates: number; failingSince: number | null; lastSuccessAt: number | null }
+  | ({ kind: 'prompt_references'; tone: 'warn' } & PromptReferenceHealth)
   | { kind: 'transcripts_stopped'; tone: 'warn'; projectId: string; transcripts: number; latestAt: number | null; reasons: Record<string, number>; latestDiagnostic?: import('../ingest/parse.js').ParseDiagnostic }
   | { kind: 'runs_held_for_capability'; tone: 'warn'; capability: string; runs: number; since: number }
   | { kind: 'no_worker'; tone: 'bad'; runs: number; since: number | null; lastContactAt: number | null }
@@ -147,6 +149,14 @@ const RULES: readonly Rule[] = [
         pendingBlobs: backlog.pending, pendingSince: backlog.oldestStoredAt,
         failedUpdates: upkeep.unrecovered?.runs ?? 0, failingSince: upkeep.unrecovered?.since ?? null, lastSuccessAt: upkeep.lastSuccessAt,
       }];
+    },
+  },
+  {
+    kind: 'prompt_references',
+    read: async (env, now) => {
+      const health = await readPromptReferenceHealth(env.db, now);
+      return health.total > 0 || health.agents.some((agent) => agent.keyMismatches > 0)
+        ? [{ kind: 'prompt_references', tone: 'warn', ...health }] : [];
     },
   },
   {

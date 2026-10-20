@@ -230,6 +230,8 @@ export interface NeedsYouWords {
 /** A part of Health, by its anchor. */
 const healthAt = (anchor: string): string => `${HEALTH_PATH}#${anchor}`;
 
+const PROMPT_SCOPE_WORDS: Readonly<Record<string, string>> = { absent_key: 'with no prompt key', steering: 'during a turn already in progress', scheme: 'with an unsupported prompt format', transcript_only: 'from transcript-only capture' };
+
 export function attentionWords(item: AttentionItem, now: number, projectName: (projectId: string) => string | null): NeedsYouWords {
   const inProject = (projectId: string) => {
     const name = projectName(projectId);
@@ -265,6 +267,19 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
           ? `${count(item.pendingBlobs, 'item')} ${item.pendingBlobs === 1 ? 'is' : 'are'} waiting to be searchable${since === null ? '' : ` since ${clockOrDay(since, now)}`}. Search still answers; new work takes longer to appear.`
           : `Its updates have failed${since === null ? '' : ` since ${clockOrDay(since, now)}`}. Search still answers; new work takes longer to appear.`,
         action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.upkeep) },
+      };
+    }
+    case 'prompt_references': {
+      const missing = item.total === 0 ? '' : `Missing prompt links: ${item.dangling.receipt_selected} spore selections, ${item.dangling.answer_selected} prepared answers, ${item.dangling.receipt_delivered} spore deliveries and ${item.dangling.answer_delivered} answer deliveries. `;
+      const agents = item.agents.map((agent) => {
+        const percent = (share: number | null) => share === null ? 'no sample' : `${Math.round(share * 100)}%`;
+        const reasons = Object.entries(agent.scopeReasons).map(([reason, sample]) => `${percent(sample.share)} ${PROMPT_SCOPE_WORDS[reason] ?? 'without a prompt link'} (${count(sample.asks, 'ask')})`);
+        return `${harnessLabel(agent.agent)}: ${count(agent.keyMismatches, 'text mismatch', 'text mismatches')}; ${percent(agent.sessionScopedShare)} session-wide${reasons.length === 0 ? '' : ` (${listed(reasons)})`}, ${percent(agent.legacyShare)} from older members, across ${count(agent.asks, 'ask')}.`;
+      });
+      return {
+        title: item.total > 0 ? `${count(item.total, 'context link')} ${item.total === 1 ? 'names' : 'name'} prompts the Deployment doesn’t hold` : 'Prompt text disagrees between capture and context',
+        detail: `In the last ${Math.round((now - item.since) / DAY)} days. ${missing}${agents.join(' ')} Session-wide context and older members are expected.`,
+        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
       };
     }
     case 'transcripts_stopped':
@@ -374,6 +389,7 @@ export const ATTENTION_CHECKS: Readonly<Record<AttentionKind, string>> = {
   runs_without_audit: 'agents’ accounts of their work',
   search_index_behind: 'search',
   transcripts_stopped: 'transcripts',
+  prompt_references: 'prompt links',
   runs_held_for_capability: 'waiting tasks',
   no_worker: 'machines',
   access_key_expiring: 'access keys',

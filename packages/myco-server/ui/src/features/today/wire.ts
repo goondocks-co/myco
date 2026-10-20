@@ -106,6 +106,7 @@ export type AttentionItem =
   | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string }
   | { kind: 'runs_without_audit'; tone: 'warn'; projectId: string; runs: number; closed: number; since: number; latestAt: number; runId: string }
   | { kind: 'search_index_behind'; tone: 'warn'; pendingBlobs: number; pendingSince: number | null; failedUpdates: number; failingSince: number | null; lastSuccessAt: number | null }
+  | { kind: 'prompt_references'; tone: 'warn'; since: number; total: number; dangling: Record<'receipt_selected' | 'answer_selected' | 'receipt_delivered' | 'answer_delivered', number>; agents: Array<{ agent: string; asks: number; sessionScoped: number; scopeReasons: Record<string, { asks: number; share: number }>; legacy: number; sessionScopedShare: number | null; legacyShare: number | null; keyMismatches: number }> }
   | { kind: 'transcripts_stopped'; tone: 'warn'; projectId: string; transcripts: number; latestAt: number | null; reasons: Record<string, number>; latestDiagnostic?: { branch: 'malformed_lines' | 'event_not_stored' | 'no_progress' | 'event_refused' | 'blob_absent' | 'record_too_large' | 'scheme_unread' | 'scheme_conflict'; offset: number; lineKind: string } }
   | { kind: 'runs_held_for_capability'; tone: 'warn'; capability: string; runs: number; since: number }
   | { kind: 'no_worker'; tone: 'bad'; runs: number; since: number | null; lastContactAt: number | null }

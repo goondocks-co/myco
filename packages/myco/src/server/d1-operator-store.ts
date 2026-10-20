@@ -4,8 +4,7 @@
  *
  * It serves statements one at a time. It runs no batch, and refuses one: the D1 API answers one statement per request
  * here, and a store that ran a batch's statements one by one would break the all-or-nothing batch every caller of a
- * store may rely on. What runs over it — a first-owner setup (`core/first-owner.ts`) — carries a guard on each
- * statement instead.
+ * store may rely on. Reads issue independent statements; writes carry their guard on each statement.
  */
 import type { PreparedStatement, RelationalStore, RunResult } from '@myco-server-worker/core/adapters.js';
 import { queryD1Answer, type D1QueryContext } from './cloudflare-d1-export.js';

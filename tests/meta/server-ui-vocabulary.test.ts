@@ -43,6 +43,8 @@ const SHARED_SRC = path.join(REPO_ROOT, 'packages', 'myco-shared', 'src');
  * covered by an old one.
  */
 const MECHANISM_ALLOWED: Readonly<Record<string, string>> = {
+  'features/today/words.ts:… … prompts the Deployment doesn’t hold':
+    'The administrator needs to distinguish a missing stored prompt from an agent that has not received context',
   'features/admin/health/words.ts:myco server backup-credential --target cloudflare':
     'The exact operator command is required to add the missing backup access key',
   'features/admin/workers.ts:Legacy worker — uses member credential':

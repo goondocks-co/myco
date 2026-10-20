@@ -472,6 +472,40 @@ describe('Today', () => {
     expect([...names.values()]).toEqual(['Your machine', 'Another of your machines', 'Lin']);
   });
 
+  for (const width of [1280, 390]) it(`words missing prompt links and their sample accessibly at ${width}px`, async () => {
+    screenWidth(width);
+    const item: AttentionItem = { kind: 'prompt_references', tone: 'warn', since: NOW - 7 * 24 * HOUR, total: 2,
+      dangling: { receipt_selected: 1, answer_selected: 0, receipt_delivered: 1, answer_delivered: 0 },
+      agents: [{ agent: 'codex', asks: 4, sessionScoped: 2, scopeReasons: { absent_key: { asks: 1, share: 0.25 }, steering: { asks: 1, share: 0.25 } }, legacy: 1, sessionScopedShare: 0.5, legacyShare: 0.25, keyMismatches: 1 }] };
+    server(day({ attention: { items: [item], unavailable: [] } }));
+    mount('/');
+    const title = '2 context links name prompts the Deployment doesn’t hold';
+    if (width === 390) {
+      const control = await screen.findByRole('button', { name: new RegExp(title) });
+      expect(control.textContent).toContain(title);
+      expect(control).toHaveAccessibleName(new RegExp(title));
+      fireEvent.click(control);
+    }
+    const headings = await screen.findAllByText(title);
+    const row = headings.map(heading => heading.closest('[data-needs-you-item]')).find(Boolean)!;
+    expect(row.textContent).toContain('50% session-wide');
+    expect(row.textContent).toContain('25% from older members');
+    expect(row.textContent).toContain('1 text mismatch');
+    expect(row.textContent).toContain('25% with no prompt key (1 ask)');
+    expect(row.textContent).not.toMatch(/dangling|receipt|v1|spore_injections/);
+    expect(within(row as HTMLElement).getByRole('link', { name: 'Open Health →' })).toBeTruthy();
+  });
+
+  it('words a text mismatch with no missing reference and names an unreadable prompt check', async () => {
+    const item: AttentionItem = { kind: 'prompt_references', tone: 'warn', since: NOW - 7 * 24 * HOUR, total: 0,
+      dangling: { receipt_selected: 0, answer_selected: 0, receipt_delivered: 0, answer_delivered: 0 }, agents: [] };
+    expect(attentionWords(item, NOW, () => null).title).toBe('Prompt text disagrees between capture and context');
+    screenWidth(1280);
+    server(day({ attention: { items: [], unavailable: ['prompt_references'] } }));
+    mount('/');
+    expect(await screen.findByText('Couldn’t check prompt links just now.')).toBeTruthy();
+  });
+
   it('gives an admin "Needs you", each item with its problem, detail and one action', async () => {
     screenWidth(1280);
     server(day());
