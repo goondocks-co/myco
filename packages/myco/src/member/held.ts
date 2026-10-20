@@ -21,6 +21,6 @@ export function restoreHeldReceiptsForHook(root: string, sessionId: string, into
   if (!fs.existsSync(pendingRoot(opts.mycoHome))) return;
   if (into.routing === null) throw new Error('Held receipts require a destination');
   for (const held of heldSessionStates(root, into.routing, sessionId, opts.mycoHome)) {
-    updateSessionState(into.dir, sessionId, (state) => mergeHeldState(state, held), opts.now);
+    updateSessionState(into.dir, sessionId, (state) => mergeHeldState(state, held, into.dir, sessionId), opts.now);
   }
 }

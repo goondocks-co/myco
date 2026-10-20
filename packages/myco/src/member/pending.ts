@@ -21,6 +21,7 @@ import { BLOBS_DIRNAME, MemberSpool, REFUSED_LOG_FILE, SPOOL_DIRNAME, toWire, ty
 import { deploymentKeyFor, deploymentUrl, readRegistryEntry, readRegistryEntryResult } from './registry.js';
 import { memberRoutingIdentity, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
 import { mergeSessionState, pointersOf, readSessionState, readSessionStateResult, sessionStatePath, turnsFileOf, type SessionState } from './session-state.js';
+import { promptAnswerKey, readSessionContext } from './context-cache.js';
 import { isProjectId } from './constants.js';
 import { CaptureLossLedger, recordSessionLoss } from './capture-loss.js';
 import { HELD_CAPTURE_TTL_MS } from '@goondocks/myco-shared/member-protocol';
@@ -830,7 +831,7 @@ function moveHeld(rootKey: string, into: MemberSpool, opts: { mycoHome: string; 
     // The session's state moves with its journal, under the session's lock in the project's spool: its transcript
     // pointers, so the transcript ships; and its prompt map and prompt id, so nothing is minted twice.
     into.appendAndRecord(sessionId, [], (target) => {
-      mergeHeldState(target, heldState);
+      mergeHeldState(target, heldState, into.dir, sessionId);
       for (const key of damagedKeys) recordSessionLoss(target, key, 'record', opts.now);
     }, opts.now);
     for (const file of [path.join(dir, `${sessionId}.jsonl`), sessionStatePath(dir, sessionId), turnsFileOf(dir, sessionId)]) {
@@ -862,9 +863,10 @@ function removeEmpty(dir: string): void {
 }
 
 /**
- * `held` folded into `target`, the state the project's spool holds for the same session: what the project's spool
- * recorded stands, and what only the held state recorded is added (`SESSION_STATE_MERGE`).
+ * `held` folded into `target`, the state the project's spool holds for the same session, concern by concern
+ * (`CONCERN_MERGE`). The held capture's context cache stays behind, so the answer the session keeps is the one cached
+ * in the project's spool at `projectDir`.
  */
-export function mergeHeldState(target: SessionState, held: SessionState): void {
-  mergeSessionState(target, held);
+export function mergeHeldState(target: SessionState, held: SessionState, projectDir: string, sessionId: string): void {
+  mergeSessionState(target, held, { keptAnswerAsk: promptAnswerKey(readSessionContext(projectDir, sessionId)) });
 }

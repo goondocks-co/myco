@@ -18,9 +18,14 @@ import path from 'node:path';
 import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { canonicalPromptId, CONTEXT_DELIVERED_KIND } from '@goondocks/myco-shared/prompt-identity';
 import { deriveId } from '@myco/member/envelope.js';
-import { appendPending, flushPending, mergeHeldState } from '@myco/member/pending.js';
-import { emptySessionState, readSessionState } from '@myco/member/session-state.js';
-import { writeSessionContext } from '@myco/member/context-cache.js';
+import { appendPending, flushPending } from '@myco/member/pending.js';
+import { emptySessionState, mergeSessionState, readSessionState } from '@myco/member/session-state.js';
+import { readSessionContext, writeSessionContext } from '@myco/member/context-cache.js';
+import { legacySpoolDir, migrateLegacySpool } from '@myco/member/spool-migration.js';
+import { prefetchContext } from '@myco/member/prefetch.js';
+import { ServerClient } from '@myco/member/transport.js';
+import { unboundedBudget } from '@myco/member/budget.js';
+import { holdsTranscriptTail } from '@myco/member/backlog.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
@@ -159,6 +164,74 @@ describe('a Claude Code prompt under prompt-identity', () => {
     expect(delivered(sessionId)).toEqual([{
       receiptId: '00000000-0000-4000-8000-000000000001', answerId: '00000000-0000-4000-8000-0000000000a1', renderedIn: await promptIdFor(sessionId, 'user_prompt', k3),
     }]);
+    // The helper records each ask it answered as settled, so no copy of it is owed again.
+    expect(readSessionState(project.dir, sessionId).settledAsks?.prompt).toBe(served.asked.at(-1)?.at);
+  });
+
+  it('renders neither answer again when a legacy spool whose answer was rendered migrates beside a routed spool whose own answer was rendered', async () => {
+    const sessionId = 'sess-render-cache-merge';
+    const tx = transcript(sessionId);
+    const served = serving('turn,project-name,prompt-identity');
+    await runHook('session-start', { session_id: sessionId, transcript_path: tx, hook_event_name: 'SessionStart' }, { helpers: 'run', fetch: served.fetch });
+    const route = { projectId: 'proj_1', serverUrl: 'https://member-test.invalid' };
+    const project = new MemberSpool(route, { mycoHome });
+    const source = new MemberSpool(null, { mycoHome, dir: legacySpoolDir('proj_1', mycoHome) });
+    const at = Date.now() - 60_000;
+    const targetAsk = at;
+    const sourceAsk = at + 1000;
+    project.appendAndRecord(sessionId, [], (state) => { state.renderedAsk = targetAsk; });
+    source.appendAndRecord(sessionId, [], (state) => { state.renderedAsk = sourceAsk; });
+    writeSessionContext(project.dir, mycoHome, sessionId, { version: 1, prompt: { context: 'ALREADY RENDERED TARGET ANSWER', at: targetAsk + 1, askedAt: targetAsk,
+      receiptId: '00000000-0000-4000-8000-0000000000b0', answerId: '00000000-0000-4000-8000-0000000000c0' } });
+    writeSessionContext(source.dir, mycoHome, sessionId, { version: 1, prompt: { context: 'LATER RENDERED SOURCE ANSWER', at: sourceAsk + 1, askedAt: sourceAsk,
+      receiptId: '00000000-0000-4000-8000-0000000000b1', answerId: '00000000-0000-4000-8000-0000000000c1' } });
+    expect(migrateLegacySpool(route, mycoHome)).toMatchObject({ status: 'migrated' });
+    expect(readSessionContext(project.dir, sessionId).prompt?.askedAt).toBe(targetAsk);
+    const next = await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'continue', prompt_id: '22222222-2222-4222-8222-222222222222' }, { helpers: 'run', fetch: served.fetch });
+    expect(next.stdout).not.toContain('ALREADY RENDERED TARGET ANSWER');
+    expect(next.stdout).not.toContain('LATER RENDERED SOURCE ANSWER');
+    expect(delivered(sessionId)).toEqual([]);
+  });
+
+  it('owes no ask older than one the project\'s helper already answered when delayed held capture joins, and keeps the newer answer', async () => {
+    const sessionId = 'sess-settled-ask-merge';
+    const tx = transcript(sessionId);
+    const served = serving('turn,project-name,prompt-identity');
+    await runHook('session-start', { session_id: sessionId, transcript_path: tx, hook_event_name: 'SessionStart' }, { helpers: 'run', fetch: served.fetch });
+    const route = { projectId: 'proj_1', serverUrl: 'https://member-test.invalid' };
+    const project = new MemberSpool(route, { mycoHome });
+    const oldAt = Date.now() - 60_000;
+    const newAt = oldAt + 1000;
+    // The project's helper answered the newer ask and settled it.
+    writeSessionContext(project.dir, mycoHome, sessionId, { version: 1, prompt: { context: 'CURRENT ANSWER', at: newAt + 1, askedAt: newAt } });
+    project.appendAndRecord(sessionId, [], (state) => { delete state.contextAsks; state.renderedAsk = newAt; });
+    const held = { root: '/checkout/joining', rootKey: 'e'.repeat(32), serverUrl: route.serverUrl };
+    appendPending(held, sessionId, [], (state) => { state.contextAsks = [{ kind: 'prompt', identity: 1, promptId: '11111111-1111-4111-8111-111111111111', text: 'STALE OLD ASK', at: oldAt }]; }, { mycoHome, now: Date.now() });
+    flushPending(held.rootKey, project, { mycoHome, now: Date.now() });
+    await prefetchContext({ spool: project, client: new ServerClient({ ...route, token: rig.token }, served.fetch), serverUrl: route.serverUrl, mycoHome, budget: unboundedBudget(), now: Date.now });
+    expect(readSessionContext(project.dir, sessionId).prompt?.askedAt).toBe(newAt);
+    expect(served.asked).toEqual([]);
+  });
+
+  it('keeps a resumed session resumed when its delayed held capture recorded an earlier end, and ended when the end is the later fact', async () => {
+    const route = { projectId: 'proj_1', serverUrl: 'https://member-test.invalid' };
+    const project = new MemberSpool(route, { mycoHome });
+    const oldAt = Date.now() - 60_000;
+    const now = Date.now();
+    const resumed = 'sess-resumed-state-merge';
+    const resumedHeld = { root: '/checkout/joining', rootKey: 'f'.repeat(32), serverUrl: route.serverUrl };
+    appendPending(resumedHeld, resumed, [], (state) => { state.endedAt = oldAt; state.hookAt = oldAt; }, { mycoHome, now: oldAt });
+    project.appendAndRecord(resumed, [], (state) => { delete state.endedAt; state.hookAt = now; }, now);
+    expect(holdsTranscriptTail(project, readSessionState(project.dir, resumed), now, route.serverUrl, false)).toBe(true);
+    flushPending(resumedHeld.rootKey, project, { mycoHome, now });
+    expect(holdsTranscriptTail(project, readSessionState(project.dir, resumed), now, route.serverUrl, false)).toBe(true);
+    // The other way round: the held capture ended the session after the project's last hook.
+    const ended = 'sess-ended-state-merge';
+    const endedHeld = { root: '/checkout/joining-2', rootKey: '9'.repeat(32), serverUrl: route.serverUrl };
+    project.appendAndRecord(ended, [], (state) => { delete state.endedAt; state.hookAt = oldAt; }, oldAt);
+    appendPending(endedHeld, ended, [], (state) => { state.endedAt = now; state.hookAt = now; }, { mycoHome, now });
+    flushPending(endedHeld.rootKey, project, { mycoHome, now });
+    expect(readSessionState(project.dir, ended).endedAt).toBe(now);
   });
 
   it('reports nothing for an answer that names no row', async () => {
@@ -259,7 +332,7 @@ describe('a Codex prompt, whose harness key names a turn', () => {
       const from = emptySessionState();
       if (target !== undefined) into.turn = { ...target };
       if (held !== undefined) from.turn = { ...held };
-      mergeHeldState(into, from);
+      mergeSessionState(into, from, { keptAnswerAsk: undefined });
       expect({ target, held, turn: into.turn }).toEqual({ target, held, turn: merged });
     }
   });

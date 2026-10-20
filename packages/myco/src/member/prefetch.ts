@@ -84,11 +84,15 @@ function sessionsWithAsks(spool: MemberSpool): Array<{ sessionId: string; asks: 
   return held.sort((a, b) => b.oldest - a.oldest);
 }
 
-/** Drop an ask the Deployment has answered; a newer ask of the same kind, written meanwhile, stays. */
+/**
+ * Drop an ask the Deployment has answered, and record it settled so it is owed no longer wherever it is found again; a
+ * newer ask of the same kind, written meanwhile, stays.
+ */
 function settleAsk(spool: MemberSpool, sessionId: string, ask: ContextAsk, now: number): void {
   updateSessionState(spool.dir, sessionId, (state) => {
     state.contextAsks = (state.contextAsks ?? []).filter((held) => !(held.kind === ask.kind && held.at === ask.at));
     if (state.contextAsks.length === 0) delete state.contextAsks;
+    state.settledAsks = { ...state.settledAsks, [ask.kind]: Math.max(state.settledAsks?.[ask.kind] ?? ask.at, ask.at) };
   }, now);
 }
 

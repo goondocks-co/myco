@@ -136,6 +136,11 @@ export interface SessionState {
    * here, written with the hook's own records, until the helper has asked.
    */
   contextAsks?: ContextAsk[];
+  /**
+   * The newest ask of each kind the member helper has settled (answered, or refused for good) and dropped from
+   * `contextAsks`: an ask of that kind at or before it is owed no longer, wherever it is found again.
+   */
+  settledAsks?: Partial<Record<ContextAsk['kind'], number>>;
   /** A transcript the member helper is to read prompts from (`member/transcript-prompts.ts`), and when it was asked. */
   promptBackfill?: { transcriptPath: string; at: number };
   /** When a hook last appended for this session: how a pass tells a live session from one its harness left. */
@@ -163,92 +168,138 @@ export function mergedTurn(target: SessionState['turn'], other: SessionState['tu
   return other?.id === target.id && other.promptId === undefined ? { id: target.id } : target;
 }
 
-/** How one field of a session's state is merged from the target state and another state of the same session. */
-type FieldMerge<K extends keyof SessionState> = (target: Readonly<SessionState>, other: Readonly<SessionState>) => SessionState[K];
-type KeyOf<T> = { [K in keyof SessionState]-?: NonNullable<SessionState[K]> extends T ? K : never }[keyof SessionState];
-
-/** The target's value: a fact about the target's own files or its current mutation. */
-const targetOnly = <K extends keyof SessionState>(key: K): FieldMerge<K> => (target) => target[key];
-/** The target's value, or the other's where the target holds none. */
-const targetFirst = <K extends keyof SessionState>(key: K): FieldMerge<K> => (target, other) => target[key] ?? other[key];
-/** Either state's entries, the target's winning a key both hold. */
-const entries = <K extends KeyOf<Record<string, unknown>>>(key: K): FieldMerge<K> =>
-  (target, other) => ({ ...other[key], ...target[key] }) as SessionState[K];
-/** Either state's members, once each. */
-const members = <K extends KeyOf<readonly string[]>>(key: K): FieldMerge<K> =>
-  (target, other) => [...new Set([...(other[key] as string[]), ...(target[key] as string[])])] as SessionState[K];
-/** The later of two instants or counts, where either holds one. */
-const later = <K extends KeyOf<number>>(key: K): FieldMerge<K> => (target, other) => {
-  const [a, b] = [target[key] as number | undefined, other[key] as number | undefined];
-  return (a === undefined ? b : b === undefined ? a : Math.max(a, b)) as SessionState[K];
-};
-/** The earlier of two instants, where either holds one. */
-const earlier = <K extends KeyOf<number>>(key: K): FieldMerge<K> => (target, other) => {
-  const [a, b] = [target[key] as number | undefined, other[key] as number | undefined];
-  return (a === undefined ? b : b === undefined ? a : Math.min(a, b)) as SessionState[K];
-};
+/** What a merge of two states of one session needs from outside them: the session's cached answer the merge keeps. */
+export interface MergeContext {
+  /** The ask instant of the prompt answer the merged session's context cache holds (`promptAnswerKey`), if any. */
+  keptAnswerAsk: number | undefined;
+}
 
 /**
- * How every field of a session's state is merged when another state of the same session joins it: a repository's held
- * capture adopted into its Project's spool (`pending.ts` `mergeHeldState`), and a legacy spool migrated into the routed
- * one (`spool-migration.ts`). What the target recorded stands, and what only the other recorded is added. Every field
- * names its rule: a field added to `SessionState` without one fails to compile here.
+ * The concerns a session's state is made of. Each owns its fields and merges them as one unit, because a field's value
+ * means something only beside the others of its concern; every field belongs to exactly one (`FIELD_CONCERN`).
  */
-export const SESSION_STATE_MERGE: { readonly [K in keyof SessionState]-?: FieldMerge<K> } = {
-  version: targetOnly('version'),
-  // The journal and marks file these count in are the target's.
-  highWater: targetOnly('highWater'),
-  markWater: targetOnly('markWater'),
-  markGeneration: targetOnly('markGeneration'),
-  startSettled: (target, other) => (target.startSettled ?? other.startSettled),
-  promptId: targetFirst('promptId'),
-  prompts: entries('prompts'),
-  transcript: targetFirst('transcript'),
-  // The other state's own transcript, where the target ships another, is one of the session's earlier files.
-  continuations: (target, other) => ({
-    ...other.continuations, ...target.continuations,
-    ...(other.transcript !== undefined && target.transcript !== undefined && other.transcript.path !== target.transcript.path
-      ? { [other.transcript.path]: other.transcript } : {}),
+type Concern = 'journal' | 'lifecycle' | 'start' | 'clocks' | 'retries' | 'transcripts' | 'receipts' | 'blocks' | 'agent' | 'rendered' | 'asks';
+
+/** Which concern owns each field: a field added to `SessionState` without one fails to compile here. */
+const FIELD_CONCERN = {
+  version: 'journal', highWater: 'journal', markWater: 'journal', markGeneration: 'journal', updatedAt: 'journal', pendingLosses: 'journal',
+  hookAt: 'lifecycle', endedAt: 'lifecycle', promptId: 'lifecycle', turn: 'lifecycle',
+  startSettled: 'start', startedAt: 'start',
+  lastAckAt: 'clocks', lastAccountedAt: 'clocks', lastDeliveryAt: 'clocks',
+  transcriptRetry: 'retries', eventRetry: 'retries',
+  transcript: 'transcripts', continuations: 'transcripts', siblings: 'transcripts', promptBackfill: 'transcripts',
+  prompts: 'receipts', planHashes: 'receipts', planPaths: 'receipts', planTagCount: 'receipts', attachmentKeys: 'receipts',
+  delivered: 'blocks', compactionOrdinal: 'blocks',
+  agent: 'agent', agentUnknown: 'agent',
+  renderedAsk: 'rendered',
+  contextAsks: 'asks', settledAsks: 'asks',
+} as const satisfies { readonly [K in keyof SessionState]-?: Concern };
+
+type FieldsOf<C extends Concern> = { [K in keyof SessionState]-?: (typeof FIELD_CONCERN)[K] extends C ? K : never }[keyof SessionState];
+/** A concern's merge: every field it owns, each named (`undefined` where the merged state holds none). */
+type ConcernMerge<C extends Concern> = (target: Readonly<SessionState>, other: Readonly<SessionState>, context: MergeContext) =>
+  { [K in FieldsOf<C>]-?: SessionState[K] };
+
+const later = (a: number | undefined, b: number | undefined): number | undefined => (a === undefined ? b : b === undefined ? a : Math.max(a, b));
+const earlier = (a: number | undefined, b: number | undefined): number | undefined => (a === undefined ? b : b === undefined ? a : Math.min(a, b));
+const union = (a: readonly string[], b: readonly string[]): string[] => [...new Set([...b, ...a])];
+
+/**
+ * The state whose latest lifecycle fact is the session's latest: its last hook (`hookAt`), or its end where it records
+ * one and no hook time. The target where neither is later.
+ */
+function latestOf(target: Readonly<SessionState>, other: Readonly<SessionState>): [Readonly<SessionState>, Readonly<SessionState>] {
+  const at = (state: Readonly<SessionState>): number | undefined => state.hookAt ?? state.endedAt;
+  const [a, b] = [at(target), at(other)];
+  return b !== undefined && (a === undefined || b > a) ? [other, target] : [target, other];
+}
+
+/**
+ * How each concern merges when another state of the same session joins the target: a repository's held capture adopted
+ * into its Project's spool (`pending.ts` `mergeHeldState`), and a legacy spool migrated into the routed one
+ * (`spool-migration.ts`). What the target recorded stands where the two disagree about a fact neither dates.
+ */
+export const CONCERN_MERGE: { readonly [C in Concern]: ConcernMerge<C> } = {
+  // The journal and marks file these count in, the version and the write time, and the losses the current receipt
+  // mutation queued, are the target's own.
+  journal: (target) => ({
+    version: target.version, highWater: target.highWater, markWater: target.markWater, markGeneration: target.markGeneration,
+    updatedAt: target.updatedAt, pendingLosses: target.pendingLosses,
   }),
-  siblings: entries('siblings'),
-  planHashes: entries('planHashes'),
-  planTagCount: later('planTagCount'),
-  planPaths: entries('planPaths'),
-  attachmentKeys: members('attachmentKeys'),
-  delivered: members('delivered'),
-  compactionOrdinal: later('compactionOrdinal'),
-  agent: targetFirst('agent'),
-  agentUnknown: targetFirst('agentUnknown'),
-  transcriptRetry: targetFirst('transcriptRetry'),
-  eventRetry: targetFirst('eventRetry'),
-  startedAt: earlier('startedAt'),
-  lastAckAt: later('lastAckAt'),
-  lastAccountedAt: later('lastAccountedAt'),
-  lastDeliveryAt: later('lastDeliveryAt'),
-  // One ask per kind, the newer of the two where both hold one: what the helper is still to fetch.
-  contextAsks: (target, other) => {
+  // Where the session stands now, read from whichever state saw it last: whether it has ended (a hook after an end
+  // resumed it, and deleted the end), the prompt it is in, and the turn it is in, a turn either state saw steered
+  // staying steered.
+  lifecycle: (target, other) => {
+    const [latest, earliest] = latestOf(target, other);
+    return {
+      hookAt: later(target.hookAt, other.hookAt), endedAt: latest.endedAt,
+      promptId: latest.promptId ?? earliest.promptId, turn: mergedTurn(latest.turn, earliest.turn),
+    };
+  },
+  // The session's start delivered (once settled, always settled), and its first capture.
+  start: (target, other) => ({ startSettled: target.startSettled ?? other.startSettled, startedAt: earlier(target.startedAt, other.startedAt) }),
+  // The last time the Deployment took or accounted for a record of the session.
+  clocks: (target, other) => ({
+    lastAckAt: later(target.lastAckAt, other.lastAckAt), lastAccountedAt: later(target.lastAccountedAt, other.lastAccountedAt),
+    lastDeliveryAt: later(target.lastDeliveryAt, other.lastDeliveryAt),
+  }),
+  // Waits on the target's own delivery lanes, which the other state's records now ship through.
+  retries: (target, other) => ({ transcriptRetry: target.transcriptRetry ?? other.transcriptRetry, eventRetry: target.eventRetry ?? other.eventRetry }),
+  // The session's transcript files: the target's own stands, and the other's own, where the target ships another, is one
+  // of the session's earlier files.
+  transcripts: (target, other) => ({
+    transcript: target.transcript ?? other.transcript,
+    continuations: {
+      ...other.continuations, ...target.continuations,
+      ...(other.transcript !== undefined && target.transcript !== undefined && other.transcript.path !== target.transcript.path
+        ? { [other.transcript.path]: other.transcript } : {}),
+    },
+    siblings: { ...other.siblings, ...target.siblings },
+    promptBackfill: target.promptBackfill ?? other.promptBackfill,
+  }),
+  // What either state already captured, so nothing is derived twice: every receipt of both, the target's id where both
+  // name one, and plan positions past every position either state used.
+  receipts: (target, other) => ({
+    prompts: { ...other.prompts, ...target.prompts }, planHashes: { ...other.planHashes, ...target.planHashes },
+    planPaths: { ...other.planPaths, ...target.planPaths }, planTagCount: Math.max(target.planTagCount, other.planTagCount),
+    attachmentKeys: union(target.attachmentKeys, other.attachmentKeys),
+  }),
+  // The session blocks either state was served, and the compactions either observed.
+  blocks: (target, other) => ({ delivered: union(target.delivered, other.delivered), compactionOrdinal: Math.max(target.compactionOrdinal, other.compactionOrdinal) }),
+  // Which symbiont captured the session; a known agent ends the search an unknown one recorded.
+  agent: (target, other) => {
+    const agent = target.agent ?? other.agent;
+    return { agent, agentUnknown: agent === undefined ? target.agentUnknown ?? other.agentUnknown : undefined };
+  },
+  // The cached answer the merged session keeps was rendered when either state rendered that very ask; any other
+  // marker names an answer no longer held, which no cached answer can match.
+  rendered: (target, other, context) => ({
+    renderedAsk: context.keptAnswerAsk !== undefined && (target.renderedAsk === context.keptAnswerAsk || other.renderedAsk === context.keptAnswerAsk)
+      ? context.keptAnswerAsk : target.renderedAsk ?? other.renderedAsk,
+  }),
+  // What the helper still owes: one ask per kind, the newer, and none at or before the newest of its kind either state
+  // settled. A prompt ask is settled too by a cached or rendered answer to it or a later one.
+  asks: (target, other, context) => {
+    const settled: Partial<Record<ContextAsk['kind'], number>> = { ...other.settledAsks };
+    for (const [kind, at] of Object.entries(target.settledAsks ?? {}) as Array<[ContextAsk['kind'], number]>) settled[kind] = later(settled[kind], at);
+    const answered = [context.keptAnswerAsk, target.renderedAsk, other.renderedAsk].reduce<number | undefined>(later, settled.prompt);
+    if (answered !== undefined) settled.prompt = answered;
     const asks = new Map<ContextAsk['kind'], ContextAsk>();
     for (const ask of [...(other.contextAsks ?? []), ...(target.contextAsks ?? [])]) {
+      const floor = settled[ask.kind];
+      if (floor !== undefined && ask.at <= floor) continue;
       const held = asks.get(ask.kind);
       if (held === undefined || ask.at >= held.at) asks.set(ask.kind, ask);
     }
-    return asks.size === 0 ? undefined : [...asks.values()];
+    return { contextAsks: asks.size === 0 ? undefined : [...asks.values()], settledAsks: Object.keys(settled).length === 0 ? undefined : settled };
   },
-  promptBackfill: targetFirst('promptBackfill'),
-  hookAt: later('hookAt'),
-  endedAt: targetFirst('endedAt'),
-  // The newest ask whose answer either state rendered: an answer is rendered once.
-  renderedAsk: later('renderedAsk'),
-  turn: (target, other) => mergedTurn(target.turn, other.turn),
-  updatedAt: targetOnly('updatedAt'),
-  // Queued by the target's own receipt mutation, which flushes them.
-  pendingLosses: targetOnly('pendingLosses'),
 };
 
-/** Merge `other`, another state of the same session, into `target` by `SESSION_STATE_MERGE`. */
-export function mergeSessionState(target: SessionState, other: Readonly<SessionState>): void {
+/** Merge `other`, another state of the same session, into `target`, concern by concern (`CONCERN_MERGE`). */
+export function mergeSessionState(target: SessionState, other: Readonly<SessionState>, context: MergeContext): void {
   const before: Readonly<SessionState> = { ...target };
-  const merged = Object.fromEntries(Object.entries(SESSION_STATE_MERGE).map(([key, merge]) => [key, (merge as FieldMerge<keyof SessionState>)(before, other)]));
+  const merged = Object.values(CONCERN_MERGE).reduce<Record<string, unknown>>(
+    (fields, merge) => ({ ...fields, ...(merge as ConcernMerge<Concern>)(before, other, context) }), {});
   for (const [key, value] of Object.entries(merged)) {
     if (value === undefined) delete (target as unknown as Record<string, unknown>)[key];
     else (target as unknown as Record<string, unknown>)[key] = value;

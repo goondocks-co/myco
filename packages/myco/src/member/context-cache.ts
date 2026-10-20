@@ -78,6 +78,9 @@ export type ContextAsk =
    */
   | { kind: 'prompt'; promptId?: string; promptScheme?: PromptIdScheme; scopeReason?: PromptScopeReason; identity?: typeof ASK_IDENTITY_MARKER; text: string; at: number };
 
+/** The ask a session's cached prompt answer answered: the instant render-once keys on. */
+export const promptAnswerKey = (cache: SessionContextCache): number | undefined => (cache.prompt === undefined ? undefined : cache.prompt.askedAt ?? cache.prompt.at);
+
 /** The most of a prompt's text a recall request carries: the search reads its head, and a request stays small. */
 export const PROMPT_ASK_MAX_CHARS = PROMPT_KEY_TEXT_MAX_CHARS;
 

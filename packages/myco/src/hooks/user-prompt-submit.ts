@@ -2,7 +2,7 @@ import { evaluateUserPromptRules, resolveSubagentThread } from './capture-rules.
 import { readTranscriptMeta } from './transcript-meta.js';
 import { runMemberHook, type HookMainOptions, type HookOutcome, type HookRun, type OptionalHookCapture } from '../member/capture.js';
 import { contextDeliveredEvent, deriveId, mintId, planEvent, planKeyForPromptTag, planKeyForTag, promptEvent, turnEvent, type OutboundEvent } from '../member/envelope.js';
-import { featureAdvertised, PROMPT_ASK_MAX_CHARS, readSessionContext, type ContextAsk } from '../member/context-cache.js';
+import { featureAdvertised, PROMPT_ASK_MAX_CHARS, promptAnswerKey, readSessionContext, type ContextAsk } from '../member/context-cache.js';
 import { readSessionState, type SessionState } from '../member/session-state.js';
 import { firstHeading, sha256Text } from '../member/text.js';
 import type { HookResponse } from './response.js';
@@ -97,9 +97,10 @@ function promptAsk(naming: PromptNaming, text: string, at: number): ContextAsk {
  * rows and the session record that answer named, recorded with its records.
  */
 function withServed(spoolDir: string, sessionId: string, state: SessionState, response: HookResponse): { response: HookResponse; rendered?: { ask: number; receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord } } {
-  const served = readSessionContext(spoolDir, sessionId).prompt;
+  const cache = readSessionContext(spoolDir, sessionId);
+  const served = cache.prompt;
   if (served === undefined || served.context.length === 0) return { response };
-  const ask = served.askedAt ?? served.at;
+  const ask = promptAnswerKey(cache)!;
   if (state.renderedAsk === ask) return { response };
   return {
     response: { ...response, additionalContext: `${response.additionalContext}\n\n${served.context}` },

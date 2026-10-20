@@ -5,10 +5,10 @@ import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
 import { isProjectId, REFUSED_LOG_MAX_BYTES } from './constants.js';
-import { CONTEXT_DIRNAME } from './context-cache.js';
+import { CONTEXT_DIRNAME, promptAnswerKey, readSessionContext, sessionContextPath, type SessionContextCache } from './context-cache.js';
 import { listRegistryEntriesResult, deploymentUrl, type RegistryEntry } from './registry.js';
 import { LEGACY_MIGRATION_FILE, memberRoutingIdentity, pinSpoolDestination, routedSpoolDir, ROUTING_FILE, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
-import { bufferLockPath, emptySessionState, mergeSessionState, readMigrationSettledUnlocked, readSessionState, readSessionStateResultUnlocked, recordMigrationSettledUnlocked, writeSessionStateUnlocked, type SessionState } from './session-state.js';
+import { bufferLockPath, emptySessionState, mergeSessionState, type MergeContext, readMigrationSettledUnlocked, readSessionState, readSessionStateResultUnlocked, recordMigrationSettledUnlocked, writeSessionStateUnlocked, type SessionState } from './session-state.js';
 import { MemberSpool, OFFLINE_LATCH_FILE, REFUSED_LOG_FILE, SPOOL_DIRNAME, WIRE_FIELDS, turnEndIdentity, type SpoolRecord } from './spool.js';
 import { publishStagedBlob, readStagedBlob } from './staged-blobs.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, isPrivateMode, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic, type PrivateRead } from './store.js';
@@ -222,7 +222,7 @@ function copySidecars(source: MemberSpool, target: MemberSpool): { holds: string
       if (existing !== null) validateSidecar(sidecar.relative, existing);
       const next = sidecar.relative === REFUSED_LOG_FILE && existing !== null
         ? mergeRefusals(sidecar.raw, existing)
-        : existing ?? sidecar.raw;
+        : keptSidecar(existing, sidecar.raw);
       if (existing !== next) {
         ensureMemberDir(path.dirname(destination), target.mycoHome);
         writePrivateFileAtomic(destination, next);
@@ -352,10 +352,19 @@ function receiptAt(dir: string, sessionId: string): SessionReceipt | null {
   return receipt;
 }
 
-function mergeState(target: SessionState, source: SessionState): SessionState {
+function mergeState(target: SessionState, source: SessionState, context: MergeContext): SessionState {
   const merged: SessionState = structuredClone(target);
-  mergeSessionState(merged, source);
+  mergeSessionState(merged, source, context);
   return merged;
+}
+
+/** Which of two copies of a sidecar the routed spool keeps (`copySidecars`): its own, else the legacy spool's. */
+const keptSidecar = <T>(existing: T | null, incoming: T): T => existing ?? incoming;
+
+/** The session's context cache the routed spool keeps once the legacy spool's sidecars are copied. */
+function keptSessionContext(source: MemberSpool, target: MemberSpool, sessionId: string): SessionContextCache {
+  const dir = keptSidecar(present(sessionContextPath(target.dir, sessionId)) ? target.dir : null, source.dir);
+  return readSessionContext(dir, sessionId);
 }
 
 function restage(record: SpoolRecord, source: MemberSpool, target: MemberSpool, sessionId: string, originDir: string, archiveDir: string): SpoolRecord {
@@ -458,7 +467,8 @@ function copySession(source: MemberSpool, target: MemberSpool, sessionId: string
       recordMigrationSettledUnlocked(target.dir, sessionId, alreadySettled);
       const sourceStateHash = sha(JSON.stringify(sourceState));
       if (previous === null || previous.sourceStateHash !== sourceStateHash) {
-        writeSessionStateUnlocked(target.dir, sessionId, mergeState(targetState, sourceState));
+        writeSessionStateUnlocked(target.dir, sessionId, mergeState(targetState, sourceState,
+          { keptAnswerAsk: promptAnswerKey(keptSessionContext(source, target, sessionId)) }));
       }
       const fresh = parseJournal(targetFile).records;
       const available = new Set(fresh.map((record) => record.eventId));
