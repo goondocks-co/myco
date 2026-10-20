@@ -28,25 +28,17 @@
  * read did. What a record is comes from the harness's own fields before any text
  * test, and what is not recognized is kept and labelled, never dropped.
  */
-import { uuidv5 } from '../../hash.js';
 import { MAIN_THREAD, type ClaudePromptShape, type PromptClaim } from '@goondocks/myco-shared/prompt-identity';
 import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import type { WirePromptOrigin } from '@goondocks/myco-shared/member-protocol';
 import {
-  callForResult, claudeRecordIdFor, parserContinuation, blocksOf, isBlock, lineTime, ownedLines, plansInText, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
+  callForResult, recordId, recordSource, optionalRecordSource, claudeRecordIdFor, parserContinuation, blocksOf, isBlock, lineTime, ownedLines, plansInText, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
   type ReplyPart, type DerivedEvent, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
 /** The longest tool name the catalogue admits. */
 const TOOL_NAME_CHARS = 64;
-
-/** A tool call's row id. The member mints a random one per hook (`envelope.ts:229`), so this derivation is the parse's own; the parity gate compares the two by content and excludes the id by name. */
-const toolCallIdFor = (sessionId: string, toolUseId: string): Promise<string> => uuidv5('tool-call', sessionId, toolUseId);
-/** A response's row id, keyed by an assistant record's byte offset; the member mints a random one at Stop. */
-const responseIdFor = (sessionId: string, offset: number): Promise<string> => uuidv5('response', sessionId, String(offset));
-
-
 
 /** A user record that names a prompt, rather than one carrying a tool result. */
 const namesPrompt = (v: Record<string, unknown>): boolean =>
@@ -207,7 +199,8 @@ export const claudeCodeParser: TranscriptParser = {
       for (const chunk of held.parts) {
         events.push({
           kind: 'response',
-          payload: { responseId: await responseIdFor(sessionId, chunk.offset), promptId: held.promptId, text: chunk.text },
+          payload: { promptId: held.promptId, text: chunk.text },
+          source: chunk.source,
           createdAt: chunk.createdAt,
           offset: chunk.offset,
         });
@@ -274,13 +267,13 @@ export const claudeCodeParser: TranscriptParser = {
         // A tool result closes the call it names and is not a turn boundary.
         for (const block of blocksOf(message?.content)) {
           if (block.type !== 'tool_result') continue;
-          const id = str(block.tool_use_id);
-          if (id === undefined) continue;
-          const call = await callForResult(sessionId, id, pending, { promptId, createdAt, offset });
+          const source = optionalRecordSource(input, this.agent, { kind: 'tool-call', record: value, result: block, role: 'result' });
+          if (source === undefined) continue;
+          const call = await callForResult(input, this.agent, source, pending, { promptId, createdAt, offset });
           const failed = block.is_error === true;
           const output = textOf(block.content).slice(0, TOOL_OUTPUT_PREVIEW_CHARS);
           events.push({
-            kind: failed ? 'tool.failure' : 'tool.use',
+            kind: failed ? 'tool.failure' : 'tool.use', source, legacyId: call.toolCallId,
             payload: {
               toolCallId: call.toolCallId,
               promptId: call.promptId,
@@ -299,21 +292,25 @@ export const claudeCodeParser: TranscriptParser = {
 
       if (type !== 'assistant') continue;
 
-      for (const block of blocksOf(message?.content)) {
+      for (const [blockIndex, block] of (Array.isArray(message?.content) ? message.content : []).entries()) {
+        if (!isBlock(block)) continue;
         if (block.type === 'text' && typeof block.text === 'string') {
           if (reply === null) reply = { parts: [], promptId };
-          reply.parts.push({ text: block.text, offset, createdAt });
-          const plans = await plansInText(block.text, claudeCodeParser.planTags, sessionId, { promptId, offset, createdAt }, planPosition);
+          reply.parts.push({ text: block.text, offset, createdAt, source: recordSource(input, this.agent, { kind: 'response', record: value, block: blockIndex }) });
+          const plans = await plansInText(block.text, claudeCodeParser.planTags, input, this.agent, value, { promptId, offset, createdAt }, planPosition, blockIndex);
           events.push(...plans.events);
           planPosition = plans.next;
           continue;
         }
         if (block.type === 'tool_use') {
-          const id = str(block.id);
           const name = str(block.name);
-          if (id === undefined || name === undefined) continue;
+          if (name === undefined) continue;
+          const source = optionalRecordSource(input, this.agent, { kind: 'tool-call', record: value, call: block, role: 'call' });
+          if (source === undefined) continue;
+          if (!('key' in source)) throw new Error('Tool invocation has no declared key');
+          const id = source.key;
           pending.set(id, {
-            toolCallId: await toolCallIdFor(sessionId, id),
+            toolCallId: await recordId(input, this.agent, { kind: 'tool-call', source, offset }),
             toolName: name.slice(0, TOOL_NAME_CHARS),
             input: block.input ?? {},
             promptId,

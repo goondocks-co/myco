@@ -20,7 +20,7 @@
 import { canonicalPromptId } from '@goondocks/myco-shared/prompt-identity';
 import { uuidv5 } from '../../hash.js';
 import {
-  parserContinuation, lineTime, offsetIdFor, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
+  parserContinuation, recordId, recordSource, legacyRecordId, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type Fidelity, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
@@ -124,11 +124,12 @@ export function pluginEventsParser(options: {
           if (text.trim() === '') continue;
           events.push({
             kind: 'response',
-            payload: { responseId: await offsetIdFor('response', input.sessionId, offset), promptId: str(line.promptId) ?? promptId, text },
+            source: recordSource(input, agent, { kind: 'response', record: value, block: 0 }),
+            payload: { promptId: str(line.promptId) ?? promptId, text },
             createdAt,
             offset,
           });
-          const plans = await plansInText(text, planTags, input.sessionId, { promptId: str(line.promptId) ?? promptId, offset, createdAt }, planPosition);
+          const plans = await plansInText(text, planTags, input, agent, value, { promptId: str(line.promptId) ?? promptId, offset, createdAt }, planPosition);
           events.push(...plans.events);
           planPosition = plans.next;
           continue;
@@ -137,12 +138,14 @@ export function pluginEventsParser(options: {
         if (type === 'tool') {
           const name = str(line.name);
           if (name === undefined) continue;
+          const source = recordSource(input, agent, { kind: 'tool-call', record: value, role: 'call' });
           const failed = line.failed === true;
           const output = typeof line.output === 'string' ? line.output.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined;
           events.push({
-            kind: failed ? 'tool.failure' : 'tool.use',
+            kind: failed ? 'tool.failure' : 'tool.use', source,
+            legacyId: await legacyRecordId(input, { kind: 'tool-call', source, offset }),
             payload: {
-              toolCallId: await offsetIdFor('tool-call', input.sessionId, offset),
+              toolCallId: await recordId(input, agent, { kind: 'tool-call', source, offset }),
               promptId: str(line.promptId) ?? promptId,
               toolName: name.slice(0, 64),
               input: toolInput(line.input) ?? {},

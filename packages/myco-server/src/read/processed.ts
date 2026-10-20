@@ -30,7 +30,7 @@ async function processedField(env: Pick<ServerEnv, 'db'>, scope: ReadScope, kind
       (SELECT b.size FROM blobs b WHERE b.project_id = d.project_id AND b.key = d.${field.blob}) AS registered_size,
       ${kind === 'tool-input' ? 'd.input_bytes' : 'NULL'} AS total_bytes,
       ${kind === 'attachment' ? 'd.media_type' : 'NULL'} AS media_type,
-      ${processedResourceProofSql('d.project_id', kind, `d.${field.id}`, `d.${field.blob}`)} AS admitted
+      ${processedResourceProofSql('d.project_id', { kind }, `d.${field.id}`, `d.${field.blob}`)} AS admitted
     FROM ${field.table} d WHERE d.project_id = ? AND d.${field.id} = ?`)
     .bind(scope.projectId, id).first<ProcessedField>();
   if (row === null) return null;

@@ -13,6 +13,7 @@ import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
 import { toolInputPreview } from '../core/tool-input.js';
 import { bundlePublicationStatements, type PreparedBundle } from '../core/archive-bundle.js';
 import { admittedScheme } from './prompt-scheme.js';
+import { admittedRecordScheme } from './record-scheme.js';
 
 export interface PreparedToolInput {
   key: string;
@@ -110,7 +111,7 @@ const owned = (ctx: WriteContext, { table, keyColumn, key, owner }: Identity): S
 /** A member may reference only uploaded bytes they possess; server processing uses its recorded input. */
 const present = (ctx: WriteContext, key: string, retainedPlan?: string): SharedCheck => {
   const upload = rawMemberResourceSql('?', 'blob', '?', '(SELECT member_id FROM member_credentials WHERE id = ?)');
-  const retained = retainedPlan === undefined ? '' : ` OR ${processedResourceProofSql('?', 'plan', '?', '?')}`;
+  const retained = retainedPlan === undefined ? '' : ` OR ${processedResourceProofSql('?', { kind: 'plan' }, '?', '?')}`;
   const proof = ctx.processing === true ? '1 = 1' : `(${upload}${retained})`;
   const params = [ctx.projectId, key, ...(ctx.processing === true ? [] : [ctx.projectId, key, ctx.tokenId, ...(retainedPlan === undefined ? [] : [ctx.projectId, retainedPlan, key])])];
   return {
@@ -681,6 +682,7 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
   const headMatches = `NOT EXISTS (SELECT 1 FROM transcripts WHERE project_id = ? AND transcript_id = ? AND head_hash IS NOT NULL AND ? IS NOT NULL AND head_hash <> ?)`;
   const segmentWritten = 'EXISTS (SELECT 1 FROM transcript_segments WHERE project_id = ? AND transcript_id = ? AND base_offset = ? AND event_id = ?)';
   const admitted = admittedScheme(ctx.projectId, e.sessionId, opt(p.agent) as string | null);
+  const record = admittedRecordScheme(opt(p.agent) as string | null);
   const owned = (rows: ReadRows): { size: number; segment_count: number } | null => {
     const transcript = rows[0]?.[0] as { size: number; segment_count: number; machine_id: string } | undefined;
     return transcript && transcript.machine_id === ctx.machineId ? transcript : null;
@@ -702,13 +704,13 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
       // would leave it in the backfill lane for the rest of its life. The prompt
       // identity scheme is written by the insert alone, admitted into its
       // session's group of the agent's transcripts (`prompt-scheme.ts`).
-      db.prepare(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, origin_path, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id, imported_at, prompt_identity_scheme)
-          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ${admitted.sql} WHERE ${RAW_ROW_GATE} AND ${segmentWritten}
+      db.prepare(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, origin_path, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id, imported_at, prompt_identity_scheme, record_identity_scheme)
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ${admitted.sql}, ${record.sql} WHERE ${RAW_ROW_GATE} AND ${segmentWritten}
           ON CONFLICT (project_id, transcript_id) DO UPDATE SET size = excluded.size, segment_count = transcripts.segment_count + 1,
             last_received_at = excluded.last_received_at, head_hash = COALESCE(transcripts.head_hash, excluded.head_hash),
             imported_at = excluded.imported_at`)
         .bind(ctx.projectId, transcriptId, e.sessionId, ctx.machineId, opt(p.agent), opt(p.originPath), opt(p.role) ?? 'primary', headHash, size, ctx.now, ctx.now, ctx.tokenId,
-              e.channel === 'import' ? ctx.now : null, ...admitted.params,
+              e.channel === 'import' ? ctx.now : null, ...admitted.params, ...record.params,
               ...rawGateParams(ctx, e), ctx.projectId, transcriptId, baseOffset, e.eventId),
       db.prepare(`UPDATE sessions SET agent = COALESCE(agent, ?) WHERE project_id = ? AND session_id = ?
           AND ${RAW_ROW_GATE} AND ${segmentWritten}`)

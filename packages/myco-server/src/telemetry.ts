@@ -77,7 +77,7 @@ export const CLASSIFIERS = [
   'project_archived',
   'run_scope', 'no_run', 'project_mismatch',
   // #1147 — transcript-first ingest
-  'session_tombstoned', 'transcript_replaced',
+  'session_tombstoned', 'transcript_replaced', 'record_identity_scheme_unsupported',
   // #1151 — worker mode
   'not_admin',
   // #1148 — bounded import

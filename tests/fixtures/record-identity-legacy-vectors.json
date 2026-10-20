@@ -1,0 +1,139 @@
+{
+  "base": "d77f59994",
+  "sessionId": "s1",
+  "transcriptId": "tx_frozen_legacy",
+  "agents": {
+    "claude-code": {
+      "fixture": "claude-parse-basic.jsonl",
+      "events": [
+        {
+          "kind": "plan",
+          "rowId": "a81bb8e9-bd00-5c21-94fb-01220ef6ff2e",
+          "eventId": "f5828916-0fe2-5d49-a2c3-5e3d6953ab25",
+          "offset": 407
+        },
+        {
+          "kind": "response",
+          "rowId": "f4a70eba-0fce-58a4-9836-b7c575697084",
+          "eventId": "bf048afb-d4b4-59f7-8f86-646a5b2db786",
+          "offset": 407
+        },
+        {
+          "kind": "tool.use",
+          "rowId": "a6581127-40d4-5c00-813d-f6645b9a6391",
+          "eventId": "b7d73a25-05a3-5ff0-90a9-6fa00afcfa7c",
+          "offset": 737
+        },
+        {
+          "kind": "tool.failure",
+          "rowId": "84495ae9-980c-5f74-8ee4-06bf49a585b6",
+          "eventId": "117b429d-8a10-581e-b5dc-5144578579bd",
+          "offset": 1173
+        },
+        {
+          "kind": "response",
+          "rowId": "a7a5f684-b625-54df-828c-d41f6dca8621",
+          "eventId": "1b73c41c-b96b-53ba-b75f-4a67764c886d",
+          "offset": 1576
+        }
+      ]
+    },
+    "codex": {
+      "fixture": "codex-parse-basic.jsonl",
+      "events": [
+        {
+          "kind": "tool.use",
+          "rowId": "b443b49f-fb14-5ee8-8974-065d624ff92a",
+          "eventId": "50d01ee0-97ef-5072-822a-f87d2832e30d",
+          "offset": 575
+        },
+        {
+          "kind": "response",
+          "rowId": "b34a02ad-32d9-553a-80fd-9e999a02837e",
+          "eventId": "40617e1e-6439-57c4-918f-88b8138d8fe5",
+          "offset": 737
+        }
+      ]
+    },
+    "cursor": {
+      "fixture": "cursor-parse-basic.jsonl",
+      "events": [
+        {
+          "kind": "response",
+          "rowId": "8ebdbabd-4f81-5c91-863c-8954061ce0cb",
+          "eventId": "1a023883-eaa3-549f-beaf-75112c5fe219",
+          "offset": 247
+        },
+        {
+          "kind": "response",
+          "rowId": "f04646ac-7b64-5eac-adee-10ca15f122a9",
+          "eventId": "316968ae-c790-5b66-92f5-d1dc52ffcf20",
+          "offset": 998
+        }
+      ]
+    },
+    "pi": {
+      "fixture": "pi-parse-basic.jsonl",
+      "events": [
+        {
+          "kind": "tool.use",
+          "rowId": "458ce9f8-8d7f-59bd-ac5e-30daca6a70b7",
+          "eventId": "2377f005-7f84-51f7-97ce-dfd9dd4e722c",
+          "offset": 2812
+        },
+        {
+          "kind": "response",
+          "rowId": "f40bab3c-4d79-5e41-b343-adb9256d738d",
+          "eventId": "1034b40d-104b-5143-9a2a-0fafacb43bb3",
+          "offset": 3269
+        }
+      ]
+    },
+    "opencode": {
+      "fixture": "opencode-parse-basic.jsonl",
+      "events": [
+        {
+          "kind": "tool.use",
+          "rowId": "86788339-91cc-5d92-ab9d-0365bb7db9c5",
+          "eventId": "61efc7a7-1530-54bd-87f1-3599b008f29b",
+          "offset": 348
+        },
+        {
+          "kind": "tool.failure",
+          "rowId": "97c8d97e-536e-5124-a4b5-0587e22b83ca",
+          "eventId": "c3fd1897-be1c-5681-bfdd-b8d899b4c64e",
+          "offset": 613
+        },
+        {
+          "kind": "response",
+          "rowId": "7276ca44-52ee-5f15-9610-e3edc31e73ed",
+          "eventId": "7d7883e0-6731-587d-93cd-96e88616eb27",
+          "offset": 857
+        }
+      ]
+    },
+    "cline": {
+      "fixture": "cline-parse-basic.jsonl",
+      "events": [
+        {
+          "kind": "tool.use",
+          "rowId": "d62e0b1e-f754-548b-a2d5-68be67e7f590",
+          "eventId": "e3f05add-a657-561e-81fb-f0a6c6c399f8",
+          "offset": 393
+        },
+        {
+          "kind": "tool.failure",
+          "rowId": "2095c81c-79a6-50d1-9d0b-36a67441258a",
+          "eventId": "7578311a-17bd-5f2a-8bb4-20e624b8cb95",
+          "offset": 663
+        },
+        {
+          "kind": "response",
+          "rowId": "99e99291-7429-5791-a923-2c16cb8f9641",
+          "eventId": "2023d1b1-25e5-5786-a627-d5c4d9dd2626",
+          "offset": 912
+        }
+      ]
+    }
+  }
+}

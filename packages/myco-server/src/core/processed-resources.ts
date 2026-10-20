@@ -23,6 +23,6 @@ export const processedReferenceSql = (alias: string, field: { blob: string }): s
         AND e.producer_adapter = '${TRANSCRIPT_PARSE_ADAPTER}')))`;
 
 /** An immutable admission for this exact logical field and stored body. */
-export const processedResourceProofSql = (project: string, kind: keyof typeof PROCESSED_FIELDS, id: string, blob: string): string => `EXISTS (
+export const processedResourceProofSql = (project: string, { kind }: { kind: keyof typeof PROCESSED_FIELDS }, id: string, blob: string): string => `EXISTS (
   SELECT 1 FROM processed_resources pr WHERE pr.project_id = ${project} AND pr.kind = '${kind}'
     AND pr.resource_id = ${id} AND pr.blob_key = ${blob} AND pr.classification = 'processed')`;

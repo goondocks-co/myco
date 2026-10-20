@@ -1,5 +1,6 @@
-import { ownedLines, unfinishedCalls, offsetIdFor, replyChunks, responseBound, REPLY_SEPARATOR,
+import { ownedLines, unfinishedCalls, recordId, legacyRecordId, replyChunks, responseBound, REPLY_SEPARATOR,
   type DerivedEvent, type TranscriptParser, type ParserState, type ReplyPart } from './index.js';
+import { LEGACY_RECORD_ID_SCHEME, isReplySource } from '@goondocks/myco-shared/record-identity';
 import { utf8 } from '../../hash.js';
 
 /** Retained tool calls above this count become explicit failures. */
@@ -13,14 +14,23 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
     ...parser,
     async parse(input) {
       const state: ParserState = input.state ?? {};
+      if (input.recordScheme !== LEGACY_RECORD_ID_SCHEME && state.reply?.parts.some(part => !isReplySource(part.source))) {
+        throw new Error('Stored reply source is invalid');
+      }
       const events: DerivedEvent[] = [];
       let openPromptId = input.openPromptId;
       // The keys this traversal claims, carried across its lines and never beyond it.
       const claims = new Map<string, string>();
       const transcriptMeta = input.transcriptMeta ?? parser.headerContext?.(input.lines);
       const emitReply = async (parts: readonly ReplyPart[], promptId?: string): Promise<void> => {
-        for (const part of replyChunks(parts)) events.push({ kind: 'response', offset: part.offset, createdAt: part.createdAt,
-          payload: { responseId: await offsetIdFor('response', input.sessionId, part.offset), promptId, text: part.text } });
+        for (const part of replyChunks(parts)) {
+          if (input.recordScheme !== LEGACY_RECORD_ID_SCHEME && !isReplySource(part.source)) throw new Error('Reply source is invalid');
+          const source = part.source ?? { position: true, block: 0 };
+          const request = { kind: 'response' as const, source, offset: part.offset };
+          events.push({ kind: 'response', offset: part.offset, createdAt: part.createdAt, source,
+            legacyId: await legacyRecordId(input, request),
+            payload: { responseId: await recordId(input, parser.agent, request), promptId, text: part.text } });
+        }
       };
       const flushReply = async (): Promise<void> => {
         if (state.reply === undefined) return;
@@ -28,7 +38,7 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
         delete state.reply;
       };
       const appendReply = async (event: DerivedEvent): Promise<void> => {
-        const part = { text: String(event.payload.text), offset: event.offset, createdAt: event.createdAt };
+        const part = { text: String(event.payload.text), offset: event.offset, createdAt: event.createdAt, source: event.source };
         // A reply is one prompt's: a line naming another prompt than the reply held starts its own.
         const promptId = typeof event.payload.promptId === 'string' ? event.payload.promptId : undefined;
         if (state.reply !== undefined && state.reply.promptId !== promptId) await flushReply();
@@ -60,16 +70,19 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
         if (parser.endsTurn?.(line.value) === true) await flushReply();
         const pending = Object.entries(state.pending ?? {});
         for (const [id, call] of pending.slice(0, Math.max(0, pending.length - MAX_PENDING_CALLS))) {
-          events.push(...unfinishedCalls([call], PENDING_CALL_LIMIT_ERROR));
+          events.push(...unfinishedCalls([[id, call]], PENDING_CALL_LIMIT_ERROR));
           delete state.pending![id];
         }
       }
       if (input.terminal !== undefined || input.state === undefined) {
         await flushReply();
         if (input.terminal !== 'turn_end') {
-          events.push(...unfinishedCalls(Object.values(state.pending ?? {})));
+          events.push(...unfinishedCalls(Object.entries(state.pending ?? {})));
           state.pending = {};
         }
+      }
+      if (input.recordScheme === LEGACY_RECORD_ID_SCHEME && state.reply !== undefined) {
+        for (const part of state.reply.parts) delete part.source;
       }
       return events.sort((a, b) => a.offset - b.offset);
     },

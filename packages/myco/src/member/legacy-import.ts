@@ -1,3 +1,4 @@
+import { legacyImportedResponseId } from '@goondocks/myco-shared/record-identity';
 /**
  * Bringing a 1.4 vault's history to a Deployment.
  *
@@ -324,7 +325,7 @@ export function legacyVaultCompletionIdentities(project: LegacyProject, machineI
     ...(group.title === null ? [] : [legacyId(project.projectId, 'session.title', group.sessionId)]),
     ...project.prompts.filter(prompt => !transcriptSessions.has(group.sessionId) && prompt.sessionId === group.promptsFrom).flatMap(prompt => [
       ...(prompt.text === null ? [] : [legacyPromptId(project.projectId, prompt.id)]),
-      ...(prompt.response === null ? [] : [legacyId(project.projectId, 'response', prompt.id)]),
+      ...(prompt.response === null ? [] : [legacyImportedResponseId(deriveId, { projectId: project.projectId, legacyId: prompt.id, identity: 'event' })]),
     ]),
   ]).concat(project.plans.filter(plan => plan.content !== null && plan.sessionId !== null
     && eligible.has(grouping.idOf.get(plan.sessionId) ?? plan.sessionId)).map(plan => legacyId(project.projectId, 'plan', plan.id)));
@@ -950,9 +951,12 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
             }), 'prompt', p.id));
           }
           if (p.response !== null) {
-            events.push(withId(responseEvent(ctx(p.endedAt ?? p.startedAt), {
-              text: p.response, promptId: p.text === null ? undefined : promptId, responseId: legacyId(projectId, 'response-id', p.id),
-            }), 'response', p.id));
+            const response = responseEvent(ctx(p.endedAt ?? p.startedAt), {
+              text: p.response, promptId: p.text === null ? undefined : promptId,
+              responseId: legacyImportedResponseId(deriveId, { projectId, legacyId: p.id, identity: 'row' }),
+            });
+            events.push({ ...response, envelope: { ...response.envelope,
+              eventId: legacyImportedResponseId(deriveId, { projectId, legacyId: p.id, identity: 'event' }) } });
           }
         }
       }
@@ -978,14 +982,14 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       const drainedRows = await drain(spool, group.sessionId, client);
       if (drainedRows !== undefined) return refusedOr(drainedRows, group.sessionId);
 
-      const kinds = (kind: string) => events.filter((e) => e.envelope.kind === kind).length;
+      const kinds = ({ kind }: { kind: string }) => events.filter((e) => e.envelope.kind === kind).length;
       if (alreadyHeld) r.sessions.alreadyHeld += 1;
       if (transcript === 'shipped') r.sessions.transcriptsShipped += 1;
       if (transcript === 'held') r.sessions.transcriptsHeld += 1;
       if (fromVault) r.sessions.fromVault += 1;
-      r.prompts += kinds('prompt');
-      r.responses += kinds('response');
-      r.plans.sent += kinds('plan');
+      r.prompts += kinds({ kind: 'prompt' });
+      r.responses += kinds({ kind: 'response' });
+      r.plans.sent += kinds({ kind: 'plan' });
       r.plans.empty += emptyPlans;
       return {};
     }

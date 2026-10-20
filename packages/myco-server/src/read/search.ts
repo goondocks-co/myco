@@ -77,7 +77,7 @@ async function searchType(db: RelationalStore, reach: SearchReach, type: SearchT
     search_blob_chunks_fts.rowid AS match_rowid
     FROM search_blob_chunks_fts CROSS JOIN search_blob_chunks c ON c.rowid = search_blob_chunks_fts.rowid
     CROSS JOIN ${s.table} d ON d.project_id = c.project_id AND d.blob_key = c.blob_key
-    WHERE search_blob_chunks_fts MATCH ? AND ${inReach.sql} AND ${processedResourceProofSql('d.project_id', s.blob, `d.${s.id}`, 'd.blob_key')}` : '';
+    WHERE search_blob_chunks_fts MATCH ? AND ${inReach.sql} AND ${processedResourceProofSql('d.project_id', { kind: s.blob }, `d.${s.id}`, 'd.blob_key')}` : '';
   if (s.blob) params.push(terms[0], ...inReach.params);
   // Each candidate is already a row of the reach. The outer read walks the candidates and joins each one's row back by
   // rowid: `CROSS JOIN` holds that order, so no statistics can turn it into a walk of the table.
@@ -89,7 +89,7 @@ async function searchType(db: RelationalStore, reach: SearchReach, type: SearchT
     if (s.blob) {
       exists += ` OR EXISTS (SELECT 1 FROM search_blob_chunks_fts JOIN search_blob_chunks c
         ON c.rowid = search_blob_chunks_fts.rowid WHERE c.project_id = d.project_id AND c.blob_key = d.blob_key
-        AND search_blob_chunks_fts MATCH ? AND ${processedResourceProofSql('d.project_id', s.blob, `d.${s.id}`, 'd.blob_key')})`;
+        AND search_blob_chunks_fts MATCH ? AND ${processedResourceProofSql('d.project_id', { kind: s.blob }, `d.${s.id}`, 'd.blob_key')})`;
       params.push(term);
     }
     where.push(`(${exists})`);

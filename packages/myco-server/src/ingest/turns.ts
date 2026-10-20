@@ -27,7 +27,7 @@ import { MAX_CLOCK_SKEW_MS, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { TURN_END_HEADER, TURN_KIND } from '@goondocks/myco-shared/member-protocol';
 
 /** The event kinds that end a turn: a response, and the session's end. A transcript segment ends one only when sent with `TURN_END_HEADER`. */
-export const TURN_END_KINDS: ReadonlySet<string> = new Set(['response', 'session.end']);
+export const TURN_END_KINDS: ReadonlySet<string> = new Set(Object.keys({ response: true, 'session.end': true }));
 /** The kind that ends a turn only when its session's own turn-end hook sends it. */
 export const TURN_END_SEGMENT_KIND = 'transcript.segment';
 export { TURN_END_HEADER };

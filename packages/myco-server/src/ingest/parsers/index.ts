@@ -18,6 +18,8 @@
  */
 import { utf8, uuidv5 } from '../../hash.js';
 import { canonicalPromptId, type ClaudePromptShape, type ClaudeRecordKey, type OffsetPromptNamespace, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
+import { canonicalRecordId, deriveLegacyRecordId, extractRecordSource, recordPlanCoordinate, RecordSourceAbsent, LEGACY_RECORD_ID_SCHEME, type RecordIdScheme, type RecordSourceRequest, type ReplySource } from '@goondocks/myco-shared/record-identity';
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import type { TranscriptRole } from '@goondocks/myco-shared/member-protocol';
 import { MAX_ID_CHARS, MAX_PAYLOAD_BYTES } from '../envelope.js';
 import { kindSpec, type Payload } from '../kinds.js';
@@ -42,6 +44,8 @@ export interface ParsedLine {
 export interface ParserInput {
   lines: readonly ParsedLine[];
   sessionId: string;
+  transcriptId: string;
+  recordScheme: RecordIdScheme;
   /** The transcript's pinned prompt identity scheme: the one derivation every prompt id of this transcript is made by. */
   scheme: PromptIdScheme;
   /** The ceiling for line timestamps and the fallback for undated live lines. */
@@ -117,9 +121,9 @@ export function withoutPrompts(state: ParserState): void {
 }
 
 /** A declared complete transcript records calls whose results never arrived. */
-export function unfinishedCalls(pending: Iterable<PendingCall>, errorMessage = 'tool call has no result in the transcript'): DerivedEvent[] {
-  return [...pending].map((call) => ({
-    kind: 'tool.failure',
+export function unfinishedCalls(pending: Iterable<readonly [string, PendingCall]>, errorMessage = 'tool call has no result in the transcript'): DerivedEvent[] {
+  return [...pending].map(([key, call]) => ({
+    kind: 'tool.failure', source: { key, block: 0 }, legacyId: call.toolCallId,
     payload: { toolCallId: call.toolCallId, promptId: call.promptId, toolName: call.toolName, input: call.input,
       success: false, errorMessage },
     createdAt: call.createdAt, offset: call.offset,
@@ -127,10 +131,42 @@ export function unfinishedCalls(pending: Iterable<PendingCall>, errorMessage = '
 }
 
 /** An output retains the source call identity after a terminal or count-bound flush. */
-export async function callForResult(sessionId: string, sourceId: string, pending: Map<string, PendingCall>, at: { offset: number; createdAt: number; promptId?: string }): Promise<PendingCall> {
-  const held = pending.get(sourceId);
-  pending.delete(sourceId);
-  return held ?? { toolCallId: await uuidv5('tool-call', sessionId, sourceId), toolName: 'unknown', input: {}, ...at };
+export async function callForResult(input: ParserInput, agent: string, source: ReplySource, pending: Map<string, PendingCall>, at: { offset: number; createdAt: number; promptId?: string }): Promise<PendingCall> {
+  const sourceId = 'key' in source ? source.key : undefined;
+  const held = sourceId === undefined ? undefined : pending.get(sourceId);
+  if (sourceId !== undefined) pending.delete(sourceId);
+  return held ?? { toolCallId: await recordId(input, agent, { kind: 'tool-call', source, offset: at.offset }), toolName: 'unknown', input: {}, ...at };
+}
+
+const recordDeclaration = (agent: string) => CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === agent)?.recordIdentity;
+
+/** The manifest's admitted source facts for one parser-emitted record. */
+export function recordSource(input: ParserInput, agent: string, request: Omit<RecordSourceRequest, 'declaration' | 'scheme'>): ReplySource {
+  return extractRecordSource({ ...request, declaration: recordDeclaration(agent),
+    scheme: input.recordScheme });
+}
+
+/** A keyed tool shape with no source key emits no invocation or result. */
+export function optionalRecordSource(input: ParserInput, agent: string, request: Omit<RecordSourceRequest, 'declaration' | 'scheme'>): ReplySource | undefined {
+  try { return recordSource(input, agent, request); }
+  catch (error) {
+    if (error instanceof RecordSourceAbsent) return undefined;
+    throw error;
+  }
+}
+
+type RecordFacts = { source: ReplySource; offset: number } & (
+  | { kind: 'response' | 'tool-call' }
+  | { kind: 'plan'; tag: string; coordinate: readonly (string | number)[]; legacyPosition: number }
+);
+/** The registry mints a record after the parser extracts its declared source. */
+export async function recordId(input: ParserInput, agent: string, request: RecordFacts): Promise<string> {
+  return canonicalRecordId(uuidv5, { ...request, scheme: input.recordScheme, sessionId: input.sessionId, transcriptId: input.transcriptId, agent });
+}
+
+/** The compatibility identity of the same extracted record. */
+export async function legacyRecordId(input: ParserInput, request: RecordFacts): Promise<string> {
+  return deriveLegacyRecordId(uuidv5, { ...request, sessionId: input.sessionId });
 }
 
 /** Pending calls and plan positions survive read boundaries; a read boundary never closes a call. */
@@ -143,7 +179,7 @@ export function parserContinuation(input: ParserInput): {
     save(position) {
       if (input.state === undefined) return;
       input.state.pending = Object.fromEntries(pending);
-      input.state.planPosition = position;
+      if (input.recordScheme === LEGACY_RECORD_ID_SCHEME) input.state.planPosition = position;
     },
   };
 }
@@ -156,6 +192,9 @@ export interface DerivedEvent {
   offset: number;
   /** False when a captured prompt supplies context without opening an assistant turn. */
   opensTurn?: boolean;
+  source?: ReplySource;
+  legacyId?: string;
+  coordinate?: readonly (string | number)[];
 }
 
 /**
@@ -223,11 +262,6 @@ export const claudeRecordIdFor = async (sessionId: string, record: ClaudeRecordK
 /** A prompt id a transcript names by its byte position, under its parser's own prompt namespace. */
 export const promptIdAtOffset = async (namespace: OffsetPromptNamespace, sessionId: string, offset: number): Promise<string> =>
   canonicalPromptId(uuidv5, { scheme: 'offset-v1', namespace, sessionId, offset });
-/** A plan key a member also derives for a plan-tag envelope at a position in the session. Parts and their order are the member's (`planKeyForTag`, `packages/myco/src/member/envelope.ts:99`). */
-export const planKeyForTag = (sessionId: string, tag: string, position: number): Promise<string> => uuidv5('plan-tag', sessionId, tag, String(position));
-/** An id for a record the member has no derivation for: the transcript and the byte that produced it. */
-export const offsetIdFor = (kind: string, transcriptId: string, offset: number): Promise<string> => uuidv5(kind, transcriptId, String(offset));
-
 /** The instant a line's own time field carries, never ahead of the server's clock; null for a line that carries none. */
 export function datedAt(raw: unknown, now: number): number | null {
   if (typeof raw !== 'string') return null;
@@ -289,6 +323,7 @@ export interface ReplyPart {
   text: string;
   offset: number;
   createdAt: number;
+  source?: ReplySource;
 }
 
 /** What separates the messages of one turn in its response text. */
@@ -299,7 +334,7 @@ export const truncationMarker = (dropped: number): string => `${REPLY_SEPARATOR}
 
 /** The largest `response.text` the catalogue admits, in characters. */
 function responseTextChars(): number {
-  const bound = kindSpec('response')?.fields.text?.bound;
+  const bound = kindSpec({ kind: 'response' })?.fields.text?.bound;
   if (bound?.type !== 'string') throw new Error('the catalogue holds no string bound on response.text');
   return bound.max;
 }
@@ -399,29 +434,29 @@ export function firstHeading(content: string): string | undefined {
   return undefined;
 }
 
-/**
- * The plans an assistant reply carries, one per tag envelope.
- *
- * Shared by every parser: the tags differ per agent and the envelope shape does
- * not, and the key each plan takes is the member's own derivation over the tag
- * and the plan's position in the session — so a plan the hook shipped and the
- * same plan parsed out of the transcript are one row.
- */
+/** The plans in each declared envelope, named by its source-record coordinate. */
 export async function plansInText(
-  text: string, tags: readonly string[], sessionId: string, at: { promptId?: string; offset: number; createdAt: number }, from: number,
+  text: string, tags: readonly string[], input: ParserInput, agent: string, record: Record<string, unknown>,
+  at: { promptId?: string; offset: number; createdAt: number }, from: number, block?: number,
 ): Promise<{ events: DerivedEvent[]; next: number }> {
   const events: DerivedEvent[] = [];
   let position = from;
   for (const tag of tags) {
     const re = planEnvelope(tag);
     let match: RegExpExecArray | null;
+    let matchIndex = 0;
     while ((match = re.exec(text)) !== null) {
+      const rawMatchIndex = matchIndex++;
       const content = match[1].trim();
       if (content === '') continue;
+      const source = recordSource(input, agent, { kind: 'plan', record, block: block ?? 0 });
+      const coordinate = recordPlanCoordinate({ declaration: recordDeclaration(agent),
+        scheme: input.recordScheme, source, matchIndex: rawMatchIndex });
+      const plan = { tag, coordinate, legacyPosition: position };
       events.push({
-        kind: 'plan',
+        kind: 'plan', source, coordinate, legacyId: await legacyRecordId(input, { kind: 'plan', source, offset: at.offset, ...plan }),
         payload: {
-          planKey: await planKeyForTag(sessionId, tag, position),
+          planKey: await recordId(input, agent, { kind: 'plan', source, offset: at.offset, ...plan }),
           promptId: at.promptId,
           title: firstHeading(content),
           content,

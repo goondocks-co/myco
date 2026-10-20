@@ -1,0 +1,5 @@
+# Record identity declaration evidence
+
+`../record-identity-evidence.json` contains synthetic accepted-shape records that isolate the source fields declared in the six parser manifests. Claude assistant UUID/thread and invocation/result fields follow `claude-parse-basic.jsonl`; Pi record IDs and tool fields follow `pi-parse-basic.jsonl`; Codex assistant IDs follow `codex-0.153.4-redacted.jsonl`, whose separate provenance records the retained object keys and references. Missing keys, ordered Codex opening-ID alternatives, original content-block positions, and empty plan-envelope matches are explicit synthetic variants.
+
+The cases name exact extracted source facts, UUIDv5 tuple components and frozen logical IDs under both record pins. They do not establish vendor-wide key uniqueness. The plugin transcript is append-only and declares position for responses and completed tools; Cursor declares response position only. Complete parse/reread and reply-boundary behavior is covered by the server integration suite.

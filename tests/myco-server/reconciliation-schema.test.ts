@@ -33,8 +33,8 @@ it('fresh and populated v91 upgrades agree on native and workerd D1, including f
   const fresh = new Database(':memory:');
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'] }));
   try {
-    expect(SERVER_SCHEMA_VERSION).toBe(92);
-    expect(SCHEMA_STEPS.at(-1)!.version).toBe(92);
+    expect(SERVER_SCHEMA_VERSION).toBeGreaterThanOrEqual(92);
+    const reconciliation = SCHEMA_STEPS.find(step => step.version === 92)!;
     const d1 = await mf.getD1Database('DB');
     for (const step of SCHEMA_STEPS) {
       for (const sql of step.statements) fresh.exec(sql);
@@ -44,8 +44,8 @@ it('fresh and populated v91 upgrades agree on native and workerd D1, including f
     }
     for (const sql of SEED) native.exec(sql);
     await d1.batch(SEED.map(sql => d1.prepare(sql)));
-    for (const sql of SCHEMA_STEPS.at(-1)!.statements) native.exec(sql);
-    await d1.batch(SCHEMA_STEPS.at(-1)!.statements.map(sql => d1.prepare(sql)));
+    for (const sql of reconciliation.statements) native.exec(sql);
+    await d1.batch(reconciliation.statements.map(sql => d1.prepare(sql)));
     for (const db of [sqliteD1(native), d1] satisfies RelationalStore[]) {
       for (const [table, column] of NEW_COLUMNS) {
         expect((await db.prepare(`SELECT ${column} AS value FROM ${table}`).all()).results, table).toEqual([{ value: null }]);

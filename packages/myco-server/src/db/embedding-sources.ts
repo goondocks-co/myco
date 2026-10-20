@@ -42,7 +42,7 @@ export const SOURCES_WITH_PRESENTED_SESSION_DATE: readonly Source[] = EMBEDDING_
 
 /** Source eligibility requiring a registered proof for blob-backed plans. */
 export const PROVEN_EMBEDDING_SOURCES: readonly Source[] = SOURCES_WITH_PRESENTED_SESSION_DATE.map((source) => source.type === 'plan'
-  ? { ...source, eligible: `content IS NOT NULL OR (blob_key IS NOT NULL AND ${processedResourceProofSql('plans.project_id', 'plan', 'plans.plan_key', 'plans.blob_key')})` }
+  ? { ...source, eligible: `content IS NOT NULL OR (blob_key IS NOT NULL AND ${processedResourceProofSql('plans.project_id', { kind: 'plan' }, 'plans.plan_key', 'plans.blob_key')})` }
   : source);
 
 /** The current embedding sources exclude generated skills. */

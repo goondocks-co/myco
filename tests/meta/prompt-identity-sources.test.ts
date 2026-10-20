@@ -23,7 +23,7 @@ import { resolvePromptIdentity, SymbiontManifestSchema } from '@myco/symbionts/m
 
 const ROOT = path.resolve(import.meta.dir, '..', '..');
 const PACKAGES = path.join(ROOT, 'packages');
-const REGISTRY = path.join(PACKAGES, 'myco-shared', 'src', 'prompt-identity.ts');
+const REGISTRY = path.join(PACKAGES, 'myco-shared', 'src', 'record-identity.ts');
 const MANIFESTS = path.join(PACKAGES, 'myco', 'src', 'symbionts', 'manifests');
 const TEMPLATES = path.join(PACKAGES, 'myco', 'src', 'symbionts', 'templates');
 /** Every namespace a prompt id is derived under. */

@@ -11,6 +11,7 @@
  * derives the same id from the same facts.
  */
 import crypto from 'node:crypto';
+import { deriveLegacyRecordId } from '@goondocks/myco-shared/record-identity';
 import { resolveHomeDir } from '../paths/home.js';
 import { getPluginVersion } from '../version.js';
 import { TOOL_OUTPUT_CAPTURE_CHARS } from '../constants.js';
@@ -108,9 +109,9 @@ export function deriveId(...parts: string[]): string {
 
 export const subagentIdFor = (sessionId: string, agentId: string): string => deriveId('subagent', sessionId, agentId);
 export const planKeyForPath = (projectId: string, planPath: string): string => deriveId('plan', projectId, planPath);
-export const planKeyForTag = (sessionId: string, tag: string, position: number): string => deriveId('plan-tag', sessionId, tag, String(position));
+export const planKeyForTag = (sessionId: string, tag: string, position: number): string => deriveLegacyRecordId(deriveId, { kind: 'plan', sessionId, tag, legacyPosition: position });
 /** A plan a person pasted inside a tag envelope in a prompt, keyed by the prompt: the Deployment's parse counts positions over assistant text only, so this key never meets one it derives. */
-export const planKeyForPromptTag = (sessionId: string, tag: string, promptId: string): string => deriveId('plan-tag', sessionId, tag, 'prompt', promptId);
+export const planKeyForPromptTag = (sessionId: string, tag: string, promptId: string): string => deriveLegacyRecordId(deriveId, { kind: 'plan', sessionId, tag, legacyPromptId: promptId });
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -180,7 +181,7 @@ export function producerIdentifier(value: string): string {
   return normalized.length > 0 ? normalized : 'unknown';
 }
 
-function envelope(ctx: EnvelopeContext, kind: WireKind, payload: Record<string, unknown>, blobSource?: BlobSource): OutboundEvent {
+function envelope(ctx: EnvelopeContext, { kind }: { kind: WireKind }, payload: Record<string, unknown>, blobSource?: BlobSource): OutboundEvent {
   const env: MemberEnvelope = {
     eventId: mintId(),
     sessionId: ctx.sessionId,
@@ -245,7 +246,7 @@ function toolCallPayload(ctx: EnvelopeContext, input: NormalizedHookInput, opts:
 export function sessionStartEvent(ctx: EnvelopeContext, facts: {
   branch?: string; headSha?: string; startedAt?: number; originPath?: string; projectName?: string; parentSessionId?: string; parentReason?: string;
 }): OutboundEvent {
-  return envelope(ctx, 'session.start', {
+  return envelope(ctx, { kind: 'session.start' }, {
     agent: trunc(ctx.agent, BOUNDS.agent),
     branch: trunc(facts.branch, BOUNDS.branch),
     headSha: facts.headSha,
@@ -259,7 +260,7 @@ export function sessionStartEvent(ctx: EnvelopeContext, facts: {
 
 /** A session's end. `title` and `summary` are carried by an import alone: the Deployment stores them only from the import channel. */
 export function sessionEndEvent(ctx: EnvelopeContext, facts: { endedAt?: number; headSha?: string; dirty?: boolean; title?: string; summary?: string } = {}): OutboundEvent {
-  return envelope(ctx, 'session.end', {
+  return envelope(ctx, { kind: 'session.end' }, {
     endedAt: facts.endedAt ?? (ctx.now ?? Date.now)(),
     headSha: facts.headSha,
     dirty: facts.headSha === undefined ? undefined : facts.dirty,
@@ -270,14 +271,14 @@ export function sessionEndEvent(ctx: EnvelopeContext, facts: { endedAt?: number;
 
 /** An import's title for a session whose lifecycle it leaves alone: a `session.end` naming no instant, which the Deployment reads as the title alone. */
 export function sessionTitleEvent(ctx: EnvelopeContext, facts: { title: string; summary?: string }): OutboundEvent {
-  return envelope(ctx, 'session.end', { title: trunc(facts.title, BOUNDS.sessionTitle), summary: trunc(facts.summary, BOUNDS.sessionSummary) });
+  return envelope(ctx, { kind: 'session.end' }, { title: trunc(facts.title, BOUNDS.sessionTitle), summary: trunc(facts.summary, BOUNDS.sessionSummary) });
 }
 
 export function promptEvent(ctx: EnvelopeContext, facts: {
   promptId: string; text: string; origin?: PromptOrigin; parentPromptId?: string; threadId?: string; threadLabel?: string;
 }): OutboundEvent {
   const spilled = inlineOrBlob(ctx, 'text', facts.text);
-  return envelope(ctx, 'prompt', {
+  return envelope(ctx, { kind: 'prompt' }, {
     promptId: facts.promptId,
     ...spilled.fields,
     origin: wireOrigin(facts.origin),
@@ -289,19 +290,19 @@ export function promptEvent(ctx: EnvelopeContext, facts: {
 
 export function toolUseEvent(ctx: EnvelopeContext, input: NormalizedHookInput, opts: { promptId?: string; toolCallId?: string } = {}): OutboundEvent {
   const { payload, blobSource } = toolCallPayload(ctx, input, { ...opts, success: true });
-  return envelope(ctx, 'tool.use', payload, blobSource);
+  return envelope(ctx, { kind: 'tool.use' }, payload, blobSource);
 }
 
 export function toolFailureEvent(ctx: EnvelopeContext, input: NormalizedHookInput, opts: { promptId?: string; toolCallId?: string } = {}): OutboundEvent {
   const { payload, blobSource } = toolCallPayload(ctx, input, { ...opts, success: false });
   const error = input.raw.error;
   const errorMessage = typeof error === 'string' ? error : error === undefined ? 'tool failed' : JSON.stringify(error);
-  return envelope(ctx, 'tool.failure', { ...payload, errorMessage: errorMessage.slice(0, BOUNDS.errorMessage) || 'tool failed' }, blobSource);
+  return envelope(ctx, { kind: 'tool.failure' }, { ...payload, errorMessage: errorMessage.slice(0, BOUNDS.errorMessage) || 'tool failed' }, blobSource);
 }
 
 export function responseEvent(ctx: EnvelopeContext, facts: { text: string; promptId?: string; responseId?: string }): OutboundEvent {
   const spilled = inlineOrBlob(ctx, 'text', facts.text);
-  return envelope(ctx, 'response', {
+  return envelope(ctx, { kind: 'response' }, {
     responseId: facts.responseId ?? mintId(),
     promptId: facts.promptId,
     ...spilled.fields,
@@ -318,11 +319,11 @@ function subagentPayload(ctx: EnvelopeContext, input: NormalizedHookInput, paren
 }
 
 export function subagentStartEvent(ctx: EnvelopeContext, input: NormalizedHookInput, opts: { parentPromptId?: string } = {}): OutboundEvent {
-  return envelope(ctx, 'subagent.start', subagentPayload(ctx, input, opts.parentPromptId));
+  return envelope(ctx, { kind: 'subagent.start' }, subagentPayload(ctx, input, opts.parentPromptId));
 }
 
 export function subagentStopEvent(ctx: EnvelopeContext, input: NormalizedHookInput, opts: { parentPromptId?: string } = {}): OutboundEvent {
-  return envelope(ctx, 'subagent.stop', subagentPayload(ctx, input, opts.parentPromptId));
+  return envelope(ctx, { kind: 'subagent.stop' }, subagentPayload(ctx, input, opts.parentPromptId));
 }
 
 /**
@@ -330,7 +331,7 @@ export function subagentStopEvent(ctx: EnvelopeContext, input: NormalizedHookInp
  * Deployment that names the `turn` feature.
  */
 export function turnEvent(ctx: EnvelopeContext, opts: { phase: TurnPhase; promptId?: string }): OutboundEvent {
-  return envelope(ctx, TURN_KIND, { phase: opts.phase, promptId: opts.promptId });
+  return envelope(ctx, { kind: TURN_KIND }, { phase: opts.phase, promptId: opts.promptId });
 }
 
 /**
@@ -339,13 +340,13 @@ export function turnEvent(ctx: EnvelopeContext, opts: { phase: TurnPhase; prompt
  * that names the `prompt-identity` feature.
  */
 export function contextDeliveredEvent(ctx: EnvelopeContext, facts: { receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord; renderedIn?: string; renderedScheme?: PromptIdScheme; renderedScopeReason?: PromptScopeReason }): OutboundEvent {
-  return envelope(ctx, CONTEXT_DELIVERED_KIND, { ...facts });
+  return envelope(ctx, { kind: CONTEXT_DELIVERED_KIND }, { ...facts });
 }
 
 export function compactionEvent(ctx: EnvelopeContext, phase: 'pre' | 'post', input: NormalizedHookInput): OutboundEvent {
   const summary = typeof input.raw.compact_summary === 'string' && input.raw.compact_summary.length > 0 ? input.raw.compact_summary : undefined;
   const spilled = summary === undefined ? { fields: {} } : inlineOrBlob(ctx, 'summary', summary);
-  return envelope(ctx, phase === 'pre' ? 'compaction.pre' : 'compaction.post', {
+  return envelope(ctx, { kind: phase === 'pre' ? 'compaction.pre' : 'compaction.post' }, {
     trigger: trunc(input.raw.trigger, BOUNDS.trigger),
     ...spilled.fields,
   }, spilled.blobSource);
@@ -361,14 +362,14 @@ function firstString(record: Record<string, unknown>, keys: readonly string[]): 
 }
 
 export function stopFailureEvent(ctx: EnvelopeContext, input: NormalizedHookInput): OutboundEvent {
-  return envelope(ctx, 'stop.failure', {
+  return envelope(ctx, { kind: 'stop.failure' }, {
     message: trunc(firstString(input.raw, ['error', 'message']), BOUNDS.message),
     data: boundedJson({ error: input.raw.error, error_details: input.raw.error_details }),
   });
 }
 
 export function taskCompletedEvent(ctx: EnvelopeContext, input: NormalizedHookInput): OutboundEvent {
-  return envelope(ctx, 'task.completed', {
+  return envelope(ctx, { kind: 'task.completed' }, {
     message: trunc(firstString(input.raw, ['task_subject', 'message']), BOUNDS.message),
     data: boundedJson({ task_id: input.raw.task_id, task_subject: input.raw.task_subject, task_description: input.raw.task_description }),
   });
@@ -383,7 +384,7 @@ function dataOf(input: NormalizedHookInput): Record<string, unknown> {
 
 export function notificationEvent(ctx: EnvelopeContext, input: NormalizedHookInput): OutboundEvent {
   const message = firstString(input.raw, ['message', 'notification', 'title', 'text']) ?? JSON.stringify(dataOf(input));
-  return envelope(ctx, 'notification', {
+  return envelope(ctx, { kind: 'notification' }, {
     message: message.slice(0, BOUNDS.message),
     level: trunc(firstString(input.raw, ['level', 'severity', 'notification_type']), BOUNDS.level),
     data: boundedJson(dataOf(input)),
@@ -392,7 +393,7 @@ export function notificationEvent(ctx: EnvelopeContext, input: NormalizedHookInp
 
 export function errorEvent(ctx: EnvelopeContext, input: NormalizedHookInput): OutboundEvent {
   const message = firstString(input.raw, ['message', 'error', 'title']) ?? JSON.stringify(dataOf(input));
-  return envelope(ctx, 'error', {
+  return envelope(ctx, { kind: 'error' }, {
     message: message.slice(0, BOUNDS.message),
     level: trunc(firstString(input.raw, ['level', 'severity', 'code']), BOUNDS.level),
     data: boundedJson(dataOf(input)),
@@ -403,7 +404,7 @@ export function planEvent(ctx: EnvelopeContext, facts: {
   planKey: string; content: string; title?: string; status?: PlanStatus; originPath?: string; tags?: string[]; promptId?: string;
 }): OutboundEvent {
   const spilled = inlineOrBlob(ctx, 'content', facts.content);
-  return envelope(ctx, 'plan', {
+  return envelope(ctx, { kind: 'plan' }, {
     planKey: facts.planKey,
     promptId: facts.promptId,
     title: trunc(facts.title, BOUNDS.title),
@@ -418,7 +419,7 @@ export function planEvent(ctx: EnvelopeContext, facts: {
 export function attachmentEvent(ctx: EnvelopeContext, facts: {
   blobSource: BlobSource; attachmentId?: string; promptId?: string; description?: string; originPath?: string;
 }): OutboundEvent {
-  return envelope(ctx, 'attachment', {
+  return envelope(ctx, { kind: 'attachment' }, {
     attachmentId: facts.attachmentId ?? mintId(),
     promptId: facts.promptId,
     blob: facts.blobSource.sha256,
@@ -432,7 +433,7 @@ export function transcriptSegmentEvent(ctx: EnvelopeContext, facts: {
   transcriptId: string; baseOffset: number; blobSource: BlobSource; originPath?: string; headHash?: string; role?: TranscriptRole;
 }): OutboundEvent {
   if (facts.blobSource.size < 1) throw new Error('transcriptSegmentEvent: a segment carries at least one byte');
-  return envelope(ctx, 'transcript.segment', {
+  return envelope(ctx, { kind: 'transcript.segment' }, {
     transcriptId: facts.transcriptId,
     baseOffset: facts.baseOffset,
     length: facts.blobSource.size,

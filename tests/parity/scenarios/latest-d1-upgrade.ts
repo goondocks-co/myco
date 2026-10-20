@@ -31,6 +31,10 @@ export const latestD1Upgrade: ParityScenario = {
     expect(await target.sql('SELECT COUNT(*) AS n FROM prompt_identity_conflicts')).toEqual([{ n: 0 }]);
     expect(await target.sql("SELECT transcript_id, prompt_identity_scheme FROM transcripts WHERE session_id = 'upgrade_session' AND agent = 'codex' ORDER BY transcript_id"))
       .toEqual([{ transcript_id: 'upgrade_transcript_read', prompt_identity_scheme: null }, { transcript_id: 'upgrade_transcript_unread', prompt_identity_scheme: null }]);
+    expect(await target.sql("SELECT transcript_id, record_identity_scheme FROM transcripts WHERE session_id = 'upgrade_session' ORDER BY transcript_id"))
+      .toEqual([{ transcript_id: 'upgrade_transcript_read', record_identity_scheme: 'legacy-session-v1' }, { transcript_id: 'upgrade_transcript_unread', record_identity_scheme: 'legacy-session-v1' }]);
+    await expect(target.sql("UPDATE transcripts SET record_identity_scheme='source-record-v1' WHERE session_id='upgrade_session'"))
+      .rejects.toThrow(/record_identity_scheme_immutable/);
     expect(await target.sql('PRAGMA foreign_key_check')).toEqual([]);
     expect(await target.sql('PRAGMA quick_check')).toEqual([{ quick_check: 'ok' }]);
   },

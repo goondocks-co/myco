@@ -255,7 +255,8 @@ export function orderingFields(spec: KindSpec): string[] {
   return Object.entries(spec.fields).filter(([, f]) => f.bound.type === 'time').map(([field]) => field);
 }
 
-export function kindSpec(name: string): KindSpec | null {
+export function kindSpec(request: string | { kind: string }): KindSpec | null {
+  const name = typeof request === 'string' ? request : request.kind;
   return BY_NAME.get(name) ?? null;
 }
 

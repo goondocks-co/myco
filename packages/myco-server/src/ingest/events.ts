@@ -7,6 +7,7 @@ import { parseEnvelope, type CaptureEnvelope, type Refused } from './envelope.js
 import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
 import { pendingSearchBlobs } from '../core/search-index.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
+import { RecordSchemeError } from './record-scheme.js';
 import { planKind, projectLive, RAW_ROW_GATE, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { receiptDeliveredStatement, type Delivery } from '../core/injection.js';
 import { answerDeliveredStatement, planNudgeDeliveredStatement, sessionRecordDeliveredStatement } from '../core/recall.js';
@@ -153,7 +154,12 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
         (ctx.writeOrigin??'member')==='member'?ctx.tokenId:undefined)
     : undefined;
   const preparedToolInput=inputBundle?{...inputBundle.body,bundle:inputBundle,preparationCalls:inputPreparation!.usage.statements+inputPreparation!.usage.blobCalls}:undefined;
-  const plan: KindPlan = planKind(spec, { db, ctx: write, e, p, contentHash, preparedToolInput });
+  let plan: KindPlan;
+  try { plan = planKind(spec, { db, ctx: write, e, p, contentHash, preparedToolInput }); }
+  catch (error) {
+    if (!(error instanceof RecordSchemeError) || error.code !== 'record_identity_scheme_unsupported') throw error;
+    return { ok: false, ...refusal('Record identity scheme is unsupported', error.code) };
+  }
   // A server-origin write is counted nothing and consults no credential's
   // liveness: the bytes it derives from were accepted and counted when the
   // member shipped them, and that member's credential rotates on its own

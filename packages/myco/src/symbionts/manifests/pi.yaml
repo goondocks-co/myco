@@ -97,3 +97,28 @@ promptIdentity:
   kind: transcript-only
   scheme: offset-v1
   evidence: tests/fixtures/prompt-identity/pi-user-prompt-submit.json
+
+recordIdentity:
+  scheme: source-record-v1
+  schemes:
+    legacy-session-v1:
+      response:
+        position: true
+        withinRecord: "record-text"
+        evidence: "tests/fixtures/record-identity-evidence.json"
+      tool-call:
+        key: {"from": "call", "path": "id"}
+        resultKey: {"from": "result", "path": "toolCallId"}
+        absentKey: "position"
+        evidence: "tests/fixtures/record-identity-evidence.json"
+    source-record-v1:
+      response:
+        key: {"from": "record", "path": "id"}
+        absentKey: "position"
+        withinRecord: "record-text"
+        evidence: "tests/fixtures/record-identity-evidence.json"
+      tool-call:
+        key: {"from": "call", "path": "id"}
+        resultKey: {"from": "result", "path": "toolCallId"}
+        absentKey: "position"
+        evidence: "tests/fixtures/record-identity-evidence.json"

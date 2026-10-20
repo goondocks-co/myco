@@ -24,7 +24,7 @@ import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { canonicalPromptId, promptKeyHash, type PromptIdScheme, type TurnSubmission } from '@goondocks/myco-shared/prompt-identity';
 import {
-  callForResult, promptIdAtOffset, parserContinuation, blocksOf, isBlock, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
+  callForResult, recordId, recordSource, optionalRecordSource, promptIdAtOffset, parserContinuation, blocksOf, isBlock, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParsedLine, type ParserInput, type ParserState, type ReplyPart, type TranscriptParser,
 } from './index.js';
 
@@ -45,8 +45,6 @@ function codexText(content: unknown): string {
 }
 
 const promptIdAt = (sessionId: string, offset: number): Promise<string> => promptIdAtOffset('codex-prompt', sessionId, offset);
-const responseIdAt = (sessionId: string, offset: number): Promise<string> => uuidv5('response', sessionId, String(offset));
-const toolCallIdFor = (sessionId: string, callId: string): Promise<string> => uuidv5('tool-call', sessionId, callId);
 
 /** The turn a `turn_context` or `task_started` record opens, or undefined for any other line. */
 function turnOpened(value: Record<string, unknown>): string | undefined {
@@ -114,7 +112,8 @@ export const codexParser: TranscriptParser = {
       for (const chunk of held.parts) {
         events.push({
           kind: 'response',
-          payload: { responseId: await responseIdAt(sessionId, chunk.offset), promptId: held.promptId, text: chunk.text },
+          payload: { promptId: held.promptId, text: chunk.text },
+          source: chunk.source,
           createdAt: chunk.createdAt,
           offset: chunk.offset,
         });
@@ -151,19 +150,22 @@ export const codexParser: TranscriptParser = {
         }
         if (str(payload.role) !== 'assistant') continue;
         if (reply === null) reply = { parts: [], promptId };
-        reply.parts.push({ text, offset, createdAt });
-        const plans = await plansInText(text, codexParser.planTags, sessionId, { promptId, offset, createdAt }, planPosition);
+        reply.parts.push({ text, offset, createdAt, source: recordSource(input, this.agent, { kind: 'response', record: value, block: 0 }) });
+        const plans = await plansInText(text, codexParser.planTags, input, this.agent, value, { promptId, offset, createdAt }, planPosition);
         events.push(...plans.events);
         planPosition = plans.next;
         continue;
       }
 
       if (kind === 'function_call' || kind === 'custom_tool_call') {
-        const callId = str(payload.call_id) ?? str(payload.id);
         const name = str(payload.name);
-        if (callId === undefined || name === undefined) continue;
+        if (name === undefined) continue;
+        const source = optionalRecordSource(input, this.agent, { kind: 'tool-call', record: value, role: 'call' });
+        if (source === undefined) continue;
+        if (!('key' in source)) throw new Error('Tool invocation has no declared key');
+        const callId = source.key;
         pending.set(callId, {
-          toolCallId: await toolCallIdFor(sessionId, callId),
+          toolCallId: await recordId(input, this.agent, { kind: 'tool-call', source, offset }),
           toolName: name.slice(0, TOOL_NAME_CHARS),
           input: kind === 'function_call' ? argumentsOf(payload.arguments) : payload.input,
           promptId,
@@ -174,13 +176,13 @@ export const codexParser: TranscriptParser = {
       }
 
       if (kind === 'function_call_output' || kind === 'custom_tool_call_output') {
-        const callId = str(payload.call_id);
-        if (callId === undefined) continue;
-        const call = await callForResult(sessionId, callId, pending, { promptId, createdAt, offset });
+        const source = optionalRecordSource(input, this.agent, { kind: 'tool-call', record: value, role: 'result' });
+        if (source === undefined) continue;
+        const call = await callForResult(input, this.agent, source, pending, { promptId, createdAt, offset });
         const output = (typeof payload.output === 'string' ? payload.output : codexText(payload.output)).slice(0, TOOL_OUTPUT_PREVIEW_CHARS);
         const failed = payload.success === false;
         events.push({
-          kind: failed ? 'tool.failure' : 'tool.use',
+          kind: failed ? 'tool.failure' : 'tool.use', source, legacyId: call.toolCallId,
           payload: {
             toolCallId: call.toolCallId,
             promptId: call.promptId,
