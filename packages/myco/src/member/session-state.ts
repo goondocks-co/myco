@@ -163,6 +163,98 @@ export function mergedTurn(target: SessionState['turn'], other: SessionState['tu
   return other?.id === target.id && other.promptId === undefined ? { id: target.id } : target;
 }
 
+/** How one field of a session's state is merged from the target state and another state of the same session. */
+type FieldMerge<K extends keyof SessionState> = (target: Readonly<SessionState>, other: Readonly<SessionState>) => SessionState[K];
+type KeyOf<T> = { [K in keyof SessionState]-?: NonNullable<SessionState[K]> extends T ? K : never }[keyof SessionState];
+
+/** The target's value: a fact about the target's own files or its current mutation. */
+const targetOnly = <K extends keyof SessionState>(key: K): FieldMerge<K> => (target) => target[key];
+/** The target's value, or the other's where the target holds none. */
+const targetFirst = <K extends keyof SessionState>(key: K): FieldMerge<K> => (target, other) => target[key] ?? other[key];
+/** Either state's entries, the target's winning a key both hold. */
+const entries = <K extends KeyOf<Record<string, unknown>>>(key: K): FieldMerge<K> =>
+  (target, other) => ({ ...other[key], ...target[key] }) as SessionState[K];
+/** Either state's members, once each. */
+const members = <K extends KeyOf<readonly string[]>>(key: K): FieldMerge<K> =>
+  (target, other) => [...new Set([...(other[key] as string[]), ...(target[key] as string[])])] as SessionState[K];
+/** The later of two instants or counts, where either holds one. */
+const later = <K extends KeyOf<number>>(key: K): FieldMerge<K> => (target, other) => {
+  const [a, b] = [target[key] as number | undefined, other[key] as number | undefined];
+  return (a === undefined ? b : b === undefined ? a : Math.max(a, b)) as SessionState[K];
+};
+/** The earlier of two instants, where either holds one. */
+const earlier = <K extends KeyOf<number>>(key: K): FieldMerge<K> => (target, other) => {
+  const [a, b] = [target[key] as number | undefined, other[key] as number | undefined];
+  return (a === undefined ? b : b === undefined ? a : Math.min(a, b)) as SessionState[K];
+};
+
+/**
+ * How every field of a session's state is merged when another state of the same session joins it: a repository's held
+ * capture adopted into its Project's spool (`pending.ts` `mergeHeldState`), and a legacy spool migrated into the routed
+ * one (`spool-migration.ts`). What the target recorded stands, and what only the other recorded is added. Every field
+ * names its rule: a field added to `SessionState` without one fails to compile here.
+ */
+export const SESSION_STATE_MERGE: { readonly [K in keyof SessionState]-?: FieldMerge<K> } = {
+  version: targetOnly('version'),
+  // The journal and marks file these count in are the target's.
+  highWater: targetOnly('highWater'),
+  markWater: targetOnly('markWater'),
+  markGeneration: targetOnly('markGeneration'),
+  startSettled: (target, other) => (target.startSettled ?? other.startSettled),
+  promptId: targetFirst('promptId'),
+  prompts: entries('prompts'),
+  transcript: targetFirst('transcript'),
+  // The other state's own transcript, where the target ships another, is one of the session's earlier files.
+  continuations: (target, other) => ({
+    ...other.continuations, ...target.continuations,
+    ...(other.transcript !== undefined && target.transcript !== undefined && other.transcript.path !== target.transcript.path
+      ? { [other.transcript.path]: other.transcript } : {}),
+  }),
+  siblings: entries('siblings'),
+  planHashes: entries('planHashes'),
+  planTagCount: later('planTagCount'),
+  planPaths: entries('planPaths'),
+  attachmentKeys: members('attachmentKeys'),
+  delivered: members('delivered'),
+  compactionOrdinal: later('compactionOrdinal'),
+  agent: targetFirst('agent'),
+  agentUnknown: targetFirst('agentUnknown'),
+  transcriptRetry: targetFirst('transcriptRetry'),
+  eventRetry: targetFirst('eventRetry'),
+  startedAt: earlier('startedAt'),
+  lastAckAt: later('lastAckAt'),
+  lastAccountedAt: later('lastAccountedAt'),
+  lastDeliveryAt: later('lastDeliveryAt'),
+  // One ask per kind, the newer of the two where both hold one: what the helper is still to fetch.
+  contextAsks: (target, other) => {
+    const asks = new Map<ContextAsk['kind'], ContextAsk>();
+    for (const ask of [...(other.contextAsks ?? []), ...(target.contextAsks ?? [])]) {
+      const held = asks.get(ask.kind);
+      if (held === undefined || ask.at >= held.at) asks.set(ask.kind, ask);
+    }
+    return asks.size === 0 ? undefined : [...asks.values()];
+  },
+  promptBackfill: targetFirst('promptBackfill'),
+  hookAt: later('hookAt'),
+  endedAt: targetFirst('endedAt'),
+  // The newest ask whose answer either state rendered: an answer is rendered once.
+  renderedAsk: later('renderedAsk'),
+  turn: (target, other) => mergedTurn(target.turn, other.turn),
+  updatedAt: targetOnly('updatedAt'),
+  // Queued by the target's own receipt mutation, which flushes them.
+  pendingLosses: targetOnly('pendingLosses'),
+};
+
+/** Merge `other`, another state of the same session, into `target` by `SESSION_STATE_MERGE`. */
+export function mergeSessionState(target: SessionState, other: Readonly<SessionState>): void {
+  const before: Readonly<SessionState> = { ...target };
+  const merged = Object.fromEntries(Object.entries(SESSION_STATE_MERGE).map(([key, merge]) => [key, (merge as FieldMerge<keyof SessionState>)(before, other)]));
+  for (const [key, value] of Object.entries(merged)) {
+    if (value === undefined) delete (target as unknown as Record<string, unknown>)[key];
+    else (target as unknown as Record<string, unknown>)[key] = value;
+  }
+}
+
 /** Every transcript pointer a session holds: its own, then the subagent transcripts beside it. */
 export const pointersOf = (state: SessionState): TranscriptPointer[] =>
   [...(state.transcript ? [state.transcript] : []), ...Object.values(state.continuations ?? {}), ...Object.values(state.siblings)];

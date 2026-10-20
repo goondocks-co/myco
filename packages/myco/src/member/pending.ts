@@ -20,7 +20,7 @@ import type { OutboundEvent } from './envelope.js';
 import { BLOBS_DIRNAME, MemberSpool, REFUSED_LOG_FILE, SPOOL_DIRNAME, toWire, type SessionEvents, type TurnEndMark } from './spool.js';
 import { deploymentKeyFor, deploymentUrl, readRegistryEntry, readRegistryEntryResult } from './registry.js';
 import { memberRoutingIdentity, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
-import { mergedTurn, pointersOf, readSessionState, readSessionStateResult, sessionStatePath, turnsFileOf, type SessionState } from './session-state.js';
+import { mergeSessionState, pointersOf, readSessionState, readSessionStateResult, sessionStatePath, turnsFileOf, type SessionState } from './session-state.js';
 import { isProjectId } from './constants.js';
 import { CaptureLossLedger, recordSessionLoss } from './capture-loss.js';
 import { HELD_CAPTURE_TTL_MS } from '@goondocks/myco-shared/member-protocol';
@@ -863,26 +863,8 @@ function removeEmpty(dir: string): void {
 
 /**
  * `held` folded into `target`, the state the project's spool holds for the same session: what the project's spool
- * recorded stands, and what only the held state recorded is added.
+ * recorded stands, and what only the held state recorded is added (`SESSION_STATE_MERGE`).
  */
 export function mergeHeldState(target: SessionState, held: SessionState): void {
-  if (held.transcript !== undefined && target.transcript !== undefined && held.transcript.path !== target.transcript.path) {
-    (target.continuations ??= {})[held.transcript.path] = held.transcript;
-  }
-  target.transcript ??= held.transcript;
-  target.siblings = { ...held.siblings, ...target.siblings };
-  target.continuations = { ...held.continuations, ...target.continuations };
-  target.prompts = { ...held.prompts, ...target.prompts };
-  target.promptId ??= held.promptId;
-  const turn = mergedTurn(target.turn, held.turn);
-  if (turn === undefined) delete target.turn;
-  else target.turn = turn;
-  target.planHashes = { ...held.planHashes, ...target.planHashes };
-  target.planPaths = { ...held.planPaths, ...target.planPaths };
-  target.planTagCount = Math.max(target.planTagCount, held.planTagCount);
-  target.attachmentKeys = [...new Set([...held.attachmentKeys, ...target.attachmentKeys])];
-  target.delivered = [...new Set([...held.delivered, ...target.delivered])];
-  target.compactionOrdinal = Math.max(target.compactionOrdinal, held.compactionOrdinal);
-  target.agent ??= held.agent;
-  if (held.startedAt !== undefined) target.startedAt = Math.min(target.startedAt ?? held.startedAt, held.startedAt);
+  mergeSessionState(target, held);
 }

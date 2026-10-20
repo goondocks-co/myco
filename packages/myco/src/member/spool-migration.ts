@@ -8,7 +8,7 @@ import { isProjectId, REFUSED_LOG_MAX_BYTES } from './constants.js';
 import { CONTEXT_DIRNAME } from './context-cache.js';
 import { listRegistryEntriesResult, deploymentUrl, type RegistryEntry } from './registry.js';
 import { LEGACY_MIGRATION_FILE, memberRoutingIdentity, pinSpoolDestination, routedSpoolDir, ROUTING_FILE, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
-import { bufferLockPath, emptySessionState, mergedTurn, readMigrationSettledUnlocked, readSessionState, readSessionStateResultUnlocked, recordMigrationSettledUnlocked, writeSessionStateUnlocked, type SessionState } from './session-state.js';
+import { bufferLockPath, emptySessionState, mergeSessionState, readMigrationSettledUnlocked, readSessionState, readSessionStateResultUnlocked, recordMigrationSettledUnlocked, writeSessionStateUnlocked, type SessionState } from './session-state.js';
 import { MemberSpool, OFFLINE_LATCH_FILE, REFUSED_LOG_FILE, SPOOL_DIRNAME, WIRE_FIELDS, turnEndIdentity, type SpoolRecord } from './spool.js';
 import { publishStagedBlob, readStagedBlob } from './staged-blobs.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, isPrivateMode, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic, type PrivateRead } from './store.js';
@@ -353,29 +353,8 @@ function receiptAt(dir: string, sessionId: string): SessionReceipt | null {
 }
 
 function mergeState(target: SessionState, source: SessionState): SessionState {
-  const merged: SessionState = { ...source, ...target };
-  merged.highWater = target.highWater;
-  merged.markWater = target.markWater;
-  merged.markGeneration = target.markGeneration;
-  merged.prompts = { ...source.prompts, ...target.prompts };
-  merged.siblings = { ...source.siblings, ...target.siblings };
-  merged.continuations = { ...source.continuations, ...target.continuations };
-  if (source.transcript !== undefined && target.transcript !== undefined && source.transcript.path !== target.transcript.path) merged.continuations[source.transcript.path] = source.transcript;
-  merged.planHashes = { ...source.planHashes, ...target.planHashes };
-  merged.planPaths = { ...source.planPaths, ...target.planPaths };
-  merged.attachmentKeys = [...new Set([...source.attachmentKeys, ...target.attachmentKeys])];
-  merged.delivered = [...new Set([...source.delivered, ...target.delivered])];
-  merged.transcript = target.transcript ?? source.transcript;
-  merged.promptId = target.promptId ?? source.promptId;
-  merged.turn = mergedTurn(target.turn, source.turn);
-  if (merged.turn === undefined) delete merged.turn;
-  merged.agent = target.agent ?? source.agent;
-  merged.planTagCount = Math.max(source.planTagCount, target.planTagCount);
-  merged.compactionOrdinal = Math.max(source.compactionOrdinal, target.compactionOrdinal);
-  if (source.startSettled || target.startSettled) merged.startSettled = true;
-  if (source.startedAt !== undefined || target.startedAt !== undefined) merged.startedAt = Math.min(source.startedAt ?? Infinity, target.startedAt ?? Infinity);
-  if (source.lastAckAt !== undefined || target.lastAckAt !== undefined) merged.lastAckAt = Math.max(source.lastAckAt ?? 0, target.lastAckAt ?? 0);
-  if (source.lastDeliveryAt !== undefined || target.lastDeliveryAt !== undefined) merged.lastDeliveryAt = Math.max(source.lastDeliveryAt ?? 0, target.lastDeliveryAt ?? 0);
+  const merged: SessionState = structuredClone(target);
+  mergeSessionState(merged, source);
   return merged;
 }
 

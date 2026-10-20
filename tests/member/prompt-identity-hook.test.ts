@@ -8,7 +8,8 @@
  * - The hook that renders an answer emits `context.delivered` naming the rows the answer named, in the same append.
  * - Codex: the first prompt of a turn claims the turn opener's id under the session's lock, behind `prompt-scheme`; a
  *   later prompt of the same turn steers it and is session-scoped, and hook tool calls name the opener until then.
- *   A claim held while the repository was joining moves with the session's state when it joins.
+ *   A claim held while the repository was joining moves with the session's state when it joins, as does the answer
+ *   that held capture rendered and the asks it still owes.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -19,6 +20,7 @@ import { canonicalPromptId, CONTEXT_DELIVERED_KIND } from '@goondocks/myco-share
 import { deriveId } from '@myco/member/envelope.js';
 import { appendPending, flushPending, mergeHeldState } from '@myco/member/pending.js';
 import { emptySessionState, readSessionState } from '@myco/member/session-state.js';
+import { writeSessionContext } from '@myco/member/context-cache.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
@@ -130,6 +132,32 @@ describe('a Claude Code prompt under prompt-identity', () => {
     await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'go on', prompt_id: k2 }, { helpers: 'run', fetch: served.fetch });
     expect(delivered(sessionId)).toEqual([{
       answerId: '00000000-0000-4000-8000-0000000000a1', sessionRecord: 'plan-nudge', renderedIn: await promptIdFor(sessionId, 'user_prompt', k2),
+    }]);
+  });
+
+  it('renders an answer held capture already rendered once, after the repository joins, and reports the next answer by its cached rows', async () => {
+    const sessionId = 'sess-held-render';
+    const tx = transcript(sessionId);
+    const served = serving(features);
+    await runHook('session-start', { session_id: sessionId, transcript_path: tx, hook_event_name: 'SessionStart' }, { helpers: 'run', fetch: served.fetch });
+    const project = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
+    const renderedAt = Date.now() - 60_000;
+    writeSessionContext(project.dir, mycoHome, sessionId, { version: 1, prompt: { context: 'Recalled while joining', at: renderedAt + 1, askedAt: renderedAt,
+      receiptId: '00000000-0000-4000-8000-0000000000b0', answerId: '00000000-0000-4000-8000-0000000000c0' } });
+    // While the repository was joining, a prompt rendered that answer and asked about its own text: both sit in the held state.
+    const heldAsk = { kind: 'prompt' as const, identity: 1 as const, promptId: await promptIdFor(sessionId, 'user_prompt', '00000000-0000-4000-8000-0000000000d0'), text: 'asked while joining', at: renderedAt + 2 };
+    const held = { root: '/checkout/joining', rootKey: 'c'.repeat(32), serverUrl: 'https://member-test.invalid' };
+    appendPending(held, sessionId, [], (state) => { state.renderedAsk = renderedAt; state.contextAsks = [heldAsk]; }, { mycoHome, now: Date.now() });
+    flushPending(held.rootKey, project, { mycoHome, now: Date.now() });
+    expect(readSessionState(project.dir, sessionId)).toMatchObject({ renderedAsk: renderedAt, contextAsks: expect.arrayContaining([heldAsk]) });
+    const k2 = '22222222-2222-4222-8222-222222222222';
+    const k3 = '33333333-3333-4333-8333-333333333333';
+    const second = await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'second prompt text', prompt_id: k2 }, { helpers: 'run', fetch: served.fetch });
+    expect(second.stdout).not.toContain('Recalled while joining');
+    const third = await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'third prompt text', prompt_id: k3 }, { helpers: 'run', fetch: served.fetch });
+    expect(third.stdout).toContain('Recalled for: second prompt text');
+    expect(delivered(sessionId)).toEqual([{
+      receiptId: '00000000-0000-4000-8000-000000000001', answerId: '00000000-0000-4000-8000-0000000000a1', renderedIn: await promptIdFor(sessionId, 'user_prompt', k3),
     }]);
   });
 

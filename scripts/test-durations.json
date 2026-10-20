@@ -186,6 +186,7 @@
     "tests/member/routing-isolation.test.ts": 4990,
     "tests/member/server-url.test.ts": 136,
     "tests/member/session-end-budget.test.ts": 1732,
+    "tests/member/session-state-merge.test.ts": 400,
     "tests/member/source-read-containment.test.ts": 683,
     "tests/member/source-read-corrections.test.ts": 1169,
     "tests/member/spool-migration.test.ts": 1733,
