@@ -84,7 +84,7 @@ describe('retained-hook replay reproduces the parity rows', () => {
   it('lands both prompts on the ids the parse derives, with their text and origin', async () => {
     await replay(onDisk(transcriptText));
     expect(rows('prompt_batches', ['prompt_id', 'text', 'origin', 'prompt_kind'], 'text')).toEqual([
-      { prompt_id: await promptIdFor(SESSION, 'user_prompt', '11111111-1111-4111-8111-111111111111'), text: 'add the retention window', origin: 'user', prompt_kind: 'user_prompt' },
+      { prompt_id: await promptIdFor(SESSION, 'user_prompt', '11111111-1111-4111-8111-111111111111'), text: 'add the retention window', origin: 'user', prompt_kind: 'unmarked' },
       { prompt_id: await promptIdFor(SESSION, 'queued_command', '22222222-2222-4222-8222-222222222222'), text: 'and run the tests', origin: 'user', prompt_kind: 'queued_command' },
     ]);
   });

@@ -91,6 +91,22 @@ describe('a Claude Code prompt under prompt-identity', () => {
     }]);
   });
 
+  it('names its prompt under claude-v1, the scheme its hook derives by, where the Deployment pins schemes and Claude Code declares claude-v2', async () => {
+    const sessionId = 'sess-hook-scheme';
+    const tx = transcript(sessionId);
+    const served = serving('turn,project-name,prompt-identity,prompt-scheme');
+    await runHook('session-start', { session_id: sessionId, transcript_path: tx, hook_event_name: 'SessionStart' }, { helpers: 'run', fetch: served.fetch });
+    const k1 = '44444444-4444-4444-8444-444444444444';
+    const k2 = '55555555-5555-4555-8555-555555555555';
+    await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'first prompt text', prompt_id: k1 }, { helpers: 'run', fetch: served.fetch });
+    await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'second prompt text', prompt_id: k2 }, { helpers: 'run', fetch: served.fetch });
+    expect(served.asked.map(({ promptId, promptScheme }) => ({ promptId, promptScheme }))).toEqual([
+      { promptId: await promptIdFor(sessionId, 'user_prompt', k1), promptScheme: 'claude-v1' },
+      { promptId: await promptIdFor(sessionId, 'user_prompt', k2), promptScheme: 'claude-v1' },
+    ]);
+    expect(delivered(sessionId).map((d) => [d.renderedIn, d.renderedScheme])).toEqual([[await promptIdFor(sessionId, 'user_prompt', k2), 'claude-v1']]);
+  });
+
   it('names no prompt for a submission without a key, and reports a delivery to it with the reason', async () => {
     const sessionId = 'sess-absent';
     const tx = transcript(sessionId);

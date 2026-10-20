@@ -3,7 +3,7 @@ import { utf8 } from '../hash.js';
 import { AHEAD_OF_CLOCK, aheadOfClock, ID_GRAMMAR, MAX_ID_CHARS, MAX_PAYLOAD_BYTES, type Refused } from './envelope.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES, TURN_KIND, TURN_PHASES } from '@goondocks/myco-shared/member-protocol';
-import { CONTEXT_DELIVERED_KIND, DELIVERED_SESSION_RECORDS, PROMPT_ID_SCHEME_NAMES, PROMPT_SCOPE_REASONS } from '@goondocks/myco-shared/prompt-identity';
+import { CONTEXT_DELIVERED_KIND, DELIVERED_SESSION_RECORDS, HOOK_NAMED_SCHEMES, PROMPT_SCOPE_REASONS } from '@goondocks/myco-shared/prompt-identity';
 
 /** Ceilings every bound of its type states; each is a real limit, never the language's. */
 export const MAX_TIME_MS = 4_102_444_800_000;
@@ -131,6 +131,14 @@ export const KINDS: readonly KindSpec[] = [
       threadLabel: str(256, 'thread_label'),
       /** The prompt's key hash (`promptKeyHash`), which a parser records under a scheme whose harness key a hook shares. */
       promptKeyHash: str(64, 'prompt_key_hash'),
+      /**
+       * Where a parsed prompt's identity comes from (`PROMPT_CLAIMS`, and the key, thread and record it is derived from).
+       * Written by the transcript parse alone: a member's prompt carries none, and the projection takes them from a parse.
+       */
+      claim: str(16, 'claim'),
+      sourceKey: str(128, 'source_key'),
+      sourceThread: str(128, 'source_thread'),
+      sourceRecord: str(128, 'source_record'),
     },
     exactlyOne: ['text', 'blob'],
     projection: 'prompt_batches',
@@ -212,8 +220,8 @@ export const KINDS: readonly KindSpec[] = [
       sessionRecord: { bound: { type: 'enum', values: DELIVERED_SESSION_RECORDS } },
       renderedIn: promptRef(),
       renderedScopeReason: { bound: { type: 'enum', values: PROMPT_SCOPE_REASONS } },
-      /** The scheme `renderedIn` is derived by; sent only to a Deployment that names `prompt-scheme`. */
-      renderedScheme: { bound: { type: 'enum', values: PROMPT_ID_SCHEME_NAMES } },
+      /** The scheme `renderedIn` is derived by, as a hook names it (`hookScheme`); sent only to a Deployment that names `prompt-scheme`. */
+      renderedScheme: { bound: { type: 'enum', values: HOOK_NAMED_SCHEMES } },
     },
     pairs: [{ fields: ['receiptId', 'answerId', 'sessionRecord'], rule: 'at-least-one' }, { fields: ['renderedIn', 'renderedScopeReason'], rule: 'exactly-one' }],
     projection: 'raw',

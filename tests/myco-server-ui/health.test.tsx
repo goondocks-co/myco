@@ -71,7 +71,7 @@ const routes = (over: Record<string, Route> = {}): Record<string, Route> => ({
   '/api/maintenance': () => Response.json({ checks: [] }),
   '/api/kpis': () => Response.json({
     windowDays: 30, since: 0, contextPresent: { value: 0.5, sampleSize: 4 }, sporeServeRate: { value: null, sampleSize: 0 }, sessionStartPresent: { value: null, sampleSize: 0 }, callsPerPrompt: { value: null, sampleSize: 0 },
-    callsPerPromptByHarness: [], planReadsPerSession: { value: null, sampleSize: 0 }, firstInjectionMs: { value: null, sampleSize: 0 }, recallQuality: { value: null, sampleSize: 0 },
+    callsPerPromptByHarness: [], planReadsPerSession: { value: null, sampleSize: 0 }, firstInjectionMs: { value: null, sampleSize: 0 }, recallQuality: { value: null, sampleSize: 0 }, promptIdentity: [],
   }),
   ...over,
 });

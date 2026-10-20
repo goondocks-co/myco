@@ -234,6 +234,7 @@
     "tests/meta/binary-replaced-mid-run.test.ts": 845,
     "tests/meta/capture-never-refused-for-volume.test.ts": 258,
     "tests/meta/claude-sibling-lines.test.ts": 1168,
+    "tests/meta/claude-v2-identity.test.ts": 2600,
     "tests/meta/cli-registry-boundary.test.ts": 449,
     "tests/meta/cli-verb-modules.test.ts": 112,
     "tests/meta/cloudflare-schema-admission.test.ts": 496,

@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
-  canonicalPromptId, hookPromptRequest, normalizePromptKey, PROMPT_ID_SCHEMES, PROMPT_KEY_MAX_CHARS, type PromptIdRequest,
+  canonicalPromptId, CLAUDE_PROMPT_SHAPES, HOOK_NAMED_SCHEMES, hookPromptRequest, hookScheme, normalizePromptKey, PROMPT_ID_SCHEMES, PROMPT_KEY_MAX_CHARS,
+  type PromptIdRequest,
 } from '@goondocks/myco-shared/prompt-identity';
 import { deriveId } from '@myco/member/envelope.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
@@ -13,6 +14,10 @@ const S = 'session-1';
 const REQUESTS: Array<[PromptIdRequest, string[]]> = [
   [{ scheme: 'claude-v1', sessionId: S, shape: 'user_prompt', key: 'k' }, ['queued-prompt', S, 'user_prompt|k']],
   [{ scheme: 'claude-v1', sessionId: S, shape: 'queued_command', key: 'u' }, ['queued-prompt', S, 'queued_command|u']],
+  [{ scheme: 'claude-v2', sessionId: S, record: { owner: 'k' } }, ['queued-prompt', S, 'user_prompt|k']],
+  [{ scheme: 'claude-v2', sessionId: S, record: { queued: 'u' } }, ['queued-prompt', S, 'queued_command|u']],
+  [{ scheme: 'claude-v2', sessionId: S, record: { thread: 'main', uuid: 'r' } }, ['queued-prompt', S, 'record|main|r']],
+  [{ scheme: 'claude-v2', sessionId: S, record: { thread: 'a7f1', uuid: 'r' } }, ['queued-prompt', S, 'record|a7f1|r']],
   [{ scheme: 'offset-v1', namespace: 'codex-prompt', sessionId: S, offset: 12 }, ['codex-prompt', S, '12']],
   [{ scheme: 'offset-v1', namespace: 'cursor-prompt', sessionId: S, offset: 0 }, ['cursor-prompt', S, '0']],
   [{ scheme: 'offset-v1', namespace: 'pi-prompt', sessionId: S, offset: 7 }, ['pi-prompt', S, '7']],
@@ -48,6 +53,27 @@ describe('canonicalPromptId', () => {
     const codex = { kind: 'harness-key', scheme: 'codex-turn-v1', hookKey: 'turn_id', transcriptKey: 'turn_context.payload.turn_id', granularity: 'turn' } as const;
     expect(hookPromptRequest(codex, S, 't1')).toEqual({ scheme: 'codex-turn-v1', sessionId: S, turnId: 't1', submission: { opener: true } });
     expect(hookPromptRequest(codex, S, undefined)).toBeNull();
+  });
+
+  it('derives a claude-v2 owner and queued command byte-equal to claude-v1, and every other record in a namespace claude-v1 never uses', () => {
+    for (const key of ['k', '07a6ad62-e77a-4522-a509-eb61b542390d']) {
+      expect(canonicalPromptId(deriveId, { scheme: 'claude-v2', sessionId: S, record: { owner: key } }))
+        .toBe(canonicalPromptId(deriveId, { scheme: 'claude-v1', sessionId: S, shape: 'user_prompt', key }));
+      expect(canonicalPromptId(deriveId, { scheme: 'claude-v2', sessionId: S, record: { queued: key } }))
+        .toBe(canonicalPromptId(deriveId, { scheme: 'claude-v1', sessionId: S, shape: 'queued_command', key }));
+    }
+    expect((CLAUDE_PROMPT_SHAPES as readonly string[]).includes('record')).toBe(false);
+    // Two threads holding one record uuid are two records.
+    expect(canonicalPromptId(deriveId, { scheme: 'claude-v2', sessionId: S, record: { thread: 'a', uuid: 'r' } }))
+      .not.toBe(canonicalPromptId(deriveId, { scheme: 'claude-v2', sessionId: S, record: { thread: 'b', uuid: 'r' } }));
+  });
+
+  it('names a claude-v2 hook\'s prompt under claude-v1, the scheme its hook derives by, and keeps the wire\'s scheme list', () => {
+    const claude = { kind: 'harness-key', scheme: 'claude-v2', hookKey: 'prompt_id', transcriptKey: 'promptId' } as const;
+    expect(hookPromptRequest(claude, S, 'k')).toEqual({ scheme: 'claude-v1', sessionId: S, shape: 'user_prompt', key: 'k' });
+    expect(hookScheme('claude-v2')).toBe('claude-v1');
+    expect(hookScheme('codex-turn-v1')).toBe('codex-turn-v1');
+    expect([...HOOK_NAMED_SCHEMES].sort()).toEqual(['claude-v1', 'codex-turn-v1', 'hook-mint-v1', 'legacy-v1', 'member-transcript-v1', 'offset-v1', 'stamp-or-offset-v1']);
   });
 
   it('normalizes a harness key to a trimmed bounded string, and anything else to none', () => {

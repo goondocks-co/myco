@@ -665,12 +665,12 @@ describe('claude-code manifest — structural envelope classification (real conf
     });
     expect(d).toMatchObject({ origin: 'agent_dispatch' });
   });
-  it('claude <command-message> still drops (drop wins, ordered first)', () => {
+  it('claude <command-message> dispatch is kept: it is the transcript record a typed slash command\'s hook names', () => {
     const d = evaluateUserPromptRules('claude-code', {
-      prompt: '<command-message>x</command-message>',
+      prompt: '<command-message>simplify</command-message>\n<command-name>/simplify</command-name>\n<command-args>review the diff</command-args>',
       transcriptPath,
     });
-    expect(d).toEqual({ action: 'drop', reason: 'claude-code-slash-command-dispatch' });
+    expect(d.action).toBe('pass');
   });
   it('claude <task-notification> stays system (origin preserved)', () => {
     const d = evaluateUserPromptRules('claude-code', {

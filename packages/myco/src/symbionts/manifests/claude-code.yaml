@@ -16,7 +16,7 @@ hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
 capture:
-  displayEnvelopeTags: [command-args, command-contents, timestamp, pasted_content]
+  displayEnvelopeTags: [command-message, command-args, command-contents, timestamp, pasted_content]
   # A session that continues one compacted starts with `source: compact` (`member/compaction.ts`).
   compactionStart:
     field: source
@@ -117,41 +117,16 @@ capture:
       action: drop
       reason: noninteractive-sdk
 
-    # Slash-command dispatch envelope filter (structural).
-    #
-    # When the user runs `/name args`, Claude Code fires UserPromptSubmit with
-    # the raw `/name args` text — the hook captures it and stores it in a
-    # prompt_batch (buffer-backed if the daemon is down). The transcript then
-    # logs the dispatch as a pair of user entries sharing one promptId:
-    #   1. <command-message>name</command-message>
-    #      <command-name>/name</command-name>
-    #      <command-args>args</command-args>
-    #   2. the expanded command body (the rendered .claude/commands/<name>.md).
-    #
-    # Without this rule, transcript mining at Stop emits the XML-wrapped text
-    # as a record, reconcile can't match its prefix to the hook-stored
-    # `/name args` batch, and a duplicate batch is inserted. Dropping the
-    # wrapper entry also suppresses the expanded body via shape-level
-    # dedupeBy: promptId, so zero transcript records are emitted for the
-    # dispatch. The live hook capture is authoritative.
-    #
-    # The `<command-message>` prefix is Claude-synthesized — it only appears
-    # on real slash-command dispatches (prompts whose first token is a
-    # recognized `/name`). Plain prompts, mid-sentence `/` mentions, and
-    # queued_command attachments (which carry raw `/name args` text, not the
-    # XML envelope) are unaffected.
-    - event: user_prompt
-      scope: this_agent
-      when:
-        prompt_starts_with: "<command-message>"
-      action: drop
-      reason: claude-code-slash-command-dispatch
+    # A typed slash command (`/name args`) is not dropped. UserPromptSubmit
+    # carries the raw `/name args` and its `prompt_id`; the transcript records
+    # the dispatch as a `<command-message>` envelope under that `promptId`, and
+    # that record is the prompt the hook's id names (`parsers/claude-code.ts`).
     # Built-in CLI command dispatch envelope filter (structural).
     #
-    # Twin of the rule above, targeting Claude Code's built-in CLI operations
-    # (`/exit`, `/compact`, `/clear`, `/mcp`, `/plugin`, `/reload-plugins`,
-    # `/extra-usage`). Unlike user-authored slash commands, these do NOT fire
-    # UserPromptSubmit — they're internal CLI ops. They land in the transcript
+    # Claude Code's built-in CLI operations (`/exit`, `/compact`, `/clear`,
+    # `/mcp`, `/plugin`, `/reload-plugins`, `/extra-usage`). Unlike
+    # user-authored slash commands, these do NOT fire UserPromptSubmit —
+    # they're internal CLI ops. They land in the transcript
     # as user-type entries whose content starts with `<command-name>` instead
     # of `<command-message>`:
     #   <command-name>/compact</command-name>
@@ -490,10 +465,13 @@ runner:
       tokenScope: attempt
 
 # How this agent's prompts are named (`@goondocks/myco-shared/prompt-identity`). The hook's `prompt_id` is the
-# transcript's `promptId`, so the hook and the Deployment's parse derive one id through `claude-v1`. A hook input
-# with no `prompt_id` names no prompt: its context answer is session-scoped.
+# transcript's `promptId`: the first record claiming it owns it under the id a hook derives (`claude-v2`'s
+# `hookIdentity`, `claude-v1`), and every other record is keyed on its own thread and uuid. A transcript read before
+# pins existed was read by `claude-v1`. A hook input with no `prompt_id` names no prompt: its context answer is
+# session-scoped.
 promptIdentity:
   kind: harness-key
-  scheme: claude-v1
+  scheme: claude-v2
+  readBeforePin: claude-v1
   hookKey: prompt_id
   transcriptKey: promptId
