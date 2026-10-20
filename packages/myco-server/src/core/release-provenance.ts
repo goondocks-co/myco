@@ -52,6 +52,7 @@ import {
   classifyCommit, memoizedCompare, resolveRunRefs, type Classification, type PackageTagMapping,
 } from './release-classify.js';
 import { emit } from '../telemetry.js';
+import { CLEANLINESS_SQL, sourceOf, type ReleaseSource } from './provenance.js';
 export const RECONCILE_INTERVAL_LEAF = 'release_provenance.reconcile_interval_minutes';
 export const DEFAULT_RECONCILE_INTERVAL_MINUTES = 15;
 export const DEFAULT_MAX_LOOKUPS = 50;
@@ -335,13 +336,8 @@ export function releaseProvenance(db: RelationalStore, secrets: SecretStore) {
 /** How long a claimed check holds the Project: every read at its timeout, and a margin. */
 const leaseMs = (maxLookups: number) => Math.min(maxLookups * GITHUB_READ_TIMEOUT_MS + 60_000, 30 * 60_000);
 
-/** Whether tracked files differed from the commit: `0`, `1`, or `unknown` when git could not say. */
-type Cleanliness = '0' | '1' | 'unknown';
+interface Candidate extends ReleaseSource { sessionId: string; pathsMark: number }
 
-interface Candidate { sessionId: string; point: 'session_start' | 'session_end'; headSha: string; cleanliness: Cleanliness; pathsMark: number }
-
-/** A git provenance row's cleanliness as `Cleanliness`; a row that records an observation error is `unknown`. */
-const CLEANLINESS_SQL = "CASE WHEN g.error IS NOT NULL THEN 'unknown' ELSE CAST(g.is_dirty AS TEXT) END";
 /**
  * How many tool calls the session holds when a package map is in use, so
  * changed paths that arrive later mark its classification stale, and 0
@@ -350,9 +346,6 @@ const CLEANLINESS_SQL = "CASE WHEN g.error IS NOT NULL THEN 'unknown' ELSE CAST(
 const PATHS_MARK_SQL = 'CASE WHEN ? = 1 THEN (SELECT COUNT(*) FROM tool_calls t WHERE t.project_id = g.project_id AND t.session_id = g.session_id) ELSE 0 END';
 
 const identityOf = (projectId: string, namespace: string, recordId: string) => `${projectId}:${namespace}:${recordId}`;
-
-/** The captured commit a row is classified from: a new one is classified afresh. */
-const sourceOf = (c: Candidate) => `${c.point}:${c.headSha}:${c.cleanliness}`;
 
 /** The paths a session's tool calls touched, or null when a stored list cannot be read. */
 async function changedPaths(db: RelationalStore, projectId: string, sessionId: string): Promise<string[] | null> {

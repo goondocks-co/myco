@@ -46,6 +46,27 @@ export const canonicalNamespace = (value: unknown): ReleaseNamespace | null =>
 export const isReleaseNamespace = (value: unknown): value is ReleaseNamespace =>
   typeof value === 'string' && (RELEASE_NAMESPACES as readonly string[]).includes(value);
 
+/** Whether tracked files differed from the commit: `0`, `1`, or `unknown` when git could not say. */
+export type Cleanliness = '0' | '1' | 'unknown';
+
+/** Where in a session its member observes a commit. */
+export type CapturePoint = 'session_start' | 'session_end';
+
+/** A session's observed commit, as the release check classifies it. */
+export interface ReleaseSource { point: CapturePoint; headSha: string; cleanliness: Cleanliness }
+
+/** A git provenance row `g`'s cleanliness as `Cleanliness`; a row that records an observation error is `unknown`. */
+export const CLEANLINESS_SQL = "CASE WHEN g.error IS NOT NULL THEN 'unknown' ELSE CAST(g.is_dirty AS TEXT) END";
+
+/** The captured commit a release state is classified from, as `evidence_json.source` records it: a new one is classified afresh. */
+export const sourceOf = (c: ReleaseSource) => `${c.point}:${c.headSha}:${c.cleanliness}`;
+
+/** The capture point a recorded source names, or null when it names none. */
+export const sourcePoint = (source: string): CapturePoint | null => {
+  const point = source.slice(0, source.indexOf(':'));
+  return point === 'session_start' || point === 'session_end' ? point : null;
+};
+
 export interface ReleaseStateRow {
   id: string;
   namespace: string;
@@ -60,6 +81,12 @@ export interface ReleaseStateRow {
   checkedAt: number;
 }
 
+/** One record's latest release state, with the captured commit it is classified from. */
+export interface ReleaseStateWithSource extends ReleaseStateRow {
+  /** As `sourceOf` records it, or null for a state recorded without one. */
+  source: string | null;
+}
+
 const named = (row: ReleaseStateRow): ReleaseStateRow => ({ ...row, namespace: canonicalNamespace(row.namespace) ?? row.namespace });
 
 const COLUMNS = `id, namespace, record_id AS recordId, state, confidence,
@@ -68,11 +95,11 @@ const COLUMNS = `id, namespace, record_id AS recordId, state, confidence,
 
 export async function getReleaseState(
   db: RelationalStore, scope: ReadScope, namespace: ReleaseNamespace, recordId: string,
-): Promise<ReleaseStateRow | null> {
-  const row = await db.prepare(`SELECT ${COLUMNS} FROM knowledge_release_state
+): Promise<ReleaseStateWithSource | null> {
+  const row = await db.prepare(`SELECT ${COLUMNS}, json_extract(evidence_json, '$.source') AS source FROM knowledge_release_state
      WHERE project_id = ? AND namespace IN (?, ?) AND record_id = ? ORDER BY checked_at DESC, id DESC LIMIT 1`)
-    .bind(scope.projectId, ...STORED_FORMS[namespace], recordId).first<ReleaseStateRow>();
-  return row === null ? null : named(row);
+    .bind(scope.projectId, ...STORED_FORMS[namespace], recordId).first<ReleaseStateWithSource>();
+  return row === null ? null : { ...named(row), source: row.source };
 }
 
 /**

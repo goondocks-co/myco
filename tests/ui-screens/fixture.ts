@@ -128,7 +128,12 @@ interface SessionSeed {
   title: string;
   summary: string;
   prompts: string[];
+  /** The commits its member observed at the start and the end, and whether tracked files had changed at the end. */
+  commits?: { start: string; end: string; dirty: boolean };
 }
+
+/** A full commit SHA that starts with the seven characters a reader is shown. */
+const commit = (shown: string) => `${shown}${'0'.repeat(33)}`;
 
 /**
  * Today's sessions start within ten hours of the fixture's now (16:00 UTC), so
@@ -136,12 +141,12 @@ interface SessionSeed {
  */
 const SESSIONS: SessionSeed[] = [
   { project: 'myco', agent: 'claude-code', machine: 'studio', startedAgo: 42, minutes: null, title: 'Canopy parity verified across both targets', summary: 'Ran the parity suite against the self-hosted and hosted targets and fixed the one ordering difference in the map reader.', prompts: ['Run the canopy parity scenarios on both targets', 'The hosted target orders ties differently; make the read stable', 'Good, now rerun and confirm'] },
-  { project: 'myco', agent: 'codex', machine: 'studio', startedAgo: 3 * 60, minutes: 55, title: 'Search box height made uniform on list pages', summary: 'Moved the Sessions and Knowledge search inputs onto one filter bar so the boxes share a height and left edge.', prompts: ['The search boxes are different heights on each list page', 'Use one filter bar everywhere'] },
+  { project: 'myco', agent: 'codex', machine: 'studio', startedAgo: 3 * 60, minutes: 55, title: 'Search box height made uniform on list pages', summary: 'Moved the Sessions and Knowledge search inputs onto one filter bar so the boxes share a height and left edge.', prompts: ['The search boxes are different heights on each list page', 'Use one filter bar everywhere'], commits: { start: commit('5be0c94'), end: commit('5be0c94'), dirty: true } },
   { project: 'atlas-web', agent: 'cursor', machine: 'buildbox', startedAgo: 5 * 60, minutes: 38, title: 'Checkout form validation messages rewritten', summary: 'Replaced the generic validation errors with field-specific messages and added tests for the empty and malformed cases.', prompts: ['Make the checkout errors say which field is wrong', 'Add tests for empty and malformed input'] },
   { project: 'field-notes', agent: 'opencode', machine: 'buildbox', startedAgo: 7 * 60, minutes: 22, title: 'Offline sync conflict resolution sketched', summary: 'Compared last-writer-wins with a per-field merge and wrote up why per-field merge fits notes edited on two phones.', prompts: ['How should we resolve conflicting offline edits?'] },
   { project: 'ledger', agent: 'pi', machine: 'studio', startedAgo: 8 * 60, minutes: 64, title: 'Monthly close report query sped up', summary: 'Added a covering index for the close report and cut the query from 4.2 s to 180 ms on the staging copy.', prompts: ['The monthly close report takes four seconds', 'Try a covering index on entries by account and period'] },
   { project: 'infra', agent: 'claude-code', machine: 'studio', startedAgo: 9 * 60, minutes: 17, title: 'Backup schedule moved to nightly', summary: 'Changed the backup interval from weekly to nightly and confirmed the first run landed in the bucket.', prompts: ['Backups are weekly; make them nightly'] },
-  { project: 'myco', agent: 'codex', machine: 'buildbox', startedAgo: 10 * 60, minutes: 41, title: 'Flaky test port collision fixed', summary: 'The test reserved a fixed port that the server’s ephemeral fallback could also pick; it now asks the kernel for one.', prompts: ['This test fails one run in twenty', 'Stop reserving a fixed port'] },
+  { project: 'myco', agent: 'codex', machine: 'buildbox', startedAgo: 10 * 60, minutes: 41, title: 'Flaky test port collision fixed', summary: 'The test reserved a fixed port that the server’s ephemeral fallback could also pick; it now asks the kernel for one.', prompts: ['This test fails one run in twenty', 'Stop reserving a fixed port'], commits: { start: commit('3f9c2a1'), end: commit('8d41b7e'), dirty: false } },
   { project: 'sandbox', agent: 'pi', machine: 'buildbox', startedAgo: 9 * 60 + 30, minutes: 6, title: 'Trying the new login flow', summary: 'Signed in on a fresh machine to check the join link opens in a browser.', prompts: ['Try logging in from scratch'] },
   { project: 'atlas-web', agent: 'claude-code', machine: 'studio', startedAgo: 26 * 60, minutes: 70, title: 'Image gallery lazy-loading added', summary: 'Gallery images now load as they scroll into view; the first paint on the product page dropped by 1.1 s.', prompts: ['The product page is slow on phones', 'Lazy-load the gallery images', 'Measure the first paint again'] },
   { project: 'myco', agent: 'cursor', machine: 'studio', startedAgo: 28 * 60, minutes: 33, title: 'Session reading page summary moved first', summary: 'The session page now opens with the summary and keeps the conversation at a readable width.', prompts: ['Put the summary at the top of the session page'] },
@@ -290,7 +295,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     const sessionId = await uuidv5('screens-session', seed.project, String(index));
     sessionIds.push(sessionId);
     const startedAt = now - seed.startedAgo * MINUTE;
-    await post(seed.machine, seed.project, sessionId, 'session.start', { agent: seed.agent, branch: 'main', startedAt }, startedAt);
+    await post(seed.machine, seed.project, sessionId, 'session.start', { agent: seed.agent, branch: 'main', startedAt, ...(seed.commits === undefined ? {} : { headSha: seed.commits.start }) }, startedAt);
     const span = seed.minutes === null ? seed.startedAgo - 1 : seed.minutes;
     let promptId = '';
     for (const [i, text] of seed.prompts.entries()) {
@@ -304,7 +309,8 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
       liveSessionId = sessionId;
     } else {
       const endedAt = startedAt + seed.minutes * MINUTE;
-      await post(seed.machine, seed.project, sessionId, 'session.end', { endedAt, title: seed.title, summary: seed.summary }, endedAt);
+      const end = seed.commits === undefined ? {} : { headSha: seed.commits.end, dirty: seed.commits.dirty };
+      await post(seed.machine, seed.project, sessionId, 'session.end', { endedAt, title: seed.title, summary: seed.summary, ...end }, endedAt);
     }
   }
 
@@ -413,6 +419,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   seedTitles(ctx.databasePath, sessionIds, now);
   settleSporeTimes(ctx.databasePath, sporeIds, now);
   const runs = seedRuns(ctx.databasePath, now, sporeIds, sessionIds);
+  seedReleaseState(ctx.databasePath, sessionIds, now);
   seedBackup(ctx.databasePath, now);
   seedUnappliedSettings(ctx.databasePath, now);
 
@@ -503,6 +510,31 @@ function seedTitles(databasePath: string, sessionIds: string[], now: number): vo
       sqlite.query('UPDATE sessions SET title = ?, summary = ?, titled_at = ? WHERE project_id = ? AND session_id = ?')
         .run(seed.title, seed.summary, titledAt, idOf(seed.project), sessionIds[index]!);
     }
+  } finally {
+    sqlite.close();
+  }
+}
+
+/**
+ * The release check's answer for the session whose fix shipped ("Flaky test
+ * port collision fixed"), recorded from its clean end commit as the check
+ * records its source. No Project here has release provenance configured, so
+ * no check runs to replace it.
+ */
+function seedReleaseState(databasePath: string, sessionIds: string[], now: number): void {
+  const seed = SESSIONS[OUTCOME_SESSION]!;
+  if (seed.commits === undefined) throw new Error('the outcome session observes no commits');
+  const projectId = idOf(seed.project);
+  const sessionId = sessionIds[OUTCOME_SESSION]!;
+  const checkedAt = now - 30 * MINUTE;
+  const sqlite = new Database(databasePath);
+  sqlite.exec('PRAGMA busy_timeout = 5000');
+  try {
+    sqlite.query(`INSERT INTO knowledge_release_state (project_id, id, identity_key, namespace, record_id, source_session_id, state, confidence,
+        basis_kind, basis_ref, basis_sha, release_pr_number, reason, evidence_json, checked_at, created_at)
+      VALUES (?, 'rs_screens_outcome', ?, 'sessions', ?, ?, 'released', 'high', 'github_pr_squash', 'refs/tags/myco/v2.0.3', ?, 1873, 'PR #1873 merge commit is contained in production ref refs/tags/myco/v2.0.3', ?, ?, ?)`)
+      .run(projectId, `${projectId}:sessions:${sessionId}`, sessionId, sessionId, commit('c07e5d2'),
+        JSON.stringify({ source: `session_end:${seed.commits.end}:0` }), checkedAt, checkedAt);
   } finally {
     sqlite.close();
   }

@@ -23,6 +23,7 @@ import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/
 import { memberFilter, startedWords, windowBounds } from '../../packages/myco-server/ui/src/features/sessions/words';
 import { LIVE_WITHIN_MS } from '../../packages/myco-server/ui/src/features/today/timeline';
 import { rawIdsIn } from '../helpers/raw-ids';
+import { containmentWords } from '../../packages/myco-server/ui/src/features/sessions/Outcomes';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -416,7 +417,7 @@ describe('the session reading page', () => {
     const tabs = screen.getByRole('tablist', { name: 'What the session holds' });
     expect(summary.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // The tabs name what they hold and count nothing.
-    expect(within(tabs).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation', 'Spores', 'Plans']);
+    expect(within(tabs).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation', 'Outcomes', 'Spores', 'Plans']);
     expect(screen.getByRole('navigation', { name: 'Breadcrumb' }).textContent).toBe('SessionsProject X');
     // The facts, in words; the id is only copied.
     const facts = screen.getByRole('complementary', { name: 'About this session' });
@@ -1188,6 +1189,115 @@ describe('the session reading page', () => {
     expect(await screen.findByRole('list', { name: 'Plans' })).toBeTruthy();
     expect((screen.getByRole('searchbox', { name: 'Search plans' }) as HTMLInputElement).value).toBe('');
     expect(screen.getByRole('combobox', { name: 'Status' }).textContent).toBe('Every status');
+  });
+
+  const COMMITS = '/api/projects/x/sessions/s1/commits';
+  const START_SHA = `a1b2c3d${'0'.repeat(33)}`;
+  const END_SHA = `e4f5a6b${'1'.repeat(33)}`;
+  const observed = (point: 'session_start' | 'session_end', headSha: string, over: Record<string, unknown> = {}) =>
+    ({ point, headSha, branch: 'main', changes: 'none', capturedAt: point === 'session_start' ? NOW - HOUR : NOW - 20 * MINUTE, ...over });
+  const releaseCheck = (over: Record<string, unknown> = {}) => ({
+    state: 'released', basisKind: 'github_pr_squash', basisRef: 'refs/tags/myco/v2.0.3', releasePrNumber: 1897, checkedAt: NOW - 10 * MINUTE,
+    covers: { point: 'session_end', current: true }, ...over,
+  });
+  const outcomes = async (body: unknown) => {
+    server(routes({ [COMMITS]: () => Response.json(body) }));
+    mount('/p/x/sessions/s1?tab=outcomes');
+    await screen.findByRole('list', { name: 'Outcomes' });
+    return listed('Outcomes').map((li) => li.textContent);
+  };
+
+  it('lists the commits the session started and ended on, with the release check on the end it classified, and copies a whole commit', async () => {
+    expect(await outcomes({ observations: [observed('session_start', START_SHA), observed('session_end', END_SHA)], release: releaseCheck() })).toEqual([
+      'Sep 2915:00CommitStarted at a1b2c3d on mainCopy commit',
+      'Sep 2915:40CommitEnded at e4f5a6bReleased · myco/v2.0.3 · PR #1897 · checked 10 min agoCopy commit',
+    ]);
+    // A list too short to need one has no filter or search.
+    expect(screen.queryByRole('searchbox')).toBeNull();
+    expect(rawIdsInPage()).toEqual([]);
+    const copied: string[] = [];
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { copied.push(text); } } });
+    try {
+      fireEvent.click(within(listed('Outcomes')[1]!).getByRole('button', { name: 'Copy commit' }));
+      await waitFor(() => expect(copied).toEqual([END_SHA]));
+    } finally {
+      if (clipboard === undefined) Reflect.deleteProperty(navigator, 'clipboard'); else Object.defineProperty(navigator, 'clipboard', clipboard);
+    }
+  });
+
+  it('says equal start and end commits are the same, and words a dirty end and an end whose changes could not be read', async () => {
+    expect(await outcomes({
+      observations: [observed('session_start', START_SHA), observed('session_end', START_SHA, { changes: 'uncommitted' })],
+      release: releaseCheck({ state: 'unknown', basisKind: 'dirty_worktree', basisRef: null, releasePrNumber: null }),
+    })).toEqual([
+      'Sep 2915:00CommitStarted at a1b2c3d on mainCopy commit',
+      'Sep 2915:40CommitEnded at a1b2c3d, uncommitted changesStart and end HEAD are the same · Release unknown: the session ended with uncommitted changes · checked 10 min agoCopy commit',
+    ]);
+    cleanup();
+    expect(await outcomes({ observations: [observed('session_end', END_SHA, { changes: 'unreadable' })], release: null })).toEqual([
+      'Sep 2915:40CommitEnded at e4f5a6b, couldn’t tell whether files changedCopy commit',
+    ]);
+  });
+
+  it('puts a release check that covers an earlier end commit, or names no source, on a row of its own and on no commit', async () => {
+    expect(await outcomes({
+      observations: [observed('session_end', END_SHA)],
+      release: releaseCheck({ covers: { point: 'session_end', current: false }, checkedAt: NOW - 30 * MINUTE }),
+    })).toEqual([
+      'Sep 2915:30Release checkRelease check covers an earlier end commitReleased · myco/v2.0.3 · PR #1897 · checked 30 min ago',
+      'Sep 2915:40CommitEnded at e4f5a6bCopy commit',
+    ]);
+    cleanup();
+    expect(await outcomes({
+      observations: [observed('session_end', END_SHA)],
+      release: releaseCheck({ basisKind: 'git_ancestry', releasePrNumber: null, covers: null }),
+    })).toEqual([
+      'Sep 2915:40CommitEnded at e4f5a6bCopy commit',
+      'Sep 2915:50Release checkRelease check source not recordedReleased · myco/v2.0.3 · checked 10 min ago',
+    ]);
+  });
+
+  it('words every release state the check records', () => {
+    const at = { checkedAt: NOW - 2 * HOUR, covers: null, releasePrNumber: null };
+    expect([
+      { state: 'merged_unreleased', basisKind: 'git_ancestry', basisRef: 'main' },
+      { state: 'not_on_release_line', basisKind: 'git_ancestry', basisRef: null },
+      { state: 'unknown', basisKind: 'missing_git_evidence', basisRef: null },
+      { state: 'unknown', basisKind: 'ref_check_failed', basisRef: null },
+      { state: 'unreconciled', basisKind: 'configuration', basisRef: null },
+    ].map((r) => containmentWords({ ...at, ...r }, NOW))).toEqual([
+      'Merged, not released · main · checked 2 h ago',
+      'Not on a release line · checked 2 h ago',
+      'Release unknown: the commit’s own work couldn’t be established · checked 2 h ago',
+      'Release unknown: not every release could be checked · checked 2 h ago',
+      'Not checked: no release refs are set · checked 2 h ago',
+    ]);
+  });
+
+  it('says no commits were observed in a session without any, and opens the tab from another with its filter dropped', async () => {
+    server(routes({
+      '/api/projects/x/spores?limit=25&type=gotcha&q=cache&session=s1': () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
+      [COMMITS]: () => Response.json({ observations: [], release: null }),
+    }));
+    mount('/p/x/sessions/s1?tab=spores&type=gotcha&q=cache');
+    await screen.findByRole('list', { name: 'Spores' });
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Outcomes' }));
+    await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=outcomes'));
+    expect(await screen.findByText('No commits were observed in this session.')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Outcomes' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('says the outcomes could not be read and reads them again on request', async () => {
+    let fail = true;
+    server(routes({ [COMMITS]: () => (fail ? new Response(null, { status: 500 }) : Response.json({ observations: [observed('session_end', END_SHA)], release: null })) }));
+    mount('/p/x/sessions/s1?tab=outcomes');
+    expect(await screen.findByText('The server had a problem')).toBeTruthy();
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    fail = false;
+    fireEvent.click(retry);
+    await screen.findByRole('list', { name: 'Outcomes' });
+    expect(listed('Outcomes').map((li) => li.textContent)).toEqual(['Sep 2915:40CommitEnded at e4f5a6bCopy commit']);
   });
 
   it('labels envelope-only prompt previews and attachment groups with the first chip', async () => {

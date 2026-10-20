@@ -25,6 +25,7 @@ import { listPlans } from '@myco-server-worker/read/children.js';
 import { pageSpores } from '@myco-server-worker/core/spores.js';
 import { heldTranscriptsFor } from '@myco-server-worker/read/transcript.js';
 import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
+import { sessionCommits } from '@myco-server-worker/read/session-commits.js';
 
 /** A store that answers no rows and remembers every statement, with the values bound to it. */
 function recordingStore(): { db: RelationalStore; statements: Array<{ sql: string; params: unknown[] }> } {
@@ -168,6 +169,22 @@ describe('the reads a person waits on', () => {
         expect({ index: /SEARCH spores USING INDEX idx_spores_session \(project_id=\? AND session_id=\?/.test(plan), scan: /SCAN spores/.test(plan), plan })
           .toEqual({ index: true, scan: false, plan: planOf(db, first.sql, first.params) });
       }
+    } finally {
+      db.close();
+    }
+  });
+
+  it('reads a session\'s commit observations and its release state over indexes, with no scan', async () => {
+    const { db: recorder, statements } = recordingStore();
+    await sessionCommits(recorder, { projectId: 'proj_1' }, 's1');
+    expect(statements).toHaveLength(2);
+    const db = migrated();
+    try {
+      const [observed, release] = statements.map((s) => planOf(db, s.sql, s.params));
+      expect({ index: /SEARCH g USING INDEX idx_fk_knowledge_git_provenance_project_id_session_id \(project_id=\? AND session_id=\?\)/.test(observed), scan: /\bSCAN\b/.test(observed), observed })
+        .toEqual({ index: true, scan: false, observed });
+      expect({ index: /SEARCH knowledge_release_state USING INDEX idx_knowledge_release_embedding/.test(release), scan: /\bSCAN\b/.test(release), release })
+        .toEqual({ index: true, scan: false, release });
     } finally {
       db.close();
     }
