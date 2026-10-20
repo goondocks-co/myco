@@ -93,8 +93,8 @@ describe('runner update execution availability', () => {
       state.lastResults = { [serverUrl]: { fromVersion: from, toVersion: to, result: 'updated', at: f.time.now } };
       state.cleanup = { currentVersion: to, previousVersion: from, platform: process.platform, serverUrl, fromVersion: from, toVersion: to };
     });
-    const before = readRunnerUpdateState(f.home);
     const payload = f.controller.contactPayload();
+    const before = readRunnerUpdateState(f.home);
     const logs = [...f.logs];
     const holder = Bun.spawn([process.execPath, '--eval', `
       import { LifecycleLock } from ${JSON.stringify(path.resolve('packages/myco/src/utils/lifecycle-lock.ts'))};

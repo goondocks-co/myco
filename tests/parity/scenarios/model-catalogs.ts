@@ -17,10 +17,11 @@ export const modelCatalogs: ParityScenario = {
       body: JSON.stringify({ harnesses: [{ id: 'opencode', authenticated: true }] }),
     });
     expect(offer.status).toBe(200);
+    let observedOrder = 0;
     const report = async (models: unknown[], fetchedAt: number) => {
       const response = await fetch(`${target.url}/worker/models`, {
         method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ catalog: { harness: 'opencode', source: { kind: 'command', command: 'opencode models' }, signIn: 'worker-login', fetchedAt, models } }),
+        body: JSON.stringify({ catalog: { observedOrder: ++observedOrder, harness: 'opencode', source: { kind: 'command', command: 'opencode models' }, signIn: 'worker-login', fetchedAt, models } }),
       });
       return { status: response.status, body: await response.json() as Record<string, unknown> };
     };
@@ -36,7 +37,7 @@ export const modelCatalogs: ParityScenario = {
     expect(settings.status).toBe(200);
     const models = ((await settings.json()) as { models: Array<Record<string, unknown>> }).models.filter((catalog) => catalog.harness === 'opencode');
     expect(models).toEqual([{
-      harness: 'opencode', source: { kind: 'command', command: 'opencode models' }, signIn: 'worker-login', fetchedAt: now - 1_000, receivedAt: expect.any(Number),
+      harness: 'opencode', source: { kind: 'command', command: 'opencode models' }, signIn: 'worker-login', fetchedAt: now - 1_000, receivedAt: expect.any(Number), observedOrder: expect.any(Number),
       models: [{ id: alias, label: alias, provider: 'openrouter' }],
     }]);
     expect(await target.sql(`SELECT resolutions FROM worker_model_catalogs WHERE harness = 'opencode'`)).toEqual([{ resolutions: '{}' }]);

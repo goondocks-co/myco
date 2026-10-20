@@ -150,3 +150,16 @@ it('tries later statements when an earlier omission is invisible to seeded rows'
     .rejects.toThrow('no statement of the latest step changes the seeded fixture; seed data it touches');
   expect(triedNoops).toEqual([0, 1]);
 });
+
+it('registers the reporter-order and writer-revision upgrade as the latest schema step', async () => {
+  const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
+  expect(SCHEMA_STEPS.at(-1)!.version).toBe(92);
+  const db = new Database(':memory:');
+  try {
+    for (const step of SCHEMA_STEPS) for (const sql of step.statements) db.exec(sql);
+    for (const [table, column] of [
+      ['knowledge_git_provenance', 'event_id'], ['deployment_settings', 'write_id'],
+      ['worker_model_catalogs', 'observed_order'], ['runner_model_catalogs', 'observed_order'], ['runner_update_reports', 'observed_order'],
+    ]) expect((db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(c => c.name === column)).toBe(true);
+  } finally { db.close(); }
+});

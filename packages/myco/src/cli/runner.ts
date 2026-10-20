@@ -130,6 +130,7 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
     compatibilityPath: RUNNER_CONTACT_PATH,
     detection: { credentialBytes: false },
     lockDir: instanceLockDir,
+    reportHome: mycoHome,
     deploymentId: record.deploymentId,
     deploymentUrls: await executionDeploymentUrls(serverUrl, { ...deps, mycoHome }),
     stillCurrent: sameProgram(deps.binaryPath ?? process.execPath, undefined, undefined, log),

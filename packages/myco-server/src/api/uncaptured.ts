@@ -113,6 +113,7 @@ export async function handleConnectUncaptured(env: ServerEnv, ctx: OwnerContext)
     return refuse(400, 'auto_create_off', 'this server creates projects only on the dashboard: name the project to connect it to');
   }
   const written = await connectMachineRoot(env.db, machineId, rootKey, projectId ?? '', ctx.member.id, ctx.now);
+  if (!written.applied && written.reason === 'conflict') return Response.json({ error: 'conflict', reason: 'the connections changed; retry the edit' }, { status: 409 });
   if (!written.applied) return written.reason === 'absent' ? notFound() : badRequest(written.detail ?? 'the connection could not be recorded');
   if (projectId !== null && holder === null && row.remote !== null) await recordProjectRemote(env.db, projectId, row.remote, ctx.now);
   // Connected: the machine joins at a hook in the repository, and "Needs you" has nothing more to ask.

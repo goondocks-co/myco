@@ -251,14 +251,17 @@ const sessionCommit = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelop
   if (headSha === null) return [];
   const dirty = p.dirty === true ? 1 : 0;
   const error = point === 'session_end' && typeof p.dirty !== 'boolean' ? GIT_STATUS_UNREADABLE : null;
-  const wins = point === 'session_start' ? 'excluded.captured_at < knowledge_git_provenance.captured_at' : 'excluded.captured_at > knowledge_git_provenance.captured_at';
+  const earlierOrLater = point === 'session_start' ? '<' : '>';
+  const wins = `(excluded.captured_at ${earlierOrLater} knowledge_git_provenance.captured_at OR
+    (excluded.captured_at = knowledge_git_provenance.captured_at AND
+      (knowledge_git_provenance.event_id IS NULL OR excluded.event_id < knowledge_git_provenance.event_id)))`;
   return [db.prepare(`INSERT INTO knowledge_git_provenance
-      (project_id, identity_key, session_id, capture_point, captured_at, branch, head_sha, is_dirty, error, status_hash, created_at)
-      SELECT ?, ?, ?, ?, ?, (SELECT branch FROM sessions WHERE project_id = ? AND session_id = ?), ?, ?, ?, '', ? WHERE ${RAW_ROW_GATE}
+      (project_id, identity_key, session_id, capture_point, captured_at, event_id, branch, head_sha, is_dirty, error, status_hash, created_at)
+      SELECT ?, ?, ?, ?, ?, ?, (SELECT branch FROM sessions WHERE project_id = ? AND session_id = ?), ?, ?, ?, '', ? WHERE ${RAW_ROW_GATE}
       ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, is_dirty = excluded.is_dirty, error = excluded.error,
-        captured_at = excluded.captured_at, branch = excluded.branch
+        captured_at = excluded.captured_at, event_id = excluded.event_id, branch = excluded.branch
         WHERE ${wins}`)
-    .bind(ctx.projectId, `session:${e.sessionId}:${point}`, e.sessionId, point, at, ctx.projectId, e.sessionId, headSha, dirty, error, ctx.now, ...rawGateParams(ctx, e))];
+    .bind(ctx.projectId, `session:${e.sessionId}:${point}`, e.sessionId, point, at, e.eventId, ctx.projectId, e.sessionId, headSha, dirty, error, ctx.now, ...rawGateParams(ctx, e))];
 };
 
 /** Session facts come from the earliest `session.start` in the total order (client time, then the smaller event id), so any delivery order converges — ties included: an event that ranks earlier than the one whose facts are held replaces every fact, an absent one included; a later one changes nothing. `started_at` is the minimum and `ended_at` the maximum of the events that carry them; identity columns (`machine_id`, `created_by_token_id`, `first_received_at`) stay with the first writer. A Project still named by its own id takes the repository name of the first start that carries one, falling back to its origin path's basename; a renamed or onboarded Project keeps its name. */
@@ -583,11 +586,12 @@ const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
   // The event is newer than the row, or it is the event the row settled on: a tie on client time follows the row's tiebreak.
   const current = 'EXISTS (SELECT 1 FROM plans WHERE project_id = ? AND plan_key = ? AND (updated_at < ? OR event_id = ?))';
   const newer = '(excluded.updated_at > plans.updated_at OR (excluded.updated_at = plans.updated_at AND excluded.event_id < plans.event_id))';
-  // The content, title and status the row already holds: nothing moves, and the row keeps its stamp and its administrator.
+  // Identical content keeps its display fields and administrator.
   const identical = '(excluded.content_hash = plans.content_hash AND excluded.title IS plans.title AND (? = 0 OR excluded.status = plans.status))';
   const moves = `${newer} AND NOT ${identical}`;
-  const moving = ['event_id', 'title', 'content', 'blob_key', 'content_hash', 'origin_path', 'token_id', 'received_at', 'updated_at'];
+  const moving = ['title', 'content', 'blob_key', 'content_hash', 'origin_path'];
   const set = [
+    ...['event_id', 'updated_at', 'received_at', 'token_id'].map((column) => `${column} = CASE WHEN ${newer} THEN excluded.${column} ELSE plans.${column} END`),
     ...moving.map((column) => `${column} = CASE WHEN ${moves} THEN excluded.${column} ELSE plans.${column} END`),
     // An event that names no status leaves the row's alone: a file written again does not reopen a completed plan.
     `status = CASE WHEN ${newer} AND ? = 1 THEN excluded.status ELSE plans.status END`,

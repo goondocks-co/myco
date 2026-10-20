@@ -105,7 +105,7 @@ export async function readMachineSettings(db: RelationalStore, machineId: string
   });
 }
 
-export type MachineWrite = { applied: true } | { applied: false; reason: 'unknown_leaf' | 'invalid_value' | 'absent'; detail?: string };
+export type MachineWrite = { applied: true } | { applied: false; reason: 'unknown_leaf' | 'invalid_value' | 'absent' | 'conflict'; detail?: string };
 
 /**
  * Set one leaf of the machine `actor` claims. The default removes the row. Both writes are conditioned on that claim
@@ -222,28 +222,55 @@ export async function machineBlockFor(
  * or creates. The claimant must still hold the machine when the write lands; the machine's other entries stand.
  */
 export async function connectMachineRoot(db: RelationalStore, machineId: string, rootKey: string, project: string, actor: string, now: number): Promise<MachineWrite> {
-  const current = (await readMachineSettings(db, machineId)).find((l) => l.leaf === CONNECT_ROOTS_LEAF)?.value;
-  const next = { ...((current ?? {}) as Record<string, string>), [rootKey]: project };
-  const violation = leafRuleViolation(MACHINE_LEAF_SPECS[CONNECT_ROOTS_LEAF]!.spec, next);
-  if (violation !== null) return { applied: false, reason: 'invalid_value', detail: violation };
-  const written = await db.prepare(
-    `INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by)
-       SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ?)
-       ON CONFLICT (machine_id, leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-  ).bind(machineId, CONNECT_ROOTS_LEAF, JSON.stringify(next), now, actor, machineId, actor).run();
-  return written.meta.changes > 0 ? { applied: true } : { applied: false, reason: 'absent' };
+  const result = await editMachineRoots(db, machineId, actor, now, current => ({ ...current, [rootKey]: project }));
+  return result.applied ? { applied: true } : result;
 }
 
-/** Stop telling a machine to connect a repository: its other entries stand. Whether the machine held an entry for it. */
-export async function disconnectMachineRoot(db: RelationalStore, machineId: string, rootKey: string, actor: string, now: number): Promise<boolean> {
-  const current = (await readMachineSettings(db, machineId)).find((l) => l.leaf === CONNECT_ROOTS_LEAF)?.value as Record<string, string> | undefined;
-  if (current === undefined || !Object.prototype.hasOwnProperty.call(current, rootKey)) return false;
-  const next = Object.fromEntries(Object.entries(current).filter(([key]) => key !== rootKey));
-  const written = await db.prepare(`UPDATE machine_settings SET value = ?, updated_at = ?, updated_by = ?
-    WHERE machine_id = ? AND leaf = ?
-      AND EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ?)`)
-    .bind(JSON.stringify(next), now, actor, machineId, CONNECT_ROOTS_LEAF, machineId, actor).run();
-  return written.meta.changes === 1;
+type RootsWrite = { applied: true; changed: boolean } | Extract<MachineWrite, { applied: false }>;
+
+/** Recompute a connection edit from the exact stored text that its conditional write replaces. */
+async function editMachineRoots(
+  db: RelationalStore, machineId: string, actor: string, now: number,
+  edit: (current: Record<string, string>) => Record<string, string>,
+): Promise<RootsWrite> {
+  for (let attempt = 0; attempt < MACHINE_SETTINGS_SNAPSHOT_ATTEMPTS; attempt++) {
+    if (await machineAccess(db, actor, machineId) !== 'allowed') return { applied: false, reason: 'absent' };
+    const row = await db.prepare('SELECT value FROM machine_settings WHERE machine_id = ? AND leaf = ?')
+      .bind(machineId, CONNECT_ROOTS_LEAF).first<{ value: string }>();
+    let current: unknown = {};
+    if (row !== null) {
+      try { current = JSON.parse(row.value); }
+      catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        return { applied: false, reason: 'invalid_value', detail: 'the stored connections cannot be read' };
+      }
+    }
+    const spec = MACHINE_LEAF_SPECS[CONNECT_ROOTS_LEAF]!.spec;
+    const invalid = leafRuleViolation(spec, current);
+    if (invalid !== null) return { applied: false, reason: 'invalid_value', detail: invalid };
+    const next = edit(current as Record<string, string>);
+    const violation = leafRuleViolation(spec, next);
+    if (violation !== null) return { applied: false, reason: 'invalid_value', detail: violation };
+    const value = JSON.stringify(next);
+    if (row === null && Object.keys(next).length === 0) return { applied: true, changed: false };
+    if (row !== null && value === row.value) return { applied: true, changed: false };
+    const claimed = 'EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id = ?)';
+    const written = row === null
+      ? await db.prepare(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by)
+          SELECT ?, ?, ?, ?, ? WHERE ${claimed}
+            AND NOT EXISTS (SELECT 1 FROM machine_settings WHERE machine_id = ? AND leaf = ?)`)
+        .bind(machineId, CONNECT_ROOTS_LEAF, value, now, actor, machineId, actor, machineId, CONNECT_ROOTS_LEAF).run()
+      : await db.prepare(`UPDATE machine_settings SET value = ?, updated_at = ?, updated_by = ?
+          WHERE machine_id = ? AND leaf = ? AND value IS ? AND ${claimed}`)
+        .bind(value, now, actor, machineId, CONNECT_ROOTS_LEAF, row.value, machineId, actor).run();
+    if (written.meta.changes === 1) return { applied: true, changed: row === null ? Object.keys(next).length > 0 : value !== row.value };
+  }
+  return { applied: false, reason: 'conflict' };
+}
+
+/** Stop telling a machine to connect a repository, retaining every sibling entry. */
+export async function disconnectMachineRoot(db: RelationalStore, machineId: string, rootKey: string, actor: string, now: number): Promise<RootsWrite> {
+  return editMachineRoots(db, machineId, actor, now, current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== rootKey)));
 }
 
 /** What a machine is told to connect a repository to: a project, `''` for any, or null where it is told nothing. */

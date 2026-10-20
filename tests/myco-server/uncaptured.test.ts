@@ -41,6 +41,13 @@ async function rig() {
   return { fixture, admin, member, machine, dashboard, projectsNamed };
 }
 
+/** Refuse every connection write after its snapshot, as an edit that continually loses its compare-and-set. */
+function contendRoots(r: Awaited<ReturnType<typeof rig>>): void {
+  for (const operation of ['INSERT', 'UPDATE']) r.fixture.sqlite.exec(`CREATE TEMP TRIGGER contend_roots_${operation}
+    BEFORE ${operation} ON machine_settings WHEN NEW.leaf = 'capture.connect_roots'
+    BEGIN SELECT RAISE(IGNORE); END`);
+}
+
 describe('a machine resolving a repository', () => {
   it('creates a project named for the folder, binds its remote, and joins every other clone of it to the same project', async () => {
     const r = await rig();
@@ -49,6 +56,21 @@ describe('a machine resolving a repository', () => {
     const clone = await r.machine(r.admin, '/members/projects/resolve', { rootKey: KEY_B, label: 'widget-fork', remote: 'git@github.com:acme/widget.git' });
     expect(clone).toEqual({ persisted: true, projectId: first.projectId, name: 'widget', created: false });
     expect(r.projectsNamed('widget')).toEqual([{ project_id: first.projectId }]);
+  });
+
+  it('answers a no-remote resolve conflict without claiming the connection persisted or forgetting the repository', async () => {
+    const r = await rig();
+    try {
+      await r.machine(r.member, '/members/uncaptured', { rootKey: KEY_A, label: 'local', reason: 'no_remote' });
+      r.fixture.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by)
+        VALUES ('machine_2', 'capture.connect_roots', ?, 1, 'mem_machine_2')`, [JSON.stringify({ [KEY_A]: '' })]);
+      contendRoots(r);
+      const res = await worker.fetch(memberPost(r.member, { rootKey: KEY_A, label: 'local' }, '/members/projects/resolve'), { ...r.fixture.env, ...OWNER_ENV });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ persisted: false, code: 'conflict', reason: expect.any(String) });
+      expect(r.fixture.sqlite.query(`SELECT value FROM machine_settings WHERE machine_id='machine_2' AND leaf='capture.connect_roots'`).get()).toEqual({ value: JSON.stringify({ [KEY_A]: '' }) });
+      expect((await r.dashboard('GET', '/api/uncaptured', MEMBER_SUB)).body.items).toHaveLength(1);
+    } finally { r.fixture.sqlite.close(); }
   });
 
   it('creates one project between resolves of a new repository racing each other', async () => {
@@ -131,6 +153,17 @@ describe('the dashboard', () => {
       .toEqual([['admins-repo', 'machine_1-laptop'], ['members-repo', null]]);
   });
 
+  it('answers an exhausted connection edit with 409 and keeps the repository waiting', async () => {
+    const r = await seeded();
+    try {
+      contendRoots(r);
+      const answer = await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/connect`, MEMBER_SUB, { projectId: 'proj_1' });
+      expect(answer).toEqual({ status: 409, body: { error: 'conflict', reason: expect.any(String) } });
+      expect((await r.dashboard('GET', '/api/uncaptured', MEMBER_SUB)).body.items).toHaveLength(1);
+      expect(r.fixture.sqlite.query(`SELECT value FROM machine_settings WHERE machine_id='machine_2' AND leaf='capture.connect_roots'`).get()).toBeNull();
+    } finally { r.fixture.sqlite.close(); }
+  });
+
   it('lets a member connect their own machine\'s repository and no other member\'s, and forgets it once connected', async () => {
     const r = await seeded();
     expect((await r.dashboard('POST', `/api/uncaptured/machine_1/${KEY_A}/connect`, MEMBER_SUB)).status).toBe(404);
@@ -148,7 +181,7 @@ describe('the dashboard', () => {
     expect(await connectMachineRoot(r.fixture.db, 'machine_2', KEY_B, 'proj_1', PRINCIPAL.id, Date.now())).toEqual({ applied: false, reason: 'absent' });
     expect(r.fixture.sqlite.query(`SELECT COUNT(*) AS n FROM machine_settings WHERE machine_id = 'machine_2' AND leaf = 'capture.connect_roots'`).get()).toEqual({ n: 0 });
     expect(await connectMachineRoot(r.fixture.db, 'machine_2', KEY_B, 'proj_1', MEMBER_PRINCIPAL.id, Date.now())).toEqual({ applied: true });
-    expect(await disconnectMachineRoot(r.fixture.db, 'machine_2', KEY_B, PRINCIPAL.id, Date.now())).toBe(false);
+    expect(await disconnectMachineRoot(r.fixture.db, 'machine_2', KEY_B, PRINCIPAL.id, Date.now())).toEqual({ applied: false, reason: 'absent' });
     expect(r.fixture.sqlite.query(`SELECT value FROM machine_settings WHERE machine_id = 'machine_2' AND leaf = 'capture.connect_roots'`).get())
       .toEqual({ value: JSON.stringify({ [KEY_B]: 'proj_1' }) });
   });

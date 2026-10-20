@@ -73,7 +73,7 @@ export async function savePlan(env: ServerEnv, member: SavingMember, scope: Read
     planKey,
     promptId,
     title: input.title ?? existing?.title ?? undefined,
-    status: input.status ?? existing?.status ?? 'active',
+    ...(input.status === undefined ? {} : { status: input.status }),
     originPath: input.sourcePath === undefined ? existing?.originPath ?? undefined : normalizePlanPath(input.sourcePath),
     tags,
     ...(text === null ? { blob } : { content: text }),

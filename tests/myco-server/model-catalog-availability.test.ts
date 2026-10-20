@@ -13,8 +13,9 @@ import { offeredHarness } from './helpers/offered-harness.js';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const close of cleanups.splice(0)) close(); });
+let catalogOrder = 0;
 const catalog = (now: number): ModelCatalog => ({
-  harness: 'claude-code', source: { kind: 'exchange', command: 'claude listing' }, signIn: 'worker-login', fetchedAt: now,
+  observedOrder: ++catalogOrder, harness: 'claude-code', source: { kind: 'exchange', command: 'claude listing' }, signIn: 'worker-login', fetchedAt: now,
   models: [{ id: 'opus', label: 'Opus', resolvesTo: 'claude-opus-fixture' }],
 });
 

@@ -1,3 +1,6 @@
+import { isReportOrder } from '@goondocks/myco-shared/report-order';
+import { deploymentKeyFor } from '@myco/member/registry.js';
+import { issueReportOrder } from '@myco/utils/order-stamp.js';
 /** Runner-owned release checks and an idle-only, durable binary handoff. */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -76,6 +79,8 @@ interface RunnerUpdateTransaction {
   rollbackResult?: 'rolled_back' | 'failed';
 }
 interface RunnerUpdateState {
+  reports?: Record<string, RunnerUpdateContact>;
+  reportFloors?: Record<string, number>;
   version: 1;
   nextCheckAt: number;
   lastCheckAt: number | null;
@@ -247,6 +252,8 @@ function decodeState(home: string): RunnerUpdateState {
   if (state?.version !== 1 || !Number.isFinite(state.nextCheckAt) || !Number.isFinite(state.failures)
     || !(state.lastCheckAt === null || Number.isFinite(state.lastCheckAt))
     || !(state.latestVersion === null || typeof state.latestVersion === 'string')
+    || (state.reports !== undefined && !entriesMatch(state.reports, entry => isReportOrder(entry.observedOrder)))
+    || (state.reportFloors !== undefined && (!record(state.reportFloors) || !Object.values(state.reportFloors).every(isReportOrder)))
     || (state.etag !== undefined && typeof state.etag !== 'string')
     || (state.releaseChannel !== undefined && !RELEASE_CHANNELS.includes(state.releaseChannel))
     || (state.retiredCandidates !== undefined && (!Array.isArray(state.retiredCandidates)
@@ -294,15 +301,15 @@ function decodeState(home: string): RunnerUpdateState {
   }
   return state;
 }
-function recoverState(home: string): RunnerUpdateState {
-  try { return decodeState(home); }
+function recoverState(home: string): { state: RunnerUpdateState; recovered: boolean } {
+  try { return { state: decodeState(home), recovered: false }; }
   catch (error) {
     const reason = sanitizeRunnerUpdateReason(`runner update metadata is unreadable: ${String(error)}`);
     const file = statePath(home);
     try { fs.renameSync(file, `${file}.quarantine-${Date.now()}-${crypto.randomUUID()}`); }
     catch (quarantineError) { console.warn(`runner update metadata quarantine failed: ${sanitizeRunnerUpdateReason(String(quarantineError))}`); }
     console.warn(reason);
-    return { ...freshState(), nextCheckAt: Date.now() + FAILURE_BACKOFF_MS, metadataFailure: { at: Date.now(), reason } };
+    return { state: { ...freshState(), nextCheckAt: Date.now() + FAILURE_BACKOFF_MS, metadataFailure: { at: Date.now(), reason } }, recovered: true };
   }
 }
 function readState(home: string): RunnerUpdateState {
@@ -327,9 +334,10 @@ function withState<T>(home: string, change: (state: RunnerUpdateState) => T, pub
   }
   if (!held.acquired) throw new Error('another runner update holds the machine binary');
   try {
-    const state = recoverState(home);
+    const { state, recovered } = recoverState(home);
+    const before = JSON.stringify(state);
     const result = change(state);
-    writeState(home, state, publisher);
+    if (recovered || JSON.stringify(state) !== before) writeState(home, state, publisher);
     return result;
   } finally { held.lock.release(); }
 }
@@ -461,6 +469,7 @@ export function cleanupRunnerUpdateGuardian(home: string, platform: NodeJS.Platf
 
 export interface RunnerUpdateController {
   contactPayload(): RunnerUpdateContact;
+  statusPayload(): RunnerUpdateContact;
   onContact(body: Record<string, unknown>): void;
   /** Called after this version starts; health is acknowledged only by authenticated contact. */
   startup(): void;
@@ -543,7 +552,23 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       ...(updateState === undefined ? {} : { updateState }),
     };
   };
-  const contactPayload = (): RunnerUpdateContact => payload(read());
+  const contactPayload = (): RunnerUpdateContact => changeState(state => {
+    const floor = state.reportFloors?.[serverUrl];
+    const observed = payload(state);
+    const previous = state.reports?.[serverUrl];
+    const { observedOrder: previousOrder, ...previousBody } = previous ?? {};
+    if (floor === undefined && previousOrder !== undefined && JSON.stringify(previousBody) === JSON.stringify(observed)) return previous!;
+    let observedOrder: number;
+    try { observedOrder = issueReportOrder(home, deploymentKeyFor(serverUrl), floor); }
+    catch {
+      log('report_order_unavailable: update report refused; repair the reporting counter before retrying');
+      return observed;
+    }
+    const report = { ...payload(state), observedOrder };
+    (state.reports ??= {})[serverUrl] = report;
+    if (state.reportFloors) delete state.reportFloors[serverUrl];
+    return report;
+  });
   const cleanupGuardian = (installationHeld = false): boolean => {
     const installation = installationHeld ? null : acquireInstallationLease(home, { command: 'myco runner update cleanup' });
     if (installation?.acquired === false) return false;
@@ -584,6 +609,14 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     state.nextCheckAt = pending && pending.id !== request?.id ? 0 : at;
   };
   const onContact = (body: Record<string, unknown>): void => {
+    if (body.updateRecorded === false && isReportOrder(body.observedOrder)) {
+      const floor = body.observedOrder;
+      changeState(state => {
+        if ((state.reports?.[serverUrl]?.observedOrder ?? 0) <= floor) {
+          (state.reportFloors ??= {})[serverUrl] = Math.max(state.reportFloors?.[serverUrl] ?? 0, floor);
+        }
+      });
+    }
     const raw = body.updateRequest;
     if (raw === undefined) return;
     if (raw === null) { changeState(state => { if (state.requests?.[serverUrl]?.manual !== true) endRequest(state, serverUrl); }); return; }
@@ -697,9 +730,9 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
   };
   const check = async (selection: RunnerUpdateSelection = {}): Promise<RunnerUpdateContact> => {
     const releaseChannel = selection.channel ?? channel(true);
-    if (releaseChannel === null) return contactPayload();
+    if (releaseChannel === null) return payload(decodeState(home));
     const checked = await releases(releaseChannel, currentVersion, undefined, deps, selection.targetVersion);
-    return { ...contactPayload(), channel: releaseChannel, latestVersion: checked.refs?.targetVersion ?? null, lastCheckAt: now() };
+    return { ...payload(decodeState(home)), channel: releaseChannel, latestVersion: checked.refs?.targetVersion ?? null, lastCheckAt: now() };
   };
   const abandon = (tx: RunnerUpdateTransaction, reason: string, retainedVersion = tx.fromVersion): boolean => {
     if (tx.phase !== 'waiting') return false;
@@ -946,6 +979,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
   };
   return {
     contactPayload: guard(contactPayload, () => payload(freshState())),
+    statusPayload: () => payload(decodeState(home)),
     onContact: guard(onContact, () => undefined), startup: guard(startup, () => undefined),
     acknowledgeHealthy: guard(acknowledgeHealthy, () => undefined), recordClaim: guard(recordClaim, () => undefined),
     recordHealthRefusal: guard(recordHealthRefusal, () => undefined), recordRuntimeCapability: guard(recordRuntimeCapability, () => undefined), queueManual, queueLocal,

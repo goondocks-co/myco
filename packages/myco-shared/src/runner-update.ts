@@ -24,6 +24,7 @@ export interface RunnerUpdateResult {
 export interface RunnerBlockedVersion { version: string; until: number; reason: string }
 export interface RunnerUpdateState { phase: 'updating' | 'probation' | 'cleanup_pending'; since: number; reason?: string }
 export interface RunnerUpdateReport {
+  observedOrder?: number;
   channel: 'stable' | 'beta' | 'alpha' | null;
   currentVersion: string;
   latestVersion: string | null;

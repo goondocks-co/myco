@@ -9,6 +9,7 @@
  * listing. A failed listing is said in the worker's log, and the catalogs that did list are reported.
  */
 import { MODEL_CATALOG_REFRESH_MS, type ModelCatalog } from '@goondocks/myco-shared/execution-profile';
+import { isReportOrder } from '@goondocks/myco-shared/report-order';
 import type { HarnessListing } from './models.js';
 import type { WorkerAnswer } from './loop.js';
 
@@ -26,6 +27,7 @@ export interface CatalogReporter {
 
 export function modelCatalogs(options: {
   harnesses: readonly string[];
+  issueOrder: (floor?: number) => number;
   list: ListModels;
   send: (catalog: ModelCatalog) => Promise<WorkerAnswer>;
   log: (line: string) => void;
@@ -34,6 +36,7 @@ export function modelCatalogs(options: {
   const stopping = new AbortController();
   let harnesses = [...options.harnesses];
   let generation = 0;
+  let orderFloor: number | undefined;
   let listingStop = new AbortController();
   const activeListings = new Set<Promise<void>>();
   let listedAt: number | null = null;
@@ -45,13 +48,20 @@ export function modelCatalogs(options: {
   const failed = new Map<string, string>();
 
   const listNow = (): void => {
+    let observedOrder: number;
+    try { observedOrder = options.issueOrder(orderFloor); }
+    catch {
+      options.log('report_order_unavailable: model listing refused; repair the reporting counter before retrying');
+      return;
+    }
     listing = true;
     const revision = generation;
+    orderFloor = undefined;
     const work = options.list(harnesses, listingStop.signal).then((listed) => {
       if (revision !== generation || stopping.signal.aborted) return;
       const catalogs: ModelCatalog[] = [];
       for (const result of listed) {
-        if (result.ok) { catalogs.push(result.catalog); failed.delete(result.catalog.harness); continue; }
+        if (result.ok) { catalogs.push({ ...result.catalog, observedOrder }); failed.delete(result.catalog.harness); continue; }
         if (failed.get(result.harness) !== result.reason) options.log(`could not list the models ${result.harness} offers: ${result.reason}`);
         failed.set(result.harness, result.reason);
       }
@@ -74,7 +84,14 @@ export function modelCatalogs(options: {
       if (answer.kind === 'unreachable') return;
       waiting = waiting.filter((held) => held !== catalog);
       if (answer.kind === 'refused') options.log(`the Deployment refused the models ${catalog.harness} offers: ${answer.code}`);
-      else if (answer.body.recorded !== true) options.log(`the Deployment did not record the models ${catalog.harness} offers: ${typeof answer.body.reason === 'string' ? answer.body.reason : 'no reason given'}`);
+      else if (answer.body.recorded !== true) {
+        if (isReportOrder(answer.body.observedOrder)) {
+          orderFloor = Math.max(orderFloor ?? 0, answer.body.observedOrder);
+          waiting = [];
+          listedAt = null;
+        }
+        options.log(`the Deployment did not record the models ${catalog.harness} offers: ${typeof answer.body.reason === 'string' ? answer.body.reason : 'no reason given'}`);
+      }
     }).finally(() => { sending = false; });
   };
 

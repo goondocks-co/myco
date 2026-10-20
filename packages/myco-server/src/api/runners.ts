@@ -17,7 +17,7 @@ import { requestByUserCode } from '../auth/device.js';
 import { sha256Hex } from '../hash.js';
 import type { RunnerAvailability } from '@goondocks/myco-shared/runner-fleet';
 import { forgetLegacyWorker } from '../core/legacy-workers.js';
-import { parseRunnerUpdateReport, readRunnerUpdateRequest, requestRunnerUpdate, runnerUpdateReportStatements } from '../core/runner-updates.js';
+import { parseRunnerUpdateReport, readRunnerUpdateReceipt, readRunnerUpdateRequest, requestRunnerUpdate, runnerUpdateReportStatements } from '../core/runner-updates.js';
 import { emit } from '../telemetry.js';
 import { ok, parseJsonObject, readJsonObject, withRunnerSignInRefusal } from './scope.js';
 
@@ -42,17 +42,20 @@ export async function handleRunnerContact(env: ServerEnv, ctx: RunnerContext): P
   if (body === null) return ok({ persisted: false, code: 'parse', reason: 'body must be a JSON object' });
   const update = body.update === undefined ? null : parseRunnerUpdateReport(body.update, ({ field, disposition }) =>
     emit({ kind: 'runner_update_metadata', reason: 'invalid_field', runnerId: ctx.auth.runnerId, field, disposition }));
-  await env.db.batch([runnerContactStatement(env.db, {
+  const contactStatements = [runnerContactStatement(env.db, {
     runnerId: ctx.auth.runnerId, machineId: reported(body.machineId, 'id'), os: reported(body.os, 'text'), version: reported(body.version, 'id'), now: ctx.now,
   }), ...(body.availability === undefined && body.arch === undefined ? [] : [runnerObservationStatement(env.db, ctx.auth.runnerId, {
     arch: reported(body.arch, 'text'),
     state: (['ready', 'settling', 'user_active', 'incompatible', 'unknown'] as const).includes(body.availability as RunnerAvailability) ? body.availability as RunnerAvailability : 'unknown',
     reason: reported(body.readinessReason, 'text') ?? 'Readiness reason unavailable.',
-  }, ctx.now)]), ...(update === null ? [] : await runnerUpdateReportStatements(env.db, ctx.auth.runnerId, update))]);
+  }, ctx.now)])];
+  await env.db.batch([...contactStatements, ...(update === null ? [] : await runnerUpdateReportStatements(env.db, ctx.auth.runnerId, update))]);
   const runner = await readRunner(env.db, ctx.auth.runnerId);
   if (runner === null) throw new Error('an authenticated runner has no row');
+  const receipt = update === null ? null : await readRunnerUpdateReceipt(env.db, ctx.auth.runnerId, update);
   return ok({
     persisted: true,
+    ...(receipt ?? {}),
     runner: { id: runner.id, name: runner.name, state: runner.state, deploymentId: await deploymentIdentity(env.db) },
     credential: { id: ctx.auth.credentialId, expiresAt: ctx.auth.expiresAt, refreshAfter: runnerWindowOpensAt(ctx.auth.expiresAt) },
     updateRequest: await readRunnerUpdateRequest(env.db, ctx.auth.runnerId),

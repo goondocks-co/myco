@@ -235,7 +235,7 @@ it('bounds repository notices and names an overflowing read as unavailable', asy
 
 it('observes only an effective code-map schedule and honors an explicit capability off', async () => {
   const { sqlite, read } = harness();
-  const set = (leaf: string, value: unknown) => sqlite.run("INSERT OR REPLACE INTO deployment_settings VALUES (?,?,1,'fixture')", [leaf, JSON.stringify(value)]);
+  const set = (leaf: string, value: unknown) => sqlite.run("INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?,?,1,'fixture')", [leaf, JSON.stringify(value)]);
   set('cortex.canopy.refresh.background_enabled', true);
   expect((await read()).items).toEqual([]);
   set('agent.scheduled_tasks_enabled', true);
