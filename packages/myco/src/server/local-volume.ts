@@ -87,8 +87,8 @@ export class LocalVolume {
   }
 
   /**
-   * One operator operation that reads the volume while it is served: a full backup, which holds the volume shared for
-   * its whole snapshot and copy, so nothing replaces the volume its artifact is being taken from.
+   * Read the volume under shared ownership for backups, owner inspection and status, including while it is served.
+   * Replacement and startup migrations require exclusive ownership and refuse while any such read is active.
    */
   async reading<T>(read: () => Promise<T>): Promise<T> {
     const held = this.lease('shared');

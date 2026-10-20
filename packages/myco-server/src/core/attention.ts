@@ -12,6 +12,8 @@
  * - the search index is behind: text has waited for it longer than `SEARCH_BEHIND_MS`, or its updates have failed
  *   for that long with no success after them;
  * - transcripts the current parser stopped on a fault;
+ * - prompt references name prompts this server never received, or a prompt row carries another text
+ *   within `PROMPT_REFERENCE_LOOKBACK_MS`;
  * - runs held longer than `CAPABILITY_HOLD_MS` for a capability no worker reports;
  * - runs are queued for a worker and no worker has been heard from lately;
  * - an access key expires within `ACCESS_KEY_NOTICE_MS`;

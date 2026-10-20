@@ -425,7 +425,12 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
 
     if (command === 'status' && target() === 'cloudflare') {
       if (readDeploymentRecord() === null) { console.log(`${missingDeploymentRecordMessage()} myco server create --target cloudflare --account-id <id> provisions one.`); return; }
-      const status = (await cloudflareDeploymentStatus(cloudflareOptions()))!;
+      const options = cloudflareOptions();
+      const references = promptReferenceStatusLine(() => cloudflarePromptReferenceCounts({ ...options, fetch: deps.fetchImpl }));
+      const status = (await cloudflareDeploymentStatus(options).catch(async (error: unknown) => {
+        console.log(await references);
+        throw error;
+      }))!;
       console.log('\nCloudflare Deployment');
       console.log(`  Worker:     ${status.record.workerName} (account ${status.record.accountId})`);
       console.log(`  Worker (live): ${status.workerError === null ? status.deployed ? status.versionId ?? 'version unavailable' : 'not deployed' : `unavailable — ${status.workerError}`}`);
@@ -440,7 +445,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
       if (lastSchema !== undefined) {
         console.log(`  Last schema update (${lastSchema.appliedAt !== undefined ? 'applied' : status.schema === lastSchema.schemaAfter ? 'completed; confirmed by live schema' : 'recovery point recorded; migration not confirmed'}): ${lastSchema.schemaBefore} → ${lastSchema.schemaAfter} at ${lastSchema.appliedAt ?? lastSchema.recordedAt}, bookmark ${lastSchema.bookmark}`);
       }
-      console.log(await promptReferenceStatusLine(() => cloudflarePromptReferenceCounts({ ...cloudflareOptions(), fetch: deps.fetchImpl })));
+      console.log(await references);
       await reportOperatorHold(cloudflareRecoveryHoldOf(cloudflareOptions()));
       return;
     }

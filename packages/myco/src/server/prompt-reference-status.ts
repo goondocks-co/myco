@@ -36,7 +36,7 @@ export async function promptReferenceStatusLine(read: () => Promise<Counts>): Pr
     const { total, dangling } = await read();
     const kinds = total === 0 ? '' : ` (${Object.entries(dangling).map(([kind, n]) => `${kind}=${n}`).join(', ')})`;
     return `  Prompt references (${PROMPT_REFERENCE_LOOKBACK_DAYS} days): ${total} dangling${kinds}`;
-  } catch {
-    return `  Prompt references (${PROMPT_REFERENCE_LOOKBACK_DAYS} days): unavailable`;
+  } catch (error) {
+    return `  Prompt references (${PROMPT_REFERENCE_LOOKBACK_DAYS} days): unavailable — ${error instanceof Error ? error.message : String(error)}`;
   }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { readAttention } from '@myco-server-worker/core/attention.js';
-import { PROMPT_REFERENCE_LOOKBACK_MS } from '@myco-server-worker/read/prompt-reference-health.js';
+import { PROMPT_REFERENCE_LOOKBACK_MS, readPromptReferenceHealth } from '@myco-server-worker/read/prompt-reference-health.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 const NOW = 1_700_000_000_000;
@@ -63,7 +63,7 @@ describe('prompt references in Needs you', () => {
     });
   }
 
-  it('raises a hash mismatch alone and reports per-agent session-wide reasons and older-member shares without counting selections twice', async () => {
+  it('raises a hash mismatch alone and reports per-agent reason shares while excluding tombstoned answers', async () => {
     const f = fixture();
     try {
       f.session('c', 'codex');
@@ -71,12 +71,16 @@ describe('prompt references in Needs you', () => {
       const id = f.reference('c');
       f.sqlite.run(`INSERT INTO prompt_batches(project_id,prompt_id,session_id,event_id,origin,content_hash,prompt_key_hash,created_at,updated_at,token_id,received_at)
         VALUES ('proj_1',?,'c','e','user','h','different',1,1,'t',1)`, [id]);
-      f.answer('c', { prompt_id: id });
-      f.answer('c', { prompt_id: null, scope_reason: 'steering' });
-      f.answer('c', { prompt_id: null, scope_reason: 'absent_key' });
-      f.answer('c', { ask_protocol: 'legacy' });
-      f.answer('s', { ask_protocol: 'legacy' });
+      f.answer('c', { prompt_id: id, asked_at: NOW - 100 });
+      f.answer('c', { prompt_id: null, scope_reason: 'steering', asked_at: NOW - 200 });
+      f.answer('c', { prompt_id: null, scope_reason: 'absent_key', asked_at: NOW - 300 });
+      f.answer('c', { ask_protocol: 'legacy', asked_at: null });
+      f.answer('s', { ask_protocol: 'legacy', asked_at: null });
       f.answer('s', { prompt_id: null, scope_reason: 'transcript_only' });
+      f.session('gone', 'codex');
+      f.answer('gone', { prompt_id: null, scope_reason: 'scheme' });
+      f.answer('gone', { ask_protocol: 'legacy', asked_at: null });
+      f.sqlite.run(`INSERT INTO session_tombstones(project_id,session_id,created_at,created_by) VALUES ('proj_1','gone',1,'m')`);
       const item = (await f.read()).items.find(i => i.kind === 'prompt_references');
       expect(item).toMatchObject({ total: 0, dangling: ZERO, agents: [
         { agent: 'claude-code', asks: 2, sessionScoped: 1, scopeReasons: { transcript_only: { asks: 1, share: 0.5 } }, legacy: 1, sessionScopedShare: 0.5, legacyShare: 0.5, keyMismatches: 0 },
@@ -84,6 +88,36 @@ describe('prompt references in Needs you', () => {
       ] });
       f.sqlite.run(`UPDATE prompt_batches SET prompt_key_hash='ask'`);
       expect(await f.read()).toEqual({ items: [], unavailable: [] });
+    } finally { f.sqlite.close(); }
+  });
+
+  it('does not raise attention for a mismatch before the window', async () => {
+    const f = fixture();
+    try {
+      f.session('c', 'codex');
+      const id = f.reference('c', { created_at: NOW - PROMPT_REFERENCE_LOOKBACK_MS - 1 });
+      f.sqlite.run(`INSERT INTO prompt_batches(project_id,prompt_id,session_id,event_id,origin,content_hash,prompt_key_hash,created_at,updated_at,token_id,received_at)
+        VALUES ('proj_1',?,'c','e','user','h','different',1,1,'t',1)`, [id]);
+      expect(await f.read()).toEqual({ items: [], unavailable: [] });
+    } finally { f.sqlite.close(); }
+  });
+
+  it('counts dated retries once per session and ask instant, and undated answers by their own id', async () => {
+    const f = fixture();
+    try {
+      f.session('c', 'codex');
+      f.session('other', 'codex');
+      for (let retry = 0; retry < 2; retry++) {
+        f.answer('c', { prompt_id: null, scope_reason: 'steering', asked_at: NOW - 500 });
+        f.answer('c', { ask_protocol: 'legacy', asked_at: NOW - 400 });
+        f.answer('c', { ask_protocol: 'legacy', asked_at: null });
+        f.answer('c', { asked_at: NOW - 300 });
+      }
+      f.answer('other', { prompt_id: null, scope_reason: 'scheme', asked_at: NOW - 500 });
+      expect((await readPromptReferenceHealth(f.serverEnv.db, NOW)).agents).toEqual([
+        { agent: 'codex', asks: 6, sessionScoped: 2, scopeReasons: { steering: { asks: 1, share: 1/6 }, scheme: { asks: 1, share: 1/6 } },
+          legacy: 3, sessionScopedShare: 2/6, legacyShare: 0.5, keyMismatches: 0 },
+      ]);
     } finally { f.sqlite.close(); }
   });
 

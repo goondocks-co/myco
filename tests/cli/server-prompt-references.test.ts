@@ -90,6 +90,23 @@ for (const target of ['local', 'cloudflare']) describe(`prompt reference status 
   it('names an unavailable read rather than claiming zero', async () => {
     if (target === 'cloudflare') failRead = true;
     else sqlite.run('ALTER TABLE spore_injections RENAME TO unreadable_references');
-    expect(await status()).toBe('  Prompt references (7 days): unavailable');
+    const line = await status();
+    expect(line).toContain('  Prompt references (7 days): unavailable — ');
+    expect(line).toContain(target === 'cloudflare' ? 'query refused' : 'no such table');
   });
+});
+
+it('refuses hosted status under a different --account-id before querying', async () => {
+  const exit = spyOn(process, 'exit').mockImplementation(() => { throw new Error('fixture exit'); });
+  const error = spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    await expect(run(['status', '--target', 'cloudflare', '--account-id', 'b'.repeat(32)], { runner, fetchImpl: globalThis.fetch })).rejects.toThrow('fixture exit');
+    expect(log.mock.calls.flat()).toContain('  Prompt references (7 days): unavailable — the selected Deployment has no matching recorded database');
+    expect(error.mock.calls.flat()).toContain('status refused: selected account does not match the deployment record');
+    expect(reads).toEqual([]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  } finally {
+    exit.mockRestore();
+    error.mockRestore();
+  }
 });

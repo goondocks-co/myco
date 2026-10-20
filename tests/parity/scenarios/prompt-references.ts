@@ -31,8 +31,11 @@ export const promptReferences: ParityScenario = {
     await target.sql(`INSERT INTO prompt_batches(project_id,prompt_id,session_id,event_id,origin,content_hash,prompt_key_hash,created_at,updated_at,token_id,received_at)
       VALUES (${project},'identity-p','identity-s','identity-e','user','h','different',1,1,'t',1)`);
     await target.sql(`INSERT INTO prompt_context_answers(project_id,id,session_id,prompt_id,scope_reason,ask_protocol,asked_at,created_at,outcome,context_chars,parts,skipped,failures,selection)
-      VALUES (${project},'identity-scoped','identity-s',NULL,'steering','v1',${now-100},${now},'served',1,'[]','[]','[]','{}'),
+      VALUES (${project},'identity-scoped','identity-s',NULL,'steering','v1',${now-90},${now},'served',1,'[]','[]','[]','{}'),
       (${project},'identity-legacy','identity-s','legacy-p',NULL,'legacy',NULL,${now},'served',1,'[]','[]','[]','{}')`);
+    await target.sql(`INSERT INTO prompt_context_answers(project_id,id,session_id,prompt_id,scope_reason,ask_protocol,asked_at,created_at,outcome,context_chars,parts,skipped,failures,selection)
+      SELECT project_id,id || '-retry',session_id,prompt_id,scope_reason,ask_protocol,asked_at,created_at,outcome,context_chars,parts,skipped,failures,selection
+      FROM prompt_context_answers WHERE project_id=${project} AND id IN ('identity-a','identity-scoped')`);
     expect(await read()).toMatchObject({ total: 0, agents: [{ agent: 'codex', asks: 3, sessionScoped: 1, scopeReasons: { steering: { asks: 1, share: 1/3 } }, legacy: 1, sessionScopedShare: 1/3, legacyShare: 1/3, keyMismatches: 1 }] });
     await target.sql(`UPDATE prompt_batches SET prompt_key_hash='ask' WHERE project_id=${project} AND prompt_id='identity-p'`);
     expect(await read()).toBeUndefined();

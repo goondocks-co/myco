@@ -4,6 +4,7 @@
  * as what it produced, a machine by its name, and the account Myco's own work
  * signs in as reads "Myco".
  */
+import { PROMPT_SCOPE_REASONS, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { harnessToolsElsewhere } from '@goondocks/myco-shared/setup-guidance';
 import { HELD_CAPTURE_TTL_DAYS } from '@goondocks/myco-shared/member-protocol';
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@goondocks/myco-shared/repository';
@@ -230,7 +231,12 @@ export interface NeedsYouWords {
 /** A part of Health, by its anchor. */
 const healthAt = (anchor: string): string => `${HEALTH_PATH}#${anchor}`;
 
-const PROMPT_SCOPE_WORDS: Readonly<Record<string, string>> = { absent_key: 'with no prompt key', steering: 'during a turn already in progress', scheme: 'with an unsupported prompt format', transcript_only: 'from transcript-only capture' };
+const PROMPT_SCOPE_WORDS: Readonly<Record<PromptScopeReason, string>> = {
+  absent_key: 'the agent sent no prompt id',
+  steering: 'sent mid-turn',
+  scheme: 'from an agent version Myco can’t match yet',
+  transcript_only: 'matched from the transcript instead',
+};
 
 export function attentionWords(item: AttentionItem, now: number, projectName: (projectId: string) => string | null): NeedsYouWords {
   const inProject = (projectId: string) => {
@@ -270,16 +276,30 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
       };
     }
     case 'prompt_references': {
-      const missing = item.total === 0 ? '' : `Missing prompt links: ${item.dangling.receipt_selected} spore selections, ${item.dangling.answer_selected} prepared answers, ${item.dangling.receipt_delivered} spore deliveries and ${item.dangling.answer_delivered} answer deliveries. `;
-      const agents = item.agents.map((agent) => {
-        const percent = (share: number | null) => share === null ? 'no sample' : `${Math.round(share * 100)}%`;
-        const reasons = Object.entries(agent.scopeReasons).map(([reason, sample]) => `${percent(sample.share)} ${PROMPT_SCOPE_WORDS[reason] ?? 'without a prompt link'} (${count(sample.asks, 'ask')})`);
-        return `${harnessLabel(agent.agent)}: ${count(agent.keyMismatches, 'text mismatch', 'text mismatches')}; ${percent(agent.sessionScopedShare)} session-wide${reasons.length === 0 ? '' : ` (${listed(reasons)})`}, ${percent(agent.legacyShare)} from older members, across ${count(agent.asks, 'ask')}.`;
+      const window = `In the last ${count(Math.round((now - item.since) / DAY), 'day')}`;
+      const missing = item.total === 0 ? `${window}.`
+        : `${window}, ${count(item.total, 'record')} of context Myco added ${item.total === 1 ? 'names' : 'name'} a prompt this server never received, so ${item.total === 1 ? 'its session can’t show it' : 'their sessions can’t show them'} on that prompt.`;
+      const notable = item.agents.filter(agent => agent.keyMismatches > 0 || agent.sessionScoped > 0 || agent.legacy > 0);
+      const agents = notable.map(agent => {
+        const clauses: string[] = [];
+        if (agent.keyMismatches > 0) clauses.push(`${count(agent.keyMismatches, 'prompt')} recorded with different text.`);
+        const requests: string[] = [];
+        if (agent.sessionScoped > 0) {
+          const reasons = PROMPT_SCOPE_REASONS.flatMap(reason => {
+            const sample = agent.scopeReasons[reason];
+            return sample === undefined || sample.asks === 0 ? [] : [`${count(sample.asks, 'request')}: ${PROMPT_SCOPE_WORDS[reason]}`];
+          });
+          requests.push(`${count(agent.sessionScoped, 'request')} ${agent.sessionScoped === 1 ? 'wasn’t' : 'weren’t'} tied to one prompt${reasons.length === 0 ? '' : ` (${listed(reasons)})`}`);
+        }
+        if (agent.legacy > 0) requests.push(`${count(agent.legacy, 'request')} came from machines that haven’t updated`);
+        if (requests.length > 0) clauses.push(`Of ${count(agent.asks, 'request')} for context, ${listed(requests)}.`);
+        return `${agentName(agent.agent)}: ${clauses.join(' ')}`;
       });
+      const expected = notable.some(agent => agent.sessionScoped > 0 || agent.legacy > 0) ? 'Those requests are expected.' : '';
       return {
-        title: item.total > 0 ? `${count(item.total, 'context link')} ${item.total === 1 ? 'names' : 'name'} prompts the Deployment doesn’t hold` : 'Prompt text disagrees between capture and context',
-        detail: `In the last ${Math.round((now - item.since) / DAY)} days. ${missing}${agents.join(' ')} Session-wide context and older members are expected.`,
-        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
+        title: item.total > 0 ? 'Some context Myco added can’t be shown on its prompt' : 'Some prompts were recorded with different text than the agent sent',
+        detail: [missing, ...agents, expected].filter(Boolean).join(' '),
+        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.measures) },
       };
     }
     case 'transcripts_stopped':
