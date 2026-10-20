@@ -8,7 +8,7 @@ import { isProjectId, REFUSED_LOG_MAX_BYTES } from './constants.js';
 import { CONTEXT_DIRNAME, PROJECT_CONTEXT_FILE } from './context-cache.js';
 import { listRegistryEntriesResult, deploymentUrl, type RegistryEntry } from './registry.js';
 import { LEGACY_MIGRATION_FILE, memberRoutingIdentity, pinSpoolDestination, routedSpoolDir, ROUTING_FILE, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
-import { bufferLockPath, emptySessionState, readMigrationSettledUnlocked, readSessionState, readSessionStateResultUnlocked, recordMigrationSettledUnlocked, writeSessionStateUnlocked, type SessionState } from './session-state.js';
+import { bufferLockPath, emptySessionState, readMigrationSettledUnlocked, readSessionState, readSessionStateResultUnlocked, recordMigrationSettledUnlocked, sessionStatePath, writeSessionStateUnlocked, type SessionState } from './session-state.js';
 import { readSourceStateForMove, reconcileSessionState } from './session-reconcile.js';
 import { MemberSpool, OFFLINE_LATCH_FILE, REFUSED_LOG_FILE, SPOOL_DIRNAME, WIRE_FIELDS, turnEndIdentity, type SpoolRecord } from './spool.js';
 import { publishStagedBlob, readStagedBlob } from './staged-blobs.js';
@@ -350,6 +350,18 @@ function stateAt(dir: string, sessionId: string): SessionState {
   throw new MigrationHold(`Unreadable session state: ${sessionId}`);
 }
 
+/**
+ * The snapshot a migration receipt names for a session's state: a digest of the state file's bytes as written, so
+ * context its read discards still changes it. A missing file has the digest of no bytes. Caller holds the buffer lock.
+ */
+function stateFingerprint(dir: string, sessionId: string): string {
+  try { return sha(fs.readFileSync(sessionStatePath(dir, sessionId), 'utf8')); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(sessionStatePath(dir, sessionId))) return sha('');
+    throw new MigrationHold(`Unreadable session state: ${sessionId}`);
+  }
+}
+
 function receiptAt(dir: string, sessionId: string): SessionReceipt | null {
   const read = readPrivateJson<SessionReceipt>(receiptPath(dir, sessionId));
   if (!read.ok) {
@@ -471,7 +483,7 @@ function copySession(source: MemberSpool, target: MemberSpool, sessionId: string
       // The target may have changed since an earlier attempt: its fresh state is reconciled every time.
       const reconciled = reconcileSessionState(targetState, sourceState);
       writeSessionStateUnlocked(target.dir, sessionId, reconciled.state);
-      const sourceStateHash = sha(JSON.stringify(sourceState));
+      const sourceStateHash = stateFingerprint(source.dir, sessionId);
       const contextSkipped = previous?.sourceStateHash === sourceStateHash ? 0 : reconciled.contextSkipped;
       const fresh = parseJournal(targetFile).records;
       const available = new Set(fresh.map((record) => record.eventId));
@@ -504,7 +516,7 @@ function verifyReceipts(source: MemberSpool, sessions: ReadonlySet<string>): voi
       const receipt = receiptAt(source.dir, sessionId);
       const journal = parseJournal(sourceJournal(source.dir, sessionId));
       if (receipt === null || receipt.sourceCount !== journal.records.length || receipt.sourceHash !== sha(journal.raw) ||
-          receipt.sourceStateHash !== sha(JSON.stringify(stateAt(source.dir, sessionId))) ||
+          receipt.sourceStateHash !== stateFingerprint(source.dir, sessionId) ||
           pendingMarks.some((mark) => !receipt.marks.includes(mark))) {
         throw new MigrationHold(`Migration receipt does not cover legacy capture: ${sessionId}`);
       }
