@@ -73,6 +73,13 @@ export const plans: ParityScenario = {
     expect([edit.body.plan.status, edit.body.plan.updatedBy, edit.body.plan.progress, edit.body.plan.updatedAt > (changed.updated_at as number)]).toEqual(['completed', MEMBER_ID, '1/2', true]);
     expect((await owner(`${base}/plans/${key}/status`, { method: 'POST', body: JSON.stringify({ status: 'all' }) })).status).toBe(400);
 
+    // The session's plans list narrows by status and by a text in the title, and refuses a status the catalogue does not hold.
+    const narrowed = async (query: string) => (await owner<{ rows: { planKey: string }[] }>(`${base}/plans?${query}`)).body.rows.map((p) => p.planKey);
+    expect(await narrowed('status=completed&q=ARIT')).toEqual([key]);
+    expect(await narrowed('status=completed&q=fresh')).toEqual([]);
+    expect(await narrowed('status=abandoned')).toEqual([]);
+    expect((await owner(`${base}/plans?status=all`)).status).toBe(400);
+
     // The turn body carries the plan under the prompt it came from; the list reads it by session.
     const detail = await owner<{ plans: { planKey: string; status: string; progress: string; promptId: string | null }[] }>(`${base}/turns/${p1}`);
     expect(detail.body.plans.map((p) => [p.planKey, p.status, p.progress, p.promptId])).toEqual([[key, 'completed', '1/2', p1]]);

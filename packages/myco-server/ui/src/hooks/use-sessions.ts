@@ -457,8 +457,12 @@ export function useSession(projectId: string, sessionId: string) {
   });
 }
 
-export function useSessionChildren<T>(projectId: string, sessionId: string, child: SessionChild) {
-  return usePaged<T>(['session-children', projectId, sessionId, child], `${project(projectId)}/sessions/${seg(sessionId)}/${child}?limit=100`);
+/** A session's records of one kind, a page at a time; `filters` narrows the read where the server takes them, as `status` and `q` on plans. */
+export function useSessionChildren<T>(projectId: string, sessionId: string, child: SessionChild, filters: Readonly<Record<string, string>> = {}) {
+  const params = new URLSearchParams({ limit: '100' });
+  for (const [key, value] of Object.entries(filters)) if (value !== '') params.set(key, value);
+  const query = params.toString();
+  return usePaged<T>(['session-children', projectId, sessionId, child, query], `${project(projectId)}/sessions/${seg(sessionId)}/${child}?${query}`);
 }
 
 /** The transcript record, or null when the session has none — the one 404 here that is an answer rather than an error. */

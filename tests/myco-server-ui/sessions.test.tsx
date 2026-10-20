@@ -80,16 +80,16 @@ const originalFetch = globalThis.fetch;
 beforeEach(() => { setSystemTime(new Date(NOW)); });
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; setSystemTime(); forgetProject(); });
 
-type Routes = Record<string, (init?: RequestInit) => Response | Promise<Response>>;
+type Routes = Record<string, (init?: RequestInit, url?: URL) => Response | Promise<Response>>;
 
-/** Answers a path with its query first, then the path alone; anything else is 404. Records every request. */
+/** Answers a path with its query first, then the path alone, handing the route the request's URL; anything else is 404. Records every request. */
 function server(routes: Routes): { requested: string[] } {
   const requested: string[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const url = new URL(href, 'https://s');
     requested.push(url.pathname + url.search);
-    return routes[url.pathname + url.search]?.(init) ?? routes[url.pathname]?.(init) ?? new Response(null, { status: 404 });
+    return routes[url.pathname + url.search]?.(init, url) ?? routes[url.pathname]?.(init, url) ?? new Response(null, { status: 404 });
   }) as typeof fetch;
   return { requested };
 }
@@ -415,7 +415,8 @@ describe('the session reading page', () => {
     // The summary comes before the conversation, and the conversation sits in the reading column.
     const tabs = screen.getByRole('tablist', { name: 'What the session holds' });
     expect(summary.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    await waitFor(() => expect(within(tabs).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation2', 'Spores12', 'Plans0']));
+    // The tabs name what they hold and count nothing.
+    expect(within(tabs).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation', 'Spores', 'Plans']);
     expect(screen.getByRole('navigation', { name: 'Breadcrumb' }).textContent).toBe('SessionsProject X');
     // The facts, in words; the id is only copied.
     const facts = screen.getByRole('complementary', { name: 'About this session' });
@@ -454,18 +455,13 @@ describe('the session reading page', () => {
     }
   });
 
-  it('says what came of the session: its spores, and each run with whether the Deployment holds a record of its reading', async () => {
+  it('says what came of the session: how many spores, one link from their tab, and each run with whether the Deployment holds a record of its reading', async () => {
     server(routes());
     mount('/p/x/sessions/s1');
     const outcome = await screen.findByText('What came of it').then((h) => h.closest('[data-outcome]') as HTMLElement);
-    const spores = within(outcome).getByRole('list', { name: 'Spores from this session' });
-    expect(within(spores).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
-      'GotchaA reserved test port races the ephemeral fallback.',
-      'FixSep 29',
-    ]);
-    expect(within(spores).getAllByRole('link')[0]!.getAttribute('href')).toBe('/p/x/spores/sp1');
-    // Ten are listed at the most; the rest are one link away, on the Spores tab.
-    expect(within(outcome).getByRole('link', { name: 'All 12 spores →' }).getAttribute('href')).toBe('/p/x/sessions/s1?tab=spores');
+    // The spores themselves are listed on the Spores tab, not here.
+    expect(within(outcome).queryByRole('list', { name: 'Spores from this session' })).toBeNull();
+    expect(within(outcome).getByRole('link', { name: '12 spores from this session →' }).getAttribute('href')).toBe('/p/x/sessions/s1?tab=spores');
 
     const runs = within(within(outcome).getByRole('list', { name: 'Myco’s work on this session' })).getAllByRole('listitem');
     expect(runs.map((li) => li.getAttribute('data-outcome-run'))).toEqual(['read', 'unrecorded', 'read', 'unrecorded']);
@@ -1037,38 +1033,161 @@ describe('the session reading page', () => {
     expect(stored.textContent).not.toContain('<subagent_notification>');
   });
 
-  it('lists the session’s spores on their tab, whatever their status, and says when only the newest are listed', async () => {
-    const spore = (over: Record<string, unknown>) => ({ id: 'sp1', agentId: 'agent_1', sessionId: 's1', promptId: null, observationType: 'gotcha', status: 'active', content: 'The cache lies after a rebase.', agentLine: null, context: null, importance: 8, filePath: null, tags: null, contentHash: null, properties: null, createdAt: NOW - MINUTE, updatedAt: null, embedded: 0, ...over });
-    server(routes({ '/api/projects/x/spores?limit=100&session=s1': () => Response.json({ spores: [spore({}), spore({ id: 'sp2', observationType: 'trade_off', status: 'superseded', agentLine: 'We page by offset.' })], total: 140, maxPage: 200 }) }));
+  const spore = (over: Record<string, unknown>) => ({ id: 'sp1', agentId: 'agent_1', sessionId: 's1', promptId: null, observationType: 'gotcha', status: 'active', content: 'The cache lies after a rebase.', agentLine: null, context: null, importance: 8, filePath: null, tags: null, contentHash: null, properties: null, createdAt: NOW - MINUTE, updatedAt: null, embedded: 0, ...over });
+  const SPORES = '/api/projects/x/spores?limit=25&session=s1';
+  const listed = (name: string) => within(screen.getByRole('list', { name })).getAllByRole('listitem');
+
+  /**
+   * The spores route as the store pages it: newest first with the id breaking a tie, a page continuing after the
+   * spore its cursor names, `cursor` null on the last page, and `total` counted as each page is read.
+   */
+  const sporeStore = (held: ReturnType<typeof spore>[], total: () => number = () => held.length) => {
+    const order = (a: ReturnType<typeof spore>, b: ReturnType<typeof spore>) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+    return (url: URL) => {
+      const rows = [...held].sort(order);
+      const cursor = url.searchParams.get('cursor');
+      const [at, id] = cursor === null ? [Infinity, ''] : [Number(cursor.slice(0, cursor.indexOf(':'))), cursor.slice(cursor.indexOf(':') + 1)];
+      const after = rows.filter((r) => r.createdAt < at || (r.createdAt === at && r.id < id));
+      const page = after.slice(0, 25);
+      const last = page.at(-1);
+      return Response.json({ spores: page, cursor: after.length > 25 && last !== undefined ? `${last.createdAt}:${last.id}` : null, total: total(), maxPage: 200 });
+    };
+  };
+  it('lists the session’s spores on their tab as rows, whatever their status, and pages by cursor until none follows', async () => {
+    const held = [
+      spore({ createdAt: NOW - MINUTE }),
+      spore({ id: 'sp2', observationType: 'trade_off', status: 'superseded', agentLine: 'We page by cursor.', createdAt: NOW - 2 * MINUTE }),
+      ...Array.from({ length: 25 }, (_, i) => spore({ id: `spx${String(i).padStart(2, '0')}`, content: `More ${i}`, createdAt: NOW - (3 + i) * MINUTE })),
+    ];
+    const { requested } = server(routes({ '/api/projects/x/spores': (_, url) => sporeStore(held)(url!) }));
     mount('/p/x/sessions/s1?tab=spores');
-    const items = await within(await screen.findByRole('list', { name: 'Spores' })).findAllByRole('listitem');
-    expect(items[0]!.textContent).toContain('Gotcha');
-    expect(items[0]!.textContent).toContain('The cache lies after a rebase.');
-    expect(items[1]!.textContent).toContain('Superseded');
-    expect(items[1]!.textContent).toContain('We page by offset.');
-    expect(within(items[0]!).getByRole('link').getAttribute('href')).toBe('/p/x/spores/sp1');
-    expect(screen.getByText('The 2 newest of 140 spores.')).toBeTruthy();
+    await screen.findByRole('list', { name: 'Spores' });
+    const items = listed('Spores');
+    expect(items).toHaveLength(25);
+    // Its time first, its type above its line, its status under it, and the whole row leads to the spore.
+    const row = within(items[0]!).getByRole('link');
+    expect(row.getAttribute('href')).toBe('/p/x/spores/sp1');
+    expect(row.textContent).toBe('Sep 2915:59GotchaThe cache lies after a rebase.Current');
+    expect(items[1]!.textContent).toContain('Trade-off');
+    expect(items[1]!.textContent).toContain('We page by cursor.');
+    expect(items[1]!.textContent).toContain('Replaced');
+    expect(screen.getByText('Showing 25 of 27 spores')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    await waitFor(() => expect(listed('Spores')).toHaveLength(27));
+    expect(listed('Spores').at(-1)!.textContent).toContain('More 24');
+    // The last page answered no cursor: no third page is offered or read.
+    expect(screen.getByText('Showing 27 of 27 spores')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
+    expect(requested.filter((p) => p.startsWith('/api/projects/x/spores'))).toEqual([SPORES, `${SPORES}&cursor=${encodeURIComponent(`${NOW - 25 * MINUTE}:spx22`)}`]);
+    expect(rawIdsInPage()).toEqual([]);
     cleanup();
-    server(routes({ '/api/projects/x/spores?limit=100&session=s1': () => new Response(null, { status: 500 }) }));
+    server(routes({ [SPORES]: () => new Response(null, { status: 500 }) }));
     mount('/p/x/sessions/s1?tab=spores');
     expect(await screen.findByText('The server had a problem')).toBeTruthy();
     expect(screen.queryByText(/No spores were saved/)).toBeNull();
   });
 
-  it('lists the session’s plans on their tab, each leading to its own page', async () => {
-    server(routes({ '/api/projects/x/sessions/s1/plans': () => page([
-      { planKey: 'plan-1', promptId: P1, title: 'Ship the thing', status: 'in_progress', content: '# Plan\n- [x] one\n- [ ] two', blobKey: null, originPath: '.claude/plans/ship.md', progress: '1/2', updatedBy: null, createdAt: NOW - 5000, updatedAt: NOW - HOUR, orderedAt: NOW - 1000 },
-    ]) }));
+  it('continues after the last spore shown when spores are written between pages: none repeats, none older is skipped, and a stale total ends nothing', async () => {
+    const held = Array.from({ length: 27 }, (_, i) => spore({ id: `live-${String(i).padStart(2, '0')}`, content: `Live spore ${i}`, createdAt: NOW - (i + 1) * MINUTE }));
+    let reads = 0;
+    // The first page counts 25: the total was read before the last two older spores were backfilled.
+    const store = sporeStore(held, () => (reads === 1 ? 25 : held.length));
+    server(routes({ '/api/projects/x/spores': (_, url) => {
+      reads += 1;
+      if (reads === 2) {
+        // Between the pages a new spore arrives and an older one is backfilled.
+        held.push(spore({ id: 'arrived', content: 'Arrived between pages', createdAt: NOW }));
+        held.push(spore({ id: 'backfilled', content: 'Backfilled from an import', createdAt: NOW - 100 * MINUTE }));
+      }
+      return store(url!);
+    } }));
+    mount('/p/x/sessions/s1?tab=spores');
+    await screen.findByRole('list', { name: 'Spores' });
+    expect(listed('Spores')).toHaveLength(25);
+    expect(screen.getByText('Showing 25 of 25 spores')).toBeTruthy();
+    // The page answered a cursor, so more is offered whatever the total says.
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    await waitFor(() => expect(listed('Spores')).toHaveLength(28));
+    const shown = within(screen.getByRole('list', { name: 'Spores' })).getAllByRole('link').map((a) => a.getAttribute('href'));
+    expect(new Set(shown).size).toBe(28);
+    expect(shown.slice(-3)).toEqual(['/p/x/spores/live-25', '/p/x/spores/live-26', '/p/x/spores/backfilled']);
+    expect(shown).not.toContain('/p/x/spores/arrived');
+    expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
+    expect(reads).toBe(2);
+  });
+
+  it('filters the session’s spores by type and by search, and says whether none were saved or none match', async () => {
+    const { requested } = server(routes({
+      [SPORES]: () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
+      [`${SPORES.replace('limit=25', 'limit=25&type=decision')}`]: () => Response.json({ spores: [], total: 0, maxPage: 200 }),
+      [`/api/projects/x/spores?limit=25&type=decision&q=cache&session=s1`]: () => Response.json({ spores: [], total: 0, maxPage: 200 }),
+    }));
+    mount('/p/x/sessions/s1?tab=spores');
+    await screen.findByRole('list', { name: 'Spores' });
+    // Ten choices make the searchable select: a button naming its value, then a search over the list.
+    fireEvent.click(screen.getByRole('button', { name: 'Type: Every type' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Decisions' }));
+    expect(await screen.findByText('No spores in this session match this filter.')).toBeTruthy();
+    expect(location()).toBe('/p/x/sessions/s1?tab=spores&type=decision');
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search spores' }), { target: { value: 'cache' } });
+    await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=spores&type=decision&q=cache'));
+    await waitFor(() => expect(requested).toContain('/api/projects/x/spores?limit=25&type=decision&q=cache&session=s1'));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));
+    await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=spores'));
+    expect(await screen.findByRole('list', { name: 'Spores' })).toBeTruthy();
+    cleanup();
+    server(routes({ [SPORES]: () => Response.json({ spores: [], total: 0, maxPage: 200 }) }));
+    mount('/p/x/sessions/s1?tab=spores');
+    expect(await screen.findByText('No spores were saved from this session yet.')).toBeTruthy();
+  });
+
+  const PLANS = '/api/projects/x/sessions/s1/plans?limit=100';
+  const plan = (over: Record<string, unknown> = {}) => ({ planKey: 'plan-1', promptId: P1, title: 'Ship the thing', status: 'in_progress', content: '# Plan\n- [x] one\n- [ ] two', blobKey: null, originPath: '.claude/plans/ship.md', progress: '1/2', updatedBy: null, createdAt: NOW - 5000, updatedAt: NOW - HOUR, orderedAt: NOW - HOUR, ...over });
+
+  it('lists the session’s plans on their tab as rows, filters them by status and title, and pages them', async () => {
+    const { requested } = server(routes({
+      '/api/projects/x/sessions/s1/plans': () => new Response(null, { status: 404 }),
+      [PLANS]: () => page([plan(), plan({ planKey: 'plan-2', title: null, status: 'active', progress: 'N/A', originPath: null, updatedAt: NOW - 2 * HOUR })], 'next'),
+      [`${PLANS}&cursor=next`]: () => page([plan({ planKey: 'plan-3', title: 'Third plan', status: 'completed', progress: '2/2' })]),
+      [`${PLANS}&status=completed`]: () => page([plan({ planKey: 'plan-3', title: 'Third plan', status: 'completed', progress: '2/2' })]),
+      [`${PLANS}&status=completed&q=nothing`]: () => page([]),
+    }));
     mount('/p/x/sessions/s1?tab=plans');
-    const line = await waitFor(() => {
-      const found = document.querySelector<HTMLElement>('[data-plan-line="in_progress"]');
-      if (found === null) throw new Error('the plan is not listed yet');
-      return found;
-    });
-    expect(line.textContent).toContain('In progress');
-    expect(line.textContent).toContain('1 of 2 items done');
-    expect(line.textContent).toContain('updated 1 h ago');
-    expect(within(line).getByRole('link', { name: 'Ship the thing' }).getAttribute('href')).toBe('/p/x/plans/plan-1');
+    await screen.findByRole('list', { name: 'Plans' });
+    const items = listed('Plans');
+    const row = within(items[0]!).getByRole('link');
+    expect(row.getAttribute('href')).toBe('/p/x/plans/plan-1');
+    // The status keeps its words, as the row's kind; the detail says how far its items got and where it lives.
+    expect(row.textContent).toBe('Sep 2915:00In progressShip the thing1 of 2 items done · .claude/plans/ship.md');
+    expect(items[1]!.textContent).toBe('Sep 2914:00OpenUntitled plan');
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    await waitFor(() => expect(listed('Plans')).toHaveLength(3));
+    expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
+    await pick('Status', 'Done');
+    await waitFor(() => expect(listed('Plans').map((li) => li.textContent)).toEqual(['Sep 2915:00DoneThird plan2 of 2 items done · .claude/plans/ship.md']));
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search plans' }), { target: { value: 'nothing' } });
+    expect(await screen.findByText('No plans in this session match this filter.')).toBeTruthy();
+    expect(requested).toContain(`${PLANS}&status=completed&q=nothing`);
+    expect(rawIdsInPage()).toEqual([]);
+    cleanup();
+    server(routes({ [PLANS]: () => page([]) }));
+    mount('/p/x/sessions/s1?tab=plans');
+    expect(await screen.findByText('No plans were captured in this session.')).toBeTruthy();
+  });
+
+  it('drops the search and the filter when another tab opens, so neither lands on a list it was not set on', async () => {
+    server(routes({
+      '/api/projects/x/spores?limit=25&type=gotcha&q=cache&session=s1': () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
+      [PLANS]: () => page([plan()]),
+    }));
+    mount('/p/x/sessions/s1?tab=spores&type=gotcha&q=cache&raw=transcript');
+    await screen.findByRole('list', { name: 'Spores' });
+    expect((screen.getByRole('searchbox', { name: 'Search spores' }) as HTMLInputElement).value).toBe('cache');
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Plans' }));
+    await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=plans'));
+    expect(await screen.findByRole('list', { name: 'Plans' })).toBeTruthy();
+    expect((screen.getByRole('searchbox', { name: 'Search plans' }) as HTMLInputElement).value).toBe('');
+    expect(screen.getByRole('combobox', { name: 'Status' }).textContent).toBe('Every status');
   });
 
   it('labels envelope-only prompt previews and attachment groups with the first chip', async () => {

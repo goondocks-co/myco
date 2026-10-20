@@ -120,7 +120,20 @@ export async function handleSessionChildren(env: ServerEnv, ctx: OwnerContext): 
   if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
+  if (query === listPlans) {
+    const filters = planFilters(ctx.url);
+    if (filters instanceof Response) return filters;
+    return ok(await listPlans(env.db, scope, sessionId, { ...page, ...filters }));
+  }
   return ok(await query(env.db, scope, sessionId, page));
+}
+
+/** A session's plans list narrows by `status`, one the catalogue holds, and by `q`, a text the title contains. */
+function planFilters(url: URL): { status?: string; q?: string } | Response {
+  const status = url.searchParams.get('status');
+  if (status !== null && !WRITABLE_PLAN_STATUSES.has(status)) return badRequest(PLAN_STATUS_MESSAGE);
+  const q = url.searchParams.get('q');
+  return { ...(status === null ? {} : { status }), ...(q === null ? {} : { q }) };
 }
 
 /** A session's turns of the named origins; `order=desc` reads backward, and `turn` resolves a named prompt directly. */

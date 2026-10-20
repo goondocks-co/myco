@@ -6,7 +6,7 @@ import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '..
  * session and the prompt it names, a supersede reads as lineage in both
  * directions through the tool and through the owner route, and the record of
  * what a prompt was served reaches the session explorer under the prompt that
- * carried it.
+ * carried it, and a session's spores page by cursor past writes between pages.
  */
 export const spores: ParityScenario = {
   name: 'spores: session and prompt on a save, lineage both ways, the injection under its turn',
@@ -82,5 +82,30 @@ export const spores: ParityScenario = {
 
     // The selecting prompt, delivered nothing, answers null rather than an empty shape.
     expect((await owner<Turn>(`${base}/turns/${p1}`)).body.injection).toBeNull();
+
+    // The session's spores page by cursor: a spore written between pages is not repeated, and one backfilled older than
+    // the cursor is reached later. Three more share one instant, so the id breaks the tie at a page boundary.
+    const agent = (await target.sql(`SELECT agent_id FROM spores WHERE id = ${lit(newId)}`))[0]!.agent_id as string;
+    const seed = async (id: string, at: number) => target.sql(`INSERT INTO spores (project_id, id, agent_id, session_id, observation_type, status, content, created_at)
+      VALUES (${lit(target.projectId)}, ${lit(id)}, ${lit(agent)}, ${lit(session)}, 'gotcha', 'active', ${lit(`seeded ${id}`)}, ${at})`);
+    for (const id of [`tie-a-${stamp}`, `tie-b-${stamp}`, `tie-c-${stamp}`]) await seed(id, stamp - 10);
+    const ordered = (await target.sql(`SELECT id FROM spores WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)} ORDER BY created_at DESC, id DESC`)).map((r) => r.id as string);
+    type SporePage = { spores: { id: string }[]; cursor: string | null; total: number };
+    const list = `/api/projects/${target.projectId}/spores?session=${encodeURIComponent(session)}&limit=2`;
+    const opening = await owner<SporePage>(list);
+    expect([opening.status, opening.body.spores.map((s) => s.id), opening.body.total]).toEqual([200, ordered.slice(0, 2), ordered.length]);
+    await seed(`arrived-${stamp}`, Date.now() + 60_000);
+    await seed(`backfilled-${stamp}`, stamp - 1_000);
+    const walked = opening.body.spores.map((s) => s.id);
+    let cursor = opening.body.cursor;
+    while (cursor !== null) {
+      const next = await owner<SporePage>(`${list}&cursor=${encodeURIComponent(cursor)}`);
+      expect(next.status).toBe(200);
+      walked.push(...next.body.spores.map((s) => s.id));
+      cursor = next.body.cursor;
+    }
+    expect(walked).toEqual([...ordered, `backfilled-${stamp}`]);
+    expect((await owner(`${list}&cursor=nope`)).status).toBe(400);
+    expect((await owner(`${list}&offset=2&cursor=${encodeURIComponent(opening.body.cursor!)}`)).status).toBe(400);
   },
 };

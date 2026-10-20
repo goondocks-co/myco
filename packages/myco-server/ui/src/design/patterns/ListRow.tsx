@@ -4,6 +4,8 @@ import { cn } from '../../lib/cn';
 import { focusRing } from '../lib/classes';
 
 export interface ListRowProps {
+  /** A short label above the title naming what kind of row it is, such as a TypeChip. */
+  kicker?: ReactNode;
   /** The headline: a title or a spore's one line, never an id. */
   title: ReactNode;
   /** The second line: a summary, or the kicker of project, agent, machine and size. */
@@ -23,13 +25,14 @@ export interface ListRowProps {
   className?: string;
 }
 
-/** A two-line row whose whole area is the target: the headline, then the secondary line. */
+/** A two-line row whose whole area is the target: the headline, then the secondary line, with an optional kicker above the headline. */
 export const ListRow = forwardRef<HTMLAnchorElement | HTMLDivElement, ListRowProps>(
-  ({ title, meta, leading, trailing, to, cursor = false, selected = false, tight = false, className }, ref) => {
+  ({ kicker, title, meta, leading, trailing, to, cursor = false, selected = false, tight = false, className }, ref) => {
     const body = (
       <>
         {leading != null && <span className="flex shrink-0 items-center">{leading}</span>}
         <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+          {kicker != null && <span className="flex min-w-0 items-center gap-s2">{kicker}</span>}
           <span className="truncate t-body font-medium text-ink">{title}</span>
           {meta != null && <span className="truncate t-small text-muted">{meta}</span>}
         </span>
@@ -37,7 +40,8 @@ export const ListRow = forwardRef<HTMLAnchorElement | HTMLDivElement, ListRowPro
       </>
     );
     const classes = cn(
-      'flex w-full items-center gap-s3 border-b border-line px-s4 py-s2 text-left last:border-b-0 transition-colors duration-120',
+      // A divider under every row another row follows, whether the rows are siblings or each sits in its own list item.
+      'flex w-full items-center gap-s3 border-line px-s4 py-s2 text-left not-last:border-b [li:not(:last-child)>&]:border-b transition-colors duration-120',
       tight ? 'min-h-row-tight' : 'min-h-row',
       to != null && 'hover:bg-surface-2',
       selected && 'bg-surface-2 shadow-[inset_2px_0_0_var(--primary)]',

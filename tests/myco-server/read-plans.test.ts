@@ -21,6 +21,8 @@ import type { PreparedStatement, RelationalStore } from '@myco-server-worker/cor
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { encodeCursor } from '@myco-server-worker/read/scope.js';
 import { listSessions } from '@myco-server-worker/read/sessions.js';
+import { listPlans } from '@myco-server-worker/read/children.js';
+import { pageSpores } from '@myco-server-worker/core/spores.js';
 import { heldTranscriptsFor } from '@myco-server-worker/read/transcript.js';
 import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
 
@@ -123,6 +125,52 @@ describe('the reads a person waits on', () => {
     expect(await heldReads([], [])).toEqual([]);
     expect(await heldReads(['s1'], [])).toHaveLength(1);
     expect(await heldReads([], ['tx_a'])).toHaveLength(1);
+  });
+
+  it('pages a session\'s plans narrowed by status and title over idx_plans_session, with the plan the unfiltered page has', async () => {
+    // Filtered and unfiltered pages use the session index and the same ordering plan.
+    const statementOf = async (opts: Parameters<typeof listPlans>[3]) => {
+      const { db: recorder, statements } = recordingStore();
+      await listPlans(recorder, { projectId: 'proj_1' }, 's1', opts);
+      expect(statements).toHaveLength(1);
+      return statements[0];
+    };
+    const db = migrated();
+    try {
+      for (const cursor of [undefined, encodeCursor(1_700_000_000_000, 'k')]) {
+        const plain = await statementOf({ limit: 50, cursor });
+        const filtered = await statementOf({ limit: 50, cursor, status: 'active', q: 'search' });
+        expect(/status = \?/.test(filtered.sql) && /title LIKE/.test(filtered.sql)).toBe(true);
+        const plan = planOf(db, filtered.sql, filtered.params);
+        expect({ index: /SEARCH plans USING INDEX idx_plans_session \(project_id=\? AND session_id=\?/.test(plan), scan: /SCAN plans/.test(plan), plan })
+          .toEqual({ index: true, scan: false, plan: planOf(db, plain.sql, plain.params) });
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it('pages a session\'s spores by cursor over idx_spores_session, with the plan its first page has', async () => {
+    // A cursor page and a first page use the session index and the same ordering plan, filtered or not.
+    const statementOf = async (opts: Parameters<typeof pageSpores>[2]) => {
+      const { db: recorder, statements } = recordingStore();
+      await pageSpores(recorder, { projectId: 'proj_1' }, opts);
+      expect(statements).toHaveLength(1);
+      return statements[0];
+    };
+    const db = migrated();
+    try {
+      for (const filters of [{}, { observationType: 'gotcha', search: 'port' }]) {
+        const first = await statementOf({ sessionId: 's1', limit: 25, ...filters });
+        const next = await statementOf({ sessionId: 's1', limit: 25, ...filters, cursor: encodeCursor(1_700_000_000_000, 'sp') });
+        expect(/created_at < \?/.test(next.sql)).toBe(true);
+        const plan = planOf(db, next.sql, next.params);
+        expect({ index: /SEARCH spores USING INDEX idx_spores_session \(project_id=\? AND session_id=\?/.test(plan), scan: /SCAN spores/.test(plan), plan })
+          .toEqual({ index: true, scan: false, plan: planOf(db, first.sql, first.params) });
+      }
+    } finally {
+      db.close();
+    }
   });
 
   it('keeps the same plan when a cursor narrows the page', async () => {

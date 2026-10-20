@@ -5,7 +5,7 @@ import { titleRunInFlightSql } from '../core/runs.js';
 import { TITLING_MAX_ATTEMPTS } from '../constants.js';
 import { progressOf } from './plans.js';
 import { TOOL_INPUT_PREVIEW_BYTES, toolInputPreview } from '../core/tool-input.js';
-import { keyset, page, type Page, type ReadScope } from './scope.js';
+import { containsPattern, keyset, page, type Page, type ReadScope } from './scope.js';
 
 /** A child projection read: its table, selected columns, order expression and tie-breaking identity. */
 export interface ChildQuery<T> {
@@ -20,12 +20,16 @@ export interface ChildQuery<T> {
 /** Paging plus, for the tables that carry one, the prompt whose children the page is narrowed to; `idx_tool_calls_prompt` and `idx_attachments_prompt` serve the narrowed order. */
 export interface ChildOptions { limit?: number; cursor?: string; promptId?: string }
 
+/** Conditions a child read adds past the session scope, each a SQL term with the values it binds. */
+export interface ChildFilter { sql: string; params: readonly unknown[] }
+
 export async function listChildren<T>(
   db: RelationalStore,
   query: ChildQuery<T>,
   scope: ReadScope,
   sessionId: string,
-  opts: ChildOptions = {}
+  opts: ChildOptions = {},
+  filters: readonly ChildFilter[] = []
 ): Promise<Page<T & { orderedAt: number }>> {
   const order = query.orderColumn;
   const k = keyset(opts, { order, id: query.idColumn, direction: 'ASC' });
@@ -34,6 +38,7 @@ export async function listChildren<T>(
   const conditions = ['project_id = ?', 'session_id = ?'];
   const params: unknown[] = [scope.projectId, sessionId];
   if (opts.promptId !== undefined) { conditions.push('prompt_id = ?'); params.push(opts.promptId); }
+  for (const filter of filters) { conditions.push(filter.sql); params.push(...filter.params); }
   if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
   const sql = `SELECT ${query.columns}, ${order} AS order_at, ${query.idColumn} FROM ${query.table}
                 WHERE ${conditions.join(' AND ')}
@@ -192,7 +197,17 @@ export const listPrompts = (db: RelationalStore, scope: ReadScope, sessionId: st
 export const listContextInjections = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: PagingOptions) => listChildren(db, CONTEXT_INJECTION_QUERY, scope, sessionId, opts);
 export const listToolCalls = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: ChildOptions) => listChildren(db, TOOL_CALL_QUERY, scope, sessionId, opts);
 export const listResponses = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: ChildOptions) => listChildren(db, RESPONSE_QUERY, scope, sessionId, opts);
-export const listPlans = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: ChildOptions) => listChildren(db, PLAN_QUERY, scope, sessionId, opts);
+/** A session's plans narrowed to one status and to a text its title contains; the terms leave `idx_plans_session` serving the scope and the order. */
+export interface PlanChildOptions extends ChildOptions { status?: string; q?: string }
+
+export function listPlans(db: RelationalStore, scope: ReadScope, sessionId: string, opts: PlanChildOptions = {}) {
+  const { status, q, ...paging } = opts;
+  const filters: ChildFilter[] = [];
+  if (status !== undefined) filters.push({ sql: 'status = ?', params: [status] });
+  const text = q?.trim() ?? '';
+  if (text !== '') filters.push({ sql: `title LIKE ? ESCAPE '\\'`, params: [containsPattern(text)] });
+  return listChildren(db, PLAN_QUERY, scope, sessionId, paging, filters);
+}
 export const listAttachments = (db: RelationalStore, scope: ReadScope, sessionId: string, opts?: ChildOptions) => listChildren(db, ATTACHMENT_QUERY, scope, sessionId, opts);
 
 export interface MaterialRow { prompt: string; response: string | null; promptId: string }

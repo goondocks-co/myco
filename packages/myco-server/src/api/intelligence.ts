@@ -15,9 +15,10 @@
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { instantParam, notFound, ok, resolveProjectScope } from './scope.js';
-import { countSpores, getSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds } from '../core/spores.js';
+import { badRequest, instantParam, notFound, ok, resolveProjectScope } from './scope.js';
+import { countSpores, getSpore, listSupersededSporeIds, listSupersedingSporeIds, pageSpores } from '../core/spores.js';
 import { canonicalNamespace, listReleaseStates } from '../core/provenance.js';
+import { decodeCursor } from '../read/scope.js';
 
 /** The largest page this surface serves, whatever a caller asks for. */
 export const MAX_PAGE = 200;
@@ -39,7 +40,12 @@ async function scopeOf(env: ServerEnv, ctx: OwnerContext) {
   return projectId === undefined ? null : await resolveProjectScope(env.db, ctx.member, projectId);
 }
 
-/** A Project's spores, newest first, paged by offset; a start instant (inclusive) and an end instant (exclusive) bound when they were written, and `author` names who wrote them, as a run's id. */
+/**
+ * A Project's spores, newest first, paged by offset or by `cursor`, the keyset the previous page answered; the two do not
+ * combine. Every page carries `cursor`, null when no spore follows it. A start instant (inclusive) and an end instant
+ * (exclusive) bound when they were written, and `author` names who wrote them, as a run's id. `total` counts what the
+ * filters match when the page is read.
+ */
 export async function handleProjectSpores(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await scopeOf(env, ctx);
   if (scope === null) return notFound();
@@ -47,6 +53,9 @@ export async function handleProjectSpores(env: ServerEnv, ctx: OwnerContext): Pr
   if (since instanceof Response) return since;
   const until = instantParam(ctx.url, 'until');
   if (until instanceof Response) return until;
+  const cursor = ctx.url.searchParams.get('cursor') ?? undefined;
+  if (cursor !== undefined && decodeCursor(cursor) === null) return badRequest('malformed cursor');
+  if (cursor !== undefined && ctx.url.searchParams.has('offset')) return badRequest('cursor and offset do not combine');
   const options = {
     observationType: ctx.url.searchParams.get('type') ?? undefined,
     status: ctx.url.searchParams.get('status') ?? undefined,
@@ -58,11 +67,11 @@ export async function handleProjectSpores(env: ServerEnv, ctx: OwnerContext): Pr
     limit: clampLimit(ctx.url.searchParams.get('limit')),
     offset: offsetOf(ctx.url.searchParams.get('offset')),
   };
-  const [spores, total] = await Promise.all([
-    listSpores(env.db, scope, options),
+  const [paged, total] = await Promise.all([
+    pageSpores(env.db, scope, { ...options, cursor }),
     countSpores(env.db, scope, options),
   ]);
-  return ok({ spores, total, maxPage: MAX_PAGE });
+  return paged === null ? badRequest('malformed cursor') : ok({ spores: paged.rows, cursor: paged.cursor, total, maxPage: MAX_PAGE });
 }
 
 /** One spore and its lineage in both directions, so a reader sees a retired spore's replacement rather than a dead end, and a replacement what it grew out of. */
