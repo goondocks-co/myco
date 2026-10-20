@@ -10,7 +10,7 @@ import { planTagEnvelopeRegex } from '../plans/tag-envelopes.js';
 import { HOOK_CONFIG } from './hook-config.generated.js';
 import { transcriptWritesTurnRows } from './turn-rows.js';
 import {
-  ASK_IDENTITY_MARKER, canonicalPromptId, hookPromptRequest, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE, turnGrained,
+  ASK_IDENTITY_MARKER, canonicalPromptId, hookPromptRequest, hookScheme, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE, turnGrained,
   type DeliveredSessionRecord, type PromptIdentityDeclaration, type PromptIdScheme, type PromptScopeReason,
 } from '@goondocks/myco-shared/prompt-identity';
 
@@ -33,7 +33,8 @@ interface AskFeatures { v1: boolean; schemes: boolean }
 
 function namePrompt(declaration: PromptIdentityDeclaration | undefined, sessionId: string, promptKey: string | undefined, features: AskFeatures, transcriptWritesRows: boolean): PromptNaming | TurnKey {
   if (!features.v1 || declaration === undefined) return { version: 'legacy', promptId: mintId(), shared: !transcriptWritesRows };
-  const scheme = features.schemes ? { scheme: declaration.scheme } : {};
+  // A prompt is named under the scheme its hook derives it by, which a transcript pinned to a later scheme still shares.
+  const scheme = features.schemes ? { scheme: hookScheme(declaration.scheme) } : {};
   switch (declaration.kind) {
     case 'harness-key': {
       // A key that names a turn names a prompt only where the Deployment pins its transcript to that key's scheme.

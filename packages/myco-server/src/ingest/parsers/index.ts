@@ -17,7 +17,8 @@
  * rather than two.
  */
 import { utf8, uuidv5 } from '../../hash.js';
-import { canonicalPromptId, type ClaudePromptShape, type OffsetPromptNamespace, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
+import { canonicalPromptId, type ClaudePromptShape, type ClaudeRecordKey, type OffsetPromptNamespace, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
+import type { TranscriptRole } from '@goondocks/myco-shared/member-protocol';
 import { MAX_ID_CHARS, MAX_PAYLOAD_BYTES } from '../envelope.js';
 import { kindSpec, type Payload } from '../kinds.js';
 
@@ -60,6 +61,29 @@ export interface ParserInput {
   state?: ParserState;
   /** A source lifecycle boundary closes the retained turn and unanswered calls. */
   terminal?: 'session_end' | 'idle' | 'complete_file' | 'turn_end';
+  /**
+   * Who already owns each harness key this window claims, as the store holds it (`TranscriptParser.claimKeys`), read
+   * before the pass and never written by a parse: a record a parse claims for itself lives in that parse alone, so
+   * every replay of a prefix of the window decides as the first one did.
+   */
+  owners?: PromptOwners;
+  /**
+   * The keys this traversal has claimed so far, by the record that claimed each: one map per traversal of a window,
+   * made by whoever walks it (`incremental.ts`), so a replay of a prefix never sees a claim a later record made.
+   */
+  claims?: Map<string, string>;
+  /** How the transcript is registered: the session's own, or a delegated agent's. Absent where no registration names it. */
+  role?: TranscriptRole;
+}
+
+/** The record that owns a harness key, by its thread and uuid. */
+export interface PromptOwner { thread: string; record: string }
+/** Read-only owners of harness keys, as a pass is handed them. */
+export interface PromptOwners { get(key: string): PromptOwner | undefined }
+/** The owners a pass reads, behind an accessor no parse can write through. */
+export function promptOwners(entries: Iterable<readonly [string, PromptOwner]>): PromptOwners {
+  const held = new Map<string, PromptOwner>([...entries].map(([key, owner]) => [key, Object.freeze({ ...owner })]));
+  return Object.freeze({ get: (key: string) => held.get(key) });
 }
 
 export interface PendingCall {
@@ -172,6 +196,11 @@ export interface TranscriptParser {
   lineTimeField?: string;
   /** The prompt identity schemes this parser derives by; a transcript pinned to another is not read (`parse.ts`). */
   schemes: readonly PromptIdScheme[];
+  /**
+   * Under a scheme whose harness key a record may claim, the keys a window's records could claim, and the prompt id of
+   * each key's owner: what the pass reads stored owners for (`ParserInput.owners`). Pure, like `parse`.
+   */
+  claimKeys?(lines: readonly ParsedLine[], scheme: PromptIdScheme, sessionId: string): Promise<ReadonlyMap<string, string>>;
   /** Async to the extent the id derivations are: a parser reads no store and touches no clock. */
   parse(input: ParserInput): Promise<DerivedEvent[]>;
 }
@@ -188,6 +217,9 @@ export interface TranscriptParser {
  */
 export const promptIdFor = async (sessionId: string, shape: ClaudePromptShape, value: string): Promise<string> =>
   canonicalPromptId(uuidv5, { scheme: 'claude-v1', sessionId, shape, key: value });
+/** A claude-v2 prompt id: a key's owner, a queued command, or any other kept record by its thread and uuid. */
+export const claudeRecordIdFor = async (sessionId: string, record: ClaudeRecordKey): Promise<string> =>
+  canonicalPromptId(uuidv5, { scheme: 'claude-v2', sessionId, record });
 /** A prompt id a transcript names by its byte position, under its parser's own prompt namespace. */
 export const promptIdAtOffset = async (namespace: OffsetPromptNamespace, sessionId: string, offset: number): Promise<string> =>
   canonicalPromptId(uuidv5, { scheme: 'offset-v1', namespace, sessionId, offset });

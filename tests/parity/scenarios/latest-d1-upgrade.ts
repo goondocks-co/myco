@@ -17,11 +17,14 @@ export const latestD1Upgrade: ParityScenario = {
   async run(target) {
     expect(await target.sql("SELECT value FROM schema_meta WHERE key = 'version'"))
       .toEqual([{ value: String(SCHEMA_STEPS.at(-1)?.version) }]);
-    // The latest step pins each transcript held: one already read to the scheme that read it, any other to its
-    // agent's declaration; the pin never changes after.
+    // The latest step records where a parsed prompt's identity comes from: a claim the store admits from its own list, and
+    // a table of refused second sources keyed by all six of its names. The transcripts it finds keep the pins they hold.
+    expect(await target.sql("SELECT claim, source_key, source_thread, source_record FROM prompt_batches WHERE project_id = 'proj_parity' LIMIT 1"))
+      .toEqual([{ claim: null, source_key: null, source_thread: null, source_record: null }]);
+    await expect(target.sql("UPDATE prompt_batches SET claim = 'guess' WHERE project_id = 'proj_parity'")).rejects.toThrow(/CHECK constraint failed/);
+    expect(await target.sql('SELECT COUNT(*) AS n FROM prompt_identity_conflicts')).toEqual([{ n: 0 }]);
     expect(await target.sql("SELECT transcript_id, prompt_identity_scheme FROM transcripts WHERE session_id = 'upgrade_session' AND agent = 'codex' ORDER BY transcript_id"))
-      .toEqual([{ transcript_id: 'upgrade_transcript_read', prompt_identity_scheme: 'offset-v1' }, { transcript_id: 'upgrade_transcript_unread', prompt_identity_scheme: 'codex-turn-v1' }]);
-    await expect(target.sql("UPDATE transcripts SET prompt_identity_scheme = 'codex-turn-v1' WHERE transcript_id = 'upgrade_transcript_read'")).rejects.toThrow(/prompt identity scheme never changes/);
+      .toEqual([{ transcript_id: 'upgrade_transcript_read', prompt_identity_scheme: null }, { transcript_id: 'upgrade_transcript_unread', prompt_identity_scheme: null }]);
     expect(await target.sql('PRAGMA foreign_key_check')).toEqual([]);
     expect(await target.sql('PRAGMA quick_check')).toEqual([{ quick_check: 'ok' }]);
   },

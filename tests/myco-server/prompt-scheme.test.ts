@@ -4,7 +4,9 @@
  *   refuses to change a set scheme while the segment and parse writes to the same row go on landing.
  * - A transcript read before the pin keeps the derivation that read it through a reread, so a reread after a
  *   declaration changed adds no row and conflicts with none.
- * - The migration and a restore of an older backup pin rows that arrive without a scheme by one function.
+ * - Every transcript of one agent in one session holds one scheme: registration joins its group's, restore decides
+ *   each group over the whole artifact, and a group needing two leaves the newcomer unpinned and unread, by name.
+ * - The migration pinned the rows it held as it shipped, per transcript.
  * - An ask, or a delivery, naming a prompt under a scheme the session's transcript is not pinned to names none.
  * - A receipt whose prompt row recorded another text is counted, never linked.
  */
@@ -15,7 +17,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { parseTranscripts, rereadTranscripts, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
 import { promptIdAtOffset } from '@myco-server-worker/ingest/parsers/index.js';
-import { DECLARED_SCHEMES } from '@myco-server-worker/ingest/prompt-scheme.js';
+import { DECLARED_SCHEMES, restoreSchemeDecisions, schemeGroupKey } from '@myco-server-worker/ingest/prompt-scheme.js';
 import { promptKeyMismatches } from '@myco-server-worker/read/prompt-reference-invariant.js';
 import { BACKUP_FORMAT, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
@@ -136,19 +138,23 @@ describe('a transcript\'s prompt identity scheme', () => {
     expect(rows(m.e.sqlite, `SELECT prompt_identity_scheme, parsed_offset = size AS caught_up FROM transcripts`)).toEqual([{ prompt_identity_scheme: 'offset-v1', caught_up: 1 }]);
   });
 
-  it('pins a transcript restored from a backup taken before the pin as the migration pins one it holds', async () => {
+  it('pins the transcripts a backup taken before the pin restores by their session: one read in it pins them all to the scheme that read it', async () => {
     const m = await member();
-    const transcript = ([id, read]: readonly [string, { version?: number; offset?: number; at?: number }]) => ({
-      project_id: 'proj_1', transcript_id: id, session_id: SESSION, machine_id: 'machine_1', agent: 'codex', size: 100, segment_count: 0,
+    const transcript = ([id, read]: readonly [string, { version?: number; offset?: number; at?: number }], session = SESSION) => ({
+      project_id: 'proj_1', transcript_id: id, session_id: session, machine_id: 'machine_1', agent: 'codex', size: 100, segment_count: 0,
       first_received_at: 1, last_received_at: 1, token_id: m.ctx.tokenId, parsed_offset: read.offset ?? 0, parser_version: read.version ?? 0,
       parsed_at: read.at ?? null, role: 'primary',
     });
     const artifact = [
-      { format: BACKUP_FORMAT, deploymentId: await deploymentId(m.e.db), schemaVersion: 89, createdAt: 1, producer: 'scheme test', counts: { transcripts: READ_WITNESSES.length } },
+      { format: BACKUP_FORMAT, deploymentId: await deploymentId(m.e.db), schemaVersion: 89, createdAt: 1, producer: 'scheme test', counts: { transcripts: READ_WITNESSES.length + 1 } },
       ...READ_WITNESSES.map((witness) => ({ t: 'transcripts', r: transcript(witness) })),
+      { t: 'transcripts', r: transcript(['codex-alone-unread', {}], 'another-session') },
     ].map((o) => JSON.stringify(o)).join('\n');
     await restoreArtifact(m.e.db, { authorization: { kind: 'recovery' }, text: artifact });
-    expect(rows(m.e.sqlite, `SELECT transcript_id, prompt_identity_scheme FROM transcripts ORDER BY transcript_id`)).toEqual(PINNED_BY_WITNESS);
+    expect(rows(m.e.sqlite, `SELECT transcript_id, prompt_identity_scheme FROM transcripts ORDER BY transcript_id`)).toEqual([
+      { transcript_id: 'codex-alone-unread', prompt_identity_scheme: 'codex-turn-v1' },
+      ...PINNED_BY_WITNESS.map(({ transcript_id }) => ({ transcript_id, prompt_identity_scheme: 'offset-v1' })),
+    ]);
   });
 
   it('is pinned for every transcript held at the migration: one already read to the scheme that read it, any other to its declaration', async () => {
@@ -165,7 +171,7 @@ describe('a transcript\'s prompt identity scheme', () => {
     held('pi', 'pi');
     held('unknown', 'some-future-agent');
     held('agentless', null);
-    expect(await applySchemaSteps(db)).toEqual([90]);
+    expect(await applySchemaSteps(db, SCHEMA_STEPS.filter((step) => step.version <= 90))).toEqual([90]);
     expect(rows(sqlite, `SELECT transcript_id, prompt_identity_scheme FROM transcripts WHERE agent = 'codex' ORDER BY transcript_id`)).toEqual(PINNED_BY_WITNESS);
     expect(rows(sqlite, `SELECT transcript_id, prompt_identity_scheme FROM transcripts WHERE agent IS NOT 'codex' ORDER BY transcript_id`)).toEqual([
       { transcript_id: 'agentless', prompt_identity_scheme: null },
@@ -173,6 +179,104 @@ describe('a transcript\'s prompt identity scheme', () => {
       { transcript_id: 'pi', prompt_identity_scheme: 'offset-v1' },
       { transcript_id: 'unknown', prompt_identity_scheme: null },
     ]);
+  });
+});
+
+describe('one scheme for every transcript of one agent in one session', () => {
+  /** A transcripts row of a backup, of Claude Code in `session`, read or not as `read` says, pinned where `pin` says. */
+  const artifactRow = (tokenId: string, id: string, session: string, read: boolean, pin?: string) => ({
+    project_id: 'proj_1', transcript_id: id, session_id: session, machine_id: 'machine_1', agent: 'claude-code', size: 100, segment_count: 0,
+    first_received_at: 1, last_received_at: 1, token_id: tokenId, parsed_offset: read ? 100 : 0, parser_version: read ? 5 : 0, parsed_at: read ? 1 : null, role: 'primary',
+    ...(pin === undefined ? {} : { prompt_identity_scheme: pin }),
+  });
+  const artifactOf = async (m: Awaited<ReturnType<typeof member>>, transcripts: Record<string, unknown>[]) => [
+    { format: BACKUP_FORMAT, deploymentId: await deploymentId(m.e.db), schemaVersion: 89, createdAt: 1, producer: 'scheme test', counts: { transcripts: transcripts.length } },
+    ...transcripts.map((r) => ({ t: 'transcripts', r })),
+  ].map((o) => JSON.stringify(o)).join('\n');
+  /** 24 unread transcripts of one session and one read before the pin, the read one first or last: across the restore's 20-row chunks either way. */
+  const split = (tokenId: string, readFirst: boolean, pin?: string) => {
+    const unread = Array.from({ length: 24 }, (_, i) => artifactRow(tokenId, `tx_${String(i).padStart(32, '0')}`, SESSION, false));
+    const read = artifactRow(tokenId, `tx_${'f'.repeat(32)}`, SESSION, pin === undefined, pin);
+    return readFirst ? [read, ...unread] : [...unread, read];
+  };
+
+  for (const readFirst of [true, false]) {
+    for (const pin of [undefined, 'claude-v1']) {
+      it(`restores a group split across chunks to one scheme, decided over the whole artifact (${pin === undefined ? 'one read' : 'one pinned'} ${readFirst ? 'first' : 'last'})`, async () => {
+        const m = await member();
+        const alone = artifactRow(m.ctx.tokenId, `tx_${'e'.repeat(32)}`, 'another-session', false);
+        await restoreArtifact(m.e.db, { authorization: { kind: 'recovery' }, text: await artifactOf(m, [...split(m.ctx.tokenId, readFirst, pin), alone]) });
+        expect(rows(m.e.sqlite, `SELECT session_id, prompt_identity_scheme, COUNT(*) AS n FROM transcripts GROUP BY session_id, prompt_identity_scheme ORDER BY session_id`)).toEqual([
+          { session_id: 'another-session', prompt_identity_scheme: 'claude-v2', n: 1 },
+          { session_id: SESSION, prompt_identity_scheme: 'claude-v1', n: 25 },
+        ]);
+      });
+    }
+  }
+
+  it('resumes an interrupted restore to the pins its first chunk wrote, whatever the rest of the artifact holds', async () => {
+    const m = await member();
+    const transcripts = split(m.ctx.tokenId, false);
+    // The first chunk of an interrupted restore: twenty rows, written with the pin decided over the whole artifact.
+    const decided = (await restoreSchemeDecisions(m.e.db, transcripts)).get(schemeGroupKey(transcripts[0]!));
+    expect(decided).toBe('claude-v1');
+    for (const r of transcripts.slice(0, 20)) {
+      m.e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role, prompt_identity_scheme)
+        VALUES (?, ?, ?, ?, ?, ?, 0, 1, 1, ?, 'primary', ?)`, [r.project_id, r.transcript_id, r.session_id, r.machine_id, r.agent, r.size, r.token_id, decided!]);
+    }
+    await restoreArtifact(m.e.db, { authorization: { kind: 'recovery' }, text: await artifactOf(m, transcripts) });
+    expect(rows(m.e.sqlite, `SELECT prompt_identity_scheme, COUNT(*) AS n FROM transcripts GROUP BY prompt_identity_scheme`)).toEqual([{ prompt_identity_scheme: 'claude-v1', n: 25 }]);
+  });
+
+  it('restores an unread transcript into the scheme its group already holds at the destination', async () => {
+    const m = await member();
+    m.e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role, prompt_identity_scheme)
+      VALUES ('proj_1', ?, ?, 'machine_1', 'claude-code', 0, 0, 1, 1, ?, 'primary', 'claude-v1')`, [`tx_${'7'.repeat(32)}`, SESSION, m.ctx.tokenId]);
+    await restoreArtifact(m.e.db, { authorization: { kind: 'recovery' }, text: await artifactOf(m, [artifactRow(m.ctx.tokenId, `tx_${'8'.repeat(32)}`, SESSION, false)]) });
+    expect(rows(m.e.sqlite, `SELECT transcript_id, prompt_identity_scheme FROM transcripts ORDER BY transcript_id`)).toEqual([
+      { transcript_id: `tx_${'7'.repeat(32)}`, prompt_identity_scheme: 'claude-v1' },
+      { transcript_id: `tx_${'8'.repeat(32)}`, prompt_identity_scheme: 'claude-v1' },
+    ]);
+  });
+
+  it('leaves a restored transcript unpinned where its group already holds another scheme, and the parse names the conflict', async () => {
+    const m = await member();
+    // A live registration pinned the session's group before the restore brought a transcript read before the pin.
+    await m.ship(1, `tx_${'1'.repeat(32)}`, line({ type: 'user', promptId: 'p', uuid: 'u', message: { content: 'live' } }), 'claude-code');
+    expect(rows(m.e.sqlite, `SELECT prompt_identity_scheme FROM transcripts`)).toEqual([{ prompt_identity_scheme: 'claude-v2' }]);
+    await restoreArtifact(m.e.db, { authorization: { kind: 'recovery' }, text: await artifactOf(m, [artifactRow(m.ctx.tokenId, `tx_${'2'.repeat(32)}`, SESSION, true)]) });
+    expect(rows(m.e.sqlite, `SELECT transcript_id, prompt_identity_scheme FROM transcripts ORDER BY transcript_id`)).toEqual([
+      { transcript_id: `tx_${'1'.repeat(32)}`, prompt_identity_scheme: 'claude-v2' },
+      { transcript_id: `tx_${'2'.repeat(32)}`, prompt_identity_scheme: null },
+    ]);
+  });
+
+  it('pins a registering transcript to its group\'s scheme, and leaves it unpinned where the group needs two, which the parse names', async () => {
+    const m = await member();
+    m.e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role, prompt_identity_scheme)
+      VALUES ('proj_1', ?, ?, 'machine_1', 'claude-code', 0, 0, 1, 1, ?, 'primary', 'claude-v1')`, [`tx_${'3'.repeat(32)}`, SESSION, m.ctx.tokenId]);
+    await m.ship(1, `tx_${'4'.repeat(32)}`, line({ type: 'user', promptId: 'p', uuid: 'u', message: { content: 'a replacement file' } }), 'claude-code');
+    expect(rows(m.e.sqlite, `SELECT prompt_identity_scheme FROM transcripts WHERE transcript_id = ?`, `tx_${'4'.repeat(32)}`)).toEqual([{ prompt_identity_scheme: 'claude-v1' }]);
+    // A group already holding two schemes (as a restore of an older Deployment's rows can leave one): a new member joins neither.
+    m.e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role, prompt_identity_scheme)
+      VALUES ('proj_1', ?, ?, 'machine_1', 'claude-code', 0, 0, 1, 1, ?, 'subagent', 'claude-v2')`, [`tx_${'5'.repeat(32)}`, SESSION, m.ctx.tokenId]);
+    await m.ship(2, `tx_${'6'.repeat(32)}`, line({ type: 'user', promptId: 'q', uuid: 'v', message: { content: 'one more' } }), 'claude-code');
+    expect(rows(m.e.sqlite, `SELECT prompt_identity_scheme FROM transcripts WHERE transcript_id = ?`, `tx_${'6'.repeat(32)}`)).toEqual([{ prompt_identity_scheme: null }]);
+    await m.parse();
+    expect(rows(m.e.sqlite, `SELECT json_extract(parser_context, '$.mycoParserFailure.branch') AS branch FROM transcripts WHERE transcript_id = ?`, `tx_${'6'.repeat(32)}`))
+      .toEqual([{ branch: 'scheme_conflict' }]);
+  });
+
+  it('names an ask\'s prompt where the session is pinned to claude-v2 and the hook names it under claude-v1, the scheme it derives by', async () => {
+    for (const pin of ['claude-v1', 'claude-v2']) {
+      const m = await member();
+      m.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES ('proj_1', ?, 'machine_1', ?, 1, 1, 'claude-code')`, [SESSION, m.ctx.tokenId]);
+      m.e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, first_received_at, last_received_at, token_id, role, prompt_identity_scheme)
+        VALUES ('proj_1', ?, ?, 'machine_1', 'claude-code', 0, 1, 1, ?, 'primary', ?)`, [TX, SESSION, m.ctx.tokenId, pin]);
+      await worker.fetch(new Request('https://s/context/prompt', { method: 'POST', headers: memberHeaders(m.token),
+        body: JSON.stringify({ sessionId: SESSION, promptId: uuid(1), promptScheme: 'claude-v1', identity: 1, at: NOW - 5, text: 'what window' }) }), m.e.env);
+      expect({ pin, rows: rows(m.e.sqlite, `SELECT prompt_id, scope_reason FROM prompt_context_answers`) }).toEqual({ pin, rows: [{ prompt_id: uuid(1), scope_reason: null }] });
+    }
   });
 });
 

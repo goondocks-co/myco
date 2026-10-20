@@ -15,6 +15,8 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
       const state: ParserState = input.state ?? {};
       const events: DerivedEvent[] = [];
       let openPromptId = input.openPromptId;
+      // The keys this traversal claims, carried across its lines and never beyond it.
+      const claims = new Map<string, string>();
       const transcriptMeta = input.transcriptMeta ?? parser.headerContext?.(input.lines);
       const emitReply = async (parts: readonly ReplyPart[], promptId?: string): Promise<void> => {
         for (const part of replyChunks(parts)) events.push({ kind: 'response', offset: part.offset, createdAt: part.createdAt,
@@ -46,7 +48,7 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
         state.reply.bytes += textBytes(kept.text);
       };
       for (const line of ownedLines(input.lines, input.sessionId, parser.continuation)) {
-        const derived = await parser.parse({ ...input, terminal: undefined, state, transcriptMeta, lines: [line], openPromptId });
+        const derived = await parser.parse({ ...input, terminal: undefined, state, transcriptMeta, lines: [line], openPromptId, claims });
         for (const event of derived) {
           if (event.kind === 'prompt' && event.opensTurn !== false && typeof event.payload.promptId === 'string') {
             await flushReply();

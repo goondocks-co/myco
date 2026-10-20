@@ -1911,6 +1911,32 @@ describe('a pass under the platform\'s budget (transcript parse throughput)', ()
       expect(count(r.sqlite, 'prompt_batches')).toBe(120);
     } finally { r.sqlite.close(); }
   });
+
+  it('claims the keys of a dense claude-v2 window within a wake and publishes every claimant', async () => {
+    const keys = 1_000;
+    const text = Array.from({ length: keys }, (_, i) => line({ type: 'user', uuid: uuid(93_000 + i), promptId: uuid(94_000 + i), sessionId: SESSION,
+      timestamp: '2026-09-01T10:00:00.000Z', origin: { kind: 'human' }, promptSource: 'typed', turnOrigin: 'human',
+      message: { role: 'user', content: `prompt ${i}` } })).join('');
+    const r = await rig(text, 1 << 20, { scheme: 'claude-v2' });
+    try {
+      let wakes = 0;
+      let moved = 0;
+      while ((await pendingTranscripts(r.serverEnv.db, NOW)).transcripts > 0 && wakes < 120) {
+        const before = target(r.sqlite).parsed_offset;
+        const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+        await parseTranscripts(measured.env, NOW, { budget: { calls: 2_000, wallMs: 10_000 }, clock: () => 0 });
+        expect(measured.usage.statements).toBeLessThanOrEqual(800);
+        if (target(r.sqlite).parsed_offset > before) moved += 1;
+        wakes += 1;
+      }
+      expect(moved).toBe(wakes);
+      expect(target(r.sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(text), parse_error: null });
+      expect(count(r.sqlite, 'prompt_key_owners')).toBe(keys);
+      expect(count(r.sqlite, 'prompt_batches')).toBe(keys);
+      expect(r.sqlite.query(`SELECT COUNT(*) AS n FROM prompt_batches p JOIN prompt_key_owners o ON o.project_id = p.project_id
+        AND o.session_id = p.session_id AND o.source_key = p.source_key AND o.source_record = p.source_record`).get()).toEqual({ n: keys });
+    } finally { r.sqlite.close(); }
+  });
   const dated = (sqlite: Database) => sqlite.query('SELECT event_id, kind, created_at FROM events ORDER BY event_id').all();
 
   it('reads on from the cursor with a ranged read, and dates every undated line exactly as one whole read does', async () => {

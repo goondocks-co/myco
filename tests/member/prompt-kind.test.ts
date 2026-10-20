@@ -103,18 +103,12 @@ describe('walkClaudeCode content shape handling', () => {
   });
 });
 
-describe('walkClaudeCode slash-command dispatch drop rule', () => {
-  // When the user runs `/name args`, Claude Code logs two user entries
-  // sharing one promptId: the XML-wrapped dispatch envelope and the
-  // expanded command body. UserPromptSubmit already captured `/name args`
-  // via the hook path, so both transcript entries are redundant and — if
-  // left alone — cause reconcileBatchKinds to insert a phantom second
-  // batch because the XML prefix doesn't match the hook-stored prefix.
-  //
-  // The manifest carries a `prompt_starts_with: "<command-message>"` drop
-  // rule. Paired with `dedupeBy: promptId`, dropping the wrapper also
-  // suppresses the expanded body.
-  it('drops both transcript entries for a slash-command dispatch', () => {
+describe('walkClaudeCode slash-command dispatch', () => {
+  // When the user runs `/name args`, Claude Code logs two user entries sharing one promptId: the XML-wrapped
+  // dispatch envelope and the expanded command body. UserPromptSubmit carries the raw `/name args` and that
+  // `prompt_id`, and the transcript is what records the prompt, so the dispatch is kept as the prompt and the
+  // expanded body collapses into it through `dedupeBy: promptId`.
+  it('keeps one record for a slash-command dispatch', () => {
     const events = [
       {
         type: 'user',
@@ -136,7 +130,7 @@ describe('walkClaudeCode slash-command dispatch drop rule', () => {
         },
       },
     ];
-    expect(extractUserPromptKinds('claude-code', events)).toEqual([]);
+    expect(extractUserPromptKinds('claude-code', events)).toEqual(['initial']);
   });
 
   it('leaves a plain user prompt untouched when no dispatch envelope is present', () => {

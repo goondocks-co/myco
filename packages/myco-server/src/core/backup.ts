@@ -28,7 +28,8 @@ import { restoreArchivedEvent } from './event-content.js';
 import { restoreToolInput } from './tool-input-restore.js';
 export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
 import { restoreParserCheckpointStatement } from '../ingest/parser-checkpoint.js';
-import { DECLARED_SCHEMES, promptSchemeBackfillSql } from '../ingest/prompt-scheme.js';
+import { restoredPin, restoreSchemeDecisions } from '../ingest/prompt-scheme.js';
+import type { PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { authorizeRestore, RestoreAuthorizationError, type RestoreAuthorization } from './restore-authorization.js';
 
 export const BACKUP_FORMAT = 'myco-backup/1';
@@ -51,7 +52,7 @@ export const BACKUP_TABLES: readonly string[] = [
   'member_credentials', 'runner_credentials', 'runner_audit', 'runner_metadata_audit', 'runner_signin_audit', 'legacy_worker_audit', 'runner_update_audit', 'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'agents',
   'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'prompt_batches', 'tool_calls', 'processed_resources', 'responses', 'plans',
   'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
-  'agent_tasks', 'agent_runs', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers',
+  'agent_tasks', 'agent_runs', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners',
   'canopy_maps', 'knowledge_release_state', 'external_grants',
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',
   'knowledge_git_provenance',
@@ -402,11 +403,24 @@ interface RestoreProgress {
 const RESTORE_OWNER = 'table_name = ? AND artifact_hash = ? AND next_row = ?';
 
 type ArtifactRow = Record<string, unknown>;
-type OwnedRowRestorer = (db: RelationalStore, row: ArtifactRow, parents: ReadonlyMap<string, ArtifactRow>) => PreparedStatement;
+/** What an owned row's restore is decided over: the artifact's transcripts, and the scheme each of their groups is admitted to. */
+interface RestoreDecisions {
+  parents: ReadonlyMap<string, ArtifactRow>;
+  schemes: ReadonlyMap<string, PromptIdScheme | null>;
+}
+type OwnedRowRestorer = (db: RelationalStore, row: ArtifactRow, decided: RestoreDecisions) => PreparedStatement;
 
 /** Owned state restores through the capability that admits its writes. */
 const OWNED_ROW_RESTORERS: Readonly<Partial<Record<string, OwnedRowRestorer>>> = {
-  transcript_parser_state_chunks(db, row, parents) {
+  // A transcript is pinned with its insert, to the scheme its group is admitted to over the whole artifact.
+  transcripts(db, row, decided) {
+    const columns = Object.keys(row).filter((column) => column !== 'prompt_identity_scheme');
+    const pin = restoredPin(row, decided.schemes);
+    return db.prepare(`INSERT OR IGNORE INTO transcripts (${[...columns, 'prompt_identity_scheme'].join(', ')})
+        SELECT ${columns.map(() => '?').join(', ')}, ${pin.sql} RETURNING rowid`)
+      .bind(...columns.map((c) => row[c] ?? null), ...pin.params);
+  },
+  transcript_parser_state_chunks(db, row, { parents }) {
     const parent = parents.get(transcriptIdentity(row.project_id, row.transcript_id));
     if (parent === undefined) throw new BackupApplyError('transcript_parser_state_chunks', 'a checkpoint row names no transcript in the artifact');
     return restoreParserCheckpointStatement(db, row, parent);
@@ -583,6 +597,7 @@ export async function restoreArtifact(
 
   const outcome: RestoreOutcome = { tables: { ...admitted.tables }, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }) };
   const transcriptParents = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row]));
+  const decided: RestoreDecisions = { parents: transcriptParents, schemes: await restoreSchemeDecisions(db, byTable.get('transcripts') ?? []) };
   const hash = await sha256Hex(opts.text);
   const provenance = ['raw_provenance_state', 'raw_resources', 'raw_archive_refs', 'raw_claims', 'events', 'blobs', 'transcripts', 'attachments', 'prompt_batches', 'responses', 'plans', 'tool_calls'].flatMap((table) => byTable.get(table) ?? []);
   const sourceRevision = provenance.reduce((max, row) => Math.max(max,
@@ -834,7 +849,7 @@ export async function restoreArtifact(
         if (table === 'member_role_audit') return restoreAuthorityAuditStatement(db, table, row,
           byTable.get('members')?.find(member => member.id === row.member_id));
         const restoreOwned = OWNED_ROW_RESTORERS[table];
-        if (restoreOwned !== undefined) return restoreOwned(db, row, transcriptParents);
+        if (restoreOwned !== undefined) return restoreOwned(db, row, decided);
         const columns = Object.keys(row);
         return db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) SELECT ${columns.map(() => '?').join(', ')}${guard} RETURNING rowid`)
           .bind(...columns.map((c) => row[c] ?? null), ...(ordered ? [table, hash, at] : []));
@@ -845,8 +860,6 @@ export async function restoreArtifact(
           WHERE ${RESTORE_OWNER} RETURNING next_row`)
           .bind(next, JSON.stringify(chunk), table, hash, at));
       }
-      // A transcript from a backup taken before schemes were pinned arrives without one, and is pinned with its insert.
-      if (table === 'transcripts') statements.push(db.prepare(promptSchemeBackfillSql(DECLARED_SCHEMES)));
       let applied;
       try {
         applied = table === 'members'
