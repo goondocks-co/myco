@@ -150,10 +150,10 @@ it('builds a coherent, non-executable 1.4 fixture home', () => {
 for (const boundary of ['projects', 'destinations'] as const) it(`seeds persisted cutover progress between ${boundary}, with skipped capture to preserve`, () => {
   const fixture = cutoverAfterFirstProject(fresh(), boundary);
   for (const route of fixture.routes) expect(readDeploymentMembership(route.serverUrl, fixture.mycoHome)).toMatchObject({ serverUrl: route.serverUrl });
-  const held = new LegacyLedger(fixture.mycoHome, fixture.completed.serverUrl, fixture.completed.id).read();
+  const held = new LegacyLedger(fixture.mycoHome, fixture.completed.serverUrl, fixture.completed.id).readState();
   expect([...held.sessions]).toEqual([fixture.completed.sessionId]);
   expect(held.sources.get(fixture.completed.sessionId)).toBe('vault');
-  expect(new LegacyLedger(fixture.mycoHome, fixture.pending.serverUrl, fixture.pending.id).read().sessions.size).toBe(0);
+  expect(new LegacyLedger(fixture.mycoHome, fixture.pending.serverUrl, fixture.pending.id).readState().sessions.size).toBe(0);
   expect(fixture.completed.serverUrl === fixture.pending.serverUrl).toBe(boundary === 'projects');
   expect([...fixture.skips]).toEqual(['proj_setup_skipped']);
   const vault = new Database(fixture.legacy.vault, { readonly: true });

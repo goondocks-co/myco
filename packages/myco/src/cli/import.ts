@@ -259,8 +259,7 @@ export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): 
       lines.push(`  would bring ${p.sessions.distinct} sessions (${p.sessions.deleted} deleted in 1.4 left out, unless the Deployment already holds them)`);
       if (p.unmatchedDeletes.length > 0) lines.push(`  ${p.unmatchedDeletes.length} sessions deleted in 1.4 could not be matched to a transcript: ${p.unmatchedDeletes.join(', ')}`);
       for (const [machine, n] of Object.entries(p.otherMachines)) lines.push(`  would leave ${n} sessions captured on ${machine} to that machine`);
-      for (const alias of p.aliases) lines.push(`  matched by time: ${alias}`);
-      for (const stored of p.unaliased) lines.push(`  no transcript matched: ${stored}`);
+      for (const stored of p.unaliased) lines.push(`  kept stored id: ${stored}`);
       if (p.lineage.malformed > 0) lines.push(`  would skip ${p.lineage.malformed} spore history events in a shape no Deployment takes`);
       continue;
     }
@@ -274,8 +273,7 @@ export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): 
     lines.push(`  sent ${p.prompts} prompts, ${p.responses} responses, ${p.plans.sent} plans (${p.plans.empty} empty, ${p.plans.unsent} of deleted or unknown sessions)`);
     lines.push(`  spores: ${p.spores.saved} saved, ${p.spores.duplicate} already here, ${p.spores.refused} refused; history: ${p.lineage.recorded} recorded, ${p.lineage.duplicate} already here, ${p.lineage.refused} refused`);
     if ((p.spores.kept ?? 0) > 0) lines.push(`  spores: ${p.spores.kept} kept with existing source links`);
-    for (const alias of p.aliases) lines.push(`  matched by time: ${alias}`);
-    for (const stored of p.unaliased) lines.push(`  no transcript matched, imported under its 1.4 id: ${stored}`);
+    for (const stored of p.unaliased) lines.push(`  kept stored id: ${stored}`);
     const groups = Object.entries(p.causes ?? {});
     lines.push(...causeLines(p.causes, 'record or upload', 'records or uploads', p.endedBy === undefined ? false : p.stoppedBy ?? true));
     if (p.endedBy !== undefined && groups.length === 0) lines.push(`  ${stoppedByLine(p.stoppedBy ?? STOPPED_WORDS[p.endedBy] ?? STOPPED_WORDS.failed!)}`);
