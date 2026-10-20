@@ -45,6 +45,7 @@ import { cosineSimilarity, VECTOR_QUERY_LIMIT } from './embedding/vectors.js';
 import type { ContextTimings, ContextTimingStage } from './context-timing.js';
 import { settledAll } from './settled.js';
 import type { SessionWriteAdmission } from '../ingest/projections.js';
+import { deliveredAssignment, type DeliveredNaming } from '../ingest/prompt-scheme.js';
 
 /** A prompt shorter than this carries too little to serve against. */
 export const MIN_PROMPT_CHARS = 10;
@@ -155,13 +156,8 @@ export interface AskNaming {
 }
 
 /** Where a rendered answer reached the agent: the delivery event's instant, and the prompt that carried it or why it has no name. */
-export interface Delivery {
-  projectId: string;
-  sessionId: string;
+export interface Delivery extends DeliveredNaming {
   id: string;
-  at: number;
-  promptId: string | null;
-  scopeReason: PromptScopeReason | null;
 }
 
 /**
@@ -169,9 +165,10 @@ export interface Delivery {
  * session, so a delivery names only its own session's rows; `gate` is the caller's condition on the write that carries it.
  */
 export function receiptDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
-  return db.prepare(`UPDATE spore_injections SET delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?
+  const set = deliveredAssignment(d);
+  return db.prepare(`UPDATE spore_injections SET ${set.sql}
       WHERE project_id = ? AND session_id = ? AND id = ? AND delivered_at IS NULL AND ${gate.sql}`)
-    .bind(d.at, d.promptId, d.scopeReason, d.projectId, d.sessionId, d.id, ...gate.params);
+    .bind(...set.params, d.projectId, d.sessionId, d.id, ...gate.params);
 }
 
 /** The selector operation that failed, with the original error retained for classification. */

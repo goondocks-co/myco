@@ -85,7 +85,9 @@ const FINAL_SHAPE_BY_PROTOCOL: Record<number, { memberKinds: readonly string[]; 
     kinds: {
       'attachment': { required: ['attachmentId', 'blob'], enums: {} },
       'compaction.post': { required: [], enums: {}, atMostOne: ['summary', 'blob'] },
-      'context.delivered': { required: [], enums: { renderedScopeReason: ['absent_key', 'scheme', 'steering', 'transcript_only'], sessionRecord: ['plan-nudge'] },
+      'context.delivered': { required: [], enums: {
+        renderedScheme: ['claude-v1', 'codex-turn-v1', 'hook-mint-v1', 'legacy-v1', 'member-transcript-v1', 'offset-v1', 'stamp-or-offset-v1'],
+        renderedScopeReason: ['absent_key', 'scheme', 'steering', 'transcript_only'], sessionRecord: ['plan-nudge'] },
         pairs: [{ fields: ['receiptId', 'answerId', 'sessionRecord'], rule: 'at-least-one' }, { fields: ['renderedIn', 'renderedScopeReason'], rule: 'exactly-one' }] },
       'compaction.pre': { required: [], enums: {}, atMostOne: ['summary', 'blob'] },
       'error': { required: ['message'], enums: {} },

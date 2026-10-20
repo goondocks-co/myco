@@ -37,3 +37,10 @@ for (const [index, agent] of ['cline', 'opencode'].entries()) continuityRecords[
   { v: 1, type: 'response', text: 'second' },
   { v: 1, type: 'prompt', promptId: `00000000-0000-7000-8000-${String(index * 10 + 2).padStart(12, '0')}`, text: 'later' },
 ];
+
+/**
+ * The records a harness writes for each continuity turn: a Codex rollout opens each turn with a `turn_context`
+ * record, which a transcript pinned to Codex's turn key reads its prompts' identity from.
+ */
+export const shippedContinuityRecords = (agent: string): Record<string, unknown>[] =>
+  agent === 'codex' ? [{ type: 'turn_context', payload: { turn_id: 'continuity-turn' } }, ...continuityRecords[agent]!] : continuityRecords[agent]!;

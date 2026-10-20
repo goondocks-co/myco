@@ -364,8 +364,12 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
     "displayEnvelopeTags": [],
     "transcriptTimestamps": "recorded",
     "promptIdentity": {
-      "kind": "transcript-only",
-      "scheme": "offset-v1"
+      "kind": "harness-key",
+      "scheme": "codex-turn-v1",
+      "hookKey": "turn_id",
+      "transcriptKey": "turn_context.payload.turn_id",
+      "granularity": "turn",
+      "readBeforePin": "offset-v1"
     }
   },
   {

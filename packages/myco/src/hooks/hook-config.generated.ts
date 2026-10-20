@@ -551,8 +551,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "transcriptFidelity": "no_tool_results"
     },
     "promptIdentity": {
-      "kind": "transcript-only",
-      "scheme": "offset-v1"
+      "kind": "harness-key",
+      "scheme": "codex-turn-v1",
+      "hookKey": "turn_id",
+      "transcriptKey": "turn_context.payload.turn_id",
+      "granularity": "turn",
+      "readBeforePin": "offset-v1"
     },
     "transcriptDiscovery": {
       "roots": [

@@ -52,7 +52,7 @@ export function responseTextOf(text: string): string {
 export const cursorParser: TranscriptParser = {
   agent: 'cursor',
   fidelity: 'no_tool_results',
-  promptGeneration: 1,
+  schemes: ['offset-v1'],
   planTags: [],
   endsTurn: (value) => value.type === TURN_ENDED,
 

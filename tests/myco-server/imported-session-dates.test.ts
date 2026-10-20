@@ -10,6 +10,8 @@
  * projection reads them, so the raw lifecycle — admission, reopen, titling —
  * compares the same baseline whether or not a parse has run.
  */
+import type { PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
+import { declaredScheme } from '@myco-server-worker/ingest/prompt-scheme.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { parseOnce, TRANSCRIPT_PARSE_EVENTS_PER_BATCH } from '@myco-server-worker/ingest/parse.js';
@@ -54,8 +56,8 @@ async function rig(text: string, sliceBytes = 1 << 20, channel: 'import' | 'cli'
   const bytes = new TextEncoder().encode(text) as Uint8Array<ArrayBuffer>;
   sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
               VALUES (?, ?, ?, ?, ?, ?)`, [PROJECT, SESSION, MACHINE, issued.tokenId, NOW, NOW]);
-  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, imported_at)
-              VALUES (?, ?, ?, ?, 'claude-code', ?, 1, ?, ?, ?, ?)`,
+  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, imported_at, prompt_identity_scheme)
+              VALUES (?, ?, ?, ?, 'claude-code', ?, 1, ?, ?, ?, ?, 'claude-v1')`,
              [PROJECT, TRANSCRIPT, SESSION, MACHINE, bytes.length, NOW, NOW, issued.tokenId, channel === 'import' ? NOW : null]);
   await appendSegments(sqlite, serverEnv, issued.tokenId, bytes, 0, sliceBytes, channel);
   return { sqlite, serverEnv, env: { db: serverEnv.db, blobs: serverEnv.blobs }, tokenId: issued.tokenId };
@@ -98,14 +100,14 @@ async function importFacts(serverEnv: { db: unknown }, tokenId: string) {
 async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max = 50): Promise<number> {
   let passes = 0;
   for (;;) {
-    const t = sqlite.query(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at, parse_error FROM transcripts`).get() as Record<string, unknown>;
+    const t = sqlite.query(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, prompt_identity_scheme, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at, parse_error FROM transcripts`).get() as Record<string, unknown>;
     if (passes >= max || (t.parsed_offset as number) >= (t.size as number) || t.parse_error !== null) return passes;
     const before = t.parsed_offset as number;
     await parseOnce(env as never, {
       projectId: t.project_id as string, transcriptId: t.transcript_id as string, sessionId: t.session_id as string,
       machineId: t.machine_id as string, tokenId: t.token_id as string, agent: t.agent as string,
       size: t.size as number, parsedOffset: before, fidelity: null,
-      openPromptId: (t.open_prompt_id as string | null) ?? null, promptIdentityStale: false,
+      openPromptId: (t.open_prompt_id as string | null) ?? null, promptIdentityStale: false, scheme: t.prompt_identity_scheme as PromptIdScheme | null,
       parserContext: typeof t.parser_context === 'string' ? JSON.parse(t.parser_context) : null,
       imported: t.imported_at !== null && t.imported_at !== undefined,
     }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });

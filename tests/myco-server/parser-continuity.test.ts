@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
+import { READ_BEFORE_PIN } from '@myco-server-worker/ingest/prompt-scheme.js';
 import type { DerivedEvent, ParsedLine } from '@myco-server-worker/ingest/parsers/index.js';
+import { canonicalPromptId, type TurnSubmission } from '@goondocks/myco-shared/prompt-identity';
+import { uuidv5 } from '@myco-server-worker/hash.js';
 
 const NOW = Date.parse('2027-01-01T00:00:00Z');
 import { continuityRecords as records } from './helpers/continuity-records.js';
@@ -21,14 +24,14 @@ describe('incremental parser continuation', () => {
       const lines = linesOf(records[agent]);
       const callIndex = agent === 'codex' ? 2 : 1;
       const state = {};
-      const before = await parser.parse({ lines: lines.slice(0, callIndex + 1), sessionId: 's1', now: NOW, state });
+      const before = await parser.parse({ lines: lines.slice(0, callIndex + 1), sessionId: 's1', scheme: READ_BEFORE_PIN[agent]!, now: NOW, state });
       expect(before.filter((event) => event.kind === 'tool.failure')).toEqual([]);
-      const terminalInput = { lines: [], sessionId: 's1', now: NOW, state, terminal: 'session_end' as const };
+      const terminalInput = { lines: [], sessionId: 's1', scheme: READ_BEFORE_PIN[agent]!, now: NOW, state, terminal: 'session_end' as const };
       const terminal = await parser.parse(terminalInput);
       const failure = terminal.find((event) => event.kind === 'tool.failure');
       expect(failure?.payload.success).toBe(false);
       expect(Object.keys(JSON.parse(JSON.stringify(state)).pending ?? {})).toEqual([]);
-      const later = await parser.parse({ lines: [lines[callIndex + 1]], sessionId: 's1', now: NOW, state });
+      const later = await parser.parse({ lines: [lines[callIndex + 1]], sessionId: 's1', scheme: READ_BEFORE_PIN[agent]!, now: NOW, state });
       expect(later.find((event) => event.kind === 'tool.use')?.payload).toMatchObject({ toolCallId: failure?.payload.toolCallId, success: true, output: 'ok' });
     });
   }
@@ -38,7 +41,7 @@ describe('incremental parser continuation', () => {
     const failures: DerivedEvent[] = [];
     for (let index = 0; index < 64; index += 1) {
       const line = { value: { type: 'assistant', message: { content: [{ type: 'tool_use', id: `call-${index}`, name: 'Read', input: { index } }] } }, offset: index * 100 };
-      failures.push(...(await PARSERS['claude-code'].parse({ lines: [line], sessionId: 's1', now: NOW, state })).filter((event) => event.kind === 'tool.failure'));
+      failures.push(...(await PARSERS['claude-code'].parse({ scheme: 'claude-v1',  lines: [line], sessionId: 's1', now: NOW, state })).filter((event) => event.kind === 'tool.failure'));
       state = JSON.parse(JSON.stringify(state));
       expect(Object.keys(JSON.parse(JSON.stringify(state)).pending ?? {}).length).toBeLessThanOrEqual(32);
     }
@@ -50,7 +53,7 @@ describe('incremental parser continuation', () => {
     it(`${agent}: replies retain the joined per-turn shape and the first assistant identity`, async () => {
       const parser = PARSERS[agent];
       const lines = linesOf(values);
-      const events = await parser.parse({ lines, sessionId: 's1', now: NOW });
+      const events = await parser.parse({ lines, sessionId: 's1', scheme: READ_BEFORE_PIN[agent]!, now: NOW });
       const replies = events.filter((event) => event.kind === 'response');
       expect(replies).toHaveLength(1);
       const texts = agent === 'claude-code' ? ['<ultraplan># First</ultraplan>', '<ultraplan># Second</ultraplan>']
@@ -64,8 +67,8 @@ describe('incremental parser continuation', () => {
     it(`${agent}: whole and every split retain full payloads and identities through serialized restart`, async () => {
       const parser = PARSERS[agent];
       const lines = linesOf(values);
-      const wholeInput = { lines, sessionId: 's1', now: NOW, state: {} };
-      const whole = await parser.parse({ lines, sessionId: wholeInput.sessionId, now: wholeInput.now });
+      const wholeInput = { lines, sessionId: 's1', scheme: READ_BEFORE_PIN[agent]!, now: NOW, state: {} };
+      const whole = await parser.parse({ lines, sessionId: wholeInput.sessionId, scheme: wholeInput.scheme, now: wholeInput.now });
       const ordered = (events: DerivedEvent[]) => events.toSorted((a, b) => a.offset - b.offset || a.kind.localeCompare(b.kind));
       for (let cut = 1; cut < lines.length; cut += 1) {
         const firstInput = { ...wholeInput, lines: lines.slice(0, cut), state: {} };
@@ -80,4 +83,40 @@ describe('incremental parser continuation', () => {
       if (parser.planTags.length > 0) expect(new Set(whole.filter((e) => e.kind === 'plan').map((e) => e.payload.planKey)).size).toBe(2);
     });
   }
+
+  it('codex under its turn key: whole and every split name each prompt by its turn, its opener and its acceptance order alike', async () => {
+    const parser = PARSERS.codex;
+    const user = (text: string, order?: number) => ({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+      ...(order === undefined ? {} : { metadata: { user_input_order: order } }) });
+    const reply = (text: string) => ({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } });
+    const lines = linesOf([
+      { type: 'session_meta', payload: { source: 'cli' } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
+      { type: 'turn_context', payload: { turn_id: 'turn-1' } },
+      user('<environment_context>cwd: /repo</environment_context>'), user('open', 0), reply('first'), user('steer', 2), reply('second'),
+      { type: 'turn_context', payload: { turn_id: 'turn-2' } },
+      user('next', 4), reply('third'),
+    ]);
+    const input = { sessionId: 's1', scheme: 'codex-turn-v1' as const, now: NOW };
+    const whole = await parser.parse({ ...input, lines, state: {} });
+    const named = (turnId: string, submission: TurnSubmission) => canonicalPromptId(uuidv5, { scheme: 'codex-turn-v1', sessionId: 's1', turnId, submission });
+    expect(whole.filter((e) => e.kind === 'prompt').map((e) => [e.payload.text, e.payload.promptId])).toEqual([
+      ['<environment_context>cwd: /repo</environment_context>', await named('turn-1', { offset: lines[3]!.offset })],
+      ['open', await named('turn-1', { opener: true })], ['steer', await named('turn-1', { order: 2 })], ['next', await named('turn-2', { opener: true })],
+    ]);
+    const ordered = (events: DerivedEvent[]) => events.toSorted((a, b) => a.offset - b.offset || a.kind.localeCompare(b.kind));
+    for (let cut = 1; cut < lines.length; cut += 1) {
+      const first = { ...input, lines: lines.slice(0, cut), state: {} };
+      const before = await parser.parse(first);
+      const prompt = before.findLast((e) => e.kind === 'prompt' && e.opensTurn !== false)?.payload.promptId;
+      const after = await parser.parse({ ...input, lines: lines.slice(cut), state: JSON.parse(JSON.stringify(first.state)),
+        openPromptId: typeof prompt === 'string' ? prompt : undefined });
+      expect({ cut, events: ordered([...before, ...after]) }).toEqual({ cut, events: ordered(whole) });
+    }
+  });
+
+  it('codex under its turn key: a message outside any turn the window has read names no prompt', async () => {
+    const lines = linesOf([{ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'mid-turn' }] }, metadata: { user_input_order: 3 } }]);
+    expect((await PARSERS.codex.parse({ sessionId: 's1', scheme: 'codex-turn-v1', now: NOW, lines, state: {} })).filter((e) => e.kind === 'prompt')).toEqual([]);
+  });
 });

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { declaredScheme } from '@myco-server-worker/ingest/prompt-scheme.js';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -35,13 +36,13 @@ async function parse(text: string, agent: string) {
   await serverEnv.blobs.put(objectKey, new Blob([bytes]).stream());
   sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
     VALUES ('proj_1', 'resumed', 'machine_1', ?, ?, ?)`, [tokenId, NOW, NOW]);
-  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id)
-    VALUES ('proj_1', 'tx_recovery', 'resumed', 'machine_1', ?, ?, 1, ?, ?, ?)`, [agent, bytes.length, NOW, NOW, tokenId]);
+  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, prompt_identity_scheme)
+    VALUES ('proj_1', 'tx_recovery', 'resumed', 'machine_1', ?, ?, 1, ?, ?, ?, ?)`, [agent, bytes.length, NOW, NOW, tokenId, declaredScheme(agent)]);
   sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
     VALUES ('proj_1', 'tx_recovery', 0, ?, ?, 'segment', ?, ?, ?)`, [bytes.length, key, NOW, NOW, tokenId]);
   const target = {
     projectId: 'proj_1', transcriptId: 'tx_recovery', sessionId: 'resumed', machineId: 'machine_1',
-    tokenId, agent, size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, imported: false,
+    tokenId, agent, size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: declaredScheme(agent), imported: false,
   };
   const diagnostics: unknown[] = [];
   const log = console.log;
