@@ -45,7 +45,7 @@ import { LEGACY_MINTED_ID } from '@goondocks/myco-shared/session-ids';
 import fs from 'node:fs';
 import path from 'node:path';
 import { enumerateTranscripts, manifestTranscriptDiscovery, findTranscriptFor, sessionIdFromStoredId, sessionIdFromTranscriptPath } from '../symbionts/transcript-discovery.js';
-import { canonicalPath, transcriptPlacer, transcriptTimeSpan } from '../symbionts/transcript-attribution.js';
+import { canonicalPath } from '../symbionts/transcript-attribution.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { legacyVaultFiles } from './home-role.js';
@@ -60,7 +60,7 @@ import {
 } from './import.js';
 import { LEGACY_RECONCILIATION_VERSION, LegacyLedger, type ContentSource } from './legacy-ledger.js';
 import { normalizePlanPath } from './plan-files.js';
-import { deploymentUrl, listRegistryEntries, listDeploymentMemberships, type DeploymentMembership } from './registry.js';
+import { deploymentUrl, listDeploymentMemberships, type DeploymentMembership } from './registry.js';
 import { MemberSpool, spoolDirFor, type RefusedEntry } from './spool.js';
 import { watchingFeatures } from './prefetch.js';
 import { ServerClient, type FetchLike, type Outcome } from './transport.js';
@@ -310,19 +310,15 @@ const legacySessionCompletionIds = (projectId: string, sessionId: string) =>
   ['session.end', 'session.title'].map(kind => legacyId(projectId, kind, sessionId));
 
 /** Source event identities use the same machine eligibility and session identities as the importer. */
-export function legacyHistoryCompletionGroups(project: LegacyProject, machineId: string, mycoHome: string): string[][] {
-  return legacySourceGrouping(project, machineId, mycoHome).groups.map(group =>
+export function legacyHistoryCompletionGroups(project: LegacyProject, machineId: string): string[][] {
+  return groupLegacySessions(project, machineId).groups.map(group =>
     legacySessionCompletionIds(project.projectId, group.sessionId));
 }
-function legacySourceGrouping(project: LegacyProject, machineId: string, mycoHome: string) {
-  const { aliases } = aliasByTranscriptTime(project, rootOf(project), mycoHome);
-  return groupLegacySessions(project, aliases, machineId);
+export function legacyDeletedSessionIds(project: LegacyProject, machineId: string): string[] {
+  return [...groupLegacySessions(project, machineId).deleted];
 }
-export function legacyDeletedSessionIds(project: LegacyProject, machineId: string, mycoHome: string): string[] {
-  return [...legacySourceGrouping(project, machineId, mycoHome).deleted];
-}
-export function legacyVaultCompletionIdentities(project: LegacyProject, machineId: string, mycoHome: string, transcriptSessions: ReadonlySet<string> = new Set()) {
-  const grouping = legacySourceGrouping(project, machineId, mycoHome);
+export function legacyVaultCompletionIdentities(project: LegacyProject, machineId: string, transcriptSessions: ReadonlySet<string> = new Set()) {
+  const grouping = groupLegacySessions(project, machineId);
   const eligible = new Set(grouping.groups.map(group => group.sessionId));
   const recordIds = grouping.groups.flatMap(group => [
     ...(group.title === null ? [] : [legacyId(project.projectId, 'session.title', group.sessionId)]),
@@ -337,8 +333,8 @@ export function legacyVaultCompletionIdentities(project: LegacyProject, machineI
     sporeIds: project.spores.map(spore => spore.id), lineageIds: lineage.map(event => event.id),
     ignoredLineage: project.resolutions.length - lineage.length };
 }
-export function legacyContentSessionIds(project: LegacyProject, machineId: string, mycoHome: string): string[] {
-  return legacySourceGrouping(project, machineId, mycoHome).groups.filter(group =>
+export function legacyContentSessionIds(project: LegacyProject, machineId: string): string[] {
+  return groupLegacySessions(project, machineId).groups.filter(group =>
     project.prompts.some(prompt => prompt.sessionId === group.promptsFrom && (prompt.text !== null || prompt.response !== null))).map(group => group.sessionId);
 }
 export const legacyPromptId = (projectId: string, promptId: string): string => canonicalPromptId(deriveId, { scheme: 'legacy-v1', projectId, legacyId: promptId });
@@ -414,11 +410,11 @@ function resolveStoredId(storedId: string): string[] {
  * Vault sessions grouped by the session id each takes. A row a person deleted,
  * a row 1.4 retired and a row another machine captured are left out of its
  * group; a group survives while any row of it does, with that row's title and
- * prompts. `aliases` maps a stored id onto a harness id found another way.
+ * prompts. Identities come from the stored id or recorded transcript path.
  * `thisMachine` is the machine importing; a row naming another machine is its
  * to import.
  */
-export function groupLegacySessions(project: LegacyProject, aliases: ReadonlyMap<string, string> = new Map(), thisMachine?: string): LegacyGrouping {
+export function groupLegacySessions(project: LegacyProject, thisMachine?: string): LegacyGrouping {
   const idOf = new Map<string, string>();
   const rowsBy = new Map<string, { agent: string; rows: LegacySession[] }>();
   const deletedRows = new Map<string, string>();
@@ -427,7 +423,7 @@ export function groupLegacySessions(project: LegacyProject, aliases: ReadonlyMap
   for (const p of project.prompts) promptCount.set(p.sessionId, (promptCount.get(p.sessionId) ?? 0) + 1);
   for (const s of project.sessions) {
     const identity = legacyIdentity(s.agent, s.id, s.transcriptPath);
-    const sessionId = aliases.get(s.id) ?? identity.sessionId;
+    const sessionId = identity.sessionId;
     idOf.set(s.id, sessionId);
     if (project.deleted.has(s.id)) { deletedRows.set(s.id, sessionId); continue; }
     if (project.retired.has(s.id)) continue;
@@ -456,56 +452,6 @@ export function groupLegacySessions(project: LegacyProject, aliases: ReadonlyMap
   return { groups, idOf, deleted, deletedSessions, unmatchedDeletes: unmatchedDeletes.sort(), otherMachines };
 }
 
-/**
- * Stored ids 1.4 minted (`LEGACY_MINTED_ID`) that the layout could not name a
- * harness session for (no transcript path, no id shape in the id), tied to
- * the one transcript on disk that the
- * same harness wrote in the same project root while the session ran: the one
- * whose first record falls in the second 1.4 recorded the start, else the one
- * whose records span that instant. A stored id with no such transcript, or
- * with more than one, is reported and keeps its id: a guess would merge two
- * sessions.
- */
-export function aliasByTranscriptTime(project: LegacyProject, root: string | null, mycoHome: string = resolveMycoHome()): { aliases: Map<string, string>; matched: string[]; unmatched: string[] } {
-  const aliases = new Map<string, string>();
-  const matched: string[] = [];
-  const unmatched: string[] = [];
-  if (root === null) return { aliases, matched, unmatched };
-  const place = transcriptPlacer([root], { repositoryRoots: listRegistryEntries(mycoHome).map((entry) => entry.root) });
-  const claimed = new Set(project.sessions.map((s) => legacyIdentity(s.agent, s.id, s.transcriptPath).sessionId));
-  const indexes = new Map<string, Array<{ sessionId: string; first: number; last: number }>>();
-  const indexFor = (agent: string) => {
-    let index = indexes.get(agent);
-    if (index !== undefined) return index;
-    index = [];
-    for (const t of enumerateTranscripts(manifestTranscriptDiscovery(agent), 100_000, mycoHome)) {
-      if (claimed.has(t.sessionId) || isMemberOwnedTranscriptPath(t.filePath, mycoHome)) continue;
-      const placed = place(agent, t.filePath);
-      if (placed.kind !== 'bound') continue;
-      const span = transcriptTimeSpan(t.filePath);
-      if (span !== null) index.push({ sessionId: t.sessionId, ...span });
-    }
-    indexes.set(agent, index);
-    return index;
-  };
-  for (const s of project.sessions) {
-    if (project.deleted.has(s.id) || project.retired.has(s.id) || s.startedAt === null || !LEGACY_MINTED_ID.test(s.id)) continue;
-    const identity = legacyIdentity(s.agent, s.id, s.transcriptPath);
-    if (identity.sessionId !== s.id || s.transcriptPath !== null || manifestTranscriptDiscovery(s.agent) === undefined) continue;
-    if (locateTranscript(s.agent, s.id, null) !== null) continue;
-    const index = indexFor(s.agent);
-    const second = Math.floor(s.startedAt / 1000);
-    const exact = index.filter((t) => Math.floor(t.first / 1000) === second);
-    const within = index.filter((t) => t.first <= s.startedAt! && s.startedAt! <= t.last + 999);
-    const pick = exact.length === 1 ? exact[0] : exact.length === 0 && within.length === 1 ? within[0] : null;
-    if (pick === null) { unmatched.push(`${s.id} (${s.agent}, ${exact.length + within.length === 0 ? 'no transcript' : 'several transcripts'})`); continue; }
-    aliases.set(s.id, pick.sessionId);
-    claimed.add(pick.sessionId);
-    matched.push(`${s.id} → ${pick.sessionId} (${s.agent}, ${exact.length === 1 ? 'same start second' : 'ran at that time'})`);
-  }
-  return { aliases, matched, unmatched };
-}
-
 export interface LegacyProjectReport {
   projectId: string;
   root: string | null;
@@ -524,8 +470,8 @@ export interface LegacyProjectReport {
     /** Finished by an earlier run, per this machine's ledger. */
     resumed: number;
   };
-  /** Stored ids tied to a transcript by the time it was written; stored ids that could not be. */
   aliases: string[];
+  /** Stored ids with no canonical harness identity, imported under their stored id. */
   unaliased: string[];
   /** Stored ids deleted in 1.4 that no layout resolves a session for: a transcript of one could still be imported. */
   unmatchedDeletes: string[];
@@ -631,7 +577,7 @@ export function legacySessionSplit(sources: readonly string[], machineId: string
   const split = { thisMachine: 0, otherMachines: {} as Record<string, number> };
   for (const project of [...new Set(sources.flatMap(legacyVaultFiles))].flatMap(readLegacyVault)) {
     if (projects !== undefined && !projects.has(project.projectId)) continue;
-    const grouping = groupLegacySessions(project, new Map(), machineId);
+    const grouping = groupLegacySessions(project, machineId);
     split.thisMachine += grouping.groups.length;
     for (const [machine, ids] of grouping.otherMachines) split.otherMachines[machine] = (split.otherMachines[machine] ?? 0) + ids.length;
   }
@@ -668,20 +614,21 @@ const malformedResolution = (event: LegacyResolution): string | null =>
 interface Prepared extends LegacyGrouping {
   project: LegacyProject;
   root: string | null;
-  matched: string[];
   unmatched: string[];
 }
 
 /** Read, identify and group every project the sources hold, as `machineId` imports them. */
-function prepare(opts: LegacyImportOptions, machineId: string, mycoHome: string): Prepared[] | string {
+function prepare(opts: LegacyImportOptions, machineId: string): Prepared[] | string {
   const files = [...new Set(opts.sources.flatMap(legacyVaultFiles))];
   if (files.length === 0) return `no 1.4 vault found in ${opts.sources.join(', ')}`;
   return files.flatMap(readLegacyVault)
     .filter((p) => opts.project === undefined || p.projectId === opts.project)
     .map((project) => {
       const root = rootOf(project);
-      const { aliases, matched, unmatched } = aliasByTranscriptTime(project, root, mycoHome);
-      return { project, root, matched, unmatched, ...groupLegacySessions(project, aliases, machineId) };
+      const grouping = groupLegacySessions(project, machineId);
+      const unmatched = grouping.groups.filter(group => LEGACY_MINTED_ID.test(group.sessionId))
+        .map(group => `${group.sessionId} (${group.agent}, no canonical harness id)`);
+      return { project, root, unmatched, ...grouping };
     });
 }
 
@@ -702,7 +649,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
   const maxPasses = deps.maxPasses ?? IMPORT_MAX_PASSES;
   const progress = deps.progress ?? (() => {});
 
-  const prepared = prepare(opts, deps.machineId, mycoHome);
+  const prepared = prepare(opts, deps.machineId);
   if (typeof prepared === 'string') return { serverUrl: null, projects: [], deleted: [], refused: prepared };
   const report: LegacyImportReport = { serverUrl: null, projects: [], deleted: [...new Set(prepared.flatMap((g) => [...g.deleted]))].sort() };
 
@@ -710,7 +657,6 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
     const r = emptyProjectReport(g.project, g.root);
     r.sessions.distinct = g.groups.length;
     r.sessions.deleted = g.deletedSessions.size;
-    r.aliases = g.matched;
     r.unaliased = g.unmatched;
     r.unmatchedDeletes = g.unmatchedDeletes;
     r.otherMachines = Object.fromEntries([...g.otherMachines].map(([machine, ids]) => [machine, ids.length]));
@@ -827,7 +773,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       : [...project.sessions].reverse().find((session) => session.projectRoot !== null && fs.existsSync(session.projectRoot))?.projectRoot ?? root;
     const projectId = project.projectId;
     const ledger = new LegacyLedger(mycoHome, serverUrl, projectId);
-    const done = ledger.read();
+    const done = ledger.readState();
     const repairing = !done.reconciled && (done.sessions.size > 0 || done.spores.size > 0);
     if (!done.reconciled && !repairing) ledger.append({ k: 'reconciled', version: LEGACY_RECONCILIATION_VERSION });
     const spool = new MemberSpool({ projectId, serverUrl }, { mycoHome });
@@ -947,7 +893,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
 
       // The Deployment's record of a vault-sourced session decides first; this
       // machine's ledger only saves asking again.
-      let source: ContentSource | undefined = held.vaultSourced.has(group.sessionId) || plan?.decision === 'vault_sourced' ? 'vault' : ledger.read().sources.get(group.sessionId);
+      let source: ContentSource | undefined = held.vaultSourced.has(group.sessionId) || plan?.decision === 'vault_sourced' ? 'vault' : ledger.readState().sources.get(group.sessionId);
       // A transcript still being written decides nothing and sends nothing
       // until it settles, unless the Deployment already holds a transcript
       // of it: a later run brings it from that transcript.

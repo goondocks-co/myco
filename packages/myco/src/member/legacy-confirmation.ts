@@ -224,9 +224,9 @@ export async function observeLegacyMigration(home: string, deps: LegacyConfirmat
           endedBy = destination;
           proof = { state: 'confirmed', eventIds: [], sporeIds: [], lineageIds: [] };
         } else {
-          const transcripts = await transcriptSources(read, legacyContentSessionIds(project, candidate.membership.machineId, home));
+          const transcripts = await transcriptSources(read, legacyContentSessionIds(project, candidate.membership.machineId));
           if (typeof transcripts === 'string') { recordFailure(transcripts); continue; }
-          const identities = legacyVaultCompletionIdentities(project, candidate.membership.machineId, home, transcripts);
+          const identities = legacyVaultCompletionIdentities(project, candidate.membership.machineId, transcripts);
           ignoredLineage = identities.ignoredLineage;
           proof = await confirmHistory(read, identities);
           if (proof.state === 'confirmed') endedBy = proof.projectState === 'archived' ? 'project_archived' : proof.projectState === 'deleted' ? 'project_deleted' : null;

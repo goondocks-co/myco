@@ -5,8 +5,8 @@
  *
  *   - every vault session lands once, under the id its harness names, whether
  *     the vault stored that id, a hashed id with the transcript's path, the
- *     transcript's whole file name, another harness's path, or no path at all
- *     but a start time a transcript on disk shares;
+ *     transcript's whole file name, or another harness's path; an unresolved
+ *     row keeps its stored id;
  *   - its prompts come from exactly one source, decided once: the transcript
  *     where one is on disk or already held, the vault only where neither is;
  *   - its 1.4 title and summary land, and never over a title an administrator
@@ -311,6 +311,40 @@ describe('importing a 1.4 vault', () => {
   beforeEach(async () => { f = await fixture(); });
   afterEach(() => f.cleanup());
 
+  it('keeps two legacy identities starting in the same second separate from the available transcript', async () => {
+    const ids = ['a', 'b'].map(c => `sess_${c.repeat(32)}`);
+    const harnessId = UUID(100);
+    const startedAt = at(45);
+    const file = path.join(f.home, '.claude', 'projects', rootSlug(f.root), `${harnessId}.jsonl`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, line({ type: 'user', timestamp: iso(startedAt), message: { role: 'user', content: 'one harness session' } }));
+    const old = new Date(Date.now() - 3 * 60 * 60_000);
+    fs.utimesSync(file, old, old);
+    const db = openVault(f.vault);
+    try {
+      for (const id of ids) db.run(`INSERT INTO sessions (id, project_id, agent, project_root, started_at, ended_at, created_at) VALUES (?, ?, 'claude-code', ?, ?, ?, ?)`, [id, PROJECT, f.root, startedAt, startedAt + 1, startedAt]);
+    } finally { db.close(); }
+    const report = await f.run();
+    expect(report.refused).toBeUndefined();
+    expect(report.projects[0].failures).toEqual([]);
+    const stored = f.rig.env.sqlite.query('SELECT session_id FROM sessions WHERE project_id = ?').all(PROJECT) as Array<{ session_id: string }>;
+    expect(stored.filter(row => ids.includes(row.session_id)).map(row => row.session_id).sort()).toEqual(ids);
+    expect(stored.some(row => row.session_id === harnessId)).toBe(false);
+  });
+
+  for (const obstruction of ['corrupt', 'directory'] as const) it(`refuses vault and transcript import with ${obstruction} exclusion evidence before sending`, async () => {
+    const ledger = new LegacyLedger(f.mycoHome, SERVER, PROJECT);
+    ledger.append({ k: 'source', session: 'deleted-session', from: 'deleted' });
+    if (obstruction === 'corrupt') fs.appendFileSync(ledger.file, '{broken}\n');
+    else { fs.unlinkSync(ledger.file); fs.mkdirSync(ledger.file); }
+    f.bind(f.mycoHome);
+    let requests = 0;
+    const fetch: MemberRig['fetch'] = async () => { requests += 1; throw new Error('unexpected transport'); };
+    await expect(f.run({ fetch })).rejects.toThrow('Legacy import ledger');
+    await expect(importUntilSettled({ serverUrl: SERVER, windowDays: 3650, maxPerAgent: 1000 }, { fetch, mycoHome: f.mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {} })).rejects.toThrow('Legacy import ledger');
+    expect(requests).toBe(0);
+  });
+
   it('lands every session once under its harness id, with one content source, its 1.4 title, and nothing deleted', async () => {
     const watched = watchedFetch(f.rig.fetch);
     const report = await f.run({ fetch: watched.fetch });
@@ -331,13 +365,13 @@ describe('importing a 1.4 vault', () => {
     const sqlite = f.rig.env.sqlite;
     const sessions = sqlite.query(`SELECT session_id, title, summary, titled_by, branch, started_at, ended_at FROM sessions WHERE project_id = ? ORDER BY session_id`).all(PROJECT) as Array<Record<string, unknown>>;
     // The Codex rollout and the Claude session stored twice are one session each; the Pi file name is its uuid;
-    // two hashed Pi ids take the transcript written at their start; the deleted session is absent.
+    // Hashed Pi ids with no canonical harness identity keep their stored ids.
     expect(sessions.map((s) => s.session_id).sort()).toEqual([
       SESSION_ON_DISK, SESSION_PRUNED, SESSION_LIVE, SESSION_ADMIN, SESSION_CURSOR, SESSION_TWICE, CODEX_ROLLOUT, PI_UUID,
-      PI_SAME_SECOND, PI_RAN_THEN, 'sess_0000000000000000000000000000dddd',
+      'sess_0000000000000000000000000000bbbb', 'sess_0000000000000000000000000000cccc', 'sess_0000000000000000000000000000dddd',
     ].sort());
-    expect(project.aliases.length).toBe(2);
-    expect(project.unaliased).toEqual(['sess_0000000000000000000000000000dddd (pi, no transcript)']);
+    expect(project.aliases).toEqual([]);
+    expect(project.unaliased).toEqual(['bbbb', 'cccc', 'dddd'].map(suffix => `sess_0000000000000000000000000000${suffix} (pi, no canonical harness id)`));
     const byId = new Map(sessions.map((s) => [s.session_id as string, s]));
 
     // Titles: the vault's, over an automatic one; never over an administrator's; the earlier row's when the later has none.
@@ -373,7 +407,7 @@ describe('importing a 1.4 vault', () => {
 
     // Every transcript on disk for a vault session reached the Deployment under that session, under the harness that wrote it.
     const transcripts = sqlite.query(`SELECT session_id, agent FROM transcripts WHERE project_id = ? ORDER BY session_id`).all(PROJECT) as Array<{ session_id: string; agent: string }>;
-    expect(transcripts.map((t) => t.session_id).sort()).toEqual([SESSION_ON_DISK, SESSION_LIVE, CODEX_ROLLOUT, PI_UUID, SESSION_CURSOR, PI_SAME_SECOND, PI_RAN_THEN].sort());
+    expect(transcripts.map((t) => t.session_id).sort()).toEqual([SESSION_ON_DISK, SESSION_LIVE, CODEX_ROLLOUT, PI_UUID, SESSION_CURSOR].sort());
     expect(transcripts.find((t) => t.session_id === SESSION_CURSOR)?.agent).toBe('cursor');
 
     // Spores keep id, status and author agent; history keeps its 1.4 time.
@@ -626,7 +660,7 @@ describe('importing a 1.4 vault', () => {
     const local = project.sessions.find((s) => s.id === SESSION_PRUNED)!;
     const unnamed = project.sessions.find((s) => s.id === SESSION_ON_DISK)!;
     const rewritten = { ...project, sessions: project.sessions.map((s) => (s === local ? { ...s, machineId: 'local' } : s === unnamed ? { ...s, machineId: null } : s)) };
-    const grouping = groupLegacySessions(rewritten, new Map(), TEST_MACHINE_ID);
+    const grouping = groupLegacySessions(rewritten, TEST_MACHINE_ID);
     expect(Object.fromEntries(grouping.otherMachines)).toEqual({ machine_2: [SESSION_ELSEWHERE] });
     expect(grouping.groups.map((g) => g.sessionId)).toEqual(expect.arrayContaining([SESSION_PRUNED, SESSION_ON_DISK]));
   });
@@ -651,7 +685,7 @@ describe('importing a 1.4 vault', () => {
     fs.utimesSync(file, old, old);
 
     const [project] = readLegacyVault(f.vault);
-    expect(groupLegacySessions(project, new Map(), TEST_MACHINE_ID).deleted.has(uuid)).toBe(true);
+    expect(groupLegacySessions(project, TEST_MACHINE_ID).deleted.has(uuid)).toBe(true);
     await f.run();
     f.bind(f.mycoHome);
     await importUntilSettled({ serverUrl: SERVER, windowDays: 3650, maxPerAgent: 1000 }, { fetch: f.rig.fetch, mycoHome: f.mycoHome, machineId: TEST_MACHINE_ID, sleep: async () => {} });
@@ -707,7 +741,7 @@ describe('importing a 1.4 vault', () => {
 
   it('leaves a session deleted in 1.4 out of the transcript import too', () => {
     const [project] = readLegacyVault(f.vault);
-    const { deleted, unmatchedDeletes } = groupLegacySessions(project, new Map(), TEST_MACHINE_ID);
+    const { deleted, unmatchedDeletes } = groupLegacySessions(project, TEST_MACHINE_ID);
     expect([...deleted].sort()).toEqual([SESSION_DELETED, UNMATCHED_DELETE].sort());
     expect(unmatchedDeletes).toEqual([UNMATCHED_DELETE]);
     const collected = collectCandidates(['claude-code'], [f.root], TEST_MACHINE_ID, f.mycoHome, Date.now(), { exclude: deleted });
