@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
-import { UpgradeStateMismatchError, assertMigrationMutationDetected, assertUpgradeState, firstObservableOmission, isLocalMigrationSqlFailure, referencedExistingTables, schemaObjects, seedReferencedTables } from './schema-upgrade.ts';
+import { UpgradeStateMismatchError, assertMigrationMutationDetected, assertUpgradeState, firstObservableOmission, isLocalMigrationSqlFailure, referencedExistingTables, schemaObjects, seedPreviousSchema, seedReferencedTables, tableRows } from './schema-upgrade.ts';
 
 const trigger = `CREATE TRIGGER "next trigger" AFTER UPDATE ON "upgrade parent"
   BEGIN UPDATE "upgrade parent" SET label = 'migrated' WHERE id = NEW.id; END`;
@@ -151,15 +151,56 @@ it('tries later statements when an earlier omission is invisible to seeded rows'
   expect(triedNoops).toEqual([0, 1]);
 });
 
-it('registers the reporter-order and writer-revision upgrade as the latest schema step', async () => {
+it('adds reporter order and writer revision in schema step 92', async () => {
   const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
-  expect(SCHEMA_STEPS.at(-1)!.version).toBe(92);
+  const step = SCHEMA_STEPS.find(step => step.version === 92)!;
+  expect(step).toBeDefined();
   const db = new Database(':memory:');
   try {
-    for (const step of SCHEMA_STEPS) for (const sql of step.statements) db.exec(sql);
-    for (const [table, column] of [
+    for (const previous of SCHEMA_STEPS.filter(previous => previous.version < step.version)) for (const sql of previous.statements) db.exec(sql);
+    const columns = [
       ['knowledge_git_provenance', 'event_id'], ['deployment_settings', 'write_id'],
       ['worker_model_catalogs', 'observed_order'], ['runner_model_catalogs', 'observed_order'], ['runner_update_reports', 'observed_order'],
-    ]) expect((db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(c => c.name === column)).toBe(true);
+    ] as const;
+    const hasColumn = (table: string, column: string) => (db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(c => c.name === column);
+    for (const [table, column] of columns) expect(hasColumn(table, column)).toBe(false);
+    for (const sql of step.statements) db.exec(sql);
+    for (const [table, column] of columns) expect(hasColumn(table, column)).toBe(true);
+    expect(db.query("SELECT value FROM schema_meta WHERE key = 'version'").get()).toEqual({ value: '92' });
   } finally { db.close(); }
+});
+
+it('v93 changes real seeded transcript rows in the upgrade-parity fixture and preserves their existing fields', async () => {
+  const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
+  const step = SCHEMA_STEPS.find(step => step.version === 93)!;
+  expect(step).toBeDefined();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-schema-upgrade-record-pin-'));
+  const file = path.join(root, 'previous.sqlite');
+  try {
+    const previous = new Database(file);
+    try {
+      for (const prior of SCHEMA_STEPS.filter(prior => prior.version < step.version)) for (const sql of prior.statements) previous.exec(sql);
+    } finally { previous.close(); }
+    const tables = seedPreviousSchema(file, step.statements, step.version);
+    expect(tables).toContain('transcripts');
+    const upgrading = new Database(file);
+    let before: Record<string, unknown>[];
+    let previousRows: Record<string, string>;
+    try {
+      before = upgrading.query('SELECT * FROM transcripts ORDER BY transcript_id').all() as Record<string, unknown>[];
+      previousRows = tableRows(upgrading, tables);
+      for (const sql of step.statements) upgrading.exec(sql);
+    } finally { upgrading.close(); }
+    const db = new Database(file);
+    try {
+      const rows = () => db.query('SELECT * FROM transcripts ORDER BY transcript_id').all() as Record<string, unknown>[];
+      expect(before.map(row => [row.transcript_id, row.parsed_offset, row.parser_version])).toEqual([
+        ['upgrade_transcript_read', 10, 5], ['upgrade_transcript_unread', 0, 0],
+      ]);
+      expect(tableRows(db, tables).transcripts).not.toEqual(previousRows.transcripts);
+      expect(rows()).toEqual(before.map(row => ({ ...row, record_identity_scheme: 'legacy-session-v1' })));
+      expect(() => db.exec("UPDATE transcripts SET record_identity_scheme = 'source-record-v1'")).toThrow('record_identity_scheme_immutable');
+      expect(rows()).toEqual(before.map(row => ({ ...row, record_identity_scheme: 'legacy-session-v1' })));
+    } finally { db.close(); }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

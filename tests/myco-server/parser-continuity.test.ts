@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
 import { READ_BEFORE_PIN } from '@myco-server-worker/ingest/prompt-scheme.js';
+import { DECLARED_RECORD_SCHEMES } from '@myco-server-worker/ingest/record-scheme.js';
+import { LEGACY_RECORD_ID_SCHEME } from '@goondocks/myco-shared/record-identity';
 import type { DerivedEvent, ParsedLine } from '@myco-server-worker/ingest/parsers/index.js';
 import { canonicalPromptId, type TurnSubmission } from '@goondocks/myco-shared/prompt-identity';
 import { uuidv5 } from '@myco-server-worker/hash.js';
@@ -18,6 +20,32 @@ function linesOf(values: Record<string, unknown>[]): ParsedLine[] {
 }
 
 describe('incremental parser continuation', () => {
+  for (const agent of ['opencode', 'cline']) {
+    for (const [pin, recordScheme] of [['legacy', LEGACY_RECORD_ID_SCHEME], ['current', DECLARED_RECORD_SCHEMES[agent]!]] as const) {
+      it(`${agent}: the registered wrapper extracts response and tool sources under the ${pin} pin`, async () => {
+        const events = await PARSERS[agent]!.parse({
+          transcriptId: 'tx_plugin_pinned', recordScheme, scheme: READ_BEFORE_PIN[agent]!,
+          sessionId: 'plugin-pinned', now: NOW, lines: linesOf(records[agent]!),
+        });
+        const replies = events.filter(event => event.kind === 'response');
+        expect(replies).toHaveLength(1);
+        expect(replies[0]!.payload.text).toBe('first\n\nsecond');
+        const tools = events.filter(event => event.kind === 'tool.use');
+        expect(tools).toHaveLength(1);
+        expect(tools[0]!.payload).toMatchObject({ toolName: 'Read', output: 'ok', success: true });
+        for (const event of [...replies, ...tools]) {
+          expect(event.source).toEqual({ position: true, block: 0 });
+          expect(event.legacyId).toBeString();
+          expect(event.payload).not.toHaveProperty('source');
+          const id = event.kind === 'response' ? event.payload.responseId : event.payload.toolCallId;
+          expect(id).toBeString();
+          if (pin === 'legacy') expect(id).toBe(event.legacyId);
+          else expect(id).not.toBe(event.legacyId);
+        }
+      });
+    }
+  }
+
   for (const agent of ['claude-code', 'codex', 'pi']) {
     it(`${agent}: a terminal read records unanswered calls and a late result retains their identity`, async () => {
       const parser = PARSERS[agent];
