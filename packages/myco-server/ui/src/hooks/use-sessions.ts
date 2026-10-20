@@ -336,13 +336,18 @@ export function useLiveSessions(filters: Omit<SessionListFilters, 'state' | 'act
   });
 }
 
-/** A named turn or its steering parent, resolved without walking prior pages. */
-export function useNamedTurn(projectId: string, sessionId: string, promptId: string | null) {
-  return useQuery({
+/** The read of a named turn or its steering parent, resolved without walking prior pages. */
+export function namedTurnQuery(projectId: string, sessionId: string, promptId: string | null) {
+  return {
     queryKey: ['turns', projectId, sessionId, 'named', promptId],
     enabled: promptId !== null,
-    queryFn: ({ signal }) => fetchJson<{ rows: TurnRow[]; cursor: string | null }>(`${project(projectId)}/sessions/${seg(sessionId)}/turns?origins=${PROMPT_ORIGINS.join(',')}&turn=${seg(promptId!)}`, signal),
-  });
+    queryFn: ({ signal }: { signal: AbortSignal }) => fetchJson<{ rows: TurnRow[]; cursor: string | null }>(`${project(projectId)}/sessions/${seg(sessionId)}/turns?origins=${PROMPT_ORIGINS.join(',')}&turn=${seg(promptId!)}`, signal),
+  };
+}
+
+/** A named turn or its steering parent, resolved without walking prior pages. */
+export function useNamedTurn(projectId: string, sessionId: string, promptId: string | null) {
+  return useQuery(namedTurnQuery(projectId, sessionId, promptId));
 }
 
 /** How many turns one page of the conversation's read holds. */

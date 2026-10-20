@@ -396,6 +396,49 @@ test.describe('Sessions', () => {
   }
 
   for (const viewport of ['desktop', 'phone'] as const) {
+    test(`searching a session's conversation ${viewport}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the session is the fixture’s');
+      const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode: 'light', cookie: screensEnv('ownerCookie') });
+      try {
+        await watch.navigate(() => openTable(page, viewport));
+        await watch.navigate(() => openOutcomeSession(page));
+        const box = page.getByRole('searchbox', { name: 'Search the conversation' });
+        await expect(box).toBeVisible();
+
+        // The prompt and the reply that said it, each leading to the turn they belong to.
+        await box.fill('fixed port');
+        await expect(page).toHaveURL(/\?q=fixed\+port$/);
+        const matches = page.getByRole('list', { name: 'Matches' }).getByRole('listitem');
+        await expect(matches).toHaveCount(2);
+        const prompt = matches.filter({ hasText: 'Prompt' });
+        const reply = matches.filter({ hasText: 'Reply' });
+        await expect(prompt).toContainText('Stop reserving a fixed port');
+        await expect(reply).toContainText('Done: stop reserving a fixed port');
+        await expect(reply).toContainText('In reply to “Stop reserving a fixed port”');
+        await expect(page.getByRole('list', { name: 'Conversation', exact: true })).toHaveCount(0);
+        await expectListState(page, viewport, 'session-conversation-search');
+
+        await box.fill('qqzzxx');
+        await expect(page.getByText('Nothing said in this session matches “qqzzxx”.')).toBeVisible();
+        await expectListState(page, viewport, 'session-conversation-search-none');
+
+        // A hit opens its turn, and the search is left behind.
+        await box.fill('fixed port');
+        await expect(matches).toHaveCount(2);
+        await reply.getByRole('link').click();
+        await expect(page).toHaveURL(/\/sessions\/[^/?]+\?turn=[^&]+$/);
+        const conversation = page.getByRole('list', { name: 'Conversation', exact: true });
+        await expect(conversation.getByText('Stop reserving a fixed port', { exact: true })).toBeInViewport();
+        await expect(page.getByRole('searchbox', { name: 'Search the conversation' })).toHaveValue('');
+        await expectListState(page, viewport, 'session-conversation-search-opened');
+        expectQuiet(watch);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  for (const viewport of ['desktop', 'phone'] as const) {
     test(`an admin's session actions ${viewport}`, async ({ browser }) => {
       test.skip(!onFixture(), 'the session is the fixture’s');
       const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode: 'dark', cookie: screensEnv('ownerCookie') });

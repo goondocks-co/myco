@@ -60,7 +60,7 @@ export function outcomeRows({ observations, release }: SessionCommits, now: numb
   const end = observations.find((o) => o.point === 'session_end');
   const same = start !== undefined && end !== undefined && start.headSha === end.headSha;
   const covered = release?.covers?.current === true ? release.covers.point : null;
-  const rows: SessionEventRow[] = observations.map((observation) => {
+  const rows: (SessionEventRow & { at: number })[] = observations.map((observation) => {
     const detail = [
       observation.point === 'session_end' && same ? SAME_HEAD : null,
       release !== null && covered === observation.point ? containmentWords(release, now) : null,
