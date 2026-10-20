@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: #1894 PR 3 focused npm test, Bun 1.4.3 darwin-arm64; status 1750ms and attention 366ms, rounded above 2x plus startup; parity scenario floor includes target startup allowance",
     "local: #1907 correction 1 ledger concurrency npm test, Bun 1.4.0 darwin-arm64; 1200ms covers twice measured 464ms plus startup",
     "local: #1901 PR 3 legacy-ledger focused npm test, Bun 1.4.3 darwin-arm64; 500ms covers twice measured 108ms plus startup",
     "local: #1901 PR 1 member reconciliation files, Bun 1.4.3 darwin-arm64; 2x measured file duration plus startup",
@@ -825,7 +826,9 @@
     "tests/myco-server/reconciliation-runtime.test.ts": 1800,
     "tests/myco-server/reconciliation-schema.test.ts": 1800,
     "tests/myco-server/server-reconciliation.test.ts": 200,
-    "tests/utils/order-stamp.test.ts": 100
+    "tests/utils/order-stamp.test.ts": 100,
+    "tests/cli/server-prompt-references.test.ts": 4000,
+    "tests/myco-server/prompt-reference-attention.test.ts": 1000
   },
   "parity": {
     "D1: latest migration upgrades seeded previous schema to expected state": 45000,
@@ -906,6 +909,7 @@
     "recall gold set: real prompts served through the shipped path hold to the recorded baseline": 108000,
     "embedding switch: search answers by meaning at every step and moves only once the new model covers every source": 56000,
     "model lists: a machine's list is kept, replaced, answered to Settings and forgotten once stale": 10000,
-    "runners: explicit per-agent stored sign-in, own default and unavailable credential holds": 60000
+    "runners: explicit per-agent stored sign-in, own default and unavailable credential holds": 60000,
+    "prompt references: attention excludes in-flight asks and reports missing prompts, mismatches and per-agent shares": 15000
   }
 }

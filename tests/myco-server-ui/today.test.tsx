@@ -472,6 +472,80 @@ describe('Today', () => {
     expect([...names.values()]).toEqual(['Your machine', 'Another of your machines', 'Lin']);
   });
 
+  for (const width of [1280, 390]) it(`words missing prompt links and their sample accessibly at ${width}px`, async () => {
+    screenWidth(width);
+    const item: AttentionItem = { kind: 'prompt_references', tone: 'warn', since: NOW - 7 * 24 * HOUR, total: 2,
+      dangling: { receipt_selected: 1, answer_selected: 0, receipt_delivered: 1, answer_delivered: 0 },
+      agents: [{ agent: 'codex', asks: 4, sessionScoped: 2, scopeReasons: { absent_key: { asks: 1, share: 0.25 }, steering: { asks: 1, share: 0.25 } }, legacy: 1, sessionScopedShare: 0.5, legacyShare: 0.25, keyMismatches: 1 }] };
+    server(day({ attention: { items: [item], unavailable: [] } }));
+    mount('/');
+    const title = 'Some context Myco added can’t be shown on its prompt';
+    if (width === 390) {
+      const control = await screen.findByRole('button', { name: new RegExp(title) });
+      expect(control.textContent).toContain(title);
+      expect(control).toHaveAccessibleName(new RegExp(title));
+      fireEvent.click(control);
+    }
+    const headings = await screen.findAllByText(title);
+    const row = headings.map(heading => heading.closest('[data-needs-you-item]')).find(Boolean)!;
+    expect(row.querySelectorAll('p')[1]!.textContent).toBe('In the last 7 days, 2 records of context Myco added name a prompt this server never received, so their sessions can’t show them on that prompt. 1 Codex prompt was recorded with different text than the agent sent. Codex: of 4 requests for context, 2 weren’t tied to one prompt (1 had no prompt id from the agent, 1 was sent mid-turn), and 1 came from a machine that hasn’t updated. Those requests are expected.');
+    expect(row.textContent).toContain('1 came from a machine that hasn’t updated');
+    expect(row.textContent).toContain('1 Codex prompt was recorded with different text than the agent sent.');
+    expect(row.textContent).toContain('1 had no prompt id from the agent');
+    expect(row.textContent).not.toMatch(/dangling|receipt|v1|spore_injections|Deployment|session-wide|text mismatch|older members|spore selections/);
+    expect(within(row as HTMLElement).getByRole('link', { name: 'Open Health →' }).getAttribute('href')).toBe('/status/health#measures');
+  });
+
+  it('words a text mismatch with no missing reference and names an unreadable prompt check', async () => {
+    const item: AttentionItem = { kind: 'prompt_references', tone: 'warn', since: NOW - 7 * 24 * HOUR, total: 0,
+      dangling: { receipt_selected: 0, answer_selected: 0, receipt_delivered: 0, answer_delivered: 0 },
+      agents: [{ agent: 'codex', asks: 1, sessionScoped: 0, scopeReasons: {}, legacy: 0, sessionScopedShare: 0, legacyShare: 0, keyMismatches: 1 }] };
+    expect(attentionWords(item, NOW, () => null)).toEqual({ title: 'Some prompts were recorded with different text than the agent sent',
+      detail: 'In the last 7 days, 1 Codex prompt was recorded with different text than the agent sent.', action: { label: 'Open Health', to: '/status/health#measures' } });
+    screenWidth(1280);
+    server(day({ attention: { items: [], unavailable: ['prompt_references'] } }));
+    mount('/');
+    expect(await screen.findByText('Couldn’t check prompt links just now.')).toBeTruthy();
+  });
+
+  it('leaves zero clauses and unremarkable agents out, and names unknown agents and Pi', () => {
+    const base: AttentionItem = { kind: 'prompt_references', tone: 'warn', since: NOW - 7 * 24 * HOUR, total: 0,
+      dangling: { receipt_selected: 0, answer_selected: 0, receipt_delivered: 0, answer_delivered: 0 },
+      agents: [
+        { agent: 'claude-code', asks: 120, sessionScoped: 0, scopeReasons: {}, legacy: 0, sessionScopedShare: 0, legacyShare: 0, keyMismatches: 0 },
+        { agent: '', asks: 1, sessionScoped: 0, scopeReasons: {}, legacy: 0, sessionScopedShare: 0, legacyShare: 0, keyMismatches: 1 },
+        { agent: 'pi', asks: 1, sessionScoped: 0, scopeReasons: {}, legacy: 0, sessionScopedShare: 0, legacyShare: 0, keyMismatches: 1 },
+      ] };
+    const words = attentionWords(base, NOW, () => null);
+    expect(words.detail).toBe('In the last 7 days, 1 prompt from an agent was recorded with different text than the agent sent. 1 Pi prompt was recorded with different text than the agent sent.');
+    const singular = attentionWords({ ...base, total: 1, agents: [] }, NOW, () => null);
+    expect(singular.detail).toBe('In the last 7 days, 1 record of context Myco added names a prompt this server never received, so its session can’t show it on that prompt.');
+  });
+
+  it('puts mismatches before request context when the first agent only has requests', async () => {
+    const item: AttentionItem = { kind: 'prompt_references', tone: 'warn', since: NOW - 7 * 24 * HOUR, total: 0,
+      dangling: { receipt_selected: 0, answer_selected: 0, receipt_delivered: 0, answer_delivered: 0 },
+      agents: [
+        { agent: 'claude-code', asks: 120, sessionScoped: 3, scopeReasons: { steering: { asks: 3, share: 0.025 } }, legacy: 0, sessionScopedShare: 0.025, legacyShare: 0, keyMismatches: 0 },
+        { agent: 'codex', asks: 1, sessionScoped: 0, scopeReasons: {}, legacy: 0, sessionScopedShare: 0, legacyShare: 0, keyMismatches: 1 },
+      ] };
+    screenWidth(1280);
+    server(day({ attention: { items: [item], unavailable: [] } }));
+    mount('/');
+    const title = await screen.findByText('Some prompts were recorded with different text than the agent sent');
+    const row = title.closest('[data-needs-you-item]')!;
+    expect(row.querySelectorAll('p')[1]!.textContent).toBe('In the last 7 days, 1 Codex prompt was recorded with different text than the agent sent. Claude Code: of 120 requests for context, 3 weren’t tied to one prompt (3 were sent mid-turn). Those requests are expected.');
+  });
+
+  it('pluralises prompt request predicates without colons inside the reason list', () => {
+    const item: AttentionItem = { kind: 'prompt_references', tone: 'warn', since: NOW - 7 * 24 * HOUR, total: 0,
+      dangling: { receipt_selected: 0, answer_selected: 0, receipt_delivered: 0, answer_delivered: 0 },
+      agents: [{ agent: 'codex', asks: 10, sessionScoped: 8,
+        scopeReasons: { absent_key: { asks: 2, share: 0.2 }, steering: { asks: 2, share: 0.2 }, scheme: { asks: 2, share: 0.2 }, transcript_only: { asks: 2, share: 0.2 } },
+        legacy: 2, sessionScopedShare: 0.8, legacyShare: 0.2, keyMismatches: 2 }] };
+    expect(attentionWords(item, NOW, () => null).detail).toBe('In the last 7 days, 2 Codex prompts were recorded with different text than the agent sent. Codex: of 10 requests for context, 8 weren’t tied to one prompt (2 had no prompt id from the agent, 2 were sent mid-turn, 2 came from an agent version Myco can’t match yet, 2 were matched from the transcript instead), and 2 came from machines that haven’t updated. Those requests are expected.');
+  });
+
   it('gives an admin "Needs you", each item with its problem, detail and one action', async () => {
     screenWidth(1280);
     server(day());

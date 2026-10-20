@@ -38,8 +38,8 @@ export function danglingReferenceSql(kind: PromptReferenceKind): string {
 
 /** How many references of each kind, created at or after `from`, name a prompt the Deployment does not hold. */
 export async function danglingPromptReferences(db: RelationalStore, from: number): Promise<Record<PromptReferenceKind, number>> {
-  const results = await db.batch(PROMPT_REFERENCE_KINDS.map((kind) => db.prepare(danglingReferenceSql(kind)).bind(from)));
-  return Object.fromEntries(PROMPT_REFERENCE_KINDS.map((kind, i) => [kind, (results[i]!.results[0] as { n: number } | undefined)?.n ?? 0])) as Record<PromptReferenceKind, number>;
+  const results = await Promise.all(PROMPT_REFERENCE_KINDS.map((kind) => db.prepare(danglingReferenceSql(kind)).bind(from).first<{ n: number }>()));
+  return Object.fromEntries(PROMPT_REFERENCE_KINDS.map((kind, i) => [kind, results[i]?.n ?? 0])) as Record<PromptReferenceKind, number>;
 }
 
 /**
