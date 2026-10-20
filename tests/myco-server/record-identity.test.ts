@@ -2,12 +2,12 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
-import { parseTranscripts, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
+import { parseTranscripts, TRANSCRIPT_IDLE_MS, PARSE_STOP_GENERATION } from '@myco-server-worker/ingest/parse.js';
 import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
 import { sqliteEnv, blobPost, memberPost } from './helpers/fixtures.js';
 import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import fs from 'node:fs';
-import { deriveLegacyRecordId, type RecordIdScheme } from '@goondocks/myco-shared/record-identity';
+import { deriveLegacyRecordId, RecordSourceInvalid, type RecordIdScheme } from '@goondocks/myco-shared/record-identity';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { parserCheckpointStatements, readParserCheckpoint } from '@myco-server-worker/ingest/parser-checkpoint.js';
 import type { DerivedEvent, ParserInput, ParserState } from '@myco-server-worker/ingest/parsers/index.js';
@@ -291,10 +291,81 @@ describe('record source continuation and pure extraction', () => {
     }
   });
 
+  for (const recordScheme of ['legacy-session-v1', 'source-record-v1'] as const) {
+    it(`Pi ${recordScheme}: keyless invocations are skipped and the remaining transcript is parsed`, async () => {
+      const e = await rig('pi');
+      const tx = 'tx_11111111111111111111111111111111';
+      try {
+        if (recordScheme === 'legacy-session-v1') e.sqlite.run(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,agent,size,segment_count,first_received_at,last_received_at,token_id,prompt_identity_scheme)
+          VALUES ('proj_1',?,?,'machine_1','pi',0,0,0,0,'mt_x','offset-v1')`, [tx, SESSION]);
+        await e.ship(tx, line({ type: 'message', id: 'pi-reply', message: { role: 'assistant', content: [
+          { type: 'toolCall', name: 'Read', arguments: {} }, { type: 'toolCall', id: '', name: 'Read', arguments: {} },
+          { type: 'text', text: 'remaining reply' },
+        ] } }));
+        await e.settle();
+        expect(e.responses().map(row => (row as { text: string }).text)).toEqual(['remaining reply']);
+        expect(e.sqlite.query('SELECT COUNT(*) AS n FROM tool_calls').get()).toEqual({ n: 0 });
+        expect(e.sqlite.query('SELECT record_identity_scheme, parsed_offset = size AS complete FROM transcripts').get())
+          .toEqual({ record_identity_scheme: recordScheme, complete: 1 });
+      } finally { e.sqlite.close(); }
+    });
+  }
+
+  for (const variant of ['stored', 'record'] as const) {
+    it(`an invalid ${variant} source stops only its transcript with a content-free identity branch`, async () => {
+      const e = await rig('claude-code');
+      try {
+        const bad = 'tx_11111111111111111111111111111111';
+        const good = 'tx_22222222222222222222222222222222';
+        await e.ship(bad, variant === 'record' ? line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'key\0invalid', name: 'Read', input: {} }] } }) : reply('claude-code', 'invalid-source-content', 'key'));
+        if (variant === 'stored') e.sqlite.run('UPDATE transcripts SET parser_context = ? WHERE transcript_id = ?', [JSON.stringify({
+          mycoParserState: { reply: { parts: [{ text: 'held-source-content', offset: 0, createdAt: NOW, source: { key: 'key', block: -1 } }], chars: 19, bytes: 19 } },
+        }), bad]);
+        await e.ship(good, reply('claude-code', 'healthy reply', 'healthy-key'));
+        await parseTranscripts(e.serverEnv, NOW + TRANSCRIPT_IDLE_MS * 2);
+        const row = e.sqlite.query('SELECT parsed_offset, parse_error, parser_context FROM transcripts WHERE transcript_id = ?').get(bad) as { parsed_offset: number; parse_error: string; parser_context: string };
+        expect(row).toMatchObject({ parsed_offset: 0, parse_error: 'parse' });
+        expect(JSON.parse(row.parser_context).mycoParserFailure).toEqual({ branch: 'record_source_invalid', offset: 0, lineKind: 'unknown', generation: PARSE_STOP_GENERATION });
+        expect(e.responses().map(row => (row as { text: string }).text)).toEqual(['healthy reply']);
+      } finally { e.sqlite.close(); }
+    });
+  }
+
+  it('legacy tool ids use their retained rule when the current declaration changes tool paths', async () => {
+    const declaration = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === 'claude-code')!.recordIdentity!;
+    const original = { scheme: declaration.scheme, schemes: declaration.schemes };
+    try {
+      Object.assign(declaration, { scheme: 'source-record-v2', schemes: { ...declaration.schemes, 'source-record-v2': {
+        ...declaration.schemes['source-record-v1'], 'tool-call': {
+          key: { from: 'call', path: 'replacement' }, resultKey: { from: 'result', path: 'replacement' }, evidence: 'synthetic',
+        },
+      } } });
+      const events = await PARSERS['claude-code'].parse({ ...input('legacy-session-v1'), lines: [
+        { offset: 0, value: { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'legacy-call', replacement: 'current-call', name: 'Read', input: {} }] } } },
+        { offset: 100, value: { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'legacy-call', replacement: 'current-call', content: 'ok' }] } } },
+      ] });
+      expect(events).toHaveLength(1);
+      expect(events[0].source).toEqual({ key: 'legacy-call', block: 0 });
+      expect(events[0].payload.toolCallId).toBe(await deriveLegacyRecordId(uuidv5, { kind: 'tool-call', sessionId: SESSION, offset: 0, source: { key: 'legacy-call', block: 0 } }));
+    } finally { Object.assign(declaration, original); }
+  });
+
+  it('a restored legacy reply with no source facts emits no invented positional source', async () => {
+    const state: ParserState = {};
+    await PARSERS['claude-code'].parse({ ...input('legacy-session-v1'), state, lines: [
+      { offset: 12, value: { type: 'assistant', uuid: 'key', message: { content: [{ type: 'text', text: 'held' }] } } },
+    ] });
+    const events = await PARSERS['claude-code'].parse({ ...input('legacy-session-v1'), state: JSON.parse(JSON.stringify(state)), lines: [], terminal: 'complete_file' });
+    expect(events).toHaveLength(1);
+    expect(events[0].payload.text).toBe('held');
+    expect(events[0].source).toBeUndefined();
+    expect(events[0].payload.responseId).toBe(events[0].legacyId);
+  });
+
   it('a new-scheme checkpoint with an absent source fails instead of substituting an offset', async () => {
     await expect(PARSERS['claude-code'].parse({ ...input(), lines: [], terminal: 'complete_file', state: {
       reply: { parts: [{ text: 'held', offset: 12, createdAt: NOW }], chars: 4, bytes: 4 },
-    } })).rejects.toThrow('Stored reply source is invalid');
+    } })).rejects.toThrow(RecordSourceInvalid);
   });
 
   it('tool shapes with no declared key leave the remaining source record readable under every pin', async () => {

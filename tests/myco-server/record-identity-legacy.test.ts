@@ -75,6 +75,7 @@ describe('frozen parser identity compatibility', () => {
       for (let split = 0; split <= lines.length; split += 1) {
         const state: ParserState = {};
         const first = await records(agent, lines.slice(0, split), state);
+        expect(JSON.stringify(state)).toBe(vector.checkpoints[split]!);
         const restored = JSON.parse(JSON.stringify(state)) as ParserState;
         const priorPrompt = first.filter(event => event.kind === 'prompt' && event.opensTurn !== false).at(-1)?.payload.promptId;
         const second = await records(agent, lines.slice(split), restored, 'complete_file', typeof priorPrompt === 'string' ? priorPrompt : undefined);
@@ -132,6 +133,22 @@ describe('frozen parser identity compatibility', () => {
         await parseTranscripts(restored.serverEnv, NOW + TRANSCRIPT_IDLE_MS + 3);
         expect<unknown>(projected(restored.sqlite)).toEqual(expected);
       } finally { sqlite.close(); fixture.sqlite.close(); restored.sqlite.close(); }
+    });
+  }
+
+  for (const vector of frozen.edges) {
+    it(`${vector.fixture}: preserves baseline logical IDs, event IDs and serialized checkpoint bytes at every split`, async () => {
+      const lines = fixtureLines(vector.fixture);
+      expect<unknown>(await identities(await records(vector.agent, lines))).toEqual(vector.events);
+      for (let split = 0; split <= lines.length; split += 1) {
+        const state: ParserState = {};
+        const first = await records(vector.agent, lines.slice(0, split), state);
+        const encoded = JSON.stringify(state);
+        expect(encoded).toBe(vector.checkpoints[split]!);
+        const priorPrompt = first.filter(event => event.kind === 'prompt' && event.opensTurn !== false).at(-1)?.payload.promptId;
+        const second = await records(vector.agent, lines.slice(split), JSON.parse(encoded), 'complete_file', typeof priorPrompt === 'string' ? priorPrompt : undefined);
+        expect<unknown>({ split, ids: sorted(await identities([...first, ...second])) }).toEqual({ split, ids: sorted(vector.events) });
+      }
     });
   }
 });

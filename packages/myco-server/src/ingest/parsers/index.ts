@@ -155,17 +155,18 @@ export function optionalRecordSource(input: ParserInput, agent: string, request:
   }
 }
 
-type RecordFacts = { source: ReplySource; offset: number } & (
+type RecordCoordinates = { offset: number } & (
   | { kind: 'response' | 'tool-call' }
   | { kind: 'plan'; tag: string; coordinate: readonly (string | number)[]; legacyPosition: number }
 );
+type RecordFacts = RecordCoordinates & { source: ReplySource };
 /** The registry mints a record after the parser extracts its declared source. */
 export async function recordId(input: ParserInput, agent: string, request: RecordFacts): Promise<string> {
   return canonicalRecordId(uuidv5, { ...request, scheme: input.recordScheme, sessionId: input.sessionId, transcriptId: input.transcriptId, agent });
 }
 
 /** The compatibility identity of the same extracted record. */
-export async function legacyRecordId(input: ParserInput, request: RecordFacts): Promise<string> {
+export async function legacyRecordId(input: ParserInput, request: RecordCoordinates & { source?: ReplySource }): Promise<string> {
   return deriveLegacyRecordId(uuidv5, { ...request, sessionId: input.sessionId });
 }
 
@@ -334,7 +335,7 @@ export const truncationMarker = (dropped: number): string => `${REPLY_SEPARATOR}
 
 /** The largest `response.text` the catalogue admits, in characters. */
 function responseTextChars(): number {
-  const bound = kindSpec({ kind: 'response' })?.fields.text?.bound;
+  const bound = kindSpec('response')?.fields.text?.bound;
   if (bound?.type !== 'string') throw new Error('the catalogue holds no string bound on response.text');
   return bound.max;
 }

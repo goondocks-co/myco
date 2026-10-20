@@ -140,5 +140,25 @@ export const recordIdentity: ParityScenario = {
     expect(Number(unresolvedCalls[0].n)).toBe(0);
     expect(Number((await target.sql(`SELECT COUNT(*) AS n FROM tags t LEFT JOIN plans p ON p.project_id=t.project_id AND p.plan_key=t.entity_id
       WHERE t.project_id=${lit(target.projectId)} AND t.entity_kind='plan' AND t.entity_id IN (SELECT plan_key FROM plans WHERE ${where}) AND p.plan_key IS NULL`))[0].n)).toBe(0);
+
+    const piIds = [0, 1].map(() => `tx_${crypto.randomUUID().replaceAll('-', '')}`);
+    const piLegacy = { ...oldRow, transcript_id: piIds[0], agent: 'pi', prompt_identity_scheme: 'offset-v1' };
+    expect((await ownerPost('/api/backups/restore-upload', { artifact: artifact([piLegacy]) })).status).toBe(200);
+    for (const transcriptId of piIds) await ship(transcriptId, 'pi', [
+      { type: 'message', message: { role: 'user', content: 'Pi parity prompt' } },
+      { type: 'message', id: `pi-reply-${transcriptId}`, message: { role: 'assistant', content: [
+        { type: 'toolCall', name: 'Read', arguments: {} }, { type: 'toolCall', id: '', name: 'Read', arguments: {} },
+        { type: 'text', text: 'Pi keyless call skipped' },
+      ] } },
+      { type: 'message', message: { role: 'user', content: 'Pi parity next' } },
+    ]);
+    await settle();
+    expect(await target.sql(`SELECT record_identity_scheme, parsed_offset = size AS complete, parse_error FROM transcripts
+      WHERE ${where} AND transcript_id IN (${piIds.map(lit).join(',')}) ORDER BY record_identity_scheme`)).toEqual([
+      { record_identity_scheme: LEGACY, complete: 1, parse_error: null },
+      { record_identity_scheme: SOURCE, complete: 1, parse_error: null },
+    ]);
+    expect((await replies()).filter(row => row.text === 'Pi keyless call skipped').length).toBe(2);
+    expect(Number((await target.sql(`SELECT COUNT(*) AS n FROM tool_calls WHERE ${where}`))[0].n)).toBe(2);
   },
 };

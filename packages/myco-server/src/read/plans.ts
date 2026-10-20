@@ -38,7 +38,7 @@ export function progressOf(content: string | null): string {
 }
 
 const COLUMNS = `plan_key, session_id, prompt_id, title, status, content, blob_key,
-  CASE WHEN ${processedResourceProofSql('plans.project_id', { kind: 'plan' }, 'plans.plan_key', 'plans.blob_key')}
+  CASE WHEN ${processedResourceProofSql('plans.project_id', 'plan', 'plans.plan_key', 'plans.blob_key')}
     THEN ${registeredObjectKeySql('plans.project_id', 'plans.blob_key')} END AS object_key,
   origin_path, updated_by, created_at, updated_at`;
 

@@ -34,7 +34,7 @@ import { envelopeHash, planEventWrite, type EventWrite, type IngestResult } from
 import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import { declaredScheme, SCHEME_GENERATION_SQL, schemeGeneration } from './prompt-scheme.js';
-import { isRecordIdScheme, RecordKindUndeclared } from '@goondocks/myco-shared/record-identity';
+import { isRecordIdScheme, RecordIdentityError } from '@goondocks/myco-shared/record-identity';
 import { isPromptIdScheme, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { datedAt, isBlock, promptOwners, withoutPrompts, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput, type PromptOwners } from './parsers/index.js';
 import type { TranscriptRole } from '@goondocks/myco-shared/member-protocol';
@@ -372,12 +372,12 @@ async function finalizePass(db: RelationalStore, target: ParseTarget, statement:
 
 /** A content-free description of the record where reading stopped. */
 export interface ParseDiagnostic {
-  branch: 'malformed_lines' | 'event_not_stored' | 'no_progress' | 'event_refused' | 'blob_absent' | 'record_too_large' | 'scheme_unread' | 'scheme_conflict' | 'record_kind_undeclared' | 'record_identity_scheme_unsupported';
+  branch: 'malformed_lines' | 'event_not_stored' | 'no_progress' | 'event_refused' | 'blob_absent' | 'record_too_large' | 'scheme_unread' | 'scheme_conflict' | 'record_kind_undeclared' | 'record_source_invalid' | 'record_identity_scheme_unsupported';
   offset: number;
   lineKind: string;
 }
 
-const FAILURE_BRANCHES = new Set(['malformed_lines', 'event_not_stored', 'no_progress', 'event_refused', 'blob_absent', 'record_too_large', 'scheme_unread', 'scheme_conflict', 'record_kind_undeclared', 'record_identity_scheme_unsupported']);
+const FAILURE_BRANCHES = new Set(['malformed_lines', 'event_not_stored', 'no_progress', 'event_refused', 'blob_absent', 'record_too_large', 'scheme_unread', 'scheme_conflict', 'record_kind_undeclared', 'record_source_invalid', 'record_identity_scheme_unsupported']);
 const LINE_KINDS = new Set(['user', 'assistant', 'attachment', 'session_meta', 'turn_context', 'event_msg', 'response_item', 'system', 'progress']);
 function lineKind(line: ParsedLine | undefined): string {
   if (line === undefined) return 'unknown';
@@ -813,8 +813,8 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   const admittedDerive = async () => {
     try { return await derive(); }
     catch (error) {
-      if (!(error instanceof RecordKindUndeclared)) throw error;
-      await stop(env.db, target, 'parse', now, undefined, { branch: 'record_kind_undeclared', offset: target.parsedOffset, lineKind: 'unknown' });
+      if (!(error instanceof RecordIdentityError)) throw error;
+      await stop(env.db, target, 'parse', now, undefined, { branch: error.code, offset: target.parsedOffset, lineKind: 'unknown' });
       calls += 1;
       return null;
     }

@@ -31,20 +31,20 @@ export interface RecordIdentityDeclaration {
 }
 export type ReplySource = { key: string; thread?: string; block: number } | { position: true; block: number };
 
-export class RecordKindUndeclared extends Error {
-  readonly code = 'record_kind_undeclared';
-  constructor() { super('Record kind is not declared'); this.name = 'RecordKindUndeclared'; }
+export class RecordIdentityError extends Error {
+  constructor(readonly code: 'record_kind_undeclared' | 'record_source_invalid' | 'record_identity_scheme_unsupported', message: string) { super(message); }
 }
-export class RecordSourceInvalid extends Error {
-  readonly code = 'record_source_invalid';
-  constructor() { super('Record source is invalid'); this.name = 'RecordSourceInvalid'; }
+export class RecordKindUndeclared extends RecordIdentityError {
+  constructor() { super('record_kind_undeclared', 'Record kind is not declared'); this.name = 'RecordKindUndeclared'; }
+}
+export class RecordSourceInvalid extends RecordIdentityError {
+  constructor() { super('record_source_invalid', 'Record source is invalid'); this.name = 'RecordSourceInvalid'; }
 }
 export class RecordSourceAbsent extends RecordSourceInvalid {
   constructor() { super(); this.name = 'RecordSourceAbsent'; }
 }
-export class RecordIdentityDeclarationInvalid extends Error {
-  readonly code = 'record_identity_scheme_unsupported';
-  constructor() { super('Record identity declaration is unsupported'); this.name = 'RecordIdentityDeclarationInvalid'; }
+export class RecordIdentityDeclarationInvalid extends RecordIdentityError {
+  constructor() { super('record_identity_scheme_unsupported', 'Record identity declaration is unsupported'); this.name = 'RecordIdentityDeclarationInvalid'; }
 }
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const keyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && !value.includes('\0');
@@ -92,14 +92,12 @@ export function assertRecordIdentityDeclaration(_agent: string, declaration: unk
   }
 }
 
-/** Checks pinned-kind admission before selecting the source field declaration. */
+/** The retained field declaration for one pinned record kind. */
 export function recordSourceDeclaration(request: {
   declaration: RecordIdentityDeclaration | undefined; scheme: RecordIdScheme; kind: RecordKind;
 }): RecordSourceDeclaration {
   const { declaration, scheme, kind } = request;
-  if (declaration?.schemes[scheme]?.[kind] === undefined) throw new RecordKindUndeclared();
-  const sourceScheme = scheme === LEGACY_RECORD_ID_SCHEME ? declaration.scheme : scheme;
-  const rule = declaration.schemes[sourceScheme]?.[kind];
+  const rule = declaration?.schemes[scheme]?.[kind];
   if (rule === undefined) throw new RecordKindUndeclared();
   return rule;
 }
@@ -124,7 +122,9 @@ const readField = (field: RecordField, request: RecordSourceRequest): unknown =>
 
 /** Extracts declared source facts independently of the pinned derivation. */
 export function extractRecordSource(request: RecordSourceRequest): ReplySource {
-  const rule = recordSourceDeclaration(request);
+  const pinnedRule = recordSourceDeclaration(request);
+  const rule = request.scheme === LEGACY_RECORD_ID_SCHEME && request.kind !== 'tool-call'
+    ? recordSourceDeclaration({ ...request, scheme: request.declaration!.scheme }) : pinnedRule;
   const block = request.block ?? (rule.withinRecord?.startsWith('content-block') ? undefined : 0);
   if (!index(block) || (rule.withinRecord?.startsWith('record-text') && block !== 0)) throw new RecordSourceInvalid();
   const keyField = request.role === 'result' ? rule.resultKey ?? rule.key : rule.key;
@@ -154,25 +154,16 @@ export function recordPlanCoordinate(request: {
 export type LegacyRecordIdRequest =
   | { kind: 'response'; sessionId: string; offset: number }
   | { kind: 'tool-call'; sessionId: string; offset: number; source?: ReplySource }
-  | { kind: 'plan'; sessionId: string; tag: string; legacyPosition: number }
-  | { kind: 'plan'; sessionId: string; tag: string; legacyPromptId: string };
+  | { kind: 'plan'; sessionId: string; tag: string; legacyPosition: number };
 
-/** The compatibility derivation for parser rows and member plan tags. */
+/** The compatibility derivation for parser rows. */
 export function deriveLegacyRecordId<R>(hash: PromptIdHasher<R>, request: LegacyRecordIdRequest): R {
   switch (request.kind) {
     case 'response': return hash('response', request.sessionId, String(request.offset));
     case 'tool-call': return hash('tool-call', request.sessionId,
       request.source !== undefined && 'key' in request.source ? request.source.key : String(request.offset));
-    case 'plan': return 'legacyPromptId' in request
-      ? hash('plan-tag', request.sessionId, request.tag, 'prompt', request.legacyPromptId)
-      : hash('plan-tag', request.sessionId, request.tag, String(request.legacyPosition));
+    case 'plan': return hash('plan-tag', request.sessionId, request.tag, String(request.legacyPosition));
   }
-}
-/** Frozen response identities from imported legacy vault history. */
-export function legacyImportedResponseId<R>(hash: PromptIdHasher<R>, request: {
-  projectId: string; legacyId: string; identity: 'row' | 'event';
-}): R {
-  return hash('legacy', request.projectId, request.identity === 'row' ? 'response-id' : 'response', request.legacyId);
 }
 
 interface RecordRequestBase {

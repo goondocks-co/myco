@@ -1,0 +1,5 @@
+{"type":"message","message":{"role":"toolResult","toolName":"Read","content":"keyless result"}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"","toolName":"Read","content":"empty result"}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"orphan-call","toolName":"Read","content":"orphan output"}}
+{"type":"message","id":"pi-edge","message":{"role":"assistant","content":[{"type":"toolCall","name":"Read","arguments":{}},{"type":"toolCall","id":"","name":"Read","arguments":{}},{"type":"text","text":"kept reply"}]}}
+{"type":"message","message":{"role":"user","content":"next"}}

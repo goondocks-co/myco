@@ -111,7 +111,7 @@ const owned = (ctx: WriteContext, { table, keyColumn, key, owner }: Identity): S
 /** A member may reference only uploaded bytes they possess; server processing uses its recorded input. */
 const present = (ctx: WriteContext, key: string, retainedPlan?: string): SharedCheck => {
   const upload = rawMemberResourceSql('?', 'blob', '?', '(SELECT member_id FROM member_credentials WHERE id = ?)');
-  const retained = retainedPlan === undefined ? '' : ` OR ${processedResourceProofSql('?', { kind: 'plan' }, '?', '?')}`;
+  const retained = retainedPlan === undefined ? '' : ` OR ${processedResourceProofSql('?', 'plan', '?', '?')}`;
   const proof = ctx.processing === true ? '1 = 1' : `(${upload}${retained})`;
   const params = [ctx.projectId, key, ...(ctx.processing === true ? [] : [ctx.projectId, key, ctx.tokenId, ...(retainedPlan === undefined ? [] : [ctx.projectId, retainedPlan, key])])];
   return {

@@ -659,7 +659,7 @@ const CapabilitiesSchema = z.object({
  * stop hook and the dispatcher runs only that phase's work, leaving
  * the other phase's processing to its own event.
  */
-const StopPhaseSchema = z.enum({ response: 'response', transcript: 'transcript' });
+const StopPhaseSchema = z.enum(['response', 'transcript']);
 
 const HookEventDeclarationSchema = z.object({
   /**

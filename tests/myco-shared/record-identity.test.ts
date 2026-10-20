@@ -47,7 +47,7 @@ describe('record identity registry', () => {
   it('derives compatibility identities independently of new source IDs and preserves member plan wrappers', () => {
     expect(deriveLegacyRecordId(deriveId, { kind: 'response', sessionId: base.sessionId, offset: 123 })).toBe('46ac81ec-47dc-50af-8894-f65f9125e997');
     expect(planKeyForTag('s', 't', 2)).toBe(deriveLegacyRecordId(deriveId, { kind: 'plan', sessionId: 's', tag: 't', legacyPosition: 2 }));
-    expect(planKeyForPromptTag('s', 't', 'p')).toBe(deriveLegacyRecordId(deriveId, { kind: 'plan', sessionId: 's', tag: 't', legacyPromptId: 'p' }));
+    expect(planKeyForPromptTag('s', 't', 'p')).toBe('2a5bfc7b-9763-53b0-8f12-c44aaaab9150');
   });
 
   it('retains raw legacy source keys while rejecting NUL tuple components for new minting', () => {

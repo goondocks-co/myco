@@ -1,6 +1,6 @@
 import { ownedLines, unfinishedCalls, recordId, legacyRecordId, replyChunks, responseBound, REPLY_SEPARATOR,
   type DerivedEvent, type TranscriptParser, type ParserState, type ReplyPart } from './index.js';
-import { LEGACY_RECORD_ID_SCHEME, isReplySource } from '@goondocks/myco-shared/record-identity';
+import { LEGACY_RECORD_ID_SCHEME, isReplySource, RecordSourceInvalid } from '@goondocks/myco-shared/record-identity';
 import { utf8 } from '../../hash.js';
 
 /** Retained tool calls above this count become explicit failures. */
@@ -15,7 +15,7 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
     async parse(input) {
       const state: ParserState = input.state ?? {};
       if (input.recordScheme !== LEGACY_RECORD_ID_SCHEME && state.reply?.parts.some(part => !isReplySource(part.source))) {
-        throw new Error('Stored reply source is invalid');
+        throw new RecordSourceInvalid();
       }
       const events: DerivedEvent[] = [];
       let openPromptId = input.openPromptId;
@@ -24,12 +24,11 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
       const transcriptMeta = input.transcriptMeta ?? parser.headerContext?.(input.lines);
       const emitReply = async (parts: readonly ReplyPart[], promptId?: string): Promise<void> => {
         for (const part of replyChunks(parts)) {
-          if (input.recordScheme !== LEGACY_RECORD_ID_SCHEME && !isReplySource(part.source)) throw new Error('Reply source is invalid');
-          const source = part.source ?? { position: true, block: 0 };
-          const request = { kind: 'response' as const, source, offset: part.offset };
-          events.push({ kind: 'response', offset: part.offset, createdAt: part.createdAt, source,
-            legacyId: await legacyRecordId(input, request),
-            payload: { responseId: await recordId(input, parser.agent, request), promptId, text: part.text } });
+          if (input.recordScheme !== LEGACY_RECORD_ID_SCHEME && !isReplySource(part.source)) throw new RecordSourceInvalid();
+          const request = { kind: 'response' as const, offset: part.offset };
+          const legacyId = await legacyRecordId(input, request);
+          events.push({ kind: 'response', offset: part.offset, createdAt: part.createdAt, source: part.source, legacyId,
+            payload: { responseId: part.source === undefined ? legacyId : await recordId(input, parser.agent, { ...request, source: part.source }), promptId, text: part.text } });
         }
       };
       const flushReply = async (): Promise<void> => {

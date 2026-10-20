@@ -23,11 +23,94 @@ const REGISTRY = path.join(PACKAGES, 'myco-shared/src/record-identity.ts');
 const MANIFESTS = path.join(PACKAGES, 'myco/src/symbionts/manifests');
 const DOMAINS = new Set(['response', 'tool-call', 'plan-tag', ...[...fs.readFileSync(REGISTRY, 'utf8').matchAll(/['"](source-[a-z0-9-]+)['"]/g)].map(match => match[1]!)]);
 
+const symbolKey = (symbol: ts.Symbol): string | undefined => {
+  const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
+  return declaration && `${path.relative(PACKAGES, declaration.getSourceFile().fileName)}#${symbol.getName()}`;
+};
+const resolvedSymbol = (checker: ts.TypeChecker, node: ts.Node): ts.Symbol | undefined => {
+  const parent = node.parent;
+  const binding = ts.isBindingElement(parent) && (parent.propertyName ?? parent.name) === node && ts.isObjectBindingPattern(parent.parent)
+    && ts.isVariableDeclaration(parent.parent.parent) ? parent.parent.parent : undefined;
+  const symbol = binding?.initializer && ts.isIdentifier(node)
+    ? checker.getPropertyOfType(checker.getTypeAtLocation(binding.initializer), node.text)
+    : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
+      ? checker.getPropertyOfType(checker.getTypeAtLocation(node.expression), node.argumentExpression.text)
+      : ts.isShorthandPropertyAssignment(parent) ? checker.getShorthandAssignmentValueSymbol(parent) : checker.getSymbolAtLocation(node);
+  return symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0 ? checker.getAliasedSymbol(symbol) : symbol;
+};
+const RECORD_ENTRIES = new Set(['canonicalRecordId', 'deriveLegacyRecordId', 'canonicalPromptId'].map(name => `myco-shared/src/record-identity.ts#${name}`));
+
+/** Non-parser identity owners and their fixed domains. */
+const NON_PARSER_ENTRIES: Readonly<Record<string, readonly string[]>> = {
+  'myco/src/member/envelope.ts#subagentIdFor': ['subagent'],
+  'myco/src/member/envelope.ts#planKeyForPath': ['plan'],
+  'myco/src/member/envelope.ts#planKeyForTag': ['plan-tag'],
+  'myco/src/member/envelope.ts#planKeyForPromptTag': ['plan-tag'],
+  'myco/src/member/legacy-import.ts#legacyId': ['legacy'],
+  'myco/src/member/legacy-import.ts#legacyPlanKey': ['plan-key'],
+  'myco/src/hooks/user-prompt-submit.ts#main': ['thread'],
+  'myco/src/member/transcript.ts#deriveTranscriptCapture': ['attachment'],
+  'myco-server/src/read/turns.ts#sessionTurnContexts': ['thread', 'subagent'],
+  'myco-server/src/ingest/parse.ts#envelopeFor': ['transcript-event'],
+  'myco-server/src/ingest/legacy-replies.ts#legacyReplies': ['transcript-event'],
+  'myco-server/src/core/plans.ts#planKeyFor': ['plan', 'plan-key'],
+};
+const KIND_DATA = new Set([
+  'myco-server/src/ingest/kinds.ts#kindSpec',
+  'myco-server/src/core/processed-resources.ts#processedResourceProofSql',
+  'myco/src/member/envelope.ts#envelope',
+  'myco/src/member/legacy-import.ts#kinds',
+  'myco/src/member/legacy-import.ts#withId',
+]);
+
+function entryOwner(checker: ts.TypeChecker, node: ts.Node): string | undefined {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if ((ts.isFunctionDeclaration(parent) || (ts.isVariableDeclaration(parent) && parent.initializer && (ts.isArrowFunction(parent.initializer) || ts.isFunctionExpression(parent.initializer)))) && parent.name && ts.isIdentifier(parent.name)) {
+      const symbol = checker.getSymbolAtLocation(parent.name);
+      if (symbol) return symbolKey(symbol);
+    }
+  }
+  return undefined;
+}
+
+function hasherReferences(source: ts.SourceFile, checker: ts.TypeChecker): string[] {
+  const hashers = new Set(['myco-server/src/hash.ts#uuidv5', 'myco/src/member/envelope.ts#deriveId']);
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) return;
+    if (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+      const definition = (ts.isFunctionDeclaration(node.parent) || ts.isVariableDeclaration(node.parent)) && node.parent.name === node;
+      const memberName = ts.isPropertyAccessExpression(node.parent) && node.parent.name === node;
+      const symbol = resolvedSymbol(checker, node);
+      if (ts.isIdentifier(node) && symbol && (symbol.flags & ts.SymbolFlags.Module) !== 0) {
+        const exposed = checker.getExportsOfModule(symbol).filter(exported => hashers.has(symbolKey(exported) ?? ''));
+        const parent = node.parent;
+        const selected = (ts.isPropertyAccessExpression(parent) && parent.expression === node)
+          || (ts.isElementAccessExpression(parent) && parent.expression === node && ts.isStringLiteralLike(parent.argumentExpression));
+        const bound = ts.isVariableDeclaration(parent) && parent.initializer === node && ts.isObjectBindingPattern(parent.name)
+          && parent.name.elements.every(element => element.dotDotDotToken === undefined);
+        if (!selected && !bound) for (const exported of exposed) found.push(`${source.getLineAndCharacterOfPosition(node.getStart()).line + 1}: ${exported.getName()}`);
+      }
+      if (!definition && !memberName && symbol && hashers.has(symbolKey(symbol) ?? '')) {
+        const call = node.parent;
+        const callee = ts.isCallExpression(call) ? resolvedSymbol(checker, call.expression) : undefined;
+        const argument = ts.isCallExpression(call) && call.arguments[0] === node && callee && RECORD_ENTRIES.has(symbolKey(callee) ?? '');
+        const domain = ts.isCallExpression(call) && call.expression === node ? call.arguments[0] : undefined;
+        const nonParser = domain && ts.isStringLiteralLike(domain) && NON_PARSER_ENTRIES[entryOwner(checker, node) ?? '']?.includes(domain.text);
+        if (!argument && !nonParser) found.push(`${source.getLineAndCharacterOfPosition(node.getStart()).line + 1}: ${symbol.getName()}`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
 function sources(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) return ['node_modules', 'dist'].includes(entry.name) ? [] : sources(full);
-    return /\.tsx?$/.test(entry.name) && !entry.name.endsWith('.generated.ts') ? [full] : [];
+    return /\.tsx?$/.test(entry.name) ? [full] : [];
   });
 }
 
@@ -87,6 +170,13 @@ function externalDomains(text: string, filename = 'source.ts', typed?: { source:
   const kindData = (call: ts.CallExpression | ts.NewExpression, argument: ts.Expression): boolean => {
     if (!typed) return false;
     const checker = typed.checker;
+    if (ts.isNewExpression(call)) return true;
+    const domain = call.arguments[0];
+    if (domain && ts.isStringLiteralLike(domain) && NON_PARSER_ENTRIES[entryOwner(checker, call) ?? '']?.includes(domain.text)) return true;
+    const symbol = resolvedSymbol(checker, call.expression);
+    const key = symbol && symbolKey(symbol);
+    if (key && (KIND_DATA.has(key) || Object.hasOwn(NON_PARSER_ENTRIES, key))) return true;
+    if (symbol?.declarations?.some(declaration => declaration.getSourceFile().fileName.includes('/node_modules/zod/'))) return true;
     const signature = checker.getResolvedSignature(call);
     if (!signature) return false;
     const result = checker.getAwaitedType(checker.getReturnTypeOfSignature(signature));
@@ -112,8 +202,39 @@ describe('record identity source gate', () => {
     const options = ts.parseJsonConfigFileContent(config.config, ts.sys, ROOT).options;
     const program = ts.createProgram(candidates, options);
     const checker = program.getTypeChecker();
-    const found = candidates.flatMap(file => externalDomains(fs.readFileSync(file, 'utf8'), file, { source: program.getSourceFile(file)!, checker }).map(hit => `${path.relative(ROOT, file)}:${hit}`));
+    const found = candidates.flatMap(file => {
+      const source = program.getSourceFile(file)!;
+      return [...hasherReferences(source, checker), ...externalDomains(source.text, file, { source, checker })].map(hit => `${path.relative(ROOT, file)}:${hit}`);
+    });
     expect(found).toEqual([]);
+  });
+
+  it('rejects object-wrapper, member-chain and interpolated-domain bypasses by resolved hasher references', () => {
+    const filename = path.join(ROOT, 'packages/myco-server/src/ingest/parsers/identity-gate-probe.ts');
+    const text = `import { uuidv5 as hash } from '../../hash.js';
+      import { canonicalRecordId as mint } from '@goondocks/myco-shared/record-identity';
+      const probeMint = (request: {kind:string}) => hash(request.kind, 's', '1'); probeMint({kind:'response'});
+      const domains = {kinds:['response']}; hash(domains.kinds[0], 's', '1');
+      hash(\`\${'resp'}onse\`, 's', '1');
+      const alias = hash; alias('response', 's', '1');
+      const holder = {hash};
+      mint(hash, {} as never);
+      import * as hashes from '../../hash.js';
+      const {uuidv5: renamed} = hashes; renamed('response', 's', '1');
+      hashes.uuidv5('response', 's', '1');
+      hashes['uuidv5']('response', 's', '1');
+      const namespaceAlias = hashes;
+      const {...rest} = hashes;
+      declare const selected: string; hashes[selected]('response', 's', '1');`;
+    const config = ts.readConfigFile(path.join(ROOT, 'tsconfig.json'), ts.sys.readFile);
+    const options = ts.parseJsonConfigFileContent(config.config, ts.sys, ROOT).options;
+    const host = ts.createCompilerHost(options);
+    const original = host.getSourceFile.bind(host);
+    host.getSourceFile = (file, language, onError, fresh) => file === filename ? ts.createSourceFile(file, text, language, true) : original(file, language, onError, fresh);
+    const program = ts.createProgram([filename], options, host);
+    expect(hasherReferences(program.getSourceFile(filename)!, program.getTypeChecker())).toEqual([
+      '3: uuidv5', '4: uuidv5', '5: uuidv5', '6: uuidv5', '7: uuidv5', '10: uuidv5', '11: uuidv5', '12: uuidv5', '13: uuidv5', '14: uuidv5', '15: uuidv5',
+    ]);
   });
 
   it('detects renamed callees, const/domain aliases and object aliases while admitting typed kind data', () => {
