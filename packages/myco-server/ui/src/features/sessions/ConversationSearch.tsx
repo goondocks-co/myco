@@ -67,6 +67,7 @@ export function ConversationHits({ projectId, sessionId, agent, query, now }: { 
         loadingLabel="Searching the conversation"
         now={now}
       />
+      {found.refreshError !== null && <ErrorState error={found.refreshError} onRetry={found.retryRefresh} />}
       {found.moreError !== null && <ErrorState error={found.moreError} onRetry={found.retryMore} />}
       {!found.isPending && found.pendingBodies > 0 && (
         <p className="t-small text-muted">Indexing {found.pendingBodies} captured bodies. More matches will become available.</p>

@@ -17,8 +17,10 @@ export interface SearchOptions {
   release_confidence?: string;
   since?: number;
   until?: number;
-  /** The `continuation` an earlier answer to the same single-type search returned: the answer then continues after it. */
-  continuation?: string;
+  /** `relevance` (the default): the best matches in one bounded page. `time`: one type's matches oldest first, in pages that continue by `cursor`. */
+  order?: string;
+  /** The `cursor` an earlier answer to the same search by time returned: the answer then lists the matches after it. */
+  cursor?: string;
 }
 
 /** The top-level turn a prompt or reply hit belongs to, as the Project's own session records it. */
@@ -38,6 +40,7 @@ export interface SearchResult {
   type: SearchType;
   title: string;
   preview: string;
+  /** Relevance among the matches of this answer, 1 for its best; a search by time lists them by time, not by this. */
   score: number;
   /** When the hit's own record was created, in epoch milliseconds. */
   created_at: number;
@@ -62,8 +65,8 @@ export interface SearchAnswer {
   mode: 'fts' | 'semantic';
   provider_unavailable: boolean;
   coverage: { pending_blobs: number };
-  /** Passed back as `continuation` for the matches that follow these; null when none follow, and always null for a search of several types. */
-  continuation: string | null;
+  /** Passed back as `cursor` for the matches that follow these; null when none follow, and always null unless the search is by time. */
+  cursor: string | null;
 }
 
 /** A result of a search across Projects: a Project's result, with the Project it belongs to. */
@@ -77,5 +80,5 @@ export interface SearchAcrossAnswer {
   mode: 'fts';
   provider_unavailable: false;
   coverage: { pending_blobs: number };
-  continuation: string | null;
+  cursor: string | null;
 }

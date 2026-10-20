@@ -7,12 +7,13 @@ const MATCHES = 105;
 const PAGE = 20;
 
 /**
- * A session's conversation searched page by page on both targets: a hundred and more prompts of identical text and
+ * A session's conversation listed by time page by page on both targets: a hundred and more prompts of identical text and
  * time, a steering prompt, a prompt whose body is stored apart, and a reply, reached through the Project's search route
- * and the MCP tool by continuation, each match once, in one order, never another session's.
+ * and the MCP tool by cursor, each match once, in one order, never another session's, and past unrelated capture in
+ * another Project between pages.
  */
 export const searchPaging: ParityScenario = {
-  name: 'search paging: a session\'s identical-text matches, a steering prompt and a stored body reached by continuation, once each, on HTTP and MCP',
+  name: 'search by time: a session\'s identical-text matches, a steering prompt and a stored body reached by cursor past capture elsewhere, once each, on HTTP and MCP',
   async run(target: ParityTarget) {
     const stamp = Date.now();
     const word = `zirconium${stamp}`;
@@ -26,7 +27,7 @@ export const searchPaging: ParityScenario = {
       }), kind);
     };
     const owner = async (extra: Record<string, string>) => {
-      const res = await fetch(`${target.url}/api/projects/${target.projectId}/search?${new URLSearchParams({ q: word, type: 'prompt', session_id: session, mode: 'fts', ...extra })}`, { headers: target.ownerHeaders() });
+      const res = await fetch(`${target.url}/api/projects/${target.projectId}/search?${new URLSearchParams({ q: word, type: 'prompt', session_id: session, mode: 'fts', order: 'time', ...extra })}`, { headers: target.ownerHeaders() });
       return { status: res.status, body: await res.json() as SearchAnswer };
     };
     const mcp = async <T,>(args: Record<string, unknown>): Promise<T> => {
@@ -69,52 +70,67 @@ export const searchPaging: ParityScenario = {
     expect(Number(times[0]!.n)).toBe(1);
 
     const everyPrompt = [...same, steer, stored].sort();
+    const foreign = `foreign-paging-${stamp}`;
+    await target.sql(`INSERT INTO projects(project_id,name,created_at) VALUES (${lit(foreign)},'Foreign',${stamp})`);
+    let noise = 0;
+    // Unrelated capture in another Project, between a walk's pages, moves every match's relevance score and no match's place in the list.
+    const capture = async () => {
+      for (let i = 0; i < 40; i++) {
+        noise += 1;
+        await target.sql(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
+          VALUES (${lit(foreign)}, 'noise', ${lit(`noise-${stamp}-${noise}`)}, ${lit(`noise-event-${stamp}-${noise}`)}, ${lit(`unrelated text ${noise} ${'words '.repeat(noise)}`)}, 'user', ${lit(`noise-hash-${noise}`)}, ${stamp}, ${stamp}, 'tok', ${stamp})`);
+      }
+    };
     const walk = async (limit: number): Promise<{ results: SearchResult[]; pages: SearchResult[][] }> => {
       const pages: SearchResult[][] = [];
       let cursor: string | null = null;
       do {
-        const page = await owner(cursor === null ? { limit: String(limit) } : { limit: String(limit), continuation: cursor });
+        const page = await owner(cursor === null ? { limit: String(limit) } : { limit: String(limit), cursor });
         expect(page.status).toBe(200);
         pages.push(page.body.results);
-        cursor = page.body.continuation;
-        if (cursor !== null) expect(page.body.results).toHaveLength(limit);
+        cursor = page.body.cursor;
+        if (cursor !== null) {
+          expect(page.body.results).toHaveLength(limit);
+          if (pages.length === 1) await capture();
+        }
       } while (cursor !== null);
       return { results: pages.flat(), pages };
     };
     const byPage = await walk(PAGE);
     expect(byPage.pages).toHaveLength(Math.ceil(everyPrompt.length / PAGE));
-    // Every prompt of the session once, none of the other session's, in the one order every page shares.
-    expect(byPage.results.map((r) => r.id).sort()).toEqual(everyPrompt);
-    expect(byPage.results.every((r) => r.session_id === session)).toBe(true);
-    const order = (a: SearchResult, b: SearchResult) => b.score - a.score || b.created_at - a.created_at || a.id.localeCompare(b.id);
-    expect(byPage.results.map((r) => r.id)).toEqual([...byPage.results].sort(order).map((r) => r.id));
-    const identical = byPage.results.filter((r) => same.includes(r.id));
-    expect(identical.map((r) => r.id)).toEqual([...same].sort());
-    expect(new Set(identical.map((r) => `${r.score}/${r.created_at}`)).size).toBe(1);
+    // Every prompt of the session once, none of the other session's, oldest first and by id among equal times.
+    expect(byPage.results.map((r) => r.id)).toEqual(everyPrompt);
+    expect(byPage.results.every((r) => r.session_id === session && r.created_at === at)).toBe(true);
     // The 21st and the 101st match come the same at any page size.
     const wide = await walk(100);
     expect(wide.pages).toHaveLength(2);
-    expect(wide.results.map((r) => r.id)).toEqual(byPage.results.map((r) => r.id));
-    expect(wide.pages[1]![0]!.id).toBe(byPage.results[100]!.id);
-    expect(byPage.pages[1]![0]!.id).toBe(byPage.results[PAGE]!.id);
+    expect(wide.results.map((r) => r.id)).toEqual(everyPrompt);
+    expect(wide.pages[1]![0]!.id).toBe(everyPrompt[100]);
+    expect(byPage.pages[1]![0]!.id).toBe(everyPrompt[PAGE]);
     // Each hit names its turn: a steering prompt opens the turn it steers, and a stored body opens its own.
     expect(byPage.results.find((r) => r.id === steer)).toMatchObject({ created_at: at, turn: { prompt_id: same[0], preview: `${word} identical words` } });
     expect(byPage.results.find((r) => r.id === stored)).toMatchObject({ turn: { prompt_id: stored, preview: null, text_chars: null, stored: true } });
     expect(byPage.results.find((r) => r.id === same[1])).toMatchObject({ created_at: at, turn: { prompt_id: same[1], stored: false } });
     const [reply] = (await owner({ type: 'response' })).body.results;
+    // Relevance order stays one bounded page with no cursor, and refuses one.
+    const relevant = await owner({ order: 'relevance', limit: '5' });
+    expect(relevant.body.results).toHaveLength(5);
+    expect(relevant.body.cursor).toBeNull();
     expect(reply).toMatchObject({ id: response, created_at: at, prompt_id: same[0], turn: { prompt_id: same[0] } });
 
-    // The MCP tool pages the same matches by the same continuation.
-    const first = await mcp<SearchAnswer>({ query: word, type: 'prompt', session_id: session, mode: 'fts', limit: PAGE });
-    expect(first.results.map((r) => r.id)).toEqual(byPage.results.slice(0, PAGE).map((r) => r.id));
-    expect(first.continuation).not.toBeNull();
-    const second = await mcp<SearchAnswer>({ query: word, type: 'prompt', session_id: session, mode: 'fts', limit: PAGE, continuation: first.continuation });
-    expect(second.results.map((r) => r.id)).toEqual(byPage.results.slice(PAGE, 2 * PAGE).map((r) => r.id));
+    // The MCP tool lists the same matches by the same cursor.
+    const first = await mcp<SearchAnswer>({ query: word, type: 'prompt', session_id: session, mode: 'fts', order: 'time', limit: PAGE });
+    expect(first.results.map((r) => r.id)).toEqual(everyPrompt.slice(0, PAGE));
+    expect(first.cursor).not.toBeNull();
+    const second = await mcp<SearchAnswer>({ query: word, type: 'prompt', session_id: session, mode: 'fts', order: 'time', limit: PAGE, cursor: first.cursor });
+    expect(second.results.map((r) => r.id)).toEqual(everyPrompt.slice(PAGE, 2 * PAGE));
+    expect((await mcp<SearchAnswer>({ query: word, type: 'prompt', session_id: session, mode: 'fts', limit: PAGE })).cursor).toBeNull();
 
-    // A continuation the search did not issue is refused, and a search of several types offers none.
-    expect((await owner({ continuation: 'nonsense' })).status).toBe(400);
-    expect((await owner({ type: 'all', continuation: first.continuation! })).status).toBe(400);
-    expect((await owner({ type: 'response', continuation: first.continuation! })).status).toBe(400);
-    expect((await owner({ type: 'all', limit: '1' })).body.continuation).toBeNull();
+    // A cursor the search did not issue is refused, as is one on relevance order, and a search of several types lists by no time.
+    expect((await owner({ cursor: 'nonsense' })).status).toBe(400);
+    expect((await owner({ order: 'relevance', cursor: first.cursor! })).status).toBe(400);
+    expect((await owner({ type: 'all', cursor: first.cursor! })).status).toBe(400);
+    expect((await owner({ type: 'response', cursor: first.cursor! })).status).toBe(400);
+    expect((await owner({ type: 'all', order: 'relevance', limit: '1' })).body.cursor).toBeNull();
   },
 };

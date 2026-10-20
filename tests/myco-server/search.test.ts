@@ -170,16 +170,16 @@ describe('full-text search', () => {
   });
 });
 
-describe('paging a search of one type', () => {
+describe('listing a search of one type by time', () => {
   type Row = { id: string; score: number; created_at: number };
-  /** Every page of a search, following each page's continuation to the one that names none. */
+  /** Every page of a search by time, following each page's cursor to the one that names none. */
   async function pages(f: ReturnType<typeof fixture>, query: string, options: Record<string, unknown>) {
     const answers = [];
     let cursor: string | undefined;
     do {
-      const answer = await f.search(query, cursor === undefined ? options : { ...options, continuation: cursor });
+      const answer = await f.search(query, { order: 'time', ...(cursor === undefined ? options : { ...options, cursor }) });
       answers.push(answer);
-      cursor = answer.continuation ?? undefined;
+      cursor = answer.cursor ?? undefined;
     } while (cursor !== undefined);
     return answers;
   }
@@ -192,32 +192,50 @@ describe('paging a search of one type', () => {
     for (const limit of [20, 100, 7]) {
       const answers = await pages(f, 'cobalt', { type: 'prompt', limit });
       expect(answers.map((a) => a.results.length).slice(0, -1).every((n) => n === limit)).toBe(true);
-      expect(answers.slice(0, -1).every((a) => a.continuation !== null)).toBe(true);
-      // Equal rank and time order by id, so the 21st and the 101st match are the same ones at any page size.
+      expect(answers.slice(0, -1).every((a) => a.cursor !== null)).toBe(true);
+      // Equal time orders by id, so the 21st and the 101st match are the same ones at any page size.
       expect(ids(answers)).toEqual(all);
     }
-    const first = await f.search('cobalt', { type: 'prompt', limit: 20 });
-    const second = await f.search('cobalt', { type: 'prompt', limit: 20, continuation: first.continuation! });
+    const first = await f.search('cobalt', { type: 'prompt', order: 'time', limit: 20 });
+    const second = await f.search('cobalt', { type: 'prompt', order: 'time', limit: 20, cursor: first.cursor! });
     expect(second.results[0]!.id).toBe('p020');
-    const wide = await f.search('cobalt', { type: 'prompt', limit: 100 });
-    expect((await f.search('cobalt', { type: 'prompt', limit: 100, continuation: wide.continuation! })).results.map((r) => r.id)).toEqual(all.slice(100));
-    await expect(f.search('cobalt', { type: 'prompt', limit: 105 })).rejects.toThrow('limit');
+    const wide = await f.search('cobalt', { type: 'prompt', order: 'time', limit: 100 });
+    expect((await f.search('cobalt', { type: 'prompt', order: 'time', limit: 100, cursor: wide.cursor! })).results.map((r) => r.id)).toEqual(all.slice(100));
+    await expect(f.search('cobalt', { type: 'prompt', order: 'time', limit: 105 })).rejects.toThrow('limit');
   });
 
-  it('orders matches of one rank newest first, then by id, and scores every page against the first page\'s best', async () => {
+  it('lists matches oldest first, then by id, whatever their relevance', async () => {
     const f = fixture();
     const at = (id: string, createdAt: number, text: string) => f.insert('prompt_batches', { ...f.base, prompt_id: id, origin: 'user', updated_at: createdAt, created_at: createdAt, text });
-    for (const [id, createdAt] of [['a', 1000], ['b', 3000], ['c', 3000], ['d', 2000], ['e', 3000]] as const) at(id, createdAt, 'cobalt common');
+    for (const [id, createdAt] of [['a', 3000], ['b', 1000], ['c', 1000], ['d', 2000], ['e', 1000]] as const) at(id, createdAt, 'cobalt common');
     at('rare', 500, 'cobalt rare rare rare');
-    for (let i = 0; i < 40; i++) at(`filler${i}`, 400, `cobalt ${'unrelated words '.repeat(i + 1)}`);
-    const whole = await f.search('cobalt', { type: 'prompt', limit: 100 });
+    for (let i = 0; i < 40; i++) at(`filler${String(i).padStart(2, '0')}`, 400, `cobalt ${'unrelated words '.repeat(i + 1)}`);
     const paged = await pages(f, 'cobalt', { type: 'prompt', limit: 6 });
-    expect(ids(paged)).toEqual(whole.results.map((r) => r.id));
-    expect(paged.flatMap((a) => a.results.map((r) => r.score))).toEqual(whole.results.map((r) => r.score));
-    const tied = whole.results.filter((r) => ['a', 'b', 'c', 'd', 'e'].includes(r.id));
-    expect(tied.map((r) => r.id)).toEqual(['b', 'c', 'e', 'd', 'a']);
-    expect(tied.map((r) => r.created_at)).toEqual([3000, 3000, 3000, 2000, 1000]);
-    expect(Math.max(...whole.results.map((r) => r.score))).toBe(1);
+    const listed = paged.flatMap((a) => a.results);
+    expect(listed.map((r) => r.created_at)).toEqual([...listed.map((r) => r.created_at)].sort((x, y) => x - y));
+    expect(ids(paged).filter((id) => ['a', 'b', 'c', 'd', 'e'].includes(id))).toEqual(['b', 'c', 'e', 'd', 'a']);
+    expect(ids(paged)).toHaveLength(46);
+    expect(new Set(ids(paged)).size).toBe(46);
+  });
+
+  it('pages on past capture that changes every rank: another Project\'s records and new matches between pages lose and repeat nothing', async () => {
+    const f = fixture();
+    const all = Array.from({ length: 105 }, (_, i) => `p${String(i).padStart(3, '0')}`);
+    for (const id of all) f.prompt(id, 'cobalt common words');
+    const rankOf = () => f.sqlite.query<{ rank: number }, []>("SELECT rank FROM prompt_batches_fts WHERE prompt_batches_fts MATCH 'cobalt' LIMIT 1").get()!.rank;
+    const rankBefore = rankOf();
+    const first = await f.search('cobalt', { type: 'prompt', order: 'time', limit: 20 });
+    // Unrelated capture, in another Project, moves every match's relevance score.
+    for (let i = 0; i < 200; i++) f.prompt(`noise${i}`, `unrelated text ${i}`, null, 'search-b');
+    const rest = [];
+    let cursor: string | null = first.cursor;
+    while (cursor !== null) {
+      const page = await f.search('cobalt', { type: 'prompt', order: 'time', limit: 20, cursor });
+      rest.push(...page.results.map((r) => r.id));
+      cursor = page.cursor;
+    }
+    expect(rankOf()).not.toBe(rankBefore);
+    expect([...first.results.map((r) => r.id), ...rest]).toEqual(all);
   });
 
   it('lists a record whose large body matches in several chunks once across pages', async () => {
@@ -227,7 +245,6 @@ describe('paging a search of one type', () => {
     f.prompt('long', null, 'long');
     for (let i = 0; i < 5; i++) f.prompt(`p${i}`, 'cobalt short');
     await reconcileSearchIndex(f.db, f.bucket, 1000);
-    expect(f.sqlite.query('SELECT COUNT(*) AS n FROM search_blob_chunks').get()).toEqual({ n: expect.any(Number) });
     expect((f.sqlite.query('SELECT COUNT(*) AS n FROM search_blob_chunks').get() as { n: number }).n).toBeGreaterThan(1);
     for (const limit of [1, 2, 100]) {
       const found = ids(await pages(f, 'cobalt', { type: 'prompt', limit }));
@@ -247,25 +264,41 @@ describe('paging a search of one type', () => {
     expect(found).toEqual(Array.from({ length: 12 }, (_, i) => `own${String(i).padStart(2, '0')}`));
   });
 
-  it('refuses a continuation it did not issue, one for another type, one with several types, and one for semantic search', async () => {
+  it('keeps relevance order to one bounded page with no cursor, and refuses a cursor on it', async () => {
+    const f = fixture();
+    for (let i = 0; i < 30; i++) f.prompt(`p${i}`, 'cobalt common words');
+    const answer = await f.search('cobalt', { type: 'prompt', limit: 10 });
+    expect(answer.results).toHaveLength(10);
+    expect(answer.cursor).toBeNull();
+    expect((await f.search('cobalt', { limit: 10, order: 'relevance' })).cursor).toBeNull();
+    const { cursor } = await f.search('cobalt', { type: 'prompt', order: 'time', limit: 10 });
+    expect(cursor).not.toBeNull();
+    await expect(f.search('cobalt', { type: 'prompt', cursor: cursor! })).rejects.toThrow('order=time');
+    await expect(f.search('cobalt', { type: 'prompt', order: 'relevance', cursor: cursor! })).rejects.toThrow('order=time');
+    await expect(f.search('cobalt', { order: 'newest' })).rejects.toThrow('order must be');
+  });
+
+  it('refuses an order by time that cannot page, and a cursor it did not issue or issued for another type', async () => {
     const f = fixture();
     for (let i = 0; i < 3; i++) { f.prompt(`p${i}`, 'cobalt'); f.insert('responses', { ...f.base, response_id: `r${i}`, prompt_id: `p${i}`, text: 'cobalt' }); }
-    const { continuation } = await f.search('cobalt', { type: 'prompt', limit: 1 });
-    expect(continuation).not.toBeNull();
+    const { cursor } = await f.search('cobalt', { type: 'prompt', order: 'time', limit: 1 });
+    expect(cursor).not.toBeNull();
     const forged = (value: unknown) => btoa(JSON.stringify(value)).replace(/=+$/, '');
     const bad = [
       'garbage!', '', 'a'.repeat(2000), forged('text'), forged({ type: 'prompt' }),
-      forged({ type: 'prompt', rank: 'x', created_at: 1, id: 'p', project_id: 'search-a', best: 1 }),
-      forged({ type: 'prompt', rank: -1, created_at: 1.5, id: 'p', project_id: 'search-a', best: 1 }),
-      forged({ type: 'prompt', rank: -1, created_at: 1, id: 'p', project_id: 'search-a', best: 0 }),
+      forged({ type: 'prompt', created_at: 'x', id: 'p', project_id: 'search-a' }),
+      forged({ type: 'prompt', created_at: 1.5, id: 'p', project_id: 'search-a' }),
+      forged({ type: 'prompt', created_at: 1, id: 7, project_id: 'search-a' }),
     ];
-    for (const cursor of bad) await expect(f.search('cobalt', { type: 'prompt', continuation: cursor })).rejects.toThrow('continuation');
-    await expect(f.search('cobalt', { type: 'response', continuation: continuation! })).rejects.toThrow('continuation');
-    await expect(f.search('cobalt', { continuation: continuation! })).rejects.toThrow('one type');
-    await expect(f.search('cobalt', { type: 'prompt', mode: 'semantic', continuation: continuation! })).rejects.toThrow('full-text');
-    expect((await f.search('cobalt', { type: 'prompt', mode: 'fts', continuation: continuation! })).results.map((r) => r.id)).toEqual(['p1', 'p2']);
-    // A search of several types never offers a continuation.
-    expect((await f.search('cobalt', { limit: 1 })).continuation).toBeNull();
+    for (const value of bad) await expect(f.search('cobalt', { type: 'prompt', order: 'time', cursor: value })).rejects.toThrow('cursor');
+    await expect(f.search('cobalt', { type: 'response', order: 'time', cursor: cursor! })).rejects.toThrow('cursor');
+    await expect(f.search('cobalt', { order: 'time' })).rejects.toThrow('one type');
+    await expect(f.search('cobalt', { type: 'all', order: 'time', cursor: cursor! })).rejects.toThrow('one type');
+    await expect(f.search('cobalt', { type: 'session', order: 'time' })).rejects.toThrow('sessions');
+    await expect(f.search('cobalt', { type: 'prompt', order: 'time', mode: 'semantic' })).rejects.toThrow('full-text');
+    expect((await f.search('cobalt', { type: 'prompt', order: 'time', mode: 'fts', cursor: cursor! })).results.map((r) => r.id)).toEqual(['p1', 'p2']);
+    // A search by time is full text whatever the mode asks, and reports no unavailable provider.
+    expect(await f.search('cobalt', { type: 'prompt', order: 'time' })).toMatchObject({ mode: 'fts', provider_unavailable: false });
   });
 });
 

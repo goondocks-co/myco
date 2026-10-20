@@ -73,8 +73,8 @@ const REACHES: Record<string, (db: RelationalStore, opts: SearchOptions) => Prom
   all: (db, opts) => searchAcross(db, ALL, opts),
   named: (db, opts) => searchAcross(db, NAMED, opts),
 };
-/** A continuation as a search issues one: the last match of a page of prompts, in the ordering every page shares. */
-const cursorFor = (type: string) => btoa(JSON.stringify({ type, rank: -1.5, created_at: 1000, id: 'p', project_id: 'proj_0', best: 2 })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+/** A cursor as a search by time issues one: the last match of a page, in the order of the record's time, id and Project. */
+const cursorFor = (type: string) => btoa(JSON.stringify({ type, created_at: 1000, id: 'p', project_id: 'proj_0' })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const CURSOR = cursorFor('prompt');
 const SHAPES: Record<string, SearchOptions> = {
   one: { query: 'title' },
@@ -82,9 +82,9 @@ const SHAPES: Record<string, SearchOptions> = {
   filtered: { query: 'title two', status: 'active', observation_type: 'gotcha', since: 1, until: 2_000_000_000 },
   session: { query: 'title', session_id: 's1' },
   released: { query: 'title', release_state: 'released', release_confidence: 'high' },
-  conversation: { query: 'title two', type: 'prompt', session_id: 's1' },
-  conversationNextPage: { query: 'title two', type: 'prompt', session_id: 's1', continuation: CURSOR },
-  repliesNextPage: { query: 'title', type: 'response', session_id: 's1', continuation: cursorFor('response') },
+  conversation: { query: 'title two', type: 'prompt', session_id: 's1', order: 'time' },
+  conversationNextPage: { query: 'title two', type: 'prompt', session_id: 's1', order: 'time', cursor: CURSOR },
+  repliesNextPage: { query: 'title', type: 'response', session_id: 's1', order: 'time', cursor: cursorFor('response') },
 };
 
 describe('search under the statistics a Deployment plans from', () => {
@@ -109,7 +109,7 @@ describe('search under the statistics a Deployment plans from', () => {
     }
   });
 
-  it('names a conversation hit\'s turn by primary key on the hit\'s own Project and session, and pages past a continuation without reading a table whole', async () => {
+  it('names a conversation hit\'s turn by primary key on the hit\'s own Project and session, and lists by time past a cursor without reading a table whole', async () => {
     for (const [reach, search] of Object.entries(REACHES)) {
       for (const shape of ['conversation', 'conversationNextPage', 'repliesNextPage']) {
         const read = (await plans((db) => search(db, SHAPES[shape]!))).filter(({ sql }) => /WITH candidates/.test(sql));
@@ -117,7 +117,7 @@ describe('search under the statistics a Deployment plans from', () => {
         for (const { store, sql, plan } of read) {
           expect({
             reach, shape, store,
-            hasPaging: shape.endsWith('NextPage') ? /HAVING/.test(sql) : !/HAVING/.test(sql),
+            hasPaging: shape.endsWith('NextPage') ? /d\.created_at > \?/.test(sql) : !/d\.created_at > \?/.test(sql),
             ownPrompt: /SEARCH rp USING (?:INDEX|COVERING INDEX) \w+ \(project_id=\? AND prompt_id=\?\)/.test(plan),
             turn: /SEARCH tp USING (?:INDEX|COVERING INDEX) \w+ \(project_id=\? AND prompt_id=\?\)/.test(plan),
             scans: tableScans(plan),
@@ -168,7 +168,7 @@ describe('search under the statistics a Deployment plans from', () => {
     };
     // A prompt has no status and is no spore, so the page that continues a conversation carries every other filter.
     const { status: _status, observation_type: _observationType, ...conversation } = opts;
-    const paged: SearchOptions = { ...conversation, type: 'prompt', continuation: CURSOR };
+    const paged: SearchOptions = { ...conversation, type: 'prompt', order: 'time', cursor: CURSOR };
     const statements = await captured(async (db) => {
       await searchAcross(db, most, opts); await searchAcross(db, ALL, opts); await searchProject(db, { projectId: 'proj_0' }, opts);
       await searchAcross(db, most, paged); await searchProject(db, { projectId: 'proj_0' }, paged);

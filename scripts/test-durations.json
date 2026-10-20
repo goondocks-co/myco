@@ -923,6 +923,6 @@
     "prompt references: attention excludes in-flight asks and reports missing prompts, mismatches and per-agent shares": 15000,
     "session commits: start and end observations, release containment on the end it classified, index-backed reads": 15000,
     "Record identity: transcript pins, distinct positional replies, reread and whole-artifact restore refusals": 15000,
-    "search paging: a session's identical-text matches, a steering prompt and a stored body reached by continuation, once each, on HTTP and MCP": 15000
+    "search by time: a session's identical-text matches, a steering prompt and a stored body reached by cursor past capture elsewhere, once each, on HTTP and MCP": 15000
   }
 }

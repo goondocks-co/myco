@@ -221,7 +221,7 @@ describe('searching a session\'s conversation', () => {
     const searchPage = async (type: string, extra: Record<string, string> = {}, session = 's1') => {
       const { status, body } = await h.get(`/api/projects/proj_1/search?${new URLSearchParams({ q: 'zirconium', type, limit: '20', session_id: session, mode: 'fts', ...extra })}`);
       expect(status).toBe(200);
-      return body as { results: { id: string; type: string; session_id: string; prompt_id?: string; preview: string; created_at: number; turn?: { prompt_id: string } | null }[]; continuation: string | null };
+      return body as { results: { id: string; type: string; session_id: string; prompt_id?: string; preview: string; created_at: number; turn?: { prompt_id: string } | null }[]; cursor: string | null };
     };
     const search = async (type: string, session = 's1') => (await searchPage(type, {}, session)).results;
     return { ...h, prompt, reply, search, searchPage };
@@ -275,8 +275,8 @@ describe('searching a session\'s conversation', () => {
       .toEqual([['r_free', null, null, NOW + 2], ['r_stray', 'p_other', null, NOW + 1]]);
   });
 
-  it('pages every match of a session through the route, past the first page of turns, with each hit\'s own time and turn', async () => {
-    const { get, prompt, reply, searchPage } = await conversation();
+  it('pages every match of a session by time through the route, past the first page of turns and past capture elsewhere, with each hit\'s own time and turn', async () => {
+    const { get, prompt, reply, searchPage, sqlite } = await conversation();
     // 130 prompts of identical text and time, then a reply to the oldest of them: the 101st match and beyond sit past any one page.
     for (let i = 0; i < 130; i += 1) prompt('s1', `p_${String(i).padStart(4, '0')}`, NOW, 'zirconium same words');
     prompt('s2', 'p_other', NOW, 'zirconium same words');
@@ -285,10 +285,17 @@ describe('searching a session\'s conversation', () => {
     let cursor: string | null = null;
     let pageCount = 0;
     do {
-      const page: Awaited<ReturnType<typeof searchPage>> = await searchPage('prompt', cursor === null ? { limit: '100' } : { limit: '100', continuation: cursor });
+      const page: Awaited<ReturnType<typeof searchPage>> = await searchPage('prompt', cursor === null ? { limit: '100', order: 'time' } : { limit: '100', order: 'time', cursor });
       seen.push(...page.results.map((hit) => hit.id));
       expect(page.results.every((hit) => hit.session_id === 's1' && hit.turn?.prompt_id === hit.id && hit.created_at === NOW)).toBe(true);
-      cursor = page.continuation;
+      if (cursor === null) {
+        // Capture in another Project between pages changes every relevance score and no match's place in the list.
+        for (let i = 0; i < 200; i += 1) {
+          sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
+                      VALUES ('proj_2', 'sx', ?, ?, ?, 'user', ?, ?, ?, 'tok_1', ?)`, [`n_${i}`, `e_n_${i}`, `unrelated text ${i}`, `h_n_${i}`, NOW, NOW, NOW]);
+        }
+      }
+      cursor = page.cursor;
       pageCount += 1;
     } while (cursor !== null);
     expect(pageCount).toBe(2);
@@ -296,9 +303,14 @@ describe('searching a session\'s conversation', () => {
     // The reply's hit carries its own time and opens the turn its prompt starts.
     const [answer] = (await searchPage('response')).results;
     expect(answer).toMatchObject({ id: 'r_old', created_at: NOW + 5, turn: { prompt_id: 'p_0000' } });
-    // A continuation that is not one the search issued is refused as the neighbouring parameters are.
-    for (const bad of ['nonsense', 'e30']) expect((await get(`/api/projects/proj_1/search?${new URLSearchParams({ q: 'zirconium', type: 'prompt', session_id: 's1', continuation: bad })}`)).status).toBe(400);
-    expect((await get(`/api/projects/proj_1/search?${new URLSearchParams({ q: 'zirconium', session_id: 's1', continuation: 'e30' })}`)).status).toBe(400);
+    // Relevance order is one bounded page with no cursor, and refuses one.
+    expect((await searchPage('prompt', { limit: '5' })).cursor).toBeNull();
+    const query = (extra: Record<string, string>) => get(`/api/projects/proj_1/search?${new URLSearchParams({ q: 'zirconium', type: 'prompt', session_id: 's1', ...extra })}`);
+    expect((await query({ cursor: 'e30' })).status).toBe(400);
+    expect((await query({ order: 'relevance', cursor: 'e30' })).status).toBe(400);
+    // A cursor that is not one the search issued is refused as the neighbouring parameters are.
+    for (const bad of ['nonsense', 'e30']) expect((await query({ order: 'time', cursor: bad })).status).toBe(400);
+    expect((await get(`/api/projects/proj_1/search?${new URLSearchParams({ q: 'zirconium', session_id: 's1', order: 'time' })}`)).status).toBe(400);
+    expect((await query({ order: 'newest' })).status).toBe(400);
   });
 });
-

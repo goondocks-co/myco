@@ -135,9 +135,14 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
           "type": "number",
           "description": "Optional created_at upper bound in epoch seconds"
         },
-        "continuation": {
+        "order": {
           "type": "string",
-          "description": "The continuation an earlier answer returned for a search of one type; the answer then lists the matches after it."
+          "enum": ["relevance", "time"],
+          "description": "relevance (default) returns the best matches in one page. time lists the matches of one type oldest first, in pages that continue by cursor."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "The cursor an earlier answer to a search with order time returned; the answer then lists the matches after it."
         },
         [PROJECT_PIVOT]: {
           "type": "string",
