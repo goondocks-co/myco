@@ -334,3 +334,41 @@ describe('B. reconciliation seams', () => {
     expect(seamViolations(fixtureFile(name)).map((found) => found.replace(/^\S+ /, ''))).toContain(violation);
   });
 });
+
+import { upsertOccurrences, validateUpserts } from './server-upsert-inventory.js';
+import { RECONCILIATION_MATRICES } from '../myco-server/helpers/reconciliation-cases.js';
+import { RECONCILED_UPSERTS } from './server-upsert-manifest.js';
+
+describe('server reconciliation upsert contract', () => {
+  it('declares every conflict-update occurrence, including fragments and repeated tables', () => {
+    const root = path.join(REPO, 'packages/myco-server/src');
+    const occurrences = fs.readdirSync(root, { recursive: true })
+      .map(String).filter(file => file.endsWith('.ts'))
+      .flatMap(file => upsertOccurrences(file, fs.readFileSync(path.join(root, file), 'utf8')));
+    expect(validateUpserts(occurrences, RECONCILED_UPSERTS, Object.assign({}, ...Object.values(RECONCILIATION_MATRICES)))).toEqual([]);
+  });
+
+  it('detects extra occurrences in an existing owner, a new owner and unresolved SQL', () => {
+    const sql = 'INSERT INTO records(id) VALUES (?) ON CONFLICT(id) DO UPDATE SET id=excluded.id';
+    const source = `function write() { db.prepare(\`${sql}\`); }`;
+    const manifest = { 'fixture.ts#write': [{ tables: ['records'], order: 'unverified' as const }] };
+    expect(validateUpserts(upsertOccurrences('fixture.ts', source), manifest)).toEqual([]);
+    for (const mutant of [
+      source.replace('db.prepare', `db.prepare(\`${sql}\`); db.prepare`),
+      source + `function other() { db.prepare(\`${sql}\`); }`,
+      source.replace('INSERT INTO records', 'INSERT INTO other_records'),
+    ]) expect(validateUpserts(upsertOccurrences('fixture.ts', mutant), manifest).length).toBeGreaterThan(0);
+    const fragment = upsertOccurrences('fragment.ts', 'const SQL = "ON CONFLICT(id) DO UPDATE SET id=excluded.id";');
+    expect(validateUpserts(fragment, {} ).length).toBeGreaterThan(0);
+    expect(validateUpserts(fragment, { 'fragment.ts#<module>': [{ tables: ['records'], order: 'unverified' }] })).toEqual([]);
+  });
+  it('rejects a claimed order without a matching runtime matrix, and rejects a mislabelled matrix', () => {
+    const sites = upsertOccurrences('fixture.ts', 'function write() { db.prepare("INSERT INTO records(id) VALUES (?) ON CONFLICT(id) DO UPDATE SET id=excluded.id"); }');
+    const manifest = { 'fixture.ts#write': [{ tables: ['records'], order: 'writer-revision' as const }] };
+    expect(validateUpserts(sites, manifest)).toContain('fixture.ts#write[0]: order has no matching runtime matrix');
+    expect(validateUpserts(sites, manifest, { 'fixture.ts#write': ['writer-revision'] })).toEqual([]);
+    expect(validateUpserts(sites, manifest, { 'fixture.ts#write': ['reporter-stamp'] })).toContain('fixture.ts#write[0]: order has no matching runtime matrix');
+    expect(validateUpserts(sites, { 'fixture.ts#write': [{ tables: ['records'], order: 'unverified' }] }, { 'fixture.ts#write': ['writer-revision'] }).length).toBeGreaterThan(0);
+  });
+
+});

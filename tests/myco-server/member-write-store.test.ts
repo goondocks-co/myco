@@ -26,7 +26,7 @@ for (const method of ['run', 'first', 'all', 'batch'] as const) {
       try {
         f.sqlite.run("UPDATE members SET role=? WHERE id='mem_machine_2'", [authority]);
         const db = memberWriteStore(f.db, 'mem_machine_2', authority);
-        const statement = db.prepare("INSERT INTO deployment_settings VALUES ('agent.tasks','{}',1,'mem_machine_2') RETURNING leaf");
+        const statement = db.prepare("INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks','{}',1,'mem_machine_2') RETURNING leaf");
         const answer = method === 'batch' ? (await db.batch([statement]))[0] : await statement[method]();
         expect(method === 'first' ? answer : (answer as { results: unknown[] }).results).toEqual(method === 'first' ? { leaf: 'agent.tasks' } : [{ leaf: 'agent.tasks' }]);
       } finally { f.sqlite.close(); }
@@ -45,7 +45,7 @@ it('an admin batch refuses before every row when demotion commits before its las
     const db = memberWriteStore(f.db, 'mem_machine_2', 'admin');
     armed = true;
     await expect(db.batch([
-      db.prepare("INSERT INTO deployment_settings VALUES ('agent.tasks','{}',1,'mem_machine_2')"),
+      db.prepare("INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks','{}',1,'mem_machine_2')"),
       db.prepare("DELETE FROM deployment_settings WHERE leaf='agent.tasks'"),
     ])).rejects.toBeInstanceOf(MemberWriteRefused);
     expect(f.sqlite.query('SELECT * FROM deployment_settings').all()).toEqual([]);

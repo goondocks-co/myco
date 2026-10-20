@@ -51,7 +51,7 @@ export const workerWriteCompletion: ParityScenario = {
           } else if (operation.path === 'steps') {
             body = { projectId: target.projectId, runId, ...stepPages(attemptId, [{ seq: 0, callId: runId, kind: 'read', tool: 'Read', target: 'file.ts', outcome: 'ok', exitCode: null, startedAt: now, endedAt: now + 1 }], 0, { total: 0, shapes: {} })[0]! };
           } else if (operation.path === 'models') {
-            body = { catalog: { harness: 'codex', source: { kind: 'exchange', command: 'fixture' }, signIn: 'worker-login', fetchedAt: now + index, models: [{ id: 'fixture-model', efforts: [] }] } };
+            body = { catalog: { observedOrder: index + 1, harness: 'codex', source: { kind: 'exchange', command: 'fixture' }, signIn: 'worker-login', fetchedAt: now + index, models: [{ id: 'fixture-model', efforts: [] }] } };
           } else if (operation.path === 'repository') {
             await target.sql(`UPDATE agent_runs SET task=${lit(operation.task ?? 'vault-seed')}, run_context=${lit(JSON.stringify({ timeoutSeconds: 300, checkout: repository }))} WHERE id=${lit(runId)}`);
             body = { projectId: target.projectId, runId, attemptId, ...repository, commit };

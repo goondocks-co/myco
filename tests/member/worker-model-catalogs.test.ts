@@ -18,6 +18,7 @@ import { HARNESSES, type ModelListing } from '@myco/runner/harnesses.js';
 import { listHarnessModels, MAX_LISTING_PAGES, runListing, valuesAt, type HarnessListing } from '@myco/runner/models.js';
 import { startHarness } from '@myco/runner/drivers/stream.js';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
+import { issueReportOrder } from '@myco/utils/order-stamp.js';
 import { modelCatalogs } from '@myco/runner/catalogs.js';
 import type { WorkerAnswer } from '@myco/runner/loop.js';
 
@@ -116,7 +117,9 @@ describe('reporting what was listed', () => {
 
   it('waits for a stopped listing to dispose before shutdown settles', async () => {
     let disposed = false;
+    let order = 0;
     const reporter = modelCatalogs({
+      issueOrder: (floor = 0) => (order = Math.max(order, floor) + 1),
       harnesses: ['codex'], clock: () => 1, log: () => {},
       list: (_ids, signal) => new Promise((resolve) => {
         signal.addEventListener('abort', () => {
@@ -134,7 +137,9 @@ describe('reporting what was listed', () => {
     let completeOld: (value: HarnessListing[]) => void = () => {};
     let oldSignal: AbortSignal | undefined;
     const sent: string[] = [];
+    let order = 0;
     const reporter = modelCatalogs({
+      issueOrder: (floor = 0) => (order = Math.max(order, floor) + 1),
       harnesses: ['codex'], clock: () => 1, log: () => {},
       list: (ids, signal) => {
         if (ids.includes('codex')) {
@@ -164,7 +169,9 @@ describe('reporting what was listed', () => {
     const sent: string[] = [];
     const lines: string[] = [];
     let listings = 0;
+    let order = 0;
     const reporter = modelCatalogs({
+      issueOrder: (floor = 0) => (order = Math.max(order, floor) + 1),
       harnesses: ['codex', 'opencode'],
       list: async () => { listings += 1; return listed; },
       send: async (c) => { sent.push(c.harness); return answers.shift() ?? ANSWERED; },
@@ -173,6 +180,37 @@ describe('reporting what was listed', () => {
     });
     return { reporter, sent, lines, listings: () => listings, advance: (ms: number) => { now += ms; } };
   }
+
+  it('refuses a corrupt counter without throwing or wedging, then relists above the server floor after repair', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'myco-catalog-counter-'));
+    const counter = join(home, 'report-order', 'fixture.json');
+    mkdirSync(join(home, 'report-order'));
+    writeFileSync(counter, '');
+    const lines: string[] = [];
+    const sent: ModelCatalog[] = [];
+    let listings = 0;
+    const reporter = modelCatalogs({
+      issueOrder: floor => issueReportOrder(home, 'fixture', floor),
+      harnesses: ['codex'], clock: () => 0, log: line => lines.push(line),
+      list: async () => { listings++; return [{ ok: true, catalog: { ...catalog('codex'), fetchedAt: listings } }]; },
+      send: async value => { sent.push(value); return sent.length === 1 ? { ...ANSWERED, body: { recorded: false, observedOrder: 100 } } : ANSWERED; },
+    });
+    try {
+      expect(() => reporter.due()).not.toThrow();
+      reporter.due(); await settle();
+      expect(listings).toBe(0);
+      expect(sent).toEqual([]);
+      expect(readFileSync(counter, 'utf8')).toBe('');
+      expect(lines).toContain('report_order_unavailable: model listing refused; repair the reporting counter before retrying');
+      writeFileSync(counter, '5');
+      reporter.due(); await settle();
+      reporter.due(); await settle();
+      reporter.due(); await settle();
+      reporter.due(); await settle();
+      expect(listings).toBe(2);
+      expect(sent.map(c => [c.observedOrder, c.fetchedAt])).toEqual([[6, 1], [101, 2]]);
+    } finally { await reporter.stop(); rmSync(home, { recursive: true, force: true }); }
+  });
 
   it('lists once, then sends each harness\'s catalog on its own pass, and lists again only once the refresh is due', async () => {
     const r = rig([]);
@@ -212,7 +250,9 @@ describe('reporting what was listed', () => {
   });
 
   it('holds up no caller: due answers before a listing or a report does', () => {
+    let order = 0;
     const reporter = modelCatalogs({
+      issueOrder: (floor = 0) => (order = Math.max(order, floor) + 1),
       harnesses: ['codex'], list: () => new Promise(() => {}), send: () => new Promise(() => {}), log: () => {}, clock: () => 0,
     });
     const started = performance.now();
@@ -351,4 +391,33 @@ describe('a listing starts its harness as a run on the machine\'s own login star
       expect(listed?.ok === true ? listed.catalog.models.length : listed).toBe(MAX_LISTING_PAGES);
     });
   });
+});
+
+it('keeps a listing stamp on transport retry and relists above a refused server order', async () => {
+  let issued = 0;
+  let listings = 0;
+  const sent: ModelCatalog[] = [];
+  const reporter = modelCatalogs({
+    harnesses: ['codex'], clock: () => 10, log: () => {},
+    issueOrder: (floor = 0) => (issued = Math.max(issued, floor) + 1),
+    list: async () => [{ ok: true, catalog: { harness: 'codex', source: { kind: 'exchange', command: 'list' }, signIn: 'worker-login', fetchedAt: 1, models: [{ id: 'gpt-6', label: String(++listings) }] } }],
+    send: async catalog => {
+      sent.push(catalog);
+      if (sent.length === 1) return { kind: 'unreachable', detail: 'offline' };
+      return { kind: 'answered', body: { persisted: true, recorded: sent.length > 2, observedOrder: sent.length === 2 ? 100 : catalog.observedOrder },
+        accounting: true, executionProfile: true, profileOutcome: true, modelCatalog: true, steps: true };
+    },
+  });
+  try {
+    reporter.due(); await Bun.sleep(5);
+    reporter.due(); await Bun.sleep(5);
+    reporter.due(); await Bun.sleep(5);
+    expect(sent[0]).toBe(sent[1]);
+    expect(sent[0]!.observedOrder).toBe(1);
+    reporter.due(); await Bun.sleep(5);
+    reporter.due(); await Bun.sleep(5);
+    expect(sent[2]!.observedOrder).toBe(101);
+    expect(sent[2]!.models[0]!.label).toBe('2');
+    expect(listings).toBe(2);
+  } finally { await reporter.stop(); }
 });

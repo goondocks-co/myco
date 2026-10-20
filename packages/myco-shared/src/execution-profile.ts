@@ -1,3 +1,4 @@
+import { isReportOrder } from './report-order.js';
 import { keyLike } from './command-shape.js';
 import { RUNNER_HARNESSES } from './runner-harnesses.generated.js';
 
@@ -255,6 +256,7 @@ export type CatalogSignIn = typeof CATALOG_SIGN_INS[number];
 
 /** The models one worker listed for one harness, and when. */
 export interface ModelCatalog {
+  observedOrder?: number;
   harness: string;
   source: CatalogSource;
   signIn: CatalogSignIn;
@@ -319,7 +321,8 @@ export function parseModelCatalog(value: unknown): ModelCatalog | null {
     seen.add(model.id);
     models.push(model);
   }
-  return { harness, source: { kind, command }, signIn, fetchedAt, models, ...(truncated ? { truncated: true as const } : {}) };
+  if (raw.observedOrder !== undefined && !isReportOrder(raw.observedOrder)) return null;
+  return { harness, source: { kind, command }, signIn, fetchedAt, models, ...(raw.observedOrder === undefined ? {} : { observedOrder: raw.observedOrder as number }), ...(truncated ? { truncated: true as const } : {}) };
 }
 
 /** The presets a harness declares whose every model some catalog of the harness lists. */

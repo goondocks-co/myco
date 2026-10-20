@@ -1,3 +1,4 @@
+let updateOrder = 0;
 import { describe, expect, it } from 'bun:test';
 import { readWorkerFleet, recentWorkerReports, runnerContactStatement, WORKER_CONTACT_RETENTION_MS } from '@myco-server-worker/core/worker-contacts.js';
 import { seededSqlite, sqliteD1 } from './helpers/d1.js';

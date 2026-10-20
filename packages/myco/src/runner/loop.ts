@@ -1,3 +1,6 @@
+import { resolveMycoHome } from '@myco/paths/home.js';
+import { deploymentKeyFor } from '@myco/member/registry.js';
+import { issueReportOrder } from '@myco/utils/order-stamp.js';
 import { memberServerDialUrl } from '@myco/member/server-url.js';
 import { runnerCheckIn } from '@goondocks/myco-shared/setup-guidance';
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
@@ -71,6 +74,8 @@ interface ClaimedRun {
 }
 
 export interface WorkerOptions {
+  /** The selected reporting home; defaults to the configured member home. */
+  reportHome?: string;
   /** Git executable override for a controlled checkout environment. */
   repositoryGitPath?: string;
   serverUrl: string;
@@ -915,6 +920,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
   const startedHarnesses = new Set<string>();
   const catalogs = modelCatalogs({
     harnesses: [],
+    issueOrder: (floor) => issueReportOrder(options.reportHome ?? resolveMycoHome(), deploymentKeyFor(options.serverUrl), floor),
     list: options.listModels ?? ((ids, signal) => listModels(ids, options.runRoot, signal, clock)),
     send: (catalog) => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/models', { catalog }),
     log: options.log,

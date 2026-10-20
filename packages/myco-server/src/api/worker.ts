@@ -184,11 +184,12 @@ export async function handleWorkerModels(env: ServerEnv, ctx: DeploymentContext)
   if (asked === null) return unreadable();
   const catalog = parseModelCatalog(asked.catalog);
   if (catalog === null) return ok({ persisted: true, recorded: false, reason: 'the list names no agent whose models Settings sets, or no source, sign-in, listing time or models' });
-  await recordModelCatalog(env.db, {
+  const result = await recordModelCatalog(env.db, {
     owner: ctx.worker.kind === 'member' ? { kind: 'machine', machineId: ctx.worker.machineId } : { kind: 'runner', runnerId: ctx.worker.runnerId },
     catalog, now: ctx.now,
   });
-  return ok({ persisted: true, recorded: true, models: catalog.models.length });
+  return ok(result.recorded ? { persisted: true, recorded: true, models: catalog.models.length }
+    : { persisted: true, ...result, reason: 'List the models again; this list is no longer current.' });
 }
 
 /**

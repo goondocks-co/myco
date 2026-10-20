@@ -169,7 +169,7 @@ describe('task execution profiles', () => {
       await r.writer.setLeaf('agent.reasoning_map.opencode.default', alias, 'mem_worker', NOW);
       if (listed !== null) {
         await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId: 'fixture' }, now: NOW, catalog: {
-          harness: 'opencode', source: { kind: 'command', command: 'opencode models' }, signIn: 'worker-login', fetchedAt: NOW,
+          harness: 'opencode', source: { kind: 'command', command: 'opencode models' }, signIn: 'worker-login', observedOrder: 1, fetchedAt: NOW,
           models: [{ id: alias, label: alias, provider: 'openrouter', resolvesTo: listed }],
         } });
       }
@@ -191,7 +191,7 @@ describe('task execution profiles', () => {
     for (const [machineId, receivedAt, expected] of [['fixture', NOW, 'claude-sonnet-5-5'], ['fixture', NOW - MODEL_CATALOG_FRESH_MS - 1, undefined], ['another', NOW, undefined]] as const) {
       const r = await rig();
       await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId }, now: receivedAt, catalog: {
-        harness: 'claude-code', source: { kind: 'exchange', command: 'claude' }, signIn: 'worker-login', fetchedAt: receivedAt,
+        harness: 'claude-code', source: { kind: 'exchange', command: 'claude' }, signIn: 'worker-login', observedOrder: 1, fetchedAt: receivedAt,
         models: [{ id: 'sonnet', label: 'Sonnet 5.5', resolvesTo: 'claude-sonnet-5-5' }],
       } });
       r.queue('resolved_run');

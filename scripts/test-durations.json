@@ -816,7 +816,13 @@
     "tests/member/prefetch.test.ts": 250,
     "tests/member/feature-cache.test.ts": 250,
     "tests/member/session-reconcile.test.ts": 400,
-    "tests/meta/reconciliation-contract.test.ts": 5500
+    "tests/meta/reconciliation-contract.test.ts": 5500,
+    "tests/runner/update-report-order.test.ts": 200,
+    "tests/myco-server/plan-status-intent.test.ts": 200,
+    "tests/myco-server/reconciliation-runtime.test.ts": 1800,
+    "tests/myco-server/reconciliation-schema.test.ts": 1800,
+    "tests/myco-server/server-reconciliation.test.ts": 200,
+    "tests/utils/order-stamp.test.ts": 100
   },
   "parity": {
     "D1: latest migration upgrades seeded previous schema to expected state": 45000,

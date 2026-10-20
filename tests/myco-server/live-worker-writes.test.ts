@@ -36,7 +36,7 @@ for (const path of paths) {
         }
         if (change === 'claim demotion') f.sqlite.run("UPDATE agent_runs SET status='queued', dispatched_by=NULL, leased_by=NULL, lease_expires_at=NULL WHERE id='live-run'");
         const body = path === '/worker/claim' ? { harnesses: change === 'claim demotion' ? [offeredHarness('claude-code')] : [] }
-          : path === '/worker/models' ? { catalog: { harness: 'codex', source: { kind: 'exchange', command: 'fixture' }, signIn: 'worker-login', fetchedAt: now, models: [{ id: 'fixture-model', efforts: [] }] } }
+          : path === '/worker/models' ? { catalog: { observedOrder: 1, harness: 'codex', source: { kind: 'exchange', command: 'fixture' }, signIn: 'worker-login', fetchedAt: now, models: [{ id: 'fixture-model', efforts: [] }] } }
           : path === '/worker/steps' ? { projectId: 'proj_1', runId: 'live-run', ...stepPages(claimed.run.attemptId, [{ seq: 0, callId: 'fixture-call', kind: 'read', tool: 'Read', target: 'file.ts', outcome: 'ok', exitCode: null, startedAt: now, endedAt: now + 1 }], 0, { total: 0, shapes: {} })[0]! }
           : path === '/worker/repository' ? { projectId: 'proj_1', runId: 'live-run', url: 'https://example.test/source', branch: 'main', commit: 'a'.repeat(40) }
           : { projectId: 'proj_1', runId: 'live-run', status: 'failed', error: 'fixture' };

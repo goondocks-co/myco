@@ -59,7 +59,7 @@ export const runnerIdentity: ParityScenario = {
     expect(await answer(asRunner(target, token, '/runners/contact', { machineId: 'parity-mini' }))).toMatchObject({ persisted: true, runner: { id: runnerId, state: 'enabled' } });
 
     expect(await answer(asRunner(target, token, '/runners/contact', { update: { channel: 'invalid' } }))).toMatchObject({ persisted: true });
-    const update = { channel: 'alpha', currentVersion: '2.0.0-alpha.2', latestVersion: '2.0.0-alpha.3', lastCheckAt: now };
+    const update = { observedOrder: 1, channel: 'alpha', currentVersion: '2.0.0-alpha.2', latestVersion: '2.0.0-alpha.3', lastCheckAt: now };
     const blockedVersion = { version: update.latestVersion, until: now + 3600000, reason: 'Launch failed' };
     expect(await answer(asRunner(target, token, '/runners/contact', { update: { ...update, blockedVersion } }))).toMatchObject({ persisted: true, updateRequest: null });
     const blockedFleet = await (await fetch(`${target.url}/api/runners`, { headers: admin })).json() as { runners: Array<Record<string, unknown>> };
@@ -78,7 +78,7 @@ export const runnerIdentity: ParityScenario = {
     expect(await answer(asRunner(target, token, '/runners/contact', { update }))).toMatchObject({ updateRequest });
     const lastResult = { requestId: updateRequest.id, attemptId: 'parity_update_attempt', fromVersion: update.currentVersion, toVersion: update.latestVersion, result: 'updated', at: now };
     const updateState = { phase: 'probation', since: now, reason: 'Waiting for health' };
-    const updated = { update: { ...update, currentVersion: update.latestVersion, lastResult, updateState } };
+    const updated = { update: { ...update, observedOrder: 2, currentVersion: update.latestVersion, lastResult, updateState } };
     for (let retry = 0; retry < 2; retry++) expect(await answer(asRunner(target, token, '/runners/contact', { update: { ...updated.update, lastResult: { ...lastResult, at: now + retry, reason: 'probe\u0085failed\u200bto\u2028launch ' + '😀'.repeat(512) } } }))).toMatchObject({ persisted: true, updateRequest: null });
     expect(await answer(asRunner(target, token, '/runners/contact', { update: { ...updated.update, lastResult: { ...lastResult, at: 'invalid' } } }))).toMatchObject({ persisted: true });
     const updatedFleet = await (await fetch(`${target.url}/api/runners`, { headers: admin })).json() as { runners: Array<Record<string, unknown>> };

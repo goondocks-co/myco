@@ -17,8 +17,14 @@ export const latestD1Upgrade: ParityScenario = {
   async run(target) {
     expect(await target.sql("SELECT value FROM schema_meta WHERE key = 'version'"))
       .toEqual([{ value: String(SCHEMA_STEPS.at(-1)?.version) }]);
-    // The latest step records where a parsed prompt's identity comes from: a claim the store admits from its own list, and
-    // a table of refused second sources keyed by all six of its names. The transcripts it finds keep the pins they hold.
+    for (const [table, column] of [
+      ['knowledge_git_provenance', 'event_id'], ['deployment_settings', 'write_id'],
+      ['worker_model_catalogs', 'observed_order'], ['runner_model_catalogs', 'observed_order'], ['runner_update_reports', 'observed_order'],
+    ]) {
+      const columns = await target.sql(`PRAGMA table_info(${table})`);
+      expect(columns.some(c => c.name === column)).toBe(true);
+      expect((await target.sql(`SELECT ${column} AS value FROM ${table}`)).every(row => row.value === null)).toBe(true);
+    }
     expect(await target.sql("SELECT claim, source_key, source_thread, source_record FROM prompt_batches WHERE project_id = 'proj_parity' LIMIT 1"))
       .toEqual([{ claim: null, source_key: null, source_thread: null, source_record: null }]);
     await expect(target.sql("UPDATE prompt_batches SET claim = 'guess' WHERE project_id = 'proj_parity'")).rejects.toThrow(/CHECK constraint failed/);

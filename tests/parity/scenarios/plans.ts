@@ -4,7 +4,7 @@ import { expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget
 
 /**
  * Plans on both targets: a plan captured with the prompt it came from, an
- * identical re-emission that moves nothing, a changed one that keeps the row's
+ * identical re-emission that advances its rank, a changed one that keeps the row's
  * status and prompt, an MCP save converging on the member's key, a status edit
  * through the owner route naming its member, the turn body carrying the plan,
  * and a later capture clearing the administrator.
@@ -48,9 +48,11 @@ export const plans: ParityScenario = {
     const first = await row(key);
     expect([first.prompt_id, first.status, first.content, first.updated_at]).toEqual([p1, 'active', '- [ ] one', stamp + 10]);
 
-    // Identical content and title, no status: nothing moves.
+    // Identical display fields still advance the event rank.
     await post(session, 'plan', { planKey: key, title: 'Parity', content: '- [ ] one', originPath: path }, stamp + 20);
-    expect(await row(key)).toEqual(first);
+    const repeated = await row(key);
+    expect(repeated).toEqual({ ...first, event_id: expect.any(String), updated_at: stamp + 20 });
+    expect(repeated.event_id).not.toBe(first.event_id);
 
     // New content from the same file, no status: the row moves and keeps its status and prompt.
     await post(session, 'plan', { planKey: key, title: 'Parity', content: '- [x] one', originPath: path }, stamp + 30);

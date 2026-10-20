@@ -167,7 +167,7 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
       }
       out(`${url}: ${isLiveRunner(record) ? `registered runner ${record.name} (${record.runnerId})` : record === null ? `not registered; run \`myco runner register ${url}\`` : 'registration pending'}`);
       const update = runnerUpdater(url, scoped, line => out(`  ${line}`));
-      const updateStatus = update.contactPayload();
+      const updateStatus = update.statusPayload();
       out(`  version: ${updateStatus.currentVersion}; channel: ${updateStatus.channel ?? 'unavailable'}`);
       out(`  last update check: ${updateStatus.lastCheckAt === null ? 'never' : new Date(updateStatus.lastCheckAt).toISOString()}`);
       const lastUpdate = updateStatus.lastResult;
