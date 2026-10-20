@@ -24,6 +24,10 @@ test.describe('design specimen', () => {
         await expect(page.getByRole('heading', { level: 1, name: 'Design system' })).toBeVisible();
         await expect(page.getByRole('switch', { name: 'Learn from sessions' })).toBeVisible();
         await expect(page.getByText('Canopy parity verified against the hosted map')).toBeVisible();
+        // A row's kicker sits above its title, inside the row.
+        const kicked = page.locator('[data-specimen-kicker]').getByRole('link');
+        const [kicker, title] = await Promise.all([kicked.getByText('Gotcha').boundingBox(), kicked.getByText('A reserved test port races the ephemeral fallback').boundingBox()]);
+        expect(kicker!.y + kicker!.height).toBeLessThanOrEqual(title!.y);
         await expectFits(page, viewport);
         await expectAxeClean(page);
         expectQuiet(watch);

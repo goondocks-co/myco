@@ -21,6 +21,7 @@ import type { PreparedStatement, RelationalStore } from '@myco-server-worker/cor
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { encodeCursor } from '@myco-server-worker/read/scope.js';
 import { listSessions } from '@myco-server-worker/read/sessions.js';
+import { listPlans } from '@myco-server-worker/read/children.js';
 import { heldTranscriptsFor } from '@myco-server-worker/read/transcript.js';
 import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
 
@@ -123,6 +124,33 @@ describe('the reads a person waits on', () => {
     expect(await heldReads([], [])).toEqual([]);
     expect(await heldReads(['s1'], [])).toHaveLength(1);
     expect(await heldReads([], ['tx_a'])).toHaveLength(1);
+  });
+
+  it('pages a session\'s plans narrowed by status and title over idx_plans_session, with the plan the unfiltered page has', async () => {
+    // The status and title terms filter the rows the index already narrowed to
+    // the session, so the filtered page keeps the unfiltered page's plan step for
+    // step. An index chosen for the new terms instead would scan the project or
+    // sort the whole order. The unfiltered page sorts only its plan_key tie-break
+    // (`idx_plans_session` ends at updated_at), which the comparison carries.
+    const statementOf = async (opts: Parameters<typeof listPlans>[3]) => {
+      const { db: recorder, statements } = recordingStore();
+      await listPlans(recorder, { projectId: 'proj_1' }, 's1', opts);
+      expect(statements).toHaveLength(1);
+      return statements[0];
+    };
+    const db = migrated();
+    try {
+      for (const cursor of [undefined, encodeCursor(1_700_000_000_000, 'k')]) {
+        const plain = await statementOf({ limit: 50, cursor });
+        const filtered = await statementOf({ limit: 50, cursor, status: 'active', q: 'search' });
+        expect(/status = \?/.test(filtered.sql) && /title LIKE/.test(filtered.sql)).toBe(true);
+        const plan = planOf(db, filtered.sql, filtered.params);
+        expect({ index: /SEARCH plans USING INDEX idx_plans_session \(project_id=\? AND session_id=\?/.test(plan), scan: /SCAN plans/.test(plan), plan })
+          .toEqual({ index: true, scan: false, plan: planOf(db, plain.sql, plain.params) });
+      }
+    } finally {
+      db.close();
+    }
   });
 
   it('keeps the same plan when a cursor narrows the page', async () => {

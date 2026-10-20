@@ -1,4 +1,5 @@
-import { type UseQueryOptions, useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
+import { type UseQueryOptions, useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { fetchJson } from '../lib/api';
 
 export interface SporeRow {
@@ -75,6 +76,35 @@ export function useSpores(projectId: string, filters: SporeFilters = {}, options
     queryFn: ({ signal }) => fetchJson<SporesResponse>(`${project(projectId)}/spores?${query}`, signal),
     ...options,
   });
+}
+
+/**
+ * The same read as `useSpores`, a page at a time: `more()` asks for the next page at the offset the loaded pages
+ * reach, and the read ends once they hold the `total` the server counts.
+ */
+export function useSporePages(projectId: string, filters: Omit<SporeFilters, 'offset'> = {}) {
+  const limit = filters.limit ?? SPORE_PAGE_SIZE;
+  const query = useInfiniteQuery({
+    queryKey: ['spores', projectId, 'pages', sporeQuery({ ...filters, limit })],
+    initialPageParam: 0,
+    queryFn: ({ pageParam, signal }) => fetchJson<SporesResponse>(`${project(projectId)}/spores?${sporeQuery({ ...filters, limit, offset: pageParam })}`, signal),
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((n, page) => n + page.spores.length, 0);
+      return last.spores.length === 0 || loaded >= last.total ? undefined : loaded;
+    },
+  });
+  const rows = useMemo(() => query.data?.pages.flatMap((page) => page.spores) ?? [], [query.data]);
+  return {
+    rows,
+    total: query.data?.pages.at(-1)?.total,
+    isPending: query.isPending,
+    error: query.error,
+    hasMore: query.hasNextPage,
+    isFetchingMore: query.isFetchingNextPage,
+    // A page already on its way is joined, never asked for again.
+    more: () => { void query.fetchNextPage({ cancelRefetch: false }); },
+    retry: () => { void query.refetch(); },
+  };
 }
 
 /** One spore with its lineage in both directions. */
