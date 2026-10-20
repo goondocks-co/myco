@@ -20,7 +20,7 @@ import { writeHookResponse, type HookResponse } from '../hooks/response.js';
 import { resolveHookBudget, type HookBudget } from './budget.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { parseCredentialFlag, redeemsJoinCode, registryCredential, resolveCredential, resolveMemberProjectRoot, type CredentialRecord, type CredentialSource } from './credential.js';
-import { withAsk, type ContextAsk } from './context-cache.js';
+import { withAsk, type ContextAskRequest } from './context-cache.js';
 import { deliveryNotice, withNotice } from './delivery-notice.js';
 import { autoJoinHold, LEFT_ALONE, type AutoJoinHold } from './auto-join-hook.js';
 import { appendPending, appendPendingTurnEnd } from './pending.js';
@@ -96,7 +96,7 @@ export interface HookOutcome {
   record?: (state: SessionState) => void;
   response?: HookResponse;
   /** What the member helper is to fetch for the hooks after this one, recorded with the records. */
-  ask?: ContextAsk;
+  ask?: ContextAskRequest;
   /**
    * Capture that depends on what an earlier hook of the session recorded: decided from the session's state under the
    * lock the append holds, so two hooks of one session never decide from the same state. Its events are appended after
@@ -132,7 +132,7 @@ export interface HookOutcome {
 /** What a hook's `claim` decided under the session's lock. */
 export interface HookClaim {
   events: OutboundEvent[];
-  ask?: ContextAsk;
+  ask?: ContextAskRequest;
   response?: HookResponse;
 }
 
@@ -285,7 +285,7 @@ export async function runMemberHook(
     response = outcome.response ?? {};
     if (hold !== null && hold.notice !== null) response = withNotice(hold.notice, response);
     let claimed: HookClaim | undefined;
-    const ask = (): ContextAsk | undefined => claimed?.ask ?? outcome.ask;
+    const ask = (): ContextAskRequest | undefined => claimed?.ask ?? outcome.ask;
     const record = outcome.events.length > 0 || outcome.record || outcome.ask || outcome.claim ? (state: SessionState) => {
       state.agent ??= input.agent;
       state.hookAt = now();

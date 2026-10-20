@@ -1,6 +1,6 @@
 import { runMemberHook, type HookMainOptions } from '../member/capture.js';
 import { subagentStartEvent } from '../member/envelope.js';
-import { renderedBlock, type ContextAsk } from '../member/context-cache.js';
+import { renderedBlock, type ContextAskRequest } from '../member/context-cache.js';
 import { readSessionState } from '../member/session-state.js';
 import { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 import { HOOK_CONFIG } from './hook-config.generated.js';
@@ -23,7 +23,7 @@ export async function main(opts: HookMainOptions = {}) {
     const state = readSessionState(run.spool.dir, run.sessionId);
     // A symbiont whose harness discards a SubagentStart answer is served nothing, and nothing is fetched for it.
     const takesInjection = HOOK_CONFIG[run.agent]?.capabilities.subagentStartInjection === true;
-    const ask: ContextAsk = { kind: 'subagent', agentId: name(run.input.raw.agent_id), agentType: name(run.input.raw.agent_type), at: run.now() };
+    const ask: ContextAskRequest = { kind: 'subagent', agentId: name(run.input.raw.agent_id), agentType: name(run.input.raw.agent_type), at: run.now() };
     const delivered = sessionInjectionKind(ask);
     // Served once per delegation, and asked for by the delegation that renders it: the Deployment's record of having
     // served it names the session it reached.

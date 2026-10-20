@@ -5,7 +5,7 @@ import { hookCwd, runMemberHook, type HookMainOptions, type HookRun } from '../m
 import { sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
 import { withNotice } from '../member/delivery-notice.js';
 import { compactionStart, recordCompaction } from '../member/compaction.js';
-import { projectLineOnly, renderedBlock, type ContextAsk, type SessionBlockKind } from '../member/context-cache.js';
+import { projectLineOnly, renderedBlock, type ContextAskRequest, type SessionBlockKind } from '../member/context-cache.js';
 import { BLOCK_JOIN } from '@goondocks/myco-shared/recall';
 import { readSessionState } from '../member/session-state.js';
 import { sessionLineage } from '../member/transcript.js';
@@ -59,7 +59,7 @@ export async function main(opts: HookMainOptions = {}) {
     const compaction = compacted ? readSessionState(run.spool.dir, sessionId).compactionOrdinal + 1 : undefined;
     if (compaction !== undefined && !isCompactionOrdinal(compaction)) throw new Error('session compaction ordinal is invalid');
     const named = { remoteFrom: cwd };
-    const ask: ContextAsk = compaction !== undefined
+    const ask: ContextAskRequest = compaction !== undefined
       ? { kind: 'compact', compaction, ...named, at: run.now() }
       : { kind: 'start', ...named, at: run.now() };
     const delivered = sessionInjectionKind(ask);

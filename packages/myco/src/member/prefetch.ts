@@ -84,10 +84,10 @@ function sessionsWithAsks(spool: MemberSpool): Array<{ sessionId: string; asks: 
   return held.sort((a, b) => b.oldest - a.oldest);
 }
 
-/** Drop an ask the Deployment has answered; a newer ask of the same kind, written meanwhile, stays. */
+/** Drop the ask the Deployment has answered, by its id; any other ask, written meanwhile, stays. */
 function settleAsk(spool: MemberSpool, sessionId: string, ask: ContextAsk, now: number): void {
   updateSessionState(spool.dir, sessionId, (state) => {
-    state.contextAsks = (state.contextAsks ?? []).filter((held) => !(held.kind === ask.kind && held.at === ask.at));
+    state.contextAsks = (state.contextAsks ?? []).filter((held) => held.id !== ask.id);
     if (state.contextAsks.length === 0) delete state.contextAsks;
   }, now);
 }
@@ -131,7 +131,7 @@ export async function prefetchContext(opts: {
         const receiptId = rowId(body.receiptId);
         const answerId = rowId(body.answerId);
         writeSessionContext(spool.dir, opts.mycoHome, sessionId, { version: 1, prompt: {
-          context, ...(ask.promptId === undefined ? {} : { promptId: ask.promptId }), askedAt: ask.at,
+          context, ...(ask.promptId === undefined ? {} : { promptId: ask.promptId }), askId: ask.id,
           ...(receiptId === undefined ? {} : { receiptId }), ...(answerId === undefined ? {} : { answerId }),
           ...(isDeliveredSessionRecord(body.sessionRecord) ? { sessionRecord: body.sessionRecord } : {}), skipped, at: now(),
         } });

@@ -142,8 +142,8 @@ export interface SessionState {
   hookAt?: number;
   /** When the session's end hook ran: nothing of its transcript waits on a turn's end after it. */
   endedAt?: number;
-  /** The instant of the ask whose served context a prompt of this session last rendered: each answer is rendered once. */
-  renderedAsk?: number;
+  /** The id of the ask whose served context a prompt of this session last rendered: each answer is rendered once. */
+  renderedAsk?: string;
   /**
    * For an agent whose harness key names a turn: the turn the last prompt hook ran in, and the id its opener claimed,
    * held until a later prompt of the same turn steers it.
@@ -246,12 +246,34 @@ export type SessionStateRead =
   | { ok: true; state: SessionState }
   | { ok: false; reason: SessionStateRefusal; detail?: string };
 
+/** State files already reported for holding asks without an id, so each is reported once per process. */
+const reportedUnidentifiedAsks = new Set<string>();
+
+/**
+ * Drop what a state holds from before asks carried their id: an ask with no id is asked again by the session's next
+ * prompt, and a render marker that is not an ask id names no answer. Dropped asks are reported once per file.
+ */
+function withIdentifiedAsks(state: SessionState, file: string): SessionState {
+  if (state.renderedAsk !== undefined && typeof state.renderedAsk !== 'string') delete state.renderedAsk;
+  if (state.contextAsks === undefined) return state;
+  const kept = state.contextAsks.filter((ask) => typeof ask?.id === 'string' && ask.id.length > 0);
+  const dropped = state.contextAsks.length - kept.length;
+  if (dropped > 0 && !reportedUnidentifiedAsks.has(file)) {
+    reportedUnidentifiedAsks.add(file);
+    process.stderr.write(`[myco] member: ${dropped} context ask(s) without an id dropped; the session's next prompt asks again ${file}\n`);
+  }
+  if (kept.length === 0) delete state.contextAsks;
+  else state.contextAsks = kept;
+  return state;
+}
+
 /** The one parse, schema check and default merge over a state file; both readers below derive from it. */
 function readStateFile(spoolDir: string, sessionId: string): SessionStateRead {
-  const read = readPrivateJson<SessionState>(sessionStatePath(spoolDir, sessionId));
+  const file = sessionStatePath(spoolDir, sessionId);
+  const read = readPrivateJson<SessionState>(file);
   if (!read.ok) return { ok: false, reason: read.reason, detail: read.detail };
   if (!isState(read.value)) return { ok: false, reason: 'invalid', detail: 'not a session state' };
-  return { ok: true, state: { ...emptySessionState(), ...read.value } };
+  return { ok: true, state: withIdentifiedAsks({ ...emptySessionState(), ...read.value }, file) };
 }
 
 /** An instant a surface can render: finite, and a date. */
@@ -316,6 +338,12 @@ export function writeSessionStateUnlocked(spoolDir: string, sessionId: string, s
   trimTracked(state);
   state.updatedAt = now;
   writePrivateFileAtomic(sessionStatePath(spoolDir, sessionId), JSON.stringify(state));
+}
+
+/** Make `target` hold exactly the fields of `next`, for a writer that hands its state to a callback to change. */
+export function replaceSessionState(target: SessionState, next: SessionState): void {
+  for (const field of Object.keys(target) as Array<keyof SessionState>) delete (target as Partial<SessionState>)[field];
+  Object.assign(target, next);
 }
 
 /** Read under the buffer lock. */

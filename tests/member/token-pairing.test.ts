@@ -14,6 +14,7 @@ import { MemberSpool } from '@myco/member/spool.js';
 import { selectedDeploymentMembership } from '@myco/member/token-pairing.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { tempMycoHome } from './helpers/server.js';
+import { withAsk } from '@myco/member/context-cache.js';
 
 const A = 'https://a.example';
 const B = 'https://b.example';
@@ -140,7 +141,7 @@ describe('member destination token pairing', () => {
     const record = { serverUrl: A, projectId: PROJECT, token: 'shared-token' };
     const spool = new MemberSpool(record, { mycoHome });
     const sessionId = 'session-pairing-context';
-    updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = [{ kind: 'start', at: 1 }]; });
+    updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = withAsk(undefined, { kind: 'start', at: 1 }); });
     let fetches = 0;
     const fetch = async (): Promise<Response> => {
       fetches += 1;

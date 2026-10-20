@@ -1,6 +1,6 @@
-import { drainEntryBacklog } from '@myco/member/backlog.js';
+import { drainEntryBacklog, holdsTranscriptTail } from '@myco/member/backlog.js';
 import { warmProjectContext } from '@myco/member/prefetch.js';
-import { readProjectContext } from '@myco/member/context-cache.js';
+import { readProjectContext, readSessionContext, sessionContextPath, withAsk, writeSessionContext } from '@myco/member/context-cache.js';
 import { listRoutingEntries } from '@myco/member/routing.js';
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
@@ -11,7 +11,7 @@ import { runHook } from './helpers/hooks.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { removeRegistryEntry, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { assignLegacySpoolDestination, migrateLegacySpool, pinLegacySpoolDestination, pinLegacySpoolDestinationForProject, legacySpoolDir, LEGACY_MIGRATION_FILE, listLegacySpools, listRetiredLegacySpoolDirs, LEGACY_SPOOL_RETIRE_GRACE_MS } from '@myco/member/spool-migration.js';
-import { bufferLockPath, readSessionState, updateSessionState } from '@myco/member/session-state.js';
+import { bufferLockPath, readSessionState, updateSessionState, type SessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { unboundedBudget } from '@myco/member/budget.js';
@@ -241,7 +241,7 @@ describe('legacy member spool migration', () => {
     expect(listLegacySpools(mycoHome)).toMatchObject([{ projectId, status: 'held', reason: 'Legacy spool is unreadable' }]);
   });
 
-  it('moves legacy context and diagnostics while preserving an existing scoped project cache', () => {
+  it('moves legacy diagnostics and the project cache, leaves session answers behind, and preserves an existing scoped project cache', () => {
     writeRegistryEntry(binding(routeA.serverUrl), { mycoHome });
     const source = legacy();
     const target = new MemberSpool(routeA, { mycoHome });
@@ -259,13 +259,13 @@ describe('legacy member spool migration', () => {
     source.appendRefused({ eventId: 'old', sessionId: 'session-sidecars', kind: 'prompt', code: 'refused', reason: 'old refusal', at: 1 });
     target.appendRefused({ eventId: 'current', sessionId: 'session-sidecars', kind: 'prompt', code: 'refused', reason: 'current refusal', at: 2 });
     const originalContext = fs.readFileSync(path.join(sourceContext, 'project.json'));
-    expect(migrateLegacySpool(routeA, mycoHome).status).toBe('migrated');
+    expect(migrateLegacySpool(routeA, mycoHome)).toMatchObject({ status: 'migrated', contextSkipped: 1 });
     expect(fs.readFileSync(path.join(targetContext, 'project.json'), 'utf8')).toBe(currentProject);
-    expect(fs.readFileSync(path.join(targetContext, 'session-sidecars.json'), 'utf8')).toContain('served');
+    expect(fs.existsSync(path.join(targetContext, 'session-sidecars.json'))).toBe(false);
     expect(target.readLatch()).toMatchObject({ since: 100 });
     expect(target.readRefused().entries.map((entry) => entry.eventId)).toEqual(['current', 'old']);
     expect(fs.readFileSync(path.join(sourceContext, 'project.json'))).toEqual(originalContext);
-    expect(migrateLegacySpool(routeA, mycoHome)).toMatchObject({ status: 'migrated', copied: 0 });
+    expect(migrateLegacySpool(routeA, mycoHome)).toMatchObject({ status: 'migrated', copied: 0, contextSkipped: 0 });
     expect(target.readRefused().entries.map((entry) => entry.eventId)).toEqual(['current', 'old']);
   });
   it.each(['corrupt-context', 'symlink-context', 'corrupt-latch', 'corrupt-refusals', 'corrupt-sidecar-receipt', 'oversized-refusals'])('isolates %s from capture migration and delivery', async (fault) => {
@@ -277,7 +277,7 @@ describe('legacy member spool migration', () => {
     if (fault === 'symlink-context') fs.symlinkSync(scratch, path.join(source.dir, 'context'));
     if (fault === 'corrupt-context') {
       fs.mkdirSync(path.join(source.dir, 'context'));
-      fs.writeFileSync(path.join(source.dir, 'context', 'broken.json'), 'broken', { mode: 0o600 });
+      fs.writeFileSync(path.join(source.dir, 'context', 'project.json'), 'broken', { mode: 0o600 });
     }
     const sidecar = fault === 'corrupt-latch' ? 'offline.json' : fault === 'corrupt-refusals' ? 'refused.jsonl' : fault === 'corrupt-sidecar-receipt' ? '.legacy-sidecars.json' : null;
     if (sidecar !== null) fs.writeFileSync(path.join(source.dir, sidecar), 'broken', { mode: 0o600 });
@@ -721,4 +721,69 @@ describe('legacy member spool migration', () => {
     }
   });
 
+});
+
+describe('legacy session state reconciliation', () => {
+  const sessionId = 'reconciled';
+  const holdsTail = (state: SessionState, now: number): boolean => holdsTranscriptTail(new MemberSpool(routeA, { mycoHome }), state, now, routeA.serverUrl, false);
+  function rig(): { source: MemberSpool; target: MemberSpool } {
+    const source = legacy();
+    const target = new MemberSpool(routeA, { mycoHome });
+    expect(assignLegacySpoolDestination(routeA, mycoHome).status).toBe('assigned');
+    return { source, target };
+  }
+
+  it.each([
+    ['legacy ended, destination resumed', { hookAt: 100, endedAt: 100 }, { hookAt: 200 }],
+    ['legacy resumed, destination ended', { hookAt: 200 }, { hookAt: 100, endedAt: 100 }],
+  ] as const)('keeps the session open when %s, with the clock rolled back', (_case, legacyState, destination) => {
+    const { source, target } = rig();
+    updateSessionState(source.dir, sessionId, (state) => Object.assign(state, legacyState));
+    updateSessionState(target.dir, sessionId, (state) => Object.assign(state, destination));
+    const rolledBack = spyOn(Date, 'now').mockReturnValue(1);
+    try { expect(migrateLegacySpool(routeA, mycoHome, 1).status).toBe('migrated'); }
+    finally { rolledBack.mockRestore(); }
+    const state = readSessionState(target.dir, sessionId);
+    expect({ hookAt: state.hookAt, endedAt: state.endedAt }).toEqual({ hookAt: 200, endedAt: undefined });
+    expect(holdsTail(state, 201)).toBe(true);
+  });
+
+  it('reconciles against the destination again on a retry after the destination recorded an end', () => {
+    const { source, target } = rig();
+    updateSessionState(source.dir, sessionId, (state) => { state.hookAt = 100; });
+    expect(migrateLegacySpool(routeA, mycoHome, 1_000).status).toBe('migrated');
+    updateSessionState(target.dir, sessionId, (state) => { state.hookAt = 200; state.endedAt = 200; });
+    expect(migrateLegacySpool(routeA, mycoHome, 1_001).status).toBe('migrated');
+    const state = readSessionState(target.dir, sessionId);
+    expect({ hookAt: state.hookAt, endedAt: state.endedAt }).toEqual({ hookAt: 200, endedAt: undefined });
+    expect(holdsTail(state, 201)).toBe(true);
+  });
+
+  it('drops legacy asks and leaves the destination\'s settled queue settled, counting the drop once', () => {
+    const { source, target } = rig();
+    updateSessionState(source.dir, sessionId, (state) => { state.contextAsks = withAsk(undefined, { kind: 'prompt', promptId: 'old', text: 'old', at: 100 }); });
+    updateSessionState(target.dir, sessionId, (state) => { state.renderedAsk = 'destination-ask'; delete state.contextAsks; });
+    expect(migrateLegacySpool(routeA, mycoHome, 1_000)).toMatchObject({ status: 'migrated', contextSkipped: 1 });
+    updateSessionState(target.dir, sessionId, (state) => { state.hookAt = 300; });
+    expect(migrateLegacySpool(routeA, mycoHome, 1_001)).toMatchObject({ status: 'migrated', contextSkipped: 0 });
+    const state = readSessionState(target.dir, sessionId);
+    expect(state.contextAsks).toBeUndefined();
+    expect(state.renderedAsk).toBe('destination-ask');
+  });
+
+  it('never carries a legacy answer or its render marker, before or after the destination cache is repaired', () => {
+    const { source, target } = rig();
+    updateSessionState(source.dir, sessionId, (state) => { state.renderedAsk = 'legacy-ask'; });
+    updateSessionState(target.dir, sessionId, (state) => { state.renderedAsk = 'destination-ask'; });
+    writeSessionContext(source.dir, mycoHome, sessionId, { version: 1, prompt: { context: 'already rendered legacy answer', at: 11, askId: 'legacy-ask' } });
+    const destination = sessionContextPath(target.dir, sessionId);
+    fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(destination, '{bad-json', { mode: 0o600 });
+    expect(migrateLegacySpool(routeA, mycoHome, 1_000)).toMatchObject({ status: 'migrated', sidecarHolds: [], contextSkipped: 2 });
+    expect(fs.readFileSync(destination, 'utf8')).toBe('{bad-json');
+    fs.unlinkSync(destination);
+    expect(migrateLegacySpool(routeA, mycoHome, 1_001)).toMatchObject({ status: 'migrated', contextSkipped: 0 });
+    expect(readSessionContext(target.dir, sessionId).prompt).toBeUndefined();
+    expect(readSessionState(target.dir, sessionId).renderedAsk).toBe('destination-ask');
+  });
 });
