@@ -3,12 +3,13 @@
  * the snapshot: a snapshot that failed to publish never advances the order, and one published before a crash still
  * orders the answers after it.
  */
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { beginFeatureRequest, cacheDeploymentFeatures, readDeploymentFeaturesStrict } from '@myco/member/context-cache.js';
 import { deploymentFeaturesPath } from '@myco/member/registry.js';
+import * as store from '@myco/member/store.js';
 
 const SERVER_URL = 'https://features.example';
 const scratches: string[] = [];
@@ -32,6 +33,23 @@ describe('Deployment feature cache order', () => {
     expect(cacheDeploymentFeatures(SERVER_URL, ['turn'], mycoHome, first)).toBe(true);
     expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ features: ['turn'], receivedAt: first });
     expect(JSON.parse(fs.readFileSync(`${file}.order`, 'utf8'))).toMatchObject({ receivedAt: first, issued: second });
+  });
+
+  it('refuses an older answer after a newer one with unchanged features failed to write its order', () => {
+    const mycoHome = home();
+    expect(cacheDeploymentFeatures(SERVER_URL, ['turn'], mycoHome)).toBe(true);
+    const older = beginFeatureRequest(SERVER_URL, mycoHome);
+    const newer = beginFeatureRequest(SERVER_URL, mycoHome);
+    const orderFile = `${deploymentFeaturesPath(SERVER_URL, mycoHome)}.order`;
+    const write = store.writePrivateFileAtomic;
+    const fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation((file, body) => {
+      if (file === orderFile) throw new Error('ordering state unavailable');
+      write(file, body);
+    });
+    try { expect(() => cacheDeploymentFeatures(SERVER_URL, ['turn'], mycoHome, newer)).toThrow('ordering state unavailable'); }
+    finally { fail.mockRestore(); }
+    expect(cacheDeploymentFeatures(SERVER_URL, [], mycoHome, older)).toBe(false);
+    expect(readDeploymentFeaturesStrict({ serverUrl: SERVER_URL, projectId: '' }, mycoHome)).toEqual(['turn']);
   });
 
   it('refuses an older answer after a crash between publishing the snapshot and writing its order', () => {

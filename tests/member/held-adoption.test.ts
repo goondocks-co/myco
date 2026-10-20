@@ -16,7 +16,7 @@ import { sessionStartEvent } from '@myco/member/envelope.js';
 import { restoreHeldReceiptsForHook } from '@myco/member/held.js';
 import { appendPending, flushPending, flushPendingForRoot, pendingSpool } from '@myco/member/pending.js';
 import { prefetchContext } from '@myco/member/prefetch.js';
-import { readSessionState, updateSessionState, type SessionState, type TranscriptPointer } from '@myco/member/session-state.js';
+import { readSessionState, sessionStatePath, updateSessionState, type SessionState, type TranscriptPointer } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { ServerClient } from '@myco/member/transport.js';
 
@@ -109,6 +109,38 @@ describe('held capture adoption', () => {
     const after = readSessionState(r.live.dir, 'pointers');
     expect(after.transcript?.path).toBe(targetFile);
     expect(after.continuations?.[heldFile]).toEqual(pointer(heldFile));
+  });
+
+  it('keeps the target\'s continuation, with its progress and refusal, when a held primary names the same transcript', () => {
+    const r = rig();
+    const oldFile = path.join(r.run, 'old.jsonl');
+    const settled = { ...pointer(oldFile), nextOffset: 500, parsedSize: 500, refused: 'identity_conflict' };
+    updateSessionState(r.live.dir, 'rotated', (state) => {
+      state.transcript = pointer(path.join(r.run, 'new.jsonl'));
+      state.continuations = { [oldFile]: settled };
+    });
+    hold(r, 'rotated', (state) => { state.transcript = pointer(oldFile); });
+    restoreHeldReceiptsForHook(r.repo.root, 'rotated', r.live, { mycoHome: r.mycoHome, now: 1 });
+    expect(readSessionState(r.live.dir, 'rotated').continuations?.[oldFile]).toEqual(settled);
+    flushPendingForRoot(r.repo.root, r.live, { mycoHome: r.mycoHome, now: 2 });
+    expect(readSessionState(r.live.dir, 'rotated').continuations?.[oldFile]).toEqual(settled);
+  });
+
+  it('counts held asks without an id and a non-id render marker among the context it moved without', () => {
+    const r = rig();
+    const sessionId = 'older-format';
+    hold(r, sessionId, (state) => { state.hookAt = 100; });
+    const file = sessionStatePath(pendingSpool(r.repo, { mycoHome: r.mycoHome, now: 1 })!.dir, sessionId);
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.writeFileSync(file, JSON.stringify({ ...stored, contextAsks: [{ kind: 'start', at: 1 }, { kind: 'prompt', text: 'old', at: 2 }], renderedAsk: 100 }), { mode: 0o600 });
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(flushPending(r.repo.rootKey, r.live, { mycoHome: r.mycoHome, now: 1 })).toBe(1);
+      expect(stderr.mock.calls.map(([line]) => String(line)).filter((line) => line.includes(`pending session ${sessionId} moved without 3 held context item(s)`))).toHaveLength(1);
+    } finally { stderr.mockRestore(); }
+    const after = readSessionState(r.live.dir, sessionId);
+    expect(after.contextAsks).toBeUndefined();
+    expect(after.renderedAsk).toBeUndefined();
   });
 
   it('restores, settles and moves a session without reviving a held ask or rendering a held answer', async () => {

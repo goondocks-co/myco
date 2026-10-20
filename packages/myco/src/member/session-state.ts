@@ -243,28 +243,34 @@ function isState(value: unknown): value is SessionState {
 export type SessionStateRefusal = 'missing' | 'unreadable' | 'loose-mode' | 'malformed' | 'invalid';
 
 export type SessionStateRead =
-  | { ok: true; state: SessionState }
+  /** `contextDiscarded`: the asks without an id and the render marker that is not an ask id the read left out. */
+  | { ok: true; state: SessionState; contextDiscarded?: number }
   | { ok: false; reason: SessionStateRefusal; detail?: string };
 
-/** State files already reported for holding asks without an id, so each is reported once per process. */
-const reportedUnidentifiedAsks = new Set<string>();
+/** State files already reported for holding context without an ask id, so each is reported once per process. */
+const reportedUnidentifiedContext = new Set<string>();
 
 /**
- * Drop what a state holds from before asks carried their id: an ask with no id is asked again by the session's next
- * prompt, and a render marker that is not an ask id names no answer. Dropped asks are reported once per file.
+ * Discard asks without an id and a render marker that is not an ask id: such an ask is asked again by the session's
+ * next prompt, and such a marker names no answer. How many were discarded; a file that held any is reported once.
  */
-function withIdentifiedAsks(state: SessionState, file: string): SessionState {
-  if (state.renderedAsk !== undefined && typeof state.renderedAsk !== 'string') delete state.renderedAsk;
-  if (state.contextAsks === undefined) return state;
-  const kept = state.contextAsks.filter((ask) => typeof ask?.id === 'string' && ask.id.length > 0);
-  const dropped = state.contextAsks.length - kept.length;
-  if (dropped > 0 && !reportedUnidentifiedAsks.has(file)) {
-    reportedUnidentifiedAsks.add(file);
-    process.stderr.write(`[myco] member: ${dropped} context ask(s) without an id dropped; the session's next prompt asks again ${file}\n`);
+function discardUnidentifiedContext(state: SessionState, file: string): number {
+  let discarded = 0;
+  if (state.renderedAsk !== undefined && typeof state.renderedAsk !== 'string') {
+    delete state.renderedAsk;
+    discarded += 1;
   }
-  if (kept.length === 0) delete state.contextAsks;
-  else state.contextAsks = kept;
-  return state;
+  if (state.contextAsks !== undefined) {
+    const kept = state.contextAsks.filter((ask) => typeof ask?.id === 'string' && ask.id.length > 0);
+    discarded += state.contextAsks.length - kept.length;
+    if (kept.length === 0) delete state.contextAsks;
+    else state.contextAsks = kept;
+  }
+  if (discarded > 0 && !reportedUnidentifiedContext.has(file)) {
+    reportedUnidentifiedContext.add(file);
+    process.stderr.write(`[myco] member: ${discarded} context item(s) without an ask id dropped; the session's next prompt asks again ${file}\n`);
+  }
+  return discarded;
 }
 
 /** The one parse, schema check and default merge over a state file; both readers below derive from it. */
@@ -273,7 +279,9 @@ function readStateFile(spoolDir: string, sessionId: string): SessionStateRead {
   const read = readPrivateJson<SessionState>(file);
   if (!read.ok) return { ok: false, reason: read.reason, detail: read.detail };
   if (!isState(read.value)) return { ok: false, reason: 'invalid', detail: 'not a session state' };
-  return { ok: true, state: withIdentifiedAsks({ ...emptySessionState(), ...read.value }, file) };
+  const state = { ...emptySessionState(), ...read.value };
+  const contextDiscarded = discardUnidentifiedContext(state, file);
+  return { ok: true, state, ...(contextDiscarded > 0 ? { contextDiscarded } : {}) };
 }
 
 /** An instant a surface can render: finite, and a date. */

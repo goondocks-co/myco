@@ -227,7 +227,10 @@ export function beginFeatureRequest(serverUrl: string, mycoHome: string): number
   return withFeatureOrder(serverUrl, mycoHome, (order) => ++order.issued);
 }
 
-/** Publish an ordered answer; unchanged feature files retain their existing bytes. */
+/**
+ * Publish an ordered answer: the snapshot records each accepted stamp, with its features, before the order does; the
+ * project cache is rewritten only when its features change.
+ */
 export function cacheDeploymentFeatures(serverUrl: string, features: CachedFeature[], mycoHome: string, receivedAt = beginFeatureRequest(serverUrl, mycoHome), project?: { spoolDir: string; at: number }): boolean {
   return withFeatureOrder(serverUrl, mycoHome, (order) => {
     if (receivedAt < order.receivedAt) return false;
@@ -238,7 +241,7 @@ export function cacheDeploymentFeatures(serverUrl: string, features: CachedFeatu
     fallbackFeatures.clear();
     const snapshotPath = deploymentFeaturesPath(serverUrl, mycoHome);
     const snapshot = readCache<FeatureSnapshot>(snapshotPath);
-    if (JSON.stringify(snapshot?.features) !== JSON.stringify(features)) {
+    if (snapshot?.receivedAt !== receivedAt || JSON.stringify(snapshot.features) !== JSON.stringify(features)) {
       writePrivateFileAtomic(snapshotPath, `${JSON.stringify({ version: CACHE_VERSION, features, receivedAt })}\n`);
     }
     if (project !== undefined && JSON.stringify(readProjectContext(project.spoolDir).features) !== JSON.stringify(features)) {

@@ -771,6 +771,20 @@ describe('legacy session state reconciliation', () => {
     expect(state.renderedAsk).toBe('destination-ask');
   });
 
+  it('counts legacy asks without an id and a non-id render marker as skipped, once', () => {
+    const { source, target } = rig();
+    updateSessionState(source.dir, sessionId, (state) => { state.hookAt = 100; });
+    const file = path.join(source.dir, `${sessionId}.state.json`);
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.writeFileSync(file, JSON.stringify({ ...stored, contextAsks: [{ kind: 'start', at: 1 }, { kind: 'prompt', text: 'old', at: 2 }], renderedAsk: 100 }), { mode: 0o600 });
+    expect(migrateLegacySpool(routeA, mycoHome, 1_000)).toMatchObject({ status: 'migrated', contextSkipped: 3 });
+    updateSessionState(target.dir, sessionId, (state) => { state.hookAt = 300; });
+    expect(migrateLegacySpool(routeA, mycoHome, 1_001)).toMatchObject({ status: 'migrated', contextSkipped: 0 });
+    const state = readSessionState(target.dir, sessionId);
+    expect(state.contextAsks).toBeUndefined();
+    expect(state.renderedAsk).toBeUndefined();
+  });
+
   it('never carries a legacy answer or its render marker, before or after the destination cache is repaired', () => {
     const { source, target } = rig();
     updateSessionState(source.dir, sessionId, (state) => { state.renderedAsk = 'legacy-ask'; });

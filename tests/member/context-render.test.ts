@@ -498,7 +498,7 @@ describe('Deployment feature scope', () => {
       expect(stderr).toHaveBeenCalledTimes(1);
     } finally { fail.mockRestore(); stderr.mockRestore(); }
   });
-  it('writes feature files only on changes and logs write failure once until recovery', async () => {
+  it('records each accepted stamp in the snapshot, rewrites the project cache only on changes, and logs write failure once until recovery', async () => {
     advertise('proj_1', [], 1);
     let features = 'turn';
     const fetch = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: features } }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 2 });
@@ -506,7 +506,7 @@ describe('Deployment feature scope', () => {
     try {
       await fetch(serverUrl);
       await fetch(serverUrl);
-      expect(writes.mock.calls.filter(([file]) => file === deploymentFeaturesPath(serverUrl, mycoHome))).toHaveLength(1);
+      expect(writes.mock.calls.filter(([file]) => file === deploymentFeaturesPath(serverUrl, mycoHome))).toHaveLength(2);
       expect(writes.mock.calls.filter(([file]) => file === contextCache.projectContextPath(spool().dir))).toHaveLength(1);
     } finally { writes.mockRestore(); }
     const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);

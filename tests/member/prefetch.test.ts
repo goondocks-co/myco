@@ -48,7 +48,7 @@ describe('context ask identity', () => {
     expect(readSessionContext(live.dir, sessionId).prompt?.askId).not.toBe(asks![0]!.id);
   });
 
-  it('drops stored asks without an id and reports them once', () => {
+  it('drops stored asks without an id and a render marker that is not an ask id, and reports them once', () => {
     const live = spool();
     const sessionId = 'unidentified';
     updateSessionState(live.dir, sessionId, () => {});
@@ -63,7 +63,7 @@ describe('context ask identity', () => {
       readSessionState(live.dir, sessionId);
       expect(first.contextAsks?.map((ask) => ask.kind)).toEqual(['compact']);
       expect(first.renderedAsk).toBeUndefined();
-      expect(stderr.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('2 context ask(s) without an id dropped'))).toHaveLength(1);
+      expect(stderr.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('3 context item(s) without an ask id dropped'))).toHaveLength(1);
     } finally { stderr.mockRestore(); }
   });
 

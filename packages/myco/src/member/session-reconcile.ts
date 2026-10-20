@@ -12,9 +12,13 @@ import {
   type SessionState, type SessionStateRefusal,
 } from './session-state.js';
 
-declare const sourceState: unique symbol;
-/** Another spool's state for a session, read only to be reconciled into the session's own spool. */
-export type SourceSessionState = SessionState & { readonly [sourceState]: true };
+const sourceState: unique symbol = Symbol('sourceState');
+/**
+ * Another spool's state for a session, read only to be reconciled into the session's own spool, with the context
+ * items its read discarded for naming no ask id. The count is keyed by a symbol, so no field rule or serialization
+ * sees it.
+ */
+export type SourceSessionState = SessionState & { readonly [sourceState]: { contextDiscarded: number } };
 
 export type SourceStateRead =
   | { ok: true; state: SourceSessionState; found: boolean }
@@ -26,12 +30,12 @@ export type SourceStateRead =
  */
 export function readSourceStateForMove(spoolDir: string, sessionId: string, lock: 'held' | 'take'): SourceStateRead {
   const read = lock === 'held' ? readSessionStateResultUnlocked(spoolDir, sessionId) : readSessionStateResult(spoolDir, sessionId);
-  if (read.ok) return { ok: true, state: read.state as SourceSessionState, found: true };
+  if (read.ok) return { ok: true, state: Object.assign(read.state, { [sourceState]: { contextDiscarded: read.contextDiscarded ?? 0 } }), found: true };
   if (read.reason === 'missing') return { ok: true, state: emptySource(), found: false };
   return { ok: false, reason: read.reason, detail: read.detail };
 }
 
-const emptySource = (): SourceSessionState => emptySessionState(0) as SourceSessionState;
+const emptySource = (): SourceSessionState => Object.assign(emptySessionState(0), { [sourceState]: { contextDiscarded: 0 } });
 
 type ScalarRule = 'meta' | 'target' | 'targetElseSource' | 'union' | 'max' | 'min' | 'or';
 type CompositeRule = 'context' | 'lifecycle' | 'pointers' | 'turnClaim';
@@ -94,12 +98,15 @@ export const SESSION_COMPOSITE_RULES = {
     hookAt: extreme(Math.max, target.hookAt, source.hookAt),
     endedAt: open(target) || open(source) ? undefined : target.endedAt ?? source.endedAt,
   }),
-  /** The target's transcript stands, else the source's; a source transcript at another path becomes a continuation. */
+  /**
+   * The target's transcript stands, else the source's; a source transcript at another path becomes a continuation,
+   * unless the target already holds one there.
+   */
   pointers: (target, source) => {
-    const continuations = { ...source.continuations, ...target.continuations };
-    if (source.transcript !== undefined && target.transcript !== undefined && source.transcript.path !== target.transcript.path) {
-      continuations[source.transcript.path] = source.transcript;
-    }
+    const sourcePrimary = source.transcript !== undefined && target.transcript !== undefined && source.transcript.path !== target.transcript.path
+      ? { [source.transcript.path]: source.transcript } : {};
+    // A continuation the target already holds at that path keeps its own progress and refusal.
+    const continuations = { ...source.continuations, ...sourcePrimary, ...target.continuations };
     return {
       transcript: target.transcript ?? source.transcript,
       continuations: Object.keys(continuations).length === 0 ? undefined : continuations,
@@ -111,12 +118,13 @@ export const SESSION_COMPOSITE_RULES = {
 
 const isComposite = (rule: SessionFieldRule): rule is CompositeRule => rule in SESSION_COMPOSITE_RULES;
 
-/** The source's hook-side context the `context` rule drops: each ask, and its render marker. */
-const contextDropped = (source: SessionState): number => (source.contextAsks?.length ?? 0) + (source.renderedAsk === undefined ? 0 : 1);
+/** The source's hook-side context dropped: each ask and its render marker, and what its read discarded. */
+const contextDropped = (source: SourceSessionState): number =>
+  (source.contextAsks?.length ?? 0) + (source.renderedAsk === undefined ? 0 : 1) + (source[sourceState]?.contextDiscarded ?? 0);
 
 /**
  * `source` folded into `target` by each field's rule, as a new state; neither input is changed. `contextSkipped` counts
- * the source's asks and render marker that were dropped.
+ * the source's context that was dropped, including what its read discarded.
  */
 export function reconcileSessionState(target: SessionState, source: SourceSessionState): { state: SessionState; contextSkipped: number } {
   const decided: Record<string, unknown> = {};
