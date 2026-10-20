@@ -10,6 +10,8 @@
  * same namespace and the same NUL-joined parts (`tests/member/derived-id-parity.test.ts`).
  */
 
+import type { OffsetPromptNamespace } from './record-identity.js';
+
 /** How an agent's prompts are named: a key the harness puts in both hook input and transcript, an id the hook mints and the agent's plugin stamps on its transcript, an id the hook mints for the rows it writes itself, or one only the transcript side derives. */
 export const PROMPT_IDENTITY_KINDS = ['harness-key', 'stamped', 'hook-owned', 'transcript-only'] as const;
 export type PromptIdentityKind = (typeof PROMPT_IDENTITY_KINDS)[number];
@@ -67,9 +69,8 @@ export const HOOK_NAMED_SCHEMES: readonly PromptIdScheme[] = PROMPT_ID_SCHEME_NA
 export const DECLARABLE_SCHEMES = ['claude-v1', 'claude-v2', 'offset-v1', 'stamp-or-offset-v1', 'codex-turn-v1', 'member-transcript-v1', 'hook-mint-v1'] as const satisfies readonly PromptIdScheme[];
 export type DeclarableScheme = (typeof DECLARABLE_SCHEMES)[number];
 
-/** The prompt namespaces the offset-named parsers derive under, one per parser. */
-export const OFFSET_PROMPT_NAMESPACES = ['codex-prompt', 'cursor-prompt', 'pi-prompt'] as const;
-export type OffsetPromptNamespace = (typeof OFFSET_PROMPT_NAMESPACES)[number];
+export { OFFSET_PROMPT_NAMESPACES } from './record-identity.js';
+export type { OffsetPromptNamespace } from './record-identity.js';
 
 /** The Claude Code record shapes a prompt id keys on. */
 export const CLAUDE_PROMPT_SHAPES = ['user_prompt', 'queued_command', 'agent_message', 'teammate_message', 'sidechain'] as const;
@@ -107,37 +108,7 @@ export type PromptIdRequest =
 /** UUIDv5 over the derived-id namespace of the NUL-joined parts, synchronous on the member and a promise on the Deployment. */
 export type PromptIdHasher<R> = (...parts: string[]) => R;
 
-/** Statically total over the derived schemes: a scheme the switch does not derive fails to compile. */
-const underived = (request: never): never => { throw new Error(`no derivation for ${JSON.stringify(request)}`); };
-
-/**
- * The canonical id of one prompt under its scheme. The only prompt-id derivation: a `uuidv5`/`deriveId` of a prompt
- * anywhere else fails `tests/meta/prompt-identity-sources.test.ts`. A stamped id is the hook's own and is taken as it is.
- */
-export function canonicalPromptId<R>(hash: PromptIdHasher<R>, request: PromptIdRequest): R | string {
-  switch (request.scheme) {
-    case 'claude-v1':
-      return hash('queued-prompt', request.sessionId, `${request.shape}|${request.key}`);
-    case 'claude-v2':
-      return hash('queued-prompt', request.sessionId, 'owner' in request.record ? `user_prompt|${request.record.owner}`
-        : 'queued' in request.record ? `queued_command|${request.record.queued}` : `record|${request.record.thread}|${request.record.uuid}`);
-    case 'offset-v1':
-      return hash(request.namespace, request.sessionId, String(request.offset));
-    case 'stamp-or-offset-v1':
-      return request.stamp ?? hash('prompt', request.sessionId, String(request.offset));
-    case 'codex-turn-v1':
-      return hash('codex-turn', request.sessionId, request.turnId, 'opener' in request.submission ? 'opener'
-        : 'order' in request.submission ? `order|${request.submission.order}` : `offset|${request.submission.offset}`);
-    case 'member-transcript-v1':
-      return request.dedupeKey === undefined
-        ? hash('transcript-prompt', request.sessionId, String(request.position))
-        : hash('queued-prompt', request.sessionId, request.dedupeKey);
-    case 'legacy-v1':
-      return hash('legacy', request.projectId, 'prompt', request.legacyId);
-    default:
-      return underived(request);
-  }
-}
+export { canonicalPromptId } from './record-identity.js';
 
 /** The most of a prompt's text a context ask carries, and what a prompt's key hash covers. */
 export const PROMPT_KEY_TEXT_MAX_CHARS = 16_384;

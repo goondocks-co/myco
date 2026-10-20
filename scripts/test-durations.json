@@ -1,5 +1,7 @@
 {
   "sources": [
+    "local: #1913 correction 2 focused npm test, Bun 1.4.0 darwin-arm64 with vendored SQLite; resolved-callee gate including generated source 4.84s, frozen baseline checkpoints 1.286s and parser identity 1.072s; source gate weight rounded above 2x plus startup, existing identity weights retained above that margin",
+    "local: #1904 PR1 focused npm test, Bun 1.4.0 darwin-arm64 with vendored SQLite; ingest/backup 1168ms, legacy migration 1.53s, record pins 0.525s, registry 0.2s, source gate 2.23s; conservative 2x plus startup weights; parity native 293ms + workerd D1 842ms with 15000ms scenario floor",
     "local: #1899 PR 2 session-commits npm test, Bun 1.4.3 darwin-arm64; 1000ms covers twice measured 321ms plus startup; parity scenario floor matches the #1894 PR 3 single-scenario allowance",
     "local: #1894 PR 3 focused npm test, Bun 1.4.3 darwin-arm64; status 1750ms and attention 366ms, rounded above 2x plus startup; parity scenario floor includes target startup allowance",
     "local: #1907 correction 1 ledger concurrency npm test, Bun 1.4.0 darwin-arm64; 1200ms covers twice measured 464ms plus startup",
@@ -830,7 +832,12 @@
     "tests/utils/order-stamp.test.ts": 100,
     "tests/cli/server-prompt-references.test.ts": 4000,
     "tests/myco-server/prompt-reference-attention.test.ts": 1000,
-    "tests/myco-server/session-commits.test.ts": 1000
+    "tests/myco-server/session-commits.test.ts": 1000,
+    "tests/myco-server/record-identity.test.ts": 3500,
+    "tests/myco-server/record-identity-legacy.test.ts": 4000,
+    "tests/myco-server/record-scheme.test.ts": 1600,
+    "tests/myco-shared/record-identity.test.ts": 1000,
+    "tests/meta/record-identity-sources.test.ts": 11000
   },
   "parity": {
     "D1: latest migration upgrades seeded previous schema to expected state": 45000,
@@ -913,6 +920,7 @@
     "model lists: a machine's list is kept, replaced, answered to Settings and forgotten once stale": 10000,
     "runners: explicit per-agent stored sign-in, own default and unavailable credential holds": 60000,
     "prompt references: attention excludes in-flight asks and reports missing prompts, mismatches and per-agent shares": 15000,
-    "session commits: start and end observations, release containment on the end it classified, index-backed reads": 15000
+    "session commits: start and end observations, release containment on the end it classified, index-backed reads": 15000,
+    "Record identity: transcript pins, distinct positional replies, reread and whole-artifact restore refusals": 15000
   }
 }

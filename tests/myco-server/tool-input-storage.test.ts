@@ -179,7 +179,7 @@ describe('tool input storage', () => {
     const f = fixture();
     try {
       const fullOutput = `first ${'é🙂'.repeat(2200)} last`;
-      const events = await PARSERS['claude-code'].parse({ scheme: 'claude-v1',  sessionId: 's1', now: NOW, lines: [
+      const events = await PARSERS['claude-code'].parse({ transcriptId: 'tx_legacy_fixture', recordScheme: 'legacy-session-v1' as const, scheme: 'claude-v1',  sessionId: 's1', now: NOW, lines: [
         { offset: 0, value: { type: 'assistant', timestamp: new Date(NOW - 2000).toISOString(), message: { content: [
           { type: 'tool_use', id: 'output-preserved', name: 'Write', input: { body: 'input '.repeat(600), file_path: '/repo/output.ts' } },
         ] } } },

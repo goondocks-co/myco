@@ -41,7 +41,7 @@ function expectAdmitted(events: DerivedEvent[]): void {
 describe('registered parser payload admission', () => {
   it('retains admissible tool input by shortening an output preview before omitting input', async () => {
     const input = { content: 'x'.repeat(MAX_PAYLOAD_BYTES - 500) };
-    const events = await PARSERS.cline.parse({ scheme: 'stamp-or-offset-v1',  sessionId: SESSION, now: NOW, lines: linesOf([
+    const events = await PARSERS.cline.parse({ transcriptId: 'tx_legacy_fixture', recordScheme: 'legacy-session-v1' as const, scheme: 'stamp-or-offset-v1',  sessionId: SESSION, now: NOW, lines: linesOf([
       { v: 1, type: 'tool', name: 'read', input, output: 'o'.repeat(4096), failed: false, at: TIME },
     ]) });
     expectAdmitted(events);
@@ -54,7 +54,7 @@ describe('registered parser payload admission', () => {
     ['JSON escapes', '\\"\n'.repeat(100_000)],
   ] as const) {
     it(`keeps later Claude turns after oversized ${label} prompts, replies, plans and tool input`, async () => {
-      const events = await PARSERS['claude-code'].parse({ scheme: 'claude-v1', 
+      const events = await PARSERS['claude-code'].parse({ transcriptId: 'tx_legacy_fixture', recordScheme: 'legacy-session-v1' as const, scheme: 'claude-v1',
         sessionId: SESSION,
         now: NOW,
         lines: linesOf([
@@ -79,7 +79,7 @@ describe('registered parser payload admission', () => {
   for (const agent of ['cline', 'opencode'] as const) {
     it(`bounds plugin transcript events for ${agent} and keeps the next turn`, async () => {
       const huge = '🌱\\"'.repeat(100_000);
-      const events = await PARSERS[agent].parse({ scheme: READ_BEFORE_PIN[agent]!,  sessionId: SESSION, now: NOW, lines: linesOf([
+      const events = await PARSERS[agent].parse({ transcriptId: 'tx_legacy_fixture', recordScheme: 'legacy-session-v1' as const, scheme: READ_BEFORE_PIN[agent]!,  sessionId: SESSION, now: NOW, lines: linesOf([
         { v: 1, type: 'prompt', promptId: SESSION, text: huge, at: TIME },
         { v: 1, type: 'tool', name: 'read', input: { nested: { content: huge } }, failed: false, at: TIME },
         { v: 1, type: 'response', text: huge, at: TIME },
@@ -96,7 +96,7 @@ describe('registered parser payload admission', () => {
     const message = (role: string, text: string) => ({ type: 'response_item', timestamp: TIME, payload: {
       type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }],
     } });
-    const events = await PARSERS.codex.parse({ scheme: 'offset-v1',  sessionId: SESSION, now: NOW, lines: linesOf([
+    const events = await PARSERS.codex.parse({ transcriptId: 'tx_legacy_fixture', recordScheme: 'legacy-session-v1' as const, scheme: 'offset-v1',  sessionId: SESSION, now: NOW, lines: linesOf([
       message('user', huge),
       { type: 'response_item', timestamp: TIME, payload: { type: 'function_call', call_id: 'large', name: 'shell', arguments: JSON.stringify({ content: huge }) } },
       { type: 'response_item', timestamp: TIME, payload: { type: 'function_call_output', call_id: 'large', output: 'ok' } },
@@ -111,7 +111,7 @@ describe('registered parser payload admission', () => {
   it('bounds Cursor prompt and reply before its later turn', async () => {
     const huge = '\n🌱"'.repeat(100_000);
     const record = (role: string, text: string) => ({ role, message: { content: [{ type: 'text', text }] }, timestamp: TIME });
-    const events = await PARSERS.cursor.parse({ scheme: 'offset-v1',  sessionId: SESSION, now: NOW, lines: linesOf([
+    const events = await PARSERS.cursor.parse({ transcriptId: 'tx_legacy_fixture', recordScheme: 'legacy-session-v1' as const, scheme: 'offset-v1',  sessionId: SESSION, now: NOW, lines: linesOf([
       record('user', `<user_query>\n${huge}\n</user_query>`),
       record('assistant', huge),
       { type: 'turn_ended' },
@@ -126,7 +126,7 @@ describe('registered parser payload admission', () => {
   it('bounds Pi prompt, plan, reply and tool input before its later turn', async () => {
     const huge = '\\"🌱'.repeat(100_000);
     const message = (role: string, content: unknown[]) => ({ type: 'message', timestamp: TIME, message: { role, content } });
-    const events = await PARSERS.pi.parse({ scheme: 'offset-v1',  sessionId: SESSION, now: NOW, lines: linesOf([
+    const events = await PARSERS.pi.parse({ transcriptId: 'tx_legacy_fixture', recordScheme: 'legacy-session-v1' as const, scheme: 'offset-v1',  sessionId: SESSION, now: NOW, lines: linesOf([
       message('user', [{ type: 'text', text: huge }]),
       message('assistant', [{ type: 'text', text: `<ultraplan>\n# Large plan\n${huge}\n</ultraplan>` }, { type: 'toolCall', id: 'large', name: 'bash', arguments: { content: huge } }]),
       message('toolResult', [{ type: 'text', text: 'ok' }]),
@@ -139,7 +139,7 @@ describe('registered parser payload admission', () => {
 
   it('bounds a pending tool input in the persisted parser continuation', async () => {
     const state = {};
-    const events = await PARSERS['claude-code'].parse({ scheme: 'claude-v1',  sessionId: SESSION, now: NOW, state, lines: linesOf([
+    const events = await PARSERS['claude-code'].parse({ transcriptId: 'tx_legacy_fixture', recordScheme: 'legacy-session-v1' as const, scheme: 'claude-v1',  sessionId: SESSION, now: NOW, state, lines: linesOf([
       { type: 'user', promptId: 'first', message: { content: 'first prompt' }, timestamp: TIME },
       { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'large-tool', name: 'Read', input: { content: '🌱'.repeat(200_000) } }] }, timestamp: TIME },
     ]) });
@@ -150,7 +150,7 @@ describe('registered parser payload admission', () => {
   it('omits a deep tool input that the envelope inspection would refuse', async () => {
     let input: unknown = { leaf: 'ok' };
     for (let depth = 0; depth < 40; depth += 1) input = { nested: input };
-    const events = await PARSERS.cline.parse({ scheme: 'stamp-or-offset-v1',  sessionId: SESSION, now: NOW, lines: linesOf([
+    const events = await PARSERS.cline.parse({ transcriptId: 'tx_legacy_fixture', recordScheme: 'legacy-session-v1' as const, scheme: 'stamp-or-offset-v1',  sessionId: SESSION, now: NOW, lines: linesOf([
       { v: 1, type: 'prompt', promptId: SESSION, text: 'first prompt', at: TIME },
       { v: 1, type: 'tool', name: 'read', input, failed: false, at: TIME },
       { v: 1, type: 'prompt', promptId: SESSION, text: 'later valid prompt', at: TIME },

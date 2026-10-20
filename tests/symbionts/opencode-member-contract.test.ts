@@ -15,7 +15,10 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
-import { opencodeParser } from '../../packages/myco-server/src/ingest/parsers/opencode.js';
+import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
+import { DECLARED_SCHEMES } from '@myco-server-worker/ingest/prompt-scheme.js';
+import { DECLARED_RECORD_SCHEMES } from '@myco-server-worker/ingest/record-scheme.js';
+import { LEGACY_RECORD_ID_SCHEME } from '@goondocks/myco-shared/record-identity';
 
 let dir: string;
 let root: string;
@@ -33,7 +36,7 @@ beforeEach(() => {
     '#!/bin/sh',
     `if [ "$1 $2" = "member routing-key" ]; then printf '%s\\n' '${ROUTING_KEY}'; exit 0; fi`,
     'cat > /dev/null',
-    `if [ "$2" = user-prompt-submit ]; then n=$(($(cat '${dir}/n' 2>/dev/null || echo 0) + 1)); echo $n > '${dir}/n'; printf '{"promptId":"prompt-%s"}' $n; else printf '{}'; fi`,
+    `if [ "$2" = user-prompt-submit ]; then n=$(($(cat '${dir}/n' 2>/dev/null || echo 0) + 1)); echo $n > '${dir}/n'; printf '{"promptId":"00000000-0000-7000-8000-%012d"}' $n; else printf '{}'; fi`,
   ].join('\n'), { mode: 0o755 });
   savedHome = process.env.MYCO_HOME;
   process.env.MYCO_HOME = home;
@@ -81,16 +84,21 @@ describe('the OpenCode member plugin under opencode\'s plugin contract', () => {
       offset += Buffer.byteLength(line) + 1;
       return parsed;
     });
-    const events = await opencodeParser.parse({ lines, sessionId: sessionID, now: Date.now() } as never);
-    const turns = events
-      .filter((e) => e.kind === 'prompt' || e.kind === 'response')
-      .map((e) => ({ kind: e.kind, text: (e.payload as { text: string }).text, promptId: (e.payload as { promptId?: string }).promptId }));
-    expect(turns).toEqual([
-      { kind: 'prompt', text: 'question 1', promptId: 'prompt-1' },
-      { kind: 'response', text: 'answer 1', promptId: 'prompt-1' },
-      { kind: 'prompt', text: 'question 2', promptId: 'prompt-2' },
-      { kind: 'response', text: 'answer 2', promptId: 'prompt-2' },
-    ]);
+    for (const recordScheme of [LEGACY_RECORD_ID_SCHEME, DECLARED_RECORD_SCHEMES.opencode!]) {
+      const events = await PARSERS.opencode!.parse({
+        lines, sessionId: sessionID, transcriptId: 'tx_opencode_contract', now: Date.now(),
+        scheme: DECLARED_SCHEMES.opencode!, recordScheme,
+      });
+      const turns = events
+        .filter((e) => e.kind === 'prompt' || e.kind === 'response')
+        .map((e) => ({ kind: e.kind, text: (e.payload as { text: string }).text, promptId: (e.payload as { promptId?: string }).promptId }));
+      expect(turns).toEqual([
+        { kind: 'prompt', text: 'question 1', promptId: '00000000-0000-7000-8000-000000000001' },
+        { kind: 'response', text: 'answer 1', promptId: '00000000-0000-7000-8000-000000000001' },
+        { kind: 'prompt', text: 'question 2', promptId: '00000000-0000-7000-8000-000000000002' },
+        { kind: 'response', text: 'answer 2', promptId: '00000000-0000-7000-8000-000000000002' },
+      ]);
+    }
   });
 
   it('ends every session it opened when its instance is disposed, so a new instance takes the session at once', async () => {

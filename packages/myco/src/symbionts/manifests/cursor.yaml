@@ -199,3 +199,17 @@ runner:
 promptIdentity:
   kind: transcript-only
   scheme: offset-v1
+
+recordIdentity:
+  scheme: source-record-v1
+  schemes:
+    legacy-session-v1:
+      response:
+        position: true
+        withinRecord: "record-text"
+        evidence: "tests/fixtures/record-identity-evidence.json"
+    source-record-v1:
+      response:
+        position: true
+        withinRecord: "record-text"
+        evidence: "tests/fixtures/record-identity-evidence.json"

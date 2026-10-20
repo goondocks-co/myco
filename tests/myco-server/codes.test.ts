@@ -1,3 +1,4 @@
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken, MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
@@ -134,6 +135,15 @@ const DRIVERS: Record<Classifier, (r: Rig) => Promise<Response>> = {
     r.e.sqlite.query(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by)
                       SELECT project_id, session_id, NULL, ?, 'mem_machine_1' FROM sessions LIMIT 1`).run(r.now);
     return r.post(r.t1.token, { eventId: uuid(700), payload: { promptId: uuid(701), text: 'after the delete', origin: 'user' } });
+  },
+  record_identity_scheme_unsupported: async (r) => {
+    const t = await r.transcript();
+    const identity = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === 'claude-code')!.recordIdentity!;
+    const scheme = identity.scheme;
+    try {
+      Object.assign(identity, { scheme: 'unsupported-v1' });
+      return await r.segment(4, t.a.byteLength, t.kb, t.b.byteLength);
+    } finally { Object.assign(identity, { scheme }); }
   },
   transcript_replaced: async (r) => {
     const t = await r.transcript();

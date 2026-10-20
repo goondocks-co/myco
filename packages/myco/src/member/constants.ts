@@ -32,7 +32,7 @@ export const MEMBER_CODES = [
   'project_archived',
   'run_scope', 'no_run', 'project_mismatch',
   // #1147 — transcript-first ingest
-  'session_tombstoned', 'transcript_replaced',
+  'session_tombstoned', 'transcript_replaced', 'record_identity_scheme_unsupported',
   // #1151 — worker mode
   'not_admin',
   // #1148 — bounded import
@@ -78,6 +78,7 @@ export const REFUSAL_SUBJECT: Readonly<Record<MemberCode, RefusalSubject>> = {
   identity_claimed: 'credential', enrollment_no_project: 'credential', run_scope: 'credential', no_run: 'credential',
   project_mismatch: 'credential', not_admin: 'credential',
   clock_skew: 'clock',
+  record_identity_scheme_unsupported: 'server-version',
   unknown_kind: 'server-version', unknown_field: 'server-version', route_retired: 'server-version', field_retired: 'server-version',
   refused: 'unclassified',
 };

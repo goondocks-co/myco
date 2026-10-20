@@ -7,6 +7,8 @@
  * An agent absent here has no server-side parse. Its capture still reaches the
  * Deployment through the member's own events; nothing is silently dropped.
  */
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
+import { recordSourceDeclaration } from '@goondocks/myco-shared/record-identity';
 import { claudeCodeParser } from './claude-code.js';
 import { clineParser } from './cline.js';
 import { codexParser } from './codex.js';
@@ -21,6 +23,12 @@ const bounded = (parser: TranscriptParser): TranscriptParser => ({
   ...parser,
   async parse(input) {
     const events = await parser.parse(input);
+    const declaration = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === parser.agent)?.recordIdentity;
+    for (const event of events) {
+      const kind = event.kind === 'response' || event.kind === 'plan' ? event.kind
+        : event.kind === 'tool.use' || event.kind === 'tool.failure' ? 'tool-call' : null;
+      if (kind !== null) recordSourceDeclaration({ declaration, scheme: input.recordScheme, kind });
+    }
     boundPendingInputs(input.state);
     return boundDerivedEvents(events);
   },

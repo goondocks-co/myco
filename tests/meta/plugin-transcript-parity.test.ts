@@ -73,7 +73,7 @@ async function parseArm(sqlite: Database, env: { db: unknown; blobs: { put: (k: 
   sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
               VALUES (?, ?, 0, ?, ?, 'seg', ?, ?, ?)`, [PROJECT, TRANSCRIPT, bytes.length, key, NOW, NOW, tokenId]);
 
-  await parseOnce(env as never, {
+  await parseOnce(env as never, { recordScheme: 'legacy-session-v1' as const,
     projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
     tokenId, agent, size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: declaredScheme(agent), imported: false,
   }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });
@@ -112,7 +112,7 @@ describe('native plugin transcripts land one row per fact', () => {
     await parseArm(sqlite, env as never, tokenId, 'opencode', TRANSCRIPT_TEXT);
     const before = count(sqlite, 'events');
     sqlite.run(`UPDATE transcripts SET parsed_offset = 0 WHERE project_id = ?`, [PROJECT]);
-    await parseOnce(env as never, {
+    await parseOnce(env as never, { recordScheme: 'legacy-session-v1' as const,
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
       tokenId, agent: 'opencode', size: utf8(TRANSCRIPT_TEXT).length,
       parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: declaredScheme('opencode'), imported: false,

@@ -1,0 +1,5 @@
+{"type":"response_item","payload":{"type":"function_call","call_id":"","id":"fallback-call","name":"Read","arguments":"{}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"fallback-call","output":"ok"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"orphan-call","output":"orphan output"}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<proposed_plan># First</proposed_plan><proposed_plan> </proposed_plan><proposed_plan># Third</proposed_plan>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}}

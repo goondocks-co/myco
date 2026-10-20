@@ -430,3 +430,35 @@ promptIdentity:
   transcriptKey: turn_context.payload.turn_id
   granularity: turn
   readBeforePin: offset-v1
+
+recordIdentity:
+  scheme: source-record-v1
+  schemes:
+    legacy-session-v1:
+      response:
+        position: true
+        withinRecord: "record-text"
+        evidence: "tests/fixtures/record-identity-evidence.json"
+      tool-call:
+        key: {"from": "record", "path": ["payload.call_id", "payload.id"]}
+        resultKey: {"from": "record", "path": "payload.call_id"}
+        evidence: "tests/fixtures/record-identity-evidence.json"
+      plan:
+        position: true
+        withinRecord: "record-text-envelope"
+        evidence: "tests/fixtures/record-identity-evidence.json"
+    source-record-v1:
+      response:
+        key: {"from": "record", "path": "payload.id"}
+        absentKey: "position"
+        withinRecord: "record-text"
+        evidence: "tests/fixtures/record-identity-evidence.json"
+      tool-call:
+        key: {"from": "record", "path": ["payload.call_id", "payload.id"]}
+        resultKey: {"from": "record", "path": "payload.call_id"}
+        evidence: "tests/fixtures/record-identity-evidence.json"
+      plan:
+        key: {"from": "record", "path": "payload.id"}
+        absentKey: "position"
+        withinRecord: "record-text-envelope"
+        evidence: "tests/fixtures/record-identity-evidence.json"

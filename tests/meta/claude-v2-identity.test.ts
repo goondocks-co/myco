@@ -38,7 +38,7 @@ function linesOf(values: readonly Record<string, unknown>[]): ParsedLine[] {
 
 /** A parse as the Deployment runs one: the registered parser, walking the window a line at a time. */
 const parse = (values: readonly Record<string, unknown>[], extra: Partial<ParserInput> = {}): Promise<DerivedEvent[]> =>
-  parserFor('claude-code')!.parse({ lines: linesOf(values), sessionId: SESSION, scheme: 'claude-v2', now: NOW, ...extra });
+  parserFor('claude-code')!.parse({ transcriptId: 'tx_legacy_fixture', recordScheme: 'legacy-session-v1' as const, lines: linesOf(values), sessionId: SESSION, scheme: 'claude-v2', now: NOW, ...extra });
 
 const promptAt = (events: readonly DerivedEvent[], offset: number) => events.filter((e) => e.kind === 'prompt' && e.offset === offset);
 const repliesTo = (events: readonly DerivedEvent[]) => events.filter((e) => e.kind === 'response').map((e) => e.payload.promptId);
@@ -113,7 +113,7 @@ describe('claude-v2 on one key many submissions share (contiguous reuse)', () =>
 
   it('keeps the prompt open before a summary current when the parser itself walks the window', async () => {
     const window = records('contiguous-reuse.jsonl').slice(0, 12);
-    const events = await claudeCodeParser.parse({ lines: linesOf(window), sessionId: SESSION, scheme: 'claude-v2', now: NOW, openPromptId: OPEN_BEFORE });
+    const events = await claudeCodeParser.parse({ transcriptId: 'tx_legacy_fixture', recordScheme: 'legacy-session-v1' as const, lines: linesOf(window), sessionId: SESSION, scheme: 'claude-v2', now: NOW, openPromptId: OPEN_BEFORE });
     const summary = events.find((e) => e.kind === 'prompt' && e.payload.claim === 'context')!;
     expect(events.filter((e) => e.kind === 'response' && e.offset > summary.offset).map((e) => e.payload.promptId)[0]).toBe(OPEN_BEFORE);
   });

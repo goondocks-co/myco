@@ -29,6 +29,7 @@ import { restoreToolInput } from './tool-input-restore.js';
 export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
 import { restoreParserCheckpointStatement } from '../ingest/parser-checkpoint.js';
 import { restoredPin, restoreSchemeDecisions } from '../ingest/prompt-scheme.js';
+import { restoreRecordSchemeDecisions } from '../ingest/record-scheme.js';
 import type { PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { authorizeRestore, RestoreAuthorizationError, type RestoreAuthorization } from './restore-authorization.js';
 
@@ -597,6 +598,7 @@ export async function restoreArtifact(
 
   const outcome: RestoreOutcome = { tables: { ...admitted.tables }, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }) };
   const transcriptParents = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row]));
+  await restoreRecordSchemeDecisions(db, byTable.get('transcripts') ?? []);
   const decided: RestoreDecisions = { parents: transcriptParents, schemes: await restoreSchemeDecisions(db, byTable.get('transcripts') ?? []) };
   const hash = await sha256Hex(opts.text);
   const provenance = ['raw_provenance_state', 'raw_resources', 'raw_archive_refs', 'raw_claims', 'events', 'blobs', 'transcripts', 'attachments', 'prompt_batches', 'responses', 'plans', 'tool_calls'].flatMap((table) => byTable.get(table) ?? []);

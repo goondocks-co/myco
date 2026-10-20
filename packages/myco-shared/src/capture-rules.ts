@@ -2,6 +2,7 @@ import type { CaptureRule } from './capture-rule-schema.js';
 import { getAtPath } from './dot-path.js';
 import { ANY_AGENT_RULES_HARNESS } from './any-agent-rules.generated.js';
 import type { PromptIdentityDeclaration } from './prompt-identity.js';
+import type { RecordIdentityDeclaration } from './record-identity.js';
 
 export interface CaptureRuleBundle {
   name: string;
@@ -10,6 +11,7 @@ export interface CaptureRuleBundle {
   transcriptTimestamps?: 'recorded' | 'synthetic';
   /** How the agent's prompts are named, from its manifest's `promptIdentity`. */
   promptIdentity: PromptIdentityDeclaration;
+  recordIdentity?: RecordIdentityDeclaration;
 }
 
 /** What rule evaluation reads of a bundle. */

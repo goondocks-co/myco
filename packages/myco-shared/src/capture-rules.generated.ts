@@ -170,6 +170,75 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
       "hookKey": "prompt_id",
       "transcriptKey": "promptId",
       "readBeforePin": "claude-v1"
+    },
+    "recordIdentity": {
+      "scheme": "source-record-v1",
+      "schemes": {
+        "legacy-session-v1": {
+          "response": {
+            "position": true,
+            "withinRecord": "content-block",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "key": {
+              "from": "call",
+              "path": "id"
+            },
+            "resultKey": {
+              "from": "result",
+              "path": "tool_use_id"
+            },
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "plan": {
+            "position": true,
+            "withinRecord": "content-block-envelope",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        },
+        "source-record-v1": {
+          "response": {
+            "key": {
+              "from": "record",
+              "path": "uuid"
+            },
+            "thread": {
+              "from": "record",
+              "path": "agentId",
+              "absent": "main"
+            },
+            "absentKey": "position",
+            "withinRecord": "content-block",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "key": {
+              "from": "call",
+              "path": "id"
+            },
+            "resultKey": {
+              "from": "result",
+              "path": "tool_use_id"
+            },
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "plan": {
+            "key": {
+              "from": "record",
+              "path": "uuid"
+            },
+            "thread": {
+              "from": "record",
+              "path": "agentId",
+              "absent": "main"
+            },
+            "absentKey": "position",
+            "withinRecord": "content-block-envelope",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        }
+      }
     }
   },
   {
@@ -209,6 +278,33 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
     "promptIdentity": {
       "kind": "stamped",
       "scheme": "stamp-or-offset-v1"
+    },
+    "recordIdentity": {
+      "scheme": "source-record-v1",
+      "schemes": {
+        "legacy-session-v1": {
+          "response": {
+            "position": true,
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "position": true,
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        },
+        "source-record-v1": {
+          "response": {
+            "position": true,
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "position": true,
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        }
+      }
     }
   },
   {
@@ -362,6 +458,71 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
       "transcriptKey": "turn_context.payload.turn_id",
       "granularity": "turn",
       "readBeforePin": "offset-v1"
+    },
+    "recordIdentity": {
+      "scheme": "source-record-v1",
+      "schemes": {
+        "legacy-session-v1": {
+          "response": {
+            "position": true,
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "key": {
+              "from": "record",
+              "path": [
+                "payload.call_id",
+                "payload.id"
+              ]
+            },
+            "resultKey": {
+              "from": "record",
+              "path": "payload.call_id"
+            },
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "plan": {
+            "position": true,
+            "withinRecord": "record-text-envelope",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        },
+        "source-record-v1": {
+          "response": {
+            "key": {
+              "from": "record",
+              "path": "payload.id"
+            },
+            "absentKey": "position",
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "key": {
+              "from": "record",
+              "path": [
+                "payload.call_id",
+                "payload.id"
+              ]
+            },
+            "resultKey": {
+              "from": "record",
+              "path": "payload.call_id"
+            },
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "plan": {
+            "key": {
+              "from": "record",
+              "path": "payload.id"
+            },
+            "absentKey": "position",
+            "withinRecord": "record-text-envelope",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        }
+      }
     }
   },
   {
@@ -403,6 +564,25 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
     "promptIdentity": {
       "kind": "transcript-only",
       "scheme": "offset-v1"
+    },
+    "recordIdentity": {
+      "scheme": "source-record-v1",
+      "schemes": {
+        "legacy-session-v1": {
+          "response": {
+            "position": true,
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        },
+        "source-record-v1": {
+          "response": {
+            "position": true,
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        }
+      }
     }
   },
   {
@@ -413,6 +593,33 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
     "promptIdentity": {
       "kind": "stamped",
       "scheme": "stamp-or-offset-v1"
+    },
+    "recordIdentity": {
+      "scheme": "source-record-v1",
+      "schemes": {
+        "legacy-session-v1": {
+          "response": {
+            "position": true,
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "position": true,
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        },
+        "source-record-v1": {
+          "response": {
+            "position": true,
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "position": true,
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        }
+      }
     }
   },
   {
@@ -423,6 +630,53 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
     "promptIdentity": {
       "kind": "transcript-only",
       "scheme": "offset-v1"
+    },
+    "recordIdentity": {
+      "scheme": "source-record-v1",
+      "schemes": {
+        "legacy-session-v1": {
+          "response": {
+            "position": true,
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "key": {
+              "from": "call",
+              "path": "id"
+            },
+            "resultKey": {
+              "from": "result",
+              "path": "toolCallId"
+            },
+            "absentKey": "position",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        },
+        "source-record-v1": {
+          "response": {
+            "key": {
+              "from": "record",
+              "path": "id"
+            },
+            "absentKey": "position",
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "key": {
+              "from": "call",
+              "path": "id"
+            },
+            "resultKey": {
+              "from": "result",
+              "path": "toolCallId"
+            },
+            "absentKey": "position",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        }
+      }
     }
   },
   {

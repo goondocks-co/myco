@@ -40,7 +40,7 @@ async function parse(text: string, agent: string) {
     VALUES ('proj_1', 'tx_recovery', 'resumed', 'machine_1', ?, ?, 1, ?, ?, ?, ?)`, [agent, bytes.length, NOW, NOW, tokenId, declaredScheme(agent)]);
   sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
     VALUES ('proj_1', 'tx_recovery', 0, ?, ?, 'segment', ?, ?, ?)`, [bytes.length, key, NOW, NOW, tokenId]);
-  const target = {
+  const target = { recordScheme: 'legacy-session-v1' as const,
     projectId: 'proj_1', transcriptId: 'tx_recovery', sessionId: 'resumed', machineId: 'machine_1',
     tokenId, agent, size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: declaredScheme(agent), imported: false,
   };
