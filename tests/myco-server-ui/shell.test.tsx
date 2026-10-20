@@ -183,7 +183,7 @@ describe('the nav', () => {
       ['Projects', '/projects'], [INVITE_CONTROLS.page, '/people'], ['Runners', '/runners'], ['Settings', '/settings'], ['Health', '/status/health'],
     ]);
     expect(screen.getByRole('button', { name: /Search/ })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Account and appearance for machine_1' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Account and appearance for machine_1 @octocat' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Skip to content' }).getAttribute('href')).toBe('#main');
     expect(screen.getByRole('main').id).toBe('main');
   });
@@ -512,7 +512,7 @@ describe('the account menu', () => {
   it('holds the appearance, the member\'s machines and sign out; the font choice is the code font', async () => {
     server(signedIn());
     mount('/p/alpha');
-    const trigger = await screen.findByRole('button', { name: 'Account and appearance for machine_1' });
+    const trigger = await screen.findByRole('button', { name: 'Account and appearance for machine_1 @octocat' });
     fireEvent.keyDown(trigger, { key: 'Enter' });
     const menu = await screen.findByRole('menu');
     expect(within(menu).getByText('@octocat · Admin')).toBeTruthy();

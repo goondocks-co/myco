@@ -150,7 +150,7 @@ function PlanCard({ projectId, planKey, sessionId, title, meta, progress }: Plan
         <RouterLink
           to={projectPath(projectId, `/sessions/${encodeURIComponent(sessionId)}`)}
           className={cn(tapTarget, 'relative z-10 w-fit gap-s1 rounded-chip t-meta font-medium text-primary hover:underline', focusRing)}
-          aria-label={`The session that wrote “${title}”`}
+          aria-label={`Its session, which wrote “${title}”`}
         >
           Its session
           <ArrowUpRight aria-hidden className="size-s3" />

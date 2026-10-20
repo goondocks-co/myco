@@ -83,10 +83,11 @@ function Segment({ value, children, label }: { value: string; children: ReactNod
 export function AccountMenu({ name, login, role, machinesHref, onSignOut, compact = false, align = 'start' }: AccountMenuProps) {
   const { effective, set } = useAppearance();
   const navigate = useNavigate();
+  const handle = login != null && login !== '' && login !== name ? `@${login}` : null;
   return (
     <Menu.Root>
       <Menu.Trigger
-        aria-label={`Account and appearance for ${name}`}
+        aria-label={`Account and appearance for ${name}${handle !== null && !compact ? ` ${handle}` : ''}`}
         className={cn(
           'flex min-w-0 items-center gap-s3 rounded-control text-left text-ink-2 transition-colors duration-120 hover:bg-surface-2 hover:text-ink data-[state=open]:bg-surface-2',
           compact ? 'size-control justify-center' : 'h-[44px] w-full px-s2',
@@ -98,7 +99,7 @@ export function AccountMenu({ name, login, role, machinesHref, onSignOut, compac
           <>
             <span className="flex min-w-0 flex-1 flex-col">
               <span className="truncate t-control font-medium text-ink">{name}</span>
-              {login != null && login !== '' && login !== name && <span className="truncate t-meta text-muted">@{login}</span>}
+              {handle !== null && <span className="truncate t-meta text-muted">{handle}</span>}
             </span>
             <ChevronsUpDown aria-hidden className="size-s4 shrink-0 text-faint" />
           </>
