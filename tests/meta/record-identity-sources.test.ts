@@ -281,7 +281,7 @@ describe('record identity source gate', () => {
 
   it('names only the three deferred positional prompt branches in the registry', () => {
     const text = fs.readFileSync(REGISTRY, 'utf8');
-    expect(text).toContain("case 'offset-v1':\n      return hash(request.namespace, request.sessionId, String(request.offset));");
+    expect(text).toContain("case 'offset-v1':\n      if (!(OFFSET_PROMPT_NAMESPACES as readonly unknown[]).includes(request.namespace)) throw new RecordSourceInvalid();\n      return hash(request.namespace, request.sessionId, String(request.offset));");
     expect(text).toContain("return request.stamp ?? hash('prompt', request.sessionId, String(request.offset));");
     expect(text).toContain("? hash('transcript-prompt', request.sessionId, String(request.position))");
   });
@@ -311,8 +311,9 @@ describe('record identity declaration evidence', () => {
         expect(rows.length).toBeGreaterThan(0);
         for (const row of rows) {
           const source = extractRecordSource({ ...row.facts, declaration: manifest.recordIdentity, scheme, kind } as RecordSourceRequest);
+          if (source === undefined) throw new Error('Expected declared fixture source');
           expect<unknown>(source).toEqual(row.source);
-          if (row.kind === 'plan') expect(recordPlanCoordinate({ declaration: manifest.recordIdentity, scheme: scheme as RecordSourceRequest['scheme'], source, matchIndex: 1 })).toEqual(row.coordinate!);
+          if (row.kind === 'plan') expect(recordPlanCoordinate({ declaration: manifest.recordIdentity, scheme: scheme as RecordSourceRequest['scheme'], block: source.block, matchIndex: 1 })).toEqual(row.coordinate!);
           const request = { kind, scheme, agent: manifest.name, sessionId: 'session-1', transcriptId: 'transcript-1', offset: row.offset, source,
             ...(row.kind === 'plan' ? { tag: row.tag!, coordinate: row.coordinate!, legacyPosition: row.legacyPosition! } : {}) } as RecordIdRequest;
           expect(canonicalRecordId(deriveId, request)).toBe(scheme === 'source-record-v1' ? row.sourceId : row.legacyId);
@@ -345,6 +346,7 @@ describe('record identity declaration evidence', () => {
       const record = JSON.parse(fs.readFileSync(path.join(ROOT, fixture.path), 'utf8').trimEnd().split('\n')[fixture.line]!);
       const ids = fixture.anchors.map(anchor => {
         const source = extractRecordSource({ declaration, scheme: 'source-record-v1', kind: 'response', record, block: anchor.block });
+        if (source === undefined) throw new Error('Expected declared fixture source');
         expect<unknown>(source).toEqual(anchor.source);
         const id = canonicalRecordId(deriveId, { scheme: 'source-record-v1', kind: 'response', agent: 'claude-code', sessionId: 'session-1', transcriptId: 'transcript-1', offset: fixture.offset, source });
         expect(id).toBe(anchor.id);

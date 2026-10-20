@@ -141,7 +141,9 @@ export async function callForResult(input: ParserInput, agent: string, source: R
 const recordDeclaration = (agent: string) => CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === agent)?.recordIdentity;
 
 /** The manifest's admitted source facts for one parser-emitted record. */
-export function recordSource(input: ParserInput, agent: string, request: Omit<RecordSourceRequest, 'declaration' | 'scheme'>): ReplySource {
+export function recordSource(input: ParserInput, agent: string, request: Omit<RecordSourceRequest, 'declaration' | 'scheme'> & { kind: 'tool-call' }): ReplySource;
+export function recordSource(input: ParserInput, agent: string, request: Omit<RecordSourceRequest, 'declaration' | 'scheme'>): ReplySource | undefined;
+export function recordSource(input: ParserInput, agent: string, request: Omit<RecordSourceRequest, 'declaration' | 'scheme'>): ReplySource | undefined {
   return extractRecordSource({ ...request, declaration: recordDeclaration(agent),
     scheme: input.recordScheme });
 }
@@ -452,12 +454,13 @@ export async function plansInText(
       if (content === '') continue;
       const source = recordSource(input, agent, { kind: 'plan', record, block: block ?? 0 });
       const coordinate = recordPlanCoordinate({ declaration: recordDeclaration(agent),
-        scheme: input.recordScheme, source, matchIndex: rawMatchIndex });
+        scheme: input.recordScheme, block: block ?? 0, matchIndex: rawMatchIndex });
       const plan = { tag, coordinate, legacyPosition: position };
+      const legacyId = await legacyRecordId(input, { kind: 'plan', offset: at.offset, ...plan });
       events.push({
-        kind: 'plan', source, coordinate, legacyId: await legacyRecordId(input, { kind: 'plan', source, offset: at.offset, ...plan }),
+        kind: 'plan', source, coordinate, legacyId,
         payload: {
-          planKey: await recordId(input, agent, { kind: 'plan', source, offset: at.offset, ...plan }),
+          planKey: source === undefined ? legacyId : await recordId(input, agent, { kind: 'plan', source, offset: at.offset, ...plan }),
           promptId: at.promptId,
           title: firstHeading(content),
           content,

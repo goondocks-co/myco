@@ -1,6 +1,10 @@
 import { getAtPath, parseDotPath } from './dot-path.js';
 import type { PromptIdHasher, PromptIdRequest } from './prompt-identity.js';
 
+/** The prompt namespaces the offset-named parsers derive under, one per parser. */
+export const OFFSET_PROMPT_NAMESPACES = ['codex-prompt', 'cursor-prompt', 'pi-prompt'] as const;
+export type OffsetPromptNamespace = (typeof OFFSET_PROMPT_NAMESPACES)[number];
+
 export const RECORD_ID_SCHEMES = {
   'legacy-session-v1': { generation: 1 },
   'source-record-v1': { generation: 1 },
@@ -121,10 +125,22 @@ const readField = (field: RecordField, request: RecordSourceRequest): unknown =>
 };
 
 /** Extracts declared source facts independently of the pinned derivation. */
-export function extractRecordSource(request: RecordSourceRequest): ReplySource {
+export function extractRecordSource(request: RecordSourceRequest & { kind: 'tool-call' }): ReplySource;
+export function extractRecordSource(request: RecordSourceRequest): ReplySource | undefined;
+export function extractRecordSource(request: RecordSourceRequest): ReplySource | undefined {
   const pinnedRule = recordSourceDeclaration(request);
-  const rule = request.scheme === LEGACY_RECORD_ID_SCHEME && request.kind !== 'tool-call'
-    ? recordSourceDeclaration({ ...request, scheme: request.declaration!.scheme }) : pinnedRule;
+  if (request.scheme === LEGACY_RECORD_ID_SCHEME && request.kind !== 'tool-call') {
+    try {
+      return extractDeclaredSource(request, recordSourceDeclaration({ ...request, scheme: request.declaration!.scheme }));
+    } catch (error) {
+      if (error instanceof RecordIdentityError) return undefined;
+      throw error;
+    }
+  }
+  return extractDeclaredSource(request, pinnedRule);
+}
+
+function extractDeclaredSource(request: RecordSourceRequest, rule: RecordSourceDeclaration): ReplySource {
   const block = request.block ?? (rule.withinRecord?.startsWith('content-block') ? undefined : 0);
   if (!index(block) || (rule.withinRecord?.startsWith('record-text') && block !== 0)) throw new RecordSourceInvalid();
   const keyField = request.role === 'result' ? rule.resultKey ?? rule.key : rule.key;
@@ -142,12 +158,12 @@ export function extractRecordSource(request: RecordSourceRequest): ReplySource {
 
 /** Selects the manifest's original within-record plan coordinates. */
 export function recordPlanCoordinate(request: {
-  declaration: RecordIdentityDeclaration | undefined; scheme: RecordIdScheme; source: ReplySource; matchIndex: number;
+  declaration: RecordIdentityDeclaration | undefined; scheme: RecordIdScheme; block: number; matchIndex: number;
 }): readonly (string | number)[] {
   const rule = recordSourceDeclaration({ ...request, kind: 'plan' });
-  if (!index(request.source.block) || !index(request.matchIndex)) throw new RecordSourceInvalid();
-  if (rule.withinRecord === 'content-block-envelope') return [request.source.block, request.matchIndex];
-  if (rule.withinRecord === 'record-text-envelope' && request.source.block === 0) return ['record-text', request.matchIndex];
+  if (!index(request.block) || !index(request.matchIndex)) throw new RecordSourceInvalid();
+  if (rule.withinRecord === 'content-block-envelope') return [request.block, request.matchIndex];
+  if (rule.withinRecord === 'record-text-envelope' && request.block === 0) return ['record-text', request.matchIndex];
   throw new RecordSourceInvalid();
 }
 
@@ -216,6 +232,7 @@ export function canonicalPromptId<R>(hash: PromptIdHasher<R>, request: PromptIdR
       return hash('queued-prompt', request.sessionId, 'owner' in request.record ? `user_prompt|${request.record.owner}`
         : 'queued' in request.record ? `queued_command|${request.record.queued}` : `record|${request.record.thread}|${request.record.uuid}`);
     case 'offset-v1':
+      if (!(OFFSET_PROMPT_NAMESPACES as readonly unknown[]).includes(request.namespace)) throw new RecordSourceInvalid();
       return hash(request.namespace, request.sessionId, String(request.offset));
     case 'stamp-or-offset-v1':
       return request.stamp ?? hash('prompt', request.sessionId, String(request.offset));

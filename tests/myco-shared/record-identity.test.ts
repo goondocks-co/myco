@@ -4,6 +4,7 @@ import {
   RecordSourceAbsent, RecordSourceInvalid, type RecordIdRequest, type RecordSourceRequest, type ReplySource,
 } from '@goondocks/myco-shared/record-identity';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
+import { canonicalPromptId, OFFSET_PROMPT_NAMESPACES } from '@goondocks/myco-shared/prompt-identity';
 import { deriveId, planKeyForPromptTag, planKeyForTag } from '@myco/member/envelope.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import evidence from '../fixtures/record-identity-evidence.json';
@@ -11,6 +12,16 @@ import evidence from '../fixtures/record-identity-evidence.json';
 const base = { sessionId: 'session-1', transcriptId: 'transcript-1', agent: 'claude-code', offset: 123 };
 
 describe('record identity registry', () => {
+  it('admits only declared offset prompt namespaces at runtime', () => {
+    const hash = (...parts: string[]) => parts;
+    for (const namespace of OFFSET_PROMPT_NAMESPACES) {
+      expect(canonicalPromptId(hash, { scheme: 'offset-v1', namespace, sessionId: 's', offset: 12 }))
+        .toEqual([namespace, 's', '12']);
+    }
+    expect(() => canonicalPromptId(hash, { scheme: 'offset-v1', namespace: 'response' as never, sessionId: 's', offset: 12 }))
+      .toThrow(RecordSourceInvalid);
+  });
+
   it('freezes the shipped scheme generations', () => {
     expect(RECORD_ID_SCHEMES).toEqual({ 'legacy-session-v1': { generation: 1 }, 'source-record-v1': { generation: 1 } });
   });
@@ -20,6 +31,7 @@ describe('record identity registry', () => {
       const declaration = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === row.agent)!.recordIdentity;
       for (const scheme of ['legacy-session-v1', 'source-record-v1'] as const) {
         const source = extractRecordSource({ ...row.facts, declaration, scheme, kind: row.kind } as RecordSourceRequest);
+        if (source === undefined) throw new Error('Expected declared fixture source');
         expect<unknown>({ case: row.label, agent: row.agent, source }).toEqual({ case: row.label, agent: row.agent, source: row.source });
         const request = { ...base, scheme, agent: row.agent, source, offset: row.offset, kind: row.kind,
           ...(row.kind === 'plan' ? { tag: row.tag!, coordinate: row.coordinate!, legacyPosition: row.legacyPosition! } : {}) } as RecordIdRequest;
@@ -54,6 +66,7 @@ describe('record identity registry', () => {
     const declaration = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === 'claude-code')!.recordIdentity;
     for (const kind of ['response', 'tool-call'] as const) {
       const source = extractRecordSource({ declaration, scheme: 'legacy-session-v1', kind, record: { uuid: 'a\0b' }, call: { id: 'call\0a' }, block: 0 });
+      if (source === undefined) throw new Error('Expected declared fixture source');
       const request = { ...base, kind, source };
       expect(canonicalRecordId(deriveId, { ...request, scheme: 'legacy-session-v1' })).toBe(kind === 'response' ? '46ac81ec-47dc-50af-8894-f65f9125e997' : 'eddf35d4-b862-5df2-b867-d37ac857dc1f');
       expect(() => canonicalRecordId(deriveId, { ...request, scheme: 'source-record-v1' })).toThrow(RecordSourceInvalid);

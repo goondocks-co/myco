@@ -7,7 +7,7 @@ import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
 import { sqliteEnv, blobPost, memberPost } from './helpers/fixtures.js';
 import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import fs from 'node:fs';
-import { deriveLegacyRecordId, RecordSourceInvalid, type RecordIdScheme } from '@goondocks/myco-shared/record-identity';
+import { deriveLegacyRecordId, extractRecordSource, RecordSourceAbsent, RecordSourceInvalid, type RecordIdScheme } from '@goondocks/myco-shared/record-identity';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { parserCheckpointStatements, readParserCheckpoint } from '@myco-server-worker/ingest/parser-checkpoint.js';
 import type { DerivedEvent, ParserInput, ParserState } from '@myco-server-worker/ingest/parsers/index.js';
@@ -349,6 +349,71 @@ describe('record source continuation and pure extraction', () => {
       expect(events[0].payload.toolCallId).toBe(await deriveLegacyRecordId(uuidv5, { kind: 'tool-call', sessionId: SESSION, offset: 0, source: { key: 'legacy-call', block: 0 } }));
     } finally { Object.assign(declaration, original); }
   });
+
+  for (const agent of ['claude-code', 'codex']) {
+    it(`${agent}: skips keyless calls under both pins even when their declaration permits position`, async () => {
+      const declaration = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === agent)!.recordIdentity!;
+      for (const recordScheme of ['legacy-session-v1', 'source-record-v1'] as const) {
+        const rule = declaration.schemes[recordScheme]!['tool-call']!;
+        const original = rule.absentKey;
+        try {
+          rule.absentKey = 'position';
+          const calls = [undefined, ''].map(id => agent === 'claude-code'
+            ? { type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Read', input: {} }] } }
+            : { type: 'response_item', payload: { type: 'function_call', call_id: id, name: 'Read', arguments: '{}' } });
+          const events = await PARSERS[agent]!.parse({ ...input(recordScheme), scheme: READ_BEFORE_PIN[agent]!, lines: [
+            ...calls.map((value, offset) => ({ value, offset })),
+            { offset: 20, value: JSON.parse(reply(agent, 'kept reply', 'reply-key')) },
+          ] });
+          expect(events.map(event => [event.kind, event.payload.text])).toEqual([['response', 'kept reply']]);
+        } finally {
+          if (original === undefined) delete rule.absentKey;
+          else rule.absentKey = original;
+        }
+      }
+    });
+  }
+
+  for (const agent of Object.keys(PARSERS)) {
+    it(`${agent}: unavailable current response and plan facts leave legacy parsing and checkpoints unchanged`, async () => {
+      const parser = PARSERS[agent]!;
+      const declaration = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === agent)!.recordIdentity!;
+      const base = { ...input('legacy-session-v1'), scheme: READ_BEFORE_PIN[agent]! };
+      const text = parser.planTags.map(tag => `<${tag}># Kept plan</${tag}>`).join('\n') || 'kept reply';
+      const lines = [{ offset: 12, value: JSON.parse(reply(agent, text, 'reply-key')) }];
+      const expected = await parser.parse({ ...base, lines });
+      const checkpoints = [];
+      for (let split = 0; split <= lines.length; split += 1) {
+        const state: ParserState = {};
+        await parser.parse({ ...base, state, lines: lines.slice(0, split) });
+        checkpoints.push(JSON.stringify(state));
+      }
+      const original = { scheme: declaration.scheme, schemes: declaration.schemes };
+      try {
+        const current = Object.fromEntries(Object.entries(declaration.schemes[declaration.scheme]!).map(([kind, rule]) => {
+          if (kind === 'tool-call') return [kind, rule];
+          const { position: _position, absentKey: _absentKey, ...retained } = rule;
+          return [kind, { ...retained, key: { from: 'record', path: 'unavailableCurrentKey' } }];
+        }));
+        Object.assign(declaration, { scheme: 'source-record-v2', schemes: { ...declaration.schemes, 'source-record-v2': current } });
+        expect(() => extractRecordSource({ declaration, scheme: 'source-record-v2' as never, kind: 'response', record: lines[0].value, block: 0 }))
+          .toThrow(RecordSourceAbsent);
+        const actual = await parser.parse({ ...base, lines });
+        expect(actual.length).toBeGreaterThan(0);
+        expect(actual.every(event => event.source === undefined)).toBe(true);
+        expect(actual).toEqual(expected.map(event => ({ ...event, source: undefined })));
+        for (let split = 0; split <= lines.length; split += 1) {
+          const state: ParserState = {};
+          const first = await parser.parse({ ...base, state, lines: lines.slice(0, split) });
+          expect(JSON.stringify(state)).toBe(checkpoints[split]!);
+          const second = await parser.parse({ ...base, state: JSON.parse(JSON.stringify(state)), lines: lines.slice(split), terminal: 'complete_file' });
+          expect([...first, ...second].map(event => [event.kind, event.payload, event.legacyId]))
+            .toEqual(expected.map(event => [event.kind, event.payload, event.legacyId]));
+          expect([...first, ...second].every(event => event.source === undefined)).toBe(true);
+        }
+      } finally { Object.assign(declaration, original); }
+    });
+  }
 
   it('a restored legacy reply with no source facts emits no invented positional source', async () => {
     const state: ParserState = {};

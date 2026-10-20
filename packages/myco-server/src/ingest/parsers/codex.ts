@@ -161,8 +161,7 @@ export const codexParser: TranscriptParser = {
         const name = str(payload.name);
         if (name === undefined) continue;
         const source = optionalRecordSource(input, this.agent, { kind: 'tool-call', record: value, role: 'call' });
-        if (source === undefined) continue;
-        if (!('key' in source)) throw new Error('Tool invocation has no declared key');
+        if (source === undefined || !('key' in source)) continue;
         const callId = source.key;
         pending.set(callId, {
           toolCallId: await recordId(input, this.agent, { kind: 'tool-call', source, offset }),

@@ -306,8 +306,7 @@ export const claudeCodeParser: TranscriptParser = {
           const name = str(block.name);
           if (name === undefined) continue;
           const source = optionalRecordSource(input, this.agent, { kind: 'tool-call', record: value, call: block, role: 'call' });
-          if (source === undefined) continue;
-          if (!('key' in source)) throw new Error('Tool invocation has no declared key');
+          if (source === undefined || !('key' in source)) continue;
           const id = source.key;
           pending.set(id, {
             toolCallId: await recordId(input, this.agent, { kind: 'tool-call', source, offset }),
