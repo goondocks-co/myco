@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -37,9 +38,9 @@ describe('legacy ledger evidence', () => {
       fs.appendFileSync(ledger.file, corrupt);
       const before = fs.readFileSync(ledger.file);
       expect(ledger.read()).toEqual({ ok: false, reason: 'invalid' });
+      expect(() => ledger.readState()).toThrow('invalid');
       expect(() => legacySessionsToLeaveOut(home, SERVER)).toThrow('invalid');
       expect(() => legacyHistoryByProject(home)).toThrow('invalid');
-      expect(() => ledger.append({ k: 'session', session: 'new' })).toThrow('invalid');
       expect(fs.readFileSync(ledger.file)).toEqual(before);
     });
   }
@@ -73,9 +74,9 @@ describe('legacy ledger evidence', () => {
     bytes[bytes.indexOf('deleted-session')] = 0xff;
     fs.writeFileSync(ledger.file, bytes);
     expect(ledger.read()).toEqual({ ok: false, reason: 'invalid' });
+    expect(() => ledger.readState()).toThrow('invalid');
     expect(() => legacySessionsToLeaveOut(home, SERVER)).toThrow('invalid');
     expect(() => legacyHistoryByProject(home)).toThrow('invalid');
-    expect(() => ledger.append({ k: 'session', session: 'new' })).toThrow('invalid');
     expect(fs.readFileSync(ledger.file)).toEqual(bytes);
   });
 
@@ -109,4 +110,93 @@ describe('legacy ledger evidence', () => {
     expect(legacySessionsToLeaveOut(home, SERVER)).toEqual(new Set());
     expect(legacyHistoryByProject(home).get(PROJECT)?.get(deploymentKeyFor(SERVER))).toEqual(new Set(['session:accepted', 'session:new']));
   });
+
+  it('appends without reading the committed prefix again', () => {
+    const { ledger } = fixture();
+    const recordCount = 5000;
+    ledger.append(...Array.from({ length: recordCount }, (_, i) => ({ k: 'spore' as const, id: `accepted-${i}` })));
+    const committedLength = fs.statSync(ledger.file).size;
+    const wholeReads = spyOn(fs, 'readFileSync');
+    const tailReads = spyOn(fs, 'readSync');
+    let readWholeLedger: boolean;
+    let bytesRead: number;
+    try {
+      ledger.append({ k: 'spore', id: 'new' });
+      readWholeLedger = wholeReads.mock.calls.some(([file]) => file === ledger.file);
+      bytesRead = tailReads.mock.results.reduce((sum, result) => sum + (result.type === 'return' ? Number(result.value) : 0), 0);
+    } finally { wholeReads.mockRestore(); tailReads.mockRestore(); }
+    expect(readWholeLedger).toBe(false);
+    expect(bytesRead).toBeGreaterThan(0);
+    expect(bytesRead).toBeLessThan(committedLength / 2);
+    expect(ledger.readState().spores.size).toBe(recordCount + 1);
+  });
+
+  it('retains a committed prefix when the torn suffix spans several read chunks', () => {
+    const { ledger } = fixture();
+    ledger.append({ k: 'source', session: 'deleted-🍄', from: 'deleted' });
+    const committed = fs.readFileSync(ledger.file);
+    const tornBytes = 20_000;
+    fs.appendFileSync(ledger.file, Buffer.alloc(tornBytes, 0xff));
+    ledger.append({ k: 'spore', id: 'new' });
+    expect(fs.readFileSync(ledger.file)).toEqual(Buffer.concat([committed, Buffer.from('{"k":"spore","id":"new"}\n')]));
+    expect(ledger.readState().sources.get('deleted-🍄')).toBe('deleted');
+  });
+
+  it('discards a wholly uncommitted file before appending', () => {
+    const { ledger } = fixture();
+    ledger.append({ k: 'spore', id: 'uncommitted' });
+    fs.writeFileSync(ledger.file, Buffer.alloc(20_000, 0xff));
+    ledger.append({ k: 'spore', id: 'new' });
+    expect(fs.readFileSync(ledger.file, 'utf8')).toBe('{"k":"spore","id":"new"}\n');
+    expect(ledger.readState().spores).toEqual(new Set(['new']));
+  });
+
+  it('serializes concurrent appends behind the ledger lock before trimming a torn tail', async () => {
+    const { home, ledger } = fixture();
+    ledger.append({ k: 'source', session: 'deleted-session', from: 'deleted' });
+    fs.appendFileSync(ledger.file, '{"k":"source","session":');
+    const before = fs.readFileSync(ledger.file);
+    const release = path.join(home, 'release');
+    const helper = path.resolve('tests/helpers/legacy-ledger-appender.ts');
+    const childTimeoutMs = 10_000;
+    const observationMs = 250;
+    const start = (mode: 'holder' | 'writer') => {
+      const child = spawn(process.execPath, ['run', helper, mode, home, SERVER, PROJECT, release], {
+        cwd: process.cwd(), env: process.env, stdio: ['ignore', 'pipe', 'pipe'], timeout: childTimeoutMs, killSignal: 'SIGKILL',
+      });
+      let stderr = '';
+      let stdout = '';
+      child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+      const ready = new Promise<void>((resolve, reject) => {
+        child.stdout.on('data', chunk => { stdout += chunk.toString(); if (stdout.includes('ready\n')) resolve(); });
+        child.on('error', reject);
+        child.on('close', code => { if (!stdout.includes('ready\n')) reject(new Error(`${mode} never became ready (${code}): ${stderr}`)); });
+      });
+      const done = new Promise<void>((resolve, reject) => {
+        child.on('close', code => code === 0 ? resolve() : reject(new Error(`${mode} failed (${code}): ${stderr}`)));
+        child.on('error', reject);
+      });
+      return { ready, done };
+    };
+    const children: ReturnType<typeof start>[] = [];
+    try {
+      const holder = start('holder');
+      children.push(holder);
+      await holder.ready;
+      const writer = start('writer');
+      children.push(writer);
+      await writer.ready;
+      const completedBeforeRelease = await Promise.race([
+        writer.done.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), observationMs)),
+      ]);
+      expect(completedBeforeRelease).toBe(false);
+      expect(fs.readFileSync(ledger.file)).toEqual(before);
+    } finally {
+      fs.writeFileSync(release, 'release');
+      await Promise.all(children.map(child => child.done));
+    }
+    const state = ledger.readState();
+    expect(state.sources).toEqual(new Map([['deleted-session', 'deleted'], ['concurrent-deletion', 'deleted']]));
+    expect(state.spores).toEqual(new Set(['concurrent-spore']));
+  }, 15_000);
 });

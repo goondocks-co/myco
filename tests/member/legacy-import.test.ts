@@ -327,6 +327,13 @@ describe('importing a 1.4 vault', () => {
     const report = await f.run();
     expect(report.refused).toBeUndefined();
     expect(report.projects[0].failures).toEqual([]);
+    expect(report.projects[0]).not.toHaveProperty('aliases');
+    for (const dryRun of [true, false]) {
+      const output = legacyReportLines(report, dryRun).join('\n');
+      expect(output).toContain(`kept stored id: ${ids[0]} (claude-code, no canonical harness id)`);
+      expect(output).not.toContain('matched by time:');
+      expect(output).not.toContain('no transcript matched');
+    }
     const stored = f.rig.env.sqlite.query('SELECT session_id FROM sessions WHERE project_id = ?').all(PROJECT) as Array<{ session_id: string }>;
     expect(stored.filter(row => ids.includes(row.session_id)).map(row => row.session_id).sort()).toEqual(ids);
     expect(stored.some(row => row.session_id === harnessId)).toBe(false);
@@ -370,7 +377,7 @@ describe('importing a 1.4 vault', () => {
       SESSION_ON_DISK, SESSION_PRUNED, SESSION_LIVE, SESSION_ADMIN, SESSION_CURSOR, SESSION_TWICE, CODEX_ROLLOUT, PI_UUID,
       'sess_0000000000000000000000000000bbbb', 'sess_0000000000000000000000000000cccc', 'sess_0000000000000000000000000000dddd',
     ].sort());
-    expect(project.aliases).toEqual([]);
+    expect(project).not.toHaveProperty('aliases');
     expect(project.unaliased).toEqual(['bbbb', 'cccc', 'dddd'].map(suffix => `sess_0000000000000000000000000000${suffix} (pi, no canonical harness id)`));
     const byId = new Map(sessions.map((s) => [s.session_id as string, s]));
 

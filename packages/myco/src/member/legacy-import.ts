@@ -470,7 +470,6 @@ export interface LegacyProjectReport {
     /** Finished by an earlier run, per this machine's ledger. */
     resumed: number;
   };
-  aliases: string[];
   /** Stored ids with no canonical harness identity, imported under their stored id. */
   unaliased: string[];
   /** Stored ids deleted in 1.4 that no layout resolves a session for: a transcript of one could still be imported. */
@@ -558,7 +557,7 @@ const emptyProjectReport = (project: LegacyProject, root: string | null): Legacy
   root,
   vault: projectCounts(project),
   sessions: { distinct: 0, deleted: 0, alreadyHeld: 0, transcriptsShipped: 0, transcriptsHeld: 0, fromVault: 0, resumed: 0 },
-  aliases: [], unaliased: [], unmatchedDeletes: [], deletedButHeld: [], stillWriting: [], otherMachines: {},
+  unaliased: [], unmatchedDeletes: [], deletedButHeld: [], stillWriting: [], otherMachines: {},
   prompts: 0, responses: 0, plans: { sent: 0, empty: 0, unsent: 0 }, spores: { saved: 0, duplicate: 0, refused: 0 },
   lineage: { recorded: 0, duplicate: 0, refused: 0, malformed: 0 }, refusals: [], failures: [], malformed: [],
 });

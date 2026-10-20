@@ -25,6 +25,7 @@ import { ensureMemberDir, ensurePrivateFile, memberRoot } from './store.js';
 
 const LEGACY_DIRNAME = 'legacy';
 const LEDGER_EXTENSION = '.jsonl';
+const LEDGER_TAIL_READ_BYTES = 4096;
 export const LEGACY_RECONCILIATION_VERSION = 1;
 
 /** Where a session's content comes from: its transcript, the vault's prompts, or nowhere because it is deleted. */
@@ -115,6 +116,20 @@ function readLedger(file: string): LedgerRead {
   }
 }
 
+/** The byte boundary after the last committed newline. Caller holds the ledger lock. */
+function committedLength(fd: number, size: number): number {
+  const chunk = Buffer.allocUnsafe(Math.min(size, LEDGER_TAIL_READ_BYTES));
+  for (let end = size; end > 0;) {
+    const length = Math.min(end, chunk.length);
+    const start = end - length;
+    if (fs.readSync(fd, chunk, 0, length, start) !== length) throw new Error('Legacy import ledger tail is unreadable');
+    const newline = chunk.subarray(0, length).lastIndexOf('\n');
+    if (newline !== -1) return start + newline + 1;
+    end = start;
+  }
+  return 0;
+}
+
 /** One Project's ledger on one Deployment. */
 export class LegacyLedger {
   readonly file: string;
@@ -138,11 +153,13 @@ export class LegacyLedger {
     ensureMemberDir(path.dirname(this.file), this.mycoHome);
     withFileLockSync(`${this.file}.lock`, () => {
       ensurePrivateFile(this.file);
-      const bytes = fs.readFileSync(this.file);
-      requireState(parseLedger(bytes), this.file);
-      const committedLength = bytes.lastIndexOf('\n') + 1;
-      if (committedLength !== bytes.length) fs.truncateSync(this.file, committedLength);
-      fs.appendFileSync(this.file, lines.map((l) => `${JSON.stringify(l)}\n`).join(''));
+      const fd = fs.openSync(this.file, fs.constants.O_RDWR | fs.constants.O_APPEND);
+      try {
+        const size = fs.fstatSync(fd).size;
+        const committed = committedLength(fd, size);
+        if (committed !== size) fs.ftruncateSync(fd, committed);
+        fs.appendFileSync(fd, lines.map((l) => `${JSON.stringify(l)}\n`).join(''));
+      } finally { fs.closeSync(fd); }
     });
   }
 }
