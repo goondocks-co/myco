@@ -552,7 +552,9 @@ describe('member hooks through the worker: retention and plan files', () => {
 describe('member hooks through the worker: codex', () => {
   it('registers, injects, ships its tool calls from the hook and the rollout as the delta; the parse writes the prompt and the reply', async () => {
     const tx = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-codex-')), `rollout-2026-09-01T10-00-00-${session}.jsonl`);
-    fs.copyFileSync(path.join(FIXTURES, 'codex-parse-basic.jsonl'), tx);
+    // A rollout opens each turn with its `turn_context`, which a transcript pinned to Codex's turn key names prompts by.
+    const [header, ...rest] = fs.readFileSync(path.join(FIXTURES, 'codex-parse-basic.jsonl'), 'utf8').split('\n');
+    fs.writeFileSync(tx, [header, JSON.stringify({ type: 'turn_context', timestamp: '2026-09-01T10:00:00Z', payload: { turn_id: 'turn-1' } }), ...rest].join('\n'));
     await run('session-start', { hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/repo' }, undefined, 'codex');
     const ups = await run('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', transcript_path: tx, prompt: 'summarise the ingest path', cwd: '/repo' }, undefined, 'codex');
     expect(ups.stdout).toContain(`Session:: \`${session}\``);

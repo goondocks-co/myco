@@ -15,6 +15,8 @@ import path from 'node:path';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
+import { canonicalPromptId } from '@goondocks/myco-shared/prompt-identity';
+import { deriveId } from '@myco/member/envelope.js';
 import { turnDetail } from '@myco-server-worker/read/turns.js';
 import { danglingPromptReferences } from '@myco-server-worker/read/prompt-reference-invariant.js';
 import { TEST_PROJECT_ID } from '../member/helpers/server.js';
@@ -86,6 +88,48 @@ const PAIRED: Record<string, (r: IdentityRig) => Promise<void>> = {
     await runHook('session-end', { ...common, hook_event_name: 'SessionEnd' }, hook);
     await r.parse();
     await assertSelectedThenDelivered(r, sessionId, await promptIdFor(sessionId, 'user_prompt', k1), await promptIdFor(sessionId, 'user_prompt', k2));
+  },
+  codex: async (r) => {
+    // The hook input Codex sends (`tests/fixtures/prompt-identity/codex-user-prompt-submit.json`), with its turn key.
+    const observed = JSON.parse(fs.readFileSync(path.join(import.meta.dir, '..', 'fixtures', 'prompt-identity', 'codex-user-prompt-submit.json'), 'utf8')) as Record<string, unknown>;
+    const sessionId = observed.session_id as string;
+    const [t1, t2] = [observed.turn_id as string, '01a150c5-7000-7071-a239-ca91304db9d8'];
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-identity-codex-'));
+    const file = path.join(dir, `rollout-2026-10-18T16-47-57-${sessionId}.jsonl`);
+    const meta = { timestamp: new Date().toISOString(), type: 'session_meta', payload: { id: sessionId, source: 'cli', cwd: '/repo', cli_version: '0.163.0' } };
+    fs.writeFileSync(file, lines([meta]));
+    const common = { session_id: sessionId, transcript_path: file, cwd: '/repo' };
+    const hook = { helpers: 'run' as const, fetch: r.fetch.fetch, symbiont: 'codex' };
+    await runHook('session-start', { ...common, hook_event_name: 'SessionStart', source: 'startup' }, hook);
+    await runHook('user-prompt-submit', { ...observed, ...common, turn_id: t1, prompt: FIRST }, hook);
+    // A tool the rollout does not record reaches the Deployment from the hook, named by the turn's opener.
+    await runHook('post-tool-use', { ...common, hook_event_name: 'PostToolUse', turn_id: t1, tool_name: 'web_search', tool_use_id: 'call_ws_1',
+      tool_input: { query: 'retention window' }, tool_response: 'thirty days' }, hook);
+    const second = await runHook('user-prompt-submit', { ...observed, ...common, turn_id: t2, prompt: SECOND }, hook);
+    expect(second.stdout).toContain(`${RELEVANT_WORD} window keeps thirty days`);
+    // Codex writes its rollout as the turns run: after each ask and delivery, on the same clock, and before the parse
+    // reads it, which takes no line's time past its own.
+    const written = Date.now();
+    const at = (ms: number) => new Date(written + ms).toISOString();
+    const item = (s: number, payload: Record<string, unknown>, order?: number) => ({ timestamp: at(s), type: 'response_item', payload, ...(order === undefined ? {} : { metadata: { user_input_order: order } }) });
+    const message = (role: string, text: string) => ({ type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] });
+    fs.writeFileSync(file, lines([
+      meta,
+      { timestamp: at(1), type: 'event_msg', payload: { type: 'task_started', turn_id: t1 } },
+      { timestamp: at(1), type: 'turn_context', payload: { turn_id: t1, cwd: '/repo' } },
+      item(1, message('user', FIRST), 0),
+      item(2, message('assistant', 'Thirty days.'), 1),
+      { timestamp: at(3), type: 'event_msg', payload: { type: 'task_started', turn_id: t2 } },
+      { timestamp: at(3), type: 'turn_context', payload: { turn_id: t2, cwd: '/repo' } },
+      item(4, message('user', SECOND), 2),
+      item(5, message('assistant', 'Plans are kept until archived.'), 3),
+    ]));
+    await runHook('stop', { ...common, hook_event_name: 'Stop', turn_id: t2, last_assistant_message: 'Plans are kept until archived.' }, hook);
+    await runHook('session-end', { ...common, hook_event_name: 'SessionEnd' }, hook);
+    await r.parse();
+    const opener = (turnId: string) => canonicalPromptId(deriveId, { scheme: 'codex-turn-v1', sessionId, turnId, submission: { opener: true } });
+    expect(r.rows(`SELECT prompt_identity_scheme FROM transcripts WHERE session_id = ?`, sessionId)).toEqual([{ prompt_identity_scheme: 'codex-turn-v1' }]);
+    await assertSelectedThenDelivered(r, sessionId, opener(t1), opener(t2));
   },
   opencode: (r) => stampedCase(r, 'opencode', { session: (id) => ({ session_id: id }) }),
   cline: (r) => stampedCase(r, 'cline', { session: (id) => ({ conversationId: id }) }),

@@ -6,13 +6,16 @@
  * - A Deployment that does not name the feature is asked as before: a minted id and no identity marker.
  * - Each answer renders once, keyed on the ask it answered, so a harness that reuses a prompt id still gets each answer.
  * - The hook that renders an answer emits `context.delivered` naming the rows the answer named, in the same append.
+ * - Codex: the first prompt of a turn claims the turn opener's id under the session's lock, behind `prompt-scheme`; a
+ *   later prompt of the same turn steers it and is session-scoped, and hook tool calls name the opener until then.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { CONTEXT_DELIVERED_KIND } from '@goondocks/myco-shared/prompt-identity';
+import { canonicalPromptId, CONTEXT_DELIVERED_KIND } from '@goondocks/myco-shared/prompt-identity';
+import { deriveId } from '@myco/member/envelope.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
 import type { FetchLike } from '@myco/member/transport.js';
@@ -31,7 +34,7 @@ beforeEach(async () => {
 });
 afterEach(() => { process.env.MYCO_HOME = savedHome; resetMachineIdCache(); });
 
-type Ask = { promptId?: string; scopeReason?: string; identity?: number; at?: number; text: string };
+type Ask = { promptId?: string; promptScheme?: string; scopeReason?: string; identity?: number; at?: number; text: string };
 
 /**
  * The rig, with the prompt route answered by a Deployment that names `features` and writes the rows it names: every
@@ -154,5 +157,63 @@ describe('a Claude Code prompt to a Deployment without prompt-identity', () => {
     await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'second', prompt_id: '77777777-7777-4777-8777-777777777777' }, { helpers: 'run', fetch: legacy });
     expect(served.asked.map((a) => ({ identity: a.identity, v7: /^[0-9a-f]{8}-[0-9a-f]{4}-7/.test(a.promptId ?? '') }))).toEqual([{ identity: undefined, v7: true }, { identity: undefined, v7: true }]);
     expect(delivered(sessionId)).toEqual([]);
+  });
+});
+
+describe('a Codex prompt, whose harness key names a turn', () => {
+  const rollout = (sessionId: string): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-identity-codex-'));
+    const file = path.join(dir, `rollout-2026-10-18T16-47-57-${sessionId}.jsonl`);
+    fs.writeFileSync(file, `${JSON.stringify({ type: 'session_meta', payload: { id: sessionId, source: 'cli', cwd: '/repo' } })}\n`);
+    return file;
+  };
+  const opener = (sessionId: string, turnId: string) => canonicalPromptId(deriveId, { scheme: 'codex-turn-v1', sessionId, turnId, submission: { opener: true } });
+  const toolPrompts = (sessionId: string) => (rig.env.sqlite.query(`SELECT payload FROM events WHERE session_id = ? AND kind = 'tool.use' ORDER BY received_at, rowid`)
+    .all(sessionId) as { payload: string }[]).map((r) => (JSON.parse(r.payload) as { promptId?: string }).promptId ?? null);
+
+  it('claims the opener for the first prompt of a turn, scopes a steering prompt, and names hook tool calls only until the turn is steered', async () => {
+    const sessionId = '01a150c5-6b8f-7f61-acf3-4c7ea2c29481';
+    const tx = rollout(sessionId);
+    const served = serving('turn,project-name,prompt-identity,prompt-scheme');
+    const hook = { helpers: 'run' as const, fetch: served.fetch, symbiont: 'codex' };
+    const common = { session_id: sessionId, transcript_path: tx, cwd: '/repo' };
+    const tool = (turnId: string, id: string) => runHook('post-tool-use', { ...common, hook_event_name: 'PostToolUse', turn_id: turnId, tool_name: 'web_search', tool_use_id: id, tool_input: { q: id }, tool_response: 'ok' }, hook);
+    await runHook('session-start', { ...common, hook_event_name: 'SessionStart' }, hook);
+    await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', turn_id: 't1', prompt: 'open the turn' }, hook);
+    await tool('t1', 'call_1');
+    const steering = await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', turn_id: 't1', prompt: 'steer it' }, hook);
+    await tool('t1', 'call_2');
+    await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', turn_id: 't2', prompt: 'next turn' }, hook);
+    expect(steering.stdout).toContain('Recalled for: open the turn');
+    expect(served.asked.map(({ promptId, promptScheme, scopeReason }) => ({ promptId, promptScheme, scopeReason }))).toEqual([
+      { promptId: opener(sessionId, 't1'), promptScheme: 'codex-turn-v1', scopeReason: undefined },
+      { promptId: undefined, promptScheme: undefined, scopeReason: 'steering' },
+      { promptId: opener(sessionId, 't2'), promptScheme: 'codex-turn-v1', scopeReason: undefined },
+    ]);
+    expect(delivered(sessionId)).toEqual([
+      { receiptId: '00000000-0000-4000-8000-000000000001', answerId: '00000000-0000-4000-8000-0000000000a1', renderedScopeReason: 'steering' },
+      { receiptId: '00000000-0000-4000-8000-000000000002', answerId: '00000000-0000-4000-8000-0000000000a2', renderedIn: opener(sessionId, 't2'), renderedScheme: 'codex-turn-v1' },
+    ]);
+    expect(toolPrompts(sessionId)).toEqual([opener(sessionId, 't1'), null]);
+  });
+
+  it('names no prompt for a Deployment that does not pin schemes', async () => {
+    const sessionId = '01a150c5-6b8f-7f61-acf3-4c7ea2c29482';
+    const tx = rollout(sessionId);
+    const features = 'turn,project-name,prompt-identity';
+    const served = serving(features);
+    const older: FetchLike = async (input, init) => {
+      const res = await served.fetch(input, init);
+      const headers = new Headers(res.headers);
+      if (headers.has(FEATURES_HEADER)) headers.set(FEATURES_HEADER, features);
+      return new Response(res.body, { status: res.status, headers });
+    };
+    const hook = { helpers: 'run' as const, fetch: older, symbiont: 'codex' };
+    const common = { session_id: sessionId, transcript_path: tx, cwd: '/repo' };
+    await runHook('session-start', { ...common, hook_event_name: 'SessionStart' }, hook);
+    await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', turn_id: 't1', prompt: 'open the turn' }, hook);
+    await runHook('post-tool-use', { ...common, hook_event_name: 'PostToolUse', turn_id: 't1', tool_name: 'web_search', tool_use_id: 'call_1', tool_input: { q: 1 }, tool_response: 'ok' }, hook);
+    expect(served.asked.map(({ promptId, scopeReason }) => ({ promptId, scopeReason }))).toEqual([{ promptId: undefined, scopeReason: 'transcript_only' }]);
+    expect(toolPrompts(sessionId)).toEqual([null]);
   });
 });

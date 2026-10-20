@@ -25,7 +25,8 @@ import { startTurnStatement, turnStartedAt, turnStartedAtAsk } from '../ingest/t
 import { refused } from '../ingest/events.js';
 import { sessionWriteAdmission } from '../ingest/projections.js';
 import type { AskNaming } from '../core/injection.js';
-import { ASK_IDENTITY_MARKER, isPromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
+import { ASK_IDENTITY_MARKER, isPromptIdScheme, isPromptScopeReason, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
+import { sharesSessionScheme } from '../ingest/prompt-scheme.js';
 import { MAX_REMOTE_CHARS, normalizeRemote, recordProjectRemote } from '../core/remotes.js';
 
 const MAX_SESSION_CHARS = 384;
@@ -77,22 +78,26 @@ const instant = (v: unknown): number | null => (typeof v === 'number' && Number.
 
 /**
  * How an ask names its prompt. A `v1` ask (`identity` is the marker) carries its own instant and exactly one of the
- * prompt's id and why it names none; an ask without the marker is an older member's, which names the id its hook
- * minted and is recorded as sent.
+ * prompt's id and why it names none, and with an id, from a member of a Deployment that names `prompt-scheme`, the
+ * scheme it derived that id by; an ask without the marker is an older member's, which names the id its hook minted and
+ * is recorded as sent.
  */
-function askNaming(body: Record<string, unknown>): { ok: true; naming: AskNaming } | { ok: false; reason: string } {
+function askNaming(body: Record<string, unknown>): { ok: true; naming: AskNaming; scheme: PromptIdScheme | null } | { ok: false; reason: string } {
   const promptId = str(body.promptId, MAX_PROMPT_ID_CHARS);
   const askedAt = instant(body.at);
   if (body.identity === undefined) {
     return promptId === null ? { ok: false, reason: 'prompt context requires sessionId, promptId and text' }
-      : { ok: true, naming: { promptId, scopeReason: null, askProtocol: 'legacy', askedAt } };
+      : { ok: true, naming: { promptId, scopeReason: null, askProtocol: 'legacy', askedAt }, scheme: null };
   }
   if (body.identity !== ASK_IDENTITY_MARKER) return { ok: false, reason: `prompt context names identity ${ASK_IDENTITY_MARKER} or none` };
   if (askedAt === null) return { ok: false, reason: 'a prompt context ask with identity names its own instant (at)' };
   const scopeReason = body.scopeReason === undefined ? null : isPromptScopeReason(body.scopeReason) ? body.scopeReason : undefined;
   if (scopeReason === undefined) return { ok: false, reason: 'prompt context scopeReason is not a reason recorded here' };
   if ((promptId === null) === (scopeReason === null)) return { ok: false, reason: 'a prompt context ask with identity names promptId or scopeReason, not both' };
-  return { ok: true, naming: { promptId, scopeReason, askProtocol: 'v1', askedAt } };
+  const scheme = body.promptScheme === undefined ? null : isPromptIdScheme(body.promptScheme) ? body.promptScheme : undefined;
+  if (scheme === undefined) return { ok: false, reason: 'prompt context promptScheme is not a scheme named here' };
+  if (scheme !== null && promptId === null) return { ok: false, reason: 'a prompt context ask names promptScheme only with promptId' };
+  return { ok: true, naming: { promptId, scopeReason, askProtocol: 'v1', askedAt }, scheme };
 }
 
 export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Promise<Response> {
@@ -105,15 +110,18 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
   if (sessionId === null || text === null || !named.ok) {
     return Response.json(refused(ctx, refusal(named.ok ? 'prompt context requires sessionId, promptId and text' : named.reason, 'parse')));
   }
-  const { naming } = named;
   // Registered first and never awaited: the turn opens whatever becomes of the compose below. It opens only a turn of a
   // session this machine holds (`startTurnStatement`).
-  noteTurnStarted(env, ctx, sessionId, naming.promptId, naming.askProtocol === 'v1' ? naming.askedAt : null);
+  noteTurnStarted(env, ctx, sessionId, named.naming.promptId, named.naming.askProtocol === 'v1' ? named.naming.askedAt : null);
   // Records naming a session are written only by the machine that holds it, as its events are: read here, and held
   // again on every write the compose below makes.
   const admission = sessionWriteAdmission(ctx, sessionId);
   const unwritable = await admission.refusal(env.db);
   if (unwritable !== null) return Response.json(refused(ctx, unwritable));
+  // A prompt id derived under a scheme the session's prompts are not named by names no prompt of it: the ask is
+  // recorded as session-scoped for that reason.
+  const naming: AskNaming = named.scheme !== null && !(await sharesSessionScheme(env.db, ctx.projectId, sessionId, named.scheme))
+    ? { ...named.naming, promptId: null, scopeReason: 'scheme' } : named.naming;
   const [leaves, capabilityOn] = await Promise.all([
     readRecallLeaves(env.db),
     settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),

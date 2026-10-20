@@ -4,6 +4,7 @@
  * spores written and embedded through the Deployment's own reconcile. A prompt naming `RELEVANT_WORD` is served the
  * relevant spores; the background spores calibrate the selector and are never relevant.
  */
+import { declaredScheme } from '@myco-server-worker/ingest/prompt-scheme.js';
 import { registerBlob } from '../../myco-server/helpers/d1.js';
 import { indexFixture } from '../../myco-server/helpers/vector-index.js';
 import { turnOnGatedCapabilities } from '../../myco-server/helpers/fixtures.js';
@@ -82,8 +83,8 @@ export async function identityRig(opts: { relevant?: number; background?: number
       const now = Date.now();
       const objectKey = registerBlob(sqlite, { projectId: TEST_PROJECT_ID, key, size: bytes.length, tokenId: rig.tokenId, receivedAt: now });
       await rig.env.bucket.put(objectKey, new Blob([bytes]).stream());
-      sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role)
-        VALUES (?, ?, ?, 'machine_1', ?, ?, 1, ?, ?, ?, ?)`, [TEST_PROJECT_ID, transcriptId, sessionId, agent, bytes.length, now, now, rig.tokenId, role]);
+      sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role, prompt_identity_scheme)
+        VALUES (?, ?, ?, 'machine_1', ?, ?, 1, ?, ?, ?, ?, ?)`, [TEST_PROJECT_ID, transcriptId, sessionId, agent, bytes.length, now, now, rig.tokenId, role, declaredScheme(agent)]);
       sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)`, [TEST_PROJECT_ID, transcriptId, bytes.length, key, `seg-${transcriptId}`, now, now, rig.tokenId]);
     },

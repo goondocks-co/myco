@@ -21,7 +21,7 @@ import path from 'node:path';
 import { featuresNamed, featureAdvertised as headerAdvertises, type MemberFeature } from '@goondocks/myco-shared/member-protocol';
 import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
 import { BLOCK_JOIN, projectLine, withoutProjectLine } from '@goondocks/myco-shared/recall';
-import type { ASK_IDENTITY_MARKER, DeliveredSessionRecord, PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
+import { PROMPT_KEY_TEXT_MAX_CHARS, type ASK_IDENTITY_MARKER, type DeliveredSessionRecord, type PromptIdScheme, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { deploymentFeaturesPath, deploymentsDir, deploymentUrl, listRegistryEntriesResult, type RegistryEntry } from './registry.js';
 import { spoolDirFor } from './spool.js';
 import { ensureMemberDir, ensurePrivateFile, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
@@ -72,13 +72,14 @@ export type ContextAsk =
   | { kind: 'compact'; compaction: number; remote?: string; remoteFrom?: string; at: number }
   | { kind: 'subagent'; agentId?: string; agentType?: string; at: number }
   /**
-   * A `v1` ask (`identity` set) names its prompt by the id the agent's declaration derives, or says why it names none
-   * (`scopeReason`); an ask without the marker comes from an older hook and names the id that hook minted.
+   * A `v1` ask (`identity` set) names its prompt by the id the agent's declaration derives, with the scheme it derived
+   * it by for a Deployment that names `prompt-scheme`, or says why it names none (`scopeReason`); an ask without the
+   * marker comes from an older hook and names the id that hook minted.
    */
-  | { kind: 'prompt'; promptId?: string; scopeReason?: PromptScopeReason; identity?: typeof ASK_IDENTITY_MARKER; text: string; at: number };
+  | { kind: 'prompt'; promptId?: string; promptScheme?: PromptIdScheme; scopeReason?: PromptScopeReason; identity?: typeof ASK_IDENTITY_MARKER; text: string; at: number };
 
 /** The most of a prompt's text a recall request carries: the search reads its head, and a request stays small. */
-export const PROMPT_ASK_MAX_CHARS = 16_384;
+export const PROMPT_ASK_MAX_CHARS = PROMPT_KEY_TEXT_MAX_CHARS;
 
 export function contextDir(spoolDir: string): string {
   return path.join(spoolDir, CONTEXT_DIRNAME);

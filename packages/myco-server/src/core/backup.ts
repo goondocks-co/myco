@@ -28,6 +28,7 @@ import { restoreArchivedEvent } from './event-content.js';
 import { restoreToolInput } from './tool-input-restore.js';
 export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
 import { restoreParserCheckpointStatement } from '../ingest/parser-checkpoint.js';
+import { DECLARED_SCHEMES, promptSchemeBackfillSql } from '../ingest/prompt-scheme.js';
 import { authorizeRestore, RestoreAuthorizationError, type RestoreAuthorization } from './restore-authorization.js';
 
 export const BACKUP_FORMAT = 'myco-backup/1';
@@ -844,6 +845,8 @@ export async function restoreArtifact(
           WHERE ${RESTORE_OWNER} RETURNING next_row`)
           .bind(next, JSON.stringify(chunk), table, hash, at));
       }
+      // A transcript from a backup taken before schemes were pinned arrives without one, and is pinned with its insert.
+      if (table === 'transcripts') statements.push(db.prepare(promptSchemeBackfillSql(DECLARED_SCHEMES)));
       let applied;
       try {
         applied = table === 'members'

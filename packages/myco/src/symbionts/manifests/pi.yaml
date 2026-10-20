@@ -31,8 +31,9 @@ registration:
   settingsTarget: null
   globalSettingsTarget: null
   hookResponse:
-    # The plugin reads the hook's stdout directly, so the response is JSON and
-    # carries the minted prompt id back for stamping on transcript lines.
+    # The extension reads the hook's stdout directly, so the response is JSON.
+    # Pi writes its own session file, and the extension writes no line into
+    # it, so the prompt id the response carries is stamped nowhere.
     format: json
     fieldNames:
       additionalContext: additionalContext
@@ -59,8 +60,8 @@ registration:
 
 capabilities:
   # The transcript is the only writer of this symbiont's turn rows: the
-  # prompt-submit hook mints the prompt id, returns it for the plugin to stamp
-  # on its transcript lines, and injects, but ships no `prompt` event.
+  # Deployment's parse names each prompt by its position in Pi's session file,
+  # and the prompt-submit hook injects and ships no `prompt` event.
   turnRowSource: transcript
   # Pi's Myco tools are registered natively in the extension via
   # pi.registerTool() and dispatched in-process; no mcpTarget is declared, so
@@ -90,7 +91,8 @@ capabilities:
       readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
 
 # How this agent's prompts are named: by their position in Pi's session file. The extension's prompt hook input
-# carries no per-submission key, so a context answer names no prompt.
+# carries no per-submission key, and the extension writes no line into Pi's session file that could carry one, so a
+# context answer names no prompt.
 promptIdentity:
   kind: transcript-only
   scheme: offset-v1

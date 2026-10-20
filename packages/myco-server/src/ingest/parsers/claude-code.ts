@@ -57,7 +57,7 @@ function promptShape(v: Record<string, unknown>, text: string): ClaudePromptShap
 export const claudeCodeParser: TranscriptParser = {
   agent: 'claude-code',
   fidelity: 'full',
-  promptGeneration: 2,
+  schemes: ['claude-v1'],
   planTags: ['ultraplan'],
   continuation: { parentSessionIdPath: 'session_id', markerPaths: ['isCompactSummary'] },
 

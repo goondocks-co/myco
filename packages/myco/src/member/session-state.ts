@@ -144,6 +144,11 @@ export interface SessionState {
   endedAt?: number;
   /** The instant of the ask whose served context a prompt of this session last rendered: each answer is rendered once. */
   renderedAsk?: number;
+  /**
+   * For an agent whose harness key names a turn: the turn the last prompt hook ran in, and the id its opener claimed,
+   * held until a later prompt of the same turn steers it.
+   */
+  turn?: { id: string; promptId?: string };
   updatedAt: number;
   /** Loss dispositions queued by the current receipt mutation, flushed before that receipt is committed. */
   pendingLosses?: CaptureLoss[];

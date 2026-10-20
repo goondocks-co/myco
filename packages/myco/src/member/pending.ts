@@ -17,7 +17,7 @@ import { filesystemWitnesses, filesystemWitnessesCurrent, type FilesystemWitness
 import { canonicalRootIdentity, rootIdentityMayMatch } from '../utils/git-files.js';
 import { resolveMycoHome } from '../paths/home.js';
 import type { OutboundEvent } from './envelope.js';
-import { BLOBS_DIRNAME, MemberSpool, REFUSED_LOG_FILE, SPOOL_DIRNAME, toWire, type TurnEndMark } from './spool.js';
+import { BLOBS_DIRNAME, MemberSpool, REFUSED_LOG_FILE, SPOOL_DIRNAME, toWire, type SessionEvents, type TurnEndMark } from './spool.js';
 import { deploymentKeyFor, deploymentUrl, readRegistryEntry, readRegistryEntryResult } from './registry.js';
 import { memberRoutingIdentity, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
 import { pointersOf, readSessionState, readSessionStateResult, sessionStatePath, turnsFileOf, type SessionState } from './session-state.js';
@@ -408,7 +408,7 @@ function appendJoined(repo: { root: string; rootKey: string; serverUrl?: string 
  * where the pending spool is past its cap.
  */
 export function appendPending(
-  repo: { root: string; rootKey: string; serverUrl?: string }, sessionId: string, events: readonly OutboundEvent[], record: ((state: SessionState) => void) | undefined,
+  repo: { root: string; rootKey: string; serverUrl?: string }, sessionId: string, events: SessionEvents, record: ((state: SessionState) => void) | undefined,
   opts: { mycoHome: string; now: number },
 ): 'pending' | 'project' | 'full' {
   const write = (spool: MemberSpool) => spool.appendAndRecord(sessionId, events, record, opts.now);

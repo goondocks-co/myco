@@ -47,8 +47,8 @@ async function rig() {
   const hold = (sessionId: string, transcriptId: string, size: number, headHash: string | null, role = 'primary') => {
     sqlite.run(`INSERT OR IGNORE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
                 VALUES (?, ?, ?, ?, ?, ?)`, [PROJECT, sessionId, MACHINE, issued.tokenId, NOW, NOW]);
-    sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id)
-                VALUES (?, ?, ?, ?, 'claude-code', ?, ?, ?, 1, ?, ?, ?)`,
+    sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id, prompt_identity_scheme)
+                VALUES (?, ?, ?, ?, 'claude-code', ?, ?, ?, 1, ?, ?, ?, 'claude-v1')`,
                [PROJECT, transcriptId, sessionId, MACHINE, role, headHash, size, NOW, NOW, issued.tokenId]);
   };
 
