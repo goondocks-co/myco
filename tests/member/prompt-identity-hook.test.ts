@@ -8,6 +8,7 @@
  * - The hook that renders an answer emits `context.delivered` naming the rows the answer named, in the same append.
  * - Codex: the first prompt of a turn claims the turn opener's id under the session's lock, behind `prompt-scheme`; a
  *   later prompt of the same turn steers it and is session-scoped, and hook tool calls name the opener until then.
+ *   A claim held while the repository was joining moves with the session's state when it joins.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -16,6 +17,9 @@ import path from 'node:path';
 import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { canonicalPromptId, CONTEXT_DELIVERED_KIND } from '@goondocks/myco-shared/prompt-identity';
 import { deriveId } from '@myco/member/envelope.js';
+import { appendPending, flushPending, mergeHeldState } from '@myco/member/pending.js';
+import { emptySessionState, readSessionState } from '@myco/member/session-state.js';
+import { MemberSpool } from '@myco/member/spool.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
 import type { FetchLike } from '@myco/member/transport.js';
@@ -195,6 +199,41 @@ describe('a Codex prompt, whose harness key names a turn', () => {
       { receiptId: '00000000-0000-4000-8000-000000000002', answerId: '00000000-0000-4000-8000-0000000000a2', renderedIn: opener(sessionId, 't2'), renderedScheme: 'codex-turn-v1' },
     ]);
     expect(toolPrompts(sessionId)).toEqual([opener(sessionId, 't1'), null]);
+  });
+
+  it('keeps a turn claimed in a joining repository\'s held capture once the repository joins: the same turn\'s next prompt steers it', async () => {
+    const sessionId = '01a150c5-6b8f-7f61-acf3-4c7ea2c29483';
+    const tx = rollout(sessionId);
+    const served = serving('turn,project-name,prompt-identity,prompt-scheme');
+    const hook = { helpers: 'run' as const, fetch: served.fetch, symbiont: 'codex' };
+    const common = { session_id: sessionId, transcript_path: tx, cwd: '/repo' };
+    await runHook('session-start', { ...common, hook_event_name: 'SessionStart' }, hook);
+    // The turn's opener ran while the repository was still joining: its claim sits in the held capture's state.
+    const held = { root: '/checkout/joining', rootKey: 'b'.repeat(32), serverUrl: 'https://member-test.invalid' };
+    expect(appendPending(held, sessionId, [], (state) => { state.turn = { id: 't1', promptId: opener(sessionId, 't1') }; }, { mycoHome, now: Date.now() })).toBe('pending');
+    const project = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
+    flushPending(held.rootKey, project, { mycoHome, now: Date.now() });
+    expect(readSessionState(project.dir, sessionId).turn).toEqual({ id: 't1', promptId: opener(sessionId, 't1') });
+    await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', turn_id: 't1', prompt: 'steer it' }, hook);
+    await runHook('post-tool-use', { ...common, hook_event_name: 'PostToolUse', turn_id: 't1', tool_name: 'web_search', tool_use_id: 'call_1', tool_input: { q: 1 }, tool_response: 'ok' }, hook);
+    expect(served.asked.map(({ promptId, scopeReason }) => ({ promptId, scopeReason }))).toEqual([{ promptId: undefined, scopeReason: 'steering' }]);
+    expect(toolPrompts(sessionId)).toEqual([null]);
+  });
+
+  it('never gives a steered turn back its opener when held and project states of one session merge', () => {
+    const steered = { id: 't1' };
+    const claimed = { id: 't1', promptId: 'opener' };
+    for (const [target, held, merged] of [
+      [claimed, steered, steered], [steered, claimed, steered], [undefined, steered, steered], [undefined, claimed, claimed],
+      [claimed, undefined, claimed], [{ id: 't2', promptId: 'next' }, steered, { id: 't2', promptId: 'next' }],
+    ] as const) {
+      const into = emptySessionState();
+      const from = emptySessionState();
+      if (target !== undefined) into.turn = { ...target };
+      if (held !== undefined) from.turn = { ...held };
+      mergeHeldState(into, from);
+      expect({ target, held, turn: into.turn }).toEqual({ target, held, turn: merged });
+    }
   });
 
   it('names no prompt for a Deployment that does not pin schemes', async () => {

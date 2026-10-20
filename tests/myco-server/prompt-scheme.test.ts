@@ -69,6 +69,23 @@ const codexUser = (s: number, text: string, order?: number) => line({ timestamp:
 const codexReply = (s: number, text: string) => line({ timestamp: at(s), type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } });
 const TX = `tx_${'a'.repeat(32)}`;
 
+/**
+ * Each witness that a parse has read a transcript, alone, and none: a Codex transcript read before the pin keeps the
+ * line positions that read it whichever witness it carries, and an unread one takes Codex's turn key.
+ */
+const READ_WITNESSES = [
+  ['codex-offset-only', { offset: 100 }],
+  ['codex-parsed-at-only', { at: 1 }],
+  ['codex-unread', {}],
+  ['codex-version-only', { version: 5 }],
+] as const satisfies ReadonlyArray<readonly [string, { version?: number; offset?: number; at?: number }]>;
+const PINNED_BY_WITNESS = [
+  { transcript_id: 'codex-offset-only', prompt_identity_scheme: 'offset-v1' },
+  { transcript_id: 'codex-parsed-at-only', prompt_identity_scheme: 'offset-v1' },
+  { transcript_id: 'codex-unread', prompt_identity_scheme: 'codex-turn-v1' },
+  { transcript_id: 'codex-version-only', prompt_identity_scheme: 'offset-v1' },
+];
+
 describe('a transcript\'s prompt identity scheme', () => {
   it('is pinned to its agent\'s declaration by the segment that registers it, and is none for a transcript that names no agent', async () => {
     const m = await member();
@@ -121,20 +138,17 @@ describe('a transcript\'s prompt identity scheme', () => {
 
   it('pins a transcript restored from a backup taken before the pin as the migration pins one it holds', async () => {
     const m = await member();
-    const transcript = (id: string, agent: string, read: boolean) => ({
-      project_id: 'proj_1', transcript_id: id, session_id: SESSION, machine_id: 'machine_1', agent, size: 0, segment_count: 0,
-      first_received_at: 1, last_received_at: 1, token_id: m.ctx.tokenId, parsed_offset: 0, parser_version: read ? 5 : 0, role: 'primary',
+    const transcript = ([id, read]: readonly [string, { version?: number; offset?: number; at?: number }]) => ({
+      project_id: 'proj_1', transcript_id: id, session_id: SESSION, machine_id: 'machine_1', agent: 'codex', size: 100, segment_count: 0,
+      first_received_at: 1, last_received_at: 1, token_id: m.ctx.tokenId, parsed_offset: read.offset ?? 0, parser_version: read.version ?? 0,
+      parsed_at: read.at ?? null, role: 'primary',
     });
     const artifact = [
-      { format: BACKUP_FORMAT, deploymentId: await deploymentId(m.e.db), schemaVersion: 89, createdAt: 1, producer: 'scheme test', counts: { transcripts: 2 } },
-      { t: 'transcripts', r: transcript(`tx_${'c'.repeat(32)}`, 'codex', true) },
-      { t: 'transcripts', r: transcript(`tx_${'d'.repeat(32)}`, 'codex', false) },
+      { format: BACKUP_FORMAT, deploymentId: await deploymentId(m.e.db), schemaVersion: 89, createdAt: 1, producer: 'scheme test', counts: { transcripts: READ_WITNESSES.length } },
+      ...READ_WITNESSES.map((witness) => ({ t: 'transcripts', r: transcript(witness) })),
     ].map((o) => JSON.stringify(o)).join('\n');
     await restoreArtifact(m.e.db, { authorization: { kind: 'recovery' }, text: artifact });
-    expect(rows(m.e.sqlite, `SELECT transcript_id, prompt_identity_scheme FROM transcripts ORDER BY transcript_id`)).toEqual([
-      { transcript_id: `tx_${'c'.repeat(32)}`, prompt_identity_scheme: 'offset-v1' },
-      { transcript_id: `tx_${'d'.repeat(32)}`, prompt_identity_scheme: 'codex-turn-v1' },
-    ]);
+    expect(rows(m.e.sqlite, `SELECT transcript_id, prompt_identity_scheme FROM transcripts ORDER BY transcript_id`)).toEqual(PINNED_BY_WITNESS);
   });
 
   it('is pinned for every transcript held at the migration: one already read to the scheme that read it, any other to its declaration', async () => {
@@ -146,20 +160,16 @@ describe('a transcript\'s prompt identity scheme', () => {
       (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, parser_version, parsed_at, first_received_at, last_received_at, token_id)
       VALUES ('proj_1', ?, 's', 'm', ?, 100, ?, ?, ?, 1, 1, 't')`, [id, agent, read.offset ?? 0, read.version ?? 0, read.at ?? null]);
     sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', 1)`);
-    held('codex-read', 'codex', { version: 5, offset: 100, at: 1 });
-    held('codex-reread-pending', 'codex', { version: 5, offset: 0, at: 1 });
-    held('codex-new', 'codex');
+    for (const [id, read] of READ_WITNESSES) held(id, 'codex', read);
     held('claude', 'claude-code', { version: 5, offset: 100, at: 1 });
     held('pi', 'pi');
     held('unknown', 'some-future-agent');
     held('agentless', null);
     expect(await applySchemaSteps(db)).toEqual([90]);
-    expect(rows(sqlite, `SELECT transcript_id, prompt_identity_scheme FROM transcripts ORDER BY transcript_id`)).toEqual([
+    expect(rows(sqlite, `SELECT transcript_id, prompt_identity_scheme FROM transcripts WHERE agent = 'codex' ORDER BY transcript_id`)).toEqual(PINNED_BY_WITNESS);
+    expect(rows(sqlite, `SELECT transcript_id, prompt_identity_scheme FROM transcripts WHERE agent IS NOT 'codex' ORDER BY transcript_id`)).toEqual([
       { transcript_id: 'agentless', prompt_identity_scheme: null },
       { transcript_id: 'claude', prompt_identity_scheme: 'claude-v1' },
-      { transcript_id: 'codex-new', prompt_identity_scheme: 'codex-turn-v1' },
-      { transcript_id: 'codex-read', prompt_identity_scheme: 'offset-v1' },
-      { transcript_id: 'codex-reread-pending', prompt_identity_scheme: 'offset-v1' },
       { transcript_id: 'pi', prompt_identity_scheme: 'offset-v1' },
       { transcript_id: 'unknown', prompt_identity_scheme: null },
     ]);
@@ -199,6 +209,24 @@ describe('an ask or a delivery naming a prompt under a scheme', () => {
       { sessionId: SESSION, scopeReason: 'steering', promptScheme: 'codex-turn-v1', identity: 1, at: NOW, text: 'x' },
     ]) {
       expect({ body, code: ((await (await worker.fetch(ask(m.token, body), m.e.env)).json()) as { code?: string }).code }).toEqual({ body, code: 'parse' });
+    }
+  });
+
+  it('records an ask and a delivery as scheme-scoped once the session\'s primary is registered unpinned, whatever its agent declares', async () => {
+    for (const agent of [undefined, 'some-future-agent']) {
+      const m = await member();
+      m.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES ('proj_1', ?, 'machine_1', ?, 1, 1, 'codex')`, [SESSION, m.ctx.tokenId]);
+      // The registering segment names no agent this Deployment declares: the primary is held, pinned to no scheme.
+      expect(await m.ship(1, TX, line({ type: 'note' }), agent)).toMatchObject({ persisted: true });
+      expect(rows(m.e.sqlite, `SELECT role, prompt_identity_scheme FROM transcripts`)).toEqual([{ role: 'primary', prompt_identity_scheme: null }]);
+      const answer = await (await worker.fetch(ask(m.token, { sessionId: SESSION, promptId: uuid(1), promptScheme: 'codex-turn-v1', identity: 1, at: NOW - 5, text: 'what window' }), m.e.env)).json();
+      expect({ agent, answer }).toMatchObject({ agent, answer: { persisted: true } });
+      expect({ agent, rows: rows(m.e.sqlite, `SELECT prompt_id, scope_reason FROM prompt_context_answers`) }).toEqual({ agent, rows: [{ prompt_id: null, scope_reason: 'scheme' }] });
+      m.e.sqlite.run(`INSERT INTO spore_injections (project_id, session_id, id, scope_reason, ask_protocol, asked_at, prompt_hash, spore_ids, created_at) VALUES ('proj_1', ?, ?, 'scheme', 'v1', 1, 'h', '[]', 1)`, [SESSION, uuid(10)]);
+      expect(await ingestEvent(m.e.db, m.ctx, envelope({ eventId: uuid(100), sessionId: SESSION, kind: 'context.delivered', createdAt: NOW - 10,
+        payload: { receiptId: uuid(10), renderedIn: uuid(2), renderedScheme: 'codex-turn-v1' } }))).toMatchObject({ persisted: true });
+      expect({ agent, delivery: rows(m.e.sqlite, `SELECT delivered_prompt_id, delivered_scope_reason FROM spore_injections`) })
+        .toEqual({ agent, delivery: [{ delivered_prompt_id: null, delivered_scope_reason: 'scheme' }] });
     }
   });
 

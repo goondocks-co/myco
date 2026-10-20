@@ -238,8 +238,11 @@ export function seedPreviousSchema(databaseFile: string, statements: readonly st
       INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at, producer_adapter) VALUES ('proj_parity', 'upgrade_event', 'upgrade_session', 'upgrade_token', 'prompt', 'import', '{}', 'upgrade_hash', 1, 1, 'claude');
       INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('upgrade_agent', 'upgrade', 'built-in', 1, 1);
       INSERT INTO agent_runs (project_id, id, agent_id, status, started_at) VALUES ('proj_parity', 'upgrade_run', 'upgrade_agent', 'completed', 1);
-      INSERT INTO agent_run_events (project_id, run_id, event_type, recorded_at) VALUES ('proj_parity', 'upgrade_run', 'upgrade_child', 1);`);
-    return [...new Set(['projects', 'sessions', 'events', 'agents', 'agent_runs', 'agent_run_events', ...seedReferencedTables(db, statements, version !== RUNNER_SIGN_IN_SCHEMA_VERSION)])];
+      INSERT INTO agent_run_events (project_id, run_id, event_type, recorded_at) VALUES ('proj_parity', 'upgrade_run', 'upgrade_child', 1);
+      INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, parser_version, first_received_at, last_received_at, token_id)
+        VALUES ('proj_parity', 'upgrade_transcript_read', 'upgrade_session', 'upgrade_machine', 'codex', 10, 10, 5, 1, 1, 'upgrade_token'),
+               ('proj_parity', 'upgrade_transcript_unread', 'upgrade_session', 'upgrade_machine', 'codex', 10, 0, 0, 1, 1, 'upgrade_token');`);
+    return [...new Set(['projects', 'sessions', 'events', 'agents', 'agent_runs', 'agent_run_events', 'transcripts', ...seedReferencedTables(db, statements, version !== RUNNER_SIGN_IN_SCHEMA_VERSION)])];
   } finally { db.close(); }
 }
 

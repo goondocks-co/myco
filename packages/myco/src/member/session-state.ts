@@ -154,6 +154,15 @@ export interface SessionState {
   pendingLosses?: CaptureLoss[];
 }
 
+/**
+ * One session's turn claim from two of its states: the target's turn stands, the other's is taken where the target
+ * holds none, and a turn either state saw steered stays steered, so a merge never gives a turn back its opener.
+ */
+export function mergedTurn(target: SessionState['turn'], other: SessionState['turn']): SessionState['turn'] {
+  if (target === undefined) return other === undefined ? undefined : { ...other };
+  return other?.id === target.id && other.promptId === undefined ? { id: target.id } : target;
+}
+
 /** Every transcript pointer a session holds: its own, then the subagent transcripts beside it. */
 export const pointersOf = (state: SessionState): TranscriptPointer[] =>
   [...(state.transcript ? [state.transcript] : []), ...Object.values(state.continuations ?? {}), ...Object.values(state.siblings)];

@@ -61,14 +61,16 @@ export const SCHEME_GENERATION_SQL = `CASE prompt_identity_scheme ${Object.entri
 export const schemeGeneration = (scheme: PromptIdScheme): number => PROMPT_ID_SCHEMES[scheme].generation;
 
 /**
- * Whether a prompt id derived under a scheme names a prompt of the session as the Deployment names them: every primary
- * transcript of the session is pinned to that scheme, or, before one is registered, the scheme the session's agent
- * declares, which its transcript will be pinned to. A session whose agent this build declares nothing for takes the
- * scheme as named. Bound as `(projectId, sessionId, scheme)` by `schemeSharedParams`.
+ * Whether a prompt id derived under a scheme names a prompt of the session as the Deployment names them. Once the
+ * session has a primary transcript, every primary transcript of it is pinned to that scheme: one pinned to another,
+ * or pinned to none (it names no agent this Deployment declares), names its prompts some other way or not at all.
+ * Before one is registered, the scheme the session's agent declares, which its transcript will be pinned to; a session
+ * whose agent this build declares nothing for takes the scheme as named. Bound as `(projectId, sessionId, scheme)` by
+ * `schemeSharedParams`.
  */
-const SCHEME_SHARED_SQL = `(CASE WHEN EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = ? AND t.session_id = ? AND t.role = 'primary' AND t.prompt_identity_scheme IS NOT NULL)
+const SCHEME_SHARED_SQL = `(CASE WHEN EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = ? AND t.session_id = ? AND t.role = 'primary')
     THEN NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = ? AND t.session_id = ? AND t.role = 'primary'
-      AND t.prompt_identity_scheme IS NOT NULL AND t.prompt_identity_scheme <> ?)
+      AND (t.prompt_identity_scheme IS NULL OR t.prompt_identity_scheme <> ?))
     ELSE COALESCE((SELECT ${schemeByAgent(DECLARED_SCHEMES, 's.agent')} FROM sessions s WHERE s.project_id = ? AND s.session_id = ?), ?) = ? END)`;
 const schemeSharedParams = (projectId: string, sessionId: string, scheme: PromptIdScheme): unknown[] =>
   [projectId, sessionId, projectId, sessionId, scheme, projectId, sessionId, scheme, scheme];

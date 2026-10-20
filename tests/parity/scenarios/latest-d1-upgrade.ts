@@ -17,10 +17,11 @@ export const latestD1Upgrade: ParityScenario = {
   async run(target) {
     expect(await target.sql("SELECT value FROM schema_meta WHERE key = 'version'"))
       .toEqual([{ value: String(SCHEMA_STEPS.at(-1)?.version) }]);
-    // The latest step rebuilds the receipts: the seeded one survives as a legacy receipt with an id of its own.
-    const receipts = await target.sql("SELECT id, prompt_id, ask_protocol FROM spore_injections WHERE session_id = 'upgrade_session'");
-    expect(receipts.map(({ prompt_id, ask_protocol }) => ({ prompt_id, ask_protocol }))).toEqual([{ prompt_id: 'upgrade_spore_injections', ask_protocol: 'legacy' }]);
-    expect(String(receipts[0]?.id)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    // The latest step pins each transcript held: one already read to the scheme that read it, any other to its
+    // agent's declaration; the pin never changes after.
+    expect(await target.sql("SELECT transcript_id, prompt_identity_scheme FROM transcripts WHERE session_id = 'upgrade_session' AND agent = 'codex' ORDER BY transcript_id"))
+      .toEqual([{ transcript_id: 'upgrade_transcript_read', prompt_identity_scheme: 'offset-v1' }, { transcript_id: 'upgrade_transcript_unread', prompt_identity_scheme: 'codex-turn-v1' }]);
+    await expect(target.sql("UPDATE transcripts SET prompt_identity_scheme = 'codex-turn-v1' WHERE transcript_id = 'upgrade_transcript_read'")).rejects.toThrow(/prompt identity scheme never changes/);
     expect(await target.sql('PRAGMA foreign_key_check')).toEqual([]);
     expect(await target.sql('PRAGMA quick_check')).toEqual([{ quick_check: 'ok' }]);
   },
