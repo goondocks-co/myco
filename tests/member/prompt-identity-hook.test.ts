@@ -17,8 +17,9 @@ import path from 'node:path';
 import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { canonicalPromptId, CONTEXT_DELIVERED_KIND } from '@goondocks/myco-shared/prompt-identity';
 import { deriveId } from '@myco/member/envelope.js';
-import { appendPending, flushPending, mergeHeldState } from '@myco/member/pending.js';
-import { emptySessionState, readSessionState } from '@myco/member/session-state.js';
+import { appendPending, flushPending } from '@myco/member/pending.js';
+import { reconcileSessionState, type SourceSessionState } from '@myco/member/session-reconcile.js';
+import { emptySessionState, readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
@@ -220,6 +221,23 @@ describe('a Codex prompt, whose harness key names a turn', () => {
     expect(toolPrompts(sessionId)).toEqual([null]);
   });
 
+  it('keeps a held turn claim beside a joined spool\'s own legacy prompt id: the same turn\'s next prompt steers it', async () => {
+    const sessionId = '01a150c5-6b8f-7f61-acf3-4c7ea2c29484';
+    const tx = rollout(sessionId);
+    const served = serving('turn,project-name,prompt-identity,prompt-scheme');
+    const hook = { helpers: 'run' as const, fetch: served.fetch, symbiont: 'codex' };
+    const common = { session_id: sessionId, transcript_path: tx, cwd: '/repo' };
+    await runHook('session-start', { ...common, hook_event_name: 'SessionStart' }, hook);
+    const project = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
+    updateSessionState(project.dir, sessionId, (state) => { state.promptId = 'legacy-prompt'; delete state.turn; });
+    const held = { root: '/checkout/joining', rootKey: 'c'.repeat(32), serverUrl: 'https://member-test.invalid' };
+    expect(appendPending(held, sessionId, [], (state) => { state.turn = { id: 't1', promptId: opener(sessionId, 't1') }; }, { mycoHome, now: Date.now() })).toBe('pending');
+    flushPending(held.rootKey, project, { mycoHome, now: Date.now() });
+    expect(readSessionState(project.dir, sessionId)).toMatchObject({ promptId: 'legacy-prompt', turn: { id: 't1', promptId: opener(sessionId, 't1') } });
+    await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', turn_id: 't1', prompt: 'steer it' }, hook);
+    expect(served.asked.map(({ promptId, scopeReason }) => ({ promptId, scopeReason }))).toEqual([{ promptId: undefined, scopeReason: 'steering' }]);
+  });
+
   it('never gives a steered turn back its opener when held and project states of one session merge', () => {
     const steered = { id: 't1' };
     const claimed = { id: 't1', promptId: 'opener' };
@@ -231,8 +249,8 @@ describe('a Codex prompt, whose harness key names a turn', () => {
       const from = emptySessionState();
       if (target !== undefined) into.turn = { ...target };
       if (held !== undefined) from.turn = { ...held };
-      mergeHeldState(into, from);
-      expect({ target, held, turn: into.turn }).toEqual({ target, held, turn: merged });
+      const { state } = reconcileSessionState(into, from as SourceSessionState);
+      expect({ target, held, turn: state.turn }).toEqual({ target, held, turn: merged });
     }
   });
 

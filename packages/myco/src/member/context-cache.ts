@@ -15,6 +15,7 @@
  * Each file is written whole (`writePrivateFileAtomic`) by the helper, which holds the project's helper lock; a hook
  * only reads. A file that cannot be read is an empty cache: the hook serves nothing rather than fail.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 import path from 'node:path';
@@ -35,7 +36,8 @@ export function cachedDeploymentFeatures(header: string | null): CachedFeature[]
 }
 
 export const CONTEXT_DIRNAME = 'context';
-const PROJECT_FILE = 'project.json';
+/** The Project's cache, the one file of a spool's context directory that is not a session's. */
+export const PROJECT_CONTEXT_FILE = 'project.json';
 const CACHE_VERSION = 1;
 
 /** A block the Deployment composed, as the helper stored it. */
@@ -59,15 +61,15 @@ export interface ProjectContextCache {
 export interface SessionContextCache {
   version: typeof CACHE_VERSION;
   /**
-   * What the Deployment served for the session's latest prompt, rendered on the next one: the ask's own instant
-   * (`askedAt`), the prompt it named, the receipt and answer rows the Deployment wrote for it, where it wrote them, and
+   * What the Deployment served for the session's latest prompt, rendered on the next one: the id of the ask it answered
+   * (`askId`), the prompt it named, the receipt and answer rows the Deployment wrote for it, where it wrote them, and
    * the session record its block carried (`sessionRecord`).
    */
-  prompt?: CachedBlock & { promptId?: string; askedAt?: number; receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord; skipped?: string[] };
+  prompt?: CachedBlock & { promptId?: string; askId: string; receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord; skipped?: string[] };
 }
 
-/** What a hook asks the helper to fetch for its session: kept in session state until the helper has asked. */
-export type ContextAsk =
+/** What a hook asks the helper to fetch for its session. */
+export type ContextAskRequest =
   | { kind: 'start'; remote?: string; remoteFrom?: string; at: number }
   | { kind: 'compact'; compaction: number; remote?: string; remoteFrom?: string; at: number }
   | { kind: 'subagent'; agentId?: string; agentType?: string; at: number }
@@ -78,6 +80,9 @@ export type ContextAsk =
    */
   | { kind: 'prompt'; promptId?: string; promptScheme?: PromptIdScheme; scopeReason?: PromptScopeReason; identity?: typeof ASK_IDENTITY_MARKER; text: string; at: number };
 
+/** An ask as session state holds it until the helper has asked: the request, and the id `withAsk` minted for it. */
+export type ContextAsk = ContextAskRequest & { id: string };
+
 /** The most of a prompt's text a recall request carries: the search reads its head, and a request stays small. */
 export const PROMPT_ASK_MAX_CHARS = PROMPT_KEY_TEXT_MAX_CHARS;
 
@@ -86,7 +91,7 @@ export function contextDir(spoolDir: string): string {
 }
 
 export function projectContextPath(spoolDir: string): string {
-  return path.join(contextDir(spoolDir), PROJECT_FILE);
+  return path.join(contextDir(spoolDir), PROJECT_CONTEXT_FILE);
 }
 
 export function sessionContextPath(spoolDir: string, sessionId: string): string {
@@ -123,8 +128,19 @@ export function updateProjectContext(spoolDir: string, mycoHome: string, mutate:
   return cache;
 }
 
+/** Session caches already reported for an answer with no ask id, so each is reported once per process. */
+const reportedUnidentifiedAnswers = new Set<string>();
+
+/** A session's cache; an answer that names no ask id is absent, and reported once. */
 export function readSessionContext(spoolDir: string, sessionId: string): SessionContextCache {
-  return readCache<SessionContextCache>(sessionContextPath(spoolDir, sessionId)) ?? { version: CACHE_VERSION };
+  const file = sessionContextPath(spoolDir, sessionId);
+  const cache = readCache<SessionContextCache>(file) ?? { version: CACHE_VERSION };
+  if (cache.prompt === undefined || (typeof cache.prompt.askId === 'string' && cache.prompt.askId.length > 0)) return cache;
+  if (!reportedUnidentifiedAnswers.has(file)) {
+    reportedUnidentifiedAnswers.add(file);
+    process.stderr.write(`[myco] member: 1 cached answer without an ask id not rendered ${file}\n`);
+  }
+  return { version: cache.version };
 }
 
 export function writeSessionContext(spoolDir: string, mycoHome: string, sessionId: string, cache: SessionContextCache): void {
@@ -190,15 +206,18 @@ function withFeatureOrder<T>(serverUrl: string, mycoHome: string, change: (order
   const lockPath = `${snapshotPath}.lock`;
   ensurePrivateFile(lockPath);
   return withFileLockSync(lockPath, () => {
-    let order = readCache<FeatureOrder>(orderPath);
-    if (order === null) {
-      if (!pathIsAbsent(orderPath)) throw new Error('Cannot read the Deployment feature ordering state');
-      const lastStamp = readCache<FeatureSnapshot>(snapshotPath)?.receivedAt ?? 0;
-      order = { version: CACHE_VERSION, issued: lastStamp, receivedAt: lastStamp };
-    }
+    const stored = readCache<FeatureOrder>(orderPath);
+    if (stored === null && !pathIsAbsent(orderPath)) throw new Error('Cannot read the Deployment feature ordering state');
+    // A snapshot is published before its order is written: the snapshot's stamp is a floor for both counters.
+    const published = readCache<FeatureSnapshot>(snapshotPath)?.receivedAt ?? 0;
+    const order: FeatureOrder = {
+      version: CACHE_VERSION,
+      issued: Math.max(stored?.issued ?? 0, published),
+      receivedAt: Math.max(stored?.receivedAt ?? 0, published),
+    };
     const result = change(order);
-    writePrivateFileAtomic(orderPath, `${JSON.stringify(order)}\n`);
     publish?.(result);
+    writePrivateFileAtomic(orderPath, `${JSON.stringify(order)}\n`);
     return result;
   });
 }
@@ -208,7 +227,10 @@ export function beginFeatureRequest(serverUrl: string, mycoHome: string): number
   return withFeatureOrder(serverUrl, mycoHome, (order) => ++order.issued);
 }
 
-/** Publish an ordered answer; unchanged feature files retain their existing bytes. */
+/**
+ * Publish an ordered answer: the snapshot records each accepted stamp, with its features, before the order does; the
+ * project cache is rewritten only when its features change.
+ */
 export function cacheDeploymentFeatures(serverUrl: string, features: CachedFeature[], mycoHome: string, receivedAt = beginFeatureRequest(serverUrl, mycoHome), project?: { spoolDir: string; at: number }): boolean {
   return withFeatureOrder(serverUrl, mycoHome, (order) => {
     if (receivedAt < order.receivedAt) return false;
@@ -219,7 +241,7 @@ export function cacheDeploymentFeatures(serverUrl: string, features: CachedFeatu
     fallbackFeatures.clear();
     const snapshotPath = deploymentFeaturesPath(serverUrl, mycoHome);
     const snapshot = readCache<FeatureSnapshot>(snapshotPath);
-    if (JSON.stringify(snapshot?.features) !== JSON.stringify(features)) {
+    if (snapshot?.receivedAt !== receivedAt || JSON.stringify(snapshot.features) !== JSON.stringify(features)) {
       writePrivateFileAtomic(snapshotPath, `${JSON.stringify({ version: CACHE_VERSION, features, receivedAt })}\n`);
     }
     if (project !== undefined && JSON.stringify(readProjectContext(project.spoolDir).features) !== JSON.stringify(features)) {
@@ -290,10 +312,10 @@ export function featureAdvertised(deployment: Deployment, mycoHome: string, feat
 }
 
 /**
- * Add an ask to the ones a session holds, replacing an older ask of the same kind: only the latest prompt is worth
- * asking about, and a block is asked for once per kind.
+ * Add an ask to the ones a session holds, under an id minted here, replacing an older ask of the same kind: only the
+ * latest prompt is worth asking about, and a block is asked for once per kind.
  */
-export function withAsk(asks: readonly ContextAsk[] | undefined, ask: ContextAsk): ContextAsk[] {
+export function withAsk(asks: readonly ContextAsk[] | undefined, ask: ContextAskRequest): ContextAsk[] {
   const kept = (asks ?? []).filter((held) => held.kind !== ask.kind);
-  return [...kept, ask];
+  return [...kept, { ...ask, id: crypto.randomUUID() }];
 }

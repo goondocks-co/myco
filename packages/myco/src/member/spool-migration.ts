@@ -5,10 +5,11 @@ import path from 'node:path';
 import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
 import { isProjectId, REFUSED_LOG_MAX_BYTES } from './constants.js';
-import { CONTEXT_DIRNAME } from './context-cache.js';
+import { CONTEXT_DIRNAME, PROJECT_CONTEXT_FILE } from './context-cache.js';
 import { listRegistryEntriesResult, deploymentUrl, type RegistryEntry } from './registry.js';
 import { LEGACY_MIGRATION_FILE, memberRoutingIdentity, pinSpoolDestination, routedSpoolDir, ROUTING_FILE, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
-import { bufferLockPath, emptySessionState, mergedTurn, readMigrationSettledUnlocked, readSessionState, readSessionStateResultUnlocked, recordMigrationSettledUnlocked, writeSessionStateUnlocked, type SessionState } from './session-state.js';
+import { bufferLockPath, emptySessionState, readMigrationSettledUnlocked, readSessionState, readSessionStateResultUnlocked, recordMigrationSettledUnlocked, sessionStatePath, writeSessionStateUnlocked, type SessionState } from './session-state.js';
+import { readSourceStateForMove, reconcileSessionState } from './session-reconcile.js';
 import { MemberSpool, OFFLINE_LATCH_FILE, REFUSED_LOG_FILE, SPOOL_DIRNAME, WIRE_FIELDS, turnEndIdentity, type SpoolRecord } from './spool.js';
 import { publishStagedBlob, readStagedBlob } from './staged-blobs.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, isPrivateMode, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic, type PrivateRead } from './store.js';
@@ -34,6 +35,8 @@ export interface LegacySpoolMigrationReport {
   copied: number;
   sidecarHolds?: string[];
   ignoredSidecars?: string[];
+  /** Legacy context asks, render markers and session answer caches not carried into the destination. */
+  contextSkipped?: number;
 }
 
 interface Marker extends LegacySpoolMigrationReport {
@@ -59,6 +62,8 @@ interface SessionReceipt {
 }
 
 interface SidecarReceipt { version: typeof VERSION; files: Record<string, string> }
+/** What a sidecar receipt records for a session's answer cache, which is never copied. */
+const SKIPPED_SIDECAR = 'skipped';
 
 class MigrationHold extends Error {}
 
@@ -157,15 +162,19 @@ function validateSidecar(relative: string, raw: string): void {
   } else if (value.version !== 1) throw new MigrationHold(`Legacy context cache is malformed: ${relative}`);
 }
 
-function scanSidecars(dir: string, mycoHome: string): { files: Sidecar[]; holds: string[]; ignored: string[] } {
+/** A session's answer cache in a context directory: a `.json` file that is not the Project's. */
+const isSessionContextFile = (name: string): boolean => name.endsWith('.json') && name !== PROJECT_CONTEXT_FILE;
+
+function scanSidecars(dir: string, mycoHome: string): { files: Sidecar[]; holds: string[]; ignored: string[]; sessionContext: string[] } {
   const names = [OFFLINE_LATCH_FILE, REFUSED_LOG_FILE];
   const context = path.join(dir, CONTEXT_DIRNAME);
   const holds: string[] = [];
+  const sessionContext: string[] = [];
   try {
     if (present(context)) {
       assertMemberPathContained(context, mycoHome);
       if (!fs.lstatSync(context).isDirectory()) throw new Error('not a directory');
-      names.push(...fs.readdirSync(context).map((name) => path.join(CONTEXT_DIRNAME, name)));
+      for (const name of fs.readdirSync(context)) (isSessionContextFile(name) ? sessionContext : names).push(path.join(CONTEXT_DIRNAME, name));
     }
   } catch { holds.push('Legacy context directory is unreadable'); }
   const found: Sidecar[] = [];
@@ -181,7 +190,7 @@ function scanSidecars(dir: string, mycoHome: string): { files: Sidecar[]; holds:
       found.push({ relative, raw, hash: sha(raw) });
     } catch (error) { holds.push((error as Error).message); }
   }
-  return { files: found, holds, ignored };
+  return { files: found, holds, ignored, sessionContext };
 }
 
 function sidecarReceiptAt(dir: string): SidecarReceipt | null {
@@ -207,13 +216,20 @@ function mergeRefusals(source: string, destination: string): string {
   return merged;
 }
 
-function copySidecars(source: MemberSpool, target: MemberSpool): { holds: string[]; ignored: string[] } {
+/** Copy the spool's sidecars a destination keeps; each session's answer cache is left behind and counted once. */
+function copySidecars(source: MemberSpool, target: MemberSpool): { holds: string[]; ignored: string[]; contextSkipped: number } {
   const scanned = scanSidecars(source.dir, source.mycoHome);
   const holds = [...scanned.holds];
   let previous: SidecarReceipt | null = null;
   try { previous = sidecarReceiptAt(source.dir); }
   catch (error) { holds.push((error as Error).message); }
   const files = { ...previous?.files };
+  let contextSkipped = 0;
+  for (const relative of scanned.sessionContext) {
+    if (files[relative] !== undefined) continue;
+    files[relative] = SKIPPED_SIDECAR;
+    contextSkipped += 1;
+  }
   for (const sidecar of scanned.files) {
     try {
       if (files[sidecar.relative] === sidecar.hash) continue;
@@ -234,7 +250,7 @@ function copySidecars(source: MemberSpool, target: MemberSpool): { holds: string
   }
   try { writePrivateFileAtomic(path.join(source.dir, SIDECAR_RECEIPT_FILE), `${JSON.stringify({ version: VERSION, files })}\n`); }
   catch (error) { holds.push(`Legacy sidecar receipt: ${(error as Error).message}`); }
-  return { holds, ignored: scanned.ignored };
+  return { holds, ignored: scanned.ignored, contextSkipped };
 }
 
 function uniqueDestination(projectId: string, mycoHome: string): MemberRoutingIdentity {
@@ -334,6 +350,18 @@ function stateAt(dir: string, sessionId: string): SessionState {
   throw new MigrationHold(`Unreadable session state: ${sessionId}`);
 }
 
+/**
+ * The snapshot a migration receipt names for a session's state: a digest of the state file's bytes as written, so
+ * context its read discards still changes it. A missing file has the digest of no bytes. Caller holds the buffer lock.
+ */
+function stateFingerprint(dir: string, sessionId: string): string {
+  try { return sha(fs.readFileSync(sessionStatePath(dir, sessionId), 'utf8')); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(sessionStatePath(dir, sessionId))) return sha('');
+    throw new MigrationHold(`Unreadable session state: ${sessionId}`);
+  }
+}
+
 function receiptAt(dir: string, sessionId: string): SessionReceipt | null {
   const read = readPrivateJson<SessionReceipt>(receiptPath(dir, sessionId));
   if (!read.ok) {
@@ -350,33 +378,6 @@ function receiptAt(dir: string, sessionId: string): SessionReceipt | null {
     throw new MigrationHold(`Migration receipt is invalid: ${sessionId}`);
   }
   return receipt;
-}
-
-function mergeState(target: SessionState, source: SessionState): SessionState {
-  const merged: SessionState = { ...source, ...target };
-  merged.highWater = target.highWater;
-  merged.markWater = target.markWater;
-  merged.markGeneration = target.markGeneration;
-  merged.prompts = { ...source.prompts, ...target.prompts };
-  merged.siblings = { ...source.siblings, ...target.siblings };
-  merged.continuations = { ...source.continuations, ...target.continuations };
-  if (source.transcript !== undefined && target.transcript !== undefined && source.transcript.path !== target.transcript.path) merged.continuations[source.transcript.path] = source.transcript;
-  merged.planHashes = { ...source.planHashes, ...target.planHashes };
-  merged.planPaths = { ...source.planPaths, ...target.planPaths };
-  merged.attachmentKeys = [...new Set([...source.attachmentKeys, ...target.attachmentKeys])];
-  merged.delivered = [...new Set([...source.delivered, ...target.delivered])];
-  merged.transcript = target.transcript ?? source.transcript;
-  merged.promptId = target.promptId ?? source.promptId;
-  merged.turn = mergedTurn(target.turn, source.turn);
-  if (merged.turn === undefined) delete merged.turn;
-  merged.agent = target.agent ?? source.agent;
-  merged.planTagCount = Math.max(source.planTagCount, target.planTagCount);
-  merged.compactionOrdinal = Math.max(source.compactionOrdinal, target.compactionOrdinal);
-  if (source.startSettled || target.startSettled) merged.startSettled = true;
-  if (source.startedAt !== undefined || target.startedAt !== undefined) merged.startedAt = Math.min(source.startedAt ?? Infinity, target.startedAt ?? Infinity);
-  if (source.lastAckAt !== undefined || target.lastAckAt !== undefined) merged.lastAckAt = Math.max(source.lastAckAt ?? 0, target.lastAckAt ?? 0);
-  if (source.lastDeliveryAt !== undefined || target.lastDeliveryAt !== undefined) merged.lastDeliveryAt = Math.max(source.lastDeliveryAt ?? 0, target.lastDeliveryAt ?? 0);
-  return merged;
 }
 
 function restage(record: SpoolRecord, source: MemberSpool, target: MemberSpool, sessionId: string, originDir: string, archiveDir: string): SpoolRecord {
@@ -404,7 +405,7 @@ function restage(record: SpoolRecord, source: MemberSpool, target: MemberSpool, 
 
 const wireOf = (record: SpoolRecord): string => JSON.stringify(WIRE_FIELDS.map((field) => record[field]));
 
-function copySession(source: MemberSpool, target: MemberSpool, sessionId: string, originDir: string, archiveDir: string): { records: number; copied: number; receipt: SessionReceipt } {
+function copySession(source: MemberSpool, target: MemberSpool, sessionId: string, originDir: string, archiveDir: string): { records: number; copied: number; contextSkipped: number; receipt: SessionReceipt } {
   const sourceLock = bufferLockPath(source.dir, sessionId);
   const targetLock = bufferLockPath(target.dir, sessionId);
   ensurePrivateFile(sourceLock);
@@ -425,7 +426,9 @@ function copySession(source: MemberSpool, target: MemberSpool, sessionId: string
       const sourceFile = sourceJournal(source.dir, sessionId);
       const targetFile = sourceJournal(target.dir, sessionId);
       const sourceRead = parseJournal(sourceFile);
-      const sourceState = stateAt(source.dir, sessionId);
+      const sourceStateRead = readSourceStateForMove(source.dir, sessionId, 'held');
+      if (!sourceStateRead.ok) throw new MigrationHold(`Unreadable session state: ${sessionId}`);
+      const sourceState = sourceStateRead.state;
       if (sourceState.highWater > sourceRead.records.length) throw new MigrationHold(`Legacy high-water exceeds journal: ${sessionId}`);
       const targetRead = parseJournal(targetFile);
       if (new Set(sourceRead.records.map((record) => record.eventId)).size !== sourceRead.records.length) throw new MigrationHold(`Duplicate legacy event id: ${sessionId}`);
@@ -477,10 +480,11 @@ function copySession(source: MemberSpool, target: MemberSpool, sessionId: string
         writePrivateFileAtomic(targetFile, base + additions.map((record) => `${JSON.stringify(record)}\n`).join(''));
       }
       recordMigrationSettledUnlocked(target.dir, sessionId, alreadySettled);
-      const sourceStateHash = sha(JSON.stringify(sourceState));
-      if (previous === null || previous.sourceStateHash !== sourceStateHash) {
-        writeSessionStateUnlocked(target.dir, sessionId, mergeState(targetState, sourceState));
-      }
+      // The target may have changed since an earlier attempt: its fresh state is reconciled every time.
+      const reconciled = reconcileSessionState(targetState, sourceState);
+      writeSessionStateUnlocked(target.dir, sessionId, reconciled.state);
+      const sourceStateHash = stateFingerprint(source.dir, sessionId);
+      const contextSkipped = previous?.sourceStateHash === sourceStateHash ? 0 : reconciled.contextSkipped;
       const fresh = parseJournal(targetFile).records;
       const available = new Set(fresh.map((record) => record.eventId));
       if (pending.some((record) => !available.has(record.eventId) && !settled.has(record.eventId))) throw new MigrationHold(`Copied count mismatch: ${sessionId}`);
@@ -490,7 +494,7 @@ function copySession(source: MemberSpool, target: MemberSpool, sessionId: string
         eventIds: [...new Set([...(previous?.eventIds ?? []), ...pending.map((record) => record.eventId)])],
         marks: previous?.marks ?? [],
       };
-      return { records: Math.max(0, sourceRead.records.length - sourceState.highWater), copied: additions.length, receipt };
+      return { records: Math.max(0, sourceRead.records.length - sourceState.highWater), copied: additions.length, contextSkipped, receipt };
     }));
   } finally {
     targetLease.lock.release();
@@ -499,7 +503,7 @@ function copySession(source: MemberSpool, target: MemberSpool, sessionId: string
 }
 
 function reportFor(projectId: string, destination: MemberRoutingIdentity | null): LegacySpoolMigrationReport {
-  return { status: 'absent', projectId, destination, sessions: 0, records: 0, copied: 0 };
+  return { status: 'absent', projectId, destination, sessions: 0, records: 0, copied: 0, contextSkipped: 0 };
 }
 
 function verifyReceipts(source: MemberSpool, sessions: ReadonlySet<string>): void {
@@ -512,7 +516,7 @@ function verifyReceipts(source: MemberSpool, sessions: ReadonlySet<string>): voi
       const receipt = receiptAt(source.dir, sessionId);
       const journal = parseJournal(sourceJournal(source.dir, sessionId));
       if (receipt === null || receipt.sourceCount !== journal.records.length || receipt.sourceHash !== sha(journal.raw) ||
-          receipt.sourceStateHash !== sha(JSON.stringify(stateAt(source.dir, sessionId))) ||
+          receipt.sourceStateHash !== stateFingerprint(source.dir, sessionId) ||
           pendingMarks.some((mark) => !receipt.marks.includes(mark))) {
         throw new MigrationHold(`Migration receipt does not cover legacy capture: ${sessionId}`);
       }
@@ -666,6 +670,7 @@ function migrateSource(route: MemberRoutingIdentity, mycoHome: string, dir: stri
         report.sessions += 1;
         report.records += moved.records;
         report.copied += moved.copied;
+        report.contextSkipped = (report.contextSkipped ?? 0) + moved.contextSkipped;
         const alreadyMarked = new Set(moved.receipt.marks);
         const marks = source.pendingTurnEnds(sessionId).map((entry) => entry.mark)
           .filter((mark) => !alreadyMarked.has(turnEndIdentity(mark)));
@@ -678,6 +683,7 @@ function migrateSource(route: MemberRoutingIdentity, mycoHome: string, dir: stri
       const sidecars = copySidecars(source, target);
       report.sidecarHolds = sidecars.holds;
       report.ignoredSidecars = sidecars.ignored;
+      report.contextSkipped = (report.contextSkipped ?? 0) + sidecars.contextSkipped;
       const verifiedSourceFingerprint = spoolFingerprint(dir);
       verifyReceipts(source, sessionIds);
       if (verifiedSourceFingerprint !== spoolFingerprint(dir)) throw new MigrationHold('Legacy spool changed during validation');
@@ -719,6 +725,7 @@ export function migrateLegacySpool(routeInput: MemberRoutingIdentity, mycoHome: 
   for (const source of sources) {
     const moved = migrateSource(route, mycoHome, source, now);
     result.sessions += moved.sessions; result.records += moved.records; result.copied += moved.copied;
+    result.contextSkipped = (result.contextSkipped ?? 0) + (moved.contextSkipped ?? 0);
     result.sidecarHolds = [...(result.sidecarHolds ?? []), ...(moved.sidecarHolds ?? [])];
     result.ignoredSidecars = [...(result.ignoredSidecars ?? []), ...(moved.ignoredSidecars ?? [])];
     if (moved.status === 'held') return { ...result, status: 'held', reason: moved.reason };

@@ -22,6 +22,7 @@ import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
 import { SWEEP_INTERVAL_MS } from '@myco/member/sweep.js';
 import { registerTestMember } from './helpers/hooks.js';
+import { withAsk } from '@myco/member/context-cache.js';
 
 const PROJECT = 'proj_1';
 let mycoHome: string;
@@ -139,7 +140,7 @@ describe('myco member helper', () => {
     const sessionId = 'sess-prompt-prefetch-fails';
     const promptId = mintId();
     spool.append(sessionId, promptEvent({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: 't' }, { promptId, text: 'must arrive' }));
-    updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = [{ kind: 'prompt', promptId, text: 'must arrive', at: Date.now() }]; });
+    updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = withAsk(undefined, { kind: 'prompt', promptId, text: 'must arrive', at: Date.now() }); });
     const original = ServerClient.prototype.request;
     const request = spyOn(ServerClient.prototype, 'request').mockImplementation(async function (this: ServerClient, method, path, init) {
       if (path === '/context/prompt') throw new Error('fixture\u001b[31m\nprefetch failure');
@@ -163,7 +164,7 @@ describe('myco member helper', () => {
       const sessionId = `sess-order-${damage}`;
       const ctx = { agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: 't' };
       spool.append(sessionId, promptEvent(ctx, { promptId: mintId(), text: 'must arrive' }));
-      updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = [{ kind: 'start', at: Date.now() }]; });
+      updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = withAsk(undefined, { kind: 'start', at: Date.now() }); });
       const orderFile = `${machineSettingsPath('https://s', mycoHome)}.order`;
       fs.mkdirSync(path.dirname(orderFile), { recursive: true, mode: 0o700 });
       if (damage === 'directory') fs.mkdirSync(orderFile, { mode: 0o700 });
@@ -204,7 +205,7 @@ describe('myco member helper', () => {
     const sessionId = 'sess-prefetch-fails';
     const ctx = { agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: 't' };
     spool.append(sessionId, promptEvent(ctx, { promptId: mintId(), text: 'must arrive' }));
-    updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = [{ kind: 'start', at: Date.now() }]; });
+    updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = withAsk(undefined, { kind: 'start', at: Date.now() }); });
     const orderFile = `${machineSettingsPath('https://s', mycoHome)}.order`;
     const realRename = fs.renameSync;
     const rename = spyOn(fs, 'renameSync').mockImplementation((from, to) => {

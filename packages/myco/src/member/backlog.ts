@@ -31,7 +31,7 @@ import { recoverArchivedQuarantine } from './retention.js';
 import { pointerBehind, pointersOf, readSessionState, retryWaiting, turnsFileOf, updateSessionState, type SessionState } from './session-state.js';
 import { HOLD_ENDS, MemberSpool, turnEndIdentity, turnEndSatisfied, type DrainEnd, type DrainOptions, type DrainResult, type PendingTurnEnd } from './spool.js';
 import { featureAdvertised } from './context-cache.js';
-import { ensurePrivateFile, writePrivateFileAtomic } from './store.js';
+import { writePrivateFileAtomic } from './store.js';
 import { shipSessionTranscripts, type ShipResult } from './transcript.js';
 import { flushHeldCapture } from './held.js';
 import { attemptHeldMigrationForCapture } from './pending.js';
@@ -39,8 +39,6 @@ import { migrateLegacySpool } from './spool-migration.js';
 import { liveRoutingEntry } from './routing.js';
 import { ServerClient, type FetchLike } from './transport.js';
 
-/** Marks a spool whose session states have been read once for transcripts behind their files. */
-export const BACKLOG_SCANNED_FILE = '.transcript-backlog-scanned';
 /** The session the last walk ended on; the next walk starts after it. */
 export const BACKLOG_CURSOR_FILE = '.backlog-cursor';
 
@@ -49,7 +47,7 @@ export interface BacklogOptions extends DrainOptions {
   machineId: string;
   /** The session the caller delivers itself; the walk leaves it alone. */
   exclude?: string;
-  /** An explicit full pass: every session state read for transcripts behind their files, not only the sessions already marked, and every deferral after a transient refusal ignored. */
+  /** An explicit full pass: every deferral after a transient refusal ignored, and a session no symbiont is named for searched again. */
   rescan?: boolean;
   /** Walk the session written to last first (the member helper's walk): the one whose hook kicked it. */
   newestFirst?: boolean;
@@ -229,11 +227,8 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
   const report: BacklogReport = { sessions: [], endedBy: 'done' };
   if (!budget.drains) return report;
   recoverArchivedQuarantine(spool, now(), () => canStartRequest(budget, now()));
-  const scanned = path.join(spool.dir, BACKLOG_SCANNED_FILE);
-  if (opts.rescan === true || !fs.existsSync(scanned)) {
-    markBehindTranscripts(spool);
-    ensurePrivateFile(scanned);
-  }
+  // A transcript grows without a hook of its session: every walk reads each session's pointers against its files.
+  markBehindTranscripts(spool);
   const spooled = new Set(spool.sessionIds());
   const ids = walkOrder(spool, [...new Set([...spooled, ...spool.transcriptBacklogIds()])].filter((id) => id !== opts.exclude), opts.newestFirst === true);
   let takesTurns: boolean | undefined;
@@ -291,10 +286,9 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
 }
 
 /**
- * A registry entry's whole backlog, unbounded, reading every session state
- * rather than only the marked ones: the credential renewed first when its
- * window is open, then every session delivered. What `myco member drain` and
- * `myco login` run.
+ * A registry entry's whole backlog, unbounded: the credential renewed first
+ * when its window is open, then every session delivered. What `myco member
+ * drain` and `myco login` run.
  */
 export async function drainEntryBacklog(
   entry: RegistryEntry,
@@ -306,9 +300,8 @@ export async function drainEntryBacklog(
     /** Dial past the offline latch. True by default; the member helper does so only for a turn's or a session's end. */
     force?: boolean;
     /**
-     * Read every session's state rather than only the marked ones, and send records again whatever wait a refusal
-     * set. True by default, for a person's `myco member drain` and `myco login`; the member helper walks as a hook
-     * does, forced or not.
+     * Send records again whatever wait a refusal set. True by default, for a person's `myco member drain` and
+     * `myco login`; the member helper walks as a hook does, forced or not.
      */
     rescan?: boolean;
     /** Walk the session written to last first. */
@@ -329,6 +322,7 @@ export async function drainEntryBacklog(
   }
   const migration = opts.migrateLegacy === false ? null : attemptHeldMigrationForCapture(() => migrateLegacySpool(current, opts.mycoHome, now()));
   if (migration?.status === 'held') process.stderr.write(`[myco] member: legacy capture for ${current.projectId} held locally: ${migration.reason}\n`);
+  if ((migration?.contextSkipped ?? 0) > 0) process.stderr.write(`[myco] member: legacy capture for ${current.projectId} moved without ${migration!.contextSkipped} context item(s) — the next prompt asks again\n`);
   for (const reason of migration?.sidecarHolds ?? []) process.stderr.write(`[myco] member: legacy optional state for ${current.projectId} held locally: ${reason}\n`);
   for (const file of migration?.ignoredSidecars ?? []) process.stderr.write(`[myco] member: legacy temporary artifact for ${current.projectId} ignored: ${file}\n`);
   const spool = new MemberSpool(current, { mycoHome: opts.mycoHome });
