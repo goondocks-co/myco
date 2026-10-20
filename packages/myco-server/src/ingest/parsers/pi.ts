@@ -16,14 +16,12 @@
  * agent's own namespace, as Cursor and Codex do. The member ships no `prompt`
  * for Pi, so there is no second id to agree with.
  */
-import { uuidv5 } from '../../hash.js';
 import {
-  callForResult, promptIdAtOffset, parserContinuation, blocksOf, isBlock, lineTime, offsetIdFor, plansInText, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
+  callForResult, recordId, recordSource, optionalRecordSource, legacyRecordId, promptIdAtOffset, parserContinuation, blocksOf, isBlock, lineTime, plansInText, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
 const promptIdAt = (sessionId: string, offset: number): Promise<string> => promptIdAtOffset('pi-prompt', sessionId, offset);
-const toolCallIdFor = (sessionId: string, callId: string): Promise<string> => uuidv5('tool-call', sessionId, callId);
 
 /** Context messages this extension delivers; never a turn of the conversation. */
 const MYCO_CUSTOM_TYPES = new Set(['myco-context', 'myco-prompt-context']);
@@ -95,21 +93,24 @@ export const piParser: TranscriptParser = {
         if (text.trim() !== '') {
           events.push({
             kind: 'response',
-            payload: { responseId: await offsetIdFor('response', input.sessionId, offset), promptId, text },
+            source: recordSource(input, this.agent, { kind: 'response', record: value, block: 0 }),
+            payload: { promptId, text },
             createdAt,
             offset,
           });
-          const plans = await plansInText(text, this.planTags, input.sessionId, { promptId, offset, createdAt }, planPosition);
+          const plans = await plansInText(text, this.planTags, input, this.agent, value, { promptId, offset, createdAt }, planPosition);
           events.push(...plans.events);
           planPosition = plans.next;
         }
         for (const block of blocksOf(message.content)) {
           if (block.type !== 'toolCall') continue;
-          const callId = str(block.id);
           const name = str(block.name);
-          if (callId === undefined || name === undefined) continue;
+          if (name === undefined) continue;
+          const source = optionalRecordSource(input, this.agent, { kind: 'tool-call', record: value, call: block, role: 'call' });
+          if (source === undefined || !('key' in source)) continue;
+          const callId = source.key;
           pending.set(callId, {
-            toolCallId: await toolCallIdFor(input.sessionId, callId),
+            toolCallId: await recordId(input, this.agent, { kind: 'tool-call', source, offset }),
             toolName: name.slice(0, 64),
             input: argumentsOf(block.arguments),
             createdAt,
@@ -121,17 +122,17 @@ export const piParser: TranscriptParser = {
       }
 
       if (role === 'toolResult') {
-        const callId = str(message.toolCallId);
-        const call = callId === undefined ? undefined : await callForResult(input.sessionId, callId, pending, { promptId, createdAt, offset });
+        const source = recordSource(input, this.agent, { kind: 'tool-call', record: value, result: value.message, role: 'result' });
+        const call = 'key' in source ? await callForResult(input, this.agent, source, pending, { promptId, createdAt, offset }) : undefined;
         const name = str(message.toolName) ?? call?.toolName;
         if (name === undefined) continue;
-        if (callId !== undefined) pending.delete(callId);
         const failed = message.isError === true;
         const output = textOf(message.content).slice(0, TOOL_OUTPUT_PREVIEW_CHARS);
         events.push({
-          kind: failed ? 'tool.failure' : 'tool.use',
+          kind: failed ? 'tool.failure' : 'tool.use', source,
+          legacyId: await legacyRecordId(input, { kind: 'tool-call', source, offset }),
           payload: {
-            toolCallId: call?.toolCallId ?? await offsetIdFor('tool-call', input.sessionId, offset),
+            toolCallId: call?.toolCallId ?? await recordId(input, this.agent, { kind: 'tool-call', source, offset }),
             promptId: call?.promptId ?? promptId,
             toolName: name.slice(0, 64),
             input: call?.input ?? {},

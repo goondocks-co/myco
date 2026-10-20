@@ -18,14 +18,12 @@
  * records it and extraction excludes the session. Deriving tool calls without
  * their results would state as fact something the file cannot support.
  */
-import { uuidv5 } from '../../hash.js';
 import {
-  isBlock, lineTime, promptIdAtOffset, str, textOf,
+  recordSource, isBlock, lineTime, promptIdAtOffset, str, textOf,
   type DerivedEvent, type ParserInput, type ReplyPart, type TranscriptParser,
 } from './index.js';
 
 const promptIdAt = (sessionId: string, offset: number): Promise<string> => promptIdAtOffset('cursor-prompt', sessionId, offset);
-const responseIdAt = (sessionId: string, offset: number): Promise<string> => uuidv5('response', sessionId, String(offset));
 
 /** The line that closes a turn. */
 const TURN_ENDED = 'turn_ended';
@@ -69,7 +67,8 @@ export const cursorParser: TranscriptParser = {
       for (const chunk of held.parts) {
         events.push({
           kind: 'response',
-          payload: { responseId: await responseIdAt(sessionId, chunk.offset), promptId: held.promptId, text: chunk.text },
+          payload: { promptId: held.promptId, text: chunk.text },
+          source: chunk.source,
           createdAt: chunk.createdAt,
           offset: chunk.offset,
         });
@@ -96,7 +95,7 @@ export const cursorParser: TranscriptParser = {
         continue;
       }
       if (reply === null) reply = { parts: [], promptId };
-      reply.parts.push({ text, offset, createdAt });
+      reply.parts.push({ text, offset, createdAt, source: recordSource(input, this.agent, { kind: 'response', record: value, block: 0 }) });
     }
 
     await flushReply();

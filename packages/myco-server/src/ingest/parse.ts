@@ -34,6 +34,7 @@ import { envelopeHash, planEventWrite, type EventWrite, type IngestResult } from
 import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import { declaredScheme, SCHEME_GENERATION_SQL, schemeGeneration } from './prompt-scheme.js';
+import { isRecordIdScheme, RecordIdentityError } from '@goondocks/myco-shared/record-identity';
 import { isPromptIdScheme, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { datedAt, isBlock, promptOwners, withoutPrompts, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput, type PromptOwners } from './parsers/index.js';
 import type { TranscriptRole } from '@goondocks/myco-shared/member-protocol';
@@ -210,6 +211,7 @@ interface ParseTarget {
   fidelity: string | null;
   /** The transcript's pinned prompt identity scheme; null for one that names no agent this Deployment declares, or one its group could not be admitted to. */
   scheme: PromptIdScheme | null;
+  recordScheme: string;
   /** How the transcript is registered; absent where the selection did not read it. */
   role?: TranscriptRole;
   /** The turn open where the cursor stands, recorded by the pass that stopped there. */
@@ -309,7 +311,7 @@ export function laneSelectionSql(lane: Lane, limit = 1, now = Date.now()): strin
   const segments = `SELECT json_group_array(json_object('base_offset', base_offset, 'length', length, 'blob_key', blob_key, 'created_at', created_at, 'object_key', object_key))
       FROM (${segmentSource('transcripts.project_id','transcripts.transcript_id','transcripts.parsed_offset')}
              ORDER BY base_offset LIMIT ${TRANSCRIPT_PARSE_SEGMENTS_PER_READ})`;
-  return `SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, role, size, parsed_offset, fidelity, prompt_identity_scheme, open_prompt_id, parser_context, imported_at, parse_segment_lines, last_received_at,
+  return `SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, role, size, parsed_offset, fidelity, prompt_identity_scheme, record_identity_scheme, open_prompt_id, parser_context, imported_at, parse_segment_lines, last_received_at,
                  (SELECT ended_at FROM sessions s WHERE s.project_id = transcripts.project_id AND s.session_id = transcripts.session_id) AS session_ended_at,
                  ${TURN_ENDED} AS turn_ended, ${PROMPT_IDENTITY_STALE} AS prompt_identity_stale,
                  (${segments}) AS segments
@@ -341,6 +343,7 @@ function targetOf(row: Record<string, unknown>): ParseTarget {
     parsedOffset: (row.parsed_offset as number | null) ?? 0,
     fidelity: (row.fidelity as string | null) ?? null,
     scheme: isPromptIdScheme(row.prompt_identity_scheme) ? row.prompt_identity_scheme : null,
+    recordScheme: row.record_identity_scheme as string,
     ...(row.role === 'subagent' || row.role === 'primary' ? { role: row.role } : {}),
     openPromptId: (row.open_prompt_id as string | null) ?? null,
     promptIdentityStale: row.prompt_identity_stale === 1,
@@ -369,12 +372,12 @@ async function finalizePass(db: RelationalStore, target: ParseTarget, statement:
 
 /** A content-free description of the record where reading stopped. */
 export interface ParseDiagnostic {
-  branch: 'malformed_lines' | 'event_not_stored' | 'no_progress' | 'event_refused' | 'blob_absent' | 'record_too_large' | 'scheme_unread' | 'scheme_conflict';
+  branch: 'malformed_lines' | 'event_not_stored' | 'no_progress' | 'event_refused' | 'blob_absent' | 'record_too_large' | 'scheme_unread' | 'scheme_conflict' | 'record_kind_undeclared' | 'record_source_invalid' | 'record_identity_scheme_unsupported';
   offset: number;
   lineKind: string;
 }
 
-const FAILURE_BRANCHES = new Set(['malformed_lines', 'event_not_stored', 'no_progress', 'event_refused', 'blob_absent', 'record_too_large', 'scheme_unread', 'scheme_conflict']);
+const FAILURE_BRANCHES = new Set(['malformed_lines', 'event_not_stored', 'no_progress', 'event_refused', 'blob_absent', 'record_too_large', 'scheme_unread', 'scheme_conflict', 'record_kind_undeclared', 'record_source_invalid', 'record_identity_scheme_unsupported']);
 const LINE_KINDS = new Set(['user', 'assistant', 'attachment', 'session_meta', 'turn_context', 'event_msg', 'response_item', 'system', 'progress']);
 function lineKind(line: ParsedLine | undefined): string {
   if (line === undefined) return 'unknown';
@@ -558,7 +561,7 @@ function rowIdentity(event: DerivedEvent): string {
 }
 
 /** The envelope a derived event travels in: a deterministic id over the row it names, so a repeated pass re-derives the same row and the raw insert absorbs it. */
-async function envelopeFor(target: ParseTarget, event: DerivedEvent): Promise<Record<string, unknown>> {
+export async function envelopeFor(target: Pick<ParseTarget, 'transcriptId' | 'sessionId'>, event: DerivedEvent): Promise<Record<string, unknown>> {
   return {
     eventId: await uuidv5('transcript-event', target.transcriptId, event.kind, rowIdentity(event)),
     sessionId: target.sessionId,
@@ -664,6 +667,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   if (scheme === null || !parser.schemes.includes(scheme)) {
     const branch = scheme === null && declaredScheme(target.agent) !== null ? 'scheme_conflict' : 'scheme_unread';
     await stop(env.db, target, 'parse', now, undefined, { branch, offset: target.parsedOffset, lineKind: 'unknown' });
+    return { derived: 0, calls: 1, nextOffset: null, failure: 'parse' };
+  }
+  const recordScheme = target.recordScheme;
+  if (!isRecordIdScheme(recordScheme)) {
+    await stop(env.db, target, 'parse', now, undefined, { branch: 'record_identity_scheme_unsupported', offset: target.parsedOffset, lineKind: 'unknown' });
     return { derived: 0, calls: 1, nextOffset: null, failure: 'parse' };
   }
   if (target.promptIdentityStale) {
@@ -797,12 +805,22 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   let owners = await readOwners();
   const derive = async (): Promise<{ state: ParserState; input: ParserInput; parsed: DerivedEvent[] }> => {
     const state: ParserState = structuredClone(initialState);
-    const input: ParserInput = { lines: lines!, sessionId: target.sessionId, scheme, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state, owners,
+    const input: ParserInput = { lines: lines!, sessionId: target.sessionId, transcriptId: target.transcriptId, recordScheme, scheme, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state, owners,
       ...(target.role === undefined ? {} : { role: target.role }),
       terminal: terminalOnly || (limits.completeFile && windowEnd === target.size) ? terminalRule(target, now, limits) : undefined };
     return { state, input, parsed: await parser.parse(input) };
   };
-  let derivation = await derive();
+  const admittedDerive = async () => {
+    try { return await derive(); }
+    catch (error) {
+      if (!(error instanceof RecordIdentityError)) throw error;
+      await stop(env.db, target, 'parse', now, undefined, { branch: error.code, offset: target.parsedOffset, lineKind: 'unknown' });
+      calls += 1;
+      return null;
+    }
+  };
+  let derivation = await admittedDerive();
+  if (derivation === null) return { derived: 0, calls, nextOffset: null, failure: 'parse' };
   for (let round = 0; round < CLAIM_ROUNDS; round += 1) {
     const claims = keyClaims(derivation.parsed, keys, owners);
     if (claims.length === 0) break;
@@ -813,7 +831,8 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     calls += 1;
     owners = await readOwners();
     if (claims.every((claim) => owners?.get(claim.key)?.record === claim.record)) break;
-    derivation = await derive();
+    derivation = await admittedDerive();
+    if (derivation === null) return { derived: 0, calls, nextOffset: null, failure: 'parse' };
   }
   const { state, input, parsed: parsedEvents } = derivation;
   const heldReplies = await legacyReplies(env.db, target.projectId, target.transcriptId, parsedEvents, initialState, () => { calls += 1; });

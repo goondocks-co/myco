@@ -24,7 +24,9 @@ import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
 import { parseTranscripts, TRANSCRIPT_PRODUCER } from '@myco-server-worker/ingest/parse.js';
-import { planKeyForTag, promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
+import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
+import { canonicalRecordId } from '@goondocks/myco-shared/record-identity';
+import { uuidv5 } from '@myco-server-worker/hash.js';
 import { memberRig, tempMycoHome, type MemberRig } from '../member/helpers/server.js';
 import { registerTestMember, recordingFetch, runHook } from '../member/helpers/hooks.js';
 
@@ -92,7 +94,9 @@ describe('retained-hook replay reproduces the parity rows', () => {
   it('lands the tagged plan under the key the parse derives, with the channel it arrived through', async () => {
     await replay(onDisk(transcriptText));
     expect(rows('plans', ['plan_key', 'title', 'content', 'status', 'source', 'origin_path'], 'plan_key')).toEqual([
-      { plan_key: await planKeyForTag(SESSION, 'ultraplan', 0), title: 'Retention', content: '# Retention\n- [ ] leaf', status: 'active', source: 'tag', origin_path: 'transcript:ultraplan' },
+      { plan_key: await canonicalRecordId(uuidv5, { scheme: 'source-record-v1', kind: 'plan', sessionId: SESSION,
+        transcriptId: String(rows('transcripts', ['transcript_id'], 'transcript_id')[0].transcript_id), agent: 'claude-code',
+        source: { key: 'a1', thread: 'main', block: 0 }, offset: Buffer.byteLength(transcriptText.split('\n')[0]) + 1, tag: 'ultraplan', coordinate: [0, 0] }), title: 'Retention', content: '# Retention\n- [ ] leaf', status: 'active', source: 'tag', origin_path: 'transcript:ultraplan' },
     ]);
   });
 

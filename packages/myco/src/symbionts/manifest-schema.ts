@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { assertRecordIdentityDeclaration, type RecordIdentityDeclaration } from '@goondocks/myco-shared/record-identity';
 import path from 'node:path';
 
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
@@ -979,6 +980,10 @@ export function resolvePromptIdentity(
     ...(block.readBeforePin === undefined ? {} : { readBeforePin: block.readBeforePin }) } };
 }
 
+const RecordIdentitySchema = z.custom<RecordIdentityDeclaration>((value) => {
+  try { assertRecordIdentityDeclaration('', value); return true; } catch { return false; }
+}, { message: 'recordIdentity must declare supported schemes, record kinds, source paths and evidence' });
+
 export const SymbiontManifestSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -1069,6 +1074,7 @@ export const SymbiontManifestSchema = z.object({
   /** What a worker needs to run this harness for the Deployment; absent for a harness no worker runs. */
   runner: RunnerManifestSchema.optional(),
   promptIdentity: PromptIdentitySchema.optional(),
+  recordIdentity: RecordIdentitySchema.optional(),
 }).strict().superRefine((m, ctx) => {
   const resolved = resolvePromptIdentity(m.promptIdentity, m.capabilities?.turnRowSource ?? 'hook');
   if (!resolved.ok) ctx.addIssue({ code: 'custom', message: resolved.reason, path: ['promptIdentity'] });

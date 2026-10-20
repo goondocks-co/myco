@@ -475,3 +475,37 @@ promptIdentity:
   readBeforePin: claude-v1
   hookKey: prompt_id
   transcriptKey: promptId
+
+recordIdentity:
+  scheme: source-record-v1
+  schemes:
+    legacy-session-v1:
+      response:
+        position: true
+        withinRecord: "content-block"
+        evidence: "tests/fixtures/record-identity-evidence.json"
+      tool-call:
+        key: {"from": "call", "path": "id"}
+        resultKey: {"from": "result", "path": "tool_use_id"}
+        evidence: "tests/fixtures/record-identity-evidence.json"
+      plan:
+        position: true
+        withinRecord: "content-block-envelope"
+        evidence: "tests/fixtures/record-identity-evidence.json"
+    source-record-v1:
+      response:
+        key: {"from": "record", "path": "uuid"}
+        thread: {"from": "record", "path": "agentId", "absent": "main"}
+        absentKey: "position"
+        withinRecord: "content-block"
+        evidence: "tests/fixtures/record-identity-evidence.json"
+      tool-call:
+        key: {"from": "call", "path": "id"}
+        resultKey: {"from": "result", "path": "tool_use_id"}
+        evidence: "tests/fixtures/record-identity-evidence.json"
+      plan:
+        key: {"from": "record", "path": "uuid"}
+        thread: {"from": "record", "path": "agentId", "absent": "main"}
+        absentKey: "position"
+        withinRecord: "content-block-envelope"
+        evidence: "tests/fixtures/record-identity-evidence.json"

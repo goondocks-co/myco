@@ -103,7 +103,7 @@ async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max
     const t = sqlite.query(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, prompt_identity_scheme, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at, parse_error FROM transcripts`).get() as Record<string, unknown>;
     if (passes >= max || (t.parsed_offset as number) >= (t.size as number) || t.parse_error !== null) return passes;
     const before = t.parsed_offset as number;
-    await parseOnce(env as never, {
+    await parseOnce(env as never, { recordScheme: 'legacy-session-v1' as const,
       projectId: t.project_id as string, transcriptId: t.transcript_id as string, sessionId: t.session_id as string,
       machineId: t.machine_id as string, tokenId: t.token_id as string, agent: t.agent as string,
       size: t.size as number, parsedOffset: before, fidelity: null,

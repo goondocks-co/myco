@@ -100,6 +100,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0090_v90.sql': '3283a9899503b34a9ef1128212165eb5fe0b162ed8841b958f333024166f30cc',
   '0091_v91.sql': '720193aa84978a9f2b8b54f6c33e3ee108f9a58607026aee5c589d45c8932035',
   '0092_v92.sql': 'a105b641c089ef95cb34859fe6677c8db5caf26945ff09dd215dcd0ebdebd82b',
+  '0093_v93.sql': '1cca9fc6a4f8b23eb5ddfa1dcba5a03cd215700fbcc929ff8658974657435387',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -367,7 +368,7 @@ describe('versioned schema steps', () => {
         VALUES ('proj_1', 'tx_1', 's1', 'm1', 'cursor', 1000, 500, 1, 2, 't1', 'awaiting_bytes', 2)`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM transcripts').get();
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(54));
-      expect(sqlite.query('SELECT * FROM transcripts').get()).toEqual({ ...before, parse_awaited_size: null, parse_segment_lines: null, parsed_through_at: null, prompt_generation: null, prompt_identity_scheme: 'offset-v1' });
+      expect(sqlite.query('SELECT * FROM transcripts').get()).toEqual({ ...before, parse_awaited_size: null, parse_segment_lines: null, parsed_through_at: null, prompt_generation: null, prompt_identity_scheme: 'offset-v1', record_identity_scheme: 'legacy-session-v1' });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally {
       sqlite.close();
@@ -382,7 +383,7 @@ describe('versioned schema steps', () => {
         VALUES ('proj_1', 'tx_1', 's1', 'm1', 'codex', 1000, 500, 1, 2, 't1')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM transcripts').get();
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(35));
-      expect(sqlite.query('SELECT * FROM transcripts').get()).toEqual({ ...before, parser_context: null, parse_awaited_size: null, parse_segment_lines: null, parsed_through_at: null, prompt_generation: null, prompt_identity_scheme: 'offset-v1' });
+      expect(sqlite.query('SELECT * FROM transcripts').get()).toEqual({ ...before, parser_context: null, parse_awaited_size: null, parse_segment_lines: null, parsed_through_at: null, prompt_generation: null, prompt_identity_scheme: 'offset-v1', record_identity_scheme: 'legacy-session-v1' });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally {
       sqlite.close();
