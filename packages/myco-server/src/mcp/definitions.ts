@@ -135,6 +135,10 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
           "type": "number",
           "description": "Optional created_at upper bound in epoch seconds"
         },
+        "continuation": {
+          "type": "string",
+          "description": "The continuation an earlier answer returned for a search of one type; the answer then lists the matches after it."
+        },
         [PROJECT_PIVOT]: {
           "type": "string",
           "description": PROJECT_DESCRIPTION

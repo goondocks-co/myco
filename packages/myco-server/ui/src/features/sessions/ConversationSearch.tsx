@@ -1,4 +1,4 @@
-import { FilterBar, useFilterParams, useQueryDraft } from '../../design';
+import { ErrorState, FilterBar, useFilterParams, useQueryDraft } from '../../design';
 import { useConversationSearch, type ConversationHit } from '../../hooks/use-conversation-search';
 import { SEARCH_MIN_CHARS } from '../../hooks/use-search';
 import { SessionEventList, type SessionEventRow } from './SessionEventList';
@@ -31,17 +31,17 @@ export function ConversationSearchBar({ search }: { search: ConversationQuery })
 
 /** One hit as a row: the turn it belongs to opens through `?turn=`; a hit with no turn in this session leads nowhere. */
 function hitRow(hit: ConversationHit, agent: string | null): SessionEventRow {
-  const found = hit.lookup.state === 'found' ? hit.lookup.turn : null;
-  const detail = hit.lookup.state === 'failed' ? 'The turn could not be read'
-    : found === null ? 'Not tied to a prompt'
-    : hit.type === 'response' ? `In reply to “${promptPreview(found, agent)}”` : 'The prompt of this turn';
+  const { turn } = hit;
+  const detail = turn === null ? 'Not tied to a prompt'
+    : hit.type === 'response' ? `In reply to “${promptPreview({ preview: turn.preview, textChars: turn.text_chars, blobKey: turn.stored ? 'stored' : null }, agent)}”`
+    : 'The prompt of this turn';
   return {
     key: hit.key,
-    at: found?.createdAt ?? null,
+    at: hit.at,
     kind: TYPE_WORD[hit.type],
     title: hit.preview === '' ? 'Matched inside a long message' : hit.preview,
     detail,
-    to: found === null || hit.promptId === null ? undefined : `?${new URLSearchParams({ turn: hit.promptId })}`,
+    to: turn === null ? undefined : `?${new URLSearchParams({ turn: turn.prompt_id })}`,
   };
 }
 
@@ -57,9 +57,9 @@ export function ConversationHits({ projectId, sessionId, agent, query, now }: { 
           isPending: found.isPending,
           error: found.error,
           retry: found.retry,
-          hasMore: false,
-          isFetchingMore: false,
-          more: () => undefined,
+          hasMore: found.hasMore,
+          isFetchingMore: found.isFetchingMore,
+          more: found.more,
         }}
         noun="matches"
         wrap
@@ -67,11 +67,9 @@ export function ConversationHits({ projectId, sessionId, agent, query, now }: { 
         loadingLabel="Searching the conversation"
         now={now}
       />
+      {found.moreError !== null && <ErrorState error={found.moreError} onRetry={found.retryMore} />}
       {!found.isPending && found.pendingBodies > 0 && (
         <p className="t-small text-muted">Indexing {found.pendingBodies} captured bodies. More matches will become available.</p>
-      )}
-      {!found.isPending && !found.error && found.capped && (
-        <p className="t-small text-muted">These are the best matches. Add a word to narrow the search.</p>
       )}
     </div>
   );

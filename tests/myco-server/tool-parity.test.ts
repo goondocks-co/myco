@@ -112,6 +112,9 @@ describe('tool parity', () => {
         type.enum = type.enum.filter((value) => value !== 'skill');
         expect((current.inputSchema.properties.type as { enum: string[] }).enum).toEqual(['session', 'plan', 'spore', 'prompt', 'response', 'all']);
         expect(current.description).not.toContain('skills');
+        // The Deployment also serves the continuation a search of one type returns, which the frozen contract never declared.
+        expect(current.inputSchema.properties.continuation).toMatchObject({ type: 'string' });
+        delete (current.inputSchema.properties as Record<string, unknown>).continuation;
       }
       if (server.name === 'myco_skills') expect(current.description).not.toContain('1.4');
       if (server.name === 'myco_cortex') expect(current.description).toContain('digest\" is retired');

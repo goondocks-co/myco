@@ -7,7 +7,7 @@ export async function handleSearch(input: ToolInput, ctx: ToolContext): Promise<
   const scope = await scopeOf(ctx, input);
   if (scope === null) return failure('Project not found');
   const options: SearchOptions = { query: input.query as string, limit: (input.limit as number | undefined) ?? SEARCH_TOOL_LIMIT };
-  for (const key of ['type', 'mode', 'session_id', 'status', 'observation_type', 'release_state', 'release_confidence'] as const) {
+  for (const key of ['type', 'mode', 'session_id', 'status', 'observation_type', 'release_state', 'release_confidence', 'continuation'] as const) {
     if (typeof input[key] === 'string') options[key] = input[key];
   }
   for (const key of ['since', 'until'] as const) if (typeof input[key] === 'number') options[key] = input[key];

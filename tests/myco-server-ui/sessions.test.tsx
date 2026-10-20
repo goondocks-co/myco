@@ -1194,10 +1194,10 @@ describe('the session reading page', () => {
   describe('searching the conversation', () => {
     const SEARCH = '/api/projects/x/search';
     const DISTANT = '00000000-0000-7000-8000-000000000777';
-    const OTHER_SESSION_HIT = { id: 'p_other', type: 'prompt', title: 'Prompt', preview: 'cobalt from another session', score: 1, session_id: 's2', prompt_id: 'p_other' };
-    const lookup = (id: string) => `/api/projects/x/sessions/s1/turns?origins=user,system,agent_dispatch,hook_injected,unknown&turn=${id}`;
-    const answer = (results: unknown[], coverage = { pending_blobs: 0 }) => Response.json({ results, mode: 'fts', provider_unavailable: false, coverage });
-    const hit = (over: Record<string, unknown>) => ({ id: 'h', type: 'prompt', title: 'Prompt', preview: 'cobalt', score: 1, session_id: 's1', ...over });
+    const OTHER_SESSION_HIT = { id: 'p_other', type: 'prompt', title: 'Prompt', preview: 'cobalt from another session', score: 1, created_at: NOW, session_id: 's2', prompt_id: 'p_other', turn: { prompt_id: 'p_other', preview: 'x', text_chars: 1, stored: false } };
+    const turnOf = (promptId: string, preview: string | null = 'Please rename the project card') => ({ prompt_id: promptId, preview, text_chars: preview?.length ?? null, stored: preview === null });
+    const answer = (results: unknown[], continuation: string | null = null, coverage = { pending_blobs: 0 }) => Response.json({ results, mode: 'fts', provider_unavailable: false, coverage, continuation });
+    const hit = (over: Record<string, unknown>) => ({ id: 'h', type: 'prompt', title: 'Prompt', preview: 'cobalt', score: 1, created_at: NOW - 2000, session_id: 's1', ...over });
     /** Answers a project search as the server does: a request scoped to a session never returns another session's hits. */
     const searchRoute = (byType: Record<string, unknown[]>) => (_init?: RequestInit, url?: URL) => {
       const scoped = url!.searchParams.get('session_id') === 's1';
@@ -1207,27 +1207,27 @@ describe('the session reading page', () => {
     const searchRequests = (requested: string[]) => requested.filter((path) => path.startsWith(`${SEARCH}?`)).map((path) => new URL(path, 'https://s').searchParams);
     const searchBox = () => screen.findByRole('searchbox', { name: 'Search the conversation' });
     const results = () => screen.findByRole('list', { name: 'Matches' });
+    const namedReads = (requested: string[]) => requested.filter((path) => /\/turns\?.*&turn=/.test(path));
 
-    it('searches the whole session’s prompts and replies, scoped to the session, and opens a hit on a turn that is not loaded through its named lookup', async () => {
+    it('searches the whole session’s prompts and replies, scoped to the session, and reads a named turn only when a hit opens one that is not loaded', async () => {
       const { requested } = server(routes({
         '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn({ promptId: P3, preview: 'Latest turn' })], 'older'),
-        [SEARCH]: searchRoute({ prompt: [hit({ id: DISTANT, prompt_id: DISTANT, preview: 'the cobalt palette' })], response: [] }),
-        [lookup(DISTANT)]: () => page([turn({ promptId: DISTANT, preview: 'Distant turn', textChars: 12, createdAt: NOW - 5 * DAY })]),
+        [SEARCH]: searchRoute({ prompt: [hit({ id: DISTANT, prompt_id: DISTANT, preview: 'the cobalt palette', created_at: NOW - 5 * DAY, turn: turnOf(DISTANT, 'Distant turn') })], response: [] }),
+        [`/api/projects/x/sessions/s1/turns?origins=user,system,agent_dispatch,hook_injected,unknown&turn=${DISTANT}`]: () => page([turn({ promptId: DISTANT, preview: 'Distant turn', textChars: 12, createdAt: NOW - 5 * DAY })]),
       }));
       mount('/p/x/sessions/s1');
       await screen.findByTestId(`turn-${P3}`);
       fireEvent.change(await searchBox(), { target: { value: 'cobalt' } });
       const rows = within(await results()).getAllByRole('listitem');
       expect(rows).toHaveLength(1);
-      expect(rows[0]!.textContent).toContain('Prompt');
-      expect(rows[0]!.textContent).toContain('the cobalt palette');
-      expect(rows[0]!.textContent).toContain('The prompt of this turn');
+      expect(rows[0]!.textContent).toBe('Sep 2416:00Promptthe cobalt paletteThe prompt of this turn');
       expect(rawIdsInPage()).toEqual([]);
       // Both kinds are asked for, each scoped to this session and nothing else.
-      const sent = searchRequests(requested);
-      expect(sent.map((params) => [params.get('type'), params.get('session_id'), params.get('q'), params.get('mode')]).sort()).toEqual([['prompt', 's1', 'cobalt', 'fts'], ['response', 's1', 'cobalt', 'fts']]);
+      expect(searchRequests(requested).map((params) => [params.get('type'), params.get('session_id'), params.get('q'), params.get('mode'), params.get('continuation')]).sort())
+        .toEqual([['prompt', 's1', 'cobalt', 'fts', null], ['response', 's1', 'cobalt', 'fts', null]]);
       expect(screen.queryByText(/another session/)).toBeNull();
-      // The conversation stays where it was, out of sight.
+      // Listing the hits reads no turn; the conversation stays where it was, out of sight.
+      expect(namedReads(requested)).toEqual([]);
       expect(screen.getByRole('list', { name: 'Conversation', hidden: true })).toBeTruthy();
       expect(screen.queryByRole('list', { name: 'Conversation' })).toBeNull();
 
@@ -1235,25 +1235,24 @@ describe('the session reading page', () => {
       await waitFor(() => expect(location()).toBe(`/p/x/sessions/s1?turn=${DISTANT}`));
       expect(await screen.findByText('Distant turn')).toBeTruthy();
       expect(screen.queryByRole('list', { name: 'Matches' })).toBeNull();
-      // The turn came from its own lookup beside the latest page, never from filtering the turns on screen.
-      expect(requested.filter((path) => path === lookup(DISTANT)).length).toBeGreaterThanOrEqual(1);
+      // The turn came from its own named read beside the latest page, never from filtering the turns on screen.
+      expect(namedReads(requested)).toEqual([`/api/projects/x/sessions/s1/turns?origins=user,system,agent_dispatch,hook_injected,unknown&turn=${DISTANT}`]);
       expect(requested.filter((path) => path.startsWith('/api/projects/x/sessions/s1/turns?origins=user&limit=200')).length).toBe(1);
     });
 
-    it('anchors a reply hit to the prompt it answers, and shows a hit found inside a long stored body', async () => {
+    it('anchors a reply hit to the prompt it answers with the hit’s own time, and shows a hit found inside a long stored body', async () => {
       server(routes({
         [SEARCH]: searchRoute({
-          prompt: [hit({ id: P3, prompt_id: P3, preview: 'a needle deep inside a long stored prompt', score: 0.4 })],
-          response: [hit({ id: 'r1', type: 'response', title: 'Response', prompt_id: P1, preview: 'renamed the card to cobalt', score: 0.9 })],
+          prompt: [hit({ id: P3, prompt_id: P3, preview: 'a needle deep inside a long stored prompt', score: 0.4, created_at: NOW - 1000, turn: turnOf(P3, null) })],
+          response: [hit({ id: 'r1', type: 'response', title: 'Response', prompt_id: P1, preview: 'renamed the card to cobalt', score: 0.9, created_at: NOW - 40 * MINUTE, turn: turnOf(P1) })],
         }),
-        [lookup(P3)]: () => page([turn({ promptId: P3, preview: null, textChars: null, blobKey: KEY_TEXT, createdAt: NOW - 1000 })]),
       }));
       mount('/p/x/sessions/s1?q=cobalt');
       const rows = within(await results()).getAllByRole('listitem');
-      // Ranked by the route's own score, each row naming its kind in words.
+      // Ranked by the route's own score, each row naming its kind in words and showing its own time, not its turn's.
       expect(rows.map((row) => row.textContent)).toEqual([
-        expect.stringMatching(/^Sep 29\d\d:\d\dReplyrenamed the card to cobaltIn reply to “Please rename the project card”$/),
-        expect.stringMatching(/^Sep 29\d\d:\d\dPrompta needle deep inside a long stored promptThe prompt of this turn$/),
+        'Sep 2915:20Replyrenamed the card to cobaltIn reply to “Please rename the project card”',
+        'Sep 2915:59Prompta needle deep inside a long stored promptThe prompt of this turn',
       ]);
       expect(within(rows[0]!).getByRole('link').getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P1}`);
       expect(within(rows[1]!).getByRole('link').getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P3}`);
@@ -1262,35 +1261,33 @@ describe('the session reading page', () => {
       expect(await screen.findByTestId(`turn-${P1}`)).toBeTruthy();
     });
 
-    it('lists a hit with no prompt, or one whose prompt this session does not hold, as session-level and links nowhere', async () => {
+    it('lists a hit with no turn in this session as session-level with its own time, and links nowhere', async () => {
       server(routes({
         [SEARCH]: searchRoute({
           prompt: [],
           response: [
-            hit({ id: 'r_free', type: 'response', title: 'Response', preview: 'a reply with no prompt' }),
-            hit({ id: 'r_gone', type: 'response', title: 'Response', prompt_id: 'p_elsewhere', preview: 'a reply to a prompt kept elsewhere', score: 0.5 }),
+            hit({ id: 'r_free', type: 'response', title: 'Response', preview: 'a reply with no prompt', turn: null, created_at: NOW - 30 * MINUTE }),
+            hit({ id: 'r_gone', type: 'response', title: 'Response', prompt_id: 'p_elsewhere', preview: 'a reply to a prompt kept elsewhere', score: 0.5, turn: null, created_at: NOW - 20 * MINUTE }),
           ],
         }),
-        [lookup('p_elsewhere')]: () => page([]),
       }));
       mount('/p/x/sessions/s1?q=reply');
       const list = await results();
       expect(within(list).getAllByRole('listitem').map((row) => row.textContent)).toEqual([
-        '—Replya reply with no promptNot tied to a prompt',
-        '—Replya reply to a prompt kept elsewhereNot tied to a prompt',
+        'Sep 2915:30Replya reply with no promptNot tied to a prompt',
+        'Sep 2915:40Replya reply to a prompt kept elsewhereNot tied to a prompt',
       ]);
       expect(within(list).queryAllByRole('link')).toEqual([]);
     });
 
-    it('says when nothing matches, when the search cannot start yet, and reads again on request after an error', async () => {
+    it('says when nothing matches and when the search cannot start yet, and after a failure retries into the results', async () => {
       let failing = true;
       const { requested } = server(routes({
         [SEARCH]: (_init, url) => {
           if (url!.searchParams.get('q') === 'zzz') return answer([]);
           if (failing) return new Response('{"error":"down"}', { status: 500 });
-          return answer(url!.searchParams.get('type') === 'prompt' ? [hit({ id: P1, prompt_id: P1, preview: 'back again' })] : []);
+          return answer(url!.searchParams.get('type') === 'prompt' ? [hit({ id: P1, prompt_id: P1, preview: 'back again', turn: turnOf(P1) })] : []);
         },
-        [lookup(P1)]: () => page([turn({ promptId: P1 })]),
       }));
       mount('/p/x/sessions/s1');
       await screen.findByTestId(`turn-${P1}`);
@@ -1301,24 +1298,61 @@ describe('the session reading page', () => {
       expect(await screen.findByText('Nothing said in this session matches “zzz”.')).toBeTruthy();
 
       fireEvent.change(await searchBox(), { target: { value: 'again' } });
-      const retry = await screen.findByRole('button', { name: /try again|retry/i });
+      const retry = await screen.findByRole('button', { name: 'Retry' });
       failing = false;
       fireEvent.click(retry);
-      expect(await within(await results()).findByText('back again')).toBeTruthy();
+      const list = await results();
+      expect(within(list).getByText('back again')).toBeTruthy();
+      expect(within(list).getByRole('link').getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P1}`);
+      expect(screen.queryByRole('alert')).toBeNull();
     });
 
-    it('says the long bodies still being indexed, and that only the best matches are listed when the search is full', async () => {
-      const many = Array.from({ length: 20 }, (_, i) => hit({ id: `r${i}`, type: 'response', title: 'Response', preview: `reply ${i}`, score: 1 - i / 100 }));
-      server(routes({ [SEARCH]: (_init, url) => answer(url!.searchParams.get('type') === 'response' ? many : [], { pending_blobs: 3 }) }));
+    it('follows each kind’s continuation through Show more, scoped the same on every page, and ends when none follows', async () => {
+      const prompts = (from: number, count: number) => Array.from({ length: count }, (_, i) => hit({ id: `p${from + i}`, prompt_id: `p${from + i}`, preview: `same words ${from + i}`, score: 0.5, created_at: NOW - HOUR, turn: turnOf(`p${from + i}`) }));
+      const replies = [hit({ id: 'r1', type: 'response', title: 'Response', prompt_id: P1, preview: 'one reply', score: 0.4, turn: turnOf(P1) })];
+      let failNext = true;
+      const { requested } = server(routes({
+        [SEARCH]: (_init, url) => {
+          const type = url!.searchParams.get('type');
+          const cursor = url!.searchParams.get('continuation');
+          if (type === 'response') return answer(replies);
+          if (cursor === null) return answer(prompts(0, 20), 'after-20');
+          if (cursor === 'after-20' && failNext) { failNext = false; return new Response('{"error":"down"}', { status: 500 }); }
+          if (cursor === 'after-20') return answer(prompts(20, 20), 'after-40');
+          return answer(prompts(40, 5), null);
+        },
+      }));
+      mount('/p/x/sessions/s1?q=same');
+      const list = await results();
+      expect(within(list).getAllByRole('listitem')).toHaveLength(21);
+      expect(screen.getByText('Showing 21 matches')).toBeTruthy();
+
+      // A page that fails keeps the matches listed and offers its own retry.
+      fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+      const retry = await screen.findByRole('button', { name: 'Retry' });
+      expect(within(await results()).getAllByRole('listitem')).toHaveLength(21);
+      fireEvent.click(retry);
+      await waitFor(() => expect(within(screen.getByRole('list', { name: 'Matches' })).getAllByRole('listitem')).toHaveLength(41));
+      fireEvent.click(await screen.findByRole('button', { name: 'Show more' }));
+      await waitFor(() => expect(within(screen.getByRole('list', { name: 'Matches' })).getAllByRole('listitem')).toHaveLength(46));
+      // The 21st and the 46th match are listed, once each, and nothing follows the last page.
+      expect(screen.getByText('same words 20')).toBeTruthy();
+      expect(screen.getByText('same words 44')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
+      const sent = searchRequests(requested).filter((params) => params.get('type') === 'prompt');
+      expect(sent.map((params) => params.get('continuation'))).toEqual([null, 'after-20', 'after-20', 'after-40']);
+      for (const params of searchRequests(requested)) expect([params.get('session_id'), params.get('mode')]).toEqual(['s1', 'fts']);
+    });
+
+    it('says the long bodies still being indexed', async () => {
+      server(routes({ [SEARCH]: (_init, url) => answer(url!.searchParams.get('type') === 'response' ? [hit({ id: 'r1', type: 'response', title: 'Response', prompt_id: P1, preview: 'reply', turn: turnOf(P1) })] : [], null, { pending_blobs: 3 }) }));
       mount('/p/x/sessions/s1?q=reply');
       expect(await screen.findByText('Indexing 3 captured bodies. More matches will become available.')).toBeTruthy();
-      expect(screen.getByText('These are the best matches. Add a word to narrow the search.')).toBeTruthy();
     });
 
     it('holds the query in the URL, drops it when another tab opens, and returns to the conversation, unchanged, when it is cleared', async () => {
       server(routes({
-        [SEARCH]: searchRoute({ prompt: [hit({ id: P1, prompt_id: P1, preview: 'cobalt card' })], response: [] }),
-        [lookup(P1)]: () => page([turn({ promptId: P1 })]),
+        [SEARCH]: searchRoute({ prompt: [hit({ id: P1, prompt_id: P1, preview: 'cobalt card', turn: turnOf(P1) })], response: [] }),
         '/api/projects/x/sessions/s1/commits': () => Response.json({ observations: [], release: null }),
       }));
       mount('/p/x/sessions/s1');

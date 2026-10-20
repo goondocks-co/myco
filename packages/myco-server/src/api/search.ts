@@ -8,7 +8,7 @@ import { badRequest, notFound, ok, projectSetParam, resolveProjectScope, resolve
 function searchOptions(q: URLSearchParams): SearchOptions | Response {
   if (q.has('language')) return badRequest('language filtering belongs to retired Canopy entries');
   const options: SearchOptions = { query: q.get('q') ?? '' };
-  for (const key of ['type', 'mode', 'status', 'session_id', 'observation_type', 'release_state', 'release_confidence'] as const) {
+  for (const key of ['type', 'mode', 'status', 'session_id', 'observation_type', 'release_state', 'release_confidence', 'continuation'] as const) {
     if (q.has(key)) options[key] = q.get(key)!;
   }
   if (!q.has('type') && q.has('namespace')) options.type = q.get('namespace')!;

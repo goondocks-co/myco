@@ -17,6 +17,20 @@ export interface SearchOptions {
   release_confidence?: string;
   since?: number;
   until?: number;
+  /** The `continuation` an earlier answer to the same single-type search returned: the answer then continues after it. */
+  continuation?: string;
+}
+
+/** The top-level turn a prompt or reply hit belongs to, as the Project's own session records it. */
+export interface SearchTurn {
+  /** The turn a named-turn read opens: the hit's prompt, or the prompt it steers. */
+  prompt_id: string;
+  /** The turn's opening text, cut as a turn row's preview is; null for a turn whose text is stored apart. */
+  preview: string | null;
+  /** The turn's whole text length in characters; null for a turn whose text is stored apart. */
+  text_chars: number | null;
+  /** The turn's text is stored apart from the turn row. */
+  stored: boolean;
 }
 
 export interface SearchResult {
@@ -25,8 +39,12 @@ export interface SearchResult {
   title: string;
   preview: string;
   score: number;
+  /** When the hit's own record was created, in epoch milliseconds. */
+  created_at: number;
   session_id?: string;
   prompt_id?: string;
+  /** Present on prompt and reply hits: the turn the hit opens, or null when its prompt reference names no prompt of this Project's session. */
+  turn?: SearchTurn | null;
   retrieve?: { tool: string; input: { op: string; id: string } };
   /** Whether the record's source work is released, as the latest release check left it; absent when it has no release state. */
   release?: ReleaseAnnotation;
@@ -44,6 +62,8 @@ export interface SearchAnswer {
   mode: 'fts' | 'semantic';
   provider_unavailable: boolean;
   coverage: { pending_blobs: number };
+  /** Passed back as `continuation` for the matches that follow these; null when none follow, and always null for a search of several types. */
+  continuation: string | null;
 }
 
 /** A result of a search across Projects: a Project's result, with the Project it belongs to. */
@@ -57,4 +77,5 @@ export interface SearchAcrossAnswer {
   mode: 'fts';
   provider_unavailable: false;
   coverage: { pending_blobs: number };
+  continuation: string | null;
 }

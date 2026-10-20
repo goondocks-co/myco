@@ -13,8 +13,8 @@ const FILTER_DEBOUNCE_MS = 250;
 /** One thing the session holds, as its list shows it. */
 export interface SessionEventRow {
   key: string;
-  /** When it happened, shown first; null for a row with no time to give. */
-  at: number | null;
+  /** When it happened, shown first. */
+  at: number;
   /** What kind of thing it is, in words: "Gotcha", "In progress". */
   kind: string;
   title: ReactNode;
@@ -136,8 +136,7 @@ function EventFilterBar({ filter }: { filter: SessionEventFilter }) {
 }
 
 /** The day above the time, so the column stays narrow. */
-function When({ at, now }: { at: number | null; now: number }) {
-  if (at === null) return <span aria-hidden className="flex w-s12 flex-col t-meta text-muted sm:w-time-col">—</span>;
+function When({ at, now }: { at: number; now: number }) {
   return (
     <time dateTime={new Date(at).toISOString()} className="flex w-s12 flex-col t-meta tabular-nums text-muted sm:w-time-col">
       <span className="whitespace-nowrap">{shortDay(at, now)}</span>

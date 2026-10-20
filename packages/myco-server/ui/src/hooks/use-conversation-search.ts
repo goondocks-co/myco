@@ -1,67 +1,79 @@
-import { useQueries } from '@tanstack/react-query';
-import { SEARCH_MIN_CHARS, SEARCH_RESULT_CAP, useSearch, type SearchResult } from './use-search';
-import { namedTurnQuery, type TurnRow } from './use-sessions';
+import { useInfiniteQuery } from '@tanstack/react-query';
+import type { SearchAnswer, SearchResult, SearchTurn } from '@goondocks/myco-shared/search-types';
+import { fetchJson } from '../lib/api';
+import { SEARCH_MIN_CHARS, searchPath } from './use-search';
 
-/** The kinds of record a conversation holds in words: tool calls are never searched. */
+/** The kinds of record a conversation holds: tool calls are never searched. */
 const CONVERSATION_TYPES = ['prompt', 'response'] as const;
-
-/** What a hit's turn lookup found. */
-export type TurnLookup =
-  /** The hit names no prompt. */
-  | { state: 'none' }
-  | { state: 'pending' }
-  | { state: 'failed' }
-  /** The session holds no prompt of that id. */
-  | { state: 'missing' }
-  | { state: 'found'; turn: TurnRow };
+type ConversationType = (typeof CONVERSATION_TYPES)[number];
+const INDEX_REFRESH_MS = 5000;
 
 export interface ConversationHit {
   /** Unique among the hits. */
   key: string;
-  type: (typeof CONVERSATION_TYPES)[number];
+  type: ConversationType;
   preview: string;
-  /** The prompt the hit belongs to, or null. */
-  promptId: string | null;
-  lookup: TurnLookup;
+  /** When the hit's own prompt or reply was captured, in epoch milliseconds. */
+  at: number;
+  /** The turn the hit opens, or null when its prompt is not one this session holds. */
+  turn: SearchTurn | null;
 }
 
+/** One kind's matches in this session, page after page, by words. */
+function useConversationPages(projectId: string, sessionId: string, query: string, type: ConversationType, enabled: boolean) {
+  return useInfiniteQuery({
+    queryKey: ['conversation-search', projectId, sessionId, type, query],
+    initialPageParam: null as string | null,
+    enabled,
+    queryFn: ({ pageParam, signal }) => fetchJson<SearchAnswer>(
+      searchPath({ projectId }, { query, type, since: '', observationType: '', sessionId, mode: 'fts', ...(pageParam === null ? {} : { continuation: pageParam }) }),
+      signal,
+    ),
+    getNextPageParam: (last) => last.continuation ?? undefined,
+    refetchInterval: (state) => (state.state.data?.pages.at(-1)?.coverage.pending_blobs ?? 0) > 0 ? INDEX_REFRESH_MS : false,
+  });
+}
+
+const asHit = (result: SearchResult): ConversationHit => ({
+  key: `${result.type}:${result.id}`,
+  type: result.type as ConversationType,
+  preview: result.preview,
+  at: result.created_at,
+  turn: result.turn ?? null,
+});
+
 /**
- * Prompt and reply hits of one session, from the project's own search scoped to the session, by words: a search by
- * meaning reads only the records already embedded, so it would leave out the newest turns. The turn each hit
- * belongs to is read through the same bounded lookup `?turn=` opens. The search has no continuation: `capped` says a
- * kind returned as many as it will.
+ * Prompt and reply hits of one session by words. Each kind pages on its own continuation; a page of hits lists
+ * its prompts and replies together by score, and the next page follows it.
  */
 export function useConversationSearch(projectId: string, sessionId: string, query: string) {
   const enabled = query.length >= SEARCH_MIN_CHARS;
-  const prompts = useSearch({ projectId }, { query, type: CONVERSATION_TYPES[0], since: '', observationType: '', sessionId, mode: 'fts' }, enabled);
-  const replies = useSearch({ projectId }, { query, type: CONVERSATION_TYPES[1], since: '', observationType: '', sessionId, mode: 'fts' }, enabled);
-  const found: SearchResult[] = [...(prompts.data?.results ?? []), ...(replies.data?.results ?? [])]
-    .filter((hit) => hit.type === 'prompt' || hit.type === 'response')
-    .sort((a, b) => b.score - a.score || CONVERSATION_TYPES.indexOf(a.type as 'prompt') - CONVERSATION_TYPES.indexOf(b.type as 'prompt') || a.id.localeCompare(b.id));
-  const promptIds = [...new Set(found.flatMap((hit) => hit.prompt_id === undefined ? [] : [hit.prompt_id]))];
-  const turns = useQueries({ queries: promptIds.map((id) => namedTurnQuery(projectId, sessionId, id)) });
-  const lookups = new Map<string, TurnLookup>(promptIds.map((id, index) => {
-    const read = turns[index]!;
-    if (read.isError) return [id, { state: 'failed' }];
-    if (read.data === undefined) return [id, { state: 'pending' }];
-    const turn = read.data.rows[0];
-    return [id, turn === undefined ? { state: 'missing' } : { state: 'found', turn }];
-  }));
-  const hits: ConversationHit[] = found.map((hit) => ({
-    key: `${hit.type}:${hit.id}`,
-    type: hit.type as ConversationHit['type'],
-    preview: hit.preview,
-    promptId: hit.prompt_id ?? null,
-    lookup: hit.prompt_id === undefined ? { state: 'none' } : lookups.get(hit.prompt_id)!,
-  }));
+  const prompts = useConversationPages(projectId, sessionId, query, 'prompt', enabled);
+  const replies = useConversationPages(projectId, sessionId, query, 'response', enabled);
   const reads = [prompts, replies];
+  const pageCount = Math.max(...reads.map((read) => read.data?.pages.length ?? 0));
+  const seen = new Set<string>();
+  const hits: ConversationHit[] = [];
+  for (let index = 0; index < pageCount; index += 1) {
+    const page = reads.flatMap((read) => read.data?.pages[index]?.results ?? []).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+    for (const result of page) {
+      const hit = asHit(result);
+      if (!seen.has(hit.key)) { seen.add(hit.key); hits.push(hit); }
+    }
+  }
+  const failedFirst = reads.find((read) => read.isError && read.data === undefined);
+  const failedMore = reads.find((read) => read.isFetchNextPageError);
   return {
     hits,
     enabled,
-    isPending: enabled && (reads.some((read) => read.isPending) || hits.some((hit) => hit.lookup.state === 'pending')),
-    error: prompts.error ?? replies.error,
-    retry: () => { for (const read of reads) if (read.isError) void read.refetch(); },
-    capped: reads.some((read) => (read.data?.results.length ?? 0) >= SEARCH_RESULT_CAP),
-    pendingBodies: Math.max(...reads.map((read) => read.data?.coverage.pending_blobs ?? 0)),
+    isPending: enabled && reads.some((read) => read.isPending && !read.isError),
+    error: failedFirst?.error ?? null,
+    moreError: failedMore?.error ?? null,
+    retry: () => { for (const read of reads) if (read.isError && read.data === undefined) void read.refetch(); },
+    hasMore: reads.some((read) => read.hasNextPage),
+    isFetchingMore: reads.some((read) => read.isFetchingNextPage),
+    more: () => { for (const read of reads) if (read.hasNextPage) void read.fetchNextPage({ cancelRefetch: false }); },
+    retryMore: () => { for (const read of reads) if (read.isFetchNextPageError) void read.fetchNextPage(); },
+    pendingBodies: Math.max(...reads.map((read) => read.data?.pages.at(-1)?.coverage.pending_blobs ?? 0)),
   };
 }

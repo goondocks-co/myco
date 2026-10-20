@@ -28,6 +28,8 @@ export interface SearchFilters {
   sessionId?: string;
   /** How a project's search matches: by meaning where it can (`auto`, the default) or by words alone (`fts`). */
   mode?: 'auto' | 'fts';
+  /** The continuation an earlier answer to this search returned: the answer then lists the matches after it. */
+  continuation?: string;
 }
 
 /** A search's answer with every result carrying the project it belongs to. */
@@ -39,11 +41,12 @@ export interface ScopedSearchAnswer {
 }
 
 /** The request a search sends: a project's own search (which may answer by meaning), or the one across every project (words only). */
-export function searchPath(scope: SearchScope, { query, type, since, observationType, sessionId, mode = 'auto' }: SearchFilters): string {
+export function searchPath(scope: SearchScope, { query, type, since, observationType, sessionId, mode = 'auto', continuation }: SearchFilters): string {
   const params = new URLSearchParams({ q: query, type, limit: String(SEARCH_RESULT_CAP) });
   if (since) params.set('since', since);
   if (observationType) params.set('observation_type', observationType);
   if (sessionId && scope !== 'all') params.set('session_id', sessionId);
+  if (continuation && scope !== 'all') params.set('continuation', continuation);
   if (scope === 'all') return `/api/search?${params}`;
   params.set('mode', mode);
   return `/api/projects/${encodeURIComponent(scope.projectId)}/search?${params}`;
