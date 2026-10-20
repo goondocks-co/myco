@@ -30,7 +30,12 @@ test.describe('design specimen', () => {
         expect(kicker!.y + kicker!.height).toBeLessThanOrEqual(title!.y);
         // Sibling rows draw a divider under every row but the last.
         const dividers = await page.locator('[data-specimen-kicker] > *').evaluateAll((rows) => rows.map((row) => getComputedStyle(row).borderBottomWidth));
-        expect(dividers).toEqual(['1px', '0px']);
+        expect(dividers).toEqual(['1px', '1px', '0px']);
+        // A wrapping row keeps all its words, and its copy control keeps its name where only the icon shows.
+        const wrapped = page.locator('[data-specimen-kicker] > *').last();
+        await expect(wrapped.getByText('Released · myco/v2.0.3 · PR #1873 · checked 30 min ago')).toBeVisible();
+        expect(await wrapped.getByText('Ended at 8d41b7e, couldn’t tell whether files changed').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+        await expect(wrapped.getByRole('button', { name: 'Copy commit' })).toBeVisible();
         await expectFits(page, viewport);
         await expectAxeClean(page);
         expectQuiet(watch);

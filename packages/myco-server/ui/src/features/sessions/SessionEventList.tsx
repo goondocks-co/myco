@@ -22,6 +22,8 @@ export interface SessionEventRow {
   detail?: ReactNode;
   /** Its own page, when it has one. */
   to?: string;
+  /** A control at the row's far end, on a row with no page of its own. */
+  trailing?: ReactNode;
 }
 
 /** A read the list shows: its rows so far, and how to get the rest. */
@@ -54,11 +56,9 @@ export function useSessionEventFilters(): SessionEventFilters {
   return { params, draft, type: picked === ANY ? null : picked, q: params.query.trim() };
 }
 
-export interface SessionEventListProps {
+/** The filter and search above a list whose read takes them. */
+export interface SessionEventFilter {
   filters: SessionEventFilters;
-  read: SessionEventRead;
-  /** The plural noun the list counts, as in "spores". */
-  noun: string;
   /** Names the search field, as in "Search spores". */
   searchLabel: string;
   placeholder: string;
@@ -66,6 +66,16 @@ export interface SessionEventListProps {
   typeLabel: string;
   /** The first option is the unfiltered one. */
   typeOptions: readonly SelectOption[];
+}
+
+export interface SessionEventListProps {
+  /** Absent for a list too short to need one. */
+  filter?: SessionEventFilter;
+  read: SessionEventRead;
+  /** The plural noun the list counts, as in "spores". */
+  noun: string;
+  /** Rows wrap their words instead of truncating them. */
+  wrap?: boolean;
   /** What the list says when the session holds none at all. */
   emptyTitle: string;
   loadingLabel: string;
@@ -74,26 +84,16 @@ export interface SessionEventListProps {
 
 /**
  * The things a session holds of one kind, as one list: a filter of their kind
- * and a search above, then one row each with its time first, its kind above
- * its title and its detail under it, and "Show more" at the foot. An empty
- * list says whether the session holds none or the filter matches none.
+ * and a search above where the list takes them, then one row each with its
+ * time first, its kind above its title and its detail under it, and "Show
+ * more" at the foot. An empty list says whether the session holds none or the
+ * filter matches none.
  */
-export function SessionEventList({ filters, read, noun, searchLabel, placeholder, typeLabel, typeOptions, emptyTitle, loadingLabel, now }: SessionEventListProps) {
-  const { params, draft } = filters;
-  const filtered = filters.type !== null || filters.q !== '';
-  const clear = () => { draft.reset(); params.clear(); };
+export function SessionEventList({ filter, read, noun, wrap = false, emptyTitle, loadingLabel, now }: SessionEventListProps) {
+  const filtered = filter !== undefined && (filter.filters.type !== null || filter.filters.q !== '');
   return (
     <div className="flex flex-col gap-s3" data-session-events={noun}>
-      <FilterBar
-        searchLabel={searchLabel}
-        placeholder={placeholder}
-        query={draft.text}
-        onQueryChange={draft.setText}
-        filters={[{ key: EVENT_TYPE_KEY, label: typeLabel, options: typeOptions }]}
-        values={params.values}
-        onFilterChange={params.setFilter}
-        onClear={clear}
-      />
+      {filter !== undefined && <EventFilterBar filter={filter} />}
       {read.isPending ? <LoadingState label={loadingLabel} count={3} />
         : read.error ? <ErrorState error={read.error} onRetry={read.retry} />
         : read.rows.length === 0 ? (
@@ -105,7 +105,7 @@ export function SessionEventList({ filters, read, noun, searchLabel, placeholder
             <ul aria-label={capitalized(noun)} className="overflow-hidden rounded-card border border-line bg-surface-1">
               {read.rows.map((row) => (
                 <li key={row.key}>
-                  <ListRow leading={<When at={row.at} now={now} />} kicker={<TypeChip>{row.kind}</TypeChip>} title={row.title} meta={row.detail} to={row.to} />
+                  <ListRow leading={<When at={row.at} now={now} />} kicker={<TypeChip>{row.kind}</TypeChip>} title={row.title} meta={row.detail} to={row.to} trailing={row.trailing} wrap={wrap} />
                 </li>
               ))}
             </ul>
@@ -115,6 +115,23 @@ export function SessionEventList({ filters, read, noun, searchLabel, placeholder
           </div>
         )}
     </div>
+  );
+}
+
+function EventFilterBar({ filter }: { filter: SessionEventFilter }) {
+  const { params, draft } = filter.filters;
+  const clear = () => { draft.reset(); params.clear(); };
+  return (
+    <FilterBar
+      searchLabel={filter.searchLabel}
+      placeholder={filter.placeholder}
+      query={draft.text}
+      onQueryChange={draft.setText}
+      filters={[{ key: EVENT_TYPE_KEY, label: filter.typeLabel, options: filter.typeOptions }]}
+      values={params.values}
+      onFilterChange={params.setFilter}
+      onClear={clear}
+    />
   );
 }
 

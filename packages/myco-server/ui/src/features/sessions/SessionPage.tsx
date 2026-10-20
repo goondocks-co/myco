@@ -25,10 +25,11 @@ import { Conversation } from './Conversation';
 import { RawData, isRawSection } from './RawData';
 import { SessionActions } from './SessionActions';
 import { EVENT_TYPE_KEY, SessionEventList, useSessionEventFilters, type SessionEventRow } from './SessionEventList';
+import { SessionOutcomes } from './Outcomes';
 import { WhatCameOfIt } from './WhatCameOfIt';
 import { agentName, count, dateTime, memberName, sporeLine, sporeTypeWord, spanWords } from './words';
 
-const TABS = ['conversation', 'spores', 'plans'] as const;
+const TABS = ['conversation', 'outcomes', 'spores', 'plans'] as const;
 type Tab = (typeof TABS)[number];
 
 const SPORE_TYPE_OPTIONS: readonly SelectOption[] = [
@@ -75,7 +76,7 @@ export function SessionPage({ projectId, sessionId, projectName }: SessionPagePr
   );
 }
 
-/** While a live session is read again, what arrived since is read too: its turns, and the bodies of turns already read. */
+/** While a live session is read again, what arrived since is read too: its turns, the bodies of turns already read, and its commits. */
 function useFollowLive(projectId: string, session: SessionRow) {
   const client = useQueryClient();
   const heard = session.lastReceivedAt;
@@ -85,6 +86,7 @@ function useFollowLive(projectId: string, session: SessionRow) {
     seen.current = heard;
     void client.invalidateQueries({ queryKey: ['turns', projectId, session.sessionId] });
     void client.invalidateQueries({ queryKey: ['turn', projectId, session.sessionId] });
+    void client.invalidateQueries({ queryKey: ['session-commits', projectId, session.sessionId] });
   }, [client, projectId, session.sessionId, heard]);
 }
 
@@ -149,11 +151,15 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList aria-label="What the session holds">
               <TabsTrigger value="conversation">Conversation</TabsTrigger>
+              <TabsTrigger value="outcomes">Outcomes</TabsTrigger>
               <TabsTrigger value="spores">Spores</TabsTrigger>
               <TabsTrigger value="plans">Plans</TabsTrigger>
             </TabsList>
             <TabsContent value="conversation">
               <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} />
+            </TabsContent>
+            <TabsContent value="outcomes">
+              <SessionOutcomes projectId={projectId} sessionId={session.sessionId} now={now} />
             </TabsContent>
             <TabsContent value="spores">
               <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />
@@ -269,13 +275,9 @@ function SessionSpores({ projectId, sessionId, now }: { projectId: string; sessi
   }));
   return (
     <SessionEventList
-      filters={filters}
+      filter={{ filters, searchLabel: 'Search spores', placeholder: 'Search what the spores say', typeLabel: 'Type', typeOptions: SPORE_TYPE_OPTIONS }}
       read={{ ...spores, rows }}
       noun="spores"
-      searchLabel="Search spores"
-      placeholder="Search what the spores say"
-      typeLabel="Type"
-      typeOptions={SPORE_TYPE_OPTIONS}
       emptyTitle="No spores were saved from this session yet."
       loadingLabel="Loading the spores"
       now={now}
@@ -297,13 +299,9 @@ function SessionPlans({ projectId, sessionId, now }: { projectId: string; sessio
   }));
   return (
     <SessionEventList
-      filters={filters}
+      filter={{ filters, searchLabel: 'Search plans', placeholder: 'Search plan titles', typeLabel: 'Status', typeOptions: PLAN_STATUS_OPTIONS }}
       read={{ ...plans, rows }}
       noun="plans"
-      searchLabel="Search plans"
-      placeholder="Search plan titles"
-      typeLabel="Status"
-      typeOptions={PLAN_STATUS_OPTIONS}
       emptyTitle="No plans were captured in this session."
       loadingLabel="Loading the plans"
       now={now}

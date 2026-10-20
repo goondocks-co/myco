@@ -263,7 +263,7 @@ test.describe('Sessions', () => {
         await watch.navigate(() => openTable(page, viewport));
         await watch.navigate(() => openOutcomeSession(page));
         const tabs = page.getByRole('tablist', { name: 'What the session holds' });
-        await expect(tabs.getByRole('tab')).toHaveText(['Conversation', 'Spores', 'Plans']);
+        await expect(tabs.getByRole('tab')).toHaveText(['Conversation', 'Outcomes', 'Spores', 'Plans']);
 
         // Spores: every one the session produced, a row each, the type above its line and its status under it.
         await tabs.getByRole('tab', { name: 'Spores' }).click();
@@ -335,6 +335,59 @@ test.describe('Sessions', () => {
           await expect(page).toHaveURL(/\/plans\/[^/?]+$/);
         });
         await expect(page.getByRole('heading', { level: 1 })).toHaveText('One filter bar on every list page');
+        expectQuiet(watch);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  for (const viewport of ['desktop', 'phone'] as const) {
+    test(`a session's outcomes tab ${viewport}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the sessions are the fixture’s');
+      const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode: 'light', cookie: screensEnv('ownerCookie') });
+      const reopen = async (title: string) => {
+        await watch.navigate(async () => {
+          await page.goto(new URL('/sessions', page.url()).href);
+          await expect(page.getByRole('heading', { level: 1, name: 'Sessions' })).toBeVisible();
+        });
+        await page.locator('[data-table="Sessions"]').getByRole('link', { name: title }).click();
+        await expect(page.getByRole('heading', { level: 1 })).toHaveText(title);
+      };
+      try {
+        await watch.navigate(() => openTable(page, viewport));
+        await watch.navigate(() => openOutcomeSession(page));
+        const tabs = page.getByRole('tablist', { name: 'What the session holds' });
+
+        // The commits it started and ended on, with the release check on the end commit it classified.
+        await tabs.getByRole('tab', { name: 'Outcomes' }).click();
+        await expect(page).toHaveURL(/\?tab=outcomes$/);
+        const outcomes = page.getByRole('list', { name: 'Outcomes' }).getByRole('listitem');
+        await expect(outcomes).toHaveCount(2);
+        await expect(outcomes.nth(0)).toContainText('Started at 3f9c2a1 on main');
+        await expect(outcomes.nth(1)).toContainText('Ended at 8d41b7e');
+        await expect(outcomes.nth(1)).toContainText(/Released · myco\/v2\.0\.3 · PR #1873 · checked /);
+        await expect(outcomes.getByRole('button', { name: 'Copy commit' })).toHaveCount(2);
+        await expect(page.locator('[data-session-events="outcomes"] [data-filter-bar]')).toHaveCount(0);
+        await expectListState(page, viewport, 'session-outcomes');
+
+        // Equal start and end commits are said to be the same, and a dirty end says so.
+        await reopen(PLAN_SESSION_TITLE);
+        await tabs.getByRole('tab', { name: 'Outcomes' }).click();
+        await expect(outcomes).toHaveCount(2);
+        await expect(outcomes.nth(1)).toContainText('Ended at 5be0c94, uncommitted changes');
+        await expect(outcomes.nth(1)).toContainText('Start and end HEAD are the same');
+        await expectListState(page, viewport, 'session-outcomes-same-dirty');
+
+        // A session whose commits were never observed says so; another tab opens from it.
+        await reopen('Checkout form validation messages rewritten');
+        await tabs.getByRole('tab', { name: 'Outcomes' }).click();
+        await expect(page.getByText('No commits were observed in this session.')).toBeVisible();
+        await expectListState(page, viewport, 'session-outcomes-empty');
+        await tabs.getByRole('tab', { name: 'Spores' }).click();
+        await expect(page).toHaveURL(/\?tab=spores$/);
+        await tabs.getByRole('tab', { name: 'Conversation' }).click();
+        await expect(page).toHaveURL(/\/sessions\/[^/?]+$/);
         expectQuiet(watch);
       } finally {
         await context.close();

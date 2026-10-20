@@ -15,6 +15,7 @@ import { PLAN_STATUS_MESSAGE, planInSession, WRITABLE_PLAN_STATUSES } from '../r
 import { tombstoneSession } from '../core/tombstones.js';
 import { endSession } from '../core/session-end.js';
 import { sessionOutcome } from '../read/run-reads.js';
+import { sessionCommits } from '../read/session-commits.js';
 import { resumeCommandFor } from '../core/resume-command.js';
 
 /** Session child collections, each served by the same scoped and paginated handler. */
@@ -134,6 +135,16 @@ function planFilters(url: URL): { status?: string; q?: string } | Response {
   if (status !== null && !WRITABLE_PLAN_STATUSES.has(status)) return badRequest(PLAN_STATUS_MESSAGE);
   const q = url.searchParams.get('q');
   return { ...(status === null ? {} : { status }), ...(q === null ? {} : { q }) };
+}
+
+/** The commits the session's member observed at its start and end, and the release check that classified one of them. */
+export async function handleSessionCommits(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const sessionId = sessionIdParam(ctx.params.sessionId);
+  if (sessionId === null) return notFound();
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
+  return ok(await sessionCommits(env.db, scope, sessionId));
 }
 
 /** A session's turns of the named origins; `order=desc` reads backward, and `turn` resolves a named prompt directly. */
