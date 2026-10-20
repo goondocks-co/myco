@@ -231,11 +231,11 @@ export interface NeedsYouWords {
 /** A part of Health, by its anchor. */
 const healthAt = (anchor: string): string => `${HEALTH_PATH}#${anchor}`;
 
-const PROMPT_SCOPE_WORDS: Readonly<Record<PromptScopeReason, string>> = {
-  absent_key: 'the agent sent no prompt id',
-  steering: 'sent mid-turn',
-  scheme: 'from an agent version Myco can’t match yet',
-  transcript_only: 'matched from the transcript instead',
+const PROMPT_SCOPE_WORDS: Readonly<Record<PromptScopeReason, readonly [string, string]>> = {
+  absent_key: ['had no prompt id from the agent', 'had no prompt id from the agent'],
+  steering: ['was sent mid-turn', 'were sent mid-turn'],
+  scheme: ['came from an agent version Myco can’t match yet', 'came from an agent version Myco can’t match yet'],
+  transcript_only: ['was matched from the transcript instead', 'were matched from the transcript instead'],
 };
 
 export function attentionWords(item: AttentionItem, now: number, projectName: (projectId: string) => string | null): NeedsYouWords {
@@ -277,28 +277,30 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
     }
     case 'prompt_references': {
       const window = `In the last ${count(Math.round((now - item.since) / DAY), 'day')}`;
-      const missing = item.total === 0 ? `${window}.`
+      const missing = item.total === 0 ? ''
         : `${window}, ${count(item.total, 'record')} of context Myco added ${item.total === 1 ? 'names' : 'name'} a prompt this server never received, so ${item.total === 1 ? 'its session can’t show it' : 'their sessions can’t show them'} on that prompt.`;
       const notable = item.agents.filter(agent => agent.keyMismatches > 0 || agent.sessionScoped > 0 || agent.legacy > 0);
-      const agents = notable.map(agent => {
+      const agents = notable.map((agent, index) => {
+        const name = agentName(agent.agent);
+        const subject = item.total === 0 && index === 0 && name === 'An agent' ? 'an agent' : name;
         const clauses: string[] = [];
-        if (agent.keyMismatches > 0) clauses.push(`${count(agent.keyMismatches, 'prompt')} recorded with different text.`);
+        if (agent.keyMismatches > 0) clauses.push(`${subject} recorded ${count(agent.keyMismatches, 'prompt')} with different text than the agent sent.`);
         const requests: string[] = [];
         if (agent.sessionScoped > 0) {
           const reasons = PROMPT_SCOPE_REASONS.flatMap(reason => {
             const sample = agent.scopeReasons[reason];
-            return sample === undefined || sample.asks === 0 ? [] : [`${count(sample.asks, 'request')}: ${PROMPT_SCOPE_WORDS[reason]}`];
+            return sample === undefined || sample.asks === 0 ? [] : [count(sample.asks, ...PROMPT_SCOPE_WORDS[reason])];
           });
-          requests.push(`${count(agent.sessionScoped, 'request')} ${agent.sessionScoped === 1 ? 'wasn’t' : 'weren’t'} tied to one prompt${reasons.length === 0 ? '' : ` (${listed(reasons)})`}`);
+          requests.push(`${count(agent.sessionScoped, 'wasn’t', 'weren’t')} tied to one prompt${reasons.length === 0 ? '' : ` (${reasons.join(', ')})`}`);
         }
-        if (agent.legacy > 0) requests.push(`${count(agent.legacy, 'request')} came from machines that haven’t updated`);
-        if (requests.length > 0) clauses.push(`Of ${count(agent.asks, 'request')} for context, ${listed(requests)}.`);
-        return `${agentName(agent.agent)}: ${clauses.join(' ')}`;
+        if (agent.legacy > 0) requests.push(count(agent.legacy, 'came from a machine that hasn’t updated', 'came from machines that haven’t updated'));
+        if (requests.length > 0) clauses.push(`${agent.keyMismatches === 0 ? `${subject}: ` : ''}Of ${count(agent.asks, 'request')} for context, ${requests.join(', and ')}.`);
+        return clauses.join(' ');
       });
-      const expected = notable.some(agent => agent.sessionScoped > 0 || agent.legacy > 0) ? 'Those requests are expected.' : '';
+      const expected = notable.some(agent => agent.sessionScoped > 0 || agent.legacy > 0) ? 'Those are expected.' : '';
       return {
         title: item.total > 0 ? 'Some context Myco added can’t be shown on its prompt' : 'Some prompts were recorded with different text than the agent sent',
-        detail: [missing, ...agents, expected].filter(Boolean).join(' '),
+        detail: `${item.total === 0 ? `${window}, ` : ''}${[missing, ...agents, expected].filter(Boolean).join(' ')}`,
         action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.measures) },
       };
     }

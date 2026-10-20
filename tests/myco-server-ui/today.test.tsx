@@ -488,10 +488,10 @@ describe('Today', () => {
     }
     const headings = await screen.findAllByText(title);
     const row = headings.map(heading => heading.closest('[data-needs-you-item]')).find(Boolean)!;
-    expect(row.querySelectorAll('p')[1]!.textContent).toBe('In the last 7 days, 2 records of context Myco added name a prompt this server never received, so their sessions can’t show them on that prompt. Codex: 1 prompt recorded with different text. Of 4 requests for context, 2 requests weren’t tied to one prompt (1 request: the agent sent no prompt id and 1 request: sent mid-turn) and 1 request came from machines that haven’t updated. Those requests are expected.');
-    expect(row.textContent).toContain('1 request came from machines that haven’t updated');
-    expect(row.textContent).toContain('Codex: 1 prompt recorded with different text.');
-    expect(row.textContent).toContain('1 request: the agent sent no prompt id');
+    expect(row.querySelectorAll('p')[1]!.textContent).toBe('In the last 7 days, 2 records of context Myco added name a prompt this server never received, so their sessions can’t show them on that prompt. Codex recorded 1 prompt with different text than the agent sent. Of 4 requests for context, 2 weren’t tied to one prompt (1 had no prompt id from the agent, 1 was sent mid-turn), and 1 came from a machine that hasn’t updated. Those are expected.');
+    expect(row.textContent).toContain('1 came from a machine that hasn’t updated');
+    expect(row.textContent).toContain('Codex recorded 1 prompt with different text than the agent sent.');
+    expect(row.textContent).toContain('1 had no prompt id from the agent');
     expect(row.textContent).not.toMatch(/dangling|receipt|v1|spore_injections|Deployment|session-wide|text mismatch|older members|spore selections/);
     expect(within(row as HTMLElement).getByRole('link', { name: 'Open Health →' }).getAttribute('href')).toBe('/status/health#measures');
   });
@@ -501,7 +501,7 @@ describe('Today', () => {
       dangling: { receipt_selected: 0, answer_selected: 0, receipt_delivered: 0, answer_delivered: 0 },
       agents: [{ agent: 'codex', asks: 1, sessionScoped: 0, scopeReasons: {}, legacy: 0, sessionScopedShare: 0, legacyShare: 0, keyMismatches: 1 }] };
     expect(attentionWords(item, NOW, () => null)).toEqual({ title: 'Some prompts were recorded with different text than the agent sent',
-      detail: 'In the last 7 days. Codex: 1 prompt recorded with different text.', action: { label: 'Open Health', to: '/status/health#measures' } });
+      detail: 'In the last 7 days, Codex recorded 1 prompt with different text than the agent sent.', action: { label: 'Open Health', to: '/status/health#measures' } });
     screenWidth(1280);
     server(day({ attention: { items: [], unavailable: ['prompt_references'] } }));
     mount('/');
@@ -517,9 +517,18 @@ describe('Today', () => {
         { agent: 'pi', asks: 1, sessionScoped: 0, scopeReasons: {}, legacy: 0, sessionScopedShare: 0, legacyShare: 0, keyMismatches: 1 },
       ] };
     const words = attentionWords(base, NOW, () => null);
-    expect(words.detail).toBe('In the last 7 days. An agent: 1 prompt recorded with different text. Pi: 1 prompt recorded with different text.');
+    expect(words.detail).toBe('In the last 7 days, an agent recorded 1 prompt with different text than the agent sent. Pi recorded 1 prompt with different text than the agent sent.');
     const singular = attentionWords({ ...base, total: 1, agents: [] }, NOW, () => null);
     expect(singular.detail).toBe('In the last 7 days, 1 record of context Myco added names a prompt this server never received, so its session can’t show it on that prompt.');
+  });
+
+  it('pluralises prompt request predicates without colons inside the reason list', () => {
+    const item: AttentionItem = { kind: 'prompt_references', tone: 'warn', since: NOW - 7 * 24 * HOUR, total: 0,
+      dangling: { receipt_selected: 0, answer_selected: 0, receipt_delivered: 0, answer_delivered: 0 },
+      agents: [{ agent: 'codex', asks: 10, sessionScoped: 8,
+        scopeReasons: { absent_key: { asks: 2, share: 0.2 }, steering: { asks: 2, share: 0.2 }, scheme: { asks: 2, share: 0.2 }, transcript_only: { asks: 2, share: 0.2 } },
+        legacy: 2, sessionScopedShare: 0.8, legacyShare: 0.2, keyMismatches: 2 }] };
+    expect(attentionWords(item, NOW, () => null).detail).toBe('In the last 7 days, Codex recorded 2 prompts with different text than the agent sent. Of 10 requests for context, 8 weren’t tied to one prompt (2 had no prompt id from the agent, 2 were sent mid-turn, 2 came from an agent version Myco can’t match yet, 2 were matched from the transcript instead), and 2 came from machines that haven’t updated. Those are expected.');
   });
 
   it('gives an admin "Needs you", each item with its problem, detail and one action', async () => {
