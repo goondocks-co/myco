@@ -96,6 +96,8 @@ export interface PromptIdentityCounts {
   identityConflicts: number;
   /** A transcript left unpinned, and so not read: its session's transcripts need two schemes. */
   schemeConflicts: number;
+  /** A session whose transcripts of this agent hold two schemes between them, pinned before one admission rule applied. */
+  mixedSchemeSessions: number;
   /** A context answer whose receipt is skipped: another receipt already names its prompt id. */
   duplicatePromptSkips: number;
 }
@@ -266,7 +268,7 @@ async function promptIdentityCounts(db: RelationalStore, since: number | null): 
   const answered = windowClause('a.created_at', since);
   const registered = windowClause('t.first_received_at', since);
   const kinds = Object.values(IDENTITY_KINDS).map((kind) => `SUM(p.prompt_kind = '${kind}') AS "${kind}"`).join(', ');
-  const [rows, conflicts, unpinned, duplicates] = await Promise.all([
+  const [rows, conflicts, unpinned, duplicates, mixed] = await Promise.all([
     db.prepare(`SELECT ${HARNESS_OF('p')} AS harness, COUNT(*) AS n, ${kinds}, SUM(p.claim = 'reused') AS reused
         FROM projects pr CROSS JOIN prompt_batches p WHERE p.project_id = pr.project_id AND p.claim IS NOT NULL AND ${claimed.sql} GROUP BY harness`)
       .bind(...claimed.params).all<Record<string, number | string>>(),
@@ -278,12 +280,16 @@ async function promptIdentityCounts(db: RelationalStore, since: number | null): 
     db.prepare(`SELECT ${HARNESS_OF('a')} AS harness, COUNT(*) AS n FROM prompt_context_answers a
         WHERE ${answered.sql} AND EXISTS (SELECT 1 FROM json_each(a.skipped) j WHERE j.value = 'spores:duplicate_prompt') GROUP BY harness`)
       .bind(...answered.params).all<{ harness: string; n: number }>(),
+    db.prepare(`SELECT agent AS harness, COUNT(*) AS n FROM (SELECT t.agent AS agent FROM transcripts t
+        WHERE t.agent IN (${DECLARED_AGENTS.map(() => '?').join(', ')}) AND t.prompt_identity_scheme IS NOT NULL AND ${registered.sql}
+        GROUP BY t.project_id, t.session_id, t.agent HAVING COUNT(DISTINCT t.prompt_identity_scheme) > 1) GROUP BY agent`)
+      .bind(...DECLARED_AGENTS, ...registered.params).all<{ harness: string; n: number }>(),
   ]);
   const byHarness = new Map<string, PromptIdentityCounts>();
   const of = (harness: string): PromptIdentityCounts => {
     let counts = byHarness.get(harness);
     if (counts === undefined) {
-      counts = { harness, sampleSize: 0, unrecognized: 0, unmarked: 0, openerConflict: 0, contractViolation: 0, reused: 0, identityConflicts: 0, schemeConflicts: 0, duplicatePromptSkips: 0 };
+      counts = { harness, sampleSize: 0, unrecognized: 0, unmarked: 0, openerConflict: 0, contractViolation: 0, reused: 0, identityConflicts: 0, schemeConflicts: 0, mixedSchemeSessions: 0, duplicatePromptSkips: 0 };
       byHarness.set(harness, counts);
     }
     return counts;
@@ -297,6 +303,7 @@ async function promptIdentityCounts(db: RelationalStore, since: number | null): 
   for (const row of conflicts.results) of(row.harness).identityConflicts = row.n;
   for (const row of unpinned.results) of(row.harness).schemeConflicts = row.n;
   for (const row of duplicates.results) of(row.harness).duplicatePromptSkips = row.n;
+  for (const row of mixed.results) of(row.harness).mixedSchemeSessions = row.n;
   return [...byHarness.values()].sort((a, b) => b.sampleSize - a.sampleSize || a.harness.localeCompare(b.harness));
 }
 

@@ -123,10 +123,10 @@ capture:
     # that record is the prompt the hook's id names (`parsers/claude-code.ts`).
     # Built-in CLI command dispatch envelope filter (structural).
     #
-    # Twin of the rule above, targeting Claude Code's built-in CLI operations
-    # (`/exit`, `/compact`, `/clear`, `/mcp`, `/plugin`, `/reload-plugins`,
-    # `/extra-usage`). Unlike user-authored slash commands, these do NOT fire
-    # UserPromptSubmit — they're internal CLI ops. They land in the transcript
+    # Claude Code's built-in CLI operations (`/exit`, `/compact`, `/clear`,
+    # `/mcp`, `/plugin`, `/reload-plugins`, `/extra-usage`). Unlike
+    # user-authored slash commands, these do NOT fire UserPromptSubmit —
+    # they're internal CLI ops. They land in the transcript
     # as user-type entries whose content starts with `<command-name>` instead
     # of `<command-message>`:
     #   <command-name>/compact</command-name>

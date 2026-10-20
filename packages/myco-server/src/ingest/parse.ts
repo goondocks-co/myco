@@ -35,7 +35,7 @@ import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import { declaredScheme, SCHEME_GENERATION_SQL, schemeGeneration } from './prompt-scheme.js';
 import { isPromptIdScheme, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
-import { datedAt, isBlock, promptOwners, withoutPrompts, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput, type PromptOwners, type TranscriptParser } from './parsers/index.js';
+import { datedAt, isBlock, promptOwners, withoutPrompts, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput, type PromptOwners } from './parsers/index.js';
 import type { TranscriptRole } from '@goondocks/myco-shared/member-protocol';
 import { resolvePresentedDates } from './projections.js';
 import { LEGACY_REPLY_LINES_PER_READ, legacyReplies, preserveLegacyReplies } from './legacy-replies.js';
@@ -789,12 +789,30 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     windowEnd = lines[LEGACY_REPLY_LINES_PER_READ].offset;
     lines = lines.slice(0, LEGACY_REPLY_LINES_PER_READ);
   }
-  const state: ParserState = structuredClone(initialState);
-  const owners = await storedOwners(env.db, target, parser, lines, scheme, () => { calls += 1; });
-  const input = { lines, sessionId: target.sessionId, scheme, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state, owners,
-    ...(target.role === undefined ? {} : { role: target.role }),
-    terminal: terminalOnly || (limits.completeFile && windowEnd === target.size) ? terminalRule(target, now, limits) : undefined };
-  const parsedEvents = await parser.parse(input);
+  // A window's claims on harness keys are admitted before anything it derives is published: the session's key owners
+  // decide (`prompt_key_owners`), and a window that lost a claim to another transcript of the session is read again
+  // under the owner that won, so its record is derived as the reuse it is.
+  const keys = await parser.claimKeys?.(lines, scheme, target.sessionId) ?? new Map<string, string>();
+  const readOwners = () => storedOwners(env.db, target, keys, () => { calls += 1; });
+  let owners = await readOwners();
+  const derive = async (): Promise<{ state: ParserState; input: ParserInput; parsed: DerivedEvent[] }> => {
+    const state: ParserState = structuredClone(initialState);
+    const input: ParserInput = { lines: lines!, sessionId: target.sessionId, scheme, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state, owners,
+      ...(target.role === undefined ? {} : { role: target.role }),
+      terminal: terminalOnly || (limits.completeFile && windowEnd === target.size) ? terminalRule(target, now, limits) : undefined };
+    return { state, input, parsed: await parser.parse(input) };
+  };
+  let derivation = await derive();
+  for (let round = 0; round < CLAIM_ROUNDS; round += 1) {
+    const claims = keyClaims(derivation.parsed, keys, owners);
+    if (claims.length === 0) break;
+    await claimKeys(env.db, target, claims, now);
+    calls += 1;
+    owners = await readOwners();
+    if (claims.every((claim) => owners?.get(claim.key)?.record === claim.record)) break;
+    derivation = await derive();
+  }
+  const { state, input, parsed: parsedEvents } = derivation;
   const heldReplies = await legacyReplies(env.db, target.projectId, target.transcriptId, parsedEvents, initialState, () => { calls += 1; });
   const events = preserveLegacyReplies(parsedEvents, state, heldReplies);
   const terminalProofs: { eventId: string; hash: string }[] = [];
@@ -1332,31 +1350,52 @@ export async function parseTranscripts(env: ServerEnv, now: number, options: Par
   return { changed: derived, more };
 }
 
-/** Owner ids read per statement: under the bound-parameter ceiling with the project and session bound beside them. */
+/** Keys read per statement: under the bound-parameter ceiling with the project and session bound beside them. */
 const OWNERS_PER_READ = 90;
+/** Claim rounds a window takes at most: a lost claim reads it again once, and the reread claims nothing new. */
+const CLAIM_ROUNDS = 3;
+
+/** One record's claim on a harness key, as a window's parse made it. */
+interface KeyClaim { key: string; thread: string; record: string }
 
 /**
- * The stored owner of each harness key a window's records could claim (`TranscriptParser.claimKeys`), read before the
+ * The claims a parse made on keys no stored owner holds: each prompt it derived under a key's owner id
+ * (`TranscriptParser.claimKeys`) for a key the window read no owner of.
+ */
+function keyClaims(events: readonly DerivedEvent[], keys: ReadonlyMap<string, string>, owners: PromptOwners | undefined): KeyClaim[] {
+  const claims: KeyClaim[] = [];
+  for (const event of events) {
+    if (event.kind !== 'prompt') continue;
+    const { sourceKey: key, sourceThread: thread, sourceRecord: record, promptId } = event.payload;
+    if (typeof key !== 'string' || typeof thread !== 'string' || typeof record !== 'string') continue;
+    if (keys.get(key) !== promptId || owners?.get(key) !== undefined) continue;
+    claims.push({ key, thread, record });
+  }
+  return claims;
+}
+
+/** Claims keys for the session as one write each: the first claim of a key holds it, and a later one changes nothing. */
+async function claimKeys(db: RelationalStore, target: ParseTarget, claims: readonly KeyClaim[], now: number): Promise<void> {
+  await db.batch(claims.map((claim) => db.prepare(`INSERT OR IGNORE INTO prompt_key_owners (project_id, session_id, source_key, source_thread, source_record, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)`).bind(target.projectId, target.sessionId, claim.key, claim.thread, claim.record, now)));
+}
+
+/**
+ * The owner of each harness key a window's records could claim, as the session's key owners hold them, read before the
  * parse and handed to it read-only: every parse of the window, and every replay of a prefix of it, decides against the
  * same owners.
  */
-async function storedOwners(db: RelationalStore, target: ParseTarget, parser: TranscriptParser, lines: readonly ParsedLine[], scheme: PromptIdScheme,
-  counted: () => void): Promise<PromptOwners | undefined> {
-  const keys = await parser.claimKeys?.(lines, scheme, target.sessionId);
-  if (keys === undefined || keys.size === 0) return undefined;
-  const byId = new Map([...keys].map(([key, id]) => [id, key]));
-  const ids = [...byId.keys()];
+async function storedOwners(db: RelationalStore, target: ParseTarget, keys: ReadonlyMap<string, string>, counted: () => void): Promise<PromptOwners | undefined> {
+  if (keys.size === 0) return undefined;
+  const wanted = [...keys.keys()];
   const owners: [string, { thread: string; record: string }][] = [];
-  for (let at = 0; at < ids.length; at += OWNERS_PER_READ) {
-    const chunk = ids.slice(at, at + OWNERS_PER_READ);
-    const { results } = await db.prepare(`SELECT prompt_id, source_thread, source_record FROM prompt_batches
-        WHERE project_id = ? AND prompt_id IN (${chunk.map(() => '?').join(', ')}) AND session_id = ? AND claim = 'owner'`)
-      .bind(target.projectId, ...chunk, target.sessionId).all<{ prompt_id: string; source_thread: string | null; source_record: string | null }>();
+  for (let at = 0; at < wanted.length; at += OWNERS_PER_READ) {
+    const chunk = wanted.slice(at, at + OWNERS_PER_READ);
+    const { results } = await db.prepare(`SELECT source_key, source_thread, source_record FROM prompt_key_owners
+        WHERE project_id = ? AND session_id = ? AND source_key IN (${chunk.map(() => '?').join(', ')})`)
+      .bind(target.projectId, target.sessionId, ...chunk).all<{ source_key: string; source_thread: string; source_record: string }>();
     counted();
-    for (const row of results) {
-      const key = byId.get(row.prompt_id);
-      if (key !== undefined && row.source_record !== null) owners.push([key, { thread: row.source_thread ?? '', record: row.source_record }]);
-    }
+    for (const row of results) owners.push([row.source_key, { thread: row.source_thread, record: row.source_record }]);
   }
   return promptOwners(owners);
 }

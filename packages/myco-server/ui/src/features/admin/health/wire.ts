@@ -45,6 +45,7 @@ export interface PromptIdentityCounts {
   reused: number;
   identityConflicts: number;
   schemeConflicts: number;
+  mixedSchemeSessions: number;
   duplicatePromptSkips: number;
 }
 

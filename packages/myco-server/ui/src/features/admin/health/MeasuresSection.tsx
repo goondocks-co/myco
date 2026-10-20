@@ -184,6 +184,7 @@ const IDENTITY_COUNTS: ReadonlyArray<readonly [keyof Omit<PromptIdentityCounts, 
   ['reused', 'prompt', 'reusing an earlier prompt\u2019s id'],
   ['identityConflicts', 'line', 'refused a second name'],
   ['schemeConflicts', 'transcript', 'not read: its session needs two schemes'],
+  ['mixedSchemeSessions', 'session', 'holding transcripts read two ways'],
   ['duplicatePromptSkips', 'context answer', 'not recorded against a prompt already named'],
 ];
 

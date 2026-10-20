@@ -83,8 +83,8 @@ const CLASS_LABEL: Readonly<Record<OpenerClass, { kind: string; origin: WireProm
   sdk: { kind: 'sdk', origin: 'user' },
 };
 
-/** A record carries one of the fields Claude Code stamps on the record that opens a turn. */
-const hasOpener = (v: Record<string, unknown>): boolean => isBlock(v.origin) || v.promptSource !== undefined || v.turnOrigin !== undefined;
+/** A record carries one of the fields Claude Code stamps on the record that opens a turn, whatever shape its value has. */
+const hasOpener = (v: Record<string, unknown>): boolean => v.origin !== undefined || v.promptSource !== undefined || v.turnOrigin !== undefined;
 
 /**
  * What a turn-opening record is, from its own fields: `origin.kind` and `turnOrigin` name one class or the record
@@ -93,7 +93,7 @@ const hasOpener = (v: Record<string, unknown>): boolean => isBlock(v.origin) || 
  */
 function openerLabel(v: Record<string, unknown>): { kind: string; origin: WirePromptOrigin } {
   const unrecognized = { kind: 'unrecognized', origin: 'system' as const };
-  const kind = isBlock(v.origin) ? v.origin.kind : undefined;
+  const kind = v.origin === undefined ? undefined : isBlock(v.origin) ? v.origin.kind ?? null : null;
   const fromOrigin = kind === undefined ? undefined : typeof kind === 'string' ? ORIGIN_KINDS[kind] ?? null : null;
   const fromTurn = v.turnOrigin === undefined ? undefined : typeof v.turnOrigin === 'string' ? TURN_ORIGINS[v.turnOrigin] ?? null : null;
   if (fromOrigin === null || fromTurn === null) return unrecognized;
@@ -127,7 +127,9 @@ function v2Disposition(v: Record<string, unknown>, text: string, role: ParserInp
   const sidechain = v.isSidechain === true;
   if (role === 'subagent' || sidechain || agentId !== undefined) {
     const thread = agentId ?? MAIN_THREAD;
-    const keepsContract = role === undefined || (role === 'subagent') === (sidechain && agentId !== undefined);
+    // Against a registered role: a delegated agent's record carries both of its markers, and the session's own
+    // transcript holds none. Where no registration names the role, the record's own markers are all there is.
+    const keepsContract = role === undefined || (role === 'subagent' && sidechain && agentId !== undefined);
     if (!keepsContract) return text.trim() === '' ? { as: 'none' } : { as: 'sibling', thread, kind: 'contract_violation', origin: 'system' };
     if (v.isCompactSummary === true) return { as: 'context', thread };
     if (v.isMeta === true || INTERRUPT_MARKERS.has(text.trim()) || text.trim() === '') return { as: 'none' };

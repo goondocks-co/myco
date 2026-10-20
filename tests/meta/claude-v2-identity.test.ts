@@ -195,6 +195,29 @@ describe('claude-v2 ownership', () => {
     ]);
   });
 
+  it('counts a turn opener whose field has an unknown shape, and never drops it as marker text', async () => {
+    const events = await parse([
+      user('m1', 'K1', [{ type: 'text', text: '[Request interrupted by user]' }], { origin: 'human' }),
+      user('m2', 'K2', 'an origin with no kind beside a typed source', { origin: {}, promptSource: 'typed' }),
+      user('m3', 'K3', 'a source of another type', { promptSource: 7 }),
+    ]);
+    expect(events.filter((e) => e.kind === 'prompt').map((e) => [e.payload.claim, e.payload.promptKind, e.payload.origin])).toEqual([
+      ['owner', 'unrecognized', 'system'], ['owner', 'unrecognized', 'system'], ['owner', 'unrecognized', 'system'],
+    ]);
+  });
+
+  it('counts every record whose markers disagree with its transcript: the session\'s own carries neither, a delegated agent\'s both', async () => {
+    const cases = [
+      ['primary', { isSidechain: true }], ['primary', { agentId: 'a1' }], ['primary', { isSidechain: true, agentId: 'a1' }],
+      ['subagent', { isSidechain: true }], ['subagent', { agentId: 'a1' }], ['subagent', {}],
+    ] as const;
+    for (const [role, markers] of cases) {
+      const events = await parse([user('c1', 'P', 'a line', { ...markers, parentUuid: null })], role === undefined ? {} : { role });
+      expect({ role, markers, got: events.filter((e) => e.kind === 'prompt').map((e) => [e.payload.claim, e.payload.promptKind]) })
+        .toEqual({ role, markers, got: [['sibling', 'contract_violation']] });
+    }
+  });
+
   it('holds a delegated agent\'s record to its transcript\'s registered role', async () => {
     const sidechainless = user('s1', 'P', 'a subagent line with no sidechain flag', { agentId: 'a1' });
     const flagged = user('s2', 'P', 'a primary line carrying a sidechain', { isSidechain: true, agentId: 'a2' });
@@ -317,8 +340,39 @@ describe('claude-v2 through the Deployment', () => {
     const report = await readKpis(r.rig.env.serverEnv.db, { windowDays: null, now: Date.now() });
     expect(report.promptIdentity).toEqual([{
       harness: 'claude-code', sampleSize: 12, unrecognized: 0, unmarked: 1, openerConflict: 1, contractViolation: 0, reused: 9,
-      identityConflicts: 0, schemeConflicts: 0, duplicatePromptSkips: 0,
+      identityConflicts: 0, schemeConflicts: 0, mixedSchemeSessions: 0, duplicatePromptSkips: 0,
     }]);
+  });
+
+  it('admits one owner when two transcripts of a session claim one key at once, and derives the other as its reuse', async () => {
+    const r = await stored(jsonl([user('u1', 'P', 'same words', human), reply('a1', 'one')]));
+    await r.storeTranscript({ transcriptId: `tx_${'d'.repeat(32)}`, sessionId: SESSION, agent: 'claude-code', text: jsonl([user('c0', 'P', 'a companion line first', { isMeta: true }), user('u2', 'P', 'same words', human), reply('a2', 'two')]), scheme: 'claude-v2' });
+    // Imported transcripts are read side by side: both passes start with no owner of the key stored.
+    r.rig.env.sqlite.run(`UPDATE transcripts SET imported_at = ?`, [Date.now()]);
+    await r.parse();
+    const prompts = r.rows(`SELECT prompt_id, claim, source_record FROM prompt_batches ORDER BY source_record`) as { prompt_id: string; claim: string; source_record: string }[];
+    expect(prompts.map((p) => p.claim).sort()).toEqual(['owner', 'reused']);
+    const owner = prompts.find((p) => p.claim === 'owner')!;
+    const reused = prompts.find((p) => p.claim === 'reused')!;
+    expect(owner.prompt_id).toBe(await claudeRecordIdFor(SESSION, { owner: 'P' }));
+    expect(r.rows(`SELECT source_key, source_record FROM prompt_key_owners`)).toEqual([{ source_key: 'P', source_record: owner.source_record }]);
+    expect(r.rows(`SELECT COUNT(*) AS n FROM prompt_identity_conflicts`)).toEqual([{ n: 0 }]);
+    const replies = r.rows(`SELECT prompt_id, text FROM responses ORDER BY text`) as { prompt_id: string; text: string }[];
+    expect(replies).toEqual([
+      { prompt_id: owner.source_record === 'u1' ? owner.prompt_id : reused.prompt_id, text: 'one' },
+      { prompt_id: owner.source_record === 'u2' ? owner.prompt_id : reused.prompt_id, text: 'two' },
+    ]);
+    expect(r.rows(`SELECT parsed_offset = size AS caught_up, parse_error FROM transcripts`)).toEqual([{ caught_up: 1, parse_error: null }, { caught_up: 1, parse_error: null }]);
+  });
+
+  it('counts a session whose transcripts already hold two schemes, from the pins alone', async () => {
+    const r = await stored(jsonl([user('u1', 'P', 'first', human)]));
+    for (const [id, pin] of [[`tx_${'1'.repeat(32)}`, 'offset-v1'], [`tx_${'2'.repeat(32)}`, 'codex-turn-v1']] as const) {
+      r.rig.env.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role, prompt_identity_scheme)
+        VALUES ('proj_1', ?, 'sess-codex', 'machine_1', 'codex', 0, 0, ?, ?, ?, 'primary', ?)`, [id, Date.now(), Date.now(), r.rig.tokenId, pin]);
+    }
+    const report = await readKpis(r.rig.env.serverEnv.db, { windowDays: null, now: Date.now() });
+    expect(report.promptIdentity.find((row) => row.harness === 'codex')).toMatchObject({ mixedSchemeSessions: 1, schemeConflicts: 0 });
   });
 
   it('credits no subagent receipt to a delegated thread whose id only matches a string', async () => {

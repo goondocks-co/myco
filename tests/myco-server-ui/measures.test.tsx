@@ -220,7 +220,7 @@ describe('the measures on Health', () => {
   });
 
   it('counts, per agent, the transcript lines not named the usual way, and links none of them', async () => {
-    const counts = { unrecognized: 0, unmarked: 0, openerConflict: 0, contractViolation: 0, reused: 0, identityConflicts: 0, schemeConflicts: 0, duplicatePromptSkips: 0 };
+    const counts = { unrecognized: 0, unmarked: 0, openerConflict: 0, contractViolation: 0, reused: 0, identityConflicts: 0, schemeConflicts: 0, mixedSchemeSessions: 0, duplicatePromptSkips: 0 };
     server(base({
       '/api/kpis?window=30': () => Response.json(report({
         promptIdentity: [

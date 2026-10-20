@@ -23,4 +23,14 @@ CREATE TABLE IF NOT EXISTS prompt_identity_conflicts (
 
 CREATE INDEX IF NOT EXISTS idx_prompt_identity_conflicts_created ON prompt_identity_conflicts (project_id, created_at);
 
+CREATE TABLE IF NOT EXISTS prompt_key_owners (
+    project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),
+    session_id TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    source_thread TEXT NOT NULL,
+    source_record TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (project_id, session_id, source_key)
+  );
+
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '91');

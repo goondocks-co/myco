@@ -6,6 +6,9 @@ import { PROJECT_ID_GRAMMAR } from './project-id.js';
  * one, is another line carrying it, or is harness context), and the key, thread and record it is derived from. The
  * three never change for a prompt id: a second derivation of the id from another source is refused, and recorded once
  * in `prompt_identity_conflicts`, so a count reads it.
+ *
+ * `prompt_key_owners` is which record owns each harness key in its session: claimed once, by the first parse to claim
+ * it, before that parse publishes anything, and read by every later parse of the session.
  */
 export const V91_STATEMENTS: readonly string[] = [
   `ALTER TABLE prompt_batches ADD COLUMN claim TEXT CHECK (claim IN ('owner', 'reused', 'sibling', 'context'))`,
@@ -24,4 +27,13 @@ export const V91_STATEMENTS: readonly string[] = [
     PRIMARY KEY (project_id, session_id, prompt_id, source_key, source_thread, source_record)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_prompt_identity_conflicts_created ON prompt_identity_conflicts (project_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS prompt_key_owners (
+    project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),
+    session_id TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    source_thread TEXT NOT NULL,
+    source_record TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (project_id, session_id, source_key)
+  )`,
 ];
