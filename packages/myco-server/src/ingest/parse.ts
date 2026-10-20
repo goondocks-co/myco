@@ -806,6 +806,9 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   for (let round = 0; round < CLAIM_ROUNDS; round += 1) {
     const claims = keyClaims(derivation.parsed, keys, owners);
     if (claims.length === 0) break;
+    // A claim and the reread after it are admitted only with the room the pass needs to publish and close behind them.
+    if (pages(claims.length) + pages(keys.size) + PARSER_CHECKPOINT_HEADROOM + PARSER_CLOSE_HEADROOM > statementRoom())
+      return { derived: 0, calls, nextOffset: null, failure: null };
     await claimKeys(env.db, target, claims, now);
     calls += 1;
     owners = await readOwners();
@@ -1350,8 +1353,13 @@ export async function parseTranscripts(env: ServerEnv, now: number, options: Par
   return { changed: derived, more };
 }
 
-/** Keys read per statement: under the bound-parameter ceiling with the project and session bound beside them. */
-const OWNERS_PER_READ = 90;
+/**
+ * Keys one statement reads or claims. A page travels as one JSON parameter read through `json_each`, so a window's
+ * keys cost statements by the page, not by the key, and the statement binds three values whatever the page holds.
+ */
+const KEYS_PER_STATEMENT = 256;
+/** Statements `count` keys take, a page each. */
+const pages = (count: number): number => Math.ceil(count / KEYS_PER_STATEMENT);
 /** Claim rounds a window takes at most: a lost claim reads it again once, and the reread claims nothing new. */
 const CLAIM_ROUNDS = 3;
 
@@ -1374,10 +1382,16 @@ function keyClaims(events: readonly DerivedEvent[], keys: ReadonlyMap<string, st
   return claims;
 }
 
-/** Claims keys for the session as one write each: the first claim of a key holds it, and a later one changes nothing. */
+/** Claims keys for the session in one batch, a page per statement: the first claim of a key holds it, and a later one changes nothing. */
 async function claimKeys(db: RelationalStore, target: ParseTarget, claims: readonly KeyClaim[], now: number): Promise<void> {
-  await db.batch(claims.map((claim) => db.prepare(`INSERT OR IGNORE INTO prompt_key_owners (project_id, session_id, source_key, source_thread, source_record, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)`).bind(target.projectId, target.sessionId, claim.key, claim.thread, claim.record, now)));
+  const statements: PreparedStatement[] = [];
+  for (let at = 0; at < claims.length; at += KEYS_PER_STATEMENT) {
+    const page = claims.slice(at, at + KEYS_PER_STATEMENT).map(({ key, thread, record }) => [key, thread, record]);
+    statements.push(db.prepare(`INSERT OR IGNORE INTO prompt_key_owners (project_id, session_id, source_key, source_thread, source_record, created_at)
+        SELECT ?, ?, json_extract(j.value, '$[0]'), json_extract(j.value, '$[1]'), json_extract(j.value, '$[2]'), ? FROM json_each(?) j`)
+      .bind(target.projectId, target.sessionId, now, JSON.stringify(page)));
+  }
+  await db.batch(statements);
 }
 
 /**
@@ -1389,11 +1403,11 @@ async function storedOwners(db: RelationalStore, target: ParseTarget, keys: Read
   if (keys.size === 0) return undefined;
   const wanted = [...keys.keys()];
   const owners: [string, { thread: string; record: string }][] = [];
-  for (let at = 0; at < wanted.length; at += OWNERS_PER_READ) {
-    const chunk = wanted.slice(at, at + OWNERS_PER_READ);
+  for (let at = 0; at < wanted.length; at += KEYS_PER_STATEMENT) {
+    const page = wanted.slice(at, at + KEYS_PER_STATEMENT);
     const { results } = await db.prepare(`SELECT source_key, source_thread, source_record FROM prompt_key_owners
-        WHERE project_id = ? AND session_id = ? AND source_key IN (${chunk.map(() => '?').join(', ')})`)
-      .bind(target.projectId, target.sessionId, ...chunk).all<{ source_key: string; source_thread: string; source_record: string }>();
+        WHERE project_id = ? AND session_id = ? AND source_key IN (SELECT value FROM json_each(?))`)
+      .bind(target.projectId, target.sessionId, JSON.stringify(page)).all<{ source_key: string; source_thread: string; source_record: string }>();
     counted();
     for (const row of results) owners.push([row.source_key, { thread: row.source_thread, record: row.source_record }]);
   }
