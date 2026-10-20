@@ -91,6 +91,12 @@ export function SearchableSelect({
     .map((entry) => entry.option), [options, deferredQuery]);
 
   const selected = options.find((option) => option.value === value);
+  const shown = selected?.short ?? selected?.label ?? placeholder ?? label;
+  // The name always holds the words on the trigger: the label and the whole choice, with the short form first when the
+  // choice does not already contain it.
+  const choice = selected?.label ?? (shown === label ? null : shown);
+  const full = choice === null ? label : `${label}: ${choice}`;
+  const name = full.toLowerCase().includes(shown.toLowerCase()) ? full : `${label}: ${shown}, ${choice}`;
 
   useEffect(() => {
     if (!open) { setQuery(''); return; }
@@ -140,12 +146,12 @@ export function SearchableSelect({
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={selected ? `${label}: ${selected.label}` : label}
+        aria-label={name}
         onClick={() => setOpen((current) => !current)}
         onKeyDown={(event) => { if (event.key === 'ArrowDown' && !open) { event.preventDefault(); setOpen(true); } }}
         className={cn(fieldFrame, focusRing, 'flex items-center justify-between gap-s2 text-left')}
       >
-        <span className={cn('truncate', !selected && 'text-muted')}>{selected?.short ?? selected?.label ?? placeholder ?? label}</span>
+        <span className={cn('truncate', !selected && 'text-muted')}>{shown}</span>
         <ChevronDown aria-hidden className="size-s4 shrink-0 text-muted" />
       </button>
 
