@@ -22,19 +22,21 @@ export interface ListRowProps {
   selected?: boolean;
   /** The tight row height, for dense lists. */
   tight?: boolean;
+  /** The title and secondary line wrap instead of truncating, for rows whose words are the content. */
+  wrap?: boolean;
   className?: string;
 }
 
 /** A two-line row whose whole area is the target: the headline, then the secondary line, with an optional kicker above the headline. */
 export const ListRow = forwardRef<HTMLAnchorElement | HTMLDivElement, ListRowProps>(
-  ({ kicker, title, meta, leading, trailing, to, cursor = false, selected = false, tight = false, className }, ref) => {
+  ({ kicker, title, meta, leading, trailing, to, cursor = false, selected = false, tight = false, wrap = false, className }, ref) => {
     const body = (
       <>
         {leading != null && <span className="flex shrink-0 items-center">{leading}</span>}
         <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
           {kicker != null && <span className="flex min-w-0 items-center gap-s2">{kicker}</span>}
-          <span className="truncate t-body font-medium text-ink">{title}</span>
-          {meta != null && <span className="truncate t-small text-muted">{meta}</span>}
+          <span className={cn(wrap ? 'break-words' : 'truncate', 't-body font-medium text-ink')}>{title}</span>
+          {meta != null && <span className={cn(wrap ? 'break-words' : 'truncate', 't-small text-muted')}>{meta}</span>}
         </span>
         {trailing != null && <span className="flex shrink-0 items-center gap-s2 t-small text-muted">{trailing}</span>}
       </>

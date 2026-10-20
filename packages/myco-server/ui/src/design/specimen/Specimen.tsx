@@ -260,6 +260,14 @@ export function Specimen() {
               title="Run Myco from source"
               meta="3 of 3 items done"
             />
+            <ListRow
+              leading={<time className="flex w-s12 flex-col t-meta tabular-nums text-muted sm:w-time-col"><span>Oct 19</span><span>15:30</span></time>}
+              kicker={<TypeChip>Commit</TypeChip>}
+              title="Ended at 8d41b7e, couldn’t tell whether files changed"
+              meta="Released · myco/v2.0.3 · PR #1873 · checked 30 min ago"
+              trailing={<CopyButton value="8d41b7e" label="Copy commit" compact />}
+              wrap
+            />
           </Card>
         </Section>
 

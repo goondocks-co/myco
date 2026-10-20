@@ -465,6 +465,47 @@ export function useSessionChildren<T>(projectId: string, sessionId: string, chil
   return usePaged<T>(['session-children', projectId, sessionId, child, query], `${project(projectId)}/sessions/${seg(sessionId)}/${child}?${query}`);
 }
 
+/** Where in a session its member observed a commit. */
+export type CapturePoint = 'session_start' | 'session_end';
+
+/** Whether tracked files differed from an observed commit: `unreadable` when the member could not tell. */
+export type CommitChanges = 'none' | 'uncommitted' | 'unreadable';
+
+/** A commit the session's member observed at its start or its end. */
+export interface CommitObservation {
+  point: CapturePoint;
+  /** The full commit, shown shortened. */
+  headSha: string;
+  branch: string | null;
+  changes: CommitChanges;
+  capturedAt: number;
+}
+
+/** The session's release state and the observation it was classified from. */
+export interface CommitReleaseCheck {
+  state: string;
+  basisKind: string | null;
+  basisRef: string | null;
+  releasePrNumber: number | null;
+  checkedAt: number;
+  /** The observation at `point` when `current`; one since replaced there when not; null when the state recorded none. */
+  covers: { point: CapturePoint; current: boolean } | null;
+}
+
+export interface SessionCommits {
+  /** Start first, then end. */
+  observations: CommitObservation[];
+  release: CommitReleaseCheck | null;
+}
+
+/** The commits the session's member observed at its start and end, and the release check that classified one of them. */
+export function useSessionCommits(projectId: string, sessionId: string) {
+  return useQuery({
+    queryKey: ['session-commits', projectId, sessionId],
+    queryFn: ({ signal }) => fetchJson<SessionCommits>(`${project(projectId)}/sessions/${seg(sessionId)}/commits`, signal),
+  });
+}
+
 /** The transcript record, or null when the session has none — the one 404 here that is an answer rather than an error. */
 export function useTranscript(projectId: string, sessionId: string, enabled = true) {
   return useQuery({
