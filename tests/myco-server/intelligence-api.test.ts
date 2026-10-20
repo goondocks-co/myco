@@ -94,6 +94,52 @@ describe('spores through the product surface', () => {
     expect({ ids: (paged.body.spores as { id: string }[]).map((s) => s.id), total: paged.body.total }).toEqual({ ids: ['s1'], total: 2 });
   });
 
+  it('continues a session\'s spores after the last row shown by cursor, so a spore written between pages is neither repeated nor ends the walk early', async () => {
+    const { get, db, sqlite, scope } = await harness();
+    sqlite.query(`INSERT INTO sessions (project_id, session_id, created_by_token_id, first_received_at, last_received_at)
+      VALUES ('proj_1', 'sess_a', 'tok', ?, ?)`).run(NOW, NOW);
+    for (let i = 0; i < 5; i += 1) await insertSpore(db, scope, spore(`s${i}`, { sessionId: 'sess_a', createdAt: NOW + i }));
+    await insertSpore(db, scope, spore('elsewhere', { createdAt: NOW + 2 }));
+    type Answer = { spores: { id: string }[]; cursor: string | null; total: number };
+    const walk = async (path: string) => (await get(path)).body as unknown as Answer;
+    const base = '/api/projects/proj_1/spores?session=sess_a&limit=2';
+
+    const first = await walk(base);
+    expect([first.spores.map((s) => s.id), first.total]).toEqual([['s4', 's3'], 5]);
+    // A newer spore arrives, and an imported one older than the cursor is backfilled, before the next page is read.
+    await insertSpore(db, scope, spore('arrived', { sessionId: 'sess_a', createdAt: NOW + 10 }));
+    await insertSpore(db, scope, spore('backfilled', { sessionId: 'sess_a', createdAt: NOW - 1 }));
+    const seen = [...first.spores.map((s) => s.id)];
+    let cursor = first.cursor;
+    while (cursor !== null) {
+      const next = await walk(`${base}&cursor=${encodeURIComponent(cursor)}`);
+      seen.push(...next.spores.map((s) => s.id));
+      cursor = next.cursor;
+    }
+    expect(seen).toEqual(['s4', 's3', 's2', 's1', 's0', 'backfilled']);
+    // The total counts what the filters match as each page is read; it does not end the walk.
+    expect((await walk(base)).total).toBe(7);
+  });
+
+  it('breaks a tie on the instant by id across a cursor boundary, and answers a null cursor on the last page', async () => {
+    const { get, db, scope } = await harness();
+    for (const id of ['a', 'b', 'c']) await insertSpore(db, scope, spore(id, { createdAt: NOW }));
+    const one = (await get('/api/projects/proj_1/spores?limit=2')).body as { spores: { id: string }[]; cursor: string };
+    expect(one.spores.map((s) => s.id)).toEqual(['c', 'b']);
+    const two = (await get(`/api/projects/proj_1/spores?limit=2&cursor=${encodeURIComponent(one.cursor)}`)).body;
+    expect([(two.spores as { id: string }[]).map((s) => s.id), two.cursor]).toEqual([['a'], null]);
+  });
+
+  it('refuses a malformed cursor, and a cursor beside an offset', async () => {
+    const { get, db, scope } = await harness();
+    await insertSpore(db, scope, spore('sp1'));
+    for (const cursor of ['nope', ':id', '12:', 'x:y']) {
+      expect((await get(`/api/projects/proj_1/spores?cursor=${encodeURIComponent(cursor)}`)).status).toBe(400);
+    }
+    expect((await get(`/api/projects/proj_1/spores?offset=1&cursor=${encodeURIComponent(`${NOW}:sp1`)}`)).status).toBe(400);
+    expect((await get(`/api/projects/proj_1/spores?cursor=${encodeURIComponent(`${NOW + 1}:z`)}`)).body.spores).toHaveLength(1);
+  });
+
   it('serves no more than the ceiling, however large a page the caller asks for', async () => {
     const { get, db, scope } = await harness();
     for (let i = 0; i < 205; i += 1) await insertSpore(db, scope, spore(`sp${i}`));

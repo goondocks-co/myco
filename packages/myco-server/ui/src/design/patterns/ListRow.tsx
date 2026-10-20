@@ -40,7 +40,8 @@ export const ListRow = forwardRef<HTMLAnchorElement | HTMLDivElement, ListRowPro
       </>
     );
     const classes = cn(
-      'flex w-full items-center gap-s3 border-b border-line px-s4 py-s2 text-left last:border-b-0 transition-colors duration-120',
+      // A divider under every row another row follows, whether the rows are siblings or each sits in its own list item.
+      'flex w-full items-center gap-s3 border-line px-s4 py-s2 text-left not-last:border-b [li:not(:last-child)>&]:border-b transition-colors duration-120',
       tight ? 'min-h-row-tight' : 'min-h-row',
       to != null && 'hover:bg-surface-2',
       selected && 'bg-surface-2 shadow-[inset_2px_0_0_var(--primary)]',

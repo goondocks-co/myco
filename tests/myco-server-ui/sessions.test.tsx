@@ -80,16 +80,16 @@ const originalFetch = globalThis.fetch;
 beforeEach(() => { setSystemTime(new Date(NOW)); });
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; setSystemTime(); forgetProject(); });
 
-type Routes = Record<string, (init?: RequestInit) => Response | Promise<Response>>;
+type Routes = Record<string, (init?: RequestInit, url?: URL) => Response | Promise<Response>>;
 
-/** Answers a path with its query first, then the path alone; anything else is 404. Records every request. */
+/** Answers a path with its query first, then the path alone, handing the route the request's URL; anything else is 404. Records every request. */
 function server(routes: Routes): { requested: string[] } {
   const requested: string[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const url = new URL(href, 'https://s');
     requested.push(url.pathname + url.search);
-    return routes[url.pathname + url.search]?.(init) ?? routes[url.pathname]?.(init) ?? new Response(null, { status: 404 });
+    return routes[url.pathname + url.search]?.(init, url) ?? routes[url.pathname]?.(init, url) ?? new Response(null, { status: 404 });
   }) as typeof fetch;
   return { requested };
 }
@@ -1037,12 +1037,29 @@ describe('the session reading page', () => {
   const SPORES = '/api/projects/x/spores?limit=25&session=s1';
   const listed = (name: string) => within(screen.getByRole('list', { name })).getAllByRole('listitem');
 
-  it('lists the session’s spores on their tab as rows, whatever their status, and pages by offset until the total', async () => {
-    const first = [spore({}), spore({ id: 'sp2', observationType: 'trade_off', status: 'superseded', agentLine: 'We page by offset.' }), ...Array.from({ length: 23 }, (_, i) => spore({ id: `spx${i}`, content: `More ${i}` }))];
-    const { requested } = server(routes({
-      [SPORES]: () => Response.json({ spores: first, total: 27, maxPage: 200 }),
-      [`${SPORES}&offset=25`]: () => Response.json({ spores: [spore({ id: 'sp26', content: 'Twenty-sixth' }), spore({ id: 'sp27', content: 'Twenty-seventh' })], total: 27, maxPage: 200 }),
-    }));
+  /**
+   * The spores route as the store pages it: newest first with the id breaking a tie, a page continuing after the
+   * spore its cursor names, `cursor` null on the last page, and `total` counted as each page is read.
+   */
+  const sporeStore = (held: ReturnType<typeof spore>[], total: () => number = () => held.length) => {
+    const order = (a: ReturnType<typeof spore>, b: ReturnType<typeof spore>) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+    return (url: URL) => {
+      const rows = [...held].sort(order);
+      const cursor = url.searchParams.get('cursor');
+      const [at, id] = cursor === null ? [Infinity, ''] : [Number(cursor.slice(0, cursor.indexOf(':'))), cursor.slice(cursor.indexOf(':') + 1)];
+      const after = rows.filter((r) => r.createdAt < at || (r.createdAt === at && r.id < id));
+      const page = after.slice(0, 25);
+      const last = page.at(-1);
+      return Response.json({ spores: page, cursor: after.length > 25 && last !== undefined ? `${last.createdAt}:${last.id}` : null, total: total(), maxPage: 200 });
+    };
+  };
+  it('lists the session’s spores on their tab as rows, whatever their status, and pages by cursor until none follows', async () => {
+    const held = [
+      spore({ createdAt: NOW - MINUTE }),
+      spore({ id: 'sp2', observationType: 'trade_off', status: 'superseded', agentLine: 'We page by cursor.', createdAt: NOW - 2 * MINUTE }),
+      ...Array.from({ length: 25 }, (_, i) => spore({ id: `spx${String(i).padStart(2, '0')}`, content: `More ${i}`, createdAt: NOW - (3 + i) * MINUTE })),
+    ];
+    const { requested } = server(routes({ '/api/projects/x/spores': (_, url) => sporeStore(held)(url!) }));
     mount('/p/x/sessions/s1?tab=spores');
     await screen.findByRole('list', { name: 'Spores' });
     const items = listed('Spores');
@@ -1052,22 +1069,51 @@ describe('the session reading page', () => {
     expect(row.getAttribute('href')).toBe('/p/x/spores/sp1');
     expect(row.textContent).toBe('Sep 2915:59GotchaThe cache lies after a rebase.Current');
     expect(items[1]!.textContent).toContain('Trade-off');
-    expect(items[1]!.textContent).toContain('We page by offset.');
+    expect(items[1]!.textContent).toContain('We page by cursor.');
     expect(items[1]!.textContent).toContain('Replaced');
     expect(screen.getByText('Showing 25 of 27 spores')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     await waitFor(() => expect(listed('Spores')).toHaveLength(27));
-    expect(listed('Spores').at(-1)!.textContent).toContain('Twenty-seventh');
-    // The total ends the paging: no third page is offered or read.
+    expect(listed('Spores').at(-1)!.textContent).toContain('More 24');
+    // The last page answered no cursor: no third page is offered or read.
     expect(screen.getByText('Showing 27 of 27 spores')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
-    expect(requested.filter((p) => p.startsWith('/api/projects/x/spores'))).toEqual([SPORES, `${SPORES}&offset=25`]);
+    expect(requested.filter((p) => p.startsWith('/api/projects/x/spores'))).toEqual([SPORES, `${SPORES}&cursor=${encodeURIComponent(`${NOW - 25 * MINUTE}:spx22`)}`]);
     expect(rawIdsInPage()).toEqual([]);
     cleanup();
     server(routes({ [SPORES]: () => new Response(null, { status: 500 }) }));
     mount('/p/x/sessions/s1?tab=spores');
     expect(await screen.findByText('The server had a problem')).toBeTruthy();
     expect(screen.queryByText(/No spores were saved/)).toBeNull();
+  });
+
+  it('continues after the last spore shown when spores are written between pages: none repeats, none older is skipped, and a stale total ends nothing', async () => {
+    const held = Array.from({ length: 27 }, (_, i) => spore({ id: `live-${String(i).padStart(2, '0')}`, content: `Live spore ${i}`, createdAt: NOW - (i + 1) * MINUTE }));
+    let reads = 0;
+    // The first page counts 25: the total was read before the last two older spores were backfilled.
+    const store = sporeStore(held, () => (reads === 1 ? 25 : held.length));
+    server(routes({ '/api/projects/x/spores': (_, url) => {
+      reads += 1;
+      if (reads === 2) {
+        // Between the pages a new spore arrives and an older one is backfilled.
+        held.push(spore({ id: 'arrived', content: 'Arrived between pages', createdAt: NOW }));
+        held.push(spore({ id: 'backfilled', content: 'Backfilled from an import', createdAt: NOW - 100 * MINUTE }));
+      }
+      return store(url!);
+    } }));
+    mount('/p/x/sessions/s1?tab=spores');
+    await screen.findByRole('list', { name: 'Spores' });
+    expect(listed('Spores')).toHaveLength(25);
+    expect(screen.getByText('Showing 25 of 25 spores')).toBeTruthy();
+    // The page answered a cursor, so more is offered whatever the total says.
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    await waitFor(() => expect(listed('Spores')).toHaveLength(28));
+    const shown = within(screen.getByRole('list', { name: 'Spores' })).getAllByRole('link').map((a) => a.getAttribute('href'));
+    expect(new Set(shown).size).toBe(28);
+    expect(shown.slice(-3)).toEqual(['/p/x/spores/live-25', '/p/x/spores/live-26', '/p/x/spores/backfilled']);
+    expect(shown).not.toContain('/p/x/spores/arrived');
+    expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
+    expect(reads).toBe(2);
   });
 
   it('filters the session’s spores by type and by search, and says whether none were saved or none match', async () => {

@@ -273,6 +273,9 @@ test.describe('Sessions', () => {
         await expect(spores.filter({ hasText: 'Gotcha' })).toHaveCount(2);
         await expect(spores.filter({ hasText: 'Replaced' })).toHaveCount(1);
         await expect(page.getByText('Showing 3 of 3 spores')).toBeVisible();
+        // A divider under every row but the last.
+        const dividers = await spores.evaluateAll((items) => items.map((item) => getComputedStyle(item.firstElementChild!).borderBottomWidth));
+        expect(dividers).toEqual(['1px', '1px', '0px']);
         await expectListState(page, viewport, 'session-spores');
 
         await page.getByRole('button', { name: 'Type: Every type' }).click();

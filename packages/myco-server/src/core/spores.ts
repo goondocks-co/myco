@@ -22,7 +22,7 @@
  */
 import type { RelationalStore } from './adapters.js';
 import { USER_AGENT_ID } from '../constants.js';
-import { containsPattern, inListChunks, projectsDriving, projectsFiltering, type ProjectSet, type ReadScope } from '../read/scope.js';
+import { containsPattern, inListChunks, keyset, page, projectsDriving, projectsFiltering, type Page, type ProjectSet, type ReadScope } from '../read/scope.js';
 
 export { OBSERVATION_TYPES, type ObservationType } from '@goondocks/myco-shared/member-protocol';
 
@@ -237,6 +237,23 @@ export async function listSpores(db: RelationalStore, scope: ReadScope, o: ListS
     .prepare(`SELECT ${READ_COLUMNS} FROM spores ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
     .bind(...params, limit, o.offset ?? 0).all<SporeRow>();
   return results;
+}
+
+/**
+ * One page of spores in `listSpores`' order, newest first with the id breaking a tie, and the cursor that continues
+ * after its last row: null when no row follows. A cursor continues from that row whatever was written since, so a page
+ * neither repeats a row nor skips one a newer write pushed down; without one, the page starts at `offset`. Null for a
+ * malformed cursor.
+ */
+export async function pageSpores(db: RelationalStore, scope: ReadScope, o: ListSporesOptions & { cursor?: string } = {}): Promise<Page<SporeRow> | null> {
+  const k = keyset({ limit: o.limit ?? DEFAULT_SPORE_LIMIT, cursor: o.cursor }, { order: 'created_at', id: 'id', direction: 'DESC' });
+  if (k === null) return null;
+  const { where, params } = filters(scope, o);
+  const after = k.where === '' ? '' : ` AND ${k.where}`;
+  const { results } = await db
+    .prepare(`SELECT ${READ_COLUMNS} FROM spores ${where}${after} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .bind(...params, ...k.params, k.limit + 1, o.cursor === undefined ? o.offset ?? 0 : 0).all<SporeRow>();
+  return page(results, k.limit, (row) => ({ createdAt: row.createdAt, id: row.id }));
 }
 
 /**

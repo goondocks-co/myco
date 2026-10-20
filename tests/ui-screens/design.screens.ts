@@ -28,6 +28,9 @@ test.describe('design specimen', () => {
         const kicked = page.locator('[data-specimen-kicker]').getByRole('link');
         const [kicker, title] = await Promise.all([kicked.getByText('Gotcha').boundingBox(), kicked.getByText('A reserved test port races the ephemeral fallback').boundingBox()]);
         expect(kicker!.y + kicker!.height).toBeLessThanOrEqual(title!.y);
+        // Sibling rows draw a divider under every row but the last.
+        const dividers = await page.locator('[data-specimen-kicker] > *').evaluateAll((rows) => rows.map((row) => getComputedStyle(row).borderBottomWidth));
+        expect(dividers).toEqual(['1px', '0px']);
         await expectFits(page, viewport);
         await expectAxeClean(page);
         expectQuiet(watch);
