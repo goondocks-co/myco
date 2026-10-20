@@ -22,7 +22,7 @@ export interface AvatarProps extends HTMLAttributes<HTMLSpanElement> {
   size?: keyof typeof SIZE;
 }
 
-/** A member's initials in a primary-tinted circle. */
+/** A member's initials in a primary-tinted circle, drawn as generated content so they never join a control's visible label. */
 export const Avatar = forwardRef<HTMLSpanElement, AvatarProps>(({ name, size = 'md', className, ...props }, ref) => (
   <span
     ref={ref}
@@ -31,7 +31,7 @@ export const Avatar = forwardRef<HTMLSpanElement, AvatarProps>(({ name, size = '
     className={cn('inline-grid shrink-0 place-items-center rounded-pill bg-primary-bg font-semibold text-primary', SIZE[size], className)}
     {...props}
   >
-    <span aria-hidden>{initialsOf(name)}</span>
+    <span aria-hidden data-initials={initialsOf(name)} className="before:content-[attr(data-initials)]" />
   </span>
 ));
 Avatar.displayName = 'Avatar';

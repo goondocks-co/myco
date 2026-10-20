@@ -113,7 +113,7 @@ describe('the plans board', () => {
     expect(column('in_progress').textContent).toContain('Myco');
     expect(column('in_progress').textContent).toContain('updated 1 h ago');
     expect(within(column('in_progress')).getByRole('meter', { name: 'Plan items done' }).getAttribute('aria-valuenow')).toBe('1');
-    expect(within(column('in_progress')).getByRole('link', { name: 'The session that wrote “Myco’s work as outcomes”' }).getAttribute('href')).toBe(`/p/${MYCO}/sessions/s1`);
+    expect(within(column('in_progress')).getByRole('link', { name: 'Its session, which wrote “Myco’s work as outcomes”' }).getAttribute('href')).toBe(`/p/${MYCO}/sessions/s1`);
     expect(column('completed').textContent).toContain('Ledger service');
     expect(within(column('abandoned')).getByRole('link', { name: 'Untitled plan' })).toBeTruthy();
     expect(within(screen.getByRole('navigation', { name: 'Knowledge sections' })).getByRole('link', { name: 'Plans' }).getAttribute('aria-current')).toBe('page');

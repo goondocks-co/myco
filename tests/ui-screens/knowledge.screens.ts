@@ -144,7 +144,7 @@ async function expectBoard(page: Page, viewport: ViewportName): Promise<void> {
   await expect(column(page, 'completed').getByRole('link', { name: 'Speed up the monthly close report', exact: true })).toBeVisible();
   await expect(column(page, 'completed')).toContainText('Ledger service');
   await expect(column(page, 'abandoned').getByRole('link', { name: 'Last-writer-wins offline sync', exact: true })).toBeVisible();
-  await expect(column(page, 'in_progress').getByRole('link', { name: `The session that wrote “${PLAN_TITLE}”` })).toBeVisible();
+  await expect(column(page, 'in_progress').getByRole('link', { name: `Its session, which wrote “${PLAN_TITLE}”` })).toBeVisible();
 }
 
 async function expectPlanPage(page: Page, viewport: ViewportName, role: 'admin' | 'member'): Promise<void> {
