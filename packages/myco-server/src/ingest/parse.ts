@@ -32,7 +32,9 @@ import { utf8, uuidv5 } from '../hash.js';
 import { MAX_PAYLOAD_BYTES, parseEnvelope } from './envelope.js';
 import { envelopeHash, planEventWrite, type EventWrite, type IngestResult } from './events.js';
 import { idFields, kindSpec } from './kinds.js';
-import { PARSERS, parserFor } from './parsers/registry.js';
+import { parserFor } from './parsers/registry.js';
+import { SCHEME_GENERATION_SQL, schemeGeneration } from './prompt-scheme.js';
+import { isPromptIdScheme, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { datedAt, isBlock, withoutPrompts, type DerivedEvent, type ParsedLine, type ParserState, type ParserInput } from './parsers/index.js';
 import { resolvePresentedDates } from './projections.js';
 import { LEGACY_REPLY_LINES_PER_READ, legacyReplies, preserveLegacyReplies } from './legacy-replies.js';
@@ -160,23 +162,17 @@ const RETRY_STOPPED = `parse_error <> '${AWAITING_BYTES}' AND COALESCE(json_extr
  */
 export const PENDING_TRANSCRIPTS = `parsed_offset < size AND (parse_error IS NULL OR parser_version < ? OR (${RETRY_STOPPED}) OR (parse_error = '${AWAITING_BYTES}' AND size > COALESCE(parse_awaited_size, -1)))`;
 
-/** Each parser's prompt generation, over a `transcripts` row's agent; an agent no parser reads has none. */
-const PROMPT_GENERATION = `CASE agent ${Object.values(PARSERS).map((parser) => {
-  if (!/^[a-z0-9-]+$/.test(parser.agent) || !Number.isSafeInteger(parser.promptGeneration)) throw new Error(`parser ${parser.agent} names no SQL-safe agent and generation`);
-  return `WHEN '${parser.agent}' THEN ${parser.promptGeneration}`;
-}).join(' ')} END`;
-
 /**
- * A checkpoint that carries a prompt forward (a turn open at its cursor, or calls or a reply unfinished) written by a
- * parser of another prompt generation. Resumed, it would go on naming that prompt as the parser that wrote it did, so
- * a pass reads it again from its start instead (`repairCursors`). Where the bytes before its cursor are gone, it
+ * A checkpoint that carries a prompt forward (a turn open at its cursor, or calls or a reply unfinished) written under
+ * another generation of its transcript's pinned scheme (`SCHEME_GENERATION_SQL`). Resumed, it would go on naming that
+ * prompt as the parser that wrote it did, so a pass reads it again from its start instead (`repairCursors`). Where the bytes before its cursor are gone, it
  * resumes with no turn open and is marked `PROMPTS_DROPPED`: the next pass drops every prompt its continuation carries
  * (`withoutPrompts`), and the checkpoint that pass writes holds no mark.
  */
 const PROMPTS_DROPPED = 'mycoParserPromptsDropped';
 /** A stored context without one of its keys. */
 const withoutKey = (context: Record<string, unknown>, key: string): Record<string, unknown> => Object.fromEntries(Object.entries(context).filter(([name]) => name !== key));
-const PROMPT_IDENTITY_STALE = `(parsed_offset > 0 AND COALESCE(prompt_generation, 1) <> ${PROMPT_GENERATION}
+const PROMPT_IDENTITY_STALE = `(parsed_offset > 0 AND COALESCE(prompt_generation, 1) <> ${SCHEME_GENERATION_SQL}
   AND (open_prompt_id IS NOT NULL OR json_extract(parser_context, '$.mycoParserUnfinished') = 1))`;
 
 /** A member's turn end covers the retained reply's source instants. */
@@ -211,6 +207,8 @@ interface ParseTarget {
   size: number;
   parsedOffset: number;
   fidelity: string | null;
+  /** The transcript's pinned prompt identity scheme; null for one that names no agent this Deployment declares. */
+  scheme: PromptIdScheme | null;
   /** The turn open where the cursor stands, recorded by the pass that stopped there. */
   openPromptId: string | null;
   /** The checkpoint carries a prompt forward under another prompt generation than its parser's (`PROMPT_IDENTITY_STALE`). */
@@ -308,7 +306,7 @@ export function laneSelectionSql(lane: Lane, limit = 1, now = Date.now()): strin
   const segments = `SELECT json_group_array(json_object('base_offset', base_offset, 'length', length, 'blob_key', blob_key, 'created_at', created_at, 'object_key', object_key))
       FROM (${segmentSource('transcripts.project_id','transcripts.transcript_id','transcripts.parsed_offset')}
              ORDER BY base_offset LIMIT ${TRANSCRIPT_PARSE_SEGMENTS_PER_READ})`;
-  return `SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at, parse_segment_lines, last_received_at,
+  return `SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, prompt_identity_scheme, open_prompt_id, parser_context, imported_at, parse_segment_lines, last_received_at,
                  (SELECT ended_at FROM sessions s WHERE s.project_id = transcripts.project_id AND s.session_id = transcripts.session_id) AS session_ended_at,
                  ${TURN_ENDED} AS turn_ended, ${PROMPT_IDENTITY_STALE} AS prompt_identity_stale,
                  (${segments}) AS segments
@@ -339,6 +337,7 @@ function targetOf(row: Record<string, unknown>): ParseTarget {
     size: row.size as number,
     parsedOffset: (row.parsed_offset as number | null) ?? 0,
     fidelity: (row.fidelity as string | null) ?? null,
+    scheme: isPromptIdScheme(row.prompt_identity_scheme) ? row.prompt_identity_scheme : null,
     openPromptId: (row.open_prompt_id as string | null) ?? null,
     promptIdentityStale: row.prompt_identity_stale === 1,
     parserContext: contextFromStored(row.parser_context),
@@ -366,12 +365,12 @@ async function finalizePass(db: RelationalStore, target: ParseTarget, statement:
 
 /** A content-free description of the record where reading stopped. */
 export interface ParseDiagnostic {
-  branch: 'malformed_lines' | 'event_not_stored' | 'no_progress' | 'event_refused' | 'blob_absent' | 'record_too_large';
+  branch: 'malformed_lines' | 'event_not_stored' | 'no_progress' | 'event_refused' | 'blob_absent' | 'record_too_large' | 'scheme_unread';
   offset: number;
   lineKind: string;
 }
 
-const FAILURE_BRANCHES = new Set(['malformed_lines', 'event_not_stored', 'no_progress', 'event_refused', 'blob_absent', 'record_too_large']);
+const FAILURE_BRANCHES = new Set(['malformed_lines', 'event_not_stored', 'no_progress', 'event_refused', 'blob_absent', 'record_too_large', 'scheme_unread']);
 const LINE_KINDS = new Set(['user', 'assistant', 'attachment', 'session_meta', 'turn_context', 'event_msg', 'response_item', 'system', 'progress']);
 function lineKind(line: ParsedLine | undefined): string {
   if (line === undefined) return 'unknown';
@@ -654,6 +653,13 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       .bind(now, PARSER_VERSION, target.projectId, target.transcriptId).run();
     return { derived: 0, calls: 1, nextOffset: target.size, failure: null };
   }
+  // A transcript is read only by the derivation it is pinned to; one pinned to a scheme its parser does not derive
+  // stops where it stands rather than naming its prompts another way.
+  const scheme = target.scheme;
+  if (scheme === null || !parser.schemes.includes(scheme)) {
+    await stop(env.db, target, 'parse', now, undefined, { branch: 'scheme_unread', offset: target.parsedOffset, lineKind: 'unknown' });
+    return { derived: 0, calls: 1, nextOffset: null, failure: 'parse' };
+  }
   if (target.promptIdentityStale) {
     return { derived: 0, calls: await repairCursors(env.db, { sql: 'project_id = ? AND transcript_id = ?', params: [target.projectId, target.transcriptId] }), nextOffset: null, failure: null };
   }
@@ -778,7 +784,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     lines = lines.slice(0, LEGACY_REPLY_LINES_PER_READ);
   }
   const state: ParserState = structuredClone(initialState);
-  const input = { lines, sessionId: target.sessionId, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state,
+  const input = { lines, sessionId: target.sessionId, scheme, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state,
     terminal: terminalOnly || (limits.completeFile && windowEnd === target.size) ? terminalRule(target, now, limits) : undefined };
   const parsedEvents = await parser.parse(input);
   const heldReplies = await legacyReplies(env.db, target.projectId, target.transcriptId, parsedEvents, initialState, () => { calls += 1; });
@@ -886,7 +892,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
                    parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
                  WHERE project_id = ? AND transcript_id = ?${guard}`)
       .bind(to, linesBehind(to), to, now, PARSER_VERSION, to, datedThrough(to), datedThrough(to), parser.fidelity, to, openPrompt, to, context,
-        to, parser.promptGeneration, target.projectId, target.transcriptId, ...guardParams));
+        to, schemeGeneration(scheme), target.projectId, target.transcriptId, ...guardParams));
   };
   // Whether the cursor's advance rode the last group's batch and applied there.
   let advanced = false;
@@ -1077,7 +1083,7 @@ async function repairCursors(db: RelationalStore, where: { sql: string; params: 
       ? `parsed_offset = 0, parse_segment_lines = 0, open_prompt_id = NULL, parse_error = NULL, parse_failed_at = NULL,
           parse_awaited_size = NULL, parser_context = json_set(${REREAD_CONTEXT}, '$.mycoParserRepair', json(?))`
       : `parser_version = ${PARSER_VERSION},${row.prompt_identity_stale === 1 ? `
-          open_prompt_id = NULL, prompt_generation = ${PROMPT_GENERATION},` : ''}
+          open_prompt_id = NULL, prompt_generation = ${SCHEME_GENERATION_SQL},` : ''}
           parse_failed_at = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_failed_at END,
           parse_awaited_size = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_awaited_size END,
           parse_error = CASE WHEN parse_error <> '${AWAITING_BYTES}' THEN NULL ELSE parse_error END,

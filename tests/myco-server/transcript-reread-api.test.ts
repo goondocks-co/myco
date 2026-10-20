@@ -9,8 +9,8 @@ import { OWNER_ENV, asOwnerPost } from './helpers/owner.js';
 
 function seed(e: ReturnType<typeof sqliteEnv>): void {
   e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1','s1','machine_1','mt_x',0,0)`);
-  e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, parsed_offset)
-                VALUES ('proj_1','tx_0123456789abcdef0123456789abcdef','s1','machine_1','cursor',100,1,0,0,'mt_x',100)`);
+  e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, parsed_offset, prompt_identity_scheme)
+                VALUES ('proj_1','tx_0123456789abcdef0123456789abcdef','s1','machine_1','cursor',100,1,0,0,'mt_x',100,'offset-v1')`);
   // Retention pruned the first 40 bytes; the segment after them is still held.
   e.sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
                 VALUES ('proj_1','tx_0123456789abcdef0123456789abcdef',40,60,?,'e40',0,0,'mt_x')`, ['a'.repeat(64)]);

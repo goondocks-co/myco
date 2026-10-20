@@ -418,9 +418,15 @@ runner:
       provider: { kind: session-config, default: openai }
       tokenScope: attempt
 
-# How this agent's prompts are named: by their position in the rollout. The prompt hook's `turn_id` names a turn,
-# not one submission, so a context answer names no prompt.
+# How this agent's prompts are named (`@goondocks/myco-shared/prompt-identity`). The hook's `turn_id` is the rollout's
+# `turn_context.payload.turn_id`: it names a turn, and one turn carries every steering submission. The turn's opener
+# is named by the turn alone, so the hook that opens a turn and the Deployment's parse derive one id through
+# `codex-turn-v1`; a later submission of the same turn steers it, and its context answer is session-scoped. A
+# rollout read before transcripts were pinned keeps the line positions it was read by.
 promptIdentity:
-  kind: transcript-only
-  scheme: offset-v1
-  evidence: tests/fixtures/prompt-identity/codex-user-prompt-submit.json
+  kind: harness-key
+  scheme: codex-turn-v1
+  hookKey: turn_id
+  transcriptKey: turn_context.payload.turn_id
+  granularity: turn
+  readBeforePin: offset-v1

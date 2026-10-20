@@ -250,8 +250,8 @@ async function fixture(prebuilt?: { base: string }): Promise<Fixture> {
     eventId: crypto.randomUUID(), sessionId: SESSION_LIVE, kind: 'session.end', createdAt: liveEnd, channel: 'cli',
     producer: { adapter: 'claude-code', version: '2.0.0' }, payload: { endedAt: liveEnd },
   } as never)).persisted).toBe(true);
-  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id)
-              VALUES (?, 'tx_00000000000000000000000000000001', ?, ?, 'claude-code', 'primary', NULL, 10, 1, ?, ?, ?)`, [PROJECT, SESSION_LIVE, TEST_MACHINE_ID, Date.now(), Date.now(), rig.tokenId]);
+  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id, prompt_identity_scheme)
+              VALUES (?, 'tx_00000000000000000000000000000001', ?, ?, 'claude-code', 'primary', NULL, 10, 1, ?, ?, ?, 'claude-v1')`, [PROJECT, SESSION_LIVE, TEST_MACHINE_ID, Date.now(), Date.now(), rig.tokenId]);
   sqlite.run(`UPDATE sessions SET title = 'Automatic title', titled_at = 1 WHERE project_id = ? AND session_id = ?`, [PROJECT, SESSION_LIVE]);
   sqlite.run(`UPDATE sessions SET title = 'Admin title', titled_at = 1, titled_by = 'mem_admin' WHERE project_id = ? AND session_id = ?`, [PROJECT, SESSION_ADMIN]);
 

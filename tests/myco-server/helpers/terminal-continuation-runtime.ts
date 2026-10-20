@@ -6,7 +6,7 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { parseTranscripts, pendingTranscripts, rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { sha256HexOf, uuidv5 } from '@myco-server-worker/hash.js';
-import { continuityRecords } from './continuity-records.js';
+import { shippedContinuityRecords } from './continuity-records.js';
 
 const NOW = Date.parse('2027-01-01T00:00:00Z');
 const IDLE_MS = 600_000;
@@ -40,7 +40,7 @@ export async function terminalContinuationRuntime(db: RelationalStore, blobs: Bl
         if (parse) await parseTranscripts(env, now);
         return bytes.length;
       };
-      const records = continuityRecords[agent].map((record) => ({ ...record, timestamp: new Date(NOW).toISOString() }));
+      const records = shippedContinuityRecords(agent).map((record) => ({ ...record, timestamp: new Date(NOW).toISOString() }));
       if (ending === 'retained64') {
         const initial = JSON.stringify({ type: 'user', message: { content: 'pending tools' }, timestamp: new Date(NOW).toISOString() }) + '\n'
           + JSON.stringify({ type: 'assistant', message: { content: Array.from({ length: 32 }, (_, i) => ({ type: 'tool_use',
@@ -93,13 +93,13 @@ export async function terminalContinuationRuntime(db: RelationalStore, blobs: Bl
         answers.push({ agent, ending, upgraded: true });
         continue;
       }
-      const callIndex = agent === 'codex' ? 2 : 1;
+      const callIndex = agent === 'codex' ? 3 : 1;
       const prefix = records.slice(0, callIndex + 1).map((record) => JSON.stringify(record) + '\n').join('');
       const cursor = await write(prefix, 0, NOW);
       const tools = () => db.prepare('SELECT tool_call_id, tool_name, input, success, output_preview, error_message FROM tool_calls WHERE project_id = ?').bind(projectId).all<Record<string, unknown>>();
       if ((await tools()).results.length !== 0) throw new Error('a live read prematurely closed an unanswered call');
       if (ending === 'turn_end') {
-        const secondReply = { ...records[agent === 'codex' ? 4 : 3], timestamp: new Date(NOW + 10).toISOString() };
+        const secondReply = { ...records[agent === 'codex' ? 5 : 3], timestamp: new Date(NOW + 10).toISOString() };
         const nextCursor = cursor + await write(JSON.stringify(secondReply) + '\n', cursor, NOW + 10);
         await ingestEvent(db, { projectId, machineId: 'terminal-machine', tokenId: token.tokenId, now: NOW, bodyBytes: 0 }, {
           eventId: crypto.randomUUID(), sessionId, kind: 'turn', createdAt: NOW, channel: 'cli',

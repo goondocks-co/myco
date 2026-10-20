@@ -10,7 +10,7 @@ import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { planKind, projectLive, RAW_ROW_GATE, sharedChecks, type Fragment, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { receiptDeliveredStatement, type Delivery } from '../core/injection.js';
 import { answerDeliveredStatement, planNudgeDeliveredStatement, sessionRecordDeliveredStatement } from '../core/recall.js';
-import { CONTEXT_DELIVERED_KIND, isDeliveredSessionRecord, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
+import { CONTEXT_DELIVERED_KIND, isDeliveredSessionRecord, isPromptIdScheme, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { ALWAYS, credentialLive } from './live-credential.js';
 import { endsTurn, endTurnStatement, startTurnFromEventStatement, turnStartFrom } from './turns.js';
 import { prepareArchiveBundle,discardArchiveBundle } from '../core/archive-bundle.js';
@@ -82,6 +82,7 @@ function deliveryStatements(db: RelationalStore, ctx: WriteContext, e: CaptureEn
     projectId: ctx.projectId, sessionId: e.sessionId, at: e.createdAt,
     promptId: typeof p.renderedIn === 'string' ? p.renderedIn : null,
     scopeReason: typeof p.renderedScopeReason === 'string' ? p.renderedScopeReason as PromptScopeReason : null,
+    scheme: isPromptIdScheme(p.renderedScheme) ? p.renderedScheme : null,
   };
   const to = (id: string): Delivery => ({ ...delivered, id });
   // The session record by its own key; from a member that names only the answer, through the answer while it is held.

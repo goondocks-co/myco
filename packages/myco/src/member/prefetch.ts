@@ -63,7 +63,7 @@ function requestFor(sessionId: string, ask: ContextAsk): { path: string; body: R
     case 'subagent':
       return { path: SESSION_PATH, body: { sessionId, kind: 'subagent', agentId: ask.agentId, agentType: ask.agentType } };
     case 'prompt':
-      return { path: PROMPT_PATH, body: { sessionId, promptId: ask.promptId, scopeReason: ask.scopeReason, identity: ask.identity, at: ask.at, text: ask.text } };
+      return { path: PROMPT_PATH, body: { sessionId, promptId: ask.promptId, promptScheme: ask.promptScheme, scopeReason: ask.scopeReason, identity: ask.identity, at: ask.at, text: ask.text } };
   }
 }
 

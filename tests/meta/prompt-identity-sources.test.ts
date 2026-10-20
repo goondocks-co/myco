@@ -7,6 +7,8 @@
  *   it as the schema resolves it, with the `hook-owned` kind derived from the turn-row source.
  * - A `transcript-only` agent that wires a prompt hook names hook-input evidence that its hook carries no key a
  *   `harness-key` agent shares, so a regression that demotes an agent fails here.
+ * - Every scheme a transcript can be pinned to resolves, every parser derives the scheme its agent declares and the one
+ *   it read under before the pin, and each scheme's checkpoint generation is fixed.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -14,7 +16,9 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
-import { OFFSET_PROMPT_NAMESPACES, PROMPT_ID_SCHEMES } from '@goondocks/myco-shared/prompt-identity';
+import { isPromptIdScheme, OFFSET_PROMPT_NAMESPACES, PROMPT_ID_SCHEMES } from '@goondocks/myco-shared/prompt-identity';
+import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
+import { DECLARED_SCHEMES, READ_BEFORE_PIN } from '@myco-server-worker/ingest/prompt-scheme.js';
 import { resolvePromptIdentity, SymbiontManifestSchema } from '@myco/symbionts/manifest-schema.js';
 
 const ROOT = path.resolve(import.meta.dir, '..', '..');
@@ -23,7 +27,7 @@ const REGISTRY = path.join(PACKAGES, 'myco-shared', 'src', 'prompt-identity.ts')
 const MANIFESTS = path.join(PACKAGES, 'myco', 'src', 'symbionts', 'manifests');
 const TEMPLATES = path.join(PACKAGES, 'myco', 'src', 'symbionts', 'templates');
 /** Every namespace a prompt id is derived under. */
-const PROMPT_NAMESPACES = ['queued-prompt', 'transcript-prompt', 'prompt', ...OFFSET_PROMPT_NAMESPACES];
+const PROMPT_NAMESPACES = ['queued-prompt', 'transcript-prompt', 'prompt', 'codex-turn', ...OFFSET_PROMPT_NAMESPACES];
 
 function sources(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -43,6 +47,26 @@ describe('prompt id sources', () => {
 
   it('declares every derived and minted scheme a manifest may name in the registry', () => {
     for (const bundle of CAPTURE_RULE_BUNDLES) expect({ agent: bundle.name, known: bundle.promptIdentity.scheme in PROMPT_ID_SCHEMES }).toEqual({ agent: bundle.name, known: true });
+  });
+
+  it('resolves every scheme a transcript can be pinned to: the declarations, the schemes read before the pin, and the migration\'s', () => {
+    const migration = fs.readFileSync(path.join(PACKAGES, 'myco-server', 'migrations', '0090_v90.sql'), 'utf8');
+    const pinned = new Set([...Object.values(DECLARED_SCHEMES), ...Object.values(READ_BEFORE_PIN), ...[...migration.matchAll(/THEN '([a-z0-9-]+)'/g)].map((m) => m[1]!)]);
+    expect([...pinned].filter((scheme) => !isPromptIdScheme(scheme))).toEqual([]);
+  });
+
+  it('reads every transcript a parser\'s agent declares a scheme for by a parser that derives that scheme', () => {
+    for (const parser of Object.values(PARSERS)) {
+      expect({ agent: parser.agent, declared: parser.schemes.includes(DECLARED_SCHEMES[parser.agent]!) }).toEqual({ agent: parser.agent, declared: true });
+      const read = READ_BEFORE_PIN[parser.agent];
+      expect({ agent: parser.agent, readBeforePin: read === undefined || parser.schemes.includes(read) }).toEqual({ agent: parser.agent, readBeforePin: true });
+    }
+  });
+
+  it('holds each scheme\'s checkpoint generation fixed: a changed derivation is a new scheme', () => {
+    expect(Object.fromEntries(Object.entries(PROMPT_ID_SCHEMES).map(([scheme, entry]) => [scheme, entry.generation]))).toEqual({
+      'claude-v1': 2, 'offset-v1': 1, 'stamp-or-offset-v1': 1, 'codex-turn-v1': 1, 'member-transcript-v1': 1, 'legacy-v1': 1, 'hook-mint-v1': 1,
+    });
   });
 });
 

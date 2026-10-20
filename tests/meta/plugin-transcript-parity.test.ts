@@ -16,6 +16,7 @@
  * Cross-package: the member's hook config and the server's parsers both load
  * here, which is why this lives in `tests/meta/`.
  */
+import { declaredScheme } from '@myco-server-worker/ingest/prompt-scheme.js';
 import { registerBlob } from '../myco-server/helpers/d1.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -66,15 +67,15 @@ async function parseArm(sqlite: Database, env: { db: unknown; blobs: { put: (k: 
   const key = await sha256HexOf(bytes);
   const objectKey = registerBlob(sqlite, { projectId: PROJECT, key, size: bytes.length, tokenId, receivedAt: NOW });
   await env.blobs.put(objectKey, new Blob([bytes]).stream());
-  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id)
-              VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
-             [PROJECT, TRANSCRIPT, SESSION, MACHINE, agent, bytes.length, NOW, NOW, tokenId]);
+  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, prompt_identity_scheme)
+              VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+             [PROJECT, TRANSCRIPT, SESSION, MACHINE, agent, bytes.length, NOW, NOW, tokenId, declaredScheme(agent)]);
   sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
               VALUES (?, ?, 0, ?, ?, 'seg', ?, ?, ?)`, [PROJECT, TRANSCRIPT, bytes.length, key, NOW, NOW, tokenId]);
 
   await parseOnce(env as never, {
     projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-    tokenId, agent, size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, imported: false,
+    tokenId, agent, size: bytes.length, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: declaredScheme(agent), imported: false,
   }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });
 }
 
@@ -114,7 +115,7 @@ describe('native plugin transcripts land one row per fact', () => {
     await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
       tokenId, agent: 'opencode', size: utf8(TRANSCRIPT_TEXT).length,
-      parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, imported: false,
+      parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: declaredScheme('opencode'), imported: false,
     }, NOW, { calls: Number.POSITIVE_INFINITY, deadline: Number.POSITIVE_INFINITY, clock: () => 0, completeFile: true });
     expect(count(sqlite, 'events')).toBe(before);
     expect(count(sqlite, 'prompt_batches')).toBe(1);

@@ -17,6 +17,9 @@ const REQUESTS: Array<[PromptIdRequest, string[]]> = [
   [{ scheme: 'offset-v1', namespace: 'cursor-prompt', sessionId: S, offset: 0 }, ['cursor-prompt', S, '0']],
   [{ scheme: 'offset-v1', namespace: 'pi-prompt', sessionId: S, offset: 7 }, ['pi-prompt', S, '7']],
   [{ scheme: 'stamp-or-offset-v1', sessionId: S, offset: 9 }, ['prompt', S, '9']],
+  [{ scheme: 'codex-turn-v1', sessionId: S, turnId: 't1', submission: { opener: true } }, ['codex-turn', S, 't1', 'opener']],
+  [{ scheme: 'codex-turn-v1', sessionId: S, turnId: 't1', submission: { order: 4 } }, ['codex-turn', S, 't1', 'order|4']],
+  [{ scheme: 'codex-turn-v1', sessionId: S, turnId: 't1', submission: { offset: 812 } }, ['codex-turn', S, 't1', 'offset|812']],
   [{ scheme: 'member-transcript-v1', sessionId: S, position: 3 }, ['transcript-prompt', S, '3']],
   [{ scheme: 'member-transcript-v1', sessionId: S, dedupeKey: 'queued_command|u', position: 3 }, ['queued-prompt', S, 'queued_command|u']],
   [{ scheme: 'legacy-v1', projectId: 'proj_1', legacyId: 'old' }, ['legacy', 'proj_1', 'prompt', 'old']],
@@ -42,6 +45,9 @@ describe('canonicalPromptId', () => {
     expect(hookPromptRequest(claude, S, 'k')).toEqual({ scheme: 'claude-v1', sessionId: S, shape: 'user_prompt', key: 'k' });
     expect(hookPromptRequest(claude, S, undefined)).toBeNull();
     expect(hookPromptRequest({ kind: 'transcript-only', scheme: 'offset-v1' }, S, 'k')).toBeNull();
+    const codex = { kind: 'harness-key', scheme: 'codex-turn-v1', hookKey: 'turn_id', transcriptKey: 'turn_context.payload.turn_id', granularity: 'turn' } as const;
+    expect(hookPromptRequest(codex, S, 't1')).toEqual({ scheme: 'codex-turn-v1', sessionId: S, turnId: 't1', submission: { opener: true } });
+    expect(hookPromptRequest(codex, S, undefined)).toBeNull();
   });
 
   it('normalizes a harness key to a trimmed bounded string, and anything else to none', () => {

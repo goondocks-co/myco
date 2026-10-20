@@ -11,6 +11,7 @@ import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
 import { toolInputPreview } from '../core/tool-input.js';
 import { bundlePublicationStatements, type PreparedBundle } from '../core/archive-bundle.js';
+import { declaredScheme } from './prompt-scheme.js';
 
 export interface PreparedToolInput {
   key: string;
@@ -446,8 +447,8 @@ const prompt = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
     admission: [],
     projections: [
       db.prepare(`INSERT INTO prompt_batches
-          (project_id, prompt_id, session_id, event_id, parent_prompt_id, thread_id, thread_label, origin, prompt_kind, text, blob_key, content_hash, created_at, updated_at, ended_at, token_id, received_at)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          (project_id, prompt_id, session_id, event_id, parent_prompt_id, thread_id, thread_label, origin, prompt_kind, text, blob_key, content_hash, prompt_key_hash, created_at, updated_at, ended_at, token_id, received_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                (SELECT MIN(r.created_at) FROM responses r JOIN sessions s ON s.project_id = r.project_id AND s.session_id = r.session_id
                  WHERE r.project_id = ? AND r.prompt_id = ? AND s.machine_id IS ?), ?, ?
          WHERE ${RAW_ROW_GATE}
@@ -462,7 +463,7 @@ const prompt = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
           updated_at = MAX(prompt_batches.updated_at, excluded.updated_at)
         WHERE excluded.content_hash = prompt_batches.content_hash`)
         .bind(ctx.projectId, p.promptId, e.sessionId, e.eventId, opt(p.parentPromptId), opt(p.threadId), opt(p.threadLabel), p.origin, opt(p.promptKind),
-              opt(p.text), opt(blob), contentHash, e.createdAt, e.createdAt, ctx.projectId, p.promptId, ctx.machineId, ctx.tokenId, ctx.now,
+              opt(p.text), opt(blob), contentHash, opt(p.promptKeyHash), e.createdAt, e.createdAt, ctx.projectId, p.promptId, ctx.machineId, ctx.tokenId, ctx.now,
               ...rawGateParams(ctx, e)),
       ...reopensSession(db, ctx, e, p),
     ],
@@ -677,14 +678,15 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
         .bind(ctx.projectId, transcriptId, baseOffset, length, blob, e.eventId, e.createdAt, ctx.now, ctx.tokenId, ...rawGateParams(ctx, e)),
       // `imported_at` is the lane of the NEWEST segment, not of the first: a
       // session imported and then continued live is live work, and a COALESCE
-      // would leave it in the backfill lane for the rest of its life.
-      db.prepare(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, origin_path, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id, imported_at)
-          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ? WHERE ${RAW_ROW_GATE} AND ${segmentWritten}
+      // would leave it in the backfill lane for the rest of its life. The prompt
+      // identity scheme is written by the insert alone (`prompt-scheme.ts`).
+      db.prepare(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, origin_path, role, head_hash, size, segment_count, first_received_at, last_received_at, token_id, imported_at, prompt_identity_scheme)
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ? WHERE ${RAW_ROW_GATE} AND ${segmentWritten}
           ON CONFLICT (project_id, transcript_id) DO UPDATE SET size = excluded.size, segment_count = transcripts.segment_count + 1,
             last_received_at = excluded.last_received_at, head_hash = COALESCE(transcripts.head_hash, excluded.head_hash),
             imported_at = excluded.imported_at`)
         .bind(ctx.projectId, transcriptId, e.sessionId, ctx.machineId, opt(p.agent), opt(p.originPath), opt(p.role) ?? 'primary', headHash, size, ctx.now, ctx.now, ctx.tokenId,
-              e.channel === 'import' ? ctx.now : null,
+              e.channel === 'import' ? ctx.now : null, declaredScheme(opt(p.agent) as string | null),
               ...rawGateParams(ctx, e), ctx.projectId, transcriptId, baseOffset, e.eventId),
       db.prepare(`UPDATE sessions SET agent = COALESCE(agent, ?) WHERE project_id = ? AND session_id = ?
           AND ${RAW_ROW_GATE} AND ${segmentWritten}`)

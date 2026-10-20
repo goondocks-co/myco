@@ -7,7 +7,7 @@ import { parseTranscripts, rereadTranscripts, TRANSCRIPT_IDLE_MS } from '@myco-s
 import { legacyReplies } from '@myco-server-worker/ingest/legacy-replies.js';
 import { MAX_PAYLOAD_BYTES } from '@myco-server-worker/ingest/envelope.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
-import { continuityRecords } from './continuity-records.js';
+import { continuityRecords, shippedContinuityRecords } from './continuity-records.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
 
 const NOW = Date.parse('2027-01-01T00:00:00Z');
@@ -23,7 +23,8 @@ export async function ingestContinuityRuntime(db: RelationalStore, blobs: BlobSt
     await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES (?, ?, ?)').bind(projectId, projectId, NOW).run();
 
   const outcomes = [];
-  for (const [agent, raw] of Object.entries(continuityRecords)) {
+  for (const agent of Object.keys(continuityRecords)) {
+    const raw = shippedContinuityRecords(agent);
     const sessionId = `continuity-${agent}`;
     const transcriptId = `tx_${(await sha256HexOf(new TextEncoder().encode(agent))).slice(0, 32)}`;
     const records = raw.map((record, n) => ({ ...record, timestamp: new Date(Date.parse(TIME) + n).toISOString(), at: new Date(Date.parse(TIME) + n).toISOString() }));

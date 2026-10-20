@@ -59,6 +59,12 @@ export const WIRE_FIELDS = ['eventId', 'sessionId', 'kind', 'createdAt', 'channe
 export const JOURNAL_VERSION = 2;
 
 /** A spool line: the envelope plus the member-private sidecars. */
+/**
+ * The events an append writes: fixed, or derived from the session's state under the lock the append and its receipt
+ * hold, for a hook whose capture depends on what an earlier hook of the session recorded.
+ */
+export type SessionEvents = readonly OutboundEvent[] | ((state: SessionState) => readonly OutboundEvent[]);
+
 export interface SpoolRecord extends MemberEnvelope {
   _memberProtocol: number;
   _blobSource?: BlobSource;
@@ -443,15 +449,17 @@ export class MemberSpool {
    * and the event exists nowhere. Appending first and recording in the same
    * locked section makes the durable copy the thing that cannot be missing.
    */
-  appendAndRecord(sessionId: string, events: readonly OutboundEvent[], record?: (state: SessionState) => void, now: number = Date.now(), deduplicate = false): void {
+  appendAndRecord(sessionId: string, events: SessionEvents, record?: (state: SessionState) => void, now: number = Date.now(), deduplicate = false): void {
     const stamp = new Date(now).toISOString();
-    this.appendLines(sessionId, this.spoolFile(sessionId), events.map((out) => ({
-      ...out.envelope,
+    const lines = (out: readonly OutboundEvent[]): object[] => out.map((event) => ({
+      ...event.envelope,
       _memberProtocol: MEMBER_PROTOCOL,
       _journal: JOURNAL_VERSION,
-      ...(out.blobSource ? { _blobSource: out.blobSource } : {}),
+      ...(event.blobSource ? { _blobSource: event.blobSource } : {}),
       timestamp: stamp,
-    })), record, now, undefined, deduplicate ? (existing, moving) => {
+    }));
+    this.appendLines(sessionId, this.spoolFile(sessionId), typeof events === 'function' ? (state) => lines(events(state)) : lines(events),
+      record, now, undefined, deduplicate ? (existing, moving) => {
       const ids = new Set(existing.flatMap((line) => typeof line === 'object' && line !== null && 'eventId' in line ? [line.eventId] : []));
       return moving.filter((line) => {
         const id = (line as SpoolRecord).eventId;
@@ -503,15 +511,18 @@ export class MemberSpool {
    * which `endsMidLine` closes before the next append so it never costs the line after it.
    */
   private appendLines(
-    sessionId: string, file: string, lines: readonly object[], record: ((state: SessionState) => void) | undefined, now: number, header?: () => object,
+    sessionId: string, file: string, derive: readonly object[] | ((state: SessionState) => readonly object[]), record: ((state: SessionState) => void) | undefined, now: number, header?: () => object,
     fresh?: (existing: readonly unknown[], lines: readonly object[]) => readonly object[],
   ): void {
-    if (lines.length === 0 && !record) return;
+    if (typeof derive !== 'function' && derive.length === 0 && !record) return;
     const lock = bufferLockPath(this.dir, sessionId);
     ensurePrivateFile(lock);
-    // A receipt with nothing to append leaves no spool file behind: an empty file would read as a session with records to drain.
-    if (lines.length > 0) ensurePrivateFile(file);
     withFileLockSync(lock, () => {
+      const state = readSessionStateUnlocked(this.dir, sessionId);
+      // Lines a hook derives from the session's state are derived under the lock that writes them and that state.
+      const lines = typeof derive === 'function' ? derive(state) : derive;
+      // A receipt with nothing to append leaves no spool file behind: an empty file would read as a session with records to drain.
+      if (lines.length > 0) ensurePrivateFile(file);
       const existing = lines.length === 0 || (header === undefined && fresh === undefined) || fs.statSync(file).size === 0 ? null
         : header === undefined ? parseSpoolLines(fs.readFileSync(file, 'utf8')) : readTurnLines(file);
       // What the file already holds is read under the lock this append holds, so no other append slips between.
@@ -527,7 +538,6 @@ export class MemberSpool {
           fs.appendFileSync(file, (endsMidLine(file) ? '\n' : '') + body, { mode: MEMBER_FILE_MODE });
         }
       }
-      const state = readSessionStateUnlocked(this.dir, sessionId);
       if (state.startedAt === undefined) state.startedAt = now;
       record?.(state);
       writeSessionStateUnlocked(this.dir, sessionId, state, now);

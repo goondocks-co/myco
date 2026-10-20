@@ -41,3 +41,22 @@ export async function danglingPromptReferences(db: RelationalStore, from: number
   const results = await db.batch(PROMPT_REFERENCE_KINDS.map((kind) => db.prepare(danglingReferenceSql(kind)).bind(from)));
   return Object.fromEntries(PROMPT_REFERENCE_KINDS.map((kind, i) => [kind, (results[i]!.results[0] as { n: number } | undefined)?.n ?? 0])) as Record<PromptReferenceKind, number>;
 }
+
+/**
+ * The statement counting, per agent, `v1` receipts created at or after its one parameter whose named prompt row
+ * records a key hash (`prompt_batches.prompt_key_hash`) other than the receipt's own (`prompt_hash`): one id that
+ * carried two texts. A Codex turn whose opener's hook never ran gives its opener id to the first steering hook, and
+ * this is where that shows. A signal and never a link: nothing is attached or moved by it.
+ */
+export const PROMPT_KEY_MISMATCH_SQL = `SELECT s.agent AS agent, COUNT(*) AS n FROM projects pr CROSS JOIN spore_injections r
+    JOIN prompt_batches p ON p.project_id = r.project_id AND p.prompt_id = r.prompt_id
+    JOIN sessions s ON s.project_id = r.project_id AND s.session_id = r.session_id
+  WHERE r.project_id = pr.project_id AND r.created_at >= ? AND r.ask_protocol = 'v1' AND r.prompt_id IS NOT NULL
+    AND p.prompt_key_hash IS NOT NULL AND p.prompt_key_hash <> r.prompt_hash
+  GROUP BY s.agent`;
+
+/** Receipts created at or after `from` whose prompt row carried another text, counted per agent (`PROMPT_KEY_MISMATCH_SQL`). */
+export async function promptKeyMismatches(db: RelationalStore, from: number): Promise<Record<string, number>> {
+  const { results } = await db.prepare(PROMPT_KEY_MISMATCH_SQL).bind(from).all<{ agent: string | null; n: number }>();
+  return Object.fromEntries(results.map((row) => [row.agent ?? '', row.n]));
+}

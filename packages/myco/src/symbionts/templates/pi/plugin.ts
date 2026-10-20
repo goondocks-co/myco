@@ -946,9 +946,9 @@ export default function (pi: any) {
   });
 
   /**
-   * Prompt submit: mint the id through the hook and hand the served block back
-   * as a custom message. Pi writes the prompt into its own transcript, so
-   * nothing is written here.
+   * Prompt submit: run the hook and hand the served block back as a custom
+   * message. Pi writes the prompt into its own transcript, so nothing is
+   * written here, and the prompt id the hook answers with is not stamped.
    */
   pi.on("before_agent_start", async (event: { prompt?: string }, ctx: PiContext) => {
     const session = sessionOf(ctx);

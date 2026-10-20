@@ -306,8 +306,8 @@ describe('the prompt-reference invariant', () => {
   async function seeded() {
     const { e } = await member();
     const transcript = (session: string, opts: { through: number; caughtUp?: boolean }) => e.sqlite.run(`INSERT INTO transcripts
-      (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, segment_count, first_received_at, last_received_at, token_id, role, parsed_through_at)
-      VALUES ('proj_1', ?, ?, 'machine_1', 'claude-code', 100, ?, 1, 1, 1, 't', 'primary', ?)`, [`tx_${session}`, session, opts.caughtUp === false ? 50 : 100, opts.through]);
+      (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, segment_count, first_received_at, last_received_at, token_id, role, parsed_through_at, prompt_identity_scheme)
+      VALUES ('proj_1', ?, ?, 'machine_1', 'claude-code', 100, ?, 1, 1, 1, 't', 'primary', ?, 'claude-v1')`, [`tx_${session}`, session, opts.caughtUp === false ? 50 : 100, opts.through]);
     const insert = (table: string, row: Record<string, unknown>) =>
       e.sqlite.run(`INSERT INTO ${table} (${Object.keys(row).join(', ')}) VALUES (${Object.keys(row).map(() => '?').join(', ')})`, Object.values(row) as never[]);
     const naming = (session: string, n: number, over: Record<string, unknown>) =>

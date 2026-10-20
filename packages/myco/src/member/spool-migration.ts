@@ -8,7 +8,7 @@ import { isProjectId, REFUSED_LOG_MAX_BYTES } from './constants.js';
 import { CONTEXT_DIRNAME } from './context-cache.js';
 import { listRegistryEntriesResult, deploymentUrl, type RegistryEntry } from './registry.js';
 import { LEGACY_MIGRATION_FILE, memberRoutingIdentity, pinSpoolDestination, routedSpoolDir, ROUTING_FILE, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
-import { bufferLockPath, emptySessionState, readMigrationSettledUnlocked, readSessionState, readSessionStateResultUnlocked, recordMigrationSettledUnlocked, writeSessionStateUnlocked, type SessionState } from './session-state.js';
+import { bufferLockPath, emptySessionState, mergedTurn, readMigrationSettledUnlocked, readSessionState, readSessionStateResultUnlocked, recordMigrationSettledUnlocked, writeSessionStateUnlocked, type SessionState } from './session-state.js';
 import { MemberSpool, OFFLINE_LATCH_FILE, REFUSED_LOG_FILE, SPOOL_DIRNAME, WIRE_FIELDS, turnEndIdentity, type SpoolRecord } from './spool.js';
 import { publishStagedBlob, readStagedBlob } from './staged-blobs.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, isPrivateMode, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic, type PrivateRead } from './store.js';
@@ -367,6 +367,8 @@ function mergeState(target: SessionState, source: SessionState): SessionState {
   merged.delivered = [...new Set([...source.delivered, ...target.delivered])];
   merged.transcript = target.transcript ?? source.transcript;
   merged.promptId = target.promptId ?? source.promptId;
+  merged.turn = mergedTurn(target.turn, source.turn);
+  if (merged.turn === undefined) delete merged.turn;
   merged.agent = target.agent ?? source.agent;
   merged.planTagCount = Math.max(source.planTagCount, target.planTagCount);
   merged.compactionOrdinal = Math.max(source.compactionOrdinal, target.compactionOrdinal);

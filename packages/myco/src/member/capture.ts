@@ -35,7 +35,7 @@ import { refreshableRoot } from './refresh.js';
 import { readRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from './registry.js';
 import { getMachineId } from '../machine-id.js';
 import type { SessionState } from './session-state.js';
-import { MemberSpool, turnEndIdentity, type TurnEndMark } from './spool.js';
+import { MemberSpool, turnEndIdentity, type SessionEvents, type TurnEndMark } from './spool.js';
 import type { FetchLike } from './transport.js';
 import type { DetachedSpawn } from '../runtime/spawn-detached.js';
 
@@ -97,6 +97,13 @@ export interface HookOutcome {
   response?: HookResponse;
   /** What the member helper is to fetch for the hooks after this one, recorded with the records. */
   ask?: ContextAsk;
+  /**
+   * Capture that depends on what an earlier hook of the session recorded: decided from the session's state under the
+   * lock the append holds, so two hooks of one session never decide from the same state. Its events are appended after
+   * `events`, its ask replaces `ask`, and its response replaces `response`. Like `record`, it may touch no
+   * `…SessionState` helper; it may mutate the state it is handed, which is written with the append.
+   */
+  claim?: (state: SessionState) => HookClaim;
   /** Extra events derived after the hook's captured records and receipts are committed. */
   optional?: (run: HookRun) => Promise<OptionalHookCapture> | OptionalHookCapture;
   /**
@@ -120,6 +127,13 @@ export interface HookOutcome {
    * Every hook that has one also prints the notice to stderr.
    */
   notice?: (text: string, response: HookResponse) => HookResponse;
+}
+
+/** What a hook's `claim` decided under the session's lock. */
+export interface HookClaim {
+  events: OutboundEvent[];
+  ask?: ContextAsk;
+  response?: HookResponse;
 }
 
 export interface OptionalHookCapture {
@@ -270,19 +284,27 @@ export async function runMemberHook(
     const outcome = await handle(run);
     response = outcome.response ?? {};
     if (hold !== null && hold.notice !== null) response = withNotice(hold.notice, response);
-    const record = outcome.events.length > 0 || outcome.record || outcome.ask ? (state: SessionState) => {
+    let claimed: HookClaim | undefined;
+    const ask = (): ContextAsk | undefined => claimed?.ask ?? outcome.ask;
+    const record = outcome.events.length > 0 || outcome.record || outcome.ask || outcome.claim ? (state: SessionState) => {
       state.agent ??= input.agent;
       state.hookAt = now();
       // A session id that hooks again after its end has resumed: its transcript waits on turn ends once more.
       if (hookName !== 'session-end') delete state.endedAt;
       outcome.record?.(state);
-      if (outcome.ask) state.contextAsks = withAsk(state.contextAsks, outcome.ask);
+      const asked = ask();
+      if (asked) state.contextAsks = withAsk(state.contextAsks, asked);
     } : undefined;
+    const claim = outcome.claim;
+    const captured: SessionEvents = claim === undefined ? outcome.events : (state) => {
+      claimed = claim(state);
+      return [...outcome.events, ...claimed.events];
+    };
     // Capture held for a repository still joining lands under the repository's lock: in its pending spool, or in the
     // project's spool once the join has connected it. It is delivered once the repository is connected, by the helper
     // its next hook kicks; until then nothing is dialled and no helper is started.
     let capturedInProject = false;
-    const append = (events: readonly OutboundEvent[], receipt?: (state: SessionState) => void): void => {
+    const append = (events: SessionEvents, receipt?: (state: SessionState) => void): void => {
       if (pending !== null) {
         const destination = appendPending(pending.repo, sessionId, events, receipt, { mycoHome, now: now() });
         if (destination === 'project') capturedInProject = true;
@@ -293,12 +315,13 @@ export async function runMemberHook(
     let appendedEvents = outcome.events;
     let turnEnd = outcome.turnEnd;
     try {
-      append(outcome.events, record);
+      append(captured, record);
+      appendedEvents = [...outcome.events, ...(claimed?.events ?? [])];
       if (outcome.optional !== undefined) {
         try {
           const extra = await outcome.optional(run);
           if (extra.events.length > 0) append(extra.events);
-          appendedEvents = [...outcome.events, ...extra.events];
+          appendedEvents = [...appendedEvents, ...extra.events];
           turnEnd = extra.turnEnd;
         } catch (error) {
           process.stderr.write(`[myco] ${hookName} optional capture skipped: ${(error as Error).message}\n`);
@@ -315,6 +338,7 @@ export async function runMemberHook(
     } finally {
       joinSteps();
     }
+    if (claimed?.response !== undefined) response = hold !== null && hold.notice !== null ? withNotice(hold.notice, claimed.response) : claimed.response;
 
     // Work for the helper: records appended, context asked for, or a turn's or a session's end to deliver.
     if (capturedInProject && pending !== null) {
@@ -324,7 +348,7 @@ export async function runMemberHook(
         run.credential = credential;
       }
     }
-    if ((pending === null || (capturedInProject && credential.projectId !== '')) && (appendedEvents.length > 0 || outcome.ask !== undefined || outcome.ends !== undefined)) {
+    if ((pending === null || (capturedInProject && credential.projectId !== '')) && (appendedEvents.length > 0 || ask() !== undefined || outcome.ends !== undefined)) {
       const reason: KickReason = outcome.ends ?? 'capture';
       const target = { projectId: credential.projectId, serverUrl: credential.serverUrl, mycoHome, reason };
       // Only a hook declared to read the registry may leave its work to a detached helper. One declared `env` runs in a

@@ -1,4 +1,4 @@
-import { CONTEXT_DELIVERED_KIND, PROMPT_IDENTITY_FEATURE } from './prompt-identity.js';
+import { CONTEXT_DELIVERED_KIND, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE } from './prompt-identity.js';
 
 /** How long a member can spend a GitHub identity link. */
 export const IDENTITY_LINK_TTL_MS = 15 * 60 * 1000;
@@ -55,7 +55,7 @@ export type MemberKind = (typeof MEMBER_KINDS)[number];
 export const FEATURES_HEADER = 'x-myco-features';
 /** Repository labels in session.start require this advertised optional field. */
 export const PROJECT_NAME_FEATURE = 'project-name';
-export const MEMBER_FEATURES = ['turn', PROJECT_NAME_FEATURE, PROMPT_IDENTITY_FEATURE] as const;
+export const MEMBER_FEATURES = ['turn', PROJECT_NAME_FEATURE, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE] as const;
 export type MemberFeature = (typeof MEMBER_FEATURES)[number];
 
 /** Machine settings revisions are exchanged only by members and Deployments advertising this feature. */

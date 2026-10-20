@@ -12,6 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { PARSERS, parserFor } from '@myco-server-worker/ingest/parsers/registry.js';
+import { READ_BEFORE_PIN } from '@myco-server-worker/ingest/prompt-scheme.js';
 import { FIDELITIES, REPLY_SEPARATOR, replyChunks, responseBound, truncationMarker, type DerivedEvent, type ParsedLine } from '@myco-server-worker/ingest/parsers/index.js';
 import { MAX_ID_CHARS, MAX_PAYLOAD_BYTES } from '@myco-server-worker/ingest/envelope.js';
 import { utf8 } from '@myco-server-worker/hash.js';
@@ -58,7 +59,7 @@ function linesOfText(raw: string): ParsedLine[] {
 }
 
 const parseFixture = (agent: string): Promise<DerivedEvent[]> =>
-  PARSERS[agent].parse({ lines: linesOf(FIXTURE_FOR[agent]), sessionId: SESSION, now: NOW });
+  PARSERS[agent].parse({ scheme: READ_BEFORE_PIN[agent]!,  lines: linesOf(FIXTURE_FOR[agent]), sessionId: SESSION, now: NOW });
 
 const kinds = (events: DerivedEvent[]): string[] => events.map((e) => e.kind);
 const only = (events: DerivedEvent[], kind: string): DerivedEvent[] => events.filter((e) => e.kind === kind);
@@ -216,13 +217,13 @@ describe('claude-code parser', () => {
 
   it('records a call the transcript never answered rather than dropping it', async () => {
     const lines = linesOf('claude-parse-basic.jsonl').filter((l) => l.value.uuid !== 'r1');
-    const events = await PARSERS['claude-code'].parse({ lines, sessionId: SESSION, now: NOW });
+    const events = await PARSERS['claude-code'].parse({ scheme: 'claude-v1',  lines, sessionId: SESSION, now: NOW });
     const unfinished = only(events, 'tool.failure').find((e) => e.payload.toolName === 'Read');
     expect(unfinished?.payload.errorMessage).toBe('tool call has no result in the transcript');
   });
 
   it('gives every tool call of one assistant message its own row identity', async () => {
-    const events = await PARSERS['claude-code'].parse({ lines: linesOf('claude-parse-parallel.jsonl'), sessionId: SESSION, now: NOW });
+    const events = await PARSERS['claude-code'].parse({ scheme: 'claude-v1',  lines: linesOf('claude-parse-parallel.jsonl'), sessionId: SESSION, now: NOW });
     const calls = only(events, 'tool.use');
     expect(calls).toHaveLength(2);
     expect(calls.map((c) => c.payload.toolCallId)).toEqual([
@@ -235,7 +236,7 @@ describe('claude-code parser', () => {
   });
 
   it('gives every plan envelope of one text block its own key', async () => {
-    const plans = only(await PARSERS['claude-code'].parse({ lines: linesOf('claude-parse-parallel.jsonl'), sessionId: SESSION, now: NOW }), 'plan');
+    const plans = only(await PARSERS['claude-code'].parse({ scheme: 'claude-v1',  lines: linesOf('claude-parse-parallel.jsonl'), sessionId: SESSION, now: NOW }), 'plan');
     expect(plans).toHaveLength(2);
     expect(plans.map((p) => p.payload.title)).toEqual(['First', 'Second']);
     expect(new Set(plans.map((p) => p.payload.planKey)).size).toBe(2);
@@ -243,7 +244,7 @@ describe('claude-code parser', () => {
   });
 
   it('parses a subagent sibling as an ordinary transcript of the same session', async () => {
-    const events = await PARSERS['claude-code'].parse({ lines: linesOf('claude-parse-subagent.jsonl'), sessionId: SESSION, now: NOW });
+    const events = await PARSERS['claude-code'].parse({ scheme: 'claude-v1',  lines: linesOf('claude-parse-subagent.jsonl'), sessionId: SESSION, now: NOW });
     expect(kinds(events)).toEqual(['prompt', 'response', 'tool.use']);
     expect(only(events, 'tool.use')[0].payload.toolName).toBe('Grep');
   });
@@ -256,7 +257,7 @@ describe('codex parser', () => {
     expect(createHash('sha256').update(bytes).digest('hex')).toBe(provenance.redacted_sha256);
     const lines = linesOf('codex-context-redacted.jsonl');
     expect(lines).toHaveLength(provenance.retained_message_rows + 1);
-    const events = await PARSERS.codex.parse({ lines, sessionId: SESSION, now: NOW });
+    const events = await PARSERS.codex.parse({ scheme: 'offset-v1',  lines, sessionId: SESSION, now: NOW });
     expect(events.map(({ kind, payload }) => [kind, payload.text, payload.origin])).toEqual([
       ['prompt', '[redacted text]', 'user'], ['response', '[redacted text]', undefined],
     ]);
@@ -264,7 +265,7 @@ describe('codex parser', () => {
 
   it('does not project developer messages as responses in the native rollout', async () => {
     const lines = linesOf('codex-0.153.4-redacted.jsonl');
-    const events = await PARSERS.codex.parse({ lines, sessionId: SESSION, now: NOW });
+    const events = await PARSERS.codex.parse({ scheme: 'offset-v1',  lines, sessionId: SESSION, now: NOW });
     expect(only(events, 'response')).toHaveLength(1);
     const assistantOffsets = lines.filter(({ value }) => {
       const payload = value.payload as { role?: string };
@@ -284,7 +285,7 @@ describe('codex parser', () => {
       'Editor context\n## My request for Codex:\nFix capture\n',
     ];
     const lines = messages.map((text, offset) => ({ offset, value: { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } } }));
-    const events = await PARSERS.codex.parse({ lines, sessionId: SESSION, now: NOW, transcriptMeta: { source: 'cli' } });
+    const events = await PARSERS.codex.parse({ scheme: 'offset-v1',  lines, sessionId: SESSION, now: NOW, transcriptMeta: { source: 'cli' } });
     expect(only(events, 'prompt').map(({ payload }) => [payload.text, payload.origin])).toEqual([
       [messages[2], 'system'], [messages[3], 'agent_dispatch'], [messages[4], 'system'], ['Fix capture', 'user'],
     ]);
@@ -347,7 +348,7 @@ describe('cursor parser', () => {
   });
 
   it('reads a recorded cursor-agent transcript into its prompt and its reply (#1461)', async () => {
-    const events = await PARSERS.cursor.parse({ lines: linesOf('cursor-agent-2026.09-redacted.jsonl'), sessionId: SESSION, now: NOW });
+    const events = await PARSERS.cursor.parse({ scheme: 'offset-v1',  lines: linesOf('cursor-agent-2026.09-redacted.jsonl'), sessionId: SESSION, now: NOW });
     expect(only(events, 'prompt').map((e) => e.payload.text)).toEqual([
       'List the files in this directory and say how many there are. Do not modify anything.',
     ]);
@@ -407,7 +408,7 @@ describe('a reply longer than one response holds', () => {
     it(`${agent}: splits a 600,000-character turn at message boundaries into admitted responses`, async () => {
       const replies = messages(24, 25_000);
       const lines = linesFor(replies);
-      const events = await PARSERS[agent].parse({ lines, sessionId: SESSION, now: NOW });
+      const events = await PARSERS[agent].parse({ scheme: READ_BEFORE_PIN[agent]!,  lines, sessionId: SESSION, now: NOW });
       const responses = only(events, 'response');
       const whole = replies.join(REPLY_SEPARATOR);
       expect(whole.length).toBeGreaterThan(TEXT_CHARS);
@@ -434,7 +435,7 @@ describe('a reply longer than one response holds', () => {
 
     it(`${agent}: cuts a single message too long for any response short, and says how much it left out`, async () => {
       const long = `start ${'🍄 over the bound '.repeat(40_000)}end`;
-      const events = await PARSERS[agent].parse({ lines: linesFor(['before', long, 'after']), sessionId: SESSION, now: NOW });
+      const events = await PARSERS[agent].parse({ scheme: READ_BEFORE_PIN[agent]!,  lines: linesFor(['before', long, 'after']), sessionId: SESSION, now: NOW });
       const texts = only(events, 'response').map((r) => r.payload.text as string);
       expect(texts.length).toBe(3);
       expect(texts[0]).toBe('before');
@@ -449,7 +450,7 @@ describe('a reply longer than one response holds', () => {
     });
   }
 
-  it('pins each joined response identity, offset, time, prompt and text from recorded transcripts', async () => {
+  it('pins each joined response identity, offset, time, prompt and text from recorded transcripts, under the scheme they were read by', async () => {
     const pinned: Array<[string, string, number, string]> = [
       ['codex', 'codex-parse-basic.jsonl', 1, 'c828fd50ab8880c182b5dab339a9eaf01d5f61b9b7da72759ca24e19fa5ed9bb'],
       ['codex', 'codex-context-redacted.jsonl', 1, 'a183b0c3a973b1dcc572d1740c96fe5383ccb1ccdc5843c64e7e7c7ea24936f1'],
@@ -459,7 +460,7 @@ describe('a reply longer than one response holds', () => {
     ];
     const seen = [];
     for (const [agent, file] of pinned) {
-      const events = await PARSERS[agent].parse({ lines: linesOf(file), sessionId: SESSION, now: NOW });
+      const events = await PARSERS[agent].parse({ scheme: READ_BEFORE_PIN[agent]!, lines: linesOf(file), sessionId: SESSION, now: NOW });
       const rows = only(events, 'response').map((e) => [e.payload.responseId, e.offset, e.createdAt, e.payload.promptId ?? null, e.payload.text]);
       seen.push([agent, file, rows.length, createHash('sha256').update(JSON.stringify(rows)).digest('hex')]);
     }

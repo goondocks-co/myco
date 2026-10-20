@@ -83,7 +83,7 @@ export function pluginEventsParser(options: {
   return {
     agent,
     fidelity,
-    promptGeneration: 1,
+    schemes: ['stamp-or-offset-v1'],
     planTags,
     lineTimeField: 'at',
     async parse(input: ParserInput): Promise<DerivedEvent[]> {

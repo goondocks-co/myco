@@ -97,6 +97,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0087_v87.sql': 'b6d34853a1bfb8fd1ee45da16f1405cc806b0549f1753443956e27964d892cf6',
   '0088_v88.sql': '7b40d6a4ffee4576a0000e12255891bc03bb06bb324ac5fcedb606ab042c3a08',
   '0089_v89.sql': 'a2e8b73fdd1b05be584e33dad00ea7b4bce99956723f5ecbb3bbced2aaaed725',
+  '0090_v90.sql': '3283a9899503b34a9ef1128212165eb5fe0b162ed8841b958f333024166f30cc',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -364,7 +365,7 @@ describe('versioned schema steps', () => {
         VALUES ('proj_1', 'tx_1', 's1', 'm1', 'cursor', 1000, 500, 1, 2, 't1', 'awaiting_bytes', 2)`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM transcripts').get();
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(54));
-      expect(sqlite.query('SELECT * FROM transcripts').get()).toEqual({ ...before, parse_awaited_size: null, parse_segment_lines: null, parsed_through_at: null, prompt_generation: null });
+      expect(sqlite.query('SELECT * FROM transcripts').get()).toEqual({ ...before, parse_awaited_size: null, parse_segment_lines: null, parsed_through_at: null, prompt_generation: null, prompt_identity_scheme: 'offset-v1' });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally {
       sqlite.close();
@@ -379,7 +380,7 @@ describe('versioned schema steps', () => {
         VALUES ('proj_1', 'tx_1', 's1', 'm1', 'codex', 1000, 500, 1, 2, 't1')`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM transcripts').get();
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(35));
-      expect(sqlite.query('SELECT * FROM transcripts').get()).toEqual({ ...before, parser_context: null, parse_awaited_size: null, parse_segment_lines: null, parsed_through_at: null, prompt_generation: null });
+      expect(sqlite.query('SELECT * FROM transcripts').get()).toEqual({ ...before, parser_context: null, parse_awaited_size: null, parse_segment_lines: null, parsed_through_at: null, prompt_generation: null, prompt_identity_scheme: 'offset-v1' });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
     } finally {
       sqlite.close();

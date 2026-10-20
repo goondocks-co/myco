@@ -1655,9 +1655,12 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       }
     },
     "promptIdentity": {
-      "kind": "transcript-only",
-      "scheme": "offset-v1",
-      "evidence": "tests/fixtures/prompt-identity/codex-user-prompt-submit.json"
+      "kind": "harness-key",
+      "scheme": "codex-turn-v1",
+      "hookKey": "turn_id",
+      "transcriptKey": "turn_context.payload.turn_id",
+      "granularity": "turn",
+      "readBeforePin": "offset-v1"
     }
   },
   {

@@ -44,7 +44,8 @@ import type { SessionWriteAdmission } from '../ingest/projections.js';
 import type { Refusal } from '../telemetry.js';
 import { classify, emit, type ErrorClass } from '../telemetry.js';
 import { BLOCK_JOIN, projectLine, sessionInjectionKind, type SessionContextRequest, type SessionContextIdentity } from '@goondocks/myco-shared/recall';
-import type { DeliveredSessionRecord } from '@goondocks/myco-shared/prompt-identity';
+import { promptKeyHash, type DeliveredSessionRecord } from '@goondocks/myco-shared/prompt-identity';
+import { deliveredAssignment } from '../ingest/prompt-scheme.js';
 export { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 
 /** The most text one prompt is served. A part that would cross it is dropped whole. */
@@ -269,9 +270,10 @@ async function recordPromptAnswer(
 
 /** Mark one answer delivered, once: the same rule a receipt's delivery follows (`receiptDeliveredStatement`). */
 export function answerDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
-  return db.prepare(`UPDATE prompt_context_answers SET delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?
+  const set = deliveredAssignment(d);
+  return db.prepare(`UPDATE prompt_context_answers SET ${set.sql}
       WHERE project_id = ? AND session_id = ? AND id = ? AND delivered_at IS NULL AND ${gate.sql}`)
-    .bind(d.at, d.promptId, d.scopeReason, d.projectId, d.sessionId, d.id, ...gate.params);
+    .bind(...set.params, d.projectId, d.sessionId, d.id, ...gate.params);
 }
 
 /**
@@ -279,9 +281,10 @@ export function answerDeliveredStatement(db: RelationalStore, d: Delivery, gate:
  * reported after that answer is pruned still lands.
  */
 export function sessionRecordDeliveredStatement(db: RelationalStore, d: Omit<Delivery, 'id'> & { record: DeliveredSessionRecord }, gate: { sql: string; params: unknown[] }): PreparedStatement {
-  return db.prepare(`UPDATE session_injections SET delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?
+  const set = deliveredAssignment(d);
+  return db.prepare(`UPDATE session_injections SET ${set.sql}
       WHERE project_id = ? AND session_id = ? AND kind = ? AND delivered_at IS NULL AND ${gate.sql}`)
-    .bind(d.at, d.promptId, d.scopeReason, d.projectId, d.sessionId, d.record, ...gate.params);
+    .bind(...set.params, d.projectId, d.sessionId, d.record, ...gate.params);
 }
 
 /**
@@ -289,12 +292,13 @@ export function sessionRecordDeliveredStatement(db: RelationalStore, d: Omit<Del
  * names only the answer reaches the nudge's record, while that answer is held.
  */
 export function planNudgeDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
-  return db.prepare(`UPDATE session_injections SET delivered_at = ?, delivered_prompt_id = ?, delivered_scope_reason = ?
+  const set = deliveredAssignment(d);
+  return db.prepare(`UPDATE session_injections SET ${set.sql}
       WHERE project_id = ? AND session_id = ? AND kind = 'plan-nudge' AND delivered_at IS NULL
         AND EXISTS (SELECT 1 FROM prompt_context_answers a, json_each(a.parts)
                      WHERE a.project_id = ? AND a.session_id = ? AND a.id = ? AND json_extract(json_each.value, '$.kind') = 'plan-nudge')
         AND ${gate.sql}`)
-    .bind(d.at, d.promptId, d.scopeReason, d.projectId, d.sessionId, d.projectId, d.sessionId, d.id, ...gate.params);
+    .bind(...set.params, d.projectId, d.sessionId, d.projectId, d.sessionId, d.id, ...gate.params);
 }
 
 export const PROMPT_ANSWER_RETENTION_SQL = `DELETE FROM prompt_context_answers WHERE rowid IN (
@@ -384,7 +388,7 @@ export async function composePromptContext(
     const selection = await selectSporesForPrompt(db, scope, leaves.injection, capabilityOn, {
       sessionId: input.sessionId,
       ...naming,
-      promptHash: await sha256Hex(input.text),
+      promptHash: await promptKeyHash(sha256Hex, input.text),
       prompt: input.text,
       now: input.now,
       admission: input.admission,

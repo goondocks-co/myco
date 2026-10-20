@@ -37,9 +37,10 @@ export async function main(opts: HookMainOptions = {}) {
       return { events: [] };
     }
     const state = readSessionState(spool.dir, sessionId);
-    // The prompt id names a turn only where the hooks mint it; the Deployment's
-    // parse derives its own, which the member cannot know.
-    const promptId = transcriptWritesTurnRows(agent) ? undefined : state.promptId;
+    // The prompt id names a turn where the hooks mint it, and where a turn-grained key's opener claimed its turn and
+    // no submission has steered it since; otherwise the Deployment's parse derives its own, which the member cannot know.
+    const promptId = !transcriptWritesTurnRows(agent) ? state.promptId
+      : state.turn !== undefined && state.turn.id === input.promptKey ? state.turn.promptId : undefined;
     // The transcript already holds this call for a symbiont whose transcript carries tool calls.
     const events: OutboundEvent[] = hookShipsToolCalls(agent) ? [toolUseEvent(ctx, input, { promptId })] : [];
     const served = HOOK_CONFIG[agent]?.capabilities.postToolUseInjection === true ? sessionBlock(run, state) : {};

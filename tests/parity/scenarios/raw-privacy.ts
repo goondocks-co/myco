@@ -60,8 +60,8 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
   const siblingText = 'other member raw transcript';
   const sibling = await upload(other, siblingText);
   await expectPersisted(sibling.response, 'sibling blob');
-  await target.sql(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role)
-    VALUES (${lit(PROJECT)}, ${lit(siblingId)}, ${lit(session)}, ${lit(other.machine)}, 'claude-code', ${siblingText.length}, 1, ${now}, ${now}, ${lit(other.tokenId)}, 'subagent')`);
+  await target.sql(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role, prompt_identity_scheme)
+    VALUES (${lit(PROJECT)}, ${lit(siblingId)}, ${lit(session)}, ${lit(other.machine)}, 'claude-code', ${siblingText.length}, 1, ${now}, ${now}, ${lit(other.tokenId)}, 'subagent', 'claude-v1')`);
   await target.sql(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
     VALUES (${lit(PROJECT)}, ${lit(siblingId)}, 0, ${siblingText.length}, ${lit(sibling.key)}, ${lit(crypto.randomUUID())}, ${now}, ${now}, ${lit(other.tokenId)})`);
   const transcriptPath = `/api/projects/${PROJECT}/sessions/${session}/transcript`;

@@ -19,8 +19,8 @@ async function heldSegment(parsedOffset: number, parserContext: string | null = 
   const physical=registerBlob(f.sqlite,{projectId:'proj_1',key:blobKey,size:Buffer.byteLength(text),receivedAt:1});
   f.bucket.seed(physical,{size:Buffer.byteLength(text),bytes:new TextEncoder().encode(text)});
   f.sqlite.query(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,agent,size,
-    first_received_at,last_received_at,token_id,parsed_offset,parser_context)
-    VALUES('proj_1','tx-held','s-held','m','claude-code',?,1,1,'token',?,?)`)
+    first_received_at,last_received_at,token_id,parsed_offset,parser_context,prompt_identity_scheme)
+    VALUES('proj_1','tx-held','s-held','m','claude-code',?,1,1,'token',?,?,'claude-v1')`)
     .run(Buffer.byteLength(text),parsedOffset,parserContext);
   f.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,
     created_at,received_at,payload_bytes,raw_revision)
@@ -250,8 +250,8 @@ it('retains exact parsed transcript bytes and their offset after removing the ho
     const physical=registerBlob(f.sqlite,{projectId:'proj_1',key,size:Buffer.byteLength(text),receivedAt:1});
     f.bucket.seed(physical,{size:Buffer.byteLength(text),bytes:new TextEncoder().encode(text)});
     f.sqlite.query(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,agent,size,
-      first_received_at,last_received_at,token_id,parsed_offset)
-      VALUES('proj_1','tx_segment','sess_segment','m','claude-code',?,1,1,'token',?)`)
+      first_received_at,last_received_at,token_id,parsed_offset,prompt_identity_scheme)
+      VALUES('proj_1','tx_segment','sess_segment','m','claude-code',?,1,1,'token',?,'claude-v1')`)
       .run(Buffer.byteLength(text),Buffer.byteLength(text));
     f.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,
       created_at,received_at,payload_bytes,raw_revision)

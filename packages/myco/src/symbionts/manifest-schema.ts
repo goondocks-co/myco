@@ -5,7 +5,7 @@ import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
 import { PROVIDER_SLOT_NAMES } from '@goondocks/myco-shared/provider-slots';
 import { STEP_KINDS } from '@goondocks/myco-shared/worker-steps';
 import { PATTERNED_DIAGNOSTIC_CODES } from '@goondocks/myco-shared/run-text';
-import { DECLARABLE_SCHEMES, PROMPT_ID_SCHEMES, type PromptIdentityDeclaration, type PromptIdentityKind } from '@goondocks/myco-shared/prompt-identity';
+import { DECLARABLE_SCHEMES, PROMPT_ID_SCHEMES, turnGrained, type PromptIdentityDeclaration, type PromptIdentityKind } from '@goondocks/myco-shared/prompt-identity';
 export type { CaptureRule } from '@goondocks/myco-shared/capture-rule-schema';
 
 /** Schema describing where user prompts live in an agent's transcript. */
@@ -928,8 +928,11 @@ const HookFieldPathSchema = z.union([
 /**
  * How the agent's prompts are named (`@goondocks/myco-shared/prompt-identity`). `kind` is declared for an agent whose
  * transcript the Deployment parses; an agent whose hooks write its turn rows is `hook-owned`, derived from
- * `capabilities.turnRowSource` and never restated. `harness-key` names where the key sits on both sides. `evidence`
- * names, for a `transcript-only` agent that has a prompt hook, a hook-input fixture showing that hook carries no
+ * `capabilities.turnRowSource` and never restated. `harness-key` names where the key sits on both sides, and
+ * `granularity: turn` where that key names a turn rather than one submission, as its scheme does. `readBeforePin` names
+ * the scheme that read the agent's transcripts before each transcript was pinned to one, where it is not `scheme`.
+ * `evidence` names,
+ * for a `transcript-only` agent that has a prompt hook, a hook-input fixture showing that hook carries no
  * per-submission key.
  */
 const PromptIdentitySchema = z.object({
@@ -937,6 +940,8 @@ const PromptIdentitySchema = z.object({
   scheme: z.enum(DECLARABLE_SCHEMES),
   hookKey: z.string().min(1).optional(),
   transcriptKey: z.string().min(1).optional(),
+  granularity: z.literal('turn').optional(),
+  readBeforePin: z.enum(DECLARABLE_SCHEMES).optional(),
   evidence: z.string().min(1).optional(),
 }).strict();
 export type PromptIdentityManifest = z.infer<typeof PromptIdentitySchema>;
@@ -965,7 +970,13 @@ export function resolvePromptIdentity(
     return { ok: false, reason: 'promptIdentity.hookKey and transcriptKey are declared together, for a harness-key agent only' };
   }
   if (block.evidence !== undefined && kind !== 'transcript-only') return { ok: false, reason: 'promptIdentity.evidence is declared for a transcript-only agent only' };
-  return { ok: true, declaration: { kind, scheme: block.scheme, ...(keyed ? { hookKey: block.hookKey, transcriptKey: block.transcriptKey } : {}) } };
+  if (block.readBeforePin === block.scheme) return { ok: false, reason: 'promptIdentity.readBeforePin is declared only where it is not the current scheme' };
+  if ((block.granularity === 'turn') !== turnGrained(block.scheme)) {
+    return { ok: false, reason: `promptIdentity.granularity: turn is declared exactly where the scheme's key names a turn (scheme ${block.scheme})` };
+  }
+  return { ok: true, declaration: { kind, scheme: block.scheme, ...(keyed ? { hookKey: block.hookKey, transcriptKey: block.transcriptKey } : {}),
+    ...(block.granularity === undefined ? {} : { granularity: block.granularity }),
+    ...(block.readBeforePin === undefined ? {} : { readBeforePin: block.readBeforePin }) } };
 }
 
 export const SymbiontManifestSchema = z.object({

@@ -13,6 +13,7 @@
  *     one defect that would lose rows silently and in bulk.
  *   - many passes and one pass produce the same rows.
  */
+import type { PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { D1_BOUND_PARAMETER_CEILING, registerBlob, sqliteD1 } from './helpers/d1.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { MemoryBlobStore } from './helpers/fixtures.js';
@@ -29,6 +30,7 @@ import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { MAX_PENDING_CALLS } from '@myco-server-worker/ingest/parsers/incremental.js';
 import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
+import { READ_BEFORE_PIN } from '@myco-server-worker/ingest/prompt-scheme.js';
 import { freeOrphanedBlobs, transcriptRetention, transcriptRetentionDays } from '@myco-server-worker/ingest/retention.js';
 import { blobHeld } from '@myco-server-worker/core/blob-references.js';
 import { listTranscripts } from '@myco-server-worker/read/transcript.js';
@@ -72,17 +74,20 @@ function body(turns: number): string {
   return out;
 }
 
-/** A store holding one transcript whose bytes are split into `sliceBytes` segments. */
-async function rig(text: string, sliceBytes = 1 << 20, opts: { agent?: string } = {}) {
+/**
+ * A store holding one transcript whose bytes are split into `sliceBytes` segments, pinned to the scheme that read a
+ * transcript of these formats, which record no Codex turns (`tests/meta/codex-turn-identity.test.ts` reads Codex's turns).
+ */
+async function rig(text: string, sliceBytes = 1 << 20, opts: { agent?: string; scheme?: PromptIdScheme } = {}) {
   const { sqlite, serverEnv } = sqliteEnv();
   const issued = await issueMemberToken(serverEnv.db, { memberId: 'mem_machine_1', machineId: MACHINE }, NOW);
   const bytes = new TextEncoder().encode(text);
 
   sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
               VALUES (?, ?, ?, ?, ?, ?)`, [PROJECT, SESSION, MACHINE, issued.tokenId, NOW, NOW]);
-  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-             [PROJECT, TRANSCRIPT, SESSION, MACHINE, opts.agent ?? 'claude-code', bytes.length, 1, NOW, NOW, issued.tokenId]);
+  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, prompt_identity_scheme)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             [PROJECT, TRANSCRIPT, SESSION, MACHINE, opts.agent ?? 'claude-code', bytes.length, 1, NOW, NOW, issued.tokenId, opts.scheme ?? READ_BEFORE_PIN[opts.agent ?? 'claude-code']!]);
 
   for (let at = 0; at < bytes.length; at += sliceBytes) {
     const slice = bytes.subarray(at, Math.min(at + sliceBytes, bytes.length));
@@ -193,7 +198,7 @@ describe('budgeted transcript continuation', () => {
     const r = await rig(text);
     try {
       const state = {};
-      await PARSERS['claude-code'].parse({ lines: [{ value: prior, offset: 0 }], sessionId: SESSION, now: NOW, state });
+      await PARSERS['claude-code'].parse({ scheme: 'claude-v1',  lines: [{ value: prior, offset: 0 }], sessionId: SESSION, now: NOW, state });
       const start = Buffer.byteLength(prefix);
       r.sqlite.run('UPDATE transcripts SET parsed_offset=?,parser_context=?', [start, JSON.stringify({ mycoParserState: state })]);
       let partial = false;
@@ -204,7 +209,7 @@ describe('budgeted transcript continuation', () => {
         const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240 });
         const report = await parseOnce(measured.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION,
           machineId: MACHINE, tokenId: r.tokenId, agent: 'claude-code', size: Buffer.byteLength(text),
-          parsedOffset: current.parsed_offset, openPromptId: null, promptIdentityStale: false, fidelity: null,
+          parsedOffset: current.parsed_offset, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!, fidelity: null,
           parserContext: JSON.parse(current.parser_context), segmentLines: current.parse_segment_lines,
           lastReceivedAt: NOW, imported: false }, NOW, { ...LIMITS, completeFile: false, statementBudget: 125 });
         expect(report.failure).toBeNull();
@@ -243,7 +248,7 @@ describe('budgeted transcript continuation', () => {
       const r = await rig(text, Buffer.byteLength(text), { agent });
       try {
         const state = {};
-        const parsed = await PARSERS[agent].parse({ lines: records.slice(0, resultIndex).map((value, i) => ({
+        const parsed = await PARSERS[agent].parse({ scheme: READ_BEFORE_PIN[agent]!,  lines: records.slice(0, resultIndex).map((value, i) => ({
           value, offset: Buffer.byteLength(records.slice(0, i).map(line).join('')),
         })), sessionId: SESSION, now: NOW, state });
         const prompt = parsed.find((event) => event.kind === 'prompt')?.payload.promptId;
@@ -260,7 +265,7 @@ describe('budgeted transcript continuation', () => {
           const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240 });
           const report = await parseOnce(measured.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION,
             machineId: MACHINE, tokenId: r.tokenId, agent, size: Buffer.byteLength(text), parsedOffset: current.parsed_offset,
-            fidelity: null, openPromptId: current.open_prompt_id, promptIdentityStale: false, parserContext: JSON.parse(current.parser_context),
+            fidelity: null, openPromptId: current.open_prompt_id, promptIdentityStale: false, scheme: READ_BEFORE_PIN[agent]!, parserContext: JSON.parse(current.parser_context),
             segmentLines: current.parse_segment_lines, lastReceivedAt: NOW, imported: false }, NOW,
           { ...LIMITS, completeFile: true, statementBudget: 125 });
           expect(report.failure).toBeNull();
@@ -303,7 +308,7 @@ describe('repair lane priority', () => {
     try {
       const size = Buffer.byteLength(pending);
       await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-        tokenId: r.tokenId, agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false,
+        tokenId: r.tokenId, agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!,
         lastReceivedAt: NOW, imported: false }, NOW, { ...LIMITS, completeFile: false });
       expect(count(r.sqlite, 'transcript_parser_state_chunks')).toBeGreaterThan(120);
       const continuation = line({ type: 'assistant', message: { content: [{ type: 'tool_use',
@@ -316,7 +321,7 @@ describe('repair lane priority', () => {
       const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
       const outcome = await parseOnce(measured.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION,
         machineId: MACHINE, tokenId: r.tokenId, agent: 'claude-code', size: current.size, parsedOffset: current.parsed_offset,
-        fidelity: current.fidelity, openPromptId: stored.open_prompt_id, promptIdentityStale: false, parserContext: stored.parser_context ? JSON.parse(stored.parser_context) : null,
+        fidelity: current.fidelity, openPromptId: stored.open_prompt_id, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!, parserContext: stored.parser_context ? JSON.parse(stored.parser_context) : null,
         segmentLines: stored.parse_segment_lines, lastReceivedAt: NOW, imported: false }, NOW + 1,
       { ...LIMITS, completeFile: false, statementBudget: 150 });
       expect(outcome.derived).toBe(0);
@@ -332,7 +337,7 @@ describe('repair lane priority', () => {
     const r = await rig(text);
     const size = Buffer.byteLength(text);
     await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
-      agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, lastReceivedAt: NOW, imported: false },
+      agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!, lastReceivedAt: NOW, imported: false },
       NOW, { ...LIMITS, completeFile: false });
     const stored = r.sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string };
     expect(JSON.parse(stored.parser_context).mycoParserState.chunked).toBe(true);
@@ -364,7 +369,7 @@ describe('repair lane priority', () => {
     try {
       const size = Buffer.byteLength(pending);
       await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
-        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, lastReceivedAt: NOW, imported: false },
+        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!, lastReceivedAt: NOW, imported: false },
       NOW, { ...LIMITS, completeFile: false });
       expect(count(r.sqlite, 'transcript_parser_state_chunks')).toBeGreaterThan(120);
       const continued = Array.from({ length: 100 }, (_, i) => line({ type: 'user', promptId: uuid(81_000 + i),
@@ -403,7 +408,7 @@ describe('repair lane priority', () => {
     try {
       const size = Buffer.byteLength(text);
       await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
-        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, lastReceivedAt: NOW, imported: false },
+        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!, lastReceivedAt: NOW, imported: false },
       NOW, { ...LIMITS, completeFile: false });
       expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') AS unfinished FROM transcripts").get()).toEqual({ unfinished: 1 });
       for (let wake = 0; wake < 8; wake += 1) {
@@ -431,7 +436,7 @@ describe('repair lane priority', () => {
     try {
       const size = Buffer.byteLength(text);
       await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
-        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, lastReceivedAt: NOW, imported: false },
+        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!, lastReceivedAt: NOW, imported: false },
       NOW, { ...LIMITS, completeFile: false });
       const settled = NOW + TRANSCRIPT_IDLE_MS + 1;
       const partial = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
@@ -460,7 +465,7 @@ describe('repair lane priority', () => {
     try {
       const size = Buffer.byteLength(text);
       await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
-        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, lastReceivedAt: NOW, imported: false },
+        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!, lastReceivedAt: NOW, imported: false },
       NOW, { ...LIMITS, completeFile: false });
       const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
       await parseTranscripts(measured.env, NOW + TRANSCRIPT_IDLE_MS + 1, { budget: { calls: 8, wallMs: 10_000 }, clock: () => 0 });
@@ -484,7 +489,7 @@ describe('repair lane priority', () => {
     try {
       const size = Buffer.byteLength(text);
       await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
-        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, lastReceivedAt: NOW, imported: false },
+        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!, lastReceivedAt: NOW, imported: false },
       NOW, { ...LIMITS, completeFile: false });
       const settled = NOW + TRANSCRIPT_IDLE_MS + 1;
       const partial = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
@@ -524,7 +529,7 @@ describe('repair lane priority', () => {
     try {
       const size = Buffer.byteLength(text);
       await parseOnce(r.env, { projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
-        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, lastReceivedAt: NOW, imported: false },
+        agent: 'claude-code', size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!, lastReceivedAt: NOW, imported: false },
       NOW, { ...LIMITS, completeFile: false });
       const stored = r.sqlite.query('SELECT parser_context FROM transcripts').get() as { parser_context: string };
       const context = JSON.parse(stored.parser_context) as { mycoParserState: { pending: Record<string, { toolCallId: string; input: unknown }> } };
@@ -620,10 +625,10 @@ describe('repair lane priority', () => {
     await rereadTranscripts(serverEnv.db, { projectId: PROJECT, sessionId: SESSION });
     for (const id of ['tx_repair_second', 'tx_live_busy', 'tx_import_busy']) {
       sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at,
-        last_received_at, token_id, parsed_offset, parsed_at, parser_version, parser_context, imported_at)
+        last_received_at, token_id, parsed_offset, parsed_at, parser_version, parser_context, imported_at, prompt_identity_scheme)
         SELECT project_id, ?, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at,
           token_id, parsed_offset, parsed_at, parser_version, CASE WHEN ? = 'tx_repair_second' THEN parser_context ELSE NULL END,
-          CASE WHEN ? = 'tx_import_busy' THEN ? ELSE NULL END FROM transcripts WHERE transcript_id = ?`, [id, id, id, NOW, TRANSCRIPT]);
+          CASE WHEN ? = 'tx_import_busy' THEN ? ELSE NULL END, prompt_identity_scheme FROM transcripts WHERE transcript_id = ?`, [id, id, id, NOW, TRANSCRIPT]);
       sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
         SELECT project_id, ?, base_offset, length, blob_key, event_id, created_at, received_at, token_id FROM transcript_segments WHERE transcript_id = ?`, [id, TRANSCRIPT]);
     }
@@ -846,9 +851,9 @@ it.each(['parse', AWAITING_BYTES])('preserves the cursor of a pruned-prefix upgr
     for (let index = 1; index <= TRANSCRIPT_REPAIRS_PER_WAKE; index += 1) {
       const transcriptId = `tx_repair_${index}`;
       sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count,
-        first_received_at, last_received_at, token_id, parsed_offset, parser_version, parser_context)
+        first_received_at, last_received_at, token_id, parsed_offset, parser_version, parser_context, prompt_identity_scheme)
         SELECT project_id, ?, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at,
-          token_id, parsed_offset, parser_version, parser_context FROM transcripts WHERE transcript_id = ?`, [transcriptId, TRANSCRIPT]);
+          token_id, parsed_offset, parser_version, parser_context, prompt_identity_scheme FROM transcripts WHERE transcript_id = ?`, [transcriptId, TRANSCRIPT]);
       sqlite.run(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
         SELECT project_id, ?, base_offset, length, blob_key, event_id, created_at, received_at, token_id
           FROM transcript_segments WHERE transcript_id = ?`, [transcriptId, TRANSCRIPT]);
@@ -888,13 +893,13 @@ it.each(['parse', AWAITING_BYTES])('preserves the cursor of a pruned-prefix upgr
 async function drain(env: { db: unknown; blobs: unknown }, sqlite: Database, max = 50): Promise<number> {
   let passes = 0;
   while (passes < max && target(sqlite).parsed_offset < target(sqlite).size && target(sqlite).parse_error === null) {
-    const t = sqlite.query(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at FROM transcripts`).get() as Record<string, unknown>;
+    const t = sqlite.query(`SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, prompt_identity_scheme, size, parsed_offset, fidelity, open_prompt_id, parser_context, imported_at FROM transcripts`).get() as Record<string, unknown>;
     const before = target(sqlite).parsed_offset;
     await parseOnce(env as never, {
       projectId: t.project_id as string, transcriptId: t.transcript_id as string, sessionId: t.session_id as string,
       machineId: t.machine_id as string, tokenId: t.token_id as string, agent: t.agent as string,
       size: t.size as number, parsedOffset: t.parsed_offset as number, fidelity: null,
-      openPromptId: (t.open_prompt_id as string | null) ?? null, promptIdentityStale: false,
+      openPromptId: (t.open_prompt_id as string | null) ?? null, promptIdentityStale: false, scheme: t.prompt_identity_scheme as PromptIdScheme | null,
       parserContext: typeof t.parser_context === 'string' ? JSON.parse(t.parser_context) : null,
       imported: t.imported_at !== null && t.imported_at !== undefined,
     }, NOW, LIMITS);
@@ -1128,7 +1133,7 @@ describe('parsing a held transcript', () => {
     const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
     const report = await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, imported: false,
+      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!, imported: false,
     }, NOW, LIMITS);
     expect(report.calls).toBeLessThanOrEqual(PASS_CALLS + 2);
     expect(report.derived).toBeGreaterThan(TRANSCRIPT_PARSE_EVENTS_PER_BATCH);
@@ -1145,7 +1150,7 @@ describe('parsing a held transcript', () => {
         projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
         tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number,
         parsedOffset: t.parsed_offset as number, fidelity: t.fidelity as string | null,
-        openPromptId: t.open_prompt_id as string | null, promptIdentityStale: false,
+        openPromptId: t.open_prompt_id as string | null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!,
         parserContext: typeof t.parser_context === 'string' ? JSON.parse(t.parser_context) : null,
         imported: false,
       }, NOW, LIMITS);
@@ -1183,7 +1188,7 @@ describe('parsing a held transcript', () => {
     const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
     const report = await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, imported: false,
+      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!, imported: false,
     }, NOW, LIMITS);
     expect(report.calls).toBeLessThanOrEqual(PASS_CALLS + 2);
   });
@@ -1219,7 +1224,7 @@ describe('parsing a held transcript', () => {
     const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
     await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, imported: false,
+      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!, imported: false,
     }, NOW, LIMITS);
     const mid = sqlite.query(`SELECT parsed_offset, size, open_prompt_id FROM transcripts`).get() as { parsed_offset: number; size: number; open_prompt_id: string | null };
     expect(mid.parsed_offset).toBeLessThan(mid.size);
@@ -1355,7 +1360,7 @@ describe('parsing a held transcript', () => {
     const t = sqlite.query(`SELECT * FROM transcripts`).get() as Record<string, unknown>;
     const first = await parseOnce(env as never, {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE,
-      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, imported: false,
+      tokenId: t.token_id as string, agent: 'claude-code', size: t.size as number, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['claude-code']!, imported: false,
     }, NOW, LIMITS);
     expect(first.nextOffset).toBeGreaterThan(0);
     expect(first.nextOffset).toBeLessThan(t.size as number);
@@ -1567,8 +1572,8 @@ describe('fidelity decides what extraction may read', () => {
   it('disqualifies a session whose PRIMARY transcript is full but whose subagent sibling is not', async () => {
     const { sqlite, env, tokenId } = await rig(body(1));
     await drain(env, sqlite);
-    sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, role, fidelity, size, segment_count, parsed_offset, first_received_at, last_received_at, token_id)
-                VALUES (?, 'tx_sibling', ?, ?, 'cursor', 'subagent', 'no_tool_results', 0, 0, 0, ?, ?, ?)`,
+    sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, role, fidelity, size, segment_count, parsed_offset, first_received_at, last_received_at, token_id, prompt_identity_scheme)
+                VALUES (?, 'tx_sibling', ?, ?, 'cursor', 'subagent', 'no_tool_results', 0, 0, 0, ?, ?, ?, 'offset-v1')`,
                [PROJECT, SESSION, MACHINE, NOW, NOW, tokenId]);
     expect((await listSessions(env.db as never, { projectId: PROJECT })).rows).toEqual([]);
   });
@@ -1826,8 +1831,8 @@ async function addTranscript(
 ): Promise<void> {
   sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (?, ?, ?, ?, ?, ?)`,
     [PROJECT, opts.sessionId, MACHINE, tokenId, opts.receivedAt, opts.receivedAt]);
-  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id)
-              VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`, [PROJECT, opts.transcriptId, opts.sessionId, MACHINE, opts.agent, opts.receivedAt, opts.receivedAt, tokenId]);
+  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, prompt_identity_scheme)
+              VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)`, [PROJECT, opts.transcriptId, opts.sessionId, MACHINE, opts.agent, opts.receivedAt, opts.receivedAt, tokenId, READ_BEFORE_PIN[opts.agent]!]);
   await appendSegment(sqlite, serverEnv, tokenId, opts.transcriptId, opts.text, opts.receivedAt);
 }
 
@@ -2044,7 +2049,7 @@ describe('ranged reads across segment boundaries (transcript parse throughput)',
     // Both passes took the transcript at its first byte: an owner's wake beside the clock's.
     const stale = {
       projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: t.token_id, agent: 'cursor',
-      size: t.size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, imported: false, segmentLines: 0,
+      size: t.size, parsedOffset: 0, fidelity: null, openPromptId: null, promptIdentityStale: false, scheme: READ_BEFORE_PIN['cursor']!, imported: false, segmentLines: 0,
     };
     const env = { db: serverEnv.db, blobs: serverEnv.blobs };
     await parseOnce(env as never, stale, NOW, { calls: 8, deadline: Number.POSITIVE_INFINITY, clock: () => 0 });
@@ -2113,7 +2118,7 @@ describe('reading a stored transcript again', () => {
     const later = line({ type: 'assistant', message: { content: [{ type: 'text', text: 'later appended reply' }] } });
     const { sqlite, serverEnv, tokenId } = await rig(text + later, 300_000);
     // A stored joined reply uses the identity of its first assistant record.
-    const first = (await PARSERS['claude-code'].parse({ lines: [{ value: JSON.parse(text.split('\n')[1]), offset: firstOffset }], sessionId: SESSION, now: NOW }))[0];
+    const first = (await PARSERS['claude-code'].parse({ scheme: 'claude-v1',  lines: [{ value: JSON.parse(text.split('\n')[1]), offset: firstOffset }], sessionId: SESSION, now: NOW }))[0];
     const oldText = replies.join('\n\n');
     expect((await ingestEvent(serverEnv.db, { projectId: PROJECT, machineId: MACHINE, tokenId, now: NOW, bodyBytes: 0, writeOrigin: 'server' }, {
       eventId: await uuidv5('transcript-event', TRANSCRIPT, 'response', String(first.payload.responseId)), sessionId: SESSION, kind: 'response', createdAt: NOW, channel: 'cli', producer: TRANSCRIPT_PRODUCER,

@@ -8,6 +8,7 @@
  * measure with no rows answers a null value and a zero sample, which is what lets
  * the surface say there is no sample instead of printing a figure.
  */
+import { declaredScheme } from '@myco-server-worker/ingest/prompt-scheme.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
@@ -58,9 +59,9 @@ function rig(): Rig {
                     VALUES (?, ?, 'm1', ?, ?, ?)`)
         .run(opts.project ?? PROJECT, id, opts.tokenId ?? 'cred_1', at, at);
       if (opts.agent !== null) {
-        sqlite.query(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role)
-                      VALUES (?, ?, ?, 'm1', ?, 0, 0, ?, ?, ?, 'primary')`)
-          .run(opts.project ?? PROJECT, `tr_${id}`, id, opts.agent ?? 'claude-code', at, at, opts.tokenId ?? 'cred_1');
+        sqlite.query(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role, prompt_identity_scheme)
+                      VALUES (?, ?, ?, 'm1', ?, 0, 0, ?, ?, ?, 'primary', ?)`)
+          .run(opts.project ?? PROJECT, `tr_${id}`, id, opts.agent ?? 'claude-code', at, at, opts.tokenId ?? 'cred_1', declaredScheme(opts.agent ?? 'claude-code'));
       }
     },
     prompt: (id, sessionId, opts = {}) => {

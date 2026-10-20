@@ -14,26 +14,43 @@
 export const PROMPT_IDENTITY_KINDS = ['harness-key', 'stamped', 'hook-owned', 'transcript-only'] as const;
 export type PromptIdentityKind = (typeof PROMPT_IDENTITY_KINDS)[number];
 
-/** Every derivation a prompt id has ever been made by, with the kinds it serves. `minted` ids are the hook's own random ids. */
+/**
+ * Every derivation a prompt id has ever been made by, with the kinds it serves. `minted` ids are the hook's own random
+ * ids. `generation` is the revision of a scheme's derivation a parser checkpoint records; it is fixed, and a changed
+ * derivation is a new scheme. `granularity: 'turn'` names a harness key that names a turn, of which only the opener is
+ * one submission.
+ */
 export const PROMPT_ID_SCHEMES = {
   /** Claude Code: the hook's `prompt_id` is the transcript's `promptId`; a queued command keys on its record's uuid. */
-  'claude-v1': { kinds: ['harness-key'], derivation: 'derived' },
-  /** A transcript the Deployment parses by line position: Codex, Cursor and Pi. */
-  'offset-v1': { kinds: ['transcript-only'], derivation: 'derived' },
+  'claude-v1': { kinds: ['harness-key'], derivation: 'derived', generation: 2 },
+  /** A transcript the Deployment parses by line position: Codex before its turn key, Cursor and Pi. */
+  'offset-v1': { kinds: ['transcript-only'], derivation: 'derived', generation: 1 },
   /** A plugin-written transcript carrying the hook's stamped id, or its line position where no hook answered: OpenCode and Cline. */
-  'stamp-or-offset-v1': { kinds: ['stamped'], derivation: 'derived' },
+  'stamp-or-offset-v1': { kinds: ['stamped'], derivation: 'derived', generation: 1 },
+  /**
+   * Codex: the hook's `turn_id` is the rollout's turn; the turn's first submission is its opener, named by the turn
+   * alone, and every later submission of the turn by its acceptance order, or its line position where the rollout
+   * records none.
+   */
+  'codex-turn-v1': { kinds: ['harness-key'], derivation: 'derived', generation: 1, granularity: 'turn' },
   /** Prompts the member reads from a harness transcript itself: Antigravity's backfill and hook-owned supplementation. */
-  'member-transcript-v1': { kinds: ['transcript-only'], derivation: 'derived' },
+  'member-transcript-v1': { kinds: ['transcript-only'], derivation: 'derived', generation: 1 },
   /** A Myco 1.4 vault's prompt, imported. */
-  'legacy-v1': { kinds: [], derivation: 'derived' },
+  'legacy-v1': { kinds: [], derivation: 'derived', generation: 1 },
   /** The hook's own time-ordered id, for an agent whose hooks write its turn rows. */
-  'hook-mint-v1': { kinds: ['hook-owned'], derivation: 'minted' },
-} as const satisfies Record<string, { kinds: readonly PromptIdentityKind[]; derivation: 'derived' | 'minted' }>;
+  'hook-mint-v1': { kinds: ['hook-owned'], derivation: 'minted', generation: 1 },
+} as const satisfies Record<string, {
+  kinds: readonly PromptIdentityKind[]; derivation: 'derived' | 'minted'; generation: number; granularity?: 'turn';
+}>;
 export type PromptIdScheme = keyof typeof PROMPT_ID_SCHEMES;
 export const PROMPT_ID_SCHEME_NAMES = Object.keys(PROMPT_ID_SCHEMES) as PromptIdScheme[];
+export const isPromptIdScheme = (value: unknown): value is PromptIdScheme =>
+  typeof value === 'string' && Object.hasOwn(PROMPT_ID_SCHEMES, value);
+/** Whether a scheme's harness key names a turn rather than one submission. */
+export const turnGrained = (scheme: PromptIdScheme): boolean => 'granularity' in PROMPT_ID_SCHEMES[scheme];
 
 /** The schemes a manifest may declare as its agent's current one. */
-export const DECLARABLE_SCHEMES = ['claude-v1', 'offset-v1', 'stamp-or-offset-v1', 'member-transcript-v1', 'hook-mint-v1'] as const satisfies readonly PromptIdScheme[];
+export const DECLARABLE_SCHEMES = ['claude-v1', 'offset-v1', 'stamp-or-offset-v1', 'codex-turn-v1', 'member-transcript-v1', 'hook-mint-v1'] as const satisfies readonly PromptIdScheme[];
 export type DeclarableScheme = (typeof DECLARABLE_SCHEMES)[number];
 
 /** The prompt namespaces the offset-named parsers derive under, one per parser. */
@@ -44,11 +61,15 @@ export type OffsetPromptNamespace = (typeof OFFSET_PROMPT_NAMESPACES)[number];
 export const CLAUDE_PROMPT_SHAPES = ['user_prompt', 'queued_command', 'agent_message', 'teammate_message', 'sidechain'] as const;
 export type ClaudePromptShape = (typeof CLAUDE_PROMPT_SHAPES)[number];
 
+/** Where one submission sits in its Codex turn: the turn's opener, or a later one by its acceptance order or line position. */
+export type TurnSubmission = { opener: true } | { order: number } | { offset: number };
+
 /** One derivation request, by scheme. */
 export type PromptIdRequest =
   | { scheme: 'claude-v1'; sessionId: string; shape: ClaudePromptShape; key: string }
   | { scheme: 'offset-v1'; namespace: OffsetPromptNamespace; sessionId: string; offset: number }
   | { scheme: 'stamp-or-offset-v1'; sessionId: string; stamp?: string; offset: number }
+  | { scheme: 'codex-turn-v1'; sessionId: string; turnId: string; submission: TurnSubmission }
   | { scheme: 'member-transcript-v1'; sessionId: string; dedupeKey?: string; position: number }
   | { scheme: 'legacy-v1'; projectId: string; legacyId: string };
 
@@ -70,6 +91,9 @@ export function canonicalPromptId<R>(hash: PromptIdHasher<R>, request: PromptIdR
       return hash(request.namespace, request.sessionId, String(request.offset));
     case 'stamp-or-offset-v1':
       return request.stamp ?? hash('prompt', request.sessionId, String(request.offset));
+    case 'codex-turn-v1':
+      return hash('codex-turn', request.sessionId, request.turnId, 'opener' in request.submission ? 'opener'
+        : 'order' in request.submission ? `order|${request.submission.order}` : `offset|${request.submission.offset}`);
     case 'member-transcript-v1':
       return request.dedupeKey === undefined
         ? hash('transcript-prompt', request.sessionId, String(request.position))
@@ -79,6 +103,18 @@ export function canonicalPromptId<R>(hash: PromptIdHasher<R>, request: PromptIdR
     default:
       return underived(request);
   }
+}
+
+/** The most of a prompt's text a context ask carries, and what a prompt's key hash covers. */
+export const PROMPT_KEY_TEXT_MAX_CHARS = 16_384;
+
+/**
+ * A prompt's key hash: the SHA-256 of its text, as the capture rules leave it, cut to what an ask carries. A receipt
+ * records it of the text it was asked with, and a parsed prompt of the text its transcript holds, so the two compare
+ * where both name one prompt. It is a signal that one id carried two texts, never a way to link records.
+ */
+export function promptKeyHash<R>(sha256: (text: string) => R, text: string): R {
+  return sha256(text.slice(0, PROMPT_KEY_TEXT_MAX_CHARS));
 }
 
 /** The longest harness prompt key a derivation takes. */
@@ -101,16 +137,22 @@ export interface PromptIdentityDeclaration {
   /** `harness-key` only: where the key sits in the hook's input and in the transcript record. */
   hookKey?: string;
   transcriptKey?: string;
+  /** `turn` where the key names a turn rather than one submission (the scheme's own granularity). */
+  granularity?: 'turn';
+  /** The scheme that read the agent's transcripts before each was pinned to one, where it is not `scheme`. */
+  readBeforePin?: DeclarableScheme;
 }
 
 /**
  * The request a prompt hook derives its submission's id with, for an agent whose harness hands the hook the key the
- * transcript also carries: null for any other agent, and for a submission the harness sent no key for.
+ * transcript also carries: null for any other agent, and for a submission the harness sent no key for. A turn key
+ * derives the turn opener's id: whether this submission opens its turn is the caller's to decide.
  */
 export function hookPromptRequest(declaration: PromptIdentityDeclaration, sessionId: string, key: string | undefined): PromptIdRequest | null {
   if (declaration.kind !== 'harness-key' || key === undefined) return null;
   switch (declaration.scheme) {
     case 'claude-v1': return { scheme: 'claude-v1', sessionId, shape: 'user_prompt', key };
+    case 'codex-turn-v1': return { scheme: 'codex-turn-v1', sessionId, turnId: key, submission: { opener: true } };
     default: return null;
   }
 }
@@ -133,6 +175,11 @@ export const ASK_IDENTITY_MARKER = 1;
 
 /** The Deployment feature that admits `v1` asks and the delivery event; a member sends neither to a Deployment that does not name it. */
 export const PROMPT_IDENTITY_FEATURE = 'prompt-identity';
+/**
+ * The Deployment feature that pins each transcript's scheme and reads it at ask time: a member names the scheme its
+ * prompt ids are derived by, and claims a turn-grained key, only for a Deployment that names it.
+ */
+export const PROMPT_SCHEME_FEATURE = 'prompt-scheme';
 /** The event a hook that rendered a cached answer sends, naming the rows it rendered by their ids. */
 export const CONTEXT_DELIVERED_KIND = 'context.delivered';
 /**

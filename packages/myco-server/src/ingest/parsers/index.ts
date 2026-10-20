@@ -17,7 +17,7 @@
  * rather than two.
  */
 import { utf8, uuidv5 } from '../../hash.js';
-import { canonicalPromptId, type ClaudePromptShape, type OffsetPromptNamespace } from '@goondocks/myco-shared/prompt-identity';
+import { canonicalPromptId, type ClaudePromptShape, type OffsetPromptNamespace, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { MAX_ID_CHARS, MAX_PAYLOAD_BYTES } from '../envelope.js';
 import { kindSpec, type Payload } from '../kinds.js';
 
@@ -41,6 +41,8 @@ export interface ParsedLine {
 export interface ParserInput {
   lines: readonly ParsedLine[];
   sessionId: string;
+  /** The transcript's pinned prompt identity scheme: the one derivation every prompt id of this transcript is made by. */
+  scheme: PromptIdScheme;
   /** The ceiling for line timestamps and the fallback for undated live lines. */
   now: number;
   /**
@@ -74,6 +76,8 @@ export interface ParserState {
   reply?: { parts: ReplyPart[]; promptId?: string; chars: number; bytes: number };
   planPosition?: number;
   legacyReplies?: { until: number; remaining?: string; promptId?: string };
+  /** The Codex turn the cursor stands in under `codex-turn-v1`, and whether its opener has been named. */
+  turn?: { id: string; opened: boolean };
   repair?: { version: number; fromVersion: number; status: 'replaying' | 'raw_absent' | 'raw_prefix_pruned' | 'raw_gap' };
 }
 
@@ -166,12 +170,8 @@ export interface TranscriptParser {
   planTags: readonly string[];
   /** The field of a line holding its own time, where it is not `timestamp`. */
   lineTimeField?: string;
-  /**
-   * The generation of how this parser derives a prompt's identity from a record. Raised when a record this parser
-   * read before now names a different prompt: a checkpoint written under another generation that carries a prompt
-   * forward is read again from its start (`parse.ts`).
-   */
-  promptGeneration: number;
+  /** The prompt identity schemes this parser derives by; a transcript pinned to another is not read (`parse.ts`). */
+  schemes: readonly PromptIdScheme[];
   /** Async to the extent the id derivations are: a parser reads no store and touches no clock. */
   parse(input: ParserInput): Promise<DerivedEvent[]>;
 }
