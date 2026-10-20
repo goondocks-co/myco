@@ -5,8 +5,9 @@
  */
 import fs from 'node:fs';
 import type { MemberRoutingIdentity } from './routing.js';
-import { flushPendingForRoot, heldSessionStates, mergeHeldState, pendingRoot } from './pending.js';
-import { updateSessionState } from './session-state.js';
+import { flushPendingForRoot, heldSessionStates, pendingRoot } from './pending.js';
+import { reconcileSessionState } from './session-reconcile.js';
+import { replaceSessionState, updateSessionState } from './session-state.js';
 import { MemberSpool } from './spool.js';
 
 /** Move what `root`'s hooks held for this Deployment into its Project spool; return the record count. */
@@ -21,6 +22,6 @@ export function restoreHeldReceiptsForHook(root: string, sessionId: string, into
   if (!fs.existsSync(pendingRoot(opts.mycoHome))) return;
   if (into.routing === null) throw new Error('Held receipts require a destination');
   for (const held of heldSessionStates(root, into.routing, sessionId, opts.mycoHome)) {
-    updateSessionState(into.dir, sessionId, (state) => mergeHeldState(state, held), opts.now);
+    updateSessionState(into.dir, sessionId, (state) => replaceSessionState(state, reconcileSessionState(state, held).state), opts.now);
   }
 }

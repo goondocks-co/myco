@@ -20,7 +20,8 @@ import type { OutboundEvent } from './envelope.js';
 import { BLOBS_DIRNAME, MemberSpool, REFUSED_LOG_FILE, SPOOL_DIRNAME, toWire, type SessionEvents, type TurnEndMark } from './spool.js';
 import { deploymentKeyFor, deploymentUrl, readRegistryEntry, readRegistryEntryResult } from './registry.js';
 import { memberRoutingIdentity, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
-import { mergedTurn, pointersOf, readSessionState, readSessionStateResult, sessionStatePath, turnsFileOf, type SessionState } from './session-state.js';
+import { pointersOf, readSessionStateResult, replaceSessionState, sessionStatePath, turnsFileOf, type SessionState } from './session-state.js';
+import { readSourceStateForMove, reconcileSessionState, type SourceSessionState } from './session-reconcile.js';
 import { isProjectId } from './constants.js';
 import { CaptureLossLedger, recordSessionLoss } from './capture-loss.js';
 import { HELD_CAPTURE_TTL_MS } from '@goondocks/myco-shared/member-protocol';
@@ -732,11 +733,11 @@ function heldKeysForRoot(root: string, serverUrl: string, home: string): string[
 }
 
 /** Read held receipts from every validated key naming this repository and Deployment. */
-export function heldSessionStates(root: string, route: MemberRoutingIdentity, sessionId: string, mycoHome: string): SessionState[] {
+export function heldSessionStates(root: string, route: MemberRoutingIdentity, sessionId: string, mycoHome: string): SourceSessionState[] {
   return withPendingForRoot(root, route.serverUrl, mycoHome, (_rootKey, dir) => {
-    const result = readSessionStateResult(dir, sessionId);
-    if (result.ok) return [result.state];
-    if (result.reason !== 'missing') process.stderr.write(`[myco] member: pending receipts ${sessionId} ${result.reason} — kept for helper retry\n`);
+    const result = readSourceStateForMove(dir, sessionId, 'take');
+    if (result.ok) return result.found ? [result.state] : [];
+    process.stderr.write(`[myco] member: pending receipts ${sessionId} ${result.reason} — kept for helper retry\n`);
     return [];
   }, false, heldKeysForRoot(root, normalizedServerUrl(route.serverUrl), mycoHome)).flat();
 }
@@ -807,13 +808,13 @@ function moveHeld(rootKey: string, into: MemberSpool, opts: { mycoHome: string; 
       damagedKeys = damaged.map((index) => crypto.createHash('sha256').update(`${rootKey}\0${sessionId}\0${index}\0${lines[index] ?? ''}`).digest('hex'));
       process.stderr.write(`[myco] member: pending journal ${sessionId} contains ${damaged.length} damaged record(s) — counted as capture loss\n`);
     }
-    const state = readSessionStateResult(dir, sessionId);
-    if (!state.ok && state.reason !== 'missing') {
+    const state = readSourceStateForMove(dir, sessionId, 'take');
+    if (!state.ok) {
       process.stderr.write(`[myco] member: pending receipts ${sessionId} ${state.reason} — kept with their journal for retry\n`);
       blocked = true;
       continue;
     }
-    const heldState = state.ok ? state.state : readSessionState(dir, sessionId);
+    const heldState = state.state;
     try {
       for (const pointer of pointersOf(heldState)) adoptPendingTranscript(pointer.path, route, opts.mycoHome, rootKey);
     } catch (err) {
@@ -829,10 +830,16 @@ function moveHeld(rootKey: string, into: MemberSpool, opts: { mycoHome: string; 
     into.appendMovedTurnEnds(sessionId, held.pendingTurnEnds(sessionId).map((pending) => pending.mark), opts.now);
     // The session's state moves with its journal, under the session's lock in the project's spool: its transcript
     // pointers, so the transcript ships; and its prompt map and prompt id, so nothing is minted twice.
+    let contextSkipped = 0;
     into.appendAndRecord(sessionId, [], (target) => {
-      mergeHeldState(target, heldState);
+      const reconciled = reconcileSessionState(target, heldState);
+      replaceSessionState(target, reconciled.state);
+      contextSkipped = reconciled.contextSkipped;
       for (const key of damagedKeys) recordSessionLoss(target, key, 'record', opts.now);
     }, opts.now);
+    if (contextSkipped > 0) {
+      process.stderr.write(`[myco] member: pending session ${sessionId} moved without ${contextSkipped} held context item(s) — its next prompt asks again\n`);
+    }
     for (const file of [path.join(dir, `${sessionId}.jsonl`), sessionStatePath(dir, sessionId), turnsFileOf(dir, sessionId)]) {
       fs.rmSync(file, { force: true });
     }
@@ -859,30 +866,4 @@ function removeEmpty(dir: string): void {
     try { if (fs.statSync(child).isDirectory()) removeEmpty(child); } catch { /* gone */ }
   }
   try { fs.rmdirSync(dir); } catch { /* holds a file */ }
-}
-
-/**
- * `held` folded into `target`, the state the project's spool holds for the same session: what the project's spool
- * recorded stands, and what only the held state recorded is added.
- */
-export function mergeHeldState(target: SessionState, held: SessionState): void {
-  if (held.transcript !== undefined && target.transcript !== undefined && held.transcript.path !== target.transcript.path) {
-    (target.continuations ??= {})[held.transcript.path] = held.transcript;
-  }
-  target.transcript ??= held.transcript;
-  target.siblings = { ...held.siblings, ...target.siblings };
-  target.continuations = { ...held.continuations, ...target.continuations };
-  target.prompts = { ...held.prompts, ...target.prompts };
-  target.promptId ??= held.promptId;
-  const turn = mergedTurn(target.turn, held.turn);
-  if (turn === undefined) delete target.turn;
-  else target.turn = turn;
-  target.planHashes = { ...held.planHashes, ...target.planHashes };
-  target.planPaths = { ...held.planPaths, ...target.planPaths };
-  target.planTagCount = Math.max(target.planTagCount, held.planTagCount);
-  target.attachmentKeys = [...new Set([...held.attachmentKeys, ...target.attachmentKeys])];
-  target.delivered = [...new Set([...held.delivered, ...target.delivered])];
-  target.compactionOrdinal = Math.max(target.compactionOrdinal, held.compactionOrdinal);
-  target.agent ??= held.agent;
-  if (held.startedAt !== undefined) target.startedAt = Math.min(target.startedAt ?? held.startedAt, held.startedAt);
 }

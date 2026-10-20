@@ -142,8 +142,8 @@ export interface SessionState {
   hookAt?: number;
   /** When the session's end hook ran: nothing of its transcript waits on a turn's end after it. */
   endedAt?: number;
-  /** The instant of the ask whose served context a prompt of this session last rendered: each answer is rendered once. */
-  renderedAsk?: number;
+  /** The id of the ask whose served context a prompt of this session last rendered: each answer is rendered once. */
+  renderedAsk?: string;
   /**
    * For an agent whose harness key names a turn: the turn the last prompt hook ran in, and the id its opener claimed,
    * held until a later prompt of the same turn steers it.
@@ -243,15 +243,45 @@ function isState(value: unknown): value is SessionState {
 export type SessionStateRefusal = 'missing' | 'unreadable' | 'loose-mode' | 'malformed' | 'invalid';
 
 export type SessionStateRead =
-  | { ok: true; state: SessionState }
+  /** `contextDiscarded`: the asks without an id and the render marker that is not an ask id the read left out. */
+  | { ok: true; state: SessionState; contextDiscarded?: number }
   | { ok: false; reason: SessionStateRefusal; detail?: string };
+
+/** State files already reported for holding context without an ask id, so each is reported once per process. */
+const reportedUnidentifiedContext = new Set<string>();
+
+/**
+ * Discard asks without an id and a render marker that is not an ask id: such an ask is asked again by the session's
+ * next prompt, and such a marker names no answer. How many were discarded; a file that held any is reported once.
+ */
+function discardUnidentifiedContext(state: SessionState, file: string): number {
+  let discarded = 0;
+  if (state.renderedAsk !== undefined && typeof state.renderedAsk !== 'string') {
+    delete state.renderedAsk;
+    discarded += 1;
+  }
+  if (state.contextAsks !== undefined) {
+    const kept = state.contextAsks.filter((ask) => typeof ask?.id === 'string' && ask.id.length > 0);
+    discarded += state.contextAsks.length - kept.length;
+    if (kept.length === 0) delete state.contextAsks;
+    else state.contextAsks = kept;
+  }
+  if (discarded > 0 && !reportedUnidentifiedContext.has(file)) {
+    reportedUnidentifiedContext.add(file);
+    process.stderr.write(`[myco] member: ${discarded} context item(s) without an ask id dropped; the session's next prompt asks again ${file}\n`);
+  }
+  return discarded;
+}
 
 /** The one parse, schema check and default merge over a state file; both readers below derive from it. */
 function readStateFile(spoolDir: string, sessionId: string): SessionStateRead {
-  const read = readPrivateJson<SessionState>(sessionStatePath(spoolDir, sessionId));
+  const file = sessionStatePath(spoolDir, sessionId);
+  const read = readPrivateJson<SessionState>(file);
   if (!read.ok) return { ok: false, reason: read.reason, detail: read.detail };
   if (!isState(read.value)) return { ok: false, reason: 'invalid', detail: 'not a session state' };
-  return { ok: true, state: { ...emptySessionState(), ...read.value } };
+  const state = { ...emptySessionState(), ...read.value };
+  const contextDiscarded = discardUnidentifiedContext(state, file);
+  return { ok: true, state, ...(contextDiscarded > 0 ? { contextDiscarded } : {}) };
 }
 
 /** An instant a surface can render: finite, and a date. */
@@ -316,6 +346,12 @@ export function writeSessionStateUnlocked(spoolDir: string, sessionId: string, s
   trimTracked(state);
   state.updatedAt = now;
   writePrivateFileAtomic(sessionStatePath(spoolDir, sessionId), JSON.stringify(state));
+}
+
+/** Make `target` hold exactly the fields of `next`, for a writer that hands its state to a callback to change. */
+export function replaceSessionState(target: SessionState, next: SessionState): void {
+  for (const field of Object.keys(target) as Array<keyof SessionState>) delete (target as Partial<SessionState>)[field];
+  Object.assign(target, next);
 }
 
 /** Read under the buffer lock. */

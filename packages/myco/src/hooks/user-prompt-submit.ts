@@ -2,7 +2,7 @@ import { evaluateUserPromptRules, resolveSubagentThread } from './capture-rules.
 import { readTranscriptMeta } from './transcript-meta.js';
 import { runMemberHook, type HookMainOptions, type HookOutcome, type HookRun, type OptionalHookCapture } from '../member/capture.js';
 import { contextDeliveredEvent, deriveId, mintId, planEvent, planKeyForPromptTag, planKeyForTag, promptEvent, turnEvent, type OutboundEvent } from '../member/envelope.js';
-import { featureAdvertised, PROMPT_ASK_MAX_CHARS, readSessionContext, type ContextAsk } from '../member/context-cache.js';
+import { featureAdvertised, PROMPT_ASK_MAX_CHARS, readSessionContext, type ContextAskRequest } from '../member/context-cache.js';
 import { readSessionState, type SessionState } from '../member/session-state.js';
 import { firstHeading, sha256Text } from '../member/text.js';
 import type { HookResponse } from './response.js';
@@ -81,7 +81,7 @@ function advertised(run: Pick<HookRun, 'credential' | 'mycoHome'>, feature: type
 }
 
 /** The ask this prompt's text is sent with: a `v1` ask carries the marker, and its prompt's id (and its scheme) or why it names none. */
-function promptAsk(naming: PromptNaming, text: string, at: number): ContextAsk {
+function promptAsk(naming: PromptNaming, text: string, at: number): ContextAskRequest {
   const base = { kind: 'prompt' as const, text: text.slice(0, PROMPT_ASK_MAX_CHARS), at };
   if (naming.version === 'legacy') return { ...base, promptId: naming.promptId };
   return naming.shared
@@ -92,14 +92,14 @@ function promptAsk(naming: PromptNaming, text: string, at: number): ContextAsk {
 /**
  * The `Session::` line, with what the Deployment served the session's previous prompt after a blank line: the helper
  * asks with each prompt's text, and the next prompt renders the answer. Each answer is rendered once, keyed on the
- * instant of the ask it answered: while no newer one arrives (the Deployment unreachable, say), the prompts after it
- * are served the line alone. `rendered` names the ask whose answer this prompt rendered, and the receipt and answer
- * rows and the session record that answer named, recorded with its records.
+ * id of the ask it answered: while no newer one arrives (the Deployment unreachable, say), the prompts after it are
+ * served the line alone. `rendered` names the ask whose answer this prompt rendered, and the receipt and answer rows
+ * and the session record that answer named, recorded with its records.
  */
-function withServed(spoolDir: string, sessionId: string, state: SessionState, response: HookResponse): { response: HookResponse; rendered?: { ask: number; receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord } } {
+function withServed(spoolDir: string, sessionId: string, state: SessionState, response: HookResponse): { response: HookResponse; rendered?: { ask: string; receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord } } {
   const served = readSessionContext(spoolDir, sessionId).prompt;
   if (served === undefined || served.context.length === 0) return { response };
-  const ask = served.askedAt ?? served.at;
+  const ask = served.askId;
   if (state.renderedAsk === ask) return { response };
   return {
     response: { ...response, additionalContext: `${response.additionalContext}\n\n${served.context}` },

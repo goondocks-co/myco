@@ -438,19 +438,25 @@ describe('Deployment feature scope', () => {
     expect(readProjectContext(spool().dir).features).toEqual([]);
     expect(JSON.parse(fs.readFileSync(deploymentFeaturesPath(serverUrl, mycoHome), 'utf8')).receivedAt).toBeGreaterThan(0);
   });
-  it('publishes no feature files when the accepted ordering stamp cannot be persisted', async () => {
+  it('orders later answers by a published snapshot whose ordering stamp could not be persisted', async () => {
     cacheDeploymentFeatures(serverUrl, [], mycoHome);
+    let finishOld!: (response: Response) => void;
+    const opts = { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 1 };
+    const old = watchingFeatures(() => new Promise<Response>((resolve) => { finishOld = resolve; }), opts)(serverUrl);
     const write = store.writePrivateFileAtomic;
     const fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation((file, body) => {
       if (file === `${deploymentFeaturesPath(serverUrl, mycoHome)}.order` && JSON.parse(body).receivedAt > 1) throw new Error('ordering state unavailable');
       write(file, body);
     });
     try {
-      const fetch = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 1 });
+      const fetch = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } }), opts);
       expect((await fetch(serverUrl)).status).toBe(200);
-      expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual([]);
-      expect(readProjectContext(spool().dir).features).toEqual([]);
     } finally { fail.mockRestore(); }
+    expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
+    finishOld(Response.json({}, { headers: { [PROTOCOL_HEADER]: '1' } }));
+    await old;
+    expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
+    expect(readProjectContext(spool().dir).features).toEqual(['turn']);
   });
   it('keeps the accepted answer stamp when its project cache write fails', async () => {
     advertise('proj_1', [], 1);
@@ -479,7 +485,7 @@ describe('Deployment feature scope', () => {
     const old = delayed(serverUrl);
     const write = store.writePrivateFileAtomic;
     const fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation((file, body) => {
-      if (file === deploymentFeaturesPath(serverUrl, mycoHome)) throw new Error('snapshot unavailable');
+      if (file === contextCache.projectContextPath(spool().dir)) throw new Error('project cache unavailable');
       write(file, body);
     });
     const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -492,7 +498,7 @@ describe('Deployment feature scope', () => {
       expect(stderr).toHaveBeenCalledTimes(1);
     } finally { fail.mockRestore(); stderr.mockRestore(); }
   });
-  it('writes feature files only on changes and logs write failure once until recovery', async () => {
+  it('records each accepted stamp in the snapshot, rewrites the project cache only on changes, and logs write failure once until recovery', async () => {
     advertise('proj_1', [], 1);
     let features = 'turn';
     const fetch = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: features } }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 2 });
@@ -500,7 +506,7 @@ describe('Deployment feature scope', () => {
     try {
       await fetch(serverUrl);
       await fetch(serverUrl);
-      expect(writes.mock.calls.filter(([file]) => file === deploymentFeaturesPath(serverUrl, mycoHome))).toHaveLength(1);
+      expect(writes.mock.calls.filter(([file]) => file === deploymentFeaturesPath(serverUrl, mycoHome))).toHaveLength(2);
       expect(writes.mock.calls.filter(([file]) => file === contextCache.projectContextPath(spool().dir))).toHaveLength(1);
     } finally { writes.mockRestore(); }
     const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
