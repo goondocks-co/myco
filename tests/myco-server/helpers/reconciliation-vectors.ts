@@ -13,7 +13,8 @@ import type { RunnerUpdateReport } from '@goondocks/myco-shared/runner-update';
 const check = (ok: boolean, message: string): void => { if (!ok) throw new Error(message); };
 const equal = (actual: unknown, expected: unknown, message: string): void => check(JSON.stringify(actual) === JSON.stringify(expected), `${message}: ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`);
 const rows = async (db: RelationalStore, sql: string) => (await db.prepare(sql).all()).results;
-export type ReconciliationCase = 'plan' | 'provenance' | 'roots' | 'embedding' | 'catalog' | 'runner';
+import type { ReconciliationCase } from './reconciliation-cases.js';
+export type { ReconciliationCase } from './reconciliation-cases.js';
 
 /** Both contenders observe their snapshot before either can write it. */
 function interleavedReads(db: RelationalStore, match: string): RelationalStore {
@@ -52,8 +53,8 @@ async function project(db: RelationalStore, kind: 'plan' | 'session.start' | 'se
   await db.batch(projection.projections);
 }
 
-export async function runReconciliationCase(db: RelationalStore, name: ReconciliationCase): Promise<void> {
-  if (name === 'plan') {
+const reconciliationRuns: Record<ReconciliationCase, (db: RelationalStore) => Promise<void>> = {
+  plan: async (db) => {
     for (const order of permutations([{ id: 'a', at: 100, content: 'A', tag: 'old' }, { id: 'b', at: 150, content: 'B', tag: 'middle' }, { id: 'c', at: 200, content: 'A', tag: 'latest' }])) {
       await db.prepare('DELETE FROM plans').run(); await db.prepare('DELETE FROM tags').run();
       for (const item of order) await project(db, 'plan', item.id, item.at, { planKey: 'k', title: 'title', content: item.content, tags: [item.tag] });
@@ -66,8 +67,8 @@ export async function runReconciliationCase(db: RelationalStore, name: Reconcili
       equal(await rows(db, 'SELECT event_id FROM plans'), [{ event_id: 'a' }], 'F2 equal-time event id');
       equal(await rows(db, 'SELECT tag FROM tags'), [{ tag: 'a' }], 'F2 equal-time tags');
     }
-  }
-  if (name === 'provenance') {
+  },
+  provenance: async (db) => {
     for (const kind of ['session.start', 'session.end'] as const) {
       for (const order of permutations([{ id: 'b', at: 100 }, { id: 'a', at: 100 }, { id: 'c', at: 200 }])) {
         await db.prepare('DELETE FROM knowledge_git_provenance').run();
@@ -79,8 +80,8 @@ export async function runReconciliationCase(db: RelationalStore, name: Reconcili
       await project(db, kind, 'b', 100, { agent: 'claude-code', startedAt: 100, endedAt: 100, headSha: 'b'.repeat(40), dirty: false });
       equal(await rows(db, 'SELECT event_id FROM knowledge_git_provenance'), [{ event_id: 'b' }], 'F8 NULL rank loses a tie');
     }
-  }
-  if (name === 'roots') {
+  },
+  roots: async (db) => {
     const A = 'a'.repeat(16), B = 'b'.repeat(16), C = 'c'.repeat(16);
     const dbRace = interleavedReads(db, 'SELECT value FROM machine_settings');
     const first = await Promise.all([connectMachineRoot(dbRace, 'machine', A, 'proj_a', 'member', 100), connectMachineRoot(dbRace, 'machine', B, 'proj_b', 'member', 100)]);
@@ -92,8 +93,8 @@ export async function runReconciliationCase(db: RelationalStore, name: Reconcili
     check(second.every(r => r.applied), 'F5 disconnect and connect apply');
     const current = await read();
     check(current[A] === undefined && current[B] === 'proj_b' && current[C] === 'proj_c', 'F5 removal never resurrects');
-  }
-  if (name === 'embedding') {
+  },
+  embedding: async (db) => {
     const reset = async () => { await db.prepare('DELETE FROM deployment_settings').run(); await db.prepare("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES ('embedding.provider','\"ollama\"',1,'member')").run(); };
     await reset();
     const writer = settingsWriter(interleavedReads(db, 'SELECT leaf, value,'), { target: 'bun' });
@@ -107,8 +108,8 @@ export async function runReconciliationCase(db: RelationalStore, name: Reconcili
     check((await sequential.setLeaf('embedding.model', 'nomic-embed-text', 'member', 99)).applied, 'F9 sequential stamped edit');
     await reset();
     check((await sequential.setEmbedding({ provider: 'openai' }, 'member', 1)).applied, 'F9 NULL revision compatibility');
-  }
-  if (name === 'catalog') {
+  },
+  catalog: async (db) => {
     for (const owner of [{ kind: 'machine', machineId: 'machine' }, { kind: 'runner', runnerId: 'r' }] as const) {
       const table = owner.kind === 'machine' ? 'worker_model_catalogs' : 'runner_model_catalogs';
       const key = owner.kind === 'machine' ? 'machine_id' : 'runner_id';
@@ -129,8 +130,8 @@ export async function runReconciliationCase(db: RelationalStore, name: Reconcili
       await db.prepare(`DELETE FROM ${table}`).run();
       check(!(await send()).recorded, 'F10 unstamped insert refused');
     }
-  }
-  if (name === 'runner') {
+  },
+  runner: async (db) => {
     const send = async (observedOrder: number | undefined, version: string, at: number, held = false) => {
       const report: RunnerUpdateReport = { observedOrder, channel: 'alpha', currentVersion: version, latestVersion: '2.0.2', lastCheckAt: at,
         lastResult: { fromVersion: '2.0.0', toVersion: version, result: held ? 'failed' : 'updated', at, attemptId: version },
@@ -156,7 +157,11 @@ export async function runReconciliationCase(db: RelationalStore, name: Reconcili
     await db.prepare('DELETE FROM runner_update_reports').run();
     await send(undefined, '2.0.0', 90, true);
     equal(await rows(db, 'SELECT * FROM runner_update_reports'), [], 'F13 unstamped insert refused');
-  }
+  },
+};
+
+export async function runReconciliationCase(db: RelationalStore, name: ReconciliationCase): Promise<void> {
+  await reconciliationRuns[name](db);
 }
 
 export const RECONCILIATION_FIXTURE = [

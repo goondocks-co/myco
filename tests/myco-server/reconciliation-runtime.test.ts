@@ -1,5 +1,6 @@
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
+import { RECONCILIATION_CASES } from './helpers/reconciliation-cases.js';
 import { RECONCILIATION_FIXTURE } from './helpers/reconciliation-vectors.js';
 
 it('workerd D1 runs the production reconciliation matrices', async () => {
@@ -14,7 +15,7 @@ it('workerd D1 runs the production reconciliation matrices', async () => {
   try {
     const db = await mf.getD1Database('DB');
     await db.batch(RECONCILIATION_FIXTURE.map(sql => db.prepare(sql)));
-    for (const name of ['plan', 'provenance', 'roots', 'embedding', 'catalog', 'runner']) {
+    for (const name of RECONCILIATION_CASES) {
       const response = await mf.dispatchFetch(`http://reconcile/${name}`);
       expect(await response.json(), name).toEqual({ passed: true });
       expect(response.status, name).toBe(200);

@@ -187,6 +187,23 @@ describe('the models a machine lists', () => {
     expect({ answered: 'models' in member, mentions: JSON.stringify(member).includes('claude-opus-latest') }).toEqual({ answered: false, mentions: false });
   });
 
+  it('returns the stored report order on stale, repeated and unstamped catalog refusals', async () => {
+    const r = await rig();
+    try {
+      const admin = await r.member('mem_admin', 'admin');
+      const current = listed('codex', [{ id: 'gpt-6-sol', label: 'GPT-6-Sol' }]);
+      current.catalog.observedOrder = 100;
+      expect((await r.json(post(admin, '/worker/models', current))).body.recorded).toBe(true);
+      const before = stored(r);
+      for (const observedOrder of [1, 100, undefined]) {
+        const answer = await r.json(post(admin, '/worker/models', { catalog: { ...current.catalog, observedOrder } }));
+        expect(answer).toEqual({ status: 200, body: { persisted: true, recorded: false, observedOrder: 100, reason: expect.any(String) } });
+        expect(stored(r)).toEqual(before);
+      }
+      expect((await r.json(post(admin, '/worker/models', { catalog: { ...current.catalog, observedOrder: 101 } }))).body.recorded).toBe(true);
+    } finally { r.e.sqlite.close(); }
+  });
+
   it('answers a list it cannot keep in its own shape, keeping nothing', async () => {
     const r = await rig();
     const admin = await r.member('mem_admin', 'admin');

@@ -57,8 +57,8 @@ export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: 
   if (!isLiveRunner(record)) throw new Error(`this machine is not registered with ${serverUrl}; run \`myco runner register ${serverUrl}\` first`);
   const update = runnerUpdater(serverUrl, deps, out);
   const leavingSource = deps.sourceArtifact === undefined && readInstallMarker(home)?.source === 'checkout';
-  const summary = (suffix: string, checked?: ReturnType<RunnerUpdateController['contactPayload']>): void => {
-    const status = checked ?? update.contactPayload();
+  const summary = (suffix: string, checked?: ReturnType<RunnerUpdateController['statusPayload']>): void => {
+    const status = checked ?? update.statusPayload();
     const transaction = readRunnerUpdateState(home).transaction;
     const target = checked ? checked.latestVersion ?? checked.currentVersion
       : transaction?.toVersion ?? status.currentVersion;
@@ -67,7 +67,7 @@ export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: 
   };
   if (checkOnly) {
     const status = await update.check(selection);
-    const recordedChannel = update.contactPayload().channel;
+    const recordedChannel = update.statusPayload().channel;
     if (recordedChannel !== null && selection.targetVersion === undefined
       && (selection.channel === undefined || selection.channel === recordedChannel)) {
       recordUpdateCheck(home, recordedChannel, status.currentVersion, status.latestVersion);
@@ -108,7 +108,7 @@ export async function updateRunner(serverUrl: string, checkOnly: boolean, deps: 
   }
   if (result === 'hold') { summary('awaiting restart or health verification'); out('A runner update is already awaiting restart or health verification.'); return true; }
   summary('runner update result');
-  const status = update.contactPayload();
+  const status = update.statusPayload();
   const receipt = status.lastResult;
   out(receipt === undefined ? 'Update check deferred; check runner status for the next check.' : `${receipt.result}: ${receipt.fromVersion} → ${receipt.toVersion}${receipt.reason === undefined ? '' : ` (${receipt.reason})`}`);
   return receipt?.result === 'no_update' || receipt?.result === 'updated';

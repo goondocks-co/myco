@@ -1,9 +1,11 @@
 import { Database } from 'bun:sqlite';
 import { it } from 'bun:test';
 import { sqliteD1 } from './helpers/d1.js';
-import { RECONCILIATION_FIXTURE, runReconciliationCase, type ReconciliationCase } from './helpers/reconciliation-vectors.js';
+import { RECONCILIATION_FIXTURE, runReconciliationCase } from './helpers/reconciliation-vectors.js';
 
-for (const name of ['plan', 'provenance', 'roots', 'embedding', 'catalog', 'runner'] satisfies ReconciliationCase[]) {
+import { RECONCILIATION_CASES } from './helpers/reconciliation-cases.js';
+
+for (const name of RECONCILIATION_CASES) {
   it(`native reconciliation: ${name}`, async () => {
     const sqlite = new Database(':memory:');
     try {

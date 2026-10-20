@@ -731,10 +731,18 @@ describe('runner update commands', () => {
       const { token, runnerId } = await r.register();
       const update = { observedOrder: 2, channel: 'alpha', currentVersion: '2.0.0-alpha.2', latestVersion: null, lastCheckAt: r.now() };
       expect(await r.json(r.asRunner(token, '/runners/contact', { version: update.currentVersion, update }))).toMatchObject({ updateRecorded: true, observedOrder: 2 });
+      const before = r.row('SELECT * FROM runner_update_reports WHERE runner_id = ?', runnerId);
+      for (let i = 0; i < 6; i++) {
+        expect(await r.json(r.asRunner(token, '/runners/contact', { version: update.currentVersion, update })))
+          .toMatchObject({ updateRecorded: true, observedOrder: 2 });
+        expect(r.row('SELECT * FROM runner_update_reports WHERE runner_id = ?', runnerId)).toEqual(before);
+      }
       for (const observedOrder of [1, 2, undefined]) {
         expect(await r.json(r.asRunner(token, '/runners/contact', { version: '2.0.0-alpha.1', update: { ...update, observedOrder, currentVersion: '2.0.0-alpha.1' } })))
           .toMatchObject({ persisted: true, updateRecorded: false, observedOrder: 2 });
       }
+      expect(await r.json(r.asRunner(token, '/runners/contact', { update: { ...update, updateState: { phase: 'updating', since: r.now() } } })))
+        .toMatchObject({ updateRecorded: false, observedOrder: 2 });
       expect(r.row('SELECT current_version, observed_order FROM runner_update_reports WHERE runner_id = ?', runnerId))
         .toEqual({ current_version: update.currentVersion, observed_order: 2 });
       expect(r.row('SELECT version FROM runner_contacts WHERE runner_id = ?', runnerId)).toEqual({ version: '2.0.0-alpha.1' });

@@ -17,7 +17,7 @@ import { requestByUserCode } from '../auth/device.js';
 import { sha256Hex } from '../hash.js';
 import type { RunnerAvailability } from '@goondocks/myco-shared/runner-fleet';
 import { forgetLegacyWorker } from '../core/legacy-workers.js';
-import { parseRunnerUpdateReport, readRunnerUpdateOrder, readRunnerUpdateRequest, requestRunnerUpdate, runnerUpdateReportStatements } from '../core/runner-updates.js';
+import { parseRunnerUpdateReport, readRunnerUpdateReceipt, readRunnerUpdateRequest, requestRunnerUpdate, runnerUpdateReportStatements } from '../core/runner-updates.js';
 import { emit } from '../telemetry.js';
 import { ok, parseJsonObject, readJsonObject, withRunnerSignInRefusal } from './scope.js';
 
@@ -49,13 +49,13 @@ export async function handleRunnerContact(env: ServerEnv, ctx: RunnerContext): P
     state: (['ready', 'settling', 'user_active', 'incompatible', 'unknown'] as const).includes(body.availability as RunnerAvailability) ? body.availability as RunnerAvailability : 'unknown',
     reason: reported(body.readinessReason, 'text') ?? 'Readiness reason unavailable.',
   }, ctx.now)])];
-  const results = await env.db.batch([...contactStatements, ...(update === null ? [] : await runnerUpdateReportStatements(env.db, ctx.auth.runnerId, update))]);
+  await env.db.batch([...contactStatements, ...(update === null ? [] : await runnerUpdateReportStatements(env.db, ctx.auth.runnerId, update))]);
   const runner = await readRunner(env.db, ctx.auth.runnerId);
   if (runner === null) throw new Error('an authenticated runner has no row');
-  const observedOrder = update === null ? null : await readRunnerUpdateOrder(env.db, ctx.auth.runnerId);
+  const receipt = update === null ? null : await readRunnerUpdateReceipt(env.db, ctx.auth.runnerId, update);
   return ok({
     persisted: true,
-    ...(update === null ? {} : { updateRecorded: update.observedOrder !== undefined && results[contactStatements.length]?.meta.changes === 1, observedOrder }),
+    ...(receipt ?? {}),
     runner: { id: runner.id, name: runner.name, state: runner.state, deploymentId: await deploymentIdentity(env.db) },
     credential: { id: ctx.auth.credentialId, expiresAt: ctx.auth.expiresAt, refreshAfter: runnerWindowOpensAt(ctx.auth.expiresAt) },
     updateRequest: await readRunnerUpdateRequest(env.db, ctx.auth.runnerId),

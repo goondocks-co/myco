@@ -48,9 +48,14 @@ export function modelCatalogs(options: {
   const failed = new Map<string, string>();
 
   const listNow = (): void => {
+    let observedOrder: number;
+    try { observedOrder = options.issueOrder(orderFloor); }
+    catch {
+      options.log('report_order_unavailable: model listing refused; repair the reporting counter before retrying');
+      return;
+    }
     listing = true;
     const revision = generation;
-    const observedOrder = options.issueOrder(orderFloor);
     orderFloor = undefined;
     const work = options.list(harnesses, listingStop.signal).then((listed) => {
       if (revision !== generation || stopping.signal.aborted) return;

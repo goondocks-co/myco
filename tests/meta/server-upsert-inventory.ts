@@ -1,6 +1,6 @@
 import ts from 'typescript-v6';
 
-export type UpsertRule = 'event-rank' | 'writer-revision' | 'reporter-stamp' | 'keyed-immutable' | 'monotonic';
+export type UpsertRule = 'event-rank' | 'writer-revision' | 'reporter-stamp' | 'unverified';
 export interface UpsertDeclaration { tables: string[]; order: UpsertRule }
 export interface UpsertOccurrence { owner: string; table: string | null }
 
@@ -34,18 +34,19 @@ export function upsertOccurrences(file: string, source: string): UpsertOccurrenc
   return occurrences;
 }
 
-export function validateUpserts(occurrences: UpsertOccurrence[], manifest: Record<string, UpsertDeclaration[]>): string[] {
+export function validateUpserts(occurrences: UpsertOccurrence[], manifest: Record<string, UpsertDeclaration[]>, matrices: Record<string, UpsertRule[]> = {}): string[] {
   const groups = new Map<string, UpsertOccurrence[]>();
   for (const occurrence of occurrences) groups.set(occurrence.owner, [...groups.get(occurrence.owner) ?? [], occurrence]);
   const errors: string[] = [];
-  for (const owner of new Set([...groups.keys(), ...Object.keys(manifest)])) {
+  for (const owner of new Set([...groups.keys(), ...Object.keys(manifest), ...Object.keys(matrices)])) {
     const sites = groups.get(owner) ?? [];
     const declarations = manifest[owner] ?? [];
     if (sites.length !== declarations.length) errors.push(`${owner}: ${sites.length} occurrences, ${declarations.length} declarations`);
     sites.forEach((site, i) => {
       const declared = declarations[i];
       if (declared === undefined || declared.tables.length === 0 || declared.tables.some(t => !/^[a-zA-Z_][a-zA-Z_0-9]*$/.test(t))) errors.push(`${owner}[${i}]: unresolved tables`);
-      else if (site.table !== null && !declared.tables.includes(site.table)) errors.push(`${owner}[${i}]: undeclared table ${site.table}`);
+      else if (declared.order !== (matrices[owner]?.[i] ?? 'unverified')) errors.push(`${owner}[${i}]: order has no matching runtime matrix`);
+      if (declared !== undefined && site.table !== null && !declared.tables.includes(site.table)) errors.push(`${owner}[${i}]: undeclared table ${site.table}`);
     });
   }
   return errors;

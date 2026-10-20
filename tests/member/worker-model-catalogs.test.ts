@@ -18,6 +18,7 @@ import { HARNESSES, type ModelListing } from '@myco/runner/harnesses.js';
 import { listHarnessModels, MAX_LISTING_PAGES, runListing, valuesAt, type HarnessListing } from '@myco/runner/models.js';
 import { startHarness } from '@myco/runner/drivers/stream.js';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
+import { issueReportOrder } from '@myco/utils/order-stamp.js';
 import { modelCatalogs } from '@myco/runner/catalogs.js';
 import type { WorkerAnswer } from '@myco/runner/loop.js';
 
@@ -179,6 +180,37 @@ describe('reporting what was listed', () => {
     });
     return { reporter, sent, lines, listings: () => listings, advance: (ms: number) => { now += ms; } };
   }
+
+  it('refuses a corrupt counter without throwing or wedging, then relists above the server floor after repair', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'myco-catalog-counter-'));
+    const counter = join(home, 'report-order', 'fixture.json');
+    mkdirSync(join(home, 'report-order'));
+    writeFileSync(counter, '');
+    const lines: string[] = [];
+    const sent: ModelCatalog[] = [];
+    let listings = 0;
+    const reporter = modelCatalogs({
+      issueOrder: floor => issueReportOrder(home, 'fixture', floor),
+      harnesses: ['codex'], clock: () => 0, log: line => lines.push(line),
+      list: async () => { listings++; return [{ ok: true, catalog: { ...catalog('codex'), fetchedAt: listings } }]; },
+      send: async value => { sent.push(value); return sent.length === 1 ? { ...ANSWERED, body: { recorded: false, observedOrder: 100 } } : ANSWERED; },
+    });
+    try {
+      expect(() => reporter.due()).not.toThrow();
+      reporter.due(); await settle();
+      expect(listings).toBe(0);
+      expect(sent).toEqual([]);
+      expect(readFileSync(counter, 'utf8')).toBe('');
+      expect(lines).toContain('report_order_unavailable: model listing refused; repair the reporting counter before retrying');
+      writeFileSync(counter, '5');
+      reporter.due(); await settle();
+      reporter.due(); await settle();
+      reporter.due(); await settle();
+      reporter.due(); await settle();
+      expect(listings).toBe(2);
+      expect(sent.map(c => [c.observedOrder, c.fetchedAt])).toEqual([[6, 1], [101, 2]]);
+    } finally { await reporter.stop(); rmSync(home, { recursive: true, force: true }); }
+  });
 
   it('lists once, then sends each harness\'s catalog on its own pass, and lists again only once the refresh is due', async () => {
     const r = rig([]);

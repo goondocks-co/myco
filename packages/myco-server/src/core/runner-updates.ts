@@ -71,6 +71,11 @@ export async function readRunnerUpdateRequest(db: RelationalStore, runnerId: str
   return request === null ? null : { ...request, clearBlock: true };
 }
 
+const reportMetadata = (report: RunnerUpdateReport): string => JSON.stringify({
+  format: RUNNER_UPDATE_REPORT_FORMAT, lastResult: report.lastResult ?? null,
+  blockedVersion: report.blockedVersion ?? null, updateState: report.updateState ?? null,
+});
+
 /** The contact's metadata, one immutable outcome receipt, and the matching command acknowledgment commit together. */
 export async function runnerUpdateReportStatements(db: RelationalStore, runnerId: string, report: RunnerUpdateReport): Promise<PreparedStatement[]> {
   const result = report.lastResult;
@@ -79,7 +84,7 @@ export async function runnerUpdateReportStatements(db: RelationalStore, runnerId
       latest_version = excluded.latest_version, last_check_at = excluded.last_check_at, last_result = excluded.last_result, observed_order = excluded.observed_order
       WHERE excluded.observed_order IS NOT NULL AND (runner_update_reports.observed_order IS NULL OR excluded.observed_order > runner_update_reports.observed_order)`)
     .bind(runnerId, report.channel, report.currentVersion, report.latestVersion, report.lastCheckAt,
-      JSON.stringify({ format: RUNNER_UPDATE_REPORT_FORMAT, lastResult: result ?? null, blockedVersion: report.blockedVersion ?? null, updateState: report.updateState ?? null }), report.observedOrder)] : [];
+      reportMetadata(report), report.observedOrder)] : [];
   if (result !== undefined) {
     const id = await sha256Hex(JSON.stringify(result.attemptId === undefined
       ? [runnerId, result.requestId ?? null, result.at, result.fromVersion, result.toVersion, result.result]
@@ -91,9 +96,14 @@ export async function runnerUpdateReportStatements(db: RelationalStore, runnerId
   return statements;
 }
 
-export async function readRunnerUpdateOrder(db: RelationalStore, runnerId: string): Promise<number | null> {
-  return (await db.prepare('SELECT observed_order FROM runner_update_reports WHERE runner_id = ?')
-    .bind(runnerId).first<{ observed_order: number | null }>())?.observed_order ?? null;
+/** An unchanged retry is acknowledged from the stored observation without replacing it. */
+export async function readRunnerUpdateReceipt(db: RelationalStore, runnerId: string, report: RunnerUpdateReport): Promise<{ updateRecorded: boolean; observedOrder: number | null }> {
+  const row = await db.prepare(`SELECT observed_order,
+      (observed_order IS ? AND channel IS ? AND current_version IS ? AND latest_version IS ? AND last_check_at IS ? AND last_result IS ?) AS matches
+    FROM runner_update_reports WHERE runner_id = ?`)
+    .bind(report.observedOrder ?? null, report.channel, report.currentVersion, report.latestVersion, report.lastCheckAt, reportMetadata(report), runnerId)
+    .first<{ observed_order: number | null; matches: number }>();
+  return { updateRecorded: isReportOrder(report.observedOrder) && row?.matches === 1, observedOrder: row?.observed_order ?? null };
 }
 
 const UPDATE_REFUSED = '$[myco_runner_update_refused]';
