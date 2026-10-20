@@ -845,7 +845,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
             if (!complete && !dry) problem(`${project.projectId}: the Deployment refused or failed part of the 1.4 history (above); run the cutover again to retry it`);
             deleted = legacy.deleted;
           } else {
-            deleted = readLegacyVault(copies.get(project.vault)!).filter(source => source.projectId === project.projectId).flatMap(source => legacyDeletedSessionIds(source, machineId, mycoHome));
+            deleted = readLegacyVault(copies.get(project.vault)!).filter(source => source.projectId === project.projectId).flatMap(source => legacyDeletedSessionIds(source, machineId));
             out(`   vault history for ${project.projectId} is confirmed; only the transcript pass remains`);
           }
           if (resumedVault) {

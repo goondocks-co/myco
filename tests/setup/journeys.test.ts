@@ -217,7 +217,7 @@ describe('legacy journey (e)', () => {
       if (['archived', 'archived-transcript', 'receipt-archived-transcript'].includes(evidence)) destination.run('UPDATE projects SET archived_at = 1');
       if (evidence === 'denied') destination.run("UPDATE events SET producer_adapter = 'claude-code'");
       if (evidence === 'title-only') for (const source of readLegacyVault(fixture.legacy.vault)) {
-        const titleId = legacyHistoryCompletionGroups(source, 'machine_1', home)[0]![1]!;
+        const titleId = legacyHistoryCompletionGroups(source, 'machine_1')[0]![1]!;
         destination.run("UPDATE events SET producer_adapter = 'claude-code', channel = 'cli' WHERE project_id = ? AND event_id <> ?", [source.projectId, titleId]);
       }
       if (evidence === 'deleted' || evidence === 'deleted-transcript') {

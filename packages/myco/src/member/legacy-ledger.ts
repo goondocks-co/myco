@@ -14,16 +14,18 @@
  *   - the transcript import, which leaves out every session whose content came
  *     from the vault and every session 1.4 deleted, on every later run.
  *
- * A line that does not parse is skipped: the ledger only ever saves work, and
- * a lost line costs one repeated request the Deployment answers as held.
+ * A newline commits a fact. An unreadable ledger or invalid committed line
+ * refuses the operation; a trailing uncommitted line is ignored by readers.
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 import { deploymentKeyFor } from './registry.js';
 import { ensureMemberDir, ensurePrivateFile, memberRoot } from './store.js';
 
 const LEGACY_DIRNAME = 'legacy';
 const LEDGER_EXTENSION = '.jsonl';
+const LEDGER_TAIL_READ_BYTES = 4096;
 export const LEGACY_RECONCILIATION_VERSION = 1;
 
 /** Where a session's content comes from: its transcript, the vault's prompts, or nowhere because it is deleted. */
@@ -44,6 +46,12 @@ export interface LedgerState {
   lineage: Set<string>;
 }
 
+export type LedgerRead =
+  | { ok: true; state: LedgerState }
+  | { ok: false; reason: 'missing' | 'unreadable' | 'invalid' };
+
+const emptyState = (): LedgerState => ({ reconciled: false, sources: new Map(), sessions: new Set(), spores: new Set(), lineage: new Set() });
+
 const ledgerDir = (mycoHome: string, serverUrl: string): string => path.join(memberRoot(mycoHome), LEGACY_DIRNAME, deploymentKeyFor(serverUrl));
 
 const parseLine = (raw: string): LedgerLine | null => {
@@ -59,6 +67,69 @@ const parseLine = (raw: string): LedgerLine | null => {
   }
 };
 
+/** Only newline-terminated facts are committed. */
+function parseLedger(bytes: Buffer): LedgerRead {
+  const state = emptyState();
+  let committed: string;
+  try { committed = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, bytes.lastIndexOf('\n') + 1)); }
+  catch { return { ok: false, reason: 'invalid' }; }
+  for (const raw of committed.split('\n').slice(0, -1)) {
+    const line = parseLine(raw);
+    if (line === null) return { ok: false, reason: 'invalid' };
+    if (line.k === 'reconciled') state.reconciled = true;
+    else if (line.k === 'source') state.sources.set(line.session, line.from);
+    else if (line.k === 'session') state.sessions.add(line.session);
+    else if (line.k === 'spore') state.spores.add(line.id);
+    else state.lineage.add(line.id);
+  }
+  return { ok: true, state };
+}
+
+function requireState(read: LedgerRead, file: string): LedgerState {
+  if (read.ok) return read.state;
+  if (read.reason === 'missing') return emptyState();
+  throw new Error(`Legacy import ledger is ${read.reason}: ${file}`);
+}
+
+/** A dangling link is unavailable evidence, not an absent store. */
+function ledgerPathAbsent(file: string, error: unknown): boolean {
+  if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+  const resolved = path.resolve(file);
+  for (let current = resolved; ; current = path.dirname(current)) {
+    let entry: fs.Stats;
+    try { entry = fs.lstatSync(current); } catch (statError) {
+      if ((statError as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+      if (path.dirname(current) === current) return false;
+      continue;
+    }
+    if (current === resolved) return false;
+    try { return entry.isDirectory() || (entry.isSymbolicLink() && fs.statSync(current).isDirectory()); }
+    catch { return false; }
+  }
+}
+
+function readLedger(file: string): LedgerRead {
+  try {
+    return withFileLockSync(`${file}.lock`, () => parseLedger(fs.readFileSync(file)), { create: false, readIfMissing: true });
+  } catch (error) {
+    return { ok: false, reason: ledgerPathAbsent(file, error) ? 'missing' : 'unreadable' };
+  }
+}
+
+/** The byte boundary after the last committed newline. Caller holds the ledger lock. */
+function committedLength(fd: number, size: number): number {
+  const chunk = Buffer.allocUnsafe(Math.min(size, LEDGER_TAIL_READ_BYTES));
+  for (let end = size; end > 0;) {
+    const length = Math.min(end, chunk.length);
+    const start = end - length;
+    if (fs.readSync(fd, chunk, 0, length, start) !== length) throw new Error('Legacy import ledger tail is unreadable');
+    const newline = chunk.subarray(0, length).lastIndexOf('\n');
+    if (newline !== -1) return start + newline + 1;
+    end = start;
+  }
+  return 0;
+}
+
 /** One Project's ledger on one Deployment. */
 export class LegacyLedger {
   readonly file: string;
@@ -67,29 +138,29 @@ export class LegacyLedger {
     this.file = path.join(ledgerDir(mycoHome, serverUrl), `${projectId}${LEDGER_EXTENSION}`);
   }
 
-  /** What the ledger holds; empty when there is none. */
-  read(): LedgerState {
-    const state: LedgerState = { reconciled: false, sources: new Map(), sessions: new Set(), spores: new Set(), lineage: new Set() };
-    let text: string;
-    try { text = fs.readFileSync(this.file, 'utf8'); } catch { return state; }
-    for (const raw of text.split('\n')) {
-      const line = raw.trim() === '' ? null : parseLine(raw);
-      if (line === null) continue;
-      if (line.k === 'reconciled') state.reconciled = true;
-      else if (line.k === 'source') state.sources.set(line.session, line.from);
-      else if (line.k === 'session') state.sessions.add(line.session);
-      else if (line.k === 'spore') state.spores.add(line.id);
-      else state.lineage.add(line.id);
-    }
-    return state;
+  read(): LedgerRead {
+    return readLedger(this.file);
+  }
+
+  /** Empty only when absent; unavailable or corrupt evidence refuses. */
+  readState(): LedgerState {
+    return requireState(this.read(), this.file);
   }
 
   /** Record facts, in order, before the caller moves on. */
   append(...lines: LedgerLine[]): void {
     if (lines.length === 0) return;
     ensureMemberDir(path.dirname(this.file), this.mycoHome);
-    ensurePrivateFile(this.file);
-    fs.appendFileSync(this.file, lines.map((l) => `${JSON.stringify(l)}\n`).join(''));
+    withFileLockSync(`${this.file}.lock`, () => {
+      ensurePrivateFile(this.file);
+      const fd = fs.openSync(this.file, fs.constants.O_RDWR | fs.constants.O_APPEND);
+      try {
+        const size = fs.fstatSync(fd).size;
+        const committed = committedLength(fd, size);
+        if (committed !== size) fs.ftruncateSync(fd, committed);
+        fs.appendFileSync(fd, lines.map((l) => `${JSON.stringify(l)}\n`).join(''));
+      } finally { fs.closeSync(fd); }
+    });
   }
 }
 
@@ -100,18 +171,21 @@ export function legacyHistoryByProject(mycoHome: string): LegacyHistory {
   const dir = path.join(memberRoot(mycoHome), LEGACY_DIRNAME);
   let entries: fs.Dirent[];
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return history;
+    if (ledgerPathAbsent(dir, error)) return history;
     throw error;
   }
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (!entry.isDirectory() || !/^[a-f0-9]{16}$/.test(entry.name)) continue;
+    if (!/^[a-f0-9]{16}$/.test(entry.name)) continue;
+    if (!entry.isDirectory()) throw new Error(`Legacy import ledger directory is unreadable: ${path.join(dir, entry.name)}`);
     for (const file of fs.readdirSync(path.join(dir, entry.name), { withFileTypes: true })) {
-      if (!file.isFile() || !file.name.endsWith(LEDGER_EXTENSION)) continue;
-      const text = fs.readFileSync(path.join(dir, entry.name, file.name), 'utf8');
-      const accepted = new Set(text.split('\n').flatMap(raw => {
-        const line = parseLine(raw);
-        return line?.k === 'session' ? [`session:${line.session}`] : line?.k === 'spore' || line?.k === 'lineage' ? [`${line.k}:${line.id}`] : [];
-      }));
+      if (!file.name.endsWith(LEDGER_EXTENSION)) continue;
+      const ledger = path.join(dir, entry.name, file.name);
+      const state = requireState(readLedger(ledger), ledger);
+      const accepted = new Set([
+        ...[...state.sessions].map(id => `session:${id}`),
+        ...[...state.spores].map(id => `spore:${id}`),
+        ...[...state.lineage].map(id => `lineage:${id}`),
+      ]);
       if (accepted.size === 0) continue;
       const projectId = file.name.slice(0, -LEDGER_EXTENSION.length);
       const project = history.get(projectId) ?? new Map<string, Set<string>>();
@@ -131,10 +205,13 @@ export function legacySessionsToLeaveOut(mycoHome: string, serverUrl: string): S
   const out = new Set<string>();
   const dir = ledgerDir(mycoHome, serverUrl);
   let names: string[];
-  try { names = fs.readdirSync(dir); } catch { return out; }
+  try { names = fs.readdirSync(dir); } catch (error) {
+    if (ledgerPathAbsent(dir, error)) return out;
+    throw error;
+  }
   for (const name of names) {
     if (!name.endsWith(LEDGER_EXTENSION)) continue;
-    const state = new LegacyLedger(mycoHome, serverUrl, name.slice(0, -LEDGER_EXTENSION.length)).read();
+    const state = new LegacyLedger(mycoHome, serverUrl, name.slice(0, -LEDGER_EXTENSION.length)).readState();
     for (const [session, from] of state.sources) if (from !== 'transcript') out.add(session);
   }
   return out;

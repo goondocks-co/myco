@@ -1,5 +1,7 @@
 {
   "sources": [
+    "local: #1907 correction 1 ledger concurrency npm test, Bun 1.4.0 darwin-arm64; 1200ms covers twice measured 464ms plus startup",
+    "local: #1901 PR 3 legacy-ledger focused npm test, Bun 1.4.3 darwin-arm64; 500ms covers twice measured 108ms plus startup",
     "local: #1901 PR 1 member reconciliation files, Bun 1.4.3 darwin-arm64; 2x measured file duration plus startup",
     "local: prompt-scheme and codex-turn-identity focused npm test, Bun 1.4.3 darwin-arm64; 2x measured file duration plus startup",
     "local: claim takeover fixture-HOME matrix, Bun 1.4.0 darwin-arm64; conservative 40000ms including twice measured 17910ms runtime and startup",
@@ -147,6 +149,7 @@
     "tests/member/legacy-daemon-stop.test.ts": 147,
     "tests/member/legacy-event-dedup.test.ts": 497,
     "tests/member/legacy-import.test.ts": 29743,
+    "tests/member/legacy-ledger.test.ts": 1200,
     "tests/member/legacy-launchd.test.ts": 107,
     "tests/member/legacy-migration-state.test.ts": 3002,
     "tests/member/legacy-run-command.test.ts": 169,
