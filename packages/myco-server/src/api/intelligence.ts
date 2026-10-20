@@ -44,7 +44,7 @@ async function scopeOf(env: ServerEnv, ctx: OwnerContext) {
  * A Project's spores, newest first, paged by offset or by `cursor`, the keyset the previous page answered; the two do not
  * combine. Every page carries `cursor`, null when no spore follows it. A start instant (inclusive) and an end instant
  * (exclusive) bound when they were written, and `author` names who wrote them, as a run's id. `total` counts what the
- * filters match as the page was read.
+ * filters match when the page is read.
  */
 export async function handleProjectSpores(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await scopeOf(env, ctx);

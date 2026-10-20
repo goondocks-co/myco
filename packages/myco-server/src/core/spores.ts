@@ -241,7 +241,7 @@ export async function listSpores(db: RelationalStore, scope: ReadScope, o: ListS
 
 /**
  * One page of spores in `listSpores`' order, newest first with the id breaking a tie, and the cursor that continues
- * after its last row: null when no row follows. A cursor continues from that row whatever was written since, so a page
+ * after its last row: null when no row follows. A cursor continues from that row whatever is written after it, so a page
  * neither repeats a row nor skips one a newer write pushed down; without one, the page starts at `offset`. Null for a
  * malformed cursor.
  */
