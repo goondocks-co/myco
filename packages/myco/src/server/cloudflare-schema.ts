@@ -11,7 +11,7 @@ interface SchemaOptions extends CloudflareOptions {
   /** A database created by this operation, verified empty before its first migration. */
   freshDatabase?: boolean;
   report?: (line: string) => void;
-  observe?: (event: { phase: 'observed' | 'applying' | 'applied'; before: number; after: number }) => void;
+  observe?: (event: { phase: 'observed' | 'applying' | 'applied' | 'failed' | 'unconfirmed'; before: number; after: number; reached?: number }) => void;
   /** Resource preparation and recovery-ledger writes run only after admission. */
   prepare?: (record: DeploymentRecord) => Promise<DeploymentRecord>;
 }
@@ -59,7 +59,23 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
   record = await options.prepare?.(record) ?? record;
   if (before < SERVER_SCHEMA_VERSION) {
     options.observe?.({ phase: 'applying', before, after: SERVER_SCHEMA_VERSION });
-    await runCloudflareCommand(options, ['d1', 'migrations', 'apply', record.databaseName, '--remote']);
+    try {
+      await runCloudflareCommand(options, ['d1', 'migrations', 'apply', record.databaseName, '--remote']);
+    } catch (error) {
+      let reached: number;
+      try {
+        reached = await cloudflareSchemaVersion(database);
+      } catch (probeError) {
+        options.report?.(`Live schema confirmation failed: ${probeError instanceof Error ? probeError.message : String(probeError)}`);
+        throw error;
+      }
+      if (reached !== SERVER_SCHEMA_VERSION) {
+        options.observe?.({ phase: reached === before ? 'failed' : 'unconfirmed', before, after: SERVER_SCHEMA_VERSION, reached });
+        throw error;
+      }
+      const detail = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();
+      options.report?.(`D1 migration apply reported ${detail}; live schema confirmed ${reached} (target ${SERVER_SCHEMA_VERSION}); continuing to the Worker.`);
+    }
     options.observe?.({ phase: 'applied', before, after: SERVER_SCHEMA_VERSION });
     if (!options.freshDatabase) {
       record = { ...record, schemaUpdates: record.schemaUpdates!.map((entry, index, entries) =>

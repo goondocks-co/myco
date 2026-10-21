@@ -270,7 +270,8 @@ export interface CloudflareUpdateSummary {
   releaseTarget: string;
   schemaBefore: number | null;
   schemaTarget: number;
-  schema: 'not attempted' | 'attempted; outcome unknown' | 'refused: not applied' | 'applied' | 'unchanged';
+  schema: 'not attempted' | 'attempted; outcome unknown' | 'refused: not applied' | 'failed: not applied' | 'applied' | 'unchanged';
+  schemaReached?: number;
   worker: 'not attempted' | 'attempted; outcome unknown' | 'refused: not applied' | 'applied';
   record: 'updated' | 'not updated';
   resources: Array<{ operation: string; state: 'attempted; outcome unknown' | 'refused: not applied' | 'applied' | 'already exists' }>;
@@ -283,16 +284,16 @@ export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[
   const resultingRelease = summary.worker === 'applied' ? summary.releaseTarget
     : ['not attempted', 'refused: not applied'].includes(summary.worker) ? summary.releaseBefore ?? 'unknown' : 'unknown';
   const resultingSchema = summary.schema === 'applied' ? summary.schemaTarget
-    : summary.schema === 'attempted; outcome unknown' ? 'unknown' : summary.schemaBefore ?? 'unknown';
+    : summary.schemaReached ?? (summary.schema === 'attempted; outcome unknown' ? 'unknown' : summary.schemaBefore ?? 'unknown');
   const lines = [
     `Cloudflare update (releases recorded before update or acknowledged by deploy; schemas observed or acknowledged): from ${summary.releaseBefore ?? 'unknown'}/${summary.schemaBefore ?? 'unknown'} to ${resultingRelease}/${resultingSchema}.`,
-    `  Schema: ${summary.schema} (target ${summary.schemaTarget}).`,
+    `  Schema: ${summary.schema} (target ${summary.schemaTarget}${summary.schemaReached === undefined ? '' : `; live schema ${summary.schemaReached}`}).`,
     `  Worker: ${summary.worker} (target release ${summary.releaseTarget}).`,
     `  Local deployment record: ${summary.record}.`,
     `  Resources: ${summary.resources.length === 0 ? 'no changes attempted' : summary.resources.map((r) => `${r.operation}: ${r.state}`).join('; ')}.`,
     summary.bookmark === undefined ? '  No new recovery bookmark recorded.' : `  Bookmark ${summary.bookmark} recorded in ${summary.recordPath}.`,
   ];
-  if (['not attempted', 'refused: not applied'].includes(summary.worker) && ['not attempted', 'unchanged', 'refused: not applied'].includes(summary.schema)
+  if (['not attempted', 'refused: not applied'].includes(summary.worker) && ['not attempted', 'unchanged', 'refused: not applied', 'failed: not applied'].includes(summary.schema)
     && summary.resources.every((r) => ['already exists', 'refused: not applied'].includes(r.state))) {
     lines.push('Nothing changed in Cloudflare; a rerun is safe. A recorded bookmark is a recovery point, not an applied migration.');
   } else if (summary.schema.includes('unknown') || summary.worker.includes('unknown') || summary.resources.some((r) => r.state.includes('unknown'))) {
@@ -342,9 +343,11 @@ export const updateCloudflareDeployment = cloudflareOperation(async (options: Li
         writeDeploymentRecord(next, options.mycoHome);
         if ((next.schemaUpdates?.length ?? 0) > (record!.schemaUpdates?.length ?? 0)) summary.bookmark = next.schemaUpdates!.at(-1)!.bookmark;
       },
-      observe: ({ phase, before, after }) => {
+      observe: ({ phase, before, after, reached }) => {
         summary.schemaBefore = before;
+        if (reached !== undefined) summary.schemaReached = reached;
         if (phase === 'observed') summary.schema = before === after ? 'unchanged' : 'not attempted';
+        else if (phase === 'failed') summary.schema = 'failed: not applied';
         else summary.schema = phase === 'applied' ? 'applied' : 'attempted; outcome unknown';
       },
       prepare: async (admitted) => {
@@ -370,7 +373,6 @@ export const updateCloudflareDeployment = cloudflareOperation(async (options: Li
     return { versionId: deployed.versionId, summary };
   } catch (cause) {
     if (cause instanceof CloudflareAuthenticationError) {
-      if (summary.schema === 'attempted; outcome unknown') summary.schema = 'refused: not applied';
       if (summary.worker === 'attempted; outcome unknown') summary.worker = 'refused: not applied';
     }
     for (const line of cloudflareUpdateLines(summary)) options.report?.(line);

@@ -155,6 +155,8 @@ For Cloudflare, use `myco server update --target cloudflare` instead. Updating t
 
 A Cloudflare update that advances an existing database's schema obtains a D1 Time Travel bookmark before migration. It saves the bookmark, schema versions, timestamp and previous Worker version in `~/.myco/server/cloudflare/record.json` under `schemaUpdates`. If it cannot obtain a valid bookmark, it refuses before changing remote resources. A code-only update needs no bookmark. Keep a full backup for disaster recovery too.
 
+If Wrangler reports a migration error, the update checks the live schema before settling the result. Reaching the target confirms the migration was applied: the update names the provider error and confirmed version, records completion and continues to the Worker. An unchanged schema is reported as failed with nothing applied, and the Worker is not attempted. Any other version, including an intermediate version in a multi-migration update, keeps the outcome unknown and names the version reached. A failed probe also leaves the outcome unknown; check `myco server status --target cloudflare` before retrying.
+
 For a code rollback:
 
 ```bash
