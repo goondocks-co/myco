@@ -16,6 +16,8 @@
  * agent's own namespace, as Cursor and Codex do. The member ships no `prompt`
  * for Pi, so there is no second id to agree with.
  */
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
+import { toolResultDeclarationOf, toolResultFailed } from '@goondocks/myco-shared/tool-result';
 import {
   callForResult, recordId, recordSource, optionalRecordSource, legacyRecordId, promptIdAtOffset, parserContinuation, blocksOf, isBlock, lineTime, plansInText, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParsedLine, type ParserInput, type TranscriptParser,
@@ -126,7 +128,7 @@ export const piParser: TranscriptParser = {
         const call = 'key' in source ? await callForResult(input, this.agent, source, pending, { promptId, createdAt, offset }) : undefined;
         const name = str(message.toolName) ?? call?.toolName;
         if (name === undefined) continue;
-        const failed = message.isError === true;
+        const failed = toolResultFailed({ declaration: toolResultDeclarationOf(CAPTURE_RULE_BUNDLES, this.agent), record: value, result: message });
         const output = textOf(message.content).slice(0, TOOL_OUTPUT_PREVIEW_CHARS);
         events.push({
           kind: failed ? 'tool.failure' : 'tool.use', source,
@@ -138,7 +140,7 @@ export const piParser: TranscriptParser = {
             input: call?.input ?? {},
             output: output === '' ? undefined : output,
             success: !failed,
-            ...(failed ? { errorMessage: output === '' ? 'tool call failed' : output } : {}),
+            ...(failed ? { resultReason: 'reported', errorMessage: output === '' ? 'tool call failed' : output } : {}),
           },
           createdAt,
           offset,

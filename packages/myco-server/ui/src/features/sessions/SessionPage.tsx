@@ -26,10 +26,11 @@ import { RawData, isRawSection } from './RawData';
 import { SessionActions } from './SessionActions';
 import { EVENT_TYPE_KEY, SessionEventList, useSessionEventFilters, type SessionEventRow } from './SessionEventList';
 import { SessionOutcomes } from './Outcomes';
+import { ACTIVITY_FILTER_KEYS, SessionActivity } from './Activity';
 import { WhatCameOfIt } from './WhatCameOfIt';
 import { agentName, count, dateTime, memberName, sporeLine, sporeTypeWord, spanWords } from './words';
 
-const TABS = ['conversation', 'outcomes', 'spores', 'plans'] as const;
+const TABS = ['conversation', 'activity', 'outcomes', 'spores', 'plans'] as const;
 type Tab = (typeof TABS)[number];
 
 const SPORE_TYPE_OPTIONS: readonly SelectOption[] = [
@@ -87,6 +88,7 @@ function useFollowLive(projectId: string, session: SessionRow) {
     void client.invalidateQueries({ queryKey: ['turns', projectId, session.sessionId] });
     void client.invalidateQueries({ queryKey: ['turn', projectId, session.sessionId] });
     void client.invalidateQueries({ queryKey: ['session-commits', projectId, session.sessionId] });
+    void client.invalidateQueries({ queryKey: ['session-activity', projectId, session.sessionId] });
   }, [client, projectId, session.sessionId, heard]);
 }
 
@@ -99,7 +101,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
     const copy = new URLSearchParams(params);
     if (next === 'conversation') copy.delete('tab'); else copy.set('tab', next);
     // A filter belongs to the list it was set on, never to the tab opened next.
-    for (const key of ['raw', 'q', EVENT_TYPE_KEY]) copy.delete(key);
+    for (const key of ['raw', 'q', EVENT_TYPE_KEY, ...ACTIVITY_FILTER_KEYS]) copy.delete(key);
     setParams(copy, { replace: true });
   };
   const raw = params.get('raw');
@@ -109,6 +111,13 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
   const name = projectName ?? 'A project';
   const sporesHref = `?${new URLSearchParams({ tab: 'spores' })}`;
   useFollowLive(projectId, session);
+  const content: Record<Tab, ReactNode> = {
+    conversation: <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} now={now} />,
+    activity: <SessionActivity projectId={projectId} sessionId={session.sessionId} now={now} />,
+    outcomes: <SessionOutcomes projectId={projectId} sessionId={session.sessionId} now={now} />,
+    spores: <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />,
+    plans: <SessionPlans projectId={projectId} sessionId={session.sessionId} now={now} />,
+  };
 
   return (
     <article data-session-page="" className="flex w-full flex-col gap-s5">
@@ -151,22 +160,14 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList aria-label="What the session holds">
               <TabsTrigger value="conversation">Conversation</TabsTrigger>
+              <TabsTrigger value="activity">Agent activity</TabsTrigger>
               <TabsTrigger value="outcomes">Outcomes</TabsTrigger>
               <TabsTrigger value="spores">Spores</TabsTrigger>
               <TabsTrigger value="plans">Plans</TabsTrigger>
             </TabsList>
-            <TabsContent value="conversation">
-              <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} now={now} />
-            </TabsContent>
-            <TabsContent value="outcomes">
-              <SessionOutcomes projectId={projectId} sessionId={session.sessionId} now={now} />
-            </TabsContent>
-            <TabsContent value="spores">
-              <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />
-            </TabsContent>
-            <TabsContent value="plans">
-              <SessionPlans projectId={projectId} sessionId={session.sessionId} now={now} />
-            </TabsContent>
+            {TABS.map((value) => (
+              <TabsContent key={value} value={value}>{value === tab ? content[value] : null}</TabsContent>
+            ))}
           </Tabs>
           <RawData agent={session.agent} projectId={projectId} sessionId={session.sessionId} open={isRawSection(raw) ? raw : null} now={now} />
         </div>

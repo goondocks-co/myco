@@ -2,7 +2,7 @@ import { MAX_BLOB_BYTES } from '../constants.js';
 import { utf8 } from '../hash.js';
 import { AHEAD_OF_CLOCK, aheadOfClock, ID_GRAMMAR, MAX_ID_CHARS, MAX_PAYLOAD_BYTES, type Refused } from './envelope.js';
 import { refusal, type Refusal } from '../telemetry.js';
-import { MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES, TURN_KIND, TURN_PHASES } from '@goondocks/myco-shared/member-protocol';
+import { MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES, TOOL_RESULT_REASONS, TURN_KIND, TURN_PHASES } from '@goondocks/myco-shared/member-protocol';
 import { CONTEXT_DELIVERED_KIND, DELIVERED_SESSION_RECORDS, HOOK_NAMED_SCHEMES, PROMPT_SCOPE_REASONS } from '@goondocks/myco-shared/prompt-identity';
 
 /** Ceilings every bound of its type states; each is a real limit, never the language's. */
@@ -86,6 +86,7 @@ const toolCallFields: Record<string, FieldSpec> = {
   durationMs: int(MAX_DURATION_MS, 'duration_ms'),
   filesAffected: { bound: { type: 'stringArray', maxItems: MAX_FILES_AFFECTED, maxItem: MAX_FILE_PATH_CHARS }, column: 'files_affected' },
   success: { bound: { type: 'bool' }, required: true, column: 'success' },
+  resultReason: { bound: { type: 'enum', values: TOOL_RESULT_REASONS }, column: 'result_reason' },
   mycoTool: str(64, 'myco_tool'),
   mycoOp: str(64, 'myco_op'),
   canopyInjectionTokens: int(MAX_TOKEN_COUNT, 'canopy_injection_tokens'),

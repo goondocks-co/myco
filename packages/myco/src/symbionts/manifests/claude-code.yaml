@@ -476,6 +476,9 @@ promptIdentity:
   hookKey: prompt_id
   transcriptKey: promptId
 
+toolResult:
+  failure: { from: result, path: is_error, equals: true }
+  evidence: tests/fixtures/tool-result-evidence.json
 recordIdentity:
   scheme: source-record-v1
   schemes:

@@ -4,6 +4,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { getSession, listSessionSummaries, projectStats, sessionCounts, sessionDurationMs, type SessionFilters } from '../read/sessions.js';
 import { activityFeed } from '../read/activity.js';
+import { listSessionActivity, SESSION_ACTIVITY_SOURCES, type SessionActivityType } from '../read/session-activity.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listContextInjections, listPlans, listPrompts, listResponses, listToolCalls, untitledReason } from '../read/children.js';
@@ -145,6 +146,25 @@ export async function handleSessionCommits(env: ServerEnv, ctx: OwnerContext): P
   if (scope === null) return notFound();
   if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
   return ok(await sessionCommits(env.db, scope, sessionId));
+}
+
+/** The session's stored tool outcome facts, narrowed by structured metadata. */
+export async function handleSessionActivity(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const sessionId = sessionIdParam(ctx.params.sessionId);
+  if (sessionId === null) return notFound();
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null || !(await sessionInScope(env.db, scope, sessionId))) return notFound();
+  const page = paging(ctx.url);
+  if (page instanceof Response) return page;
+  const type = ctx.url.searchParams.get('type');
+  if (type !== null && !SESSION_ACTIVITY_SOURCES.some(source => source.type === type)) return badRequest('unknown activity type');
+  const failed = ctx.url.searchParams.get('failed');
+  if (failed !== null && failed !== 'true' && failed !== 'false') return badRequest('failed must be true or false');
+  const tool = ctx.url.searchParams.get('tool');
+  return ok(await listSessionActivity(env.db, scope, sessionId, {
+    ...page, type: type === null ? undefined : type as SessionActivityType,
+    tool: tool === null ? undefined : tool, failed: failed === null ? undefined : failed === 'true',
+  }));
 }
 
 /** A session's turns of the named origins; `order=desc` reads backward, and `turn` resolves a named prompt directly. */

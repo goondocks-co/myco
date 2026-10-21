@@ -18,7 +18,7 @@ import { IMPORT_PLAN_MAX_CANDIDATES as SERVER_PLAN_MAX } from '@myco-server-work
 import { IMPORT_PLAN_MAX_CANDIDATES as MEMBER_PLAN_MAX } from '@myco/member/import.js';
 import { OUTBOUND_CHANNELS as MEMBER_CHANNELS } from '@myco/member/envelope.js';
 import { KINDS, kindSpec, PLAN_SOURCES as SERVER_PLAN_SOURCES, PLAN_STATUSES as SERVER_PLAN_STATUSES, PROMPT_ORIGINS as SERVER_PROMPT_ORIGINS, TRANSCRIPT_ROLES as SERVER_TRANSCRIPT_ROLES } from '@myco-server-worker/ingest/kinds.js';
-import { FEATURE_KINDS, PROJECT_NAME_FEATURE, featuresNamed, MEMBER_KINDS, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
+import { FEATURE_KINDS, PROJECT_NAME_FEATURE, TOOL_RESULT_REASON_FEATURE, featuresNamed, MEMBER_KINDS, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
 import { LINEAGE_REPLAYED_CODE as SERVER_LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
 import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
@@ -67,20 +67,29 @@ const BOUND_FIELDS: Record<keyof typeof BOUNDS, [string, string] | [string, stri
  * dropped by the other side at the same protocol, so the change is a member
  * protocol bump and a new row here, never an edit of an existing row.
  *
- * The one addition a protocol row takes in place is an ADVERTISED kind
+ * A protocol row also admits ADVERTISED kinds and optional fields. A field
+ * shipped only to an advertising Deployment has its feature, kind, optional
+ * status and enum values pinned separately in `featureFields`; the base
+ * required-field pins still cover it. An advertised kind
  * (`featureKinds`): a kind the worker names as a feature on every answer, and
  * a member ships only to a Deployment that names it. No member at the row's
  * protocol sends it unasked, so cataloguing it refuses nothing that member
  * sent before; it is never among `memberKinds`, which a member ships to any
  * Deployment of the protocol.
  */
-const FINAL_SHAPE_BY_PROTOCOL: Record<number, { memberKinds: readonly string[]; featureKinds: readonly string[]; channels: readonly string[]; kinds: Record<string, unknown> }> = {
+const FINAL_SHAPE_BY_PROTOCOL: Record<number, { memberKinds: readonly string[]; featureKinds: readonly string[]; featureFields: Record<string, unknown>; channels: readonly string[]; kinds: Record<string, unknown> }> = {
   1: {
     memberKinds: [
       'attachment', 'compaction.post', 'compaction.pre', 'error', 'notification', 'plan', 'prompt', 'response', 'session.end',
       'session.start', 'stop.failure', 'subagent.start', 'subagent.stop', 'task.completed', 'tool.failure', 'tool.use', 'transcript.segment',
     ],
     featureKinds: ['context.delivered', 'turn'],
+    featureFields: {
+      'tool-result-reason': {
+        'tool.failure': { resultReason: { required: false, enums: ['no_result', 'pending_limit', 'reported'] } },
+        'tool.use': { resultReason: { required: false, enums: ['no_result', 'pending_limit', 'reported'] } },
+      },
+    },
     channels: ['cli', 'http', 'import'],
     kinds: {
       'attachment': { required: ['attachmentId', 'blob'], enums: {} },
@@ -114,11 +123,21 @@ function finalShape(): unknown {
   const kinds = Object.fromEntries([...KINDS].sort((a, b) => a.name.localeCompare(b.name)).map((spec) => {
     const required = Object.entries(spec.fields).filter(([, f]) => f.required === true).map(([field]) => field).sort();
     const enums = Object.fromEntries(Object.entries(spec.fields)
+      .filter(([field]) => !(field === 'resultReason' && (spec.name === 'tool.failure' || spec.name === 'tool.use')))
       .flatMap(([field, f]) => (f.bound.type === 'enum' ? [[field, [...f.bound.values].sort()] as const] : []))
       .sort(([a], [b]) => a.localeCompare(b)));
     return [spec.name, { required, enums, ...(spec.exactlyOne ? { exactlyOne: [...spec.exactlyOne] } : {}), ...(spec.atMostOne ? { atMostOne: [...spec.atMostOne] } : {}), ...(spec.pairs ? { pairs: spec.pairs.map((p) => ({ fields: [...p.fields], rule: p.rule })) } : {}) }];
   }));
-  return { channels: [...SERVER_CHANNELS].sort(), kinds };
+  const featureFields = {
+    [TOOL_RESULT_REASON_FEATURE]: Object.fromEntries(['tool.failure', 'tool.use'].map(kind => {
+      const field = kindSpec(kind)?.fields.resultReason;
+      return [kind, { resultReason: field === undefined ? null : {
+        required: field.required === true,
+        enums: field.bound.type === 'enum' ? [...field.bound.values].sort() : null,
+      } }];
+    })),
+  };
+  return { channels: [...SERVER_CHANNELS].sort(), kinds, featureFields };
 }
 
 describe('member ↔ worker pins', () => {
@@ -151,6 +170,7 @@ describe('member ↔ worker pins', () => {
 
   it('catalogues every advertised kind, ships none of them unasked, and changes the advertised set only in the protocol\'s own row', () => {
     expect(featuresNamed(PROJECT_NAME_FEATURE)).toEqual(['project-name']);
+    expect(featuresNamed(TOOL_RESULT_REASON_FEATURE)).toEqual(['tool-result-reason']);
     const advertised: readonly string[] = Object.values(FEATURE_KINDS).sort();
     expect({ protocol: MEMBER_PROTOCOL, featureKinds: advertised }).toEqual({ protocol: MEMBER_PROTOCOL, featureKinds: FINAL_SHAPE_BY_PROTOCOL[MEMBER_PROTOCOL]?.featureKinds });
     expect(advertised.filter((kind) => kindSpec(kind) === null)).toEqual([]);

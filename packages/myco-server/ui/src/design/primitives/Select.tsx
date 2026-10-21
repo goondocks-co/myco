@@ -109,9 +109,11 @@ export function Select({ label, value, onValueChange, options, placeholder, disa
     );
   }
   const selected = options.find((option) => option.value === value);
+  const visible = selected?.short ?? selected?.label;
+  const name = visible === undefined ? label : visible.toLowerCase().startsWith(label.toLowerCase()) ? visible : `${label}: ${visible}`;
   return (
     <SelectRoot value={value} onValueChange={onValueChange} disabled={disabled}>
-      <SelectTrigger id={id} aria-label={label} className={className}>
+      <SelectTrigger id={id} aria-label={name} className={className}>
         <SelectValue placeholder={placeholder ?? label}>{selected === undefined ? undefined : selected.short ?? selected.label}</SelectValue>
       </SelectTrigger>
       <SelectContent>

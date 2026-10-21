@@ -94,7 +94,7 @@ const asked = (requested: string[], url: string) => waitFor(() => expect(request
 
 /** Opens a design-system select by its label and picks one option, the way a person does. */
 async function pick(label: string, option: string) {
-  fireEvent.click(await screen.findByRole('combobox', { name: label }));
+  fireEvent.click(await screen.findByRole('combobox', { name: new RegExp(`^${label}(?::|$)`) }));
   fireEvent.click(await screen.findByRole('option', { name: option }));
 }
 

@@ -51,7 +51,7 @@ async function expectTable(page: Page, viewport: ViewportName): Promise<void> {
   await expect(bar).toHaveCount(1);
   await expect(bar).toBeInViewport();
   await expect(bar.getByRole('searchbox', { name: 'Filter sessions' })).toBeVisible();
-  for (const name of ['Member', 'State', 'Active']) await expect(bar.getByRole('combobox', { name })).toBeVisible();
+  for (const name of ['Member', 'State', 'Active']) await expect(bar.getByRole('combobox', { name: new RegExp(`^${name}(?::|$)`) })).toBeVisible();
   await expect(bar.getByRole('button', { name: /^Agent: / })).toBeVisible();
   await expect(rows(page, viewport).first()).toBeInViewport();
   if (!onFixture()) return;
@@ -214,7 +214,7 @@ test.describe('Sessions', () => {
     try {
       await expect(page.locator('main')).toHaveCount(1);
       await expect(page.getByRole('heading', { level: 1, name: 'Sessions' })).toBeVisible();
-      await expect(page.getByRole('combobox', { name: 'State' })).toContainText('Ended');
+      await expect(page.getByRole('combobox', { name: /^State(?::|$)/ })).toContainText('Ended');
       await expect(rows(page, 'desktop').first()).toBeVisible();
       expectQuiet(watch);
     } finally {
@@ -271,7 +271,7 @@ test.describe('Sessions', () => {
         await watch.navigate(() => openTable(page, viewport));
         await watch.navigate(() => openOutcomeSession(page));
         const tabs = page.getByRole('tablist', { name: 'What the session holds' });
-        await expect(tabs.getByRole('tab')).toHaveText(['Conversation', 'Outcomes', 'Spores', 'Plans']);
+        await expect(tabs.getByRole('tab')).toHaveText(['Conversation', 'Agent activity', 'Outcomes', 'Spores', 'Plans']);
 
         // Spores: every one the session produced, a row each, the type above its line and its status under it.
         await tabs.getByRole('tab', { name: 'Spores' }).click();
@@ -301,7 +301,7 @@ test.describe('Sessions', () => {
         await tabs.getByRole('tab', { name: 'Plans' }).click();
         await expect(page).toHaveURL(/\?tab=plans$/);
         await expect(page.getByText('No plans were captured in this session.')).toBeVisible();
-        await expect(page.getByRole('combobox', { name: 'Status' })).toHaveText('Every status');
+        await expect(page.getByRole('combobox', { name: /^Status(?::|$)/ })).toHaveText('Every status');
         await expectListState(page, viewport, 'session-plans-empty');
 
         // A spore's row opens the spore.
@@ -330,11 +330,11 @@ test.describe('Sessions', () => {
 
         await page.getByRole('searchbox', { name: 'Search plans' }).fill('filter bar');
         await expect(page).toHaveURL(/\?tab=plans&q=filter\+bar$/);
-        await page.getByRole('combobox', { name: 'Status' }).click();
+        await page.getByRole('combobox', { name: /^Status(?::|$)/ }).click();
         await page.getByRole('option', { name: 'Done', exact: true }).click();
         await expect(page.getByText('No plans in this session match this filter.')).toBeVisible();
         await expectListState(page, viewport, 'session-plans-none-match');
-        await page.getByRole('combobox', { name: 'Status' }).click();
+        await page.getByRole('combobox', { name: /^Status(?::|$)/ }).click();
         await page.getByRole('option', { name: 'Open', exact: true }).click();
         await expect(plans).toHaveCount(1);
         await expectListState(page, viewport, 'session-plans-filtered');
@@ -344,6 +344,81 @@ test.describe('Sessions', () => {
           await expect(page).toHaveURL(/\/plans\/[^/?]+$/);
         });
         await expect(page.getByRole('heading', { level: 1 })).toHaveText('One filter bar on every list page');
+        expectQuiet(watch);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  for (const viewport of ['desktop', 'phone'] as const) {
+    test(`a session's agent activity tab ${viewport}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the sessions are the fixture’s');
+      const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode: 'light', cookie: screensEnv('ownerCookie') });
+      const capture = async (name: string) => {
+        await page.waitForLoadState('networkidle');
+        await expectFits(page, viewport);
+        await expectNoRawIds(page);
+        await expectAxeClean(page);
+        await shoot(page, name, viewport, 'light', process.env.MYCO_ACTIVITY_SHOTS_DIR);
+      };
+      try {
+        await watch.navigate(() => openTable(page, viewport));
+        await watch.navigate(() => openOutcomeSession(page));
+        const sessionUrl = page.url();
+        const tabs = page.getByRole('tablist', { name: 'What the session holds' });
+        await tabs.getByRole('tab', { name: 'Agent activity' }).click();
+        await expect(page).toHaveURL(/\?tab=activity$/);
+        const list = page.getByRole('list', { name: 'Agent activity' });
+        const events = list.getByRole('listitem');
+        await expect(events).toHaveCount(4);
+        await expect(events.filter({ hasText: 'Tool reported a failure' })).toContainText('Failure');
+        const legacy = events.filter({ hasText: 'Tool call did not succeed' });
+        await expect(legacy).toContainText('Reason not recorded · Not tied to a prompt');
+        await expect(legacy.getByRole('link')).toHaveCount(0);
+        await expect(page.getByRole('searchbox')).toHaveCount(0);
+        await capture('session-activity-failure');
+
+        await page.getByRole('combobox', { name: /^Type(?::|$)/ }).click();
+        await page.getByRole('option', { name: 'No result captured', exact: true }).click();
+        await expect(page).toHaveURL(/tab=activity&type=no_result$/);
+        await expect(events).toHaveCount(2);
+        await expect(events.filter({ hasText: 'Read' })).toContainText('Not tied to a prompt');
+        await expect(events.getByRole('link')).toHaveCount(0);
+        await capture('session-activity-no-result');
+
+        await page.getByRole('combobox', { name: /^Tool(?::|$)/ }).click();
+        await page.getByRole('option', { name: 'Read', exact: true }).click();
+        await expect(events).toHaveCount(1);
+        await expect(page).toHaveURL(/type=no_result&tool=Read$/);
+        await capture('session-activity-filtered');
+
+        await expect(page.getByRole('combobox', { name: /^Result(?::|$)/ })).toHaveCount(0);
+        await page.getByRole('combobox', { name: /^Tool(?::|$)/ }).click();
+        await page.getByRole('option', { name: 'Bash', exact: true }).click();
+        await expect(page.getByText('No agent activity in this session matches these filters.')).toBeVisible();
+        await capture('session-activity-none-match');
+
+        await page.getByRole('button', { name: 'Clear search and filters' }).click();
+        await expect(page).toHaveURL(/\?tab=activity$/);
+        await expect(events).toHaveCount(4);
+        await watch.navigate(async () => {
+          await events.filter({ hasText: 'Tool reported a failure' }).getByRole('link').click();
+          await expect(page).toHaveURL(/\?turn=/);
+        });
+        await expect(tabs.getByRole('tab', { name: 'Conversation' })).toHaveAttribute('aria-selected', 'true');
+        await expect(page.getByRole('list', { name: 'Conversation', exact: true })).toBeVisible();
+
+        await page.goto(`${sessionUrl}?tab=activity&type=failure&tool=Bash`);
+        await expect(events).toHaveCount(1);
+        await tabs.getByRole('tab', { name: 'Plans' }).click();
+        await expect(page).toHaveURL(/\?tab=plans$/);
+
+        await page.goto(new URL('/sessions', page.url()).href);
+        await page.locator('[data-table="Sessions"]').getByRole('link', { name: 'Checkout form validation messages rewritten' }).click();
+        await tabs.getByRole('tab', { name: 'Agent activity' }).click();
+        await expect(page.getByText('No agent activity was recorded in this session.')).toBeVisible();
+        await capture('session-activity-empty');
         expectQuiet(watch);
       } finally {
         await context.close();

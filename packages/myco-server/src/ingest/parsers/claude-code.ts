@@ -28,6 +28,7 @@
  * read did. What a record is comes from the harness's own fields before any text
  * test, and what is not recognized is kept and labelled, never dropped.
  */
+import { toolResultDeclarationOf, toolResultFailed } from '@goondocks/myco-shared/tool-result';
 import { MAIN_THREAD, type ClaudePromptShape, type PromptClaim } from '@goondocks/myco-shared/prompt-identity';
 import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
@@ -270,7 +271,7 @@ export const claudeCodeParser: TranscriptParser = {
           const source = optionalRecordSource(input, this.agent, { kind: 'tool-call', record: value, result: block, role: 'result' });
           if (source === undefined) continue;
           const call = await callForResult(input, this.agent, source, pending, { promptId, createdAt, offset });
-          const failed = block.is_error === true;
+          const failed = toolResultFailed({ declaration: toolResultDeclarationOf(CAPTURE_RULE_BUNDLES, this.agent), record: value, result: block });
           const output = textOf(block.content).slice(0, TOOL_OUTPUT_PREVIEW_CHARS);
           events.push({
             kind: failed ? 'tool.failure' : 'tool.use', source, legacyId: call.toolCallId,
@@ -281,7 +282,7 @@ export const claudeCodeParser: TranscriptParser = {
               input: call.input,
               ...(output === '' ? {} : { output }),
               success: !failed,
-              ...(failed ? { errorMessage: output === '' ? 'tool failed' : output } : {}),
+              ...(failed ? { resultReason: 'reported', errorMessage: output === '' ? 'tool failed' : output } : {}),
             },
             createdAt: call.createdAt,
             offset: input.state === undefined ? call.offset : offset,

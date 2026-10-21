@@ -19,6 +19,7 @@ import { utf8 } from '@myco-server-worker/hash.js';
 import { kindSpec, parsePayload } from '@myco-server-worker/ingest/kinds.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { promptTextOf, responseTextOf } from '@myco-server-worker/ingest/parsers/cursor.js';
+import toolResultEvidence from '../fixtures/tool-result-evidence.json';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const FIXTURES = path.join(REPO_ROOT, 'tests', 'fixtures');
@@ -184,6 +185,7 @@ describe('claude-code parser', () => {
     expect(failure.payload.toolName).toBe('Bash');
     expect(failure.payload.success).toBe(false);
     expect(failure.payload.errorMessage).toBe('exit 1');
+    expect(failure.payload.resultReason).toBe('reported');
   });
 
   it('attributes a tool call and a response to the prompt whose turn they fall in', async () => {
@@ -248,6 +250,24 @@ describe('claude-code parser', () => {
     expect(kinds(events)).toEqual(['prompt', 'response', 'tool.use']);
     expect(only(events, 'tool.use')[0].payload.toolName).toBe('Grep');
   });
+});
+
+describe('reported tool results', () => {
+  for (const row of toolResultEvidence.filter(row => row.reported !== undefined)) {
+    it(`${row.agent}: reports a failure reason only when the harness reports failure`, async () => {
+      for (const failed of [true, false]) {
+        const records = [...row.before, failed ? row.reported : row.success];
+        const events = await PARSERS[row.agent]!.parse({ transcriptId: 'tool-result-fixture', recordScheme: 'source-record-v1',
+          scheme: READ_BEFORE_PIN[row.agent]!, sessionId: SESSION, now: NOW,
+          lines: records.map((value, offset) => ({ value: value as Record<string, unknown>, offset })), terminal: 'complete_file' });
+        const tools = events.filter(event => event.kind === 'tool.use' || event.kind === 'tool.failure');
+        expect(tools).toHaveLength(1);
+        expect(tools[0]!.kind).toBe(failed ? 'tool.failure' : 'tool.use');
+        expect(tools[0]!.payload.success).toBe(!failed);
+        expect(tools[0]!.payload.resultReason).toBe(failed ? 'reported' : undefined);
+      }
+    });
+  }
 });
 
 describe('codex parser', () => {

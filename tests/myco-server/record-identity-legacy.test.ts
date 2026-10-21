@@ -49,6 +49,24 @@ function insert(sqlite: Database, table: string, row: Record<string, unknown>): 
   const columns = Object.keys(row);
   sqlite.query(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(...Object.values(row) as never[]);
 }
+/** Copies staged rows using only the destination schema's columns. */
+function copyFrozenRows(source: Database, destination: Database): void {
+  for (const table of BACKUP_TABLES) {
+    const columns = destination.query<{ name: string; pk: number }, []>(`PRAGMA table_info("${table}")`).all();
+    const names = columns.map(column => `"${column.name}"`).join(',');
+    const primaryKey = columns.filter(column => column.pk > 0).sort((a, b) => a.pk - b.pk).map(column => `"${column.name}"`).join(',');
+    const updates = columns.filter(column => column.pk === 0).map(column => `"${column.name}" = excluded."${column.name}"`).join(',');
+    const write = destination.query(`INSERT INTO "${table}" (${names}) VALUES (${columns.map(() => '?').join(',')})
+      ON CONFLICT (${primaryKey}) DO ${updates ? `UPDATE SET ${updates}` : 'NOTHING'}`);
+    const select = `SELECT ${names} FROM "${table}"`;
+    for (const row of source.query<Record<string, unknown>, []>(select).all()) {
+      write.run(...Object.values(row) as never[]);
+    }
+  }
+}
+function failedToolReasons(sqlite: Database) {
+  return sqlite.query(`SELECT tool_call_id AS toolCallId, result_reason AS resultReason FROM tool_calls WHERE success = 0 ORDER BY tool_call_id`).all();
+}
 function projected(sqlite: Database) {
   return [
     ...sqlite.query(`SELECT 'response' AS kind, response_id AS rowId, event_id AS eventId FROM responses`).all(),
@@ -87,6 +105,7 @@ describe('frozen parser identity compatibility', () => {
       const sqlite = new Database(':memory:');
       const fixture = sqliteEnv();
       const restored = sqliteEnv();
+      let staging: Database | undefined;
       try {
         sqlite.exec('PRAGMA foreign_keys = ON');
         for (const step of SCHEMA_STEPS.filter(step => step.version <= 92)) for (const statement of step.statements) sqlite.exec(statement);
@@ -95,12 +114,19 @@ describe('frozen parser identity compatibility', () => {
         const db = sqliteD1(sqlite);
         fixture.env.MYCO_DB = db;
         const { tokenId } = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, NOW);
+        staging = Database.deserialize(sqlite.serialize());
+        staging.exec('PRAGMA foreign_keys = ON');
+        const stagingDb = sqliteD1(staging);
+        await applySchemaSteps(stagingDb);
         const lines = fixtureLines(vector.fixture);
         const events = await records(agent, lines);
         for (const event of events) {
-          const result = await ingestEvent(db, { projectId: 'proj_1', machineId: 'machine_1', tokenId, bodyBytes: 100, now: NOW, writeOrigin: 'server' }, await envelopeFor(target, event));
+          const { resultReason: _reason, ...payload } = event.payload;
+          const result = await ingestEvent(stagingDb, { projectId: 'proj_1', machineId: 'machine_1', tokenId, bodyBytes: 100, now: NOW, writeOrigin: 'server' }, await envelopeFor(target, { ...event, payload }));
           expect(result).toMatchObject({ persisted: true });
         }
+        copyFrozenRows(staging, sqlite);
+        expect(sqlite.query<{ name: string }, []>('PRAGMA table_info(tool_calls)').all().map(column => column.name)).not.toContain('result_reason');
         const bytes = new TextEncoder().encode(fs.readFileSync(path.join(import.meta.dir, '../fixtures', vector.fixture), 'utf8'));
         const key = await sha256HexOf(bytes);
         const objectKey = registerBlob(sqlite, { projectId: 'proj_1', key, size: bytes.length, tokenId, receivedAt: NOW });
@@ -113,11 +139,18 @@ describe('frozen parser identity compatibility', () => {
         const expected = sorted(vector.events.map(({ offset: _offset, ...row }) => row));
         expect<unknown>(projected(sqlite)).toEqual(expected);
         const artifact = await oldArtifact(sqlite, db);
-        expect(await applySchemaSteps(db)).toEqual([93]);
+        const artifactRows = artifact.split('\n').map(line => JSON.parse(line) as { schemaVersion?: number; t?: string; r?: Record<string, unknown> });
+        expect(artifactRows[0]!.schemaVersion).toBe(92);
+        for (const row of artifactRows.filter(row => row.t === 'tool_calls')) expect(Object.hasOwn(row.r!, 'result_reason')).toBe(false);
+        expect(await applySchemaSteps(db)).toEqual([93, 94]);
         expect<unknown>(projected(sqlite)).toEqual(expected);
+        expect(sqlite.query('SELECT COUNT(*) AS n FROM tool_calls WHERE result_reason IS NOT NULL').get()).toEqual({ n: 0 });
         expect(sqlite.query('SELECT record_identity_scheme AS pin FROM transcripts').get()).toEqual({ pin: LEGACY });
+        const expectedReasons = events.filter(event => event.kind === 'tool.failure').map(event => ({ toolCallId: event.payload.toolCallId, resultReason: event.payload.resultReason }))
+          .sort((a, b) => String(a.toolCallId).localeCompare(String(b.toolCallId)));
         await parseTranscripts(fixture.serverEnv, NOW + TRANSCRIPT_IDLE_MS + 1);
         expect<unknown>(projected(sqlite)).toEqual(expected);
+        expect<unknown>(failedToolReasons(sqlite)).toEqual(expectedReasons);
         const reread = await worker.fetch(await asOwnerPost(db, '/api/transcripts/reread', { projectId: 'proj_1', sessionId: target.sessionId }), { ...fixture.env, ...OWNER_ENV });
         expect(reread.status).toBe(200);
         await parseTranscripts(fixture.serverEnv, NOW + TRANSCRIPT_IDLE_MS + 2);
@@ -127,12 +160,14 @@ describe('frozen parser identity compatibility', () => {
         for (const row of sqlite.query<Record<string, unknown>, []>('SELECT * FROM blobs').all()) insert(restored.sqlite, 'blobs', row);
         await restoreArtifact(restored.db, { text: artifact, blobs: fixture.bucket, authorization: { kind: 'recovery' }, now: NOW });
         expect<unknown>(projected(restored.sqlite)).toEqual(expected);
+        expect(restored.sqlite.query('SELECT COUNT(*) AS n FROM tool_calls WHERE result_reason IS NOT NULL').get()).toEqual({ n: 0 });
         expect(restored.sqlite.query('SELECT record_identity_scheme AS pin FROM transcripts').get()).toEqual({ pin: LEGACY });
         const restoredReread = await worker.fetch(await asOwnerPost(restored.db, '/api/transcripts/reread', { projectId: 'proj_1', sessionId: target.sessionId }), { ...restored.env, ...OWNER_ENV });
         expect(restoredReread.status).toBe(200);
         await parseTranscripts(restored.serverEnv, NOW + TRANSCRIPT_IDLE_MS + 3);
         expect<unknown>(projected(restored.sqlite)).toEqual(expected);
-      } finally { sqlite.close(); fixture.sqlite.close(); restored.sqlite.close(); }
+        expect<unknown>(failedToolReasons(restored.sqlite)).toEqual(expectedReasons);
+      } finally { staging?.close(); sqlite.close(); fixture.sqlite.close(); restored.sqlite.close(); }
     });
   }
 

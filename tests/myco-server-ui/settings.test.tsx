@@ -148,7 +148,7 @@ function found(selector: string): HTMLElement {
 async function pick(label: string, option: string) {
   const proto = window.HTMLElement.prototype as unknown as { scrollIntoView?: () => void };
   proto.scrollIntoView ??= () => undefined;
-  fireEvent.click(await screen.findByLabelText(label));
+  fireEvent.click(await screen.findByLabelText(new RegExp(`^${label}(?::|$)`)));
   fireEvent.click(await screen.findByRole('option', { name: option }));
 }
 
@@ -192,7 +192,7 @@ describe('Settings, in five sections', () => {
     expect(editor.getByText('Seeding')).toBeTruthy();
     expect(editor.getByText('Titling')).toBeTruthy();
     expect(editor.getByText('A code map update')).toBeTruthy();
-    expect(editor.getByRole('combobox', { name: 'Titling tier' })).toBeTruthy();
+    expect(editor.getByRole('combobox', { name: /^Titling\ tier(?::|$)/ })).toBeTruthy();
     expect(statusOf('task-tier-title-summary')).toContain('Correct the tier in Settings or reset the task tier.');
     fireEvent.click(editor.getByRole('button', { name: 'Reset Titling tier' }));
     await waitFor(() => expect(sent).toHaveLength(1));
@@ -1113,7 +1113,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     server(base({ '/api/settings': withModels([openCode(['openai/gpt-6', 'opencode/big-pickle', ...OPENROUTER_LATEST])], { [leaf]: { value: 'openai/gpt-6', updatedBy: ADA, updatedAt: NOW } }) }));
     mount('/settings/models');
     const opencode = within(await group('OpenCode tiers'));
-    fireEvent.click(opencode.getByLabelText('Default tier model provider'));
+    fireEvent.click(opencode.getByLabelText(/^Default tier model provider(?::|$)/));
     expect(await optionWords()).toEqual(['All providers', 'OpenAI', 'OpenCode Zen', 'OpenRouter']);
     fireEvent.click(await screen.findByRole('option', { name: 'OpenRouter' }));
     await waitFor(() => expect(screen.queryByRole('option')).toBeNull());

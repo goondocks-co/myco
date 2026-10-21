@@ -239,6 +239,14 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
           }
         }
       }
+    },
+    "toolResult": {
+      "failure": {
+        "from": "result",
+        "path": "is_error",
+        "equals": true
+      },
+      "evidence": "tests/fixtures/tool-result-evidence.json"
     }
   },
   {
@@ -305,6 +313,14 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
           }
         }
       }
+    },
+    "toolResult": {
+      "failure": {
+        "from": "record",
+        "path": "failed",
+        "equals": true
+      },
+      "evidence": "tests/fixtures/tool-result-evidence.json"
     }
   },
   {
@@ -523,6 +539,10 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
           }
         }
       }
+    },
+    "toolResult": {
+      "failure": null,
+      "evidence": "tests/fixtures/tool-result-evidence.json"
     }
   },
   {
@@ -620,6 +640,14 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
           }
         }
       }
+    },
+    "toolResult": {
+      "failure": {
+        "from": "record",
+        "path": "failed",
+        "equals": true
+      },
+      "evidence": "tests/fixtures/tool-result-evidence.json"
     }
   },
   {
@@ -677,6 +705,14 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
           }
         }
       }
+    },
+    "toolResult": {
+      "failure": {
+        "from": "result",
+        "path": "isError",
+        "equals": true
+      },
+      "evidence": "tests/fixtures/tool-result-evidence.json"
     }
   },
   {

@@ -108,6 +108,9 @@ promptIdentity:
   kind: stamped
   scheme: stamp-or-offset-v1
 
+toolResult:
+  failure: { from: record, path: failed, equals: true }
+  evidence: tests/fixtures/tool-result-evidence.json
 recordIdentity:
   scheme: source-record-v1
   schemes:

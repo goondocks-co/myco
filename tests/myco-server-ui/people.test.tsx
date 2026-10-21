@@ -130,7 +130,7 @@ describe('People & machines', () => {
     fireEvent.keyDown(await screen.findByRole('button', { name: 'More for A teammate' }), { key: 'Enter' });
     fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: `${INVITE_CONTROLS.button} for them` }));
     const dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.button });
-    expect(within(dialog).getByRole('combobox', { name: INVITE_CONTROLS.field }).textContent).toContain('A teammate');
+    expect(within(dialog).getByRole('combobox', { name: new RegExp(`^${INVITE_CONTROLS.field}(?::|$)`) }).textContent).toContain('A teammate');
   });
 
   it('shows what a machine wrote: what, where and when, with its session linked and no id shown', async () => {
@@ -258,7 +258,7 @@ describe('My machines', () => {
     expect(screen.queryByText(/an admin creates a one-time link/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: INVITE_CONTROLS.button }));
     const dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.button });
-    expect(within(dialog).getByRole('combobox', { name: INVITE_CONTROLS.field }).textContent).toContain('You');
+    expect(within(dialog).getByRole('combobox', { name: new RegExp(`^${INVITE_CONTROLS.field}(?::|$)`) }).textContent).toContain('You');
   });
 
   it('says so when none of the member\'s machines has signed in', async () => {

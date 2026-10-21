@@ -33,6 +33,7 @@
       "import": "./dist/harness-providers.js",
       "types": "./dist/harness-providers.d.ts"
     },
+    "./run-protocol": { "import": "./dist/run-protocol.js", "types": "./dist/run-protocol.d.ts" },
     "./run-holds": {
       "import": "./dist/run-holds.js",
       "types": "./dist/run-holds.d.ts"
@@ -94,6 +95,7 @@
       "types": "./dist/capture-rules.d.ts"
     },
     "./record-identity": { "import": "./dist/record-identity.js", "types": "./dist/record-identity.d.ts" },
+    "./tool-result": { "import": "./dist/tool-result.js", "types": "./dist/tool-result.d.ts" },
     "./prompt-identity": {
       "import": "./dist/prompt-identity.js",
       "types": "./dist/prompt-identity.d.ts"

@@ -154,7 +154,7 @@ test('Settings tier changes the model shown by the real Tasks registry', async (
     return await response.json() as { leaves: Array<{ leaf: string; configured: boolean; value: unknown }> };
   });
   try {
-    const preferred = page.getByRole('combobox', { name: 'Preferred agent' });
+    const preferred = page.getByRole('combobox', { name: /^Preferred\ agent(?::|$)/ });
     if ((await preferred.textContent()) !== 'Claude Code') {
       await preferred.click();
       await Promise.all([
@@ -172,7 +172,7 @@ test('Settings tier changes the model shown by the real Tasks registry', async (
         input.press('Tab'),
       ]);
     }
-    const tier = page.getByRole('combobox', { name: 'Learning tier' });
+    const tier = page.getByRole('combobox', { name: /^Learning\ tier(?::|$)/ });
     const pickTier = async (label: string) => {
       if ((await tier.textContent()) === label) return;
       await tier.click();

@@ -11,13 +11,13 @@ export interface Page<T> { rows: T[]; cursor: string | null }
  * `rowKey` lists a row once: its first position, its latest payload. A refresh
  * re-walks the loaded pages.
  */
-export function usePaged<T>(key: readonly unknown[], path: string, opts: { enabled?: boolean; rowKey?: (row: T) => string } = {}) {
+export function usePaged<T, TPage extends Page<T> = Page<T>>(key: readonly unknown[], path: string, opts: { enabled?: boolean; rowKey?: (row: T) => string } = {}) {
   const query = useInfiniteQuery({
     queryKey: [...key],
     initialPageParam: null as string | null,
     enabled: opts.enabled ?? true,
     queryFn: ({ pageParam, signal }) =>
-      fetchJson<Page<T>>(pageParam === null ? path : `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(pageParam)}`, signal),
+      fetchJson<TPage>(pageParam === null ? path : `${path}${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(pageParam)}`, signal),
     getNextPageParam: (last) => last.cursor ?? undefined,
   });
   const rowKey = opts.rowKey;
@@ -28,6 +28,7 @@ export function usePaged<T>(key: readonly unknown[], path: string, opts: { enabl
   }, [query.data, rowKey]);
   return {
     rows,
+    pages: query.data?.pages,
     isPending: query.isPending,
     error: query.error,
     hasMore: query.hasNextPage,

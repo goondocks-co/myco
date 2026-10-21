@@ -801,7 +801,7 @@ describe('Today', () => {
     fireEvent.click(within(widget!).getByRole('button', { name: 'Connect widget' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connect widget' });
     expect(dialog.textContent).toContain('Ada’s studio Mac starts capturing it at the next agent session there');
-    fireEvent.click(within(dialog).getByRole('combobox', { name: 'Project' }));
+    fireEvent.click(within(dialog).getByRole('combobox', { name: /^Project(?::|$)/ }));
     fireEvent.click(await screen.findByRole('option', { name: 'Atlas web' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
     await waitFor(() => expect(posts).toEqual([{ path: '/api/uncaptured/mt_studio_machine/a1b2c3d4e5f60718/connect', body: { projectId: P_ATLAS } }]));
@@ -823,7 +823,7 @@ describe('Today', () => {
     mount('/');
     fireEvent.click(await screen.findByRole('button', { name: 'Connect widget' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connect widget' });
-    expect(within(dialog).getByRole('combobox', { name: 'Project' }).textContent).toBe('Let Myco choose');
+    expect(within(dialog).getByRole('combobox', { name: /^Project(?::|$)/ }).textContent).toBe('Let Myco choose');
     const refusal = async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
       return (await within(dialog).findByRole('alert')).textContent;
@@ -862,7 +862,7 @@ describe('Today', () => {
     mount('/');
     fireEvent.click(await screen.findByRole('button', { name: 'Connect widget' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connect widget' });
-    const field = within(dialog).getByRole('combobox', { name: 'Project' });
+    const field = within(dialog).getByRole('combobox', { name: /^Project(?::|$)/ });
     expect(field.textContent).toBe('Choose a project');
     expect((within(dialog).getByRole('button', { name: 'Connect' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(field);

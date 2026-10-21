@@ -45,8 +45,8 @@ function mount(scoped = true) {
 
 /** Opens a design-system select by its label, the searchable form included, and picks one option. */
 async function pick(label: string, option: string) {
-  await waitFor(() => expect(screen.queryAllByRole('combobox', { name: label }).length + screen.queryAllByRole('button', { name: new RegExp(`^${label}:`) }).length).toBeGreaterThan(0));
-  const [trigger] = screen.queryAllByRole('combobox', { name: label }).concat(screen.queryAllByRole('button', { name: new RegExp(`^${label}:`) }));
+  await waitFor(() => expect(screen.queryAllByRole('combobox', { name: new RegExp(`^${label}(?::|$)`) }).length + screen.queryAllByRole('button', { name: new RegExp(`^${label}:`) }).length).toBeGreaterThan(0));
+  const [trigger] = screen.queryAllByRole('combobox', { name: new RegExp(`^${label}(?::|$)`) }).concat(screen.queryAllByRole('button', { name: new RegExp(`^${label}:`) }));
   fireEvent.click(trigger!);
   fireEvent.click(await screen.findByRole('option', { name: option }));
 }

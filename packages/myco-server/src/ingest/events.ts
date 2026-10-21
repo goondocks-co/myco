@@ -115,6 +115,8 @@ export async function ingestEvent(db: RelationalStore, ctx: IngestContext, body:
 
 /** The statements one event needs and how to read their answers, without executing them. Callers with one event run their own batch; a caller with many concatenates the statements of each into ONE batch and interprets each write's own slice — the difference between one database call per event and one per pass. */
 export interface EventWrite {
+  proof: Fragment;
+  replayAdmission?: Fragment;
   statements: PreparedStatement[];
   interpret(results: BatchResult[]): IngestResult;
   releaseUnlinked?(): Promise<number>;
@@ -123,8 +125,49 @@ export interface EventWrite {
 
 export type PlannedWrite = { ok: true; write: EventWrite } | Refused;
 
+/** Evidence that one canonical event is held with the expected raw bytes. */
+export function eventProof(projectId: string, eventId: string, hash: string): Fragment {
+  return { sql: 'EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND envelope_hash = ?)', params: [projectId, eventId, hash] };
+}
+
+/** Conjoins event evidence with one JSON binding across a bounded checkpoint batch. */
+export function allEventProofs(proofs: readonly Fragment[]): Fragment {
+  if (proofs.length === 0) return { sql: '1', params: [] };
+  const cases = proofs.map((proof, index) => {
+    let position = 0;
+    const sql = proof.sql.replace(/'(?:''|[^'])*'|"(?:""|[^"])*"|\?/g,
+      token => token === '?' ? `json_extract(proof.value, '$[${position++}]')` : token);
+    if (position !== proof.params.length) throw new StorageContractError('Event proof bindings do not match its predicate');
+    return `WHEN ${index} THEN (${sql})`;
+  });
+  return { sql: `NOT EXISTS (SELECT 1 FROM json_each(?) proof WHERE CASE CAST(proof.key AS INTEGER)
+    ${cases.join(' ')} ELSE 0 END IS NOT 1)`, params: [JSON.stringify(proofs.map(proof => proof.params))] };
+}
+
+
 /** What `db.batch` answers per statement; the shape the interpreter reads. */
 type BatchResult = { results: unknown[]; meta: { changes: number } };
+
+/** Pins a replay to the verified envelope already held, or the raw row this request will write. */
+async function replaySourceProof(db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope): Promise<Fragment> {
+  const held = await db.prepare(`SELECT session_id,kind,channel,payload,created_at,producer_adapter,producer_version,envelope_hash
+    FROM events WHERE project_id = ? AND event_id = ?`).bind(ctx.projectId, e.eventId).first<{
+      session_id: string; kind: string; channel: string; payload: string; created_at: number;
+      producer_adapter: string; producer_version: string; envelope_hash: string;
+    }>();
+  if (held === null) return { sql: RAW_ROW_GATE, params: [ctx.projectId, e.eventId, ctx.nonce] };
+  const original = parseEnvelope({ eventId: e.eventId, sessionId: held.session_id, kind: held.kind, channel: held.channel,
+    createdAt: held.created_at, producer: { adapter: held.producer_adapter, version: held.producer_version }, payload: JSON.parse(held.payload) }, ctx.now);
+  return original.ok && await envelopeHash(original.value) === held.envelope_hash
+    ? {
+      sql: `EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND envelope_hash = ?
+        AND session_id = ? AND kind = ? AND channel = ? AND payload = ? AND created_at = ?
+        AND producer_adapter = ? AND producer_version = ?)`,
+      params: [ctx.projectId, e.eventId, held.envelope_hash, held.session_id, held.kind, held.channel,
+        held.payload, held.created_at, held.producer_adapter, held.producer_version],
+    }
+    : { sql: '0', params: [] };
+}
 
 export async function planEventWrite(db: RelationalStore, ctx: IngestContext, body: unknown, env?: Pick<ServerEnv, 'db' | 'blobs'>): Promise<PlannedWrite> {
   const parsed = parseEnvelope(body, ctx.now);
@@ -143,6 +186,8 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const write: WriteContext = { projectId: ctx.projectId, tokenId: ctx.tokenId, machineId: ctx.machineId, now: ctx.now, nonce: crypto.randomUUID(), actor: ctx.actor ?? null, processing: ctx.writeOrigin === 'server' && e.producer.adapter === TRANSCRIPT_PARSE_ADAPTER };
   const digest = await envelopeHash(e);
   const contentHash = await contentHashOf(spec, p);
+  const sourceProof = write.processing && e.kind === 'tool.failure' && p.resultReason !== undefined
+    ? await replaySourceProof(db, write, e) : undefined;
   const fullInput = spec.projection === 'tool_calls' && p.input !== undefined ? JSON.stringify(p.input) : null;
   const inputDisplay = fullInput === null ? null : toolInputPreview(fullInput);
   if (inputDisplay?.truncated && env === undefined) throw new Error('Oversized tool input requires server blob storage');
@@ -155,7 +200,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
     : undefined;
   const preparedToolInput=inputBundle?{...inputBundle.body,bundle:inputBundle,preparationCalls:inputPreparation!.usage.statements+inputPreparation!.usage.blobCalls}:undefined;
   let plan: KindPlan;
-  try { plan = planKind(spec, { db, ctx: write, e, p, contentHash, preparedToolInput }); }
+  try { plan = planKind(spec, { db, ctx: write, e, p, contentHash, preparedToolInput, envelopeHash: digest }); }
   catch (error) {
     if (!(error instanceof RecordSchemeError) || error.code !== 'record_identity_scheme_unsupported') throw error;
     return { ok: false, ...refusal('Record identity scheme is unsupported', error.code) };
@@ -169,6 +214,17 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const liveAdmission = charged ? credentialLive(ctx.tokenId) : ALWAYS;
   const checks = [projectLive(write), ...sharedChecks(spec, write, e, p, plan.identities)];
   const admission: Fragment[] = [liveAdmission, ...checks.map((c) => c.admission), ...plan.admission];
+  const replayChecks = plan.replay === undefined ? undefined : [...admission, plan.replay.compatible, sourceProof!];
+  const replayGate: Fragment | undefined = replayChecks === undefined ? undefined : {
+    sql: replayChecks.map(fragment => `(${fragment.sql})`).join(' AND '),
+    params: replayChecks.flatMap(fragment => fragment.params),
+  };
+
+  const rawProof = eventProof(ctx.projectId, e.eventId, digest);
+  const proof: Fragment = replayGate === undefined ? rawProof : {
+    sql: `(${rawProof.sql}) OR ((${replayGate.sql}) AND (${plan.replay!.effect.sql}))`,
+    params: [...rawProof.params, ...replayGate.params, ...plan.replay!.effect.params],
+  };
 
   const raw = db
     .prepare(`INSERT INTO events
@@ -210,10 +266,10 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   // per statement, and the nonce is written by the insert itself: reading it
   // back asks the store what happened instead of asking the driver.
   const stored = db
-    .prepare(`SELECT ev.envelope_hash, ev.ingest_nonce FROM events ev
+    .prepare(`SELECT ev.envelope_hash, ev.ingest_nonce, ${replayGate ? `(${replayGate.sql})` : '0'} AS replayed FROM events ev
         JOIN sessions s ON s.project_id = ev.project_id AND s.session_id = ev.session_id
        WHERE ev.project_id = ? AND ev.event_id = ? AND s.machine_id IS ?`)
-    .bind(ctx.projectId, e.eventId, ctx.machineId);
+    .bind(...(replayGate?.params ?? []), ctx.projectId, e.eventId, ctx.machineId);
 
   const admitted = db.prepare(`SELECT ${liveAdmission.sql} AS live`).bind(...liveAdmission.params);
   const shared = checks.map((c) => db.prepare(c.read.sql).bind(...c.read.params));
@@ -233,7 +289,8 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
       WHERE project_id = ? AND session_id = ?
         AND EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)`)
     .bind(ctx.now, ctx.projectId, e.sessionId, ctx.projectId, e.eventId, write.nonce)];
-  const incidental = [...(plan.incidental ?? []), ...turnEnd, ...turnStart, ...liveCapture, ...deliveryStatements(db, write, e, p)];
+  const replayWrites = replayGate ? plan.replay!.project(replayGate) : [];
+  const incidental = [...replayWrites, ...(plan.incidental ?? []), ...turnEnd, ...turnStart, ...liveCapture, ...deliveryStatements(db, write, e, p)];
   const statements: PreparedStatement[] = [raw, counted, receipt, ...priors, ...plan.projections, ...incidental, stored, admitted, ...shared, ...plan.reads];
 
   const interpret = (results: BatchResult[]): IngestResult => {
@@ -243,7 +300,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const priorRows: ReadRows = results.slice(3, base).map((r) => r.results as Record<string, unknown>[]);
   const projectionResults = results.slice(base, base + plan.projections.length);
   const afterWrites = base + plan.projections.length + incidental.length;
-  const storedRow = results[afterWrites].results[0] as { envelope_hash?: string; ingest_nonce?: string } | undefined;
+  const storedRow = results[afterWrites].results[0] as { envelope_hash?: string; ingest_nonce?: string; replayed: number } | undefined;
   const liveRow = results[afterWrites + 1].results[0] as { live: number } | undefined;
   const allReads: ReadRows = results.slice(afterWrites + 2).map((r) => r.results as Record<string, unknown>[]);
   const sharedRows = allReads.slice(0, checks.length);
@@ -251,7 +308,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const extra = plan.extra ? plan.extra(reads) : {};
 
   if (storedRow?.ingest_nonce === write.nonce) {
-    if (plan.projections.length > 0 && projectionResults.every((r) => r.meta.changes === 0)) {
+    if (plan.projections.length > 0 && storedRow.replayed !== 1 && projectionResults.every((r) => r.meta.changes === 0)) {
       const reason = plan.conflict ? plan.conflict(reads) : 'projection did not apply';
       emit({ kind: 'projection_conflict', projectId: ctx.projectId, tokenId: ctx.tokenId, eventKind: e.kind });
       return { persisted: true, projected: false, code: 'projection_conflict', reason, ...extra };
@@ -261,9 +318,14 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
     return plan.projections.length > 0 ? { persisted: true, projected: true, ...extra } : { persisted: true, ...extra };
   }
   if (storedRow) {
-    if (storedRow.envelope_hash === digest) {
+    if (storedRow.envelope_hash === digest || (storedRow.replayed === 1
+      && results.slice(base + plan.projections.length, base + plan.projections.length + replayWrites.length).every(result => result.results.length === 0))) {
       emit({ kind: 'ingest_duplicate', projectId: ctx.projectId, tokenId: ctx.tokenId });
       return { persisted: true, duplicate: true, ...extra };
+    }
+    if (storedRow.replayed === 1) {
+      emit({ kind: 'ingest_ok', projectId: ctx.projectId, tokenId: ctx.tokenId, eventKind: e.kind });
+      return { persisted: true, projected: true, ...extra };
     }
     emit({ kind: 'ingest_conflict', projectId: ctx.projectId, tokenId: ctx.tokenId });
     return { persisted: false, code: 'event_id_conflict', reason: 'event id conflict', ...extra };
@@ -283,7 +345,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const releaseUnlinked = inputBundle && env
     ? () => discardArchiveBundle(env,inputBundle,ctx.now)
     : undefined;
-  return { ok: true, write: { statements, interpret, releaseUnlinked, preparationCalls: preparedToolInput?.preparationCalls } };
+  return { ok: true, write: { proof, replayAdmission: replayGate, statements, interpret, releaseUnlinked, preparationCalls: (preparedToolInput?.preparationCalls ?? 0) + (replayChecks === undefined ? 0 : 1) } };
 }
 
 /** The kind whose projected arrival, on any channel but import, asks for its session's title. */

@@ -26,11 +26,12 @@
  * is exactly what a transcript-first design cannot afford.
  */
 import type { JobBudget, PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
+import type { Fragment } from './projections.js';
 import type { JobOutcome } from '../core/jobs-run.js';
 import { emit, type Classifier } from '../telemetry.js';
 import { utf8, uuidv5 } from '../hash.js';
 import { MAX_PAYLOAD_BYTES, parseEnvelope } from './envelope.js';
-import { envelopeHash, planEventWrite, type EventWrite, type IngestResult } from './events.js';
+import { allEventProofs, eventProof, envelopeHash, planEventWrite, type EventWrite, type IngestResult } from './events.js';
 import { idFields, kindSpec } from './kinds.js';
 import { parserFor } from './parsers/registry.js';
 import { declaredScheme, SCHEME_GENERATION_SQL, schemeGeneration } from './prompt-scheme.js';
@@ -114,7 +115,7 @@ export const TRANSCRIPT_PARSE_CONCURRENT_BYTES = 8 * 1024 * 1024;
 export const TRANSCRIPT_PARSE_RECORD_BYTES = MAX_BLOB_BYTES;
 
 /** Bump when derived output changes; older retained recordings are read again. */
-export const PARSER_VERSION = 5;
+export const PARSER_VERSION = 6;
 
 /** Bump when only stop conditions change; older failures resume from their cursor, leaving intact recordings alone. */
 export const PARSE_STOP_GENERATION = 1;
@@ -837,7 +838,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   const { state, input, parsed: parsedEvents } = derivation;
   const heldReplies = await legacyReplies(env.db, target.projectId, target.transcriptId, parsedEvents, initialState, () => { calls += 1; });
   const events = preserveLegacyReplies(parsedEvents, state, heldReplies);
-  const terminalProofs: { eventId: string; hash: string }[] = [];
+  const terminalProofs: { eventId: string; hash: string; evidence: Fragment }[] = [];
   if (terminalOnly && startingStatements !== undefined) {
     for (const event of events) {
       const parsed = parseEnvelope(await envelopeFor(target, event), now);
@@ -845,246 +846,279 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
         await stop(env.db, target, 'event_refused', now, { eventKind: event.kind, refusal: parsed.classifier }, { branch: 'event_refused', offset: event.offset, lineKind: event.kind });
         return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
       }
-      terminalProofs.push({ eventId: parsed.value.eventId, hash: await envelopeHash(parsed.value) });
+      const hash = await envelopeHash(parsed.value);
+      terminalProofs.push({ eventId: parsed.value.eventId, hash, evidence: eventProof(target.projectId, parsed.value.eventId, hash) });
     }
   }
-  const terminalIds = terminalProofs.map(({ eventId }) => eventId);
-  const terminalProofJson = JSON.stringify(terminalProofs.map(({ eventId, hash }) => [eventId, hash]));
-  let remainingEvents = events;
-  if (terminalIds.length > 0) {
-    const { results } = await env.db.prepare(`SELECT held.event_id,held.envelope_hash,held.session_id,held.producer_adapter
-      FROM events held WHERE held.project_id=? AND held.event_id IN
-        (SELECT json_extract(expected.value,'$[0]') FROM json_each(?) expected)`)
-      .bind(target.projectId, terminalProofJson).all<{ event_id: string; envelope_hash: string; session_id: string; producer_adapter: string }>();
-    calls += 1;
-    const expected = new Map(terminalProofs.map((proof, index) => [proof.eventId, { ...proof, kind: events[index].kind }]));
-    for (const row of results) {
-      const proof = expected.get(row.event_id);
-      if (proof === undefined || row.envelope_hash !== proof.hash || row.session_id !== target.sessionId
-        || row.producer_adapter !== TRANSCRIPT_PARSE_ADAPTER) {
-        await stop(env.db, target, 'event_refused', now, { eventKind: proof?.kind ?? 'unknown', refusal: 'event_id_conflict' },
-          { branch: 'event_refused', offset: target.parsedOffset, lineKind: proof?.kind ?? 'unknown' });
-        return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
-      }
-    }
-    const landedIds = new Set(results.map((row) => row.event_id));
-    remainingEvents = events.filter((_, index) => !landedIds.has(terminalIds[index]));
-  }
-  // Events retained across reads may precede the cursor; their stored identities absorb replay before budget admission.
-  const cursorEvents = startingStatements === undefined ? [] : remainingEvents.filter((event) => event.offset <= target.parsedOffset);
-  const recorded = new Set<string>();
-  let recordedTurn: string | null = null;
-  for (const group of eventGroups(cursorEvents)) {
-    const ids = await Promise.all(group.map(async (event) => (await envelopeFor(target, event)).eventId as string));
-    const held = await env.db.prepare(`SELECT event_id, envelope_hash FROM events WHERE project_id = ? AND event_id IN (${ids.map(() => '?').join(',')})`)
-      .bind(target.projectId, ...ids).all<{ event_id: string; envelope_hash: string }>();
-    calls += 1;
-    for (const row of held.results) {
-      const event = group[ids.indexOf(row.event_id)];
-      const parsed = parseEnvelope(await envelopeFor(target, event), now);
-      if (!parsed.ok) continue;
-      recorded.add(row.event_id);
-      if (await envelopeHash(parsed.value) !== row.envelope_hash) rowConflict(target, event);
-    }
-  }
-  if (recorded.size > 0) {
-    const unrecorded: DerivedEvent[] = [];
-    for (const event of remainingEvents) {
-      if (event.offset > target.parsedOffset || !recorded.has((await envelopeFor(target, event)).eventId as string)) unrecorded.push(event);
-      else recordedTurn = turnOf(event) ?? recordedTurn;
-    }
-    remainingEvents = unrecorded;
-  }
-  const stateAt = async (to: number): Promise<ParserState> => {
-    const checkpoint = to === windowEnd ? state : structuredClone(initialState);
-    if (to !== windowEnd) {
-      const prefix = await parser.parse({ ...input, terminal: undefined, lines: input.lines.filter((line) => line.offset < to), state: checkpoint });
-      preserveLegacyReplies(prefix, checkpoint, heldReplies);
-    }
-    return checkpoint;
-  };
-  lines = null;
-  const datedThrough = latestDatedBefore(input.lines, parser.lineTimeField ?? 'timestamp', now);
   const ctx = { projectId: target.projectId, machineId: target.machineId, tokenId: target.tokenId, bodyBytes: 0, now, writeOrigin: 'server' as const };
-
-  let derived = 0;
-  let cursor = windowEnd;
-  // The turn open at the cursor, carried in and moved by every event landed.
-  // A pass ends for either of two reasons — the call budget, or the window's
-  // own bound — and BOTH can fall mid-turn: the member slices at 8 MiB and a
-  // pass takes the first segment whole, so an ordinary boundary lands inside a
-  // turn under either bound. Tracking it here rather than at the break is what
-  // makes the two ends behave alike.
-  let lastTurn: string | null = recordedTurn ?? target.openPromptId;
-  /**
-   * The cursor's advance to `to`, with the turn open there. With `landedIds`, it applies only once every one of those
-   * events is in the store, so it can ride the batch that writes them: a pass whose last group did not land whole
-   * leaves the cursor where it stood.
-   */
-  const advanceTo = async (to: number, openPrompt: string | null, landedIds?: readonly string[]): Promise<PreparedStatement[]> => {
-    const proofGuard = terminalOnly && landedIds !== undefined && terminalProofs.length > 0;
-    const guard = landedIds === undefined ? '' : proofGuard
-      ? ` AND NOT EXISTS (SELECT 1 FROM json_each(?) expected WHERE NOT EXISTS
-          (SELECT 1 FROM events held WHERE held.project_id=? AND held.event_id=json_extract(expected.value,'$[0]')
-            AND held.envelope_hash=json_extract(expected.value,'$[1]')))`
-      : ` AND (SELECT COUNT(*) FROM events WHERE project_id = ? AND event_id IN (${landedIds.map(() => '?').join(', ')})) = ?`;
-    const guardParams = landedIds === undefined ? [] : proofGuard
-      ? [terminalProofJson, target.projectId]
-      : [target.projectId, ...landedIds, landedIds.length];
-    const checkpoint = await stateAt(to);
-    return parserCheckpointStatements(env.db, target, to, checkpoint, transcriptMeta, chunkedState, (context) => env.db
-      .prepare(`UPDATE transcripts SET parse_segment_lines = CASE WHEN ? >= parsed_offset THEN ? ELSE NULL END, parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?,
-                   parsed_through_at = CASE WHEN ? >= parsed_offset AND ? IS NOT NULL THEN MAX(COALESCE(parsed_through_at, 0), ?) ELSE parsed_through_at END,
-                   fidelity = COALESCE(fidelity, ?), open_prompt_id = CASE WHEN ? >= parsed_offset THEN ? ELSE open_prompt_id END, parser_context = CASE WHEN ? >= parsed_offset THEN ? ELSE parser_context END,
-                   prompt_generation = CASE WHEN ? >= parsed_offset THEN ? ELSE prompt_generation END,
-                   parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
-                 WHERE project_id = ? AND transcript_id = ?${guard}`)
-      .bind(to, linesBehind(to), to, now, PARSER_VERSION, to, datedThrough(to), datedThrough(to), parser.fidelity, to, openPrompt, to, context,
-        to, schemeGeneration(scheme), target.projectId, target.transcriptId, ...guardParams));
-  };
-  // Whether the cursor's advance rode the last group's batch and applied there.
-  let advanced = false;
-  const budgeted = startingStatements !== undefined;
-  const groupSize = budgeted ? Math.max(1, Math.min(BUDGETED_EVENTS_PER_BATCH,
-    Math.floor((statementRoom() - PARSER_CHECKPOINT_HEADROOM) / EVENT_STATEMENT_ADMISSION))) : TRANSCRIPT_PARSE_EVENTS_PER_BATCH;
-  const groups = terminalOnly && !budgeted ? (events.length === 0 ? [] : [events]) : eventGroups(remainingEvents,groupSize);
-  // The line counts every cursor this pass can end at needs, read before the writes so the segment bytes they are
-  // counted in are let go first. Parsed records remain available for a cursor's continuation checkpoint.
-  const linesAt = new Map<number, number>([target.parsedOffset, windowEnd, ...events.map((event) => event.offset)].map((offset) => [offset, segmentLinesAt(offset, held)]));
-  held = [];
-  let fallbackCheckpoint: PreparedStatement[] | null = null;
-  let completedGroups = 0;
-  const linesBehind = (offset: number): number => {
-    if (terminalOnly && offset === target.parsedOffset) return target.segmentLines ?? 0;
-    const counted = linesAt.get(offset);
-    if (counted === undefined) throw new Error(`no line count read for cursor ${offset}`);
-    return counted;
-  };
-  for (let g = 0; g < groups.length; g += 1) {
-    const group = groups[g];
-    const turnAfter = group.reduce<string | null>((turn, event) => turnOf(event) ?? turn, lastTurn);
-    const next = groups[g + 1];
-    const checkpoint = budgeted && !terminalOnly && next !== undefined ? await advanceTo(Math.max(target.parsedOffset, next[0]!.offset), turnAfter) : null;
-    const preparationReserve = group.some(oversizedToolInput) ? CONTENT_PREPARATION_CALL_RESERVE : 0;
-    const checkpointCost = terminalOnly && next !== undefined ? 0 : checkpoint?.length ?? (budgeted ? (await advanceTo(cursor, turnAfter)).length : 0);
-    if (budgeted && group.length * EVENT_STATEMENT_ADMISSION + checkpointCost + preparationReserve + PARSER_CLOSE_HEADROOM > statementRoom()) {
-      if (budgeted && group.length > 1) {
-        groups.splice(g, 1, ...eventGroups(group, Math.max(1, Math.floor(group.length / 2))));
-        g -= 1;
-        continue;
+  const prepared = { writes: new Map<string, EventWrite>() };
+  try {
+    const terminalIds = terminalProofs.map(({ eventId }) => eventId);
+    const terminalProofJson = JSON.stringify(terminalProofs.map(({ eventId, hash }) => [eventId, hash]));
+    let remainingEvents = events;
+    if (terminalIds.length > 0) {
+      const { results } = await env.db.prepare(`SELECT held.event_id,held.envelope_hash,held.session_id,held.producer_adapter
+        FROM events held WHERE held.project_id=? AND held.event_id IN
+          (SELECT json_extract(expected.value,'$[0]') FROM json_each(?) expected)`)
+        .bind(target.projectId, terminalProofJson).all<{ event_id: string; envelope_hash: string; session_id: string; producer_adapter: string }>();
+      calls += 1;
+      const expected = new Map(terminalProofs.map((proof, index) => [proof.eventId, { ...proof, kind: events[index].kind, event: events[index] }]));
+      for (const row of results) {
+        const proof = expected.get(row.event_id);
+        if (proof === undefined || row.session_id !== target.sessionId
+          || row.producer_adapter !== TRANSCRIPT_PARSE_ADAPTER) {
+          await stop(env.db, target, 'event_refused', now, { eventKind: proof?.kind ?? 'unknown', refusal: 'event_id_conflict' },
+            { branch: 'event_refused', offset: target.parsedOffset, lineKind: proof?.kind ?? 'unknown' });
+          return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
+        }
+        if (row.envelope_hash !== proof.hash) {
+          const planned = await planEventWrite(env.db, ctx, await envelopeFor(target, proof.event), env);
+          let admitted = false;
+          if (planned.ok) {
+            calls += planned.write.preparationCalls ?? 0;
+            prepared.writes.set(row.event_id, planned.write);
+            const gate = planned.write.replayAdmission;
+            if (gate !== undefined) {
+              admitted = (await env.db.prepare(`SELECT ${gate.sql} AS admitted`).bind(...gate.params).first<{ admitted: number }>())?.admitted === 1;
+              calls += 1;
+            }
+          }
+          if (!admitted) {
+            await stop(env.db, target, 'event_refused', now, { eventKind: proof.kind, refusal: 'event_id_conflict' },
+              { branch: 'event_refused', offset: target.parsedOffset, lineKind: proof.kind });
+            return { derived: 0, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
+          }
+        }
       }
-      if (g === 0) return { derived: 0, calls, nextOffset: null, failure: null };
-      cursor = Math.max(target.parsedOffset, group[0].offset);
-      break;
+      const landedIds = new Set(results.filter(row => row.envelope_hash === expected.get(row.event_id)?.hash).map(row => row.event_id));
+      remainingEvents = events.filter((_, index) => !landedIds.has(terminalIds[index]));
     }
-    // A pass can end mid-turn; the cursor and its open prompt travel together to the next pass.
-    if (budgeted && statementRoom() < preparationReserve + PARSER_CHECKPOINT_HEADROOM + PARSER_CLOSE_HEADROOM) {
-      if(g===0) return { derived:0,calls,nextOffset:null,failure:null };
-      cursor=Math.max(target.parsedOffset, group[0].offset);
-      break;
+    // Events retained across reads may precede the cursor; their stored identities absorb replay before budget admission.
+    const cursorEvents = startingStatements === undefined ? [] : remainingEvents.filter((event) => event.offset <= target.parsedOffset);
+    const recorded = new Set<string>();
+    let recordedTurn: string | null = null;
+    for (const group of eventGroups(cursorEvents)) {
+      const ids = await Promise.all(group.map(async (event) => (await envelopeFor(target, event)).eventId as string));
+      const held = await env.db.prepare(`SELECT event_id, envelope_hash FROM events WHERE project_id = ? AND event_id IN (${ids.map(() => '?').join(',')})`)
+        .bind(target.projectId, ...ids).all<{ event_id: string; envelope_hash: string }>();
+      calls += 1;
+      for (const row of held.results) {
+        const event = group[ids.indexOf(row.event_id)];
+        const parsed = parseEnvelope(await envelopeFor(target, event), now);
+        if (!parsed.ok) continue;
+        if (await envelopeHash(parsed.value) === row.envelope_hash) recorded.add(row.event_id);
+      }
     }
-    if (g > 0 && spentAll(limits, calls + preparationReserve) && (terminalOnly || group[0].offset > target.parsedOffset)) {
-      cursor = Math.max(target.parsedOffset, group[0].offset);
-      break;
+    if (recorded.size > 0) {
+      const unrecorded: DerivedEvent[] = [];
+      for (const event of remainingEvents) {
+        if (event.offset > target.parsedOffset || !recorded.has((await envelopeFor(target, event)).eventId as string)) unrecorded.push(event);
+        else recordedTurn = turnOf(event) ?? recordedTurn;
+      }
+      remainingEvents = unrecorded;
     }
-    const writes: EventWrite[] = [];
-    const releaseUnlinked = async (pending: readonly EventWrite[]) => {
-      for (const write of pending) calls += await write.releaseUnlinked?.() ?? 0;
+    const stateAt = async (to: number): Promise<ParserState> => {
+      const checkpoint = to === windowEnd ? state : structuredClone(initialState);
+      if (to !== windowEnd) {
+        const prefix = await parser.parse({ ...input, terminal: undefined, lines: input.lines.filter((line) => line.offset < to), state: checkpoint });
+        preserveLegacyReplies(prefix, checkpoint, heldReplies);
+      }
+      return checkpoint;
     };
-    const eventIds = new Set<string>();
-    for (const event of group) {
-      const envelope = await envelopeFor(target, event);
-      eventIds.add(envelope.eventId as string);
-      let planned: Awaited<ReturnType<typeof planEventWrite>>;
-      try { planned = await planEventWrite(env.db, ctx, envelope, env); }
+    lines = null;
+    const datedThrough = latestDatedBefore(input.lines, parser.lineTimeField ?? 'timestamp', now);
+
+    let derived = 0;
+    let cursor = windowEnd;
+    // The turn open at the cursor, carried in and moved by every event landed.
+    // A pass ends for either of two reasons — the call budget, or the window's
+    // own bound — and BOTH can fall mid-turn: the member slices at 8 MiB and a
+    // pass takes the first segment whole, so an ordinary boundary lands inside a
+    // turn under either bound. Tracking it here rather than at the break is what
+    // makes the two ends behave alike.
+    let lastTurn: string | null = recordedTurn ?? target.openPromptId;
+    /**
+     * The cursor's advance to `to`, with the turn open there. With `landedIds`, it applies only once every one of those
+     * events is in the store, so it can ride the batch that writes them: a pass whose last group did not land whole
+     * leaves the cursor where it stood.
+     */
+    const advanceTo = async (to: number, openPrompt: string | null, landedIds?: readonly string[]): Promise<PreparedStatement[]> => {
+      const proofGuard = terminalOnly && landedIds !== undefined && terminalProofs.length > 0;
+      const evidence = allEventProofs(terminalProofs.map(proof => proof.evidence));
+      const guard = landedIds === undefined ? '' : proofGuard
+        ? ` AND ${evidence.sql}`
+        : ` AND (SELECT COUNT(*) FROM events WHERE project_id = ? AND event_id IN (${landedIds.map(() => '?').join(', ')})) = ?`;
+      const guardParams = landedIds === undefined ? [] : proofGuard
+        ? evidence.params
+        : [target.projectId, ...landedIds, landedIds.length];
+      const checkpoint = await stateAt(to);
+      return parserCheckpointStatements(env.db, target, to, checkpoint, transcriptMeta, chunkedState, (context) => env.db
+        .prepare(`UPDATE transcripts SET parse_segment_lines = CASE WHEN ? >= parsed_offset THEN ? ELSE NULL END, parsed_offset = MAX(parsed_offset, ?), parsed_at = ?, parser_version = ?,
+                     parsed_through_at = CASE WHEN ? >= parsed_offset AND ? IS NOT NULL THEN MAX(COALESCE(parsed_through_at, 0), ?) ELSE parsed_through_at END,
+                     fidelity = COALESCE(fidelity, ?), open_prompt_id = CASE WHEN ? >= parsed_offset THEN ? ELSE open_prompt_id END, parser_context = CASE WHEN ? >= parsed_offset THEN ? ELSE parser_context END,
+                     prompt_generation = CASE WHEN ? >= parsed_offset THEN ? ELSE prompt_generation END,
+                     parse_error = NULL, parse_failed_at = NULL, parse_awaited_size = NULL
+                   WHERE project_id = ? AND transcript_id = ?${guard}`)
+        .bind(to, linesBehind(to), to, now, PARSER_VERSION, to, datedThrough(to), datedThrough(to), parser.fidelity, to, openPrompt, to, context,
+          to, schemeGeneration(scheme), target.projectId, target.transcriptId, ...guardParams));
+    };
+    // Whether the cursor's advance rode the last group's batch and applied there.
+    let advanced = false;
+    const budgeted = startingStatements !== undefined;
+    const groupSize = budgeted ? Math.max(1, Math.min(BUDGETED_EVENTS_PER_BATCH,
+      Math.floor((statementRoom() - PARSER_CHECKPOINT_HEADROOM) / EVENT_STATEMENT_ADMISSION))) : TRANSCRIPT_PARSE_EVENTS_PER_BATCH;
+    const groups = terminalOnly && !budgeted ? (events.length === 0 ? [] : [events]) : eventGroups(remainingEvents,groupSize);
+    // The line counts every cursor this pass can end at needs, read before the writes so the segment bytes they are
+    // counted in are let go first. Parsed records remain available for a cursor's continuation checkpoint.
+    const linesAt = new Map<number, number>([target.parsedOffset, windowEnd, ...events.map((event) => event.offset)].map((offset) => [offset, segmentLinesAt(offset, held)]));
+    held = [];
+    let fallbackCheckpoint: PreparedStatement[] | null = null;
+    let completedGroups = 0;
+    const linesBehind = (offset: number): number => {
+      if (terminalOnly && offset === target.parsedOffset) return target.segmentLines ?? 0;
+      const counted = linesAt.get(offset);
+      if (counted === undefined) throw new Error(`no line count read for cursor ${offset}`);
+      return counted;
+    };
+    for (let g = 0; g < groups.length; g += 1) {
+      const group = groups[g];
+      const turnAfter = group.reduce<string | null>((turn, event) => turnOf(event) ?? turn, lastTurn);
+      const next = groups[g + 1];
+      const checkpoint = budgeted && !terminalOnly && next !== undefined ? await advanceTo(Math.max(target.parsedOffset, next[0]!.offset), turnAfter) : null;
+      const preparationReserve = group.some(oversizedToolInput) ? CONTENT_PREPARATION_CALL_RESERVE : 0;
+      const checkpointCost = terminalOnly && next !== undefined ? 0 : checkpoint?.length ?? (budgeted ? (await advanceTo(cursor, turnAfter)).length : 0);
+      if (budgeted && group.length * EVENT_STATEMENT_ADMISSION + checkpointCost + preparationReserve + PARSER_CLOSE_HEADROOM > statementRoom()) {
+        if (budgeted && group.length > 1) {
+          groups.splice(g, 1, ...eventGroups(group, Math.max(1, Math.floor(group.length / 2))));
+          g -= 1;
+          continue;
+        }
+        if (g === 0) return { derived: 0, calls, nextOffset: null, failure: null };
+        cursor = Math.max(target.parsedOffset, group[0].offset);
+        break;
+      }
+      // A pass can end mid-turn; the cursor and its open prompt travel together to the next pass.
+      if (budgeted && statementRoom() < preparationReserve + PARSER_CHECKPOINT_HEADROOM + PARSER_CLOSE_HEADROOM) {
+        if(g===0) return { derived:0,calls,nextOffset:null,failure:null };
+        cursor=Math.max(target.parsedOffset, group[0].offset);
+        break;
+      }
+      if (g > 0 && spentAll(limits, calls + preparationReserve) && (terminalOnly || group[0].offset > target.parsedOffset)) {
+        cursor = Math.max(target.parsedOffset, group[0].offset);
+        break;
+      }
+      const writes: EventWrite[] = [];
+      const releaseUnlinked = async (pending: readonly EventWrite[]) => {
+        for (const write of pending) calls += await write.releaseUnlinked?.() ?? 0;
+      };
+      const eventIds = new Set<string>();
+      for (const event of group) {
+        const envelope = await envelopeFor(target, event);
+        eventIds.add(envelope.eventId as string);
+        let planned: Awaited<ReturnType<typeof planEventWrite>>;
+        const prior = prepared.writes.get(envelope.eventId as string);
+        prepared.writes.delete(envelope.eventId as string);
+        try { planned = prior === undefined ? await planEventWrite(env.db, ctx, envelope, env) : { ok: true, write: prior }; }
+        catch (error) { await releaseUnlinked(writes); throw error; }
+        if (!planned.ok) {
+          await releaseUnlinked(writes);
+          // The catalogue refused an event this parser derived: telemetry names its kind and the refusal's classifier.
+          await stop(env.db, target, 'event_refused', now, { eventKind: event.kind, refusal: planned.classifier }, { branch: 'event_refused', offset: event.offset, lineKind: event.kind });
+          return { derived, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
+        }
+        if (prior === undefined) calls += planned.write.preparationCalls ?? 0;
+        const proof = terminalProofs.find(proof => proof.eventId === envelope.eventId);
+        if (proof !== undefined) proof.evidence = planned.write.proof;
+        writes.push(planned.write);
+      }
+      // The last group carries the cursor's advance past the window, guarded on every event of the group being stored.
+      const last = g === groups.length - 1 && (cursor > target.parsedOffset || terminalOnly);
+      const envelopes = last ? terminalOnly && terminalIds.length > 0 ? terminalIds : [...eventIds] : [];
+      let advancement: PreparedStatement[];
+      try { advancement = last ? await advanceTo(cursor, turnAfter, envelopes) : []; }
       catch (error) { await releaseUnlinked(writes); throw error; }
-      if (!planned.ok) {
+      const tail = last ? [...advancement, ...(target.imported ? [resolvePresentedDates(env.db, target.projectId, target.sessionId)] : [])] : [];
+      const statements = [...writes.flatMap((w) => w.statements), ...tail];
+      if (budgeted && statements.length + (checkpoint?.length ?? 0) + PARSER_CLOSE_HEADROOM > statementRoom()) {
         await releaseUnlinked(writes);
-        // The catalogue refused an event this parser derived: telemetry names its kind and the refusal's classifier.
-        await stop(env.db, target, 'event_refused', now, { eventKind: event.kind, refusal: planned.classifier }, { branch: 'event_refused', offset: event.offset, lineKind: event.kind });
-        return { derived, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
+        if (budgeted && group.length > 1) {
+          groups.splice(g, 1, ...eventGroups(group, Math.max(1, Math.floor(group.length / 2))));
+          g -= 1;
+          continue;
+        }
+        if(g===0) return { derived:0,calls,nextOffset:null,failure:null };
+        cursor=Math.max(target.parsedOffset, group[0].offset);
+        break;
       }
-      calls += planned.write.preparationCalls ?? 0;
-      writes.push(planned.write);
-    }
-    // The last group carries the cursor's advance past the window, guarded on every event of the group being stored.
-    const last = g === groups.length - 1 && (cursor > target.parsedOffset || terminalOnly);
-    const envelopes = last ? terminalOnly && terminalIds.length > 0 ? terminalIds : [...eventIds] : [];
-    let advancement: PreparedStatement[];
-    try { advancement = last ? await advanceTo(cursor, turnAfter, envelopes) : []; }
-    catch (error) { await releaseUnlinked(writes); throw error; }
-    const tail = last ? [...advancement, ...(target.imported ? [resolvePresentedDates(env.db, target.projectId, target.sessionId)] : [])] : [];
-    const statements = [...writes.flatMap((w) => w.statements), ...tail];
-    if (budgeted && statements.length + (checkpoint?.length ?? 0) + PARSER_CLOSE_HEADROOM > statementRoom()) {
-      await releaseUnlinked(writes);
-      if (budgeted && group.length > 1) {
-        groups.splice(g, 1, ...eventGroups(group, Math.max(1, Math.floor(group.length / 2))));
-        g -= 1;
-        continue;
-      }
-      if(g===0) return { derived:0,calls,nextOffset:null,failure:null };
-      cursor=Math.max(target.parsedOffset, group[0].offset);
-      break;
-    }
-    let results: Awaited<ReturnType<typeof env.db.batch>> | null;
-    try { results = terminalOnly ? await terminalCheckpointBatch(env.db, target, statements) : await env.db.batch(statements); }
-    catch (error) { await releaseUnlinked(writes); throw error; }
-    if (results === null) {
-      await releaseUnlinked(writes);
-      return { derived: 0, calls: calls + 2, nextOffset: null, failure: null };
-    }
-    calls += 1;
-    if (last) advanced = (results[writes.reduce((n, w) => n + w.statements.length, 0) ] as { meta: { changes: number } }).meta.changes > 0;
-
-    let offset = 0;
-    for (const [n, write] of writes.entries()) {
-      const slice = results.slice(offset, offset + write.statements.length);
-      offset += write.statements.length;
-      let didLand: boolean;
-      try {
-        didLand = landed(write.interpret(slice), target, group[n]);
-        await releaseUnlinked([write]);
-      }
-      catch (error) { await releaseUnlinked(writes.slice(n)); throw error; }
-      if (didLand) {
-        derived += 1;
-        lastTurn = turnOf(group[n]) ?? lastTurn;
-        continue;
-      }
-      // The cursor stops at the byte of the event that did not land, never past it.
-      await releaseUnlinked(writes.slice(n + 1));
-      await stop(env.db, target, 'parse', now, undefined, { branch: 'event_not_stored', offset: group[n].offset, lineKind: group[n].kind });
-      return { derived, calls: calls + 1, nextOffset: group[n].offset, failure: 'parse' };
-    }
-    fallbackCheckpoint=checkpoint;
-    completedGroups += 1;
-  }
-
-  if (terminalOnly && completedGroups < groups.length) return { derived, calls, nextOffset: null, failure: null };
-
-  // A partial line may store events before its cursor advances; replay absorbs those identities on the next pass.
-  if (cursor <= target.parsedOffset && derived === 0 && !terminalOnly) {
-    await stop(env.db, target, 'parse', now, undefined, { branch: 'no_progress', offset: cursor, lineKind: lineKind(input.lines.find((line) => line.offset === cursor)) });
-    return { derived, calls: calls + 1, nextOffset: null, failure: 'parse' };
-  }
-
-  // Uploaded bytes may end mid-turn; later segments continue the same prompt. The lines of its segment behind the new
-  // cursor, and the turn open there, go with it, so the next pass reads on from the cursor alone. A cursor another pass
-  // moved further keeps its own turn and no count: the pass after reads that segment from its first byte. An advance
-  // the last batch carried is already in place; one it could not prove (a row held elsewhere as a duplicate) is made here.
-  if (!advanced) {
-    const statements = fallbackCheckpoint ?? await advanceTo(cursor, lastTurn, terminalOnly && terminalIds.length > 0 ? terminalIds : undefined);
-    if (budgeted && statements.length + PARSER_CLOSE_HEADROOM > statementRoom())
-      return { derived,calls,nextOffset:null,failure:null };
-    if (terminalOnly) {
-      if (await terminalCheckpointBatch(env.db, target, statements) === null)
+      let results: Awaited<ReturnType<typeof env.db.batch>> | null;
+      try { results = terminalOnly ? await terminalCheckpointBatch(env.db, target, statements) : await env.db.batch(statements); }
+      catch (error) { await releaseUnlinked(writes); throw error; }
+      if (results === null) {
+        await releaseUnlinked(writes);
         return { derived: 0, calls: calls + 2, nextOffset: null, failure: null };
-    } else await finalizePass(env.db, target, statements);
-    calls += 1;
-  }
+      }
+      calls += 1;
+      if (last) advanced = (results[writes.reduce((n, w) => n + w.statements.length, 0) ] as { meta: { changes: number } }).meta.changes > 0;
 
-  emit({ kind: 'transcript_parsed', projectId: target.projectId, transcriptId: target.transcriptId, derived, offset: cursor });
-  return { derived, calls, nextOffset: cursor, failure: null };
+      let offset = 0;
+      for (const [n, write] of writes.entries()) {
+        const slice = results.slice(offset, offset + write.statements.length);
+        offset += write.statements.length;
+        let didLand: boolean;
+        let outcome: IngestResult;
+        try {
+          outcome = write.interpret(slice);
+          didLand = terminalOnly && !outcome.persisted ? false : landed(outcome, target, group[n]);
+          await releaseUnlinked([write]);
+        }
+        catch (error) { await releaseUnlinked(writes.slice(n)); throw error; }
+        if (didLand) {
+          derived += 1;
+          lastTurn = turnOf(group[n]) ?? lastTurn;
+          continue;
+        }
+        // The cursor stops at the byte of the event that did not land, never past it.
+        await releaseUnlinked(writes.slice(n + 1));
+        if (terminalOnly && !outcome.persisted) {
+          await stop(env.db, target, 'event_refused', now, { eventKind: group[n].kind, refusal: outcome.code },
+            { branch: 'event_refused', offset: group[n].offset, lineKind: group[n].kind });
+          return { derived, calls: calls + 1, nextOffset: null, failure: 'event_refused' };
+        }
+        await stop(env.db, target, 'parse', now, undefined, { branch: 'event_not_stored', offset: group[n].offset, lineKind: group[n].kind });
+        return { derived, calls: calls + 1, nextOffset: group[n].offset, failure: 'parse' };
+      }
+      fallbackCheckpoint=checkpoint;
+      completedGroups += 1;
+    }
+
+    if (terminalOnly && completedGroups < groups.length) return { derived, calls, nextOffset: null, failure: null };
+
+    // A partial line may store events before its cursor advances; replay absorbs those identities on the next pass.
+    if (cursor <= target.parsedOffset && derived === 0 && !terminalOnly) {
+      await stop(env.db, target, 'parse', now, undefined, { branch: 'no_progress', offset: cursor, lineKind: lineKind(input.lines.find((line) => line.offset === cursor)) });
+      return { derived, calls: calls + 1, nextOffset: null, failure: 'parse' };
+    }
+
+    // Uploaded bytes may end mid-turn; later segments continue the same prompt. The lines of its segment behind the new
+    // cursor, and the turn open there, go with it, so the next pass reads on from the cursor alone. A cursor another pass
+    // moved further keeps its own turn and no count: the pass after reads that segment from its first byte. An advance
+    // the last batch carried is already in place; one it could not prove (a row held elsewhere as a duplicate) is made here.
+    if (!advanced) {
+      const statements = fallbackCheckpoint ?? await advanceTo(cursor, lastTurn, terminalOnly && terminalIds.length > 0 ? terminalIds : undefined);
+      if (budgeted && statements.length + PARSER_CLOSE_HEADROOM > statementRoom())
+        return { derived,calls,nextOffset:null,failure:null };
+      if (terminalOnly) {
+        if (await terminalCheckpointBatch(env.db, target, statements) === null)
+          return { derived: 0, calls: calls + 2, nextOffset: null, failure: null };
+      } else await finalizePass(env.db, target, statements);
+      calls += 1;
+    }
+
+    emit({ kind: 'transcript_parsed', projectId: target.projectId, transcriptId: target.transcriptId, derived, offset: cursor });
+    return { derived, calls, nextOffset: cursor, failure: null };
+  } finally {
+    for (const write of prepared.writes.values()) await write.releaseUnlinked?.();
+  }
 }
 
 /** The first byte of a transcript still held in a segment, for a statement over `transcripts`. */

@@ -543,3 +543,35 @@ export interface PromptAnswer {
   skipped: string[]; failures: Array<{ contributor: string; error: string; operation?: string }>;
   selection: Record<string, number>;
 }
+
+/** A diagnostic event with a prompt target verified by the Deployment. */
+export interface SessionActivityRow {
+  id: string;
+  type: 'failure' | 'no_result';
+  title: string;
+  detail: string;
+  at: number;
+  promptId: string | null;
+  toolName: string;
+  resultReason: string | null;
+  failed: boolean;
+}
+
+interface SessionActivityPage {
+  rows: SessionActivityRow[];
+  cursor: string | null;
+  /** Every tool represented in the session, independent of filters and paging. */
+  tools: string[];
+}
+
+/** Session diagnostics, filtered only by their structured metadata. */
+export function useSessionActivity(projectId: string, sessionId: string, filters: Readonly<Record<string, string>>) {
+  const params = new URLSearchParams({ limit: '100' });
+  for (const [key, value] of Object.entries(filters)) params.set(key, value);
+  const query = params.toString();
+  const read = usePaged<SessionActivityRow, SessionActivityPage>(
+    ['session-activity', projectId, sessionId, query],
+    `${project(projectId)}/sessions/${seg(sessionId)}/activity?${query}`,
+  );
+  return { ...read, tools: read.pages?.[0]?.tools ?? [] };
+}
