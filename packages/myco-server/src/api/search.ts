@@ -5,14 +5,15 @@ import { searchDeployment } from '../core/search.js';
 import { badRequest, notFound, ok, projectSetParam, resolveProjectScope, resolveProjectSet } from './scope.js';
 
 /** The search options a query string names, shared by a Project's search and the search across Projects. */
-function searchOptions(q: URLSearchParams): SearchOptions | Response {
-  if (q.has('language')) return badRequest('language filtering belongs to retired Canopy entries');
-  const options: SearchOptions = { query: q.get('q') ?? '' };
-  for (const key of ['type', 'mode', 'status', 'session_id', 'observation_type', 'release_state', 'release_confidence'] as const) {
-    if (q.has(key)) options[key] = q.get(key)!;
+function searchOptions(searchParams: URLSearchParams): SearchOptions | Response {
+  if (searchParams.has('language')) return badRequest('language filtering belongs to retired Canopy entries');
+  const options: SearchOptions = { query: searchParams.get('q') ?? '' };
+  for (const key of ['type', 'mode', 'status', 'session_id', 'observation_type', 'release_state', 'release_confidence', 'order'] as const) {
+    if (searchParams.has(key)) options[key] = searchParams.get(key)!;
   }
-  if (!q.has('type') && q.has('namespace')) options.type = q.get('namespace')!;
-  for (const key of ['limit', 'since', 'until'] as const) if (q.has(key)) options[key] = Number(q.get(key));
+  if (searchParams.has('cursor')) options.cursor = searchParams.get('cursor')!;
+  if (!searchParams.has('type') && searchParams.has('namespace')) options.type = searchParams.get('namespace')!;
+  for (const key of ['limit', 'since', 'until'] as const) if (searchParams.has(key)) options[key] = Number(searchParams.get(key));
   return options;
 }
 

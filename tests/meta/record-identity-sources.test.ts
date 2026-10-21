@@ -61,6 +61,7 @@ const KIND_DATA = new Set([
   'myco/src/member/envelope.ts#envelope',
   'myco/src/member/legacy-import.ts#kinds',
   'myco/src/member/legacy-import.ts#withId',
+  'myco-server/ui/src/hooks/use-conversation-search.ts#useConversationPages',
 ]);
 
 function entryOwner(checker: ts.TypeChecker, node: ts.Node): string | undefined {

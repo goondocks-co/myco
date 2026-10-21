@@ -73,12 +73,18 @@ const REACHES: Record<string, (db: RelationalStore, opts: SearchOptions) => Prom
   all: (db, opts) => searchAcross(db, ALL, opts),
   named: (db, opts) => searchAcross(db, NAMED, opts),
 };
+/** A cursor as a search by time issues one: the last match of a page, in the order of the record's time, id and Project. */
+const cursorFor = (type: string) => btoa(JSON.stringify({ type, created_at: 1000, id: 'p', project_id: 'proj_0' })).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const CURSOR = cursorFor('prompt');
 const SHAPES: Record<string, SearchOptions> = {
   one: { query: 'title' },
   terms: { query: 'title two three' },
   filtered: { query: 'title two', status: 'active', observation_type: 'gotcha', since: 1, until: 2_000_000_000 },
   session: { query: 'title', session_id: 's1' },
   released: { query: 'title', release_state: 'released', release_confidence: 'high' },
+  conversation: { query: 'title two', type: 'prompt', session_id: 's1', order: 'time' },
+  conversationNextPage: { query: 'title two', type: 'prompt', session_id: 's1', order: 'time', cursor: CURSOR },
+  repliesNextPage: { query: 'title', type: 'response', session_id: 's1', order: 'time', cursor: cursorFor('response') },
 };
 
 describe('search under the statistics a Deployment plans from', () => {
@@ -98,6 +104,24 @@ describe('search under the statistics a Deployment plans from', () => {
             scans: tableScans(plan),
             plan,
           }).toEqual({ reach, shape, store, sql, byMatch: true, snippetsByRowid: true, walksCandidates: true, byProject: false, scans: [], plan });
+        }
+      }
+    }
+  });
+
+  it('names a conversation hit\'s turn by primary key on the hit\'s own Project and session, and lists by time past a cursor without reading a table whole', async () => {
+    for (const [reach, search] of Object.entries(REACHES)) {
+      for (const shape of ['conversation', 'conversationNextPage', 'repliesNextPage']) {
+        const read = (await plans((db) => search(db, SHAPES[shape]!))).filter(({ sql }) => /WITH candidates/.test(sql));
+        expect(read).toHaveLength(3);
+        for (const { store, sql, plan } of read) {
+          expect({
+            reach, shape, store,
+            hasPaging: shape.endsWith('NextPage') ? /d\.created_at > \?/.test(sql) : !/d\.created_at > \?/.test(sql),
+            ownPrompt: /SEARCH rp USING (?:INDEX|COVERING INDEX) \w+ \(project_id=\? AND prompt_id=\?\)/.test(plan),
+            turn: /SEARCH tp USING (?:INDEX|COVERING INDEX) \w+ \(project_id=\? AND prompt_id=\?\)/.test(plan),
+            scans: tableScans(plan),
+          }).toEqual({ reach, shape, store, hasPaging: true, ownPrompt: true, turn: true, scans: [] });
         }
       }
     }
@@ -142,8 +166,14 @@ describe('search under the statistics a Deployment plans from', () => {
       query: Array.from({ length: 16 }, (_, i) => `term${i}`).join(' '), status: 'active', session_id: 's', observation_type: 'gotcha',
       since: 1, until: 2, release_state: 'released', release_confidence: 'high', limit: 100,
     };
-    const statements = await captured(async (db) => { await searchAcross(db, most, opts); await searchAcross(db, ALL, opts); await searchProject(db, { projectId: 'proj_0' }, opts); });
-    expect(statements.filter(({ sql }) => /WITH candidates/.test(sql)).length).toBeGreaterThanOrEqual(3);
+    // A prompt has no status and is no spore, so the page that continues a conversation carries every other filter.
+    const { status: _status, observation_type: _observationType, ...conversation } = opts;
+    const paged: SearchOptions = { ...conversation, type: 'prompt', order: 'time', cursor: CURSOR };
+    const statements = await captured(async (db) => {
+      await searchAcross(db, most, opts); await searchAcross(db, ALL, opts); await searchProject(db, { projectId: 'proj_0' }, opts);
+      await searchAcross(db, most, paged); await searchProject(db, { projectId: 'proj_0' }, paged);
+    });
+    expect(statements.filter(({ sql }) => /WITH candidates/.test(sql)).length).toBeGreaterThanOrEqual(3 + 2);
     const over = statements.filter((s) => s.params.length > 100).map((s) => `${s.params.length}: ${s.sql.replace(/\s+/g, ' ').slice(0, 60)}`);
     expect(over).toEqual([]);
     // D1 refuses a compound SELECT of more than five terms; a search is its match and, for a spilled body, one more.

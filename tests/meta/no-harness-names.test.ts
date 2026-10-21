@@ -105,7 +105,22 @@ function namesAKey(literal: Node): boolean {
     const typeName = up?.kind === SyntaxKind.TypeReference ? nameText((up as unknown as { typeName: Node }).typeName) : undefined;
     return typeName === 'Pick' || typeName === 'Omit';
   }
-  return false;
+  return namesAPaginationKey(literal);
+}
+
+/**
+ * `cursor` as the key a page continues by, declared where a request or a tool states its parameters: the key of a schema
+ * property, an object literal that is the value of a `properties` key and whose own value is an object literal. A `cursor`
+ * anywhere else (compared, switched on, listed, keyed in a map, assigned) stays a harness name.
+ */
+function namesAPaginationKey(literal: Node): boolean {
+  if (textOf(literal) !== 'cursor') return false;
+  const property = literal.parent;
+  if (property?.kind !== SyntaxKind.PropertyAssignment) return false;
+  const { name, initializer } = property as unknown as { name: Node; initializer: Node };
+  if (name !== literal || initializer.kind !== SyntaxKind.ObjectLiteralExpression) return false;
+  const schema = property.parent?.parent;
+  return schema?.kind === SyntaxKind.PropertyAssignment && nameText((schema as unknown as { name: Node }).name) === 'properties';
 }
 
 /** The harness names an object literal's own keys spell, identifier and string keys alike. */
@@ -146,10 +161,10 @@ function namings(sf: SourceFile): string[] {
 }
 
 /** The syntax tree of every file, from the projects that compile them. */
-async function syntaxTrees(files: readonly string[]): Promise<Map<string, SourceFile>> {
+async function syntaxTrees(files: readonly string[], projects: readonly string[] = ['tsconfig.json', 'packages/myco-server/tsconfig.json', 'packages/myco-shared/tsconfig.json']): Promise<Map<string, SourceFile>> {
   const api = new API({ cwd: REPO_ROOT });
   try {
-    const configs = ['tsconfig.json', 'packages/myco-server/tsconfig.json', 'packages/myco-shared/tsconfig.json'].map((c) => path.join(REPO_ROOT, c));
+    const configs = projects.map((c) => path.join(REPO_ROOT, c));
     const snapshot = await api.updateSnapshot({ openProjects: configs });
     const trees = new Map<string, SourceFile>();
     for (const file of files) {
@@ -202,4 +217,27 @@ describe('no code names a harness outside the registries (G7)', () => {
     const stale = Object.entries(KNOWN).filter(([file, count]) => (offenders[file]?.length ?? 0) < count).map(([file]) => file);
     expect(stale).toEqual([]);
   });
+});
+
+describe('cursor as a pagination key (G7)', () => {
+  const FIXTURES = path.join(REPO_ROOT, 'tests', 'fixtures', 'harness-names');
+  const read = async (name: string): Promise<string[]> => {
+    const file = path.join(FIXTURES, name);
+    const tree = (await syntaxTrees([file], ['tsconfig.tests.json'])).get(file);
+    expect(tree).toBeDefined();
+    return namings(tree!);
+  };
+
+  it('does not name a harness where cursor is a schema property or a query parameter', async () => {
+    expect(await read('pagination-keys.ts')).toEqual([]);
+  }, 60_000);
+
+  it('still names the harness where cursor is compared, switched on, listed, aliased, keyed in a map or a schema-shaped object outside properties, or assigned', async () => {
+    const hits = await read('harness-branches.ts');
+    // The comparison, the case, the list beside another harness, the per-harness map, the value, the alias list, the lone-key map,
+    // and a schema-shaped object or a nested one outside a `properties` key: each line names the Cursor harness.
+    const cursorLines = hits.filter((hit) => hit.endsWith('"cursor"')).map((hit) => Number.parseInt(hit, 10));
+    expect(cursorLines).toEqual([2, 6, 11, 13, 15, 17, 20, 23, 26]);
+    expect(hits.filter((hit) => !hit.endsWith('"cursor"'))).toEqual(['11: string "claude-code"', '13: string "codex"']);
+  }, 60_000);
 });

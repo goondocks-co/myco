@@ -99,7 +99,7 @@ export async function semanticSearch(db: RelationalStore, scope: ReadScope, sema
   return branches.flat().sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, limit).map((row) => {
     const tool = tools[row.type];
     return {
-      id: row.record_id, type: row.type, title: row.title, preview: row.text.slice(0, SEARCH_PREVIEW_CHARS), score: row.score,
+      id: row.record_id, type: row.type, title: row.title, preview: row.text.slice(0, SEARCH_PREVIEW_CHARS), score: row.score, created_at: row.created_at,
       ...(row.session_id === '' ? {} : { session_id: row.session_id }),
       ...(row.prompt_id === null ? {} : { prompt_id: row.prompt_id }),
       ...(tool === undefined ? {} : { retrieve: { tool, input: { op: 'get', id: row.record_id } } }),

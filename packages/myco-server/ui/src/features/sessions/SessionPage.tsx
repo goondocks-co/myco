@@ -156,7 +156,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
               <TabsTrigger value="plans">Plans</TabsTrigger>
             </TabsList>
             <TabsContent value="conversation">
-              <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} />
+              <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} now={now} />
             </TabsContent>
             <TabsContent value="outcomes">
               <SessionOutcomes projectId={projectId} sessionId={session.sessionId} now={now} />

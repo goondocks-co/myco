@@ -92,7 +92,7 @@ describe('tool parity', () => {
     expect(TOOL_DEFINITIONS.filter((d) => !member.has(d.name)).map((d) => d.name)).toEqual([]);
   });
 
-  it('preserves the frozen contract except for retired generated-intelligence discovery', () => {
+  it('preserves the frozen contract except for retired generated-intelligence discovery and the search order and cursor properties', () => {
     const member = byName(FROZEN_DEFINITIONS);
     for (const server of TOOL_DEFINITIONS) {
       const frozen = structuredClone(member.get(server.name)!);
@@ -112,6 +112,11 @@ describe('tool parity', () => {
         type.enum = type.enum.filter((value) => value !== 'skill');
         expect((current.inputSchema.properties.type as { enum: string[] }).enum).toEqual(['session', 'plan', 'spore', 'prompt', 'response', 'all']);
         expect(current.description).not.toContain('skills');
+        // The search's time order and cursor are the properties the frozen contract does not carry.
+        for (const added of ['order', 'cursor']) {
+          expect(current.inputSchema.properties[added]).toMatchObject({ type: 'string' });
+          delete (current.inputSchema.properties as Record<string, unknown>)[added];
+        }
       }
       if (server.name === 'myco_skills') expect(current.description).not.toContain('1.4');
       if (server.name === 'myco_cortex') expect(current.description).toContain('digest\" is retired');

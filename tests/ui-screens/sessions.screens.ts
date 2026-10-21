@@ -92,6 +92,14 @@ async function openTable(page: Page, viewport: ViewportName): Promise<void> {
 async function openOutcomeSession(page: Page): Promise<void> {
   await page.locator('[data-table="Sessions"]').getByRole('link', { name: OUTCOME_TITLE }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(OUTCOME_TITLE);
+  await settled(page);
+}
+
+/** Waits for the conversation's turns and each turn's body to be read, so a tab opened next cancels none of them. */
+async function settled(page: Page): Promise<void> {
+  await expect(page.getByRole('status', { name: 'Loading the conversation' })).toHaveCount(0);
+  await expect(page.getByRole('list', { name: 'Conversation', exact: true }).getByRole('listitem').first()).toBeVisible();
+  await expect(page.getByRole('status', { name: 'Reading this turn' })).toHaveCount(0);
 }
 
 async function expectReadingPage(page: Page, viewport: ViewportName, role: 'admin' | 'member'): Promise<void> {
@@ -311,6 +319,7 @@ test.describe('Sessions', () => {
         });
         await page.locator('[data-table="Sessions"]').getByRole('link', { name: PLAN_SESSION_TITLE }).click();
         await expect(page.getByRole('heading', { level: 1 })).toHaveText(PLAN_SESSION_TITLE);
+        await settled(page);
         await tabs.getByRole('tab', { name: 'Plans' }).click();
         const plans = page.getByRole('list', { name: 'Plans' }).getByRole('listitem');
         await expect(plans).toHaveCount(1);
@@ -353,6 +362,7 @@ test.describe('Sessions', () => {
         });
         await page.locator('[data-table="Sessions"]').getByRole('link', { name: title }).click();
         await expect(page.getByRole('heading', { level: 1 })).toHaveText(title);
+        await settled(page);
       };
       try {
         await watch.navigate(() => openTable(page, viewport));
@@ -388,6 +398,49 @@ test.describe('Sessions', () => {
         await expect(page).toHaveURL(/\?tab=spores$/);
         await tabs.getByRole('tab', { name: 'Conversation' }).click();
         await expect(page).toHaveURL(/\/sessions\/[^/?]+$/);
+        expectQuiet(watch);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  for (const viewport of ['desktop', 'phone'] as const) {
+    test(`searching a session's conversation ${viewport}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the session is the fixture’s');
+      const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode: 'light', cookie: screensEnv('ownerCookie') });
+      try {
+        await watch.navigate(() => openTable(page, viewport));
+        await watch.navigate(() => openOutcomeSession(page));
+        const box = page.getByRole('searchbox', { name: 'Search the conversation' });
+        await expect(box).toBeVisible();
+
+        // The prompt and the reply that said it, each leading to the turn they belong to.
+        await box.fill('fixed port');
+        await expect(page).toHaveURL(/\?q=fixed\+port$/);
+        const matches = page.getByRole('list', { name: 'Matches' }).getByRole('listitem');
+        await expect(matches).toHaveCount(2);
+        const prompt = matches.filter({ hasText: 'Prompt' });
+        const reply = matches.filter({ hasText: 'Reply' });
+        await expect(prompt).toContainText('Stop reserving a fixed port');
+        await expect(reply).toContainText('Done: stop reserving a fixed port');
+        await expect(reply).toContainText('In reply to “Stop reserving a fixed port”');
+        await expect(page.getByRole('list', { name: 'Conversation', exact: true })).toHaveCount(0);
+        await expectListState(page, viewport, 'session-conversation-search');
+
+        await box.fill('qqzzxx');
+        await expect(page.getByText('Nothing said in this session matches “qqzzxx”.')).toBeVisible();
+        await expectListState(page, viewport, 'session-conversation-search-none');
+
+        // A hit opens its turn, and the search is left behind.
+        await box.fill('fixed port');
+        await expect(matches).toHaveCount(2);
+        await reply.getByRole('link').click();
+        await expect(page).toHaveURL(/\/sessions\/[^/?]+\?turn=[^&]+$/);
+        const conversation = page.getByRole('list', { name: 'Conversation', exact: true });
+        await expect(conversation.getByText('Stop reserving a fixed port', { exact: true })).toBeInViewport();
+        await expect(page.getByRole('searchbox', { name: 'Search the conversation' })).toHaveValue('');
+        await expectListState(page, viewport, 'session-conversation-search-opened');
         expectQuiet(watch);
       } finally {
         await context.close();
