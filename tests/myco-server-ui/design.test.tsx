@@ -29,6 +29,17 @@ describe('Switch', () => {
 });
 
 describe('Select', () => {
+  it('includes the visible choice in its accessible name', () => {
+    render(<Select label="Type" value="failure" onValueChange={() => undefined} options={[{ value: 'failure', label: 'Failure' }]} />);
+    expect(screen.getByRole('combobox', { name: 'Type: Failure' }).textContent).toBe('Failure');
+  });
+
+  it('supports structured filters without a text search', () => {
+    render(<FilterBar filters={[{ key: 'type', label: 'Type', options: [{ value: 'all', label: 'Every type' }] }]} />);
+    expect(screen.queryByRole('searchbox')).toBeNull();
+    expect(screen.getByRole('combobox', { name: 'Type: Every type' })).toBeTruthy();
+  });
+
   it('becomes searchable past eight options', () => {
     expect(PROJECTS.length).toBeGreaterThan(SEARCHABLE_AFTER);
     render(<Select label="Project" value="myco" onValueChange={() => undefined} options={PROJECTS} />);
@@ -93,7 +104,7 @@ describe('FilterBar with useFilterParams', () => {
   it('keeps the query and filters in the URL and clears both', () => {
     render(<MemoryRouter initialEntries={['/sessions?agent=codex']}><Page /></MemoryRouter>);
     expect(document.querySelectorAll('[data-filter-bar]').length).toBe(1);
-    expect(screen.getByRole('combobox', { name: 'Agent' }).textContent).toContain('Codex');
+    expect(screen.getByRole('combobox', { name: /^Agent(?::|$)/ }).textContent).toContain('Codex');
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search sessions' }), { target: { value: 'canopy' } });
     expect(screen.getByTestId('search').textContent).toBe('?agent=codex&q=canopy');
     fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));

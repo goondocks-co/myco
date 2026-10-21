@@ -59,11 +59,16 @@ describe('immutable record identity pin', () => {
         ['plans', { plan_key: uuid(903), machine_id: 'machine_1', content: 'held plan', content_hash: 'plan', status: 'active', updated_at: 1 }],
       ] as const;
       for (const [table, fields] of children) insert(sqlite, table, { project_id: 'proj_1', session_id: 'record-scheme-session', event_id: uuid(900), created_at: 1, received_at: 1, token_id: 'token_1', ...fields });
-      const frozen = children.map(([table]) => [table, sqlite.query(`SELECT * FROM ${table}`).all()]);
+      const frozen = children.map(([table]) => [table, sqlite.query<Record<string, unknown>, []>(`SELECT * FROM ${table}`).all()]);
       const held = sqlite.query('SELECT * FROM transcripts ORDER BY transcript_id').all() as Record<string, unknown>[];
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([93]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([93, 94]);
       expect(sqlite.query('SELECT * FROM transcripts ORDER BY transcript_id').all()).toEqual(held.map(row => ({ ...row, record_identity_scheme: LEGACY })));
-      expect(children.map(([table]) => [table, sqlite.query(`SELECT * FROM ${table}`).all()])).toEqual(frozen);
+      expect(children.map(([table]) => [table, sqlite.query<Record<string, unknown>, []>(`SELECT * FROM ${table}`).all().map(row => {
+        if (table !== 'tool_calls') return row;
+        const { result_reason, ...held } = row;
+        expect(result_reason).toBeNull();
+        return held;
+      })])).toEqual(frozen);
       expect(sqlite.query('SELECT payload FROM transcript_parser_state_chunks').all()).toEqual([{ payload: '{"pending":true}' }]);
       expect(() => sqlite.exec(`UPDATE transcripts SET record_identity_scheme = '${SOURCE}' WHERE transcript_id = 'unread'`)).toThrow(/record_identity_scheme_immutable/);
       sqlite.exec(`UPDATE transcripts SET parsed_offset = 0, parser_context = NULL WHERE transcript_id = 'inflight'`);

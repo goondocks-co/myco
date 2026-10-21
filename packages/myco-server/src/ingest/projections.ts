@@ -9,7 +9,7 @@ import { NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 import { IMPORT_DISABLED, importEnabledChecks } from '../core/import-policy.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { isPromptClaim } from '@goondocks/myco-shared/prompt-identity';
-import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
+import { TOOL_RESULT_REASONS, filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
 import { toolInputPreview } from '../core/tool-input.js';
 import { bundlePublicationStatements, type PreparedBundle } from '../core/archive-bundle.js';
 import { admittedScheme } from './prompt-scheme.js';
@@ -59,6 +59,8 @@ export interface KindPlan {
   admission: Fragment[];
   /** Projection statements, every one gated on the raw row this request wrote (a kind's own precondition is conjoined with that gate, never substituted for it); each reports its own row change. */
   projections: PreparedStatement[];
+  /** Replay evidence and metadata writes, conjoined with the same admission as a new event. */
+  replay?: { compatible: Fragment; effect: Fragment; project(gate: Fragment): PreparedStatement[] };
   /** Same-batch reads placed ahead of the projections, so a kind sees the row it is about to move. */
   priors?: PreparedStatement[];
   /** Statements a kind runs beside its projections whose row change is not evidence that the kind's own projection applied. A conflict is decided from `projections` alone. */
@@ -140,6 +142,7 @@ interface Inputs {
   /** sha256 of the inline text, or the blob key when spilled. */
   contentHash: string | null;
   preparedToolInput?: PreparedToolInput;
+  envelopeHash?: string;
 }
 
 /** A capture lands only in a live Project: an archived one refuses every event, whatever route carried it. The admission fragment sits on the raw insert; the read tells an archived Project from an absent row. */
@@ -501,8 +504,49 @@ const prompt = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
   };
 };
 
+const toolResultReplay = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, p: Payload, digest: string | undefined): KindPlan['replay'] => {
+  if (!ctx.processing || e.kind !== 'tool.failure' || p.resultReason === undefined) return undefined;
+  if (digest === undefined) throw new Error('Parser metadata replay requires the admitted envelope hash');
+  const noResultReasons = JSON.stringify(TOOL_RESULT_REASONS.filter(reason => reason !== 'reported'));
+  const familyReplay: Fragment = {
+    sql: `(? IN (SELECT value FROM json_each(?)) AND (json_extract(held.payload, '$.resultReason') IS NULL
+      OR json_extract(held.payload, '$.resultReason') IN (SELECT value FROM json_each(?))))`,
+    params: [p.resultReason, noResultReasons, noResultReasons],
+  };
+  const mutable: Fragment = {
+    sql: `(t.event_id = ? AND t.success = 0 AND (t.result_reason IS NULL OR t.result_reason = ?
+      OR (? = 'reported' AND t.result_reason IN (SELECT value FROM json_each(?)))))`,
+    params: [e.eventId, p.resultReason, p.resultReason, noResultReasons],
+  };
+  const source = (condition: Fragment): Fragment => ({
+    sql: `EXISTS (SELECT 1 FROM events held
+      JOIN tool_calls t ON t.project_id = held.project_id AND t.tool_call_id = ?
+      WHERE held.project_id = ? AND held.event_id = ? AND held.session_id = ?
+        AND held.kind = ? AND held.producer_adapter = ?
+        AND json_extract(held.payload, '$.toolCallId') = t.tool_call_id
+        AND t.session_id = held.session_id AND ${condition.sql})`,
+    params: [p.toolCallId, ctx.projectId, e.eventId, e.sessionId, e.kind, e.producer.adapter, ...condition.params],
+  });
+  return {
+    compatible: source({
+      sql: `(${familyReplay.sql} OR (${mutable.sql} AND (json_extract(held.payload, '$.resultReason') IS NULL
+        OR held.envelope_hash = ? OR (? = 'reported' AND json_extract(held.payload, '$.resultReason') IN (SELECT value FROM json_each(?))))))`,
+      params: [...familyReplay.params, ...mutable.params, digest, p.resultReason, noResultReasons],
+    }),
+    effect: source({
+      sql: `(${familyReplay.sql} OR t.result_reason = ?)`,
+      params: [...familyReplay.params, p.resultReason],
+    }),
+    project: gate => [db.prepare(`UPDATE tool_calls AS t SET result_reason = ?
+      WHERE t.project_id = ? AND t.tool_call_id = ? AND t.session_id = ? AND ${gate.sql}
+        AND ${mutable.sql} AND t.result_reason IS NOT ?
+      RETURNING tool_call_id`)
+      .bind(p.resultReason, ctx.projectId, p.toolCallId, e.sessionId, ...gate.params, ...mutable.params, p.resultReason)],
+  };
+};
+
 /** A tool call row; one that carries no `filesAffected` records the paths its input names, so hook and parsed calls read alike. */
-const toolCall = ({ db, ctx, e, p, preparedToolInput }: Inputs): KindPlan => {
+const toolCall = ({ db, ctx, e, p, preparedToolInput, envelopeHash }: Inputs): KindPlan => {
   const fullInput = p.input === undefined ? null : JSON.stringify(p.input);
   const display = fullInput === null ? null : toolInputPreview(fullInput);
   if (display?.truncated && preparedToolInput === undefined) throw new Error('Oversized tool input requires registered content preparation');
@@ -530,18 +574,19 @@ const toolCall = ({ db, ctx, e, p, preparedToolInput }: Inputs): KindPlan => {
   return {
     identities: [{ table: 'tool_calls', keyColumn: 'tool_call_id', key: p.toolCallId as string, owner: 'session' }],
     admission: [],
+    replay: toolResultReplay(db, ctx, e, p, envelopeHash),
     projections: [
       db.prepare(`INSERT INTO tool_calls
-          (project_id, tool_call_id, session_id, prompt_id, event_id, tool_name, myco_tool, myco_op, input, input_bytes, input_blob_key, output_preview, output_blob_key, success, error_message, duration_ms, files_affected, canopy_injection_tokens, created_at, token_id, received_at)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, (SELECT b.size FROM blobs b WHERE b.project_id = ? AND b.key = ?)), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          (project_id, tool_call_id, session_id, prompt_id, event_id, tool_name, myco_tool, myco_op, input, input_bytes, input_blob_key, output_preview, output_blob_key, success, error_message, result_reason, duration_ms, files_affected, canopy_injection_tokens, created_at, token_id, received_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, (SELECT b.size FROM blobs b WHERE b.project_id = ? AND b.key = ?)), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
          WHERE ${RAW_ROW_GATE}
         ON CONFLICT (project_id, tool_call_id) DO UPDATE SET
           event_id = excluded.event_id, output_preview = excluded.output_preview, output_blob_key = excluded.output_blob_key,
-          success = excluded.success, error_message = excluded.error_message, duration_ms = excluded.duration_ms,
+          success = excluded.success, error_message = excluded.error_message, result_reason = excluded.result_reason, duration_ms = excluded.duration_ms,
           received_at = MAX(tool_calls.received_at, excluded.received_at)
         WHERE tool_calls.session_id = excluded.session_id AND tool_calls.success = 0 AND excluded.success = 1`)
         .bind(ctx.projectId, p.toolCallId, e.sessionId, opt(p.promptId), e.eventId, p.toolName, opt(p.mycoTool), opt(p.mycoOp),
-              display?.preview ?? null, display?.bytes ?? null, ctx.projectId, opt(inputBlob), opt(inputBlob), opt(p.output), opt(outputBlob), e.kind === 'tool.failure' ? 0 : bool(p.success), opt(p.errorMessage),
+              display?.preview ?? null, display?.bytes ?? null, ctx.projectId, opt(inputBlob), opt(inputBlob), opt(p.output), opt(outputBlob), e.kind === 'tool.failure' ? 0 : bool(p.success), opt(p.errorMessage), e.kind === 'tool.failure' || p.success === false ? opt(p.resultReason) : null,
               opt(p.durationMs), json(p.filesAffected ?? filesNamedByToolInput(p.input)), opt(p.canopyInjectionTokens), e.createdAt, ctx.tokenId, ctx.now, ...rawGateParams(ctx, e)),
       ...proof,
       ...(preparedToolInput?.bundle === undefined ? [] : [

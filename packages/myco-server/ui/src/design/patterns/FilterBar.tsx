@@ -17,13 +17,9 @@ export interface FilterDefinition {
   options: readonly SelectOption[];
 }
 
-export interface FilterBarProps {
-  /** Names the search field and fills it when empty, as in "Search sessions". */
-  searchLabel: string;
+interface FilterBarOptions {
   /** Says what the search matches, as in "Filter by title, agent or branch"; defaults to the label. */
   placeholder?: string;
-  query: string;
-  onQueryChange: (query: string) => void;
   filters?: readonly FilterDefinition[];
   values?: Readonly<Record<string, string>>;
   onFilterChange?: (key: string, value: string) => void;
@@ -36,6 +32,16 @@ export interface FilterBarProps {
   hint?: ReactNode;
   className?: string;
 }
+
+export type FilterBarProps = FilterBarOptions & (
+  | {
+    /** Names the search field and fills it when empty, as in "Search sessions". */
+    searchLabel: string;
+    query: string;
+    onQueryChange: (query: string) => void;
+  }
+  | { searchLabel?: never; query?: never; onQueryChange?: never }
+);
 
 /** With more filters than this the selects size to their words, so the search keeps most of the row. */
 export const FIXED_WIDTH_FILTERS = 2;
@@ -57,7 +63,7 @@ const SELECT_GRID: Record<number, string> = {
 export function FilterBar({
   searchLabel, placeholder, query, onQueryChange, filters = [], values = {}, onFilterChange, onClear, count, inputRef, hint, className,
 }: FilterBarProps) {
-  const active = query.trim() !== '' || filters.some((filter) => (values[filter.key] ?? defaultOf(filter)) !== defaultOf(filter));
+  const active = (query?.trim() ?? '') !== '' || filters.some((filter) => (values[filter.key] ?? defaultOf(filter)) !== defaultOf(filter));
   const sized = filters.length > FIXED_WIDTH_FILTERS;
   const selects = filters.map((filter) => (
     <Select
@@ -70,8 +76,8 @@ export function FilterBar({
     />
   ));
   return (
-    <div data-filter-bar="" role="search" className={cn('flex flex-wrap items-center gap-s2 lg:flex-nowrap', className)}>
-      <SearchInput
+    <div data-filter-bar="" role="search" aria-label={searchLabel ?? 'Filters'} className={cn('flex flex-wrap items-center gap-s2 lg:flex-nowrap', className)}>
+      {searchLabel !== undefined && <SearchInput
         ref={inputRef}
         label={searchLabel}
         placeholder={placeholder}
@@ -79,7 +85,7 @@ export function FilterBar({
         hint={hint}
         onChange={(event) => onQueryChange(event.target.value)}
         className={cn('basis-full lg:basis-auto', sized && 'lg:min-w-[56%]')}
-      />
+      />}
       {sized ? <div className={cn('grid w-full gap-s2 lg:flex lg:w-auto lg:min-w-0 lg:shrink', SELECT_GRID[Math.min(filters.length, 4)])}>{selects}</div> : selects}
       {onClear && active && (
         <Button variant="ghost" onClick={onClear} icon={<X aria-hidden className="size-s4" />} aria-label="Clear search and filters">

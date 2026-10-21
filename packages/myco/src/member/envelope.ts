@@ -296,7 +296,7 @@ export function toolFailureEvent(ctx: EnvelopeContext, input: NormalizedHookInpu
   const { payload, blobSource } = toolCallPayload(ctx, input, { ...opts, success: false });
   const error = input.raw.error;
   const errorMessage = typeof error === 'string' ? error : error === undefined ? 'tool failed' : JSON.stringify(error);
-  return envelope(ctx, 'tool.failure', { ...payload, errorMessage: errorMessage.slice(0, BOUNDS.errorMessage) || 'tool failed' }, blobSource);
+  return envelope(ctx, 'tool.failure', { ...payload, errorMessage: errorMessage.slice(0, BOUNDS.errorMessage) || 'tool failed', resultReason: 'reported' }, blobSource);
 }
 
 export function responseEvent(ctx: EnvelopeContext, facts: { text: string; promptId?: string; responseId?: string }): OutboundEvent {

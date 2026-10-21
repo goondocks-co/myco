@@ -66,7 +66,7 @@ async function expectStream(page: Page, viewport: ViewportName): Promise<void> {
   } else {
     await expect(page.getByRole('region', { name: 'Type' })).toHaveCount(0);
     // Every type is in the fixture, so the type is the searchable select: a button naming its value.
-    await expect(bar.getByRole('combobox', { name: 'Type' }).or(bar.getByRole('button', { name: /^Type: / }))).toBeVisible();
+    await expect(bar.getByRole('combobox', { name: /^Type(?::|$)/ }).or(bar.getByRole('button', { name: /^Type: / }))).toBeVisible();
   }
   if (!onFixture()) return;
   const tied = cards(page).filter({ hasText: 'Hosted and self-hosted order ties differently' });
@@ -90,7 +90,7 @@ async function expectStream(page: Page, viewport: ViewportName): Promise<void> {
 
 /** Opens the replaced spore from the stream: the status filter first, then its card. */
 async function openReplacedSpore(page: Page, watch: PageWatch): Promise<void> {
-  await page.getByRole('combobox', { name: 'Status' }).click();
+  await page.getByRole('combobox', { name: /^Status(?::|$)/ }).click();
   await watch.navigate(async () => {
     await page.getByRole('option', { name: 'Replaced' }).click();
     await expect(page).toHaveURL(/status=superseded/);
@@ -157,7 +157,7 @@ async function expectPlanPage(page: Page, viewport: ViewportName, role: 'admin' 
   if (viewport === 'desktop') await expect(written).toBeInViewport();
   await expect(written).toContainText(PLAN_SESSION);
   await expect(written.getByRole('link', { name: 'Open the session →' })).toBeVisible();
-  await expect(page.getByRole('combobox', { name: 'Plan status' })).toHaveCount(role === 'admin' ? 1 : 0);
+  await expect(page.getByRole('combobox', { name: /^Plan\ status(?::|$)/ })).toHaveCount(role === 'admin' ? 1 : 0);
   await expect(plan.locator('[data-facts]').getByRole('button', { name: 'Copy plan key' })).toBeVisible();
   // The plan is read by its key, so its tags come with it.
   if (onFixture()) await expect(plan.locator('[data-facts]')).toContainText('Tagsdashboardoutcomes');

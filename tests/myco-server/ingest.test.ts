@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'bun:test';
-import { ingestEvent } from '@myco-server-worker/ingest/events.js';
+import { allEventProofs, ingestEvent, planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { sqliteD1, seededSqlite, seedCredential } from './helpers/d1.js';
 import { ENVELOPE_FIELDS, PRODUCER_FIELDS } from '@myco-server-worker/ingest/envelope.js';
-import { envelope, uuid, PRODUCER } from './helpers/fixtures.js';
+import { envelope, sqliteEnv, uuid, PRODUCER } from './helpers/fixtures.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '@myco-server-worker/constants.js';
+import { TOOL_INPUT_PREVIEW_BYTES } from '@myco-server-worker/core/tool-input.js';
 
 function realDb() {
   const sqlite = seededSqlite();
@@ -21,6 +22,69 @@ const bytes = (s: any, id: string) => (s.query(`SELECT bytes_written b FROM memb
 const sessions = (s: any) => s.query('SELECT project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at FROM sessions ORDER BY project_id, session_id').all();
 
 describe('ingest', () => {
+  it('keeps checkpoint evidence under the binding ceiling and refuses false or null evidence', () => {
+    const { sqlite } = realDb();
+    try {
+      const evaluate = (proofs: Parameters<typeof allEventProofs>[0]) => {
+        const proof = allEventProofs(proofs);
+        expect(proof.params.length).toBeLessThanOrEqual(1);
+        return (sqlite.query(`SELECT ${proof.sql} AS admitted`).get(...proof.params as never[]) as { admitted: number }).admitted;
+      };
+      expect(evaluate(Array.from({ length: 64 }, (_, index) => ({ sql: '? = ?', params: [index, index] })))).toBe(1);
+      expect(evaluate([{ sql: '? = ?', params: ['same', 'same'] }, { sql: '0', params: [] }])).toBe(0);
+      expect(evaluate([{ sql: 'NULL', params: [] }])).toBe(0);
+      expect(evaluate([{ sql: "'?' = ? AND 'it''s ?' = ?", params: ['?', "it's ?"] }])).toBe(1);
+      expect(evaluate([])).toBe(1);
+    } finally { sqlite.close(); }
+  });
+
+  it('refuses metadata replay when raw bytes change after the source proof was read', async () => {
+    const { db, sqlite } = realDb();
+    try {
+      const context = { ...ctx, writeOrigin: 'server' as const };
+      const original = { eventId: uuid(71), sessionId: 'replay-race', kind: 'tool.failure', createdAt: 1_000,
+        channel: 'cli', producer: { adapter: TRANSCRIPT_PARSE_ADAPTER, version: '1' },
+        payload: { toolCallId: uuid(72), toolName: 'Read', input: {}, success: false, errorMessage: 'original failure' } };
+      expect(await ingestEvent(db, context, original)).toEqual({ persisted: true, projected: true });
+      const replay = { ...original, payload: { ...original.payload, resultReason: 'reported' } };
+      const planned = await planEventWrite(db, context, replay);
+      if (!planned.ok) throw new Error('metadata replay fixture was refused before its race');
+      sqlite.query("UPDATE events SET payload=json_set(payload, '$.errorMessage', ?) WHERE event_id=?")
+        .run('changed after source proof', original.eventId);
+      const raw = sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=?').get(original.eventId);
+      const outcome = planned.write.interpret(await db.batch(planned.write.statements));
+      expect(outcome).toEqual({ persisted: false, code: 'event_id_conflict', reason: 'event id conflict' });
+      expect(sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: null });
+      expect(sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=?').get(original.eventId)).toEqual(raw);
+      expect(await db.prepare(`SELECT ${planned.write.proof.sql} AS admitted`).bind(...planned.write.proof.params).first())
+        .toEqual({ admitted: 0 });
+      sqlite.query('UPDATE events SET payload=? WHERE event_id=?').run(JSON.stringify(original.payload), original.eventId);
+      expect(await ingestEvent(db, context, replay)).toEqual({ persisted: true, projected: true });
+      expect(sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: 'reported' });
+    } finally { sqlite.close(); }
+  });
+
+  it('propagates a replay source lookup failure before preparing oversized tool input', async () => {
+    const fixture = sqliteEnv();
+    try {
+      seedCredential(fixture.sqlite, { id: ctx.tokenId, machineId: ctx.machineId });
+      const failure = new Error('injected replay source lookup failure');
+      const db = { ...fixture.db, prepare(sql: string) {
+        if (sql.includes('SELECT session_id,kind,channel,payload,created_at,producer_adapter,producer_version,envelope_hash')) throw failure;
+        return fixture.db.prepare(sql);
+      } };
+      const event = envelope({ eventId: uuid(73), sessionId: 'replay-lookup-failure', kind: 'tool.failure',
+        producer: { adapter: TRANSCRIPT_PARSE_ADAPTER, version: '1' },
+        payload: { toolCallId: uuid(74), toolName: 'Read', input: { text: 'x'.repeat(TOOL_INPUT_PREVIEW_BYTES + 1) }, success: false, errorMessage: 'failure', resultReason: 'reported' } });
+      await expect(planEventWrite(db, { ...ctx, writeOrigin: 'server' }, event, fixture.serverEnv)).rejects.toBe(failure);
+      expect(count(fixture.sqlite, 'prepared_archive_bundles')).toBe(0);
+      expect(count(fixture.sqlite, 'archive_bundles')).toBe(0);
+      expect(count(fixture.sqlite, 'events')).toBe(0);
+      expect(fixture.bucket.puts).toEqual([]);
+      expect(fixture.bucket.objects.size).toBe(0);
+    } finally { fixture.sqlite.close(); }
+  });
+
   it('reserves the parser\'s adapter for the Deployment: a member claiming it is refused, the parser writing it is stored', async () => {
     const { db, sqlite } = realDb();
     const forged = envelope({ eventId: uuid(7), producer: { adapter: TRANSCRIPT_PARSE_ADAPTER, version: '1' } });

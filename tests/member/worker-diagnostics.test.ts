@@ -1,4 +1,4 @@
-import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-text';
+import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 /**
  * A harness that stops on a missing login, a rate limit, a timeout or a crash is recorded by its coded reason, read

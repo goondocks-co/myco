@@ -20,7 +20,7 @@ import { utf8, uuidv5 } from '../../hash.js';
 import { canonicalPromptId, type ClaudePromptShape, type ClaudeRecordKey, type OffsetPromptNamespace, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { canonicalRecordId, deriveLegacyRecordId, extractRecordSource, recordPlanCoordinate, RecordSourceAbsent, LEGACY_RECORD_ID_SCHEME, type RecordIdScheme, type RecordSourceRequest, type ReplySource } from '@goondocks/myco-shared/record-identity';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
-import type { TranscriptRole } from '@goondocks/myco-shared/member-protocol';
+import type { TranscriptRole, ToolResultReason } from '@goondocks/myco-shared/member-protocol';
 import { MAX_ID_CHARS, MAX_PAYLOAD_BYTES } from '../envelope.js';
 import { kindSpec, type Payload } from '../kinds.js';
 
@@ -121,11 +121,11 @@ export function withoutPrompts(state: ParserState): void {
 }
 
 /** A declared complete transcript records calls whose results never arrived. */
-export function unfinishedCalls(pending: Iterable<readonly [string, PendingCall]>, errorMessage = 'tool call has no result in the transcript'): DerivedEvent[] {
+export function unfinishedCalls(pending: Iterable<readonly [string, PendingCall]>, reason: Exclude<ToolResultReason, 'reported'>, errorMessage = 'tool call has no result in the transcript'): DerivedEvent[] {
   return [...pending].map(([key, call]) => ({
     kind: 'tool.failure', source: { key, block: 0 }, legacyId: call.toolCallId,
     payload: { toolCallId: call.toolCallId, promptId: call.promptId, toolName: call.toolName, input: call.input,
-      success: false, errorMessage },
+      success: false, errorMessage, resultReason: reason },
     createdAt: call.createdAt, offset: call.offset,
   }));
 }

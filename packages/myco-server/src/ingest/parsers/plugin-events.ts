@@ -17,6 +17,8 @@
  * produced it — the turn is still the user's work, and dropping it loses a
  * prompt at the moment capture is already degraded.
  */
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
+import { toolResultDeclarationOf, toolResultFailed } from '@goondocks/myco-shared/tool-result';
 import { canonicalPromptId } from '@goondocks/myco-shared/prompt-identity';
 import { uuidv5 } from '../../hash.js';
 import {
@@ -139,7 +141,7 @@ export function pluginEventsParser(options: {
           const name = str(line.name);
           if (name === undefined) continue;
           const source = recordSource(input, agent, { kind: 'tool-call', record: value, role: 'call' });
-          const failed = line.failed === true;
+          const failed = toolResultFailed({ declaration: toolResultDeclarationOf(CAPTURE_RULE_BUNDLES, agent), record: value, result: line });
           const output = typeof line.output === 'string' ? line.output.slice(0, TOOL_OUTPUT_PREVIEW_CHARS) : undefined;
           events.push({
             kind: failed ? 'tool.failure' : 'tool.use', source,
@@ -151,7 +153,7 @@ export function pluginEventsParser(options: {
               input: toolInput(line.input) ?? {},
               output,
               success: !failed,
-              ...(failed ? { errorMessage: output ?? 'tool call failed' } : {}),
+              ...(failed ? { resultReason: 'reported', errorMessage: output ?? 'tool call failed' } : {}),
             },
             createdAt,
             offset,

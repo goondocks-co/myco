@@ -389,7 +389,7 @@ describe('read/turns', () => {
     for (const prompt of [false, true]) {
       const params = ['proj_1', 's1', ...(prompt ? [UUID(1)] : [])];
       const plan = sqlite.query('EXPLAIN QUERY PLAN ' + toolUsageSql(prompt)).all(...params) as { detail: string }[];
-      expect(plan.find(p => p.detail.startsWith('SEARCH tool_calls'))?.detail).toContain('idx_tool_calls_prompt (project_id=? AND session_id=?');
+      expect(plan.find(p => p.detail.startsWith('SEARCH tool_calls'))?.detail).toMatch(/idx_tool_calls_(?:prompt|activity) \(project_id=\? AND session_id=\?/);
       if (prompt) expect(plan.find(p => p.detail.startsWith('SEARCH tool_calls'))?.detail).toContain('prompt_id=?');
     }
   });

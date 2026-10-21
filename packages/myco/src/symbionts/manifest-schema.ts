@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { assertRecordIdentityDeclaration, type RecordIdentityDeclaration } from '@goondocks/myco-shared/record-identity';
+import { assertToolResultDeclaration, type ToolResultDeclaration } from '@goondocks/myco-shared/tool-result';
 import path from 'node:path';
 
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
@@ -984,6 +985,10 @@ const RecordIdentitySchema = z.custom<RecordIdentityDeclaration>((value) => {
   try { assertRecordIdentityDeclaration('', value); return true; } catch { return false; }
 }, { message: 'recordIdentity must declare supported schemes, record kinds, source paths and evidence' });
 
+const ToolResultSchema = z.custom<ToolResultDeclaration>((value) => {
+  try { assertToolResultDeclaration('', value); return true; } catch { return false; }
+}, { message: 'toolResult must declare a failure field or its absence, with evidence' });
+
 export const SymbiontManifestSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -1075,6 +1080,7 @@ export const SymbiontManifestSchema = z.object({
   runner: RunnerManifestSchema.optional(),
   promptIdentity: PromptIdentitySchema.optional(),
   recordIdentity: RecordIdentitySchema.optional(),
+  toolResult: ToolResultSchema.optional(),
 }).strict().superRefine((m, ctx) => {
   const resolved = resolvePromptIdentity(m.promptIdentity, m.capabilities?.turnRowSource ?? 'hook');
   if (!resolved.ok) ctx.addIssue({ code: 'custom', message: resolved.reason, path: ['promptIdentity'] });

@@ -48,9 +48,6 @@ export type WorkerFailureCode = (typeof WORKER_FAILURE_CODES)[number];
 export const RUN_STOP_REASONS = ['end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled', 'error'] as const;
 export type RunStopReason = (typeof RUN_STOP_REASONS)[number];
 
-/** Structured harness diagnostics supported by a Deployment's worker end reports. */
-export const HARNESS_STOP_FEATURE = 'harness-stop-v1';
-
 /** What a driver knows of how a harness ended: a code where its stream's structure says one, its words, and its exit status. */
 export interface HarnessEnding {
   fields?: HarnessStopFields;

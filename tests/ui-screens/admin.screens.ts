@@ -109,7 +109,7 @@ async function expectModels(page: Page): Promise<void> {
   const tabs = page.getByRole('navigation', { name: 'Settings sections' });
   await expect(tabs.getByRole('link', { name: 'Models and keys' })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('heading', { name: 'Claude Code tiers' })).toBeVisible();
-  await expect(page.getByRole('combobox', { name: 'Embedding provider' })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: /^Embedding\ provider(?::|$)/ })).toBeVisible();
   await expect(page.getByLabel('Provider', { exact: true })).toHaveCount(0);
   await expect(page.locator('#credentials')).toBeVisible();
   if (!onFixture()) return;

@@ -116,7 +116,7 @@ const location = () => screen.getByTestId('location').textContent;
 
 /** Opens a design-system select by its label and picks one option, the way a person does. */
 async function pick(label: string, option: string) {
-  fireEvent.click(await screen.findByRole('combobox', { name: label }));
+  fireEvent.click(await screen.findByRole('combobox', { name: new RegExp(`^${label}(?::|$)`) }));
   fireEvent.click(await screen.findByRole('option', { name: option }));
 }
 
@@ -202,14 +202,14 @@ describe('the sessions table', () => {
     expect(document.querySelectorAll('[data-filter-bar]')).toHaveLength(1);
     // The closed controls show their short words; the lists say them in full.
     expect(within(bar).getByRole('button', { name: 'Agent: Any agent' }).textContent).toBe('Agent');
-    expect(within(bar).getAllByRole('combobox').map((c) => [c.getAttribute('aria-label'), c.textContent])).toEqual([['Member', 'Member'], ['State', 'State'], ['Active', 'Active: any time']]);
+    expect(within(bar).getAllByRole('combobox').map((c) => [c.getAttribute('aria-label'), c.textContent])).toEqual([['Member', 'Member'], ['State', 'State'], ['Active: any time', 'Active: any time']]);
 
     await pickAgent('Codex');
     await waitFor(() => expect(location()).toBe('/p/x/sessions?agent=codex'));
     await waitFor(() => expect(requested).toContain(listPath({ projectId: 'x', agent: 'codex' })));
 
     // Members are offered by name; one known only by an id is left out, and Myco's own account reads "Myco".
-    fireEvent.click(screen.getByRole('combobox', { name: 'Member' }));
+    fireEvent.click(screen.getByRole('combobox', { name: /^Member(?::|$)/ }));
     expect((await screen.findAllByRole('option')).map((o) => o.textContent)).toEqual(['Any member', 'Ada', 'Myco']);
     fireEvent.click(screen.getByRole('option', { name: 'Myco' }));
     await waitFor(() => expect(requested).toContain(listPath({ projectId: 'x', agent: 'codex', member: 'harness' })));
@@ -250,8 +250,8 @@ describe('the sessions table', () => {
     // An ended list has no live group to ask for.
     expect(requested.some((p) => p.includes('state=open'))).toBe(false);
     expect(screen.getByRole('button', { name: 'Agent: Cursor' })).toBeTruthy();
-    expect(screen.getByRole('combobox', { name: 'State' }).textContent).toBe('Ended');
-    expect(screen.getByRole('combobox', { name: 'Active' }).textContent).toBe('Past 7 days');
+    expect(screen.getByRole('combobox', { name: /^State(?::|$)/ }).textContent).toBe('Ended');
+    expect(screen.getByRole('combobox', { name: /^Active(?::|$)/ }).textContent).toBe('Past 7 days');
     expect(document.querySelector('[data-branch-filter]')!.textContent).toContain('main');
     expect((screen.getByRole('searchbox', { name: 'Filter sessions' }) as HTMLInputElement).value).toBe('rounding');
     fireEvent.click(screen.getByRole('button', { name: 'Clear the search and filters' }));
@@ -417,7 +417,7 @@ describe('the session reading page', () => {
     const tabs = screen.getByRole('tablist', { name: 'What the session holds' });
     expect(summary.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // The tabs name what they hold and count nothing.
-    expect(within(tabs).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation', 'Outcomes', 'Spores', 'Plans']);
+    expect(within(tabs).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation', 'Agent activity', 'Outcomes', 'Spores', 'Plans']);
     expect(screen.getByRole('navigation', { name: 'Breadcrumb' }).textContent).toBe('SessionsProject X');
     // The facts, in words; the id is only copied.
     const facts = screen.getByRole('complementary', { name: 'About this session' });
@@ -454,6 +454,84 @@ describe('the session reading page', () => {
     } finally {
       if (clipboard === undefined) Reflect.deleteProperty(navigator, 'clipboard'); else Object.defineProperty(navigator, 'clipboard', clipboard);
     }
+  });
+
+  const activityRow = (over: Record<string, unknown> = {}) => ({
+    id: 'activity-one', type: 'failure', title: 'Bash', detail: 'Tool reported a failure', at: NOW - MINUTE,
+    promptId: P1, toolName: 'Bash', resultReason: 'reported', failed: true, ...over,
+  });
+  const activityPage = (rows: unknown[], cursor: string | null = null) => Response.json({ rows, cursor, tools: ['Bash', 'Read'] });
+
+  it('lists diagnostic reasons and opens only the prompt target the server verified', async () => {
+    server(routes({
+      '/api/projects/x/sessions/s1/activity': () => activityPage([
+        activityRow(),
+        activityRow({ id: 'no-result', type: 'no_result', title: 'Read', detail: 'No result captured · Not tied to a prompt', promptId: null, resultReason: 'no_result' }),
+        activityRow({ id: 'legacy', title: 'Tool call did not succeed', detail: 'Reason not recorded · Not tied to a prompt', promptId: null, resultReason: null }),
+      ]),
+    }));
+    mount('/p/x/sessions/s1?tab=activity');
+    const list = await screen.findByRole('list', { name: 'Agent activity' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(3);
+    expect(within(list).getAllByText('Failure')[0]).toBeTruthy();
+    expect(within(list).getByText('No result captured')).toBeTruthy();
+    expect(within(list).getByText('Tool call did not succeed')).toBeTruthy();
+    expect(within(list).getByText('Reason not recorded · Not tied to a prompt')).toBeTruthy();
+    expect(within(list).getAllByRole('link')).toHaveLength(1);
+    expect(within(list).getByRole('link').getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P1}`);
+    expect(screen.queryByRole('searchbox')).toBeNull();
+    expect(rawIdsInPage()).toEqual([]);
+    fireEvent.click(within(list).getByRole('link'));
+    await waitFor(() => expect(location()).toBe(`/p/x/sessions/s1?turn=${P1}`));
+    expect(await screen.findByTestId(`turn-${P1}`)).toBeTruthy();
+  });
+
+  it('pages activity under structured filters and drops activity filters when opening another tab', async () => {
+    const { requested } = server(routes({
+      '/api/projects/x/sessions/s1/activity': (_init, url) => {
+        if (url!.searchParams.get('tool') === 'Read') return activityPage([]);
+        return url!.searchParams.has('cursor')
+          ? activityPage([activityRow({ id: 'second', title: 'Second failure' })])
+          : activityPage([activityRow()], 'next:page');
+      },
+    }));
+    mount('/p/x/sessions/s1?tab=activity&type=failure&tool=Bash&q=ignored-body');
+    await screen.findByRole('list', { name: 'Agent activity' });
+    expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=failure&tool=Bash');
+    expect(screen.getByText('Showing 1 activity events')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    await screen.findByText('Second failure');
+    expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=failure&tool=Bash&cursor=next%3Apage');
+    expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
+    await pick('Tool', 'Read');
+    await waitFor(() => expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=failure&tool=Read'));
+    expect(screen.queryByRole('combobox', { name: /^Result(?::|$)/ })).toBeNull();
+    await screen.findByText('No agent activity in this session matches these filters.');
+    expect(screen.queryByRole('list', { name: 'Agent activity' })).toBeNull();
+    const activityReads = () => requested.filter(path => path.startsWith('/api/projects/x/sessions/s1/activity?'));
+    const beforeExit = activityReads();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Plans' }));
+    await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=plans'));
+    expect(await screen.findByText('No plans were captured in this session.')).toBeTruthy();
+    expect(activityReads()).toEqual(beforeExit);
+  });
+
+  it('keeps a linked tool filter visible when the session has no matching calls', async () => {
+    server(routes({ '/api/projects/x/sessions/s1/activity': () => activityPage([]) }));
+    mount('/p/x/sessions/s1?tab=activity&tool=Unrecorded');
+    await screen.findByText('No agent activity in this session matches these filters.');
+    expect(screen.getByRole('combobox', { name: 'Tool: Unrecorded' }).textContent).toBe('Unrecorded');
+  });
+
+  it('surfaces an activity read failure and retries into the unfiltered empty state', async () => {
+    let fail = true;
+    server(routes({ '/api/projects/x/sessions/s1/activity': () => fail ? new Response(null, { status: 503 }) : activityPage([]) }));
+    mount('/p/x/sessions/s1?tab=activity');
+    const alert = await screen.findByRole('alert');
+    expect(screen.queryByText('No agent activity was recorded in this session.')).toBeNull();
+    fail = false;
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('No agent activity was recorded in this session.')).toBeTruthy();
   });
 
   it('says what came of the session: how many spores, one link from their tab, and each run with whether the Deployment holds a record of its reading', async () => {
@@ -1188,7 +1266,7 @@ describe('the session reading page', () => {
     await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=plans'));
     expect(await screen.findByRole('list', { name: 'Plans' })).toBeTruthy();
     expect((screen.getByRole('searchbox', { name: 'Search plans' }) as HTMLInputElement).value).toBe('');
-    expect(screen.getByRole('combobox', { name: 'Status' }).textContent).toBe('Every status');
+    expect(screen.getByRole('combobox', { name: /^Status(?::|$)/ }).textContent).toBe('Every status');
   });
 
   describe('searching the conversation', () => {

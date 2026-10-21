@@ -314,3 +314,69 @@ describe('searching a session\'s conversation', () => {
     expect((await query({ order: 'newest' })).status).toBe(400);
   });
 });
+
+describe('a session\'s agent activity', () => {
+  async function activity() {
+    const h = await harness();
+    h.session('proj_1', 's1', NOW);
+    h.session('proj_1', 's2', NOW);
+    h.session('proj_2', 's1', NOW);
+    const prompt = (project: string, session: string, id: string) => h.sqlite.run(`INSERT INTO prompt_batches
+      (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
+      VALUES (?, ?, ?, ?, 'prompt body secret', 'user', ?, ?, ?, 'tok_1', ?)`, [project, session, id, id, id, NOW, NOW, NOW]);
+    const call = (id: string, reason: string | null, at: number, over: { project?: string; session?: string; prompt?: string; tool?: string; success?: number } = {}) => h.sqlite.run(`INSERT INTO tool_calls
+      (project_id,session_id,tool_call_id,event_id,tool_name,prompt_id,success,result_reason,input,output_preview,error_message,created_at,token_id,received_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'input secret', 'output secret', 'error secret', ?, 'tok_1', ?)`,
+      [over.project ?? 'proj_1', over.session ?? 's1', id, id, over.tool ?? 'Bash', over.prompt ?? null, over.success ?? 0, reason, at, NOW]);
+    return { ...h, prompt, call };
+  }
+  const base = '/api/projects/proj_1/sessions/s1/activity';
+  const rowIds = (body: Record<string, unknown>) => (body.rows as { id: string }[]).map(r => r.id);
+
+  it('projects stored reasons and only prompt targets in the same project and session, without tool bodies', async () => {
+    const { get, prompt, call } = await activity();
+    prompt('proj_1', 's1', 'p_here');
+    prompt('proj_1', 's2', 'p_elsewhere');
+    prompt('proj_2', 's1', 'p_other_project');
+    call('reported', 'reported', NOW + 1, { prompt: 'p_here' });
+    call('idle', 'no_result', NOW + 2, { prompt: 'p_elsewhere' });
+    call('pending', 'pending_limit', NOW + 3, { prompt: 'p_other_project' });
+    call('legacy', null, NOW + 4);
+    call('complete', 'no_result', NOW + 5);
+    call('end', 'no_result', NOW + 6);
+    call('success', null, NOW + 7, { success: 1 });
+    call('other_session', 'reported', NOW + 8, { session: 's2' });
+    call('other_project', 'reported', NOW + 9, { project: 'proj_2' });
+    const { status, body } = await get(base);
+    expect(status).toBe(200);
+    expect(rowIds(body)).toEqual(['end', 'complete', 'legacy', 'pending', 'idle', 'reported']);
+    const rows = body.rows as Record<string, unknown>[];
+    expect(rows.map(r => [r.type, r.promptId])).toEqual([['no_result', null], ['no_result', null], ['failure', null], ['no_result', null], ['no_result', null], ['failure', 'p_here']]);
+    expect(rows.find(r => r.id === 'legacy')).toMatchObject({ title: 'Tool call did not succeed', detail: 'Reason not recorded · Not tied to a prompt' });
+    for (const row of rows.filter(r => r.id !== 'reported')) expect(row.detail).toContain('Not tied to a prompt');
+    expect(JSON.stringify(body)).not.toMatch(/input secret|output secret|error secret|prompt body secret/);
+    expect((await get('/api/projects/proj_1/sessions/absent/activity')).status).toBe(404);
+    expect((await get('/api/projects/absent/sessions/s1/activity')).status).toBe(404);
+  });
+
+  it('filters the full collection and pages immutable time and id ties while new rows arrive', async () => {
+    const { sqlite, get, call } = await activity();
+    for (const index of sqlite.query<{ name: string; origin: string }, []>("PRAGMA index_list('tool_calls')").all()) {
+      if (index.origin !== 'pk') sqlite.exec(`DROP INDEX "${index.name}"`);
+    }
+    call('late_b', 'reported', NOW, { tool: 'Read' });
+    call('late_a', 'reported', NOW, { tool: 'Read' });
+    for (let i = 0; i < 5; i++) call(`noise_${i}`, 'no_result', NOW + 10 + i);
+    expect(rowIds((await get(`${base}?limit=2`)).body)).toEqual(['noise_4', 'noise_3']);
+    const first = (await get(`${base}?limit=1&type=failure&tool=Read&failed=true`)).body;
+    expect(rowIds(first)).toEqual(['late_b']);
+    expect(first.tools).toEqual(['Bash', 'Read']);
+    call('new', 'reported', NOW + 100, { tool: 'Read' });
+    const next = (await get(`${base}?limit=1&type=failure&tool=Read&failed=true&cursor=${encodeURIComponent(first.cursor as string)}`)).body;
+    expect([rowIds(next), next.cursor]).toEqual([['late_a'], null]);
+    expect(rowIds((await get(`${base}?tool=read`)).body)).toEqual([]);
+    expect(rowIds((await get(`${base}?failed=false`)).body)).toEqual([]);
+    expect(rowIds((await get(`${base}?tool=error%20secret`)).body)).toEqual([]);
+    for (const query of ['type=all', 'failed=0', 'cursor=broken', 'limit=no']) expect((await get(`${base}?${query}`)).status).toBe(400);
+  });
+});
