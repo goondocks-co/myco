@@ -47,40 +47,64 @@
         ]
       }
     },
-    "resultPath": "message.content[0]"
+    "resultPath": "message.content[0]",
+    "provenance": {
+      "kind": "recording-derived",
+      "source": "tests/fixtures/claude-parse-basic.jsonl",
+      "detail": "Reduced tool_result shape; paired flag values and output text are synthetic controls."
+    }
   },
   {
     "agent": "codex",
     "before": [
       {
+        "timestamp": "2026-01-01T00:00:00.000Z",
+        "ordinal": 12,
         "type": "response_item",
         "payload": {
-          "type": "function_call",
-          "call_id": "call-1",
-          "name": "shell",
-          "arguments": "{}"
+          "type": "custom_tool_call",
+          "id": "redacted-8",
+          "status": "completed",
+          "call_id": "redacted-9",
+          "name": "exec",
+          "input": "[redacted input]",
+          "internal_chat_message_metadata_passthrough": {
+            "turn_id": "redacted-2",
+            "create_time": 1767225600.0
+          }
         }
       }
     ],
-    "reported": {
-      "type": "response_item",
-      "payload": {
-        "type": "function_call_output",
-        "call_id": "call-1",
-        "success": false,
-        "output": "same output regardless of status"
-      }
-    },
     "success": {
+      "timestamp": "2026-01-01T00:00:00.000Z",
+      "ordinal": 15,
       "type": "response_item",
       "payload": {
-        "type": "function_call_output",
-        "call_id": "call-1",
-        "success": true,
-        "output": "same output regardless of status"
+        "type": "custom_tool_call_output",
+        "id": "redacted-10",
+        "call_id": "redacted-9",
+        "output": [
+          {
+            "type": "input_text",
+            "text": "[redacted text]"
+          },
+          {
+            "type": "input_text",
+            "text": "[redacted text]"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "redacted-2",
+          "create_time": 1767225600.0
+        }
       }
     },
-    "resultPath": "payload"
+    "resultPath": "payload",
+    "provenance": {
+      "kind": "recording-derived",
+      "source": "tests/fixtures/codex-0.153.4-redacted.jsonl",
+      "detail": "Key-preserving recording, documented in tests/fixtures/codex-0.153.4-provenance.md; the recorded tool output has no per-tool failure flag."
+    }
   },
   {
     "agent": "pi",
@@ -133,7 +157,13 @@
         ]
       }
     },
-    "resultPath": "message"
+    "resultPath": "message",
+    "provenance": {
+      "kind": "recording-derived",
+      "source": "tests/fixtures/pi-parse-basic.jsonl",
+      "commit": "e420e56a33cbf75276861c24d2ab5e56028451a7",
+      "detail": "The introducing commit documents a scrubbed reduction of a real Pi store. The recorded isError is false; the true variant and neutral output text are synthetic paired controls."
+    }
   },
   {
     "agent": "opencode",
@@ -153,6 +183,11 @@
       "input": {},
       "output": "same output regardless of status",
       "failed": false
+    },
+    "provenance": {
+      "kind": "writer-derived",
+      "source": "packages/myco/src/symbionts/templates/opencode/plugin.ts",
+      "detail": "The plugin tool line writes failed from output?.error !== undefined; paired records are synthetic writer-contract controls."
     }
   },
   {
@@ -173,6 +208,11 @@
       "input": {},
       "output": "same output regardless of status",
       "failed": false
+    },
+    "provenance": {
+      "kind": "writer-derived",
+      "source": "packages/myco/src/symbionts/templates/cline/plugin.ts",
+      "detail": "The plugin tool line writes failed from call?.error !== undefined; paired records are synthetic writer-contract controls."
     }
   }
 ]

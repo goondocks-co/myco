@@ -32,6 +32,7 @@
       "@goondocks/myco-shared/harness-health": ["./packages/myco-shared/src/harness-health.ts"],
       "@goondocks/myco-shared/command-shape": ["./packages/myco-shared/src/command-shape.ts"],
       "@goondocks/myco-shared/run-text": ["./packages/myco-shared/src/run-text.ts"],
+      "@goondocks/myco-shared/run-protocol": ["./packages/myco-shared/src/run-protocol.ts"],
       "@goondocks/myco-shared/run-diagnostic": ["./packages/myco-shared/src/run-diagnostic.ts"],
       "@goondocks/myco-shared/worker-log": ["./packages/myco-shared/src/worker-log.ts"],
       "@goondocks/myco-shared/runner-step-words.generated": ["./packages/myco-shared/src/runner-step-words.generated.ts"],

@@ -3,19 +3,13 @@ import { useSessionActivity } from '../../hooks/use-sessions';
 import { projectPath } from '../../routes/nav';
 import { SessionEventList, type SessionEventRow } from './SessionEventList';
 
-export const ACTIVITY_FILTER_KEYS = ['type', 'tool', 'failed'] as const;
+export const ACTIVITY_FILTER_KEYS = ['type', 'tool'] as const;
 
 const TYPES: readonly SelectOption[] = [
   { value: ANY, label: 'Every type' },
   { value: 'failure', label: 'Failure' },
   { value: 'no_result', label: 'No result captured' },
 ];
-const RESULTS: readonly SelectOption[] = [
-  { value: ANY, label: 'Every result' },
-  { value: 'true', label: 'Did not succeed' },
-  { value: 'false', label: 'Succeeded' },
-];
-
 /** Recorded tool diagnostics; only a verified prompt target opens a turn. */
 export function SessionActivity({ projectId, sessionId, now }: { projectId: string; sessionId: string; now: number }) {
   const params = useFilterParams(ACTIVITY_FILTER_KEYS);
@@ -38,7 +32,6 @@ export function SessionActivity({ projectId, sessionId, now }: { projectId: stri
         filters={[
           { key: 'type', label: 'Type', options: TYPES },
           { key: 'tool', label: 'Tool', options: tools },
-          { key: 'failed', label: 'Result', options: RESULTS },
         ]}
         values={params.values}
         onFilterChange={params.setFilter}

@@ -117,6 +117,36 @@ const pendingCount = async (db: Parameters<typeof pendingTranscripts>[0], now = 
 
 
 describe('tool result reasons at the transcript writer', () => {
+  for (const recordScheme of ['legacy-session-v1', 'source-record-v1'] as const) {
+    for (const reread of ['owner', 'generation', 'import'] as const) {
+      it(`preserves no-result history across ${reread} reread under ${recordScheme}`, async () => {
+        const text = line({ type: 'assistant', uuid: 'unfinished-assistant', timestamp: new Date(NOW).toISOString(),
+          message: { content: [{ type: 'tool_use', id: 'unfinished-replay', name: 'Read', input: {} }] } });
+        const r = await rig(text, 1 << 20, { recordScheme });
+        const parse = async (now: number) => {
+          const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+          await parseTranscripts(measured.env, now, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
+        };
+        try {
+          await parse(NOW);
+          const settled = NOW + TRANSCRIPT_IDLE_MS + 1;
+          await parse(settled);
+          const held = r.sqlite.query('SELECT * FROM tool_calls').get();
+          const raw = r.sqlite.query("SELECT * FROM events WHERE kind='tool.failure'").get();
+          expect(held).toMatchObject({ result_reason: 'no_result' });
+          if (reread === 'import') r.sqlite.run('UPDATE transcripts SET imported_at=?', [settled]);
+          else r.sqlite.run('UPDATE sessions SET ended_at=?', [settled]);
+          if (reread === 'generation') r.sqlite.run('UPDATE transcripts SET parser_version=?', [PARSER_VERSION - 1]);
+          else await rereadTranscripts(r.env.db, { projectId: PROJECT, sessionId: SESSION });
+          for (let wake = 0; wake < 4; wake += 1) await parse(settled + SESSION_END_SETTLE_MS + 1 + wake);
+          expect(target(r.sqlite).parse_error).toBeNull();
+          expect(r.sqlite.query('SELECT * FROM tool_calls').get()).toEqual(held);
+          expect(r.sqlite.query("SELECT * FROM events WHERE kind='tool.failure'").get()).toEqual(raw);
+        } finally { r.sqlite.close(); }
+      });
+    }
+  }
+
   it('reparses a legacy failed row from declared evidence without changing its raw event or prompt', async () => {
     const at = new Date(NOW).toISOString();
     const text = line({ type: 'user', message: { content: 'read' }, timestamp: at })
@@ -155,6 +185,46 @@ describe('tool result reasons at the transcript writer', () => {
     } finally { r.sqlite.close(); }
   });
 
+  it.each(([
+    ['no_result', 'pending_limit'], ['pending_limit', 'no_result'],
+    ['no_result', 'no_result'], ['pending_limit', 'pending_limit'],
+  ] as const).flatMap(([held, replay]) => [[held, replay, false], [held, replay, true]] as const))('keeps a held %s reason when the same call replays as %s (legacy raw: %s)', async (heldReason, replayReason, legacyRaw) => {
+    const r = await rig('');
+    try {
+      const old = { eventId: uuid(89_101), sessionId: SESSION, kind: 'tool.failure', createdAt: NOW, channel: 'cli', producer: TRANSCRIPT_PRODUCER,
+        payload: { toolCallId: uuid(89_102), toolName: 'Read', input: {}, success: false, errorMessage: 'no captured result', ...(legacyRaw ? {} : { resultReason: heldReason }) } };
+      const ctx = { projectId: PROJECT, machineId: MACHINE, tokenId: r.tokenId, bodyBytes: 0, now: NOW, writeOrigin: 'server' as const };
+      expect(await ingestEvent(r.env.db, ctx, old, r.env)).toMatchObject({ persisted: true, projected: true });
+      if (legacyRaw) expect(await ingestEvent(r.env.db, ctx, { ...old, payload: { ...old.payload, resultReason: heldReason } }, r.env))
+        .toMatchObject({ persisted: true, projected: true });
+      const row = r.sqlite.query('SELECT * FROM tool_calls').get();
+      const raw = r.sqlite.query('SELECT * FROM events').all();
+      expect(await ingestEvent(r.env.db, ctx, { ...old, payload: { ...old.payload, resultReason: replayReason, errorMessage: 'another close' } }, r.env))
+        .toMatchObject({ persisted: true, duplicate: true });
+      expect(r.sqlite.query('SELECT * FROM tool_calls').get()).toEqual(row);
+      expect(r.sqlite.query('SELECT * FROM events').all()).toEqual(raw);
+      expect(await ingestEvent(r.env.db, ctx, { ...old, payload: { ...old.payload, resultReason: 'reported' } }, r.env))
+        .toMatchObject({ persisted: true, projected: true });
+      expect(await ingestEvent(r.env.db, ctx, old, r.env)).toMatchObject({ persisted: true, duplicate: true });
+      const reported = r.sqlite.query('SELECT * FROM tool_calls').get();
+      expect(await ingestEvent(r.env.db, ctx, { ...old, payload: { ...old.payload, resultReason: replayReason, errorMessage: 'future bound close' } }, r.env))
+        .toMatchObject({ persisted: true, duplicate: true });
+      expect(r.sqlite.query('SELECT * FROM tool_calls').get()).toEqual(reported);
+      expect(r.sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: 'reported' });
+      expect(r.sqlite.query('SELECT * FROM events').all()).toEqual(raw);
+      expect(await ingestEvent(r.env.db, ctx, { ...old, eventId: uuid(89_103), kind: 'tool.use',
+        payload: { toolCallId: old.payload.toolCallId, toolName: 'Read', input: {}, success: true } }, r.env))
+        .toMatchObject({ persisted: true, projected: true });
+      const succeeded = r.sqlite.query('SELECT * FROM tool_calls').get();
+      const successfulHistory = r.sqlite.query('SELECT * FROM events').all();
+      expect(await ingestEvent(r.env.db, ctx, { ...old, payload: { ...old.payload, resultReason: replayReason, errorMessage: 'close after success' } }, r.env))
+        .toMatchObject({ persisted: true, duplicate: true });
+      expect(r.sqlite.query('SELECT * FROM tool_calls').get()).toEqual(succeeded);
+      expect(r.sqlite.query('SELECT success,result_reason FROM tool_calls').get()).toEqual({ success: 1, result_reason: null });
+      expect(r.sqlite.query('SELECT * FROM events').all()).toEqual(successfulHistory);
+    } finally { r.sqlite.close(); }
+  });
+
   it('admits additive result metadata only through the original event and common admission, and reports the accepted replay', async () => {
     const r = await rig('');
     try {
@@ -189,7 +259,7 @@ describe('tool result reasons at the transcript writer', () => {
       const settled = NOW + TRANSCRIPT_IDLE_MS + 1;
       if (boundary === 'idle') await parse(settled);
       const id = await uuidv5('tool-call', SESSION, 'late-failed-0');
-      expect(r.sqlite.query('SELECT result_reason FROM tool_calls WHERE tool_call_id=?').get(id)).toEqual({ result_reason: boundary === 'idle' ? 'no_result:idle' : 'pending_limit' });
+      expect(r.sqlite.query('SELECT result_reason FROM tool_calls WHERE tool_call_id=?').get(id)).toEqual({ result_reason: boundary === 'idle' ? 'no_result' : 'pending_limit' });
       const raw = r.sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=(SELECT event_id FROM tool_calls WHERE tool_call_id=?)').get(id);
       await appendSegment(r.sqlite, r.serverEnv, r.tokenId, TRANSCRIPT,
         line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'late-failed-0', is_error: true, content: 'permission denied' }] }, timestamp: new Date(settled).toISOString() }), settled);
@@ -225,7 +295,7 @@ describe('tool result reasons at the transcript writer', () => {
       await rereadTranscripts(r.env.db, { projectId: PROJECT, sessionId: SESSION });
       await parse(NOW + TRANSCRIPT_IDLE_MS + 2);
       await parse(NOW + TRANSCRIPT_IDLE_MS + 3);
-      expect(r.sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: 'no_result:idle' });
+      expect(r.sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: 'no_result' });
       expect(r.sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=?').get(eventId)).toEqual(raw);
       expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') unfinished,parse_error FROM transcripts").get())
         .toEqual({ unfinished: 0, parse_error: null });
@@ -266,7 +336,7 @@ describe('tool result reasons at the transcript writer', () => {
       await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
       await parseTranscripts(r.serverEnv, NOW + TRANSCRIPT_IDLE_MS + 1, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
       const before = r.sqlite.query('SELECT tool_call_id,success,result_reason FROM tool_calls').get() as { tool_call_id: string };
-      expect(before).toMatchObject({ success: 0, result_reason: 'no_result:idle' });
+      expect(before).toMatchObject({ success: 0, result_reason: 'no_result' });
       await appendSegment(r.sqlite, r.serverEnv, r.tokenId, TRANSCRIPT,
         line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'idle-result', content: 'ok' }] }, timestamp: at }),
         NOW + TRANSCRIPT_IDLE_MS + 2);
@@ -587,7 +657,7 @@ describe('repair lane priority', () => {
         }
       }
       expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') AS unfinished FROM transcripts").get()).toEqual({ unfinished: 0 });
-      expect(r.sqlite.query("SELECT COUNT(*) AS n FROM tool_calls WHERE result_reason='no_result:idle'").get()).toEqual({ n: 32 });
+      expect(r.sqlite.query("SELECT COUNT(*) AS n FROM tool_calls WHERE result_reason='no_result'").get()).toEqual({ n: 32 });
       expect(target(r.sqlite).parse_error).toBeNull();
     } finally { r.sqlite.close(); }
   });

@@ -541,11 +541,7 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
       }
     },
     "toolResult": {
-      "failure": {
-        "from": "record",
-        "path": "payload.success",
-        "equals": false
-      },
+      "failure": null,
       "evidence": "tests/fixtures/tool-result-evidence.json"
     }
   },

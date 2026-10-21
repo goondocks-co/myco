@@ -76,7 +76,7 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
       if (input.terminal !== undefined || input.state === undefined) {
         await flushReply();
         if (input.terminal !== 'turn_end') {
-          events.push(...unfinishedCalls(Object.entries(state.pending ?? {}), `no_result:${input.terminal ?? 'complete_file'}`));
+          events.push(...unfinishedCalls(Object.entries(state.pending ?? {}), 'no_result'));
           state.pending = {};
         }
       }

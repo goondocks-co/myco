@@ -253,7 +253,7 @@ describe('claude-code parser', () => {
 });
 
 describe('reported tool results', () => {
-  for (const row of toolResultEvidence) {
+  for (const row of toolResultEvidence.filter(row => row.reported !== undefined)) {
     it(`${row.agent}: reports a failure reason only when the harness reports failure`, async () => {
       for (const failed of [true, false]) {
         const records = [...row.before, failed ? row.reported : row.success];

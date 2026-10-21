@@ -1,3 +1,4 @@
+import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
 export const SERVER_SCHEMA_VERSION = 94;
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
@@ -49,7 +50,6 @@ import { EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATU
 import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
 import { REPOSITORY_FAILURE_FEATURE } from '@goondocks/myco-shared/repository';
 import { HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
-import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-text';
 export const SERVER_FEATURES = [...MEMBER_FEATURES, MACHINE_SETTINGS_FEATURE, WORKER_ACCOUNTING_FEATURE, EXECUTION_PROFILE_FEATURE, PROFILE_OUTCOME_FEATURE, MODEL_CATALOG_FEATURE, WORKER_STEPS_FEATURE, HARNESS_HEALTH_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE, REPOSITORY_FAILURE_FEATURE, HARNESS_STOP_FEATURE] as const;
 /** The Project a member request acts on. A credential is Deployment-wide, so the Project travels per request. It rides a header rather than the envelope: an envelope field is a protocol bump, and a member whose spool holds records of the older protocol stops draining them entirely. */
 export const PROJECT_HEADER = 'x-myco-project';

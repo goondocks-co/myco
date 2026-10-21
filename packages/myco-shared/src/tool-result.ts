@@ -1,7 +1,7 @@
 import { getAtPath, parseDotPath } from './dot-path.js';
 
 export interface ToolResultDeclaration {
-  failure: { from: 'record' | 'result'; path: string; equals: boolean };
+  failure: { from: 'record' | 'result'; path: string; equals: boolean } | null;
   evidence: string;
 }
 
@@ -12,12 +12,14 @@ export class ToolResultDeclarationInvalid extends Error {
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0 && !value.includes('\0');
 
-/** Admits one manifest-owned failure flag and its evidence. */
+/** Admits one manifest-owned failure flag or its explicit absence and evidence. */
 export function assertToolResultDeclaration(_agent: string, value: unknown): asserts value is ToolResultDeclaration {
   const refuse = (): never => { throw new ToolResultDeclarationInvalid(); };
   if (!object(value)) refuse();
   const declaration = value as Record<string, unknown>;
-  if (Object.keys(declaration).some(key => key !== 'failure' && key !== 'evidence') || !text(declaration.evidence) || !object(declaration.failure)) refuse();
+  if (Object.keys(declaration).some(key => key !== 'failure' && key !== 'evidence') || !text(declaration.evidence)) refuse();
+  if (declaration.failure === null) return;
+  if (!object(declaration.failure)) refuse();
   const failure = declaration.failure as Record<string, unknown>;
   if (Object.keys(failure).some(key => !['from', 'path', 'equals'].includes(key))
     || (failure.from !== 'record' && failure.from !== 'result') || !text(failure.path) || typeof failure.equals !== 'boolean') refuse();
@@ -33,5 +35,5 @@ export function toolResultDeclarationOf(bundles: readonly { name: string; toolRe
 export function toolResultFailed(request: { declaration: ToolResultDeclaration | undefined; record?: unknown; result?: unknown }): boolean {
   assertToolResultDeclaration('', request.declaration);
   const { failure } = request.declaration;
-  return getAtPath(request[failure.from], failure.path) === failure.equals;
+  return failure !== null && getAtPath(request[failure.from], failure.path) === failure.equals;
 }

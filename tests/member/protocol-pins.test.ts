@@ -86,8 +86,8 @@ const FINAL_SHAPE_BY_PROTOCOL: Record<number, { memberKinds: readonly string[]; 
     featureKinds: ['context.delivered', 'turn'],
     featureFields: {
       'tool-result-reason': {
-        'tool.failure': { resultReason: { required: false, enums: ['no_result:complete_file', 'no_result:idle', 'no_result:session_end', 'pending_limit', 'reported'] } },
-        'tool.use': { resultReason: { required: false, enums: ['no_result:complete_file', 'no_result:idle', 'no_result:session_end', 'pending_limit', 'reported'] } },
+        'tool.failure': { resultReason: { required: false, enums: ['no_result', 'pending_limit', 'reported'] } },
+        'tool.use': { resultReason: { required: false, enums: ['no_result', 'pending_limit', 'reported'] } },
       },
     },
     channels: ['cli', 'http', 'import'],

@@ -5,7 +5,7 @@ import { keyset, page, type Page, type ReadScope } from './scope.js';
 /** Each source declares its stored classification, immutable order and structured filters. */
 export const SESSION_ACTIVITY_SOURCES = [
   { type: 'failure', where: "t.success = 0 AND (t.result_reason = 'reported' OR t.result_reason IS NULL)", order: 't.created_at', id: 't.tool_call_id', tool: 't.tool_name', failed: 't.success = 0' },
-  { type: 'no_result', where: "t.success = 0 AND t.result_reason IN ('no_result:complete_file', 'no_result:session_end', 'no_result:idle', 'pending_limit')", order: 't.created_at', id: 't.tool_call_id', tool: 't.tool_name', failed: 't.success = 0' },
+  { type: 'no_result', where: "t.success = 0 AND t.result_reason IN ('no_result', 'pending_limit')", order: 't.created_at', id: 't.tool_call_id', tool: 't.tool_name', failed: 't.success = 0' },
 ] as const;
 
 export type SessionActivityType = typeof SESSION_ACTIVITY_SOURCES[number]['type'];
@@ -32,9 +32,7 @@ export interface SessionActivityOptions {
 
 const REASON_DETAILS: Readonly<Record<ToolResultReason, string>> = {
   reported: 'Tool reported a failure',
-  'no_result:complete_file': 'No result captured before the transcript completed',
-  'no_result:session_end': 'No result captured before the session ended',
-  'no_result:idle': 'No result captured before the session became idle',
+  no_result: 'No result captured',
   pending_limit: 'Pending tool call limit reached',
 };
 

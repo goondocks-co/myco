@@ -787,7 +787,7 @@ async function seedSessionActivity(databasePath: string, sessionId: string, prom
   try {
     for (const [index, row] of [
       { tool: 'Bash', reason: 'reported', prompt: promptId },
-      { tool: 'Read', reason: 'no_result:session_end', prompt: null },
+      { tool: 'Read', reason: 'no_result', prompt: null },
       { tool: 'Write', reason: null, prompt: null },
       { tool: 'Grep', reason: 'pending_limit', prompt: null },
     ].entries()) {

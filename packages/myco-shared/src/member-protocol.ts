@@ -57,7 +57,7 @@ export const FEATURES_HEADER = 'x-myco-features';
 export const PROJECT_NAME_FEATURE = 'project-name';
 /** Tool-result reasons travel only to Deployments that admit the optional field. */
 export const TOOL_RESULT_REASON_FEATURE = 'tool-result-reason';
-export const TOOL_RESULT_REASONS = ['reported', 'no_result:complete_file', 'no_result:session_end', 'no_result:idle', 'pending_limit'] as const;
+export const TOOL_RESULT_REASONS = ['reported', 'no_result', 'pending_limit'] as const;
 export type ToolResultReason = (typeof TOOL_RESULT_REASONS)[number];
 export const MEMBER_FEATURES = ['turn', PROJECT_NAME_FEATURE, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE, TOOL_RESULT_REASON_FEATURE] as const;
 export type MemberFeature = (typeof MEMBER_FEATURES)[number];

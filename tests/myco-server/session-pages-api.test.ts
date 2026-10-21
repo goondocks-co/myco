@@ -339,11 +339,11 @@ describe('a session\'s agent activity', () => {
     prompt('proj_1', 's2', 'p_elsewhere');
     prompt('proj_2', 's1', 'p_other_project');
     call('reported', 'reported', NOW + 1, { prompt: 'p_here' });
-    call('idle', 'no_result:idle', NOW + 2, { prompt: 'p_elsewhere' });
+    call('idle', 'no_result', NOW + 2, { prompt: 'p_elsewhere' });
     call('pending', 'pending_limit', NOW + 3, { prompt: 'p_other_project' });
     call('legacy', null, NOW + 4);
-    call('complete', 'no_result:complete_file', NOW + 5);
-    call('end', 'no_result:session_end', NOW + 6);
+    call('complete', 'no_result', NOW + 5);
+    call('end', 'no_result', NOW + 6);
     call('success', null, NOW + 7, { success: 1 });
     call('other_session', 'reported', NOW + 8, { session: 's2' });
     call('other_project', 'reported', NOW + 9, { project: 'proj_2' });
@@ -360,10 +360,13 @@ describe('a session\'s agent activity', () => {
   });
 
   it('filters the full collection and pages immutable time and id ties while new rows arrive', async () => {
-    const { get, call } = await activity();
-    call('late_a', 'reported', NOW, { tool: 'Read' });
+    const { sqlite, get, call } = await activity();
+    for (const index of sqlite.query<{ name: string; origin: string }, []>("PRAGMA index_list('tool_calls')").all()) {
+      if (index.origin !== 'pk') sqlite.exec(`DROP INDEX "${index.name}"`);
+    }
     call('late_b', 'reported', NOW, { tool: 'Read' });
-    for (let i = 0; i < 5; i++) call(`noise_${i}`, 'no_result:idle', NOW + 10 + i);
+    call('late_a', 'reported', NOW, { tool: 'Read' });
+    for (let i = 0; i < 5; i++) call(`noise_${i}`, 'no_result', NOW + 10 + i);
     expect(rowIds((await get(`${base}?limit=2`)).body)).toEqual(['noise_4', 'noise_3']);
     const first = (await get(`${base}?limit=1&type=failure&tool=Read&failed=true`)).body;
     expect(rowIds(first)).toEqual(['late_b']);

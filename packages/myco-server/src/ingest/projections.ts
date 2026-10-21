@@ -508,27 +508,40 @@ const toolResultReplay = (db: RelationalStore, ctx: WriteContext, e: CaptureEnve
   if (!ctx.processing || e.kind !== 'tool.failure' || p.resultReason === undefined) return undefined;
   if (digest === undefined) throw new Error('Parser metadata replay requires the admitted envelope hash');
   const noResultReasons = JSON.stringify(TOOL_RESULT_REASONS.filter(reason => reason !== 'reported'));
+  const familyReplay: Fragment = {
+    sql: `(? IN (SELECT value FROM json_each(?)) AND (json_extract(held.payload, '$.resultReason') IS NULL
+      OR json_extract(held.payload, '$.resultReason') IN (SELECT value FROM json_each(?))))`,
+    params: [p.resultReason, noResultReasons, noResultReasons],
+  };
+  const mutable: Fragment = {
+    sql: `(t.event_id = ? AND t.success = 0 AND (t.result_reason IS NULL OR t.result_reason = ?
+      OR (? = 'reported' AND t.result_reason IN (SELECT value FROM json_each(?)))))`,
+    params: [e.eventId, p.resultReason, p.resultReason, noResultReasons],
+  };
+  const source = (condition: Fragment): Fragment => ({
+    sql: `EXISTS (SELECT 1 FROM events held
+      JOIN tool_calls t ON t.project_id = held.project_id AND t.tool_call_id = ?
+      WHERE held.project_id = ? AND held.event_id = ? AND held.session_id = ?
+        AND held.kind = ? AND held.producer_adapter = ?
+        AND json_extract(held.payload, '$.toolCallId') = t.tool_call_id
+        AND t.session_id = held.session_id AND ${condition.sql})`,
+    params: [p.toolCallId, ctx.projectId, e.eventId, e.sessionId, e.kind, e.producer.adapter, ...condition.params],
+  });
   return {
-    compatible: {
-      sql: `EXISTS (SELECT 1 FROM events held
-        JOIN tool_calls t ON t.project_id = held.project_id AND t.event_id = held.event_id
-        WHERE held.project_id = ? AND held.event_id = ? AND held.session_id = ?
-          AND held.kind = ? AND held.producer_adapter = ?
-          AND (json_extract(held.payload, '$.resultReason') IS NOT ? OR held.envelope_hash = ?)
-          AND t.tool_call_id = ? AND json_extract(held.payload, '$.toolCallId') = t.tool_call_id
-          AND t.session_id = held.session_id AND t.success = 0
-          AND (t.result_reason IS NULL OR t.result_reason = ?
-            OR (? = 'reported' AND t.result_reason IN (SELECT value FROM json_each(?)))))`,
-      params: [ctx.projectId, e.eventId, e.sessionId, e.kind, e.producer.adapter, p.resultReason, digest, p.toolCallId,
-        p.resultReason, p.resultReason, noResultReasons],
-    },
-    effect: {
-      sql: `EXISTS (SELECT 1 FROM tool_calls WHERE project_id = ? AND tool_call_id = ? AND session_id = ? AND result_reason = ?)`,
-      params: [ctx.projectId, p.toolCallId, e.sessionId, p.resultReason],
-    },
-    project: gate => [db.prepare(`UPDATE tool_calls SET result_reason = ?
-      WHERE project_id = ? AND tool_call_id = ? AND session_id = ? AND ${gate.sql}`)
-      .bind(p.resultReason, ctx.projectId, p.toolCallId, e.sessionId, ...gate.params)],
+    compatible: source({
+      sql: `(${familyReplay.sql} OR (${mutable.sql} AND (json_extract(held.payload, '$.resultReason') IS NULL
+        OR held.envelope_hash = ? OR (? = 'reported' AND json_extract(held.payload, '$.resultReason') IN (SELECT value FROM json_each(?))))))`,
+      params: [...familyReplay.params, ...mutable.params, digest, p.resultReason, noResultReasons],
+    }),
+    effect: source({
+      sql: `(${familyReplay.sql} OR t.result_reason = ?)`,
+      params: [...familyReplay.params, p.resultReason],
+    }),
+    project: gate => [db.prepare(`UPDATE tool_calls AS t SET result_reason = ?
+      WHERE t.project_id = ? AND t.tool_call_id = ? AND t.session_id = ? AND ${gate.sql}
+        AND ${mutable.sql} AND t.result_reason IS NOT ?
+      RETURNING tool_call_id`)
+      .bind(p.resultReason, ctx.projectId, p.toolCallId, e.sessionId, ...gate.params, ...mutable.params, p.resultReason)],
   };
 };
 

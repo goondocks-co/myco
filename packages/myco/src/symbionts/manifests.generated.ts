@@ -1832,11 +1832,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       }
     },
     "toolResult": {
-      "failure": {
-        "from": "record",
-        "path": "payload.success",
-        "equals": false
-      },
+      "failure": null,
       "evidence": "tests/fixtures/tool-result-evidence.json"
     }
   },

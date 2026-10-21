@@ -393,8 +393,9 @@ test.describe('Sessions', () => {
         await expect(page).toHaveURL(/type=no_result&tool=Read$/);
         await capture('session-activity-filtered');
 
-        await page.getByRole('combobox', { name: /^Result(?::|$)/ }).click();
-        await page.getByRole('option', { name: 'Succeeded', exact: true }).click();
+        await expect(page.getByRole('combobox', { name: /^Result(?::|$)/ })).toHaveCount(0);
+        await page.getByRole('combobox', { name: /^Tool(?::|$)/ }).click();
+        await page.getByRole('option', { name: 'Bash', exact: true }).click();
         await expect(page.getByText('No agent activity in this session matches these filters.')).toBeVisible();
         await capture('session-activity-none-match');
 
@@ -408,7 +409,7 @@ test.describe('Sessions', () => {
         await expect(tabs.getByRole('tab', { name: 'Conversation' })).toHaveAttribute('aria-selected', 'true');
         await expect(page.getByRole('list', { name: 'Conversation', exact: true })).toBeVisible();
 
-        await page.goto(`${sessionUrl}?tab=activity&type=failure&tool=Bash&failed=true`);
+        await page.goto(`${sessionUrl}?tab=activity&type=failure&tool=Bash`);
         await expect(events).toHaveCount(1);
         await tabs.getByRole('tab', { name: 'Plans' }).click();
         await expect(page).toHaveURL(/\?tab=plans$/);

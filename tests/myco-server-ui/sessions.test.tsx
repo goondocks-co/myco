@@ -466,7 +466,7 @@ describe('the session reading page', () => {
     server(routes({
       '/api/projects/x/sessions/s1/activity': () => activityPage([
         activityRow(),
-        activityRow({ id: 'no-result', type: 'no_result', title: 'Read', detail: 'No result captured before the session ended · Not tied to a prompt', promptId: null, resultReason: 'no_result:session_end' }),
+        activityRow({ id: 'no-result', type: 'no_result', title: 'Read', detail: 'No result captured · Not tied to a prompt', promptId: null, resultReason: 'no_result' }),
         activityRow({ id: 'legacy', title: 'Tool call did not succeed', detail: 'Reason not recorded · Not tied to a prompt', promptId: null, resultReason: null }),
       ]),
     }));
@@ -489,23 +489,23 @@ describe('the session reading page', () => {
   it('pages activity under structured filters and drops activity filters when opening another tab', async () => {
     const { requested } = server(routes({
       '/api/projects/x/sessions/s1/activity': (_init, url) => {
-        if (url!.searchParams.get('failed') === 'false') return activityPage([]);
+        if (url!.searchParams.get('tool') === 'Read') return activityPage([]);
         return url!.searchParams.has('cursor')
           ? activityPage([activityRow({ id: 'second', title: 'Second failure' })])
           : activityPage([activityRow()], 'next:page');
       },
     }));
-    mount('/p/x/sessions/s1?tab=activity&type=failure&tool=Bash&failed=true&q=ignored-body');
+    mount('/p/x/sessions/s1?tab=activity&type=failure&tool=Bash&q=ignored-body');
     await screen.findByRole('list', { name: 'Agent activity' });
-    expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=failure&tool=Bash&failed=true');
+    expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=failure&tool=Bash');
     expect(screen.getByText('Showing 1 activity events')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     await screen.findByText('Second failure');
-    expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=failure&tool=Bash&failed=true&cursor=next%3Apage');
+    expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=failure&tool=Bash&cursor=next%3Apage');
     expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
     await pick('Tool', 'Read');
-    await waitFor(() => expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=failure&tool=Read&failed=true'));
-    await pick('Result', 'Succeeded');
+    await waitFor(() => expect(requested).toContain('/api/projects/x/sessions/s1/activity?limit=100&type=failure&tool=Read'));
+    expect(screen.queryByRole('combobox', { name: /^Result(?::|$)/ })).toBeNull();
     await screen.findByText('No agent activity in this session matches these filters.');
     expect(screen.queryByRole('list', { name: 'Agent activity' })).toBeNull();
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Plans' }));

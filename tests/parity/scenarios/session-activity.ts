@@ -3,7 +3,8 @@ import { listSessionActivity, type SessionActivityRow } from '@myco-server-worke
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { envelopeHash } from '@myco-server-worker/ingest/events.js';
 import { parseEnvelope } from '@myco-server-worker/ingest/envelope.js';
-import { TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
+import { PARSER_VERSION, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
+import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { expectPersisted, lit, type ParityTarget, type ParityScenario } from '../harness.ts';
 
@@ -47,7 +48,7 @@ export const sessionActivityParity: ParityScenario = {
     };
     await post('session.start', stamp, { agent: 'claude-code', startedAt: stamp });
     await post('prompt', stamp + 1, { promptId: prompt, origin: 'user', text: 'Inspect activity' });
-    const reasons = ['reported', 'no_result:idle', 'pending_limit', 'no_result:complete_file', 'no_result:session_end'] as const;
+    const reasons = ['reported', 'no_result', 'pending_limit', 'no_result', 'no_result'] as const;
     for (const [index, resultReason] of reasons.entries()) {
       await post('tool.use', stamp + index + 2, { toolCallId: ids[index], promptId: index === 0 ? prompt : undefined, toolName: index === 0 ? 'Read' : 'Bash', input: { secret: 'activity input secret' }, output: 'activity output secret', success: false, resultReason });
     }
@@ -59,7 +60,7 @@ export const sessionActivityParity: ParityScenario = {
     expect(full.rows.slice(0, -1).every(row => row.promptId === null && row.detail.includes('Not tied to a prompt'))).toBe(true);
     expect(full.rows[0]).toMatchObject({ title: 'Tool call did not succeed', resultReason: null });
     expect(JSON.stringify(full)).not.toMatch(/activity input secret|activity output secret|activity error secret/);
-    expect(await target.sql(`SELECT result_reason FROM tool_calls WHERE project_id=${lit(target.projectId)} AND tool_call_id=${lit(ids[1])}`)).toEqual([{ result_reason: 'no_result:idle' }]);
+    expect(await target.sql(`SELECT result_reason FROM tool_calls WHERE project_id=${lit(target.projectId)} AND tool_call_id=${lit(ids[1])}`)).toEqual([{ result_reason: 'no_result' }]);
     expect((await read('?tool=Read&type=failure&failed=true&limit=1')).rows.map(row => row.id)).toEqual([ids[0]]);
     const first = await read('?type=no_result&limit=2');
     expect(first.tools).toEqual(['Bash', 'Legacy', 'Read']);
@@ -137,9 +138,27 @@ async function verifyParserResultReplay(target: ParityTarget): Promise<void> {
   await target.sql(`UPDATE sessions SET last_received_at=${idleAt} WHERE ${where}`);
   await settle();
   const closed = await calls();
-  expect(closed.map(row => [row.tool_name, row.result_reason])).toEqual([['Bash', 'no_result:idle'], ['Read', 'reported']]);
+  expect(closed.map(row => [row.tool_name, row.result_reason])).toEqual([['Bash', 'no_result'], ['Read', 'reported']]);
   const synthetic = closed[0];
   const syntheticRaw = await rawEvent(String(synthetic.event_id));
+  const reread = async () => {
+    const response = await fetch(`${target.url}/api/transcripts/reread`, {
+      method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: target.projectId, sessionId }),
+    });
+    expect(response.status).toBe(200);
+  };
+  await target.sql(`UPDATE sessions SET ended_at=${Date.now() - SESSION_END_SETTLE_MS - 1} WHERE ${where}`);
+  for (const replay of ['owner', 'generation', 'import'] as const) {
+    if (replay === 'generation') await target.sql(`UPDATE transcripts SET parser_version=${PARSER_VERSION - 1} WHERE ${transcriptWhere}`);
+    else {
+      if (replay === 'import') await target.sql(`UPDATE transcripts SET imported_at=${Date.now()} WHERE ${transcriptWhere}`);
+      await reread();
+    }
+    for (let pass = 0; pass < 4; pass++) await settle();
+    expect(await calls()).toEqual(closed);
+    expect(await rawEvent(String(synthetic.event_id))).toEqual(syntheticRaw);
+  }
   await ship([{ type: 'user', uuid: crypto.randomUUID(), message: { role: 'user', content: [
     { type: 'tool_result', tool_use_id: 'unfinished-call', is_error: true, content: 'late fixture failure' },
   ] }, timestamp: new Date().toISOString() }], size);
@@ -161,11 +180,7 @@ async function verifyParserResultReplay(target: ParityTarget): Promise<void> {
   const legacyRaw = await rawEvent(String(reported.event_id));
   expect(legacyRaw.envelope_hash).toBe(digest);
   expect(JSON.parse(String(legacyRaw.payload))).not.toHaveProperty('resultReason');
-  const reread = await fetch(`${target.url}/api/transcripts/reread`, {
-    method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-    body: JSON.stringify({ projectId: target.projectId, sessionId }),
-  });
-  expect(reread.status).toBe(200);
+  await reread();
   await settle();
   expect((await calls()).map(row => [row.tool_name, row.result_reason])).toEqual([['Bash', 'reported'], ['Read', 'reported']]);
   expect(await rawEvent(String(reported.event_id))).toEqual(legacyRaw);

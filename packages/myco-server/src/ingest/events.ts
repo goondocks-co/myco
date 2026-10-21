@@ -289,7 +289,8 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
       WHERE project_id = ? AND session_id = ?
         AND EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)`)
     .bind(ctx.now, ctx.projectId, e.sessionId, ctx.projectId, e.eventId, write.nonce)];
-  const incidental = [...(replayGate ? plan.replay!.project(replayGate) : []), ...(plan.incidental ?? []), ...turnEnd, ...turnStart, ...liveCapture, ...deliveryStatements(db, write, e, p)];
+  const replayWrites = replayGate ? plan.replay!.project(replayGate) : [];
+  const incidental = [...replayWrites, ...(plan.incidental ?? []), ...turnEnd, ...turnStart, ...liveCapture, ...deliveryStatements(db, write, e, p)];
   const statements: PreparedStatement[] = [raw, counted, receipt, ...priors, ...plan.projections, ...incidental, stored, admitted, ...shared, ...plan.reads];
 
   const interpret = (results: BatchResult[]): IngestResult => {
@@ -317,7 +318,8 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
     return plan.projections.length > 0 ? { persisted: true, projected: true, ...extra } : { persisted: true, ...extra };
   }
   if (storedRow) {
-    if (storedRow.envelope_hash === digest) {
+    if (storedRow.envelope_hash === digest || (storedRow.replayed === 1
+      && results.slice(base + plan.projections.length, base + plan.projections.length + replayWrites.length).every(result => result.results.length === 0))) {
       emit({ kind: 'ingest_duplicate', projectId: ctx.projectId, tokenId: ctx.tokenId });
       return { persisted: true, duplicate: true, ...extra };
     }

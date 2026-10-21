@@ -987,7 +987,7 @@ const RecordIdentitySchema = z.custom<RecordIdentityDeclaration>((value) => {
 
 const ToolResultSchema = z.custom<ToolResultDeclaration>((value) => {
   try { assertToolResultDeclaration('', value); return true; } catch { return false; }
-}, { message: 'toolResult must declare a failure source, boolean flag and evidence' });
+}, { message: 'toolResult must declare a failure field or its absence, with evidence' });
 
 export const SymbiontManifestSchema = z.object({
   name: z.string(),

@@ -33,6 +33,7 @@
       "import": "./dist/harness-providers.js",
       "types": "./dist/harness-providers.d.ts"
     },
+    "./run-protocol": { "import": "./dist/run-protocol.js", "types": "./dist/run-protocol.d.ts" },
     "./run-holds": {
       "import": "./dist/run-holds.js",
       "types": "./dist/run-holds.d.ts"
