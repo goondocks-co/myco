@@ -115,7 +115,7 @@ export const TRANSCRIPT_PARSE_CONCURRENT_BYTES = 8 * 1024 * 1024;
 export const TRANSCRIPT_PARSE_RECORD_BYTES = MAX_BLOB_BYTES;
 
 /** Bump when derived output changes; older retained recordings are read again. */
-export const PARSER_VERSION = 6;
+export const PARSER_VERSION = 7;
 
 /** Bump when only stop conditions change; older failures resume from their cursor, leaving intact recordings alone. */
 export const PARSE_STOP_GENERATION = 1;
@@ -219,6 +219,8 @@ interface ParseTarget {
   openPromptId: string | null;
   /** The checkpoint carries a prompt forward under another prompt generation than its parser's (`PROMPT_IDENTITY_STALE`). */
   promptIdentityStale: boolean;
+  /** The cursor owes a generation repair before any further pass can stamp its version. */
+  parserGenerationStale?: boolean;
   parserContext?: Record<string, unknown> | null;
   parserContextJson?: string | null;
   lastReceivedAt?: number;
@@ -314,7 +316,7 @@ export function laneSelectionSql(lane: Lane, limit = 1, now = Date.now()): strin
              ORDER BY base_offset LIMIT ${TRANSCRIPT_PARSE_SEGMENTS_PER_READ})`;
   return `SELECT project_id, transcript_id, session_id, machine_id, token_id, agent, role, size, parsed_offset, fidelity, prompt_identity_scheme, record_identity_scheme, open_prompt_id, parser_context, imported_at, parse_segment_lines, last_received_at,
                  (SELECT ended_at FROM sessions s WHERE s.project_id = transcripts.project_id AND s.session_id = transcripts.session_id) AS session_ended_at,
-                 ${TURN_ENDED} AS turn_ended, ${PROMPT_IDENTITY_STALE} AS prompt_identity_stale,
+                 ${TURN_ENDED} AS turn_ended, ${PROMPT_IDENTITY_STALE} AS prompt_identity_stale, (${repairCandidateSql(PARSER_VERSION)}) AS parser_generation_stale,
                  (${segments}) AS segments
             FROM (SELECT * FROM transcripts WHERE (${PENDING_TRANSCRIPTS}) AND ${LANE_ORDER[lane].where} AND NOT ${TOMBSTONED}
               UNION ALL SELECT * FROM transcripts WHERE (${terminalWorkSql(now)}) AND ${LANE_ORDER[lane].where} AND NOT ${TOMBSTONED}) AS transcripts
@@ -348,6 +350,7 @@ function targetOf(row: Record<string, unknown>): ParseTarget {
     ...(row.role === 'subagent' || row.role === 'primary' ? { role: row.role } : {}),
     openPromptId: (row.open_prompt_id as string | null) ?? null,
     promptIdentityStale: row.prompt_identity_stale === 1,
+    parserGenerationStale: row.parser_generation_stale === 1,
     parserContext: contextFromStored(row.parser_context),
     parserContextJson: (row.parser_context as string | null) ?? null,
     lastReceivedAt: row.last_received_at as number | undefined,
@@ -653,6 +656,9 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     if (remaining === undefined || startingStatements === undefined) return Number.POSITIVE_INFINITY;
     return Math.min(remaining, (limits.statementBudget ?? Number.POSITIVE_INFINITY) - (startingStatements - remaining));
   };
+  if (target.promptIdentityStale || target.parserGenerationStale) {
+    return { derived: 0, calls: await repairCursors(env.db, { sql: 'project_id = ? AND transcript_id = ?', params: [target.projectId, target.transcriptId] }), nextOffset: null, failure: null };
+  }
   const parser = parserFor(target.agent);
   if (parser === null) {
     // Nothing here reads this agent's format. The bytes are kept and the cursor
@@ -674,9 +680,6 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   if (!isRecordIdScheme(recordScheme)) {
     await stop(env.db, target, 'parse', now, undefined, { branch: 'record_identity_scheme_unsupported', offset: target.parsedOffset, lineKind: 'unknown' });
     return { derived: 0, calls: 1, nextOffset: null, failure: 'parse' };
-  }
-  if (target.promptIdentityStale) {
-    return { derived: 0, calls: await repairCursors(env.db, { sql: 'project_id = ? AND transcript_id = ?', params: [target.projectId, target.transcriptId] }), nextOffset: null, failure: null };
   }
 
   // `calls` counts what THIS pass spends; the caller adds its own selection.
@@ -1128,7 +1131,7 @@ const HELD_PREFIX_SOURCE = `SELECT base_offset,length FROM transcript_segments
     AND transcript_id=transcripts.transcript_id AND source_kind='transcript' AND disposition='archived'`;
 const FIRST_HELD_BYTE = `SELECT MIN(base_offset) FROM (${HELD_PREFIX_SOURCE})`;
 
-/** Only this many older cursors enter repair on one wake. */
+/** Older cursors admitted by one repair selection. */
 export const TRANSCRIPT_REPAIRS_PER_WAKE = 4;
 const repairCandidateSql = (version: number | '?' = '?'): string => `parser_version > 0 AND parser_version < ${version} AND parsed_offset > 0
   AND json_type(parser_context, '$.mycoLegacyResponseUntil') IS NULL`;

@@ -15,6 +15,7 @@ import { CONTEXT_DELIVERED_KIND, isDeliveredSessionRecord, isPromptIdScheme, typ
 import { ALWAYS, credentialLive } from './live-credential.js';
 import { endsTurn, endTurnStatement, startTurnFromEventStatement, turnStartFrom } from './turns.js';
 import { prepareArchiveBundle,discardArchiveBundle } from '../core/archive-bundle.js';
+import { eventContent } from '../core/event-content.js';
 import { toolInputPreview } from '../core/tool-input.js';
 
 /** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
@@ -149,24 +150,41 @@ export function allEventProofs(proofs: readonly Fragment[]): Fragment {
 type BatchResult = { results: unknown[]; meta: { changes: number } };
 
 /** Pins a replay to the verified envelope already held, or the raw row this request will write. */
-async function replaySourceProof(db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope): Promise<Fragment> {
-  const held = await db.prepare(`SELECT session_id,kind,channel,payload,created_at,producer_adapter,producer_version,envelope_hash
+async function replaySourceProof(db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, toolCallId: unknown, env?: Pick<ServerEnv, 'db' | 'blobs'>): Promise<Fragment & { calls: number }> {
+  let calls = 1;
+  const held = await db.prepare(`SELECT session_id,kind,channel,payload,created_at,producer_adapter,producer_version,envelope_hash, payload_format, bundle_id, bundle_entry, content_revision
     FROM events WHERE project_id = ? AND event_id = ?`).bind(ctx.projectId, e.eventId).first<{
       session_id: string; kind: string; channel: string; payload: string; created_at: number;
       producer_adapter: string; producer_version: string; envelope_hash: string;
+      payload_format: string; bundle_id: number | null; bundle_entry: number | null; content_revision: number;
     }>();
-  if (held === null) return { sql: RAW_ROW_GATE, params: [ctx.projectId, e.eventId, ctx.nonce] };
+  if (held === null) return { sql: RAW_ROW_GATE, params: [ctx.projectId, e.eventId, ctx.nonce], calls };
+  let payload = held.payload;
+  if (held.payload_format !== 'inline') {
+    if (env === undefined) return { sql: '0', params: [], calls };
+    const measured = measuredContentEnv(env);
+    const content = await eventContent(measured.env, ctx.projectId, e.eventId);
+    calls += measured.usage.roundTrips + measured.usage.blobCalls;
+    if (content === null) return { sql: '0', params: [], calls };
+    payload = content;
+  }
+  const heldPayload: unknown = JSON.parse(payload);
+  const sameCall = typeof heldPayload === 'object' && heldPayload !== null && 'toolCallId' in heldPayload
+    && heldPayload.toolCallId === toolCallId;
   const original = parseEnvelope({ eventId: e.eventId, sessionId: held.session_id, kind: held.kind, channel: held.channel,
-    createdAt: held.created_at, producer: { adapter: held.producer_adapter, version: held.producer_version }, payload: JSON.parse(held.payload) }, ctx.now);
-  return original.ok && await envelopeHash(original.value) === held.envelope_hash
+    createdAt: held.created_at, producer: { adapter: held.producer_adapter, version: held.producer_version }, payload: heldPayload }, ctx.now);
+  return sameCall && original.ok && await envelopeHash(original.value) === held.envelope_hash
     ? {
       sql: `EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND envelope_hash = ?
         AND session_id = ? AND kind = ? AND channel = ? AND payload = ? AND created_at = ?
-        AND producer_adapter = ? AND producer_version = ?)`,
+        AND producer_adapter = ? AND producer_version = ? AND payload_format = ?
+        AND bundle_id IS ? AND bundle_entry IS ? AND content_revision = ?)`,
       params: [ctx.projectId, e.eventId, held.envelope_hash, held.session_id, held.kind, held.channel,
-        held.payload, held.created_at, held.producer_adapter, held.producer_version],
+        held.payload, held.created_at, held.producer_adapter, held.producer_version,
+        held.payload_format, held.bundle_id, held.bundle_entry, held.content_revision],
+      calls,
     }
-    : { sql: '0', params: [] };
+    : { sql: '0', params: [], calls };
 }
 
 export async function planEventWrite(db: RelationalStore, ctx: IngestContext, body: unknown, env?: Pick<ServerEnv, 'db' | 'blobs'>): Promise<PlannedWrite> {
@@ -187,7 +205,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const digest = await envelopeHash(e);
   const contentHash = await contentHashOf(spec, p);
   const sourceProof = write.processing && e.kind === 'tool.failure' && p.resultReason !== undefined
-    ? await replaySourceProof(db, write, e) : undefined;
+    ? await replaySourceProof(db, write, e, p.toolCallId, env) : undefined;
   const fullInput = spec.projection === 'tool_calls' && p.input !== undefined ? JSON.stringify(p.input) : null;
   const inputDisplay = fullInput === null ? null : toolInputPreview(fullInput);
   if (inputDisplay?.truncated && env === undefined) throw new Error('Oversized tool input requires server blob storage');
@@ -200,7 +218,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
     : undefined;
   const preparedToolInput=inputBundle?{...inputBundle.body,bundle:inputBundle,preparationCalls:inputPreparation!.usage.statements+inputPreparation!.usage.blobCalls}:undefined;
   let plan: KindPlan;
-  try { plan = planKind(spec, { db, ctx: write, e, p, contentHash, preparedToolInput, envelopeHash: digest }); }
+  try { plan = planKind(spec, { db, ctx: write, e, p, contentHash, preparedToolInput }); }
   catch (error) {
     if (!(error instanceof RecordSchemeError) || error.code !== 'record_identity_scheme_unsupported') throw error;
     return { ok: false, ...refusal('Record identity scheme is unsupported', error.code) };
@@ -345,7 +363,7 @@ export async function planEventWrite(db: RelationalStore, ctx: IngestContext, bo
   const releaseUnlinked = inputBundle && env
     ? () => discardArchiveBundle(env,inputBundle,ctx.now)
     : undefined;
-  return { ok: true, write: { proof, replayAdmission: replayGate, statements, interpret, releaseUnlinked, preparationCalls: (preparedToolInput?.preparationCalls ?? 0) + (replayChecks === undefined ? 0 : 1) } };
+  return { ok: true, write: { proof, replayAdmission: replayGate, statements, interpret, releaseUnlinked, preparationCalls: (preparedToolInput?.preparationCalls ?? 0) + (replayChecks === undefined ? 0 : sourceProof!.calls) } };
 }
 
 /** The kind whose projected arrival, on any channel but import, asks for its session's title. */

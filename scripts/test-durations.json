@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: #1918/#1919 focused npm test on pinned Bun 1.4.0 darwin-arm64: transcript-parse 16430ms; 34000ms weight covers twice measured runtime plus startup; generation-repair parity native234ms and workerd D1 745ms, 15000ms scenario startup floor",
     "local: PR1914 correction2 tool-result source gate measured494ms via npm test with pinned Bun1.4.0 darwin-arm64; retained1200ms weight exceeds twice measured plus startup",
     "local: PR1914 correction1 activity parity measured via npm run test:parity on Bun1.4.0 darwin-arm64: native196ms and workerd D1 713ms; retained15000ms startup floor",
     "local: PR1914 correction1 tool-result-sources measured 457ms with pinned Bun1.4.0, darwin-arm64;1200ms weight includes more than twice measured runtime",
@@ -624,7 +625,7 @@
     "tests/myco-server/tool-input-adoption.test.ts": 72,
     "tests/myco-server/tool-input-storage.test.ts": 699,
     "tests/myco-server/tool-parity.test.ts": 7,
-    "tests/myco-server/transcript-parse.test.ts": 24811,
+    "tests/myco-server/transcript-parse.test.ts": 34000,
     "tests/myco-server/transcript-reread-api.test.ts": 39,
     "tests/myco-server/uncaptured-plans.test.ts": 4015,
     "tests/myco-server/uncaptured.test.ts": 218,
@@ -930,6 +931,7 @@
     "session commits: start and end observations, release containment on the end it classified, index-backed reads": 15000,
     "Record identity: transcript pins, distinct positional replies, reread and whole-artifact restore refusals": 15000,
     "search by time: a session's identical-text matches, a steering prompt and a stored body reached by cursor past capture elsewhere, once each, on HTTP and MCP": 15000,
-    "session activity: stored reasons, scoped keyset filters, prompt targets and success upgrade": 15000
+    "session activity: stored reasons, scoped keyset filters, prompt targets and success upgrade": 15000,
+    "Transcript generation repair: archived failures and growing generation 6 cursors under both record schemes": 15000
   }
 }

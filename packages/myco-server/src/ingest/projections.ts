@@ -142,7 +142,6 @@ interface Inputs {
   /** sha256 of the inline text, or the blob key when spilled. */
   contentHash: string | null;
   preparedToolInput?: PreparedToolInput;
-  envelopeHash?: string;
 }
 
 /** A capture lands only in a live Project: an archived one refuses every event, whatever route carried it. The admission fragment sits on the raw insert; the read tells an archived Project from an absent row. */
@@ -504,13 +503,12 @@ const prompt = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
   };
 };
 
-const toolResultReplay = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, p: Payload, digest: string | undefined): KindPlan['replay'] => {
+const toolResultReplay = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, p: Payload): KindPlan['replay'] => {
   if (!ctx.processing || e.kind !== 'tool.failure' || p.resultReason === undefined) return undefined;
-  if (digest === undefined) throw new Error('Parser metadata replay requires the admitted envelope hash');
   const noResultReasons = JSON.stringify(TOOL_RESULT_REASONS.filter(reason => reason !== 'reported'));
   const familyReplay: Fragment = {
-    sql: `(? IN (SELECT value FROM json_each(?)) AND (json_extract(held.payload, '$.resultReason') IS NULL
-      OR json_extract(held.payload, '$.resultReason') IN (SELECT value FROM json_each(?))))`,
+    sql: `(? IN (SELECT value FROM json_each(?)) AND (t.result_reason IS NULL
+      OR t.result_reason IN (SELECT value FROM json_each(?)) OR t.result_reason = 'reported'))`,
     params: [p.resultReason, noResultReasons, noResultReasons],
   };
   const mutable: Fragment = {
@@ -523,15 +521,14 @@ const toolResultReplay = (db: RelationalStore, ctx: WriteContext, e: CaptureEnve
       JOIN tool_calls t ON t.project_id = held.project_id AND t.tool_call_id = ?
       WHERE held.project_id = ? AND held.event_id = ? AND held.session_id = ?
         AND held.kind = ? AND held.producer_adapter = ?
-        AND json_extract(held.payload, '$.toolCallId') = t.tool_call_id
+        AND (t.event_id = held.event_id OR t.success = 1)
         AND t.session_id = held.session_id AND ${condition.sql})`,
     params: [p.toolCallId, ctx.projectId, e.eventId, e.sessionId, e.kind, e.producer.adapter, ...condition.params],
   });
   return {
     compatible: source({
-      sql: `(${familyReplay.sql} OR (${mutable.sql} AND (json_extract(held.payload, '$.resultReason') IS NULL
-        OR held.envelope_hash = ? OR (? = 'reported' AND json_extract(held.payload, '$.resultReason') IN (SELECT value FROM json_each(?))))))`,
-      params: [...familyReplay.params, ...mutable.params, digest, p.resultReason, noResultReasons],
+      sql: `(${familyReplay.sql} OR ${mutable.sql})`,
+      params: [...familyReplay.params, ...mutable.params],
     }),
     effect: source({
       sql: `(${familyReplay.sql} OR t.result_reason = ?)`,
@@ -546,7 +543,7 @@ const toolResultReplay = (db: RelationalStore, ctx: WriteContext, e: CaptureEnve
 };
 
 /** A tool call row; one that carries no `filesAffected` records the paths its input names, so hook and parsed calls read alike. */
-const toolCall = ({ db, ctx, e, p, preparedToolInput, envelopeHash }: Inputs): KindPlan => {
+const toolCall = ({ db, ctx, e, p, preparedToolInput }: Inputs): KindPlan => {
   const fullInput = p.input === undefined ? null : JSON.stringify(p.input);
   const display = fullInput === null ? null : toolInputPreview(fullInput);
   if (display?.truncated && preparedToolInput === undefined) throw new Error('Oversized tool input requires registered content preparation');
@@ -574,7 +571,7 @@ const toolCall = ({ db, ctx, e, p, preparedToolInput, envelopeHash }: Inputs): K
   return {
     identities: [{ table: 'tool_calls', keyColumn: 'tool_call_id', key: p.toolCallId as string, owner: 'session' }],
     admission: [],
-    replay: toolResultReplay(db, ctx, e, p, envelopeHash),
+    replay: toolResultReplay(db, ctx, e, p),
     projections: [
       db.prepare(`INSERT INTO tool_calls
           (project_id, tool_call_id, session_id, prompt_id, event_id, tool_name, myco_tool, myco_op, input, input_bytes, input_blob_key, output_preview, output_blob_key, success, error_message, result_reason, duration_ms, files_affected, canopy_injection_tokens, created_at, token_id, received_at)

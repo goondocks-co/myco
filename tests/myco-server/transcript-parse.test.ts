@@ -14,6 +14,8 @@
  *   - many passes and one pass produce the same rows.
  */
 import type { RecordIdScheme } from '@goondocks/myco-shared/record-identity';
+import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
+import { eventContent } from '@myco-server-worker/core/event-content.js';
 import { envelopeHash } from '@myco-server-worker/ingest/events.js';
 import { parseEnvelope } from '@myco-server-worker/ingest/envelope.js';
 import type { PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
@@ -147,6 +149,93 @@ describe('tool result reasons at the transcript writer', () => {
     }
   }
 
+  for (const recordScheme of ['legacy-session-v1', 'source-record-v1'] as const) {
+    for (const archived of [false, true]) {
+      for (const reason of [null, 'no_result', 'pending_limit'] as const) {
+        it(`enriches ${archived ? 'archived' : 'inline'} ${reason} failure from transcript bytes under ${recordScheme}`, async () => {
+          const at = new Date(NOW).toISOString();
+          const text = line({ type: 'assistant', uuid: 'archive-assistant', timestamp: at,
+            message: { content: [{ type: 'tool_use', id: 'archive-call', name: 'Bash', input: { command: 'false' } }] } })
+            + line({ type: 'user', timestamp: at, message: { content: [
+              { type: 'tool_result', tool_use_id: 'archive-call', is_error: true, content: 'Exit code 2' },
+            ] } });
+          const r = await rig(text, 1 << 20, { recordScheme });
+          try {
+            let offset = 0;
+            const lines = text.trimEnd().split('\n').map(value => {
+              const parsed = { value: JSON.parse(value), offset };
+              offset += Buffer.byteLength(value) + 1;
+              return parsed;
+            });
+            const derived = await PARSERS['claude-code'].parse({ lines, sessionId: SESSION, transcriptId: TRANSCRIPT,
+              scheme: READ_BEFORE_PIN['claude-code']!, recordScheme, now: NOW });
+            const tool = derived.find(event => event.kind === 'tool.failure')!;
+            const { resultReason: _reason, ...payload } = tool.payload;
+            const old = await envelopeFor({ transcriptId: TRANSCRIPT, sessionId: SESSION },
+              { ...tool, payload: { ...payload, ...(reason === null ? {} : { resultReason: reason }) } });
+            const ctx = { projectId: PROJECT, machineId: MACHINE, tokenId: r.tokenId, bodyBytes: 0, now: NOW, writeOrigin: 'server' as const };
+            expect(await ingestEvent(r.env.db, ctx, old, r.env)).toMatchObject({ persisted: true, projected: true });
+            const eventId = String(old.eventId);
+            const originalBody = await eventContent(r.env, PROJECT, eventId);
+            if (archived) {
+              for (let pass = 0; pass < 8; pass++) await archiveRawSources(r.serverEnv, NOW + 91 * 86_400_000, 90);
+              expect(r.sqlite.query('SELECT payload,payload_format FROM events WHERE event_id=?').get(eventId))
+                .toEqual({ payload: '{}', payload_format: 'archived' });
+              expect(await eventContent(r.env, PROJECT, eventId)).toBe(originalBody);
+            }
+            const raw = r.sqlite.query('SELECT * FROM events').all();
+            const before = r.sqlite.query<Record<string, unknown>, []>('SELECT * FROM tool_calls').get()!;
+            if (reason !== null) {
+              expect(await ingestEvent(r.env.db, ctx, { ...old, payload: { ...payload,
+                resultReason: reason === 'no_result' ? 'pending_limit' : 'no_result' } }, r.env))
+                .toMatchObject({ persisted: true, duplicate: true });
+              expect(r.sqlite.query('SELECT * FROM tool_calls').get()).toEqual(before);
+            }
+            await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
+            expect(target(r.sqlite).parse_error).toBeNull();
+            expect(r.sqlite.query('SELECT * FROM tool_calls').get()).toEqual({ ...before, result_reason: 'reported' });
+            const reported = r.sqlite.query('SELECT * FROM tool_calls').get();
+            for (const replayReason of ['no_result', 'pending_limit'] as const) {
+              expect(await ingestEvent(r.env.db, ctx, { ...old, payload: { ...payload, resultReason: replayReason } }, r.env))
+                .toMatchObject({ persisted: true, duplicate: true });
+              expect(r.sqlite.query('SELECT * FROM tool_calls').get()).toEqual(reported);
+            }
+            expect(r.sqlite.query('SELECT * FROM events').all()).toEqual(raw);
+            expect(await eventContent(r.env, PROJECT, eventId)).toBe(originalBody);
+          } finally { r.sqlite.close(); }
+        });
+      }
+    }
+  }
+
+  for (const recordScheme of ['legacy-session-v1', 'source-record-v1'] as const) {
+    it(`repairs a growing generation 6 cursor before an ordinary pass under ${recordScheme}`, async () => {
+      const r = await rig(body(1), 1 << 20, { recordScheme });
+      try {
+        await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
+        r.sqlite.run('UPDATE transcripts SET parser_version=6');
+        await appendSegment(r.sqlite, r.serverEnv, r.tokenId, TRANSCRIPT, body(1), NOW + 1);
+        const row = r.sqlite.query<Record<string, unknown>, []>(laneSelectionSql('live', 1, NOW + 1)).get(PARSER_VERSION)!;
+        const report = await parseOnce(r.env, {
+          projectId: PROJECT, transcriptId: TRANSCRIPT, sessionId: SESSION, machineId: MACHINE, tokenId: r.tokenId,
+          agent: 'claude-code', size: Number(row.size), parsedOffset: Number(row.parsed_offset),
+          fidelity: String(row.fidelity), scheme: READ_BEFORE_PIN['claude-code']!, recordScheme,
+          openPromptId: row.open_prompt_id as string | null, promptIdentityStale: row.prompt_identity_stale === 1,
+          parserGenerationStale: row.parser_generation_stale === 1, parserContext: JSON.parse(String(row.parser_context)),
+          imported: false,
+        }, NOW + 1, LIMITS);
+        expect(report.nextOffset).toBeNull();
+        expect(target(r.sqlite).parsed_offset).toBe(0);
+        const context = r.sqlite.query<{ parser_context: string }, []>('SELECT parser_context FROM transcripts').get()!;
+        expect(JSON.parse(context.parser_context).mycoParserRepair).toEqual({ version: PARSER_VERSION, fromVersion: 6, status: 'replaying' });
+        for (let pass = 0; pass < 4; pass++) await parseTranscripts(r.serverEnv, NOW + 1, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
+        expect(r.sqlite.query('SELECT parsed_offset=size AS complete, parser_version, parse_error FROM transcripts').get())
+          .toEqual({ complete: 1, parser_version: PARSER_VERSION, parse_error: null });
+        expect(PARSER_VERSION).toBeGreaterThan(6);
+      } finally { r.sqlite.close(); }
+    });
+  }
+
   it('reparses a legacy failed row from declared evidence without changing its raw event or prompt', async () => {
     const at = new Date(NOW).toISOString();
     const text = line({ type: 'user', message: { content: 'read' }, timestamp: at })
@@ -222,6 +311,14 @@ describe('tool result reasons at the transcript writer', () => {
       expect(r.sqlite.query('SELECT * FROM tool_calls').get()).toEqual(succeeded);
       expect(r.sqlite.query('SELECT success,result_reason FROM tool_calls').get()).toEqual({ success: 1, result_reason: null });
       expect(r.sqlite.query('SELECT * FROM events').all()).toEqual(successfulHistory);
+      const other = { ...old, eventId: uuid(89_104), kind: 'tool.use',
+        payload: { toolCallId: uuid(89_105), toolName: 'Read', input: {}, success: true } };
+      expect(await ingestEvent(r.env.db, ctx, other, r.env)).toMatchObject({ persisted: true, projected: true });
+      const otherHeld = r.sqlite.query('SELECT * FROM tool_calls WHERE tool_call_id=?').get(other.payload.toolCallId);
+      expect(await ingestEvent(r.env.db, ctx, { ...old, payload: { ...old.payload, toolCallId: other.payload.toolCallId,
+        resultReason: replayReason } }, r.env)).toMatchObject({ persisted: false, code: 'event_id_conflict' });
+      expect(r.sqlite.query('SELECT * FROM tool_calls WHERE tool_call_id=?').get(other.payload.toolCallId)).toEqual(otherHeld);
+
     } finally { r.sqlite.close(); }
   });
 
