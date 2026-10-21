@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: PR1914 correction2 tool-result source gate measured494ms via npm test with pinned Bun1.4.0 darwin-arm64; retained1200ms weight exceeds twice measured plus startup",
     "local: PR1914 correction1 activity parity measured via npm run test:parity on Bun1.4.0 darwin-arm64: native196ms and workerd D1 713ms; retained15000ms startup floor",
     "local: PR1914 correction1 tool-result-sources measured 457ms with pinned Bun1.4.0, darwin-arm64;1200ms weight includes more than twice measured runtime",
     "local: #1899 PR3 npm test on pinned Bun 1.4.0 darwin-arm64; tool result source gate 321ms and native/D1 v93 migration 946ms, weights exceed twice measured plus startup; activity parity native 117ms and workerd D1 379ms with 15000ms scenario startup floor",

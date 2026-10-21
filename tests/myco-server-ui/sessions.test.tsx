@@ -508,8 +508,12 @@ describe('the session reading page', () => {
     expect(screen.queryByRole('combobox', { name: /^Result(?::|$)/ })).toBeNull();
     await screen.findByText('No agent activity in this session matches these filters.');
     expect(screen.queryByRole('list', { name: 'Agent activity' })).toBeNull();
+    const activityReads = () => requested.filter(path => path.startsWith('/api/projects/x/sessions/s1/activity?'));
+    const beforeExit = activityReads();
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Plans' }));
     await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=plans'));
+    expect(await screen.findByText('No plans were captured in this session.')).toBeTruthy();
+    expect(activityReads()).toEqual(beforeExit);
   });
 
   it('keeps a linked tool filter visible when the session has no matching calls', async () => {

@@ -14,52 +14,74 @@ import evidence from '../fixtures/tool-result-evidence.json';
 
 const ROOT = path.resolve(import.meta.dir, '..', '..');
 const PARSER_DIR = path.join(ROOT, 'packages/myco-server/src/ingest/parsers');
+const INGEST_DIR = path.dirname(PARSER_DIR);
 const MANIFEST_DIR = path.join(ROOT, 'packages/myco/src/symbionts/manifests');
 const manifests = fs.readdirSync(MANIFEST_DIR).filter(file => file.endsWith('.yaml'))
   .map(file => SymbiontManifestSchema.parse(YAML.parse(fs.readFileSync(path.join(MANIFEST_DIR, file), 'utf8'))));
 const failureFields = new Set(manifests.flatMap(manifest => manifest.toolResult?.failure ? [parseDotPath(manifest.toolResult.failure.path).at(-1)!] : []));
 
-function inlineFailureFields(text: string): string[] {
+function expressionSource(text: string) {
   const source = ts.createSourceFile('parser.ts', text, ts.ScriptTarget.Latest, true);
-  const found: string[] = [];
   const constants = new Map<string, ts.Expression>();
   const collect = (node: ts.Node): void => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) constants.set(node.name.text, node.initializer);
     ts.forEachChild(node, collect);
   };
   collect(source);
-  const stringOf = (node: ts.Node, seen = new Set<string>()): string | undefined => {
+  return { source, constants };
+}
+
+function resolvedExpression(node: ts.Node, constants: ReadonlyMap<string, ts.Expression>, seen = new Set<string>()): { node: ts.Node; seen: Set<string> } | undefined {
+  if (ts.isAsExpression(node) || ts.isSatisfiesExpression(node) || ts.isParenthesizedExpression(node) || ts.isTypeAssertionExpression(node) || ts.isComputedPropertyName(node)) {
+    return resolvedExpression(node.expression, constants, seen);
+  }
+  if (ts.isIdentifier(node) && constants.has(node.text)) {
+    if (seen.has(node.text)) return undefined;
+    return resolvedExpression(constants.get(node.text)!, constants, new Set([...seen, node.text]));
+  }
+  return { node, seen };
+}
+
+function inlineFailureFields(text: string, filename = path.join(PARSER_DIR, 'parser.ts')): string[] {
+  const { source, constants } = expressionSource(text);
+  const found: string[] = [];
+  const scanLiterals = filename.startsWith(INGEST_DIR + path.sep)
+    || runtimeImports(source).some(specifier => path.basename(specifier).replace(/\.(?:js|ts)$/, '') === 'dot-path');
+  const stringOf = (expression: ts.Node, seen = new Set<string>()): string | undefined => {
+    const resolved = resolvedExpression(expression, constants, seen);
+    if (!resolved) return undefined;
+    const { node, seen: visited } = resolved;
     if (ts.isStringLiteralLike(node)) return node.text;
-    if (ts.isComputedPropertyName(node)) return stringOf(node.expression, seen);
-    if (ts.isIdentifier(node)) {
-      if (seen.has(node.text)) return undefined;
-      const value = constants.get(node.text);
-      return value === undefined ? undefined : stringOf(value, new Set([...seen, node.text]));
-    }
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-      const left = stringOf(node.left, seen), right = stringOf(node.right, seen);
+      const left = stringOf(node.left, visited), right = stringOf(node.right, visited);
       return left === undefined || right === undefined ? undefined : left + right;
     }
     return undefined;
   };
-  const visit = (node: ts.Node): void => {
+  const visit = (node: ts.Node, keyExpression = false): void => {
     const field = ts.isPropertyAccessExpression(node) ? node.name.text
       : ts.isElementAccessExpression(node) ? stringOf(node.argumentExpression)
         : ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)
           ? node.propertyName ? (ts.isIdentifier(node.propertyName) ? node.propertyName.text : stringOf(node.propertyName))
             : ts.isIdentifier(node.name) ? node.name.text : undefined : undefined;
-    const literal = ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node) ? node.text : undefined;
+    const literal = (scanLiterals || keyExpression) && (ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) ? node.text : undefined;
     const name = (literal ?? field)?.split('.').at(-1);
     const flagged = name !== undefined && failureFields.has(name);
     if (flagged) {
       found.push(`${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: ${name}`);
     }
-    if (flagged && (ts.isElementAccessExpression(node) || ts.isBindingElement(node) && node.propertyName && !ts.isIdentifier(node.propertyName))) {
-      if (ts.isElementAccessExpression(node)) visit(node.expression);
-      else if (node.initializer) visit(node.initializer);
+    if (ts.isElementAccessExpression(node)) {
+      visit(node.expression, keyExpression);
+      if (!flagged) visit(node.argumentExpression, true);
       return;
     }
-    ts.forEachChild(node, visit);
+    if (ts.isBindingElement(node) && node.propertyName && !ts.isIdentifier(node.propertyName)) {
+      if (!flagged) visit(node.propertyName, true);
+      visit(node.name, keyExpression);
+      if (node.initializer) visit(node.initializer, keyExpression);
+      return;
+    }
+    ts.forEachChild(node, child => visit(child, keyExpression));
   };
   visit(source);
   return found;
@@ -74,6 +96,21 @@ const resolveImport = (specifier: string, filename: string): string | undefined 
   return resolved?.isExternalLibraryImport ? undefined : resolved?.resolvedFileName;
 };
 
+function runtimeImports(source: ts.SourceFile): string[] {
+  const imports: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if ((ts.isImportDeclaration(node) && !node.importClause?.isTypeOnly)
+      || (ts.isExportDeclaration(node) && !node.isTypeOnly)) {
+      if (node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) imports.push(node.moduleSpecifier.text);
+    }
+    if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+      || ts.isIdentifier(node.expression) && node.expression.text === 'require') && node.arguments[0] && ts.isStringLiteralLike(node.arguments[0])) imports.push(node.arguments[0].text);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return imports;
+}
+
 /** Runtime import closure; manifest data and its accessor own the declared fields. */
 function reachableModules(entry: string, read = readSource, resolve = resolveImport): string[] {
   const seen = new Set<string>();
@@ -81,17 +118,10 @@ function reachableModules(entry: string, read = readSource, resolve = resolveImp
     if (seen.has(filename) || AUTHORITIES.has(filename)) return;
     seen.add(filename);
     const source = ts.createSourceFile(filename, read(filename), ts.ScriptTarget.Latest, true);
-    const edge = (specifier: string) => { const resolved = resolve(specifier, filename); if (resolved) visit(resolved); };
-    const imports = (node: ts.Node): void => {
-      if ((ts.isImportDeclaration(node) && !node.importClause?.isTypeOnly)
-        || (ts.isExportDeclaration(node) && !node.isTypeOnly)) {
-        if (node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) edge(node.moduleSpecifier.text);
-      }
-      if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
-        || ts.isIdentifier(node.expression) && node.expression.text === 'require') && node.arguments[0] && ts.isStringLiteralLike(node.arguments[0])) edge(node.arguments[0].text);
-      ts.forEachChild(node, imports);
-    };
-    imports(source);
+    for (const specifier of runtimeImports(source)) {
+      const resolved = resolve(specifier, filename);
+      if (resolved) visit(resolved);
+    }
   };
   visit(entry);
   return [...seen];
@@ -99,16 +129,22 @@ function reachableModules(entry: string, read = readSource, resolve = resolveImp
 const parserModules = (agent: string) => reachableModules(path.join(PARSER_DIR, `${agent}.ts`));
 
 function emitsFailure(filename: string, text = readSource(filename)): boolean {
-  const source = ts.createSourceFile(filename, text, ts.ScriptTarget.Latest, true);
+  const { source, constants } = expressionSource(text);
   let emits = false;
-  const value = (node: ts.Node): boolean => ts.isStringLiteralLike(node) && node.text === 'tool.failure'
-    || ts.isConditionalExpression(node) && (value(node.whenTrue) || value(node.whenFalse));
+  const value = (expression: ts.Node, seen = new Set<string>()): boolean => {
+    const resolved = resolvedExpression(expression, constants, seen);
+    if (!resolved) return false;
+    const { node, seen: visited } = resolved;
+    return ts.isStringLiteralLike(node) && node.text === 'tool.failure'
+      || ts.isConditionalExpression(node) && (value(node.whenTrue, visited) || value(node.whenFalse, visited));
+  };
   const visit = (node: ts.Node): void => {
     if (filename === path.join(PARSER_DIR, 'index.ts') && ts.isFunctionDeclaration(node) && node.name?.text === 'unfinishedCalls') return;
     if (ts.isPropertyAssignment(node)) {
-      const name = ts.isComputedPropertyName(node.name) ? node.name.expression : node.name;
-      if ((ts.isIdentifier(name) || ts.isStringLiteralLike(name)) && name.text === 'kind' && value(node.initializer)) emits = true;
+      const name = ts.isComputedPropertyName(node.name) ? resolvedExpression(node.name.expression, constants)?.node : node.name;
+      if (name && (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) && name.text === 'kind' && value(node.initializer)) emits = true;
     }
+    if (ts.isShorthandPropertyAssignment(node) && node.name.text === 'kind' && value(node.name)) emits = true;
     ts.forEachChild(node, visit);
   };
   visit(source);
@@ -118,7 +154,7 @@ function emitsFailure(filename: string, text = readSource(filename)): boolean {
 describe('tool result source authority', () => {
   it('reads harness failure flags only through the shared declaration accessor', () => {
     for (const file of new Set(Object.keys(PARSERS).flatMap(parserModules))) {
-      expect({ file, fields: inlineFailureFields(readSource(file)) }).toEqual({ file, fields: [] });
+      expect({ file, fields: inlineFailureFields(readSource(file), file) }).toEqual({ file, fields: [] });
     }
   });
 
@@ -139,12 +175,44 @@ describe('tool result source authority', () => {
     const files: Record<string, string> = { [entry]: "import { failure } from '../tool-flags.js';", [helper]: "export const failure = getAtPath(block, 'is_error') === true;" };
     const modules = reachableModules(entry, file => files[file]!, (specifier, from) => path.resolve(path.dirname(from), specifier.replace(/\.js$/, '.ts')));
     expect(modules).toEqual([entry, helper]);
-    expect(modules.flatMap(file => inlineFailureFields(files[file]!))).toEqual(['1: is_error']);
+    expect(modules.flatMap(file => inlineFailureFields(files[file]!, file))).toEqual(['1: is_error']);
     const index = path.join(PARSER_DIR, 'index.ts');
     expect(emitsFailure(index, "export function unfinishedCalls() { return [{ kind: 'tool.failure' }]; }")).toBe(false);
     for (const key of ['kind', "'kind'", "['kind']"]) {
       expect(emitsFailure(index, `export function anotherFailure() { return [{ ${key}: 'tool.failure' }]; }`)).toBe(true);
     }
+  });
+
+  it('detects wrapped, aliased and shorthand failure emitters', () => {
+    const file = path.join(PARSER_DIR, 'index.ts');
+    for (const expression of ["'tool.failure' as const", "('tool.failure')", "'tool.failure' satisfies string", "<string>'tool.failure'"]) {
+      expect({ expression, emits: emitsFailure(file, `export const failure = () => [{ kind: ${expression} }];`) })
+        .toEqual({ expression, emits: true });
+    }
+    expect(emitsFailure(file, "const failure = 'tool.failure' as const; const kind = failure; export const anotherFailure = () => [{ kind }];")).toBe(true);
+    expect(emitsFailure(file, "const a = b; const b = a; export const anotherFailure = () => [{ kind: a }];")).toBe(false);
+  });
+
+  it('limits standalone flag literals to ingest modules and dot-path consumers, while checking field reads throughout the closure', () => {
+    const shared = path.join(ROOT, 'packages/myco-shared/src/status.ts');
+    const display = "export const text = 'failed';";
+    expect(inlineFailureFields(display, shared)).toEqual([]);
+    expect(inlineFailureFields("record[`${'is_error'}`]; const { [String('isError')]: bad } = record; record[`${prefix}.failed`];", shared))
+      .toEqual(['1: is_error', '1: isError', '1: failed']);
+    expect(inlineFailureFields(display, path.join(PARSER_DIR, '../status.ts'))).toEqual(['1: failed']);
+    expect(inlineFailureFields("record.is_error; record['isError']; const { failed: bad } = record;", shared))
+      .toEqual(['1: is_error', '1: isError', '1: failed']);
+    expect(inlineFailureFields("import { getAtPath } from '@goondocks/myco-shared/dot-path'; export const bad = getAtPath(record, 'is_error');", shared))
+      .toEqual(['1: is_error']);
+    const entry = path.join(PARSER_DIR, 'probe.ts');
+    const files: Record<string, string> = {
+      [entry]: `import { bad } from '${path.relative(PARSER_DIR, shared).replace(/\.ts$/, '.js')}';`,
+      [shared]: "import { getAtPath } from '@goondocks/myco-shared/dot-path'; export const bad = getAtPath(record, 'is_error');",
+    };
+    const modules = reachableModules(entry, file => files[file]!, (specifier, from) => specifier.startsWith('.')
+      ? path.resolve(path.dirname(from), specifier.replace(/\.js$/, '.ts')) : undefined);
+    expect(modules).toEqual([entry, shared]);
+    expect(modules.flatMap(file => inlineFailureFields(files[file]!, file))).toEqual(['1: is_error']);
   });
 
   it('requires a declaration and evidence for every parser source that emits failures', () => {

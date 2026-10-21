@@ -111,6 +111,13 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
   const name = projectName ?? 'A project';
   const sporesHref = `?${new URLSearchParams({ tab: 'spores' })}`;
   useFollowLive(projectId, session);
+  const content: Record<Tab, ReactNode> = {
+    conversation: <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} now={now} />,
+    activity: <SessionActivity projectId={projectId} sessionId={session.sessionId} now={now} />,
+    outcomes: <SessionOutcomes projectId={projectId} sessionId={session.sessionId} now={now} />,
+    spores: <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />,
+    plans: <SessionPlans projectId={projectId} sessionId={session.sessionId} now={now} />,
+  };
 
   return (
     <article data-session-page="" className="flex w-full flex-col gap-s5">
@@ -158,21 +165,9 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
               <TabsTrigger value="spores">Spores</TabsTrigger>
               <TabsTrigger value="plans">Plans</TabsTrigger>
             </TabsList>
-            <TabsContent value="conversation">
-              <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} now={now} />
-            </TabsContent>
-            <TabsContent value="activity">
-              <SessionActivity projectId={projectId} sessionId={session.sessionId} now={now} />
-            </TabsContent>
-            <TabsContent value="outcomes">
-              <SessionOutcomes projectId={projectId} sessionId={session.sessionId} now={now} />
-            </TabsContent>
-            <TabsContent value="spores">
-              <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />
-            </TabsContent>
-            <TabsContent value="plans">
-              <SessionPlans projectId={projectId} sessionId={session.sessionId} now={now} />
-            </TabsContent>
+            {TABS.map((value) => (
+              <TabsContent key={value} value={value}>{value === tab ? content[value] : null}</TabsContent>
+            ))}
           </Tabs>
           <RawData agent={session.agent} projectId={projectId} sessionId={session.sessionId} open={isRawSection(raw) ? raw : null} now={now} />
         </div>
