@@ -25,6 +25,8 @@ let failure: string | undefined;
 let createVector: boolean;
 let readOnlyRecord: boolean;
 let failureMessage: string;
+let schemaOnMigrationFailure: number | undefined;
+let schemaProbeFails: boolean;
 let printed: string[];
 let errors: string[];
 let exitCode: number | undefined;
@@ -39,13 +41,19 @@ const runner: CommandRunner = {
     expect(options?.cwd?.startsWith(root)).toBe(true);
     calls.push({ args: [...args], options });
     const text = args.slice(2).join(' ');
-    if (failure !== undefined && text.startsWith(failure)) return { code: 1, stdout: '', stderr: failureMessage };
+    if (failure !== undefined && text.startsWith(failure)) {
+      if (text.startsWith('d1 migrations') && schemaOnMigrationFailure !== undefined) schema = schemaOnMigrationFailure;
+      return { code: 1, stdout: '', stderr: failureMessage };
+    }
     let stdout = '';
     if (text === '--version') stdout = '4.126.0';
     else if (text === 'whoami') stdout = 'OAuth fixture';
     else if (text.startsWith('secret list')) stdout = '[]';
     else if (text.startsWith('deployments list')) stdout = `Version ID: ${worker}`;
     else if (text.startsWith('d1 execute')) {
+      if (schemaProbeFails && calls.some((call) => call.args.includes('migrations'))) {
+        return { code: 1, stdout: '', stderr: 'live schema probe unavailable' };
+      }
       const sql = args[args.indexOf('--command') + 1] ?? '';
       const rows = sql.includes('sqlite_master') ? [{ name: 'schema_meta' }]
         : sql.includes("key = 'version'") ? [{ value: String(schema) }] : [];
@@ -88,6 +96,8 @@ beforeEach(() => {
   createVector = false;
   readOnlyRecord = false;
   failureMessage = AUTH_ERROR;
+  schemaOnMigrationFailure = undefined;
+  schemaProbeFails = false;
   calls = [];
   printed = [];
   errors = [];
@@ -250,7 +260,7 @@ Private debug: ${PRIVATE_TOKEN}`;
       createVector = command === 'vectorize create';
       failure = command;
       const text = await drive('update');
-      expect(text).toContain(command === 'vectorize create' ? 'vectorize index myco-server-memory: refused: not applied' : 'Schema: refused: not applied');
+      expect(text).toContain(command === 'vectorize create' ? 'vectorize index myco-server-memory: refused: not applied' : 'Schema: failed: not applied');
       expect(text).not.toContain('outcome unknown');
       expect(text).toContain('Nothing changed in Cloudflare; a rerun is safe');
       expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeUndefined();
@@ -299,6 +309,7 @@ Private debug: ${PRIVATE_TOKEN}`;
   it('labels a failed migration attempted with an unknown outcome and keeps the recorded release', async () => {
     failure = 'd1 migrations';
     failureMessage = 'connection closed before acknowledgement';
+    schemaProbeFails = true;
     const text = await drive('update');
     expect(text).toContain('Schema: attempted; outcome unknown');
     expect(text).not.toContain('Schema: applied');
@@ -308,6 +319,111 @@ Private debug: ${PRIVATE_TOKEN}`;
     expect(count('d1 migrations')).toBe(1);
     expect(count('deploy ')).toBe(0);
     expect(readDeploymentRecord()?.release).toBe('2.0.0-alpha.1');
+    expect(readDeploymentRecord()?.versionId).toBe(RECORDED);
+    expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeUndefined();
+    expect(text).toContain('Live schema confirmation failed:');
+    expect(text).toContain('live schema probe unavailable');
+    expect(text).toContain(failureMessage);
+    expect(exitCode).toBe(1);
+  });
+
+  for (const steps of [1, 2]) {
+    it(`continues after a failed ${steps}-step migration apply when live schema confirms the target`, async () => {
+      schema = SERVER_SCHEMA_VERSION - steps;
+      const before = schema;
+      failure = 'd1 migrations';
+      failureMessage = 'D1 DB storage operation exceeded timeout which caused object to be reset. [code: 7429]';
+      schemaOnMigrationFailure = SERVER_SCHEMA_VERSION;
+      const text = await drive('update');
+      expect(text).toContain(`from 2.0.0-alpha.1/${before} to ${getPluginVersion()}/${SERVER_SCHEMA_VERSION}`);
+      expect(text).toContain('Schema: applied');
+      expect(text).toContain('Worker: applied');
+      expect(text).toContain('Local deployment record: updated');
+      expect(printed.filter((line) => line.includes('live schema confirmed'))).toHaveLength(1);
+      expect(text).toContain(`${failureMessage}; live schema confirmed ${SERVER_SCHEMA_VERSION}`);
+      expect(text).not.toContain('outcome unknown');
+      expect(count('d1 execute')).toBe(4);
+      expect(count('d1 migrations')).toBe(1);
+      expect(count('deploy ')).toBe(1);
+      expect(readDeploymentRecord()).toMatchObject({ release: getPluginVersion(), versionId: LIVE,
+        schemaUpdates: [{ bookmark: BOOKMARK, schemaBefore: before, schemaAfter: SERVER_SCHEMA_VERSION, workerVersionBefore: RECORDED }] });
+      expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeDefined();
+      expect(exitCode).toBeUndefined();
+    });
+
+    it(`reports a failed ${steps}-step apply with nothing applied when live schema is unchanged`, async () => {
+      schema = SERVER_SCHEMA_VERSION - steps;
+      const before = schema;
+      failure = 'd1 migrations';
+      failureMessage = 'D1 storage timeout [code: 7429]';
+      const text = await drive('update');
+      expect(text).toContain(`from 2.0.0-alpha.1/${before} to 2.0.0-alpha.1/${before}`);
+      expect(text).toContain(`Schema: failed: not applied (target ${SERVER_SCHEMA_VERSION}; live schema ${before})`);
+      expect(text).toContain('Worker: not attempted');
+      expect(text).toContain('Local deployment record: not updated');
+      expect(text).toContain('Nothing changed in Cloudflare; a rerun is safe');
+      expect(text).toContain(failureMessage);
+      expect(text).not.toContain('outcome unknown');
+      expect(count('d1 execute')).toBe(4);
+      expect(count('d1 migrations')).toBe(1);
+      expect(count('deploy ')).toBe(0);
+      expect(readDeploymentRecord()).toMatchObject({ release: '2.0.0-alpha.1', versionId: RECORDED,
+        schemaUpdates: [{ bookmark: BOOKMARK, schemaBefore: before, schemaAfter: SERVER_SCHEMA_VERSION, workerVersionBefore: RECORDED }] });
+      expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeUndefined();
+      expect(exitCode).toBe(1);
+    });
+  }
+
+  for (const reached of [SERVER_SCHEMA_VERSION - 1, SERVER_SCHEMA_VERSION + 1]) {
+    it(`keeps a two-step apply outcome unknown when live schema reaches ${reached}`, async () => {
+      schema = SERVER_SCHEMA_VERSION - 2;
+      const before = schema;
+      failure = 'd1 migrations';
+      failureMessage = 'D1 storage timeout [code: 7429]';
+      schemaOnMigrationFailure = reached;
+      const text = await drive('update');
+      expect(text).toContain(`from 2.0.0-alpha.1/${before} to 2.0.0-alpha.1/${reached}`);
+      expect(text).toContain(`Schema: attempted; outcome unknown (target ${SERVER_SCHEMA_VERSION}; live schema ${reached})`);
+      expect(text).toContain('Worker: not attempted');
+      expect(text).toContain('Local deployment record: not updated');
+      expect(text).toContain('An attempted change has an unknown outcome');
+      expect(text).toContain(failureMessage);
+      expect(text).not.toContain('Nothing changed');
+      expect(count('d1 execute')).toBe(4);
+      expect(count('deploy ')).toBe(0);
+      expect(readDeploymentRecord()).toMatchObject({ release: '2.0.0-alpha.1', versionId: RECORDED,
+        schemaUpdates: [{ bookmark: BOOKMARK, schemaBefore: before, schemaAfter: SERVER_SCHEMA_VERSION }] });
+      expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeUndefined();
+      expect(exitCode).toBe(1);
+    });
+  }
+
+  it('keeps an observed intermediate schema unknown even when the migration reports an authentication refusal', async () => {
+    schema = SERVER_SCHEMA_VERSION - 2;
+    failure = 'd1 migrations';
+    schemaOnMigrationFailure = SERVER_SCHEMA_VERSION - 1;
+    const text = await drive('update');
+    expect(text).toContain(`Schema: attempted; outcome unknown (target ${SERVER_SCHEMA_VERSION}; live schema ${SERVER_SCHEMA_VERSION - 1})`);
+    expect(text).toContain('Worker: not attempted');
+    expect(text).toContain('Authentication error [code: 10000] on d1');
+    expect(count('deploy ')).toBe(0);
+    expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeUndefined();
+    expect(readDeploymentRecord()?.versionId).toBe(RECORDED);
+    expect(exitCode).toBe(1);
+  });
+
+  it('keeps a failed live schema probe unknown even when the migration reports an authentication refusal', async () => {
+    failure = 'd1 migrations';
+    schemaProbeFails = true;
+    const text = await drive('update');
+    expect(text).toContain('Schema: attempted; outcome unknown');
+    expect(text).toContain('Worker: not attempted');
+    expect(text).toContain('live schema probe unavailable');
+    expect(text).toContain('Authentication error [code: 10000] on d1');
+    expect(count('deploy ')).toBe(0);
+    expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeUndefined();
+    expect(readDeploymentRecord()?.versionId).toBe(RECORDED);
+    expect(exitCode).toBe(1);
   });
 
   it('reports the applied schema separately from a failed Worker upload', async () => {
