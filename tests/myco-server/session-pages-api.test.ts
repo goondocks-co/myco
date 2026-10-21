@@ -7,6 +7,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { registerBlob } from './helpers/d1.js';
+import { reconcileSearchIndex } from '@myco-server-worker/core/search-index.js';
 import { asOwner, asOwnerPatch, OWNER_ENV } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { MAX_FEED } from '@myco-server-worker/read/activity.js';
@@ -201,3 +203,114 @@ describe('a project\'s name', () => {
   });
 });
 
+
+describe('searching a session\'s conversation', () => {
+  const TURN_PAGE = 200;
+
+  async function conversation() {
+    const h = await harness();
+    h.session('proj_1', 's1', NOW);
+    h.session('proj_1', 's2', NOW);
+    const prompt = (session: string, id: string, at: number, text: string | null, blobKey: string | null = null) =>
+      h.sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, blob_key, origin, content_hash, created_at, updated_at, token_id, received_at)
+                    VALUES ('proj_1', ?, ?, ?, ?, ?, 'user', ?, ?, ?, 'tok_1', ?)`, [session, id, `e_${id}`, text, blobKey, `h_${id}`, at, at, at]);
+    const reply = (session: string, id: string, promptId: string | null, at: number, text: string) =>
+      h.sqlite.run(`INSERT INTO responses (project_id, response_id, session_id, prompt_id, event_id, text, content_hash, created_at, token_id, received_at)
+                    VALUES ('proj_1', ?, ?, ?, ?, ?, ?, ?, 'tok_1', ?)`, [id, session, promptId, `e_${id}`, text, `h_${id}`, at, at]);
+    // The route's own query, exactly as the dashboard's conversation search sends it.
+    const searchPage = async (type: string, extra: Record<string, string> = {}, session = 's1') => {
+      const { status, body } = await h.get(`/api/projects/proj_1/search?${new URLSearchParams({ q: 'zirconium', type, limit: '20', session_id: session, mode: 'fts', ...extra })}`);
+      expect(status).toBe(200);
+      return body as { results: { id: string; type: string; session_id: string; prompt_id?: string; preview: string; created_at: number; turn?: { prompt_id: string } | null }[]; cursor: string | null };
+    };
+    const search = async (type: string, session = 's1') => (await searchPage(type, {}, session)).results;
+    return { ...h, prompt, reply, search, searchPage };
+  }
+
+  it('returns this session\'s prompt and reply hits only, including a prompt beyond the first page of turns and a hit inside a stored body', async () => {
+    const { get, prompt, reply, search, sqlite, bucket, db } = await conversation();
+    prompt('s1', 'p_oldest', NOW, 'zirconium opening request');
+    for (let i = 1; i <= TURN_PAGE + 5; i += 1) prompt('s1', `p_${String(i).padStart(4, '0')}`, NOW + i, `filler ${i}`);
+    reply('s1', 'r_answer', 'p_0007', NOW + 7, 'the zirconium answer');
+    reply('s1', 'r_orphan', null, NOW + 8, 'a zirconium note with no prompt');
+    prompt('s2', 'p_other', NOW, 'zirconium in another session');
+    reply('s2', 'r_other', 'p_other', NOW + 1, 'zirconium elsewhere');
+    const text = `${'padding '.repeat(10_000)} zirconium deepbody`;
+    const objectKey = registerBlob(sqlite, { projectId: 'proj_1', key: 'long-prompt', size: text.length, tokenId: 'tok_1', receivedAt: NOW });
+    await bucket.put(objectKey, new Response(text).body);
+    prompt('s1', 'p_long', NOW + 9, null, 'long-prompt');
+    await reconcileSearchIndex(db, bucket, NOW);
+
+    // The oldest prompt is not on the first page of turns, so only the search reaches it.
+    const firstPage = (await get('/api/projects/proj_1/sessions/s1/turns?origins=user&limit=200&order=desc')).body as { rows: { promptId: string }[]; cursor: string | null };
+    expect(firstPage.rows).toHaveLength(TURN_PAGE);
+    expect(firstPage.cursor).not.toBeNull();
+    expect(firstPage.rows.map((row) => row.promptId)).not.toContain('p_oldest');
+
+    const prompts = await search('prompt');
+    expect(prompts.map((hit) => hit.id).sort()).toEqual(['p_long', 'p_oldest']);
+    expect(prompts.every((hit) => hit.type === 'prompt' && hit.session_id === 's1' && hit.prompt_id === hit.id)).toBe(true);
+    // The stored body has no inline text; its hit is found through the body's chunks.
+    expect(prompts.find((hit) => hit.id === 'p_long')!.preview.length).toBeGreaterThan(0);
+    const replies = await search('response');
+    expect(replies.map((hit) => [hit.id, hit.session_id, hit.prompt_id ?? null]).sort()).toEqual([['r_answer', 's1', 'p_0007'], ['r_orphan', 's1', null]]);
+
+    // The named lookup the hit opens reads the turn directly, past the first page.
+    const lookup = (await get('/api/projects/proj_1/sessions/s1/turns?origins=user,system,agent_dispatch,hook_injected,unknown&turn=p_oldest')).body as { rows: { promptId: string }[] };
+    expect(lookup.rows.map((row) => row.promptId)).toEqual(['p_oldest']);
+
+    // Without the session filter the other session's hits are found, so the filter is what keeps them out.
+    const { body } = await get(`/api/projects/proj_1/search?${new URLSearchParams({ q: 'zirconium', type: 'prompt', limit: '20', mode: 'fts' })}`);
+    expect((body.results as { id: string }[]).map((hit) => hit.id)).toContain('p_other');
+    // The other session searched for its own gets only its own.
+    expect((await search('prompt', 's2')).map((hit) => hit.id)).toEqual(['p_other']);
+  });
+
+  it('leaves a hit on a prompt the session does not hold without a turn, and keeps its own time', async () => {
+    const { prompt, reply, search } = await conversation();
+    prompt('s2', 'p_other', NOW, 'a prompt kept elsewhere');
+    reply('s1', 'r_stray', 'p_other', NOW + 1, 'a zirconium reply to a prompt of another session');
+    reply('s1', 'r_free', null, NOW + 2, 'a zirconium reply with no prompt');
+    expect((await search('response')).map((hit) => [hit.id, hit.prompt_id ?? null, hit.turn, hit.created_at]).sort())
+      .toEqual([['r_free', null, null, NOW + 2], ['r_stray', 'p_other', null, NOW + 1]]);
+  });
+
+  it('pages every match of a session by time through the route, past the first page of turns and past capture elsewhere, with each hit\'s own time and turn', async () => {
+    const { get, prompt, reply, searchPage, sqlite } = await conversation();
+    // 130 prompts of identical text and time, then a reply to the oldest of them: the 101st match and beyond sit past any one page.
+    for (let i = 0; i < 130; i += 1) prompt('s1', `p_${String(i).padStart(4, '0')}`, NOW, 'zirconium same words');
+    prompt('s2', 'p_other', NOW, 'zirconium same words');
+    reply('s1', 'r_old', 'p_0000', NOW + 5, 'a zirconium reply to the oldest prompt');
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pageCount = 0;
+    do {
+      const page: Awaited<ReturnType<typeof searchPage>> = await searchPage('prompt', cursor === null ? { limit: '100', order: 'time' } : { limit: '100', order: 'time', cursor });
+      seen.push(...page.results.map((hit) => hit.id));
+      expect(page.results.every((hit) => hit.session_id === 's1' && hit.turn?.prompt_id === hit.id && hit.created_at === NOW)).toBe(true);
+      if (cursor === null) {
+        // Capture in another Project between pages changes every relevance score and no match's place in the list.
+        for (let i = 0; i < 200; i += 1) {
+          sqlite.run(`INSERT INTO prompt_batches (project_id, session_id, prompt_id, event_id, text, origin, content_hash, created_at, updated_at, token_id, received_at)
+                      VALUES ('proj_2', 'sx', ?, ?, ?, 'user', ?, ?, ?, 'tok_1', ?)`, [`n_${i}`, `e_n_${i}`, `unrelated text ${i}`, `h_n_${i}`, NOW, NOW, NOW]);
+        }
+      }
+      cursor = page.cursor;
+      pageCount += 1;
+    } while (cursor !== null);
+    expect(pageCount).toBe(2);
+    expect(seen).toEqual(Array.from({ length: 130 }, (_, i) => `p_${String(i).padStart(4, '0')}`));
+    // The reply's hit carries its own time and opens the turn its prompt starts.
+    const [answer] = (await searchPage('response')).results;
+    expect(answer).toMatchObject({ id: 'r_old', created_at: NOW + 5, turn: { prompt_id: 'p_0000' } });
+    // Relevance order is one bounded page with no cursor, and refuses one.
+    expect((await searchPage('prompt', { limit: '5' })).cursor).toBeNull();
+    const query = (extra: Record<string, string>) => get(`/api/projects/proj_1/search?${new URLSearchParams({ q: 'zirconium', type: 'prompt', session_id: 's1', ...extra })}`);
+    expect((await query({ cursor: 'e30' })).status).toBe(400);
+    expect((await query({ order: 'relevance', cursor: 'e30' })).status).toBe(400);
+    // A cursor that is not one the search issued is refused as the neighbouring parameters are.
+    for (const bad of ['nonsense', 'e30']) expect((await query({ order: 'time', cursor: bad })).status).toBe(400);
+    expect((await get(`/api/projects/proj_1/search?${new URLSearchParams({ q: 'zirconium', session_id: 's1', order: 'time' })}`)).status).toBe(400);
+    expect((await query({ order: 'newest' })).status).toBe(400);
+  });
+});

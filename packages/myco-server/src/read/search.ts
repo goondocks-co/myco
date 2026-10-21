@@ -7,8 +7,9 @@ import { projectsBoundOnce, type ProjectSet, type ReadScope } from './scope.js';
 import { semanticSearch, type SemanticSearch } from './embedding.js';
 import { EmbeddingUnavailable } from '../core/embedding/provider.js';
 import { notTombstonedSql } from '../core/tombstones.js';
+import { TURN_PREVIEW_CHARS } from './turns.js';
 
-import { SEARCH_TYPES, SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, SEARCH_PREVIEW_CHARS, type SearchType, type SearchOptions, type SearchResult, type SearchAnswer, type SearchAcrossAnswer, type SearchAcrossResult, type ReleaseAnnotation } from '@goondocks/myco-shared/search-types';
+import { SEARCH_TYPES, SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, SEARCH_PREVIEW_CHARS, type SearchType, type SearchOptions, type SearchResult, type SearchAnswer, type SearchAcrossAnswer, type SearchAcrossResult, type ReleaseAnnotation, type SearchTurn } from '@goondocks/myco-shared/search-types';
 import { getReleaseStatesAcross, getReleaseStatesForRecords, isReleaseNamespace, type ReleaseNamespace } from '../core/provenance.js';
 export * from '@goondocks/myco-shared/search-types';
 const SEARCH_MAX_TERMS = 16;
@@ -28,13 +29,15 @@ interface Source {
   status?: string; blob?: 'plan' | 'prompt' | 'response'; namespace: string;
   /** The one line a reader sees for the record, which previews it in place of a snippet wherever it has one. */
   line?: string;
+  /** A hit on a record of a conversation names the turn it belongs to. */
+  turn?: true;
 }
 const SOURCES: Record<SearchType, Source> = {
   session: { table: 'sessions', id: 'session_id', title: "COALESCE(NULLIF(d.title, ''), 'Session ' || substr(d.session_id, -6))", created: occurredAt('d.'), session: 'd.session_id', prompt: 'NULL', status: presentedStatus('d.'), namespace: 'sessions' },
   spore: { table: 'spores', id: 'id', title: 'd.observation_type', created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', status: 'd.status', namespace: 'spores', line: 'd.agent_line' },
   plan: { table: 'plans', id: 'plan_key', title: "COALESCE(NULLIF(d.title, ''), 'Plan')", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', status: 'd.status', blob: 'plan', namespace: 'plans' },
-  prompt: { table: 'prompt_batches', id: 'prompt_id', title: "'Prompt'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', blob: 'prompt', namespace: 'prompt_batches' },
-  response: { table: 'responses', id: 'response_id', title: "'Response'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', blob: 'response', namespace: 'responses' },
+  prompt: { table: 'prompt_batches', id: 'prompt_id', title: "'Prompt'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', blob: 'prompt', namespace: 'prompt_batches', turn: true },
+  response: { table: 'responses', id: 'response_id', title: "'Response'", created: 'd.created_at', session: 'd.session_id', prompt: 'd.prompt_id', blob: 'response', namespace: 'responses', turn: true },
 };
 
 const ALIASES: Record<string, SearchType> = {
@@ -49,7 +52,42 @@ function typesFor(value: string | undefined): readonly SearchType[] {
   return [type as SearchType];
 }
 
-interface Hit { agent: string | null; project_id: string; id: string; title: string; preview: string; rank: number; created_at: number; session_id: string | null; prompt_id: string | null }
+interface Hit {
+  agent: string | null; project_id: string; id: string; title: string; preview: string; rank: number; created_at: number; session_id: string | null; prompt_id: string | null;
+  turn_id?: string | null; turn_preview?: string | null; turn_chars?: number | null; turn_stored?: number | null;
+}
+
+/** Where a page of one type's matches, listed by time, ends: the last match's place in an order of immutable keys. */
+interface TimeCursor { type: SearchType; created_at: number; id: string; project_id: string }
+
+const utf8 = new TextEncoder();
+const CURSOR_MAX_CHARS = 1024;
+
+function encodeCursor(cursor: TimeCursor): string {
+  let binary = '';
+  for (const byte of utf8.encode(JSON.stringify(cursor))) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function decodeCursor(value: string, type: SearchType): TimeCursor {
+  const invalid = () => new InvalidSearch('cursor is not one this search returned');
+  if (value.length === 0 || value.length > CURSOR_MAX_CHARS || !/^[A-Za-z0-9_-]+$/.test(value)) throw invalid();
+  let parsed: unknown;
+  try {
+    const bytes = Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+    parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch { throw invalid(); }
+  const c = parsed as Partial<Record<keyof TimeCursor, unknown>> | null;
+  if (typeof c !== 'object' || c === null || c.type !== type || typeof c.created_at !== 'number' || !Number.isSafeInteger(c.created_at)
+    || typeof c.id !== 'string' || typeof c.project_id !== 'string') throw invalid();
+  return { type, created_at: c.created_at, id: c.id, project_id: c.project_id };
+}
+
+/** How one type's matches are listed: best match first in a single bounded page, or oldest first in pages that continue by cursor. */
+type Listing = { by: 'relevance' } | { by: 'time'; after: TimeCursor | null };
+
+/** One type's matches in the order they are listed, and the cursor of the matches after them when they are listed by time and more follow. */
+interface TypeHits { hits: SearchAcrossResult[]; cursor: string | null }
 
 /** Where a search reads: one Project, or a set of them. */
 type SearchReach = ReadScope | ProjectSet;
@@ -59,10 +97,11 @@ function reachOf(reach: SearchReach): { sql: string; params: string[] } {
   return 'projectId' in reach ? { sql: 'd.project_id = ?', params: [reach.projectId] } : projectsBoundOnce(reach, 'd');
 }
 
-async function searchType(db: RelationalStore, reach: SearchReach, type: SearchType, terms: string[], opts: SearchOptions, limit: number): Promise<SearchAcrossResult[]> {
+async function searchType(db: RelationalStore, reach: SearchReach, type: SearchType, terms: string[], opts: SearchOptions, limit: number, listing: Listing): Promise<TypeHits> {
   const s = SOURCES[type];
-  if ((opts.status !== undefined && s.status === undefined) || (opts.observation_type !== undefined && type !== 'spore')) return [];
-  if (opts.session_id !== undefined && s.session === 'NULL') return [];
+  const none: TypeHits = { hits: [], cursor: null };
+  if ((opts.status !== undefined && s.status === undefined) || (opts.observation_type !== undefined && type !== 'spore')) return none;
+  if (opts.session_id !== undefined && s.session === 'NULL') return none;
   const fts = `${s.table}_fts`;
   const inReach = reachOf(reach);
   // The full-text match drives each branch, and `CROSS JOIN` holds that order: a planner free to choose may instead read
@@ -109,7 +148,14 @@ async function searchType(db: RelationalStore, reach: SearchReach, type: SearchT
     if (opts.release_confidence !== undefined) { condition += ' AND k.confidence = ?'; params.push(opts.release_confidence); }
     where.push(`EXISTS (SELECT 1 FROM knowledge_release_state k WHERE ${condition})`);
   }
-  params.push(limit);
+  // Listed by time, a page after another starts past that page's last match in an order of keys no capture changes: the record's own
+  // time, its id, its Project. One row past the page says whether another follows.
+  if (listing.by === 'time' && listing.after !== null) {
+    const { created_at, id, project_id } = listing.after;
+    where.push(`(${s.created} > ? OR (${s.created} = ? AND d.${s.id} > ?) OR (${s.created} = ? AND d.${s.id} = ? AND d.project_id > ?))`);
+    params.push(created_at, created_at, id, created_at, id, project_id);
+  }
+  params.push(listing.by === 'time' ? limit + 1 : limit);
   // The page's snippets: each kept row's best match, matched again by its rowid in the branch that found it.
   const ownSnippet = `(SELECT snippet(${fts}, -1, '', '', ' … ', 40) FROM ${fts} WHERE ${fts} MATCH ? AND ${fts}.rowid = kept.match_rowid)`;
   const blobSnippet = `(SELECT snippet(search_blob_chunks_fts, 0, '', '', ' … ', 40) FROM search_blob_chunks_fts
@@ -118,23 +164,43 @@ async function searchType(db: RelationalStore, reach: SearchReach, type: SearchT
   const preview = s.line === undefined ? snippet : `COALESCE(NULLIF(kept.line, ''), ${snippet})`;
   params.push(terms[0]);
   if (s.blob) params.push(terms[0]);
-  const rows = (await db.prepare(`WITH candidates AS MATERIALIZED (${first}${blob}),
+  // A conversation hit names its turn: the hit's own prompt reference, kept only where the Project's session holds that prompt, and a
+  // steering prompt resolved to the turn it steers, as the named-turn read does. Both reads are by primary key.
+  const turnColumns = s.turn ? `, tp.prompt_id AS turn_id, substr(tp.text, 1, ${TURN_PREVIEW_CHARS}) AS turn_preview, length(tp.text) AS turn_chars, tp.blob_key IS NOT NULL AS turn_stored` : '';
+  const turnJoins = s.turn ? `LEFT JOIN prompt_batches rp ON rp.project_id = kept.project_id AND rp.session_id = kept.session_id AND rp.prompt_id = kept.prompt_id
+    LEFT JOIN prompt_batches tp ON tp.project_id = rp.project_id AND tp.session_id = rp.session_id AND tp.prompt_id = COALESCE(rp.parent_prompt_id, rp.prompt_id) AND tp.parent_prompt_id IS NULL` : '';
+  const keptOrder = listing.by === 'time' ? 'created_at, id, d.project_id' : 'rank, created_at DESC, id, d.project_id';
+  const listedOrder = listing.by === 'time' ? 'kept.created_at, kept.id, kept.project_id' : 'kept.rank, kept.created_at DESC, kept.id, kept.project_id';
+  const found = (await db.prepare(`WITH candidates AS MATERIALIZED (${first}${blob}),
     kept AS MATERIALIZED (SELECT d.project_id, d.${s.id} AS id, ${s.title} AS title, MIN(candidates.rank) AS rank,
       candidates.branch, candidates.match_rowid, ${s.line ?? 'NULL'} AS line,
       ${s.created} AS created_at, ${s.session} AS session_id, ${s.prompt} AS prompt_id
     FROM candidates CROSS JOIN ${s.table} d ON d.rowid = candidates.source_rowid
-    ${where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`} GROUP BY d.rowid ORDER BY rank, created_at DESC, id, d.project_id LIMIT ?)
-    SELECT kept.project_id, kept.id, kept.title, kept.rank, kept.created_at, kept.session_id, kept.prompt_id, (SELECT agent FROM sessions WHERE project_id = kept.project_id AND session_id = kept.session_id) AS agent, ${preview} AS preview
-    FROM kept ORDER BY kept.rank, kept.created_at DESC, kept.id, kept.project_id`).bind(...params).all<Hit>()).results;
+    ${where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`} GROUP BY d.rowid ORDER BY ${keptOrder} LIMIT ?)
+    SELECT kept.project_id, kept.id, kept.title, kept.rank, kept.created_at, kept.session_id, kept.prompt_id, (SELECT agent FROM sessions WHERE project_id = kept.project_id AND session_id = kept.session_id) AS agent, ${preview} AS preview${turnColumns}
+    FROM kept ${turnJoins} ORDER BY ${listedOrder}`).bind(...params).all<Hit>()).results;
+  const more = listing.by === 'time' && found.length > limit;
+  const rows = more ? found.slice(0, limit) : found;
   const best = Math.max(...rows.map((r) => Math.abs(r.rank)), Number.MIN_VALUE);
   const tools: Partial<Record<SearchType, string>> = { session: 'myco_sessions', spore: 'myco_spores', plan: 'myco_plans' };
   const tool = tools[type];
-  return rows.filter((r) => r.id.length > 0).map((r) => ({
+  const last = rows.at(-1);
+  const hits = rows.filter((r) => r.id.length > 0).map((r): SearchAcrossResult => ({
     projectId: r.project_id, id: r.id, type, title: type === 'session' ? displayPrompt(r.title, r.agent) : r.title, preview: (type === 'session' || type === 'prompt' ? displayPrompt(r.preview ?? '', r.agent) : r.preview ?? '').slice(0, SEARCH_PREVIEW_CHARS), score: Math.abs(r.rank) / best,
+    created_at: r.created_at,
     ...(r.session_id === null ? {} : { session_id: r.session_id }),
     ...(r.prompt_id === null ? {} : { prompt_id: r.prompt_id }),
+    ...(s.turn ? { turn: turnOf(r) } : {}),
     ...(tool === undefined ? {} : { retrieve: { tool, input: { op: 'get', id: r.id } } }),
   }));
+  const cursor = more && last !== undefined ? encodeCursor({ type, created_at: last.created_at, id: last.id, project_id: last.project_id }) : null;
+  return { hits, cursor };
+}
+
+/** The turn a conversation hit opens, or null when its prompt reference names no top-level prompt of the hit's own session. */
+function turnOf(r: Hit): SearchTurn | null {
+  if (r.turn_id == null) return null;
+  return { prompt_id: r.turn_id, preview: r.turn_preview ?? null, text_chars: r.turn_chars ?? null, stored: r.turn_stored === 1 };
 }
 
 /** Each result's release state, one bulk read per namespace present. */
@@ -189,13 +255,13 @@ export async function searchProject(db: RelationalStore, scope: ReadScope, opts:
  * or `fts`, and the answer is always full text.
  */
 export async function searchAcross(db: RelationalStore, set: ProjectSet, opts: SearchOptions): Promise<SearchAcrossAnswer> {
-  const { words, types, mode, limit } = validated(opts);
+  const { words, types, mode, limit, listing } = validated(opts);
   if (mode === 'semantic') throw new InvalidSearch('semantic search reads one project; across projects, mode must be auto or fts');
-  const results = await fullText(db, set, types, words, opts, limit);
-  return { results: await withReleaseAcross(db, results), mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: await pendingSearchBlobs(db, set) } };
+  const { results, cursor } = await fullText(db, set, types, words, opts, limit, listing);
+  return { results: await withReleaseAcross(db, results), mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: await pendingSearchBlobs(db, set) }, cursor };
 }
 
-function validated(opts: SearchOptions): { query: string; words: string[]; types: readonly SearchType[]; mode: string; limit: number } {
+function validated(opts: SearchOptions): { query: string; words: string[]; types: readonly SearchType[]; mode: string; limit: number; listing: Listing } {
   const query = opts.query.trim();
   if (query.length === 0 || query.length > SEARCH_QUERY_MAX_CHARS) throw new InvalidSearch(`query must contain 1–${SEARCH_QUERY_MAX_CHARS} characters`);
   if (CONTROL_CHARACTERS.test(query)) throw new InvalidSearch('query must not contain control characters');
@@ -208,30 +274,50 @@ function validated(opts: SearchOptions): { query: string; words: string[]; types
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > SEARCH_MAX_LIMIT) throw new InvalidSearch(`limit must be between 1 and ${SEARCH_MAX_LIMIT}`);
   for (const value of [opts.since, opts.until]) if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new InvalidSearch('timestamps must be non-negative epoch seconds');
   if (opts.since !== undefined && opts.until !== undefined && opts.since > opts.until) throw new InvalidSearch('since must not exceed until');
-  return { query, words, types, mode, limit };
+  const order = opts.order ?? 'relevance';
+  if (order !== 'relevance' && order !== 'time') throw new InvalidSearch('order must be relevance or time');
+  if (order === 'relevance') {
+    if (opts.cursor !== undefined) throw new InvalidSearch('a cursor continues a search ordered by time; send order=time');
+    return { query, words, types, mode, limit, listing: { by: 'relevance' } };
+  }
+  // Only a search by time pages: its order rests on keys no capture changes, so a page after another never loses or repeats a match.
+  const [only, ...others] = types;
+  if (only === undefined || others.length > 0) throw new InvalidSearch('order=time lists the matches of one type; name it with type');
+  if (only === 'session') throw new InvalidSearch('order=time does not apply to sessions');
+  if (mode === 'semantic') throw new InvalidSearch('order=time lists full-text matches; mode must be auto or fts');
+  return { query, words, types, mode, limit, listing: { by: 'time', after: opts.cursor === undefined ? null : decodeCursor(opts.cursor, only) } };
 }
 
-/** Each type's best hits, one statement per type, merged: every type's best first, then the rest by score, to the limit. */
-async function fullText(db: RelationalStore, reach: SearchReach, types: readonly SearchType[], words: string[], opts: SearchOptions, limit: number): Promise<SearchAcrossResult[]> {
-  const branches = await Promise.all(types.map((type) => searchType(db, reach, type, words.map(sanitizeFtsQuery), opts, limit)));
+/**
+ * Each type's best hits, one statement per type, merged: every type's best first, then the rest by score, to the limit. Listed by
+ * time, one type's matches oldest first, each page naming the cursor of the matches after it.
+ */
+async function fullText(db: RelationalStore, reach: SearchReach, types: readonly SearchType[], words: string[], opts: SearchOptions, limit: number, listing: Listing): Promise<{ results: SearchAcrossResult[]; cursor: string | null }> {
+  const terms = words.map(sanitizeFtsQuery);
+  if (listing.by === 'time') {
+    const { hits, cursor } = await searchType(db, reach, types[0]!, terms, opts, limit, listing);
+    return { results: hits, cursor };
+  }
+  const branches = (await Promise.all(types.map((type) => searchType(db, reach, type, terms, opts, limit, listing)))).map((branch) => branch.hits);
   const order = (a: SearchAcrossResult, b: SearchAcrossResult) => b.score - a.score || SEARCH_TYPES.indexOf(a.type) - SEARCH_TYPES.indexOf(b.type) || a.id.localeCompare(b.id) || a.projectId.localeCompare(b.projectId);
   const floor = branches.flatMap((hits) => hits.slice(0, 1)).sort(order).slice(0, limit);
   const remaining = branches.flatMap((hits) => hits.slice(1)).sort(order).slice(0, limit - floor.length);
-  return [...floor, ...remaining].sort(order);
+  return { results: [...floor, ...remaining].sort(order), cursor: null };
 }
 
 async function searchUnannotated(db: RelationalStore, scope: ReadScope, opts: SearchOptions, resolveSemantic?: () => Promise<SemanticSearch | null>): Promise<SearchAnswer> {
-  const { query, words, types, mode, limit } = validated(opts);
+  const { query, words, types, mode, limit, listing } = validated(opts);
   const coverage = { pending_blobs: await pendingSearchBlobs(db, scope.projectId) };
-  if (mode !== 'fts') {
+  if (mode !== 'fts' && listing.by === 'relevance') {
     const semantic = await resolveSemantic?.();
     if (semantic != null) {
       try {
-        return { results: await semanticSearch(db, scope, semantic, types, { ...opts, query }, limit), mode: 'semantic', provider_unavailable: false, coverage };
+        return { results: await semanticSearch(db, scope, semantic, types, { ...opts, query }, limit), mode: 'semantic', provider_unavailable: false, coverage, cursor: null };
       } catch (error) { if (!(error instanceof EmbeddingUnavailable)) throw error; }
     }
   }
-  if (mode === 'semantic') return { results: [], mode, provider_unavailable: true, coverage };
-  const results = (await fullText(db, scope, types, words, opts, limit)).map(({ projectId: _projectId, ...result }) => result);
-  return { results, mode: 'fts', provider_unavailable: mode === 'auto', coverage };
+  if (mode === 'semantic') return { results: [], mode, provider_unavailable: true, coverage, cursor: null };
+  const found = await fullText(db, scope, types, words, opts, limit, listing);
+  const results = found.results.map(({ projectId: _projectId, ...result }) => result);
+  return { results, mode: 'fts', provider_unavailable: mode === 'auto' && listing.by === 'relevance', coverage, cursor: found.cursor };
 }
