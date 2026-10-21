@@ -1051,6 +1051,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           }
         }
       }
+    },
+    "toolResult": {
+      "failure": {
+        "from": "result",
+        "path": "is_error",
+        "equals": true
+      },
+      "evidence": "tests/fixtures/tool-result-evidence.json"
     }
   },
   {
@@ -1260,6 +1268,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           }
         }
       }
+    },
+    "toolResult": {
+      "failure": {
+        "from": "record",
+        "path": "failed",
+        "equals": true
+      },
+      "evidence": "tests/fixtures/tool-result-evidence.json"
     }
   },
   {
@@ -1814,6 +1830,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           }
         }
       }
+    },
+    "toolResult": {
+      "failure": {
+        "from": "record",
+        "path": "payload.success",
+        "equals": false
+      },
+      "evidence": "tests/fixtures/tool-result-evidence.json"
     }
   },
   {
@@ -2928,6 +2952,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           }
         }
       }
+    },
+    "toolResult": {
+      "failure": {
+        "from": "record",
+        "path": "failed",
+        "equals": true
+      },
+      "evidence": "tests/fixtures/tool-result-evidence.json"
     }
   },
   {
@@ -3109,6 +3141,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           }
         }
       }
+    },
+    "toolResult": {
+      "failure": {
+        "from": "result",
+        "path": "isError",
+        "equals": true
+      },
+      "evidence": "tests/fixtures/tool-result-evidence.json"
     }
   },
   {

@@ -94,6 +94,7 @@
       "types": "./dist/capture-rules.d.ts"
     },
     "./record-identity": { "import": "./dist/record-identity.js", "types": "./dist/record-identity.d.ts" },
+    "./tool-result": { "import": "./dist/tool-result.js", "types": "./dist/tool-result.d.ts" },
     "./prompt-identity": {
       "import": "./dist/prompt-identity.js",
       "types": "./dist/prompt-identity.d.ts"

@@ -250,7 +250,7 @@ describe('a plan’s page', () => {
       [`/api/projects/${MYCO}/sessions/s1/plans/${KEY}/status`]: () => { status = 'completed'; return Response.json({ plan: plan({ status }) }); },
     }));
     mount(planPagePath(MYCO, { planKey: KEY }));
-    fireEvent.click(await screen.findByRole('combobox', { name: 'Plan status' }));
+    fireEvent.click(await screen.findByRole('combobox', { name: /^Plan\ status(?::|$)/ }));
     fireEvent.click(await screen.findByRole('option', { name: 'Done' }));
     // Picking writes nothing; the save does.
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -267,10 +267,10 @@ describe('a plan’s page', () => {
       [`/api/projects/${MYCO}/sessions/s1`]: sessionAnswer,
     }));
     mount(planPagePath(MYCO, { planKey: KEY }));
-    fireEvent.click(await screen.findByRole('combobox', { name: 'Plan status' }));
+    fireEvent.click(await screen.findByRole('combobox', { name: /^Plan\ status(?::|$)/ }));
     fireEvent.click(await screen.findByRole('option', { name: 'Abandoned' }));
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.getByRole('combobox', { name: 'Plan status' }).textContent).toBe('In progress');
+    expect(screen.getByRole('combobox', { name: /^Plan\ status(?::|$)/ }).textContent).toBe('In progress');
     expect(sent).toEqual([]);
   });
 
@@ -281,7 +281,7 @@ describe('a plan’s page', () => {
     }, MEMBER));
     mount(planPagePath(MYCO, { planKey: KEY }));
     await screen.findByRole('heading', { level: 1 });
-    expect(screen.queryByRole('combobox', { name: 'Plan status' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: /^Plan\ status(?::|$)/ })).toBeNull();
     expect((document.querySelector('[data-facts]') as HTMLElement).textContent).toContain('StatusIn progress');
   });
 

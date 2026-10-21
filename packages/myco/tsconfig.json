@@ -45,6 +45,7 @@
       "@goondocks/myco-shared/capture-rules": ["../myco-shared/src/capture-rules.ts"],
       "@goondocks/myco-shared/prompt-identity": ["../myco-shared/src/prompt-identity.ts"],
       "@goondocks/myco-shared/record-identity": ["../myco-shared/src/record-identity.ts"],
+      "@goondocks/myco-shared/tool-result": ["../myco-shared/src/tool-result.ts"],
       "@goondocks/myco-shared/capture-rules-data": ["../myco-shared/src/capture-rules.generated.ts"],
       "@goondocks/myco-shared/session-ids": ["../myco-shared/src/session-ids.ts"],
       "@goondocks/myco-shared/dot-path": ["../myco-shared/src/dot-path.ts"],

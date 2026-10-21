@@ -187,11 +187,11 @@ describe('invitations', () => {
     fireEvent.click(await screen.findByRole('button', { name: INVITE_CONTROLS.button }));
     let dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.button });
     // The viewer is picked first; the field lists every live person.
-    const field = within(dialog).getByRole('combobox', { name: INVITE_CONTROLS.field });
+    const field = within(dialog).getByRole('combobox', { name: new RegExp(`^${INVITE_CONTROLS.field}(?::|$)`) });
     expect(field.textContent).toContain('Ada');
     fireEvent.click(field);
     fireEvent.click(await screen.findByRole('option', { name: 'Lin' }));
-    fireEvent.click(within(dialog).getByRole('combobox', { name: 'How long the link works' }));
+    fireEvent.click(within(dialog).getByRole('combobox', { name: /^How\ long\ the\ link\ works(?::|$)/ }));
     fireEvent.click(await screen.findByRole('option', { name: 'For a day' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create link' }));
     await waitFor(() => expect(screen.getByRole('dialog').querySelector('code')?.textContent).toBe(`myco login ${window.location.origin}/join#${'m'.repeat(43)}`));

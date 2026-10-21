@@ -411,6 +411,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   // Search reads with Ollama's bge-m3, chosen before anything was built, and a switch to nomic-embed-text is under way.
   await expectOk(await fetch(`${url}/api/embedding`, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ provider: 'ollama', model: 'bge-m3' }) }), 'choose the embedding model');
   await seedSessionAudit(ctx.databasePath, sessionIds[OUTCOME_SESSION]!, sporeIds[0]!);
+  await seedSessionActivity(ctx.databasePath, sessionIds[OUTCOME_SESSION]!, lastPrompt[OUTCOME_SESSION]!, now);
   seedEmbeddingSwitch(ctx.databasePath, now);
 
   settleReceiptTimes(ctx.databasePath, liveSessionId, now);
@@ -777,4 +778,25 @@ async function seedSessionAudit(databasePath: string, sessionId: string, sporeId
     sqlite.query("UPDATE prompt_batches SET text = '<subagent_notification>/audit</subagent_notification> This test fails one run in twenty' WHERE project_id = ? AND prompt_id = ?")
       .run(projectId, first.prompt_id);
   } finally { sqlite.close(); }
+}
+
+/** Tool result classifications, with both turn-bound and session-level diagnostics. */
+async function seedSessionActivity(databasePath: string, sessionId: string, promptId: string, now: number): Promise<void> {
+  const sqlite = new Database(databasePath);
+  sqlite.exec('PRAGMA busy_timeout = 5000');
+  try {
+    for (const [index, row] of [
+      { tool: 'Bash', reason: 'reported', prompt: promptId },
+      { tool: 'Read', reason: 'no_result:session_end', prompt: null },
+      { tool: 'Write', reason: null, prompt: null },
+      { tool: 'Grep', reason: 'pending_limit', prompt: null },
+    ].entries()) {
+      const id = await uuidv5('screens-tool', sessionId, String(index));
+      sqlite.query(`INSERT INTO tool_calls (project_id, tool_call_id, session_id, prompt_id, event_id, tool_name, success, result_reason, created_at, token_id, received_at)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'fixture', ?)`)
+        .run(idOf('myco'), id, sessionId, row.prompt, id, row.tool, row.reason, now - (40 - index) * MINUTE, now);
+    }
+  } finally {
+    sqlite.close();
+  }
 }

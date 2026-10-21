@@ -144,7 +144,7 @@ describe('member envelope — field rules', () => {
     const absent = toolUseEvent(ctx(), input({ tool_name: 'Bash', tool_input: { command: 'ls' } }));
     expect(absent.envelope.payload).not.toHaveProperty('output');
     const failed = toolFailureEvent(ctx(), input({ tool_name: 'Bash', tool_input: { command: 'false' }, tool_response: ['exit', 1], error: 'exit 1' }));
-    expect(failed.envelope.payload).toMatchObject({ output: '["exit",1]', errorMessage: 'exit 1', success: false });
+    expect(failed.envelope.payload).toMatchObject({ output: '["exit",1]', errorMessage: 'exit 1', success: false, resultReason: 'reported' });
   });
 
   it('spills text over the inline ceiling to a staged blob and keeps it inline otherwise', async () => {

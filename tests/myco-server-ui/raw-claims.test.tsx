@@ -152,7 +152,7 @@ describe('explicit initial ownership', () => {
       { memberId: OWNER, label, role: 'admin', roleRevision: 'ada-r1' },
     ], proposalMemberId: OWNER }) });
     expect(await screen.findByText(`Proposed server owner: ${name}. Review and confirm this choice; ownership has not changed.`)).toBeTruthy();
-    fireEvent.click(screen.getByRole('combobox', { name: 'Server owner' }));
+    fireEvent.click(screen.getByRole('combobox', { name: /^Server\ owner(?::|$)/ }));
     fireEvent.click(await screen.findByRole('option', { name }));
     fireEvent.click(screen.getByRole('button', { name: 'Record server owner' }));
     const dialog = screen.getByRole('dialog');
@@ -177,7 +177,7 @@ describe('explicit initial ownership', () => {
       return Response.json({ ownerMemberId, revision: ownerMemberId === null ? 'owner-r1' : 'owner-r2', candidates: [{ memberId: OWNER, label: 'Ada', role: 'admin', roleRevision: 'ada-r1' }], proposalMemberId: ownerMemberId === null ? OWNER : null });
     } });
     await screen.findByRole('button', { name: 'Record server owner' });
-    fireEvent.click(screen.getByRole('combobox', { name: 'Server owner' }));
+    fireEvent.click(screen.getByRole('combobox', { name: /^Server\ owner(?::|$)/ }));
     fireEvent.click(await screen.findByRole('option', { name: 'Ada' }));
     fireEvent.click(screen.getByRole('button', { name: 'Record server owner' }));
     const dialog = screen.getByRole('dialog');
@@ -193,7 +193,7 @@ describe('explicit initial ownership', () => {
     const { requests } = deployment({ owner: false, ownership: (init) => Response.json({ ownerMemberId: init?.method === 'POST' ? OWNER : null, revision: 'owner-r1', candidates: [{ memberId: OWNER, label: 'Ada', role: 'admin', roleRevision: 'ada-r1' }], proposalMemberId: OWNER }) });
     const button = await screen.findByRole('button', { name: 'Record server owner' });
     expect(button.hasAttribute('disabled')).toBe(true);
-    fireEvent.click(screen.getByRole('combobox', { name: 'Server owner' }));
+    fireEvent.click(screen.getByRole('combobox', { name: /^Server\ owner(?::|$)/ }));
     const option = await screen.findByRole('option', { name: 'Ada' });
     expect(screen.queryByRole('option', { name: 'Lin' })).toBeNull();
     expect(screen.queryByRole('option', { name: 'Unlinked' })).toBeNull();
@@ -215,7 +215,7 @@ describe('explicit initial ownership', () => {
     ], proposalMemberId: null }) });
     const button = await screen.findByRole('button', { name: 'Transfer server ownership' });
     expect(button.hasAttribute('disabled')).toBe(true);
-    fireEvent.click(screen.getByRole('combobox', { name: 'New server owner' }));
+    fireEvent.click(screen.getByRole('combobox', { name: /^New\ server\ owner(?::|$)/ }));
     fireEvent.click(await screen.findByRole('option', { name: 'Next' }));
     fireEvent.click(button);
     const dialog = screen.getByRole('dialog');

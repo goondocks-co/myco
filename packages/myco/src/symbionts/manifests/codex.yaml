@@ -431,6 +431,9 @@ promptIdentity:
   granularity: turn
   readBeforePin: offset-v1
 
+toolResult:
+  failure: { from: record, path: payload.success, equals: false }
+  evidence: tests/fixtures/tool-result-evidence.json
 recordIdentity:
   scheme: source-record-v1
   schemes:

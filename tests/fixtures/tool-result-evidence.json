@@ -1,0 +1,178 @@
+[
+  {
+    "agent": "claude-code",
+    "before": [
+      {
+        "type": "assistant",
+        "uuid": "assistant-1",
+        "message": {
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "call-1",
+              "name": "Bash",
+              "input": {
+                "command": "false"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "reported": {
+      "type": "user",
+      "uuid": "result-1",
+      "message": {
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "call-1",
+            "is_error": true,
+            "content": "same output regardless of status"
+          }
+        ]
+      }
+    },
+    "success": {
+      "type": "user",
+      "uuid": "result-1",
+      "message": {
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "call-1",
+            "is_error": false,
+            "content": "same output regardless of status"
+          }
+        ]
+      }
+    },
+    "resultPath": "message.content[0]"
+  },
+  {
+    "agent": "codex",
+    "before": [
+      {
+        "type": "response_item",
+        "payload": {
+          "type": "function_call",
+          "call_id": "call-1",
+          "name": "shell",
+          "arguments": "{}"
+        }
+      }
+    ],
+    "reported": {
+      "type": "response_item",
+      "payload": {
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "success": false,
+        "output": "same output regardless of status"
+      }
+    },
+    "success": {
+      "type": "response_item",
+      "payload": {
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "success": true,
+        "output": "same output regardless of status"
+      }
+    },
+    "resultPath": "payload"
+  },
+  {
+    "agent": "pi",
+    "before": [
+      {
+        "type": "message",
+        "id": "assistant-1",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call-1",
+              "name": "bash",
+              "arguments": {}
+            }
+          ]
+        }
+      }
+    ],
+    "reported": {
+      "type": "message",
+      "id": "result-1",
+      "message": {
+        "role": "toolResult",
+        "toolCallId": "call-1",
+        "toolName": "bash",
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "same output regardless of status"
+          }
+        ]
+      }
+    },
+    "success": {
+      "type": "message",
+      "id": "result-1",
+      "message": {
+        "role": "toolResult",
+        "toolCallId": "call-1",
+        "toolName": "bash",
+        "isError": false,
+        "content": [
+          {
+            "type": "text",
+            "text": "same output regardless of status"
+          }
+        ]
+      }
+    },
+    "resultPath": "message"
+  },
+  {
+    "agent": "opencode",
+    "before": [],
+    "reported": {
+      "v": 1,
+      "type": "tool",
+      "name": "bash",
+      "input": {},
+      "output": "same output regardless of status",
+      "failed": true
+    },
+    "success": {
+      "v": 1,
+      "type": "tool",
+      "name": "bash",
+      "input": {},
+      "output": "same output regardless of status",
+      "failed": false
+    }
+  },
+  {
+    "agent": "cline",
+    "before": [],
+    "reported": {
+      "v": 1,
+      "type": "tool",
+      "name": "bash",
+      "input": {},
+      "output": "same output regardless of status",
+      "failed": true
+    },
+    "success": {
+      "v": 1,
+      "type": "tool",
+      "name": "bash",
+      "input": {},
+      "output": "same output regardless of status",
+      "failed": false
+    }
+  }
+]

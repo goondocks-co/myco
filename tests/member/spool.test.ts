@@ -7,14 +7,15 @@
  * content and cap.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { normalizeHookInput } from '@myco/hooks/normalize.js';
 import { cacheDeploymentFeatures } from '@myco/member/context-cache.js';
-import { FEATURES_HEADER, PROTOCOL_HEADER, PROJECT_NAME_FEATURE } from '@goondocks/myco-shared/member-protocol';
+import { FEATURES_HEADER, PROTOCOL_HEADER, PROJECT_NAME_FEATURE, TOOL_RESULT_REASON_FEATURE } from '@goondocks/myco-shared/member-protocol';
 import fs from 'node:fs';
 import path from 'node:path';
 import { RETIRED_BYTE_CEILING } from '../myco-server/helpers/fixtures.js';
 import { unboundedBudget, resolveHookBudget } from '@myco/member/budget.js';
 import { MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, PROJECT_HEADER, REFUSED_LOG_MAX_BYTES } from '@myco/member/constants.js';
-import { mintId, promptEvent, sessionStartEvent, type MemberEnvelope, type EnvelopeContext } from '@myco/member/envelope.js';
+import { mintId, promptEvent, toolFailureEvent, sessionStartEvent, type MemberEnvelope, type EnvelopeContext } from '@myco/member/envelope.js';
 import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { drainBacklog } from '@myco/member/backlog.js';
 import { MemberSpool, WIRE_FIELDS, toWire, type SpoolRecord } from '@myco/member/spool.js';
@@ -66,6 +67,30 @@ describe('member spool', () => {
     expect(payloads).toHaveLength(1);
     expect(payloads[0].projectName).toBe(advertised ? 'whisker-sites' : undefined);
     expect(rig.env.sqlite.query('SELECT name FROM projects WHERE project_id = ?').get('proj_1')).toMatchObject({ name: advertised ? 'whisker-sites' : 'agent' });
+  });
+
+  it.each([false, true])('ships resultReason only to an advertising Deployment (advertised: %s)', async (advertised) => {
+    const rig = await memberRig();
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
+    const features = advertised ? [TOOL_RESULT_REASON_FEATURE] as const : [] as const;
+    cacheDeploymentFeatures('https://s', [...features], mycoHome);
+    const payloads: Record<string, unknown>[] = [];
+    const fetch: FetchLike = async (input, init) => {
+      const request = new Request(input, init);
+      const payload = (await request.clone().json() as MemberEnvelope).payload;
+      payloads.push(payload);
+      if (!advertised && 'resultReason' in payload) return Response.json({ code: 'unknown_field', reason: 'resultReason' }, { status: 400, headers: { [PROTOCOL_HEADER]: '1' } });
+      const response = await rig.fetch(request);
+      response.headers.set(FEATURES_HEADER, features.join(','));
+      return response;
+    };
+    const input = normalizeHookInput({ tool_name: 'Shell', tool_input: { command: 'false' }, error: 'exit 1' });
+    spool.append('sess-reason', toolFailureEvent(ctxFor(spool, 'sess-reason'), input));
+    const result = await spool.drainSession('sess-reason', clientFor(rig, fetch), unboundedBudget());
+    expect(result).toMatchObject({ acked: 1, refused: 0, remaining: 0, endedBy: 'drained' });
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0].resultReason).toBe(advertised ? 'reported' : undefined);
+    expect(rig.env.sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: advertised ? 'reported' : null });
   });
 
   it('appends before sending and the wire carries only the seven envelope fields — never a sidecar or the buffer timestamp', async () => {

@@ -25,6 +25,7 @@ import { listPlans } from '@myco-server-worker/read/children.js';
 import { pageSpores } from '@myco-server-worker/core/spores.js';
 import { heldTranscriptsFor } from '@myco-server-worker/read/transcript.js';
 import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
+import { listSessionActivity } from '@myco-server-worker/read/session-activity.js';
 import { sessionCommits } from '@myco-server-worker/read/session-commits.js';
 
 /** A store that answers no rows and remembers every statement, with the values bound to it. */
@@ -188,6 +189,22 @@ describe('the reads a person waits on', () => {
     } finally {
       db.close();
     }
+  });
+
+  it('pages structured session activity over immutable indexed keys and verifies prompt targets by index', async () => {
+    const db = migrated();
+    try {
+      for (const opts of [{}, { type: 'failure' as const, tool: 'Bash', failed: true, cursor: encodeCursor(1_700_000_000_000, 'tool') }]) {
+        const { db: recorder, statements } = recordingStore();
+        await listSessionActivity(recorder, { projectId: 'proj_1' }, 's1', opts);
+        expect(statements).toHaveLength(2);
+        expect(statements.map(s => s.sql).join(' ')).not.toMatch(/error_message|output_preview|input_blob_key/);
+        const plan = planOf(db, statements[0].sql, statements[0].params);
+        expect(plan).toContain('idx_tool_calls_activity');
+        expect(plan).not.toMatch(/SCAN t\b|TEMP B-TREE/);
+        expect(plan).toMatch(/SEARCH p USING (?:COVERING )?INDEX/);
+      }
+    } finally { db.close(); }
   });
 
   it('keeps the same plan when a cursor narrows the page', async () => {

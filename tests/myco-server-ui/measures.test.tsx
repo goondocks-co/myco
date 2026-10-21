@@ -64,7 +64,7 @@ const base = (extra: Record<string, () => Response> = {}) => ({
 async function pick(label: string, option: string) {
   const proto = window.HTMLElement.prototype as unknown as { scrollIntoView?: () => void };
   proto.scrollIntoView ??= () => undefined;
-  fireEvent.click(await screen.findByLabelText(label));
+  fireEvent.click(await screen.findByLabelText(new RegExp(`^${label}(?::|$)`)));
   fireEvent.click(await screen.findByRole('option', { name: option }));
 }
 

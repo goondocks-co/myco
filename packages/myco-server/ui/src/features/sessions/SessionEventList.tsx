@@ -71,13 +71,19 @@ export interface SessionEventFilter {
 export interface SessionEventListProps {
   /** Absent for a list too short to need one. */
   filter?: SessionEventFilter;
+  /** Structured filters for lists with no body search. */
+  filterBar?: ReactNode;
+  filtered?: boolean;
   read: SessionEventRead;
   /** The plural noun the list counts, as in "spores". */
   noun: string;
+  /** Countable words when the list name is collective. */
+  countNoun?: string;
   /** Rows wrap their words instead of truncating them. */
   wrap?: boolean;
   /** What the list says when the session holds none at all. */
   emptyTitle: string;
+  emptyFilteredTitle?: string;
   loadingLabel: string;
   now: number;
 }
@@ -89,16 +95,17 @@ export interface SessionEventListProps {
  * more" at the foot. An empty list says whether the session holds none or the
  * filter matches none.
  */
-export function SessionEventList({ filter, read, noun, wrap = false, emptyTitle, loadingLabel, now }: SessionEventListProps) {
-  const filtered = filter !== undefined && (filter.filters.type !== null || filter.filters.q !== '');
+export function SessionEventList({ filter, filterBar, filtered: structuredFiltered = false, read, noun, countNoun = noun, wrap = false, emptyTitle, emptyFilteredTitle, loadingLabel, now }: SessionEventListProps) {
+  const filtered = structuredFiltered || (filter !== undefined && (filter.filters.type !== null || filter.filters.q !== ''));
   return (
     <div className="flex flex-col gap-s3" data-session-events={noun}>
+      {filterBar}
       {filter !== undefined && <EventFilterBar filter={filter} />}
       {read.isPending ? <LoadingState label={loadingLabel} count={3} />
         : read.error ? <ErrorState error={read.error} onRetry={read.retry} />
         : read.rows.length === 0 ? (
           filtered
-            ? <EmptyState title={`No ${noun} in this session match this filter.`} />
+            ? <EmptyState title={emptyFilteredTitle ?? `No ${noun} in this session match this filter.`} />
             : <EmptyState title={emptyTitle} />
         ) : (
           <div>
@@ -110,7 +117,7 @@ export function SessionEventList({ filter, read, noun, wrap = false, emptyTitle,
               ))}
             </ul>
             {(read.hasMore || read.total !== undefined) && (
-              <ShowMore shown={read.rows.length} total={read.total} noun={noun} onMore={read.more} pending={read.isFetchingMore} hasMore={read.hasMore} />
+              <ShowMore shown={read.rows.length} total={read.total} noun={countNoun} onMore={read.more} pending={read.isFetchingMore} hasMore={read.hasMore} />
             )}
           </div>
         )}

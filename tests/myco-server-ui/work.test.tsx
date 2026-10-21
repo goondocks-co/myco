@@ -475,8 +475,8 @@ describe('Myco’s work', () => {
     const windows = later.filter((url) => url.pathname === '/api/work').map((url) => [Number(url.searchParams.get('since')), Number(url.searchParams.get('until'))]);
     expect(windows).toContainEqual([TODAY.since, TODAY.until]);
     expect(windows).toContainEqual([WEEK.since, WEEK.until]);
-    expect(screen.getByRole('combobox', { name: 'When' }).textContent).toBe('Today');
-    expect(screen.getByRole('combobox', { name: 'Outcome' }).textContent).toBe('Code map');
+    expect(screen.getByRole('combobox', { name: /^When(?::|$)/ }).textContent).toBe('Today');
+    expect(screen.getByRole('combobox', { name: /^Outcome(?::|$)/ }).textContent).toBe('Code map');
   });
 
   it('reads again every 30 s only while a run is queued or running, never from a hidden tab', async () => {

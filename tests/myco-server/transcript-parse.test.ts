@@ -13,6 +13,9 @@
  *     one defect that would lose rows silently and in bulk.
  *   - many passes and one pass produce the same rows.
  */
+import type { RecordIdScheme } from '@goondocks/myco-shared/record-identity';
+import { envelopeHash } from '@myco-server-worker/ingest/events.js';
+import { parseEnvelope } from '@myco-server-worker/ingest/envelope.js';
 import type { PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { D1_BOUND_PARAMETER_CEILING, registerBlob, sqliteD1 } from './helpers/d1.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -22,7 +25,7 @@ import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
-  AWAITING_BYTES, eventGroups, TRANSCRIPT_PRODUCER, PARSER_VERSION, PARSE_STOP_GENERATION, TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES, laneSelectionSql, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
+  AWAITING_BYTES, eventGroups, TRANSCRIPT_PRODUCER, PARSER_VERSION, PARSE_STOP_GENERATION, TRANSCRIPT_PARSE_BATCH_PAYLOAD_BYTES, laneSelectionSql, envelopeFor, parseOnce, parseTranscripts, pendingTranscripts, rereadTranscripts,
   TRANSCRIPT_PARSE_EVENTS_PER_BATCH, TRANSCRIPT_PARSE_MALFORMED_LIMIT, TRANSCRIPT_REPAIRS_PER_WAKE,
   TRANSCRIPT_PARSE_BYTES_PER_READ, TRANSCRIPT_PARSE_SEGMENTS_PER_READ, TRANSCRIPT_PARSE_RECORD_BYTES, TRANSCRIPT_IDLE_MS,
 } from '@myco-server-worker/ingest/parse.js';
@@ -78,16 +81,16 @@ function body(turns: number): string {
  * A store holding one transcript whose bytes are split into `sliceBytes` segments, pinned to the scheme that read a
  * transcript of these formats, which record no Codex turns (`tests/meta/codex-turn-identity.test.ts` reads Codex's turns).
  */
-async function rig(text: string, sliceBytes = 1 << 20, opts: { agent?: string; scheme?: PromptIdScheme } = {}) {
+async function rig(text: string, sliceBytes = 1 << 20, opts: { agent?: string; scheme?: PromptIdScheme; recordScheme?: RecordIdScheme } = {}) {
   const { sqlite, serverEnv } = sqliteEnv();
   const issued = await issueMemberToken(serverEnv.db, { memberId: 'mem_machine_1', machineId: MACHINE }, NOW);
   const bytes = new TextEncoder().encode(text);
 
   sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
               VALUES (?, ?, ?, ?, ?, ?)`, [PROJECT, SESSION, MACHINE, issued.tokenId, NOW, NOW]);
-  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, prompt_identity_scheme)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-             [PROJECT, TRANSCRIPT, SESSION, MACHINE, opts.agent ?? 'claude-code', bytes.length, 1, NOW, NOW, issued.tokenId, opts.scheme ?? READ_BEFORE_PIN[opts.agent ?? 'claude-code']!]);
+  sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, prompt_identity_scheme, record_identity_scheme)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             [PROJECT, TRANSCRIPT, SESSION, MACHINE, opts.agent ?? 'claude-code', bytes.length, 1, NOW, NOW, issued.tokenId, opts.scheme ?? READ_BEFORE_PIN[opts.agent ?? 'claude-code']!, opts.recordScheme ?? 'legacy-session-v1']);
 
   for (let at = 0; at < bytes.length; at += sliceBytes) {
     const slice = bytes.subarray(at, Math.min(at + sliceBytes, bytes.length));
@@ -112,14 +115,175 @@ const LIMITS = { calls: PASS_CALLS, deadline: Number.POSITIVE_INFINITY, clock: (
 /** How many transcripts still owe a pass. */
 const pendingCount = async (db: Parameters<typeof pendingTranscripts>[0], now = NOW): Promise<number> => (await pendingTranscripts(db, now)).transcripts;
 
+
+describe('tool result reasons at the transcript writer', () => {
+  it('reparses a legacy failed row from declared evidence without changing its raw event or prompt', async () => {
+    const at = new Date(NOW).toISOString();
+    const text = line({ type: 'user', message: { content: 'read' }, timestamp: at })
+      + line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'old-result', name: 'Read', input: {} }] }, timestamp: at })
+      + line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'old-result', is_error: true, content: 'tool call has no result in the transcript' }] }, timestamp: at });
+    const r = await rig(text);
+    try {
+      const values = text.trimEnd().split('\n');
+      let offset = 0;
+      const lines = values.map(value => { const parsed = { value: JSON.parse(value), offset }; offset += Buffer.byteLength(value) + 1; return parsed; });
+      const derived = await PARSERS['claude-code'].parse({ lines, sessionId: SESSION, transcriptId: TRANSCRIPT,
+        scheme: READ_BEFORE_PIN['claude-code']!, recordScheme: 'legacy-session-v1', now: NOW });
+      const tool = derived.find(event => event.kind === 'tool.failure')!;
+      const { resultReason: _reason, ...payload } = tool.payload;
+      const old = await envelopeFor({ transcriptId: TRANSCRIPT, sessionId: SESSION }, { ...tool, payload });
+      const eventId = String(old.eventId);
+      for (const prompt of derived.filter(event => event.kind === 'prompt')) {
+        await ingestEvent(r.env.db, { projectId: PROJECT, machineId: MACHINE, tokenId: r.tokenId, bodyBytes: 0, now: NOW, writeOrigin: 'server' },
+          await envelopeFor({ transcriptId: TRANSCRIPT, sessionId: SESSION }, prompt), r.env);
+      }
+      expect(await ingestEvent(r.env.db, { projectId: PROJECT, machineId: MACHINE, tokenId: r.tokenId, bodyBytes: 0, now: NOW, writeOrigin: 'server' }, old, r.env)).toMatchObject({ persisted: true });
+      const raw = r.sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=?').get(eventId);
+      expect(r.sqlite.query('SELECT result_reason,prompt_id FROM tool_calls').get()).toEqual({ result_reason: null, prompt_id: tool.payload.promptId ?? null });
+      await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
+      expect(r.sqlite.query('SELECT result_reason,prompt_id FROM tool_calls').get()).toEqual({ result_reason: 'reported', prompt_id: tool.payload.promptId ?? null });
+      expect(r.sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=?').get(eventId)).toEqual(raw);
+      expect(count(r.sqlite, 'tool_calls')).toBe(1);
+      expect(target(r.sqlite).parse_error).toBeNull();
+      r.sqlite.run('DELETE FROM events WHERE event_id=?', [eventId]);
+      r.sqlite.run('UPDATE tool_calls SET result_reason=NULL');
+      await rereadTranscripts(r.env.db, { projectId: PROJECT, sessionId: SESSION });
+      await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
+      expect(r.sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: 'reported' });
+      expect(count(r.sqlite, 'tool_calls')).toBe(1);
+      expect(target(r.sqlite).parse_error).toBeNull();
+    } finally { r.sqlite.close(); }
+  });
+
+  it('admits additive result metadata only through the original event and common admission, and reports the accepted replay', async () => {
+    const r = await rig('');
+    try {
+      const old = { eventId: uuid(89_001), sessionId: SESSION, kind: 'tool.failure', createdAt: NOW, channel: 'cli', producer: TRANSCRIPT_PRODUCER,
+        payload: { toolCallId: uuid(89_002), toolName: 'Read', input: {}, success: false, errorMessage: 'failure' } };
+      const ctx = { projectId: PROJECT, machineId: MACHINE, tokenId: r.tokenId, bodyBytes: 0, now: NOW, writeOrigin: 'server' as const };
+      expect(await ingestEvent(r.env.db, ctx, old, r.env)).toMatchObject({ persisted: true });
+      const raw = r.sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=?').get(old.eventId);
+      const replay = { ...old, payload: { ...old.payload, resultReason: 'reported' } };
+      r.sqlite.run('UPDATE projects SET archived_at=? WHERE project_id=?', [NOW, PROJECT]);
+      expect(await ingestEvent(r.env.db, ctx, replay, r.env)).toMatchObject({ persisted: false, code: 'event_id_conflict' });
+      expect(r.sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: null });
+      r.sqlite.run('UPDATE projects SET archived_at=NULL WHERE project_id=?', [PROJECT]);
+      expect(await ingestEvent(r.env.db, ctx, { ...replay, producer: { ...replay.producer, adapter: 'different-source' } }, r.env))
+        .toMatchObject({ persisted: false, code: 'event_id_conflict' });
+      expect(r.sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: null });
+      expect(await ingestEvent(r.env.db, ctx, replay, r.env)).toMatchObject({ persisted: true, projected: true });
+      expect(r.sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: 'reported' });
+      expect(r.sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=?').get(old.eventId)).toEqual(raw);
+    } finally { r.sqlite.close(); }
+  });
+
+  it.each(['idle', 'pending_limit'] as const)('upgrades a %s closure when the harness later reports failure without replacing raw history', async boundary => {
+    const at = new Date(NOW).toISOString();
+    const calls = Array.from({ length: boundary === 'idle' ? 1 : MAX_PENDING_CALLS + 1 }, (_, i) => ({ type: 'tool_use', id: `late-failed-${i}`, name: 'Read', input: {} }));
+    const text = line({ type: 'user', message: { content: 'read' }, timestamp: at })
+      + line({ type: 'assistant', message: { content: calls }, timestamp: at });
+    const r = await rig(text, 1 << 20, { recordScheme: 'source-record-v1' });
+    try {
+      const parse = (now: number) => parseTranscripts(r.serverEnv, now, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
+      await parse(NOW);
+      const settled = NOW + TRANSCRIPT_IDLE_MS + 1;
+      if (boundary === 'idle') await parse(settled);
+      const id = await uuidv5('tool-call', SESSION, 'late-failed-0');
+      expect(r.sqlite.query('SELECT result_reason FROM tool_calls WHERE tool_call_id=?').get(id)).toEqual({ result_reason: boundary === 'idle' ? 'no_result:idle' : 'pending_limit' });
+      const raw = r.sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=(SELECT event_id FROM tool_calls WHERE tool_call_id=?)').get(id);
+      await appendSegment(r.sqlite, r.serverEnv, r.tokenId, TRANSCRIPT,
+        line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'late-failed-0', is_error: true, content: 'permission denied' }] }, timestamp: new Date(settled).toISOString() }), settled);
+      await parse(settled + 1);
+      expect(r.sqlite.query('SELECT success,result_reason FROM tool_calls WHERE tool_call_id=?').get(id)).toEqual({ success: 0, result_reason: 'reported' });
+      expect(r.sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=(SELECT event_id FROM tool_calls WHERE tool_call_id=?)').get(id)).toEqual(raw);
+    } finally { r.sqlite.close(); }
+  });
+
+  async function oldUnfinished() {
+    const at = new Date(NOW).toISOString();
+    const text = line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'old-unfinished', name: 'Read', input: {} }] }, timestamp: at });
+    const r = await rig(text);
+    const parse = (now: number) => parseTranscripts(r.serverEnv, now, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
+    await parse(NOW);
+    const pendingContext = r.sqlite.query<{ parser_context: string }, []>('SELECT parser_context FROM transcripts').get()!.parser_context;
+    await parse(NOW + TRANSCRIPT_IDLE_MS + 1);
+    const row = r.sqlite.query<Record<string, unknown>, []>("SELECT * FROM events WHERE kind='tool.failure'").get()!;
+    const { resultReason: _reason, ...payload } = JSON.parse(String(row.payload));
+    const parsed = parseEnvelope({ eventId: row.event_id, sessionId: row.session_id, kind: row.kind, createdAt: row.created_at, channel: row.channel,
+      producer: { adapter: row.producer_adapter, version: row.producer_version }, payload }, NOW + TRANSCRIPT_IDLE_MS + 1);
+    if (!parsed.ok) throw new Error(parsed.reason);
+    r.sqlite.run('UPDATE events SET payload=?,envelope_hash=?,payload_bytes=? WHERE event_id=?',
+      [parsed.value.payloadJson, await envelopeHash(parsed.value), parsed.value.payloadBytes.length, String(row.event_id)]);
+    r.sqlite.run('UPDATE tool_calls SET result_reason=NULL');
+    return { r, parse, pendingContext, eventId: String(row.event_id) };
+  }
+
+  it('reparses an old synthetic failure and atomically closes its terminal checkpoint without replacing raw history', async () => {
+    const { r, parse, eventId } = await oldUnfinished();
+    try {
+      const raw = r.sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=?').get(eventId);
+      await rereadTranscripts(r.env.db, { projectId: PROJECT, sessionId: SESSION });
+      await parse(NOW + TRANSCRIPT_IDLE_MS + 2);
+      await parse(NOW + TRANSCRIPT_IDLE_MS + 3);
+      expect(r.sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: 'no_result:idle' });
+      expect(r.sqlite.query('SELECT payload,envelope_hash FROM events WHERE event_id=?').get(eventId)).toEqual(raw);
+      expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') unfinished,parse_error FROM transcripts").get())
+        .toEqual({ unfinished: 0, parse_error: null });
+    } finally { r.sqlite.close(); }
+  });
+
+  it.each([false, true])('refuses legacy reason enrichment when raw integrity changes (after lookup: %s)', async afterLookup => {
+    const { r, eventId, pendingContext } = await oldUnfinished();
+    try {
+      expect(Object.keys(JSON.parse(pendingContext).mycoParserState.pending)).toEqual(['old-unfinished']);
+      expect(JSON.parse(pendingContext).mycoParserUnfinished).toBe(1);
+      r.sqlite.run('UPDATE transcripts SET parser_context=?,parsed_offset=size,parse_error=NULL,parse_failed_at=NULL', [pendingContext]);
+      let corrupted = false;
+      const corrupt = () => { r.sqlite.run('UPDATE events SET envelope_hash=? WHERE event_id=?', ['0'.repeat(64), eventId]); corrupted = true; };
+      if (!afterLookup) corrupt();
+      const db: RelationalStore = { ...r.env.db, prepare(sql) {
+        if (afterLookup && !corrupted && sql.includes('UPDATE transcripts SET parse_segment_lines') && sql.includes('json_each(?) proof')) corrupt();
+        return r.env.db.prepare(sql);
+      } };
+      for (let wake = 0; wake < 3; wake += 1) {
+        const measured = measuredContentEnv({ ...r.serverEnv, db }, { statements: 800, blobCalls: 240, wallMs: 10_000 });
+        await parseTranscripts(measured.env, NOW + TRANSCRIPT_IDLE_MS + 2 + wake, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
+        expect(measured.usage.statements).toBeLessThanOrEqual(800);
+      }
+      expect(corrupted).toBe(true);
+      expect(r.sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: null });
+      expect(target(r.sqlite).parse_error).toBe('event_refused');
+      expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') unfinished FROM transcripts").get()).toEqual({ unfinished: 1 });
+    } finally { r.sqlite.close(); }
+  });
+
+  it('clears an idle reason when the same call later succeeds', async () => {
+    const at = new Date(NOW).toISOString();
+    const text = line({ type: 'user', message: { content: 'read' }, timestamp: at })
+      + line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'idle-result', name: 'Read', input: {} }] }, timestamp: at });
+    const r = await rig(text);
+    try {
+      await parseTranscripts(r.serverEnv, NOW, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
+      await parseTranscripts(r.serverEnv, NOW + TRANSCRIPT_IDLE_MS + 1, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
+      const before = r.sqlite.query('SELECT tool_call_id,success,result_reason FROM tool_calls').get() as { tool_call_id: string };
+      expect(before).toMatchObject({ success: 0, result_reason: 'no_result:idle' });
+      await appendSegment(r.sqlite, r.serverEnv, r.tokenId, TRANSCRIPT,
+        line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'idle-result', content: 'ok' }] }, timestamp: at }),
+        NOW + TRANSCRIPT_IDLE_MS + 2);
+      await parseTranscripts(r.serverEnv, NOW + TRANSCRIPT_IDLE_MS + 3, { budget: { calls: 1000, wallMs: 10_000 }, clock: () => 0 });
+      expect(r.sqlite.query('SELECT tool_call_id,success,result_reason FROM tool_calls').get()).toEqual({ tool_call_id: before.tool_call_id, success: 1, result_reason: null });
+    } finally { r.sqlite.close(); }
+  });
+});
+
 describe('stop generation recovery', () => {
-  it('resumes a stopped v5 recording once from its cursor without reading its intact prefix', async () => {
+  it('resumes a stopped current recording once from its cursor without reading its intact prefix', async () => {
     const text = body(2);
     const cursor = Buffer.byteLength(body(1));
     const r = await rig(text, cursor);
     try {
-      r.sqlite.run("UPDATE transcripts SET parsed_offset=?, parser_version=5, parse_error='parse', parse_failed_at=?, parser_context=NULL",
-        [cursor, NOW]);
+      r.sqlite.run("UPDATE transcripts SET parsed_offset=?, parser_version=?, parse_error='parse', parse_failed_at=?, parser_context=NULL",
+        [cursor, PARSER_VERSION, NOW]);
       expect(r.sqlite.query(laneSelectionSql('live', 1, NOW)).get(PARSER_VERSION)).toMatchObject({ parsed_offset: cursor });
       const prefix = r.sqlite.query('SELECT blob_key FROM transcript_segments WHERE base_offset=0').get() as { blob_key: string };
       const prefixKey = registeredObject(r.sqlite, PROJECT, prefix.blob_key);
@@ -140,12 +304,12 @@ describe('stop generation recovery', () => {
     } finally { r.sqlite.close(); }
   });
 
-  it('leaves an intact completed v5 recording untouched', async () => {
+  it('leaves an intact completed current recording untouched', async () => {
     const r = await rig(body(1));
     try {
       await parseTranscripts(r.serverEnv, NOW);
       const before = r.sqlite.query('SELECT * FROM transcripts').get();
-      expect(before).toMatchObject({ parsed_offset: Buffer.byteLength(body(1)), parser_version: 5, parse_error: null });
+      expect(before).toMatchObject({ parsed_offset: Buffer.byteLength(body(1)), parser_version: PARSER_VERSION, parse_error: null });
       expect(await pendingCount(r.env.db)).toBe(0);
       await parseTranscripts(r.serverEnv, NOW);
       expect(r.sqlite.query('SELECT * FROM transcripts').get()).toEqual(before);
@@ -178,8 +342,8 @@ describe('budgeted transcript continuation', () => {
     try {
       await parseTranscripts(r.serverEnv, NOW);
       const prompt = r.sqlite.query('SELECT prompt_id FROM prompt_batches').get() as { prompt_id: string };
-      r.sqlite.run("UPDATE transcripts SET parsed_offset=0,open_prompt_id=NULL,parse_segment_lines=0,parser_version=5,parse_error='parse',parser_context=?",
-        [JSON.stringify({ mycoParserFailure: { branch: 'no_progress', offset: 0, lineKind: 'user' } })]);
+      r.sqlite.run("UPDATE transcripts SET parsed_offset=0,open_prompt_id=NULL,parse_segment_lines=0,parser_version=?,parse_error='parse',parser_context=?",
+        [PARSER_VERSION, JSON.stringify({ mycoParserFailure: { branch: 'no_progress', offset: 0, lineKind: 'user' } })]);
       const measured = measuredContentEnv(r.serverEnv, { statements: 800, blobCalls: 240 });
       await parseTranscripts(measured.env, NOW, { budget: { calls: 100, wallMs: 10_000 }, clock: () => 0 });
       expect(target(r.sqlite)).toMatchObject({ parsed_offset: Buffer.byteLength(body(1)), parse_error: null });
@@ -423,7 +587,7 @@ describe('repair lane priority', () => {
         }
       }
       expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') AS unfinished FROM transcripts").get()).toEqual({ unfinished: 0 });
-      expect(r.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE kind='tool.failure'").get()).toEqual({ n: 32 });
+      expect(r.sqlite.query("SELECT COUNT(*) AS n FROM tool_calls WHERE result_reason='no_result:idle'").get()).toEqual({ n: 32 });
       expect(target(r.sqlite).parse_error).toBeNull();
     } finally { r.sqlite.close(); }
   });
@@ -452,7 +616,7 @@ describe('repair lane priority', () => {
         await parseTranscripts(measured.env, settled + 2 + wake, { budget: { calls: 8, wallMs: 10_000 }, clock: () => 0 });
         expect(measured.usage.statements).toBeLessThanOrEqual(800);
       }
-      expect(r.sqlite.query("SELECT success,input FROM tool_calls WHERE input=?").get('{"path":"/repo/31"}')).toEqual({ success: 1, input: '{"path":"/repo/31"}' });
+      expect(r.sqlite.query("SELECT success,input,result_reason FROM tool_calls WHERE input=?").get('{"path":"/repo/31"}')).toEqual({ success: 1, input: '{"path":"/repo/31"}', result_reason: null });
       expect(target(r.sqlite).parse_error).toBeNull();
     } finally { r.sqlite.close(); }
   });
@@ -502,7 +666,7 @@ describe('repair lane priority', () => {
         ...r.serverEnv.db,
         prepare(sql) {
           if (!raced && sql.includes('UPDATE transcripts SET parse_segment_lines')
-            && sql.includes("held.envelope_hash=json_extract(expected.value,'$[1]')")) {
+            && sql.includes('json_each(?) proof')) {
             raced = true;
             r.sqlite.run("UPDATE events SET envelope_hash=? WHERE event_id=(SELECT event_id FROM events WHERE kind='tool.failure' LIMIT 1)", ['0'.repeat(64)]);
           }
@@ -544,7 +708,7 @@ describe('repair lane priority', () => {
       for (let wake = 0; wake < 10; wake += 1) {
         const measured = measuredContentEnv({ ...r.serverEnv, db: sqliteD1(r.sqlite, { onSql: (sql) => {
           if (sql.includes("FROM events held WHERE held.project_id=? AND held.event_id IN")) proofQueries.push(sql);
-          if (sql.includes('SELECT 1 FROM json_each(?) expected WHERE NOT EXISTS')) clearQueries.push(sql);
+          if (sql.includes('SELECT 1 FROM json_each(?) proof WHERE CASE')) clearQueries.push(sql);
         } }) }, { statements: 800, blobCalls: 240, wallMs: 10_000 });
         await parseTranscripts(measured.env, NOW + TRANSCRIPT_IDLE_MS + wake + 1, { budget: { calls: 2_000, wallMs: 10_000 }, clock: () => 0 });
         expect(measured.usage.statements).toBeLessThanOrEqual(800);
@@ -554,7 +718,7 @@ describe('repair lane priority', () => {
       expect(plan.some(({ detail }) => /SEARCH held USING INDEX .*events.*\(project_id=\? AND event_id=\?\)/.test(detail))).toBe(true);
       expect(clearQueries.length).toBeGreaterThan(0);
       const clearPlan = r.sqlite.query(`EXPLAIN QUERY PLAN ${clearQueries[0]}`).all(...Array(clearQueries[0].match(/\?/g)?.length ?? 0).fill(null)) as { detail: string }[];
-      expect(clearPlan.some(({ detail }) => /SEARCH held USING INDEX .*events.*\(project_id=\? AND event_id=\?\)/.test(detail))).toBe(true);
+      expect(clearPlan.some(({ detail }) => /SEARCH (?:events|held) USING INDEX .*events.*\(project_id=\? AND event_id=\?\)/.test(detail))).toBe(true);
       expect(r.sqlite.query("SELECT json_extract(parser_context,'$.mycoParserUnfinished') AS unfinished FROM transcripts").get()).toEqual({ unfinished: 0 });
       expect(r.sqlite.query("SELECT COUNT(*) AS n FROM events WHERE kind='tool.failure'").get()).toEqual({ n: 64 });
     } finally { r.sqlite.close(); }

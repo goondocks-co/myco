@@ -585,6 +585,7 @@ describe('member hooks through the worker: cursor', () => {
     await cursor('post-tool-use', { hook_event_name: 'postToolUse', tool_name: 'Read', tool_input: { file_path: '/repo/a.ts' }, tool_output: 'contents' });
     await cursor('post-tool-use-failure', { hook_event_name: 'postToolUseFailure', tool_name: 'Shell', tool_input: { command: 'false' }, error: 'exit 1' });
     expect(rig.rows('tool_calls')).toBe(2);
+    expect(rig.env.sqlite.query("SELECT result_reason, prompt_id FROM tool_calls WHERE success = 0").get()).toEqual({ result_reason: 'reported', prompt_id: null });
     // No prompt hook ran, and the parse derives its own prompt ids, so the calls name no turn.
     expect((rig.env.sqlite.query('SELECT prompt_id FROM tool_calls').all() as Array<{ prompt_id: string | null }>).every((r) => r.prompt_id === null)).toBe(true);
     await cursor('stop', { hook_event_name: 'stop', last_assistant_message: 'Nothing was modified.' });

@@ -69,14 +69,14 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
         if (parser.endsTurn?.(line.value) === true) await flushReply();
         const pending = Object.entries(state.pending ?? {});
         for (const [id, call] of pending.slice(0, Math.max(0, pending.length - MAX_PENDING_CALLS))) {
-          events.push(...unfinishedCalls([[id, call]], PENDING_CALL_LIMIT_ERROR));
+          events.push(...unfinishedCalls([[id, call]], 'pending_limit', PENDING_CALL_LIMIT_ERROR));
           delete state.pending![id];
         }
       }
       if (input.terminal !== undefined || input.state === undefined) {
         await flushReply();
         if (input.terminal !== 'turn_end') {
-          events.push(...unfinishedCalls(Object.entries(state.pending ?? {})));
+          events.push(...unfinishedCalls(Object.entries(state.pending ?? {}), `no_result:${input.terminal ?? 'complete_file'}`));
           state.pending = {};
         }
       }

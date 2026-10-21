@@ -62,7 +62,7 @@ describe('incremental parser continuation', () => {
       const terminalInput = { transcriptId: 'tx_legacy_fixture', recordScheme: 'legacy-session-v1' as const, lines: [], sessionId: 's1', scheme: READ_BEFORE_PIN[agent]!, now: NOW, state, terminal: 'session_end' as const };
       const terminal = await parser.parse(terminalInput);
       const failure = terminal.find((event) => event.kind === 'tool.failure');
-      expect(failure?.payload.success).toBe(false);
+      expect(failure?.payload).toMatchObject({ success: false, resultReason: 'no_result:session_end' });
       expect(Object.keys(JSON.parse(JSON.stringify(state)).pending ?? {})).toEqual([]);
       const later = await parser.parse({ transcriptId: 'tx_legacy_fixture', recordScheme: 'legacy-session-v1' as const, lines: [lines[callIndex + 1]], sessionId: 's1', scheme: READ_BEFORE_PIN[agent]!, now: NOW, state });
       expect(later.find((event) => event.kind === 'tool.use')?.payload).toMatchObject({ toolCallId: failure?.payload.toolCallId, success: true, output: 'ok' });
@@ -79,7 +79,7 @@ describe('incremental parser continuation', () => {
       expect(Object.keys(JSON.parse(JSON.stringify(state)).pending ?? {}).length).toBeLessThanOrEqual(32);
     }
     expect(failures).toHaveLength(32);
-    expect(failures.every((event) => event.payload.errorMessage === 'tool call exceeded the pending-call limit')).toBe(true);
+    expect(failures.every((event) => event.payload.resultReason === 'pending_limit')).toBe(true);
   });
 
   for (const [agent, values] of Object.entries(records)) {
