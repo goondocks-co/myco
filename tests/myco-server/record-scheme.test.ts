@@ -61,7 +61,7 @@ describe('immutable record identity pin', () => {
       for (const [table, fields] of children) insert(sqlite, table, { project_id: 'proj_1', session_id: 'record-scheme-session', event_id: uuid(900), created_at: 1, received_at: 1, token_id: 'token_1', ...fields });
       const frozen = children.map(([table]) => [table, sqlite.query<Record<string, unknown>, []>(`SELECT * FROM ${table}`).all()]);
       const held = sqlite.query('SELECT * FROM transcripts ORDER BY transcript_id').all() as Record<string, unknown>[];
-      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([93, 94]);
+      expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(SCHEMA_STEPS.filter(step => step.version > 92).map(step => step.version));
       expect(sqlite.query('SELECT * FROM transcripts ORDER BY transcript_id').all()).toEqual(held.map(row => ({ ...row, record_identity_scheme: LEGACY })));
       expect(children.map(([table]) => [table, sqlite.query<Record<string, unknown>, []>(`SELECT * FROM ${table}`).all().map(row => {
         if (table !== 'tool_calls') return row;

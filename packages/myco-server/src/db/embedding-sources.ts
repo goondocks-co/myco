@@ -47,4 +47,6 @@ export const PROVEN_EMBEDDING_SOURCES: readonly Source[] = SOURCES_WITH_PRESENTE
 
 /** The current embedding sources exclude generated skills. */
 export const V86_EMBEDDING_SOURCES: readonly Source[] = PROVEN_EMBEDDING_SOURCES.filter((source) => source.type !== 'skill');
-export const CURRENT_EMBEDDING_SOURCES: readonly Source[] = V86_EMBEDDING_SOURCES;
+export const CURRENT_EMBEDDING_SOURCES: readonly Source[] = V86_EMBEDDING_SOURCES.map(source => source.type === 'spore'
+  ? { ...source, prompt: 'NULL' }
+  : source);

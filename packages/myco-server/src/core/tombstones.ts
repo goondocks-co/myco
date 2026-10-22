@@ -1,7 +1,7 @@
 /**
  * Session deletion retains its identity and tombstone, clears its title and
  * summary, and removes captured projections, the context served to it and the
- * record of which runs read it. A spore kept from it names no prompt of it. Saved knowledge, the runs themselves and other sessions remain. Reads
+ * record of which runs read or were served it. A spore kept from it names no prompt of it. Saved knowledge, the runs themselves and other sessions remain. Reads
  * exclude tombstones; ingestion refuses subsequent capture and import for the
  * same session ID. Unreferenced blobs are freed in bounded pages.
  */
@@ -132,6 +132,7 @@ export async function tombstoneSession(
     ...DERIVED_TABLES.map((table) => env.db.prepare(`DELETE FROM ${table} WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId)),
     // The runs that read the session keep their own rows; only their record of reading this one goes.
     env.db.prepare(`DELETE FROM run_reads WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId),
+    env.db.prepare(`DELETE FROM run_served_material WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId),
     env.db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id NOT IN (SELECT plan_key FROM plans WHERE project_id = ?)`).bind(projectId, projectId),
   ];
   // Every blob the session's rows named is recorded as a release candidate in the transaction that removes the rows,

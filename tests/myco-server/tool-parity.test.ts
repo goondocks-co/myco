@@ -25,13 +25,6 @@ const RETIRED_INTELLIGENCE_WORDING: Partial<Record<ServedTool, { description: st
   },
 };
 
-/** A property whose description the Deployment states differently from the frozen contract, by tool and property. */
-const REVISED_PROPERTY_DESCRIPTIONS: Partial<Record<ServedTool, Record<string, string>>> = {
-  myco_plans: {
-    prompt_id: 'For op: "save" creating a plan: the prompt it came from, captured by this machine; a plan saved without one names no prompt. Ignored on update — the plan keeps the prompt it names.',
-  },
-};
-
 const byName = <T extends { name: string }>(defs: readonly T[]): Map<string, T> => new Map(defs.map((d) => [d.name, d]));
 
 const opsOf = (def: { inputSchema: { properties: Record<string, unknown> } }): string[] | null => {
@@ -40,6 +33,16 @@ const opsOf = (def: { inputSchema: { properties: Record<string, unknown> } }): s
 };
 
 describe('tool parity', () => {
+  it('declares session citation and accepts the old extraction prompt argument', () => {
+    for (const defs of [TOOL_DEFINITIONS, FROZEN_DEFINITIONS]) {
+      const properties = defs.find(def => def.name === 'myco_spores')!.inputSchema.properties;
+      expect(properties.session_id!.type).toBe('string');
+      expect(properties.session_id!.description).toContain('supporting whole session');
+      expect(properties.prompt_id!.type).toBe('string');
+      expect(properties.prompt_id!.description).toContain('Compatibility');
+    }
+  });
+
 
   it('declares the tenancy key under one spelling, and never the retired one', () => {
     const RETIRED_PIVOT = 'project_id';
@@ -103,9 +106,6 @@ describe('tool parity', () => {
         expect(current.cortex?.guidance).toBe(wording.guidance);
         frozen.description = wording.description;
         if (frozen.cortex && wording.guidance !== undefined) frozen.cortex.guidance = wording.guidance;
-      }
-      for (const [property, description] of Object.entries(REVISED_PROPERTY_DESCRIPTIONS[server.name] ?? {})) {
-        Object.assign((frozen.inputSchema.properties as Record<string, unknown>)[property] as object, { description });
       }
       if (server.name === 'myco_search') {
         const type = frozen.inputSchema.properties.type as { enum: string[] };

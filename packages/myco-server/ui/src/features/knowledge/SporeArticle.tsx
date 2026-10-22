@@ -148,7 +148,7 @@ function Neighbours({ projectId, ids, label, now }: { projectId: string; ids: re
   );
 }
 
-/** Where the spore came from: the session it was learned from, the turn, and what wrote it. */
+/** Where the spore came from: the session it was learned from and what wrote it. */
 function Origin({ answer, projectId, now }: { answer: SporeArticleAnswer; projectId: string; now: number }) {
   const { spore } = answer;
   const author = sporeAuthor(spore);
@@ -158,7 +158,7 @@ function Origin({ answer, projectId, now }: { answer: SporeArticleAnswer; projec
       <h2 className="t-h3 text-ink">Where it came from</h2>
       {spore.sessionId === null
         ? <p className="t-small text-muted">Saved outside a session.</p>
-        : <FromSession projectId={projectId} sessionId={spore.sessionId} promptId={spore.promptId} />}
+        : <FromSession projectId={projectId} sessionId={spore.sessionId} />}
       {author.kind === 'run' && (
         <p className="flex flex-col gap-s1 t-small text-ink-2" data-spore-author="run">
           Myco wrote it while learning from your sessions.
@@ -175,15 +175,14 @@ function Origin({ answer, projectId, now }: { answer: SporeArticleAnswer; projec
       )}
       {author.kind === 'imported' && <p className="t-small text-ink-2" data-spore-author="imported">{IMPORTED_AUTHOR_WORDS}.</p>}
       {author.kind === 'key' && <p className="t-small text-ink-2" data-spore-author="key">Saved with an access key.</p>}
-      {spore.sourceCreatedAt !== null && <p className="t-meta text-muted">From a turn on {dateTime(spore.sourceCreatedAt, now)}.</p>}
+      {spore.sourceCreatedAt !== null && <p className="t-meta text-muted">From a session on {dateTime(spore.sourceCreatedAt, now)}.</p>}
     </Card>
   );
 }
 
-function FromSession({ projectId, sessionId, promptId }: { projectId: string; sessionId: string; promptId: string | null }) {
+function FromSession({ projectId, sessionId }: { projectId: string; sessionId: string }) {
   const session = useSession(projectId, sessionId);
   const base = projectPath(projectId, `/sessions/${encodeURIComponent(sessionId)}`);
-  const turn = promptId === null ? null : `${base}?${new URLSearchParams({ turn: promptId })}`;
   if (session.error instanceof ApiError && session.error.status === 404) {
     return <p className="t-small text-muted">Learned from a session this project no longer holds.</p>;
   }
@@ -195,7 +194,6 @@ function FromSession({ projectId, sessionId, promptId }: { projectId: string; se
         : <span className="t-small font-medium text-ink">{sessionHeadingText(session.data.session)}</span>}
       <span className="flex flex-wrap gap-x-s4 gap-y-s1 t-small">
         <ActionLink to={base}>Open the session →</ActionLink>
-        {turn !== null && <ActionLink to={turn}>The turn it came from →</ActionLink>}
       </span>
     </div>
   );

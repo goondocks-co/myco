@@ -424,7 +424,7 @@ describe('importing a 1.4 vault', () => {
       ['gotcha-old', 'superseded', 'myco-agent'], ['gotcha-part', 'consolidated', 'myco-agent'], ['wisdom-whole', 'active', 'myco-agent'],
     ]);
     expect(spores.find((s) => s.id === 'gotcha-new')?.session_id).toBe(SESSION_PRUNED);
-    expect(spores.find((s) => s.id === 'gotcha-new')?.prompt_id).not.toBeNull();
+    expect(spores.find((s) => s.id === 'gotcha-new')?.prompt_id).toBeNull();
     expect(spores.find((s) => s.id === 'gotcha-of-deleted')?.session_id).toBeNull();
     const history = sqlite.query(`SELECT id, created_at FROM resolution_events WHERE project_id = ? ORDER BY id`).all(PROJECT);
     expect(history).toEqual([{ id: 'res_1', created_at: at(29) * 1000 }, { id: 'res_2', created_at: at(28) * 1000 }]);
@@ -985,7 +985,7 @@ for (const link of ['prompt', 'session']) it(`keeps an existing different ${link
     const report = await differentialImport(f);
     expect(legacyImportComplete(report)).toBe(true);
     expect(importSnapshot(db)).toEqual(baseline);
-    expect(report.projects[0]!.spores.kept).toBe(1);
+    expect(report.projects[0]!.spores.kept ?? 0).toBe(link === 'session' ? 1 : 0);
   } finally { f.cleanup(); }
 });
 

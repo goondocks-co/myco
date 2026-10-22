@@ -128,7 +128,7 @@ export const TASK_RUNS = taskRunsFor(ADMIN.member.id);
 
 export const spore = (id: string, author: string, type: string, line: string, sessionId: string | null = S1) => ({
   projectId: P, id, observationType: type, status: 'active', content: `${line}\n\nMore.`, agentLine: line, author, createdAt: NOW - 2 * HOUR,
-  agentId: 'myco-agent', sessionId, promptId: null, context: null, importance: 5, filePath: null, tags: null, contentHash: null,
+  agentId: 'myco-agent', sessionId, context: null, importance: 5, filePath: null, tags: null, contentHash: null,
   properties: null, provenanceKind: null, provenanceRef: null, updatedAt: null, embedded: 0,
 });
 

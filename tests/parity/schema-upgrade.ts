@@ -142,7 +142,8 @@ export function isLocalMigrationSqlFailure(error: unknown, omittedStatement: str
   const missingKind = missing[1]!.toLowerCase();
   if (missingKind !== omitted.kind && !(omitted.kind === 'view' && missingKind === 'table')) return false;
   // D1 reports where in the statement it met the name (`no such column: c at offset 103`); the name precedes it.
-  const missingName = missing[2]!.replace(/:\s*SQLITE_[A-Z_]+\b.*$/, '').replace(/\s+at offset \d+\s*$/, '').trim().replace(/[.;]$/, '').replace(/^(["`\[])(.*)(["`\]])$/, '$2');
+  const missingName = missing[2]!.replace(/:\s*SQLITE_[A-Z_]+\b.*$/, '').replace(/\s+at offset \d+\s*$/, '').trim().replace(/[.;]$/, '')
+    .replace(/^(?:"(?:main|temp)"|`(?:main|temp)`|\[(?:main|temp)\]|(?:main|temp))\s*\.\s*/i, '').replace(/^(["`\[])(.*)(["`\]])$/, '$2');
   return missingName.toLowerCase() === omitted.name.toLowerCase();
 }
 

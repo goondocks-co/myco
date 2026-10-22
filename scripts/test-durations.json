@@ -1,5 +1,8 @@
 {
   "sources": [
+    "local: #1924 PR 1 correction 2, pinned Bun 1.4.0 darwin-arm64; npm test -- tests/parity/schema-upgrade.test.ts measured final 847ms for 7 tests; 2000ms includes twice measured runtime plus startup",
+    "local: #1924 PR 1 correction 1, pinned Bun 1.4.0 darwin-arm64; both native/Cloudflare session-citation and spores scenarios passed in 57270ms wall including boots while full build and source gates ran; 120000ms session-citation allowance covers twice the combined observed wall time",
+    "local: #1924 PR 1 session citation parity, pinned Bun 1.4.0 darwin-arm64; npm run test:parity -- --test-name-pattern session citation: served ledger; measured final native 103ms and Cloudflare 467ms, total with boots 25640ms; 60000ms includes twice observed process wall time",
     "local: PR1914 correction2 tool-result source gate measured494ms via npm test with pinned Bun1.4.0 darwin-arm64; retained1200ms weight exceeds twice measured plus startup",
     "local: PR1914 correction1 activity parity measured via npm run test:parity on Bun1.4.0 darwin-arm64: native196ms and workerd D1 713ms; retained15000ms startup floor",
     "local: PR1914 correction1 tool-result-sources measured 457ms with pinned Bun1.4.0, darwin-arm64;1200ms weight includes more than twice measured runtime",
@@ -660,7 +663,7 @@
     "tests/myco-shared/runner-update.test.ts": 4,
     "tests/parity/locked-retry.test.ts": 113,
     "tests/parity/parity.test.ts": 463,
-    "tests/parity/schema-upgrade.test.ts": 750,
+    "tests/parity/schema-upgrade.test.ts": 2000,
     "tests/parity/transport-load.test.ts": 134,
     "tests/plugins/marketplace.test.ts": 157,
     "tests/project-root/resolve.test.ts": 114,
@@ -874,7 +877,7 @@
     "session turns: capture keyed to prompts, turns read, turn body, tool calls on their own, rail summaries and filters": 17000,
     "plans: prompt linkage, convergence guards, MCP save on the member key, owner status edit, turn body": 10000,
     "plans at scale: a full page past the parameter ceiling, tags on every row, and every plan by pages": 27000,
-    "spores: session and prompt on a save, lineage both ways, the injection under its turn": 5000,
+    "spores: session citation on a save, lineage both ways, the injection under its turn": 5000,
     "recall: semantic configuration, independent guidance and capability admission": 19000,
     "backup: create, verified list, preview, converging restore, and cross-deployment adoption": 51000,
     "the wake: retention and the stale-run sweep, identical on both targets, idempotent": 44000,
@@ -930,6 +933,7 @@
     "session commits: start and end observations, release containment on the end it classified, index-backed reads": 15000,
     "Record identity: transcript pins, distinct positional replies, reread and whole-artifact restore refusals": 15000,
     "search by time: a session's identical-text matches, a steering prompt and a stored body reached by cursor past capture elsewhere, once each, on HTTP and MCP": 15000,
-    "session activity: stored reasons, scoped keyset filters, prompt targets and success upgrade": 15000
+    "session activity: stored reasons, scoped keyset filters, prompt targets and success upgrade": 15000,
+    "session citation: served ledger admits extraction writes and preserves old dispatches": 120000
   }
 }

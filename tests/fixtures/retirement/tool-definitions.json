@@ -230,7 +230,7 @@
         },
         "prompt_id": {
           "type": "string",
-          "description": "For op: \"save\" creating a plan: the prompt it came from, captured by this machine; defaults to the session's latest prompt. Ignored on update — the plan keeps the prompt it names."
+          "description": "For op: \"save\" creating a plan: an optional prompt placement hint within its session, captured by this machine. Ignored on update. It is not citation or authority."
         },
         "limit": {
           "type": "number",
@@ -463,11 +463,11 @@
         },
         "session_id": {
           "type": "string",
-          "description": "Session id the spore belongs to for op: \"save\" and \"consolidate\", or the session acting for op: \"supersede\" and \"obsolete\"; from the Session:: line when known"
+          "description": "For save and consolidate: the supporting whole session. Required for new extraction runs and must be a session served to this run. For supersede and obsolete: the acting session. Other callers use the Session:: line when known."
         },
         "prompt_id": {
           "type": "string",
-          "description": "For save and consolidate: the exact captured prompt supporting this finding. Required for extraction runs; the server derives its source session. Other callers may name a prompt within their permitted session."
+          "description": "Compatibility for extraction runs dispatched before the served-material ledger: the captured prompt resolves the source session. Accepted for other callers within their permitted session. Never stored on a new spore."
         },
         "tags": {
           "type": "array",

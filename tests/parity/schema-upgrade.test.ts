@@ -59,6 +59,22 @@ it('counts an omitted prerequisite SQL rejection as a detected mutation', () => 
   } finally { db.close(); }
 });
 
+it('recognizes schema-qualified D1 missing objects while refusing a different object', () => {
+  const omitted = 'CREATE TABLE run_served_material (id TEXT PRIMARY KEY)';
+  for (const name of [
+    'main.run_served_material', 'temp.run_served_material',
+    '"main"."run_served_material"', '[temp].[run_served_material]', '`main`.`run_served_material`',
+  ]) {
+    const reported = 'wrangler d1 migrations apply exited 1: ✘ [ERROR] no such table: ' + name + ': SQLITE_ERROR';
+    expect(isLocalMigrationSqlFailure(new Error(reported), omitted)).toBe(true);
+  }
+  for (const name of ['main.different_table', 'unrelated_schema.run_served_material']) {
+    expect(isLocalMigrationSqlFailure(
+      new Error('wrangler d1 migrations apply exited 1: no such table: ' + name + ': SQLITE_ERROR'), omitted,
+    )).toBe(false);
+  }
+});
+
 it('requires an observed state mismatch after a local SQL rejection', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-schema-upgrade-mutation-'));
   const databaseFile = path.join(root, 'previous.sqlite');

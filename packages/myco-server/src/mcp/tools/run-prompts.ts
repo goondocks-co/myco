@@ -11,6 +11,7 @@
  * A page with bodies is recorded as the run's read of each session it carries.
  */
 import { listUnprocessedPrompts, markPromptProcessed } from '../../read/prompts.js';
+import { recordServedPrompts } from '../../core/served-material.js';
 import { PROMPT_MARK_TOOL } from '../../core/tool-catalogue.js';
 import { failure, noteRunReads, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
@@ -43,10 +44,14 @@ export async function handleRunPrompts(input: ToolInput, ctx: ToolContext): Prom
     includeActive: input.include_active === true,
     includeText: input.include_text === true,
   });
+  const rows = input.include_text === true
+    ? await recordServedPrompts(db, scope, run.runId, page.rows, ctx.now)
+    : page.rows;
   // A page with bodies is the run reading those sessions; a page of ids alone reads none of them.
   if (input.include_text === true) noteRunReads(ctx, page.rows.map((row) => row.sessionId));
   return {
-    prompts: page.rows.map((row) => ({
+    prompts: rows.map((row) => ({
+      ...('servedId' in row ? { served_id: row.servedId } : {}),
       prompt_id: row.promptId,
       session_id: row.sessionId,
       created_at: row.createdAt,

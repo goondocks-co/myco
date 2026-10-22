@@ -19,6 +19,7 @@ import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { LEDGER_ENABLED_AT } from '@myco-server-worker/db/schema-v95.js';
 import { DEPLOYMENT_ID_KEY, migrateAndSeed, seededSqlite } from './helpers/d1.js';
 
 function contents(sqlite: Database): { schema: unknown[]; rows: Record<string, unknown[]> } {
@@ -35,9 +36,9 @@ function contents(sqlite: Database): { schema: unknown[]; rows: Record<string, u
   return { schema, rows };
 }
 
-const withoutDeploymentId = (rows: Record<string, unknown[]>) => ({
+const withoutDeploymentMarkers = (rows: Record<string, unknown[]>) => ({
   ...rows,
-  schema_meta: (rows.schema_meta as Array<{ key: string }>).filter((row) => row.key !== DEPLOYMENT_ID_KEY),
+  schema_meta: (rows.schema_meta as Array<{ key: string }>).filter((row) => row.key !== DEPLOYMENT_ID_KEY && row.key !== LEDGER_ENABLED_AT),
 });
 const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'packages', 'myco-server', 'migrations');
 const schemaOf = (sqlite: Database) => sqlite.query(`SELECT type, name, sql FROM sqlite_master ORDER BY type, name`).all();
@@ -52,7 +53,10 @@ describe('a seeded database copy', () => {
       for (const copy of [first, second]) {
         const got = contents(copy);
         expect(got.schema).toEqual(want.schema);
-        expect(withoutDeploymentId(got.rows)).toEqual(withoutDeploymentId(want.rows));
+        const enabled = Number((copy.query('SELECT value FROM schema_meta WHERE key = ?').get(LEDGER_ENABLED_AT) as { value: string }).value);
+        expect(enabled).toBeGreaterThan(0);
+        expect(enabled).toBeLessThanOrEqual(Date.now());
+        expect(withoutDeploymentMarkers(got.rows)).toEqual(withoutDeploymentMarkers(want.rows));
         expect(copy.query('PRAGMA user_version').get()).toEqual(fresh.query('PRAGMA user_version').get());
         expect(copy.query('PRAGMA foreign_keys').get()).toEqual({ foreign_keys: 1 });
       }

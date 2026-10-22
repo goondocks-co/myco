@@ -91,12 +91,13 @@ for (const op of ['save', 'obsolete', 'consolidate'] as const) for (const revoke
     try {
       f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at) VALUES('proj_1','sess','m','t',0,0,0,1)");
       f.sqlite.run("INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at) VALUES('proj_1','sess','prompt','ev','hello','user','h',0,0,'t',0)");
+      await f.call('myco_run_prompts', { op: 'unprocessed', include_text: true });
       for (const id of ['a', 'b']) f.sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,created_at) VALUES('proj_1',?,'myco-agent','gotcha','active','source',0)", [id]);
       if (revoke) f.sqlite.exec(`CREATE TRIGGER revoke_spore AFTER ${op === 'obsolete' ? 'UPDATE' : 'INSERT'} ON spores BEGIN
         UPDATE members SET revoked_at = 1 WHERE id = '${HARNESS_MEMBER_ID}'; END`);
-      const args = op === 'save' ? { op, content: 'observation', type: 'gotcha', prompt_id: 'prompt' }
+      const args = op === 'save' ? { op, content: 'observation', type: 'gotcha', session_id: 'sess' }
         : op === 'obsolete' ? { op, id: 'a', reason: 'obsolete' }
-        : { op, source_spore_ids: ['a', 'b'], consolidated_content: 'wisdom', observation_type: 'wisdom', prompt_id: 'prompt' };
+        : { op, source_spore_ids: ['a', 'b'], consolidated_content: 'wisdom', observation_type: 'wisdom', session_id: 'sess' };
       const answer = await f.call('myco_spores', args);
       const count = (sql: string) => (f.sqlite.query(sql).get() as { n: number }).n;
       expect(count("SELECT COUNT(*) AS n FROM spores WHERE author = 'target'"))

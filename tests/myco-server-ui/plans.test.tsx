@@ -217,7 +217,7 @@ describe('a plan’s page', () => {
     const written = page.querySelector('[data-plan-session]') as HTMLElement;
     expect(await within(written).findByText('Work outcomes counted per task')).toBeTruthy();
     expect(within(written).getByRole('link', { name: 'Open the session →' }).getAttribute('href')).toBe(`/p/${MYCO}/sessions/s1`);
-    expect(within(written).getByRole('link', { name: 'The turn it came from →' }).getAttribute('href')).toBe(`/p/${MYCO}/sessions/s1?turn=p1`);
+    expect(within(written).queryByRole('link', { name: 'The turn it came from →' })).toBeNull();
     const facts = page.querySelector('[data-facts]') as HTMLElement;
     expect(facts.textContent).toContain('docs/plans/work-outcomes.md');
     expect(facts.textContent).toContain('Status set byAda');

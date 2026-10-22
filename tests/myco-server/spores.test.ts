@@ -8,7 +8,7 @@ import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
-  consolidateSpores, countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore,
+  consolidateSpores, countSpores, getSpore, insertSpore, repairImportedSporeSource, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore,
   type SporeInsert,
 } from '@myco-server-worker/core/spores.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -39,12 +39,31 @@ function seedSession(sqlite: Database, id: string, ended: boolean, projectId = S
 }
 
 const spore = (id: string, over: Partial<SporeInsert> = {}): SporeInsert => ({
-  id, agentId: AGENT, sessionId: null, promptId: null, observationType: 'gotcha',
+  id, agentId: AGENT, sessionId: null, observationType: 'gotcha',
   content: `content of ${id}`, context: null, filePath: null, tags: null,
   contentHash: null, properties: null, author: null, createdAt: NOW, ...over,
 });
 
 describe('spores', () => {
+  it('stores no prompt on direct saves, consolidation or import source repair, and reads legacy citations by session', async () => {
+    const { db, sqlite } = store();
+    try {
+      seedSession(sqlite, 'source', true);
+      const input = spore('direct', { sessionId: 'source' });
+      await insertSpore(db, SCOPE, input);
+      const event = { agentId: AGENT, author: null, reason: 'combined', sessionId: 'source', createdAt: NOW };
+      await consolidateSpores(db, SCOPE, { ...input, id: 'wisdom' }, ['direct'], event, NOW);
+      await insertSpore(db, SCOPE, spore('imported', { author: 'member' }));
+      await repairImportedSporeSource(db, SCOPE, { id: 'imported', author: 'member', agentId: AGENT, content: 'content of imported', sessionId: 'source' });
+      expect(sqlite.query('SELECT DISTINCT prompt_id FROM spores').all()).toEqual([{ prompt_id: null }]);
+      sqlite.run("UPDATE spores SET prompt_id='old-prompt' WHERE id='direct'");
+      const read = await getSpore(db, SCOPE, 'direct');
+      expect(read).toMatchObject({ sessionId: 'source', sourceCreatedAt: NOW });
+      expect(read).not.toHaveProperty('promptId');
+      expect(sqlite.query("SELECT prompt_id FROM spores WHERE id='direct'").get()).toEqual({ prompt_id: 'old-prompt' });
+    } finally { sqlite.close(); }
+  });
+
   it('returns the written row from the write, without reading it back', async () => {
     const { db } = store();
     const written = await insertSpore(db, SCOPE, spore('sp1'));

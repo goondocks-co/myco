@@ -53,7 +53,7 @@ export const BACKUP_TABLES: readonly string[] = [
   'member_credentials', 'runner_credentials', 'runner_audit', 'runner_metadata_audit', 'runner_signin_audit', 'legacy_worker_audit', 'runner_update_audit', 'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'agents',
   'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'prompt_batches', 'tool_calls', 'processed_resources', 'responses', 'plans',
   'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
-  'agent_tasks', 'agent_runs', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners',
+  'agent_tasks', 'agent_runs', 'run_served_material', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners',
   'canopy_maps', 'knowledge_release_state', 'external_grants',
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',
   'knowledge_git_provenance',

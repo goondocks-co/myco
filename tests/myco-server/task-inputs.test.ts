@@ -109,7 +109,7 @@ describe('the instruction an extraction run receives', () => {
     expect(built.instruction).toContain('AGENTS.md');
     expect(built.instructions).toBe(EXTRACTION_RULES);
     expect(EXTRACTION_RULES).toContain('Search before every write');
-    expect(EXTRACTION_RULES).toContain('exact supporting `prompt_id`');
+    expect(EXTRACTION_RULES).toContain('supporting whole session with `session_id`');
     expect(built.inputHash).toHaveLength(64);
   });
 });

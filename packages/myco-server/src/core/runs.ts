@@ -1158,10 +1158,8 @@ export async function launchQueued(db: RelationalStore, scope: ReadScope, runId:
  * that describes why, and it carries the launch spec the drain relaunches it
  * from.
  *
- * `queued_at` is kept where the row already had one, so a run returned here
- * keeps its place in the queue's order rather than moving to the back of it.
- * The launch's own context is dropped, and the drain rebuilds it when it
- * launches.
+ * `queued_at` keeps the initial queue instant, or the initial `started_at`
+ * for a dispatch that enters the queue after launch.
  *
  * The caller names the credential the row is to carry. A launch can be answered
  * late — after the supervisor has already started a child under the credential
@@ -1178,7 +1176,7 @@ export async function launchQueued(db: RelationalStore, scope: ReadScope, runId:
  */
 const RETURN_TO_QUEUE_SQL = `UPDATE agent_runs
    SET status = 'queued', held_by = ?, dispatch_spec = ?, dispatched_by = ?,
-       queued_at = COALESCE(queued_at, ?)
+       queued_at = COALESCE(queued_at, started_at, ?)
  WHERE project_id = ? AND id = ? AND status = 'pending'`;
 
 export async function returnToQueue(

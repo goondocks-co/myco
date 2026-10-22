@@ -6,7 +6,6 @@ export interface SporeRow {
   id: string;
   agentId: string;
   sessionId: string | null;
-  promptId: string | null;
   sourceCreatedAt?: number | null;
   observationType: string;
   status: string;

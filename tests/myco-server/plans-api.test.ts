@@ -133,7 +133,7 @@ describe('spores named by id at the size a page of recall reaches', () => {
     const scope = { projectId: 'proj_1' };
     const ids = Array.from({ length: MAX_SPORE_LIMIT }, (_, i) => `sp_${i}`);
     for (const id of ids) {
-      await insertSpore(db, scope, { id, agentId: 'agent_1', sessionId: null, promptId: null, observationType: 'gotcha', content: `content of ${id}`, context: null, filePath: null, tags: null, contentHash: null, properties: null, author: null, createdAt: NOW });
+      await insertSpore(db, scope, { id, agentId: 'agent_1', sessionId: null, observationType: 'gotcha', content: `content of ${id}`, context: null, filePath: null, tags: null, contentHash: null, properties: null, author: null, createdAt: NOW });
     }
     expect((await listSporesByIds(db, scope, ids)).map((row) => row.id).sort()).toEqual([...ids].sort());
   });

@@ -48,6 +48,7 @@ const grantRequest = (key: string, body: string) =>
 
 async function setup() {
   const e = sqliteEnv();
+  e.sqlite.run(`UPDATE schema_meta SET value = ? WHERE key = 'ledger_enabled_at'`, [String(NOW)]);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [NOW]);
   e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at)
                 VALUES ('proj_1', 'sess_1', 'm1', 'tok_1', ?, ?, 'claude-code', 'main', ?, ?)`, [NOW - 10_000, NOW, NOW - 10_000, NOW]);
@@ -654,13 +655,14 @@ describe('a sweep consolidates through the member op', () => {
     const { harness, dispatch, call, spore, prompt, sqlite } = await setup();
     await dispatch('run_s', SWEEP);
     prompt('source-prompt');
+    await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true });
     spore('sp_a', 'first source');
     spore('sp_b', 'second source');
     spore('sp_gone', 'already resolved');
     sqlite.run(`UPDATE spores SET status = 'superseded' WHERE id = 'sp_gone'`);
 
     const answered = (await call(harness.token, 'myco_spores', {
-      op: 'consolidate', source_spore_ids: ['sp_a', 'sp_b'], consolidated_content: 'the wisdom', observation_type: 'wisdom', project: 'proj_1', prompt_id: 'source-prompt',
+      op: 'consolidate', source_spore_ids: ['sp_a', 'sp_b'], consolidated_content: 'the wisdom', observation_type: 'wisdom', project: 'proj_1', session_id: 'sess_1',
     }) as any).result;
     expect(answered.sources_consolidated).toBe(2);
     expect(sqlite.query(`SELECT status FROM spores WHERE id IN ('sp_a','sp_b') ORDER BY id`).all())
@@ -670,7 +672,7 @@ describe('a sweep consolidates through the member op', () => {
     // The member op counts only sources that were active, and leaves a
     // resolved one where it stands.
     const second = (await call(harness.token, 'myco_spores', {
-      op: 'consolidate', source_spore_ids: ['sp_gone'], consolidated_content: 'again', observation_type: 'wisdom', project: 'proj_1', prompt_id: 'source-prompt',
+      op: 'consolidate', source_spore_ids: ['sp_gone'], consolidated_content: 'again', observation_type: 'wisdom', project: 'proj_1', session_id: 'sess_1',
     }) as any).result;
     expect(second.sources_consolidated).toBe(0);
     expect(sqlite.query(`SELECT status FROM spores WHERE id = 'sp_gone'`).get()).toEqual({ status: 'superseded' });
