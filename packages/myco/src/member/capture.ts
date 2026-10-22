@@ -66,6 +66,8 @@ export interface HookRun {
   budget: HookBudget;
   now: () => number;
   argv: readonly string[];
+  /** The environment the harness started the hook with. */
+  env: NodeJS.ProcessEnv;
   /** The home this run's membership is held under, resolved from the hook's own directory: every file the run reads or writes for that membership lives here. */
   mycoHome: string;
   /** The extra plan folders the Deployment holds for this machine, read from this run's own home; each reader asks here rather than naming a home. */
@@ -275,7 +277,7 @@ export async function runMemberHook(
     const ctx: EnvelopeContext = { agent: input.agent, sessionId, stage: spool.stagerFor(sessionId), now };
     const serverUrl = credential.serverUrl;
     const run: HookRun = {
-      hookName, input, sessionId, agent: input.agent, credential, spool, ctx, budget, now, argv, mycoHome,
+      hookName, input, sessionId, agent: input.agent, credential, spool, ctx, budget, now, argv, env, mycoHome,
       machinePlanDirs: () => machinePlanDirs(serverUrl, mycoHome),
       ...(pending !== null ? { pending: true } : {}),
     };

@@ -1,4 +1,6 @@
 import { emptyInjectionCounts } from '@myco-server-worker/core/injection.js';
+import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
+import { sessionLineage } from '@myco-server-worker/read/lineage.js';
 /**
  * Sessions: the table across every project and within one, and a session's
  * reading page with what came of it, its conversation, its tabs, its raw data
@@ -59,7 +61,7 @@ const P4 = '00000000-0000-7000-8000-000000000004';
 /** A session as the server serves it: listed across projects, or read on its own. */
 const session = (over: Record<string, unknown> = {}) => ({
   projectId: 'x', sessionId: 's1', machineId: 'mac-1', createdByTokenId: 'mt_0123456789abcdef', firstReceivedAt: NOW - HOUR, lastReceivedAt: NOW - MINUTE,
-  agent: 'claude-code', branch: 'main', startedAt: NOW - HOUR, endedAt: null, endedBy: null, endedByLabel: null, originPath: '/repo', parentSessionId: null, parentReason: null,
+  agent: 'claude-code', branch: 'main', startedAt: NOW - HOUR, endedAt: null, endedBy: null, endedByLabel: null, originPath: '/repo', parentSessionId: null, parentReason: null, launchParentSessionId: null,
   memberId: 'mem_q3Vb8xRk2LmT7wYz', memberLabel: 'Ada', runtimeLabel: 'Ada’s studio Mac', runtimeKind: 'cli',
   title: null, summary: null, titledAt: null, label: 's1', promptCount: 2, toolCallCount: 3, activityBuckets: [1, 0, 0, 0, 0, 0, 0, 1],
   ...over,
@@ -337,6 +339,22 @@ describe('the session reading page', () => {
     ] },
   };
 
+  const edge = (parentId: string, childId: string, kind: 'launched' | 'continuation' = 'launched', reason: string | null = null) => ({ parentId, childId, kind, reason });
+  const lineageNode = (sessionId: string, depth: number, over: Record<string, unknown> = {}) => ({
+    sessionId, captured: true, label: `Session ${sessionId}`, agent: 'codex', startedAt: NOW - 2 * HOUR + depth * MINUTE, endedAt: NOW - HOUR, depth, placedUnder: null, current: false, ...over,
+  });
+  /** The fixture session launched by a coordinator and launching a reviewer, whose fixer continues in a later session. */
+  const LINEAGE = {
+    nodes: [
+      lineageNode('coordinator', 0, { label: 'Release checks coordinated', agent: 'claude-code', endedAt: null }),
+      lineageNode('s1', 1, { label: 'Flaky test port collision fixed', current: true, placedUnder: edge('coordinator', 's1') }),
+      lineageNode('reviewer', 2, { label: 'Port allocation reviewed', placedUnder: edge('s1', 'reviewer') }),
+      lineageNode('continued', 2, { label: 'Port fix continued', placedUnder: edge('s1', 'continued', 'continuation', 'compact continuation') }),
+    ],
+    edges: [edge('coordinator', 's1'), edge('s1', 'reviewer'), edge('s1', 'continued', 'continuation', 'compact continuation')],
+    truncated: false,
+  };
+
   const routes = (over: Routes = {}, me: unknown = ADMIN): Routes => base({
     '/api/projects/x/sessions/s1': () => detail({ title: 'Flaky test port collision fixed', summary: 'The test reserved a fixed port.\nIt now asks the kernel for one.', endedAt: NOW - 20 * MINUTE }, { outcome: OUTCOME, release: { state: 'released', confidence: 'high', ref: 'refs/tags/v1.2.0', reason: null, checkedAt: NOW, latestCheck: null } }),
     '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([
@@ -372,6 +390,7 @@ describe('the session reading page', () => {
       { toolCallId: 't1', promptId: P1, toolName: 'Write', mycoTool: null, mycoOp: null, inputPreview: 'x'.repeat(20), inputBytes: 190_000, inputTruncated: true, inputBlobKey: null, outputPreview: 'wrote it', outputBlobKey: null, success: false, errorMessage: 'disk full', durationMs: 42, filesAffected: '["/repo/a.ts"]', createdAt: NOW - 2000, orderedAt: NOW - 2000 },
     ]),
     '/api/projects/x/sessions/s1/plans': () => page([]),
+    '/api/projects/x/sessions/s1/lineage': () => Response.json(LINEAGE),
     '/api/projects/x/sessions/s1/context-injections': () => page([{ kind: 'cortex', createdAt: NOW - HOUR, orderedAt: NOW - HOUR, delivery: null }]),
     '/api/projects/x/sessions/s1/attachments': () => page([
       { attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW },
@@ -417,7 +436,7 @@ describe('the session reading page', () => {
     const tabs = screen.getByRole('tablist', { name: 'What the session holds' });
     expect(summary.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // The tabs name what they hold and count nothing.
-    expect(within(tabs).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation', 'Agent activity', 'Outcomes', 'Spores', 'Plans']);
+    expect(within(tabs).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Conversation', 'Agent activity', 'Outcomes', 'Spores', 'Plans', 'Lineage']);
     expect(screen.getByRole('navigation', { name: 'Breadcrumb' }).textContent).toBe('SessionsProject X');
     // The facts, in words; the id is only copied.
     const facts = screen.getByRole('complementary', { name: 'About this session' });
@@ -458,7 +477,7 @@ describe('the session reading page', () => {
 
   const activityRow = (over: Record<string, unknown> = {}) => ({
     id: 'activity-one', type: 'failure', title: 'Bash', detail: 'Tool reported a failure', at: NOW - MINUTE,
-    promptId: P1, toolName: 'Bash', resultReason: 'reported', failed: true, ...over,
+    promptId: P1, toolName: 'Bash', resultReason: 'reported', failed: true, sessionId: null, agent: null, ...over,
   });
   const activityPage = (rows: unknown[], cursor: string | null = null) => Response.json({ rows, cursor, tools: ['Bash', 'Read'] });
 
@@ -484,6 +503,124 @@ describe('the session reading page', () => {
     fireEvent.click(within(list).getByRole('link'));
     await waitFor(() => expect(location()).toBe(`/p/x/sessions/s1?turn=${P1}`));
     expect(await screen.findByTestId(`turn-${P1}`)).toBeTruthy();
+  });
+
+  it('lists child sessions and continuations, each opening the related session on its conversation, and a session not captured here opening nothing', async () => {
+    server(routes({
+      '/api/projects/x/sessions/s1/activity': () => activityPage([
+        activityRow({ id: 'child:reviewer', type: 'child_session', title: 'Port allocation reviewed', detail: 'Child of this session', promptId: null, toolName: null, resultReason: null, failed: false, sessionId: 'reviewer', agent: 'codex' }),
+        activityRow({ id: 'continues:gone', type: 'continuation', title: 'A session not captured here', detail: 'This session continues its conversation · fork', promptId: null, toolName: null, resultReason: null, failed: false, sessionId: null, agent: null }),
+      ]),
+    }));
+    mount('/p/x/sessions/s1?tab=activity');
+    const list = await screen.findByRole('list', { name: 'Agent activity' });
+    const [child, continuation] = within(list).getAllByRole('listitem');
+    expect(child!.textContent).toContain('Child session');
+    expect(child!.textContent).toContain('Codex · Child of this session');
+    expect(within(child!).getByRole('link', { name: /Port allocation reviewed/ }).getAttribute('href')).toBe('/p/x/sessions/reviewer');
+    expect(continuation!.textContent).toContain('Continuation');
+    expect(within(continuation!).queryByRole('link')).toBeNull();
+    expect(rawIdsInPage()).toEqual([]);
+  });
+
+  it('names the parent and counts the children in the facts, and draws the family on the Lineage tab with the session marked', async () => {
+    server(routes());
+    mount('/p/x/sessions/s1');
+    const facts = await screen.findByRole('complementary', { name: 'About this session' });
+    const parent = await within(facts).findByRole('link', { name: 'Release checks coordinated' });
+    expect(parent.getAttribute('href')).toBe('/p/x/sessions/coordinator');
+    const children = within(facts).getByRole('link', { name: '2 sessions' });
+    fireEvent.click(children);
+    await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=lineage'));
+    const lineage = await screen.findByRole('list', { name: 'Lineage' });
+    const lanes = within(lineage).getAllByRole('listitem');
+    expect(lanes.map((lane) => lane.querySelector(':scope > div')!.textContent)).toEqual([
+      expect.stringContaining('Release checks coordinated'),
+      expect.stringContaining('Flaky test port collision fixed'),
+      expect.stringContaining('Port allocation reviewed'),
+      expect.stringContaining('Port fix continued'),
+    ]);
+    expect(lanes[3]!.textContent).toContain('Continues its parent (compact continuation)');
+    expect(lanes[0]!.textContent).toContain('no end recorded');
+    const current = lineage.querySelector('[aria-current="true"]')!;
+    expect(current.textContent).toContain('This session');
+    expect(within(current as HTMLElement).queryByRole('link')).toBeNull();
+    // The session's children are nested in its own item.
+    expect(within(lanes[1]!).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(lineage).getByRole('link', { name: 'Release checks coordinated' }).getAttribute('href')).toBe('/p/x/sessions/coordinator');
+    expect(lineage.querySelectorAll('[data-lane-track][aria-hidden="true"]')).toHaveLength(4);
+    expect(rawIdsInPage()).toEqual([]);
+    fireEvent.click(within(lineage).getByRole('link', { name: 'Port allocation reviewed' }));
+    await waitFor(() => expect(location()).toBe('/p/x/sessions/reviewer'));
+  });
+
+  /** The Deployment's own lineage read over a family that outgrows its bound: `wide` children under `root`, and two under `s1` when `s1` is one of them. */
+  const wideLineage = async (root: string, wide: number, under: string | null) => {
+    const { db, sqlite } = sqliteEnv();
+    const add = (id: string, parent: string | null) => sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, title, launch_parent_session_id)
+      VALUES ('proj_1', ?, 'm1', 'tok_1', 1, 1, ?, ?)`, [id, `Session ${id}`, parent]);
+    add(root, null);
+    for (let i = 0; i < wide; i++) add(`c-${String(i).padStart(3, '0')}`, root);
+    if (under !== null) { add(under, root); add('g-1', under); add('g-2', under); }
+    return (await sessionLineage(db, { projectId: 'proj_1' }, under ?? root))!;
+  };
+
+  it('gives the children as a lower bound when the family read stops at its bound, including when none of the session\'s own fit', async () => {
+    const wide = await wideLineage('s1', 205, null);
+    expect(wide.truncated).toBe(true);
+    server(routes({ '/api/projects/x/sessions/s1/lineage': () => Response.json(wide) }));
+    mount('/p/x/sessions/s1');
+    const facts = await screen.findByRole('complementary', { name: 'About this session' });
+    expect((await within(facts).findByRole('link', { name: '199+ sessions' })).getAttribute('href')).toBe('/p/x/sessions/s1?tab=lineage');
+    cleanup();
+    const boundary = await wideLineage('r', 205, 's1');
+    expect([boundary.truncated, boundary.edges.some((edge) => edge.parentId === 's1')]).toEqual([true, false]);
+    server(routes({ '/api/projects/x/sessions/s1/lineage': () => Response.json(boundary) }));
+    mount('/p/x/sessions/s1');
+    const cut = await screen.findByRole('complementary', { name: 'About this session' });
+    expect(await within(cut).findByRole('link', { name: 'Not all counted' })).toBeTruthy();
+    expect(within(cut).getByRole('link', { name: 'Session r' })).toBeTruthy();
+  });
+
+  it('shows a failed family read with a retry whether or not the session names a parent, and keeps loaded facts through a failed refresh', async () => {
+    let fail = true;
+    server(routes({ '/api/projects/x/sessions/s1/lineage': () => fail ? new Response(null, { status: 500 }) : Response.json(LINEAGE) }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mount('/p/x/sessions/s1', client);
+    const facts = await screen.findByRole('complementary', { name: 'About this session' });
+    expect((await within(facts).findByText('Could not be read')).closest('[data-facts]')).not.toBeNull();
+    expect(within(facts).queryByText('Children')).toBeNull();
+    fail = false;
+    fireEvent.click(within(facts).getByRole('button', { name: 'Retry' }));
+    expect(await within(facts).findByRole('link', { name: '2 sessions' })).toBeTruthy();
+    expect(within(facts).queryByText('Could not be read')).toBeNull();
+    fail = true;
+    await act(async () => { await client.refetchQueries({ queryKey: ['session-lineage', 'x', 's1'] }); });
+    expect(await within(facts).findByText('Could not be read')).toBeTruthy();
+    expect(within(facts).getByRole('link', { name: '2 sessions' })).toBeTruthy();
+    expect(within(facts).getByRole('link', { name: 'Release checks coordinated' })).toBeTruthy();
+  });
+
+  it('shows a parent the Project does not hold without a link, says when the family is cut short, and says when a session has none', async () => {
+    server(routes({
+      '/api/projects/x/sessions/s1/lineage': () => Response.json({
+        nodes: [lineageNode('gone', 0, { captured: false, label: null, agent: null, startedAt: null, endedAt: null }), lineageNode('s1', 1, { current: true, placedUnder: edge('gone', 's1') })],
+        edges: [edge('gone', 's1')], truncated: true,
+      }),
+    }));
+    mount('/p/x/sessions/s1?tab=lineage');
+    const lineage = await screen.findByRole('list', { name: 'Lineage' });
+    expect(within(lineage).queryAllByRole('link')).toHaveLength(0);
+    expect(lineage.textContent).toContain('A session not captured here');
+    expect(lineage.textContent).toContain('Times not captured');
+    expect(screen.getByText('Only part of this family is shown: it reaches past what one page reads.')).toBeTruthy();
+    const facts = screen.getByRole('complementary', { name: 'About this session' });
+    expect(within(facts).getByText('A session not captured here')).toBeTruthy();
+    cleanup();
+    server(routes({ '/api/projects/x/sessions/s1/lineage': () => Response.json({ nodes: [lineageNode('s1', 0, { current: true })], edges: [], truncated: false }) }));
+    mount('/p/x/sessions/s1?tab=lineage');
+    expect(await screen.findByText('No parent or child sessions were recorded for this session.')).toBeTruthy();
+    expect(screen.queryByText('Children')).toBeNull();
   });
 
   it('pages activity under structured filters and drops activity filters when opening another tab', async () => {

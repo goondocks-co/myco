@@ -244,6 +244,7 @@ function toolCallPayload(ctx: EnvelopeContext, input: NormalizedHookInput, opts:
 
 export function sessionStartEvent(ctx: EnvelopeContext, facts: {
   branch?: string; headSha?: string; startedAt?: number; originPath?: string; projectName?: string; parentSessionId?: string; parentReason?: string;
+  launchParentSessionId?: string;
 }): OutboundEvent {
   return envelope(ctx, 'session.start', {
     agent: trunc(ctx.agent, BOUNDS.agent),
@@ -254,6 +255,7 @@ export function sessionStartEvent(ctx: EnvelopeContext, facts: {
     originPath: facts.originPath === undefined ? undefined : trunc(homeRelativePath(facts.originPath), BOUNDS.originPath),
     parentSessionId: facts.parentSessionId,
     parentReason: trunc(facts.parentReason, BOUNDS.parentReason),
+    launchParentSessionId: facts.launchParentSessionId,
   });
 }
 

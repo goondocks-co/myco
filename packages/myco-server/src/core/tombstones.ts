@@ -5,7 +5,7 @@
  * exclude tombstones; ingestion refuses subsequent capture and import for the
  * same session ID. Unreferenced blobs are freed in bounded pages.
  */
-import type { RelationalStore, ServerEnv } from './adapters.js';
+import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
 import { recordBlobCandidates, releaseBlobs } from './object-release.js';
 import { BLOB_REFERENCES, kindFilter, type BlobReference } from './blob-references.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
@@ -88,6 +88,37 @@ async function blobKeysOf(db: RelationalStore, projectId: string, sessionId: str
 }
 
 
+/** A deleted session's own lineage facts, cleared: a session leaves the parent indexes when it is deleted, so they hold live sessions alone. */
+export const CLEAR_DELETED_PARENTS = `parent_session_id = NULL, parent_reason = NULL, launch_parent_session_id = NULL`;
+
+/**
+ * The statements that mark a session deleted: its tombstone, then what the session says of itself cleared, its title
+ * and summary and its own parents. A surviving session that names it as a parent keeps that reference.
+ */
+export function tombstoneMarkStatements(db: RelationalStore, projectId: string, sessionId: string, by: string, nowMs: number, reason?: string): PreparedStatement[] {
+  return [
+    db.prepare(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by)
+        VALUES (?, ?, ?, ?, ?) ON CONFLICT (project_id, session_id) DO NOTHING`)
+      .bind(projectId, sessionId, reason ?? null, nowMs, by),
+    db.prepare(`UPDATE sessions SET title = NULL, summary = NULL, titled_at = NULL, titled_by = NULL
+      WHERE project_id = ? AND session_id = ? AND (title IS NOT NULL OR summary IS NOT NULL OR titled_at IS NOT NULL OR titled_by IS NOT NULL)`).bind(projectId, sessionId),
+    clearDeletedParentsStatement(db, projectId, [sessionId]),
+  ];
+}
+
+/**
+ * The one clear of deleted sessions' own parents, for every session among `sessionIds` that carries a tombstone. Each
+ * writer of deleted-session state (deletion, and restore of `sessions` or `session_tombstones` rows) runs it in the batch
+ * that writes that state, so a deleted session never stays in the parent indexes.
+ */
+export function clearDeletedParentsStatement(db: RelationalStore, projectId: string, sessionIds: readonly string[]): PreparedStatement {
+  return db.prepare(`UPDATE sessions SET ${CLEAR_DELETED_PARENTS}
+      WHERE project_id = ? AND session_id IN (${sessionIds.map(() => '?').join(', ')})
+        AND (parent_session_id IS NOT NULL OR parent_reason IS NOT NULL OR launch_parent_session_id IS NOT NULL)
+        AND EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = sessions.project_id AND t.session_id = sessions.session_id)`)
+    .bind(projectId, ...sessionIds);
+}
+
 /**
  * Suppress a session: record the tombstone, drop every derived row, and free
  * the blobs nothing else holds through the release owner, which journals their stored objects for deletion.
@@ -108,12 +139,7 @@ export async function tombstoneSession(
   const keys = await blobKeysOf(env.db, projectId, sessionId);
 
   const metadata = [
-    env.db
-      .prepare(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by)
-        VALUES (?, ?, ?, ?, ?) ON CONFLICT (project_id, session_id) DO NOTHING`)
-      .bind(projectId, sessionId, reason ?? null, nowMs, by),
-    env.db.prepare(`UPDATE sessions SET title = NULL, summary = NULL, titled_at = NULL, titled_by = NULL
-      WHERE project_id = ? AND session_id = ? AND (title IS NOT NULL OR summary IS NOT NULL OR titled_at IS NOT NULL OR titled_by IS NOT NULL)`).bind(projectId, sessionId),
+    ...tombstoneMarkStatements(env.db, projectId, sessionId, by, nowMs, reason),
     // A spore outlives its session and stops naming a prompt the deletion removes; it runs before the prompts go.
     env.db.prepare(`UPDATE spores SET prompt_id = NULL
       WHERE project_id = ? AND prompt_id IN (SELECT prompt_id FROM prompt_batches WHERE project_id = ? AND session_id = ?)`).bind(projectId, projectId, sessionId),

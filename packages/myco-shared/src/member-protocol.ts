@@ -59,7 +59,9 @@ export const PROJECT_NAME_FEATURE = 'project-name';
 export const TOOL_RESULT_REASON_FEATURE = 'tool-result-reason';
 export const TOOL_RESULT_REASONS = ['reported', 'no_result', 'pending_limit'] as const;
 export type ToolResultReason = (typeof TOOL_RESULT_REASONS)[number];
-export const MEMBER_FEATURES = ['turn', PROJECT_NAME_FEATURE, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE, TOOL_RESULT_REASON_FEATURE] as const;
+/** The session that launched a session travels in session.start only to Deployments that admit the optional field. */
+export const LAUNCH_PARENT_FEATURE = 'launch-parent';
+export const MEMBER_FEATURES = ['turn', PROJECT_NAME_FEATURE, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE, TOOL_RESULT_REASON_FEATURE, LAUNCH_PARENT_FEATURE] as const;
 export type MemberFeature = (typeof MEMBER_FEATURES)[number];
 
 /** Machine settings revisions are exchanged only by members and Deployments advertising this feature. */

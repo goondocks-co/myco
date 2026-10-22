@@ -25,7 +25,7 @@ describe('read/sessions', () => {
     expect(rows.map((r) => r.sessionId)).toEqual(['s3', 's2', 's1']);
     expect(rows[0]).toEqual({
       sessionId: 's3', machineId: 'm2', createdByTokenId: 'tok_1', firstReceivedAt: 3, lastReceivedAt: 20,
-      agent: 'claude-code', branch: 'main', startedAt: 3, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null,
+      agent: 'claude-code', branch: 'main', startedAt: 3, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null, launchParentSessionId: null,
       memberId: null, memberLabel: null, runtimeLabel: null, runtimeKind: null, workingSince: null, working: false,
       title: null, summary: null, titledAt: null, endedBy: null, endedByLabel: null, label: 'claude-code',
     });
@@ -612,7 +612,7 @@ describe('schema v34', () => {
     expect(v34?.statements).toContain('DROP INDEX IF EXISTS idx_sessions_recent');
     const sqlite = planDb();
     expect((sqlite.query(`SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sessions' ORDER BY name`).all() as { name: string }[]).map((r) => r.name))
-      .toEqual(['idx_sessions_capture', 'idx_sessions_harness_live', 'idx_sessions_machine_live', 'idx_sessions_occurred', 'idx_sessions_occurred_deployment', 'idx_sessions_pending_title', 'idx_sessions_titled', 'idx_sessions_titled_recent', 'idx_sessions_untitled_ended', 'idx_sessions_untitled_open', 'idx_sessions_working', 'sqlite_autoindex_sessions_1']);
+      .toEqual(['idx_sessions_capture', 'idx_sessions_harness_live', 'idx_sessions_launch_parent', 'idx_sessions_machine_live', 'idx_sessions_occurred', 'idx_sessions_occurred_deployment', 'idx_sessions_parent', 'idx_sessions_pending_title', 'idx_sessions_titled', 'idx_sessions_titled_recent', 'idx_sessions_untitled_ended', 'idx_sessions_untitled_open', 'idx_sessions_working', 'sqlite_autoindex_sessions_1']);
   });
 
   it('serves a session list ordered by when the session happened from one index, first page and keyset page alike, with no sort step', () => {
