@@ -82,7 +82,7 @@ describe('plan read dependencies survive transcript derivation', () => {
         input: { agent: 'claude-code', sessionId, transcriptPath: transcript, raw: { cwd: root } },
         credential: { source: 'registry', root, serverUrl: 'https://example.invalid', token: 'fixture-token', projectId: 'proj_retry' },
         ctx: { agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId) },
-        budget: unboundedBudget(), now: Date.now, argv: [], mycoHome: path.join(root, 'member-home'), machinePlanDirs: () => [],
+        budget: unboundedBudget(), now: Date.now, argv: [], env: {}, mycoHome: path.join(root, 'member-home'), machinePlanDirs: () => [],
       };
       const read = fs.readFileSync;
       const unavailable = failure === 'ENOENT' ? null : spyOn(fs, 'readFileSync').mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {

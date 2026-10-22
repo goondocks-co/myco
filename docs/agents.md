@@ -62,6 +62,18 @@ Repositories under your capture folders (`~/Repos` by default) join automaticall
 
 When the server cannot be reached, capture waits on the machine. `myco member status` shows queued delivery and refusals; `myco member drain` delivers queued capture now.
 
+## Sessions that start other sessions
+
+When one agent session starts another (an orchestrator launching a worker, or a script starting an agent), set `MYCO_PARENT_SESSION` to the starting session's id in the new agent's environment:
+
+```sh
+MYCO_PARENT_SESSION=<parent session id> codex
+```
+
+Myco reads it once, when the new session starts, and records the parent on that session. The session page's **Lineage** tab then shows both sessions in one family, with the parent above its children. Nothing is recorded when the variable is unset or is not a session id, and a resumed session keeps the parent it started with. A parent Myco never captured in that project shows as "A session not captured here".
+
+A Claude Code session can pass its own `CLAUDE_CODE_SESSION_ID`, which is its Myco session id. Other agents show their id on the `Session::` line Myco adds at session start. Sub-agents that run inside one session need nothing: they are already part of it.
+
 ## What agents receive
 
 Project instructions arrive at session start. Relevant spores and plans return with each prompt, and the [agent tools](agent-tools.md) let agents search further or record findings. The project's **Context for sessions** switch is on by default.

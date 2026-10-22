@@ -45,6 +45,8 @@ export interface RunHookOptions {
   helpers?: 'record' | 'run';
   /** A start of the test's own, in place of `helpers`. */
   helperSpawn?: DetachedSpawn;
+  /** The environment the harness starts the hook with; this process's by default. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** A process id that names no live process: a recorded start's helper, gone at once, holds off no later start. */
@@ -97,7 +99,7 @@ export async function runHook(name: HookName, raw: Record<string, unknown>, opts
     const mod = await HOOKS[name]();
     await mod.main({
       credential: opts.credential === undefined ? 'registry' : opts.credential, fetch: opts.fetch, now: opts.now, argv: process.argv, startedAt: Date.now(),
-      helperSpawn,
+      helperSpawn, env: opts.env,
     });
     // Each batch is awaited whole, then any helper a batch started (a successor) is awaited in turn.
     for (let done = 0; done < helpers.length;) {
