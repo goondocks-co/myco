@@ -290,6 +290,7 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
               ${fact('origin_path')},
               ${fact('parent_session_id')},
               ${fact('parent_reason')},
+              ${fact('launch_parent_session_id')},
               ${fact('facts_event_id')},
               ${fact('started_at')}
         WHERE project_id = ? AND session_id = ? AND ${RAW_ROW_GATE}`)
@@ -298,6 +299,7 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
               ...rank, opt(p.originPath),
               ...rank, opt(p.parentSessionId),
               ...rank, opt(p.parentReason),
+              ...rank, opt(p.launchParentSessionId),
               ...rank, e.eventId,
               ...rank, startedAt,
               ctx.projectId, e.sessionId, ...rawGateParams(ctx, e)),

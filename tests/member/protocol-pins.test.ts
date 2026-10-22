@@ -18,7 +18,7 @@ import { IMPORT_PLAN_MAX_CANDIDATES as SERVER_PLAN_MAX } from '@myco-server-work
 import { IMPORT_PLAN_MAX_CANDIDATES as MEMBER_PLAN_MAX } from '@myco/member/import.js';
 import { OUTBOUND_CHANNELS as MEMBER_CHANNELS } from '@myco/member/envelope.js';
 import { KINDS, kindSpec, PLAN_SOURCES as SERVER_PLAN_SOURCES, PLAN_STATUSES as SERVER_PLAN_STATUSES, PROMPT_ORIGINS as SERVER_PROMPT_ORIGINS, TRANSCRIPT_ROLES as SERVER_TRANSCRIPT_ROLES } from '@myco-server-worker/ingest/kinds.js';
-import { FEATURE_KINDS, PROJECT_NAME_FEATURE, TOOL_RESULT_REASON_FEATURE, featuresNamed, MEMBER_KINDS, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
+import { FEATURE_KINDS, LAUNCH_PARENT_FEATURE, PROJECT_NAME_FEATURE, TOOL_RESULT_REASON_FEATURE, featuresNamed, MEMBER_KINDS, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES } from '@goondocks/myco-shared/member-protocol';
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
 import { LINEAGE_REPLAYED_CODE as SERVER_LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN as SERVER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS as SERVER_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/tokens.js';
 import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
@@ -85,6 +85,9 @@ const FINAL_SHAPE_BY_PROTOCOL: Record<number, { memberKinds: readonly string[]; 
     ],
     featureKinds: ['context.delivered', 'turn'],
     featureFields: {
+      'launch-parent': {
+        'session.start': { launchParentSessionId: { required: false, enums: null } },
+      },
       'tool-result-reason': {
         'tool.failure': { resultReason: { required: false, enums: ['no_result', 'pending_limit', 'reported'] } },
         'tool.use': { resultReason: { required: false, enums: ['no_result', 'pending_limit', 'reported'] } },
@@ -128,7 +131,11 @@ function finalShape(): unknown {
       .sort(([a], [b]) => a.localeCompare(b)));
     return [spec.name, { required, enums, ...(spec.exactlyOne ? { exactlyOne: [...spec.exactlyOne] } : {}), ...(spec.atMostOne ? { atMostOne: [...spec.atMostOne] } : {}), ...(spec.pairs ? { pairs: spec.pairs.map((p) => ({ fields: [...p.fields], rule: p.rule })) } : {}) }];
   }));
+  const launchParent = kindSpec('session.start')?.fields.launchParentSessionId;
   const featureFields = {
+    [LAUNCH_PARENT_FEATURE]: {
+      'session.start': { launchParentSessionId: launchParent === undefined ? null : { required: launchParent.required === true, enums: launchParent.bound.type === 'enum' ? [...launchParent.bound.values].sort() : null } },
+    },
     [TOOL_RESULT_REASON_FEATURE]: Object.fromEntries(['tool.failure', 'tool.use'].map(kind => {
       const field = kindSpec(kind)?.fields.resultReason;
       return [kind, { resultReason: field === undefined ? null : {
@@ -171,6 +178,7 @@ describe('member ↔ worker pins', () => {
   it('catalogues every advertised kind, ships none of them unasked, and changes the advertised set only in the protocol\'s own row', () => {
     expect(featuresNamed(PROJECT_NAME_FEATURE)).toEqual(['project-name']);
     expect(featuresNamed(TOOL_RESULT_REASON_FEATURE)).toEqual(['tool-result-reason']);
+    expect(featuresNamed(LAUNCH_PARENT_FEATURE)).toEqual(['launch-parent']);
     const advertised: readonly string[] = Object.values(FEATURE_KINDS).sort();
     expect({ protocol: MEMBER_PROTOCOL, featureKinds: advertised }).toEqual({ protocol: MEMBER_PROTOCOL, featureKinds: FINAL_SHAPE_BY_PROTOCOL[MEMBER_PROTOCOL]?.featureKinds });
     expect(advertised.filter((kind) => kindSpec(kind) === null)).toEqual([]);

@@ -13,3 +13,6 @@ export const overlaySurface = 'rounded-control border border-line-strong bg-surf
  * It grows the target; use `tap-area` instead where the layout must not move.
  */
 export const tapTarget = 'inline-flex min-h-tap min-w-tap items-center';
+
+/** The row whose detail is open, or the one a view is about: a raised surface with the primary colour at its start edge. */
+export const selectedRow = 'bg-surface-2 shadow-[inset_2px_0_0_var(--primary)]';

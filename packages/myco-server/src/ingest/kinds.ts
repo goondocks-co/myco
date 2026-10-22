@@ -105,6 +105,7 @@ export const KINDS: readonly KindSpec[] = [
       projectName: str(200),
       parentSessionId: { bound: { type: 'sessionId' }, column: 'parent_session_id' },
       parentReason: str(64, 'parent_reason'),
+      launchParentSessionId: { bound: { type: 'sessionId' }, column: 'launch_parent_session_id' },
     },
     projection: 'sessions',
   },

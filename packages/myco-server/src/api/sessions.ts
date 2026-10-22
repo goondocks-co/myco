@@ -17,6 +17,7 @@ import { tombstoneSession } from '../core/tombstones.js';
 import { endSession } from '../core/session-end.js';
 import { sessionOutcome } from '../read/run-reads.js';
 import { sessionCommits } from '../read/session-commits.js';
+import { sessionLineage } from '../read/lineage.js';
 import { resumeCommandFor } from '../core/resume-command.js';
 
 /** Session child collections, each served by the same scoped and paginated handler. */
@@ -146,6 +147,16 @@ export async function handleSessionCommits(env: ServerEnv, ctx: OwnerContext): P
   if (scope === null) return notFound();
   if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
   return ok(await sessionCommits(env.db, scope, sessionId));
+}
+
+/** The session's family over both parent edges: its parents up to the roots, and what descends from them. */
+export async function handleSessionLineage(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const sessionId = sessionIdParam(ctx.params.sessionId);
+  if (sessionId === null) return notFound();
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  const lineage = await sessionLineage(env.db, scope, sessionId);
+  return lineage === null ? notFound() : ok(lineage);
 }
 
 /** The session's stored tool outcome facts, narrowed by structured metadata. */

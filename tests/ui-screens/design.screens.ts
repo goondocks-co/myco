@@ -36,6 +36,15 @@ test.describe('design specimen', () => {
         await expect(wrapped.getByText('Released · myco/v2.0.3 · PR #1873 · checked 30 min ago')).toBeVisible();
         expect(await wrapped.getByText('Ended at 8d41b7e, couldn’t tell whether files changed').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
         await expect(wrapped.getByRole('button', { name: 'Copy commit' })).toBeVisible();
+        // Lanes nest as lists, mark the current lane without a link to itself, and draw their tracks from the md width only.
+        const lanes = page.locator('[data-specimen-lanes]').getByRole('list', { name: 'Lineage' });
+        await expect(lanes.getByRole('listitem')).toHaveCount(5);
+        await expect(lanes.locator('[aria-current="true"]')).toContainText('Flaky test port collision fixed');
+        await expect(lanes.locator('[aria-current="true"]').getByRole('link')).toHaveCount(0);
+        await expect(lanes.getByRole('link')).toHaveText(['Release checks coordinated', 'Port allocation reviewed']);
+        await expect(lanes.getByText('A session not captured here', { exact: true })).toBeVisible();
+        const tracks = lanes.locator('[data-lane-track]');
+        if (viewport === 'phone') await expect(tracks.first()).toBeHidden(); else await expect(tracks.first()).toBeVisible();
         await expectFits(page, viewport);
         await expectAxeClean(page);
         expectQuiet(watch);

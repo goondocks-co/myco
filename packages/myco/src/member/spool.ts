@@ -10,7 +10,7 @@
  * (`_memberProtocol`, `_blobSource`) that never reach the wire; blob bytes are
  * never spooled — the drain re-reads them from the staged source.
  */
-import { PROJECT_NAME_FEATURE, TOOL_RESULT_REASON_FEATURE } from '@goondocks/myco-shared/member-protocol';
+import { LAUNCH_PARENT_FEATURE, PROJECT_NAME_FEATURE, TOOL_RESULT_REASON_FEATURE } from '@goondocks/myco-shared/member-protocol';
 import { featureAdvertised } from './context-cache.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -1107,6 +1107,10 @@ export class MemberSpool {
         const wire = toWire(record);
         if (wire.kind === 'session.start' && !featureAdvertised({ serverUrl: activeClient.serverUrl, projectId: this.projectId }, this.mycoHome, PROJECT_NAME_FEATURE)) {
           const { projectName: _projectName, ...payload } = wire.payload;
+          wire.payload = payload;
+        }
+        if (wire.kind === 'session.start' && !featureAdvertised({ serverUrl: activeClient.serverUrl, projectId: this.projectId }, this.mycoHome, LAUNCH_PARENT_FEATURE)) {
+          const { launchParentSessionId: _launchParentSessionId, ...payload } = wire.payload;
           wire.payload = payload;
         }
         if ((wire.kind === 'tool.use' || wire.kind === 'tool.failure')

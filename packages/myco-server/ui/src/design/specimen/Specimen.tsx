@@ -3,7 +3,7 @@ import { Play } from 'lucide-react';
 import { ApiError } from '../../lib/api';
 import {
   Avatar, Button, Card, CommandBlock, ConfirmDialog, CopyButton, DayGroup, Dialog, DialogContent, DialogFooter, DialogTrigger,
-  ActionLink, Disclosure, EmptyState, ErrorState, FactRow, FactsPanel, FilterBar, HealthDot, IconButton, Input, Kbd, Link, ListRow,
+  ActionLink, Disclosure, EmptyState, ErrorState, FactRow, FactsPanel, FilterBar, HealthDot, IconButton, Input, Kbd, LaneTimeline, Link, ListRow,
   LoadingState, MoreMenu, SearchableSelect, SearchInput, Select, ShowMore, Stat, StatusChip, Switch, Tabs, TabsContent,
   TabsList, TabsTrigger, Textarea, TypeChip,
 } from '../index';
@@ -29,6 +29,27 @@ const TYPE_SCALE = [
   ['t-kicker', 'Projects', 'Inter 500 · 12, tracked, uppercase'],
   ['t-mono', 'myco login https://example.test/join', 'JetBrains Mono · 13/1.5'],
 ] as const;
+
+/** A fixed instant, so the specimen's spans read the same on every render. */
+const LANES_NOW = Date.UTC(2026, 9, 19, 16, 0);
+const HOUR_MS = 60 * 60 * 1000;
+const LANES = [
+  {
+    key: 'coordinator', name: 'Release checks coordinated', to: '/sessions/coordinator', detail: 'Claude Code · Child of a session not captured here',
+    when: 'Oct 19, 06:00 – no end recorded', start: LANES_NOW - 10 * HOUR_MS, end: null,
+    lanes: [
+      {
+        key: 'current', name: 'Flaky test port collision fixed', detail: 'Codex · This session · Child session', when: 'Oct 19, 07:00 – 07:41',
+        start: LANES_NOW - 9 * HOUR_MS, end: LANES_NOW - 9 * HOUR_MS + 41 * 60_000, current: true,
+        lanes: [
+          { key: 'reviewer', name: 'Port allocation reviewed', to: '/sessions/reviewer', detail: 'Codex · Child session', when: 'Oct 19, 07:10 – 07:25', start: LANES_NOW - 9 * HOUR_MS + 10 * 60_000, end: LANES_NOW - 9 * HOUR_MS + 25 * 60_000 },
+          { key: 'plain', name: 'Port fix continued', detail: 'Claude Code · Continues its parent (compact continuation)', when: 'Oct 19, 07:42 – 08:30', start: LANES_NOW - 9 * HOUR_MS + 42 * 60_000, end: LANES_NOW - 7.5 * HOUR_MS },
+        ],
+      },
+    ],
+  },
+  { key: 'gone', name: 'A session not captured here', when: 'Times not captured', start: null, end: null },
+];
 
 const SPACES = [['s-1', 'w-s1'], ['s-2', 'w-s2'], ['s-3', 'w-s3'], ['s-4', 'w-s4'], ['s-5', 'w-s5'], ['s-6', 'w-s6'], ['s-8', 'w-s8'], ['s-10', 'w-s10'], ['s-12', 'w-s12']] as const;
 
@@ -268,6 +289,12 @@ export function Specimen() {
               trailing={<CopyButton value="8d41b7e" label="Copy commit" compact />}
               wrap
             />
+          </Card>
+        </Section>
+
+        <Section id="lanes" kicker="Patterns" title="Lanes in time">
+          <Card padding="flush" className="p-s3" data-specimen-lanes="">
+            <LaneTimeline lanes={LANES} label="Lineage" now={LANES_NOW} />
           </Card>
         </Section>
 

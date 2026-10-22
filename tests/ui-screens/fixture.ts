@@ -130,6 +130,10 @@ interface SessionSeed {
   prompts: string[];
   /** The commits its member observed at the start and the end, and whether tracked files had changed at the end. */
   commits?: { start: string; end: string; dirty: boolean };
+  /** The session that launched it: an earlier seed's index, or an id this Deployment holds no session for. */
+  launchedBy?: number | string;
+  /** The earlier seed it continues under a new id, with the continuation's recorded reason. */
+  continues?: { session: number; reason: string };
 }
 
 /** A full commit SHA that starts with the seven characters a reader is shown. */
@@ -146,7 +150,7 @@ const SESSIONS: SessionSeed[] = [
   { project: 'field-notes', agent: 'opencode', machine: 'buildbox', startedAgo: 7 * 60, minutes: 22, title: 'Offline sync conflict resolution sketched', summary: 'Compared last-writer-wins with a per-field merge and wrote up why per-field merge fits notes edited on two phones.', prompts: ['How should we resolve conflicting offline edits?'] },
   { project: 'ledger', agent: 'pi', machine: 'studio', startedAgo: 8 * 60, minutes: 64, title: 'Monthly close report query sped up', summary: 'Added a covering index for the close report and cut the query from 4.2 s to 180 ms on the staging copy.', prompts: ['The monthly close report takes four seconds', 'Try a covering index on entries by account and period'] },
   { project: 'infra', agent: 'claude-code', machine: 'studio', startedAgo: 9 * 60, minutes: 17, title: 'Backup schedule moved to nightly', summary: 'Changed the backup interval from weekly to nightly and confirmed the first run landed in the bucket.', prompts: ['Backups are weekly; make them nightly'] },
-  { project: 'myco', agent: 'codex', machine: 'buildbox', startedAgo: 10 * 60, minutes: 41, title: 'Flaky test port collision fixed', summary: 'The test reserved a fixed port that the server’s ephemeral fallback could also pick; it now asks the kernel for one.', prompts: ['This test fails one run in twenty', 'Stop reserving a fixed port'], commits: { start: commit('3f9c2a1'), end: commit('8d41b7e'), dirty: false } },
+  { project: 'myco', agent: 'codex', machine: 'buildbox', startedAgo: 10 * 60, minutes: 41, title: 'Flaky test port collision fixed', summary: 'The test reserved a fixed port that the server’s ephemeral fallback could also pick; it now asks the kernel for one.', prompts: ['This test fails one run in twenty', 'Stop reserving a fixed port'], commits: { start: commit('3f9c2a1'), end: commit('8d41b7e'), dirty: false }, launchedBy: 'screens-coordinator-not-captured' },
   { project: 'sandbox', agent: 'pi', machine: 'buildbox', startedAgo: 9 * 60 + 30, minutes: 6, title: 'Trying the new login flow', summary: 'Signed in on a fresh machine to check the join link opens in a browser.', prompts: ['Try logging in from scratch'] },
   { project: 'atlas-web', agent: 'claude-code', machine: 'studio', startedAgo: 26 * 60, minutes: 70, title: 'Image gallery lazy-loading added', summary: 'Gallery images now load as they scroll into view; the first paint on the product page dropped by 1.1 s.', prompts: ['The product page is slow on phones', 'Lazy-load the gallery images', 'Measure the first paint again'] },
   { project: 'myco', agent: 'cursor', machine: 'studio', startedAgo: 28 * 60, minutes: 33, title: 'Session reading page summary moved first', summary: 'The session page now opens with the summary and keeps the conversation at a readable width.', prompts: ['Put the summary at the top of the session page'] },
@@ -154,6 +158,10 @@ const SESSIONS: SessionSeed[] = [
   { project: 'ledger', agent: 'opencode', machine: 'studio', startedAgo: 33 * 60, minutes: 25, title: 'Currency rounding rule documented', summary: 'Wrote down that amounts round half-even at the ledger boundary and only there.', prompts: ['Where do we round currency amounts?'] },
   { project: 'infra', agent: 'pi', machine: 'buildbox', startedAgo: 36 * 60, minutes: 12, title: 'Certificate renewal alert tuned', summary: 'The renewal alert now fires fourteen days out instead of three.', prompts: ['The cert alert fires too late'] },
   { project: 'myco', agent: 'claude-code', machine: 'studio', startedAgo: 40 * 60, minutes: 95, title: 'Work outcomes counted per task', summary: 'Grouped Myco’s runs by the outcome they produce so the work page can say what was learned rather than list every run.', prompts: ['List runs by what they produced', 'Fold the index upkeep into one line', 'Show the failures with their cause'] },
+  // The family of "Flaky test port collision fixed": two sessions it launched, the second continued under a new id.
+  { project: 'myco', agent: 'codex', machine: 'buildbox', startedAgo: 10 * 60 - 10, minutes: 15, title: 'Port allocation reviewed', summary: 'Reviewed the port change and found no other test reserving a fixed port.', prompts: ['Review the port allocation change'], launchedBy: 6 },
+  { project: 'myco', agent: 'claude-code', machine: 'studio', startedAgo: 10 * 60 - 20, minutes: 20, title: 'Ephemeral port test rewritten', summary: 'Rewrote the server test to bind port 0 and read the port back from the server.', prompts: ['Rewrite the server test to bind port 0'], launchedBy: 6 },
+  { project: 'myco', agent: 'claude-code', machine: 'studio', startedAgo: 10 * 60 - 41, minutes: 10, title: 'Ephemeral port test finished', summary: 'Finished the rewrite after the conversation was compacted and ran the suite twice.', prompts: ['Run the suite twice more'], launchedBy: 6, continues: { session: 15, reason: 'compact continuation' } },
 ];
 
 /** Spores, one of every type, headlined by their one-line form; the last two were saved without one. */
@@ -295,7 +303,11 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     const sessionId = await uuidv5('screens-session', seed.project, String(index));
     sessionIds.push(sessionId);
     const startedAt = now - seed.startedAgo * MINUTE;
-    await post(seed.machine, seed.project, sessionId, 'session.start', { agent: seed.agent, branch: 'main', startedAt, ...(seed.commits === undefined ? {} : { headSha: seed.commits.start }) }, startedAt);
+    const lineage = {
+      ...(seed.launchedBy === undefined ? {} : { launchParentSessionId: typeof seed.launchedBy === 'number' ? sessionIds[seed.launchedBy]! : seed.launchedBy }),
+      ...(seed.continues === undefined ? {} : { parentSessionId: sessionIds[seed.continues.session]!, parentReason: seed.continues.reason }),
+    };
+    await post(seed.machine, seed.project, sessionId, 'session.start', { agent: seed.agent, branch: 'main', startedAt, ...(seed.commits === undefined ? {} : { headSha: seed.commits.start }), ...lineage }, startedAt);
     const span = seed.minutes === null ? seed.startedAgo - 1 : seed.minutes;
     let promptId = '';
     for (const [i, text] of seed.prompts.entries()) {

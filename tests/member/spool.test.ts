@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { normalizeHookInput } from '@myco/hooks/normalize.js';
 import { cacheDeploymentFeatures } from '@myco/member/context-cache.js';
-import { FEATURES_HEADER, PROTOCOL_HEADER, PROJECT_NAME_FEATURE, TOOL_RESULT_REASON_FEATURE } from '@goondocks/myco-shared/member-protocol';
+import { FEATURES_HEADER, LAUNCH_PARENT_FEATURE, PROTOCOL_HEADER, PROJECT_NAME_FEATURE, TOOL_RESULT_REASON_FEATURE } from '@goondocks/myco-shared/member-protocol';
 import fs from 'node:fs';
 import path from 'node:path';
 import { RETIRED_BYTE_CEILING } from '../myco-server/helpers/fixtures.js';
@@ -91,6 +91,28 @@ describe('member spool', () => {
     expect(payloads).toHaveLength(1);
     expect(payloads[0].resultReason).toBe(advertised ? 'reported' : undefined);
     expect(rig.env.sqlite.query('SELECT result_reason FROM tool_calls').get()).toEqual({ result_reason: advertised ? 'reported' : null });
+  });
+
+  it.each([false, true])('ships launchParentSessionId only to an advertising Deployment (advertised: %s)', async (advertised) => {
+    const rig = await memberRig();
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
+    const features = advertised ? [LAUNCH_PARENT_FEATURE] as const : [] as const;
+    cacheDeploymentFeatures('https://s', [...features], mycoHome);
+    const payloads: Record<string, unknown>[] = [];
+    const fetch: FetchLike = async (input, init) => {
+      const request = new Request(input, init);
+      const payload = (await request.clone().json() as MemberEnvelope).payload;
+      payloads.push(payload);
+      if (!advertised && 'launchParentSessionId' in payload) return Response.json({ code: 'unknown_field', reason: 'launchParentSessionId' }, { status: 400, headers: { [PROTOCOL_HEADER]: '1' } });
+      const response = await rig.fetch(request);
+      response.headers.set(FEATURES_HEADER, features.join(','));
+      return response;
+    };
+    spool.append('sess-launched', sessionStartEvent(ctxFor(spool, 'sess-launched'), { startedAt: Date.now(), launchParentSessionId: 'sess-orchestrator' }));
+    const result = await spool.drainSession('sess-launched', clientFor(rig, fetch), unboundedBudget());
+    expect(result).toMatchObject({ acked: 1, refused: 0, remaining: 0, endedBy: 'drained' });
+    expect(payloads.map((payload) => payload.launchParentSessionId)).toEqual([advertised ? 'sess-orchestrator' : undefined]);
+    expect(rig.env.sqlite.query('SELECT launch_parent_session_id AS v FROM sessions').get()).toEqual({ v: advertised ? 'sess-orchestrator' : null });
   });
 
   it('appends before sending and the wire carries only the seven envelope fields — never a sidecar or the buffer timestamp', async () => {

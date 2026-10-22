@@ -1,7 +1,7 @@
 import { forwardRef, type ReactNode, type Ref } from 'react';
 import { Link } from 'react-router-dom';
 import { cn } from '../../lib/cn';
-import { focusRing } from '../lib/classes';
+import { focusRing, selectedRow } from '../lib/classes';
 
 export interface ListRowProps {
   /** A short label above the title naming what kind of row it is, such as a TypeChip. */
@@ -46,7 +46,7 @@ export const ListRow = forwardRef<HTMLAnchorElement | HTMLDivElement, ListRowPro
       'flex w-full items-center gap-s3 border-line px-s4 py-s2 text-left not-last:border-b [li:not(:last-child)>&]:border-b transition-colors duration-120',
       tight ? 'min-h-row-tight' : 'min-h-row',
       to != null && 'hover:bg-surface-2',
-      selected && 'bg-surface-2 shadow-[inset_2px_0_0_var(--primary)]',
+      selected && selectedRow,
       cursor && !selected && 'bg-surface-2',
       focusRing,
       'focus-visible:-outline-offset-2',

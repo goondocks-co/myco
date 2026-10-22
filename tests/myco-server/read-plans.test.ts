@@ -197,8 +197,14 @@ describe('the reads a person waits on', () => {
       for (const opts of [{}, { type: 'failure' as const, tool: 'Bash', failed: true, cursor: encodeCursor(1_700_000_000_000, 'tool') }]) {
         const { db: recorder, statements } = recordingStore();
         await listSessionActivity(recorder, { projectId: 'proj_1' }, 's1', opts);
-        expect(statements).toHaveLength(2);
+        expect(statements).toHaveLength(opts.type === undefined ? 3 : 2);
         expect(statements.map(s => s.sql).join(' ')).not.toMatch(/error_message|output_preview|input_blob_key/);
+        if (opts.type === undefined) {
+          const edges = planOf(db, statements[1].sql, statements[1].params);
+          expect(edges).toMatch(/SEARCH r USING INDEX idx_sessions_launch_parent \(project_id=\? AND launch_parent_session_id=\?\)/);
+          expect(edges).toMatch(/SEARCH r USING INDEX idx_sessions_parent \(project_id=\? AND parent_session_id=\?\)/);
+          expect(edges).not.toMatch(/SCAN [rs]\b/);
+        }
         const plan = planOf(db, statements[0].sql, statements[0].params);
         expect(plan).toContain('idx_tool_calls_activity');
         expect(plan).not.toMatch(/SCAN t\b|TEMP B-TREE/);

@@ -271,7 +271,7 @@ test.describe('Sessions', () => {
         await watch.navigate(() => openTable(page, viewport));
         await watch.navigate(() => openOutcomeSession(page));
         const tabs = page.getByRole('tablist', { name: 'What the session holds' });
-        await expect(tabs.getByRole('tab')).toHaveText(['Conversation', 'Agent activity', 'Outcomes', 'Spores', 'Plans']);
+        await expect(tabs.getByRole('tab')).toHaveText(['Conversation', 'Agent activity', 'Outcomes', 'Spores', 'Plans', 'Lineage']);
 
         // Spores: every one the session produced, a row each, the type above its line and its status under it.
         await tabs.getByRole('tab', { name: 'Spores' }).click();
@@ -371,7 +371,9 @@ test.describe('Sessions', () => {
         await expect(page).toHaveURL(/\?tab=activity$/);
         const list = page.getByRole('list', { name: 'Agent activity' });
         const events = list.getByRole('listitem');
-        await expect(events).toHaveCount(4);
+        await expect(events).toHaveCount(7);
+        await expect(events.filter({ hasText: 'Child of this session' })).toHaveCount(3);
+        await expect(events.filter({ hasText: 'Port allocation reviewed' })).toContainText('Child session');
         await expect(events.filter({ hasText: 'Tool reported a failure' })).toContainText('Failure');
         const legacy = events.filter({ hasText: 'Tool call did not succeed' });
         await expect(legacy).toContainText('Reason not recorded · Not tied to a prompt');
@@ -401,7 +403,7 @@ test.describe('Sessions', () => {
 
         await page.getByRole('button', { name: 'Clear search and filters' }).click();
         await expect(page).toHaveURL(/\?tab=activity$/);
-        await expect(events).toHaveCount(4);
+        await expect(events).toHaveCount(7);
         await watch.navigate(async () => {
           await events.filter({ hasText: 'Tool reported a failure' }).getByRole('link').click();
           await expect(page).toHaveURL(/\?turn=/);
@@ -419,6 +421,59 @@ test.describe('Sessions', () => {
         await tabs.getByRole('tab', { name: 'Agent activity' }).click();
         await expect(page.getByText('No agent activity was recorded in this session.')).toBeVisible();
         await capture('session-activity-empty');
+        expectQuiet(watch);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
+  for (const viewport of ['desktop', 'phone'] as const) {
+    test(`a session's lineage tab ${viewport}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the sessions are the fixture’s');
+      const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode: 'light', cookie: screensEnv('ownerCookie') });
+      const capture = async (name: string) => {
+        await page.waitForLoadState('networkidle');
+        await expectFits(page, viewport);
+        await expectNoRawIds(page);
+        await expectAxeClean(page);
+        await shoot(page, name, viewport, 'light');
+      };
+      try {
+        await watch.navigate(() => openTable(page, viewport));
+        await watch.navigate(() => openOutcomeSession(page));
+        const facts = page.locator('[data-facts]');
+        await expect(facts).toContainText('A session not captured here');
+        const tabs = page.getByRole('tablist', { name: 'What the session holds' });
+        await facts.getByRole('link', { name: '3 sessions' }).click();
+        await expect(page).toHaveURL(/\?tab=lineage$/);
+        await expect(tabs.getByRole('tab', { name: 'Lineage' })).toHaveAttribute('aria-selected', 'true');
+        const lineage = page.getByRole('list', { name: 'Lineage' });
+        await expect(lineage.getByRole('listitem')).toHaveCount(5);
+        const current = lineage.locator('[aria-current="true"]');
+        await expect(current).toContainText(OUTCOME_TITLE);
+        await expect(current).toContainText('This session');
+        await expect(current.getByRole('link')).toHaveCount(0);
+        await expect(lineage.getByText('A session not captured here')).toBeVisible();
+        await expect(lineage.getByRole('link')).toHaveText(['Port allocation reviewed', 'Ephemeral port test rewritten', 'Ephemeral port test finished']);
+        await expect(lineage.locator('li', { hasText: 'Ephemeral port test finished' }).last()).toContainText('Continues Ephemeral port test rewritten (compact continuation)');
+        const track = lineage.locator('[data-lane-track]').first();
+        if (viewport === 'phone') await expect(track).toBeHidden(); else await expect(track).toBeVisible();
+        await capture('session-lineage');
+
+        await watch.navigate(async () => {
+          await lineage.getByRole('link', { name: 'Port allocation reviewed' }).click();
+          await expect(page).toHaveURL(/\/sessions\/[^/?]+$/);
+        });
+        await expect(page.getByRole('heading', { level: 1 })).toHaveText('Port allocation reviewed');
+        await expect(tabs.getByRole('tab', { name: 'Conversation' })).toHaveAttribute('aria-selected', 'true');
+        await expect(page.locator('[data-facts]').getByRole('link', { name: OUTCOME_TITLE })).toBeVisible();
+
+        await page.goto(new URL('/sessions', page.url()).href);
+        await page.locator('[data-table="Sessions"]').getByRole('link', { name: 'Checkout form validation messages rewritten' }).click();
+        await tabs.getByRole('tab', { name: 'Lineage' }).click();
+        await expect(page.getByText('No parent or child sessions were recorded for this session.')).toBeVisible();
+        await capture('session-lineage-empty');
         expectQuiet(watch);
       } finally {
         await context.close();

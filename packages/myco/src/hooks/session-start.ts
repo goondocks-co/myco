@@ -8,7 +8,7 @@ import { compactionStart, recordCompaction } from '../member/compaction.js';
 import { projectLineOnly, renderedBlock, type ContextAskRequest, type SessionBlockKind } from '../member/context-cache.js';
 import { BLOCK_JOIN } from '@goondocks/myco-shared/recall';
 import { readSessionState } from '../member/session-state.js';
-import { sessionLineage } from '../member/transcript.js';
+import { sessionLineageFacts } from '../member/session-lineage.js';
 import { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 import { isCompactionOrdinal } from '@goondocks/myco-shared/recall';
 import { HOOK_CONFIG } from './hook-config.generated.js';
@@ -42,15 +42,14 @@ export async function main(opts: HookMainOptions = {}) {
     const cwd = hookCwd(input);
     const git = gitHead(cwd);
 
-    const lineage = sessionLineage(agent, sessionId, transcriptPath);
+    const lineage = sessionLineageFacts(agent, sessionId, transcriptPath, run.env);
     const events: OutboundEvent[] = [sessionStartEvent(ctx, {
       projectName: sessionRepositoryName(cwd, run.budget, run.now()),
       branch: git.branch,
       headSha: git.headSha,
       startedAt: run.now(),
       originPath: typeof input.raw.cwd === 'string' && input.raw.cwd.length > 0 ? input.raw.cwd : process.cwd(),
-      parentSessionId: lineage?.parentSessionId,
-      parentReason: lineage?.parentReason,
+      ...lineage,
     })];
 
     // A start the harness fires after compacting is the compaction's own record: the ordinal moves here, under the

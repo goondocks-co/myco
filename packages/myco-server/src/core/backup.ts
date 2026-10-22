@@ -26,6 +26,7 @@ import { assertArchivedContentClosure, assertBundleObjectClosure, assertCaptureC
 import { verifyBundleArtifact, type BundleEntryIdentity } from './archive-bundle.js';
 import { restoreArchivedEvent } from './event-content.js';
 import { restoreToolInput } from './tool-input-restore.js';
+import { clearDeletedParentsStatement } from './tombstones.js';
 export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
 import { restoreParserCheckpointStatement } from '../ingest/parser-checkpoint.js';
 import { restoredPin, restoreSchemeDecisions } from '../ingest/prompt-scheme.js';
@@ -856,6 +857,7 @@ export async function restoreArtifact(
         return db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) SELECT ${columns.map(() => '?').join(', ')}${guard} RETURNING rowid`)
           .bind(...columns.map((c) => row[c] ?? null), ...(ordered ? [table, hash, at] : []));
       }));
+      if (table === 'sessions' || table === 'session_tombstones') statements.push(...deletedParentClears(db, chunk));
       const inserts = references.length === 0 ? 0 : 1;
       if (ordered) {
         statements.push(db.prepare(`UPDATE backup_restore_progress SET next_row = ?, verified = ${restoredRowsMatch(table, chunk)}
@@ -911,6 +913,16 @@ export async function restoreArtifact(
     }
   }
   return outcome;
+}
+
+/** The deleted-parent clear for every Project a restored `sessions` or `session_tombstones` chunk names, run in the chunk's own batch. */
+function deletedParentClears(db: RelationalStore, chunk: readonly Record<string, unknown>[]): PreparedStatement[] {
+  const byProject = new Map<string, string[]>();
+  for (const row of chunk) {
+    if (typeof row.project_id !== 'string' || typeof row.session_id !== 'string') continue;
+    byProject.set(row.project_id, [...byProject.get(row.project_id) ?? [], row.session_id]);
+  }
+  return [...byProject].map(([projectId, sessionIds]) => clearDeletedParentsStatement(db, projectId, sessionIds));
 }
 
 /** One stored artifact's text and index row, for the download surface. */

@@ -12,6 +12,7 @@ import { reconcileSearchIndex } from '@myco-server-worker/core/search-index.js';
 import { asOwner, asOwnerPatch, OWNER_ENV } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { MAX_FEED } from '@myco-server-worker/read/activity.js';
+import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -378,5 +379,157 @@ describe('a session\'s agent activity', () => {
     expect(rowIds((await get(`${base}?failed=false`)).body)).toEqual([]);
     expect(rowIds((await get(`${base}?tool=error%20secret`)).body)).toEqual([]);
     for (const query of ['type=all', 'failed=0', 'cursor=broken', 'limit=no']) expect((await get(`${base}?${query}`)).status).toBe(400);
+  });
+});
+
+describe('a session\'s lineage', () => {
+  async function family() {
+    const h = await harness();
+    /** A session of `project` started at `NOW + at`, with its parents as its records name them. */
+    const add = (project: string, id: string, at: number, over: { launch?: string; continues?: string; reason?: string; title?: string; endedAt?: number } = {}) => {
+      h.session(project, id, NOW + at, { agent: 'claude-code', endedAt: over.endedAt });
+      h.sqlite.run(`UPDATE sessions SET launch_parent_session_id = ?, parent_session_id = ?, parent_reason = ?, title = ? WHERE project_id = ? AND session_id = ?`,
+        [over.launch ?? null, over.continues ?? null, over.reason ?? null, over.title ?? `Session ${id}`, project, id]);
+    };
+    const lineage = async (id: string, project = 'proj_1') => {
+      const { status, body } = await h.get(`/api/projects/${project}/sessions/${encodeURIComponent(id)}/lineage`);
+      expect(status).toBe(200);
+      return body as unknown as { nodes: Array<{ sessionId: string; captured: boolean; label: string | null; depth: number; current: boolean; startedAt: number | null; endedAt: number | null; placedUnder: { parentId: string; kind: string } | null }>; edges: Array<{ parentId: string; childId: string; kind: string; reason: string | null }>; truncated: boolean };
+    };
+    const tree = (body: Awaited<ReturnType<typeof lineage>>) => body.nodes.map((n) => `${'  '.repeat(n.depth)}${n.sessionId}${n.current ? '*' : ''}${n.placedUnder ? ` <${n.placedUnder.kind}` : ''}`);
+    return { ...h, add, lineage, tree };
+  }
+
+  it('reads three generations over both parent columns, places each session once, and keeps each edge\'s kind and times', async () => {
+    const { add, lineage, tree } = await family();
+    add('proj_1', 'root', 0, { endedAt: NOW + 100 });
+    add('proj_1', 'worker', 10, { launch: 'root', endedAt: NOW + 50 });
+    add('proj_1', 'reviewer', 20, { launch: 'root' });
+    add('proj_1', 'fixer', 30, { launch: 'worker' });
+    add('proj_1', 'worker-2', 51, { launch: 'root', continues: 'worker', reason: 'compact continuation' });
+    add('proj_1', 'unrelated', 5);
+    const body = await lineage('worker');
+    expect(tree(body)).toEqual(['root', '  worker* <launched', '    fixer <launched', '  reviewer <launched', '  worker-2 <launched']);
+    expect(body.edges).toContainEqual({ parentId: 'worker', childId: 'worker-2', kind: 'continuation', reason: 'compact continuation' });
+    expect(body.edges).toHaveLength(5);
+    expect(body.nodes[0]).toMatchObject({ label: 'Session root', startedAt: NOW, endedAt: NOW + 100, captured: true });
+    expect(body.truncated).toBe(false);
+    expect(tree(await lineage('fixer'))).toEqual(tree(body).map((line) => line.replace('*', '')).map((line) => line.trimStart() === 'fixer <launched' ? line.replace('fixer', 'fixer*') : line));
+  });
+
+  it('shows a parent this Project does not hold as a node that is not captured, and never reads another Project\'s sessions', async () => {
+    const { add, lineage, tree } = await family();
+    add('proj_2', 'orchestrator', 0);
+    add('proj_2', 'stranger', 2, { launch: 'child' });
+    add('proj_1', 'child', 1, { launch: 'orchestrator' });
+    add('proj_1', 'sibling', 3, { launch: 'orchestrator' });
+    const body = await lineage('child');
+    expect(tree(body)).toEqual(['orchestrator', '  child* <launched', '  sibling <launched']);
+    expect(body.nodes[0]).toMatchObject({ captured: false, label: null, startedAt: null, endedAt: null });
+    expect(JSON.stringify(body)).not.toContain('stranger');
+    expect(tree(await lineage('orchestrator', 'proj_2'))).toEqual(['orchestrator*']);
+  });
+
+  it('places a child that names one parent through both columns once, with its descendants and the session read', async () => {
+    const { add, lineage, tree } = await family();
+    add('proj_1', 'R', 0);
+    add('proj_1', 'C', 1, { launch: 'R', continues: 'R', reason: 'fork' });
+    add('proj_1', 'G', 2, { launch: 'C' });
+    const fromLeaf = await lineage('G');
+    expect([tree(fromLeaf), fromLeaf.truncated]).toEqual([['R', '  C <launched', '    G* <launched'], false]);
+    expect(fromLeaf.edges.filter((edge) => edge.childId === 'C').map((edge) => edge.kind).sort()).toEqual(['continuation', 'launched']);
+    expect(tree(await lineage('C'))).toEqual(['R', '  C* <launched', '    G <launched']);
+  });
+
+  it('names a related session with no title, prompt or agent in words, never by an id fragment', async () => {
+    const { add, lineage, sqlite, get } = await family();
+    add('proj_1', 'parent', 0);
+    add('proj_1', 'abcdef12-unnamed', 1, { launch: 'parent' });
+    sqlite.run(`UPDATE sessions SET title = NULL, agent = NULL WHERE session_id = 'abcdef12-unnamed'`);
+    expect((await lineage('parent')).nodes.map((node) => node.label)).toEqual(['Session parent', 'Untitled session']);
+    const { body } = await get('/api/projects/proj_1/sessions/parent/activity');
+    expect((body.rows as Array<{ title: string; sessionId: string }>).map((row) => [row.title, row.sessionId])).toEqual([['Untitled session', 'abcdef12-unnamed']]);
+    expect(JSON.stringify((await lineage('parent')).nodes.map((node) => node.label))).not.toContain('abcdef12');
+  });
+
+  it('ends at a cycle in the records with each session once', async () => {
+    const { add, lineage, tree } = await family();
+    add('proj_1', 'a', 0, { launch: 'b' });
+    add('proj_1', 'b', 1, { continues: 'a' });
+    add('proj_1', 'self', 2, { launch: 'self' });
+    const cycle = await lineage('a');
+    expect([tree(cycle), cycle.truncated]).toEqual([['a*', '  b <continuation'], false]);
+    expect(tree(await lineage('self'))).toEqual(['self*']);
+  });
+
+  it('stops at the depth and size bounds and says so', async () => {
+    const { add, lineage } = await family();
+    for (let i = 0; i <= 10; i++) add('proj_1', `g${i}`, i, i === 0 ? {} : { launch: `g${i - 1}` });
+    const deep = await lineage('g10');
+    expect(deep.truncated).toBe(true);
+    expect(deep.nodes[0]?.sessionId).toBe('g2');
+    expect(deep.nodes.map((n) => n.sessionId)).toEqual(['g2', 'g3', 'g4', 'g5', 'g6', 'g7', 'g8', 'g9', 'g10']);
+    const fromRoot = await lineage('g5');
+    expect([fromRoot.nodes[0]?.sessionId, fromRoot.nodes.at(-1)?.sessionId, fromRoot.truncated]).toEqual(['g0', 'g8', true]);
+    add('proj_1', 'hub', 100);
+    for (let i = 0; i < 205; i++) add('proj_1', `spoke-${String(i).padStart(3, '0')}`, 101 + i, { launch: 'hub' });
+    const wide = await lineage('spoke-204');
+    expect(wide.truncated).toBe(true);
+    expect(wide.nodes).toHaveLength(200);
+    expect(wide.nodes.filter((n) => n.current).map((n) => n.sessionId)).toEqual(['spoke-204']);
+  });
+
+  it('clears a deleted session\'s own parents when it is deleted, while a surviving child keeps naming it', async () => {
+    const { add, lineage, tree, sqlite, db } = await family();
+    add('proj_1', 'grandparent', 0);
+    add('proj_1', 'middle', 1, { launch: 'grandparent', continues: 'grandparent', reason: 'fork' });
+    add('proj_1', 'child', 2, { launch: 'middle' });
+    expect((await tombstoneSession({ db }, { projectId: 'proj_1' }, 'middle', 'owner', NOW)).applied).toBe(true);
+    const parents = (id: string) => sqlite.query('SELECT parent_session_id, parent_reason, launch_parent_session_id FROM sessions WHERE project_id = ? AND session_id = ?').get('proj_1', id);
+    expect(parents('middle')).toEqual({ parent_session_id: null, parent_reason: null, launch_parent_session_id: null });
+    expect(parents('child')).toEqual({ parent_session_id: null, parent_reason: null, launch_parent_session_id: 'middle' });
+    const read = await lineage('child');
+    expect(tree(read)).toEqual(['middle', '  child* <launched']);
+    expect(read.nodes[0]).toMatchObject({ captured: false, label: null });
+    expect(tree(await lineage('grandparent'))).toEqual(['grandparent*']);
+  });
+
+  it('leaves out a deleted session and answers 404 for a session the Project does not hold', async () => {
+    const { add, lineage, tree, sqlite, get } = await family();
+    add('proj_1', 'parent', 0);
+    add('proj_1', 'kept', 1, { launch: 'parent' });
+    add('proj_1', 'deleted', 2, { launch: 'parent' });
+    sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, created_at, created_by) VALUES ('proj_1', 'deleted', ?, 'owner')`, [NOW]);
+    expect(tree(await lineage('parent'))).toEqual(['parent*', '  kept <launched']);
+    expect((await get('/api/projects/proj_1/sessions/absent/lineage')).status).toBe(404);
+    expect((await get('/api/projects/proj_2/sessions/parent/lineage')).status).toBe(404);
+  });
+
+  it('lists children and continuations as agent activity at the related session\'s start, beside tool rows', async () => {
+    const { add, get, sqlite } = await family();
+    add('proj_1', 'parent', 0);
+    add('proj_1', 'here', 10, { continues: 'parent', reason: 'fork' });
+    add('proj_1', 'launched', 20, { launch: 'here' });
+    add('proj_1', 'next', 30, { continues: 'here', reason: 'compact continuation' });
+    add('proj_2', 'foreign', 25, { launch: 'here' });
+    sqlite.run(`INSERT INTO tool_calls (project_id,session_id,tool_call_id,event_id,tool_name,success,result_reason,created_at,token_id,received_at)
+      VALUES ('proj_1','here','call',  'call','Bash',0,'reported',?,'tok_1',?)`, [NOW + 20, NOW]);
+    const base = '/api/projects/proj_1/sessions/here/activity';
+    const rows = (body: Record<string, unknown>) => (body.rows as Array<Record<string, unknown>>).map((r) => [r.type, r.title, r.detail, r.sessionId]);
+    expect(rows((await get(base)).body)).toEqual([
+      ['continuation', 'Session next', 'Continues this session’s conversation · compact continuation', 'next'],
+      ['child_session', 'Session launched', 'Child of this session', 'launched'],
+      ['failure', 'Bash', 'Tool reported a failure · Not tied to a prompt', null],
+      ['continuation', 'Session parent', 'This session continues its conversation · fork', 'parent'],
+    ]);
+    expect(rows((await get(`${base}?type=child_session`)).body)).toEqual([['child_session', 'Session launched', 'Child of this session', 'launched']]);
+    expect(rows((await get(`${base}?tool=Bash`)).body).map((r) => r[0])).toEqual(['failure']);
+    expect(rows((await get(`${base}?failed=false`)).body).map((r) => r[0])).toEqual(['continuation', 'child_session', 'continuation']);
+    const first = (await get(`${base}?limit=2`)).body;
+    const second = (await get(`${base}?limit=2&cursor=${encodeURIComponent(first.cursor as string)}`)).body;
+    expect([...rows(first), ...rows(second)].map((r) => r[3] ?? r[1])).toEqual(['next', 'launched', 'Bash', 'parent']);
+    expect(second.cursor).toBeNull();
+    sqlite.run(`DELETE FROM sessions WHERE project_id = 'proj_1' AND session_id = 'parent'`);
+    expect(rows((await get(`${base}?type=continuation`)).body).at(-1)).toEqual(['continuation', 'A session not captured here', 'This session continues its conversation · fork', null]);
   });
 });

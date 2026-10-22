@@ -29,6 +29,7 @@ export {
   FilterBar, useFilterParams, useQueryDraft, ANY, FIXED_WIDTH_FILTERS, type FilterBarProps, type FilterDefinition, type FilterParams, type FilterParamsOptions, type QueryDraft,
 } from './patterns/FilterBar';
 export { ListRow, type ListRowProps } from './patterns/ListRow';
+export { LaneTimeline, type Lane, type LaneTimelineProps } from './patterns/LaneTimeline';
 export { FacetList, type FacetListProps, type FacetRow } from './patterns/FacetList';
 export { DataTable, type DataTableProps, type DataTableColumn, type DataTableGroup } from './patterns/DataTable';
 export { Markdown, type MarkdownProps } from './patterns/Markdown';
@@ -43,7 +44,7 @@ export { LoadingState, Skeleton, type LoadingStateProps } from './patterns/Loadi
 export { CommandBlock, type CommandBlockProps } from './patterns/CommandBlock';
 export { SlideOver, type SlideOverProps } from './patterns/SlideOver';
 export { Breadcrumbs, type BreadcrumbsProps, type Crumb } from './patterns/Breadcrumbs';
-export { focusRing, tapTarget } from './lib/classes';
+export { focusRing, selectedRow, tapTarget } from './lib/classes';
 
 export { AppShell, BottomBar, useShellMenu, COMPACT_QUERY, PHONE_QUERY, type AppShellProps, type BottomBarItem } from './shell/AppShell';
 export {

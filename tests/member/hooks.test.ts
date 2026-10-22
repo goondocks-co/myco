@@ -29,7 +29,9 @@ import { readSessionState } from '@myco/member/session-state.js';
 import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { registerTestMember, recordingFetch, runHook } from './helpers/hooks.js';
-import { FEATURES_HEADER, TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { FEATURES_HEADER, MEMBER_FEATURES, TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { cacheDeploymentFeatures } from '@myco/member/context-cache.js';
+import { PARENT_SESSION_ENV } from '@myco/member/session-lineage.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { runHelperVerb } from '@myco/cli/member-helper.js';
 import { TAIL_IDLE_MS } from '@myco/member/backlog.js';
@@ -479,6 +481,35 @@ describe('member hooks through the worker: a session resumed after its end', () 
     expect(readSessionState(spool.dir, 'sess-resumed').endedAt).toBeNumber();
     await hook('session-start', { source: 'resume' });
     expect(readSessionState(spool.dir, 'sess-resumed').endedAt).toBeUndefined();
+  });
+});
+
+describe('member hooks through the worker: the session that launched this one', () => {
+  const start = (sessionId: string, parent: string | undefined, raw: Record<string, unknown> = {}) =>
+    runHook('session-start', { session_id: sessionId, hook_event_name: 'SessionStart', transcript_path: transcript([{ type: 'user', message: { role: 'user', content: 'x' } }], sessionId), cwd: '/work/repo', ...raw },
+      { helpers: 'run', fetch: fetchSpy.fetch, env: { ...process.env, [PARENT_SESSION_ENV]: parent } });
+  const launchParent = (sessionId: string) => (rig.env.sqlite.query('SELECT launch_parent_session_id AS v FROM sessions WHERE session_id = ?').get(sessionId) as { v: string | null } | null)?.v;
+  beforeEach(() => cacheDeploymentFeatures('https://member-test.invalid', [...MEMBER_FEATURES], mycoHome));
+
+  it('records the variable as a fact of the start, and nothing when it is unset or not a session id', async () => {
+    await start('sess-child', 'sess-orchestrator');
+    expect(launchParent('sess-child')).toBe('sess-orchestrator');
+    await start('sess-unset', undefined);
+    expect(launchParent('sess-unset')).toBeNull();
+    for (const [index, value] of ['', 'two words', 'line\nbreak', 'x'.repeat(129), 'sess-self-7'].entries()) {
+      const out = await start(`sess-self-${index + 3}`, value);
+      expect(out.stderr).not.toMatch(/error|refused/i);
+      expect(launchParent(`sess-self-${index + 3}`)).toBeNull();
+    }
+  });
+
+  it('keeps the first start\'s value through a resumed start', async () => {
+    await start('sess-resumed-child', 'sess-first');
+    await start('sess-resumed-child', 'sess-second', { source: 'resume' });
+    expect(launchParent('sess-resumed-child')).toBe('sess-first');
+    await start('sess-unset-then-set', undefined);
+    await start('sess-unset-then-set', 'sess-late', { source: 'resume' });
+    expect(launchParent('sess-unset-then-set')).toBeNull();
   });
 });
 

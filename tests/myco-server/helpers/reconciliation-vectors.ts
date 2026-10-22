@@ -168,7 +168,7 @@ export const RECONCILIATION_FIXTURE = [
   'CREATE TABLE events(project_id TEXT,event_id TEXT,ingest_nonce TEXT,PRIMARY KEY(project_id,event_id))',
   'CREATE TABLE projects(project_id TEXT PRIMARY KEY,name TEXT)',
   "INSERT INTO projects VALUES ('p','p')",
-  'CREATE TABLE sessions(project_id TEXT,session_id TEXT,agent TEXT,branch TEXT,origin_path TEXT,parent_session_id TEXT,parent_reason TEXT,facts_event_id TEXT,started_at INTEGER,ended_at INTEGER,ended_by TEXT,titling_requested_at INTEGER,PRIMARY KEY(project_id,session_id))',
+  'CREATE TABLE sessions(project_id TEXT,session_id TEXT,agent TEXT,branch TEXT,origin_path TEXT,parent_session_id TEXT,parent_reason TEXT,launch_parent_session_id TEXT,facts_event_id TEXT,started_at INTEGER,ended_at INTEGER,ended_by TEXT,titling_requested_at INTEGER,PRIMARY KEY(project_id,session_id))',
   "INSERT INTO sessions(project_id,session_id) VALUES ('p','s')",
   'CREATE TABLE prompt_batches(project_id TEXT,session_id TEXT,origin TEXT,created_at INTEGER)',
   'CREATE TABLE knowledge_git_provenance(project_id TEXT,identity_key TEXT,session_id TEXT,capture_point TEXT,captured_at INTEGER,event_id TEXT,branch TEXT,head_sha TEXT,is_dirty INTEGER,error TEXT,status_hash TEXT,created_at INTEGER,PRIMARY KEY(project_id,identity_key))',

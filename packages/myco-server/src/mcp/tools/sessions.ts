@@ -27,6 +27,7 @@ interface SessionSummary {
   prompt_count: number;
   tool_count: number;
   parent_session_id: string | null;
+  launch_parent_session_id: string | null;
 }
 
 function summary(row: SessionRow, counts: { prompts: number; toolCalls: number }): SessionSummary {
@@ -43,6 +44,7 @@ function summary(row: SessionRow, counts: { prompts: number; toolCalls: number }
     prompt_count: counts.prompts,
     tool_count: counts.toolCalls,
     parent_session_id: row.parentSessionId,
+    launch_parent_session_id: row.launchParentSessionId,
   };
 }
 

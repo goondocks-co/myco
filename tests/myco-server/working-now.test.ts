@@ -373,15 +373,15 @@ describe('a turn the member ships as events', () => {
   it('names the turn feature on every answer to an authenticated member, refusals and context answers included, and on none to anyone else', async () => {
     const r = await rig();
     const res = await worker.fetch(memberPost(r.token, envelope({ eventId: uuid(900), ...turn('start', r.now - 1_000) }), '/events'), r.e.env, r.e.deferred);
-    expect({ status: res.status, features: featuresNamed(res.headers.get(FEATURES_HEADER)) }).toEqual({ status: 200, features: ['turn', 'project-name', 'prompt-identity', 'prompt-scheme', 'tool-result-reason'] });
+    expect({ status: res.status, features: featuresNamed(res.headers.get(FEATURES_HEADER)) }).toEqual({ status: 200, features: ['turn', 'project-name', 'prompt-identity', 'prompt-scheme', 'tool-result-reason', 'launch-parent'] });
     // A refusal names it too: a member reads its Deployment's features from whatever answer it gets.
     const refused = await worker.fetch(memberPost(r.token, envelope({ eventId: uuid(901), ...turn('start', r.now - 1_000) }), '/events', { 'x-myco-protocol': '999' }), r.e.env, r.e.deferred);
-    expect({ status: refused.status, features: featuresNamed(refused.headers.get(FEATURES_HEADER)) }).toEqual({ status: 409, features: ['turn', 'project-name', 'prompt-identity', 'prompt-scheme', 'tool-result-reason'] });
+    expect({ status: refused.status, features: featuresNamed(refused.headers.get(FEATURES_HEADER)) }).toEqual({ status: 409, features: ['turn', 'project-name', 'prompt-identity', 'prompt-scheme', 'tool-result-reason', 'launch-parent'] });
     const context = await worker.fetch(new Request('https://s/context/prompt', {
       method: 'POST', headers: memberHeaders(r.token), body: JSON.stringify({ sessionId: 'sess_1', promptId: promptIdAt(r.now - 1_000), text: 'let us keep going' }),
     }), r.e.env, r.e.deferred);
     await r.e.deferred.settle();
-    expect({ status: context.status, features: featuresNamed(context.headers.get(FEATURES_HEADER)) }).toEqual({ status: 200, features: ['turn', 'project-name', 'prompt-identity', 'prompt-scheme', 'tool-result-reason'] });
+    expect({ status: context.status, features: featuresNamed(context.headers.get(FEATURES_HEADER)) }).toEqual({ status: 200, features: ['turn', 'project-name', 'prompt-identity', 'prompt-scheme', 'tool-result-reason', 'launch-parent'] });
     const anonymous = await worker.fetch(new Request('https://s/health'), r.e.env, r.e.deferred);
     expect(anonymous.headers.get(FEATURES_HEADER)).toBeNull();
   });

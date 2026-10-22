@@ -2,14 +2,14 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  ANY, Breadcrumbs, CopyButton, ErrorState, FactRow, FactsPanel, Link, LoadingState, StatusChip, Tabs, TabsContent, TabsList, TabsTrigger, type SelectOption,
+  ANY, Breadcrumbs, Button, CopyButton, ErrorState, FactRow, FactsPanel, Link, LoadingState, StatusChip, Tabs, TabsContent, TabsList, TabsTrigger, type SelectOption,
 } from '../../design';
 import { planPagePath } from '../../hooks/use-knowledge';
 import { PLAN_COLUMNS, planStatusWord, planTitle, progressWords, SPORE_TYPES, sporeStatusWord, sporeTypePlural } from '../knowledge/words';
 import { releaseStateLabel, shortRef } from '../../components/release/release-labels';
 import { useSporePages } from '../../hooks/use-intelligence';
 import { useIsAdmin, useMe } from '../../hooks/use-me';
-import { SESSION_ANSWER_KIND_PREFIX, UNTITLED_REASON_TEXT, useSession, useSessionChildren, type ContextInjectionRow, type PlanRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
+import { SESSION_ANSWER_KIND_PREFIX, UNTITLED_REASON_TEXT, useSession, useSessionChildren, useSessionLineage, type ContextInjectionRow, type PlanRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
 import { ApiError } from '../../lib/api';
 import { memberLabel } from '../../lib/member-name';
@@ -28,9 +28,10 @@ import { EVENT_TYPE_KEY, SessionEventList, useSessionEventFilters, type SessionE
 import { SessionOutcomes } from './Outcomes';
 import { ACTIVITY_FILTER_KEYS, SessionActivity } from './Activity';
 import { WhatCameOfIt } from './WhatCameOfIt';
+import { lineageName, SessionLineageTab, sessionPagePath } from './Lineage';
 import { agentName, count, dateTime, memberName, sporeLine, sporeTypeWord, spanWords } from './words';
 
-const TABS = ['conversation', 'activity', 'outcomes', 'spores', 'plans'] as const;
+const TABS = ['conversation', 'activity', 'outcomes', 'spores', 'plans', 'lineage'] as const;
 type Tab = (typeof TABS)[number];
 
 const SPORE_TYPE_OPTIONS: readonly SelectOption[] = [
@@ -117,6 +118,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
     outcomes: <SessionOutcomes projectId={projectId} sessionId={session.sessionId} now={now} />,
     spores: <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />,
     plans: <SessionPlans projectId={projectId} sessionId={session.sessionId} now={now} />,
+    lineage: <SessionLineageTab projectId={projectId} sessionId={session.sessionId} now={now} />,
   };
 
   return (
@@ -164,6 +166,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
               <TabsTrigger value="outcomes">Outcomes</TabsTrigger>
               <TabsTrigger value="spores">Spores</TabsTrigger>
               <TabsTrigger value="plans">Plans</TabsTrigger>
+              <TabsTrigger value="lineage">Lineage</TabsTrigger>
             </TabsList>
             {TABS.map((value) => (
               <TabsContent key={value} value={value}>{value === tab ? content[value] : null}</TabsContent>
@@ -252,13 +255,53 @@ function Facts({ answer, projectId, projectName, now, live, actions }: { answer:
       <FactRow term="Tokens">{answer.metrics?.tokens == null ? 'Not recorded, including sub-agents' : answer.metrics.tokens.toLocaleString()}</FactRow>
       <FactRow term="Size">{[count(counts.prompts, 'prompt'), count(counts.toolCalls, 'tool call'), count(counts.responses, 'reply', 'replies')].join(' · ')}</FactRow>
       {release != null && <FactRow term="Release">{releaseStateLabel(release.state)}{release.ref !== null && release.state !== 'not_on_release_line' ? ` · ${shortRef(release.ref)}` : ''}</FactRow>}
-      {session.parentSessionId !== null && (
-        <FactRow term="Started by">
-          <Link to={projectPath(projectId, `/sessions/${encodeURIComponent(session.parentSessionId)}`)}>another session</Link>
-          {session.parentReason !== null && ` (${session.parentReason})`}
+      <Family projectId={projectId} session={session} />
+    </FactsPanel>
+  );
+}
+
+/** How many children the facts name: exact when the family was read whole, a lower bound when a bound cut it short. */
+function childrenWords(children: number, truncated: boolean): string {
+  if (!truncated) return count(children, 'session');
+  return children === 0 ? 'Not all counted' : `${children}+ ${children === 1 ? 'session' : 'sessions'}`;
+}
+
+/**
+ * The session's parents, each by name, and how many children it has, which open the lineage. A failed read says so
+ * with a retry, beside whatever an earlier read already showed.
+ */
+function Family({ projectId, session }: { projectId: string; session: SessionRow }) {
+  const lineage = useSessionLineage(projectId, session.sessionId);
+  if (lineage.isPending) return null;
+  const failed = lineage.error !== null && (
+    <FactRow term="Family">
+      <span data-family-error="">Could not be read</span>{' '}
+      <Button size="sm" variant="ghost" className="tap-area" onClick={() => void lineage.refetch()}>Retry</Button>
+    </FactRow>
+  );
+  if (lineage.data === undefined) return failed;
+  const byId = new Map(lineage.data.nodes.map((node) => [node.sessionId, node]));
+  const parents = lineage.data.edges.filter((edge) => edge.childId === session.sessionId);
+  const children = new Set(lineage.data.edges.filter((edge) => edge.parentId === session.sessionId).map((edge) => edge.childId)).size;
+  return (
+    <>
+      {parents.map((edge) => {
+        const parent = byId.get(edge.parentId);
+        const name = lineageName(parent);
+        return (
+          <FactRow key={`${edge.kind}:${edge.parentId}`} term="Parent">
+            {parent?.captured === true ? <Link to={sessionPagePath(projectId, edge.parentId)} className="tap-area">{name}</Link> : name}
+            {edge.kind === 'continuation' && <span className="block text-muted">This session continues it{edge.reason === null ? '' : ` (${edge.reason})`}</span>}
+          </FactRow>
+        );
+      })}
+      {(children > 0 || lineage.data.truncated) && (
+        <FactRow term="Children">
+          <Link to={`?${new URLSearchParams({ tab: 'lineage' })}`} className="tap-area">{childrenWords(children, lineage.data.truncated)}</Link>
         </FactRow>
       )}
-    </FactsPanel>
+      {failed}
+    </>
   );
 }
 

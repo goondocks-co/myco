@@ -20,8 +20,11 @@ export interface SessionRow {
   endedBy: string | null;
   endedByLabel: string | null;
   originPath: string | null;
+  /** The session this one continues under a new id, and the continuation's recorded reason. */
   parentSessionId: string | null;
   parentReason: string | null;
+  /** The session that launched this one, as the launcher named it. */
+  launchParentSessionId: string | null;
   memberId: string | null;
   memberLabel: string | null;
   runtimeLabel: string | null;
@@ -547,14 +550,18 @@ export interface PromptAnswer {
 /** A diagnostic event with a prompt target verified by the Deployment. */
 export interface SessionActivityRow {
   id: string;
-  type: 'failure' | 'no_result';
+  type: 'failure' | 'no_result' | 'child_session' | 'continuation';
   title: string;
   detail: string;
   at: number;
   promptId: string | null;
-  toolName: string;
+  /** The tool a tool row records; null on a session row. */
+  toolName: string | null;
   resultReason: string | null;
   failed: boolean;
+  /** The related session a session row opens; null on a tool row and for a session the Project does not hold. */
+  sessionId: string | null;
+  agent: string | null;
 }
 
 interface SessionActivityPage {
@@ -574,4 +581,44 @@ export function useSessionActivity(projectId: string, sessionId: string, filters
     `${project(projectId)}/sessions/${seg(sessionId)}/activity?${query}`,
   );
   return { ...read, tools: read.pages?.[0]?.tools ?? [] };
+}
+
+/** How a child relates to its parent: started by it, or continuing its conversation under a new id. */
+export type LineageEdgeKind = 'launched' | 'continuation';
+
+export interface LineageEdge {
+  parentId: string;
+  childId: string;
+  kind: LineageEdgeKind;
+  /** The continuation's recorded reason; null for a launch. */
+  reason: string | null;
+}
+
+/** One session of a lineage; `captured` is false for a parent named by a record that the Project holds no session for. */
+export interface LineageNode {
+  sessionId: string;
+  captured: boolean;
+  label: string | null;
+  agent: string | null;
+  startedAt: number | null;
+  endedAt: number | null;
+  /** Generations below its root. */
+  depth: number;
+  /** The edge it is placed under; null for a root. */
+  placedUnder: LineageEdge | null;
+  current: boolean;
+}
+
+/** A session's family: its nodes in tree order, every edge between them, and whether a bound left sessions unread. */
+export interface SessionLineage {
+  nodes: LineageNode[];
+  edges: LineageEdge[];
+  truncated: boolean;
+}
+
+export function useSessionLineage(projectId: string, sessionId: string) {
+  return useQuery({
+    queryKey: ['session-lineage', projectId, sessionId],
+    queryFn: ({ signal }) => fetchJson<SessionLineage>(`${project(projectId)}/sessions/${seg(sessionId)}/lineage`, signal),
+  });
 }

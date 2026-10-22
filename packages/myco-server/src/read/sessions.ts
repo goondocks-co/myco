@@ -35,8 +35,11 @@ export interface SessionRow {
   endedBy: string | null;
   endedByLabel: string | null;
   originPath: string | null;
+  /** The session this one continues under a new id, and the continuation's recorded reason. */
   parentSessionId: string | null;
   parentReason: string | null;
+  /** The session that launched this one, as the launcher named it; it may name a session this Project does not hold. */
+  launchParentSessionId: string | null;
   /** The member and runtime behind the credential that captured the session; null when the credential row is gone. */
   memberId: string | null;
   memberLabel: string | null;
@@ -93,13 +96,17 @@ export const FIRST_PROMPT_CHARS = 160;
 /** The longest label the fallback rule produces. */
 export const LABEL_MAX_CHARS = 80;
 
-/** The opening of a session's first inline user prompt, for the label of a session with no title. Correlated on the alias `s`; `idx_prompt_batches_first` serves the whole order, so it stops at the first row, and a spilled prompt (no inline text) is skipped. */
-export const FIRST_PROMPT_SQL = `(SELECT substr(pb.text, 1, ${FIRST_PROMPT_CHARS}) FROM prompt_batches pb
-       WHERE pb.project_id = s.project_id AND pb.session_id = s.session_id AND pb.origin = 'user' AND pb.text IS NOT NULL
+/** The opening of a session's first inline user prompt, for the label of a session with no title. Correlated on the sessions alias `alias`; `idx_prompt_batches_first` serves the whole order, so it stops at the first row, and a spilled prompt (no inline text) is skipped. */
+export const firstPromptSql = (alias: string): string => `(SELECT substr(pb.text, 1, ${FIRST_PROMPT_CHARS}) FROM prompt_batches pb
+       WHERE pb.project_id = ${alias}.project_id AND pb.session_id = ${alias}.session_id AND pb.origin = 'user' AND pb.text IS NOT NULL
        ORDER BY pb.created_at, pb.prompt_id LIMIT 1)`;
+export const FIRST_PROMPT_SQL = firstPromptSql('s');
 
-/** The one label rule for a session, shared by the list, the detail and the activity feed. A stored title is shown as is; the first prompt contributes its first line, whitespace collapsed, cut at `LABEL_MAX_CHARS` on a word boundary; then the agent; then the id's first eight characters. */
-export function sessionLabel(title: string | null, firstPrompt: string | null, agent: string | null, sessionId: string): string {
+/** What a label shows for a session with no title, typed prompt or agent, where an id fragment must never reach the reader. */
+export const UNTITLED_SESSION_LABEL = 'Untitled session';
+
+/** The one label rule for a session's words: a stored title as is; else the first prompt's first line, whitespace collapsed, cut at `LABEL_MAX_CHARS` on a word boundary; else the agent; else null. */
+function namedLabel(title: string | null, firstPrompt: string | null, agent: string | null): string | null {
   if (title !== null && title.trim() !== '') return title.trim();
   const line = firstPrompt === null ? '' : (firstPrompt.split(/\r?\n/).find((l) => l.trim() !== '') ?? '').replace(/\s+/g, ' ').trim();
   if (line !== '') {
@@ -109,7 +116,17 @@ export function sessionLabel(title: string | null, firstPrompt: string | null, a
     return `${(boundary > LABEL_MAX_CHARS / 2 ? cut.slice(0, boundary) : cut).trimEnd()}…`;
   }
   if (agent !== null && agent.trim() !== '') return agent.trim();
-  return sessionId.slice(0, 8);
+  return null;
+}
+
+/** The label the list, the detail and the activity feed share: the words of `namedLabel`, then the id's first eight characters. */
+export function sessionLabel(title: string | null, firstPrompt: string | null, agent: string | null, sessionId: string): string {
+  return namedLabel(title, firstPrompt, agent) ?? sessionId.slice(0, 8);
+}
+
+/** The same words for a surface that names related sessions, which falls back to `UNTITLED_SESSION_LABEL` and never to the id. */
+export function relatedSessionLabel(title: string | null, firstPrompt: string | null, agent: string | null): string {
+  return namedLabel(title, firstPrompt, agent) ?? UNTITLED_SESSION_LABEL;
 }
 
 /** Presented conversation dates fall back to raw lifecycle dates. */
@@ -118,7 +135,7 @@ export const PRESENTED_ENDED_AT = presentedEndedAt('s.');
 
 /** All joins land on primary keys, preserving the session row count. */
 const SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
-     s.agent, s.branch, ${PRESENTED_STARTED_AT} AS started_at, ${PRESENTED_ENDED_AT} AS ended_at, s.origin_path, s.parent_session_id, s.parent_reason,
+     s.agent, s.branch, ${PRESENTED_STARTED_AT} AS started_at, ${PRESENTED_ENDED_AT} AS ended_at, s.origin_path, s.parent_session_id, s.parent_reason, s.launch_parent_session_id,
      s.title, s.summary, s.titled_at, s.ended_by, ${FIRST_PROMPT_SQL} AS first_prompt,
      c.member_id, c.runtime_kind, m.label AS member_label, e.label AS ended_by_label, s.working_since`;
 const SESSION_FROM = sessionFrom('');
@@ -168,6 +185,7 @@ function toSession(row: Record<string, unknown>, nowMs?: number): SessionRow {
     originPath: text(row.origin_path),
     parentSessionId: text(row.parent_session_id),
     parentReason: text(row.parent_reason),
+    launchParentSessionId: text(row.launch_parent_session_id),
     memberId: text(row.member_id),
     memberLabel: text(row.member_label),
     runtimeLabel: null,
