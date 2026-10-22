@@ -14,13 +14,14 @@
  * nobody can weigh. The pair is the unit of measurement here, so a tile cannot
  * render one half of it.
  *
- * Measures are Deployment-wide rather than per Project. Two of the six — the time
- * from a machine joining to its first served context, and recall quality — are
+ * Measures are Deployment-wide rather than per Project. The time
+ * from a machine joining to its first served context and recall quality are
  * properties of the Deployment's credential lineages and of the release it runs,
  * not of one Project, and splitting the page by Project would leave those two answering a
- * different question from the other four.
+ * different question from the other measures.
  */
 import type { RelationalStore } from '../core/adapters.js';
+import { hookPlacementSql } from './hook-placement.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 
 /** The agents this build declares a prompt identity for: a transcript of one left unpinned is a scheme conflict. */
@@ -52,8 +53,12 @@ export interface KpiReport {
   windowDays: number | null;
   /** The earliest stamp a row may carry to be counted, or null for all of them. */
   since: number | null;
-  /** Prompts that received context this Deployment prepared, as a share of every prompt. */
-  contextPresent: Measure;
+  /** Prompts in the window with a placed delivery. */
+  promptsServed: number;
+  /** Receipts delivered in the window, split by whether their delivery hint places them. */
+  deliveries: { placed: number; unplaced: number };
+  /** Prompts served as a share of prompts in the window. */
+  servedShare: Measure;
   /** Prompts that received at least one observation, as a share of every prompt. */
   sporeServeRate: Measure;
   /** Sessions served a session start block, as a share of every session. */
@@ -158,10 +163,10 @@ const countOf = async (db: RelationalStore, sql: string, params: readonly unknow
  */
 const SERVED_PROMPTS = `
   EXISTS (SELECT 1 FROM spore_injections i
-           WHERE i.project_id = p.project_id AND i.session_id = p.session_id AND i.delivered_prompt_id = p.prompt_id)
+           WHERE i.project_id = p.project_id AND i.session_id = p.session_id AND i.delivered_prompt_id = p.prompt_id AND ${hookPlacementSql({ project: 'i.project_id', session: 'i.session_id', prompt: 'i.delivered_prompt_id' })} AND i.delivered_at IS NOT NULL)
   OR EXISTS (SELECT 1 FROM session_injections j
               WHERE j.project_id = p.project_id AND j.session_id = p.session_id AND j.kind = 'plan-nudge'
-                AND j.delivered_prompt_id = p.prompt_id)`;
+                AND j.delivered_prompt_id = p.prompt_id AND ${hookPlacementSql({ project: 'j.project_id', session: 'j.session_id', prompt: 'j.delivered_prompt_id' })} AND j.delivered_at IS NOT NULL)`;
 
 /** Sessions the Deployment served a session start block. */
 const SESSIONS_STARTED_WITH_BLOCK = `EXISTS (SELECT 1 FROM session_injections j
@@ -191,9 +196,19 @@ async function promptMeasures(db: RelationalStore, since: number | null): Promis
                   WHERE ${w.sql} AND EXISTS (
                     SELECT 1 FROM spore_injections i
                      WHERE i.project_id = p.project_id AND i.session_id = p.session_id
-                       AND i.delivered_prompt_id = p.prompt_id AND i.spore_ids <> '[]')`, w.params),
+                       AND i.delivered_prompt_id = p.prompt_id AND ${hookPlacementSql({ project: 'i.project_id', session: 'i.session_id', prompt: 'i.delivered_prompt_id' })} AND i.delivered_at IS NOT NULL AND i.spore_ids <> '[]')`, w.params),
   ]);
   return { prompts, served, withSpores };
+}
+
+/** Receipts use their delivery instant for the window and their delivery hint for placement. */
+async function deliveryMeasures(db: RelationalStore, since: number | null): Promise<KpiReport['deliveries']> {
+  const w = windowClause('i.delivered_at', since);
+  const placed = hookPlacementSql({ project: 'i.project_id', session: 'i.session_id', prompt: 'i.delivered_prompt_id' });
+  const row = await db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN ${placed} THEN 1 ELSE 0 END), 0) AS placed
+    FROM spore_injections i WHERE i.delivered_at IS NOT NULL AND ${w.sql}`)
+    .bind(...w.params).first<{ total: number; placed: number }>();
+  return { placed: row?.placed ?? 0, unplaced: (row?.total ?? 0) - (row?.placed ?? 0) };
 }
 
 /**
@@ -313,7 +328,7 @@ export async function readKpis(db: RelationalStore, opts: { windowDays: number |
   const sessionWindow = windowClause('first_received_at', since);
   const callWindow = windowClause('c.created_at', since);
 
-  const [{ prompts, served, withSpores }, byHarness, sessions, startedWithBlock, planReads, mycoCalls, firstInjections, identity] = await Promise.all([
+  const [{ prompts, served, withSpores }, byHarness, sessions, startedWithBlock, planReads, mycoCalls, firstInjections, identity, deliveries] = await Promise.all([
     promptMeasures(db, since),
     harnessSplit(db, since),
     countOf(db, `SELECT COUNT(*) AS n FROM sessions WHERE ${sessionWindow.sql}`, sessionWindow.params),
@@ -322,12 +337,15 @@ export async function readKpis(db: RelationalStore, opts: { windowDays: number |
     countOf(db, `SELECT COUNT(*) AS n FROM tool_calls c WHERE ${callWindow.sql} AND ${MYCO_CALL}`, callWindow.params),
     firstInjectionSamples(db, since),
     promptIdentityCounts(db, since),
+    deliveryMeasures(db, since),
   ]);
 
   return {
     windowDays: opts.windowDays,
     since,
-    contextPresent: share(served, prompts),
+    promptsServed: served,
+    deliveries,
+    servedShare: share(served, prompts),
     sporeServeRate: share(withSpores, prompts),
     sessionStartPresent: share(startedWithBlock, sessions),
     callsPerPrompt: rate(mycoCalls, prompts),

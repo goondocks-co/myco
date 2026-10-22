@@ -57,7 +57,7 @@ export const sessionActivityParity: ParityScenario = {
     const full = await read();
     expect(full.rows.map(row => row.id)).toEqual([ids[5], ids[4], ids[3], ids[2], ids[1], ids[0]]);
     expect(full.rows.at(-1)?.promptId).toBe(prompt);
-    expect(full.rows.slice(0, -1).every(row => row.promptId === null && row.detail.includes('Not tied to a prompt'))).toBe(true);
+    expect(full.rows.slice(0, -1).every(row => row.promptId === null && row.detail.includes('Not placed on a turn'))).toBe(true);
     expect(full.rows[0]).toMatchObject({ title: 'Tool call did not succeed', resultReason: null });
     expect(JSON.stringify(full)).not.toMatch(/activity input secret|activity output secret|activity error secret/);
     expect(await target.sql(`SELECT result_reason FROM tool_calls WHERE project_id=${lit(target.projectId)} AND tool_call_id=${lit(ids[1])}`)).toEqual([{ result_reason: 'no_result' }]);
@@ -77,7 +77,7 @@ export const sessionActivityParity: ParityScenario = {
       const plan = (await target.sql(`EXPLAIN QUERY PLAN ${sql}`)).map(row => String(row.detail)).join('\n');
       expect(plan).toContain('idx_tool_calls_activity');
       expect(plan).not.toMatch(/SCAN t\b|TEMP B-TREE/);
-      expect(plan).toMatch(/SEARCH p USING (?:COVERING )?INDEX/);
+      expect(plan).toMatch(/SEARCH hook_prompt USING (?:COVERING )?INDEX/);
     }
     await post('tool.use', stamp + 20, { toolCallId: ids[1], toolName: 'Bash', input: {}, output: 'success', success: true });
     expect(await target.sql(`SELECT success,result_reason,created_at FROM tool_calls WHERE project_id=${lit(target.projectId)} AND tool_call_id=${lit(ids[1])}`)).toEqual([{ success: 1, result_reason: null, created_at: stamp + 3 }]);

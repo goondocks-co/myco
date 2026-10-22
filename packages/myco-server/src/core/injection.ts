@@ -1,3 +1,4 @@
+import { hookPlacementSql } from '../read/hook-placement.js';
 /**
  * What the prompt hook is served: the spores that go into one prompt, and the
  * record of having served them.
@@ -313,7 +314,9 @@ export async function injectionsForSession(db: RelationalStore, scope: ReadScope
 export async function injectionForPrompt(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string): Promise<PromptInjection | null> {
   const row = await db
     .prepare(`SELECT spore_ids, created_at FROM spore_injections
-               WHERE project_id = ? AND session_id = ? AND prompt_id = ? ORDER BY created_at DESC LIMIT 1`)
+               WHERE project_id = ? AND session_id = ? AND delivered_prompt_id = ?
+                 AND ${hookPlacementSql({ project: 'spore_injections.project_id', session: 'spore_injections.session_id', prompt: 'spore_injections.delivered_prompt_id' })}
+               ORDER BY created_at DESC LIMIT 1`)
     .bind(scope.projectId, sessionId, promptId)
     .first<{ spore_ids: string; created_at: number }>();
   if (row === null) return null;
@@ -448,14 +451,24 @@ export async function selectSporesForPrompt(
   const idsOf = (kind: InjectionItem['kind']): string[] => served.filter((i) => i.kind === kind).map((i) => i.id);
   const receiptId = crypto.randomUUID();
   const promptId = input.promptId ?? null;
-  const written = await duringInjection('record', counts, () => db
+  const plansById = new Map(planRows.filter(row => row !== null).map(row => [row.planKey, row]));
+  const receipt = db
     .prepare(`INSERT OR IGNORE INTO spore_injections
                 (project_id, session_id, id, prompt_id, scope_reason, ask_protocol, asked_at, prompt_hash, spore_ids, plan_ids, created_at)
               SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${input.admission.admission.sql}`)
     .bind(scope.projectId, input.sessionId, receiptId, promptId, input.scopeReason ?? null, input.askProtocol ?? 'legacy', input.askedAt ?? null,
-      input.promptHash, JSON.stringify(idsOf('spore')), JSON.stringify(idsOf('plan')), input.now, ...input.admission.admission.params)
-    .run());
-  if (written.meta.changes !== 1) {
+      input.promptHash, JSON.stringify(idsOf('spore')), JSON.stringify(idsOf('plan')), input.now, ...input.admission.admission.params);
+  const snapshots = idsOf('plan').map(id => {
+    const plan = plansById.get(id)!;
+    return db.prepare(`INSERT INTO injection_served_items
+        (project_id, receipt_id, kind, item_id, title, session_id, content_hash, unavailable)
+      SELECT ?, ?, 'plan', ?, ?, ?, ?, 0 WHERE EXISTS
+        (SELECT 1 FROM spore_injections WHERE project_id = ? AND session_id = ? AND id = ?)`)
+      .bind(scope.projectId, receiptId, id, plan.title, plan.sessionId, plan.contentHash,
+        scope.projectId, input.sessionId, receiptId);
+  });
+  const [written] = await duringInjection('record', counts, () => db.batch([receipt, ...snapshots]));
+  if (written!.meta.changes !== 1) {
     if (await duringInjection('record', counts, () => input.admission.refusal(db)) !== null) return nothing('unwritable');
     // Which rule held the insert back: a receipt for this text already, or one for this prompt id.
     const named = promptId === null ? null : await duringInjection('record', counts, () => db

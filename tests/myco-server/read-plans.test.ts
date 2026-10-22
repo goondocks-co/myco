@@ -208,7 +208,7 @@ describe('the reads a person waits on', () => {
         const plan = planOf(db, statements[0].sql, statements[0].params);
         expect(plan).toContain('idx_tool_calls_activity');
         expect(plan).not.toMatch(/SCAN t\b|TEMP B-TREE/);
-        expect(plan).toMatch(/SEARCH p USING (?:COVERING )?INDEX/);
+        expect(plan).toMatch(/SEARCH hook_prompt USING (?:COVERING )?INDEX/);
       }
     } finally { db.close(); }
   });

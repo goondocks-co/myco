@@ -353,8 +353,8 @@ describe('a session\'s agent activity', () => {
     expect(rowIds(body)).toEqual(['end', 'complete', 'legacy', 'pending', 'idle', 'reported']);
     const rows = body.rows as Record<string, unknown>[];
     expect(rows.map(r => [r.type, r.promptId])).toEqual([['no_result', null], ['no_result', null], ['failure', null], ['no_result', null], ['no_result', null], ['failure', 'p_here']]);
-    expect(rows.find(r => r.id === 'legacy')).toMatchObject({ title: 'Tool call did not succeed', detail: 'Reason not recorded · Not tied to a prompt' });
-    for (const row of rows.filter(r => r.id !== 'reported')) expect(row.detail).toContain('Not tied to a prompt');
+    expect(rows.find(r => r.id === 'legacy')).toMatchObject({ title: 'Tool call did not succeed', detail: 'Reason not recorded · Not placed on a turn' });
+    for (const row of rows.filter(r => r.id !== 'reported')) expect(row.detail).toContain('Not placed on a turn');
     expect(JSON.stringify(body)).not.toMatch(/input secret|output secret|error secret|prompt body secret/);
     expect((await get('/api/projects/proj_1/sessions/absent/activity')).status).toBe(404);
     expect((await get('/api/projects/absent/sessions/s1/activity')).status).toBe(404);
@@ -519,7 +519,7 @@ describe('a session\'s lineage', () => {
     expect(rows((await get(base)).body)).toEqual([
       ['continuation', 'Session next', 'Continues this session’s conversation · compact continuation', 'next'],
       ['child_session', 'Session launched', 'Child of this session', 'launched'],
-      ['failure', 'Bash', 'Tool reported a failure · Not tied to a prompt', null],
+      ['failure', 'Bash', 'Tool reported a failure · Not placed on a turn', null],
       ['continuation', 'Session parent', 'This session continues its conversation · fork', 'parent'],
     ]);
     expect(rows((await get(`${base}?type=child_session`)).body)).toEqual([['child_session', 'Session launched', 'Child of this session', 'launched']]);

@@ -90,11 +90,17 @@ export function MeasuresSection() {
 function Measures({ report }: { report: KpiReport }) {
   return (
     <div className="flex flex-col gap-s4">
+      <div className="grid gap-s3 sm:grid-cols-2">
+        <Stat label="Prompts served" value={report.promptsServed.toLocaleString()}
+          context="Prompts in this window with spores or a plan reminder shown on their turn." />
+        <Stat label="Deliveries" value={(report.deliveries.placed + report.deliveries.unplaced).toLocaleString()}
+          context={`${report.deliveries.placed.toLocaleString()} shown on a turn · ${report.deliveries.unplaced.toLocaleString()} not on a turn. Context deliveries in this window.`} />
+      </div>
       <div className="grid gap-s3 sm:grid-cols-2 lg:grid-cols-3">
         <MeasureStat
-          label="Prompts that received context"
-          note="The share of prompts that reached the agent carrying something this server prepared: spores or a plan reminder. A machine that has not updated reports no deliveries, so its prompts count as receiving none."
-          measure={report.contextPresent}
+          label="Served share"
+          note="The share of prompts in this window with context shown on their turn."
+          measure={report.servedShare}
           format={percent}
           unit="prompt"
           noSample="No prompts have reached this server yet."

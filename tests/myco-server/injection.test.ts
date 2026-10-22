@@ -19,6 +19,7 @@ import type { PreparedStatement, RelationalStore } from '@myco-server-worker/cor
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 import { semanticRecall } from './helpers/semantic-recall.js';
 import * as plans from '@myco-server-worker/read/plans.js';
+import { receiptPlans } from '@myco-server-worker/read/injection-served-items.js';
 import { cosineSimilarity } from '@myco-server-worker/core/embedding/vectors.js';
 /** The admission a write by this rig's machine carries; a session no machine holds yet is writable. */
 const admit = (projectId: string, sessionId: string) => sessionWriteAdmission({ projectId, machineId: 'machine_1' }, sessionId);
@@ -207,6 +208,12 @@ describe('the record', () => {
     const listed = await injectionsForSession(db, SCOPE, SESSION);
     expect(listed.map((r) => [r.promptId, r.sporeIds, r.createdAt])).toEqual([['p2', ['b'], NOW + 10], ['p1', ['a'], NOW]]);
 
+    expect(await injectionForPrompt(db, SCOPE, SESSION, 'p1')).toBeNull();
+    await db.prepare(`INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at)
+      VALUES (?,?,'p1','p1-event','request','user','h',1,1,'t',1)`).bind(SCOPE.projectId, SESSION).run();
+    expect(await injectionForPrompt(db, SCOPE, SESSION, 'p1')).toBeNull();
+    await db.prepare('UPDATE spore_injections SET delivered_at=created_at,delivered_prompt_id=prompt_id WHERE project_id=? AND session_id=?')
+      .bind(SCOPE.projectId, SESSION).run();
     const one = await injectionForPrompt(db, SCOPE, SESSION, 'p1');
     expect(one).toEqual({
       sporeIds: ['a'],
@@ -324,6 +331,17 @@ describe('plan selection', () => {
       return sql.includes('FROM plans WHERE') ? wrap(statement) : statement;
     } };
     try {
+      sqlite.exec(`CREATE TRIGGER reject_second_snapshot BEFORE INSERT ON injection_served_items
+        WHEN NEW.item_id = 'receipts' BEGIN SELECT RAISE(ABORT, 'snapshot failed'); END`);
+      try {
+        await expect(selectSporesForPrompt(recallDb, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
+          { sessionId: 'failed', admission: admit(SCOPE.projectId, 'failed'), promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic))
+          .rejects.toThrow('prompt injection failed: record');
+        expect(rows(sqlite)).toEqual([]);
+        expect(sqlite.query('SELECT * FROM injection_served_items').all()).toEqual([]);
+      } finally { sqlite.exec('DROP TRIGGER reject_second_snapshot'); }
+      planReads.length = 0;
+      get.mockClear();
       const answer = await selectSporesForPrompt(recallDb, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
         { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
       const expected = ['capture', 'receipts'];
@@ -335,6 +353,9 @@ describe('plan selection', () => {
       expect(planReads.every((row) => !('content' in row))).toBe(true);
       expect(get).toHaveBeenCalledTimes(1);
       expect(JSON.parse(rows(sqlite)[0]!.plan_ids as string)).toEqual(expected);
+      const snapshot = await receiptPlans(db, SCOPE, [{ receiptId: answer.receiptId!, planIds: expected }]);
+      expect(snapshot.get(answer.receiptId!)?.map(plan => [plan.planKey, plan.sessionId, plan.contentHash, plan.unavailable]))
+        .toEqual(expected.map(id => [id, 'history', id, false]));
       const row = await plans.getPlan(db, SCOPE, 'retry');
       const completed = spyOn(plans, 'getPlan').mockResolvedValue({ ...row!, status: 'completed' });
       try {
@@ -345,6 +366,8 @@ describe('plan selection', () => {
         expect(changed.items).toEqual([]);
         expect(rows(sqlite)).toHaveLength(1);
       } finally { completed.mockRestore(); }
+      sqlite.exec("UPDATE plans SET title = 'Changed after serving', content_hash = 'changed'; DELETE FROM plans");
+      expect(await receiptPlans(db, SCOPE, [{ receiptId: answer.receiptId!, planIds: expected }])).toEqual(snapshot);
     } finally { get.mockRestore(); sqlite.close(); }
   });
 

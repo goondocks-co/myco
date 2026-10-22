@@ -1,3 +1,4 @@
+import { binaryOrder } from '../../read/scope.js';
 import type { RelationalStore } from '../adapters.js';
 import { DELETION_RETRIES, RECEIPT } from './receipt-state.js';
 import { embeddingFailureWakeAt, PASSED_OVER, SOURCE_HELD, passedOverBinds } from './reconcile.js';
@@ -6,13 +7,6 @@ import type { VectorType } from './vectors.js';
 
 export interface EmbeddingQuery { sql: string; binds: unknown[] }
 export interface RetiringReceipt { id: string; model_key: string; type: VectorType; record_id: string; revision: string; ready: number; updated_at: number }
-
-/** SQLite BINARY collation compares UTF-8 bytes, including for supplementary Unicode characters. */
-const binaryOrder = (a: string, b: string): number => {
-  const left = new TextEncoder().encode(a), right = new TextEncoder().encode(b);
-  const at = left.findIndex((byte, index) => byte !== right[index]);
-  return at < 0 ? left.length - right.length : left[at]! - (right[at] ?? -1);
-};
 
 /** Separate indexed ranges cover retired models, stale revisions and each deletion retry state. */
 export function retirementQueries(projectId: string, retained: readonly string[], now: number): EmbeddingQuery[] {

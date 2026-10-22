@@ -1,3 +1,4 @@
+import { listUnplacedHookRecords } from '../read/hook-placement.js';
 import { getReleaseStatus } from '../core/provenance.js';
 import { nameOwnMachines, ownMachineNames } from '../read/capture.js';
 import type { ServerEnv } from '../core/adapters.js';
@@ -23,6 +24,7 @@ import { resumeCommandFor } from '../core/resume-command.js';
 /** Session child collections, each served by the same scoped and paginated handler. */
 const CHILDREN = {
   prompts: listPrompts,
+  unplaced: listUnplacedHookRecords,
   'tool-calls': listToolCalls,
   responses: listResponses,
   plans: listPlans,

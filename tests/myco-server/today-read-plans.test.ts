@@ -20,7 +20,6 @@ import { listMachines, machinesOf } from '@myco-server-worker/read/machines.js';
 import { renameMachine } from '@myco-server-worker/auth/enrollment.js';
 import { ownMachineNames } from '@myco-server-worker/read/capture.js';
 import { stoppedTranscripts } from '@myco-server-worker/ingest/parse.js';
-import { readPromptReferenceHealth } from '@myco-server-worker/read/prompt-reference-health.js';
 import { grantsExpiringBy } from '@myco-server-worker/auth/grants.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
 
@@ -302,18 +301,6 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
     }
     for (const { store, plan } of reading(read, 'member_credentials')) {
       expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH member_credentials USING INDEX idx_member_credentials_member \(member_id=\? AND revoked_at=\?\)/) });
-    }
-  });
-
-  it('reads prompt reference attention through the created and prompt indexes in every planner state', async () => {
-    const read = await plans(db => readPromptReferenceHealth(db, 1_700_000_000_000));
-    expect(read).toHaveLength(6 * 3);
-    for (const { store, sql, plan } of read) {
-      expect({ store, sql, scans: tableScans(plan).filter(step => !/^SCAN pr\b/.test(step)), plan })
-        .toEqual({ store, sql, scans: [], plan });
-      expect(plan).toMatch(/SEARCH [ra] USING (?:COVERING )?INDEX idx_(?:spore_injections|prompt_context_answers)_created/);
-      if (sql.includes('prompt_batches')) expect(plan).toMatch(/SEARCH p USING (?:COVERING )?INDEX/);
-      if (process.env.MYCO_EXPLAIN === '1') console.log(JSON.stringify({ store, sql, plan }));
     }
   });
 

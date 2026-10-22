@@ -111,7 +111,7 @@ function Transcripts({ projectId, sessionId, now }: { projectId: string; session
 function contextLabel(record: ContextInjectionRow): string {
   const kind = record.kind;
   if (kind.startsWith(SESSION_ANSWER_KIND_PREFIX)) {
-    return record.delivery === 'unnamed_prompt' ? 'Context that reached the agent on a prompt not shown here' : 'Context prepared for a prompt but not reported as reaching the agent';
+    return record.delivery === 'unnamed_prompt' ? 'Context received · Not placed on a turn' : 'Context prepared · Not placed on a turn';
   }
   if (kind === 'cortex') return 'At the session’s start';
   if (kind === 'plan-nudge') return 'A reminder to keep its plan';
@@ -157,7 +157,7 @@ export function attachmentGroups(rows: readonly AttachmentRow[], turns: readonly
   byPrompt.delete(null);
   const other = [...byPrompt.values()].flat();
   if (other.length > 0) groups.push({ key: 'other', label: 'Other prompts in this session', rows: other, turn: null });
-  if (untied.length > 0) groups.push({ key: 'none', label: 'Not tied to a prompt', rows: untied, turn: null });
+  if (untied.length > 0) groups.push({ key: 'none', label: 'Not placed on a turn', rows: untied, turn: null });
   return groups;
 }
 
