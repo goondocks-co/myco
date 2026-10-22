@@ -49,10 +49,11 @@ function insert(sqlite: Database, table: string, row: Record<string, unknown>): 
   const columns = Object.keys(row);
   sqlite.query(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(...Object.values(row) as never[]);
 }
-/** Copies staged rows using only the destination schema's columns. */
+/** Copies staged rows for the tables and columns held by the destination schema. */
 function copyFrozenRows(source: Database, destination: Database): void {
   for (const table of BACKUP_TABLES) {
     const columns = destination.query<{ name: string; pk: number }, []>(`PRAGMA table_info("${table}")`).all();
+    if (columns.length === 0) continue;
     const names = columns.map(column => `"${column.name}"`).join(',');
     const primaryKey = columns.filter(column => column.pk > 0).sort((a, b) => a.pk - b.pk).map(column => `"${column.name}"`).join(',');
     const updates = columns.filter(column => column.pk === 0).map(column => `"${column.name}" = excluded."${column.name}"`).join(',');
@@ -75,8 +76,9 @@ function projected(sqlite: Database) {
   ].sort((a, b) => String((a as { eventId: string }).eventId).localeCompare(String((b as { eventId: string }).eventId)));
 }
 async function oldArtifact(sqlite: Database, db: ReturnType<typeof sqliteD1>): Promise<string> {
-  const rows = BACKUP_TABLES.flatMap(table => sqlite.query(`SELECT * FROM "${table}"`).all().map(row => ({ t: table, r: row })));
-  const counts = Object.fromEntries(BACKUP_TABLES.map(table => [table, rows.filter(row => row.t === table).length]));
+  const tables = BACKUP_TABLES.filter(table => sqlite.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table) !== null);
+  const rows = tables.flatMap(table => sqlite.query(`SELECT * FROM "${table}"`).all().map(row => ({ t: table, r: row })));
+  const counts = Object.fromEntries(tables.map(table => [table, rows.filter(row => row.t === table).length]));
   return [{ format: BACKUP_FORMAT, deploymentId: await deploymentId(db), schemaVersion: 92, createdAt: NOW, producer: 'frozen legacy rows', counts }, ...rows].map(row => JSON.stringify(row)).join('\n');
 }
 
@@ -142,7 +144,7 @@ describe('frozen parser identity compatibility', () => {
         const artifactRows = artifact.split('\n').map(line => JSON.parse(line) as { schemaVersion?: number; t?: string; r?: Record<string, unknown> });
         expect(artifactRows[0]!.schemaVersion).toBe(92);
         for (const row of artifactRows.filter(row => row.t === 'tool_calls')) expect(Object.hasOwn(row.r!, 'result_reason')).toBe(false);
-        expect(await applySchemaSteps(db)).toEqual([93, 94]);
+        expect(await applySchemaSteps(db)).toEqual(SCHEMA_STEPS.filter(step => step.version > 92).map(step => step.version));
         expect<unknown>(projected(sqlite)).toEqual(expected);
         expect(sqlite.query('SELECT COUNT(*) AS n FROM tool_calls WHERE result_reason IS NOT NULL').get()).toEqual({ n: 0 });
         expect(sqlite.query('SELECT record_identity_scheme AS pin FROM transcripts').get()).toEqual({ pin: LEGACY });

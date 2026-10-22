@@ -70,13 +70,13 @@ export async function handleSaveSpore(env: ServerEnv, ctx: RouteContext): Promis
   await ensureNamedAgent(env, agentId, ctx.now);
   const scope = { projectId: ctx.projectId };
   const spore = await insertSpore(env.db, scope, {
-    id, agentId, sessionId, promptId, observationType, status, content, context,
+    id, agentId, sessionId, observationType, status, content, context,
     importance: int(body.importance) ?? 5, filePath, tags, contentHash, properties, author: ctx.memberId,
     createdAt: int(body.createdAt) ?? ctx.now,
   });
   if (spore !== null) return Response.json({ persisted: true, spore });
   // Duplicate saves return the held row without its author kind.
-  const source = body.channel === IMPORT_CHANNEL ? await repairImportedSporeSource(env.db, scope, { id, agentId, content, sessionId, promptId, author: ctx.memberId, createdAt: int(body.createdAt) }) : undefined;
+  const source = body.channel === IMPORT_CHANNEL ? await repairImportedSporeSource(env.db, scope, { id, agentId, content, sessionId, author: ctx.memberId, createdAt: int(body.createdAt) }) : undefined;
   if (source === 'pending') {
     return Response.json(refused(ctx, refusal('the existing spore source could not be restored; keep the original vault and ask its operator to review the source links', 'invalid_field')));
   }

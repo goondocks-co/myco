@@ -22,6 +22,33 @@ const indexes = (sqlite: Database, t: string) => (sqlite.query(`PRAGMA index_lis
 const indexColumns = (sqlite: Database, i: string) => (sqlite.query(`PRAGMA index_info(${i})`).all() as { name: string }[]).map((c) => c.name);
 
 describe('server schema', () => {
+  it('creates an empty served ledger with indexed authority and an immutable Deployment boundary', () => {
+    const sqlite = new Database(':memory:');
+    try {
+      for (const step of SCHEMA_STEPS.filter(step => step.version < 95)) for (const sql of step.statements) sqlite.exec(sql);
+      sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('ledger','Ledger',1)");
+      sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('a','Agent','built-in',1,1)");
+      sqlite.run("INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES('ledger','s','t',1,2)");
+      sqlite.run("INSERT INTO spores(project_id,id,agent_id,session_id,prompt_id,observation_type,content,created_at) VALUES('ledger','fact','a','s','legacy-prompt','gotcha','kept',1)");
+      sqlite.run("INSERT INTO spores(project_id,id,agent_id,prompt_id,observation_type,content,created_at) VALUES('ledger','unpaired','a','legacy-unpaired','gotcha','kept without a session',1)");
+      const before = sqlite.query('SELECT * FROM spores').all();
+      const step = SCHEMA_STEPS.find(step => step.version === 95)!;
+      for (const sql of step.statements) sqlite.exec(sql);
+      const boundary = sqlite.query("SELECT value FROM schema_meta WHERE key='ledger_enabled_at'").get() as { value: string };
+      expect(Number(boundary.value)).toBeGreaterThan(Date.now() - 60_000);
+      expect(sqlite.query('SELECT * FROM run_served_material').all()).toEqual([]);
+      for (const sql of step.statements) sqlite.exec(sql);
+      expect(sqlite.query("SELECT value FROM schema_meta WHERE key='ledger_enabled_at'").get()).toEqual(boundary);
+      expect(sqlite.query('SELECT * FROM spores').all()).toEqual(before);
+      for (const statement of step.statements.filter(sql => /CREATE INDEX/.test(sql))) expect(statement).toContain('ON run_served_material');
+      const plan = sqlite.query("EXPLAIN QUERY PLAN SELECT 1 FROM run_served_material WHERE project_id='ledger' AND run_id='run' AND session_id='s' LIMIT 1").all() as { detail: string }[];
+      expect(plan.map(row => row.detail).join(' ')).toContain('USING COVERING INDEX idx_run_served_material_session');
+      expect(columns(sqlite, 'run_served_material').map(column => column.name)).toEqual([
+        'project_id', 'served_id', 'run_id', 'session_id', 'instance_id', 'record_id', 'source_transcript_id', 'source_offset', 'source_end', 'served_at',
+      ]);
+    } finally { sqlite.close(); }
+  });
+
   it('adds the subagent-start access path without changing retained events', () => {
     const sqlite = new Database(':memory:');
     try {

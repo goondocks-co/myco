@@ -3,13 +3,13 @@ import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '..
 
 /**
  * Spores on both targets: a member's save naming its session carries that
- * session and the prompt it names, a supersede reads as lineage in both
+ * session, a supersede reads as lineage in both
  * directions through the tool and through the owner route, and the record of
  * what a prompt was served reaches the session explorer under the prompt that
  * carried it, and a session's spores page by cursor past writes between pages.
  */
 export const spores: ParityScenario = {
-  name: 'spores: session and prompt on a save, lineage both ways, the injection under its turn',
+  name: 'spores: session citation on a save, lineage both ways, the injection under its turn',
   async run(target: ParityTarget) {
     const post = async (sessionId: string, kind: string, payload: Record<string, unknown>, createdAt = Date.now()) => {
       const res = await fetch(`${target.url}/events`, {
@@ -40,11 +40,11 @@ export const spores: ParityScenario = {
     await post(session, 'prompt', { promptId: p1, text: `What did we settle on ${stamp}`, origin: 'user' }, stamp + 1);
     await post(session, 'prompt', { promptId: p2, text: 'and carry on with it', origin: 'user' }, stamp + 2);
 
-    // A save naming the session and a prompt carries both; one naming no prompt names none.
+    // A save cites its session and stores no prompt.
     const first = await mcp({ op: 'save', type: 'decision', content: `recency is the selector ${stamp}`, session_id: session, prompt_id: p1, project: target.projectId });
     const oldId = String(first.id);
     const saved = (await target.sql(`SELECT session_id, prompt_id, status FROM spores WHERE id = ${lit(oldId)}`))[0]!;
-    expect([saved.session_id, saved.prompt_id, saved.status]).toEqual([session, p1, 'active']);
+    expect([saved.session_id, saved.prompt_id, saved.status]).toEqual([session, null, 'active']);
 
     // A session the caller's machine does not hold is one refusal, whatever the cause.
     const refused = await mcp({ op: 'save', type: 'decision', content: 'nowhere', session_id: `no-such-${stamp}`, project: target.projectId });

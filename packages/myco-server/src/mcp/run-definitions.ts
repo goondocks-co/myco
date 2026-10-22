@@ -92,7 +92,7 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
         cursor: { type: 'string', description: 'For unprocessed: the next_cursor from the previous page.' },
         limit: { type: 'number', description: 'For unprocessed: page size, clamped to this run\'s window.' },
         include_active: { type: 'boolean', description: 'For unprocessed: include prompts of sessions still in flight. Defaults to false.' },
-        include_text: { type: 'boolean', description: 'For unprocessed: include each prompt\'s body and an excerpt of the agent\'s first response. Defaults to false, which reads no bodies at all.' },
+        include_text: { type: 'boolean', description: 'For unprocessed: include each prompt\'s body and an excerpt of the agent\'s first response. Each body item returns served_id and authorizes this run to cite its session. Defaults to false, which reads no bodies at all.' },
         [PROJECT_PIVOT]: project,
       },
       required: ['op'],

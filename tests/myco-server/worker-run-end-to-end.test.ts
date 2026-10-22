@@ -231,12 +231,15 @@ describe('what a worker reporting `completed` actually closes', () => {
     r.e.sqlite.run(`INSERT INTO responses (project_id, response_id, session_id, prompt_id, event_id, text, content_hash, created_at, token_id, received_at) VALUES ('proj_1', 'resp3', 's3', 'p3', 'e3r', 'The lease renewal re-claims it; wrap only the claim call.', 'hr3', ?, 'tok_1', ?)`, [NOW - 4000, NOW - 4000]);
     const asked = await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW);
     expect(asked).toMatchObject({ dispatched: true, queued: true });
+    r.e.sqlite.run(`UPDATE schema_meta SET value = ? WHERE key = 'ledger_enabled_at'`, [String(NOW + 1)]);
     const claimed = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
     expect(claimed.claimed).toBe(true);
     if (!claimed.claimed) return;
     const run = claimed.run;
     expect(run.task).toBe(EXTRACTION_TASK);
     expect(run.instructions).toContain('Search before every write');
+    expect(run.instructions).toContain('session_id');
+    expect(r.e.sqlite.query('SELECT queued_at AS queuedAt FROM agent_runs WHERE id = ?').get(run.id)).toEqual({ queuedAt: NOW });
 
     // The page carries the prompt and the opening of its response, which is the
     // material an observation is read from.
@@ -249,7 +252,7 @@ describe('what a worker reporting `completed` actually closes', () => {
 
     // A spore written under the run's credential names the run as its author.
     const line = 'Wrap only the claim call in the retry: the lease renewal re-claims a run another worker holds (runner/loop.ts).';
-    const saved = await r.asRun(run.runToken, 'myco_spores', { op: 'save', type: 'gotcha', content: `${line}\n\nThe renewal path is idempotent on the worker that holds the lease and a re-claim on any other.`, tags: ['runner', 'lease'], agent_line: `  ${line}  `, prompt_id: 'p3' });
+    const saved = await r.asRun(run.runToken, 'myco_spores', { op: 'save', type: 'gotcha', content: `${line}\n\nThe renewal path is idempotent on the worker that holds the lease and a re-claim on any other.`, tags: ['runner', 'lease'], agent_line: `  ${line}  `, session_id: 's3' });
     expect(saved.id).toEqual(expect.any(String));
     // The spore names the run as its author, and carries the agent line the run gave it, as one line.
     expect(r.e.sqlite.query(`SELECT author, agent_line AS agentLine FROM spores WHERE id = ?`).get(saved.id as string)).toEqual({ author: run.id, agentLine: line });

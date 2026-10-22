@@ -15,7 +15,6 @@
 export interface SporeFields {
   id: string;
   sessionId: string | null;
-  promptId: string | null;
   observationType: string;
   status: string;
   content: string;
