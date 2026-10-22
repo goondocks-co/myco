@@ -38,7 +38,7 @@ const MEMBERS = { members: [
 ] };
 
 const spore = (over: Record<string, unknown> = {}) => ({
-  projectId: MYCO, id: 'gotcha-1a2b3c4d', agentId: 'agent_1', sessionId: 's1', promptId: null, observationType: 'gotcha', status: 'active',
+  projectId: MYCO, id: 'gotcha-1a2b3c4d', agentId: 'agent_1', sessionId: 's1', observationType: 'gotcha', status: 'active',
   content: 'The cache lies after a rebase.\n\nClear it on checkout.', context: null, importance: 8, filePath: 'src/cache.ts', tags: null,
   contentHash: null, properties: null, author: 'run_4f1c9a2e7b', authorKind: 'run', provenanceKind: null, provenanceRef: null,
   agentLine: 'The cache lies after a rebase; clear it on checkout.', createdAt: NOW - HOUR, updatedAt: null, embedded: 0, ...over,
@@ -251,7 +251,7 @@ describe('the spore stream', () => {
 
 describe('a spore’s article', () => {
   const article = (over: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => Response.json({
-    spore: { ...spore({ status: 'superseded', promptId: 'p1', context: 'Seen on **both** targets.', tags: '["cache","git"]', ...over }), sourceCreatedAt: NOW - 90 * MINUTE },
+    spore: { ...spore({ status: 'superseded', context: 'Seen on **both** targets.', tags: '["cache","git"]', ...over }), sourceCreatedAt: NOW - 90 * MINUTE },
     supersededBy: ['gotcha-7a8b9c0d'], supersedes: ['gotcha-0a1b2c3d'], ...extra,
   });
   const sessionAnswer = Response.json({
@@ -293,11 +293,11 @@ describe('a spore’s article', () => {
     expect(within(lineage).getByRole('heading', { name: 'What it replaced' })).toBeTruthy();
     expect(await within(lineage).findByText('A spore this project no longer holds')).toBeTruthy();
     expect(within(lineage).queryByRole('link', { name: /Clear the cache on every checkout/ })).toBeNull();
-    // Where it came from: the session by its title, the turn, and the run that wrote it.
+    // Where it came from: the session by its title and the run that wrote it.
     const origin = page.querySelector('[data-spore-origin]') as HTMLElement;
     expect(await within(origin).findByText('Flaky test port collision fixed')).toBeTruthy();
     expect(within(origin).getByRole('link', { name: 'Open the session →' }).getAttribute('href')).toBe(`/p/${MYCO}/sessions/s1`);
-    expect(within(origin).getByRole('link', { name: 'The turn it came from →' }).getAttribute('href')).toBe(`/p/${MYCO}/sessions/s1?turn=p1`);
+    expect(within(origin).queryByRole('link', { name: 'The turn it came from →' })).toBeNull();
     expect(within(origin).getByRole('link', { name: 'The run that wrote it →' }).getAttribute('href')).toBe(`/p/${MYCO}/work/runs/run_4f1c9a2e7b`);
     const facts = page.querySelector('[data-facts]') as HTMLElement;
     expect(facts.textContent).toContain('Importance8 of 10');

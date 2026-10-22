@@ -89,7 +89,7 @@ async function oracle(db: RelationalStore, matches: VectorHit[], filters?: Vecto
       JOIN embedding_sources s ON s.project_id = r.project_id AND s.type = r.type AND s.record_id = r.record_id AND s.revision = r.revision
       WHERE r.project_id = ? AND r.model_key = ? AND r.ready = 1 AND r.id IN (${ids.map(() => '?').join(',')})
       AND (s.type <> 'session' OR ${notTombstonedSql('s')})`).bind(SCOPE.projectId, MODEL, ...ids).all<Omit<SemanticHit, 'score'>>();
-    rows.push(...found.results.filter((row) => vectorMatches(row, filters)).map((row) => ({ ...row, score: byId.get(row.vector_id)! })));
+    rows.push(...found.results.filter((row) => vectorMatches(row, filters)).map((row) => ({ ...row, prompt_id: row.type === 'spore' ? null : row.prompt_id, score: byId.get(row.vector_id)! })));
   }
   return rows.sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id));
 }

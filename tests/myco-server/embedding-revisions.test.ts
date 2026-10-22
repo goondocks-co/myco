@@ -13,7 +13,7 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
 import type { EmbeddingProvider } from '@myco-server-worker/core/embedding/provider.js';
-import { EMBEDDING_SOURCES as HISTORICAL_EMBEDDING_SOURCES, embeddingSourcesView, SOURCES_WITH_PRESENTED_SESSION_DATE as HISTORICAL_PRESENTED_SOURCES, CURRENT_EMBEDDING_SOURCES } from '@myco-server-worker/db/embedding-sources.js';
+import { EMBEDDING_SOURCES as HISTORICAL_EMBEDDING_SOURCES, embeddingSourcesView, SOURCES_WITH_PRESENTED_SESSION_DATE as HISTORICAL_PRESENTED_SOURCES, V86_EMBEDDING_SOURCES } from '@myco-server-worker/db/embedding-sources.js';
 const EMBEDDING_SOURCES = HISTORICAL_EMBEDDING_SOURCES.filter((source) => source.type !== 'skill');
 const SOURCES_WITH_PRESENTED_SESSION_DATE = HISTORICAL_PRESENTED_SOURCES.filter((source) => source.type !== 'skill');
 import { RELEASE_REVISION_COLUMNS } from '@myco-server-worker/db/schema-v49.js';
@@ -171,8 +171,8 @@ describe('embedding revisions follow the values a vector is built from', () => {
   it('follows every column the embedding view builds a record from, but the named exceptions', () => {
     const f = fixture();
     const current = f.sqlite.query(`SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'embedding_sources'`).get() as { sql: string };
-    // The view a database serves is the one built from the presented session sources.
-    const admittedSources = CURRENT_EMBEDDING_SOURCES;
+    // The persisted view has the projection declared by schema step 86.
+    const admittedSources = V86_EMBEDDING_SOURCES;
     expect(current.sql).toBe(embeddingSourcesView(admittedSources).replace('CREATE VIEW IF NOT EXISTS', 'CREATE VIEW'));
     for (const sources of [EMBEDDING_SOURCES, SOURCES_WITH_PRESENTED_SESSION_DATE]) {
       for (const s of sources) {

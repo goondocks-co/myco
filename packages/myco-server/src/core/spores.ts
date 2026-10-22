@@ -20,7 +20,7 @@
  * without its event leaves a spore superseded by nothing, which no reader can
  * repair; a batch is atomic by contract, so the pair commits or neither does.
  */
-import type { RelationalStore } from './adapters.js';
+import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { USER_AGENT_ID } from '../constants.js';
 import { containsPattern, inListChunks, keyset, page, projectsDriving, projectsFiltering, type Page, type ProjectSet, type ReadScope } from '../read/scope.js';
 
@@ -57,7 +57,6 @@ export interface SporeInsert {
   id: string;
   agentId: string;
   sessionId: string | null;
-  promptId: string | null;
   observationType: string;
   status?: SporeStatus;
   content: string;
@@ -86,7 +85,6 @@ export interface SporeRow {
   id: string;
   agentId: string;
   sessionId: string | null;
-  promptId: string | null;
   observationType: string;
   status: string;
   content: string;
@@ -141,7 +139,7 @@ const AUTHOR_KIND = `CASE WHEN spores.author IS NULL THEN NULL
   WHEN EXISTS (SELECT 1 FROM external_grants g WHERE g.id = spores.author) THEN 'grant'
   ELSE 'run' END`;
 
-const COLUMNS = `id, agent_id AS agentId, session_id AS sessionId, prompt_id AS promptId,
+const COLUMNS = `id, agent_id AS agentId, session_id AS sessionId,
   observation_type AS observationType, status, content, context, importance,
   file_path AS filePath, tags, content_hash AS contentHash, properties, author,
   provenance_kind AS provenanceKind, provenance_ref AS provenanceRef, agent_line AS agentLine,
@@ -158,38 +156,41 @@ const READ_COLUMNS = `${COLUMNS}, ${AUTHOR_KIND} AS authorKind`;
  * against a Deployment.
  */
 export async function insertSpore(db: RelationalStore, scope: ReadScope, row: SporeInsert): Promise<SporeRow | null> {
+  return sporeInsert(db, scope, row, true).first<SporeRow>();
+}
+
+/** Every new spore stores only its session citation. */
+function sporeInsert(db: RelationalStore, scope: ReadScope, row: SporeInsert, ignoreConflict = false): PreparedStatement {
   return db.prepare(`INSERT INTO spores
-      (project_id, id, agent_id, session_id, prompt_id, observation_type, status, content, context,
+      (project_id, id, agent_id, session_id, observation_type, status, content, context,
        importance, file_path, tags, content_hash, properties, author, provenance_kind, provenance_ref, agent_line, created_at, embedded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-      ON CONFLICT (project_id, id) DO NOTHING
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      ${ignoreConflict ? 'ON CONFLICT (project_id, id) DO NOTHING' : ''}
       RETURNING ${COLUMNS}`)
-    .bind(scope.projectId, row.id, row.agentId, row.sessionId, row.promptId, row.observationType,
+    .bind(scope.projectId, row.id, row.agentId, row.sessionId, row.observationType,
       row.status ?? 'active', row.content, row.context, row.importance ?? 5, row.filePath,
       row.tags, row.contentHash, row.properties, row.author,
-      row.provenance?.kind ?? null, row.provenance?.ref ?? null, row.agentLine ?? null, row.createdAt)
-    .first<SporeRow>();
+      row.provenance?.kind ?? null, row.provenance?.ref ?? null, row.agentLine ?? null, row.createdAt);
 }
 
 /** Fill absent import provenance only when the original spore and its stored source agree. */
-export async function repairImportedSporeSource(db: RelationalStore, scope: ReadScope, row: Pick<SporeInsert, 'id' | 'author' | 'agentId' | 'content' | 'sessionId' | 'promptId'> & { createdAt?: number }): Promise<'restored' | 'kept' | 'pending'> {
+export async function repairImportedSporeSource(db: RelationalStore, scope: ReadScope, row: Pick<SporeInsert, 'id' | 'author' | 'agentId' | 'content' | 'sessionId'> & { createdAt?: number }): Promise<'restored' | 'kept' | 'pending'> {
   if (row.sessionId === null) return 'restored';
-  await db.prepare(`UPDATE spores SET session_id = COALESCE(session_id, ?), prompt_id = COALESCE(prompt_id, ?)
+  await db.prepare(`UPDATE spores SET session_id = COALESCE(session_id, ?)
     WHERE project_id = ? AND id = ? AND author = ? AND agent_id = ? AND content = ? AND (? IS NULL OR created_at = ?)
-      AND (session_id IS NULL OR session_id = ?) AND prompt_id IS NULL
-      AND EXISTS (SELECT 1 FROM sessions s WHERE s.project_id = spores.project_id AND s.session_id = ?)
-      AND (? IS NULL OR EXISTS (SELECT 1 FROM prompt_batches p WHERE p.project_id = spores.project_id AND p.session_id = ? AND p.prompt_id = ?))`)
-    .bind(row.sessionId, row.promptId, scope.projectId, row.id, row.author, row.agentId, row.content, row.createdAt ?? null, row.createdAt ?? null, row.sessionId, row.sessionId, row.promptId, row.sessionId, row.promptId).run();
+      AND (session_id IS NULL OR session_id = ?)
+      AND EXISTS (SELECT 1 FROM sessions s WHERE s.project_id = spores.project_id AND s.session_id = ?)`)
+    .bind(row.sessionId, scope.projectId, row.id, row.author, row.agentId, row.content, row.createdAt ?? null, row.createdAt ?? null, row.sessionId, row.sessionId).run();
   const held = await getSpore(db, scope, row.id);
-  if (held?.sessionId === row.sessionId && held.promptId === row.promptId) return 'restored';
-  if (held !== null && ((held.sessionId !== null && held.sessionId !== row.sessionId) || (held.promptId !== null && held.promptId !== row.promptId)
+  if (held?.sessionId === row.sessionId) return 'restored';
+  if (held !== null && ((held.sessionId !== null && held.sessionId !== row.sessionId)
     || held.author !== row.author || held.agentId !== row.agentId || held.content !== row.content || (row.createdAt !== undefined && held.createdAt !== row.createdAt))) return 'kept';
   return 'pending';
 }
 
 export async function getSpore(db: RelationalStore, scope: ReadScope, id: string): Promise<(SporeRow & { sourceCreatedAt: number | null }) | null> {
-  return db.prepare(`SELECT ${READ_COLUMNS}, (SELECT p.created_at FROM prompt_batches p
-    WHERE p.project_id = spores.project_id AND p.session_id = spores.session_id AND p.prompt_id = spores.prompt_id) AS sourceCreatedAt
+  return db.prepare(`SELECT ${READ_COLUMNS}, (SELECT COALESCE(s.started_at, s.first_received_at) FROM sessions s
+    WHERE s.project_id = spores.project_id AND s.session_id = spores.session_id) AS sourceCreatedAt
     FROM spores WHERE project_id = ? AND id = ?`)
     .bind(scope.projectId, id).first<SporeRow & { sourceCreatedAt: number | null }>();
 }
@@ -436,15 +437,7 @@ export async function consolidateSpores(
   event: Omit<ResolutionEventInsert, 'id' | 'sporeId' | 'action' | 'newSporeId'>,
   now: number,
 ): Promise<{ wisdom: SporeRow | null; consolidated: number }> {
-  const insert = db.prepare(`INSERT INTO spores
-      (project_id, id, agent_id, session_id, prompt_id, observation_type, status, content, context,
-       importance, file_path, tags, content_hash, properties, author, provenance_kind, provenance_ref, agent_line, created_at, embedded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-      RETURNING ${COLUMNS}`)
-    .bind(scope.projectId, wisdom.id, wisdom.agentId, wisdom.sessionId, wisdom.promptId, wisdom.observationType,
-      wisdom.status ?? 'active', wisdom.content, wisdom.context, wisdom.importance ?? 5, wisdom.filePath,
-      wisdom.tags, wisdom.contentHash, wisdom.properties, wisdom.author,
-      wisdom.provenance?.kind ?? null, wisdom.provenance?.ref ?? null, wisdom.agentLine ?? null, wisdom.createdAt);
+  const insert = sporeInsert(db, scope, wisdom);
   const moves = sources.flatMap((sporeId) => [
     db.prepare(`UPDATE spores SET status = 'consolidated', updated_at = ? WHERE project_id = ? AND id = ? AND status = 'active' RETURNING id`)
       .bind(now, scope.projectId, sporeId),

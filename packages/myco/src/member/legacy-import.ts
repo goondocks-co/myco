@@ -128,7 +128,6 @@ export interface LegacySpore {
   id: string;
   agentId: string;
   sessionId: string | null;
-  promptId: string | null;
   observationType: string;
   status: string;
   content: string;
@@ -228,7 +227,6 @@ export function readLegacyVault(file: string): LegacyProject[] {
     for (const r of rows(`SELECT * FROM spores WHERE project_id IS NOT NULL ORDER BY created_at, id`)) {
       project(r.project_id).spores.push({
         id: idOf(r.id), agentId: text(r.agent_id) ?? 'user', sessionId: text(r.session_id),
-        promptId: r.prompt_batch_id == null ? null : idOf(r.prompt_batch_id),
         observationType: text(r.observation_type) ?? 'discovery', status: text(r.status) ?? 'active', content: text(r.content) ?? '',
         context: text(r.context), importance: num(r.importance), filePath: text(r.file_path), tags: text(r.tags),
         contentHash: text(r.content_hash), properties: text(r.properties), createdAt: legacyMs(num(r.created_at)),
@@ -825,10 +823,9 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
         continue;
       }
       const onDeployment = sessionId !== null && present.has(sessionId) ? sessionId : null;
-      const promptId = onDeployment !== null && vaultContent.has(onDeployment) && spore.promptId !== null ? legacyPromptId(projectId, spore.promptId) : null;
       const outcome = await settle(async () => classified(await clientFor(projectId).postPersisted(SPORES_SAVE_PATH, {
         channel: 'import', id: spore.id, agentId: spore.agentId, observationType: spore.observationType, status: spore.status,
-        content: spore.content, context: spore.context, sessionId: onDeployment, promptId,
+        content: spore.content, context: spore.context, sessionId: onDeployment,
         importance: spore.importance ?? undefined, filePath: spore.filePath, tags: spore.tags, contentHash: spore.contentHash,
         properties: spore.properties, createdAt: spore.createdAt ?? undefined,
       }, unboundedBudget())));

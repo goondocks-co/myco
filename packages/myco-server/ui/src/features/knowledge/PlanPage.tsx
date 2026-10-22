@@ -74,7 +74,7 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanFields; proj
         </div>
 
         <aside aria-label="About this plan" className="flex min-w-0 flex-col gap-s4">
-          <WrittenIn projectId={projectId} sessionId={plan.sessionId} promptId={plan.promptId} />
+          <WrittenIn projectId={projectId} sessionId={plan.sessionId} />
           <FactsPanel title="Facts" actions={<CopyButton value={plan.planKey} label="Copy plan key" variant="secondary" />}>
             <FactRow term="Project">{projectName}</FactRow>
             <FactRow term="Status">
@@ -105,11 +105,10 @@ export function withoutTitle(content: string, title: string | null): string {
 }
 
 
-/** The session that wrote the plan, by its title, and the turn it came from. */
-function WrittenIn({ projectId, sessionId, promptId }: { projectId: string; sessionId: string; promptId: string | null }) {
+/** The session that wrote the plan, by its title. */
+function WrittenIn({ projectId, sessionId }: { projectId: string; sessionId: string }) {
   const session = useSession(projectId, sessionId);
   const base = projectPath(projectId, `/sessions/${encodeURIComponent(sessionId)}`);
-  const turn = promptId === null ? null : `${base}?${new URLSearchParams({ turn: promptId })}`;
   const gone = session.error instanceof ApiError && session.error.status === 404;
   return (
     <Card className="flex flex-col gap-s2" data-plan-session="">
@@ -121,7 +120,6 @@ function WrittenIn({ projectId, sessionId, promptId }: { projectId: string; sess
             : <span className="t-small font-medium text-ink">{sessionHeadingText(session.data.session)}</span>}
           <span className="flex flex-wrap gap-x-s4 gap-y-s1 t-small">
             <ActionLink to={base}>Open the session →</ActionLink>
-            {turn !== null && <ActionLink to={turn}>The turn it came from →</ActionLink>}
           </span>
         </>
       )}

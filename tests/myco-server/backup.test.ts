@@ -15,6 +15,7 @@ import { renderMigrationFile } from '@myco-server-worker/db/migrate.js';
 import { journaled, sqliteEnv } from './helpers/fixtures.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { sqliteVectorStore } from '@myco-server-worker/platform/bun/vectors.js';
+import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 
 const seeded = () => {
   const fixture = sqliteEnv();
@@ -48,6 +49,46 @@ describe('table dispositions', () => {
         .toContain(`DROP TABLE IF EXISTS ${table}`);
     }
     for (const t of EMPTY_ONLY_TABLES) expect(BACKUP_TABLES).toContain(t);
+  });
+});
+
+describe('served material lifecycle', () => {
+  it('restores served rows after their run, removes a tombstoned session, and cascades run deletion', async () => {
+    const source = seeded();
+    const target = seeded();
+    try {
+      source.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, status, started_at)
+        VALUES ('proj_bk', 'run_served', 'agent_bk', 'completed', ?)`, [source.now]);
+      source.sqlite.run(`INSERT INTO run_served_material
+        (project_id, served_id, run_id, session_id, instance_id, record_id, source_transcript_id, source_offset, source_end, served_at)
+        VALUES ('proj_bk', 'served_1', 'run_served', 'sess_1', NULL, 'record_1', NULL, NULL, NULL, ?)`, [source.now]);
+
+      expect(BACKUP_TABLES.indexOf('run_served_material')).toBe(BACKUP_TABLES.indexOf('agent_runs') + 1);
+      const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(target.db),
+        schemaVersion: Number((target.sqlite.query(`SELECT value FROM schema_meta WHERE key = 'version'`).get() as { value: string }).value),
+        createdAt: source.now, producer: 'test', counts: { agent_runs: 1, run_served_material: 1 } };
+      const artifact = [header, ...(['agent_runs', 'run_served_material'] as const).map((table) => ({
+        t: table, r: source.sqlite.query(`SELECT * FROM ${table}`).get(),
+      }))].map((row) => JSON.stringify(row)).join('\n') + '\n';
+      await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: artifact });
+      const rows = () => target.sqlite.query(`SELECT served_id FROM run_served_material WHERE project_id = 'proj_bk'`).all();
+      expect(rows()).toEqual([{ served_id: 'served_1' }]);
+
+      await tombstoneSession({ db: target.db }, { projectId: 'proj_bk' }, 'sess_1', 'test', source.now + 1);
+      expect(rows()).toEqual([]);
+      expect(target.sqlite.query(`SELECT id FROM agent_runs WHERE project_id = 'proj_bk'`).all()).toEqual([{ id: 'run_served' }]);
+
+      target.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
+        VALUES ('proj_bk', 'sess_2', 'm1', 'mt_seed', ?, ?)`, [source.now, source.now]);
+      target.sqlite.run(`INSERT INTO run_served_material
+        (project_id, served_id, run_id, session_id, instance_id, record_id, source_transcript_id, source_offset, source_end, served_at)
+        VALUES ('proj_bk', 'served_2', 'run_served', 'sess_2', NULL, 'record_2', NULL, NULL, NULL, ?)`, [source.now]);
+      target.sqlite.run(`DELETE FROM agent_runs WHERE project_id = 'proj_bk' AND id = 'run_served'`);
+      expect(rows()).toEqual([]);
+    } finally {
+      source.sqlite.close();
+      target.sqlite.close();
+    }
   });
 });
 
