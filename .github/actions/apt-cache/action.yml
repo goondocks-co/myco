@@ -1,0 +1,52 @@
+name: Cached apt install
+description: Cache apt archives per runner image and dependency recipe; install offline on hits
+inputs:
+  recipe:
+    description: Dependency identity including its pinned version
+    required: true
+  install:
+    description: Shell command that installs dependencies on a cache miss
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: image
+      shell: bash
+      env:
+        INSTALL: ${{ inputs.install }}
+      run: |
+        test -n "$ImageOS"
+        test -n "$ImageVersion"
+        echo "key=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+        echo "install=$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.env.INSTALL).digest("hex"))')" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v6
+      id: archives
+      with:
+        path: ${{ runner.temp }}/apt-archives/${{ inputs.recipe }}
+        key: apt-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.key }}-${{ steps.image.outputs.install }}-${{ inputs.recipe }}-${{ hashFiles('.github/actions/apt-cache/action.yml') }}
+    - if: steps.archives.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        ARCHIVES: ${{ runner.temp }}/apt-archives/${{ inputs.recipe }}
+        INSTALL: ${{ inputs.install }}
+      run: |
+        mkdir -p "$ARCHIVES/partial"
+        chmod 755 "$RUNNER_TEMP" "$RUNNER_TEMP/apt-archives" "$ARCHIVES"
+        config=/etc/apt/apt.conf.d/99-myco-ci-cache
+        trap 'sudo rm -f "$config"' EXIT
+        printf 'Dir::Cache::archives "%s";\nBinary::apt::APT::Keep-Downloaded-Packages "true";\n' "$ARCHIVES" | sudo tee "$config" >/dev/null
+        bash -e -o pipefail -c "$INSTALL"
+        sudo chown -R "$(id -u):$(id -g)" "$ARCHIVES"
+        rm -rf "$ARCHIVES/partial" "$ARCHIVES/lock"
+        touch "$ARCHIVES/complete"
+    - if: steps.archives.outputs.cache-hit == 'true'
+      shell: bash
+      env:
+        ARCHIVES: ${{ runner.temp }}/apt-archives/${{ inputs.recipe }}
+      run: |
+        test -f "$ARCHIVES/complete"
+        shopt -s nullglob
+        packages=("$ARCHIVES"/*.deb)
+        if (( ${#packages[@]} )); then
+          sudo apt-get -o Dir::Cache::archives="$ARCHIVES" install --yes --no-download --no-install-recommends "${packages[@]}"
+        fi
