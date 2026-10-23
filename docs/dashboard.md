@@ -28,7 +28,7 @@ Beside the timeline, **Capture** shows which agents have sent sessions lately, a
 
 **Sessions** lists every captured session, newest first, with its title and summary. Search it by title, first prompt, agent or branch, or narrow it to one agent or one person.
 
-A session's page has the conversation turn by turn, with the tool calls inside each turn. It ends with **what came of it**: the spores Myco learned from the session, and each run of Myco's work that read it. Its **Lineage** tab shows the sessions that started it and the ones it started, on one timeline.
+A session's page has the conversation turn by turn, with the tool calls inside each turn. It ends with **what came of it**: the spores Myco learned from the session, and each run of Myco's work that read it. Its **Outcomes** tab lists the commits the session started and ended on, and each pull request, issue, tag, release or deploy its agent reported creating, linked when it is on GitHub. Its **Lineage** tab shows the sessions that started it and the ones it started, on one timeline.
 
 ### Knowledge
 

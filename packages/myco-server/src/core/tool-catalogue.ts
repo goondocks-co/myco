@@ -17,6 +17,7 @@ export const SERVED_TOOLS = [
   'myco_spores',
   'myco_skills',
   'myco_agent',
+  'myco_outcomes',
 ] as const;
 
 export type ServedTool = (typeof SERVED_TOOLS)[number];
@@ -31,7 +32,7 @@ export function isServedTool(name: string): name is ServedTool {
  *
  * Deliberately outside `SERVED_TOOLS`: a member and a grant never see these
  * names, and the member side declares none of them, so the parity gate and the
- * ledger's §7.3 catalogue judge the seven and only the seven. What a run does
+ * ledger's §7.3 catalogue judge the served tools and only those. What a run does
  * that a member also does — every write of vault content, and search — stays on
  * the catalogued tools rather than being copied here.
  */
@@ -106,6 +107,7 @@ export const UNSERVED_OPS: Readonly<Partial<Record<ServedTool, Readonly<Record<s
 export const WRITE_OPS: Readonly<Partial<Record<AnyTool, readonly string[]>>> = {
   myco_plans: ['save'],
   myco_spores: ['save', 'supersede', 'consolidate', 'obsolete'],
+  myco_outcomes: ['report'],
   // `report` is absent deliberately: a dry run does its work, writes nothing,
   // and still files the report the close gate reads.
   myco_run: ['state_set'],

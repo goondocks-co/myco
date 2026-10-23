@@ -191,6 +191,12 @@ export const SUPERSEDED: ReadonlyArray<{ old: number; by: number }> = [{ old: 10
 /** The session whose reading page shows what came of it: runs that read it, wrote from it and titled it, and one with no record. */
 export const OUTCOME_SESSION = 6;
 
+/** What the outcome session reported it created: a pull request on a host the page links, and a deploy on one it shows as text. */
+export const OUTCOME_ARTIFACTS = [
+  { kind: 'pr', artifact_id: '1873', url: 'https://github.com/goondocks-co/myco/pull/1873' },
+  { kind: 'deploy', artifact_id: 'dep_20261019_preview', url: 'https://preview-oct-nineteen.myco-example-account.workers.dev/projects/myco/sessions/recent' },
+] as const;
+
 const PLANS: Array<{ project: ProjectKey; session: number; status: (typeof PLAN_STATUSES)[number]; title: string; path: string; content: string; tags?: string[] }> = [
   { project: 'myco', session: 13, status: 'in_progress', title: 'Myco’s work as outcomes', path: 'docs/plans/work-outcomes.md', tags: ['dashboard', 'outcomes'], content: '# Myco’s work as outcomes\n\n- [x] Group runs by task\n- [ ] Fold index upkeep into one line\n- [ ] Show failures with cause and next step' },
   { project: 'myco', session: 1, status: 'active', title: 'One filter bar on every list page', path: 'docs/plans/filter-bar.md', content: '# One filter bar\n\n- [ ] Sessions\n- [ ] Knowledge\n- [ ] Myco’s work' },
@@ -343,6 +349,19 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     const saved = body.result?.structuredContent?.result;
     if (!saved?.id) throw new Error(`spore ${spore.type}: ${JSON.stringify(body).slice(0, 300)}`);
     sporeIds.push(saved.id);
+  }
+
+  for (const artifact of OUTCOME_ARTIFACTS) {
+    const seed = SESSIONS[OUTCOME_SESSION]!;
+    const res = await fetch(`${url}/mcp`, {
+      method: 'POST',
+      headers: memberHeaders(seed.machine, seed.project),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_outcomes', arguments: {
+        op: 'report', session_id: sessionIds[OUTCOME_SESSION], project: idOf(seed.project), ...artifact,
+      } } }),
+    });
+    const body = await expectOk(res, `report ${artifact.kind}`) as { result?: { structuredContent?: { result?: { created?: boolean; error?: string } } } };
+    if (body.result?.structuredContent?.result?.created !== true) throw new Error(`report ${artifact.kind}: ${JSON.stringify(body).slice(0, 300)}`);
   }
 
   for (const { old, by } of SUPERSEDED) {

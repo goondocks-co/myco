@@ -29,6 +29,7 @@ import { restoreToolInput } from './tool-input-restore.js';
 import { clearDeletedParentsStatement } from './tombstones.js';
 import { RESTORED_SESSION_UNREAD_SQL } from '../db/read-budget-session-statements.js';
 import { restoreExtractionAckStatement } from './extraction-acks.js';
+import { admitRestoredArtifacts, ArtifactRestoreRefused, restoreSessionArtifactStatement } from './session-artifacts.js';
 export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
 import { restoreParserCheckpointStatement } from '../ingest/parser-checkpoint.js';
 import { restoredPin, restoreSchemeDecisions } from '../ingest/prompt-scheme.js';
@@ -60,7 +61,7 @@ export const BACKUP_TABLES: readonly string[] = [
   'agent_tasks', 'agent_runs', 'run_served_material', 'extraction_acks', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners',
   'injection_served_items', 'canopy_maps', 'knowledge_release_state', 'external_grants',
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',
-  'knowledge_git_provenance',
+  'knowledge_git_provenance', 'session_artifacts',
 ];
 
 /** Artifact tables whose data class is retired by a numbered schema step. */
@@ -418,6 +419,7 @@ type OwnedRowRestorer = (db: RelationalStore, row: ArtifactRow, decided: Restore
 /** Owned state restores through the capability that admits its writes. */
 const OWNED_ROW_RESTORERS: Readonly<Partial<Record<string, OwnedRowRestorer>>> = {
   extraction_acks: restoreExtractionAckStatement,
+  session_artifacts: restoreSessionArtifactStatement,
   // A transcript is pinned with its insert, to the scheme its group is admitted to over the whole artifact.
   transcripts(db, row, decided) {
     const columns = Object.keys(row).filter((column) => column !== 'prompt_identity_scheme');
@@ -560,6 +562,11 @@ export async function restoreArtifact(
   db = await authorizeRestore(db, opts.authorization, byTable.keys());
   try { assertArchivedContentClosure(byTable); }
   catch (error) { throw new BackupApplyError('archive_bundles', error instanceof Error ? error.message : String(error)); }
+  try { await admitRestoredArtifacts(db, byTable.get('session_artifacts') ?? [], byTable.get('sessions') ?? []); }
+  catch (error) {
+    if (error instanceof ArtifactRestoreRefused) throw new BackupApplyError('session_artifacts', error.message);
+    throw error;
+  }
 
   // Blob rows are never inserted: each must already be registered here, with the bytes its own row names. Checked
   // before any table is written, so a refused artifact changes nothing.

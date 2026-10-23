@@ -30,7 +30,13 @@ test.describe('design specimen', () => {
         expect(kicker!.y + kicker!.height).toBeLessThanOrEqual(title!.y);
         // Sibling rows draw a divider under every row but the last.
         const dividers = await page.locator('[data-specimen-kicker] > *').evaluateAll((rows) => rows.map((row) => getComputedStyle(row).borderBottomWidth));
-        expect(dividers).toEqual(['1px', '1px', '0px']);
+        expect(dividers).toEqual(['1px', '1px', '1px', '1px', '0px']);
+        // A reported artifact links its URL only where the page names its host, and a long URL wraps inside the row.
+        const [linkedRow, plainRow] = [page.locator('[data-specimen-kicker] > *').nth(2), page.locator('[data-specimen-kicker] > *').nth(3)];
+        await expect(linkedRow.getByRole('link', { name: 'https://github.com/goondocks-co/myco/pull/1931' })).toBeVisible();
+        await expect(plainRow.getByRole('link')).toHaveCount(0);
+        expect(await plainRow.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+        await expect(plainRow.getByRole('button', { name: 'Copy link' })).toBeVisible();
         // A wrapping row keeps all its words, and its copy control keeps its name where only the icon shows.
         const wrapped = page.locator('[data-specimen-kicker] > *').last();
         await expect(wrapped.getByText('Released · myco/v2.0.3 · PR #1873 · checked 30 min ago')).toBeVisible();

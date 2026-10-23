@@ -6,7 +6,10 @@
  * across sessions, runs and spores, newest first, and never another project's.
  */
 import { describe, expect, it } from 'bun:test';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { envelope, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import { reportSessionArtifact } from '@myco-server-worker/core/session-artifacts.js';
 import { registerBlob } from './helpers/d1.js';
 import { reconcileSearchIndex } from '@myco-server-worker/core/search-index.js';
 import { asOwner, asOwnerPatch, OWNER_ENV } from './helpers/owner.js';
@@ -531,5 +534,28 @@ describe('a session\'s lineage', () => {
     expect(second.cursor).toBeNull();
     sqlite.run(`DELETE FROM sessions WHERE project_id = 'proj_1' AND session_id = 'parent'`);
     expect(rows((await get(`${base}?type=continuation`)).body).at(-1)).toEqual(['continuation', 'A session not captured here', 'This session continues its conversation · fork', null]);
+  });
+});
+
+describe('a session\'s reported artifacts', () => {
+  it('serves only the addressed Project\'s reports for a session id two Projects share, and 404 for a session the Project does not hold', async () => {
+    const h = await harness();
+    const { token } = await issueMemberToken(h.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+    let event = 1;
+    for (const [project, sessionId] of [['proj_1', 's_shared'], ['proj_2', 's_shared'], ['proj_2', 's_only_2']]) {
+      const res = await worker.fetch(memberPost(token, envelope({ eventId: uuid(event++), sessionId, kind: 'session.start', payload: { agent: 'codex', startedAt: 1_000 } }), '/events', { [PROJECT_HEADER]: project }), h.env);
+      expect(res.status).toBe(200);
+    }
+    const report = (projectId: string, sessionId: string, artifactId: string) => reportSessionArtifact(h.db, { projectId }, {
+      sessionId, kind: 'issue', artifactId, url: `https://github.com/o/r/issues/${artifactId}`, author: 'mem_machine_1', reportedAt: NOW,
+    });
+    expect((await report('proj_1', 's_shared', '1')).outcome).toBe('created');
+    expect((await report('proj_2', 's_shared', '2')).outcome).toBe('created');
+    expect((await report('proj_2', 's_only_2', '3')).outcome).toBe('created');
+
+    const page = await h.get('/api/projects/proj_1/sessions/s_shared/artifacts');
+    expect({ status: page.status, ids: (page.body.rows as Array<{ artifactId: string }>).map((row) => row.artifactId), cursor: page.body.cursor })
+      .toEqual({ status: 200, ids: ['1'], cursor: null });
+    expect((await h.get('/api/projects/proj_1/sessions/s_only_2/artifacts')).status).toBe(404);
   });
 });

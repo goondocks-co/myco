@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseLedger, REPO_ROOT } from '../helpers/ledger.ts';
 import { RETAINED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
+import { SERVED_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
 import { SERVER_JOBS, TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
 import { MACHINE_LEAVES } from '@myco-server-worker/core/machine-settings.js';
@@ -194,6 +195,7 @@ const REGISTRIES: readonly Registry[] = [
   { label: 'data classes', source: 'packages/myco-server/src/db', section: '7.6', scan: dataClasses },
   { label: 'config leaves', source: 'packages/myco/src/config/declared-leaves.ts', section: '7.8', scan: configLeaves },
   { label: '2.0 dashboard routes', source: 'packages/myco-server/ui/src/routes/table.tsx', section: '7.2', answers: true, scan: () => [...new Set(routePaths!())].sort() },
+  { label: 'served MCP tools', source: 'packages/myco-server/src/core/tool-catalogue.ts', section: '7.3', scan: () => [...SERVED_TOOLS].sort() },
   { label: 'retained tasks', source: 'packages/myco-server/src/core/task-catalogue.ts', section: '7.4', scan: () => [...RETAINED_TASKS].sort() },
   { label: 'task schedule', source: 'packages/myco-server/src/core/jobs.ts', section: '7.4', scan: () => Object.keys(TASK_SCHEDULE).sort() },
   { label: 'server jobs', source: 'packages/myco-server/src/core/jobs.ts', section: '7.5', scan: () => SERVER_JOBS.map((job) => job.name).sort() },

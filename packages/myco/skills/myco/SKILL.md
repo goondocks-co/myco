@@ -61,6 +61,18 @@ myco_spores { "op": "supersede", "old_spore_id": "<old id>",
 
 Plans are the same shape — `myco_plans` with `op: "save"` — and are for work that spans sessions. Status changes through an explicit status-only save.
 
+## Recording what you created
+
+When you create a pull request, issue, tag, release or deploy in this session, record it once with its own id and URL. The session page then lists it beside the commits Myco observed.
+
+```
+myco_outcomes { "op": "report", "project": "<project id>", "session_id": "<your Session:: id>",
+                "kind": "pr", "artifact_id": "1931",
+                "url": "https://github.com/<owner>/<repo>/pull/1931" }
+```
+
+`kind` is `pr`, `issue`, `tag`, `release` or `deploy`. The URL must be https. Reporting the same artifact again changes nothing. The same artifact under a different URL is refused: a report is never rewritten. Without MCP, make the same call through the CLI, which always needs its credential source named. On a machine enrolled as a member, run `myco tool call myco_outcomes --credential registry --json --input '<the same arguments>'`. In CI, set `MYCO_SERVER_URL`, `MYCO_MEMBER_TOKEN` and `MYCO_PROJECT` and run it with `--credential env`.
+
 ## What happens without you
 
 Where the `myco` binary is installed and its hooks are wired, sessions are captured and context is served at session start and on each prompt. You do not call anything for that.

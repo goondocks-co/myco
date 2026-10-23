@@ -1,6 +1,6 @@
 # The Myco tool surface
 
-Seven tools. Every one takes `project` — a project id or the repository's git remote. Reads fall back to the credential's own project; writes without it are refused.
+Eight tools. Every one takes `project` — a project id or the repository's git remote. Reads fall back to the credential's own project; writes without it are refused.
 
 ## myco_search
 
@@ -43,6 +43,10 @@ An external agent with a per-project access key reaches `list`, `get`, `save` an
 ## myco_sessions
 
 `list` (default) and `get`. A session is the record of one agent conversation: what was asked, what was done, what came out of it. `get` by id is how you read what an earlier session actually did rather than guessing from the diff.
+
+## myco_outcomes
+
+`list` (default) and `report`. `report` records one pull request, issue, tag, release or deploy you created in this session. It takes `session_id` (your own, from the `Session::` line), `kind` (`pr`, `issue`, `tag`, `release` or `deploy`), `artifact_id` (its own id: a number, a tag name, a release or deploy id), `url` (https, with no user name or password) and `project`. The answer carries `created`: true the first time, false for the same report again. The same artifact under a different URL is refused. A session that is not yours, or that was deleted, gets `session_id not found`. `list` takes a `session_id` and pages with `cursor`. Through the CLI, name the credential source: `myco tool call myco_outcomes --credential registry --json --input '…'` on an enrolled machine, or `--credential env` with `MYCO_SERVER_URL`, `MYCO_MEMBER_TOKEN` and `MYCO_PROJECT` set.
 
 ## myco_skills
 
