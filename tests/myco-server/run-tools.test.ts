@@ -523,6 +523,7 @@ describe('the extraction cursor', () => {
     const second = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', limit: 2, cursor: first.next_cursor }) as any).result;
     expect(second.prompts.map((p: any) => p.prompt_id)).toEqual(['p_2']);
 
+    await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true });
     expect((await call(harness.token, 'myco_run_prompts', { op: 'mark_processed', prompt_id: 'p_0' }) as any).result)
       .toEqual({ prompt_id: 'p_0', marked: true });
     const after = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed' }) as any).result;
@@ -530,7 +531,7 @@ describe('the extraction cursor', () => {
 
     const withText = (await call(harness.token, 'myco_run_prompts', { op: 'unprocessed', include_text: true }) as any).result;
     expect(withText.prompts[0].text).toBe('body of p_1');
-    expect((await call(harness.token, 'myco_run_prompts', { op: 'mark_processed', prompt_id: 'p_absent' }) as any).result.marked).toBe(false);
+    expect((await call(harness.token, 'myco_run_prompts', { op: 'mark_processed', prompt_id: 'p_absent' }) as any).result).toMatchObject({ ok: false, error: expect.stringContaining('not served') });
   });
 
   it('reads the origins a person speaks through and skips the rest, and hides an in-flight session unless asked', async () => {

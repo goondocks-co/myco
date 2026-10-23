@@ -5,7 +5,7 @@
  *
  * The ask is one pass over the prompts nobody has read: read a page, record
  * what it taught as spores, retire what it replaced, mark the page read, close.
- * The Deployment's cursor is the processed mark on each prompt, so a pass that
+ * The Deployment's coverage is the acknowledgement of each served item, so a pass that
  * dies mid-page has left every prompt it marked behind it and the next tick
  * reads on from the rest; nothing here is resumed, nothing is phased.
  *
@@ -71,10 +71,10 @@ export function extractionPrompt(): string {
     '',
     '## Steps',
     '',
-    `1. Call \`myco_run_prompts\` op "unprocessed" with \`include_text\` true and \`limit\` ${EXTRACTION_PAGE}. Each item carries its served id, the prompt id, its session, the person's prompt and an excerpt of the agent's first response. An empty page means there is nothing to read: close at once with action "${RUN_SKIP_ACTION}" and its \`audit\`.`,
+    `1. Call \`myco_run_prompts\` op "unprocessed" with \`include_text\` true and \`limit\` ${EXTRACTION_PAGE}. Each item carries its served id, the prompt id, its session, the person's prompt and an excerpt of the agent's first response. If a page is empty and has \`next_cursor\`, call again with that value as \`cursor\` until you reach material or an empty page with no \`next_cursor\`. Only an empty page with no \`next_cursor\` means there is nothing to read: close at once with action "${RUN_SKIP_ACTION}" and its \`audit\`.`,
     '2. Read the whole page before writing anything, grouped by session, and list the candidate observations. Group candidates by topic: one search per topic, never one per prompt.',
     '3. For each topic, call `myco_search` with `type` "spore" and the topic as the query. Decide per the rules: write nothing, save, save then supersede, consolidate, or obsolete. Writes go through `myco_spores` op "save", "supersede", "consolidate" and "obsolete". Every save or consolidation cites its supporting `session_id`; date historical observations as the rules describe.',
-    '4. Call `myco_run_prompts` op "mark_processed" with its `prompt_id` for EVERY prompt on the page you read, including the ones that taught nothing. A prompt left unmarked is read again by the next pass.',
+    '4. Call `myco_run_prompts` op "mark_processed" with its `served_id` for EVERY item on the page you read, including the ones that taught nothing. A prompt left unmarked is read again by the next pass.',
     `5. Close by calling \`myco_run\` op "report": action "${EXTRACTION_REPORT_ACTION}" with a one-line \`summary\` and \`details\` as a serialized JSON object string such as "{\\"prompts\\":20,\\"created\\":3,\\"superseded\\":1,\\"consolidated\\":0,\\"obsoleted\\":0}". ${RUN_AUDIT_INSTRUCTION}`,
     '',
     'Partial work stands: a spore saved and a prompt marked before you run out of budget are kept, and the next pass reads on from the prompts you did not mark.',

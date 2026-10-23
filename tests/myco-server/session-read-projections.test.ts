@@ -1,10 +1,11 @@
+import { markPromptProcessed } from './helpers/extraction.js';
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { READ_BUDGET_SESSION_STATEMENTS } from '@myco-server-worker/db/read-budget-session-statements.js';
-import { markPromptProcessed, newestUnprocessedSession, newestUnprocessedSessionQuery } from '@myco-server-worker/read/prompts.js';
+import { newestUnprocessedSession, newestUnprocessedSessionQuery } from '@myco-server-worker/read/prompts.js';
 import { hasUnprocessedPrompts } from '@myco-server-worker/core/schedule-rules.js';
 import { listProjects, listProjectsSql } from '@myco-server-worker/read/sessions.js';
 import { sqliteD1 } from './helpers/d1.js';
@@ -22,7 +23,7 @@ const transcript = (id: string, owner: string, imported: number | null = null) =
 const sourceSelection = `SELECT s.session_id AS id,s.ended_at AS endedAt,
   EXISTS(SELECT 1 FROM transcripts t WHERE t.project_id=s.project_id AND t.session_id=s.session_id AND t.imported_at IS NULL) AS liveCapture
   FROM sessions s WHERE s.project_id=? AND s.ended_at IS NOT NULL
-  AND EXISTS(SELECT 1 FROM prompt_batches p WHERE p.project_id=s.project_id AND p.session_id=s.session_id AND p.processed=0 AND p.origin IN ('user','unknown'))
+  AND EXISTS(SELECT 1 FROM prompt_batches p WHERE p.project_id=s.project_id AND p.session_id=s.session_id AND p.processed=0 AND p.origin IN ('user','unknown') AND NOT EXISTS(SELECT 1 FROM extraction_acks a WHERE a.project_id=p.project_id AND a.record_id=p.prompt_id AND a.kind='record'))
   AND NOT EXISTS(SELECT 1 FROM session_tombstones t WHERE t.project_id=s.project_id AND t.session_id=s.session_id)
   AND NOT EXISTS(SELECT 1 FROM transcripts t WHERE t.project_id=s.project_id AND t.session_id=s.session_id AND (t.parsed_offset<t.size OR t.parse_error IS NOT NULL))
   ORDER BY liveCapture DESC,s.ended_at DESC,s.session_id DESC LIMIT 1`;
@@ -36,7 +37,7 @@ async function assertProjection(db: RelationalStore) {
     EXISTS(SELECT 1 FROM session_tombstones t WHERE t.project_id=i.project_id AND t.session_id=i.session_id) AS tombstoned,
     (SELECT ended_at FROM sessions s WHERE s.project_id=i.project_id AND s.session_id=i.session_id) AS ended_at,
     (SELECT last_received_at FROM sessions s WHERE s.project_id=i.project_id AND s.session_id=i.session_id) AS last_received_at,
-    (SELECT COUNT(*) FROM prompt_batches p WHERE p.project_id=i.project_id AND p.session_id=i.session_id AND p.processed=0 AND p.origin IN ('user','unknown')) AS eligible_prompts,
+    (SELECT COUNT(*) FROM prompt_batches p WHERE p.project_id=i.project_id AND p.session_id=i.session_id AND p.processed=0 AND p.origin IN ('user','unknown') AND NOT EXISTS(SELECT 1 FROM extraction_acks a WHERE a.project_id=p.project_id AND a.record_id=p.prompt_id AND a.kind='record')) AS eligible_prompts,
     (SELECT COUNT(*) FROM transcripts t WHERE t.project_id=i.project_id AND t.session_id=i.session_id AND (t.parsed_offset<t.size OR t.parse_error IS NOT NULL)) AS pending_transcripts,
     (SELECT COUNT(*) FROM transcripts t WHERE t.project_id=i.project_id AND t.session_id=i.session_id AND t.imported_at IS NULL) AS live_transcripts
     FROM ids i ORDER BY i.project_id,i.session_id`).all<Record<string, unknown>>();
@@ -70,6 +71,7 @@ async function verify(db: RelationalStore) {
   ];
   for (const sql of initial) await db.prepare(sql).run();
   await db.batch(READ_BUDGET_SESSION_STATEMENTS.map((sql) => db.prepare(sql)));
+  for (const step of SCHEMA_STEPS.filter(step => step.version > 83)) await db.batch(step.statements.map(sql => db.prepare(sql)));
   await assertProjection(db);
   await db.batch([
     db.prepare('UPDATE session_read_facts SET eligible_prompts=99'),
@@ -89,6 +91,7 @@ async function verify(db: RelationalStore) {
   expect(await markPromptProcessed(db, { projectId: 'proj_1' }, 'old')).toBe(true);
   expect(await markPromptProcessed(db, { projectId: 'proj_1' }, 'absent')).toBe(false);
   await assertProjection(db);
+  await db.prepare('DELETE FROM agent_runs').run();
   await db.prepare("UPDATE prompt_batches SET processed=0 WHERE prompt_id='old'").run();
   const mutations = [
     "UPDATE transcripts SET imported_at=1 WHERE transcript_id='old'",

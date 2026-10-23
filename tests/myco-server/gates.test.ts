@@ -1,4 +1,5 @@
 import { sourceCalls } from './helpers/source-calls.js';
+import { UNRELATED_PROCESSED_LINES } from './helpers/processed-token-allowlist.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -44,6 +45,43 @@ const allFiles = (dir: string): string[] =>
     return statSync(f).isDirectory() ? allFiles(f) : [f];
   });
 const files = (dir: string): string[] => allFiles(dir).filter((f) => f.endsWith('.ts'));
+
+it('defines the extraction unread predicate once and never writes the historical processed flag', () => {
+  const owner = join(SRC, 'read/extraction-coverage.ts');
+  const historicalDdl = new Set([
+    '\`ALTER TABLE prompt_batches ADD COLUMN processed INTEGER NOT NULL DEFAULT 0\`',
+    '\`CREATE INDEX IF NOT EXISTS idx_prompt_batches_unprocessed ON prompt_batches (project_id, processed, created_at, prompt_id)\`',
+  ]);
+  const allowedLines = new Map<string, Set<string>>();
+  for (const group of Object.values(UNRELATED_PROCESSED_LINES)) for (const [file, lines] of Object.entries(group)) {
+    const held = allowedLines.get(file) ?? new Set<string>();
+    for (const line of lines) held.add(line);
+    allowedLines.set(file, held);
+  }
+  const unexpected: { file: string; token: string }[] = [];
+  for (const file of files(SRC).filter(file => file !== owner)) {
+    const source = readFileSync(file, 'utf8'), relative = file.slice(SRC.length + 1), tokens = tokensOf(source);
+    for (const [index, token] of tokens.entries()) {
+      if (!/\bprocessed\b/.test(token.text)) continue;
+      const line = source.slice(source.lastIndexOf('\n', token.start - 1) + 1, source.indexOf('\n', token.end) < 0 ? source.length : source.indexOf('\n', token.end)).trim();
+      const namedDomainUse = !token.text.includes('\n') && allowedLines.get(relative)?.has(line);
+      const moduleImport = tokens[index - 1]?.kind === K.FromKeyword && /^['"].*\/processed(?:-resources)?\.js['"]$/.test(token.text);
+      const policy = ['routes.ts', 'mcp/registry.ts'].includes(relative) && token.text === "'processed'"
+        && /\b(?:httpPolicy|served)\([^()]*$/.test(source.slice(Math.max(0, token.start - 100), token.start));
+      const route = relative === 'routes.ts' && (token.text === "'/api/projects/{projectId}/processed/{kind}/{id}'"
+        || (token.kind === K.RegularExpressionLiteral && token.text.includes('\\/processed\\/')));
+      const historical = relative === 'db/schema.ts' && historicalDdl.has(token.text);
+      const triggerColumns = relative === 'db/read-budget-session-statements.ts' && token.text === '\`project_id,session_id,processed,origin${';
+      const classification = ['core/processed-resources.ts', 'db/schema.ts'].includes(relative)
+        && !/\bprocessed\b/.test(token.text.replace(/(classification\s*(?:=|TEXT NOT NULL DEFAULT)\s*)'processed'/g, '$1')
+          .replace('processed reference classification is immutable', 'reference classification is immutable'));
+      if (!(namedDomainUse || moduleImport || policy || route || historical || triggerColumns || classification)) unexpected.push({ file: relative, token: token.text });
+    }
+  }
+  expect(unexpected).toEqual([]);
+  const historicalCallers = files(SRC).filter(file => file !== owner && /beforeLedger\s*:\s*true|promptSessionReadTriggers\(true\)/.test(readFileSync(file, 'utf8')));
+  expect(historicalCallers).toEqual([join(SRC, 'db/read-budget-session-statements.ts')]);
+});
 /**
  * Shared code: everything that is neither a platform adapter nor an entry point.
  * Those are the only places a platform may be named. `src/index.ts` counts as an
