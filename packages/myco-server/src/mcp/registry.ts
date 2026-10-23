@@ -19,6 +19,7 @@ import { handleSessions } from './tools/sessions.js';
 import { handleSkills } from './tools/skills.js';
 import { handleSpores } from './tools/spores.js';
 import { handleSearch } from './tools/search.js';
+import { handleOutcomes } from './tools/outcomes.js';
 import type { ToolInput } from './validate.js';
 import type { AuthorizationDeclaration, Action, ResourceKind, SubjectKind } from '../auth/authorization.js';
 
@@ -72,6 +73,7 @@ export const TOOL_REGISTRY: Record<ServedTool, ToolEntry> = {
       supersede: served(handleSpores, 'spore', 'edit'), consolidate: served(handleSpores, 'spore', 'edit', ['member', 'run']), obsolete: served(handleSpores, 'spore', 'edit', ['member', 'run']),
     },
   },
+  myco_outcomes: { defaultOp: 'list', ops: { list: served(handleOutcomes, 'processed', 'read', ['member']), report: served(handleOutcomes, 'processed', 'capture', ['member']) } },
   myco_agent: { defaultOp: 'runs', ops: { runs: served(handleAgent, 'processed', 'read', ['member']), run: served(handleAgent, 'processed', 'read', ['member']) } },
 };
 

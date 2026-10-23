@@ -1,6 +1,9 @@
-import { CopyButton } from '../../design';
+import { CopyButton, ExternalLink, tapTarget } from '../../design';
 import { releaseStateLabel, shortRef } from '../../components/release/release-labels';
-import { useSessionCommits, type CapturePoint, type CommitChanges, type CommitObservation, type CommitReleaseCheck, type SessionCommits } from '../../hooks/use-sessions';
+import {
+  useSessionArtifacts, useSessionCommits,
+  type ArtifactKind, type CapturePoint, type CommitChanges, type CommitObservation, type CommitReleaseCheck, type SessionArtifact, type SessionCommits,
+} from '../../hooks/use-sessions';
 import { ago } from '../today/words';
 import { SessionEventList, type SessionEventRow } from './SessionEventList';
 
@@ -86,23 +89,64 @@ export function outcomeRows({ observations, release }: SessionCommits, now: numb
   return rows.sort((a, b) => a.at - b.at);
 }
 
-/** What came of the session that Myco observed: the commits it started and ended on, and where the release check found its work. */
+/** What each kind of reported artifact is called. */
+export const ARTIFACT_WORDS: Record<ArtifactKind, string> = {
+  pr: 'Pull request',
+  issue: 'Issue',
+  tag: 'Tag',
+  release: 'Release',
+  deploy: 'Deploy',
+};
+
+/** Said when the session has neither an observed commit nor a reported artifact. */
+export const NOTHING_RECORDED = 'Nothing was recorded for this session.';
+
+/** A pull request or issue is named by its number, as people say it; anything else by its id as reported. */
+function artifactTitle({ kind, artifactId }: SessionArtifact): string {
+  return (kind === 'pr' || kind === 'issue') && /^\d+$/.test(artifactId) ? `#${artifactId}` : artifactId;
+}
+
+/** A reported artifact as a row: its kind, its own id, and its URL, a link only where the read marks it linked. */
+export function artifactRow(artifact: SessionArtifact): SessionEventRow {
+  return {
+    key: `artifact:${artifact.id}`,
+    at: artifact.reportedAt,
+    kind: ARTIFACT_WORDS[artifact.kind],
+    title: artifactTitle(artifact),
+    detail: artifact.linked
+      ? <ExternalLink href={artifact.url} className={`${tapTarget} break-all`}>{artifact.url}</ExternalLink>
+      : <span className="break-all">{artifact.url}</span>,
+    trailing: <CopyButton value={artifact.url} label="Copy link" compact />,
+  };
+}
+
+/**
+ * The commit rows and the artifact rows loaded so far, oldest first. While more artifacts remain to load, a commit row
+ * later than the last artifact loaded waits for them, so loading a page never puts a row above one already shown.
+ */
+export function mergeOutcomes(commits: readonly SessionEventRow[], artifacts: readonly SessionEventRow[], moreArtifacts: boolean): SessionEventRow[] {
+  const frontier = moreArtifacts ? artifacts.at(-1)?.at ?? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
+  return [...commits.filter((row) => row.at <= frontier), ...artifacts].sort((a, b) => a.at - b.at);
+}
+
+/** What came of the session: the commits Myco observed it start and end on, where the release check found that work, and what it reported creating. */
 export function SessionOutcomes({ projectId, sessionId, now }: { projectId: string; sessionId: string; now: number }) {
   const commits = useSessionCommits(projectId, sessionId);
+  const artifacts = useSessionArtifacts(projectId, sessionId);
   return (
     <SessionEventList
       read={{
-        rows: commits.data === undefined ? [] : outcomeRows(commits.data, now),
-        isPending: commits.isPending,
-        error: commits.error,
-        retry: () => void commits.refetch(),
-        hasMore: false,
-        isFetchingMore: false,
-        more: () => undefined,
+        rows: mergeOutcomes(commits.data === undefined ? [] : outcomeRows(commits.data, now), artifacts.rows.map(artifactRow), artifacts.hasMore),
+        isPending: commits.isPending || artifacts.isPending,
+        error: commits.error ?? artifacts.error,
+        retry: () => { void commits.refetch(); artifacts.retry(); },
+        hasMore: artifacts.hasMore,
+        isFetchingMore: artifacts.isFetchingMore,
+        more: artifacts.more,
       }}
       noun="outcomes"
       wrap
-      emptyTitle="No commits were observed in this session."
+      emptyTitle={NOTHING_RECORDED}
       loadingLabel="Loading the outcomes"
       now={now}
     />

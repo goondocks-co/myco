@@ -108,7 +108,7 @@ export async function relationalSnapshot(db: RelationalStore, tables: readonly s
   return snapshot;
 }
 
-const SESSION_CHILDREN = ['events', 'archive_bundles', 'raw_archive_refs', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'attachments', 'transcripts'];
+const SESSION_CHILDREN = ['events', 'archive_bundles', 'raw_archive_refs', 'prompt_batches', 'tool_calls', 'responses', 'plans', 'attachments', 'transcripts', 'session_artifacts'];
 const identity = (row: Row, key: string) => JSON.stringify([row.project_id, row[key]]);
 
 /** A snapshot must carry the registered bytes and evidence for every archived event. */

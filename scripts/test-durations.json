@@ -45,7 +45,8 @@
     "local: #1899 PR5 correction 3, npm test with pinned Bun1.4.0 darwin-arm64: lineage-restore (schema-95 createBackup restored into step-96 D1 and native) measured 8.58s max of two; weight 18000ms is twice measured plus startup",
     "local: #1899 PR5 correction 2, npm test with pinned Bun1.4.0 darwin-arm64: lineage-schema with the D1 deleted-children regression (799 to 9,799 tombstoned children per parent column, marked through the tombstone writer's statements) measured 31.99s; weight 66000ms is twice measured plus startup",
     "local: #1899 PR5 correction 1, npm test with pinned Bun1.4.0 darwin-arm64: lineage-schema (v96 upgrade plus D1 rows-read gate at 1,000 and 10,000 children) measured 2.58s max of two, weight 6000ms is twice measured plus startup; dashboard sessions.test.tsx measured 10.99s max of two, weight set to 11000ms",
-    "local: #1899 PR5 lineage npm test with pinned Bun1.4.0 darwin-arm64: native/D1 lineage-step upgrade measured 2.09s max of three, weight 4500ms is twice measured plus startup; lineage parity via npm run test:parity native 25ms and workerd D1 129ms, retained15000ms single-scenario startup floor"
+    "local: #1899 PR5 lineage npm test with pinned Bun1.4.0 darwin-arm64: native/D1 lineage-step upgrade measured 2.09s max of three, weight 4500ms is twice measured plus startup; lineage parity via npm run test:parity native 25ms and workerd D1 129ms, retained15000ms single-scenario startup floor",
+    "local: #1899 PR7 npm test with pinned Bun1.4.0 darwin-arm64: session-artifacts.test.ts measured 0.71s max of two, weight 1500ms is twice measured plus startup; session artifacts parity scenario passed on both targets in a full local run, retained 15000ms single-scenario startup floor"
   ],
   "files": {
     "target/test-bundles/node-env-mt-E0RYoB/tests-symbionts-parsers.test.ts": 117,
@@ -870,7 +871,8 @@
     "tests/myco-server/hook-placement.test.ts": 1000,
     "tests/myco-server/extraction-coverage.test.ts": 1500,
     "tests/myco-server/extraction-coverage-budget.test.ts": 225000,
-    "tests/myco-server/extraction-history-budget.test.ts": 90000
+    "tests/myco-server/extraction-history-budget.test.ts": 90000,
+    "tests/myco-server/session-artifacts.test.ts": 1500
   },
   "parity": {
     "D1: latest migration upgrades seeded previous schema to expected state": 45000,
@@ -961,6 +963,7 @@
     "receipt snapshots: atomic plan metadata survives source deletion": 60000,
     "hook placement: session and Project hints, delivery, and unplaced hook records": 120000,
     "KPI deliveries: delivery counts, served prompts and retired attention agree on both stores": 120000,
-    "extraction coverage: served item acks, late material and counters survive run deletion": 45000
+    "extraction coverage: served item acks, late material and counters survive run deletion": 45000,
+    "session artifacts: declared report, idempotent re-report, conflict refusal, deletion, index-backed page read": 15000
   }
 }

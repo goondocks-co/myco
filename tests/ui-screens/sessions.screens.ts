@@ -21,6 +21,10 @@ import { SCREENS_ENV, screensEnv } from './env.ts';
 
 const onFixture = (): boolean => process.env[SCREENS_ENV.fixture] === '1';
 
+/** What the fixture's outcome session reports it created (`OUTCOME_ARTIFACTS` in fixture.ts). */
+const REPORTED_PR = 'https://github.com/goondocks-co/myco/pull/1873';
+const REPORTED_DEPLOY = 'https://preview-oct-nineteen.myco-example-account.workers.dev/projects/myco/sessions/recent';
+
 const ROLES = [
   { role: 'admin', cookie: 'ownerCookie' },
   { role: 'member', cookie: 'memberCookie' },
@@ -510,11 +514,17 @@ test.describe('Sessions', () => {
         await tabs.getByRole('tab', { name: 'Outcomes' }).click();
         await expect(page).toHaveURL(/\?tab=outcomes$/);
         const outcomes = page.getByRole('list', { name: 'Outcomes' }).getByRole('listitem');
-        await expect(outcomes).toHaveCount(2);
+        await expect(outcomes).toHaveCount(4);
         await expect(outcomes.nth(0)).toContainText('Started at 3f9c2a1 on main');
         await expect(outcomes.nth(1)).toContainText('Ended at 8d41b7e');
         await expect(outcomes.nth(1)).toContainText(/Released · myco\/v2\.0\.3 · PR #1873 · checked /);
         await expect(outcomes.getByRole('button', { name: 'Copy commit' })).toHaveCount(2);
+        // What the session reported it created, after its commits: a link where the page names the host, text elsewhere.
+        await expect(outcomes.nth(2)).toContainText('Pull request#1873');
+        await expect(outcomes.nth(2).getByRole('link', { name: REPORTED_PR })).toHaveAttribute('href', REPORTED_PR);
+        await expect(outcomes.nth(3)).toContainText(`Deploydep_20261019_preview${REPORTED_DEPLOY}`);
+        await expect(outcomes.nth(3).getByRole('link')).toHaveCount(0);
+        await expect(outcomes.getByRole('button', { name: 'Copy link' })).toHaveCount(2);
         await expect(page.locator('[data-session-events="outcomes"] [data-filter-bar]')).toHaveCount(0);
         await expectListState(page, viewport, 'session-outcomes');
 
@@ -526,10 +536,10 @@ test.describe('Sessions', () => {
         await expect(outcomes.nth(1)).toContainText('Start and end HEAD are the same');
         await expectListState(page, viewport, 'session-outcomes-same-dirty');
 
-        // A session whose commits were never observed says so; another tab opens from it.
+        // A session with no observed commit and no report says nothing was recorded; another tab opens from it.
         await reopen('Checkout form validation messages rewritten');
         await tabs.getByRole('tab', { name: 'Outcomes' }).click();
-        await expect(page.getByText('No commits were observed in this session.')).toBeVisible();
+        await expect(page.getByText('Nothing was recorded for this session.')).toBeVisible();
         await expectListState(page, viewport, 'session-outcomes-empty');
         await tabs.getByRole('tab', { name: 'Spores' }).click();
         await expect(page).toHaveURL(/\?tab=spores$/);

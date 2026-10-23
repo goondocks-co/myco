@@ -3,9 +3,9 @@ import { Play } from 'lucide-react';
 import { ApiError } from '../../lib/api';
 import {
   Avatar, Button, Card, CommandBlock, ConfirmDialog, CopyButton, DayGroup, Dialog, DialogContent, DialogFooter, DialogTrigger,
-  ActionLink, Disclosure, EmptyState, ErrorState, FactRow, FactsPanel, FilterBar, HealthDot, IconButton, Input, Kbd, LaneTimeline, Link, ListRow,
+  ActionLink, Disclosure, EmptyState, ErrorState, ExternalLink, FactRow, FactsPanel, FilterBar, HealthDot, IconButton, Input, Kbd, LaneTimeline, Link, ListRow,
   LoadingState, MoreMenu, SearchableSelect, SearchInput, Select, ShowMore, Stat, StatusChip, Switch, Tabs, TabsContent,
-  TabsList, TabsTrigger, Textarea, TypeChip,
+  TabsList, TabsTrigger, Textarea, TypeChip, tapTarget,
 } from '../index';
 
 const SURFACES = ['page', 'bg', 'surface-1', 'surface-2', 'surface-3', 'line', 'line-strong'] as const;
@@ -280,6 +280,22 @@ export function Specimen() {
               kicker={<TypeChip>Done</TypeChip>}
               title="Run Myco from source"
               meta="3 of 3 items done"
+            />
+            <ListRow
+              leading={<time className="flex w-s12 flex-col t-meta tabular-nums text-muted sm:w-time-col"><span>Oct 19</span><span>15:10</span></time>}
+              kicker={<TypeChip>Pull request</TypeChip>}
+              title="#1931"
+              meta={<ExternalLink href="https://github.com/goondocks-co/myco/pull/1931" className={`${tapTarget} break-all`}>https://github.com/goondocks-co/myco/pull/1931</ExternalLink>}
+              trailing={<CopyButton value="https://github.com/goondocks-co/myco/pull/1931" label="Copy link" compact />}
+              wrap
+            />
+            <ListRow
+              leading={<time className="flex w-s12 flex-col t-meta tabular-nums text-muted sm:w-time-col"><span>Oct 19</span><span>15:20</span></time>}
+              kicker={<TypeChip>Deploy</TypeChip>}
+              title="dep_20261019_1520_preview"
+              meta={<span className="break-all">https://preview-oct-nineteen.myco-example-account.workers.dev/projects/myco/sessions/recent</span>}
+              trailing={<CopyButton value="https://preview-oct-nineteen.myco-example-account.workers.dev/projects/myco/sessions/recent" label="Copy link" compact />}
+              wrap
             />
             <ListRow
               leading={<time className="flex w-s12 flex-col t-meta tabular-nums text-muted sm:w-time-col"><span>Oct 19</span><span>15:30</span></time>}
