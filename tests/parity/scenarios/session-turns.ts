@@ -1,3 +1,4 @@
+import { uuidv5 } from '@myco-server-worker/hash.js';
 import { expect } from 'bun:test';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
@@ -44,7 +45,7 @@ export const sessionTurns: ParityScenario = {
     const stamp = Date.now();
     const session = `parity-turns-${stamp}`;
     const [p1, p2, p3] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
-    await post(session, 'session.start', { agent: 'claude-code', branch: 'turns', startedAt: stamp });
+    await post(session, 'session.start', { agent: 'copilot', branch: 'turns', startedAt: stamp });
     await post(session, 'prompt', { promptId: p1, text: `Please rename the project card ${stamp}`, origin: 'user' });
     await post(session, 'tool.use', { toolCallId: UUID(1), promptId: p1, toolName: 'Read', input: { file_path: 'a.ts' }, output: 'the file', success: true });
     await post(session, 'tool.failure', { toolCallId: UUID(2), promptId: p1, toolName: 'Bash', input: { command: 'false' }, success: false, errorMessage: 'exit 1' });
@@ -72,6 +73,7 @@ export const sessionTurns: ParityScenario = {
     await target.sql(`INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES (${lit(target.projectId)},${lit(session)},'cortex',${stamp})`);
     await target.sql(`UPDATE prompt_batches SET thread_id = 'reviewer' WHERE project_id = ${lit(target.projectId)} AND prompt_id = ${lit(p3)}`);
     await target.sql(`INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES (${lit(target.projectId)},${lit(session)},'cortex:reviewer',${stamp})`);
+    await post(session, 'subagent.start', { subagentId: await uuidv5('subagent', session, 'reviewer'), agentType: 'reviewer', parentPromptId: p3 });
     await target.sql(`INSERT INTO prompt_context_answers(project_id,session_id,prompt_id,id,outcome,context_chars,parts,skipped,failures,selection,created_at)
       VALUES (${lit(target.projectId)},${lit(session)},${lit(p1)},'answer','empty',0,'[]','["spores:empty"]','[]','{"candidates":0}',${stamp})`);
     const detail = await owner<Detail>(`${base}/turns/${p1}`);
@@ -95,6 +97,8 @@ export const sessionTurns: ParityScenario = {
     // The start block is the session's, listed with the session's own context; a turn carries its sub-agent preambles.
     expect(sessionAudit.body.turnContexts[p1]).toBeUndefined();
     expect(sessionAudit.body.turnContexts[p3]).toEqual({ subagents: 1 });
+    await target.sql(`UPDATE prompt_batches SET thread_id = 'unrelated-thread' WHERE project_id = ${lit(target.projectId)} AND prompt_id = ${lit(p3)}`);
+    expect((await owner<{ turnContexts: Record<string, { subagents: number }> }>(base)).body.turnContexts).toEqual(sessionAudit.body.turnContexts);
     const sessionContext = await owner<{ rows: { kind: string }[] }>(`${base}/context-injections`);
     expect(sessionContext.body.rows.map((r) => r.kind)).toContain('cortex');
     expect(sessionAudit.body.metrics).toMatchObject({ tools: [{ toolName: 'Bash', count: 1 }, { toolName: 'Edit', count: 1 }, { toolName: 'Read', count: 1 }], tokens: null });

@@ -23,7 +23,9 @@ export interface HarnessMeasure extends Measure {
 export interface KpiReport {
   windowDays: number | null;
   since: number | null;
-  contextPresent: Measure;
+  promptsServed: number;
+  deliveries: { placed: number; unplaced: number };
+  servedShare: Measure;
   sporeServeRate: Measure;
   sessionStartPresent: Measure;
   callsPerPrompt: Measure;

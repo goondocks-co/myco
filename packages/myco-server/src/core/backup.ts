@@ -55,7 +55,7 @@ export const BACKUP_TABLES: readonly string[] = [
   'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'prompt_batches', 'tool_calls', 'processed_resources', 'responses', 'plans',
   'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
   'agent_tasks', 'agent_runs', 'run_served_material', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners',
-  'canopy_maps', 'knowledge_release_state', 'external_grants',
+  'injection_served_items', 'canopy_maps', 'knowledge_release_state', 'external_grants',
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',
   'knowledge_git_provenance',
 ];

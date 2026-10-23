@@ -391,6 +391,7 @@ describe('the session reading page', () => {
     ]),
     '/api/projects/x/sessions/s1/plans': () => page([]),
     '/api/projects/x/sessions/s1/lineage': () => Response.json(LINEAGE),
+    '/api/projects/x/sessions/s1/unplaced': () => page([]),
     '/api/projects/x/sessions/s1/context-injections': () => page([{ kind: 'cortex', createdAt: NOW - HOUR, orderedAt: NOW - HOUR, delivery: null }]),
     '/api/projects/x/sessions/s1/attachments': () => page([
       { attachmentId: 'a1', promptId: P1, blobKey: KEY_IMG, mediaType: 'image/png', byteSize: 1234, description: 'a screenshot', createdAt: NOW, orderedAt: NOW },
@@ -415,6 +416,28 @@ describe('the session reading page', () => {
     };
     return { transcript: primary, transcripts: [primary], segments };
   };
+
+  it('reads records not placed on a turn only when their disclosure opens, including a session with no prompts', async () => {
+    const { requested } = server(routes({
+      '/api/projects/x/sessions/s1/turns': () => page([]),
+      '/api/projects/x/sessions/s1/unplaced': () => page([
+        { key: 'tool_call:a', kind: 'tool_call', id: 'a', label: 'Shell', createdAt: NOW },
+        { key: 'receipt:b', kind: 'receipt', id: 'b', label: 'Context received', createdAt: NOW },
+      ]),
+    }));
+    mount('/p/x/sessions/s1');
+    await screen.findByRole('heading', { level: 1 });
+    const disclosure = await screen.findByRole('button', { name: 'Not placed on a turn' });
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    expect(requested.some(path => path.includes('/unplaced'))).toBe(false);
+    fireEvent.click(disclosure);
+    const unplaced = await screen.findByRole('region', { name: 'Not placed on a turn' });
+    expect(within(unplaced).getByText('Shell')).toBeTruthy();
+    expect(within(unplaced).getByText('Context received')).toBeTruthy();
+    expect(screen.getAllByText('Not placed on a turn')).toHaveLength(1);
+    expect(within(unplaced).getByText('These records belong to this session. No turn in this session matches them.')).toBeTruthy();
+    expect(requested.filter(path => path.includes('/unplaced'))).toHaveLength(1);
+  });
 
   it('leads with the title and summary, keeps the facts and what came of it beside the conversation, and shows no raw id', async () => {
     server(routes());
@@ -485,8 +508,8 @@ describe('the session reading page', () => {
     server(routes({
       '/api/projects/x/sessions/s1/activity': () => activityPage([
         activityRow(),
-        activityRow({ id: 'no-result', type: 'no_result', title: 'Read', detail: 'No result captured · Not tied to a prompt', promptId: null, resultReason: 'no_result' }),
-        activityRow({ id: 'legacy', title: 'Tool call did not succeed', detail: 'Reason not recorded · Not tied to a prompt', promptId: null, resultReason: null }),
+        activityRow({ id: 'no-result', type: 'no_result', title: 'Read', detail: 'No result captured · Not placed on a turn', promptId: null, resultReason: 'no_result' }),
+        activityRow({ id: 'legacy', title: 'Tool call did not succeed', detail: 'Reason not recorded · Not placed on a turn', promptId: null, resultReason: null }),
       ]),
     }));
     mount('/p/x/sessions/s1?tab=activity');
@@ -495,7 +518,7 @@ describe('the session reading page', () => {
     expect(within(list).getAllByText('Failure')[0]).toBeTruthy();
     expect(within(list).getByText('No result captured')).toBeTruthy();
     expect(within(list).getByText('Tool call did not succeed')).toBeTruthy();
-    expect(within(list).getByText('Reason not recorded · Not tied to a prompt')).toBeTruthy();
+    expect(within(list).getByText('Reason not recorded · Not placed on a turn')).toBeTruthy();
     expect(within(list).getAllByRole('link')).toHaveLength(1);
     expect(within(list).getByRole('link').getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P1}`);
     expect(screen.queryByRole('searchbox')).toBeNull();
@@ -1489,8 +1512,8 @@ describe('the session reading page', () => {
       mount('/p/x/sessions/s1?q=reply');
       const list = await results();
       expect(within(list).getAllByRole('listitem').map((row) => row.textContent)).toEqual([
-        'Sep 2915:30Replya reply with no promptNot tied to a prompt',
-        'Sep 2915:40Replya reply to a prompt kept elsewhereNot tied to a prompt',
+        'Sep 2915:30Replya reply with no promptNot placed on a turn',
+        'Sep 2915:40Replya reply to a prompt kept elsewhereNot placed on a turn',
       ]);
       expect(within(list).queryAllByRole('link')).toEqual([]);
     });
@@ -1793,7 +1816,7 @@ describe('the session reading page', () => {
     const attachments = within(raw).getByRole('region', { name: 'Attachments' });
     await within(attachments).findByRole('img', { name: 'a screenshot' });
     const groups = within(attachments).getAllByRole('region');
-    expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Please rename the project card', 'Other prompts in this session', 'Not tied to a prompt']);
+    expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Please rename the project card', 'Other prompts in this session', 'Not placed on a turn']);
     expect(within(groups[0]!).getByRole('link', { name: 'Open the prompt' }).getAttribute('href')).toBe(`/p/x/sessions/s1?turn=${P1}`);
     expect(within(groups[0]!).getByRole('img', { name: 'a screenshot' }).getAttribute('src')).toBe('/api/projects/x/processed/attachment/a1');
     expect(within(groups[2]!).getByText('Download a diagram').getAttribute('href')).toBe('/api/projects/x/processed/attachment/a2');

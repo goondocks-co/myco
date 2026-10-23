@@ -258,7 +258,7 @@ function ContextAnswer({ answer }: { answer: PromptAnswer }) {
   return <Disclosure summary={<StatusChip>{answer.failures.length > 0 ? (answer.outcome === 'empty' ? 'Myco context lookup failed' : 'Myco context partly prepared') : answer.outcome === 'empty' ? 'Myco prepared no context' : 'Myco prepared context'}</StatusChip>}>
     <div className="flex flex-col gap-s1 t-small text-muted">
       <time dateTime={new Date(answer.createdAt).toISOString()}>{clockTime(answer.createdAt)}</time>
-      {answer.parts.map((part, i) => <p key={i}>{part.kind === 'plan-nudge' ? 'Plan reminder served' : `${count(part.sporeCount ?? 0, 'spore')} and ${count(part.planCount ?? 0, 'plan')} served`}</p>)}
+      {answer.parts.map((part, i) => <p key={i}>{part.kind === 'plan-nudge' ? 'Plan reminder prepared' : `${count(part.sporeCount ?? 0, 'spore')} and ${count(part.planCount ?? 0, 'plan')} selected`}</p>)}
       {answer.skipped.filter((skip) => !answer.failures.some(f => skip === f.contributor)).map((skip) => <p key={skip}>{words(skip)}</p>)}
       {answer.failures.map((failure, i) => <p key={i} className="text-bad">{words(failure.contributor)} · {ERROR_WORDS[failure.error] ?? 'The request could not be completed'}</p>)}
       {selection !== null && <p>{selection}</p>}
@@ -280,6 +280,6 @@ function selectionWords(answer: PromptAnswer): string | null {
   if (matches === 0) return null;
   if (answer.failures.length > 0) return count(matches, 'match', 'matches') + ', lookup incomplete';
   if (relevant === 0) return count(matches, 'match', 'matches') + ', none relevant enough';
-  if (served === 0) return count(matches, 'match', 'matches') + ', none served';
-  return count(matches, 'match', 'matches') + ', ' + count(served, 'item') + ' served';
+  if (served === 0) return count(matches, 'match', 'matches') + ', none selected';
+  return count(matches, 'match', 'matches') + ', ' + count(served, 'item') + ' selected';
 }

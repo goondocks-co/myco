@@ -50,6 +50,15 @@ describe('Needs you', () => {
     expect(await get(MEMBER_SUB)).toMatchObject({ status: 403, body: { error: 'not_admin' } });
   });
 
+  it('keeps unplaced hook records out of attention after transcript parsing', async () => {
+    const { sqlite, read } = harness();
+    sqlite.run(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,agent,size,parsed_offset,first_received_at,last_received_at,token_id,role,parsed_through_at)
+      VALUES ('proj_1','placement-tx','placement-s','m','codex',100,100,1,1,'t','primary',?)`, [NOW]);
+    sqlite.run(`INSERT INTO spore_injections(project_id,id,session_id,prompt_id,prompt_hash,spore_ids,ask_protocol,asked_at,created_at,delivered_prompt_id,delivered_at)
+      VALUES ('proj_1','placement-r','placement-s','missing-selection','h','[]','v1',?,?,'missing-delivery',?)`, [NOW - 100, NOW, NOW - 50]);
+    expect(await read()).toEqual({ items: [], unavailable: [] });
+  });
+
   it('counts the search index only when text has actually waited on it, or its updates keep failing with no success after', async () => {
     const { sqlite, run, read, kinds } = harness();
     const pending = (key: string, storedAt: number, complete = 0) => {

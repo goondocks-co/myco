@@ -24,7 +24,7 @@ import {
   updateLocalDeployment,
   type LocalDeploymentRecord,
 } from '../server/local.js';
-import { localPromptReferenceCounts, cloudflarePromptReferenceCounts, promptReferenceStatusLine } from '../server/prompt-reference-status.js';
+import { localUnplacedContextRecords, cloudflareUnplacedContextRecords, hookPlacementStatusLine } from '../server/hook-placement-status.js';
 import { keptArtifacts } from '../server/local-artifacts.js';
 import { schemaMetaValue } from '@myco-server-worker/platform/bun/server-main.js';
 import { carriedNative, runLocalDeployment } from '../server/local-run.js';
@@ -348,7 +348,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
         console.log(`  Directory:  ${paths.root}`);
         console.log(`  Address:    ${record.origin ?? `http://127.0.0.1:${record.port}`}`);
         console.log(`  Service:    ${service.loaded ? 'running at login' : service.detail ?? 'not installed'}`);
-        console.log(await promptReferenceStatusLine(() => localPromptReferenceCounts(paths, carriedNative())));
+        console.log(await hookPlacementStatusLine(() => localUnplacedContextRecords(paths, carriedNative())));
         await reportOperatorHold(localRecoveryHold(paths, carriedNative()));
         console.log(`  Serving:    ${(await reachable(record)) ? 'answering on its address' : 'not answering — see ~/.myco/logs/server.log'}`);
         return;
@@ -440,7 +440,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
       if (lastSchema !== undefined) {
         console.log(`  Last schema update (${lastSchema.appliedAt !== undefined ? 'applied' : status.schema === lastSchema.schemaAfter ? 'completed; confirmed by live schema' : 'recovery point recorded; migration not confirmed'}): ${lastSchema.schemaBefore} → ${lastSchema.schemaAfter} at ${lastSchema.appliedAt ?? lastSchema.recordedAt}, bookmark ${lastSchema.bookmark}`);
       }
-      console.log(await promptReferenceStatusLine(() => cloudflarePromptReferenceCounts({ ...cloudflareOptions(), fetch: deps.fetchImpl })));
+      console.log(await hookPlacementStatusLine(() => cloudflareUnplacedContextRecords({ ...cloudflareOptions(), fetch: deps.fetchImpl })));
       await reportOperatorHold(cloudflareRecoveryHoldOf(cloudflareOptions()));
       return;
     }

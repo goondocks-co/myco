@@ -1,3 +1,4 @@
+import { hookPlacementSql, placedHintSql } from './hook-placement.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { assertSessionMaterialReady, sessionMaterialReadySql, titlingClaimAvailableSql } from './material-readiness.js';
 import { notTombstonedSql } from '../core/tombstones.js';
@@ -10,6 +11,7 @@ import { containsPattern, keyset, page, type Page, type ReadScope } from './scop
 /** A child projection read: its table, selected columns, order expression and tie-breaking identity. */
 export interface ChildQuery<T> {
   table: string;
+  promptHint?: string;
   columns: string;
   idColumn: string;
   /** The numeric ordering expression paired with the identity in a page cursor. */
@@ -37,10 +39,13 @@ export async function listChildren<T>(
   const limit = k.limit;
   const conditions = ['project_id = ?', 'session_id = ?'];
   const params: unknown[] = [scope.projectId, sessionId];
-  if (opts.promptId !== undefined) { conditions.push('prompt_id = ?'); params.push(opts.promptId); }
+  if (opts.promptId !== undefined) {
+    conditions.push(`${query.promptHint ?? 'prompt_id'} = ?`); params.push(opts.promptId);
+    if (query.promptHint !== undefined) conditions.push(hookPlacementSql({ project: `${query.table}.project_id`, session: `${query.table}.session_id`, prompt: `${query.table}.${query.promptHint}` }));
+  }
   for (const filter of filters) { conditions.push(filter.sql); params.push(...filter.params); }
   if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
-  const sql = `SELECT ${query.columns}, ${order} AS order_at, ${query.idColumn} FROM ${query.table}
+  const sql = `SELECT ${childColumns(query)}, ${order} AS order_at, ${query.idColumn} FROM ${query.table}
                 WHERE ${conditions.join(' AND ')}
                 ORDER BY ${order} ASC, ${query.idColumn} ASC LIMIT ?`;
   const { results } = await db.prepare(sql).bind(...params, limit + 1).all<Record<string, unknown>>();
@@ -49,15 +54,21 @@ export async function listChildren<T>(
   return { rows: paged.rows.map(({ __id, ...rest }) => rest as T & { orderedAt: number }), cursor: paged.cursor };
 }
 
+function childColumns<T>(query: ChildQuery<T>): string {
+  if (query.promptHint === undefined) return query.columns;
+  return `${placedHintSql({ project: `${query.table}.project_id`, session: `${query.table}.session_id`, prompt: `${query.table}.${query.promptHint}` })} AS prompt_id, ${query.columns}`;
+}
+
 /** First pages for several prompts, each bounded independently, in one scoped query. */
 export async function listChildrenByPrompt<T>(db: RelationalStore, query: ChildQuery<T>, scope: ReadScope, sessionId: string, promptIds: readonly string[], limit: number): Promise<Map<string, Page<T & { orderedAt: number }>>> {
   const pages = new Map<string, Page<T & { orderedAt: number }>>();
   if (promptIds.length === 0) return pages;
   const { results } = await db.prepare(`SELECT * FROM (
-    SELECT ${query.columns}, ${query.orderColumn} AS order_at, ${query.idColumn},
-      ROW_NUMBER() OVER (PARTITION BY prompt_id ORDER BY ${query.orderColumn} ASC, ${query.idColumn} ASC) AS page_row
+    SELECT ${childColumns(query)}, ${query.orderColumn} AS order_at, ${query.idColumn},
+      ROW_NUMBER() OVER (PARTITION BY ${query.promptHint ?? 'prompt_id'} ORDER BY ${query.orderColumn} ASC, ${query.idColumn} ASC) AS page_row
     FROM (SELECT value AS wanted_prompt FROM json_each(?)) wanted CROSS JOIN ${query.table}
-    WHERE project_id = ? AND session_id = ? AND prompt_id = wanted.wanted_prompt
+    WHERE project_id = ? AND session_id = ? AND ${query.promptHint ?? 'prompt_id'} = wanted.wanted_prompt
+      ${query.promptHint === undefined ? '' : `AND ${hookPlacementSql({ project: `${query.table}.project_id`, session: `${query.table}.session_id`, prompt: `${query.table}.${query.promptHint}` })}`}
   ) WHERE page_row <= ? ORDER BY prompt_id, order_at ASC, ${query.idColumn} ASC`)
     .bind(JSON.stringify(promptIds), scope.projectId, sessionId, limit + 1).all<Record<string, unknown>>();
   const grouped = new Map<string, Record<string, unknown>[]>();
@@ -84,15 +95,14 @@ export interface ToolCallRow {
 export interface ResponseRow { responseId: string; promptId: string | null; text: string | null; blobKey: string | null; createdAt: number; orderedAt: number }
 /** `planKey` is the plan's identity in this table (its primary key), not a session-scoped id. `createdAt` is the plan's first capture; `orderedAt` carries the `updated_at` this listing pages over. */
 export interface PlanRow { planKey: string; promptId: string | null; title: string | null; status: string; content: string | null; blobKey: string | null; originPath: string | null; progress: string; updatedBy: string | null; createdAt: number; updatedAt: number; orderedAt: number }
-/** `promptId` names the prompt an attachment accompanies, when the capture named one; the session page shows the image under that prompt. */
+/** `promptId` names the session prompt the attachment's captured hint resolves to; an unplaced attachment carries null. */
 export interface AttachmentRow { attachmentId: string; promptId: string | null; blobKey: string; mediaType: string; byteSize: number; description: string | null; createdAt: number; orderedAt: number }
 
 /**
  * A record of what Myco served the session as a whole: a session-level block (`kind` names it: `cortex` for the start,
  * `cortex:<agent>` for a sub-agent's, `plan-nudge`), or context no named prompt received (`kind` is `context:<row
  * id>`): an answer, or a receipt no answer names, which outlives the answers' retention. `delivery` says whether it
- * reached the agent on a prompt that has no name, or has no reported delivery. Only asks that name their prompt
- * (`v1`) are reported delivered, so an older member's records are not listed here.
+ * reached the agent with no matching prompt in this session, or has no reported delivery.
  */
 export interface ContextInjectionRow { kind: string; createdAt: number; orderedAt: number; delivery: 'unnamed_prompt' | 'not_delivered' | null }
 
@@ -104,11 +114,11 @@ const CONTEXT_INJECTION_QUERY: ChildQuery<Omit<ContextInjectionRow, 'orderedAt'>
      UNION ALL
      SELECT project_id, session_id, '${SESSION_ANSWER_KIND_PREFIX}' || id AS kind, created_at,
        CASE WHEN delivered_at IS NULL THEN 'not_delivered' ELSE 'unnamed_prompt' END AS delivery
-       FROM prompt_context_answers WHERE outcome = 'served' AND ask_protocol = 'v1' AND delivered_prompt_id IS NULL
+       FROM prompt_context_answers WHERE outcome = 'served' AND NOT ${hookPlacementSql({ project: 'prompt_context_answers.project_id', session: 'prompt_context_answers.session_id', prompt: 'prompt_context_answers.delivered_prompt_id' })}
      UNION ALL
      SELECT r.project_id, r.session_id, '${SESSION_ANSWER_KIND_PREFIX}' || r.id AS kind, r.created_at,
        CASE WHEN r.delivered_at IS NULL THEN 'not_delivered' ELSE 'unnamed_prompt' END AS delivery
-       FROM spore_injections r WHERE r.ask_protocol = 'v1' AND r.delivered_prompt_id IS NULL
+       FROM spore_injections r WHERE NOT ${hookPlacementSql({ project: 'r.project_id', session: 'r.session_id', prompt: 'r.delivered_prompt_id' })}
          AND NOT EXISTS (SELECT 1 FROM prompt_context_answers a
                           WHERE a.project_id = r.project_id AND a.session_id = r.session_id AND a.receipt_id = r.id))`,
   columns: 'kind, created_at, delivery', idColumn: 'kind', orderColumn: 'created_at',
@@ -124,8 +134,8 @@ export const PROMPT_QUERY: ChildQuery<Omit<PromptRow, 'orderedAt'>> = {
 };
 
 export const TOOL_CALL_QUERY: ChildQuery<Omit<ToolCallRow, 'orderedAt'>> = {
-  table: 'tool_calls',
-  columns: `tool_call_id, prompt_id, tool_name, myco_tool, myco_op, substr(input, 1, ${TOOL_INPUT_PREVIEW_BYTES}) AS input_preview,
+  table: 'tool_calls', promptHint: 'prompt_id',
+  columns: `tool_call_id, tool_name, myco_tool, myco_op, substr(input, 1, ${TOOL_INPUT_PREVIEW_BYTES}) AS input_preview,
     COALESCE(input_bytes, length(CAST(input AS BLOB)), (SELECT b.size FROM blobs b WHERE b.project_id = tool_calls.project_id AND b.key = tool_calls.input_blob_key)) AS input_bytes,
     input_blob_key, output_preview, output_blob_key, success, error_message, duration_ms, files_affected, created_at`,
   idColumn: 'tool_call_id', orderColumn: 'created_at',
@@ -178,7 +188,7 @@ export const PLAN_QUERY: ChildQuery<Omit<PlanRow, 'orderedAt'>> = {
 export const TURN_PLAN_QUERY: ChildQuery<Omit<PlanRow, 'orderedAt'>> = { ...PLAN_QUERY, orderColumn: 'CAST(0 AS INTEGER)' };
 
 export const ATTACHMENT_QUERY: ChildQuery<Omit<AttachmentRow, 'orderedAt'>> = {
-  table: 'attachments', columns: 'attachment_id, prompt_id, blob_key, media_type, byte_size, description, created_at', idColumn: 'attachment_id', orderColumn: 'created_at',
+  table: 'attachments', promptHint: 'prompt_id', columns: 'attachment_id, blob_key, media_type, byte_size, description, created_at', idColumn: 'attachment_id', orderColumn: 'created_at',
   map: (r) => ({
     createdAt: r.created_at as number,
     attachmentId: r.attachment_id as string,

@@ -1,8 +1,9 @@
+import { placedHintSql } from './hook-placement.js';
 import type { ToolResultReason } from '@goondocks/myco-shared/member-protocol';
 import type { RelationalStore } from '../core/adapters.js';
 import { notTombstonedSql } from '../core/tombstones.js';
 import { occurredAt } from '../db/session-dates.js';
-import { keyset, page, type Page, type ReadScope } from './scope.js';
+import { binaryOrder, keyset, page, type Page, type ReadScope } from './scope.js';
 import { CHILDREN_INDEX } from './lineage.js';
 import { firstPromptSql, relatedSessionLabel } from './sessions.js';
 
@@ -82,14 +83,6 @@ const EDGE_DETAILS: Readonly<Record<EdgeKey, string>> = {
 /** The title of a session row whose related session this Project does not hold. */
 export const NOT_CAPTURED_TITLE = 'A session not captured here';
 
-/** SQLite's `BINARY` order over UTF-8 bytes, which the keyset compares ids by. */
-function binaryOrder(a: string, b: string): number {
-  const x = new TextEncoder().encode(a);
-  const y = new TextEncoder().encode(b);
-  for (let i = 0; i < Math.min(x.length, y.length); i += 1) if (x[i] !== y[i]) return x[i]! - y[i]!;
-  return x.length - y.length;
-}
-
 /** Stored tool outcomes and parent edges only; tool bodies and provider errors never enter this projection. */
 export async function listSessionActivity(db: RelationalStore, scope: ReadScope, sessionId: string, opts: SessionActivityOptions = {}): Promise<Page<SessionActivityRow> & { tools: string[] }> {
   const named = (source: { type: string }) => opts.type === undefined || source.type === opts.type;
@@ -117,14 +110,13 @@ async function toolRows(db: RelationalStore, scope: ReadScope, sessionId: string
   if (paging.where) { filters.push(paging.where); params.push(...paging.params); }
   const { results } = await db.prepare(`SELECT CASE ${sources.map(source => `WHEN ${source.where} THEN '${source.type}'`).join(' ')} END AS type,
       t.tool_call_id AS id, t.tool_name AS tool_name, t.result_reason AS result_reason, t.created_at AS at,
-      CASE WHEN EXISTS (SELECT 1 FROM prompt_batches p WHERE p.project_id = t.project_id
-        AND p.session_id = t.session_id AND p.prompt_id = t.prompt_id) THEN t.prompt_id ELSE NULL END AS prompt_id
+      ${placedHintSql({ project: 't.project_id', session: 't.session_id', prompt: 't.prompt_id' })} AS prompt_id
     FROM tool_calls t WHERE t.project_id = ? AND t.session_id = ? AND ${filters.join(' AND ')}
     ORDER BY ${source.order} DESC, ${source.id} DESC LIMIT ?`)
     .bind(...params, paging.limit + 1).all<{ type: SessionActivityType; id: string; tool_name: string; result_reason: ToolResultReason | null; at: number; prompt_id: string | null }>();
   return results.map((row): SessionActivityRow => ({
     id: row.id, type: row.type, title: row.result_reason === null ? 'Tool call did not succeed' : row.tool_name,
-    detail: [row.result_reason === null ? 'Reason not recorded' : REASON_DETAILS[row.result_reason], row.prompt_id === null ? 'Not tied to a prompt' : null].filter(Boolean).join(' · '),
+    detail: [row.result_reason === null ? 'Reason not recorded' : REASON_DETAILS[row.result_reason], row.prompt_id === null ? 'Not placed on a turn' : null].filter(Boolean).join(' · '),
     at: row.at, promptId: row.prompt_id, toolName: row.tool_name, resultReason: row.result_reason, failed: true, sessionId: null, agent: null,
   }));
 }

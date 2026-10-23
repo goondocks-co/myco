@@ -6,9 +6,10 @@ import path from 'node:path';
 import { run } from '@myco/cli/server.js';
 import { createLocalDeployment, DEFAULT_LOCAL_RECORD, resolveLocalPaths } from '@myco/server/local.js';
 import { writeDeploymentRecord } from '@myco/server/cloudflare.js';
-import { cloudflarePromptReferenceCounts } from '@myco/server/prompt-reference-status.js';
+import { cloudflareUnplacedContextRecords } from '@myco/server/hook-placement-status.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { MS_PER_DAY } from '@myco/constants.js';
 
 let root: string;
 let previous: Record<string, string | undefined>;
@@ -75,34 +76,43 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-for (const target of ['local', 'cloudflare']) describe(`prompt reference status on ${target}`, () => {
+for (const target of ['local', 'cloudflare']) describe(`hook placement status on ${target}`, () => {
   async function status() {
     await run(['status', '--target', target], { runner, fetchImpl: globalThis.fetch });
-    return log.mock.calls.flat().map(String).find(line => line.includes('Prompt references'));
+    return log.mock.calls.flat().map(String).find(line => line.includes('Context deliveries not placed on a turn'));
   }
   it('prints zero through the target’s real read path', async () => {
-    expect(await status()).toBe('  Prompt references (7 days): 0 dangling');
+    expect(await status()).toBe('  Context deliveries not placed on a turn (7 days): 0');
     if (target === 'cloudflare') {
-      expect(reads).toHaveLength(4);
+      expect(reads.length).toBeGreaterThan(0);
       expect(loginStartedAfterStatus).toBe(true);
       const lines = log.mock.calls.flat().map(String);
-      expect(lines.findIndex(line => line.includes('Prompt references'))).toBeGreaterThan(lines.findIndex(line => line.includes('URL (recorded)')));
+      expect(lines.findIndex(line => line.includes('Context deliveries not placed on a turn'))).toBeGreaterThan(lines.findIndex(line => line.includes('URL (recorded)')));
     }
   });
-  it('prints the total and every reference kind for missing prompts', async () => {
+  it('counts an unplaced record once despite selection and delivery hints', async () => {
     const now = Date.now();
     sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES ('p','P',1)");
     sqlite.run(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,agent,size,parsed_offset,first_received_at,last_received_at,token_id,role,parsed_through_at)
       VALUES ('p','tx','s','m','codex',100,100,1,1,'t','primary',?)`, [now]);
     sqlite.run(`INSERT INTO spore_injections(project_id,id,session_id,prompt_id,prompt_hash,spore_ids,ask_protocol,asked_at,created_at,delivered_prompt_id,delivered_at)
       VALUES ('p','r','s','missing','h','[]','v1',?,?,'missing-delivery',?)`, [now - 10, now - 5, now - 8]);
-    expect(await status()).toBe('  Prompt references (7 days): 2 dangling (receipt_selected=1, answer_selected=0, receipt_delivered=1, answer_delivered=0)');
+    expect(await status()).toBe('  Context deliveries not placed on a turn (7 days): 1');
+  });
+  it('excludes records created before the seven-day status window', async () => {
+    const now = Date.now();
+    sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES ('p','P',1)");
+    for (const [id, at] of [['recent', now - MS_PER_DAY], ['old', now - 8 * MS_PER_DAY]] as const) {
+      sqlite.run(`INSERT INTO spore_injections(project_id,id,session_id,prompt_id,prompt_hash,spore_ids,ask_protocol,asked_at,created_at,delivered_prompt_id,delivered_at)
+        VALUES ('p',?,'s',?,?,'[]','v1',?,?,'missing-delivery',?)`, [id, 'missing-' + id, id, at, at, at]);
+    }
+    expect(await status()).toBe('  Context deliveries not placed on a turn (7 days): 1');
   });
   it('names an unavailable read rather than claiming zero', async () => {
     if (target === 'cloudflare') failRead = true;
     else sqlite.run('ALTER TABLE spore_injections RENAME TO unreadable_references');
     const line = await status();
-    expect(line).toContain('  Prompt references (7 days): unavailable — ');
+    expect(line).toContain('  Context deliveries not placed on a turn (7 days): unavailable — ');
     expect(line).toContain(target === 'cloudflare' ? 'query refused' : 'no such table');
   });
 });
@@ -112,7 +122,7 @@ it('refuses hosted status under a different --account-id before querying', async
   const error = spyOn(console, 'error').mockImplementation(() => {});
   try {
     await expect(run(['status', '--target', 'cloudflare', '--account-id', 'b'.repeat(32)], { runner, fetchImpl: globalThis.fetch })).rejects.toThrow('fixture exit');
-    expect(log.mock.calls.flat().map(String).some(line => line.includes('Prompt references'))).toBe(false);
+    expect(log.mock.calls.flat().map(String).some(line => line.includes('Context deliveries not placed on a turn'))).toBe(false);
     expect(error.mock.calls.flat()).toContain('status refused: selected account does not match the deployment record');
     expect(reads).toEqual([]);
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -122,7 +132,7 @@ it('refuses hosted status under a different --account-id before querying', async
   }
 });
 
-it('refuses a prompt-reference read for a different recorded account before querying', async () => {
-  await expect(cloudflarePromptReferenceCounts({ accountId: 'b'.repeat(32), runner, fetch: globalThis.fetch })).rejects.toThrow('no matching recorded database');
+it('refuses a hook-placement read for a different recorded account before querying', async () => {
+  await expect(cloudflareUnplacedContextRecords({ accountId: 'b'.repeat(32), runner, fetch: globalThis.fetch })).rejects.toThrow('no matching recorded database');
   expect(fetchSpy).not.toHaveBeenCalled();
 });

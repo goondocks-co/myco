@@ -108,12 +108,14 @@ describe('the measures route', () => {
     const { status, body } = await get('/api/kpis?window=7');
     expect(status).toBe(200);
     expect(Object.keys(body).sort()).toEqual([
-      'callsPerPrompt', 'callsPerPromptByHarness', 'contextPresent',
-      'firstInjectionMs', 'planReadsPerSession', 'promptIdentity', 'recallQuality', 'sessionStartPresent', 'since', 'sporeServeRate', 'windowDays',
+      'callsPerPrompt', 'callsPerPromptByHarness', 'deliveries',
+      'firstInjectionMs', 'planReadsPerSession', 'promptIdentity', 'promptsServed', 'recallQuality', 'servedShare', 'sessionStartPresent', 'since', 'sporeServeRate', 'windowDays',
     ]);
     expect(body.windowDays).toBe(7);
-    // Every measure answers the pair; none answers a bare number.
-    for (const key of ['contextPresent', 'sporeServeRate', 'callsPerPrompt', 'planReadsPerSession', 'firstInjectionMs', 'recallQuality'] as const) {
+    expect(body.promptsServed).toBe(0);
+    expect(body.deliveries).toEqual({ placed: 0, unplaced: 0 });
+    // Rates carry their sample; placement counts remain counts.
+    for (const key of ['servedShare', 'sporeServeRate', 'callsPerPrompt', 'planReadsPerSession', 'firstInjectionMs', 'recallQuality'] as const) {
       expect({ key, shape: Object.keys(body[key] as object).sort() }).toEqual({ key, shape: ['sampleSize', 'value'] });
     }
   });

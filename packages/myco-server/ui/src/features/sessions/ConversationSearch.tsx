@@ -32,7 +32,7 @@ export function ConversationSearchBar({ search }: { search: ConversationQuery })
 /** One hit as a row: the turn it belongs to opens through `?turn=`; a hit with no turn in this session leads nowhere. */
 function hitRow(hit: ConversationHit, agent: string | null): SessionEventRow {
   const { turn } = hit;
-  const detail = turn === null ? 'Not tied to a prompt'
+  const detail = turn === null ? 'Not placed on a turn'
     : hit.type === 'response' ? `In reply to “${promptPreview({ preview: turn.preview, textChars: turn.text_chars, blobKey: turn.stored ? 'stored' : null }, agent)}”`
     : 'The prompt of this turn';
   return {

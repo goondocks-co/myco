@@ -1,8 +1,9 @@
 import { useEffect, useId, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Button, EmptyState, ErrorState, LoadingState, Switch } from '../../design';
-import { PROMPT_ORIGINS, useTurns, useNamedTurn, type PromptOrigin } from '../../hooks/use-sessions';
+import { Button, Disclosure, EmptyState, ErrorState, LoadingState, ShowMore, Switch } from '../../design';
+import { PROMPT_ORIGINS, useTurns, useNamedTurn, useSessionChildren, type PromptOrigin } from '../../hooks/use-sessions';
 import { ConversationHits, ConversationSearchBar, useConversationQuery } from './ConversationSearch';
+import { dateTime } from './words';
 import { Turn } from './Turn';
 
 /** The prompts a person typed: what the conversation shows by default. */
@@ -59,6 +60,29 @@ export function Conversation({ projectId, sessionId, agent = null, contexts, now
           )}
         </div>
       </div>
+      <Disclosure summary="Not placed on a turn">
+        <UnplacedRecords projectId={projectId} sessionId={sessionId} now={now} />
+      </Disclosure>
     </div>
+  );
+}
+
+interface UnplacedRecord { key: string; kind: string; id: string; label: string; createdAt: number }
+
+function UnplacedRecords({ projectId, sessionId, now }: { projectId: string; sessionId: string; now: number }) {
+  const records = useSessionChildren<UnplacedRecord>(projectId, sessionId, 'unplaced');
+  if (records.isPending) return <LoadingState label="Reading records not placed on a turn" count={1} />;
+  if (records.error) return <ErrorState error={records.error} onRetry={records.retry} />;
+  if (records.rows.length === 0) return <p className="t-small text-muted">No records to show here.</p>;
+  return (
+    <section aria-label="Not placed on a turn" className="flex flex-col gap-s3 border-t border-line pt-s4">
+      <p className="t-small text-muted">These records belong to this session. No turn in this session matches them.</p>
+      <ul className="flex flex-col divide-y divide-line">
+        {records.rows.map(record => <li key={record.key} className="flex flex-wrap justify-between gap-s2 py-s2 t-small">
+          <span>{record.label}</span><time dateTime={new Date(record.createdAt).toISOString()} className="text-muted">{dateTime(record.createdAt, now)}</time>
+        </li>)}
+      </ul>
+      {records.hasMore && <ShowMore shown={records.rows.length} noun="records" onMore={records.more} pending={records.isFetchingMore} hasMore />}
+    </section>
   );
 }

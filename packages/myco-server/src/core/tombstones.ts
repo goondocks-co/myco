@@ -143,6 +143,9 @@ export async function tombstoneSession(
     // A spore outlives its session and stops naming a prompt the deletion removes; it runs before the prompts go.
     env.db.prepare(`UPDATE spores SET prompt_id = NULL
       WHERE project_id = ? AND prompt_id IN (SELECT prompt_id FROM prompt_batches WHERE project_id = ? AND session_id = ?)`).bind(projectId, projectId, sessionId),
+    env.db.prepare(`UPDATE injection_served_items
+      SET title = NULL, content_hash = NULL, session_id = NULL, unavailable = 1
+      WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId),
   ];
   const statements = [
     ...metadata,
@@ -155,6 +158,9 @@ export async function tombstoneSession(
           WHERE r.project_id=? AND r.session_id=? AND o.project_id=r.project_id
             AND o.resource_kind=? AND o.resource_id=r.${id})`).bind(projectId,sessionId,kind);
     }),
+    // Served snapshots belong to the receiving session's receipt, not the source plan's session.
+    env.db.prepare(`DELETE FROM injection_served_items WHERE project_id = ? AND receipt_id IN
+      (SELECT id FROM spore_injections WHERE project_id = ? AND session_id = ?)`).bind(projectId, projectId, sessionId),
     ...DERIVED_TABLES.map((table) => env.db.prepare(`DELETE FROM ${table} WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId)),
     // The runs that read the session keep their own rows; only their record of reading this one goes.
     env.db.prepare(`DELETE FROM run_reads WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId),

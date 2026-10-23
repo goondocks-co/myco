@@ -18,7 +18,6 @@ import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
 import { canonicalPromptId } from '@goondocks/myco-shared/prompt-identity';
 import { deriveId } from '@myco/member/envelope.js';
 import { turnDetail } from '@myco-server-worker/read/turns.js';
-import { danglingPromptReferences } from '@myco-server-worker/read/prompt-reference-invariant.js';
 import { TEST_PROJECT_ID } from '../member/helpers/server.js';
 import { runHook } from '../member/helpers/hooks.js';
 import { identityRig, RELEVANT_WORD, type IdentityRig } from './helpers/prompt-identity-rig.js';
@@ -49,12 +48,7 @@ async function assertSelectedThenDelivered(r: IdentityRig, sessionId: string, fi
   expect(delivered?.injection?.spores.length).toBeGreaterThan(0);
   expect(r.rows(`SELECT prompt_id, tool_name FROM tool_calls WHERE session_id = ?`, sessionId)).toEqual([{ prompt_id: first, tool_name: expect.any(String) }]);
   expect(r.rows(`SELECT prompt_id FROM responses WHERE session_id = ? ORDER BY created_at`, sessionId).map((p) => p.prompt_id)).toEqual([first, second]);
-  // The invariant reads every one of these references: the parse read the transcript to its end, past each ask and delivery.
-  const [reach] = r.rows(`SELECT MIN(x.parsed_through_at > (SELECT MAX(MAX(COALESCE(asked_at, 0), COALESCE(delivered_at, 0))) FROM (
-      SELECT asked_at, delivered_at FROM spore_injections WHERE session_id = ? UNION ALL SELECT asked_at, delivered_at FROM prompt_context_answers WHERE session_id = ?))
-      AND x.parsed_offset = x.size) AS past FROM transcripts x WHERE x.session_id = ? AND x.role = 'primary'`, sessionId, sessionId, sessionId);
-  expect(reach).toEqual({ past: 1 });
-  expect(await danglingPromptReferences(db, 0)).toEqual({ receipt_selected: 0, answer_selected: 0, receipt_delivered: 0, answer_delivered: 0 });
+
 }
 
 const lines = (records: readonly Record<string, unknown>[]): string => records.map((o) => `${JSON.stringify(o)}\n`).join('');

@@ -334,8 +334,10 @@ describe('read/turns', () => {
   it('joins context receipts, served plans, answer reasons and complete metrics to their own prompt', async () => {
     const { db, sqlite } = sqliteEnv();
     seedTurns(sqlite);
+    const { subagentIdFor, deriveId } = await import('@myco/member/envelope.js');
     sqlite.run("UPDATE prompt_batches SET origin = 'agent_dispatch', thread_id = 'reviewer' WHERE project_id = 'proj_1' AND prompt_id = ?", [UUID(3)]);
     sqlite.run("INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES ('proj_1','s1','cortex',1),('proj_1','s1','cortex:reviewer',22)");
+    sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES ('proj_1','reviewer-start','s1','t','subagent.start','hook',?,'hash',22,22)", [JSON.stringify({ subagentId: subagentIdFor('s1', 'reviewer'), agentType: 'reviewer', parentPromptId: UUID(3) })]);
     sqlite.run("INSERT INTO prompt_context_answers (project_id,session_id,prompt_id,id,outcome,context_chars,parts,skipped,failures,selection,created_at) VALUES ('proj_1','s1',?,'a','empty',0,'[]',?, ?, ?,9)",
       [UUID(1), JSON.stringify(['spores:empty','plan-nudge:no_intent']), JSON.stringify([{ contributor: 'spores', error: 'unavailable' }]), JSON.stringify({ candidates: 0 })]);
     sqlite.run("INSERT INTO prompt_context_answers (project_id,session_id,prompt_id,id,outcome,context_chars,parts,skipped,failures,selection,created_at) VALUES ('proj_1','s1',?,'b','empty',0,'[]','[\"spores:short_prompt\"]','[]','{}',10)", [UUID(4)]);
@@ -354,7 +356,6 @@ describe('read/turns', () => {
     expect((await turnDetail(db, { projectId: 'proj_1' }, 's1', UUID(3)))?.answers).toEqual([]);
     expect(detail?.answers[0]).toMatchObject({ outcome: 'empty', skipped: ['spores:empty','plan-nudge:no_intent'], failures: [{ contributor: 'spores', error: 'unavailable' }], selection: { candidates: 0 } });
     expect((await sessionTurnContexts(db, { projectId: 'proj_1' }, 's1'))[UUID(3)]).toEqual({ subagents: 1 });
-    const { subagentIdFor, deriveId } = await import('@myco/member/envelope.js');
     sqlite.run("UPDATE prompt_batches SET thread_id = ? WHERE project_id = 'proj_1' AND prompt_id = ?", [deriveId('thread', 'reviewer'), UUID(3)]);
     expect((await sessionTurnContexts(db, { projectId: 'proj_1' }, 's1'))[UUID(3)]).toEqual({ subagents: 1 });
     sqlite.run("INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES ('proj_1','s1','cortex:raw-agent',24)");

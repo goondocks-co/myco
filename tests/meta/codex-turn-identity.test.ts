@@ -2,9 +2,8 @@
  * A Codex turn key names a turn, of which only the opener is one submission (`codex-turn-v1`).
  * - The first prompt hook of a turn claims the opener's id, and the parse names the turn's first person's prompt by
  *   the same id; a later prompt of the turn steers it, is session-scoped, and its row is named by its acceptance order.
- * - When the opener's hook never ran, the first steering hook claims the opener: the receipt resolves, and the prompt
- *   key mismatch signal counts it.
- * - When another hook blocked the opener, no opener row exists, and the invariant reports the receipt dangling.
+ * - When the opener's hook never ran, the first steering hook claims the opener.
+ * - When another hook blocked the opener, no opener row exists, and the hook record remains unplaced.
  * Cross-package (member hooks and the Deployment's parse), so it lives here.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
@@ -14,7 +13,6 @@ import path from 'node:path';
 import { canonicalPromptId, type TurnSubmission } from '@goondocks/myco-shared/prompt-identity';
 import { deriveId } from '@myco/member/envelope.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
-import { danglingPromptReferences, promptKeyMismatches } from '@myco-server-worker/read/prompt-reference-invariant.js';
 import { runHook } from '../member/helpers/hooks.js';
 import { identityRig, RELEVANT_WORD, type IdentityRig } from './helpers/prompt-identity-rig.js';
 
@@ -85,11 +83,9 @@ describe('a Codex turn', () => {
     ]);
     expect(r.rows(`SELECT r.prompt_id, p.text FROM responses r JOIN prompt_batches p ON p.prompt_id = r.prompt_id WHERE r.session_id = ? ORDER BY r.created_at`, sessionId)
       .map((row) => row.text)).toEqual([FIRST, STEER, SECOND]);
-    expect(await danglingPromptReferences(r.rig.env.db, 0)).toEqual({ receipt_selected: 0, answer_selected: 0, receipt_delivered: 0, answer_delivered: 0 });
-    expect(await promptKeyMismatches(r.rig.env.db, 0)).toEqual({});
   });
 
-  it('gives the opener to the first steering hook when the opener\'s hook never ran, and the mismatch signal counts it', async () => {
+  it('gives the opener to the first steering hook when the opener\'s hook never ran', async () => {
     const r = await identityRig();
     const sessionId = '01a150c5-6b8f-7f61-acf3-4c7ea2c29492';
     const s = await codexSession(r, sessionId);
@@ -99,11 +95,9 @@ describe('a Codex turn', () => {
       { role: 'user', text: STEER, order: 2 }, { role: 'assistant', text: 'Plans too.', order: 3 },
     ] }]);
     expect(r.rows(`SELECT prompt_id FROM spore_injections WHERE session_id = ?`, sessionId)).toEqual([{ prompt_id: s.id('t1', { opener: true }) }]);
-    expect(await danglingPromptReferences(r.rig.env.db, 0)).toMatchObject({ receipt_selected: 0, answer_selected: 0 });
-    expect(await promptKeyMismatches(r.rig.env.db, 0)).toEqual({ codex: 1 });
   });
 
-  it('holds no opener row when another hook blocked the opener, and the invariant reports the receipt', async () => {
+  it('holds the hook record when another hook blocked the opener and no opener row exists', async () => {
     const r = await identityRig();
     const sessionId = '01a150c5-6b8f-7f61-acf3-4c7ea2c29493';
     const s = await codexSession(r, sessionId);
@@ -111,6 +105,5 @@ describe('a Codex turn', () => {
     await s.finish([{ turnId: 't1', items: [] }, { turnId: 't2', items: [{ role: 'user', text: SECOND, order: 1 }, { role: 'assistant', text: 'No.', order: 2 }] }]);
     expect(r.rows(`SELECT prompt_id FROM spore_injections WHERE session_id = ?`, sessionId)).toEqual([{ prompt_id: s.id('t1', { opener: true }) }]);
     expect(r.rows(`SELECT prompt_id FROM prompt_batches WHERE session_id = ?`, sessionId)).toEqual([{ prompt_id: s.id('t2', { opener: true }) }]);
-    expect(await danglingPromptReferences(r.rig.env.db, 0)).toMatchObject({ receipt_selected: 1, answer_selected: 1 });
   });
 });

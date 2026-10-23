@@ -50,7 +50,7 @@ const NON_PARSER_ENTRIES: Readonly<Record<string, readonly string[]>> = {
   'myco/src/member/legacy-import.ts#legacyPlanKey': ['plan-key'],
   'myco/src/hooks/user-prompt-submit.ts#main': ['thread'],
   'myco/src/member/transcript.ts#deriveTranscriptCapture': ['attachment'],
-  'myco-server/src/read/turns.ts#sessionTurnContexts': ['thread', 'subagent'],
+  'myco-server/src/read/hook-placement.ts#sessionContextHints': ['subagent'],
   'myco-server/src/ingest/parse.ts#envelopeFor': ['transcript-event'],
   'myco-server/src/ingest/legacy-replies.ts#legacyReplies': ['transcript-event'],
   'myco-server/src/core/plans.ts#planKeyFor': ['plan', 'plan-key'],

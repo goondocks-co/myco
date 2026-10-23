@@ -31,6 +31,8 @@ import { uuidv5 } from '@myco-server-worker/hash.js';
 import { MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
 import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
 import { RUN_WRITE_EVENT } from '@myco-server-worker/core/runs.js';
+import { recordSessionInjection } from '@myco-server-worker/core/recall.js';
+import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { REPORT_UNCAPTURED_PATH, RESOLVE_PROJECT_PATH } from '@goondocks/myco-shared/member-protocol';
 import { MACHINE_IDS } from './machine-ids.ts';
 
@@ -780,8 +782,12 @@ async function seedSessionAudit(databasePath: string, sessionId: string, sporeId
     const child = await uuidv5('screens-audit-child', sessionId);
     sqlite.query("INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,parent_prompt_id,thread_id,thread_label,origin,text,content_hash,created_at,updated_at,token_id,received_at) VALUES (?,?,?,'audit-child',?,'audit-review','Reviewer','agent_dispatch','Check the port fix','audit',?,?,'fixture',?)")
       .run(projectId, sessionId, child, first.prompt_id, first.created_at + 1000, first.created_at + 1000, first.created_at + 1000);
-    sqlite.query('INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES (?,?,?,?)').run(projectId, sessionId, 'cortex', first.created_at - 1000);
-    sqlite.query('INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES (?,?,?,?)').run(projectId, sessionId, 'cortex:audit-review', first.created_at + 900);
+    const db = sqliteRelationalStore(sqlite);
+    const admission = sessionWriteAdmission({ projectId, machineId: machineOf(SESSIONS[OUTCOME_SESSION]!.machine).id }, sessionId);
+    for (const [kind, at] of [['cortex', first.created_at - 1000], ['cortex:audit-review', first.created_at + 900]] as const) {
+      const recorded = await recordSessionInjection(db, { projectId }, sessionId, kind, at, admission);
+      if (recorded.outcome !== 'recorded') throw new Error(`session context ${kind}: ${recorded.outcome}`);
+    }
     sqlite.query('INSERT INTO prompt_context_answers(project_id,session_id,prompt_id,id,outcome,context_chars,parts,skipped,failures,selection,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
       .run(projectId, sessionId, first.prompt_id, 'audit-empty', 'empty', 0, '[]', JSON.stringify(['spores:empty', 'plan-nudge:no_intent']), '[]', JSON.stringify({ ...emptyInjectionCounts(), sporeRawMatches: 12 }), first.created_at);
     const plan = sqlite.query('SELECT plan_key FROM plans WHERE project_id = ? LIMIT 1').get(projectId) as { plan_key: string } | null;

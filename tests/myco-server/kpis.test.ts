@@ -31,7 +31,7 @@ interface Rig {
   prompt: (id: string, sessionId: string, opts?: { project?: string; at?: number }) => void;
   call: (id: string, sessionId: string, opts?: { project?: string; at?: number; tool?: string | null; op?: string | null }) => void;
   /** A receipt selected with `promptId`'s text and delivered to `deliveredTo` (that same prompt unless named; null for none). */
-  sporeInjection: (sessionId: string, promptId: string, sporeIds: string[], opts?: { project?: string; at?: number; deliveredTo?: string | null }) => void;
+  sporeInjection: (sessionId: string, promptId: string, sporeIds: string[], opts?: { project?: string; at?: number; deliveredTo?: string | null; deliveredAt?: number }) => void;
   sessionInjection: (sessionId: string, kind: string, opts?: { project?: string; at?: number }) => void;
   credential: (id: string, opts?: { lineage?: string; startedAt?: number }) => void;
 }
@@ -79,9 +79,9 @@ function rig(): Rig {
     sporeInjection: (sessionId, promptId, sporeIds, opts = {}) => {
       const at = opts.at ?? NOW;
       const deliveredTo = opts.deliveredTo === undefined ? promptId : opts.deliveredTo;
-      sqlite.query(`INSERT INTO spore_injections (project_id, session_id, prompt_id, ask_protocol, asked_at, prompt_hash, spore_ids, plan_ids, created_at, delivered_at, delivered_prompt_id)
-                    VALUES (?, ?, ?, 'v1', ?, ?, ?, '[]', ?, ?, ?)`)
-        .run(opts.project ?? PROJECT, sessionId, promptId, at, `ph_${promptId}`, JSON.stringify(sporeIds), at, deliveredTo === null ? null : at, deliveredTo);
+      sqlite.query(`INSERT INTO spore_injections (project_id, session_id, prompt_id, ask_protocol, asked_at, prompt_hash, spore_ids, plan_ids, created_at, delivered_at, delivered_prompt_id, delivered_scope_reason)
+                    VALUES (?, ?, ?, 'v1', ?, ?, ?, '[]', ?, ?, ?, ?)`)
+        .run(opts.project ?? PROJECT, sessionId, promptId, at, `ph_${promptId}`, JSON.stringify(sporeIds), at, opts.deliveredAt ?? (deliveredTo === null ? null : at), deliveredTo, deliveredTo === null && opts.deliveredAt !== undefined ? 'absent_key' : null);
     },
     sessionInjection: (sessionId, kind, opts = {}) => {
       sqlite.query(`INSERT INTO session_injections (project_id, session_id, kind, created_at) VALUES (?, ?, ?, ?)`)
@@ -97,14 +97,14 @@ describe('the measures', () => {
   it('answers every measure with a null value and an empty sample on a Deployment holding nothing', async () => {
     const report = await all(rig().db);
     expect({
-      contextPresent: report.contextPresent,
+      servedShare: report.servedShare,
       sporeServeRate: report.sporeServeRate,
       callsPerPrompt: report.callsPerPrompt,
       planReadsPerSession: report.planReadsPerSession,
       firstInjectionMs: report.firstInjectionMs,
       byHarness: report.callsPerPromptByHarness,
     }).toEqual({
-      contextPresent: { value: null, sampleSize: 0 },
+      servedShare: { value: null, sampleSize: 0 },
       sporeServeRate: { value: null, sampleSize: 0 },
       callsPerPrompt: { value: null, sampleSize: 0 },
       planReadsPerSession: { value: null, sampleSize: 0 },
@@ -124,7 +124,7 @@ describe('the measures', () => {
     r.sessionInjection('s1', 'cortex', { at: NOW });
     r.session('s2');
     const report = await all(r.db);
-    expect(report.contextPresent).toEqual({ value: 0, sampleSize: 4 });
+    expect(report.servedShare).toEqual({ value: 0, sampleSize: 4 });
     expect(report.sessionStartPresent).toEqual({ value: 0.5, sampleSize: 2 });
   });
 
@@ -139,7 +139,7 @@ describe('the measures', () => {
     // p3 receives spores of its own, so one of the four prompts got something.
     r.sporeInjection('s1', 'p3', ['sp1']);
     const report = await all(r.db);
-    expect(report.contextPresent).toEqual({ value: 0.25, sampleSize: 4 });
+    expect(report.servedShare).toEqual({ value: 0.25, sampleSize: 4 });
     expect(report.sporeServeRate).toEqual({ value: 0.25, sampleSize: 4 });
   });
 
@@ -152,7 +152,7 @@ describe('the measures', () => {
     r.sporeInjection('s1', 'p1', ['sp1'], { deliveredTo: 'p2' });
     r.sporeInjection('s1', 'p3', ['sp2'], { deliveredTo: null });
     const report = await all(r.db);
-    expect(report.contextPresent).toEqual({ value: 1 / 3, sampleSize: 3 });
+    expect(report.servedShare).toEqual({ value: 1 / 3, sampleSize: 3 });
     expect(report.sporeServeRate).toEqual({ value: 1 / 3, sampleSize: 3 });
   });
 
@@ -163,7 +163,7 @@ describe('the measures', () => {
     r.sporeInjection('s1', 'p1', []);
     const report = await all(r.db);
     // A share of zero over one prompt is a measurement. Only an empty sample has no value.
-    expect({ context: report.contextPresent, spores: report.sporeServeRate })
+    expect({ context: report.servedShare, spores: report.sporeServeRate })
       .toEqual({ context: { value: 1, sampleSize: 1 }, spores: { value: 0, sampleSize: 1 } });
   });
 
@@ -176,6 +176,37 @@ describe('the measures', () => {
     r.sporeInjection('s1', 'p1', ['sp1']);
     const report = await all(r.db);
     expect(report.sporeServeRate).toEqual({ value: 0.5, sampleSize: 2 });
+  });
+
+  it('separates prompts served from receipts delivered in the window and recomputes placement when a hint arrives', async () => {
+    const r = rig();
+    r.session('s1');
+    r.session('s2');
+    r.session('s1', { project: OTHER });
+    r.prompt('p1', 's1');
+    r.prompt('p2', 's1');
+    r.prompt('elsewhere', 's2');
+    r.prompt('foreign', 's1', { project: OTHER });
+    r.prompt('old', 's1', { at: NOW - 30 * DAY });
+    r.sporeInjection('s1', 'previous-selection', [], { at: NOW - 30 * DAY, deliveredTo: 'p1', deliveredAt: NOW });
+    r.sporeInjection('s1', 'repeated-selection', [], { deliveredTo: 'p1' });
+    r.sporeInjection('s1', 'old-prompt-selection', [], { deliveredTo: 'old' });
+    r.sporeInjection('s1', 'wrong-session-selection', [], { deliveredTo: 'elsewhere' });
+    r.sporeInjection('s1', 'wrong-project-selection', [], { deliveredTo: 'foreign' });
+    r.sporeInjection('s1', 'no-hint-selection', [], { deliveredTo: null, deliveredAt: NOW });
+    r.sporeInjection('s1', 'awaiting-transcript', [], { deliveredTo: 'later' });
+    r.sporeInjection('s1', 'p2', [], { deliveredTo: null });
+    r.sporeInjection('s1', 'older-delivery-selection', [], { deliveredTo: 'p2', at: NOW - 30 * DAY });
+    const read = () => readKpis(r.db, { windowDays: 7, now: NOW });
+    const before = await read();
+    expect(before.promptsServed).toBe(2);
+    expect(before.servedShare).toEqual({ value: 0.5, sampleSize: 4 });
+    expect(before.deliveries).toEqual({ placed: 3, unplaced: 4 });
+    r.prompt('later', 's1');
+    const after = await read();
+    expect(after.promptsServed).toBe(3);
+    expect(after.servedShare).toEqual({ value: 3 / 5, sampleSize: 5 });
+    expect(after.deliveries).toEqual({ placed: 4, unplaced: 3 });
   });
 
   it('counts Myco calls per prompt and splits them by the agent the session ran under, naming a session with no transcript', async () => {

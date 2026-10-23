@@ -182,7 +182,7 @@ export interface TranscriptResponse {
   segments: TranscriptSegment[];
 }
 
-export type SessionChild = 'prompts' | 'tool-calls' | 'responses' | 'plans' | 'attachments' | 'context-injections';
+export type SessionChild = 'unplaced' | 'prompts' | 'tool-calls' | 'responses' | 'plans' | 'attachments' | 'context-injections';
 /** A record of what Myco served the session as a whole; see the Deployment's `read/children.ts`. */
 export interface ContextInjectionRow { kind: string; createdAt: number; orderedAt: number; delivery: 'unnamed_prompt' | 'not_delivered' | null }
 
