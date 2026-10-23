@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { bundleArchiveStatements,type BundleItem,type PreparedBundle } from '@myco-server-worker/core/archive-bundle.js';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { storageCleanup } from '@myco-server-worker/core/storage-cleanup.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
@@ -126,6 +127,9 @@ it('starts old-key cleanup at bounded identities on a large Project',async()=>{
     expect(plan(rig.sqlite,oldBundle)).toMatch(/SEARCH a USING INTEGER PRIMARY KEY/);
     expect(plan(rig.sqlite,oldBundle)).toMatch(/SEARCH t (?:EXISTS )?USING INDEX sqlite_autoindex_tool_calls_1 \(project_id=\? AND tool_call_id=\?\)/);
     expect(plan(rig.sqlite,oldBundle)).toMatch(/SEARCH e USING INDEX sqlite_autoindex_events_1 \(project_id=\? AND event_id=\?\)/);
+    expect(plan(rig.sqlite,oldBundle)).toMatch(/SEARCH events (?:EXISTS )?USING INDEX sqlite_autoindex_events_1 \(project_id=\? AND event_id=\?\)/);
+    expect(plan(rig.sqlite,oldBundle)).toMatch(/SEARCH tool_calls (?:EXISTS )?USING INDEX sqlite_autoindex_tool_calls_1 \(project_id=\? AND tool_call_id=\?\)/);
+    expect(plan(rig.sqlite,oldBundle)).toMatch(/SEARCH view_tool_calls (?:EXISTS )?USING COVERING INDEX idx_view_tool_calls_bundle \(project_id=\? AND input_bundle_id=\?\)/);
     for(const proof of proofs){
       const details=plan(rig.sqlite,proof);
       expect(details).toMatch(/SEARCH p USING COVERING INDEX sqlite_autoindex_registered_content_proofs_1 \(project_id=\? AND source_kind=\? AND source_id=\? AND key=\?\)/);
@@ -141,18 +145,7 @@ it('workerd D1 plans the bounded old-key deletes as point searches',async()=>{
   const rig=sqliteEnv();
   try {
     const d1=await mf.getD1Database('DB');
-    await d1.batch([
-      `CREATE TABLE content_scan_checkpoints(project_id TEXT,source_kind TEXT,resource_id TEXT,
-        content_revision INTEGER,envelope_hash TEXT,PRIMARY KEY(project_id,source_kind,resource_id))`,
-      `CREATE TABLE archive_bundles(id INTEGER PRIMARY KEY,project_id TEXT,entry_count INTEGER,event_id TEXT,
-        archive_key TEXT,receipt_key TEXT,UNIQUE(project_id,archive_key))`,
-      `CREATE INDEX idx_archive_bundles_receipt ON archive_bundles(project_id,receipt_key)`,
-      `CREATE TABLE registered_content_proofs(project_id TEXT,source_kind TEXT,source_id TEXT,key TEXT,
-        PRIMARY KEY(project_id,source_kind,source_id,key))`,
-      `CREATE TABLE tool_calls(project_id TEXT,tool_call_id TEXT,input_bundle_id INTEGER,
-        PRIMARY KEY(project_id,tool_call_id))`,
-      `CREATE TABLE events(project_id TEXT,event_id TEXT,bundle_id INTEGER,PRIMARY KEY(project_id,event_id))`,
-    ].map(sql=>d1.prepare(sql)));
+    for(const step of SCHEMA_STEPS)await d1.batch(step.statements.map(sql=>d1.prepare(sql)));
     const entries=cleanupSql(rig.sqlite,Array.from({length:20},(_,i)=>item(i,true)));
     for(const entry of [statement(entries,'content_scan_checkpoints'),statement(entries,'archive_bundles'),
       ...proofStatements(entries)]){
@@ -164,6 +157,9 @@ it('workerd D1 plans the bounded old-key deletes as point searches',async()=>{
         expect(details).toMatch(/SEARCH a USING INTEGER PRIMARY KEY/);
         expect(details).toMatch(/SEARCH t USING .*\(project_id=\? AND tool_call_id=\?\)/);
         expect(details).toMatch(/SEARCH e USING .*\(project_id=\? AND event_id=\?\)/);
+        expect(details).toMatch(/SEARCH events USING .*\(project_id=\? AND event_id=\?\)/);
+        expect(details).toMatch(/SEARCH tool_calls USING .*\(project_id=\? AND tool_call_id=\?\)/);
+        expect(details).toMatch(/SEARCH view_tool_calls USING COVERING INDEX idx_view_tool_calls_bundle \(project_id=\? AND input_bundle_id=\?\)/);
       } else expect(details).toMatch(/SEARCH p USING .*\(project_id=\? AND source_kind=\? AND source_id=\? AND key=\?\)/);
       expect(details).not.toMatch(/SCAN (c|a|p|e|t)\b/);
     }

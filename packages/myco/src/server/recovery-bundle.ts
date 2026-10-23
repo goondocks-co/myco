@@ -311,7 +311,7 @@ function openSnapshot(file: string): Database {
     const schemaVersion = Number(db.query<{ value: string }, []>("SELECT value FROM schema_meta WHERE key = 'version'").get()?.value);
     for (const ref of BLOB_REFERENCES) {
       if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(ref.table) === null) {
-        if (schemaVersion >= 75) throw new Error(`recovery database is missing reference table ${ref.table}`);
+        if (schemaVersion >= ref.sinceSchema) throw new Error(`recovery database is missing reference table ${ref.table}`);
         continue;
       }
       if (db.query(`SELECT 1 FROM ${ref.table} r WHERE r.${ref.column} IS NOT NULL${kindFilter(ref)}

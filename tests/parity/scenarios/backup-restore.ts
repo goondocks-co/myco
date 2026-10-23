@@ -12,7 +12,7 @@ async function ownerPost<T>(target: ParityTarget, path: string, body: unknown): 
   return { status: res.status, body: (await res.json()) as T };
 }
 
-async function selectOwner(target: ParityTarget): Promise<void> {
+export async function selectOwner(target: ParityTarget): Promise<void> {
   await target.sql("UPDATE deployment_ownership SET bootstrap_mode = 'selection' WHERE id = 1");
   const preview = await fetch(`${target.url}/api/ownership`, { headers: ownerJson(target) });
   expect(preview.status).toBe(200);

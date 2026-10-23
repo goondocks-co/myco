@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { createBackup } from '@myco-server-worker/core/backup.js';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import {
   copyRecoveryBundle, copyRecoveryObjects, createRecoveryBundle, preparedObjectKeys, RECOVERY_RETRY, verifyRecoveryBundle,
   type RecoveryAdapter, type RecoveryObjectDestination, type RecoveryRetryPolicy,
@@ -62,6 +63,32 @@ function addBackup(f: ReturnType<typeof fixture>, id = 'pinned', { recorded = tr
 const sameLengthSubstitute = (body: string): string => body.replace('lineage', 'LINEAGE');
 
 describe('verified recovery artifacts', () => {
+  it('accepts a schema-99 snapshot with no view reference tables', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-recovery-'));
+    const source = new Database(':memory:');
+    try {
+      for (const step of SCHEMA_STEPS.filter(step => step.version <= 99)) for (const sql of step.statements) source.exec(sql);
+      expect(source.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({ value: '99' });
+      const result = await createRecoveryBundle(path.join(root, 'backup'), {
+        source: { target: 'local', locator: 'schema99' },
+        snapshot: async file => {
+          source.query('VACUUM INTO ?').run(file);
+          return { configuration: { port: 8787 }, credentialsRequired: ['SECRET_WRAP_KEY'] };
+        },
+        blob: async () => { throw new Error('empty snapshot holds no blobs'); },
+      });
+      expect(result.status).toBe('complete');
+    } finally { source.close(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['responses', 'view_content_proofs'])('requires reference table %s in a current-schema snapshot', async table => {
+    const f = fixture();
+    try {
+      f.source.sqlite.exec(`DROP TABLE ${table}`);
+      await expect(createRecoveryBundle(f.destination, f.adapter)).rejects.toThrow(`recovery database is missing reference table ${table}`);
+    } finally { f.cleanup(); }
+  });
+
   it('resumes verified object transfers after an interrupted upload, including pinned backups', async () => {
     const f = fixture();
     try {
