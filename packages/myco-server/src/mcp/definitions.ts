@@ -1,19 +1,16 @@
 /**
  * The MCP tool definitions this Deployment serves.
  *
- * The seven tools of ledger §7.3, as `packages/myco/src/tools/definitions.ts`
- * declares them, with the retired Grove pivot removed: a Deployment has no
- * Grove, and the Project a call addresses is the request's Project header or
- * the `project` argument. `tests/myco-server/tool-parity.test.ts` holds
- * these equal to the member-side definitions, naming the one property whose
- * description differs.
- *
- * Served verbatim on `tools/list`; arguments are validated against
- * `inputSchema` by `validate.ts` before any handler runs.
+ * Every tool of ledger §7.3, served verbatim on `tools/list`. A call
+ * addresses a Project through the request's Project header or the `project`
+ * argument. Its arguments are validated against `inputSchema` by
+ * `validate.ts` before any handler runs, and each definition's annotations
+ * say whether any of its ops writes.
  */
 import { PROJECT_PIVOT, type ServedTool } from '../core/tool-catalogue.js';
 import { AGENT_LINE_MAX_CHARS } from '../core/injection.js';
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
+import { ARTIFACT_KINDS } from '../core/session-artifacts.js';
 
 /**
  * What the tenancy argument means on the member surface.
@@ -530,6 +527,62 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
         "provenance_ref": {
           "type": "string",
           "description": "The pull request URL for provenance_kind: \"pr\", or the commit sha for \"commit\". Give with provenance_kind."
+        },
+        [PROJECT_PIVOT]: {
+          "type": "string",
+          "description": PROJECT_DESCRIPTION
+        }
+      }
+    }
+  },
+  {
+    "name": "myco_outcomes",
+    "description": "Record and read what a session created. op: \"report\" records a pull request, issue, tag, release or deploy you created in this session: its kind, its own id, its https URL and the session_id from your Session:: line. Reporting the same one again changes nothing. op: \"list\" (default) returns what a session reported, oldest first.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "cortex": {
+      "guidance": "Use op: \"report\" right after you create a pull request, issue, tag, release or deploy in this session, once for each, with its own id and URL. Use op: \"list\" to see what a session reported.",
+      "priority": 55
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": [
+            "list",
+            "report"
+          ],
+          "description": "Operation (default: \"list\")"
+        },
+        "session_id": {
+          "type": "string",
+          "description": "The session: for op: \"report\", your own, from the Session:: line; for op: \"list\", the session to read"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [...ARTIFACT_KINDS],
+          "description": "For op: \"report\": what you created — pr (pull request), issue, tag, release or deploy"
+        },
+        "artifact_id": {
+          "type": "string",
+          "description": "For op: \"report\": its own id — a pull request or issue number, a tag name, a release or deploy id"
+        },
+        "url": {
+          "type": "string",
+          "description": "For op: \"report\": its https URL"
+        },
+        "cursor": {
+          "type": "string",
+          "description": "For op: \"list\": the cursor an earlier answer returned; the answer then continues after it"
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max results for op: \"list\" (default: 50)"
         },
         [PROJECT_PIVOT]: {
           "type": "string",

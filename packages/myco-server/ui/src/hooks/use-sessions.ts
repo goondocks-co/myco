@@ -509,6 +509,26 @@ export function useSessionCommits(projectId: string, sessionId: string) {
   });
 }
 
+/** What a session can report it created. */
+export type ArtifactKind = 'pr' | 'issue' | 'tag' | 'release' | 'deploy';
+
+/** One artifact the session reported it created. */
+export interface SessionArtifact {
+  id: string;
+  kind: ArtifactKind;
+  /** The artifact's own id: a pull request or issue number, a tag name, a release or deploy id. */
+  artifactId: string;
+  url: string;
+  /** Whether the page links the URL; otherwise it shows as text. */
+  linked: boolean;
+  reportedAt: number;
+}
+
+/** What the session reported it created, oldest first, a page at a time. */
+export function useSessionArtifacts(projectId: string, sessionId: string) {
+  return usePaged<SessionArtifact>(['session-artifacts', projectId, sessionId], `${project(projectId)}/sessions/${seg(sessionId)}/artifacts`, { rowKey: (row) => row.id });
+}
+
 /** The transcript record, or null when the session has none — the one 404 here that is an answer rather than an error. */
 export function useTranscript(projectId: string, sessionId: string, enabled = true) {
   return useQuery({

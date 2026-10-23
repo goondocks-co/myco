@@ -27,6 +27,7 @@ import { heldTranscriptsFor } from '@myco-server-worker/read/transcript.js';
 import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
 import { listSessionActivity } from '@myco-server-worker/read/session-activity.js';
 import { sessionCommits } from '@myco-server-worker/read/session-commits.js';
+import { listSessionArtifacts } from '@myco-server-worker/read/session-artifacts.js';
 
 /** A store that answers no rows and remembers every statement, with the values bound to it. */
 function recordingStore(): { db: RelationalStore; statements: Array<{ sql: string; params: unknown[] }> } {
@@ -186,6 +187,23 @@ describe('the reads a person waits on', () => {
         .toEqual({ index: true, scan: false, observed });
       expect({ index: /SEARCH knowledge_release_state USING INDEX idx_knowledge_release_embedding/.test(release), scan: /\bSCAN\b/.test(release), release })
         .toEqual({ index: true, scan: false, release });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('pages a session\'s reported artifacts over their session index in its own order, with no sort step and no scan', async () => {
+    const { db: recorder, statements } = recordingStore();
+    await listSessionArtifacts(recorder, { projectId: 'proj_1' }, 's1', { limit: 2 });
+    await listSessionArtifacts(recorder, { projectId: 'proj_1' }, 's1', { limit: 2, cursor: encodeCursor(5, 'a') });
+    expect(statements).toHaveLength(2);
+    const db = migrated();
+    try {
+      for (const statement of statements) {
+        const plan = planOf(db, statement.sql, statement.params);
+        expect({ index: /SEARCH session_artifacts USING INDEX idx_session_artifacts_session \(project_id=\? AND session_id=\?/.test(plan), scan: /\bSCAN\b/.test(plan), sort: /TEMP B-TREE/.test(plan), plan })
+          .toEqual({ index: true, scan: false, sort: false, plan });
+      }
     } finally {
       db.close();
     }

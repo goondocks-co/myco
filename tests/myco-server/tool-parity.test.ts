@@ -25,6 +25,9 @@ const RETIRED_INTELLIGENCE_WORDING: Partial<Record<ServedTool, { description: st
   },
 };
 
+/** Served tools the frozen member contract never carried, each held to its own definition instead. */
+const ADDED_AFTER_FREEZE: ReadonlySet<string> = new Set(['myco_outcomes']);
+
 const byName = <T extends { name: string }>(defs: readonly T[]): Map<string, T> => new Map(defs.map((d) => [d.name, d]));
 
 const opsOf = (def: { inputSchema: { properties: Record<string, unknown> } }): string[] | null => {
@@ -101,12 +104,13 @@ describe('tool parity', () => {
   it('serves exactly the catalogued tools, and the frozen contract declares every one of them', () => {
     expect(TOOL_DEFINITIONS.map((d) => d.name).sort()).toEqual([...SERVED_TOOLS].sort());
     const member = byName(FROZEN_DEFINITIONS);
-    expect(TOOL_DEFINITIONS.filter((d) => !member.has(d.name)).map((d) => d.name)).toEqual([]);
+    expect(TOOL_DEFINITIONS.filter((d) => !member.has(d.name) && !ADDED_AFTER_FREEZE.has(d.name)).map((d) => d.name)).toEqual([]);
+    expect([...ADDED_AFTER_FREEZE].filter((name) => member.has(name))).toEqual([]);
   });
 
   it('preserves the frozen contract except for retired generated-intelligence discovery and the search order and cursor properties', () => {
     const member = byName(FROZEN_DEFINITIONS);
-    for (const server of TOOL_DEFINITIONS) {
+    for (const server of TOOL_DEFINITIONS.filter((d) => !ADDED_AFTER_FREEZE.has(d.name))) {
       const frozen = structuredClone(member.get(server.name)!);
       const current = structuredClone(server);
       const wording = RETIRED_INTELLIGENCE_WORDING[server.name];

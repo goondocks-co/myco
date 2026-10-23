@@ -19,6 +19,7 @@ import { endSession } from '../core/session-end.js';
 import { sessionOutcome } from '../read/run-reads.js';
 import { sessionCommits } from '../read/session-commits.js';
 import { sessionLineage } from '../read/lineage.js';
+import { listSessionArtifacts } from '../read/session-artifacts.js';
 import { resumeCommandFor } from '../core/resume-command.js';
 
 /** Session child collections, each served by the same scoped and paginated handler. */
@@ -149,6 +150,18 @@ export async function handleSessionCommits(env: ServerEnv, ctx: OwnerContext): P
   if (scope === null) return notFound();
   if (!(await sessionInScope(env.db, scope, sessionId))) return notFound();
   return ok(await sessionCommits(env.db, scope, sessionId));
+}
+
+/** What the session reported it created, oldest first, one page at a time. */
+export async function handleSessionArtifacts(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const sessionId = sessionIdParam(ctx.params.sessionId);
+  if (sessionId === null) return notFound();
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null || !(await sessionInScope(env.db, scope, sessionId))) return notFound();
+  const page = paging(ctx.url);
+  if (page instanceof Response) return page;
+  const artifacts = await listSessionArtifacts(env.db, scope, sessionId, page);
+  return artifacts === null ? badRequest('malformed cursor') : ok(artifacts);
 }
 
 /** The session's family over both parent edges: its parents up to the roots, and what descends from them. */

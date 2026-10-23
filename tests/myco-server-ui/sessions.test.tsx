@@ -400,6 +400,7 @@ describe('the session reading page', () => {
     ]),
     '/api/projects/x/sessions/s1/transcript': () => Response.json(transcriptPayload()),
     [`/api/projects/x/processed/prompt/${P3}`]: () => new Response('{"a":1}', { headers: { 'content-type': 'text/plain; charset=utf-8' } }),
+    '/api/projects/x/sessions/s1/artifacts': () => Response.json({ rows: [], cursor: null }),
     ...over,
   }, me);
 
@@ -1746,7 +1747,7 @@ describe('the session reading page', () => {
     ]);
   });
 
-  it('says no commits were observed in a session without any, and opens the tab from another with its filter dropped', async () => {
+  it('says nothing was recorded in a session without commits or reports, and opens the tab from another with its filter dropped', async () => {
     server(routes({
       '/api/projects/x/spores?limit=25&type=gotcha&q=cache&session=s1': () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
       [COMMITS]: () => Response.json({ observations: [], release: null }),
@@ -1755,7 +1756,7 @@ describe('the session reading page', () => {
     await screen.findByRole('list', { name: 'Spores' });
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Outcomes' }));
     await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=outcomes'));
-    expect(await screen.findByText('No commits were observed in this session.')).toBeTruthy();
+    expect(await screen.findByText('Nothing was recorded for this session.')).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Outcomes' }).getAttribute('aria-selected')).toBe('true');
   });
 
@@ -1769,6 +1770,78 @@ describe('the session reading page', () => {
     fireEvent.click(retry);
     await screen.findByRole('list', { name: 'Outcomes' });
     expect(listed('Outcomes').map((li) => li.textContent)).toEqual(['Sep 2915:40CommitEnded at e4f5a6bCopy commit']);
+  });
+
+  const ARTIFACTS = '/api/projects/x/sessions/s1/artifacts';
+  const reported = (id: string, kind: string, artifactId: string, url: string, linked: boolean, reportedAt: number) => ({ id, kind, artifactId, url, linked, reportedAt });
+
+  it('lists what the session reported it created beside its commits, by time, linking only the hosts the read names, and copies a link', async () => {
+    server(routes({
+      [COMMITS]: () => Response.json({ observations: [observed('session_start', START_SHA), observed('session_end', END_SHA)], release: null }),
+      [ARTIFACTS]: () => Response.json({ rows: [
+        reported('a1', 'pr', '1931', 'https://github.com/o/r/pull/1931', true, NOW - 30 * MINUTE),
+        reported('a2', 'deploy', 'dep_7', 'https://myco.example.workers.dev/', false, NOW - 25 * MINUTE),
+        reported('a3', 'tag', 'v2.0.0', 'https://github.com/o/r/releases/tag/v2.0.0', true, NOW - 10 * MINUTE),
+      ], cursor: null }),
+    }));
+    mount('/p/x/sessions/s1?tab=outcomes');
+    await screen.findByRole('list', { name: 'Outcomes' });
+    expect(listed('Outcomes').map((li) => li.textContent)).toEqual([
+      'Sep 2915:00CommitStarted at a1b2c3d on mainCopy commit',
+      'Sep 2915:30Pull request#1931https://github.com/o/r/pull/1931Copy link',
+      'Sep 2915:35Deploydep_7https://myco.example.workers.dev/Copy link',
+      'Sep 2915:40CommitEnded at e4f5a6bCopy commit',
+      'Sep 2915:50Tagv2.0.0https://github.com/o/r/releases/tag/v2.0.0Copy link',
+    ]);
+    expect(within(listed('Outcomes')[1]!).getByRole('link', { name: 'https://github.com/o/r/pull/1931' }).getAttribute('href')).toBe('https://github.com/o/r/pull/1931');
+    expect(within(listed('Outcomes')[2]!).queryByRole('link')).toBeNull();
+    expect(rawIdsInPage()).toEqual([]);
+    const copied: string[] = [];
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { copied.push(text); } } });
+    try {
+      fireEvent.click(within(listed('Outcomes')[2]!).getByRole('button', { name: 'Copy link' }));
+      await waitFor(() => expect(copied).toEqual(['https://myco.example.workers.dev/']));
+    } finally {
+      if (clipboard === undefined) Reflect.deleteProperty(navigator, 'clipboard'); else Object.defineProperty(navigator, 'clipboard', clipboard);
+    }
+  });
+
+  it('holds back a commit later than the last report loaded until the rest are loaded, and never moves a row already shown', async () => {
+    server(routes({
+      [COMMITS]: () => Response.json({ observations: [observed('session_start', START_SHA), observed('session_end', END_SHA)], release: null }),
+      [ARTIFACTS]: (_init, url) => Response.json(url!.searchParams.get('cursor') === null
+        ? { rows: [reported('a1', 'issue', '12', 'https://github.com/o/r/issues/12', true, NOW - 50 * MINUTE)], cursor: 'next' }
+        : { rows: [reported('a2', 'release', 'v1', 'https://github.com/o/r/releases/tag/v1', true, NOW - 30 * MINUTE)], cursor: null }),
+    }));
+    mount('/p/x/sessions/s1?tab=outcomes');
+    await screen.findByRole('list', { name: 'Outcomes' });
+    expect(listed('Outcomes').map((li) => li.textContent)).toEqual([
+      'Sep 2915:00CommitStarted at a1b2c3d on mainCopy commit',
+      'Sep 2915:10Issue#12https://github.com/o/r/issues/12Copy link',
+    ]);
+    fireEvent.click(screen.getByRole('button', { name: /Show more/ }));
+    await waitFor(() => expect(listed('Outcomes')).toHaveLength(4));
+    expect(listed('Outcomes').map((li) => li.textContent)).toEqual([
+      'Sep 2915:00CommitStarted at a1b2c3d on mainCopy commit',
+      'Sep 2915:10Issue#12https://github.com/o/r/issues/12Copy link',
+      'Sep 2915:30Releasev1https://github.com/o/r/releases/tag/v1Copy link',
+      'Sep 2915:40CommitEnded at e4f5a6bCopy commit',
+    ]);
+  });
+
+  it('says the outcomes could not be read when the reports could not be, and reads them again on request', async () => {
+    let fail = true;
+    server(routes({
+      [COMMITS]: () => Response.json({ observations: [], release: null }),
+      [ARTIFACTS]: () => (fail ? new Response(null, { status: 500 }) : Response.json({ rows: [reported('a1', 'pr', '7', 'https://github.com/o/r/pull/7', true, NOW - 30 * MINUTE)], cursor: null })),
+    }));
+    mount('/p/x/sessions/s1?tab=outcomes');
+    expect(await screen.findByText('The server had a problem')).toBeTruthy();
+    fail = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findByRole('list', { name: 'Outcomes' });
+    expect(listed('Outcomes').map((li) => li.textContent)).toEqual(['Sep 2915:30Pull request#7https://github.com/o/r/pull/7Copy link']);
   });
 
   it('labels envelope-only prompt previews and attachment groups with the first chip', async () => {

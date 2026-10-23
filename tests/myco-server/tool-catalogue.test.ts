@@ -54,7 +54,7 @@ describe('the tool catalogue', () => {
 
   it('names every MCP tool the ledger keeps, and none it does not', () => {
     const kept = ledgerMcpRows()
-      .filter((r) => (r.disposition === 'KEEP' || r.disposition === 'REPLACE') && r.surfaces.includes('MCP'))
+      .filter((r) => (r.disposition === 'KEEP' || r.disposition === 'REPLACE' || r.disposition === 'NEW') && r.surfaces.includes('MCP'))
       .map((r) => r.tool);
 
     const unserved = kept.filter((t) => !isServedTool(t));

@@ -6,7 +6,7 @@ Myco gives your coding agents tools for reading project knowledge and recording 
 
 Project instructions arrive at session start. Relevant spores and plans return with each prompt. The project's **Context for sessions** switch is on by default. Tools let an agent search deeper, revisit a session or save a discovery during its work.
 
-## The seven tools
+## The eight tools
 
 | Tool | Operations | What it is for |
 |---|---|---|
@@ -17,6 +17,7 @@ Project instructions arrive at session start. Relevant spores and plans return w
 | `myco_skills` | `list`, `get` | Find the skills shipped with Myco and where their bodies are installed. |
 | `myco_spores` | `list`, `get`, `save`, `supersede`, `consolidate`, `obsolete` | Record durable knowledge and retire or replace stale findings. |
 | `myco_agent` | `runs`, `run` | Read Myco's task run history and details. |
+| `myco_outcomes` | `list`, `report` | Record each pull request, issue, tag, release or deploy you created in this session, and read what a session recorded. |
 
 These tools read and edit project intelligence. Administration belongs in the dashboard and CLI. See [Actors & boundaries](architecture/actors-and-boundaries.md).
 
@@ -35,6 +36,16 @@ Search first, then fetch the result in full using its retrieval hint. When recor
   "agent_line": "When working on this area, follow this guidance in the named file."
 }
 ```
+
+### Record what you created
+
+When an agent creates a pull request, issue, tag, release or deploy, it records it with `myco_outcomes` op `report`: its `kind`, its own `artifact_id`, its https `url`, and the agent's own `session_id`. The session page's Outcomes tab lists it beside the commits the session started and ended on, and links it when it is on GitHub. Myco records only what is reported. It never infers an artifact from commits, branch names or tool output. Reporting the same artifact again changes nothing, and the same artifact under another URL is refused. A launcher or CI step without MCP makes the same call through the CLI. The CLI always needs its credential source named. On a machine enrolled as a member, use the member's own credential:
+
+```sh
+myco tool call myco_outcomes --credential registry --json --input '{"op":"report","project":"<project-id>","session_id":"<session-id>","kind":"release","artifact_id":"v2.0.0","url":"https://github.com/<owner>/<repo>/releases/tag/v2.0.0"}'
+```
+
+In CI, set `MYCO_SERVER_URL`, `MYCO_MEMBER_TOKEN` and `MYCO_PROJECT` (all three) and pass `--credential env` instead.
 
 A 2.0 Deployment does not serve plan deletion or the `myco_cortex` operations `digest`, `canopy_entry`, `notifications` and `maintenance_summary`. The code map is one map per project.
 
