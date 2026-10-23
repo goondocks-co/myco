@@ -481,3 +481,23 @@ describe('apply refusals', () => {
     await expect(restoreArtifact(db, { authorization: { kind: 'recovery' }, text: `${header}\n${crafted}\n` })).rejects.toThrow(/column name outside the store grammar/);
   });
 });
+
+describe('spore revision recovery', () => {
+  it('backs up revisions with spores and defaults an older artifact lacking the column to zero', async () => {
+    const source = seeded(), target = seeded(), legacy = seeded();
+    try {
+      source.sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,revision,created_at) VALUES ('proj_bk','revision','agent_bk','gotcha','superseded','kept',7,1)");
+      const saved = await createBackup(source.db, source.bucket, { producer: 'test', now: source.now });
+      const artifact = (await backupArtifact(source.db, source.bucket, saved.id))!;
+      await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
+      expect(target.sqlite.query("SELECT status,content,revision FROM spores WHERE id='revision'").get())
+        .toEqual({ status: 'superseded', content: 'kept', revision: 7 });
+      const rows = artifact.text.trim().split('\n').map(line => JSON.parse(line));
+      rows[0].schemaVersion = 100;
+      for (const row of rows) if (row.t === 'spores') delete row.r.revision;
+      await restoreArtifact(legacy.db, { authorization: { kind: 'recovery' }, text: rows.map(row => JSON.stringify(row)).join('\n') + '\n', allowForeignLineage: true });
+      expect(legacy.sqlite.query("SELECT status,content,revision FROM spores WHERE id='revision'").get())
+        .toEqual({ status: 'superseded', content: 'kept', revision: 0 });
+    } finally { source.sqlite.close(); target.sqlite.close(); legacy.sqlite.close(); }
+  });
+});

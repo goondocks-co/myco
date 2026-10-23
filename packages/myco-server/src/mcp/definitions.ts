@@ -26,6 +26,9 @@ export interface JsonSchemaProperty {
   type?: string | string[];
   enum?: readonly unknown[];
   items?: JsonSchemaProperty;
+  properties?: Record<string, JsonSchemaProperty>;
+  required?: string[];
+  additionalProperties?: boolean;
   description?: string;
 }
 
@@ -482,12 +485,24 @@ export const TOOL_DEFINITIONS: readonly ServedToolDefinition[] = [
           "type": "string",
           "description": "ID of the replacement spore for op: \"supersede\""
         },
+        "expect_status": {
+          "type": "string",
+          "enum": ["active", "superseded", "consolidated", "obsolete"],
+          "description": "Expected source status; defaults to active. Members may explicitly re-resolve a terminal spore. Runs require active."
+        },
+        "expect_revision": {
+          "type": "integer",
+          "description": "Expected source revision for supersede or obsolete. Required for new runs; optional for members and old runs."
+        },
         "source_spore_ids": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": ["object", "string"],
+            "properties": { "id": { "type": "string" }, "revision": { "type": "integer" } },
+            "required": ["id"],
+            "additionalProperties": false
           },
-          "description": "IDs of the spores to merge for op: \"consolidate\" (minimum 2)"
+          "description": "Sources to consolidate as ids or {id, revision?}. New runs require a revision per source; each active source moves independently."
         },
         "consolidated_content": {
           "type": "string",

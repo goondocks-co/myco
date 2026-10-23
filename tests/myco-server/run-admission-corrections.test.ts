@@ -97,8 +97,8 @@ for (const op of ['save', 'obsolete', 'consolidate'] as const) for (const revoke
       if (revoke) f.sqlite.exec(`CREATE TRIGGER revoke_spore AFTER ${op === 'obsolete' ? 'UPDATE' : 'INSERT'} ON spores BEGIN
         UPDATE members SET revoked_at = 1 WHERE id = '${HARNESS_MEMBER_ID}'; END`);
       const args = op === 'save' ? { op, content: 'observation', type: 'gotcha', session_id: 'sess' }
-        : op === 'obsolete' ? { op, id: 'a', reason: 'obsolete' }
-        : { op, source_spore_ids: ['a', 'b'], consolidated_content: 'wisdom', observation_type: 'wisdom', session_id: 'sess' };
+        : op === 'obsolete' ? { op, id: 'a', expect_revision: 0, reason: 'obsolete' }
+        : { op, source_spore_ids: [{ id: 'a', revision: 0 }, { id: 'b', revision: 0 }], consolidated_content: 'wisdom', observation_type: 'wisdom', session_id: 'sess' };
       const answer = await f.call('myco_spores', args);
       const count = (sql: string) => (f.sqlite.query(sql).get() as { n: number }).n;
       expect(count("SELECT COUNT(*) AS n FROM spores WHERE author = 'target'"))

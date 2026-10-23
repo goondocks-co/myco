@@ -45,6 +45,7 @@ export const EXTRACTION_RULES = [
   '## Sharp, not bloated',
   '',
   '- Search before every write. `myco_search` with `type` "spore" finds what already covers the topic; `myco_run_spores` op "get" reads one body in full. Full reads are counted against this run, so read in full only what you mean to act on.',
+  '- Before resolving a spore, read its revision with `myco_run_spores` get/list. Supersede and obsolete pass it as `expect_revision`; consolidation passes `source_spore_ids` as [{id, revision}]. Only active sources may move. A `stale` refusal carries the current status and revision: reassess the source before deciding again.',
   '- A topic already covered and nothing new to add: write nothing.',
   '- A topic already covered and the prompts add real detail: save the new spore, then `myco_spores` op "supersede" with `old_spore_id`, `new_spore_id` and a `reason` naming what the new one adds.',
   '- Three or more active spores on one topic: `myco_spores` op "consolidate" with `source_spore_ids`, `consolidated_content` that keeps every concrete detail, `observation_type` "wisdom" and a `reason`.',

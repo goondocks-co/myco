@@ -848,7 +848,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       if (status === undefined) { refusedRecord(r, 'missing_reference'); r.lineage.refused += 1; r.refusals.push(`history ${event.id}: its spore ${event.sporeId} is not in the vault`); continue; }
       const sessionId = event.sessionId === null ? null : g.idOf.get(event.sessionId) ?? null;
       const outcome = await settle(async () => classified(await clientFor(projectId).postPersisted(SPORES_RESOLVE_PATH, {
-        eventId: event.id, agentId: event.agentId, sporeId: event.sporeId, action: event.action, status,
+        eventId: event.id, agentId: event.agentId, sporeId: event.sporeId, action: event.action, status, expectStatus: status,
         newSporeId: event.newSporeId, reason: event.reason, sessionId: sessionId !== null && present.has(sessionId) ? sessionId : null,
         channel: 'import', createdAt: event.createdAt ?? undefined,
       }, unboundedBudget())));

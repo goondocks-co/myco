@@ -17,6 +17,8 @@ import { refused } from '../ingest/events.js';
 import { ensureAgent } from '../core/runs.js';
 import { HARNESS_AGENT_ID } from '../core/harness.js';
 
+import { sporeExpectations } from '../core/spore-writes.js';
+
 export { MAX_SPORE_CONTENT_BYTES };
 const MAX_ID_CHARS = 192;
 
@@ -122,13 +124,12 @@ export async function handleGetSpore(env: ServerEnv, ctx: RouteContext): Promise
 }
 
 /**
- * Move a spore's status and record why, in one call.
- *
- * `resolved: false` means the spore is not in this Project — nothing moved and
- * no event exists for it, which a caller must not read as a resolution. An
- * event id already recorded changes nothing and answers `duplicate`. On the
- * `import` channel the event keeps the time it names (`createdAt`); every other
- * resolution is dated when it arrives.
+ * Move a spore and record its event atomically. An absent source answers
+ * `resolved: false`; an existing event id answers `duplicate` without a move.
+ * Ordinary writes default `expectStatus` to active; `expectRevision` is checked
+ * when given. Import history admits `expectStatus` (the final status when
+ * omitted) or active and keeps `createdAt`. A guard mismatch answers `stale` with the current status,
+ * revision and the comparison that refused it.
  */
 export async function handleResolveSpore(env: ServerEnv, ctx: RouteContext): Promise<Response> {
   const body = parseBody(ctx.body);
@@ -153,10 +154,14 @@ export async function handleResolveSpore(env: ServerEnv, ctx: RouteContext): Pro
     return Response.json(refused(ctx, refusal('a supersede resolution requires newSporeId', 'refused')));
   }
 
+  const expectations = await sporeExpectations(env.db, { projectId: ctx.projectId }, { expect_status: body.expectStatus, expect_revision: body.expectRevision });
+  if (!expectations.ok) return Response.json(refused(ctx, refusal(expectations.reason, 'invalid_field')));
   const at = body.channel === IMPORT_CHANNEL ? int(body.createdAt) ?? ctx.now : ctx.now;
   await ensureNamedAgent(env, agentId, ctx.now);
   const outcome = await resolveSpore(env.db, { projectId: ctx.projectId }, status, {
     id: eventId, agentId, sporeId, action, newSporeId, reason, sessionId, author: ctx.memberId, createdAt: at,
-  }, at);
+    ...(body.channel === IMPORT_CHANNEL ? { channel: IMPORT_CHANNEL } : {}),
+  }, at, expectations.expect);
+  if (typeof outcome === 'object') return Response.json({ ...refused(ctx, refusal(outcome.reason, 'stale')), status: outcome.status, revision: outcome.revision });
   return Response.json({ persisted: true, resolved: outcome !== false, ...(outcome === 'duplicate' ? { duplicate: true } : {}) });
 }

@@ -17,8 +17,8 @@
  * without a ref never reaches the store, and no op accepts a citation it would
  * then drop.
  */
-import { consolidateSpores, countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore, type ResolutionAction, type SporeProvenance, type SporeRow, type SporeStatus } from '../../core/spores.js';
-import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags } from '../../core/spore-writes.js';
+import { consolidateSpores, countSpores, getSpore, insertSpore, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore, type ResolutionAction, type SporeProvenance, type SporeRow, type SporeStatus, type SporeExpectation } from '../../core/spores.js';
+import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags, sporeExpectations } from '../../core/spore-writes.js';
 import { dispatchedBeforeLedger, servedSessionStore, ServedSessionRefused, SESSION_NOT_SERVED } from '../../core/served-material.js';
 import { extractionSourceSession } from '../../read/prompts.js';
 import { promptInSession } from '../../read/turns.js';
@@ -97,12 +97,15 @@ function provenanceOf(input: ToolInput): { ok: true; provenance: SporeProvenance
 
 async function resolve(
   ctx: ToolContext, scope: ReadScope, sporeId: string, status: SporeStatus, action: ResolutionAction,
-  newSporeId: string | null, reason: string | null, sessionId: string | null, provenance: SporeProvenance | null,
-): Promise<boolean> {
+  newSporeId: string | null, reason: string | null, sessionId: string | null, provenance: SporeProvenance | null, expect: SporeExpectation,
+): Promise<true | ToolFailure | (ToolFailure & { status: string; revision: number; reason: string })> {
   const by = writerOf(ctx, TOOL);
-  return (await resolveSpore(ctx.env.db, scope, status, {
+  const outcome = await resolveSpore(ctx.env.db, scope, status, {
     id: crypto.randomUUID(), agentId: by.agentId, author: by.author, sporeId, action, newSporeId, reason, sessionId, provenance, createdAt: ctx.now,
-  }, ctx.now)) !== false;
+  }, ctx.now, expect);
+  if (typeof outcome === 'object') return { ...failure(outcome.error), status: outcome.status, revision: outcome.revision, reason: outcome.reason };
+  if (outcome === false) return failure('spore_id not found');
+  return true;
 }
 
 export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<unknown> {
@@ -153,6 +156,11 @@ async function handleSporeOperation(input: ToolInput, ctx: ToolContext): Promise
     return { id: spore.id, observation_type: spore.observationType, status: spore.status, created_at: spore.createdAt };
   }
 
+  const expectations = ['supersede', 'obsolete', 'consolidate'].includes(String(op))
+    ? await sporeExpectations(db, scope, input, ctx.principal.kind === 'run' ? ctx.principal.runId : undefined)
+    : { ok: true as const, expect: {} };
+  if (!expectations.ok) return failure(expectations.reason);
+
   if (op === 'supersede') {
     const planned = await planSporeResolution(db, scope, {
       action: 'supersede', sporeId: str(input.old_spore_id), newSporeId: str(input.new_spore_id), reason: str(input.reason),
@@ -163,7 +171,8 @@ async function handleSporeOperation(input: ToolInput, ctx: ToolContext): Promise
     if (!cited.ok) return cited;
     const session = await sessionOf(ctx, scope, input, TOOL);
     if (!session.ok) return session;
-    if (!(await resolve(ctx, scope, plan.sporeId, plan.status, 'supersede', plan.newSporeId, plan.reason, session.sessionId, cited.provenance))) return failure('old_spore_id not found');
+    const outcome = await resolve(ctx, scope, plan.sporeId, plan.status, 'supersede', plan.newSporeId, plan.reason, session.sessionId, cited.provenance, expectations.expect);
+    if (outcome !== true) return outcome;
     return { old_spore: plan.sporeId, new_spore: plan.newSporeId, status: plan.status };
   }
 
@@ -175,13 +184,14 @@ async function handleSporeOperation(input: ToolInput, ctx: ToolContext): Promise
     if (!cited.ok) return cited;
     const session = await sessionOf(ctx, scope, input, TOOL);
     if (!session.ok) return session;
-    if (!(await resolve(ctx, scope, plan.sporeId, plan.status, 'obsolete', null, plan.reason, session.sessionId, cited.provenance))) return failure('spore_id not found');
+    const outcome = await resolve(ctx, scope, plan.sporeId, plan.status, 'obsolete', null, plan.reason, session.sessionId, cited.provenance, expectations.expect);
+    if (outcome !== true) return outcome;
     return { spore: plan.sporeId, status: plan.status };
   }
 
   if (op === 'consolidate') {
     const planned = await planSporeConsolidation(db, scope, {
-      sources: Array.isArray(input.source_spore_ids) ? input.source_spore_ids.map(String) : [],
+      sources: 'sources' in expectations ? expectations.sources : [],
       content: str(input.consolidated_content),
       observationType: str(input.observation_type),
       reason: str(input.reason),

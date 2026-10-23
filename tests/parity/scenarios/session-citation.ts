@@ -64,8 +64,13 @@ export const sessionCitation: ParityScenario = {
     const read = (await call('myco_run_spores', { op: 'get', id: saved.id })).result;
     expect(read.spore.session_id).toBe(session);
     expect(read.spore).not.toHaveProperty('prompt_id');
-    const consolidated = (await call('myco_spores', {
+    const consolidation = {
       op: 'consolidate', source_spore_ids: [saved.id], consolidated_content: 'Session wisdom', observation_type: 'wisdom', session_id: session,
+    };
+    expect((await call('myco_spores', consolidation)).result)
+      .toEqual({ ok: false, error: 'revision is required for every source_spore_ids item' });
+    const consolidated = (await call('myco_spores', {
+      ...consolidation, source_spore_ids: [{ id: saved.id, revision: read.spore.revision }],
     })).result;
     expect(consolidated.new_spore_id).toEqual(expect.any(String));
     expect(await target.sql('SELECT DISTINCT session_id,prompt_id FROM spores')).toEqual([{ session_id: session, prompt_id: null }]);
@@ -80,8 +85,9 @@ export const sessionCitation: ParityScenario = {
     expect(secondPage.prompts.map((item: any) => item.session_id)).toEqual(['second-session']);
     const second = (await call('myco_spores', { ...save, session_id: 'second-session' })).result;
     expect(second.id).toEqual(expect.any(String));
+    const secondRead = (await call('myco_run_spores', { op: 'get', id: second.id })).result;
     expect((await call('myco_spores', {
-      op: 'consolidate', source_spore_ids: [second.id], consolidated_content: 'Second session wisdom',
+      op: 'consolidate', source_spore_ids: [{ id: second.id, revision: secondRead.spore.revision }], consolidated_content: 'Second session wisdom',
       observation_type: 'wisdom', session_id: 'second-session',
     })).result.new_spore_id).toEqual(expect.any(String));
     expect((await call('myco_spores', { ...save, session_id: 'unserved-session' })).result)
@@ -117,8 +123,9 @@ export const sessionCitation: ParityScenario = {
     await target.sql(`UPDATE agent_runs SET queued_at=${boundary - 1}, started_at=${now} WHERE project_id=${lit(project)} AND id=${lit(run)}`);
     const claimedAfter = (await call('myco_spores', save)).result;
     expect(claimedAfter.id).toEqual(expect.any(String));
+    const claimedRead = (await call('myco_run_spores', { op: 'get', id: claimedAfter.id })).result;
     expect((await call('myco_spores', {
-      op: 'consolidate', source_spore_ids: [claimedAfter.id], consolidated_content: 'Claimed session wisdom',
+      op: 'consolidate', source_spore_ids: [{ id: claimedAfter.id, revision: claimedRead.spore.revision }], consolidated_content: 'Claimed session wisdom',
       observation_type: 'wisdom', session_id: session,
     })).result.new_spore_id).toEqual(expect.any(String));
     await target.sql(`UPDATE agent_runs SET queued_at=NULL WHERE project_id=${lit(project)} AND id=${lit(run)}`);

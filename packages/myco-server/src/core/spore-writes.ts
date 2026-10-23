@@ -1,19 +1,7 @@
-/**
- * What a spore write must satisfy before it reaches the store.
- *
- * Two writers reach the same rows — a member through `myco_spores`, a harness
- * run through the run routes — and one set of checks serves both. A resolution
- * a member may not make is one a run may not make either, refused in the same
- * words, so the two surfaces cannot drift into disagreeing about what a valid
- * supersession is.
- *
- * The checks name what is missing and what the store does not hold; the write
- * itself stays in `core/spores.ts`, where a status move and its resolution
- * event commit together.
- */
+/** Admission for spore content, citations and lifecycle expectations across callers. */
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
-import { getSpore, MAX_SPORE_CONTENT_BYTES, type ResolutionAction, type SporeStatus } from './spores.js';
+import { getSpore, sporeRevisionRequired, MAX_SPORE_CONTENT_BYTES, type ResolutionAction, type SporeStatus, type SporeExpectation, type SporeSource, SPORE_STATUSES } from './spores.js';
 
 export const SPORE_CAP_REASON = `content exceeds ${MAX_SPORE_CONTENT_BYTES} bytes`;
 
@@ -88,14 +76,14 @@ export async function planSporeResolution(
 
 /** A consolidation that records the wisdom spore as part of the move: the sources it merges, and the body and kind that replace them. */
 export interface SporeConsolidationRequest {
-  sources?: readonly string[];
+  sources?: readonly SporeSource[];
   content?: string;
   observationType?: string;
   reason?: string;
 }
 
 export interface SporeConsolidationPlan {
-  sources: readonly string[];
+  sources: readonly SporeSource[];
   content: string;
   observationType: string;
   reason: string | null;
@@ -123,8 +111,43 @@ export async function planSporeConsolidation(
   if (content === undefined) return { ok: false, reason: 'consolidated_content is required for op: consolidate' };
   if (observationType === undefined) return { ok: false, reason: 'observation_type is required for op: consolidate' };
   if (overSporeCap(content)) return { ok: false, reason: SPORE_CAP_REASON };
-  for (const id of sources) {
+  for (const { id } of sources) {
     if ((await getSpore(db, scope, id)) === null) return { ok: false, reason: `source_spore_id not found: ${id}` };
   }
   return { ok: true, plan: { sources, content, observationType, reason: request.reason ?? null } };
+}
+
+/** Admit one lifecycle call's expectations for its editorial or run authority. */
+export async function sporeExpectations(
+  db: RelationalStore, scope: ReadScope, input: Record<string, unknown>, runId?: string,
+): Promise<{ ok: true; expect: SporeExpectation; sources?: SporeSource[] } | { ok: false; reason: string }> {
+  const status = input.expect_status;
+  const revision = input.expect_revision;
+  if (status !== undefined && !(SPORE_STATUSES as readonly unknown[]).includes(status)) return { ok: false, reason: 'expect_status must be a spore status' };
+  const validRevision = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+  if (revision !== undefined && !validRevision(revision)) return { ok: false, reason: 'expect_revision must be a nonnegative safe integer' };
+  let required = false;
+  if (runId !== undefined) {
+    if (status !== undefined && status !== 'active') return { ok: false, reason: 'runs require expect_status active' };
+    required = await sporeRevisionRequired(db, scope, runId);
+  }
+  let sources: SporeSource[] | undefined;
+  if (input.op === 'consolidate') {
+    if (!Array.isArray(input.source_spore_ids)) return { ok: false, reason: 'source_spore_ids must be an array' };
+    if (status !== undefined && status !== 'active') return { ok: false, reason: 'consolidation requires expect_status active' };
+    sources = [];
+    for (const value of input.source_spore_ids) {
+      const source = typeof value === 'string' ? { id: value } : value;
+      if (typeof source !== 'object' || source === null || Array.isArray(source)
+        || typeof source.id !== 'string' || source.id.length === 0
+        || Object.keys(source).some(key => key !== 'id' && key !== 'revision')
+        || (source.revision !== undefined && !validRevision(source.revision))) {
+        return { ok: false, reason: 'source_spore_ids requires ids or {id, revision?}' };
+      }
+      if (required && source.revision === undefined) return { ok: false, reason: 'revision is required for every source_spore_ids item' };
+      if (sources.some(held => held.id === source.id)) return { ok: false, reason: 'source_spore_ids must be distinct' };
+      sources.push({ id: source.id, ...(source.revision === undefined ? {} : { revision: source.revision }) });
+    }
+  } else if (required && revision === undefined) return { ok: false, reason: 'expect_revision is required' };
+  return { ok: true, expect: { status: status as SporeStatus | undefined, revision: revision as number | undefined }, ...(sources === undefined ? {} : { sources }) };
 }
