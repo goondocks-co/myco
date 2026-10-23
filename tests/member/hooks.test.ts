@@ -13,6 +13,7 @@
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { resetMachineIdCache } from '@myco/machine-id.js';
@@ -29,9 +30,9 @@ import { readSessionState } from '@myco/member/session-state.js';
 import { parseTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
 import { registerTestMember, recordingFetch, runHook } from './helpers/hooks.js';
-import { FEATURES_HEADER, MEMBER_FEATURES, TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { FEATURES_HEADER, MAX_ID_CHARS, MEMBER_FEATURES, TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { cacheDeploymentFeatures } from '@myco/member/context-cache.js';
-import { PARENT_SESSION_ENV } from '@myco/member/session-lineage.js';
+import { BAGGAGE_ENV } from '@myco/member/session-lineage.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { runHelperVerb } from '@myco/cli/member-helper.js';
 import { TAIL_IDLE_MS } from '@myco/member/backlog.js';
@@ -485,30 +486,84 @@ describe('member hooks through the worker: a session resumed after its end', () 
 });
 
 describe('member hooks through the worker: the session that launched this one', () => {
-  const start = (sessionId: string, parent: string | undefined, raw: Record<string, unknown> = {}) =>
+  const start = (sessionId: string, baggage: string | undefined, raw: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = {}) =>
     runHook('session-start', { session_id: sessionId, hook_event_name: 'SessionStart', transcript_path: transcript([{ type: 'user', message: { role: 'user', content: 'x' } }], sessionId), cwd: '/work/repo', ...raw },
-      { helpers: 'run', fetch: fetchSpy.fetch, env: { ...process.env, [PARENT_SESSION_ENV]: parent } });
+      { helpers: 'run', fetch: fetchSpy.fetch, env: { ...process.env, [BAGGAGE_ENV]: baggage, ...env } });
   const launchParent = (sessionId: string) => (rig.env.sqlite.query('SELECT launch_parent_session_id AS v FROM sessions WHERE session_id = ?').get(sessionId) as { v: string | null } | null)?.v;
   beforeEach(() => cacheDeploymentFeatures('https://member-test.invalid', [...MEMBER_FEATURES], mycoHome));
 
-  it('records the variable as a fact of the start, and nothing when it is unset or not a session id', async () => {
-    await start('sess-child', 'sess-orchestrator');
-    expect(launchParent('sess-child')).toBe('sess-orchestrator');
-    await start('sess-unset', undefined);
-    expect(launchParent('sess-unset')).toBeNull();
-    for (const [index, value] of ['', 'two words', 'line\nbreak', 'x'.repeat(129), 'sess-self-7'].entries()) {
-      const out = await start(`sess-self-${index + 3}`, value);
-      expect(out.stderr).not.toMatch(/error|refused/i);
-      expect(launchParent(`sess-self-${index + 3}`)).toBeNull();
-    }
+  it.each([
+    ['unset', undefined, null],
+    ['empty', '', null],
+    ['absent member', 'other=value', null],
+    ['upper-case key', 'GEN_AI.CONVERSATION.ID=sess-parent', null],
+    ['member alone', 'gen_ai.conversation.id=sess-parent', 'sess-parent'],
+    ['member first', 'gen_ai.conversation.id=sess-parent,other=value', 'sess-parent'],
+    ['member last', 'other=value,gen_ai.conversation.id=sess-parent', 'sess-parent'],
+    ['whitespace', ' \tother = value , \tgen_ai.conversation.id \t= sess-parent \t', 'sess-parent'],
+    ['properties', 'gen_ai.conversation.id=sess-parent;flag; prop = value,other=x;another', 'sess-parent'],
+    ['percent decoding', 'gen_ai.conversation.id=sess%2Dparent', 'sess-parent'],
+    ['same duplicates', 'gen_ai.conversation.id=sess-parent,gen_ai.conversation.id=sess%2Dparent', 'sess-parent'],
+    ['conflicting duplicates', 'gen_ai.conversation.id=sess-parent,gen_ai.conversation.id=sess-other', null],
+    ['missing equals', 'gen_ai.conversation.id=sess-parent,broken', null],
+    ['empty list member', 'gen_ai.conversation.id=sess-parent,,other=x', null],
+    ['trailing comma', 'gen_ai.conversation.id=sess-parent,', null],
+    ['invalid key', 'bad key=value,gen_ai.conversation.id=sess-parent', null],
+    ['invalid property', 'gen_ai.conversation.id=sess-parent;bad key', null],
+    ['empty property', 'gen_ai.conversation.id=sess-parent;', null],
+    ['quoted value', 'other="value",gen_ai.conversation.id=sess-parent', null],
+    ['raw newline', 'gen_ai.conversation.id=sess-parent\n', null],
+    ['raw unicode', 'other=café,gen_ai.conversation.id=sess-parent', null],
+    ['undecodable value', 'gen_ai.conversation.id=sess%ZZparent', null],
+    ['undecodable target UTF-8', 'gen_ai.conversation.id=sess%FF', null],
+    ['undecodable unrelated value', 'other=%FF,gen_ai.conversation.id=sess-parent', 'sess-parent'],
+    ['empty id', 'gen_ai.conversation.id=', null],
+    ['encoded whitespace', 'gen_ai.conversation.id=two%20words', null],
+    ['encoded control', 'gen_ai.conversation.id=line%0Abreak', null],
+    ['overlong id', 'gen_ai.conversation.id=' + 'x'.repeat(MAX_ID_CHARS + 1), null],
+    ['maximum id', 'gen_ai.conversation.id=' + 'x'.repeat(MAX_ID_CHARS), 'x'.repeat(MAX_ID_CHARS)],
+    ['self id', 'gen_ai.conversation.id=sess-child', null],
+    ['equals in value', 'gen_ai.conversation.id=sess=parent', 'sess=parent'],
+    ['plus in value', 'gen_ai.conversation.id=sess+parent', 'sess+parent'],
+  ])('reads launch baggage: %s', async (_name, baggage, expected) => {
+    const out = await start('sess-child', baggage ?? undefined);
+    expect(out.stderr).not.toMatch(/error|refused/i);
+    expect(launchParent('sess-child')).toBe(expected);
+  });
+
+  it.each(['value', 'properties'])('rejects hostile baggage in bounded parse time: %s', (shape) => {
+    const PARSE_BUDGET_MS = 1_000;
+    const CHILD_TIMEOUT_MS = 5_000;
+    const modulePath = path.resolve('packages/myco/src/member/session-lineage.ts');
+    const script = `
+      import { launchParentSession } from ${JSON.stringify(modulePath)};
+      const carriers = [1, 2, 4].map(scale =>
+        ${shape === 'value' ? "'k=' + 'a'.repeat(100_000 * scale)" : "'k=v' + ';p'.repeat(50_000 * scale)"} + '\\\\');
+      const started = performance.now();
+      const parents = carriers.map(baggage => launchParentSession('sess-child', { BAGGAGE: baggage }) ?? null);
+      console.log(JSON.stringify({ parents, elapsedMs: performance.now() - started }));
+    `;
+    const child = spawnSync(process.execPath, ['--no-env-file', '--eval', script], {
+      cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: CHILD_TIMEOUT_MS, killSignal: 'SIGKILL',
+    });
+    expect(child.error).toBeUndefined();
+    expect(child.status).toBe(0);
+    const result = JSON.parse(child.stdout) as { parents: Array<string | null>; elapsedMs: number };
+    expect(result.parents).toEqual([null, null, null]);
+    expect(result.elapsedMs).toBeLessThan(PARSE_BUDGET_MS);
+  });
+
+  it('ignores MYCO_PARENT_SESSION set alone', async () => {
+    await start('sess-child', undefined, {}, { MYCO_PARENT_SESSION: 'sess-parent' });
+    expect(launchParent('sess-child')).toBeNull();
   });
 
   it('keeps the first start\'s value through a resumed start', async () => {
-    await start('sess-resumed-child', 'sess-first');
-    await start('sess-resumed-child', 'sess-second', { source: 'resume' });
+    await start('sess-resumed-child', 'gen_ai.conversation.id=sess-first');
+    await start('sess-resumed-child', 'gen_ai.conversation.id=sess-second', { source: 'resume' });
     expect(launchParent('sess-resumed-child')).toBe('sess-first');
     await start('sess-unset-then-set', undefined);
-    await start('sess-unset-then-set', 'sess-late', { source: 'resume' });
+    await start('sess-unset-then-set', 'gen_ai.conversation.id=sess-late', { source: 'resume' });
     expect(launchParent('sess-unset-then-set')).toBeNull();
   });
 });

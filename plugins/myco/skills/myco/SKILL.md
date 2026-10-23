@@ -79,6 +79,12 @@ Where the `myco` binary is installed and its hooks are wired, sessions are captu
 
 Where only the plugin is installed there is no capture, and the tools above are the whole surface. That is a working configuration, not a broken one — but if you expect this project's sessions to be recorded and they are not, the **`myco-setup`** skill installs the rest.
 
+## Starting another agent
+
+When you start another agent session, put your own session id from the `Session::` line in its `BAGGAGE` environment variable as `gen_ai.conversation.id=<your session id>`. Keep other baggage members and replace any existing member with that key. Percent-encode the id where the [W3C Baggage format](https://www.w3.org/TR/baggage/) requires it. Myco then shows the new session as your child.
+
+Sub-agents that run inside your own session need nothing; they are already part of it.
+
 ## Skills
 
 `myco_skills` lists the skills that ship with Myco and what each one is for. It is the way to see what is available without leaving the session. It does not return a body: `get` names where the body sits on this machine, and your host's own skill mechanism is what loads it.

@@ -7,6 +7,7 @@
  * content and cap.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { sessionLineageFacts } from '@myco/member/session-lineage.js';
 import { normalizeHookInput } from '@myco/hooks/normalize.js';
 import { cacheDeploymentFeatures } from '@myco/member/context-cache.js';
 import { FEATURES_HEADER, LAUNCH_PARENT_FEATURE, PROTOCOL_HEADER, PROJECT_NAME_FEATURE, TOOL_RESULT_REASON_FEATURE } from '@goondocks/myco-shared/member-protocol';
@@ -108,7 +109,7 @@ describe('member spool', () => {
       response.headers.set(FEATURES_HEADER, features.join(','));
       return response;
     };
-    spool.append('sess-launched', sessionStartEvent(ctxFor(spool, 'sess-launched'), { startedAt: Date.now(), launchParentSessionId: 'sess-orchestrator' }));
+    spool.append('sess-launched', sessionStartEvent(ctxFor(spool, 'sess-launched'), { startedAt: Date.now(), ...sessionLineageFacts('claude-code', 'sess-launched', undefined, { BAGGAGE: 'gen_ai.conversation.id=sess-orchestrator' }) }));
     const result = await spool.drainSession('sess-launched', clientFor(rig, fetch), unboundedBudget());
     expect(result).toMatchObject({ acked: 1, refused: 0, remaining: 0, endedBy: 'drained' });
     expect(payloads.map((payload) => payload.launchParentSessionId)).toEqual([advertised ? 'sess-orchestrator' : undefined]);

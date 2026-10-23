@@ -1,3 +1,4 @@
+import { launchParentSession } from '@myco/member/session-lineage.js';
 import { emptyInjectionCounts } from '@myco-server-worker/core/injection.js';
 /**
  * The screens fixture: a production-shaped Deployment with no production data.
@@ -312,7 +313,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     sessionIds.push(sessionId);
     const startedAt = now - seed.startedAgo * MINUTE;
     const lineage = {
-      ...(seed.launchedBy === undefined ? {} : { launchParentSessionId: typeof seed.launchedBy === 'number' ? sessionIds[seed.launchedBy]! : seed.launchedBy }),
+      ...(seed.launchedBy === undefined ? {} : { launchParentSessionId: launchParentSession(sessionId, { BAGGAGE: 'gen_ai.conversation.id=' + encodeURIComponent(typeof seed.launchedBy === 'number' ? sessionIds[seed.launchedBy]! : seed.launchedBy) }) }),
       ...(seed.continues === undefined ? {} : { parentSessionId: sessionIds[seed.continues.session]!, parentReason: seed.continues.reason }),
     };
     await post(seed.machine, seed.project, sessionId, 'session.start', { agent: seed.agent, branch: 'main', startedAt, ...(seed.commits === undefined ? {} : { headSha: seed.commits.start }), ...lineage }, startedAt);
