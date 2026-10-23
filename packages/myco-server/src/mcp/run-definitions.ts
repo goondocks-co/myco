@@ -87,8 +87,9 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['unprocessed', 'mark_processed'], description: 'unprocessed: one page of prompts not yet read. mark_processed: mark one prompt read.' },
-        prompt_id: { type: 'string', description: 'For mark_processed: the prompt to mark.' },
+        op: { type: 'string', enum: ['unprocessed', 'mark_processed'], description: 'unprocessed: one page of prompts not yet read. mark_processed: acknowledge one item using its served_id.' },
+        served_id: { type: 'string', description: 'For mark_processed: acknowledge this item using the served_id from its body page.' },
+        prompt_id: { type: 'string', description: 'Compatibility for mark_processed: a prompt served to this run. Ambiguous instances require served_id.' },
         cursor: { type: 'string', description: 'For unprocessed: the next_cursor from the previous page.' },
         limit: { type: 'number', description: 'For unprocessed: page size, clamped to this run\'s window.' },
         include_active: { type: 'boolean', description: 'For unprocessed: include prompts of sessions still in flight. Defaults to false.' },

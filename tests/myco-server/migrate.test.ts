@@ -10,6 +10,9 @@ import { SCHEMA_STEPS, type SchemaStep } from '@myco-server-worker/db/schema.js'
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
 import { sqliteD1 } from './helpers/d1.js';
+import { sqliteEnv } from './helpers/fixtures.js';
+import { markPromptProcessed } from './helpers/extraction.js';
+import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 
 const MIGRATIONS = fileURLToPath(new URL('../../packages/myco-server/migrations/', import.meta.url));
 
@@ -105,6 +108,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0095_v95.sql': 'e6e20556516e5723e3a4bdc09a62fe704b448bdc076204b78b544c8a07e688bd',
   '0096_v96.sql': '4d8a3764c9fc51c77045880adb7e621868f035137b4ac983ae96d6e69ae13af5',
   '0097_v97.sql': 'aeedee8552c8108153fd5a578b1bd287104a7f6355da55b0fdf6282a7dde960f',
+  '0098_v98.sql': '64e6ef29947424c0ab00b607773596989a42cc6ad78da1334e172dc8b526eace',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -709,7 +713,18 @@ describe('versioned schema steps', () => {
       .toEqual([{ session_id: 'sess_ok', machine_id: 'machine_1' }, { session_id: 'sess_orphan', machine_id: 'machine_recovered' }]);
   });
 
-  it('applies the project-id grammar as a CHECK on every table created or rebuilt by step 2 that has a project_id column', () => {
+  it('applies the project-id grammar as a CHECK on every table created or rebuilt by step 2 that has a project_id column', async () => {
+    const source = sqliteEnv();
+    const promptId = crypto.randomUUID();
+    const writerRows = new Map<string, Record<string, unknown>>();
+    try {
+      expect(await ingestEvent(source.db, { projectId: 'proj_1', machineId: 'machine', tokenId: 'capture', now: 1, bodyBytes: 0, writeOrigin: 'server' }, {
+        eventId: crypto.randomUUID(), sessionId: 'grammar-session', kind: 'prompt', createdAt: 1, channel: 'cli',
+        producer: { adapter: 'claude-code', version: 'test' }, payload: { promptId, text: 'Grammar fixture', origin: 'user' },
+      })).toMatchObject({ persisted: true, projected: true });
+      expect(await markPromptProcessed(source.db, { projectId: 'proj_1' }, promptId)).toBe(true);
+      writerRows.set('extraction_acks', source.sqlite.query('SELECT * FROM extraction_acks').get() as Record<string, unknown>);
+    } finally { source.sqlite.close(); }
     const sqlite = fresh();
     for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
     // The probe inserts one synthetic row per table to observe the CHECK. Parent
@@ -724,6 +739,13 @@ describe('versioned schema steps', () => {
       if (t === 'member_tokens' || t === 'sessions' || t === 'events') continue;
       sqlite.exec('SAVEPOINT grammar_probe');
       const insert = (projectId: string) => {
+        const specimen = writerRows.get(t);
+        if (specimen !== undefined) {
+          const row = { ...specimen, project_id: projectId };
+          const fields = Object.keys(row);
+          sqlite.query(`INSERT INTO ${t} (${fields.join(', ')}) VALUES (${fields.map(() => '?').join(', ')})`).run(...Object.values(row) as never[]);
+          return;
+        }
         const names = cols.map((c) => c.name);
         // A blob row registers a generation: a UUID.
         // A step row names a kind and an outcome from its own vocabulary.
@@ -758,7 +780,7 @@ describe('versioned schema steps', () => {
     expect(checked.sort()).toEqual([
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_hubness_work', 'embedding_receipts', 'embedding_source_failures', 'embedding_versions', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
-      'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
+      'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
       'prompt_batches', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_injections', 'session_read_facts', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags', 'tool_calls', 'transcript_parser_state_chunks', 'transcript_segments', 'transcripts',
     ]);

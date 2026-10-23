@@ -1,5 +1,5 @@
 import { describe, expect, it, spyOn } from 'bun:test';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { extractionSqlEnv as sqliteEnv } from './helpers/extraction-sql.js';
 import { EXTRACTION_PAGE } from '@myco-server-worker/core/extraction-input.js';
 import { extractionRamp } from '@myco-server-worker/core/extraction-ramp.js';
 import { CLOCK_ACTOR, runScheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';

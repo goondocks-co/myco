@@ -1,22 +1,13 @@
-import { commitAttributedWrite, type RunWrite } from '../core/runs.js';
-/**
- * The extraction cursor: which prompts a run has not read yet, and marking one read.
- *
- * `prompt_batches.processed` is one flag per row, not one per task. A Deployment
- * runs a single extraction outcome, so one flag is the whole answer; a second
- * reader would need a second column and this module would be the place to add
- * it.
- *
- * Extraction origins are shared with the session read model.
- */
+/** Extraction pages and history snapshots share durable acknowledgement coverage. */
 import type { RelationalStore } from '../core/adapters.js';
 import { MATERIAL_EXCERPT_CHARS } from '../constants.js';
 import { READ_ORIGINS } from './extraction-origins.js';
 export { EXTRACTION_ORIGINS, READ_ORIGINS } from './extraction-origins.js';
-import { EXTRACTION_CANDIDATE_SQL } from '../db/session-read-model.js';
+export { hasAcknowledgedPrompts as hasProcessedPrompts } from './extraction-coverage.js';
+import { ACTIVE_EXTRACTION_CANDIDATE_SQL, EXTRACTION_CANDIDATE_SQL } from '../db/session-read-model.js';
 import { notTombstonedSql } from '../core/tombstones.js';
-import { clampLimit, decodeCursor, encodeCursor, keyset, page, type Page, type ReadScope } from './scope.js';
-import { sessionMaterialReadySql } from './material-readiness.js';
+import { binaryOrder, clampLimit, decodeCursor, encodeCursor, page, type Page, type ReadScope } from './scope.js';
+import { unreadPromptSql } from './extraction-coverage.js';
 
 /** The captured session supporting an extraction finding, within the run's Project. */
 export async function extractionSourceSession(db: RelationalStore, scope: ReadScope, promptId: string): Promise<string | null> {
@@ -26,172 +17,220 @@ export async function extractionSourceSession(db: RelationalStore, scope: ReadSc
     .bind(scope.projectId, promptId, ...READ_ORIGINS).first<{ sessionId: string }>();
   return source?.sessionId ?? null;
 }
-
-/** Whether this Project has any prompts already marked extracted. */
-export async function hasProcessedPrompts(db: RelationalStore, scope: ReadScope): Promise<boolean> {
-  return await db.prepare('SELECT 1 AS found FROM prompt_batches WHERE project_id = ? AND processed = 1 LIMIT 1')
-    .bind(scope.projectId).first() !== null;
-}
-
-const ELIGIBLE_PROMPT_SQL = `p.processed = 0 AND p.origin IN (${READ_ORIGINS.map(() => '?').join(', ')})`;
-
-/** One unprocessed prompt. `text` and `response` are present only where the caller asked for bodies. */
 export interface UnprocessedPrompt {
-  promptId: string;
-  sessionId: string;
-  createdAt: number;
-  endedAt: number | null;
-  text?: string | null;
-  /** The opening of the agent's first response to this prompt, cut to the material excerpt; null where the Project holds no response to it. */
-  response?: string | null;
+  promptId: string; sessionId: string; createdAt: number; endedAt: number | null;
+  text?: string | null; response?: string | null;
 }
-
 export interface UnprocessedOptions {
-  limit?: number;
-  cursor?: string;
-  /** Prompts of sessions still in flight; excluded unless asked for. */
-  includeActive?: boolean;
-  /** The prompt body, read only when asked: a page without it reads no blobs. */
-  includeText?: boolean;
-  /** Material received by the snapshot instant in the sessions eligible at that instant. */
+  limit?: number; cursor?: string; includeActive?: boolean; includeText?: boolean;
   history?: { receivedThrough: number; sessionIds: readonly string[] };
 }
-
-type SessionSelection = { id: string; exclude: boolean };
-
-/** The shared eligibility and partition predicates for extraction reads and history snapshots. */
-function unprocessedConditions(scope: ReadScope, opts: UnprocessedOptions) {
-  const conditions = ['p.project_id = ?', ELIGIBLE_PROMPT_SQL, notTombstonedSql('s'), sessionMaterialReadySql('s')];
-  const params: unknown[] = [scope.projectId, ...READ_ORIGINS];
-  if (opts.history !== undefined) {
-    conditions.push('p.received_at <= ?', 'p.session_id IN (SELECT value FROM json_each(?))');
-    params.push(opts.history.receivedThrough, JSON.stringify(opts.history.sessionIds));
-  }
-  if (opts.includeActive !== true) conditions.push('s.ended_at IS NOT NULL');
-  return { conditions, params };
-}
-
-/** Sessions with eligible unread material at the first extraction wake. */
-export async function extractionHistorySessions(db: RelationalStore, scope: ReadScope): Promise<string[]> {
-  const { conditions, params } = unprocessedConditions(scope, {});
-  const { results } = await db.prepare(`SELECT DISTINCT p.session_id AS id FROM prompt_batches p
-    JOIN sessions s ON s.project_id = p.project_id AND s.session_id = p.session_id
-    WHERE ${conditions.join(' AND ')}`).bind(...params).all<{ id: string }>();
-  return results.map(row => row.id);
-}
-
-/** One chronological partition of eligible prompts. */
-async function readUnprocessedPrompts(
-  db: RelationalStore, scope: ReadScope, opts: UnprocessedOptions, session?: SessionSelection,
-): Promise<Page<UnprocessedPrompt>> {
-  const k = keyset(opts, { order: 'p.created_at', id: 'p.prompt_id', direction: 'ASC' });
-  if (k === null) return { rows: [], cursor: null };
-
-  const { conditions, params } = unprocessedConditions(scope, opts);
-  if (session !== undefined) { conditions.push(`p.session_id ${session.exclude ? '!=' : '='} ?`); params.push(session.id); }
-  if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
-
-  // A body page carries the prompt and the opening of its first response: the
-  // ask and what the agent found, which is the material an observation is read
-  // from. A page without bodies reads neither.
-  const body = opts.includeText === true
-    ? `, p.text AS text, (SELECT substr(r.text, 1, ?) FROM responses r
-         WHERE r.project_id = p.project_id AND r.session_id = p.session_id AND r.prompt_id = p.prompt_id AND r.text IS NOT NULL
-         ORDER BY r.created_at, r.response_id LIMIT 1) AS response`
-    : '';
-  const bodyParams: unknown[] = opts.includeText === true ? [MATERIAL_EXCERPT_CHARS] : [];
-  const { results } = await db
-    .prepare(`SELECT p.prompt_id AS promptId, p.session_id AS sessionId, p.created_at AS createdAt, p.ended_at AS endedAt${body}
-                FROM prompt_batches p JOIN sessions s ON s.project_id = p.project_id AND s.session_id = p.session_id
-               WHERE ${conditions.join(' AND ')}
-               ORDER BY p.created_at ASC, p.prompt_id ASC LIMIT ?`)
-    .bind(...bodyParams, ...params, k.limit + 1)
-    .all<Record<string, unknown>>();
-
-  const rows = results.map((row): UnprocessedPrompt => ({
-    promptId: row.promptId as string,
-    sessionId: row.sessionId as string,
-    createdAt: row.createdAt as number,
-    endedAt: (row.endedAt as number | null) ?? null,
-    ...(opts.includeText === true ? { text: (row.text as string | null) ?? null, response: (row.response as string | null) ?? null } : {}),
-  }));
-  return page(rows, k.limit, (r) => ({ createdAt: r.createdAt, id: r.promptId }));
-}
-
-/** One quarter of a normal extraction page is reserved for historical work. */
+type Position = { id: string; endedAt: number | null; liveCapture: number };
+type Positioned = UnprocessedPrompt & { position: Position };
+type PromptCursor = string | null | false;
+type HistoryCursor = { position: Position; prompt: string | false } | null | false;
+type HistoryPage = { rows: readonly Positioned[]; cursor: HistoryCursor };
+type SessionRead = { position: Position; after?: string };
+type Cursor = { project: string; session: string; fresh: PromptCursor; history: HistoryCursor; floor: string | null };
 const HISTORY_PAGE_DIVISOR = 4;
-const EXTRACTION_CURSOR_PREFIX = 'ex1:';
-/** False marks an exhausted partition; null starts it; a string continues its keyset. */
-type PartitionCursor = string | null | false;
-type ExtractionCursor = [sessionId: string, fresh: PartitionCursor, history: PartitionCursor];
+const HISTORY_EMPTY_SESSION_LOOKAHEAD = 1;
+const CURSOR_PREFIX = 'ex2:';
+const SESSION_ORDER = '(live_transcripts > 0) DESC, ended_at DESC, session_id DESC';
+const candidateIndex = (opts: UnprocessedOptions) => opts.includeActive === true ? 'idx_session_read_unread' : 'idx_session_read_extraction';
 
-function extractionCursor(value: string): ExtractionCursor | null {
-  let parsed: unknown;
-  try { parsed = JSON.parse(value.slice(EXTRACTION_CURSOR_PREFIX.length)); } catch { return null; }
-  if (!Array.isArray(parsed) || parsed.length !== 3 || typeof parsed[0] !== 'string' || parsed[0].length === 0) return null;
-  const valid = (part: unknown): part is PartitionCursor => part === null || part === false || (typeof part === 'string' && decodeCursor(part) !== null);
-  return valid(parsed[1]) && valid(parsed[2]) ? [parsed[0], parsed[1], parsed[2]] : null;
-}
-
-function advancePartition(before: PartitionCursor, result: Page<UnprocessedPrompt>, taken: number): PartitionCursor {
-  if (taken === result.rows.length && result.cursor === null) return false;
-  const last = result.rows[taken - 1];
-  return last === undefined ? before : encodeCursor(last.createdAt, last.promptId);
-}
-
-/** The indexed primary extraction selection, with its Project binding. */
-export function newestUnprocessedSessionQuery(scope: ReadScope): { sql: string; binds: unknown[] } {
-  return { sql: `SELECT session_id AS id, ended_at AS endedAt, (live_transcripts > 0) AS liveCapture
-    FROM session_read_facts
-    WHERE project_id = ? AND ${EXTRACTION_CANDIDATE_SQL}
-    ORDER BY (live_transcripts > 0) DESC, ended_at DESC, session_id DESC LIMIT 1`, binds: [scope.projectId] };
-}
-
-/** The primary extraction session, preferring completed live capture over imports. */
-export async function newestUnprocessedSession(db: RelationalStore, scope: ReadScope): Promise<{ id: string; endedAt: number; liveCapture: number } | null> {
-  const { sql, binds } = newestUnprocessedSessionQuery(scope);
-  return db.prepare(sql).bind(...binds).first<{ id: string; endedAt: number; liveCapture: number }>();
-}
-
-/**
- * The primary completed session gets the first three quarters of a page; other
- * sessions get the remainder. Unused space is shared. Each partition stays in
- * prompt order, and a cursor pins the chosen session across subsequent pages.
- */
-export async function listUnprocessedPrompts(
-  db: RelationalStore, scope: ReadScope, opts: UnprocessedOptions = {},
-): Promise<Page<UnprocessedPrompt>> {
-  if (opts.cursor !== undefined && !opts.cursor.startsWith(EXTRACTION_CURSOR_PREFIX)) return readUnprocessedPrompts(db, scope, opts);
-  let cursor: ExtractionCursor | null;
-  if (opts.cursor !== undefined) {
-    cursor = extractionCursor(opts.cursor);
-    if (cursor === null) throw new Error('Invalid extraction cursor');
-  } else {
-    const newest = await newestUnprocessedSession(db, scope);
-    if (newest === null) return opts.includeActive === true ? readUnprocessedPrompts(db, scope, opts) : { rows: [], cursor: null };
-    cursor = [newest.id, null, null];
+function candidates(scope: ReadScope, opts: UnprocessedOptions) {
+  const conditions = ['project_id = ?', opts.includeActive === true ? ACTIVE_EXTRACTION_CANDIDATE_SQL : EXTRACTION_CANDIDATE_SQL];
+  const binds: unknown[] = [scope.projectId];
+  if (opts.history !== undefined) {
+    conditions.push('session_id IN (SELECT value FROM json_each(?))');
+    binds.push(JSON.stringify(opts.history.sessionIds));
   }
-  const [sessionId, freshAfter, historyAfter] = cursor;
-  const limit = clampLimit(opts.limit);
-  const readPartition = (after: PartitionCursor, exclude: boolean): Promise<Page<UnprocessedPrompt>> => after === false
-    ? Promise.resolve({ rows: [], cursor: null })
-    : readUnprocessedPrompts(db, scope, { ...opts, limit, cursor: after ?? undefined }, { id: sessionId, exclude });
-  const [fresh, history] = await Promise.all([readPartition(freshAfter, false), readPartition(historyAfter, true)]);
-  const reservedHistory = limit === 1 ? 0 : Math.max(1, Math.floor(limit / HISTORY_PAGE_DIVISOR));
-  const historyCount = Math.min(history.rows.length, limit - Math.min(fresh.rows.length, limit - reservedHistory));
-  const freshCount = Math.min(fresh.rows.length, limit - historyCount);
-  const next: ExtractionCursor = [sessionId, advancePartition(freshAfter, fresh, freshCount), advancePartition(historyAfter, history, historyCount)];
-  return {
-    rows: [...fresh.rows.slice(0, freshCount), ...history.rows.slice(0, historyCount)],
-    cursor: next[1] === false && next[2] === false ? null : `${EXTRACTION_CURSOR_PREFIX}${JSON.stringify(next)}`,
-  };
+  return { conditions, binds };
 }
-
-/** Mark one prompt read. False when this Project holds no such prompt, so a caller never reads a miss as a move. */
-export async function markPromptProcessed(db: RelationalStore, scope: ReadScope, promptId: string, attribution?: RunWrite): Promise<boolean> {
-  const statement = db
-    .prepare('UPDATE prompt_batches SET processed = 1 WHERE project_id = ? AND prompt_id = ?')
-    .bind(scope.projectId, promptId);
-  const result = await commitAttributedWrite(db, scope, statement, attribution);
-  return result.meta.changes > 0;
+function candidateQuery(scope: ReadScope, opts: UnprocessedOptions, only?: string) {
+  const { conditions, binds } = candidates(scope, opts);
+  if (only !== undefined) { conditions.push('session_id = ?'); binds.push(only); }
+  return { sql: `SELECT session_id AS id, ended_at AS endedAt, (live_transcripts > 0) AS liveCapture
+    FROM session_read_facts ${only === undefined ? `INDEXED BY ${candidateIndex(opts)}` : ''}
+    WHERE ${conditions.join(' AND ')} ${only === undefined ? `ORDER BY ${SESSION_ORDER}` : ''} LIMIT 1`, binds };
+}
+/** Candidate ranges seek within one live group and completion range. */
+async function candidatePositions(db: RelationalStore, scope: ReadScope, opts: UnprocessedOptions, limit: number, primary: string, after?: Position) {
+  const positions: Position[] = [];
+  for (const liveCapture of [1, 0]) for (const nullEnd of opts.includeActive === true ? [false, true] : [false]) {
+    if (after !== undefined && (liveCapture > after.liveCapture
+      || (liveCapture === after.liveCapture && after.endedAt === null && !nullEnd))) continue;
+    const { conditions, binds } = candidates(scope, opts);
+    conditions.push('(live_transcripts > 0) = ?', nullEnd ? 'ended_at IS NULL' : 'ended_at IS NOT NULL', 'session_id != ?');
+    binds.push(liveCapture, primary);
+    if (after !== undefined && liveCapture === after.liveCapture && nullEnd === (after.endedAt === null)) {
+      conditions.push(nullEnd ? 'session_id < ?' : '(ended_at, session_id) < (?, ?)');
+      binds.push(...(nullEnd ? [after.id] : [after.endedAt, after.id]));
+    }
+    const found = (await db.prepare(`SELECT session_id AS id, ended_at AS endedAt, (live_transcripts > 0) AS liveCapture
+      FROM session_read_facts INDEXED BY ${candidateIndex(opts)}
+      WHERE ${conditions.join(' AND ')} ORDER BY ended_at DESC, session_id DESC LIMIT ?`)
+      .bind(...binds, limit - positions.length).all<Position>()).results;
+    positions.push(...found);
+    if (positions.length === limit) return { positions, exhausted: false };
+  }
+  return { positions, exhausted: true };
+}
+async function readyPosition(db: RelationalStore, scope: ReadScope, opts: UnprocessedOptions, id: string) {
+  const query = candidateQuery(scope, opts, id);
+  return db.prepare(query.sql).bind(...query.binds).first<Position>();
+}
+/** The indexed primary extraction selection, with its Project binding. */
+export function newestUnprocessedSessionQuery(scope: ReadScope, opts: Pick<UnprocessedOptions, 'history'> = {}) { return candidateQuery(scope, opts); }
+/** The primary completed session, preferring live capture over imports. */
+export async function newestUnprocessedSession(db: RelationalStore, scope: ReadScope, opts: Pick<UnprocessedOptions, 'history'> = {}): Promise<(Position & { endedAt: number }) | null> {
+  const query = newestUnprocessedSessionQuery(scope, opts);
+  return db.prepare(query.sql).bind(...query.binds).first<Position & { endedAt: number }>();
+}
+/** Sessions with ready unread material at the first extraction wake. */
+export async function extractionHistorySessions(db: RelationalStore, scope: ReadScope): Promise<string[]> {
+  const { conditions, binds } = candidates(scope, {});
+  return (await db.prepare(`SELECT session_id AS id FROM session_read_facts INDEXED BY ${candidateIndex({})}
+    WHERE ${conditions.join(' AND ')} ORDER BY ${SESSION_ORDER}`).bind(...binds).all<{ id: string }>()).results.map(row => row.id);
+}
+/** Snapshot cutoffs are checked only within sessions the unread counter admits. */
+function snapshotCondition(opts: UnprocessedOptions, count: boolean) {
+  if (opts.history === undefined) return { sql: count ? 'eligible_prompts' : '1', binds: [] as unknown[] };
+  const source = `SELECT 1 FROM prompt_batches p INDEXED BY idx_prompt_batches_turns
+    WHERE p.project_id = session_read_facts.project_id AND p.session_id = session_read_facts.session_id
+      AND ${unreadPromptSql('p')} AND p.received_at <= ? LIMIT ?`;
+  return { sql: count ? `(SELECT COUNT(*) FROM (${source}))` : `EXISTS (${source})`,
+    binds: [opts.history.receivedThrough, count ? clampLimit(opts.limit) : 1] };
+}
+/** An existence seek over ready counters, with a bounded snapshot probe when requested. */
+export async function hasUnreadPrompts(db: RelationalStore, scope: ReadScope, opts: UnprocessedOptions = {}): Promise<boolean> {
+  const { conditions, binds } = candidates(scope, opts), snapshot = snapshotCondition(opts, false);
+  return await db.prepare(`SELECT 1 AS found FROM session_read_facts INDEXED BY ${candidateIndex(opts)} WHERE ${[...conditions, snapshot.sql].join(' AND ')} LIMIT 1`)
+    .bind(...binds, ...snapshot.binds).first() !== null;
+}
+/** The ramp threshold counts only candidate sessions and each session's bounded snapshot contribution. */
+export async function unreadPromptBacklog(db: RelationalStore, scope: ReadScope, opts: UnprocessedOptions): Promise<number> {
+  const { conditions, binds } = candidates(scope, opts), snapshot = snapshotCondition(opts, true);
+  return (await db.prepare(`SELECT COALESCE(SUM(${snapshot.sql}), 0) AS n
+    FROM session_read_facts INDEXED BY ${candidateIndex(opts)} WHERE ${conditions.join(' AND ')}`).bind(...snapshot.binds, ...binds).first<{ n: number }>())!.n;
+}
+/** Each origin and cursor class reads all selected sessions in one prepared statement. */
+async function readPositions(db: RelationalStore, scope: ReadScope, opts: UnprocessedOptions, sessions: SessionRead[]): Promise<Positioned[]> {
+  const limit = clampLimit(opts.limit);
+  const groups = [false, true].map(hasCursor => sessions.flatMap((session, slot) => {
+    if ((session.after !== undefined) !== hasCursor) return [];
+    const after = session.after === undefined ? undefined : decodeCursor(session.after);
+    if (after === null) throw new Error('Invalid extraction cursor');
+    return [{ slot, id: session.position.id, after }];
+  })).filter(group => group.length > 0);
+  const partitions = await Promise.all(groups.flatMap(group => READ_ORIGINS.map(async origin => {
+    const conditions = ['p.project_id = ?', "p.session_id = json_extract(j.value, '$.id')", 'p.origin = ?', unreadPromptSql('p')];
+    const binds: unknown[] = [scope.projectId, origin];
+    if (opts.history !== undefined) { conditions.push('p.received_at <= ?'); binds.push(opts.history.receivedThrough); }
+    if (group[0]!.after !== undefined) conditions.push("(p.created_at, p.prompt_id) > (json_extract(j.value, '$.after.createdAt'), json_extract(j.value, '$.after.id'))");
+    return (await db.prepare(`SELECT json_extract(j.value, '$.slot') AS slot,
+      (SELECT json_group_array(json_object('promptId', promptId, 'sessionId', sessionId, 'createdAt', createdAt, 'endedAt', endedAt))
+        FROM (SELECT p.prompt_id AS promptId, p.session_id AS sessionId, p.created_at AS createdAt, p.ended_at AS endedAt
+          FROM prompt_batches p INDEXED BY idx_prompt_batches_turns
+          WHERE ${conditions.join(' AND ')} ORDER BY p.created_at, p.prompt_id LIMIT ?)) AS prompts
+      FROM json_each(?) j`).bind(...binds, limit + 1, JSON.stringify(group)).all<{ slot: number; prompts: string }>()).results;
+  })));
+  return partitions.flat().flatMap(({ slot, prompts }) =>
+    (JSON.parse(prompts) as UnprocessedPrompt[]).map(row => ({ ...row, position: sessions[slot]!.position, slot })))
+    .sort((a, b) => a.slot - b.slot || a.createdAt - b.createdAt || binaryOrder(a.promptId, b.promptId))
+    .map(({ slot: _slot, ...row }) => row);
+}
+/** Bodies are read only for the exact identities selected for the returned page. */
+async function withBodies(db: RelationalStore, scope: ReadScope, rows: UnprocessedPrompt[]): Promise<UnprocessedPrompt[]> {
+  if (rows.length === 0) return rows;
+  const bodies = (await db.prepare(`SELECT p.prompt_id AS promptId, p.text AS text,
+    (SELECT substr(r.text, 1, ?) FROM responses r WHERE r.project_id = p.project_id AND r.session_id = p.session_id
+      AND r.prompt_id = p.prompt_id AND r.text IS NOT NULL ORDER BY r.created_at, r.response_id LIMIT 1) AS response
+    FROM json_each(?) j CROSS JOIN prompt_batches p ON p.project_id = ? AND p.prompt_id = j.value`)
+    .bind(MATERIAL_EXCERPT_CHARS, JSON.stringify(rows.map(row => row.promptId)), scope.projectId)
+    .all<{ promptId: string; text: string | null; response: string | null }>()).results;
+  const byId = new Map(bodies.map(row => [row.promptId, row]));
+  return rows.flatMap(row => {
+    const body = byId.get(row.promptId);
+    return body === undefined ? [] : [{ ...row, text: body.text, response: body.response }];
+  });
+}
+async function readHistory(db: RelationalStore, scope: ReadScope, opts: UnprocessedOptions, primary: string, after: HistoryCursor, floor: string | null): Promise<HistoryPage> {
+  if (after === false) return { rows: [], cursor: false };
+  const limit = clampLimit(opts.limit);
+  const visitLimit = limit + HISTORY_EMPTY_SESSION_LOOKAHEAD;
+  const sessions: SessionRead[] = [];
+  if (after !== null && after.prompt !== false && await readyPosition(db, scope, opts, after.position.id) !== null) {
+    sessions.push({ position: after.position, after: after.prompt });
+  }
+  const candidates = await candidatePositions(db, scope, opts, visitLimit - sessions.length, primary, after === null ? undefined : after.position);
+  sessions.push(...candidates.positions.map(position => ({ position, after: floor ?? undefined })));
+  const rows = await readPositions(db, scope, opts, sessions);
+  const result = page(rows, limit, row => ({ createdAt: row.createdAt, id: row.promptId }));
+  const last = result.rows.at(-1);
+  return { rows: result.rows, cursor: result.cursor !== null ? { position: last!.position, prompt: result.cursor }
+    : candidates.exhausted || sessions.length === 0 ? false : { position: sessions.at(-1)!.position, prompt: false } };
+}
+const validPrompt = (value: unknown): value is PromptCursor => value === null || value === false || (typeof value === 'string' && decodeCursor(value) !== null);
+function validPosition(value: unknown): value is Position {
+  if (typeof value !== 'object' || value === null) return false;
+  const p = value as Partial<Position>;
+  return typeof p.id === 'string' && p.id.length > 0 && (p.liveCapture === 0 || p.liveCapture === 1) && (p.endedAt === null || Number.isSafeInteger(p.endedAt));
+}
+function parseCursor(value: string, scope: ReadScope): Cursor {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value.slice(CURSOR_PREFIX.length)); } catch { throw new Error('Invalid extraction cursor'); }
+  if (typeof parsed !== 'object' || parsed === null) throw new Error('Invalid extraction cursor');
+  const c = parsed as Partial<Cursor>;
+  if (c.project !== scope.projectId || typeof c.session !== 'string' || c.session.length === 0 || !validPrompt(c.fresh)
+    || !(c.history === null || c.history === false || (typeof c.history === 'object' && validPosition(c.history.position)
+      && (c.history.prompt === false || (typeof c.history.prompt === 'string' && decodeCursor(c.history.prompt) !== null))))
+    || !(c.floor === null || (typeof c.floor === 'string' && decodeCursor(c.floor) !== null))) throw new Error('Invalid extraction cursor');
+  return c as Cursor;
+}
+/** The pinned primary gets three quarters; history follows candidate-session order, then prompt order. */
+export async function listUnprocessedPrompts(db: RelationalStore, scope: ReadScope, opts: UnprocessedOptions = {}): Promise<Page<UnprocessedPrompt>> {
+  let cursor: Cursor;
+  let initialPosition: Position | undefined;
+  if (opts.cursor?.startsWith(CURSOR_PREFIX)) {
+    cursor = parseCursor(opts.cursor, scope);
+  } else if (opts.cursor?.startsWith('ex1:')) {
+    let old: unknown;
+    try { old = JSON.parse(opts.cursor.slice(4)); } catch { throw new Error('Invalid extraction cursor'); }
+    if (!Array.isArray(old) || old.length !== 3 || typeof old[0] !== 'string' || old[0].length === 0 || !validPrompt(old[1]) || !validPrompt(old[2])) throw new Error('Invalid extraction cursor');
+    cursor = { project: scope.projectId, session: old[0], fresh: old[1], history: old[2] === false ? false : null, floor: typeof old[2] === 'string' ? old[2] : null };
+  } else {
+    const floor = opts.cursor ?? null;
+    if (floor !== null && decodeCursor(floor) === null) throw new Error('Invalid extraction cursor');
+    let newest: Position | null = await newestUnprocessedSession(db, scope, { history: opts.history });
+    if (newest === null && opts.includeActive === true) {
+      const query = candidateQuery(scope, opts);
+      newest = await db.prepare(query.sql).bind(...query.binds).first<Position>();
+    }
+    if (newest === null) return { rows: [], cursor: null };
+    initialPosition = newest;
+    cursor = { project: scope.projectId, session: newest.id, fresh: floor, history: null, floor };
+  }
+  const limit = clampLimit(opts.limit);
+  const [fresh, history] = await Promise.all([
+    (async (): Promise<Page<Positioned>> => {
+      if (cursor.fresh === false) return { rows: [], cursor: null };
+      const position = initialPosition ?? await readyPosition(db, scope, opts, cursor.session);
+      if (position === null) return { rows: [], cursor: null };
+      const rows = await readPositions(db, scope, { ...opts, limit }, [{ position, after: cursor.fresh ?? undefined }]);
+      return page(rows, limit, row => ({ createdAt: row.createdAt, id: row.promptId }));
+    })(),
+    readHistory(db, scope, { ...opts, limit }, cursor.session, cursor.history, cursor.floor),
+  ]);
+  const reserved = limit === 1 ? 0 : Math.max(1, Math.floor(limit / HISTORY_PAGE_DIVISOR));
+  const historyCount = Math.min(history.rows.length, limit - Math.min(fresh.rows.length, limit - reserved));
+  const freshCount = Math.min(fresh.rows.length, limit - historyCount);
+  const lastFresh = fresh.rows[freshCount - 1], lastHistory = history.rows[historyCount - 1];
+  const next: Cursor = { ...cursor,
+    fresh: freshCount === fresh.rows.length && fresh.cursor === null ? false : lastFresh === undefined ? cursor.fresh : encodeCursor(lastFresh.createdAt, lastFresh.promptId),
+    history: historyCount === history.rows.length ? history.cursor : lastHistory === undefined ? cursor.history
+      : { position: lastHistory.position, prompt: encodeCursor(lastHistory.createdAt, lastHistory.promptId) } };
+  const rows = [...fresh.rows.slice(0, freshCount), ...history.rows.slice(0, historyCount)].map(({ position: _position, ...row }) => row);
+  return { rows: opts.includeText === true ? await withBodies(db, scope, rows) : rows,
+    cursor: next.fresh === false && next.history === false ? null : CURSOR_PREFIX + JSON.stringify(next) };
 }

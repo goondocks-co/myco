@@ -10,14 +10,14 @@
  * it reads no bodies at all, and grouping a session's prompts costs nothing.
  * A page with bodies is recorded as the run's read of each session it carries.
  */
-import { listUnprocessedPrompts, markPromptProcessed } from '../../read/prompts.js';
+import { listUnprocessedPrompts } from '../../read/prompts.js';
 import { recordServedPrompts } from '../../core/served-material.js';
-import { PROMPT_MARK_TOOL } from '../../core/tool-catalogue.js';
+import { acknowledgePrompt } from '../../core/extraction-acks.js';
 import { failure, noteRunReads, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
 const MAX_ID_CHARS = 192;
-const MAX_CURSOR_CHARS = 1024;
+const MAX_CURSOR_CHARS = 2048;
 
 const str = (v: unknown, max: number): string | undefined =>
   (typeof v === 'string' && v.length > 0 && v.length <= max ? v : undefined);
@@ -29,10 +29,12 @@ export async function handleRunPrompts(input: ToolInput, ctx: ToolContext): Prom
   const { db } = ctx.env;
 
   if (input.op === 'mark_processed') {
+    const servedId = str(input.served_id, MAX_ID_CHARS);
     const promptId = str(input.prompt_id, MAX_ID_CHARS);
-    if (promptId === undefined) return failure('prompt_id is required for op: mark_processed');
-    const marked = await markPromptProcessed(db, scope, promptId, { runId: run.runId, toolName: PROMPT_MARK_TOOL, op: 'mark_processed', recordedAt: ctx.now, detail: { prompt_id: promptId } });
-    return { prompt_id: promptId, marked };
+    if (input.served_id !== undefined && servedId === undefined) return failure('served_id must be a nonempty item id');
+    if (servedId === undefined && promptId === undefined) return failure('served_id is required for op: mark_processed; prompt_id is accepted for compatibility');
+    if (servedId !== undefined && input.prompt_id !== undefined) return failure('provide served_id or prompt_id, not both');
+    return acknowledgePrompt(db, scope, run.runId, servedId === undefined ? { promptId: promptId! } : { servedId }, ctx.now);
   }
 
   const cursor = input.cursor === undefined ? undefined : str(input.cursor, MAX_CURSOR_CHARS);

@@ -1,3 +1,4 @@
+import { preparePromptAcknowledgement } from './helpers/extraction.js';
 import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
@@ -8,7 +9,7 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { LAST_ACTIVITY_SQL, LAST_REQUEST_KEY, lastActivityAt } from '@myco-server-worker/core/activity.js';
 import { RETENTION_CANDIDATES_SQL, pruneTerminalRuns } from '@myco-server-worker/core/runs.js';
-import { listUnprocessedPrompts, markPromptProcessed, newestUnprocessedSession, newestUnprocessedSessionQuery, READ_ORIGINS } from '@myco-server-worker/read/prompts.js';
+import { listUnprocessedPrompts, newestUnprocessedSession, newestUnprocessedSessionQuery, READ_ORIGINS } from '@myco-server-worker/read/prompts.js';
 import { listProjects, listProjectsSql } from '@myco-server-worker/read/sessions.js';
 import { notTombstonedSql } from '@myco-server-worker/core/tombstones.js';
 import { sessionMaterialReadySql } from '@myco-server-worker/read/material-readiness.js';
@@ -23,9 +24,12 @@ const BLOB = '0'.repeat(64);
 const CONTEXT = { projectId: PROJECT, machineId: 'machine', tokenId: 'credential', bodyBytes: 100, now: 2_000 };
 const ROW_READ_LIMIT = 64;
 const CORPUS_SIZES = [1_000, 10_000] as const;
+const ACTIVE_COUNTER_INDEX_REPLACE_WRITES = 2;
+const ACTIVE_COUNTER_INDEX_UPDATE_WRITES = 1;
 const CAPTURE_WRITE_LIMITS = {
-  'session.start': 38, prompt: 30, notification: 16, 'transcripts insert': 14,
-  'parse-progress UPDATE': 3, 'session.end': 26, markPromptProcessed: 4,
+  'session.start': 38, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES,
+  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': 14,
+  'parse-progress UPDATE': 3, 'session.end': 26, markPromptProcessed: 10,
 } as const;
 type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;
 const CAPTURE_WRITE_NAMES = Object.keys(CAPTURE_WRITE_LIMITS) as CaptureWrite[];
@@ -312,9 +316,8 @@ it('D1 capture writes stay within their rows-written ceilings at both corpus siz
       for (let i = 1; i <= 5; i++) await capture('parse-progress UPDATE', () => measured.db.prepare(
         'UPDATE transcripts SET parsed_offset=?,size=size+10 WHERE project_id=? AND transcript_id=?').bind(i * 10, PROJECT, sessionId).run());
       await event('session.end', { endedAt: now });
-      await capture('markPromptProcessed', async () => {
-        expect(await markPromptProcessed(measured.db, { projectId: PROJECT }, promptIds[0]!)).toBe(true);
-      });
+      const acknowledge = await preparePromptAcknowledgement(measured.db, { projectId: PROJECT }, promptIds[0]!);
+      await capture('markPromptProcessed', async () => { expect(await acknowledge()).toBe(true); });
       for (const name of CAPTURE_WRITE_NAMES) captureWrites.get(name)!.push(writes.get(name)!);
     } finally { await mf.dispose(); }
   }

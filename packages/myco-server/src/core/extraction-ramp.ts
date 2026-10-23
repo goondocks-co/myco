@@ -1,6 +1,6 @@
 import type { ServerEnv } from './adapters.js';
 import { EXTRACTION_PAGE } from './extraction-input.js';
-import { extractionHistorySessions, hasProcessedPrompts, listUnprocessedPrompts } from '../read/prompts.js';
+import { extractionHistorySessions, hasProcessedPrompts, hasUnreadPrompts, unreadPromptBacklog } from '../read/prompts.js';
 import { schedulerState } from './scheduler-state.js';
 import { scheduleFor, scheduleLeaves } from './schedule-rules.js';
 import { TASK_SCHEDULE } from './jobs.js';
@@ -30,7 +30,9 @@ export async function extractionRamp(env: ServerEnv, projectId: string, now: num
   const scope = { projectId };
   const established = !reset && held === null && await hasProcessedPrompts(db, scope);
   const history = { receivedThrough: held?.startedAt ?? now, sessionIds: held?.sessionIds ?? (established ? [] : await extractionHistorySessions(db, scope)) };
-  const backlog = established ? 0 : (await listUnprocessedPrompts(db, scope, { limit: held === null ? EXTRACTION_PAGE + 1 : 1, history })).rows.length;
+  const backlog = established ? 0 : held === null
+    ? await unreadPromptBacklog(db, scope, { limit: EXTRACTION_PAGE + 1, history })
+    : Number(await hasUnreadPrompts(db, scope, { history }));
   const complete = established || limits.activeWindowDays === 0 || (held === null ? backlog <= EXTRACTION_PAGE : backlog === 0 || now - held.startedAt >= limits.activeWindowDays * DAY_MS);
   const next: RampState = complete ? { phase: 'complete' } : held ?? { phase: 'ramping', startedAt: now, sessionIds: history.sessionIds };
   if (held === null || complete) await state.update(current => current?.phase === 'complete' ? current : complete ? next : current ?? next);

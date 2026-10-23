@@ -5,6 +5,8 @@ import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { DEPLOYMENT_ACCESS_PATH_INDEXES } from './helpers/access-paths.js';
 import { foreignKeyChildren, isForeignKeyChildIndex, leadsWith } from './helpers/foreign-key-indexes.js';
+import { ingestEvent } from '@myco-server-worker/ingest/events.js';
+import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 
 const table = (name: string) => SCHEMA_DDL.find((s) => new RegExp(`CREATE TABLE IF NOT EXISTS ${name}\\b`).test(s))!;
 
@@ -22,6 +24,34 @@ const indexes = (sqlite: Database, t: string) => (sqlite.query(`PRAGMA index_lis
 const indexColumns = (sqlite: Database, i: string) => (sqlite.query(`PRAGMA index_info(${i})`).all() as { name: string }[]).map((c) => c.name);
 
 describe('server schema', () => {
+  it('adds empty durable acknowledgements at step 98 without rewriting historical prompt flags', async () => {
+    const sqlite = new Database(':memory:');
+    try {
+      for (const step of SCHEMA_STEPS.filter(step => step.version < 98)) for (const sql of step.statements) sqlite.exec(sql);
+      sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('coverage','Coverage',1)");
+      const db = sqliteRelationalStore(sqlite);
+      expect(await ingestEvent(db, { projectId: 'coverage', machineId: 'machine', tokenId: 'capture', now: 1, bodyBytes: 0, writeOrigin: 'server' }, {
+        eventId: crypto.randomUUID(), sessionId: 'session', kind: 'prompt', createdAt: 1, channel: 'cli',
+        producer: { adapter: 'claude-code', version: 'test' }, payload: { promptId: crypto.randomUUID(), text: 'Historical material', origin: 'user' },
+      })).toMatchObject({ persisted: true, projected: true });
+      sqlite.run('UPDATE prompt_batches SET processed=1');
+      const before = sqlite.query('SELECT * FROM prompt_batches').all();
+      const step = SCHEMA_STEPS.find(step => step.version === 98)!;
+      for (let repeat = 0; repeat < 2; repeat++) for (const sql of step.statements) sqlite.exec(sql);
+      expect(sqlite.query('SELECT * FROM extraction_acks').all()).toEqual([]);
+      expect(sqlite.query('SELECT * FROM prompt_batches').all()).toEqual(before);
+      expect(columns(sqlite, 'extraction_acks').filter(column => column.pk > 0).map(column => column.name)).toEqual(['project_id', 'ack_id']);
+      const declared = new Map(indexes(sqlite, 'extraction_acks').map(index => [index.name, indexColumns(sqlite, index.name)]));
+      expect(declared).toEqual(new Map([
+        ['idx_extraction_acks_served', ['project_id', 'served_id']],
+        ['idx_extraction_acks_session', ['project_id', 'session_id']],
+        ['idx_extraction_acks_record', ['project_id', 'record_id']],
+        ['idx_extraction_acks_source', ['project_id', 'source_transcript_id', 'source_offset', 'source_end']],
+      ]));
+      expect(sqlite.query('PRAGMA foreign_key_list(extraction_acks)').all()).not.toContainEqual(expect.objectContaining({ table: 'agent_runs' }));
+    } finally { sqlite.close(); }
+  });
+
   it('adds empty receipt snapshots without rewriting retained receipt rows', () => {
     const sqlite = new Database(':memory:');
     try {

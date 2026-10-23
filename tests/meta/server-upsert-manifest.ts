@@ -7,6 +7,9 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/backup.ts#claimRestoreTable': [
     { tables: ['backup_restore_progress'], order: 'unverified' },
   ],
+  'core/backup.ts#restoreArtifact': [
+    { tables: ['backup_restore_progress'], order: 'unverified' },
+  ],
   'core/canopy.ts#writeCanopyMap': [
     { tables: ['canopy_maps'], order: 'unverified' },
   ],

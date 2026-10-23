@@ -44,7 +44,7 @@ import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shar
 import { canopyMapWrittenBy } from './canopy.js';
 import { sessionCarriesTitle } from '../read/sessions.js';
 import { countSpores, sporeAuthoredBy } from './spores.js';
-import { listUnprocessedPrompts } from '../read/prompts.js';
+import { hasUnreadPrompts } from '../read/prompts.js';
 import { PROMPT_MARK_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
 import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 import { SEEDED_SPORE_FLOOR } from './seeding-params.js';
@@ -133,7 +133,7 @@ export async function sporesWrittenBy(db: RelationalStore, scope: ReadScope, run
 
 /** An extraction skip holds when no settled prompt is left unread. */
 export async function nothingUnread(db: RelationalStore, scope: ReadScope): Promise<boolean> {
-  return (await listUnprocessedPrompts(db, scope, { limit: 1 })).rows.length === 0;
+  return !await hasUnreadPrompts(db, scope);
 }
 
 /** A seeding skip holds when the Project already holds enough active spores to count as seeded. */

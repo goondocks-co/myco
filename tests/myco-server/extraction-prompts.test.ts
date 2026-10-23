@@ -1,6 +1,7 @@
+import { markPromptProcessed } from './helpers/extraction.js';
 import { describe, expect, it } from 'bun:test';
-import { listUnprocessedPrompts, markPromptProcessed } from '@myco-server-worker/read/prompts.js';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { listUnprocessedPrompts } from '@myco-server-worker/read/prompts.js';
+import { extractionSqlEnv as sqliteEnv } from './helpers/extraction-sql.js';
 
 function setup() {
   const env = sqliteEnv();
@@ -99,8 +100,8 @@ describe('extraction prompt selection', () => {
       seen.push(...next.rows);
       cursor = next.cursor;
     }
-    expect(seen).toHaveLength(81);
-    expect(new Set(seen.map((p) => p.promptId)).size).toBe(81);
+    expect(seen).toHaveLength(80);
+    expect(new Set(seen.map((p) => p.promptId)).size).toBe(80);
     for (const id of ['old', 'fresh']) expect(seen.filter((p) => p.sessionId === id).map((p) => p.createdAt))
       .toEqual(Array.from({ length: 40 }, (_, i) => i + (id === 'fresh' ? 100 : 0)));
     expect((await e.read()).rows[0].promptId).toBe('newer_1');

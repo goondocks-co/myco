@@ -296,14 +296,12 @@ const NO_ISOLATE_NODE_TARGETS = [
   // shared Bun after neighboring hook fixtures mutate globals.
 ];
 
-// Files that call mock.module() and therefore cannot share a bun process
-// (the mock swaps the process-wide module registry), evicted from the
-// shared groups below. They do NOT go to the --isolate chunks either:
-// these are SQLite/daemon-server-heavy fixtures, the exact churn profile
-// that triggers the bun 1.3.14 --isolate runtime spin (180s phase-kill ×
-// retries). Each runs as its own plain single-file bun process instead —
-// process-level isolation at ordinary startup cost.
+// Single-file processes isolate global mocks and retain duration headroom for scale fixtures.
+// SQLite and server fixtures use process isolation because Bun's --isolate can spin during teardown.
 const SOLO_NODE_FILES = [
+  // Scale fixtures reserve one process's duration budget.
+  'tests/myco-server/extraction-coverage-budget.test.ts',
+  'tests/myco-server/extraction-history-budget.test.ts',
   'tests/agent/phase-loop.test.ts',
   'tests/agent/tools-dry-run.test.ts',
   'tests/agent/tools-skills.test.ts',

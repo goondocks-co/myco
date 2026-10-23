@@ -103,7 +103,10 @@ describe('the instruction an extraction run receives', () => {
     expect(built.instruction).toContain(`\`limit\` ${EXTRACTION_PAGE}`);
     expect(built.instruction).toContain('`myco_run_prompts` op "unprocessed"');
     expect(built.instruction).toContain('`myco_run_prompts` op "mark_processed"');
-    expect(built.instruction).toContain('EVERY prompt on the page');
+    expect(built.instruction).toContain('EVERY item on the page');
+    expect(built.instruction).toContain('with its `served_id`');
+    expect(built.instruction).toContain('If a page is empty and has `next_cursor`, call again');
+    expect(built.instruction).toContain('Only an empty page with no `next_cursor` means there is nothing to read');
     expect(built.instruction).toContain(`action "${EXTRACTION_REPORT_ACTION}"`);
     expect(built.instruction).toContain(`action "${RUN_SKIP_ACTION}"`);
     expect(built.instruction).toContain('AGENTS.md');

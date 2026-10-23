@@ -1,10 +1,14 @@
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
-import { READ_ORIGINS } from '../read/extraction-origins.js';
+import { unreadPromptSql } from '../read/extraction-coverage.js';
 import { EXTRACTION_CANDIDATE_SQL, transcriptPendingSql } from './session-read-model.js';
 
-const origins = READ_ORIGINS.map((origin) => `'${origin}'`).join(',');
-const promptEligible = (row: string): string => `(${row}.processed = 0 AND ${row}.origin IN (${origins}))`;
 const liveSession = (row: string): string => `(${row}.has_session = 1 AND ${row}.tombstoned = 0)`;
+
+/** Recompute restored sessions together after their prompts and durable acknowledgements have landed. */
+export const RESTORED_SESSION_UNREAD_SQL = `UPDATE session_read_facts SET eligible_prompts =
+  (SELECT COUNT(*) FROM prompt_batches p WHERE p.project_id = session_read_facts.project_id
+    AND p.session_id = session_read_facts.session_id AND ${unreadPromptSql('p')})
+  WHERE (project_id, session_id) IN (SELECT json_extract(value, '$.projectId'), json_extract(value, '$.sessionId') FROM json_each(?))`;
 
 /** Apply a child-row contribution to its session, including children received before the session itself. */
 function contribution(row: string, values: Record<string, string>, sign: 1 | -1): string {
@@ -24,6 +28,12 @@ function childTriggers(table: string, updateColumns: string, values: (row: strin
     WHEN ${changed}` : ''} BEGIN${operation === 'INSERT' ? '' : `
     ${contribution('OLD', oldValues, -1)}`}
     ${operation === 'DELETE' ? '' : contribution('NEW', newValues, 1)} END`);
+}
+
+/** Prompt contributions use the same predicate as extraction pages. */
+export function promptSessionReadTriggers(beforeLedger = false): string[] {
+  return childTriggers('prompt_batches', `project_id,session_id,processed,origin${beforeLedger ? '' : ',prompt_id'}`,
+    row => ({ eligible_prompts: unreadPromptSql(row, { beforeLedger }) }));
 }
 
 function sessionPresent(row: string): string {
@@ -55,7 +65,7 @@ export const READ_BUDGET_SESSION_STATEMENTS: readonly string[] = [
     SELECT project_id,session_id,1 FROM session_tombstones WHERE 1
     ON CONFLICT(project_id,session_id) DO UPDATE SET tombstoned=1`,
   `INSERT INTO session_read_facts(project_id,session_id,eligible_prompts)
-    SELECT p.project_id,p.session_id,SUM(${promptEligible('p')}) FROM prompt_batches p GROUP BY p.project_id,p.session_id
+    SELECT p.project_id,p.session_id,SUM(${unreadPromptSql('p', { beforeLedger: true })}) FROM prompt_batches p GROUP BY p.project_id,p.session_id
     ON CONFLICT(project_id,session_id) DO UPDATE SET eligible_prompts=excluded.eligible_prompts`,
   `INSERT INTO session_read_facts(project_id,session_id,pending_transcripts,live_transcripts)
     SELECT t.project_id,t.session_id,SUM(${transcriptPendingSql('t')}),SUM(t.imported_at IS NULL)
@@ -78,7 +88,7 @@ export const READ_BUDGET_SESSION_STATEMENTS: readonly string[] = [
     ${sessionPresent('NEW')} END`,
   `CREATE TRIGGER IF NOT EXISTS sessions_read_delete AFTER DELETE ON sessions BEGIN
     UPDATE session_read_facts SET has_session=0,ended_at=NULL,last_received_at=NULL WHERE project_id=OLD.project_id AND session_id=OLD.session_id; END`,
-  ...childTriggers('prompt_batches', 'project_id,session_id,processed,origin', (row) => ({ eligible_prompts: promptEligible(row) })),
+  ...promptSessionReadTriggers(true),
   ...childTriggers('transcripts', 'project_id,session_id,parsed_offset,size,parse_error,imported_at', (row) => ({
     pending_transcripts: transcriptPendingSql(row), live_transcripts: `(${row}.imported_at IS NULL)`,
   })),

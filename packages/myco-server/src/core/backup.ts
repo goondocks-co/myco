@@ -27,6 +27,8 @@ import { verifyBundleArtifact, type BundleEntryIdentity } from './archive-bundle
 import { restoreArchivedEvent } from './event-content.js';
 import { restoreToolInput } from './tool-input-restore.js';
 import { clearDeletedParentsStatement } from './tombstones.js';
+import { RESTORED_SESSION_UNREAD_SQL } from '../db/read-budget-session-statements.js';
+import { restoreExtractionAckStatement } from './extraction-acks.js';
 export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
 import { restoreParserCheckpointStatement } from '../ingest/parser-checkpoint.js';
 import { restoredPin, restoreSchemeDecisions } from '../ingest/prompt-scheme.js';
@@ -44,6 +46,7 @@ export const MAX_UPLOAD_BODY_BYTES = 80 * 1024 * 1024;
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Rows per applied batch on restore; one statement per row keeps every statement under the bind-count bound. */
 const RESTORE_CHUNK_ROWS = 20;
+const EXTRACTION_RECOUNT_PHASE = 'extraction-session-counters';
 
 /**
  * Every data table, in an order that satisfies the schema's foreign keys:
@@ -54,7 +57,7 @@ export const BACKUP_TABLES: readonly string[] = [
   'member_credentials', 'runner_credentials', 'runner_audit', 'runner_metadata_audit', 'runner_signin_audit', 'legacy_worker_audit', 'runner_update_audit', 'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'agents',
   'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'prompt_batches', 'tool_calls', 'processed_resources', 'responses', 'plans',
   'attachments', 'transcripts', 'transcript_parser_state_chunks', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
-  'agent_tasks', 'agent_runs', 'run_served_material', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners',
+  'agent_tasks', 'agent_runs', 'run_served_material', 'extraction_acks', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners',
   'injection_served_items', 'canopy_maps', 'knowledge_release_state', 'external_grants',
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',
   'knowledge_git_provenance',
@@ -414,6 +417,7 @@ type OwnedRowRestorer = (db: RelationalStore, row: ArtifactRow, decided: Restore
 
 /** Owned state restores through the capability that admits its writes. */
 const OWNED_ROW_RESTORERS: Readonly<Partial<Record<string, OwnedRowRestorer>>> = {
+  extraction_acks: restoreExtractionAckStatement,
   // A transcript is pinned with its insert, to the scheme its group is admitted to over the whole artifact.
   transcripts(db, row, decided) {
     const columns = Object.keys(row).filter((column) => column !== 'prompt_identity_scheme');
@@ -602,6 +606,12 @@ export async function restoreArtifact(
   await restoreRecordSchemeDecisions(db, byTable.get('transcripts') ?? []);
   const decided: RestoreDecisions = { parents: transcriptParents, schemes: await restoreSchemeDecisions(db, byTable.get('transcripts') ?? []) };
   const hash = await sha256Hex(opts.text);
+  const restoredSessions = new Map<string, { projectId: string; sessionId: string }>();
+  for (const table of ['sessions', 'prompt_batches', 'extraction_acks']) for (const row of byTable.get(table) ?? []) {
+    if (typeof row.project_id === 'string' && typeof row.session_id === 'string') restoredSessions.set(
+      JSON.stringify([row.project_id, row.session_id]), { projectId: row.project_id, sessionId: row.session_id });
+  }
+  const recountPhase = `${EXTRACTION_RECOUNT_PHASE}:${hash}`;
   const provenance = ['raw_provenance_state', 'raw_resources', 'raw_archive_refs', 'raw_claims', 'events', 'blobs', 'transcripts', 'attachments', 'prompt_batches', 'responses', 'plans', 'tool_calls'].flatMap((table) => byTable.get(table) ?? []);
   const sourceRevision = provenance.reduce((max, row) => Math.max(max,
     ...['revision','raw_revision','cutoff_revision'].map((key) => typeof row[key] === 'number' ? row[key] as number : 0)), 0);
@@ -632,6 +642,8 @@ export async function restoreArtifact(
     segments.push(row);
     transcriptSegments.set(identity, segments);
   }
+  if (restoredSessions.size > 0) await db.prepare(`INSERT INTO backup_restore_progress(table_name,artifact_hash,next_row)
+    VALUES(?,?,0) ON CONFLICT(table_name) DO UPDATE SET next_row=0`).bind(recountPhase, hash).run();
   for (const table of BACKUP_TABLES) {
     let rows = byTable.get(table) ?? [];
     const artifactRowCount = rows.length;
@@ -912,6 +924,10 @@ export async function restoreArtifact(
       outcome.tables[table] = { ...applied, rows: applied.rows + skipped.rows, skipped: skipped.skipped };
     }
   }
+  if (restoredSessions.size > 0) await db.batch([
+    db.prepare(RESTORED_SESSION_UNREAD_SQL).bind(JSON.stringify([...restoredSessions.values()])),
+    db.prepare('UPDATE backup_restore_progress SET next_row=1 WHERE table_name=? AND artifact_hash=?').bind(recountPhase, hash),
+  ]);
   return outcome;
 }
 

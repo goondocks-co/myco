@@ -132,6 +132,7 @@ export async function waitFor<T>(read: () => Promise<T>, pred: (value: T) => boo
 export function volumeSql(databasePath: string) {
   return async (command: string): Promise<Record<string, unknown>[]> => {
     const sqlite = new Database(databasePath);
+    sqlite.exec('PRAGMA foreign_keys = ON');
     sqlite.exec('PRAGMA busy_timeout = 5000');
     try {
       return sqlite.query(command).all() as Record<string, unknown>[];
