@@ -1,5 +1,6 @@
 {
   "sources": [
+    "local: #1899 BAGGAGE correction1, pinned Bun1.4.0 darwin-arm64 with worktree SQLite3.53.0; hooks measured6752ms via npm test -- tests/member/hooks.test.ts alone without concurrent lane checks (62 tests,15000ms weight covers twice plus startup). Existing session-lineage parity native/local workerd D1 weights retained at15000ms startup floor. No new test file or scenario.",
     "local: #1924 PR4a correction2, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0; npm test -- tests/meta/schema-step-ownership.test.ts tests/myco-server/view-store-schema.test.ts tests/myco-server/view-bundle-references.test.ts tests/myco-server/archive-bundle-work.test.ts measured6140ms test wall (6167ms runner group): schema ownership1ms, native/local-D1 bundle1238ms, schema contracts about3700ms, archive work about1100ms. Weights1000ms/3500ms/10000ms/3000ms cover twice per-file duration plus startup. Inert and backup parity selection measured59150ms including both target boots; existing scenario weights retained. Temporary uncommitted bare-stamp99 used for verification.",
     "local: #1924 PR4a step100, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0; npm test -- tests/myco-server/view-store-schema.test.ts tests/myco-server/view-store-maintenance.test.ts measured6437ms wall including both native/local-D1 contracts. File weights8000ms/10000ms cover twice measured per-file tests plus startup. npm run test:parity -- --test-name-pattern \"view store: empty\" measured21294ms including both boots, native194ms and local-D1/workerd364ms scenario execution; 45000ms weight covers twice wall plus startup. Final registered-blob fixtures measured schema2468ms and maintenance3211ms summed test durations in a14595ms five-file run including migrations and blob-release contracts. Snapshot-version regression selection measured15691ms wall; backup-cli3304ms and recovery-bundle6247ms summed test durations, reweighted7000ms/14000ms. Verification used a temporary uncommitted bare-stamp99 before step100.",
     "local: #1924 PR3 correction3, pinned Bun1.4.0 darwin-arm64 with worktree SQLite3.53.0; npm test -- tests/myco-server/extraction-history-budget.test.ts measured38680ms for three restored tests (deep/floor with and without bodies plus native/local-D1 active traversals at limits1/3). Its90000ms weight covers twice wall plus startup; the history scale fixture runs in its own process to keep the shared server group below its225000ms budget. Body-aware scale file measured67350ms, steady-state leg33326ms; retained225000ms scale weight. No new parity scenario; existing extraction-coverage45000ms and session-citation weights retained.",
@@ -167,7 +168,7 @@
     "tests/member/home-pin.test.ts": 1328,
     "tests/member/hook-git-calls.test.ts": 2205,
     "tests/member/hook-no-network.test.ts": 8346,
-    "tests/member/hooks.test.ts": 4375,
+    "tests/member/hooks.test.ts": 15000,
     "tests/member/import.test.ts": 14930,
     "tests/member/inline-and-upgrade.test.ts": 14058,
     "tests/member/join-code.test.ts": 1564,

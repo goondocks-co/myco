@@ -1,3 +1,4 @@
+import { launchParentSession } from '@myco/member/session-lineage.js';
 import { expect } from 'bun:test';
 import { sessionLineage, type SessionLineage } from '@myco-server-worker/read/lineage.js';
 import { listSessionActivity, type SessionActivityRow } from '@myco-server-worker/read/session-activity.js';
@@ -54,11 +55,14 @@ export const sessionLineageParity: ParityScenario = {
       return await response.json() as T;
     };
 
-    await start('root', stamp, { launchParentSessionId: id('not-captured') });
-    await start('worker', stamp + 1, { launchParentSessionId: id('root') });
-    await start('worker', stamp + 5, { launchParentSessionId: id('later-value') });
-    await start('next', stamp + 2, { launchParentSessionId: id('root'), parentSessionId: id('worker'), parentReason: 'compact continuation' });
-    await start('fixer', stamp + 3, { launchParentSessionId: id('worker') });
+    const launched = (name: string, parent: string) => ({
+      launchParentSessionId: launchParentSession(id(name), { BAGGAGE: 'other=kept,gen_ai.conversation.id=' + encodeURIComponent(id(parent)) }),
+    });
+    await start('root', stamp, launched('root', 'not-captured'));
+    await start('worker', stamp + 1, launched('worker', 'root'));
+    await start('worker', stamp + 5, launched('worker', 'later-value'));
+    await start('next', stamp + 2, { ...launched('next', 'root'), parentSessionId: id('worker'), parentReason: 'compact continuation' });
+    await start('fixer', stamp + 3, launched('fixer', 'worker'));
 
     expect(await target.sql(`SELECT session_id, launch_parent_session_id, parent_session_id FROM sessions
       WHERE project_id = ${lit(target.projectId)} AND session_id IN (${['worker', 'next'].map((name) => lit(id(name))).join(',')}) ORDER BY started_at`))
