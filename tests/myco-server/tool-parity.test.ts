@@ -33,6 +33,15 @@ const opsOf = (def: { inputSchema: { properties: Record<string, unknown> } }): s
 };
 
 describe('tool parity', () => {
+  it('excepts the revised run acknowledgement property while preserving the frozen member contract', () => {
+    const revisedProperties = { myco_run_prompts: ['served_id'] };
+    const current = RUN_DEFINITIONS.find(def => def.name === 'myco_run_prompts')!;
+    for (const property of revisedProperties.myco_run_prompts) expect(current.inputSchema.properties[property]).toMatchObject({ type: 'string', description: expect.stringContaining('mark_processed') });
+    expect(current.inputSchema.properties.prompt_id).toMatchObject({ description: expect.stringContaining('Compatibility') });
+    expect(FROZEN_DEFINITIONS.some(def => String(def.name) === current.name)).toBe(false);
+    expect(Object.keys(current.inputSchema.properties).filter(property => !revisedProperties.myco_run_prompts.includes(property)).sort())
+      .toEqual(['project', 'op', 'prompt_id', 'cursor', 'limit', 'include_active', 'include_text'].sort());
+  });
   it('declares session citation and accepts the old extraction prompt argument', () => {
     for (const defs of [TOOL_DEFINITIONS, FROZEN_DEFINITIONS]) {
       const properties = defs.find(def => def.name === 'myco_spores')!.inputSchema.properties;

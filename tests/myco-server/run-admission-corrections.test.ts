@@ -61,21 +61,22 @@ for (const op of ['prompt', 'title', 'map'] as const) for (const loss of ['lease
     try {
       f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at) VALUES('proj_1','sess','m','t',0,0,0,1)");
       f.sqlite.run("INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,text,origin,content_hash,created_at,updated_at,token_id,received_at) VALUES('proj_1','sess','prompt','ev','hello','user','h',0,0,'t',0)");
+      if (op === 'prompt') await f.call('myco_run_prompts', { op: 'unprocessed', include_text: true });
       if (op === 'title') f.sqlite.run("UPDATE agent_runs SET task = 'title-summary' WHERE id = 'target'");
       if (op === 'map') {
         const repository = { url: 'https://example.test/source', branch: 'main', commit: 'a'.repeat(40) };
         f.sqlite.run("INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by) VALUES('proj_1','r1',?,?,0,'test')", [repository.url, repository.branch]);
         f.sqlite.run("UPDATE agent_runs SET task = 'canopy-map', run_context = ? WHERE id = 'target'", [JSON.stringify({ timeoutSeconds: 300, repository, canopy: { inputHash: 'b'.repeat(64), priorRevision: null } })]);
       }
-      if (loss === 'mid_batch_revocation') f.sqlite.exec(`CREATE TRIGGER revoke_domain AFTER ${op === 'map' ? 'INSERT' : 'UPDATE'}
-        ON ${op === 'prompt' ? 'prompt_batches' : op === 'title' ? 'sessions' : 'canopy_maps'} BEGIN
+      if (loss === 'mid_batch_revocation') f.sqlite.exec(`CREATE TRIGGER revoke_domain AFTER ${op === 'title' ? 'UPDATE' : 'INSERT'}
+        ON ${op === 'prompt' ? 'extraction_acks' : op === 'title' ? 'sessions' : 'canopy_maps'} BEGIN
         UPDATE members SET revoked_at = 1 WHERE id = '${HARNESS_MEMBER_ID}'; END`);
       armed = true;
       const answer = op === 'prompt' ? await f.call('myco_run_prompts', { op: 'mark_processed', prompt_id: 'prompt' })
         : op === 'title' ? await f.call('myco_run_sessions', { op: 'title', title: 'title', summary: 'summary' })
         : await f.call('myco_run_map', { op: 'write', artifact: { directories: [{ path: 'src', annotation: 'Source', groundedIn: [{ path: 'src/a.ts', sha256: 'c'.repeat(64) }] }], domains: [{ id: 'main', title: 'Main', files: [{ path: 'src/a.ts', annotation: 'Entry', groundedIn: [{ path: 'src/a.ts', sha256: 'c'.repeat(64) }] }] }] } });
       const count = (sql: string) => (f.sqlite.query(sql).get() as { n: number }).n;
-      const changed = op === 'prompt' ? count("SELECT processed AS n FROM prompt_batches WHERE prompt_id = 'prompt'")
+      const changed = op === 'prompt' ? count("SELECT COUNT(*) AS n FROM extraction_acks WHERE record_id = 'prompt'")
         : op === 'title' ? count("SELECT COUNT(*) AS n FROM sessions WHERE title IS NOT NULL") : count('SELECT COUNT(*) AS n FROM canopy_maps');
       const attributed = count("SELECT COUNT(*) AS n FROM agent_run_events WHERE event_type = 'run_write'");
       expect(changed).toBe(loss === 'none' ? 1 : 0);

@@ -1,5 +1,9 @@
 {
   "sources": [
+    "local: #1924 PR3 correction3, pinned Bun1.4.0 darwin-arm64 with worktree SQLite3.53.0; npm test -- tests/myco-server/extraction-history-budget.test.ts measured38680ms for three restored tests (deep/floor with and without bodies plus native/local-D1 active traversals at limits1/3). Its90000ms weight covers twice wall plus startup; the history scale fixture runs in its own process to keep the shared server group below its225000ms budget. Body-aware scale file measured67350ms, steady-state leg33326ms; retained225000ms scale weight. No new parity scenario; existing extraction-coverage45000ms and session-citation weights retained.",
+    "local: #1924 PR3 correction2, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0; production-writer batches and 7k/14k scale measured110441ms (225000ms weight covers twice wall plus startup), the changed steady-state test alone measured61580ms. New deep/floor 400/1200-session tests measured18447ms and17407ms in a37006ms focused run (80000ms file weight covers twice wall plus startup). Extended extraction-coverage native/local-D1 parity measured18211ms including both boots; existing45000ms scenario weight retained.",
+    "local: #1924 PR3 correction1, npm test on pinned Bun1.4.0 darwin-arm64 with worktree SQLite3.53.0; coverage behavior measured673ms including runner (1500ms weight), native/local-D1 scale and 7k/21k steady-state production SQL plans measured197353ms (210000ms weight; standalone process retains the 225000ms CI group ceiling). Selected extraction/session-citation/latest-D1 parity measured63858ms including both boots; existing extraction45000ms and session-citation120000ms per-scenario weights retained.",
+    "local: #1924 PR3, pinned Bun1.4.0 darwin-arm64 with worktree SQLite3.53.0; npm test measured coverage behavior583ms (1500ms weight), 26k/7k scale file61893ms including native ingest and local D1 restore of actual ingest-produced rows plus target ledger/ack writers (75000ms weight). A separate direct D1 ingest/ack scale run passed in211258ms. Serve-ack-next-page parity21974ms including both boots (45000ms weight). Equality seeks and counter assertions ran on both stores; all source/behavior mutations were restored.",
     "local: #1924 PR 2 rebase onto648337dcc (schema96), pinned Bun1.4.0 darwin-arm64 and worktree SQLite; migration/schema/upgrade fixtures 7981ms total, combined Lineage/session UI11558ms, corrected schema95 restore cases measured D1 6901ms/native370ms in a9333ms three-file run. Retained Lineage restore18000ms and UI28000ms weights cover twice per-file measurement plus startup; both lanes duration/parity entries retained.",
     "local: #1924 PR 2 correction 4, pinned Bun 1.4.0 darwin-arm64 and worktree SQLite; affected focused suites measured 12285ms total, D1 session budget 9083ms including explicit Conversation DOM child 2884ms, session UI 10127ms. Existing file and parity weights retained above twice measured individual runtimes; status read budget is 1505 rows for both 200 and 2000 old sessions and 4 after expiry.",
     "local: #1924 PR 2 correction 3, pinned Bun 1.4.0 darwin-arm64 and worktree SQLite; new D1 snapshot tombstone budget file measured 832ms initially, 709ms restored and 1106ms during concurrent final checks; 3000ms weight exceeds twice measured plus startup. Session read budget with 200/2000 old sessions measured 8294ms including DOM child 2816ms; retained conservative 45000ms parent/14000ms child weights.",
@@ -863,7 +867,10 @@
     "tests/myco-server/injection-snapshot-budget-runtime.test.ts": 3000,
     "tests/myco-server/helpers/conversation-budget_test.tsx": 14000,
     "tests/myco-server/injection-served-items.test.ts": 1000,
-    "tests/myco-server/hook-placement.test.ts": 1000
+    "tests/myco-server/hook-placement.test.ts": 1000,
+    "tests/myco-server/extraction-coverage.test.ts": 1500,
+    "tests/myco-server/extraction-coverage-budget.test.ts": 225000,
+    "tests/myco-server/extraction-history-budget.test.ts": 90000
   },
   "parity": {
     "D1: latest migration upgrades seeded previous schema to expected state": 45000,
@@ -953,6 +960,7 @@
     "session lineage: launch and continuation parents, unresolved parents, children reads on their indexes": 15000,
     "receipt snapshots: atomic plan metadata survives source deletion": 60000,
     "hook placement: session and Project hints, delivery, and unplaced hook records": 120000,
-    "KPI deliveries: delivery counts, served prompts and retired attention agree on both stores": 120000
+    "KPI deliveries: delivery counts, served prompts and retired attention agree on both stores": 120000,
+    "extraction coverage: served item acks, late material and counters survive run deletion": 45000
   }
 }

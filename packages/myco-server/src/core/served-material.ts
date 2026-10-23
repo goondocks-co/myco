@@ -14,17 +14,27 @@ export type ServedPrompt = UnprocessedPrompt & { servedId: string };
 
 /** Commit the entire bounded body page before its caller can answer it. */
 export async function recordServedPrompts(
-  db: RelationalStore, scope: ReadScope, runId: string, rows: readonly UnprocessedPrompt[], now: number,
+  db: RelationalStore, scope: ReadScope, runId: string, rows: readonly UnprocessedPrompt[], now: number, instanceId: string | null = null,
 ): Promise<ServedPrompt[]> {
-  const served = rows.map(row => ({ ...row, servedId: crypto.randomUUID() }));
-  if (served.length === 0) return served;
-  await db.prepare(`INSERT INTO run_served_material (project_id, served_id, run_id, session_id, record_id, served_at)
+  if (rows.length === 0) return [];
+  const items = JSON.stringify([...new Map(rows.map(({ promptId, sessionId }) => [promptId, { promptId, sessionId, servedId: crypto.randomUUID() }])).values()]);
+  const match = `m.project_id = ? AND m.run_id = ? AND m.record_id = json_extract(j.value, '$.promptId') AND m.instance_id IS ?`;
+  const [, result] = await db.batch([
+    db.prepare(`INSERT INTO run_served_material (project_id, served_id, run_id, session_id, record_id, served_at, instance_id)
     SELECT ?, json_extract(j.value, '$.servedId'), ?, json_extract(j.value, '$.sessionId'),
-      json_extract(j.value, '$.promptId'), ?
-    FROM json_each(?) j`)
-    .bind(scope.projectId, runId, now, JSON.stringify(served.map(({ servedId, sessionId, promptId }) => ({ servedId, sessionId, promptId }))))
-    .run();
-  return served;
+      json_extract(j.value, '$.promptId'), ?, ?
+    FROM json_each(?) j WHERE NOT EXISTS (SELECT 1 FROM run_served_material m WHERE ${match})`)
+      .bind(scope.projectId, runId, now, instanceId, items, scope.projectId, runId, instanceId),
+    db.prepare(`SELECT m.record_id AS promptId, MIN(m.served_id) AS servedId FROM json_each(?) j
+      CROSS JOIN run_served_material m ON ${match} GROUP BY m.record_id`)
+      .bind(items, scope.projectId, runId, instanceId),
+  ]);
+  const identities = new Map((result!.results as { promptId: string; servedId: string }[]).map(row => [row.promptId, row.servedId]));
+  return rows.map(row => {
+    const servedId = identities.get(row.promptId);
+    if (servedId === undefined) throw new Error('Served material was not recorded');
+    return { ...row, servedId };
+  });
 }
 
 /** Whether the dispatch predates the Deployment's durable ledger boundary. */
