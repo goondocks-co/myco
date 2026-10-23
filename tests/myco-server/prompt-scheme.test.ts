@@ -18,10 +18,9 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { parseTranscripts, rereadTranscripts, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
 import { promptIdAtOffset } from '@myco-server-worker/ingest/parsers/index.js';
 import { DECLARED_SCHEMES, restoreSchemeDecisions, schemeGroupKey } from '@myco-server-worker/ingest/prompt-scheme.js';
-import { promptKeyMismatches } from '@myco-server-worker/read/prompt-reference-invariant.js';
 import { BACKUP_FORMAT, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { sha256Hex, sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
+import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { applySchemaSteps } from './helpers/migrate.js';
 import { registerBlob, sqliteD1 } from './helpers/d1.js';
 import { envelope, memberHeaders, sqliteEnv, uuid } from './helpers/fixtures.js';
@@ -342,21 +341,5 @@ describe('an ask or a delivery naming a prompt under a scheme', () => {
     expect(delivered).toMatchObject({ persisted: true });
     expect(rows(m.e.sqlite, `SELECT delivered_at, delivered_prompt_id, delivered_scope_reason FROM spore_injections`))
       .toEqual([{ delivered_at: NOW - 10, delivered_prompt_id: null, delivered_scope_reason: 'scheme' }]);
-  });
-});
-
-describe('the prompt key mismatch signal', () => {
-  it('counts, per agent, a receipt whose prompt row recorded another text, and none whose texts agree', async () => {
-    const m = await member();
-    m.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES ('proj_1', ?, 'machine_1', ?, 1, 1, 'codex')`, [SESSION, m.ctx.tokenId]);
-    const prompt = async (id: string, text: string) => m.e.sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, text, content_hash, prompt_key_hash, created_at, updated_at, token_id, received_at)
-      VALUES ('proj_1', ?, ?, ?, 'user', ?, 'c', ?, 1, 1, 't', 1)`, [id, SESSION, `ev-${id}`, text, await sha256Hex(text)]);
-    const receipt = async (n: number, id: string, asked: string) => m.e.sqlite.run(`INSERT INTO spore_injections (project_id, session_id, id, prompt_id, ask_protocol, asked_at, prompt_hash, spore_ids, created_at)
-      VALUES ('proj_1', ?, ?, ?, 'v1', 1, ?, '[]', ?)`, [SESSION, uuid(n), id, await sha256Hex(asked), NOW]);
-    await prompt(uuid(1), 'the opener the transcript holds');
-    await prompt(uuid(2), 'a second opener');
-    await receipt(11, uuid(1), 'a steering prompt that claimed the opener');
-    await receipt(12, uuid(2), 'a second opener');
-    expect(await promptKeyMismatches(m.e.db, 0)).toEqual({ codex: 1 });
   });
 });

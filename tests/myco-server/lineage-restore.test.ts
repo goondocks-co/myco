@@ -7,11 +7,10 @@ import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { BACKUP_FORMAT, BACKUP_TABLES, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { LINEAGE_MAX_NODES, sessionLineage } from '@myco-server-worker/read/lineage.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteD1 } from './helpers/d1.js';
-import { memoryBlobStore } from './helpers/fixtures.js';
 import { measuredStore } from './helpers/read-budget.js';
 
 const LIVE_CHILDREN = 201;
@@ -31,11 +30,12 @@ async function oldBackup(project: string, size: number): Promise<{ text: string;
     old.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent,parent_session_id,parent_reason) VALUES(?,'held-deleted','m','t',1,1,'codex','root','fork')", [project]);
     old.run("INSERT INTO session_tombstones(project_id,session_id,created_at,created_by) SELECT project_id,session_id,1,'owner' FROM sessions WHERE project_id=? AND session_id >= 'child-' AND session_id <= ?",
       [project, `child-${String(size - LIVE_CHILDREN).padStart(5, '0')}`]);
-    const source = sqliteD1(old);
-    const blobs = memoryBlobStore();
-    const saved = await createBackup(source, blobs, { producer: 'lineage-restore', now: 1_000 });
-    const text = (await backupArtifact(source, blobs, saved.id))!.text;
-    const header = JSON.parse(text.split('\n')[0]!) as { schemaVersion: number; deploymentId: string };
+    const tables = new Set((old.query("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(row => row.name));
+    const snapshot = BACKUP_TABLES.filter(table => tables.has(table)).map(table => ({ table, rows: old.query(`SELECT * FROM ${table}`).all() }));
+    const meta = new Map((old.query('SELECT key,value FROM schema_meta').all() as { key: string; value: string }[]).map(row => [row.key, row.value]));
+    const header = { format: BACKUP_FORMAT, deploymentId: meta.get('deployment_id')!, schemaVersion: Number(meta.get('version')),
+      producer: 'lineage-restore', createdAt: 1_000, counts: Object.fromEntries(snapshot.map(({ table, rows }) => [table, rows.length])) };
+    const text = [header, ...snapshot.flatMap(({ table, rows }) => rows.map(row => ({ t: table, r: row })))].map(row => JSON.stringify(row)).join('\n') + '\n';
     expect(header.schemaVersion).toBe(BEFORE_LAUNCH_PARENT);
     return { text, deploymentId: header.deploymentId };
   } finally { old.close(); }

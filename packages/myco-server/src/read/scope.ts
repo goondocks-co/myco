@@ -126,3 +126,10 @@ export function page<T>(rows: readonly T[], limit: number, key: (row: T) => { cr
   const last = key(out[out.length - 1]);
   return { rows: out, cursor: encodeCursor(last.createdAt, last.id) };
 }
+
+/** SQLite BINARY collation orders UTF-8 bytes. */
+export function binaryOrder(a: string, b: string): number {
+  const left = new TextEncoder().encode(a), right = new TextEncoder().encode(b);
+  const at = left.findIndex((byte, index) => byte !== right[index]);
+  return at < 0 ? left.length - right.length : left[at]! - (right[at] ?? -1);
+}

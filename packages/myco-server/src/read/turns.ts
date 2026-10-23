@@ -7,7 +7,8 @@
  */
 import { sourceTimestampsRecorded } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
-import { uuidv5 } from '../hash.js';
+import { hookPlacementSql, sessionContextHints } from './hook-placement.js';
+import { receiptPlans } from './injection-served-items.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { oneLine, type PromptInjection } from '../core/injection.js';
 import { listSporesByIds, MAX_SPORE_LIMIT } from '../core/spores.js';
@@ -67,7 +68,7 @@ export interface TurnDetail {
   attachments: AttachmentRow[];
   /** The plans this prompt produced, in immutable key order. */
   plans: PlanRow[];
-  /** The spores and plans Myco served with this prompt, hydrated from retained records; null when it served none. */
+  /** The context delivered to this prompt, with receipt snapshots for plans and retained spore previews; null when no receipt places here. */
   injection: (PromptInjection & { planIds: string[]; plans: Array<{ planKey: string; title: string | null }> }) | null;
   metrics: TurnMetrics;
   answers: PromptAnswer[];
@@ -102,10 +103,10 @@ function toPrompt(r: Record<string, unknown>): TurnPrompt {
   };
 }
 
-const TOOL_CALL_COUNT = `(SELECT COUNT(*) FROM tool_calls t WHERE t.project_id = pb.project_id AND t.session_id = pb.session_id AND t.prompt_id = pb.prompt_id)`;
+const TOOL_CALL_COUNT = `(SELECT COUNT(*) FROM tool_calls t WHERE t.project_id = pb.project_id AND t.session_id = pb.session_id AND t.prompt_id = pb.prompt_id AND ${hookPlacementSql({ project: 't.project_id', session: 't.session_id', prompt: 't.prompt_id' })})`;
 const RESPONSE_COUNT = `(SELECT COUNT(*) FROM responses r WHERE r.project_id = pb.project_id AND r.prompt_id = pb.prompt_id)`;
 const PLAN_COUNT = `(SELECT COUNT(*) FROM plans p WHERE p.project_id = pb.project_id AND p.session_id = pb.session_id AND p.prompt_id = pb.prompt_id)`;
-const ATTACHMENT_COUNT = `(SELECT COUNT(*) FROM attachments a WHERE a.project_id = pb.project_id AND a.session_id = pb.session_id AND a.prompt_id = pb.prompt_id)`;
+const ATTACHMENT_COUNT = `(SELECT COUNT(*) FROM attachments a WHERE a.project_id = pb.project_id AND a.session_id = pb.session_id AND a.prompt_id = pb.prompt_id AND ${hookPlacementSql({ project: 'a.project_id', session: 'a.session_id', prompt: 'a.prompt_id' })})`;
 const CHILD_COUNT = `(SELECT COUNT(*) FROM prompt_batches c WHERE c.project_id = pb.project_id AND c.session_id = pb.session_id AND c.parent_prompt_id = pb.prompt_id)`;
 
 /** A session's top-level prompts, keyset-paged in the requested direction; a named prompt resolves to its turn. */
@@ -176,10 +177,9 @@ async function readTurnBodies(db: RelationalStore, scope: ReadScope, sessionId: 
     (SELECT MAX(+created_at) FROM responses WHERE project_id = pb.project_id AND session_id = pb.session_id AND prompt_id = pb.prompt_id) AS last_reply,
     (SELECT json_group_array(json_object('toolName', tool_name, 'count', n)) FROM (
       ${toolUsageSql(true, true)})) AS tools,
-    (SELECT json_object('sporeIds', i.spore_ids, 'createdAt', i.created_at, 'planIds', json(COALESCE(i.plan_ids, '[]')),
-      'plans', json((SELECT json_group_array(json_object('planKey', p.plan_key, 'title', p.title))
-        FROM plans p WHERE p.project_id = i.project_id AND p.plan_key IN (SELECT value FROM json_each(i.plan_ids)))))
+    (SELECT json_object('receiptId', i.id, 'sporeIds', i.spore_ids, 'createdAt', i.created_at, 'planIds', json(COALESCE(i.plan_ids, '[]')))
       FROM spore_injections i WHERE i.project_id = pb.project_id AND i.session_id = pb.session_id AND i.delivered_prompt_id = pb.prompt_id
+        AND ${hookPlacementSql({ project: 'i.project_id', session: 'i.session_id', prompt: 'i.delivered_prompt_id' })}
       ORDER BY +i.created_at DESC LIMIT 1) AS injection,
     (SELECT agent FROM sessions s WHERE s.project_id = pb.project_id AND s.session_id = pb.session_id) AS agent
     FROM (SELECT value AS wanted_prompt FROM json_each(?)) wanted CROSS JOIN prompt_batches pb
@@ -192,11 +192,12 @@ async function readTurnBodies(db: RelationalStore, scope: ReadScope, sessionId: 
     listChildrenByPrompt(db, TURN_PLAN_QUERY, scope, sessionId, ids, TURN_BODY_LIMIT),
     listChildrenByPrompt(db, ANSWER_QUERY, scope, sessionId, ids, TURN_BODY_LIMIT),
   ]);
-  type Served = { sporeIds: string[]; createdAt: number; planIds: string[]; plans: Array<{ planKey: string; title: string | null }> };
+  type Served = { receiptId: string; sporeIds: string[]; createdAt: number; planIds: string[]; };
   const served = new Map(results.map(r => {
     const raw = r.injection === null ? null : JSON.parse(r.injection as string) as Omit<Served, 'sporeIds'> & { sporeIds: string };
     return [r.prompt_id as string, raw === null ? null : { ...raw, sporeIds: retainedIds(raw.sporeIds) }] as const;
   }));
+  const plansByReceipt = await receiptPlans(db, scope, [...served.values()].flatMap(r => r === null ? [] : [{ receiptId: r.receiptId, planIds: r.planIds }]));
   const sporeIds = [...new Set([...served.values()].flatMap(i => i?.sporeIds ?? []))];
   const spores = [];
   for (let offset = 0; offset < sporeIds.length; offset += MAX_SPORE_LIMIT) spores.push(...await listSporesByIds(db, scope, sporeIds.slice(offset, offset + MAX_SPORE_LIMIT)));
@@ -205,8 +206,8 @@ async function readTurnBodies(db: RelationalStore, scope: ReadScope, sessionId: 
     const prompt = toPrompt(row);
     const id = prompt.promptId;
     const receipt = served.get(id);
-    const planById = new Map(receipt?.plans.map(plan => [plan.planKey, plan]));
-    const injection = receipt == null ? null : { ...receipt,
+    const planById = new Map((receipt == null ? [] : plansByReceipt.get(receipt.receiptId) ?? []).map(plan => [plan.planKey, { planKey: plan.planKey, title: plan.title }]));
+    const injection = receipt == null ? null : { sporeIds: receipt.sporeIds, planIds: receipt.planIds, createdAt: receipt.createdAt,
       plans: receipt.planIds.flatMap(id => { const plan = planById.get(id); return plan === undefined ? [] : [plan]; }),
       spores: receipt.sporeIds.flatMap(id => {
         const spore = byId.get(id);
@@ -274,9 +275,10 @@ export interface PromptAnswer {
 /** What a turn's prompt carried beyond its own answers: the sub-agent preambles prepared under it. */
 export interface TurnContext { subagents: number }
 
+/** Selection hints associate lookup diagnostics; receipt delivery places the served context. */
 const ANSWER_QUERY = {
-  table: 'prompt_context_answers', idColumn: 'id', orderColumn: 'created_at',
-  columns: 'prompt_id, id, created_at, outcome, context_chars, parts, skipped, failures, selection',
+  table: 'prompt_context_answers', promptHint: 'prompt_id', idColumn: 'id', orderColumn: 'created_at',
+  columns: 'id, created_at, outcome, context_chars, parts, skipped, failures, selection',
   map: (r: Record<string, unknown>): PromptAnswer => ({
     id: r.id as string, createdAt: r.created_at as number, outcome: r.outcome as string, contextChars: r.context_chars as number,
     parts: JSON.parse(r.parts as string), skipped: JSON.parse(r.skipped as string),
@@ -295,34 +297,19 @@ export function toolUsageSql(byPrompt: boolean, correlated = false): string {
   const project = correlated ? 'pb.project_id' : '?';
   const session = correlated ? 'pb.session_id' : '?';
   const prompt = correlated ? 'pb.prompt_id' : '?';
-  return `SELECT tool_name, COUNT(*) AS n FROM tool_calls WHERE project_id = ${project} AND session_id = ${session} ${byPrompt ? 'AND prompt_id = ' + prompt : ''}
+  return `SELECT tool_name, COUNT(*) AS n FROM tool_calls WHERE project_id = ${project} AND session_id = ${session} ${byPrompt ? 'AND prompt_id = ' + prompt + ' AND ' + hookPlacementSql({ project: 'tool_calls.project_id', session: 'tool_calls.session_id', prompt: 'tool_calls.prompt_id' }) : ''}
     GROUP BY +tool_name ORDER BY n DESC, tool_name ASC`;
 }
 
 
-const SUBAGENT_CONTEXT_PREFIX = 'cortex:';
-
-/** Sub-agent preamble attribution is computed once for a session, using retained identities. A session's start block is the session's, read with its other session-level records (`read/children.ts`). */
+/** Sub-agent preambles use the parent hint carried by their canonical start event. */
 export async function sessionTurnContexts(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<Record<string, TurnContext>> {
-  const [prompts, receipts, agents] = await Promise.all([
-    db.prepare('SELECT prompt_id, thread_id FROM prompt_batches WHERE project_id = ? AND session_id = ? ORDER BY created_at, prompt_id')
-      .bind(scope.projectId, sessionId).all<{ prompt_id: string; thread_id: string | null }>(),
-    db.prepare("SELECT kind FROM session_injections WHERE project_id = ? AND session_id = ? AND kind LIKE 'cortex:%'")
-      .bind(scope.projectId, sessionId).all<{ kind: string }>(),
-    db.prepare("SELECT json_extract(payload, '$.subagentId') AS agent, json_extract(payload, '$.parentPromptId') AS parent FROM events WHERE project_id = ? AND session_id = ? AND kind = 'subagent.start'")
-      .bind(scope.projectId, sessionId).all<{ agent: string; parent: string }>(),
-  ]);
-  const contexts: Record<string, TurnContext> = {};
-  const firstByThread = new Map<string, string>();
-  for (const p of prompts.results) if (p.thread_id !== null && !firstByThread.has(p.thread_id)) firstByThread.set(p.thread_id, p.prompt_id);
-  const parents = new Map(agents.results.map(a => [a.agent, a.parent]));
-  const add = (id: string): TurnContext => contexts[id] ??= { subagents: 0 };
-  for (const receipt of receipts.results) {
-    const id = receipt.kind.slice(SUBAGENT_CONTEXT_PREFIX.length);
-    const prompt = firstByThread.get(id) ?? firstByThread.get(await uuidv5('thread', id)) ?? parents.get(await uuidv5('subagent', sessionId, id));
-    if (prompt !== undefined && prompts.results.some(p => p.prompt_id === prompt)) add(prompt).subagents++;
-  }
-  return contexts;
+  const contexts = await sessionContextHints(db, scope, sessionId);
+  const { results } = await db.prepare(`SELECT r.placement_hint AS prompt_id, COUNT(*) AS n FROM (${contexts.sql}) r
+    WHERE r.project_id = ? AND r.session_id = ? AND r.kind LIKE 'cortex:%'
+      AND ${hookPlacementSql({ project: 'r.project_id', session: 'r.session_id', prompt: 'r.placement_hint' })}
+    GROUP BY r.placement_hint`).bind(...contexts.params, scope.projectId, sessionId).all<{ prompt_id: string; n: number }>();
+  return Object.fromEntries(results.map(row => [row.prompt_id, { subagents: row.n }]));
 }
 
 

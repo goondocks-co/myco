@@ -32,6 +32,7 @@ const OUTCOME_TITLE = 'Flaky test port collision fixed';
 const PLAN_SESSION_TITLE = 'Search box height made uniform on list pages';
 /** The live session is untitled; it is headed by the first thing the person typed. */
 const LIVE_HEADING = 'Run the canopy parity scenarios on both targets';
+const TURN_READ_DELAY_MS = 250;
 
 /** The fixture's first project: the one Myco's runs and the live session belong to. */
 function fixtureProject(): { projectId: string; name: string } {
@@ -88,10 +89,10 @@ async function openTable(page: Page, viewport: ViewportName): Promise<void> {
   await expect(page).toHaveURL(/\/sessions$/);
 }
 
-/** Opens the outcome session from the table, the way a reader does. */
-async function openOutcomeSession(page: Page): Promise<void> {
-  await page.locator('[data-table="Sessions"]').getByRole('link', { name: OUTCOME_TITLE }).click();
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText(OUTCOME_TITLE);
+/** Opens a session from the table and waits for its visible conversation. */
+async function openSession(page: Page, title = OUTCOME_TITLE): Promise<void> {
+  await page.locator('[data-table="Sessions"]').getByRole('link', { name: title }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(title);
   await settled(page);
 }
 
@@ -130,7 +131,12 @@ async function expectReadingPage(page: Page, viewport: ViewportName, role: 'admi
   await expect(page.getByRole('list', { name: 'Conversation' }).getByRole('listitem').first()).toBeVisible();
   const conversation = page.getByRole('list', { name: 'Conversation', exact: true });
   await expect(page.locator('[data-session-context]').getByText('Myco sent the session start block')).toBeVisible();
-  await expect(conversation.getByText('Myco prepared 1 sub-agent preamble')).toBeVisible();
+  await expect(conversation.getByText('Myco prepared 1 sub-agent preamble')).toHaveCount(0);
+  const unplacedToggle = page.getByRole('button', { name: 'Not placed on a turn', exact: true });
+  await unplacedToggle.click();
+  const unplaced = page.getByRole('region', { name: 'Not placed on a turn', exact: true });
+  await expect(unplaced.getByText('Context for a sub-agent', { exact: true })).toBeVisible();
+  await unplacedToggle.click();
   await expect(conversation.getByText('Sub-agent tokens not recorded')).toBeVisible();
   await expect(conversation).not.toContainText('<subagent_notification>');
   await expect(conversation.getByText('This test fails one run in twenty', { exact: true })).toBeVisible();
@@ -176,7 +182,7 @@ test.describe('Sessions', () => {
       const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode, cookie: screensEnv(cookie) });
       try {
         await watch.navigate(() => openTable(page, viewport));
-        await watch.navigate(() => openOutcomeSession(page));
+        await watch.navigate(() => openSession(page));
         // The reading page is a link of its own: loaded directly, it reads the same.
         await page.reload();
         await expect(page.getByRole('heading', { level: 1 })).toHaveText(OUTCOME_TITLE);
@@ -269,7 +275,7 @@ test.describe('Sessions', () => {
       const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode: 'light', cookie: screensEnv('ownerCookie') });
       try {
         await watch.navigate(() => openTable(page, viewport));
-        await watch.navigate(() => openOutcomeSession(page));
+        await watch.navigate(() => openSession(page));
         const tabs = page.getByRole('tablist', { name: 'What the session holds' });
         await expect(tabs.getByRole('tab')).toHaveText(['Conversation', 'Agent activity', 'Outcomes', 'Spores', 'Plans', 'Lineage']);
 
@@ -317,9 +323,7 @@ test.describe('Sessions', () => {
           await page.goto(new URL('/sessions', page.url()).href);
           await expect(page.getByRole('heading', { level: 1, name: 'Sessions' })).toBeVisible();
         });
-        await page.locator('[data-table="Sessions"]').getByRole('link', { name: PLAN_SESSION_TITLE }).click();
-        await expect(page.getByRole('heading', { level: 1 })).toHaveText(PLAN_SESSION_TITLE);
-        await settled(page);
+        await openSession(page, PLAN_SESSION_TITLE);
         await tabs.getByRole('tab', { name: 'Plans' }).click();
         const plans = page.getByRole('list', { name: 'Plans' }).getByRole('listitem');
         await expect(plans).toHaveCount(1);
@@ -364,7 +368,7 @@ test.describe('Sessions', () => {
       };
       try {
         await watch.navigate(() => openTable(page, viewport));
-        await watch.navigate(() => openOutcomeSession(page));
+        await watch.navigate(() => openSession(page));
         const sessionUrl = page.url();
         const tabs = page.getByRole('tablist', { name: 'What the session holds' });
         await tabs.getByRole('tab', { name: 'Agent activity' }).click();
@@ -376,7 +380,7 @@ test.describe('Sessions', () => {
         await expect(events.filter({ hasText: 'Port allocation reviewed' })).toContainText('Child session');
         await expect(events.filter({ hasText: 'Tool reported a failure' })).toContainText('Failure');
         const legacy = events.filter({ hasText: 'Tool call did not succeed' });
-        await expect(legacy).toContainText('Reason not recorded · Not tied to a prompt');
+        await expect(legacy).toContainText('Reason not recorded · Not placed on a turn');
         await expect(legacy.getByRole('link')).toHaveCount(0);
         await expect(page.getByRole('searchbox')).toHaveCount(0);
         await capture('session-activity-failure');
@@ -385,7 +389,7 @@ test.describe('Sessions', () => {
         await page.getByRole('option', { name: 'No result captured', exact: true }).click();
         await expect(page).toHaveURL(/tab=activity&type=no_result$/);
         await expect(events).toHaveCount(2);
-        await expect(events.filter({ hasText: 'Read' })).toContainText('Not tied to a prompt');
+        await expect(events.filter({ hasText: 'Read' })).toContainText('Not placed on a turn');
         await expect(events.getByRole('link')).toHaveCount(0);
         await capture('session-activity-no-result');
 
@@ -417,7 +421,7 @@ test.describe('Sessions', () => {
         await expect(page).toHaveURL(/\?tab=plans$/);
 
         await page.goto(new URL('/sessions', page.url()).href);
-        await page.locator('[data-table="Sessions"]').getByRole('link', { name: 'Checkout form validation messages rewritten' }).click();
+        await openSession(page, 'Checkout form validation messages rewritten');
         await tabs.getByRole('tab', { name: 'Agent activity' }).click();
         await expect(page.getByText('No agent activity was recorded in this session.')).toBeVisible();
         await capture('session-activity-empty');
@@ -432,6 +436,11 @@ test.describe('Sessions', () => {
     test(`a session's lineage tab ${viewport}`, async ({ browser }) => {
       test.skip(!onFixture(), 'the sessions are the fixture’s');
       const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode: 'light', cookie: screensEnv('ownerCookie') });
+      await page.route(/\/sessions\/[^/]+\/turns\/[^/?]+$/, async route => {
+        const response = await route.fetch();
+        await new Promise(resolve => setTimeout(resolve, TURN_READ_DELAY_MS));
+        await route.fulfill({ response });
+      });
       const capture = async (name: string) => {
         await page.waitForLoadState('networkidle');
         await expectFits(page, viewport);
@@ -441,7 +450,7 @@ test.describe('Sessions', () => {
       };
       try {
         await watch.navigate(() => openTable(page, viewport));
-        await watch.navigate(() => openOutcomeSession(page));
+        await watch.navigate(() => openSession(page));
         const facts = page.locator('[data-facts]');
         await expect(facts).toContainText('A session not captured here');
         const tabs = page.getByRole('tablist', { name: 'What the session holds' });
@@ -470,7 +479,7 @@ test.describe('Sessions', () => {
         await expect(page.locator('[data-facts]').getByRole('link', { name: OUTCOME_TITLE })).toBeVisible();
 
         await page.goto(new URL('/sessions', page.url()).href);
-        await page.locator('[data-table="Sessions"]').getByRole('link', { name: 'Checkout form validation messages rewritten' }).click();
+        await openSession(page, 'Checkout form validation messages rewritten');
         await tabs.getByRole('tab', { name: 'Lineage' }).click();
         await expect(page.getByText('No parent or child sessions were recorded for this session.')).toBeVisible();
         await capture('session-lineage-empty');
@@ -490,13 +499,11 @@ test.describe('Sessions', () => {
           await page.goto(new URL('/sessions', page.url()).href);
           await expect(page.getByRole('heading', { level: 1, name: 'Sessions' })).toBeVisible();
         });
-        await page.locator('[data-table="Sessions"]').getByRole('link', { name: title }).click();
-        await expect(page.getByRole('heading', { level: 1 })).toHaveText(title);
-        await settled(page);
+        await openSession(page, title);
       };
       try {
         await watch.navigate(() => openTable(page, viewport));
-        await watch.navigate(() => openOutcomeSession(page));
+        await watch.navigate(() => openSession(page));
         const tabs = page.getByRole('tablist', { name: 'What the session holds' });
 
         // The commits it started and ended on, with the release check on the end commit it classified.
@@ -541,7 +548,7 @@ test.describe('Sessions', () => {
       const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode: 'light', cookie: screensEnv('ownerCookie') });
       try {
         await watch.navigate(() => openTable(page, viewport));
-        await watch.navigate(() => openOutcomeSession(page));
+        await watch.navigate(() => openSession(page));
         const box = page.getByRole('searchbox', { name: 'Search the conversation' });
         await expect(box).toBeVisible();
 
@@ -584,7 +591,7 @@ test.describe('Sessions', () => {
       const { context, page, watch } = await openPage(browser, { path: '/projects', viewport, mode: 'dark', cookie: screensEnv('ownerCookie') });
       try {
         await openTable(page, viewport);
-        await openOutcomeSession(page);
+        await openSession(page);
         await page.getByRole('button', { name: 'Session actions' }).click();
         const menu = page.getByRole('menu');
         await expect(menu.getByRole('menuitem')).toHaveText(['Write a new title', 'Delete session']);

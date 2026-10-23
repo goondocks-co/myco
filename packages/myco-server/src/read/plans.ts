@@ -196,13 +196,17 @@ async function selectPlans(
   return { rows, cursor: results.length > k.limit && last !== undefined ? encodeCursor(last.updatedAt, last.planKey) : null };
 }
 
+/** A plan's bounded metadata, including the content revision and source session. */
+export type ProjectPlanSummary = Pick<ProjectPlanRow, 'planKey' | 'title' | 'status' | 'sessionId'> & { contentHash: string | null };
+
 /** One plan inside the scope, or null — including when the key exists under another project. */
-export function getPlan(db: RelationalStore, scope: ReadScope, planKey: string, options: { summary: true }): Promise<Pick<ProjectPlanRow, 'planKey' | 'title' | 'status'> | null>;
+export function getPlan(db: RelationalStore, scope: ReadScope, planKey: string, options: { summary: true }): Promise<ProjectPlanSummary | null>;
 export function getPlan(db: RelationalStore, scope: ReadScope, planKey: string): Promise<ProjectPlanRow | null>;
-export async function getPlan(db: RelationalStore, scope: ReadScope, planKey: string, options: { summary?: boolean } = {}): Promise<Pick<ProjectPlanRow, 'planKey' | 'title' | 'status'> | ProjectPlanRow | null> {
-  const row = await db.prepare(`SELECT ${options.summary ? 'plan_key, title, status' : COLUMNS} FROM plans WHERE project_id = ? AND plan_key = ?`).bind(scope.projectId, planKey).first<Record<string, unknown>>();
+export async function getPlan(db: RelationalStore, scope: ReadScope, planKey: string, options: { summary?: boolean } = {}): Promise<ProjectPlanSummary | ProjectPlanRow | null> {
+  const row = await db.prepare(`SELECT ${options.summary ? 'plan_key, title, status, session_id, content_hash' : COLUMNS} FROM plans WHERE project_id = ? AND plan_key = ?`).bind(scope.projectId, planKey).first<Record<string, unknown>>();
   if (row === null) return null;
-  if (options.summary) return { planKey: row.plan_key as string, title: row.title as string | null, status: row.status as string };
+  if (options.summary) return { planKey: row.plan_key as string, title: row.title as string | null, status: row.status as string,
+    sessionId: row.session_id as string, contentHash: row.content_hash as string | null };
   const tags = await tagsOf(db, scope, [planKey]);
   return toPlan(row, tags.get(planKey) ?? []);
 }

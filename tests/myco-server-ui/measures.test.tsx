@@ -23,7 +23,9 @@ const PROJECTS = { projects: [{ projectId: 'x', name: 'Project X', createdAt: 0,
 const report = (over: Record<string, unknown> = {}) => ({
   windowDays: 30,
   since: 0,
-  contextPresent: { value: null, sampleSize: 0 },
+  promptsServed: 0,
+  deliveries: { placed: 0, unplaced: 0 },
+  servedShare: { value: null, sampleSize: 0 },
   sporeServeRate: { value: null, sampleSize: 0 },
   sessionStartPresent: { value: null, sampleSize: 0 },
   callsPerPrompt: { value: null, sampleSize: 0 },
@@ -134,7 +136,7 @@ describe('the measures on Health', () => {
   it('renders no measure without its sample, whatever the report holds', async () => {
     server(base({
       '/api/kpis?window=30': () => Response.json(report({
-        contextPresent: { value: 0.625, sampleSize: 8 },
+        servedShare: { value: 0.625, sampleSize: 8 },
         sporeServeRate: { value: 0.25, sampleSize: 8 },
         callsPerPrompt: { value: 1.5, sampleSize: 8 },
         callsPerPromptByHarness: [{ harness: 'claude-code', value: 1.5, sampleSize: 8, calls: 12 }],
@@ -156,10 +158,25 @@ describe('the measures on Health', () => {
     }
   });
 
+  it('names prompts served and where deliveries are shown separately from served share', async () => {
+    server(base({
+      '/api/kpis?window=30': () => Response.json(report({
+        promptsServed: 5, deliveries: { placed: 7, unplaced: 3 }, servedShare: { value: 0.625, sampleSize: 8 },
+      })),
+    }));
+    mount('/measures');
+    expect(await screen.findByText('Prompts served')).toBeTruthy();
+    expect(screen.getByText('Deliveries')).toBeTruthy();
+    expect(screen.getByText('Prompts in this window with spores or a plan reminder shown on their turn.')).toBeTruthy();
+    expect(screen.getByText('The share of prompts in this window with context shown on their turn.')).toBeTruthy();
+    expect(screen.getByText('7 shown on a turn · 3 not on a turn. Context deliveries in this window.')).toBeTruthy();
+    expect(new Map((await tiles()).map(t => [t.label, t])).get('Served share')!.value).toBe('63%');
+  });
+
   it('shows the measured figures and the sample each one stands on', async () => {
     server(base({
       '/api/kpis?window=30': () => Response.json(report({
-        contextPresent: { value: 0.625, sampleSize: 8 },
+        servedShare: { value: 0.625, sampleSize: 8 },
         sporeServeRate: { value: 0.25, sampleSize: 8 },
         callsPerPrompt: { value: 1.5, sampleSize: 8 },
         planReadsPerSession: { value: 0.5, sampleSize: 4 },
@@ -168,8 +185,8 @@ describe('the measures on Health', () => {
     }));
     mount('/measures');
     const byLabel = new Map((await tiles()).map((t) => [t.label, t]));
-    expect(byLabel.get('Prompts that received context')).toEqual({
-      label: 'Prompts that received context', value: '63%', sample: 'n = 8 prompts', sampleVisible: true, noSample: false,
+    expect(byLabel.get('Served share')).toEqual({
+      label: 'Served share', value: '63%', sample: 'n = 8 prompts', sampleVisible: true, noSample: false,
     });
     expect(byLabel.get('Time to first context')).toEqual({
       label: 'Time to first context', value: '1m 30s', sample: 'n = 1 machine', sampleVisible: true, noSample: false,
@@ -187,7 +204,7 @@ describe('the measures on Health', () => {
   });
 
   it('says no recall score was recorded rather than showing zero', async () => {
-    server(base({ '/api/kpis?window=30': () => Response.json(report({ contextPresent: { value: 1, sampleSize: 3 } })) }));
+    server(base({ '/api/kpis?window=30': () => Response.json(report({ servedShare: { value: 1, sampleSize: 3 } })) }));
     mount('/measures');
     const byLabel = new Map((await tiles()).map((t) => [t.label, t]));
     const recall = byLabel.get('Recall quality')!;
@@ -248,21 +265,21 @@ describe('the measures on Health', () => {
   it('carries the window in the URL and reads the server again for it', async () => {
     const { requested } = server(base({
       '/api/kpis?window=30': () => Response.json(report()),
-      '/api/kpis?window=7': () => Response.json(report({ windowDays: 7, contextPresent: { value: 1, sampleSize: 2 } })),
-      '/api/kpis?window=90': () => Response.json(report({ windowDays: 90, contextPresent: { value: 1, sampleSize: 9 } })),
+      '/api/kpis?window=7': () => Response.json(report({ windowDays: 7, servedShare: { value: 1, sampleSize: 2 } })),
+      '/api/kpis?window=90': () => Response.json(report({ windowDays: 90, servedShare: { value: 1, sampleSize: 9 } })),
     }));
     mount('/measures');
     await screen.findAllByTestId('measure-tile');
     await pick('Window', 'Last 7 days');
     await waitFor(() => expect(requested).toContain('/api/kpis?window=7'));
-    await waitFor(async () => expect(new Map((await tiles()).map((t) => [t.label, t])).get('Prompts that received context')!.sample).toBe('n = 2 prompts'));
+    await waitFor(async () => expect(new Map((await tiles()).map((t) => [t.label, t])).get('Served share')!.sample).toBe('n = 2 prompts'));
     cleanup();
 
     // A link carries its window: the old address with one lands on it.
-    const again = server(base({ '/api/kpis?window=90': () => Response.json(report({ windowDays: 90, contextPresent: { value: 1, sampleSize: 9 } })) }));
+    const again = server(base({ '/api/kpis?window=90': () => Response.json(report({ windowDays: 90, servedShare: { value: 1, sampleSize: 9 } })) }));
     mount('/measures?window=90');
     const byLabel = new Map((await tiles()).map((t) => [t.label, t]));
-    expect(byLabel.get('Prompts that received context')!.sample).toBe('n = 9 prompts');
+    expect(byLabel.get('Served share')!.sample).toBe('n = 9 prompts');
     expect(again.requested).toContain('/api/kpis?window=90');
     expect(again.requested).not.toContain('/api/kpis?window=30');
   });

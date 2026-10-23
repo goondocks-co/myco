@@ -22,6 +22,28 @@ const indexes = (sqlite: Database, t: string) => (sqlite.query(`PRAGMA index_lis
 const indexColumns = (sqlite: Database, i: string) => (sqlite.query(`PRAGMA index_info(${i})`).all() as { name: string }[]).map((c) => c.name);
 
 describe('server schema', () => {
+  it('adds empty receipt snapshots without rewriting retained receipt rows', () => {
+    const sqlite = new Database(':memory:');
+    try {
+      for (const step of SCHEMA_STEPS.filter(step => step.version < 97)) for (const sql of step.statements) sqlite.exec(sql);
+      sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('snapshots','Snapshots',1)");
+      sqlite.run("INSERT INTO spore_injections(project_id,session_id,id,prompt_id,prompt_hash,spore_ids,plan_ids,created_at) VALUES('snapshots','s','receipt','hint','hash','[]','[\"plan\"]',1)");
+      const before = sqlite.query('SELECT * FROM spore_injections').all();
+      const step = SCHEMA_STEPS.find(step => step.version === 97)!;
+      for (let repeat = 0; repeat < 2; repeat++) for (const sql of step.statements) sqlite.exec(sql);
+      expect(sqlite.query('SELECT * FROM injection_served_items').all()).toEqual([]);
+      expect(sqlite.query('SELECT * FROM spore_injections').all()).toEqual(before);
+      expect(columns(sqlite, 'injection_served_items').filter(column => column.pk > 0).map(column => column.name))
+        .toEqual(['project_id', 'receipt_id', 'kind', 'item_id']);
+      expect(indexes(sqlite, 'injection_served_items').map(index => index.name)).toEqual(['idx_injection_served_items_source_session']);
+      expect(indexColumns(sqlite, 'idx_injection_served_items_source_session')).toEqual(['project_id', 'session_id']);
+      expect((sqlite.query("PRAGMA index_list('injection_served_items')").all() as { name: string; partial: number }[])
+        .find(index => index.name === 'idx_injection_served_items_source_session')?.partial).toBe(1);
+      const plan = sqlite.query("EXPLAIN QUERY PLAN UPDATE injection_served_items SET title=NULL, content_hash=NULL, session_id=NULL, unavailable=1 WHERE project_id='snapshots' AND session_id='s'").all() as { detail: string }[];
+      expect(plan.map(row => row.detail).join(' ')).toContain('USING INDEX idx_injection_served_items_source_session');
+    } finally { sqlite.close(); }
+  });
+
   it('creates an empty served ledger with indexed authority and an immutable Deployment boundary', () => {
     const sqlite = new Database(':memory:');
     try {

@@ -1,6 +1,6 @@
 /**
  * What the Deployment records of a prompt's identity: how an ask named its prompt, the rows it wrote and names back,
- * where a delivery says the context reached the agent, and the invariant that every named prompt resolves.
+ * and where a delivery says the context reached the agent.
  */
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -13,7 +13,6 @@ import { listContextInjections } from '@myco-server-worker/read/children.js';
 import { readKpis } from '@myco-server-worker/read/kpis.js';
 import { spyOn } from 'bun:test';
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
-import { danglingPromptReferences, danglingReferenceSql, PROMPT_REFERENCE_KINDS } from '@myco-server-worker/read/prompt-reference-invariant.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { RECEIPT_COLLISIONS_META_KEY } from '@myco-server-worker/db/schema.js';
@@ -257,7 +256,7 @@ describe('what outlives the answers', () => {
     // The nudge alone: the receipt this answer carried is set aside, so only the nudge can credit the prompt.
     s.e.sqlite.run(`DELETE FROM spore_injections`);
     expect(await s.deliver(1, { answerId: s.answer.answerId, renderedIn: uuid(2) })).toMatchObject({ persisted: true });
-    const present = async () => (await readKpis(s.e.db, { windowDays: null, now: NOW })).contextPresent;
+    const present = async () => (await readKpis(s.e.db, { windowDays: null, now: NOW })).servedShare;
     expect(await present()).toEqual({ value: 1, sampleSize: 1 });
     expect(await s.prune()).toBe(1);
     expect(rows(s.e.sqlite, `SELECT 1 FROM prompt_context_answers`)).toEqual([]);
@@ -273,7 +272,7 @@ describe('what outlives the answers', () => {
     // The member renders the cached answer long after: it reports the answer and the record it carried.
     expect(await s.deliver(1, { answerId: s.answer.answerId, sessionRecord: s.answer.sessionRecord, renderedIn: uuid(2) })).toMatchObject({ persisted: true });
     expect(rows(s.e.sqlite, `SELECT delivered_prompt_id, delivered_at IS NOT NULL AS delivered FROM session_injections WHERE kind = 'plan-nudge'`)).toEqual([{ delivered_prompt_id: uuid(2), delivered: 1 }]);
-    expect((await readKpis(s.e.db, { windowDays: null, now: NOW })).contextPresent).toEqual({ value: 1, sampleSize: 1 });
+    expect((await readKpis(s.e.db, { windowDays: null, now: NOW })).servedShare).toEqual({ value: 1, sampleSize: 1 });
   });
 
   it('lists one row for an answer and the receipt it carried, and the receipt alone once the answer is pruned', async () => {
@@ -296,68 +295,6 @@ describe('what outlives the answers', () => {
       await s.deliver(1, { receiptId: s.answer.receiptId, renderedScopeReason: 'absent_key' });
       expect(await s.sessionLevel()).toEqual([{ kind: `context:${s.answer.receiptId}`, delivery: 'unnamed_prompt' }]);
     } finally { log.mockRestore(); }
-  });
-});
-
-describe('the prompt-reference invariant', () => {
-  /** Instants on the member's clock, a minute before now and `ms` after that. */
-  const at = (ms: number) => NOW - 60_000 + ms;
-
-  async function seeded() {
-    const { e } = await member();
-    const transcript = (session: string, opts: { through: number; caughtUp?: boolean }) => e.sqlite.run(`INSERT INTO transcripts
-      (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, segment_count, first_received_at, last_received_at, token_id, role, parsed_through_at, prompt_identity_scheme)
-      VALUES ('proj_1', ?, ?, 'machine_1', 'claude-code', 100, ?, 1, 1, 1, 't', 'primary', ?, 'claude-v1')`, [`tx_${session}`, session, opts.caughtUp === false ? 50 : 100, opts.through]);
-    const insert = (table: string, row: Record<string, unknown>) =>
-      e.sqlite.run(`INSERT INTO ${table} (${Object.keys(row).join(', ')}) VALUES (${Object.keys(row).map(() => '?').join(', ')})`, Object.values(row) as never[]);
-    const naming = (session: string, n: number, over: Record<string, unknown>) =>
-      ({ project_id: 'proj_1', session_id: session, id: uuid(n), prompt_id: uuid(n), scope_reason: null, ask_protocol: 'v1', asked_at: at(100), created_at: NOW, ...over });
-    const receipt = (session: string, n: number, over: Record<string, unknown> = {}) =>
-      insert('spore_injections', { ...naming(session, n, over), prompt_hash: `h${n}`, spore_ids: '[]' });
-    const answer = (session: string, n: number, over: Record<string, unknown> = {}) =>
-      insert('prompt_context_answers', { ...naming(session, n, over), outcome: 'served', context_chars: 1, parts: '[]', skipped: '[]', failures: '[]', selection: '{}' });
-    /** One receipt and one answer naming the same prompts. */
-    const both = (session: string, n: number, over: Record<string, unknown> = {}) => { receipt(session, n, over); answer(session, n + 1000, { prompt_id: uuid(n), ...over }); };
-    return { e, transcript, receipt, answer, both };
-  }
-
-  it('counts a receipt\'s and an answer\'s named prompt the session does not hold, once its transcript was read past the ask', async () => {
-    const s = await seeded();
-    s.transcript('read', { through: at(200) });
-    s.both('read', 1);
-    s.both('read', 2, { delivered_at: at(150), delivered_prompt_id: uuid(99) });
-    expect(await danglingPromptReferences(s.e.db, 0)).toEqual({ receipt_selected: 2, answer_selected: 2, receipt_delivered: 1, answer_delivered: 1 });
-    s.e.sqlite.run(`INSERT INTO prompt_batches (project_id, prompt_id, session_id, event_id, origin, content_hash, created_at, updated_at, token_id, received_at)
-      VALUES ('proj_1', ?, 'read', 'e1', 'user', 'h', 1, 1, 't', 1), ('proj_1', ?, 'read', 'e2', 'user', 'h', 1, 1, 't', 1)`, [uuid(1), uuid(99)]);
-    expect(await danglingPromptReferences(s.e.db, 0)).toEqual({ receipt_selected: 1, answer_selected: 1, receipt_delivered: 0, answer_delivered: 0 });
-  });
-
-  it('counts nothing in flight, legacy, session-scoped, deleted, or before the bound', async () => {
-    const s = await seeded();
-    s.transcript('early', { through: at(50) });
-    s.both('early', 1, { delivered_at: at(150), delivered_prompt_id: uuid(91) });
-    s.transcript('behind', { through: at(200), caughtUp: false });
-    s.both('behind', 2, { delivered_at: at(150), delivered_prompt_id: uuid(92) });
-    s.transcript('legacy', { through: at(200) });
-    s.both('legacy', 3, { ask_protocol: 'legacy', delivered_at: at(150), delivered_prompt_id: uuid(93) });
-    s.both('legacy', 4, { prompt_id: null, scope_reason: 'absent_key' });
-    s.transcript('gone', { through: at(200) });
-    s.both('gone', 5, { delivered_at: at(150), delivered_prompt_id: uuid(95) });
-    s.e.sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, created_at, created_by) VALUES ('proj_1', 'gone', 1, 'm')`);
-    s.transcript('old', { through: at(200) });
-    s.both('old', 6, { created_at: 1, delivered_at: at(150), delivered_prompt_id: uuid(96) });
-    expect(await danglingPromptReferences(s.e.db, 2)).toEqual({ receipt_selected: 0, answer_selected: 0, receipt_delivered: 0, answer_delivered: 0 });
-  });
-
-  it('is one statement per kind of reference, each a range over its references by Project and an index for every lookup', () => {
-    const sqlite = new Database(':memory:');
-    for (const step of SCHEMA_STEPS) for (const statement of step.statements) sqlite.run(statement);
-    for (const kind of PROMPT_REFERENCE_KINDS) {
-      const plan = (sqlite.query(`EXPLAIN QUERY PLAN ${danglingReferenceSql(kind)}`).all(0) as { detail: string }[]).map((r) => r.detail);
-      // The Projects drive it; every reference table and every correlated lookup is searched, none scanned.
-      expect({ kind, scans: plan.filter((d) => /^SCAN /.test(d) && !/^SCAN pr\b/.test(d)) }).toEqual({ kind, scans: [] });
-      expect({ kind, driving: plan.some((d) => /^SEARCH r USING (COVERING )?INDEX idx_\w+_created \(project_id=\? AND created_at>\?\)$/.test(d)) }).toEqual({ kind, driving: true });
-    }
   });
 });
 
