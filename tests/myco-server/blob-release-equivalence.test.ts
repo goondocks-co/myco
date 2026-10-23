@@ -9,6 +9,7 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { sharedChecks } from '@myco-server-worker/ingest/projections.js';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
+import { seedViewInstance } from './helpers/view-instances.js';
 
 const P = 'proj_release';
 const OTHER = 'proj_other';
@@ -66,7 +67,7 @@ const holderInserts = [
     VALUES(?,'tool-input','proof',?,'event','hash','session','digest',1,1,1,'${GENERATION}')`,
 ] as const;
 
-async function seed(db: RelationalStore): Promise<void> {
+async function seed(db: RelationalStore): Promise<string[]> {
   for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
   await db.batch([
     db.prepare(`INSERT INTO projects(project_id,name,created_at) VALUES(?,'release',1),(?,'other',1)`).bind(P, OTHER),
@@ -93,7 +94,9 @@ async function seed(db: RelationalStore): Promise<void> {
     db.prepare(`INSERT INTO object_releases(physical,kind,created_at) VALUES(?,'blob',0)`).bind(blobObjectKey(P, key(16), GENERATION)),
     db.prepare(`INSERT INTO recovery_holds(token,acquired_at,holder) VALUES('producer',1,'producer'),('operator',1,'operator')`),
   ]);
-  expect(holderInserts).toHaveLength(BLOB_REFERENCES.length);
+  const viewKeys = await seedViewInstance(db, { projectId: P, sessionId: 'session', instanceId: 'release-view', state: 'retired' });
+  expect(holderInserts.length + viewKeys.length).toBe(BLOB_REFERENCES.length);
+  return viewKeys;
 }
 
 async function snapshot(db: RelationalStore) {
@@ -104,9 +107,10 @@ async function snapshot(db: RelationalStore) {
   };
 }
 
-async function exercise(db: RelationalStore, decision: typeof blobDecisionStatements) {
+async function exercise(db: RelationalStore, decision: typeof blobDecisionStatements, viewKeys: string[]) {
   const pairs = [...Array.from({ length: holderInserts.length + 3 }, (_, n) => ({ projectId: P, key: key(n) })),
-    { projectId: OTHER, key: key(13) }, { projectId: P, key: key(13) }, { projectId: P, key: key(100) }];
+    { projectId: OTHER, key: key(13) }, { projectId: P, key: key(13) }, { projectId: P, key: key(100) },
+    ...viewKeys.map(key => ({ projectId: P, key }))];
   const page = JSON.stringify(pairs.map(row => ({ p: row.projectId, k: row.key })));
   await db.prepare(`DELETE FROM attachments WHERE project_id=? AND attachment_id='shared'`).bind(P).run();
   await db.batch(recordBlobCandidates(db, pairs, 2));
@@ -116,7 +120,8 @@ async function exercise(db: RelationalStore, decision: typeof blobDecisionStatem
     outcomes.push({ result: await db.batch(decision(db, page, 4)), state: await snapshot(db) });
   }
   expect(outcomes[0]!.state).toEqual(outcomes[1]!.state);
-  expect(outcomes[2]!.state.blobs).toHaveLength(holderInserts.length + 3);
+  expect(outcomes[2]!.state.blobs).toHaveLength(holderInserts.length + viewKeys.length + 3);
+  expect(outcomes[2]!.state.blobs.filter(row => viewKeys.includes(String(row.key)))).toHaveLength(viewKeys.length);
   expect(outcomes[2]!.state.candidates).toEqual([]);
   expect(outcomes[2]!.state.journal.map(row => row.physical)).toEqual([
     blobObjectKey(P, key(0), OLD_GENERATION), blobObjectKey(P, key(13), GENERATION), blobObjectKey(P, key(14), GENERATION),
@@ -143,9 +148,9 @@ describe('blob release decision contract on native SQLite and local D1', () => {
     try {
       const stores = mf === null ? [sqliteRelationalStore(oldNative), sqliteRelationalStore(newNative)]
         : [await mf.getD1Database('OLD') as unknown as RelationalStore, await mf.getD1Database('NEW') as unknown as RelationalStore];
-      for (const store of stores) await seed(store);
-      const baseline = await exercise(stores[0]!, legacyDecision);
-      expect(await exercise(stores[1]!, blobDecisionStatements)).toEqual(baseline);
+      const viewKeys = await Promise.all(stores.map(seed));
+      const baseline = await exercise(stores[0]!, legacyDecision, viewKeys[0]!);
+      expect(await exercise(stores[1]!, blobDecisionStatements, viewKeys[1]!)).toEqual(baseline);
     } finally { oldNative.close(); newNative.close(); await mf?.dispose(); }
   }, 120_000);
 
