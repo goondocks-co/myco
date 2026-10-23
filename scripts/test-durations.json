@@ -1,5 +1,7 @@
 {
   "sources": [
+    "local: #1924 PR4a correction2, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0; npm test -- tests/meta/schema-step-ownership.test.ts tests/myco-server/view-store-schema.test.ts tests/myco-server/view-bundle-references.test.ts tests/myco-server/archive-bundle-work.test.ts measured6140ms test wall (6167ms runner group): schema ownership1ms, native/local-D1 bundle1238ms, schema contracts about3700ms, archive work about1100ms. Weights1000ms/3500ms/10000ms/3000ms cover twice per-file duration plus startup. Inert and backup parity selection measured59150ms including both target boots; existing scenario weights retained. Temporary uncommitted bare-stamp99 used for verification.",
+    "local: #1924 PR4a step100, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0; npm test -- tests/myco-server/view-store-schema.test.ts tests/myco-server/view-store-maintenance.test.ts measured6437ms wall including both native/local-D1 contracts. File weights8000ms/10000ms cover twice measured per-file tests plus startup. npm run test:parity -- --test-name-pattern \"view store: empty\" measured21294ms including both boots, native194ms and local-D1/workerd364ms scenario execution; 45000ms weight covers twice wall plus startup. Final registered-blob fixtures measured schema2468ms and maintenance3211ms summed test durations in a14595ms five-file run including migrations and blob-release contracts. Snapshot-version regression selection measured15691ms wall; backup-cli3304ms and recovery-bundle6247ms summed test durations, reweighted7000ms/14000ms. Verification used a temporary uncommitted bare-stamp99 before step100.",
     "local: #1924 PR3 correction3, pinned Bun1.4.0 darwin-arm64 with worktree SQLite3.53.0; npm test -- tests/myco-server/extraction-history-budget.test.ts measured38680ms for three restored tests (deep/floor with and without bodies plus native/local-D1 active traversals at limits1/3). Its90000ms weight covers twice wall plus startup; the history scale fixture runs in its own process to keep the shared server group below its225000ms budget. Body-aware scale file measured67350ms, steady-state leg33326ms; retained225000ms scale weight. No new parity scenario; existing extraction-coverage45000ms and session-citation weights retained.",
     "local: #1924 PR3 correction2, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0; production-writer batches and 7k/14k scale measured110441ms (225000ms weight covers twice wall plus startup), the changed steady-state test alone measured61580ms. New deep/floor 400/1200-session tests measured18447ms and17407ms in a37006ms focused run (80000ms file weight covers twice wall plus startup). Extended extraction-coverage native/local-D1 parity measured18211ms including both boots; existing45000ms scenario weight retained.",
     "local: #1924 PR3 correction1, npm test on pinned Bun1.4.0 darwin-arm64 with worktree SQLite3.53.0; coverage behavior measured673ms including runner (1500ms weight), native/local-D1 scale and 7k/21k steady-state production SQL plans measured197353ms (210000ms weight; standalone process retains the 225000ms CI group ceiling). Selected extraction/session-citation/latest-D1 parity measured63858ms including both boots; existing extraction45000ms and session-citation120000ms per-scenario weights retained.",
@@ -396,7 +398,7 @@
     "tests/myco-server/api.test.ts": 228,
     "tests/myco-server/archival.test.ts": 81,
     "tests/myco-server/archive-backup.test.ts": 2327,
-    "tests/myco-server/archive-bundle-work.test.ts": 721,
+    "tests/myco-server/archive-bundle-work.test.ts": 3000,
     "tests/myco-server/archive-preparation.test.ts": 201,
     "tests/myco-server/attention.test.ts": 149,
     "tests/myco-server/auth-setup-refusals.test.ts": 55,
@@ -706,7 +708,7 @@
     "tests/scripts/source-install.test.ts": 30000,
     "tests/scripts/test-shards.test.ts": 2492,
     "tests/scripts/test-temp-root.test.ts": 132,
-    "tests/server/backup-cli.test.ts": 2398,
+    "tests/server/backup-cli.test.ts": 7000,
     "tests/server/cloudflare-backup-streaming.test.ts": 89118,
     "tests/server/cloudflare-backup.test.ts": 11034,
     "tests/server/cloudflare-command-dir.test.ts": 166,
@@ -739,7 +741,7 @@
     "tests/server/local-volume.test.ts": 170,
     "tests/server/native-vec0.test.ts": 98,
     "tests/server/recovery-bundle-inventory.test.ts": 1004,
-    "tests/server/recovery-bundle.test.ts": 8895,
+    "tests/server/recovery-bundle.test.ts": 14000,
     "tests/server/recovery-configuration-record.test.ts": 317,
     "tests/server/recovery-hold-destination.test.ts": 2025,
     "tests/server/recovery-materialize-boundaries.test.ts": 5250,
@@ -872,7 +874,11 @@
     "tests/myco-server/extraction-coverage.test.ts": 1500,
     "tests/myco-server/extraction-coverage-budget.test.ts": 225000,
     "tests/myco-server/extraction-history-budget.test.ts": 90000,
-    "tests/myco-server/session-artifacts.test.ts": 1500
+    "tests/myco-server/session-artifacts.test.ts": 1500,
+    "tests/myco-server/view-store-schema.test.ts": 10000,
+    "tests/myco-server/view-store-maintenance.test.ts": 10000,
+    "tests/meta/schema-step-ownership.test.ts": 1000,
+    "tests/myco-server/view-bundle-references.test.ts": 3500
   },
   "parity": {
     "D1: latest migration upgrades seeded previous schema to expected state": 45000,
@@ -964,6 +970,7 @@
     "hook placement: session and Project hints, delivery, and unplaced hook records": 120000,
     "KPI deliveries: delivery counts, served prompts and retired attention agree on both stores": 120000,
     "extraction coverage: served item acks, late material and counters survive run deletion": 45000,
-    "session artifacts: declared report, idempotent re-report, conflict refusal, deletion, index-backed page read": 15000
+    "session artifacts: declared report, idempotent re-report, conflict refusal, deletion, index-backed page read": 15000,
+    "view store: empty instance storage preserves captured turns and additive backup": 45000
   }
 }

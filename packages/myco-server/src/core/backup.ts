@@ -1,3 +1,4 @@
+import { VIEW_FACT_TABLES, VIEW_FTS_TABLES, VIEW_REGENERABLE_TABLES } from '../db/view-tables.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
 import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
@@ -21,7 +22,7 @@ import { publishBackupObject, referencedBlobsOf, registeredBlobsGuard, releaseBa
   recordBlobCandidates, releaseBlobs } from './object-release.js';
 import { currentRetentionVictims, type BackupRetentionPolicy } from './backup-retention.js';
 export { retentionVictims } from './backup-retention.js';
-import type { BlobRef } from './blob-references.js';
+import { BUNDLE_REFERENCES, bundleHeld, type BlobRef } from './blob-references.js';
 import { assertArchivedContentClosure, assertBundleObjectClosure, assertCaptureClosure, relationalSnapshot, RelationalSnapshotTooLargeError } from './relational-snapshot.js';
 import { verifyBundleArtifact, type BundleEntryIdentity } from './archive-bundle.js';
 import { restoreArchivedEvent } from './event-content.js';
@@ -61,7 +62,7 @@ export const BACKUP_TABLES: readonly string[] = [
   'agent_tasks', 'agent_runs', 'run_served_material', 'extraction_acks', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners',
   'injection_served_items', 'canopy_maps', 'knowledge_release_state', 'external_grants',
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',
-  'knowledge_git_provenance', 'session_artifacts',
+  'knowledge_git_provenance', 'session_artifacts', ...VIEW_FACT_TABLES,
 ];
 
 /** Artifact tables whose data class is retired by a numbered schema step. */
@@ -91,11 +92,12 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * spends on another model only once an admin there starts the switch again.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
+  ...VIEW_REGENERABLE_TABLES,
   'search_blob_queue', 'search_blob_chunks',
   'session_read_facts', 'project_session_counts',
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_work', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
-  ...['prompt_batches', 'responses', 'spores', 'plans', 'sessions', 'search_blob_chunks']
-    .flatMap((table) => ['', '_data', '_idx', '_docsize', '_config'].map((suffix) => `${table}_fts${suffix}`)),
+  ...[...['prompt_batches', 'responses', 'spores', 'plans', 'sessions', 'search_blob_chunks'].map(table => `${table}_fts`), ...VIEW_FTS_TABLES]
+    .flatMap(table => ['', '_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
   'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
   'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
   'backup_restore_progress', 'recovery_forget_commands',
@@ -908,9 +910,8 @@ export async function restoreArtifact(
     outcome.tables[table] = { rows: artifactRowCount, inserted };
   }
   for (const bundle of insertedBundles) {
-    const unused = `NOT EXISTS (SELECT 1 FROM events e WHERE e.project_id=? AND e.bundle_id=?)
-      AND NOT EXISTS (SELECT 1 FROM tool_calls t WHERE t.project_id=? AND t.input_bundle_id=?)`;
-    const guardValues = [bundle.projectId,bundle.id,bundle.projectId,bundle.id];
+    const unused = `NOT (${bundleHeld('?', '?')})`;
+    const guardValues = BUNDLE_REFERENCES.flatMap(() => [bundle.projectId,bundle.id]);
     const pairs = [{projectId:bundle.projectId,key:bundle.archiveKey},{projectId:bundle.projectId,key:bundle.receiptKey}];
     const results = await db.batch([
       db.prepare(`DELETE FROM registered_content_proofs WHERE project_id=?

@@ -15,6 +15,7 @@ import { SERVED_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
 import { SERVER_JOBS, TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
 import { MACHINE_LEAVES } from '@myco-server-worker/core/machine-settings.js';
+import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 
 const { DEFAULT_APPEARANCE: viewerAppearance } = await import(path.join(REPO_ROOT, 'packages/myco-server/ui/src/lib/appearance-values.ts'));
 
@@ -105,20 +106,23 @@ function schemaDirs(): string[] {
 function dataClasses(): string[] {
   const created = new Set<string>();
   const dropped = new Set<string>();
+  const collect = (src: string): void => {
+    for (const m of src.matchAll(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${TABLE_NAME}`, 'g'))) created.add(m[1]);
+    for (const m of src.matchAll(new RegExp(`DROP TABLE (?:IF EXISTS )?${TABLE_NAME}`, 'g'))) {
+      if (!new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${m[1]}\\b`).test(src.slice(m.index))) dropped.add(m[1]);
+    }
+  };
   const walk = (dir: string): void => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full);
       else if (entry.name.endsWith('.ts') && entry.name !== MIGRATION_CHAIN) {
-        const src = read(full);
-        for (const m of src.matchAll(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${TABLE_NAME}`, 'g'))) created.add(m[1]);
-        for (const m of src.matchAll(new RegExp(`DROP TABLE (?:IF EXISTS )?${TABLE_NAME}`, 'g'))) {
-          if (!new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${m[1]}\\b`).test(src.slice(m.index))) dropped.add(m[1]);
-        }
+        collect(read(full));
       }
     }
   };
   for (const dir of schemaDirs()) walk(dir);
+  collect(SCHEMA_DDL.join('\n'));
   const frozen = read(path.join(REPO_ROOT, 'tests/fixtures/legacy/vault-v76.sql'));
   for (const m of frozen.matchAll(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${TABLE_NAME}`, 'g'))) created.add(m[1]);
   return [...created].filter((t) => !dropped.has(t)).sort();

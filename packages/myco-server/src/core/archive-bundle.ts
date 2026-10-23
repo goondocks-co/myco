@@ -1,6 +1,7 @@
 import { SHA256 } from '@stablelib/sha256';
 import type { ContentStore, PreparedStatement, RelationalStore } from './adapters.js';
 import { blobObjectKey } from './blob-objects.js';
+import { bundleHeld } from './blob-references.js';
 import { readStoredObject } from './stored-object.js';
 import { sha256HexOf, utf8 } from '../hash.js';
 import { contentAssertion, prepareDerivedContent, prepareDerivedStream, verifiedContentSql,
@@ -221,7 +222,8 @@ export function bundleArchiveStatements(db:RelationalStore,bundle:PreparedBundle
         AND EXISTS(SELECT 1 FROM tool_calls t WHERE t.project_id=a.project_id
           AND t.tool_call_id=json_extract(j.value,'$.resourceId') AND t.input_bundle_id IS NOT a.id)
         AND NOT EXISTS(SELECT 1 FROM events e WHERE e.project_id=a.project_id
-          AND e.event_id=a.event_id AND e.bundle_id=a.id))`)
+          AND e.event_id=a.event_id AND e.bundle_id=a.id)
+        AND NOT (${bundleHeld('a.project_id','a.id', { eventId: 'a.event_id', toolCallId: "json_extract(j.value,'$.resourceId')" })}))`)
     .bind(old,bundle.source.projectId));
   for(const kind of ['bundle','receipt'] as const){
     const sourceId=kind==='bundle'?"json_extract(j.value,'$.key')":"'bundle:'||json_extract(j.value,'$.key')";

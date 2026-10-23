@@ -13,6 +13,9 @@ import { sqliteD1 } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { markPromptProcessed } from './helpers/extraction.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
+import { VIEW_SESSION_TABLES } from '@myco-server-worker/db/view-tables.js';
+import { captureViewSession } from './helpers/view-stores.js';
+import { seedViewInstance, seedViewState } from './helpers/view-instances.js';
 
 const MIGRATIONS = fileURLToPath(new URL('../../packages/myco-server/migrations/', import.meta.url));
 
@@ -110,6 +113,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0097_v97.sql': 'aeedee8552c8108153fd5a578b1bd287104a7f6355da55b0fdf6282a7dde960f',
   '0098_v98.sql': '64e6ef29947424c0ab00b607773596989a42cc6ad78da1334e172dc8b526eace',
   '0099_v99.sql': 'e0cb58c903bc05ce29293b2babe6c02df7419ffb42c97c966654c8f38fb6b6a9',
+  '0100_v100.sql': 'ac5a2268d4091da1a071e1f752bbbb11bb13e996a0f5156ce041db65fc91cc18',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -725,6 +729,10 @@ describe('versioned schema steps', () => {
       })).toMatchObject({ persisted: true, projected: true });
       expect(await markPromptProcessed(source.db, { projectId: 'proj_1' }, promptId)).toBe(true);
       writerRows.set('extraction_acks', source.sqlite.query('SELECT * FROM extraction_acks').get() as Record<string, unknown>);
+      await captureViewSession(source.db, 'proj_1', 'grammar-session');
+      await seedViewInstance(source.db, { projectId: 'proj_1', sessionId: 'grammar-session', instanceId: 'grammar-view', state: 'live' });
+      await seedViewState(source.db, 'proj_1', 'grammar-session', 'grammar-view');
+      for (const table of VIEW_SESSION_TABLES) writerRows.set(table, source.sqlite.query(`SELECT * FROM ${table}`).get() as Record<string, unknown>);
     } finally { source.sqlite.close(); }
     const sqlite = fresh();
     for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
@@ -785,7 +793,8 @@ describe('versioned schema steps', () => {
       'extraction_acks', 'injection_served_items', 'knowledge_git_provenance', 'knowledge_release_state', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
       'prompt_batches', 'prompt_context_answers', 'prompt_identity_conflicts', 'prompt_key_owners', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events', 'responses', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_injections', 'session_read_facts', 'session_tombstones',
       'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'tags', 'tool_calls', 'transcript_parser_state_chunks', 'transcript_segments', 'transcripts',
-    ]);
+      ...VIEW_SESSION_TABLES,
+    ].sort());
   });
 });
 
