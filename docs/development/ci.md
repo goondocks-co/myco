@@ -1,6 +1,6 @@
 # Pull request checks
 
-The CI workflow runs lint, the native build, five Node test shards, two DOM test
+The CI workflow runs lint, the native build, six Node test shards, two DOM test
 shards, seven parity shards, UI screen checks, hook startup checks, container checks,
 and Windows contracts independently. Darwin release-recipe build and verification
 jobs run when build or release inputs change.
@@ -15,7 +15,7 @@ and Cloudflare targets and runs its selected scenarios against both.
 Run a shard locally:
 
 ```sh
-MYCO_TEST_KIND=node MYCO_TEST_SHARD=1/5 npm test
+MYCO_TEST_KIND=node MYCO_TEST_SHARD=1/6 npm test
 MYCO_TEST_KIND=dom MYCO_TEST_SHARD=1/2 npm test
 MYCO_PARITY_SHARD=1/7 npm run test:parity
 ```
@@ -25,7 +25,7 @@ printed by `MYCO_RUNNER_DRY_RUN=1 npm test`. `MYCO_TEST_GROUP` filters after sha
 assignment; an unknown label or a group assigned elsewhere is an error.
 
 ```sh
-MYCO_TEST_KIND=node MYCO_TEST_SHARD=2/5 \
+MYCO_TEST_KIND=node MYCO_TEST_SHARD=2/6 \
   MYCO_TEST_GROUP='node env shared tests-myco-server-3' \
   MYCO_RUNNER_GROUP_BUDGET_MS=3600000 npm test -- --rerun-each 20
 ```
