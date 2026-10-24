@@ -301,6 +301,7 @@ const NO_ISOLATE_NODE_TARGETS = [
 const SOLO_NODE_FILES = [
   // Scale fixtures reserve one process's duration budget.
   'tests/myco-server/extraction-coverage-budget.test.ts',
+  'tests/myco-server/extraction-coverage-steady-state-budget.test.ts',
   'tests/myco-server/extraction-history-budget.test.ts',
   'tests/agent/phase-loop.test.ts',
   'tests/agent/tools-dry-run.test.ts',
@@ -614,37 +615,16 @@ function noIsolateArgsForFiles(files, options) {
   ];
 }
 
-// Shared targets too slow to be one group: each runs as this many shared
-// processes over contiguous runs of its files, balanced by measured duration,
-// so no single group bounds a CI shard.
-const SPLIT_NO_ISOLATE_TARGETS = new Map([
-  ['tests/myco-server', 3],
+// Shared targets run contiguous file groups within the measured duration budget.
+const SPLIT_NO_ISOLATE_TARGETS = new Set([
+  'tests/myco-server',
 ]);
-
-/** `files`, in order, cut into at most `parts` contiguous runs of about equal measured duration. */
-function splitByDuration(files, parts) {
-  const weight = (file) => durations.files[file] ?? DEFAULT_FILE_DURATION_MS;
-  const total = files.reduce((sum, file) => sum + weight(file), 0);
-  const runs = [];
-  let current = [];
-  let seen = 0;
-  files.forEach((file, index) => {
-    current.push(file);
-    seen += weight(file);
-    const partsLeft = parts - runs.length - 1;
-    if (partsLeft > 0 && seen >= (total * (runs.length + 1)) / parts && files.length - index - 1 >= partsLeft) {
-      runs.push(current);
-      current = [];
-    }
-  });
-  if (current.length > 0) runs.push(current);
-  return runs;
-}
 
 function noIsolatePhasesForTarget(target, files, options) {
   const covered = sharedTargetFiles(target, files);
-  const parts = SPLIT_NO_ISOLATE_TARGETS.get(target) ?? 1;
-  const runs = parts > 1 ? splitByDuration(covered, parts) : [covered];
+  const runs = SPLIT_NO_ISOLATE_TARGETS.has(target)
+    ? groupByDuration(covered, isolatedNodeBudgetMs, file => durations.files[file] ?? DEFAULT_FILE_DURATION_MS)
+    : [covered];
   return runs.map((run, index) => ({
     label: runs.length === 1 ? `node env shared ${bundleSlug(target)}` : `node env shared ${bundleSlug(target)}-${index + 1}`,
     args: noIsolateArgsForFiles(run, options),

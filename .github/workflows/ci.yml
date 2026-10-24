@@ -76,7 +76,8 @@ jobs:
   hook-startup:
     name: hook startup (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # Windows basis: 2x 46s build + >=1478s cancelled apt + 120s setup; 30m all legs is provisional.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -99,7 +100,12 @@ jobs:
           npm install "sqlite-vec-${TARGET}@${SQLITE_VEC_VERSION}" "@vscode/ripgrep-${RG_PLATFORM}@${RG_VERSION}" --no-save --ignore-scripts --force
       - name: Install the mingw toolchain
         if: matrix.target == 'windows-x64'
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64
+        uses: ./.github/actions/apt-cache
+        with:
+          recipe: mingw-w64-x64
+          install: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+      - if: matrix.target == 'windows-x64'
+        run: node scripts/check-test-shards.mjs --start hook-startup
       - run: bash packages/myco/scripts/build-libsqlite3-target.sh "${{ matrix.target }}"
       - name: Hand the Darwin native library to the Linux cross-compiler
         if: matrix.target == 'darwin-arm64'
@@ -138,11 +144,11 @@ jobs:
           bash scripts/verify-darwin-distribution.sh "$version" target/darwin-distribution/myco-darwin-arm64 "${tarballs[0]}" native
       - name: Measure a no-op hook
         if: ${{ !matrix.measure_elsewhere }}
-        run: node packages/myco/scripts/measure-hook-startup.mjs "packages/myco-${{ matrix.target }}/bin/myco" --prefix "${{ matrix.prefix }}" --max-p95-ms "${{ matrix.ceiling }}"
+        run: node packages/myco/scripts/measure-hook-startup.mjs "packages/myco-${{ matrix.target }}/bin/myco" --max-p95-ms "${{ matrix.ceiling }}"
       # Gate G1, timed: every hook doing its real work, under both credential sources, each inside its own budget.
       - name: Measure every hook at work
         if: ${{ !matrix.measure_elsewhere }}
-        run: bun packages/myco/scripts/measure-hook-work.ts "packages/myco-${{ matrix.target }}/bin/myco" --prefix "${{ matrix.prefix }}"
+        run: bun packages/myco/scripts/measure-hook-work.ts "packages/myco-${{ matrix.target }}/bin/myco"
       - name: Hand the Windows binary to its runner
         if: matrix.measure_elsewhere
         uses: actions/upload-artifact@v7
@@ -151,6 +157,15 @@ jobs:
           path: packages/myco-${{ matrix.target }}/bin/myco.exe
           if-no-files-found: error
           retention-days: 1
+
+      - if: matrix.target == 'windows-x64'
+        run: node scripts/check-test-shards.mjs --finish hook-startup
+      - if: always() && matrix.target == 'windows-x64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hook-startup-timing
+          path: target/ci-timings/
+          if-no-files-found: error
 
   darwin-release-build:
     name: Cross-compile Darwin release recipe
@@ -267,6 +282,9 @@ jobs:
       - if: matrix.kind == 'node'
         run: chmod +x packages/myco-linux-x64/bin/myco
       - run: npm test
+      - name: Per-test timeout headroom
+        if: always() && matrix.kind == 'node'
+        run: node scripts/check-test-shards.mjs --test-reports target/test-reports
       - name: Test timing summary
         if: always()
         shell: bash
@@ -310,7 +328,8 @@ jobs:
   # request errors, axe-core, raw ids) and shot at two viewports in both modes.
   ui-screens:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 2x measured 620s screens + 617s cold apt + 240s setup/build = 2097s.
+    timeout-minutes: 35
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/target/playwright-browsers
     steps:
@@ -323,19 +342,30 @@ jobs:
         with:
           path: target/playwright-browsers
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Identify Playwright dependencies
+        id: playwright-version
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/apt-cache
+        with:
+          recipe: playwright-chromium-${{ steps.playwright-version.outputs.version }}
+          install: npx playwright install-deps chromium
       - if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install --with-deps chromium
-      - if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: npx playwright install-deps chromium
+        run: npx playwright install chromium
       - run: npm run build:ui -w @goondocks/myco-server
       - run: npm run build:specimen --prefix packages/myco-server/ui
-      - run: npm run test:screens
+      - run: node scripts/check-test-shards.mjs --measure ui-screens -- npm run test:screens
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ui-screens
           path: target/ui-screens/
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ui-screens-timing
+          path: target/ci-timings/
+          if-no-files-found: error
 
   check:
     if: always()
