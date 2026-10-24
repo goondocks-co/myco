@@ -82,8 +82,10 @@ describe('test shard selection', () => {
       expect(coverageShard).toBeGreaterThanOrEqual(0);
       expect(historyShard).toBeGreaterThanOrEqual(0);
       expect(coverageShard).not.toBe(historyShard);
-      const incomplete = { runs: nodeWorkload.runs.map(run => ({ ...run, shards: run.shards.slice(1) })) };
-      expect(() => assertNodeShardHeadroom(plans, timeout, durations.files, incomplete)).toThrow('incomplete node workload');
+      for (const trim of [1, -1]) {
+        const incomplete = { runs: nodeWorkload.runs.map(run => ({ ...run, shards: trim === 1 ? run.shards.slice(1) : run.shards.slice(0, -1) })) };
+        expect(() => assertNodeShardHeadroom(plans, timeout, durations.files, incomplete)).toThrow('incomplete node workload');
+      }
       const stale = { ...durations.files, 'tests/setup/journeys.test.ts': 2920 };
       expect(() => assertNodeShardHeadroom(plans, timeout, stale, nodeWorkload)).toThrow('Stale node duration');
       const unrecorded = { label: 'new file', files: ['tests/unrecorded.test.ts'], estimatedMs: 100 };
@@ -188,7 +190,7 @@ test('the CI per-test command rejects an overrun from actual JUnit evidence', ()
 });
 
 test('transfers an introduced split duration floor once and preserves measured floors on refresh', () => {
-  const workload: NodeWorkload = { runs: [{ source: 'recorded split', shards: [{ shard: 1, groups: [
+  const workload: NodeWorkload = { runs: [{ source: 'recorded split', shardCount: 1, shards: [{ shard: 1, groups: [
     { label: 'combined', milliseconds: 250, files: { original: 250 }, splits: { original: { file: 'introduced', milliseconds: 125 } } },
   ] }] }] };
   const weights = mergeNodeDurationWeights({ original: 225, unrelated: 77 }, workload);
@@ -207,4 +209,20 @@ test('replays the complete hot CI workload with both extraction solos recorded',
   expect(hot.groups.reduce((sum, group) => sum + group.milliseconds, 0)).toBeGreaterThan(720_000);
   expect(hot.groups.find(group => group.label.endsWith('extraction-coverage-budget'))!.milliseconds).toBe(249_152);
   expect(hot.groups.find(group => group.label.endsWith('extraction-history-budget'))!.milliseconds).toBe(142_417);
+});
+
+test('replays a five-shard recording against a six-shard plan', () => {
+  const shards = Array.from({ length: 5 }, (_, index) => ({
+    shard: index + 1,
+    groups: Array.from({ length: 2 }, (_, group) => ({
+      label: `recorded ${index + 1}-${group}`, milliseconds: 100, files: { [`file-${index + 1}-${group}`]: 100 },
+    })),
+  }));
+  const workload: NodeWorkload = { runs: [{ source: 'five-shard recording', shardCount: 5, shards }] };
+  const groups = shards.flatMap(shard => shard.groups.map(group => ({
+    label: group.label, files: Object.keys(group.files), estimatedMs: group.milliseconds,
+  })));
+  const plans = Array.from({ length: 6 }, (_, index) => selectShard(groups, { index: index + 1, count: 6 }, group => group.estimatedMs));
+  expect(nodeDurationSamples(workload)[0]!.files).toEqual(Object.fromEntries(groups.map(group => [group.files[0]!, 100])));
+  expect(() => assertNodeShardHeadroom(plans, 900_000, recordedNodeDurations(workload), workload)).not.toThrow();
 });
