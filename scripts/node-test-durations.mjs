@@ -2,6 +2,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { format } from 'node:util';
+import { SaxesParser } from 'saxes';
 
 const MAX_GROUP_JOB_SHARE = 1 / 4;
 
@@ -40,6 +44,26 @@ export function recordedNodeDurations(workload) {
   return weights;
 }
 
+export function mergeNodeDurationWeights(weights, workload) {
+  const recorded = recordedNodeDurations(workload);
+  const merged = { ...weights };
+  for (const [file, milliseconds] of Object.entries(recorded)) merged[file] = Math.max(weights[file] ?? 0, milliseconds);
+  const introduced = new Map();
+  for (const run of workload.runs) for (const shard of run.shards) for (const group of shard.groups) {
+    for (const [source, split] of Object.entries(group.splits ?? {})) {
+      if (Object.hasOwn(weights, split.file)) continue;
+      const targets = introduced.get(source) ?? new Set();
+      targets.add(split.file);
+      introduced.set(source, targets);
+    }
+  }
+  for (const [source, targets] of introduced) {
+    const carried = [...targets].reduce((sum, file) => sum + merged[file], 0);
+    merged[source] = Math.max(recorded[source] ?? 0, merged[source] - carried);
+  }
+  return merged;
+}
+
 /** Reserve one equal share of the job budget for runner and setup variance. */
 export function assertNodeShardHeadroom(plans, timeoutMs, weights, workload) {
   const groupBudget = nodeGroupBudget(timeoutMs);
@@ -69,13 +93,70 @@ export function assertNodeShardHeadroom(plans, timeoutMs, weights, workload) {
   }
 }
 
+const MAX_TEST_TIMEOUT_SHARE = 0.8;
+
+export function assertTestCaseHeadroom(samples, timeoutFor) {
+  for (const { source, tests } of samples) for (const test of tests) {
+    const timeoutMs = timeoutFor(test);
+    assert.ok(Number.isFinite(timeoutMs) && timeoutMs > 0, `${test.file}: missing declared test timeout: ${test.name}`);
+    assert.ok(Number.isFinite(test.milliseconds) && test.milliseconds > 0, `${source}: missing measured test duration: ${test.name}`);
+    assert.ok(test.milliseconds <= timeoutMs * MAX_TEST_TIMEOUT_SHARE,
+      `${source}: ${test.file}: ${test.name}: ${test.milliseconds}ms exceeds ${MAX_TEST_TIMEOUT_SHARE * 100}% of its ${timeoutMs}ms test timeout`);
+  }
+}
+
+export function declaredTestTimeout(root, test) {
+  const ts = createRequire(import.meta.url)('typescript-v6');
+  const file = ts.createSourceFile(test.file, fs.readFileSync(path.join(root, test.file), 'utf8'), ts.ScriptTarget.Latest, true);
+  const matches = [];
+  const testRoot = expression => {
+    if (ts.isIdentifier(expression)) return ['it', 'test'].includes(expression.text);
+    if (ts.isPropertyAccessExpression(expression)) return testRoot(expression.expression);
+    if (ts.isCallExpression(expression)) return testRoot(expression.expression);
+    return false;
+  };
+  const visit = node => {
+    if (ts.isCallExpression(node) && testRoot(node.expression) && node.arguments.length >= 2 &&
+      ts.isStringLiteralLike(node.arguments[0])) {
+      const pattern = node.arguments[0].text;
+      let names = [pattern];
+      if (ts.isCallExpression(node.expression)) {
+        const each = node.expression;
+        let values = each.arguments[0];
+        if (values && ts.isAsExpression(values)) values = values.expression;
+        if (ts.isPropertyAccessExpression(each.expression) && each.expression.name.text === 'each' && values && ts.isArrayLiteralExpression(values)) {
+          names = values.elements.filter(ts.isStringLiteralLike).map(value => format(pattern, value.text));
+        }
+      }
+      if (!names.includes(test.name)) { ts.forEachChild(node, visit); return; }
+      const timeout = node.arguments[2];
+      assert.ok(timeout && ts.isNumericLiteral(timeout), `${test.file}:${test.line}: record an explicit numeric test timeout`);
+      matches.push(Number(timeout.text));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  assert.equal(matches.length, 1, `${test.file}:${test.line}: expected one declared test matching its recorded name`);
+  return matches[0];
+}
+
+export function testDurationSamples(xml) {
+  const tests = [];
+  const parser = new SaxesParser();
+  parser.on('error', error => { throw error; });
+  parser.on('opentag', ({ name, attributes }) => {
+    if (name === 'testcase') tests.push({ file: attributes.file, name: attributes.name,
+      line: Number(attributes.line), milliseconds: Number(attributes.time) * 1000 });
+  });
+  parser.write(xml).close();
+  return tests;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const workload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   const target = new URL('./test-durations.json', import.meta.url);
   const durations = JSON.parse(fs.readFileSync(target, 'utf8'));
-  for (const [file, milliseconds] of Object.entries(recordedNodeDurations(workload))) {
-    durations.files[file] = Math.max(durations.files[file] ?? 0, milliseconds);
-  }
+  durations.files = mergeNodeDurationWeights(durations.files, workload);
   durations.files = Object.fromEntries(Object.entries(durations.files).sort(([left], [right]) => left.localeCompare(right)));
   durations.sources = [...new Set([...durations.sources, ...workload.runs.map(run => run.source)])];
   fs.writeFileSync(target, JSON.stringify(durations, null, 2) + '\n');

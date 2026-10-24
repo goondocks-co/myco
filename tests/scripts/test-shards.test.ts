@@ -9,7 +9,7 @@ import durations from '../../scripts/test-durations.json';
 import parityWorkload from '../fixtures/runner/parity-ci-9777180d.json';
 import completeParityWorkload from '../fixtures/runner/parity-ci-f2c7ecc5.json';
 import nodeWorkloadFixture from '../fixtures/runner/node-ci-durations.json';
-import { assertNodeShardHeadroom, nodeDurationSamples, nodeGroupBudget, recordedNodeDurations, type NodeGroup, type NodeWorkload } from '../../scripts/node-test-durations.mjs';
+import { mergeNodeDurationWeights, assertTestCaseHeadroom, declaredTestTimeout, testDurationSamples, assertNodeShardHeadroom, nodeDurationSamples, nodeGroupBudget, recordedNodeDurations, type NodeGroup, type NodeWorkload } from '../../scripts/node-test-durations.mjs';
 
 const nodeWorkload: NodeWorkload = nodeWorkloadFixture;
 
@@ -76,6 +76,12 @@ describe('test shard selection', () => {
       const timeout = workflow.jobs.tests['timeout-minutes'] * 60_000;
       const plans = Array.from({ length: count }, (_, index) => selectShard(groups, { index: index + 1, count }, group => group.estimatedMs));
       expect(() => assertNodeShardHeadroom(plans, timeout, durations.files, nodeWorkload)).not.toThrow();
+      const shardOf = (file: string) => plans.findIndex(plan => plan.some(group => group.files.includes(file)));
+      const coverageShard = shardOf('tests/myco-server/extraction-coverage-budget.test.ts');
+      const historyShard = shardOf('tests/myco-server/extraction-history-budget.test.ts');
+      expect(coverageShard).toBeGreaterThanOrEqual(0);
+      expect(historyShard).toBeGreaterThanOrEqual(0);
+      expect(coverageShard).not.toBe(historyShard);
       const incomplete = { runs: nodeWorkload.runs.map(run => ({ ...run, shards: run.shards.slice(1) })) };
       expect(() => assertNodeShardHeadroom(plans, timeout, durations.files, incomplete)).toThrow('incomplete node workload');
       const stale = { ...durations.files, 'tests/setup/journeys.test.ts': 2920 };
@@ -146,4 +152,59 @@ describe('test shard selection', () => {
     expect(() => selectShard(['one'], parseShard('2/2'))).toThrow('contains no tests');
     expect(() => selectShard(['one'], parseShard('1/1'), () => NaN)).toThrow('weights');
   });
+});
+
+test('rejects the recorded main lineage case before the parent-column split', () => {
+  const baseline = nodeWorkloadFixture.baselineTestRuns;
+  expect(() => assertTestCaseHeadroom(baseline, () => baseline[0]!.tests[0]!.timeoutMs)).toThrow('111388.52ms exceeds 80% of its 120000ms test timeout');
+});
+
+test('gates recorded per-test CI timings against their own declared timeout', () => {
+  const root = path.resolve(import.meta.dir, '../..');
+  expect(() => assertTestCaseHeadroom(nodeWorkloadFixture.testRuns, test => declaredTestTimeout(root, test))).not.toThrow();
+  const test = nodeWorkloadFixture.testRuns[0]!.tests[2]!;
+  const timeoutMs = declaredTestTimeout(root, test);
+  expect(timeoutMs).toBe(120_000);
+  expect(() => assertTestCaseHeadroom([{ source: 'boundary', tests: [{ ...test, milliseconds: timeoutMs * 0.8 }] }], value => declaredTestTimeout(root, value))).not.toThrow();
+  expect(() => assertTestCaseHeadroom([{ source: 'overrun', tests: [{ ...test, milliseconds: timeoutMs * 0.8 + 1 }] }], value => declaredTestTimeout(root, value))).toThrow('80%');
+  expect(() => declaredTestTimeout(root, { ...test, name: 'unrecorded test' })).toThrow('matching its recorded name');
+});
+
+test('the CI per-test command rejects an overrun from actual JUnit evidence', () => {
+  const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'per-test-evidence-'));
+  try {
+    expect(spawnSync('node', ['scripts/check-test-shards.mjs', '--test-reports'], { encoding: 'utf8' }).status).not.toBe(0);
+    const test = nodeWorkloadFixture.testRuns[0]!.tests[2]!;
+    const xml = `<testsuite><testcase file="${test.file}" name="${test.name}" line="${test.line}" time="97" /></testsuite>`;
+    expect(testDurationSamples(xml)[0]!.milliseconds).toBe(97_000);
+    fs.writeFileSync(path.join(reports, 'run.junit.xml'), xml);
+    const run = () => spawnSync('node', ['scripts/check-test-shards.mjs', '--test-reports', reports], { encoding: 'utf8' });
+    const overrun = run();
+    expect(overrun.status).not.toBe(0);
+    expect(overrun.stderr).toContain('80% of its 120000ms test timeout');
+    fs.writeFileSync(path.join(reports, 'run.junit.xml'), xml.replace('time="97"', 'time="30"'));
+    expect(run().status).toBe(0);
+  } finally { fs.rmSync(reports, { recursive: true, force: true }); }
+});
+
+test('transfers an introduced split duration floor once and preserves measured floors on refresh', () => {
+  const workload: NodeWorkload = { runs: [{ source: 'recorded split', shards: [{ shard: 1, groups: [
+    { label: 'combined', milliseconds: 250, files: { original: 250 }, splits: { original: { file: 'introduced', milliseconds: 125 } } },
+  ] }] }] };
+  const weights = mergeNodeDurationWeights({ original: 225, unrelated: 77 }, workload);
+  expect(weights).toEqual({ original: 125, introduced: 125, unrelated: 77 });
+  expect(weights.original! + weights.introduced!).toBeGreaterThanOrEqual(225);
+  expect(mergeNodeDurationWeights(weights, workload)).toEqual(weights);
+  expect(mergeNodeDurationWeights({ original: 150, introduced: 200 }, workload)).toEqual({ original: 150, introduced: 200 });
+});
+
+test('replays the complete hot CI workload with both extraction solos recorded', () => {
+  const run = nodeWorkload.runs.find(value => value.source.includes('/40047399103/attempts/1'))!;
+  expect(run).toBeDefined();
+  expect(run.shards.map(shard => shard.shard)).toEqual([1, 2, 3, 4, 5]);
+  const hot = run.shards[0]!;
+  expect(hot.groups.reduce((sum, group) => sum + group.milliseconds, 0)).toBe(748_807);
+  expect(hot.groups.reduce((sum, group) => sum + group.milliseconds, 0)).toBeGreaterThan(720_000);
+  expect(hot.groups.find(group => group.label.endsWith('extraction-coverage-budget'))!.milliseconds).toBe(249_152);
+  expect(hot.groups.find(group => group.label.endsWith('extraction-history-budget'))!.milliseconds).toBe(142_417);
 });

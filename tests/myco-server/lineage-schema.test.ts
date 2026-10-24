@@ -87,36 +87,34 @@ it('reads the same D1 rows for a family of 1,000 children as of 10,000, through 
   } finally { await mf.dispose(); }
 }, 60_000);
 
-it('reads the same D1 rows while deleted children grow and live ones stay the same, through either parent column', async () => {
+it.each(['launch_parent_session_id', 'parent_session_id'] as const)('reads the same D1 rows while deleted children grow and live ones stay the same, through %s', async (column) => {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'] }));
   try {
     const d1 = await mf.getD1Database('DB');
     for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql => d1.prepare(sql)));
     await d1.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_deleted','Deleted',1)").run();
     const LIVE_CHILDREN = 201;
-    for (const column of ['launch_parent_session_id', 'parent_session_id'] as const) {
-      const root = `root-${column}`;
-      await d1.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent) VALUES('proj_deleted',?,'m','t',1,1,'codex')`).bind(root).run();
-      const children = (from: number, to: number, prefix: string) => d1.prepare(`WITH RECURSIVE n(i) AS (SELECT ${from} UNION ALL SELECT i+1 FROM n WHERE i<${to})
-        INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent,${column})
-        SELECT 'proj_deleted',printf('${prefix}-%05d',i),'m','t',1,1,'codex',? FROM n`).bind(root).run();
-      // Live children sort after every deleted one, so a read that walked deleted entries would pay for each of them.
-      await children(1, LIVE_CHILDREN, `${root}-live`);
-      const costs: number[] = [];
-      let deleted = 0;
-      for (const target of [799, 9_799]) {
-        await children(deleted + 1, target, `${root}-deleted`);
-        const marks = Array.from({ length: target - deleted }, (_, i) =>
-          tombstoneMarkStatements(asStore(d1), 'proj_deleted', `${root}-deleted-${String(deleted + 1 + i).padStart(5, '0')}`, 'owner', 1)).flat();
-        for (let i = 0; i < marks.length; i += 900) await d1.batch(marks.slice(i, i + 900) as never);
-        deleted = target;
-        const measured = measuredStore(d1);
-        const lineage = (await sessionLineage(measured.db, { projectId: 'proj_deleted' }, root))!;
-        expect([lineage.nodes.length, lineage.truncated]).toEqual([LINEAGE_MAX_NODES, true]);
-        costs.push(measured.reads());
-      }
-      expect({ column, flat: costs[1] === costs[0], costs }).toEqual({ column, flat: true, costs: [costs[0], costs[0]] });
+    const root = `root-${column}`;
+    await d1.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent) VALUES('proj_deleted',?,'m','t',1,1,'codex')`).bind(root).run();
+    const children = (from: number, to: number, prefix: string) => d1.prepare(`WITH RECURSIVE n(i) AS (SELECT ${from} UNION ALL SELECT i+1 FROM n WHERE i<${to})
+      INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent,${column})
+      SELECT 'proj_deleted',printf('${prefix}-%05d',i),'m','t',1,1,'codex',? FROM n`).bind(root).run();
+    // Live children sort after every deleted child.
+    await children(1, LIVE_CHILDREN, `${root}-live`);
+    const costs: number[] = [];
+    let deleted = 0;
+    for (const target of [799, 9_799]) {
+      await children(deleted + 1, target, `${root}-deleted`);
+      const marks = Array.from({ length: target - deleted }, (_, i) =>
+        tombstoneMarkStatements(asStore(d1), 'proj_deleted', `${root}-deleted-${String(deleted + 1 + i).padStart(5, '0')}`, 'owner', 1)).flat();
+      for (let i = 0; i < marks.length; i += 900) await d1.batch(marks.slice(i, i + 900) as never);
+      deleted = target;
+      const measured = measuredStore(d1);
+      const lineage = (await sessionLineage(measured.db, { projectId: 'proj_deleted' }, root))!;
+      expect([lineage.nodes.length, lineage.truncated]).toEqual([LINEAGE_MAX_NODES, true]);
+      costs.push(measured.reads());
     }
+    expect({ column, flat: costs[1] === costs[0], costs }).toEqual({ column, flat: true, costs: [costs[0], costs[0]] });
   } finally { await mf.dispose(); }
 }, 120_000);
 
