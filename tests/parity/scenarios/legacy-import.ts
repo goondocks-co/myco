@@ -144,3 +144,50 @@ export const legacyImportParity: ParityScenario = {
     expect(await target.sql('SELECT project_id FROM projects ORDER BY project_id')).toEqual(projectsBefore);
   },
 };
+
+/** An additive import carries a later vault resolution into an already imported active source. */
+export const legacySporeResolution: ParityScenario = {
+  name: 'legacy spores: later vault retirement converges and replays once',
+  async run(target) {
+    const id = 'legacy-later-' + crypto.randomUUID();
+    const eventId = 'legacy-resolution-' + crypto.randomUUID();
+    const post = async (path: string, body: Record<string, unknown>) => {
+      const response = await fetch(target.url + path, {
+        method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      return await response.json() as Record<string, unknown>;
+    };
+    const vault = { id, agentId: 'user', observationType: 'gotcha', content: 'retire later', status: 'active' };
+    let retirement: Record<string, unknown> | null = null;
+    const importVault = async () => {
+      expect((await post('/spores/save', { channel: 'import', ...vault })).persisted).toBe(true);
+      return retirement === null ? null : post('/spores/resolve', {
+        channel: 'import', eventId, agentId: 'user', sporeId: id, action: 'obsolete', status: vault.status,
+        expectStatus: vault.status, createdAt: 1000, ...retirement,
+      });
+    };
+    const row = async () => (await target.sql(`SELECT status,revision FROM spores WHERE project_id=${lit(target.projectId)} AND id=${lit(id)}`))[0];
+    await importVault();
+    expect(await row()).toEqual({ status: 'active', revision: 0 });
+    vault.status = 'obsolete';
+    retirement = { reason: 'retired in vault after import' };
+    expect(await importVault()).toEqual({ persisted: true, resolved: true });
+    expect(await row()).toEqual({ status: 'obsolete', revision: 1 });
+    expect(await importVault()).toEqual({ persisted: true, resolved: true, duplicate: true });
+    expect(await row()).toEqual({ status: 'obsolete', revision: 1 });
+    expect(await target.sql(`SELECT id FROM resolution_events WHERE project_id=${lit(target.projectId)} AND spore_id=${lit(id)}`))
+      .toEqual([{ id: eventId }]);
+
+    const other = id + '-other';
+    await post('/spores/save', { ...vault, id: other, status: 'superseded' });
+    const refused = await post('/spores/resolve', {
+      channel: 'import', eventId: eventId + '-other', agentId: 'user', sporeId: other,
+      action: 'obsolete', status: 'obsolete', expectStatus: 'obsolete',
+    });
+    expect(refused).toMatchObject({ persisted: false, code: 'stale', status: 'superseded', revision: 0 });
+    expect(refused.reason).toBe('source is superseded at revision 0; expected obsolete or active');
+    expect(await target.sql(`SELECT id FROM resolution_events WHERE project_id=${lit(target.projectId)} AND spore_id=${lit(other)}`)).toEqual([]);
+  },
+};

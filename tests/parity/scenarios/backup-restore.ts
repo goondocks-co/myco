@@ -77,6 +77,10 @@ export const backupRestore: ParityScenario = {
     await selectOwner(target);
     await target.sql(`INSERT OR IGNORE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (${lit(target.projectId)}, 'sess_backup', 'm_parity', 'mt_parity', 1, 1)`);
 
+    await target.sql("INSERT INTO agents(id,name,source,enabled,created_at) VALUES ('revision_backup','backup','built-in',1,1)");
+    await target.sql(`INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,revision,created_at)
+      VALUES (${lit(target.projectId)},'revision_backup','revision_backup','gotcha','superseded','kept',7,1)`);
+
     const created = await ownerPost<{ backup: { id: string } }>(target, '/api/backups', {});
     expect(created.status).toBe(200);
     const id = created.body.backup.id;
@@ -98,6 +102,20 @@ export const backupRestore: ParityScenario = {
     const artifact = await fetch(`${target.url}/api/backups/${id}/artifact`, { headers: ownerJson(target) });
     expect(artifact.status).toBe(200);
     const text = await artifact.text();
+    const portable = text.trim().split('\n').map(line => JSON.parse(line));
+    expect(portable.find(row => row.t === 'spores' && row.r.id === 'revision_backup').r.revision).toBe(7);
+    await target.sql("DELETE FROM spores WHERE id='revision_backup'");
+    const revisionRestore = await ownerPost<{ applied: boolean }>(target, `/api/backups/${id}/restore`, {});
+    expect(revisionRestore.body.applied).toBe(true);
+    expect(await target.sql("SELECT revision FROM spores WHERE id='revision_backup'")).toEqual([{ revision: 7 }]);
+    portable[0].schemaVersion = 100;
+    for (const row of portable) if (row.t === 'spores') { row.r.id = 'legacy_revision_backup'; delete row.r.revision; }
+    const legacyRestore = await ownerPost<{ applied: boolean }>(target, '/api/backups/restore-upload', {
+      artifact: portable.map(row => JSON.stringify(row)).join('\n') + '\n',
+    });
+    expect(legacyRestore.body.applied).toBe(true);
+    expect(await target.sql("SELECT revision FROM spores WHERE id='legacy_revision_backup'")).toEqual([{ revision: 0 }]);
+
 
     const sibling = await bootSelfhosted();
     try {

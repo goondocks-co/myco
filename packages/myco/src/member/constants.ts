@@ -26,7 +26,7 @@ export const MEMBER_CODES = [
   'refused', 'parse', 'body_cap', 'blob_cap', 'content_length', 'media_type', 'digest_mismatch', 'empty_body',
   'blob_absent', 'no_project', 'offset_gap', 'offset_overlap', 'identity_mismatch', 'no_machine_identity', 'blob_length_mismatch',
   'unknown_kind', 'unknown_field', 'id_grammar', 'clock_skew', 'event_id_conflict', 'projection_conflict',
-  'refresh_too_early', 'lineage_expired', 'non_rotating', 'link_requires_admin',
+  'refresh_too_early', 'lineage_expired', 'stale', 'non_rotating', 'link_requires_admin',
   'enrollment_unknown', 'enrollment_used', 'enrollment_expired', 'enrollment_revoked', 'identity_claimed',
   'enrollment_no_project',
   'project_archived',
@@ -69,7 +69,7 @@ export type RefusalSubject = 'record' | 'session' | 'deployment' | 'credential' 
 export const REFUSAL_SUBJECT: Readonly<Record<MemberCode, RefusalSubject>> = {
   body_cap: 'record', blob_cap: 'record', digest_mismatch: 'record', media_type: 'record', blob_length_mismatch: 'record',
   parse: 'record', id_grammar: 'record', invalid_field: 'record', event_id_conflict: 'record', projection_conflict: 'record', identity_mismatch: 'record',
-  session_tombstoned: 'session',
+  stale: 'record', session_tombstoned: 'session',
   no_project: 'deployment', project_archived: 'deployment', blob_absent: 'deployment', offset_gap: 'deployment', offset_overlap: 'deployment',
   transcript_replaced: 'deployment', import_disabled: 'deployment', content_length: 'deployment', empty_body: 'deployment', unavailable: 'deployment',
   link_requires_admin: 'deployment',

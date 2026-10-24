@@ -351,7 +351,7 @@ describe('the read window binds on the MCP path', () => {
     const answered = await call(harness.token, 'myco_run_spores', { op: 'list' }) as any;
     expect(answered.result.total).toBe(1);
     expect(answered.result.spores[0].preview.length).toBe(SPORE_PREVIEW_CHARS);
-    expect(Object.keys(answered.result.spores[0]).sort()).toEqual(['created_at', 'id', 'importance', 'observation_type', 'preview']);
+    expect(Object.keys(answered.result.spores[0]).sort()).toEqual(['created_at', 'id', 'importance', 'observation_type', 'preview', 'revision']);
   });
 
   it('spends a full read per get, refuses past the budget, and spends one even for an id the Project does not hold', async () => {
@@ -663,7 +663,7 @@ describe('a sweep consolidates through the member op', () => {
     sqlite.run(`UPDATE spores SET status = 'superseded' WHERE id = 'sp_gone'`);
 
     const answered = (await call(harness.token, 'myco_spores', {
-      op: 'consolidate', source_spore_ids: ['sp_a', 'sp_b'], consolidated_content: 'the wisdom', observation_type: 'wisdom', project: 'proj_1', session_id: 'sess_1',
+      op: 'consolidate', source_spore_ids: [{ id: 'sp_a', revision: 0 }, { id: 'sp_b', revision: 0 }], consolidated_content: 'the wisdom', observation_type: 'wisdom', project: 'proj_1', session_id: 'sess_1',
     }) as any).result;
     expect(answered.sources_consolidated).toBe(2);
     expect(sqlite.query(`SELECT status FROM spores WHERE id IN ('sp_a','sp_b') ORDER BY id`).all())
@@ -673,7 +673,7 @@ describe('a sweep consolidates through the member op', () => {
     // The member op counts only sources that were active, and leaves a
     // resolved one where it stands.
     const second = (await call(harness.token, 'myco_spores', {
-      op: 'consolidate', source_spore_ids: ['sp_gone'], consolidated_content: 'again', observation_type: 'wisdom', project: 'proj_1', session_id: 'sess_1',
+      op: 'consolidate', source_spore_ids: [{ id: 'sp_gone', revision: 0 }], consolidated_content: 'again', observation_type: 'wisdom', project: 'proj_1', session_id: 'sess_1',
     }) as any).result;
     expect(second.sources_consolidated).toBe(0);
     expect(sqlite.query(`SELECT status FROM spores WHERE id = 'sp_gone'`).get()).toEqual({ status: 'superseded' });

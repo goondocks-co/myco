@@ -19,7 +19,7 @@ describe('refusal permanence', () => {
     const permanent = MEMBER_CODES.filter((code) => REFUSAL_PERMANENCE[code] === 'permanent').sort();
     expect(permanent).toEqual([
       'blob_cap', 'blob_length_mismatch', 'body_cap', 'digest_mismatch', 'event_id_conflict', 'id_grammar', 'identity_mismatch', 'invalid_field', 'media_type', 'parse',
-      'projection_conflict', 'session_tombstoned',
+      'projection_conflict', 'session_tombstoned', 'stale',
     ]);
     for (const code of MEMBER_CODES) {
       expect({ code, permanent: REFUSAL_PERMANENCE[code] === 'permanent' }).toEqual({ code, permanent: ['record', 'session'].includes(REFUSAL_SUBJECT[code]) });

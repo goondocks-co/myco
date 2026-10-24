@@ -22,6 +22,7 @@
  */
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { USER_AGENT_ID } from '../constants.js';
+import { GUARD_ENABLED_AT } from '../db/schema-v101.js';
 import { containsPattern, inListChunks, keyset, page, projectsDriving, projectsFiltering, type Page, type ProjectSet, type ReadScope } from '../read/scope.js';
 
 export { OBSERVATION_TYPES, type ObservationType } from '@goondocks/myco-shared/member-protocol';
@@ -87,6 +88,7 @@ export interface SporeRow {
   sessionId: string | null;
   observationType: string;
   status: string;
+  revision: number;
   content: string;
   context: string | null;
   importance: number;
@@ -140,7 +142,7 @@ const AUTHOR_KIND = `CASE WHEN spores.author IS NULL THEN NULL
   ELSE 'run' END`;
 
 const COLUMNS = `id, agent_id AS agentId, session_id AS sessionId,
-  observation_type AS observationType, status, content, context, importance,
+  observation_type AS observationType, status, revision, content, context, importance,
   file_path AS filePath, tags, content_hash AS contentHash, properties, author,
   provenance_kind AS provenanceKind, provenance_ref AS provenanceRef, agent_line AS agentLine,
   created_at AS createdAt, updated_at AS updatedAt, embedded`;
@@ -334,6 +336,7 @@ export async function sporeAuthoredBy(db: RelationalStore, scope: ReadScope, aut
 }
 
 export interface ResolutionEventInsert {
+  channel?: 'import';
   id: string;
   agentId: string;
   sporeId: string;
@@ -348,38 +351,83 @@ export interface ResolutionEventInsert {
   createdAt: number;
 }
 
-/**
- * Move a spore's status and record why, as one atomic write.
- *
- * Returns false when the spore is not in this scope — the batch changed
- * nothing, and a caller must not read that as a resolution it did not make.
- * An event id already recorded moves nothing and records nothing, and answers
- * `duplicate`: replaying a resolution never undoes a later one.
- */
-export async function resolveSpore(
-  db: RelationalStore,
-  scope: ReadScope,
-  status: SporeStatus,
-  event: ResolutionEventInsert,
-  now: number,
-): Promise<boolean | 'duplicate'> {
-  const [held, moved] = await db.batch([
-    db.prepare(`SELECT 1 AS held FROM resolution_events WHERE project_id = ? AND id = ?`).bind(scope.projectId, event.id),
-    db.prepare(`UPDATE spores SET status = ?, updated_at = ? WHERE project_id = ? AND id = ?
+/** A run's dispatched instructions require revisions unless they predate this Deployment's guard boundary. */
+export async function sporeRevisionRequired(db: RelationalStore, scope: ReadScope, runId: string): Promise<boolean> {
+  return await db.prepare(`SELECT 1 FROM agent_runs r JOIN schema_meta m ON m.key = ?
+    WHERE r.project_id = ? AND r.id = ? AND r.started_at < CAST(m.value AS INTEGER)`)
+    .bind(GUARD_ENABLED_AT, scope.projectId, runId).first() === null;
+}
+
+export interface SporeExpectation {
+  status?: SporeStatus;
+  revision?: number;
+}
+
+export interface SporeSource {
+  id: string;
+  revision?: number;
+}
+
+export interface StaleSpore {
+  error: 'stale';
+  reason: string;
+  status: string;
+  revision: number;
+}
+
+/** Import history admits its expected final state as well as a source that is still active. */
+function expectedResolutionStatus(status: SporeStatus, event: ResolutionEventInsert, expect: SporeExpectation): SporeStatus {
+  return expect.status ?? (event.channel === 'import' ? status : 'active');
+}
+
+/** The status move and its event are adjacent; changes() counts only that move, excluding trigger writes. */
+function resolutionStatements(
+  db: RelationalStore, scope: ReadScope, status: SporeStatus, event: ResolutionEventInsert,
+  now: number, expect: SporeExpectation,
+): PreparedStatement[] {
+  return [
+    db.prepare(`UPDATE spores SET status = ?, revision = revision + 1, updated_at = ?
+      WHERE project_id = ? AND id = ? AND (status = ?${event.channel === 'import' ? " OR status = 'active'" : ''})${expect.revision === undefined ? '' : ' AND revision = ?'}
         AND NOT EXISTS (SELECT 1 FROM resolution_events WHERE project_id = ? AND id = ?) RETURNING id`)
-      .bind(status, now, scope.projectId, event.sporeId, scope.projectId, event.id),
+      .bind(status, now, scope.projectId, event.sporeId, expectedResolutionStatus(status, event, expect),
+        ...(expect.revision === undefined ? [] : [expect.revision]), scope.projectId, event.id),
     db.prepare(`INSERT INTO resolution_events
         (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, author, provenance_kind, provenance_ref, created_at)
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-         WHERE EXISTS (SELECT 1 FROM spores WHERE project_id = ? AND id = ?)
-        ON CONFLICT (project_id, id) DO NOTHING`)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE changes() = 1`)
       .bind(scope.projectId, event.id, event.agentId, event.sporeId, event.action,
         event.newSporeId, event.reason, event.sessionId, event.author,
-        event.provenance?.kind ?? null, event.provenance?.ref ?? null, event.createdAt,
-        scope.projectId, event.sporeId),
+        event.provenance?.kind ?? null, event.provenance?.ref ?? null, event.createdAt),
+  ];
+}
+
+/** Move a spore and record its event atomically; replayed event ids change nothing. */
+export async function resolveSpore(
+  db: RelationalStore, scope: ReadScope, status: SporeStatus, event: ResolutionEventInsert,
+  now: number, expect: SporeExpectation = {},
+): Promise<boolean | 'duplicate' | StaleSpore> {
+  const [held, moved, , current] = await db.batch([
+    db.prepare(`SELECT 1 AS held FROM resolution_events WHERE project_id = ? AND id = ?`).bind(scope.projectId, event.id),
+    ...resolutionStatements(db, scope, status, event, now, expect),
+    db.prepare(`SELECT status, revision FROM spores WHERE project_id = ? AND id = ?`).bind(scope.projectId, event.sporeId),
   ]);
-  if (held.results.length === 1) return 'duplicate';
-  return moved.results.length === 1;
+  if (held!.results.length === 1) return 'duplicate';
+  if (moved!.results.length === 1) return true;
+  const row = current!.results[0] as { status: string; revision: number } | undefined;
+  if (row === undefined) return false;
+  const expected = expectedResolutionStatus(status, event, expect);
+  const active = event.channel === 'import' && expected !== 'active' ? ' or active' : '';
+  const revision = expect.revision === undefined ? '' : ` at revision ${expect.revision}`;
+  return { error: 'stale', ...row,
+    reason: `source is ${row.status} at revision ${row.revision}; expected ${expected}${active}${revision}` };
+}
+
+/** Content edits use the spore's revision writer, including edits that leave its status active. */
+export async function updateSporeContent(
+  db: RelationalStore, scope: ReadScope, id: string, content: string, now: number,
+): Promise<boolean> {
+  const result = await db.prepare(`UPDATE spores SET content = ?, revision = revision + 1, updated_at = ?
+    WHERE project_id = ? AND id = ? AND content <> ? RETURNING id`).bind(content, now, scope.projectId, id, content).all();
+  return result.results.length === 1;
 }
 
 /**
@@ -424,31 +472,24 @@ export async function listSupersededSporeIds(
 }
 
 /**
- * Consolidate sources into one wisdom spore: the wisdom row and, for every
- * source, its status move and its resolution event, in one batch — a caller
- * cannot leave a wisdom spore with half its sources still active, and a
- * source already moved by another writer is left as it is.
+ * Record one wisdom spore and independently move each current active source,
+ * with an event only for each successful move, in one atomic batch.
  */
 export async function consolidateSpores(
   db: RelationalStore,
   scope: ReadScope,
   wisdom: SporeInsert,
-  sources: readonly string[],
+  sources: readonly (string | SporeSource)[],
   event: Omit<ResolutionEventInsert, 'id' | 'sporeId' | 'action' | 'newSporeId'>,
   now: number,
 ): Promise<{ wisdom: SporeRow | null; consolidated: number }> {
   const insert = sporeInsert(db, scope, wisdom);
-  const moves = sources.flatMap((sporeId) => [
-    db.prepare(`UPDATE spores SET status = 'consolidated', updated_at = ? WHERE project_id = ? AND id = ? AND status = 'active' RETURNING id`)
-      .bind(now, scope.projectId, sporeId),
-    db.prepare(`INSERT INTO resolution_events
-        (project_id, id, agent_id, spore_id, action, new_spore_id, reason, session_id, author, provenance_kind, provenance_ref, created_at)
-        SELECT ?, ?, ?, ?, 'consolidate', ?, ?, ?, ?, ?, ?, ?
-         WHERE EXISTS (SELECT 1 FROM spores WHERE project_id = ? AND id = ? AND status = 'consolidated' AND updated_at = ?)`)
-      .bind(scope.projectId, crypto.randomUUID(), event.agentId, sporeId, wisdom.id, event.reason, event.sessionId, event.author,
-        event.provenance?.kind ?? null, event.provenance?.ref ?? null, event.createdAt,
-        scope.projectId, sporeId, now),
-  ]);
+  const moves = sources.flatMap(source => {
+    const { id, revision } = typeof source === 'string' ? { id: source, revision: undefined } : source;
+    return resolutionStatements(db, scope, 'consolidated', {
+      ...event, id: crypto.randomUUID(), sporeId: id, action: 'consolidate', newSporeId: wisdom.id,
+    }, now, { revision });
+  });
   const results = await db.batch([insert, ...moves]);
   const consolidated = moves.filter((_, i) => i % 2 === 0 && results[1 + i].results.length === 1).length;
   return { wisdom: (results[0].results[0] as SporeRow | undefined) ?? null, consolidated };

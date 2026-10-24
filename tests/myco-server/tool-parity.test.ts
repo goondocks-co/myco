@@ -36,6 +36,22 @@ const opsOf = (def: { inputSchema: { properties: Record<string, unknown> } }): s
 };
 
 describe('tool parity', () => {
+  it('lists object first in every tool schema union that includes object', () => {
+    const visit = (value: unknown, path: string): void => {
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => visit(item, `${path}[${index}]`));
+      } else if (typeof value === 'object' && value !== null) {
+        for (const [key, entry] of Object.entries(value)) {
+          if (key === 'type' && Array.isArray(entry) && entry.includes('object')) {
+            expect({ path, first: entry[0] }).toEqual({ path, first: 'object' });
+          }
+          visit(entry, path + '.' + key);
+        }
+      }
+    };
+    for (const definition of [...TOOL_DEFINITIONS, ...RUN_DEFINITIONS, ...externalDefinitions(), ...FROZEN_DEFINITIONS]) visit(definition.inputSchema, definition.name);
+  });
+
   it('excepts the revised run acknowledgement property while preserving the frozen member contract', () => {
     const revisedProperties = { myco_run_prompts: ['served_id'] };
     const current = RUN_DEFINITIONS.find(def => def.name === 'myco_run_prompts')!;

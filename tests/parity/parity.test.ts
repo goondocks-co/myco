@@ -26,12 +26,12 @@ import { sessionCommitsParity } from './scenarios/session-commits.ts';
 import { sessionArtifactsParity } from './scenarios/session-artifacts.ts';
 import { plans } from './scenarios/plans.ts';
 import { plansAtScale } from './scenarios/plans-at-scale.ts';
-import { spores } from './scenarios/spores.ts';
+import { spores, guardedSpores } from './scenarios/spores.ts';
 import { recall } from './scenarios/recall.ts';
 import { receiptSnapshots } from './scenarios/receipt-snapshots.ts';
 import { tick } from './scenarios/tick.ts';
 import { importParity } from './scenarios/import.ts';
-import { legacyImportParity } from './scenarios/legacy-import.ts';
+import { legacyImportParity, legacySporeResolution } from './scenarios/legacy-import.ts';
 import { dispatchQueue } from './scenarios/dispatch-queue.ts';
 import { scheduledTasks } from './scenarios/scheduled-tasks.ts';
 import { cortex } from './scenarios/cortex.ts';
@@ -87,7 +87,7 @@ import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-
 import { PARITY_PLAN_PREFIX, parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import durations from '../../scripts/test-durations.json';
 
-const scenarios = [viewStoreInert, extractionCoverage, hookPlacement, receiptSnapshots, sessionCitation, runnerSignIn, latestD1Upgrade, setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, repositories, repositoryFailure, canopy, sessionsTitling, sessionTurns, sessionCommitsParity, sessionArtifactsParity, sessionActivityParity, sessionLineageParity, plans, plansAtScale, spores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, searchPaging, grants, importParity, legacyImportParity, workerWire, codexRecording, transcriptReread, recordIdentity, transcriptBacklog, transcriptRepairPriority, transcriptLiveService, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, kpiDeliveries, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
+const scenarios = [viewStoreInert, extractionCoverage, hookPlacement, receiptSnapshots, sessionCitation, runnerSignIn, latestD1Upgrade, setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, repositories, repositoryFailure, canopy, sessionsTitling, sessionTurns, sessionCommitsParity, sessionArtifactsParity, sessionActivityParity, sessionLineageParity, plans, plansAtScale, spores, guardedSpores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, searchPaging, grants, importParity, legacyImportParity, legacySporeResolution, workerWire, codexRecording, transcriptReread, recordIdentity, transcriptBacklog, transcriptRepairPriority, transcriptLiveService, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, kpiDeliveries, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {
