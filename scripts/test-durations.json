@@ -1,5 +1,7 @@
 {
   "sources": [
+    "local: #1204 correction1 pinned Bun1.4.0 darwin-arm64; focused six-file recovery run135pass/871 assertions measured68080ms /68145ms runner. Runtime source12481.50ms, bundle10179.18ms, persisted resume15355.22ms, abandoned upload8666.97ms sum46682.87ms;48000ms runtime file weight covers measurement plus startup. Existing core/boundary/object CI allowances retained; no new test file or parity scenario. Reconcile probe12parts with8s fake-clock reads is part of recovery-producer.test.ts. Restored135-test run measured20150ms /20170ms runner; the observed maximum runtime-file allowance is retained.",
+    "local: #1204 pinned Bun1.4.0 darwin-arm64; final focused four-file recovery run measured52740ms /52797ms runner. Four workerd/local-R2 contracts measured source9318ms, deployable bundle10023ms, persisted mid-part resume16549ms, abandoned-upload diagnostics10291ms (46181ms sum);47000ms file weight covers this measured maximum plus startup. Earlier runtime sums35980ms and29523ms. Core/boundary/checkpoint weights2000/2000/4000ms retain the measured deadline/cancellation allowances. Schema and staging suites measured1530ms /1664ms runner. No new parity scenario; full existing native/Cloudflare parity required.",
     "local: vault evolution PR 1 corrections 1 and 2, pinned Bun 1.4.0 and SQLite 3.53. The renamed tests/myco-server/titling-ceilings.test.ts ran two tests in 197.11ms summed test time (192.97ms and 4.14ms) in the eight-file focused run; its existing 946ms weight moved from extraction-ramp.test.ts and covers twice measured tests plus startup. Added stale-attempt, cutover attribution and pause-refusal assertions in existing files; no new named parity scenario.",
     "local: vault evolution PR 1 rebase on 7b44e3da7/schema 101, pinned Bun 1.4.0 and worktree SQLite 3.53. Latest emitted 0102 D1 upgrade including FK-descendant fixture and omission probe passed in 29689ms with 117ms scenario execution; 70000ms weight covers twice dedicated boot/process wall plus startup. Upgrade helper 7 tests measured 1093ms; 3500ms covers twice plus startup. Six pause/clock/queue/member/guarded-spore/legacy-spore scenarios passed 12 native/local-D1 cases in 60345ms; existing per-scenario weights retained. No new test file or scenario in this rebase.",
     "local: vault evolution PR 1 operator cutover update, pinned Bun 1.4.0 and worktree SQLite 3.53. npm test -- tests/myco-server/learning-cutover.test.ts measured 441ms wall for 4 tests; final cutover/migration 10 tests including manual-dispatch counterexample measured 3830ms. Existing cutover 1500ms/migration 12000ms weights retained above twice measured test time plus startup. Frozen old settings/schedule files are helpers, not new test files or parity scenarios.",
@@ -592,11 +594,12 @@
     "tests/myco-server/recovery-admission.test.ts": 813,
     "tests/myco-server/recovery-alarm-runtime.test.ts": 16841,
     "tests/myco-server/recovery-configuration.test.ts": 6,
+    "tests/myco-server/recovery-download-runtime.test.ts": 48000,
     "tests/myco-server/recovery-hold-operator.test.ts": 407,
     "tests/myco-server/recovery-inventory.test.ts": 2130,
-    "tests/myco-server/recovery-producer-boundaries.test.ts": 575,
-    "tests/myco-server/recovery-producer-object.test.ts": 971,
-    "tests/myco-server/recovery-producer.test.ts": 20,
+    "tests/myco-server/recovery-producer-boundaries.test.ts": 2000,
+    "tests/myco-server/recovery-producer-object.test.ts": 4000,
+    "tests/myco-server/recovery-producer.test.ts": 2000,
     "tests/myco-server/recovery-schedule.test.ts": 719,
     "tests/myco-server/recovery-schema-agreement.test.ts": 34,
     "tests/myco-server/recovery-staging-stages.test.ts": 283,

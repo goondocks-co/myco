@@ -9,7 +9,7 @@ import type {
 } from '../../core/recovery-producer.js';
 import { PRODUCER_LIMITS, stagedSqlKey, TransientProducerFailure, type RecoveryAdmission } from '../../core/recovery-producer.js';
 import { readHostedRecoveryConfiguration, HOSTED_RECOVERY_CREDENTIAL_NAMES, STAGING_OBJECTS_DIRECTORY, stagingPath, type HostedRecoveryConfiguration } from '../../core/recovery-staging.js';
-import { discardStoredBody, streamStoredObject } from '../../core/stored-object.js';
+import { discardStoredBody, hashStoredObject, streamStoredObject } from '../../core/stored-object.js';
 import { r2RefusedDigest } from './r2-digest.js';
 import { readD1ExportAnswer, transientExportStatus } from '@goondocks/myco-shared/d1-export';
 
@@ -238,52 +238,70 @@ export function cloudflareProducerPorts(
         case 'unknown': return { status: 'error', bookmark: read.bookmark, failure: failure(read.cause, read.status, read.transient) };
       }
     },
-    async readRange(url, offset, length) {
+    async readRange(url, offset, length, signal) {
       // The signed URL is a capability of its own: it is fetched with no Authorization header.
       let response: Response;
       try {
-        response = await fetch(url, { signal: deadline(), headers: { range: `bytes=${offset}-${offset + length - 1}`, 'accept-encoding': 'identity' } });
+        response = await fetch(url, { signal: signal ?? deadline(), headers: { range: `bytes=${offset}-${offset + length - 1}`, 'accept-encoding': 'identity' } });
       } catch {
         return { status: 'error', failure: TRANSPORT };
       }
-      if ([401, 403, 404, 410].includes(response.status)) return { status: 'gone' };
-      if (response.status === 200) return { status: 'unranged' };
-      if (response.status !== 206) {
-        return { status: 'error', failure: failure('http', response.status, transientStatus(response.status)) };
-      }
-      const encoding = (response.headers.get('content-encoding') ?? '').trim().toLowerCase();
-      if (encoding !== '' && encoding !== 'identity') {
-        if (response.body !== null) await discardStoredBody(response.body);
-        return { status: 'error', failure: failure('encoding', response.status, true) };
-      }
-      const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
-      if (range === null || Number(range[1]) !== offset) {
-        return { status: 'error', failure: failure('protocol', response.status, false) };
-      }
-      let bytes: Uint8Array;
+      let handedOff = false;
       try {
-        bytes = new Uint8Array(await response.arrayBuffer());
-      } catch {
-        // The headers arrived and the body did not, leaving the range unread, so the attempt reads it again.
-        return { status: 'error', failure: TRANSPORT };
+        if ([401, 403, 404, 410].includes(response.status)) return { status: 'gone' };
+        if (response.status === 200) return { status: 'unranged' };
+        if (response.status !== 206) {
+          return { status: 'error', failure: failure('http', response.status, transientStatus(response.status)) };
+        }
+        const encoding = (response.headers.get('content-encoding') ?? '').trim().toLowerCase();
+        if (encoding !== '' && encoding !== 'identity') {
+          return { status: 'error', failure: failure('encoding', response.status, true) };
+        }
+        const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
+        const start = Number(range?.[1]);
+        const end = Number(range?.[2]);
+        const total = Number(range?.[3]);
+        const requestedEnd = offset + length - 1;
+        if (range === null || ![start, end, total, requestedEnd].every(Number.isSafeInteger) || start !== offset
+          || end < start || end >= total || end !== Math.min(requestedEnd, total - 1) || response.body === null) {
+          return { status: 'error', failure: failure('protocol', response.status, false) };
+        }
+        const answer: RangeAnswer = {
+          status: 'part',
+          bytes: response.body!,
+          length: end - start + 1,
+          total,
+          etag: response.headers.get('etag'),
+        };
+        handedOff = true;
+        return answer;
+      } finally {
+        if (!handedOff && response.body !== null) await discardStoredBody(response.body);
       }
-      return {
-        status: 'part',
-        bytes,
-        length: Number(range[2]) - offset + 1,
-        total: Number(range[3]),
-        etag: response.headers.get('etag'),
-      };
     },
-    async beginUpload(prefix) {
-      return stored(async () => (await bucket.createMultipartUpload(stagedSqlKey(prefix))).uploadId);
+    async beginUpload(prefix, signal) {
+      const upload = await stored(() => bucket.createMultipartUpload(stagedSqlKey(prefix)));
+      if (signal?.aborted) {
+        await stored(() => bucket.resumeMultipartUpload(stagedSqlKey(prefix), upload.uploadId).abort());
+        signal.throwIfAborted();
+      }
+      return upload.uploadId;
     },
-    async writePart(prefix, uploadId, part, body, length) {
-      const bytes = body instanceof Uint8Array ? body : new Uint8Array(await new Response(body).arrayBuffer());
-      // A part that is not the length the range answered is this attempt's own failure, never a retry.
-      if (bytes.byteLength !== length) throw new Error('a staged part is not the length its range answered');
-      const written = await stored(() => bucket.resumeMultipartUpload(stagedSqlKey(prefix), uploadId).uploadPart(part, bytes));
-      return { sha256: await digestOf(bytes), etag: written.etag };
+    async writePart(prefix, uploadId, part, body, length, signal = deadline()) {
+      const stream = body instanceof Uint8Array
+        ? new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(body); controller.close(); } })
+        : body;
+      const metered = streamStoredObject(stream, length, signal, true);
+      const declared = typeof FixedLengthStream === 'function' ? metered.stream.pipeThrough(new FixedLengthStream(length), { signal }) : metered.stream;
+      try {
+        const written = await stored(() => bucket.resumeMultipartUpload(stagedSqlKey(prefix), uploadId).uploadPart(part, declared));
+        signal.throwIfAborted();
+        const held = metered.result();
+        if (held.overrun || !held.finished || held.bytes !== length) throw new Error('a staged part is not the length its range answered');
+        return { sha256: held.sha256!, etag: written.etag };
+      } finally {
+        await metered.release();
+      }
     },
     async completeUpload(prefix, uploadId, parts: AttemptPart[]) {
       try {
@@ -301,11 +319,11 @@ export function cloudflareProducerPorts(
     async abortUpload(prefix, uploadId) {
       await stored(() => bucket.resumeMultipartUpload(stagedSqlKey(prefix), uploadId).abort());
     },
-    async readStoredRange(prefix, offset, length) {
+    async readStoredRange(prefix, offset, length, signal) {
       return stored(async () => {
         const object = await bucket.get(stagedSqlKey(prefix), { range: { offset, length } });
         if (object === null) return null;
-        return { sha256: await digestOf(new Uint8Array(await new Response(object.body).arrayBuffer())) };
+        return hashStoredObject(object.body, length, signal);
       });
     },
     async storedSize(prefix) {
