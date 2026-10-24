@@ -18,6 +18,7 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { sqliteEnv } from './helpers/fixtures.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { recoveryScheduleOf } from '@myco-server-worker/core/recovery-schedule.js';
+import { newInventoryProgress } from '@myco-server-worker/core/recovery-inventory.js';
 
 function storage(sql: Database, signed: { delete?: (key: string) => Promise<boolean> } = {}) {
   return {
@@ -82,6 +83,31 @@ function producerOver(
 
 const admission = (holdToken: string): RecoveryAdmission => ({
   holdToken, tables: ['example'], schema: '[]', captured: { example: 'CREATE TABLE example(id INTEGER)' }, startedBy: 'mem_owner',
+});
+
+it('commits progress, clears its operation and resets consecutive transients in one transaction', async () => {
+  const sql = new Database(':memory:');
+  try {
+    const producer = producerOver(sql, []);
+    const first = await producer.admit(admission('atomic-part'));
+    const checkpoint = (producer as unknown as { checkpoint(): import('@myco-server-worker/core/recovery-producer.js').AttemptCheckpoint }).checkpoint();
+    checkpoint.update(first.attempt!, { stage: 'download', attempts: 4, inFlight: { name: 'upload part 1', startedAt: Date.now() } });
+    sql.exec(`CREATE TRIGGER part_operation BEFORE UPDATE OF download_offset ON attempts
+      WHEN NEW.download_offset > OLD.download_offset AND (NEW.in_flight IS NOT NULL OR NEW.attempts <> 0)
+      BEGIN SELECT RAISE(ABORT, 'a committed part still carries an operation'); END`);
+    const scan = JSON.parse((sql.query('SELECT scan FROM attempts').get() as { scan: string }).scan);
+    checkpoint.recordPart(first.attempt!, { part: 1, bytes: 4, sha256: 'a'.repeat(64), etag: 'e1' }, 4, { defined: {}, scan, scanBytes: '' });
+    expect((await producer.status()).inFlight).toBeNull();
+    expect((await producer.status()).staged!.downloadedBytes).toBe(4);
+    expect((await producer.status()).transientSpent).toBe(0);
+    checkpoint.update(first.attempt!, { stage: 'inventory', attempts: 4 });
+    const object = { key: 'backups/fixture.jsonl', source: 'backups/fixture.jsonl', bytes: 4, sha256: 'a'.repeat(64) };
+    checkpoint.recordInventory(first.attempt!, { ...newInventoryProgress(), parts: 1, bytes: 4 }, [object]);
+    expect((await producer.status()).transientSpent).toBe(0);
+    checkpoint.update(first.attempt!, { stage: 'copy', attempts: 4 });
+    checkpoint.recordCopied(first.attempt!, object.key, { bytes: 4, sha256: object.sha256 });
+    expect((await producer.status()).transientSpent).toBe(0);
+  } finally { sql.close(); }
 });
 
 it('answers an admission replayed with a carried token with its own attempt at every stage and across a restart, staging nothing again', async () => {
@@ -348,6 +374,9 @@ it('fails an attempt that commits no checkpoint for the stall bound, durably, an
   sql.run("UPDATE attempts SET stage = 'copy', last_progress_at = ? WHERE id = ?", [Date.now() - PRODUCER_STALL_MS + 60_000, first.attempt]);
   expect((await producer.settleHold('token-stall')).state).toBe('open');
   sql.run("UPDATE attempts SET last_progress_at = ?, upload_id = 'upload-in-flight' WHERE id = ?", [Date.now() - PRODUCER_STALL_MS - 1, first.attempt]);
+  const checkpoint = (producer as unknown as { checkpoint(): import('@myco-server-worker/core/recovery-producer.js').AttemptCheckpoint }).checkpoint();
+  checkpoint.update(first.attempt!, { inFlight: { name: 'upload part 7', startedAt: Date.now() } });
+  expect((await producer.status()).inFlight?.name).toBe('upload part 7');
   const logged: string[] = [];
   const log = console.log;
   console.log = (line: unknown) => { logged.push(String(line)); };
@@ -358,11 +387,10 @@ it('fails an attempt that commits no checkpoint for the stall bound, durably, an
   // and the refusal announced with what its clean-up reached.
   expect(sql.query('SELECT stage, error, upload_id FROM attempts WHERE id = ?').get(first.attempt!)).toEqual({ stage: 'failed', error: 'producer_stalled', upload_id: null });
   const announced = logged.map((line) => JSON.parse(line) as Record<string, unknown>).find((event) => event.kind === 'recovery_attempt_failed');
-  expect(announced).toMatchObject({ refusal: 'producer_stalled', attempt: first.attempt, stage: 'copy', signedUrlCleared: true });
+  expect(announced).toMatchObject({ refusal: 'producer_stalled', attempt: first.attempt, stage: 'copy', signedUrlCleared: true, operation: 'upload part 7', operationStartedAt: expect.any(Number) });
   expect(typeof announced?.uploadAborted).toBe('boolean');
 
   // A continuation step already in flight completes after the terminalization: none of its writes revive the attempt.
-  const checkpoint = (producer as unknown as { checkpoint(): import('@myco-server-worker/core/recovery-producer.js').AttemptCheckpoint }).checkpoint();
   checkpoint.update(first.attempt!, { stage: 'complete', completedAt: Date.now() });
   checkpoint.recordCopied(first.attempt!, 'proj_1/key', { sha256: 'a'.repeat(64), bytes: 1 });
   checkpoint.recordPart(first.attempt!, { part: 1, bytes: 1, sha256: 'b'.repeat(64), etag: 'e' }, 1, { defined: {}, scan: JSON.parse((sql.query('SELECT scan FROM attempts').get() as { scan: string }).scan), scanBytes: '' } as never);

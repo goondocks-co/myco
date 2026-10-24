@@ -110,3 +110,30 @@ export function streamStoredObject(
     },
   };
 }
+
+export type StoredObjectHash = { sha256: string } | { lengthMismatch: true };
+
+/** Hashes a stored body chunk by chunk, refusing length disagreements and cancelling it when its caller stops waiting. */
+export async function hashStoredObject(
+  body: ReadableStream<Uint8Array>, expectedBytes: number, signal: AbortSignal,
+): Promise<StoredObjectHash> {
+  if (signal.aborted) {
+    await discardStoredBody(body);
+    signal.throwIfAborted();
+  }
+  const metered = streamStoredObject(body, expectedBytes, signal, true);
+  const reader = metered.stream.getReader();
+  try {
+    while (!(await reader.read()).done) signal.throwIfAborted();
+    signal.throwIfAborted();
+    const held = metered.result();
+    if (held.overrun || !held.finished || held.bytes !== expectedBytes) return { lengthMismatch: true };
+    return { sha256: held.sha256! };
+  } catch (error) {
+    signal.throwIfAborted();
+    if (metered.result().overrun) return { lengthMismatch: true };
+    throw error;
+  } finally {
+    try { await metered.release(); } finally { reader.releaseLock(); }
+  }
+}

@@ -32,11 +32,129 @@ const bucket = () => ({
   async createMultipartUpload() { return { uploadId: 'u1' }; },
   resumeMultipartUpload() {
     return {
-      async uploadPart() { return { etag: 'e1' }; },
+      async uploadPart(_part: number, body: ReadableStream<Uint8Array> | Uint8Array) {
+        if (body instanceof ReadableStream) await new Response(body).arrayBuffer();
+        return { etag: 'e1' };
+      },
       async complete() { return { size: 0 }; },
       async abort() {},
     };
   },
+});
+
+it('returns a ranged body before consuming it and uploads it as a bounded stream', async () => {
+  const original = globalThis.fetch;
+  let pulled = 0;
+  globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (pulled === 4) { controller.close(); return; }
+      pulled += 1;
+      controller.enqueue(new Uint8Array(64 * 1024));
+    },
+  }, { highWaterMark: 0 }), { status: 206, headers: { 'content-range': 'bytes 0-262143/262144' } })) as unknown as typeof fetch;
+  try {
+    const store = bucket();
+    store.resumeMultipartUpload = () => ({ ...bucket().resumeMultipartUpload(), async uploadPart(_part, body) {
+      expect(pulled).toBeLessThanOrEqual(1);
+      if (!(body instanceof ReadableStream)) throw new Error('the upload must remain streamed');
+      const reader = body.getReader();
+      try {
+        expect((await reader.read()).done).toBe(false);
+        expect(pulled).toBeLessThanOrEqual(2);
+        while (!(await reader.read()).done) {}
+      } finally { reader.releaseLock(); }
+      return { etag: 'e1' };
+    } });
+    const ports = cloudflareProducerPorts(target(), store, source());
+    const answer = await ports.readRange('https://signed.example/one', 0, 256 * 1024);
+    expect(answer.status).toBe('part');
+    if (answer.status !== 'part') throw new Error('expected a ranged body');
+    expect(answer.bytes).toBeInstanceOf(ReadableStream);
+    expect(pulled).toBeLessThanOrEqual(1);
+    const written = await ports.writePart('staging/1', 'u1', 1, answer.bytes, answer.length);
+    expect(written.sha256).toBe(new Bun.CryptoHasher('sha256').update(new Uint8Array(256 * 1024)).digest('hex'));
+    expect(pulled).toBe(4);
+  } finally { globalThis.fetch = original; }
+});
+
+it('aborts an upload allocated after its caller stopped waiting', async () => {
+  let land!: (upload: { uploadId: string }) => void;
+  let aborted = 0;
+  const store = bucket();
+  store.createMultipartUpload = () => new Promise(resolve => { land = resolve; });
+  const base = store.resumeMultipartUpload;
+  store.resumeMultipartUpload = () => ({ ...base(), abort: async () => { aborted += 1; } });
+  const controller = new AbortController();
+  const creating = cloudflareProducerPorts(target(), store, source()).beginUpload('staging/1', controller.signal);
+  controller.abort();
+  land({ uploadId: 'late-upload' });
+  await expect(creating).rejects.toBeDefined();
+  expect(aborted).toBe(1);
+});
+
+it('hashes a stored range as a stream and cancels its body when reconciliation stops waiting', async () => {
+  const bytes = new Uint8Array(256 * 1024).fill(3);
+  const store = { ...bucket(), async get(): Promise<{ body: ReadableStream<Uint8Array>; size: number }> {
+    return { body: new Blob([bytes]).stream(), size: bytes.length };
+  } };
+  const ports = cloudflareProducerPorts(target(), store, source());
+  const signal = new AbortController();
+  expect(await ports.readStoredRange('staging/1', 0, bytes.length, signal.signal)).toEqual({
+    sha256: new Bun.CryptoHasher('sha256').update(bytes).digest('hex'),
+  });
+  let sourceController!: ReadableStreamDefaultController<Uint8Array>;
+  let cancelled = false;
+  store.get = async () => ({ size: bytes.length, body: new ReadableStream<Uint8Array>({
+    start(controller) { sourceController = controller; controller.enqueue(bytes.subarray(0, 4)); },
+    cancel() { cancelled = true; },
+  }) });
+  const reading = ports.readStoredRange('staging/1', 0, bytes.length, signal.signal);
+  try {
+    await Bun.sleep(5);
+    signal.abort();
+    const result = await Promise.race([reading.then(() => 'resolved', () => 'rejected'), Bun.sleep(200).then(() => 'pending')]);
+    expect(result).toBe('rejected');
+    expect(cancelled).toBe(true);
+  } finally {
+    if (!cancelled) sourceController.close();
+    await reading.catch(() => undefined);
+  }
+});
+
+it('answers stored range length disagreements as integrity refusals', async () => {
+  for (const length of [3, 5]) {
+    const store = { ...bucket(), async get() { return { body: new Blob([new Uint8Array(length)]).stream(), size: length }; } };
+    const answer = await cloudflareProducerPorts(target(), store, source()).readStoredRange('staging/1', 0, 4, new AbortController().signal);
+    expect(answer).toEqual({ lengthMismatch: true });
+  }
+});
+
+it('refuses and cancels a short range that is not the export tail', async () => {
+  const original = globalThis.fetch;
+  let cancelled = false;
+  globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+    cancel() { cancelled = true; },
+  }), { status: 206, headers: { 'content-range': 'bytes 0-2/8' } })) as unknown as typeof fetch;
+  try {
+    const answer = await cloudflareProducerPorts(target(), bucket(), source()).readRange('https://signed.example/one', 0, 4);
+    expect(answer).toEqual({ status: 'error', failure: { cause: 'protocol', status: 206, transient: false } });
+    expect(cancelled).toBe(true);
+  } finally { globalThis.fetch = original; }
+});
+
+it('releases every refused response before a ranged body is handed to its caller', async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const status of [200, 403, 429]) {
+      let cancelled = false;
+      globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+        cancel() { cancelled = true; },
+      }), { status })) as unknown as typeof fetch;
+      const answer = await cloudflareProducerPorts(target(), bucket(), source()).readRange('https://signed.example/one', 0, 4);
+      expect(answer.status).toBe(status === 200 ? 'unranged' : status === 403 ? 'gone' : 'error');
+      expect(cancelled).toBe(true);
+    }
+  } finally { globalThis.fetch = original; }
 });
 
 it('sends the account credential to the provider API and to nothing else', async () => {
@@ -168,7 +286,10 @@ it('treats an answer that stopped mid-body as a request worth another attempt', 
       status: 206, headers: { 'content-range': 'bytes 0-3/4', etag: 'w/"one"' },
     })) as unknown as typeof fetch;
     const range = await cloudflareProducerPorts(target(), bucket(), source()).readRange('https://signed.example/one', 0, 4);
-    expect(range).toEqual({ status: 'error', failure: { cause: 'transport', status: null, transient: true } });
+    expect(range.status).toBe('part');
+    if (range.status !== 'part') throw new Error('expected a streamed part');
+    await expect(cloudflareProducerPorts(target(), bucket(), source()).writePart('staging/1', 'u1', 1, range.bytes, range.length))
+      .rejects.toBeInstanceOf(TransientProducerFailure);
 
     // The same for the export request's own answer.
     globalThis.fetch = (async () => new Response(cut(), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
