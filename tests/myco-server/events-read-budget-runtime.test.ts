@@ -1,3 +1,5 @@
+import { observeStatement } from '../helpers/statement-recorder.js';
+import { significantRead } from '../helpers/view-read-contract.js';
 import { preparePromptAcknowledgement } from './helpers/extraction.js';
 import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -9,7 +11,7 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { LAST_ACTIVITY_SQL, LAST_REQUEST_KEY, lastActivityAt } from '@myco-server-worker/core/activity.js';
 import { RETENTION_CANDIDATES_SQL, pruneTerminalRuns } from '@myco-server-worker/core/runs.js';
-import { listUnprocessedPrompts, newestUnprocessedSession, newestUnprocessedSessionQuery, READ_ORIGINS } from '@myco-server-worker/read/prompts.js';
+import { listUnprocessedPrompts, newestUnprocessedSession, READ_ORIGINS } from '@myco-server-worker/read/prompts.js';
 import { listProjects, listProjectsSql } from '@myco-server-worker/read/sessions.js';
 import { notTombstonedSql } from '@myco-server-worker/core/tombstones.js';
 import { sessionMaterialReadySql } from '@myco-server-worker/read/material-readiness.js';
@@ -203,10 +205,14 @@ it('D1 recurring history readers keep the existing rows-read budget at both corp
       const sessionBinds = ['p', ...READ_ORIGINS, 'p'];
       totals['session-selection']!.before.push(await read(() => measured.db.prepare(OLD_SESSION_SQL).bind(...sessionBinds).first()));
       totals['session-selection']!.after.push(await read(() => newestUnprocessedSession(measured.db, { projectId: 'p' })));
-      const oldScheduleDb: RelationalStore = { ...measured.db, prepare: sql => sql === newestUnprocessedSessionQuery({ projectId: 'p' }).sql
-        ? { ...measured.db.prepare(OLD_SESSION_SQL), bind: (project) => measured.db.prepare(OLD_SESSION_SQL).bind(project, ...READ_ORIGINS, project) }
+      const selection = await observeStatement(measured.db, db => newestUnprocessedSession(db, { projectId: 'p' }));
+      let scheduleSubstitutions = 0;
+      const oldScheduleSelection = measured.db.prepare(OLD_SESSION_SQL);
+      const oldScheduleDb: RelationalStore = { ...measured.db, prepare: sql => sql === selection.sql
+        ? (++scheduleSubstitutions, { ...oldScheduleSelection, bind: (project) => oldScheduleSelection.bind(project, ...READ_ORIGINS, project) })
         : measured.db.prepare(sql) };
       totals['schedule-precondition']!.before.push(await read(() => listUnprocessedPrompts(oldScheduleDb, { projectId: 'p' }, { limit: 1 })));
+      expect(scheduleSubstitutions).toBeGreaterThan(0);
       totals['schedule-precondition']!.after.push(await read(async () => expect(await hasUnprocessedPrompts(measured.db, 'p')).toBe(true)));
       await d1.prepare('UPDATE sessions SET ended_at=NULL').run();
       totals['empty-selection']!.before.push(await read(() => measured.db.prepare(OLD_SESSION_SQL).bind(...sessionBinds).first()));
@@ -223,7 +229,8 @@ it('D1 recurring history readers keep the existing rows-read budget at both corp
         const activity = await lastActivityAt(db);
         await db.prepare(LAST_ACTIVITY_SQL).bind(LAST_REQUEST_KEY).all();
         await db.prepare(OLD_SESSION_SQL).bind(...sessionBinds).all();
-        const candidateQuery = newestUnprocessedSessionQuery({ projectId: 'p' });
+        const candidateQuery = await observeStatement(db, db => newestUnprocessedSession(db, { projectId: 'p' }));
+        candidateQuery.sql = significantRead(candidateQuery.sql);
         await db.prepare(candidateQuery.sql).bind(...candidateQuery.binds).all();
         if (db !== nativeDb) for (const [index] of HISTORY_INDEXES) await db.prepare(`DROP INDEX IF EXISTS ${index}`).run();
         expect((await db.prepare(RETENTION_CANDIDATES_SQL).bind(size, 10).all()).results).toEqual(selected);
@@ -233,7 +240,6 @@ it('D1 recurring history readers keep the existing rows-read budget at both corp
       totals['finished-run']!.before.push(await read(() => pruneTerminalRuns(measured.db, 0, 500)));
       totals['last-activity']!.before.push(await read(() => lastActivityAt(measured.db)));
       for (const [, sql] of HISTORY_INDEXES) await d1.prepare(sql).run();
-      const selection = newestUnprocessedSessionQuery({ projectId: 'p' });
       for (const db of stores) for (const [sql, binds, indexes] of [
         [selection.sql, selection.binds, ['idx_session_read_extraction']],
         [listProjectsSql(), [], ['idx_session_read_activity']],

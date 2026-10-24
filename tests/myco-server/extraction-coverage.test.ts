@@ -1,3 +1,5 @@
+import {statementRecorder} from '../helpers/statement-recorder.js';
+import {readTag} from '../helpers/view-read-contract.js';
 import { describe, expect, it } from 'bun:test';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { ensureAgent, recordDispatch, pruneTerminalRuns } from '@myco-server-worker/core/runs.js';
@@ -170,17 +172,16 @@ describe('served extraction coverage', () => {
       expect(restored.sqlite.query("SELECT eligible_prompts FROM session_read_facts WHERE project_id='proj_1' ORDER BY session_id").all()).toEqual([{ eligible_prompts: 1 }, { eligible_prompts: 1 }]);
       restored.sqlite.run("UPDATE session_read_facts SET eligible_prompts=18 WHERE project_id='proj_1'");
       let recounts = 0;
-      const interrupted = { prepare(sql: string) {
-        if (sql.startsWith('UPDATE session_read_facts SET eligible_prompts =')) { recounts++; throw new Error('interrupted recount'); }
-        return restored.db.prepare(sql);
-      }, batch: restored.db.batch };
+      const interrupted = statementRecorder(restored.db, {accounting:'native',prepared(event) {
+        if (event.operation === 'M46:prepareRestoredSessionUnread:0') { recounts++; throw new Error('interrupted recount'); }
+      }}).db;
       await expect(restoreArtifact(interrupted, options)).rejects.toThrow('interrupted recount');
       expect(recounts).toBe(1);
       expect(restored.sqlite.query("SELECT DISTINCT eligible_prompts FROM session_read_facts WHERE project_id='proj_1'").all()).toEqual([{ eligible_prompts: 18 }]);
       expect(restored.sqlite.query("SELECT next_row FROM backup_restore_progress WHERE table_name LIKE 'extraction-session-counters:%'").all()).toEqual([{ next_row: 0 }]);
       const before = restored.prepared.length;
       await restoreArtifact(restored.db, options);
-      expect(restored.prepared.slice(before).filter(sql => sql.startsWith('UPDATE session_read_facts SET eligible_prompts ='))).toHaveLength(1);
+      expect(restored.prepared.slice(before).filter(sql => readTag(sql)?.operation === 'M46:prepareRestoredSessionUnread:0')).toHaveLength(1);
       expect(restored.sqlite.query("SELECT eligible_prompts FROM session_read_facts WHERE project_id='proj_1' ORDER BY session_id").all()).toEqual([{ eligible_prompts: 1 }, { eligible_prompts: 1 }]);
       expect(restored.sqlite.query("SELECT next_row FROM backup_restore_progress WHERE table_name LIKE 'extraction-session-counters:%'").all()).toEqual([{ next_row: 1 }]);
     } finally { restored.sqlite.close(); f.sqlite.close(); }

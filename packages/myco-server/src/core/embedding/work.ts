@@ -1,7 +1,8 @@
+import { prepareEmbeddingUnwritten } from '../../read/view-store.js';
 import type { RelationalStore } from '../adapters.js';
 import { calibrationPending } from './hubness.js';
 import { calibrationModel } from './policy.js';
-import { embeddingWakeAt, retiringReceipt, unwrittenQuery } from './selection.js';
+import { embeddingWakeAt, retiringReceipt } from './selection.js';
 import { recordedWork, WORK_PREDICATE_VERSION } from './work-state.js';
 import { embeddingSweep } from './work-sweep.js';
 
@@ -27,8 +28,7 @@ export async function hasEmbeddingWork(db: RelationalStore, projectId: string, m
   const retained = [...new Set([model, ...writes, ...(scope.retain ?? [])])].sort();
   const pending = await recordedWork(db, projectId, model, 'embedding', JSON.stringify({ predicate: WORK_PREDICATE_VERSION, writes, retained }), now, async () => {
     for (const key of writes) {
-      const { sql, binds } = unwrittenQuery(projectId, key, now);
-      if (await db.prepare(sql).bind(...binds).first() !== null) return { pending: true };
+      if (await prepareEmbeddingUnwritten(db, projectId, key, now).first() !== null) return { pending: true };
     }
     if (await retiringReceipt(db, projectId, retained, now) !== null) return { pending: true };
     return { pending: false, wakeAt: await embeddingWakeAt(db, projectId, writes, now) };

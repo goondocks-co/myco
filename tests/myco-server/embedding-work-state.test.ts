@@ -1,7 +1,9 @@
+import { statementRecorder } from '../helpers/statement-recorder.js';
+import { prepareEmbeddingUnwritten, prepareEmbeddingSelection, prepareHubnessWork } from '@myco-server-worker/read/view-store.js';
 import { describe, expect, test } from 'bun:test';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
-import { calibrationPending, hubnessQueries } from '@myco-server-worker/core/embedding/hubness.js';
-import { retirementQueries, retiringReceipt, sourceSelectionQuery, unwrittenQuery } from '@myco-server-worker/core/embedding/selection.js';
+import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.js';
+import { retiringReceipt } from '@myco-server-worker/core/embedding/selection.js';
 import { INPUT_REFUSAL_RETRY_MS, embeddingFailureWakeAt, reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import { VECTOR_DELETE_CONFIRM_MS, VECTOR_DELETE_RETRY_MS } from '@myco-server-worker/core/embedding/provider.js';
 import { WORK_SWEEP_MIN_MS, WORK_SWEEP_PAGE, WORK_SWEEP_CONTINUE_MS } from '@myco-server-worker/core/embedding/work-state.js';
@@ -198,8 +200,12 @@ describe.each(['native', 'D1'])('%s embedding work journal', (target) => {
 
   test('selection arms use source identities and the new composite indexes', async () => {
     await withEmbeddingStore(target, async (db) => {
-      const queries = [...retirementQueries('p', [MODEL], NOW), unwrittenQuery('p', MODEL, NOW),
-        ...[false, true].map((stale) => sourceSelectionQuery('p', 'plan', MODEL, NOW, stale)), ...hubnessQueries('p', MODEL, NOW), ...lastTaskEntryQueries({ projectId: 'p' }, 'embedding-reconcile')];
+      const recording = statementRecorder(db, {accounting: target === 'native' ? 'native' : 'd1'});
+      await retiringReceipt(recording.db, 'p', [MODEL], NOW);
+      await prepareEmbeddingUnwritten(recording.db, 'p', MODEL, NOW).first();
+      for(const stale of [false,true]) await prepareEmbeddingSelection(recording.db, 'p', 'plan', MODEL, NOW, stale).first();
+      for(const statement of prepareHubnessWork(recording.db, 'p', MODEL, NOW)) await statement.first();
+      const queries = [...recording.statements, ...lastTaskEntryQueries({ projectId: 'p' }, 'embedding-reconcile')];
       const plans: string[] = [];
       for (const { sql, binds } of queries) {
         const details = (await db.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind(...binds).all<{ detail: string }>()).results.map((row) => row.detail).join('\n');
