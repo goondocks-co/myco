@@ -15,9 +15,10 @@ export function nodeGroupBudget(timeoutMs) {
 
 /** Allocate each recorded process's wall time to its files, including startup. */
 export function nodeDurationSamples(workload) {
-  return workload.runs.map(({ source, shards }) => {
+  return workload.runs.map(({ source, shardCount, shards }) => {
+    assert.ok(Number.isSafeInteger(shardCount) && shardCount > 0, `${source}: invalid recorded shard count`);
     const files = {};
-    assert.deepEqual(shards.map(shard => shard.shard).sort((left, right) => left - right), Array.from({ length: shards.length }, (_, index) => index + 1), `${source}: incomplete shard sequence`);
+    assert.deepEqual(shards.map(shard => shard.shard).sort((left, right) => left - right), Array.from({ length: shardCount }, (_, index) => index + 1), `${source}: incomplete node workload`);
     for (const { groups } of shards) for (const group of groups) {
       const total = Object.values(group.files).reduce((sum, milliseconds) => sum + milliseconds, 0);
       assert.ok(total > 0, `${source}: group needs positive recorded duration`);
@@ -68,7 +69,6 @@ export function mergeNodeDurationWeights(weights, workload) {
 export function assertNodeShardHeadroom(plans, timeoutMs, weights, workload) {
   const groupBudget = nodeGroupBudget(timeoutMs);
   const shardBudget = timeoutMs - timeoutMs / plans.length;
-  for (const run of workload.runs) assert.equal(run.shards.length, plans.length, `${run.source}: incomplete node workload`);
   const recorded = recordedNodeDurations(workload);
   for (const file of plans.flatMap(plan => plan.flatMap(group => group.files))) {
     assert.ok(Number.isFinite(weights[file]) && weights[file] > 0, `Node file needs an explicit duration weight: ${file}; add "${file}": <ms> to scripts/test-durations.json, using its measured npm test time.`);

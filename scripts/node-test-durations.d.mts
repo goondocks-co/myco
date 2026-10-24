@@ -4,6 +4,7 @@ export interface NodeWorkload {
   testRuns?: TestDurationRun[];
   runs: {
     source: string;
+    shardCount: number;
     shards: {
       shard: number;
       groups: {

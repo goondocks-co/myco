@@ -1,5 +1,5 @@
 {"runs":[
-{"source":"https://github.com/goondocks-co/myco/actions/runs/38710891740","shards":[
+{"source":"https://github.com/goondocks-co/myco/actions/runs/38710891740","shardCount":5,"shards":[
 {"shard":1,"groups":[
 {"label":"node env isolated 101","milliseconds":171380,"files":{"tests/scripts/run-test-command.test.ts":2087,"tests/scripts/make-dogfood.test.ts":454,"tests/scripts/run-bun-tests-guards.test.ts":168803}},
 {"label":"node env isolated 116","milliseconds":4864,"files":{"tests/server/rss-units.test.ts":136,"tests/server/runner.test.ts":3872,"tests/server/recovery-staging-materialize.test.ts":811}},
@@ -159,7 +159,7 @@
 {"label":"node env solo hooks-normalize","milliseconds":177,"files":{"tests/hooks/normalize.test.ts":141}}
 ]}
 ]},
-{"source":"https://github.com/goondocks-co/myco/actions/runs/38724215040","shards":[
+{"source":"https://github.com/goondocks-co/myco/actions/runs/38724215040","shardCount":5,"shards":[
 {"shard":1,"groups":[
 {"label":"node env isolated 101","milliseconds":150361,"files":{"tests/scripts/run-test-command.test.ts":1772,"tests/scripts/make-dogfood.test.ts":392,"tests/scripts/run-bun-tests-guards.test.ts":148164}},
 {"label":"node env isolated 116","milliseconds":4701,"files":{"tests/server/rss-units.test.ts":98,"tests/server/runner.test.ts":3823,"tests/server/recovery-staging-materialize.test.ts":745}},
@@ -319,7 +319,7 @@
 {"label":"node env solo hooks-normalize","milliseconds":180,"files":{"tests/hooks/normalize.test.ts":147}}
 ]}
 ]},
-{"source":"https://github.com/goondocks-co/myco/actions/runs/38743027517","shards":[
+{"source":"https://github.com/goondocks-co/myco/actions/runs/38743027517","shardCount":5,"shards":[
 {"shard":1,"groups":[
 {"label":"node env isolated 101","milliseconds":171002,"files":{"tests/scripts/run-test-command.test.ts":2110,"tests/scripts/make-dogfood.test.ts":443,"tests/scripts/run-bun-tests-guards.test.ts":168412}},
 {"label":"node env isolated 116","milliseconds":4882,"files":{"tests/server/rss-units.test.ts":126,"tests/server/runner.test.ts":3878,"tests/server/recovery-staging-materialize.test.ts":831}},
@@ -479,7 +479,7 @@
 {"label":"node env solo hooks-normalize","milliseconds":188,"files":{"tests/hooks/normalize.test.ts":153}}
 ]}
 ]},
-{"source":"https://github.com/goondocks-co/myco/actions/runs/39960024599/attempts/1","shards":[
+{"source":"https://github.com/goondocks-co/myco/actions/runs/39960024599/attempts/1","shardCount":5,"shards":[
 {"shard":1,"groups":[
 {"label":"node env shared tests-myco-shared","files":{"tests/myco-shared/process.test.ts":0.246,"tests/myco-shared/record-identity.test.ts":3.893,"tests/myco-shared/runner-harnesses.test.ts":29.99,"tests/myco-shared/relevance.test.ts":89.044,"tests/myco-shared/runner-update.test.ts":0.476,"tests/myco-shared/prompt-identity.test.ts":0.813,"tests/myco-shared/run-text.test.ts":90.55399999999999,"tests/myco-shared/open-browser.test.ts":115.751,"tests/myco-shared/run-text-cost.test.ts":640.4540000000001,"tests/myco-shared/model-catalog.test.ts":6.295999999999999,"tests/myco-shared/capture-folder.test.ts":0.23399999999999999,"tests/myco-shared/command-shape.test.ts":70.92400000000006},"milliseconds":1242},
 {"label":"node env solo hooks-normalize","files":{"tests/hooks/normalize.test.ts":1.767},"milliseconds":110},
@@ -654,7 +654,7 @@
 {"label":"node env isolated 146","files":{"tests/symbionts/transcript-placement.test.ts":125.106,"tests/symbionts/trust-check-agreement.test.ts":1.227,"tests/symbionts/windsurf.test.ts":1.006},"milliseconds":561}
 ]}
 ]},
-{"source":"https://github.com/goondocks-co/myco/actions/runs/40047399103/attempts/1 (complete job logs; removed artifacts; file timing parser cross-checked against all five green-main JUnit archives)","shards":[
+{"source":"https://github.com/goondocks-co/myco/actions/runs/40047399103/attempts/1 (complete job logs; removed artifacts; file timing parser cross-checked against all five green-main JUnit archives)","shardCount":5,"shards":[
 {"shard":1,"groups":[
 {"label":"node env shared tests-mcp","files":{"tests/mcp/deployment-upstream.test.ts":2.23,"tests/mcp/stdio-bridge.test.ts":0.11000000000000001,"tests/mcp/no-legacy-runtime.test.ts":1521.5,"tests/mcp/deployment-parity.test.ts":3758.38},"milliseconds":5773},
 {"label":"node env shared tests-service","files":{"tests/service/task-proof.test.ts":55.550000000000004,"tests/service/windows-native-ci-contract.test.ts":23.56},"milliseconds":267},
