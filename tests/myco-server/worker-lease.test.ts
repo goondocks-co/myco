@@ -25,7 +25,7 @@ const OFFERED = [offeredHarness('claude-code')];
 /** A Deployment holding one queued run of a worker-served task. */
 const WRAP_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
 
-function fixture(task = 'extract-curate') {
+function fixture(task = 'title-summary') {
   const e = sqliteEnv({ workerLogin: true });
   turnOnGatedCapabilities(e.sqlite);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
@@ -34,7 +34,7 @@ function fixture(task = 'extract-curate') {
     e.sqlite.run(
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction, dispatched_by)
        VALUES ('proj_1', ?, 'myco-agent', ?, 'queued', ?, 'worker', ?, ?, 'do the thing', ?)`,
-      [id, task, at, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 }), (over.dispatchedBy as string | null) ?? null],
+      [id, task, at, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300, params: { session_id: 'session', mode: 'claim' } }), JSON.stringify({ timeoutSeconds: 300 }), (over.dispatchedBy as string | null) ?? null],
     );
   };
   // A worker's lease names its own credential, which the schema holds to a real
@@ -83,7 +83,7 @@ describe('the claim queue', () => {
     expect(f.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running'`).get()).toEqual({ n: 1 });
   });
 
-  it('holds a third extraction across Projects at the default task cap until a running extraction finishes', async () => {
+  it('holds a third titling across Projects at the default task cap until a running titling finishes', async () => {
     const f = fixture();
     try {
       f.e.sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES ('proj_3','three',?)", [NOW]);
@@ -174,7 +174,7 @@ describe('the claim queue', () => {
 
 describe('the prompt a claim hands a worker', () => {
   it('is built again at the claim, so a run reads the vault as it stands when it runs', async () => {
-    const f = fixture('extract-curate');
+    const f = fixture('title-summary');
     f.e.sqlite.run(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`, [NOW]);
     f.queue('run_1', NOW);
     // The dispatch left a prompt on the row; the claim replaces it with one

@@ -1,3 +1,4 @@
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from '@myco-server-worker/core/harness.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
@@ -12,7 +13,7 @@ import { BACKUP_FORMAT } from '@myco-server-worker/core/backup.js';
 const OWNER = 'mem_machine_1';
 const ADMIN = 'mem_machine_2';
 const MEMBER = 'mem_machine_3';
-const TASK = 'extract-curate';
+const TASK = 'title-summary';
 const WRAP_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
 
 type Operation = { name: string; method: string; path: string; body?: unknown; sql: RegExp; seed?: string };
@@ -269,7 +270,7 @@ describe('live authority at administrative writes', () => {
         const response = await send(f, operation, sub);
         expect(response.status).toBe(200);
         const run = f.sqlite.query('SELECT run_context FROM agent_runs').get() as { run_context: string };
-        expect(JSON.parse(run.run_context).timeoutSeconds).toBe(role === 'admin' ? 123 : runTimeoutForTask(TASK));
+        expect(JSON.parse(run.run_context).timeoutSeconds).toBe(role === 'admin' ? 123 : runTimeoutForTask(TASK) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS);
         expect((await send(f, operation, sub)).status).toBe(role === 'admin' ? 200 : 429);
       } finally { f.sqlite.close(); }
     });

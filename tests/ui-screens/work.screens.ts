@@ -201,7 +201,8 @@ test.describe('Myco’s work', () => {
       try {
         await page.getByRole('button', { name: 'Run a task' }).click();
         const menu = page.getByRole('menu');
-        await expect(menu.getByRole('menuitem')).toHaveCount(3);
+        await expect(menu.getByRole('menuitem')).toHaveCount(2);
+        await expect(menu.getByRole('menuitem', { name: /Learn from new sessions now/ })).toHaveCount(0);
         // One way to start the map: the menu. The map's card carries no button of its own.
         await expect(card(page, 'map').getByRole('button', { name: 'Update now' })).toHaveCount(0);
         await expectAxeClean(page, ['[role="menu"]']);
@@ -237,10 +238,10 @@ test.describe('Myco’s work', () => {
         await expect(page.locator('main [data-scope-current]')).toHaveText('All projects');
         // The same menu as under a project: a task started here asks which project first.
         await page.getByRole('button', { name: 'Run a task' }).click();
-        await page.getByRole('menu').getByRole('menuitem', { name: /Learn from new sessions now/ }).click();
-        const dialog = page.getByRole('dialog', { name: 'Learn from new sessions now?' });
+        await page.getByRole('menu').getByRole('menuitem', { name: /Update the code map now/ }).click();
+        const dialog = page.getByRole('dialog', { name: 'Update the code map now?' });
         await expect(dialog.locator('[data-run-task-project]')).toContainText('Which project?');
-        await expect(dialog.getByRole('button', { name: 'Learn now' })).toBeDisabled();
+        await expect(dialog.getByRole('button', { name: 'Update the code map' })).toBeDisabled();
         await expectAxeClean(page, ['[role="dialog"]']);
         await shoot(page, 'work-all-run-a-task', viewport, mode);
         await dialog.getByRole('button', { name: 'Cancel' }).click();

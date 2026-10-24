@@ -2,7 +2,7 @@ import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS, isReasoningTier, modelRefusal, effortRefusal, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
-import { admissionForTask, OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK } from './task-catalogue.js';
+import { admissionForTask, OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK, EXTRACTION_TASK } from './task-catalogue.js';
 import { TASK_SCHEDULE } from './jobs.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { EMBEDDING_CATALOGUE, isEmbeddingProvider, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
@@ -176,9 +176,10 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 
 /** The fields each retained task's consumers read. */
 const TASK_FIELDS = ['harness', 'model', 'reasoningLevel', 'schedule'] as const;
-const SCHEDULE_FIELDS = ['enabled', 'intervalSeconds', 'runIn', 'preCondition', 'accelerator', 'maxRunsPerDay', 'rampRunsPerDay', 'memberRunsPerDay', 'reservedRunsPerDay', 'runWhenCold', 'overlap'] as const;
+const SCHEDULE_FIELDS = ['enabled', 'intervalSeconds', 'runIn', 'preCondition', 'accelerator', 'maxRunsPerDay', 'memberRunsPerDay', 'reservedRunsPerDay', 'runWhenCold', 'overlap'] as const;
 const consumedTaskFields = (task: string): readonly string[] => {
   if (!(OUTCOME_TASKS as readonly string[]).includes(task)) return [];
+  if (task === EXTRACTION_TASK) return ['harness', 'model', 'reasoningLevel', 'enabled', 'memberRunsPerDay'];
   return task === TITLING_TASK || TASK_SCHEDULE[task] != null ? TASK_FIELDS : TASK_FIELDS.filter((field) => field !== 'schedule');
 };
 
@@ -216,6 +217,9 @@ export function taskOverridesResolution(value: unknown): { effective: unknown; r
     for (const [field, held] of Object.entries(entry)) {
       const path = `${task}.${field}`;
       if (!fields.includes(field)) { reasons.push(`${path}: no consumer uses this field; it does not apply.`); continue; }
+      if ((field === 'enabled' && typeof held !== 'boolean') || (field === 'memberRunsPerDay' && !isScheduleCount(held))) {
+        applied[field] = null; invalid = true; reasons.push(`${path}: invalid task preference; correct it in Settings.`); continue;
+      }
       if (field === 'harness' && (typeof held !== 'string' || !Object.hasOwn(PROFILE_HARNESSES, held))) {
         applied[field] = null; invalid = true; reasons.push(`${path}: the stored agent${typeof held === 'string' ? ` "${held}"` : ''} is not supported; the worker cannot choose it.`); continue;
       }
@@ -260,9 +264,9 @@ function preserveRetiredTaskOverrides(value: unknown, previous: unknown): unknow
 
 /**
  * The schedule counts a task override carries, each a whole number of 0 or more when given: the clock's own daily
- * ceiling, its initial-history ramp ceiling, and a member's daily allowance for starts by hand.
+ * ceiling and a member's daily allowance for starts by hand.
  */
-export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay', 'rampRunsPerDay', 'memberRunsPerDay'] as const;
+export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay', 'memberRunsPerDay'] as const;
 
 /** What a changed per-task override violates; unchanged stored fields remain available for a separate repair. */
 function taskOverridesViolation(value: unknown, previous?: unknown): string | null {
@@ -285,6 +289,10 @@ function taskOverridesViolation(value: unknown, previous?: unknown): string | nu
     if (override === before) continue;
     if (!isRecord(override)) return `${task}: expected an object of task overrides`;
     const old = isRecord(before) ? before : {};
+    if (task === EXTRACTION_TASK) {
+      if (override.enabled !== undefined && override.enabled !== old.enabled && typeof override.enabled !== 'boolean') return `${task}.enabled: expected true or false`;
+      if (override.memberRunsPerDay !== undefined && override.memberRunsPerDay !== old.memberRunsPerDay && !isScheduleCount(override.memberRunsPerDay)) return `${task}.memberRunsPerDay: expected a whole number of 0 or more`;
+    }
     const tier = override.reasoningLevel;
     if (tier !== undefined && tier !== old.reasoningLevel && !(REASONING_TIERS as readonly unknown[]).includes(tier)) return `${task}.reasoningLevel: expected low, default, or high`;
     if (override.model !== undefined && (override.model !== old.model || override.harness !== old.harness)) {
@@ -296,6 +304,9 @@ function taskOverridesViolation(value: unknown, previous?: unknown): string | nu
     }
     if (!isRecord(override.schedule)) continue;
     const oldSchedule = isRecord(old.schedule) ? old.schedule : {};
+    for (const [field, held] of Object.entries(override.schedule)) {
+      if (!(SCHEDULE_FIELDS as readonly string[]).includes(field) && JSON.stringify(held) !== JSON.stringify(oldSchedule[field])) return `${task}.schedule.${field}: field is not used by this task`;
+    }
     for (const field of SCHEDULE_COUNT_FIELDS) {
       const count = override.schedule[field];
       if (count !== undefined && count !== oldSchedule[field] && !isScheduleCount(count)) return `${task}.schedule.${field}: expected a whole number of 0 or more`;
@@ -1026,4 +1037,17 @@ export function settingsWriter(
       return Object.fromEntries(results.map((row) => [row.capability, row.enabled === 1])) as Record<ProjectCapability, boolean>;
     },
   };
+}
+
+/** An absent task preference enables learning; invalid stored preferences retain its source. */
+export function taskEnabledSql(task: typeof EXTRACTION_TASK): string {
+  return `NOT EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = 'agent.tasks'
+    AND CASE WHEN json_valid(value) THEN json_type(value, '$."${task}".enabled') = 'false' ELSE 0 END)`;
+}
+
+/** The Deployment's automatic learning switch and per-task preference apply together. */
+export function learningEnabledSql(): string {
+  return `EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = 'agent.scheduled_tasks_enabled'
+      AND CASE WHEN json_valid(value) THEN json_type(value) = 'true' ELSE 0 END)
+    AND ${taskEnabledSql(EXTRACTION_TASK)}`;
 }

@@ -2,6 +2,7 @@ import { expect } from 'bun:test';
 import { stepPages } from '@goondocks/myco-shared/worker-steps';
 import { MEMBER_ID, lit, type ParityScenario } from '../harness.ts';
 import { offeredHarness } from '../../myco-server/helpers/offered-harness.js';
+import { TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
 
 export const workerWriteCompletion: ParityScenario = {
   name: 'worker writes: required state and responses commit together under late authority loss',
@@ -38,7 +39,7 @@ export const workerWriteCompletion: ParityScenario = {
         await target.sql(`UPDATE members SET role='admin', revoked_at=NULL WHERE id=${lit(MEMBER_ID)}`);
         await target.sql("UPDATE worker_contacts SET last_seen_at=0, last_reason='no_work'");
         await target.sql(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context,instruction)
-          VALUES (${lit(target.projectId)},${lit(runId)},'myco-agent','extract-curate','queued',${now},'worker',${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, timeoutSeconds: 300 }))},'{}','do it')`);
+          VALUES (${lit(target.projectId)},${lit(runId)},'myco-agent',${lit(TITLING_TASK)},'queued',${now},'worker',${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, timeoutSeconds: 300, params: { session_id: runId, mode: 'claim' } }))},'{}','do it')`);
         let body: unknown = claimBody;
         if (operation.path !== 'claim') {
           const claimed = await (await request('/worker/claim', claimBody)).json() as { persisted: boolean; claimed: boolean; run: { attemptId: string } };

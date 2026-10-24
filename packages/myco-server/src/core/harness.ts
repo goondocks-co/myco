@@ -1,3 +1,4 @@
+import { learningPaused, LEARNING_PAUSED } from './learning-pause.js';
 import { harnessCredentialAvailability } from './secrets.js';
 import { runnerCredentialChoices } from '../auth/runners.js';
 import { emitLateHarnessError } from './run-postconditions.js';
@@ -39,7 +40,7 @@ import { workerKey, type WorkerPrincipal } from './worker-lease.js';
 import { runnerAcceptsWork } from '../auth/runners.js';
 import { CAPABILITY_HOLDS, credentialUnavailable, type CapabilityHold } from '@goondocks/myco-shared/run-holds';
 import { emit } from '../telemetry.js';
-import { workerClaimAdmission, claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordQueueHolder, recordTaskHolder, renewRunLeaseExpiry, requeueLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
+import { workerClaimAdmission, claimQueuedRun, deploymentTaskEntriesSince, lapsedLeases, nextClaimable, recordQueueHolder, recordTaskHolder, renewRunLeaseExpiry, settleLapsedLease, UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 export type { ActorCeiling } from './runs.js';
 import { TERMINAL_RUN_STATUSES, runUpdateStatement, runRemainingMs, applyRunUpdate, ensureAgent, ensureAgentStatement, getDispatchActor, recordDispatch, dispatchLoad, failQueuedRun, hasSuccessorOf, INPUT_UNCHANGED, launchQueued, listQueuedAcrossProjects, recordQueued, getRun, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS, type RunRow } from './runs.js';
 import { openHarnessCredential } from './provider-credentials.js';
@@ -56,7 +57,7 @@ export {
   capabilityOf, capabilityOn, CLAIM_SETTING_LEAVES, chooseHarness, claimSettings, DEFAULT_DISPATCH_TIMEOUT_SECONDS, harnessPreference, RUNTIME_SERVED_TASKS, workerPreference,
   type FleetReport, type OfferedHarness,
 };
-import { admissionForTask, OUTCOME_TASKS, runTimeoutForTask, UNLANDED_TASKS } from './task-catalogue.js';
+import { admissionForTask, OUTCOME_TASKS, runTimeoutForTask, UNLANDED_TASKS, EXTRACTION_TASK, taskAvailabilityNote } from './task-catalogue.js';
 import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, uninstructedError } from './task-inputs.js';
 
 /** The agent identity a dispatched runtime claims under when its task names none; matches DEFAULT_AGENT_ID in the runner (packages/myco/src/constants.ts). */
@@ -84,6 +85,9 @@ const DISPATCHER_CONTEXT_KEYS = new Set(['timeoutSeconds', 'input_hash', 'counts
 export type DispatchRefusal =
   | 'harness_unavailable' | 'unknown_task' | 'unknown_project' | 'repository_missing' | 'no_instruction' | 'not_landed'
   | 'no_provider' | 'capability_off';
+
+export const dispatchRefusalMessage = (refusal: DispatchRefusal, task?: string): string =>
+  (refusal === 'not_landed' && task !== undefined ? taskAvailabilityNote(task) : null) ?? DISPATCH_REFUSAL_MESSAGE[refusal];
 
 export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>> = {
   repository_missing: 'Connect the project repository in Settings before running a code task.',
@@ -411,6 +415,10 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
   const limits = await readDispatchLimits(env);
   for (const queued of await listQueuedAcrossProjects(env.db, DRAIN_BATCH)) {
     const scope = { projectId: queued.projectId };
+    if (queued.task === EXTRACTION_TASK && await learningPaused(env.db)) {
+      await endQueuedRun(env, scope, queued, now, { skipped: LEARNING_PAUSED });
+      continue;
+    }
     if (queued.task === null || queued.dispatchSpec === null) {
       await endQueuedRun(env, scope, queued, now, { failed: NO_LAUNCH_ERROR, errorCode: 'task_start_failed' });
       continue;
@@ -936,6 +944,11 @@ export async function claimNextRun(
   let chosen: SelectedExecution | null = null;
   let held = false;
   while (candidate !== null) {
+    if (candidate.task === EXTRACTION_TASK && await learningPaused(env.db)) {
+      await endQueuedRun(env, { projectId: candidate.projectId }, candidate, worker.now, { skipped: LEARNING_PAUSED });
+      candidate = await nextClaimable(env.db, excluded);
+      continue;
+    }
     const { selected } = await selectWorkerExecution(env, candidate.task, worker.harnesses, settings, worker.principal);
     chosen = selected;
     if (chosen !== null) break;
@@ -1003,6 +1016,7 @@ export async function claimNextRun(
     ...(built !== null && !built.unchanged ? { input: built.input } : {}),
   }, { ...admission, setup });
   if (row === null) {
+    if (candidate.task === EXTRACTION_TASK && await learningPaused(env.db)) return skipRefused(LEARNING_PAUSED);
     if (worker.principal.kind === 'runner' && !(await runnerAcceptsWork(env.db, worker.principal.runnerId))) return { claimed: false, reason: 'paused' };
     if (!(await projectWorkEnabled(env.db, candidate.projectId))) return skipRefused('unknown_project');
     if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipRefused(CAPABILITY_OFF);
@@ -1090,20 +1104,13 @@ export async function endLeasedRun(
   return { ended: true, status };
 }
 
-/**
- * Return every run whose lease has lapsed to the claim queue.
- *
- * A lapsed lease says the worker went away, which is a different fact from a
- * run outrunning its budget: this one is re-runnable and the stale sweep's is
- * not. So it requeues rather than fails, and the run keeps the place in the
- * queue it had already waited for.
- */
+/** Settle expired attempts and retire their exact credentials, then prune inactive worker metadata. */
 export async function expireLeases(env: ServerEnv, now: number): Promise<number> {
-  let requeued = 0;
+  let settled = 0;
   for (const lapsed of await lapsedLeases(env.db, now, DRAIN_BATCH)) {
-    if (!(await requeueLapsedLease(env.db, { projectId: lapsed.projectId }, lapsed.id, lapsed.owner, now))) continue;
+    if (!(await settleLapsedLease(env.db, { projectId: lapsed.projectId }, lapsed.id, lapsed.owner, lapsed.dispatchedBy, now))) continue;
     await retireDispatchCredential(env, lapsed.dispatchedBy, now);
-    requeued += 1;
+    settled += 1;
     emit({ kind: 'worker_lease_expired', runId: lapsed.id, projectId: lapsed.projectId,
       ...(lapsed.owner?.kind === 'runner' ? { runnerId: lapsed.owner.runnerId } : { tokenId: lapsed.owner?.leasedBy ?? null }) });
   }
@@ -1115,5 +1122,5 @@ export async function expireLeases(env: ServerEnv, now: number): Promise<number>
   await pruneModelCatalogs(env.db, now, DRAIN_BATCH);
   // And forgets a repository no machine has reported for a month, bounded the same way.
   await pruneUncaptured(env.db, now, DRAIN_BATCH);
-  return requeued;
+  return settled;
 }

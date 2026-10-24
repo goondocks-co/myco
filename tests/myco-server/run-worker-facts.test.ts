@@ -2,7 +2,7 @@
 import { legacyWorker } from './helpers/worker-principal.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { applyRunUpdate, claimQueuedRun, lapsedLeases, NO_LIMITS, requeueLapsedLease } from '@myco-server-worker/core/runs.js';
+import { applyRunUpdate, claimQueuedRun, lapsedLeases, NO_LIMITS, settleLapsedLease } from '@myco-server-worker/core/runs.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
 import { listCredentials } from '@myco-server-worker/read/credentials.js';
 import { listMembers } from '@myco-server-worker/auth/members-admin.js';
@@ -99,7 +99,7 @@ describe('a run names the worker holding it', () => {
   it('stops naming a holder when a lapsed lease returns the run to the queue', async () => {
     const r = await rig();
     await r.claim();
-    expect(await requeueLapsedLease(r.db, SCOPE, 'run_1', { kind: 'member', leasedBy: r.workerCredential.tokenId }, LEASE_UNTIL + 1)).toBe(true);
+    expect(await settleLapsedLease(r.db, SCOPE, 'run_1', { kind: 'member', leasedBy: r.workerCredential.tokenId }, r.runCredential.tokenId, LEASE_UNTIL + 1)).toBe(true);
 
     const detail = await getRunDetail(r.db, SCOPE, 'run_1', Date.now(), 'mem_viewer');
     expect(detail?.run).toMatchObject({ status: 'queued', leasedBy: null, leaseExpiresAt: null, dispatchedBy: null, worker: null });
@@ -159,7 +159,7 @@ describe('a credential says what it was minted for', () => {
   it('keeps a run credential a run credential once the run stops naming it', async () => {
     const r = await rig();
     await r.claim();
-    expect(await requeueLapsedLease(r.db, SCOPE, 'run_1', { kind: 'member', leasedBy: r.workerCredential.tokenId }, LEASE_UNTIL + 1)).toBe(true);
+    expect(await settleLapsedLease(r.db, SCOPE, 'run_1', { kind: 'member', leasedBy: r.workerCredential.tokenId }, r.runCredential.tokenId, LEASE_UNTIL + 1)).toBe(true);
     const page = await listCredentials(r.db, NOW);
     expect(page.rows.find((row) => row.id === r.runCredential.tokenId)?.purpose).toBe('run');
   });

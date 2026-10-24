@@ -48,7 +48,7 @@ describe('task description registry gates', () => {
     const f = sqliteEnv();
     try {
       await settingsWriter(f.db).setLeaf('agent.scheduled_tasks_enabled', true, 'test', 1);
-      await settingsWriter(f.db).setLeaf('agent.tasks', { 'extract-curate': { schedule: { intervalSeconds: 7200, maxRunsPerDay: 5 } } }, 'test', 2);
+      await settingsWriter(f.db).setLeaf('agent.tasks', { 'extract-curate': { enabled: false, memberRunsPerDay: 7 } }, 'test', 2);
       for (const task of await read(f)) {
         expect(task.name).toBe(TASK_WORDS[task.task as RetainedTask].name);
         expect(task.description).toBe(TASK_WORDS[task.task as RetainedTask].description);
@@ -56,7 +56,7 @@ describe('task description registry gates', () => {
         expect(task.budget).toEqual(RUNTIME_SERVED_TASKS.includes(task.task) ? null : { timeoutSeconds: runTimeoutForTask(task.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS, readWindow: readWindowFor(task.task) });
         const allow = runAllowlist(TASK_TOOLS[task.task], { dryRun: false });
         expect(task.tools).toEqual(RUNTIME_SERVED_TASKS.includes(task.task) ? [] : [...new Set([...allow].flatMap(([tool, ops]) => [...ops].map((op) => callWords(tool, op))))]);
-        if (task.task === 'extract-curate') expect(task.triggers).toEqual(expect.arrayContaining(['At least 2 hours between runs; on in Settings.', 'At most 5 runs in a day.']));
+        if (task.task === 'extract-curate') expect(task).toMatchObject({ startable: false, availabilityNote: 'Learning resumes with whole-session reading' });
         else if (TASK_SCHEDULE[task.task] != null) expect(task.triggers).toContain(`At most ${TASK_SCHEDULE[task.task]!.maxRunsPerDay} runs in a day.`);
       }
     } finally { f.sqlite.close(); }

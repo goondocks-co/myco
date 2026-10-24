@@ -381,6 +381,7 @@ export function runErrorWords(code: string | null | undefined, reason: string | 
   const words: Readonly<Record<string, string>> = {
     ...RUN_CONTROL_REFUSAL_WORDS,
     machine_did_not_start: 'No machine started the task within a day.',
+    learning_paused: 'Learning resumes with whole-session reading.',
     machine_unresponsive: 'The machine running it stopped responding.',
     task_start_failed: 'The machine could not start the task.',
     model_not_applied: 'The agent couldn’t use the chosen model.',

@@ -28,6 +28,7 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { expireLeases } from '@myco-server-worker/core/harness.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { sqliteEnv, turnOnGatedCapabilities } from '../myco-server/helpers/fixtures.ts';
 import { stubProfileHarness, PROFILE_STUB_DETECTED, PROFILE_STUB_HARNESS } from '../helpers/stub-profile-harness.ts';
@@ -67,6 +68,8 @@ async function until(what: string, pred: () => boolean, ms = 10_000): Promise<vo
  */
 async function host(options: { heartbeatMs?: number } = {}) {
   const e = sqliteEnv({ workerLogin: true });
+  expect(await settingsWriter(e.db).setLeaf('agent.tasks',{'title-summary':{reasoningLevel:'default'}},'fixture',NOW))
+    .toEqual({applied:true});
   turnOnGatedCapabilities(e.sqlite, [PROJECT_ID]);
   let offset = 0;
   /** While set, a renewal reaches nothing and is answered never: a network still coming back after a wake. */
@@ -106,8 +109,8 @@ async function host(options: { heartbeatMs?: number } = {}) {
     e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
     e.sqlite.run(
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
-       VALUES (?, ?, 'myco-agent', 'extract-curate', 'queued', ?, 'worker', ?, ?, 'do it')`,
-      [PROJECT_ID, id, clock(), JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
+       VALUES (?, ?, 'myco-agent', 'title-summary', 'queued', ?, 'worker', ?, ?, 'do it')`,
+      [PROJECT_ID, id, clock(), JSON.stringify({ serverUrl: 'https://s', params:{session_id:'sleep-session',mode:'claim'}, actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
     );
   };
   const row = (id: string) => e.sqlite.query(`SELECT status, leased_by AS leasedBy, dispatched_by AS dispatchedBy FROM agent_runs WHERE id = ?`).get(id) as { status: string; leasedBy: string | null; dispatchedBy: string | null };
