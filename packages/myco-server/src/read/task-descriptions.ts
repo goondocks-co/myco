@@ -15,7 +15,7 @@ import { readWindowFor, type ReadWindow } from '../core/read-window.js';
 import { RUN_CLOSE_RULES } from '../core/run-postconditions.js';
 import { ACCELERATORS, effectiveIntervalSeconds, PRE_CONDITIONS, scheduleFor, scheduleLeaves } from '../core/schedule-rules.js';
 import { enabledCapabilities } from '../core/settings.js';
-import { RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK } from '../core/task-catalogue.js';
+import { RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK, UNLANDED_TASKS, taskAvailabilityNote } from '../core/task-catalogue.js';
 import { inputBuilderFor, type TaskTemplate } from '../core/task-inputs.js';
 import { runAllowlist } from '../mcp/run-allowlist.js';
 
@@ -41,7 +41,7 @@ export interface TaskDescription {
 }
 
 /** Whether a person may start the task by hand from Run a task: every worker-served task but titling, which a person asks for one session at a time. */
-export const startableByHand = (task: string): boolean => (RETAINED_TASKS as readonly string[]).includes(task) && !RUNTIME_SERVED_TASKS.includes(task) && task !== TITLING_TASK;
+export const startableByHand = (task: string): boolean => (RETAINED_TASKS as readonly string[]).includes(task) && !RUNTIME_SERVED_TASKS.includes(task) && task !== TITLING_TASK && !UNLANDED_TASKS.includes(task);
 
 /** The launch builder owns its template; runtime tasks carry no server-built prompt. */
 export function taskTemplate(task: string, patterns: readonly string[]): TaskTemplate {
@@ -103,6 +103,8 @@ async function availabilityNotes(env: ServerEnv, set: ProjectSet): Promise<Map<s
   const projectsByCapability = new Map(required.map((capability) => [capability, new Set(enabled.filter((row) => row.capability === capability).map((row) => row.projectId))]));
   const embeddingAvailable = env.vectors !== undefined && await env.embeddingProvider?.() != null;
   const notes = await Promise.all(RETAINED_TASKS.map(async (task) => {
+    const paused = taskAvailabilityNote(task);
+    if (paused !== null) return [task, paused] as const;
     const capability = capabilityOf(task);
     if (capability === null) {
       if (task === 'embedding-reconcile') return [task, embeddingAvailable ? null : 'Search for similar knowledge is unavailable on this server.'] as const;

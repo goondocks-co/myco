@@ -29,8 +29,8 @@ async function rig() {
   e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, NOW]);
   e.sqlite.run(
     `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
-     VALUES ('proj_1', 'run_1', 'myco-agent', 'extract-curate', 'queued', ?, 'worker', ?, ?, 'do the thing')`,
-    [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
+     VALUES ('proj_1', 'run_1', 'myco-agent', 'title-summary', 'queued', ?, 'worker', ?, ?, 'do the thing')`,
+    [NOW, JSON.stringify({ serverUrl: 'https://s', params: { session_id: 'session', mode: 'claim' }, actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
   );
   /** A worker: an administrator's credential issued on a named machine. */
   const issued = new Map<string, string>();

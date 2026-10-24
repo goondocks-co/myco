@@ -602,7 +602,7 @@ describe('why a wake of the titling convergence dispatched nothing', () => {
       const body: unknown = await res.json();
       expect({ count, status: res.status, body }).toEqual({ count, status: 400, body: { applied: false, reason: 'invalid_value', leaf: 'agent.tasks', detail: `${TITLING_TASK}.schedule.maxRunsPerDay: expected a whole number of 0 or more` } });
     }
-    const accepted: Array<Record<string, unknown>> = [{ [TITLING_TASK]: { schedule: { maxRunsPerDay: 0 } } }, { [TITLING_TASK]: { model: 'haiku', harness: 'claude-code' } }, { 'extract-curate': { schedule: { intervalSeconds: 60 } } }];
+    const accepted: Array<Record<string, unknown>> = [{ [TITLING_TASK]: { schedule: { maxRunsPerDay: 0 } } }, { [TITLING_TASK]: { model: 'haiku', harness: 'claude-code' } }, { 'canopy-map': { schedule: { intervalSeconds: 60 } } }];
     for (const value of accepted) {
       const answer: unknown = await (await request('PUT', '/api/settings/agent.tasks', { value })).json();
       expect(answer).toEqual({ applied: true });

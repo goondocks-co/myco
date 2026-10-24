@@ -37,13 +37,14 @@ async function fixture() {
   const token = (await issueMemberToken(e.db, { memberId: 'mem_w', machineId: 'm1' }, NOW)).tokenId;
   const secrets = deploymentSecretStore(env.db, env.wrappingKey);
   const settings = settingsWriter(e.db);
+  await settings.setLeaf('agent.tasks', { 'title-summary': { reasoningLevel: 'default' } }, 'mem_w', NOW);
   for (const [harness, model] of [['codex', 'gpt-fixture'], ['opencode', 'anthropic/claude-fixture']]) {
     await settings.setLeaf(`agent.reasoning_map.${harness}.default`, model, 'mem_w', NOW);
   }
   const queue = (id: string) => e.sqlite.run(
     `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
-     VALUES ('proj_1', ?, 'myco-agent', 'extract-curate', 'queued', ?, 'worker', ?, ?, 'do it')`,
-    [id, NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
+     VALUES ('proj_1', ?, 'myco-agent', 'title-summary', 'queued', ?, 'worker', ?, ?, 'do it')`,
+    [id, NOW, JSON.stringify({ serverUrl: 'https://s', params: { session_id: 'session', mode: 'claim' }, actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
   );
   /** What a claim hands the worker for this harness, against whatever secrets the Deployment holds. */
   const claimUnder = async (harness: string, at: number, source: 'deployment' | 'worker-login' = 'deployment') => {
@@ -64,8 +65,8 @@ describe('the run credential a claim mints (#1420)', () => {
     await settingsWriter(f.e.db).setLeaf('agent.harnesses.claude-code.credential', 'worker-login', 'mem_w', NOW);
     f.e.sqlite.run(
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
-       VALUES ('proj_1', 'run_rot', 'myco-agent', 'extract-curate', 'queued', ?, 'worker', ?, ?, 'do it')`,
-      [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
+       VALUES ('proj_1', 'run_rot', 'myco-agent', 'title-summary', 'queued', ?, 'worker', ?, ?, 'do it')`,
+      [NOW, JSON.stringify({ serverUrl: 'https://s', params: { session_id: 'session', mode: 'claim' }, actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
     );
     const worker = (f.e.sqlite.query(`SELECT id FROM member_credentials WHERE member_id = 'mem_w'`).get() as { id: string }).id;
     const outcome = await claimNextRun(f.env, { principal: legacyWorker(worker, 'm1'), harnesses: [offeredHarness('claude-code')], now: NOW + 1 });

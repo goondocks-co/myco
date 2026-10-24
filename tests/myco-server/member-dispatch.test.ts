@@ -1,3 +1,4 @@
+import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 /**
@@ -20,7 +21,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 
 const DAY = 86_400_000;
-const TASK = 'extract-curate';
+const TASK = 'canopy-map';
 
 const INNER = Symbol('inner statement');
 
@@ -46,6 +47,9 @@ function harness(settings: Record<string, unknown> = {}, opts: { slow?: boolean 
   const env = { ...fixture.env, ...OWNER_ENV, ...(opts.slow === true ? { MYCO_DB: slowed(fixture.env.MYCO_DB) } : {}) };
   seedMemberRoleAccount(fixture.sqlite);
   turnOnGatedCapabilities(fixture.sqlite);
+  for(const project of ['proj_1','proj_2']) fixture.sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
+    VALUES(?,'fixture','https://example.test/repo','main',1,'test')`,[project]);
+
   for (const [leaf, value] of Object.entries(settings)) {
     fixture.sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'test')`).run(leaf, JSON.stringify(value));
   }
@@ -76,6 +80,18 @@ function harness(settings: Record<string, unknown> = {}, opts: { slow?: boolean 
 const memberCap = (perDay: number) => ({ 'agent.tasks': { [TASK]: { schedule: { memberRunsPerDay: perDay } } } });
 
 describe('a member starting a task', () => {
+  it('returns the learning pause before a spent member allowance and records no run', async () => {
+    const h = harness({ 'agent.tasks': { 'extract-curate': { memberRunsPerDay: 0 } } });
+    h.entered('spent-learning', 'extract-curate', Date.now());
+    const before = h.runs();
+    for (const start of [h.asMember, h.asAdmin]) {
+      expect(await start({ task: 'extract-curate', projectId: 'proj_1' })).toMatchObject({
+        status: 400, body: { error: 'not_landed', message: 'Learning resumes with whole-session reading' },
+      });
+      expect(h.runs()).toEqual(before);
+    }
+  });
+
   it('queues the run and records who started it, which the run list names', async () => {
     const h = harness();
     const started = await h.asMember({ task: TASK, projectId: 'proj_1' });
@@ -206,7 +222,7 @@ describe('how many runs of a task a member may start in a day', () => {
     expect(await memberRunsPerDay(tuned.fixture.serverEnv, 'canopy-map')).toBe(MEMBER_RUNS_PER_DAY_DEFAULT);
     expect(await memberRunsPerDay(tuned.fixture.serverEnv, 'title-summary')).toBe(0);
     // The clock turned all the way down leaves members their day.
-    expect((await tuned.asMember({ task: 'extract-curate', projectId: 'proj_1' })).status).toBe(200);
+    expect((await tuned.asMember({ task: 'canopy-map', projectId: 'proj_1' })).status).toBe(200);
     expect(await tuned.asMember({ task: 'title-summary', projectId: 'proj_1' })).toMatchObject({ status: 429, body: { error: 'daily_limit', perDay: 0, resetsAt: null } });
   });
 
@@ -221,9 +237,9 @@ describe('how many runs of a task a member may start in a day', () => {
 describe('a task a capability gates', () => {
   it('is refused at dispatch, to a member and an admin alike, where the Project has it off, and writes no run', async () => {
     const h = harness();
-    h.turnOff('proj_1', 'vault_evolution');
+    h.turnOff('proj_1', 'canopy');
     for (const answer of [await h.asMember({ task: TASK, projectId: 'proj_1' }), await h.asAdmin({ task: TASK, projectId: 'proj_1' })]) {
-      expect(answer).toMatchObject({ status: 409, body: { error: 'capability_off', capability: 'vault_evolution' } });
+      expect(answer).toMatchObject({ status: 409, body: { error: 'capability_off', capability: 'canopy' } });
     }
     expect(h.runs()).toHaveLength(0);
     expect((await h.asMember({ task: TASK, projectId: 'proj_2' })).status).toBe(200);
@@ -234,12 +250,12 @@ describe('a task a capability gates', () => {
     const now = Date.now();
     const first = (await h.asAdmin({ task: TASK, projectId: 'proj_1' })).body.runId;
     const second = (await h.asAdmin({ task: TASK, projectId: 'proj_2' })).body.runId;
-    h.turnOff('proj_1', 'vault_evolution');
+    h.turnOff('proj_1', 'canopy');
     await ensureMember(h.fixture.db, 'mem_worker', now, 'admin', 'a worker');
     const tokenId = (await issueMemberToken(h.fixture.db, { memberId: 'mem_worker', machineId: 'm1' }, now)).tokenId;
     h.fixture.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, now]);
     const minted = () => (h.fixture.sqlite.query(`SELECT COUNT(*) AS n FROM member_credentials WHERE member_id = ?`).get(HARNESS_MEMBER_ID) as { n: number }).n;
-    const claimed = await claimNextRun(h.fixture.serverEnv, { principal: legacyWorker(tokenId, 'm1'), harnesses: [offeredHarness('claude-code')], now: now + 1 });
+    const claimed = await claimNextRun(h.fixture.serverEnv, { principal: legacyWorker(tokenId, 'm1'), harnesses: [offeredHarness('claude-code')], capabilities: [...capabilitiesRequiredBy(TASK)], now: now + 1 });
     expect(claimed).toMatchObject({ claimed: true });
     // The skipped run had no credential minted for it: the one minted is the claimed run's.
     expect(minted()).toBe(1);
@@ -258,10 +274,10 @@ describe('a task a capability gates', () => {
     const inner = h.fixture.serverEnv;
     // The admin turns the capability off in the instant between the claim deciding and the claim writing.
     const db = { ...inner.db, prepare: (sql: string) => {
-      if (/SET status = 'running', started_at = \?/.test(sql)) h.turnOff('proj_1', 'vault_evolution');
+      if (/SET status = 'running', started_at = \?/.test(sql)) h.turnOff('proj_1', 'canopy');
       return inner.db.prepare(sql);
     } };
-    const claimed = await claimNextRun({ ...inner, db }, { principal: legacyWorker(tokenId, 'm1'), harnesses: [offeredHarness('claude-code')], now: now + 1 });
+    const claimed = await claimNextRun({ ...inner, db }, { principal: legacyWorker(tokenId, 'm1'), harnesses: [offeredHarness('claude-code')], capabilities: [...capabilitiesRequiredBy(TASK)], now: now + 1 });
     expect(claimed).toMatchObject({ claimed: false });
     expect(h.fixture.sqlite.query(`SELECT status, json_extract(run_context, '$.reason') AS reason FROM agent_runs WHERE id = ?`).get(run)).toEqual({ status: 'skipped', reason: CAPABILITY_OFF });
   });

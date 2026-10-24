@@ -12,7 +12,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import { MAX_WORKER_RUN_SECONDS } from '@goondocks/myco-shared/harness-health';
 import type { OwnerContext } from '../context.js';
-import { CeilingReached, DEFAULT_DISPATCH_TIMEOUT_SECONDS, DISPATCH_REFUSAL_MESSAGE, dispatchTask, RUNTIME_SERVED_TASKS, type DispatchRefusal } from '../core/harness.js';
+import { CeilingReached, DEFAULT_DISPATCH_TIMEOUT_SECONDS, DISPATCH_REFUSAL_MESSAGE, DispatchAdmissionRefused, dispatchRefusalMessage, prepareDispatch, dispatchPrepared, RUNTIME_SERVED_TASKS, type DispatchRefusal } from '../core/harness.js';
 import { deploymentTaskCeilingWindow, type ActorCeiling } from '../core/runs.js';
 import { memberRunsPerDay } from '../core/scheduled-tasks.js';
 import { isAdmin } from '../auth/roles.js';
@@ -82,8 +82,9 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   const fresh = body.fresh === true;
   // A fresh run is one over input that has not moved; only an admin spends on that.
   if (fresh && !isAdmin(ctx.member.role)) return Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
+  const prepared = await prepareDispatch(env, task, projectId);
+  if (!prepared.ok) return refuseAdmission(prepared.refusal, task, prepared.capability);
   const ceiling = await memberCeiling(env, ctx, task);
-
   // Unchanged input returns without dispatching a run.
   const built = await buildTaskInput(env, task, projectId, ctx.now, { fresh });
   if (built !== null && built.unchanged) {
@@ -93,24 +94,23 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   const input = built === null || built.unchanged
     ? {}
     : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
-  let outcome;
   try {
-    outcome = await dispatchTask(env, task, projectId, { serverUrl: ctx.url.origin, actor: ctx.member.id, timeoutSeconds, ...input, options: { dryRun, fresh } }, ctx.now, { ceiling, actor: { memberId: ctx.member.id, authority: isAdmin(ctx.member.role) ? 'admin' : 'member' } });
+    return ok(await dispatchPrepared(env, prepared.prepared, { serverUrl: ctx.url.origin, actor: ctx.member.id, timeoutSeconds, ...input, options: { dryRun, fresh } }, ctx.now, { ceiling, actor: { memberId: ctx.member.id, authority: isAdmin(ctx.member.role) ? 'admin' : 'member' } }));
   } catch (error) {
     if (error instanceof CeilingReached && ceiling !== undefined) return dailyLimit(env, ceiling, ctx.now);
+    if (error instanceof DispatchAdmissionRefused) return refuseAdmission(error.refusal, task, error.capability);
     throw error;
   }
-  if (!outcome.dispatched) {
-    if (outcome.refusal === 'capability_off') {
-      return Response.json({ error: 'capability_off', capability: outcome.capability, message: DISPATCH_REFUSAL_MESSAGE.capability_off }, { status: 409 });
-    }
-    return dispatchRefusal(outcome.refusal);
-  }
-  const { dispatched: _dispatched, ...answer } = outcome;
-  return ok(answer);
+}
+
+/** Admission refusals retain their status and capability at preparation and commit. */
+function refuseAdmission(refusal: DispatchRefusal, task: string, capability?: string): Response {
+  return refusal === 'capability_off'
+    ? Response.json({ error: refusal, capability, message: DISPATCH_REFUSAL_MESSAGE.capability_off }, { status: 409 })
+    : dispatchRefusal(refusal, 400, task);
 }
 
 /** Named dispatch refusals keep their code and words across admission and execution. */
-export function dispatchRefusal(error: DispatchRefusal, status = 400): Response {
-  return Response.json({ error, message: DISPATCH_REFUSAL_MESSAGE[error] }, { status });
+export function dispatchRefusal(error: DispatchRefusal, status = 400, task?: string): Response {
+  return Response.json({ error, message: dispatchRefusalMessage(error, task) }, { status });
 }

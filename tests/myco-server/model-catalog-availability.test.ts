@@ -249,12 +249,12 @@ describe('catalog availability from current machine offers', () => {
     turnOnGatedCapabilities(r.sqlite);
     await ensureMember(r.db, HARNESS_MEMBER_ID, r.now, 'member', 'harness');
     r.sqlite.run(`INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','agent','built-in',1,?)`, [r.now]);
-    await settingsWriter(r.db).setLeaf('agent.tasks', { 'extract-curate': { harness: 'claude-code', model: 'opus', reasoningLevel: 'high' } }, 'mem_machine_1', r.now);
+    await settingsWriter(r.db).setLeaf('agent.tasks', { 'title-summary': { harness: 'claude-code', model: 'opus', reasoningLevel: 'high' } }, 'mem_machine_1', r.now);
     await r.json(memberPost(r.token.token, { catalog: catalog(r.now) }, '/worker/models'));
     await r.json(memberPost(r.token.token, { harnesses: [{ id: 'claude-code', authenticated: false }] }, '/worker/claim'));
     expect(await r.models()).toEqual([]);
-    r.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,instruction,run_context)
-      VALUES ('proj_1','reauth-run','myco-agent','extract-curate','queued',?,'worker','read the project','{}')`, [r.now]);
+    r.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,instruction,run_context,dispatch_spec)
+      VALUES ('proj_1','reauth-run','myco-agent','title-summary','queued',?,'worker','read the project','{}','{"params":{"session_id":"session","mode":"claim"}}')`, [r.now]);
     const answer = await r.json(memberPost(r.token.token, { harnesses: [offeredHarness('claude-code')] }, '/worker/claim'));
     expect(answer).toMatchObject({ claimed: true, run: { profile: { model: 'opus', resolvesTo: 'claude-opus-fixture' } } });
     expect(await r.models()).toHaveLength(1);

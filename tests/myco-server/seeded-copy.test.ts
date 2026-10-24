@@ -21,7 +21,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LEDGER_ENABLED_AT } from '@myco-server-worker/db/schema-v95.js';
 import { GUARD_ENABLED_AT } from '@myco-server-worker/db/schema-v101.js';
+import { LEARNING_PAUSED_AT } from '@myco-server-worker/core/learning-pause.js';
 import { DEPLOYMENT_ID_KEY, migrateAndSeed, seededSqlite } from './helpers/d1.js';
+
+const MIGRATION_TIMESTAMPS = [LEDGER_ENABLED_AT, GUARD_ENABLED_AT, LEARNING_PAUSED_AT];
 
 function contents(sqlite: Database): { schema: unknown[]; rows: Record<string, unknown[]> } {
   const schema = sqlite.query(`SELECT type, name, sql FROM sqlite_master ORDER BY type, name`).all();
@@ -39,7 +42,7 @@ function contents(sqlite: Database): { schema: unknown[]; rows: Record<string, u
 
 const withoutDeploymentMarkers = (rows: Record<string, unknown[]>) => ({
   ...rows,
-  schema_meta: (rows.schema_meta as Array<{ key: string }>).filter((row) => ![DEPLOYMENT_ID_KEY, LEDGER_ENABLED_AT, GUARD_ENABLED_AT].includes(row.key)),
+  schema_meta: (rows.schema_meta as Array<{ key: string }>).filter((row) => ![DEPLOYMENT_ID_KEY, ...MIGRATION_TIMESTAMPS].includes(row.key)),
 });
 const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'packages', 'myco-server', 'migrations');
 const schemaOf = (sqlite: Database) => sqlite.query(`SELECT type, name, sql FROM sqlite_master ORDER BY type, name`).all();
@@ -54,7 +57,7 @@ describe('a seeded database copy', () => {
       for (const copy of [first, second]) {
         const got = contents(copy);
         expect(got.schema).toEqual(want.schema);
-        for (const key of [LEDGER_ENABLED_AT, GUARD_ENABLED_AT]) {
+        for (const key of MIGRATION_TIMESTAMPS) {
           const enabled = Number((copy.query('SELECT value FROM schema_meta WHERE key = ?').get(key) as { value: string }).value);
           expect(enabled).toBeGreaterThan(0);
           expect(enabled).toBeLessThanOrEqual(Date.now());

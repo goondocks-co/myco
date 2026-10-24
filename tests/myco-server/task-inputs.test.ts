@@ -196,18 +196,18 @@ describe('a task the Deployment cannot instruct', () => {
   it('is refused at dispatch by name, with copy an owner reads, rather than queued for a claim that would end it', async () => {
     const r = await rig();
     const builders = INPUT_BUILDERS as Record<string, unknown>;
-    const kept = builders[EXTRACTION_TASK];
-    delete builders[EXTRACTION_TASK];
+    const kept = builders[SEEDING_TASK];
+    delete builders[SEEDING_TASK];
     try {
-      expect(await prepareDispatch(r.e.serverEnv, EXTRACTION_TASK, 'proj_1')).toEqual({ ok: false, refusal: 'no_instruction' });
-      expect(await dispatchTask(r.e.serverEnv, EXTRACTION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_x' }, NOW)).toEqual({ dispatched: false, refusal: 'no_instruction' });
+      expect(await prepareDispatch(r.e.serverEnv, SEEDING_TASK, 'proj_1')).toEqual({ ok: false, refusal: 'no_instruction' });
+      expect(await dispatchTask(r.e.serverEnv, SEEDING_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_x' }, NOW)).toEqual({ dispatched: false, refusal: 'no_instruction' });
       expect((r.e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs`).get() as { n: number }).n).toBe(0);
       expect(DISPATCH_REFUSAL_MESSAGE.no_instruction).toContain('no instruction');
     } finally {
-      builders[EXTRACTION_TASK] = kept;
+      builders[SEEDING_TASK] = kept;
     }
     // With its builder back, the same ask queues.
-    expect(await prepareDispatch(r.e.serverEnv, EXTRACTION_TASK, 'proj_1')).toMatchObject({ ok: true, prepared: { servedBy: 'worker' } });
+    expect(await prepareDispatch(r.e.serverEnv, SEEDING_TASK, 'proj_1')).toMatchObject({ ok: true, prepared: { servedBy: 'worker' } });
   });
 
   it('admits seeding through a worker only when the Project has connected source', async () => {
@@ -235,16 +235,12 @@ describe('what a claim hands out', () => {
     expect(r.row(claimed.run.id).instruction).toBe(claimed.run.instruction);
   });
 
-  it('an extraction run with its prompt and its standing rules, built at the claim over whatever the dispatch carried', async () => {
+  it('issues no thin instruction from an extraction row queued during the pause', async () => {
     const r = await rig();
     r.queued('run_x', EXTRACTION_TASK, 'a prompt from the dispatch');
-    const claimed = await r.claim(NOW + 1);
-    expect(claimed.claimed).toBe(true);
-    if (!claimed.claimed) return;
-    expect(claimed.run.instruction).toContain('Read the prompts nobody has read yet');
-    expect(claimed.run.instructions).toBe(EXTRACTION_RULES);
+    expect(await r.claim(NOW + 1)).toMatchObject({ claimed: false });
+    expect(r.row('run_x').status).toBe('skipped');
   });
-
   it('a seeding run under the prompt built from the repository the Project connected, and no credential on the claim', async () => {
     const r = await rig();
     r.queued('run_seed', SEEDING_TASK, null);
