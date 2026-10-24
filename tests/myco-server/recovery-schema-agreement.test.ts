@@ -75,7 +75,11 @@ async function stage(sql: string, captured: Record<string, string>, chunkBytes =
     async copyObject() { throw new Error('this stage copies no object'); },
     async readStagingFile() { return null; },
   };
-  const report = await continueAttempt(state, port, { ...PRODUCER_LIMITS, partBytes: chunkBytes });
+  const limits = { ...PRODUCER_LIMITS, partBytes: chunkBytes };
+  let report = await continueAttempt(state, port, limits);
+  for (let step = 0; step < chunks.length && report.stage === 'download'; step += 1) {
+    report = await continueAttempt(state, port, limits);
+  }
   return { report, state };
 }
 

@@ -53,7 +53,7 @@ interface AttemptRow {
   inventory_started_at: number | null; inventory_parts: number; inventory_bytes: number; inventory_scan: string;
   inventory_scan_bytes: string; inventory_digest: string | null; database_sha256: string | null;
   database_bytes: number | null; copy_started_at: number | null; completed_at: number | null; admission: string | null;
-  hold_token: string | null; last_progress_at: number | null;
+  hold_token: string | null; last_progress_at: number | null; in_flight: string | null;
   prune_started_at: number | null; prune_cursor: number; payload_pruned_at: number | null;
   staging_writes: number; staging_revision: number; staging_recheck_until: number | null;
 }
@@ -77,7 +77,7 @@ const COLUMN: Record<keyof AttemptState, string> = {
   inventoryStartedAt: 'inventory_started_at', inventoryParts: 'inventory_parts', inventoryBytes: 'inventory_bytes',
   inventoryScan: 'inventory_scan', inventoryScanBytes: 'inventory_scan_bytes', inventoryDigest: 'inventory_digest',
   databaseSha256: 'database_sha256', databaseBytes: 'database_bytes', copyStartedAt: 'copy_started_at',
-  completedAt: 'completed_at', admission: 'admission',
+  completedAt: 'completed_at', admission: 'admission', inFlight: 'in_flight',
 };
 
 /**
@@ -98,6 +98,7 @@ const ADDED_COLUMNS: readonly [string, string][] = [
   ['admission', 'TEXT'],
   ['hold_token', 'TEXT'],
   ['last_progress_at', 'INTEGER'],
+  ['in_flight', 'TEXT'],
   ['prune_started_at', 'INTEGER'],
   ['prune_cursor', 'INTEGER NOT NULL DEFAULT 0'],
   ['payload_pruned_at', 'INTEGER'],
@@ -111,7 +112,7 @@ const ADDED_COLUMNS: readonly [string, string][] = [
 
 /** Columns holding a list or a record are written as JSON text, so one update path serves every field. */
 const JSON_COLUMNS = new Set<keyof AttemptState>([
-  'tables', 'captured', 'defined', 'scan', 'inventoryScan', 'inventoryDigest', 'admission',
+  'tables', 'captured', 'defined', 'scan', 'inventoryScan', 'inventoryDigest', 'admission', 'inFlight',
 ]);
 
 const stateOf = (row: AttemptRow): AttemptState => ({
@@ -132,6 +133,7 @@ const stateOf = (row: AttemptRow): AttemptState => ({
   inventoryDigest: row.inventory_digest === null ? null : JSON.parse(row.inventory_digest) as SavedDigest,
   databaseSha256: row.database_sha256, databaseBytes: row.database_bytes, copyStartedAt: row.copy_started_at,
   completedAt: row.completed_at,
+  inFlight: row.in_flight === null ? null : JSON.parse(row.in_flight) as AttemptState['inFlight'],
   // An attempt admitted before admissions were recorded carries none.
   admission: row.admission === null ? null : JSON.parse(row.admission) as AttemptState['admission'],
 });
@@ -210,9 +212,10 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       update: (id, fields) => {
         const entries = Object.entries(fields) as Array<[keyof AttemptState, AttemptState[keyof AttemptState]]>;
         if (entries.length === 0) return;
+        const advancing = entries.some(([key]) => key !== 'inFlight');
         sql.exec(
-          `UPDATE attempts SET ${entries.map(([key]) => `${COLUMN[key]} = ?`).join(', ')}, last_progress_at = ? WHERE id = ? AND ${writable}`,
-          ...entries.map(([key, value]) => (JSON_COLUMNS.has(key) ? (value === null || value === undefined ? null : JSON.stringify(value)) : value as string | number | null)), Date.now(), id,
+          `UPDATE attempts SET ${entries.map(([key]) => `${COLUMN[key]} = ?`).join(', ')}${advancing ? ', last_progress_at = ?' : ''} WHERE id = ? AND ${writable}`,
+          ...entries.map(([key, value]) => (JSON_COLUMNS.has(key) ? (value === null || value === undefined ? null : JSON.stringify(value)) : value as string | number | null)), ...(advancing ? [Date.now()] : []), id,
         );
       },
       parts: (id) => sql.exec('SELECT part, bytes, sha256, etag FROM parts WHERE attempt = ? ORDER BY part', id).toArray() as unknown as AttemptPart[],
@@ -221,7 +224,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
           if (!stillWritable(id)) return;
           sql.exec('INSERT OR REPLACE INTO parts (attempt, part, bytes, sha256, etag) VALUES (?, ?, ?, ?, ?)', id, part.part, part.bytes, part.sha256, part.etag);
           sql.exec(
-            'UPDATE attempts SET download_offset = ?, defined = ?, scan = ?, scan_bytes = ?, last_progress_at = ? WHERE id = ?',
+            'UPDATE attempts SET download_offset = ?, defined = ?, scan = ?, scan_bytes = ?, attempts = 0, error = NULL, in_flight = NULL, last_progress_at = ? WHERE id = ?',
             downloadOffset, JSON.stringify(progress.defined), JSON.stringify(progress.scan), progress.scanBytes, Date.now(), id,
           );
         });
@@ -241,7 +244,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
           }
           sql.exec(
             `UPDATE attempts SET inventory_parts = ?, inventory_bytes = ?, inventory_scan = ?, inventory_scan_bytes = ?,
-               inventory_digest = ?, last_progress_at = ? WHERE id = ?`,
+               inventory_digest = ?, attempts = 0, error = NULL, in_flight = NULL, last_progress_at = ? WHERE id = ?`,
             progress.parts, progress.bytes, JSON.stringify(progress.scan), progress.scanBytes,
             JSON.stringify(progress.digest), Date.now(), id,
           );
@@ -255,7 +258,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
         storage.transactionSync(() => {
           if (!stillWritable(id)) return;
           sql.exec('UPDATE objects SET staged_sha256 = ?, staged_bytes = ? WHERE attempt = ? AND key = ?', staged.sha256, staged.bytes, id, key);
-          sql.exec('UPDATE attempts SET last_progress_at = ? WHERE id = ?', Date.now(), id);
+          sql.exec('UPDATE attempts SET attempts = 0, error = NULL, in_flight = NULL, last_progress_at = ? WHERE id = ?', Date.now(), id);
         });
       },
       objects: (id) => (sql.exec(
@@ -542,6 +545,7 @@ export class RecoveryProducer extends DurableObject<CloudflareBindings> {
       form: 'staging',
       startedAt: row.started_at,
       recoverable: false,
+      inFlight: stateOf(row).inFlight,
       ...(pruned ? { stagingPruned: true as const } : {}),
       staged: pruned ? null : {
         prefix: row.prefix, sqlBytes: row.sql_bytes, downloadedBytes: row.download_offset, parts,

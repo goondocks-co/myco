@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { HOSTED_RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
 
 const ROOT = path.resolve(import.meta.dir, '../../..');
 const WRANGLER = path.join(ROOT, 'node_modules/.bin/wrangler');
@@ -363,7 +364,7 @@ try {
   check('the staging it writes is open, with no object and no completion', [manifest.file.status, manifest.file.objects.length, manifest.file.completedAt], ['open', 0, undefined]);
   check('the staging records this Deployment\'s bound configuration, who started it, and every recovery credential name',
     [manifest.file.configuration, manifest.file.credentialsRequired],
-    [{ ...RUNTIME_CONFIGURATION, startedBy: 'runtime-test' }, ['SECRET_WRAP_KEY', 'SESSION_SECRET', 'GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET']]);
+    [{ ...RUNTIME_CONFIGURATION, startedBy: 'runtime-test' }, [...HOSTED_RECOVERY_CREDENTIAL_NAMES]]);
   check('no staged metadata carries the bound export credential', JSON.stringify(manifest.file).includes('runtime-token-not-a-credential'), false);
 
   // One continuation that cannot finish the export: the source is paused and another continuation is wanted at once.
@@ -388,7 +389,11 @@ try {
   const completed = await call('/continue?limits={"exportPollMs":600000,"maxPollsPerStep":12,"stepMs":60000,"partBytes":5242880,"maxTransient":5,"maxReExports":3}');
   check('the export completes after the restart and the download begins', [completed.stage, completed.sourcePaused], ['download', false]);
   const wide = '{"exportPollMs":600000,"maxPollsPerStep":12,"stepMs":60000,"partBytes":5242880,"maxTransient":5,"maxReExports":3,"maxPartsPerStep":1,"maxObjectsPerStep":1,"inventoryMs":600000,"copyMs":600000}';
-  const downloaded = await call(`/continue?limits=${encodeURIComponent(wide)}`);
+  let downloaded = await call(`/continue?limits=${encodeURIComponent(wide)}`);
+  check('one continuation commits one part', [(await call('/status')).staged.parts, downloaded.stage], [1, 'download']);
+  for (let step = 0; step < 4 && downloaded.stage === 'download'; step += 1) {
+    downloaded = await call(`/continue?limits=${encodeURIComponent(wide)}`);
+  }
   note('download outcome', downloaded);
   check('a staged export hands the attempt to the inventory its own rows name', [downloaded.stage, downloaded.nextInMs, downloaded.error ?? null], ['inventory', 0, null]);
 
@@ -521,7 +526,10 @@ try {
   check('and a retired token is answered as retired through the port wire', (await call('/admit?hold=runtime-never-admitted')).holdRetired, true);
   const unconfiguredAdmission = await call('/admit-raised?hold=runtime-unconfigured');
   check('without a rendered configuration a new admission through the port wire is refused', String(unconfiguredAdmission.raised ?? '').includes('carries no recovery configuration'), true);
-  check('and stages no attempt', (await call('/status')).attempt, fresh.attempt);
+  const refusedPreparation = await call('/status');
+  check('an unconfigured admission retains its failed preparation with no staged payload',
+    [refusedPreparation.attempt > fresh.attempt, refusedPreparation.stage, refusedPreparation.staged],
+    [true, 'failed', null]);
 
   // A rolling update mixes this release's Worker with the previous release's producer object, and the reverse. Each
   // admits what the other sends, records who started the attempt and the configuration, and a token replayed in the
@@ -529,7 +537,7 @@ try {
   const rollingPrevious = previousSource(ROLLING_COMMIT);
   const rollingEntry = ENTRY.replaceAll(path.join(ROOT, 'packages/myco-server/src'), rollingPrevious);
   const expectedConfiguration = (startedBy: string) => ({ ...RUNTIME_CONFIGURATION, startedBy });
-  const credentialNames = ['SECRET_WRAP_KEY', 'SESSION_SECRET', 'GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET'];
+  const credentialNames = [...HOSTED_RECOVERY_CREDENTIAL_NAMES];
   for (const [label, firstEntry, firstShape, replayEntry, replayShape, startedBy] of [
     ['this Worker to the previous producer object', rollingEntry, 'wire', ENTRY, 'previous', 'runtime-test'],
     ['the previous Worker to this producer object', ENTRY, 'previous', rollingEntry, 'wire', 'previous-owner'],
