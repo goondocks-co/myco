@@ -132,7 +132,7 @@ describe('the allowed shape of a command', () => {
       ['git log -1 --oneline', 'git log -1 --oneline'],
       ['git -C /repo status', 'git -C /repo status'],
       ['cd repo && npm run build | tail -5', 'cd … && npm run … | tail -5'],
-      ['TOKEN=x9secret npm publish --access public', 'npm publish --access …'],
+      ['TOKEN=x9secret git push --access public', 'git push --access …'],
       ['true && ls -l /etc', 'true && ls -l /etc'],
       ['curl --data-binary @payload.json https://api.example.test', 'curl --data-binary … https://api.example.test'],
       ['export STRIPE=x', 'export'],

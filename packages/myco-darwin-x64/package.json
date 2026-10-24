@@ -1,16 +1,8 @@
 {
   "name": "@goondocks/myco-darwin-x64",
   "version": "0.0.0-dev",
-  "description": "macOS x64 binary for @goondocks/myco. Installed automatically as an optional dependency.",
+  "description": "macOS x64 binary for @goondocks/myco. Internal build output.",
   "type": "module",
-  "files": [
-    "bin/",
-    "README.md",
-    "LICENSE"
-  ],
-  "publishConfig": {
-    "access": "public"
-  },
   "engines": {
     "node": ">=20"
   },
@@ -23,5 +15,6 @@
     "type": "git",
     "url": "https://github.com/goondocks-co/myco.git",
     "directory": "packages/myco-darwin-x64"
-  }
+  },
+  "private": true
 }

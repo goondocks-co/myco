@@ -1,4 +1,4 @@
-// Managed binary paths shared by the npm postinstall, install helpers and runtime resolver.
+// Managed binary paths shared by install helpers and runtime resolution.
 // Callers pass the resolved Myco home. POSIX binaries live under that home;
 // Windows binaries live under LOCALAPPDATA independently of the Myco home.
 

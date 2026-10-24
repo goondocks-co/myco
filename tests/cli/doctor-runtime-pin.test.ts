@@ -92,3 +92,15 @@ describe('the binary version row', () => {
     ]).toContain(check.reason ?? 'missing_reason');
   });
 });
+
+it('package version skew directs existing installations to the native installers', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-skew-'));
+  try {
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@goondocks/myco', version: '2.0.0-alpha.12' }));
+    const check = checkBinaryVersionSkew('2.0.0-alpha.1', path.join(root, 'myco'));
+    expect(check.reason).toBe('binary_version_skew');
+    expect(check.detail).toContain('https://myco.sh/install.sh');
+    expect(check.detail).toContain('https://myco.sh/install.ps1');
+    expect(check.detail).not.toMatch(/npm\s+(?:i|install|update)/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

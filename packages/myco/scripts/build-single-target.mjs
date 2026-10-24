@@ -56,10 +56,7 @@ function buildSingleTarget() {
   }
   const mycoVersion = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version;
 
-  // Compile the binary directly into its per-platform npm package
-  // (`packages/myco-<target>/bin/`). The core package's postinstall then uses
-  // `require.resolve('@goondocks/myco-<target>/bin/<bin>')` to locate it at
-  // runtime. Workspace symlinks make this work in monorepo dev too.
+  // Compile into the target workspace used by release and source builds.
   const platformPkgDir = path.resolve(pkgRoot, '..', `myco-${target}`);
   const outputDir = path.join(platformPkgDir, 'bin');
   fs.mkdirSync(outputDir, { recursive: true });

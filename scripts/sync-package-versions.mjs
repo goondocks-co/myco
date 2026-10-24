@@ -7,19 +7,6 @@ import { execFileSync } from 'node:child_process';
 const repoRoot = process.cwd();
 const LEGACY_MYCO_TAG_PATTERN = 'v*.*.*';
 
-// Files in the myco target whose `optionalDependencies` for the
-// `@goondocks/myco-<platform>` packages must be re-pinned to the release
-// version on every bump. Without this, a tagged @goondocks/myco@X.Y.Z would
-// ask npm to install platform packages at a stale version that doesn't
-// exist on the registry.
-const MYCO_PLATFORM_OPTIONAL_DEPS = [
-  '@goondocks/myco-darwin-arm64',
-  '@goondocks/myco-darwin-x64',
-  '@goondocks/myco-linux-x64',
-  '@goondocks/myco-linux-arm64',
-  '@goondocks/myco-windows-x64',
-];
-
 const PACKAGE_TARGETS = [
   {
     envKey: 'MYCO_VERSION',
@@ -34,9 +21,6 @@ const PACKAGE_TARGETS = [
       'packages/myco-linux-arm64/package.json',
       'packages/myco-windows-x64/package.json',
     ],
-    rewriteOptionalDeps: {
-      'packages/myco/package.json': MYCO_PLATFORM_OPTIONAL_DEPS,
-    },
   },
   {
     envKey: 'MYCO_SHARED_VERSION',
@@ -146,33 +130,18 @@ function syncTargetVersions() {
       if (!fs.existsSync(absolutePath)) continue;
 
       const current = readJson(absolutePath);
-      const depsToRewrite = target.rewriteOptionalDeps?.[relativePath] ?? [];
-      const needsVersionBump = current.version !== nextVersion;
-      const needsDepRewrite = depsToRewrite.some(
-        (depName) => current.optionalDependencies?.[depName] !== nextVersion,
-      );
-
-      if (!needsVersionBump && !needsDepRewrite) continue;
-
+      if (current.version === nextVersion) continue;
       current.version = nextVersion;
-      if (depsToRewrite.length > 0) {
-        current.optionalDependencies = current.optionalDependencies ?? {};
-        for (const depName of depsToRewrite) {
-          current.optionalDependencies[depName] = nextVersion;
-        }
-      }
       writeJson(absolutePath, current);
       applied.push({
         file: relativePath,
         version: nextVersion,
-        rewroteDeps: depsToRewrite.length > 0,
       });
     }
   }
 
   for (const update of applied) {
-    const note = update.rewroteDeps ? ' (+ optionalDependencies)' : '';
-    console.log(`${update.file}: ${update.version}${note}`);
+    console.log(`${update.file}: ${update.version}`);
   }
 }
 

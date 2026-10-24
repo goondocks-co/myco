@@ -755,7 +755,6 @@ main() {
   if [ "$REPLACE_LEGACY" = 0 ] && { [ "$UNKNOWN_BINARY" = 1 ] || { [ "$MEMBER_HOME" = 1 ] && [ "$CURRENT_MAJOR" = 1 ]; }; }; then
     error "Found ${LEGACY}. Nothing was installed; the binary was preserved."
     printf '  To install 2.0 explicitly: %s -s -- --replace-1.4\n' "$ONE_LINER" >&2
-    printf '  For an intentional 1.x update, use: npm install -g @goondocks/myco@1\n' >&2
     exit 1
   fi
 

@@ -125,7 +125,7 @@ it('names the physical home through a symlink', () => {
   expect(missingDeploymentRecordMessage(link)).toContain(path.join(home, 'server', 'cloudflare', 'record.json'));
 });
 
-it.skipIf(process.platform === 'win32').each(['project', 'machine'])('explains the home chosen by a %s runtime command pin through the CLI shim', (scope) => {
+it.skipIf(process.platform === 'win32').each(['project', 'machine'])('explains the home chosen by a %s runtime command pin through the runtime redirect', (scope) => {
   const repository = fileURLToPath(new URL('../../', import.meta.url));
   const workingDirectory = path.join(root, 'work');
   fs.mkdirSync(workingDirectory);
@@ -140,8 +140,8 @@ it.skipIf(process.platform === 'win32').each(['project', 'machine'])('explains t
   const env = { ...process.env };
   delete env.MYCO_HOME;
   delete env.MYCO_REDIRECTED;
-  const result = spawnSync('node', ['-e', 'delete process.env.MYCO_HOME; require(process.argv[1]);',
-    path.join(repository, 'packages/myco/bin/myco.cjs'), 'server', 'status', '--target', 'cloudflare'],
+  const result = spawnSync('node', ['-e', 'delete process.env.MYCO_HOME; require(process.argv[1]).maybeRedirect(process.argv[1]);',
+    path.join(repository, 'packages/myco/bin/runtime-redirect.cjs'), 'server', 'status', '--target', 'cloudflare'],
     { cwd: workingDirectory, env, encoding: 'utf8' });
   expect(result.error).toBeUndefined();
   expect(result.status).toBe(0);

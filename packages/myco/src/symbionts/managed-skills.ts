@@ -1,19 +1,7 @@
 /**
- * Seed the managed skills directory (`<mycoHome>/skills`) from the
- * binary-embedded skill bundle.
- *
- * Why this exists: global skill symlinks (`~/.claude/skills/<name>` etc.) must
- * resolve to a stable, managed location that survives any checkout/worktree
- * deletion. No install kind ships a `skills/` tree under `~/.myco` — the npm
- * versions dirs and curl downloads hold only the binary — so the managed daemon
- * binary (`resolvePackageRoot()` falls to `cwd=/` under launchd) had nothing to
- * source, leaving native/curl installs with zero global skills and no path to
- * self-heal. Embedding the skills in the binary (skills.generated.ts) and
- * writing them here makes the source uniform across npm + curl + dev.
- *
- * `<mycoHome>/skills` is wholly Myco-owned, so this mirrors the bundle exactly:
- * current files are written (content-gated to avoid churn) and anything not in
- * the bundle is pruned, so a renamed/removed skill leaves no stale source behind.
+ * Mirror the binary-embedded skill bundle into <mycoHome>/skills.
+ * Global skill links resolve to this managed location independently of a checkout.
+ * Files outside the current bundle are pruned.
  */
 import fs from 'node:fs';
 import path from 'node:path';

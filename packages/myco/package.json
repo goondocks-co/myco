@@ -3,21 +3,7 @@
   "version": "0.0.0-dev",
   "description": "Collective agent intelligence — Claude Code plugin",
   "type": "module",
-  "bin": {
-    "myco": "bin/myco.cjs"
-  },
-  "files": [
-    "bin/",
-    "dist/",
-    "scripts/",
-    "commands/",
-    "skills/",
-    "README.md",
-    "LICENSE",
-    "CONTRIBUTING.md"
-  ],
   "scripts": {
-    "postinstall": "node scripts/select-binary.mjs",
     "codegen": "tsx scripts/gen-hook-config.ts && tsx scripts/gen-ui-assets.ts && node scripts/gen-templates.mjs && tsx scripts/gen-plugin-bundle.ts && tsx scripts/gen-worker-bundle.ts",
     "build": "npm run build:ui && npm run codegen && node scripts/clean-core.mjs && npm run build:binary && npm run build:verify",
     "build:binaries": "node scripts/clean-core.mjs && node scripts/build-all-targets.mjs",
@@ -32,9 +18,6 @@
     "lint:skills": "tsx scripts/lint-skill-content.ts",
     "lint:skills:strict": "tsx scripts/lint-skill-content.ts --strict",
     "lint": "tsc --noEmit"
-  },
-  "publishConfig": {
-    "access": "public"
   },
   "engines": {
     "node": ">=20"
@@ -76,13 +59,6 @@
     "yaml": "^2.9.1",
     "zod": "^4.6.7"
   },
-  "optionalDependencies": {
-    "@goondocks/myco-darwin-arm64": "0.0.0-dev",
-    "@goondocks/myco-darwin-x64": "0.0.0-dev",
-    "@goondocks/myco-linux-arm64": "0.0.0-dev",
-    "@goondocks/myco-linux-x64": "0.0.0-dev",
-    "@goondocks/myco-windows-x64": "0.0.0-dev"
-  },
   "devDependencies": {
     "@goondocks/myco-shared": "*",
     "@types/bun": "^1.4.3",
@@ -94,5 +70,6 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "typescript-v6": "npm:typescript@^6.0.3"
-  }
+  },
+  "private": true
 }

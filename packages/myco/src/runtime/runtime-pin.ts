@@ -10,15 +10,7 @@ import { MACHINE_RUNTIME_COMMAND_FILENAME } from '../constants/update.js';
 import { resolveMycoHome } from '../paths/home.js';
 import { readLayeredPin } from './binary-resolution.js';
 
-/**
- * `~/.myco/runtime.command` — single source of truth for which `myco`
- * binary the launcher (`myco-run.cjs`, `myco-cli.cjs`, `bin/myco.cjs`)
- * should exec. Absent file means "use whatever PATH resolves `myco` to."
- *
- * Machine-scoped because the daemon itself is now machine-scoped: there
- * is exactly one daemon per machine, and the runtime that backs it is a
- * machine-level choice, not a per-project one.
- */
+/** Path to the machine's explicit executable override. */
 export function resolveMachineRuntimeCommandPath(mycoHome = resolveMycoHome()): string {
   return path.join(mycoHome, MACHINE_RUNTIME_COMMAND_FILENAME);
 }

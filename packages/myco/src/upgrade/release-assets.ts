@@ -277,10 +277,6 @@ export function mycoReleasesApiUrl(): string {
 /**
  * Derive `{ latest_stable, latest_beta }` from a GitHub releases array.
  *
- * Mirrors the npm dist-tag semantics used by the npm-registry path:
- *   - `latest_stable` ≈ dist-tags.latest  — highest NON-prerelease semver
- *   - `latest_beta`   ≈ dist-tags.beta    — highest PRERELEASE semver
- *
  * Only tags matching `^myco/v` are considered (sibling package tags such as
  * `myco-team/v*` and `myco-collective/v*` are excluded). Tags whose suffix is
  * not valid semver are skipped. Returns null for a category when no releases

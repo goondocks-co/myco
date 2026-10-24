@@ -21,7 +21,6 @@ cd packages/myco
 npx tsx scripts/gen-hook-config.ts
 bash scripts/build-libsqlite3-target.sh linux-arm64
 TARGET=linux-arm64 node scripts/build-single-target.mjs
-node scripts/select-binary.mjs
 cd /work
 BIN=/work/packages/myco-linux-arm64/bin/myco
 echo "built: $("$BIN" --version 2>&1 | head -1)"

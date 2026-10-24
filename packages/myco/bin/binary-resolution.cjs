@@ -1,13 +1,4 @@
-// Shared binary-resolution primitives for the npm-shipped shims.
-//
-// CJS mirror of `src/runtime/binary-resolution.ts` for the entry points that
-// cannot import TS: `bin/myco.cjs` and `bin/runtime-redirect.cjs` require()
-// this file; `bin/myco-run` (ESM) imports it. Agreement with the TS contract
-// is gated by tests/runtime/binary-resolution-cjs-agreement.test.ts.
-//
-// Ships in the npm tarball and versions independently of the compiled binary,
-// so it must stay self-contained: no requires beyond node builtins, and no
-// assumption that a same-version binary is installed.
+// Standalone binary resolution for existing package dispatch and runtime redirect fixtures.
 
 'use strict';
 

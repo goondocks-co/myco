@@ -1,4 +1,4 @@
-/** Read-only membership and legacy-vault predicates shared with the npm bootstrap. */
+/** Read-only membership and legacy-vault predicates for installation and member operations. */
 import fs from 'node:fs';
 import path from 'node:path';
 export const MEMBER_DIRNAME = 'member';

@@ -223,7 +223,6 @@ export const TEAM_FUNNEL_MOUNT = '/';
 
 // --- Self-update ---
 export {
-  NPM_REGISTRY_BASE_URL,
   MYCO_GLOBAL_DIR,
   UPDATE_CHECK_CACHE_PATH,
   UPDATE_CONFIG_PATH,

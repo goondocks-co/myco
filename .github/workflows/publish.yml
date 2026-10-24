@@ -6,8 +6,6 @@ on:
     tags:
       - 'myco/v*.*.*'
       - 'myco/v*.*.*-*'
-      - 'myco-shared/v*.*.*'
-      - 'myco-shared/v*.*.*-*'
 
   pull_request:
     branches: [main]
@@ -28,11 +26,6 @@ on:
         required: true
         default: '2.0.0-alpha.1'
         type: string
-      package:
-        description: Package family to verify
-        default: myco
-        type: choice
-        options: [myco, myco-shared]
 
 permissions:
   actions: read
@@ -64,10 +57,7 @@ jobs:
       tag_prefix: ${{ steps.extract.outputs.tag_prefix }}
       version: ${{ steps.extract.outputs.version }}
       is_prerelease: ${{ steps.extract.outputs.is_prerelease }}
-      npm_tag: ${{ steps.extract.outputs.npm_tag }}
-      package_name: ${{ steps.extract.outputs.package_name }}
-      package_dir: ${{ steps.extract.outputs.package_dir }}
-      tarball_prefix: ${{ steps.extract.outputs.tarball_prefix }}
+      release_channel: ${{ steps.extract.outputs.release_channel }}
     steps:
       - uses: actions/checkout@v7
       - name: Extract package and version from tag
@@ -76,57 +66,42 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
           EVENT_NAME: ${{ github.event_name }}
           DRY_RUN_VERSION: ${{ inputs.version || '2.0.0-alpha.1' }}
-          DRY_RUN_PACKAGE: ${{ inputs.package || 'myco' }}
         run: |
           if [ "$EVENT_NAME" = push ]; then
             DRY_RUN=false
           else
-            TAG_NAME="${DRY_RUN_PACKAGE}/v${DRY_RUN_VERSION}"
+            TAG_NAME="myco/v${DRY_RUN_VERSION}"
             DRY_RUN=true
           fi
           TAG_PREFIX="${TAG_NAME%%/v*}"
           VERSION="${TAG_NAME#"${TAG_PREFIX}/v"}"
 
-          case "$TAG_PREFIX" in
-            myco)
-              PACKAGE_NAME="@goondocks/myco"
-              PACKAGE_DIR="packages/myco"
-              TARBALL_PREFIX="goondocks-myco"
-              ;;
-            myco-shared)
-              PACKAGE_NAME="@goondocks/myco-shared"
-              PACKAGE_DIR="packages/myco-shared"
-              TARBALL_PREFIX="goondocks-myco-shared"
-              ;;
-            *)
-              echo "Unsupported release tag: $TAG_NAME" >&2
-              exit 1
-              ;;
-          esac
+          if [ "$TAG_PREFIX" != myco ]; then
+            echo "Unsupported release tag: $TAG_NAME" >&2
+            exit 1
+          fi
 
           # A version is <major>.<minor>.<patch>, or that with a -alpha.N,
           # -beta.N or -rc.N prerelease. Every hyphenated version is a
-          # prerelease under its own npm dist-tag, never latest; any other
+          # prerelease in its declared release channel; any other
           # shape fails here, before anything is built or published.
           if ! VERSION="$VERSION" node --input-type=module -e 'import { releaseKey } from "./packages/myco/scripts/release-policy.mjs"; if (!releaseKey(process.env.VERSION)) process.exit(1)'; then
             echo "Malformed version in release tag: $TAG_NAME" >&2
             exit 1
           fi
           case "$VERSION" in
-            *-alpha.*) IS_PRERELEASE=true; NPM_TAG=alpha ;;
-            *-beta.*)  IS_PRERELEASE=true; NPM_TAG=beta ;;
-            *-rc.*)    IS_PRERELEASE=true; NPM_TAG=next ;;
+            *-alpha.*) IS_PRERELEASE=true; RELEASE_CHANNEL=alpha ;;
+            *-beta.*)  IS_PRERELEASE=true; RELEASE_CHANNEL=beta ;;
+            *-rc.*)    IS_PRERELEASE=true; RELEASE_CHANNEL=rc ;;
             *-*)
               echo "Unsupported prerelease in release tag: $TAG_NAME (use -alpha.N, -beta.N or -rc.N)" >&2
               exit 1
               ;;
-            *) IS_PRERELEASE=false; NPM_TAG=latest ;;
+            *) IS_PRERELEASE=false; RELEASE_CHANNEL=stable ;;
           esac
           printf '%s\n' "dry_run=$DRY_RUN" "tag_name=$TAG_NAME" \
             "tag_prefix=$TAG_PREFIX" "version=$VERSION" \
-            "package_name=$PACKAGE_NAME" "package_dir=$PACKAGE_DIR" \
-            "tarball_prefix=$TARBALL_PREFIX" "is_prerelease=$IS_PRERELEASE" \
-            "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
+            "is_prerelease=$IS_PRERELEASE" "release_channel=$RELEASE_CHANNEL" >> "$GITHUB_OUTPUT"
 
       - name: Require the committed Git plugin release version
         if: github.event_name == 'push' && steps.extract.outputs.tag_prefix == 'myco'
@@ -276,10 +251,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: myco-binary-${{ matrix.target }}
-          # build-single-target.mjs writes the binary into the per-platform
-          # npm package's bin/ directory. Upload just that — the build job
-          # downloads back into the same path so the per-platform npm pack
-          # picks it up.
+          # Build outputs retain their per-target workspace paths.
           path: packages/myco-${{ matrix.target }}/bin/
           if-no-files-found: error
 
@@ -313,14 +285,11 @@ jobs:
     name: Build and verify release artifacts
     runs-on: ubuntu-latest
     needs: [validate-tag, cross-compile, sign-darwin]
-    # cross-compile is skipped for myco-shared tags, which would
-    # normally cascade-skip this job. Force it to run in that case.
     if: |
       always() &&
       needs.validate-tag.result == 'success' &&
-      (needs.cross-compile.result == 'success' || needs.cross-compile.result == 'skipped') &&
-      (needs.sign-darwin.result == 'success' ||
-       (needs.validate-tag.outputs.tag_prefix != 'myco' && needs.sign-darwin.result == 'skipped'))
+      needs.cross-compile.result == 'success' &&
+      needs.sign-darwin.result == 'success'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -347,15 +316,6 @@ jobs:
         run: |
           node --import tsx packages/myco/scripts/gen-plugin-bundle.ts --check
 
-      # For myco-shared tags, run the normal build (bun build). For
-      # myco tags, the binaries arrive from the cross-compile matrix —
-      # downloaded in the next step. Run only the UI build locally.
-      - name: Build target package (myco-shared)
-        if: needs.validate-tag.outputs.tag_prefix != 'myco'
-        env:
-          PACKAGE_NAME: ${{ needs.validate-tag.outputs.package_name }}
-        run: npm run build -w "$PACKAGE_NAME"
-
       # Stage the pre-built per-target binaries back into their platform
       # packages. download-artifact with `pattern` places each artifact in a
       # subdirectory named after the artifact; we move each binary into the
@@ -381,7 +341,7 @@ jobs:
           done
           rm -rf "$STAGING"
 
-      # Verify every platform binary landed before packing.
+      # Verify every platform binary landed before distribution.
       - name: Verify platform binaries
         if: needs.validate-tag.outputs.tag_prefix == 'myco'
         run: |
@@ -415,12 +375,23 @@ jobs:
         if: needs.validate-tag.outputs.tag_prefix == 'myco'
         run: |
           set -euo pipefail
+          source scripts/release-assets.sh
           mkdir -p release-binaries
-          cp packages/myco-darwin-arm64/bin/myco    release-binaries/myco-darwin-arm64
-          cp packages/myco-darwin-x64/bin/myco      release-binaries/myco-darwin-x64
-          cp packages/myco-linux-x64/bin/myco       release-binaries/myco-linux-x64
-          cp packages/myco-linux-arm64/bin/myco     release-binaries/myco-linux-arm64
-          cp packages/myco-windows-x64/bin/myco.exe release-binaries/myco-windows-x64.exe
+          for name in "${MYCO_RELEASE_BINARIES[@]}"; do
+            target="${name#myco-}"
+            target="${target%.exe}"
+            binary="packages/myco-${target}/bin/myco"
+            case "$name" in *.exe) binary="${binary}.exe" ;; esac
+            cp "$binary" "release-binaries/$name"
+          done
+          (cd release-binaries && sha256sum "${MYCO_RELEASE_BINARIES[@]}" > SHA256SUMS)
+
+      - name: Verify release manifest
+        if: needs.validate-tag.outputs.tag_prefix == 'myco'
+        run: |
+          set -euo pipefail
+          source scripts/release-assets.sh
+          verify_release_assets release-binaries
 
       # Upload the flat release-binaries/ dir as a single artifact. Because the
       # path is a single directory, upload-artifact roots the artifact there and
@@ -432,124 +403,6 @@ jobs:
         with:
           name: myco-raw-binaries
           path: release-binaries/
-          if-no-files-found: error
-
-      # For myco tags, pack the 5 platform packages first (each injects
-      # os/cpu metadata just before pack so the published tarball carries
-      # the constraint while source-tree workspaces stay platform-neutral).
-      - name: Pack platform packages (myco)
-        if: needs.validate-tag.outputs.tag_prefix == 'myco'
-        run: |
-          set -euo pipefail
-          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64; do
-            node scripts/inject-platform-metadata.mjs "$target"
-            (cd "packages/myco-${target}" && npm pack --json > npm-pack.json)
-          done
-
-      - name: Pack npm tarball
-        working-directory: ${{ needs.validate-tag.outputs.package_dir }}
-        run: |
-          PACK_JSON="$(npm pack --json)"
-          printf '%s\n' "$PACK_JSON" > npm-pack.json
-
-      - name: Verify packed package version
-        working-directory: ${{ needs.validate-tag.outputs.package_dir }}
-        env:
-          PACKAGE_NAME: ${{ needs.validate-tag.outputs.package_name }}
-          VERSION: ${{ needs.validate-tag.outputs.version }}
-        run: |
-          node - <<'NODE'
-          const fs = require('node:fs');
-
-          const expectedName = process.env.PACKAGE_NAME;
-          const expectedVersion = process.env.VERSION;
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
-          const pack = JSON.parse(fs.readFileSync('npm-pack.json', 'utf-8'))[0];
-
-          if (pkg.name !== expectedName) {
-            throw new Error(`package.json name ${pkg.name} did not match ${expectedName}`);
-          }
-
-          if (pkg.version !== expectedVersion) {
-            throw new Error(`package.json version ${pkg.version} did not match ${expectedVersion}`);
-          }
-
-          if (pack.name !== expectedName) {
-            throw new Error(`packed name ${pack.name} did not match ${expectedName}`);
-          }
-
-          if (pack.version !== expectedVersion) {
-            throw new Error(`packed version ${pack.version} did not match ${expectedVersion}`);
-          }
-          NODE
-
-      - name: Verify packed package size
-        working-directory: ${{ needs.validate-tag.outputs.package_dir }}
-        env:
-          TAG_PREFIX: ${{ needs.validate-tag.outputs.tag_prefix }}
-        run: |
-          node - <<'NODE'
-          const fs = require('node:fs');
-
-          // Core @goondocks/myco no longer bundles platform binaries — each
-          // ships in its own @goondocks/myco-<arch> package. Core should
-          // stay well under the old 210 MB ceiling. Per-platform packages
-          // are verified separately below.
-          const tagPrefix = process.env.TAG_PREFIX;
-          const maxBytes = tagPrefix === 'myco' ? 50_000_000 : 210_000_000;
-          const pack = JSON.parse(fs.readFileSync('npm-pack.json', 'utf-8'))[0];
-
-          if (pack.size > maxBytes) {
-            const sizeMb = (pack.size / 1_000_000).toFixed(1);
-            const maxMb = (maxBytes / 1_000_000).toFixed(1);
-            throw new Error(`packed tarball is ${sizeMb} MB, above npm publish guardrail ${maxMb} MB`);
-          }
-          NODE
-
-      - name: Verify packed platform-package sizes (myco)
-        if: needs.validate-tag.outputs.tag_prefix == 'myco'
-        run: |
-          node - <<'NODE'
-          const fs = require('node:fs');
-
-          // Each per-platform package ships one Bun-compiled binary,
-          // typically ~30 MB packed. Guard the upper end to catch a
-          // regression that re-bundles unintended payloads.
-          const maxBytes = 60_000_000;
-          const targets = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64', 'windows-x64'];
-          for (const target of targets) {
-            const pack = JSON.parse(fs.readFileSync(`packages/myco-${target}/npm-pack.json`, 'utf-8'))[0];
-            if (pack.size > maxBytes) {
-              const sizeMb = (pack.size / 1_000_000).toFixed(1);
-              const maxMb = (maxBytes / 1_000_000).toFixed(1);
-              throw new Error(`@goondocks/myco-${target}: packed tarball is ${sizeMb} MB, above guardrail ${maxMb} MB`);
-            }
-          }
-          NODE
-
-      - name: Upload build artifact
-        if: needs.validate-tag.outputs.tag_prefix != 'myco'
-        uses: actions/upload-artifact@v7
-        with:
-          name: npm-package
-          path: ${{ needs.validate-tag.outputs.package_dir }}/${{ needs.validate-tag.outputs.tarball_prefix }}-*.tgz
-
-      # For myco tags we upload core + 5 per-platform tarballs as one artifact
-      # bundle. download-artifact preserves the directory layout, so the
-      # publish step recovers `packages/myco/*.tgz` and
-      # `packages/myco-<target>/*.tgz`.
-      - name: Upload build artifact (myco)
-        if: needs.validate-tag.outputs.tag_prefix == 'myco'
-        uses: actions/upload-artifact@v7
-        with:
-          name: npm-package
-          path: |
-            packages/myco/goondocks-myco-*.tgz
-            packages/myco-darwin-arm64/goondocks-myco-darwin-arm64-*.tgz
-            packages/myco-darwin-x64/goondocks-myco-darwin-x64-*.tgz
-            packages/myco-linux-x64/goondocks-myco-linux-x64-*.tgz
-            packages/myco-linux-arm64/goondocks-myco-linux-arm64-*.tgz
-            packages/myco-windows-x64/goondocks-myco-windows-x64-*.tgz
           if-no-files-found: error
 
   verify-darwin:
@@ -564,27 +417,18 @@ jobs:
         with:
           name: myco-raw-binaries
           path: raw-binaries/
-      - uses: actions/download-artifact@v8
-        with:
-          name: npm-package
-          path: npm-packages/
-      - name: Verify exact release assets and npm binaries
+      - name: Verify exact release assets
         env:
           VERSION: ${{ needs.validate-tag.outputs.version }}
         run: |
           set -euo pipefail
           for target in darwin-arm64 darwin-x64; do
-            tarballs=("npm-packages/myco-${target}/goondocks-myco-${target}-"*.tgz)
-            if [ "${#tarballs[@]}" -ne 1 ] || [ ! -f "${tarballs[0]}" ]; then
-              echo "Expected one packed npm tarball for $target" >&2
-              exit 1
-            fi
             mode=native
             if [ "$target" = darwin-x64 ]; then
               mode=signature-only
-              echo "darwin-x64 execution skipped: Bun x64 raises SIGILL under macos-14 Rosetta; both signatures and byte identity are required."
+              echo "darwin-x64 execution skipped: Bun x64 raises SIGILL under macos-14 Rosetta; both signatures and checksums are required."
             fi
-            bash scripts/verify-darwin-distribution.sh "$VERSION" "raw-binaries/myco-${target}" "${tarballs[0]}" "$mode"
+            bash scripts/verify-darwin-distribution.sh "$VERSION" "raw-binaries/myco-${target}" "raw-binaries/SHA256SUMS" "$mode"
           done
 
   create-release:
@@ -593,18 +437,14 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     needs: [validate-tag, build, require-ci, verify-darwin]
-    # build runs for all tag prefixes via its always() gate; this gate
-    # carries that override forward. myco-shared is internal — we skip
-    # the GitHub Release UI for it but still let publish run.
     if: |
       always() &&
       needs.validate-tag.outputs.publication_allowed == 'true' &&
       needs.validate-tag.result == 'success' &&
       needs.build.result == 'success' &&
       needs.require-ci.result == 'success' &&
-      (needs.verify-darwin.result == 'success' ||
-       (needs.validate-tag.outputs.tag_prefix != 'myco' && needs.verify-darwin.result == 'skipped')) &&
-      needs.validate-tag.outputs.tag_prefix != 'myco-shared'
+      needs.verify-darwin.result == 'success' &&
+      needs.validate-tag.outputs.tag_prefix == 'myco'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -613,7 +453,7 @@ jobs:
       - name: Download build artifact
         uses: actions/download-artifact@v8
         with:
-          name: npm-package
+          name: myco-raw-binaries
           path: release-files
 
       - name: Generate release notes
@@ -622,7 +462,6 @@ jobs:
           TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
           TAG_PREFIX: ${{ needs.validate-tag.outputs.tag_prefix }}
           VERSION: ${{ needs.validate-tag.outputs.version }}
-          PACKAGE_NAME: ${{ needs.validate-tag.outputs.package_name }}
           IS_PRERELEASE: ${{ needs.validate-tag.outputs.is_prerelease }}
         run: |
           set -euo pipefail
@@ -672,22 +511,17 @@ jobs:
             RANGE_BLURB="initial release"
           fi
 
-          # Friendly display name keyed on the tag prefix.
-          case "$TAG_PREFIX" in
-            myco)            DISPLAY_NAME="Myco" ;;
-            myco-shared)     DISPLAY_NAME="Myco Shared" ;;
-            *)               DISPLAY_NAME="$PACKAGE_NAME" ;;
-          esac
+          DISPLAY_NAME="Myco"
 
           if [ "$TAG_PREFIX" = "myco" ]; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               INSTALL_BLOCK='```bash
-          curl --proto '"'"'=https'"'"' --tlsv1.2 -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=${{ needs.validate-tag.outputs.npm_tag }} sh
+          curl --proto '"'"'=https'"'"' --tlsv1.2 -fsSL https://myco.sh/install.sh | MYCO_CHANNEL=${{ needs.validate-tag.outputs.release_channel }} sh
           myco login <your-myco-address>
           ```
 
           Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14).'
-              if [ '${{ needs.validate-tag.outputs.npm_tag }}' = 'next' ]; then
+              if [ '${{ needs.validate-tag.outputs.release_channel }}' = 'rc' ]; then
                 INSTALL_BLOCK='RC builds are outside the automatic release channels. Download the binary and SHA256SUMS from this release for manual evaluation.'
               fi
             else
@@ -698,23 +532,12 @@ jobs:
 
           Moving a machine from Myco 1.4: see [Upgrading from 1.4](https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14).'
             fi
-          else
-            if [ "$IS_PRERELEASE" = "true" ]; then
-              INSTALL_BLOCK='```bash
-          npm install -g '"${PACKAGE_NAME}"'@beta
-          ```'
-            else
-              INSTALL_BLOCK='```bash
-          npm install -g '"${PACKAGE_NAME}"'        # fresh install
-          npm update  -g '"${PACKAGE_NAME}"'        # upgrade existing
-          ```'
-            fi
           fi
 
           if [ "$IS_PRERELEASE" = "true" ]; then
             RELEASE_TITLE="${DISPLAY_NAME} ${VERSION} · Pre-release"
             cat > release-notes.md <<NOTES_EOF
-          \`${PACKAGE_NAME}\` · ${RANGE_BLURB} · **Pre-release**
+          ${DISPLAY_NAME} · ${RANGE_BLURB} · **Pre-release**
 
           > Pre-release. May contain bugs or incomplete features. Install alpha with \`MYCO_CHANNEL=alpha\`, or beta with \`MYCO_CHANNEL=beta\`. Fresh default installs choose 2.x stable, then beta, then alpha, never 1.4. Explicit stable selects releases only. Existing 1.4 machines keep 1.x updates until --replace-1.4. Alpha admits alpha, beta and stable; beta admits beta and stable. Updates stay within the recorded channel and never downgrade. Cut the stable/next tag first; delete old prerelease tags only after its release is published.
 
@@ -729,7 +552,7 @@ jobs:
           else
             RELEASE_TITLE="${DISPLAY_NAME} ${VERSION}"
             cat > release-notes.md <<NOTES_EOF
-          \`${PACKAGE_NAME}\` · ${RANGE_BLURB}
+          ${DISPLAY_NAME} · ${RANGE_BLURB}
 
           Cut the stable/next tag first; delete old prerelease tags only after its release is published. Installed machines never downgrade when a channel target is older.
 
@@ -748,20 +571,13 @@ jobs:
           # Export the title for the next step.
           echo "title=${RELEASE_TITLE}" >> "$GITHUB_OUTPUT"
 
-      # Collect every .tgz under release-files/ (multi-directory for myco
-      # tags, single file for myco-shared) into a flat list. Using
-      # `find` keeps the gh-release invocation directory-structure-agnostic.
       - name: Collect release assets
         id: assets
         run: |
           set -euo pipefail
-          mapfile -t assets < <(find release-files -type f -name '*.tgz' | sort)
-          if [ "${#assets[@]}" -eq 0 ]; then
-            echo "no .tgz files found in release-files/" >&2
-            exit 1
-          fi
-          printf '%s\n' "${assets[@]}" > release-assets.txt
-          cat release-assets.txt
+          source scripts/release-assets.sh
+          verify_release_assets release-files
+          printf 'release-files/%s\n' "${MYCO_RELEASE_BINARIES[@]}" SHA256SUMS > release-assets.txt
 
       # The release is created as a draft, and made public only by the last step
       # below, once every asset is attached: an installer reading the releases
@@ -801,40 +617,6 @@ jobs:
             gh release create "${create_args[@]}"
           fi
 
-      # Download the raw binaries artifact (uploaded by the build job for myco
-      # tags) and attach them to the GitHub Release under canonical asset names.
-      # Additive: the .tgz upload above is untouched.
-      - name: Download raw binaries artifact (myco)
-        if: needs.validate-tag.outputs.tag_prefix == 'myco' && steps.release.outputs.published != 'true'
-        uses: actions/download-artifact@v8
-        with:
-          name: myco-raw-binaries
-          path: raw-binaries-staging/
-
-      - name: Stage and upload raw binaries + SHA256SUMS (myco)
-        if: needs.validate-tag.outputs.tag_prefix == 'myco'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
-          RELEASE_PUBLISHED: ${{ steps.release.outputs.published }}
-        run: |
-          set -euo pipefail
-          if [ "${RELEASE_PUBLISHED:-false}" = "true" ]; then exit 0; fi
-
-          # The artifact was uploaded as a flat release-binaries/ dir in the build
-          # job, so download-artifact roots extraction at raw-binaries-staging/ and
-          # files land flat: raw-binaries-staging/myco-darwin-arm64, …, no prefix.
-
-          # Generate SHA256SUMS in canonical two-space format (<sha>  <name>).
-          # Run sha256sum from inside the dir so names are bare (no path prefix);
-          # later install scripts parse $2 == <assetname>. Enumerate the five
-          # names explicitly — `sha256sum *` would include SHA256SUMS itself
-          # (shell creates the file before the glob expands), producing a bogus
-          # self-referential entry that breaks `sha256sum -c SHA256SUMS`.
-          ( cd raw-binaries-staging && sha256sum myco-darwin-arm64 myco-darwin-x64 myco-linux-x64 myco-linux-arm64 myco-windows-x64.exe > SHA256SUMS )
-
-          gh release upload "$TAG_NAME" raw-binaries-staging/* --clobber
-
       # Every asset is attached: only now does the release become public. A
       # prerelease never becomes the repository's latest release.
       - name: Publish the GitHub Release
@@ -851,115 +633,3 @@ jobs:
             publish_args+=(--prerelease --latest=false)
           fi
           gh release edit "${publish_args[@]}"
-
-  publish:
-    name: Publish to npmjs.org
-    permissions:
-      contents: read
-      id-token: write
-    runs-on: ubuntu-latest
-    needs: [validate-tag, build, create-release, require-ci, verify-darwin]
-    environment: npm-publish
-    # Build supplies the npm tarballs. Internal packages skip the GitHub Release.
-    if: |
-      always() &&
-      needs.validate-tag.outputs.publication_allowed == 'true' &&
-      needs.validate-tag.result == 'success' &&
-      needs.build.result == 'success' &&
-      needs.require-ci.result == 'success' &&
-      (needs.verify-darwin.result == 'success' ||
-       (needs.validate-tag.outputs.tag_prefix != 'myco' && needs.verify-darwin.result == 'skipped')) &&
-      (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
-    steps:
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
-
-      - name: Download packaged artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: npm-package
-          path: publish-files
-
-      - name: Publish package
-        env:
-          NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
-          TAG_PREFIX: ${{ needs.validate-tag.outputs.tag_prefix }}
-        run: |
-          set -euo pipefail
-
-          # Publish a tarball idempotently. npm versions are immutable, so a
-          # job that fails partway (e.g. a transient Sigstore/Rekor provenance
-          # outage after some packages already shipped) cannot be recovered by
-          # re-running: the first already-published package returns "cannot
-          # publish over the previously published versions" and aborts the loop
-          # before reaching the packages that never shipped. Skipping versions
-          # already present on the registry makes the whole job safely
-          # re-runnable — a re-run finishes whatever the previous attempt left
-          # behind instead of wedging on the first survivor.
-          #
-          # Resolve to an absolute path first. If the arg looks like
-          # `foo/bar.tgz` (one slash, no leading ./ or /), npm interprets it as
-          # a GitHub shorthand specifier and tries to `git ls-remote` it —
-          # exit 128 with "Permission denied (publickey)". `realpath`
-          # guarantees an absolute path so npm always treats it as a local
-          # tarball file.
-          publish_tarball() {
-            local tgz name version
-            tgz="$(realpath "$1")"
-            name="$(tar -xzOf "$tgz" package/package.json | node -p 'JSON.parse(require("node:fs").readFileSync(0,"utf8")).name')"
-            version="$(tar -xzOf "$tgz" package/package.json | node -p 'JSON.parse(require("node:fs").readFileSync(0,"utf8")).version')"
-            if npm view "${name}@${version}" version >/dev/null 2>&1; then
-              echo "Skipping ${name}@${version} — already published"
-              return 0
-            fi
-            echo "Publishing ${name}@${version} from ${tgz}"
-            npx npm@latest publish "$tgz" --tag "$NPM_TAG" --provenance --access public
-          }
-
-          if [ "$TAG_PREFIX" = "myco" ]; then
-            # Publish each platform package first so core's
-            # optionalDependencies pin resolves on the registry by the time
-            # users install core. Then publish core last.
-            for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64; do
-              # download-artifact preserves directory structure relative to
-              # the upload root, so platform tarballs land at
-              # publish-files/packages/myco-<target>/*.tgz.
-              tgz="$(find publish-files -type f -name "goondocks-myco-${target}-*.tgz" -print -quit)"
-              if [ -z "$tgz" ]; then
-                echo "missing platform tarball: ${target}" >&2
-                exit 1
-              fi
-              publish_tarball "$tgz"
-            done
-            tgz="$(find publish-files -type f -regex '.*/goondocks-myco-[0-9].*\.tgz$' -print -quit)"
-            if [ -z "$tgz" ]; then
-              echo "missing core tarball" >&2
-              exit 1
-            fi
-            publish_tarball "$tgz"
-          else
-            tgz="$(find publish-files -maxdepth 2 -type f -name '*.tgz' -print -quit)"
-            if [ -z "$tgz" ]; then
-              echo "no tarball found in publish-files/" >&2
-              exit 1
-            fi
-            publish_tarball "$tgz"
-          fi
-
-      - name: Publish summary
-        env:
-          TAG_NAME: ${{ needs.validate-tag.outputs.tag_name }}
-          PACKAGE_NAME: ${{ needs.validate-tag.outputs.package_name }}
-          VERSION: ${{ needs.validate-tag.outputs.version }}
-          IS_PRERELEASE: ${{ needs.validate-tag.outputs.is_prerelease }}
-          NPM_TAG: ${{ needs.validate-tag.outputs.npm_tag }}
-        run: |
-          echo "## Published to npmjs.org" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Tag:** $TAG_NAME" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Package:** $PACKAGE_NAME" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Version:** $VERSION" >> "$GITHUB_STEP_SUMMARY"
-          echo "**npm tag:** $NPM_TAG" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Pre-release:** $IS_PRERELEASE" >> "$GITHUB_STEP_SUMMARY"

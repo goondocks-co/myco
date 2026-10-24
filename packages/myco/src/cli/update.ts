@@ -310,8 +310,7 @@ async function runCheck(channel: ReleaseChannel, deps: UpgradeDeps, target: stri
     checkResult = await checkFn(
       currentVersion,
       channel,
-      // installed_version: use current as proxy (CLI doesn't track the npm install path
-      // separately from the running binary)
+      // The running binary supplies the installed version.
       currentVersion,
       updateBudget(deps).fetch,
     );

@@ -78,7 +78,7 @@ function isPrerelease(version: string): boolean {
  *
  * - `currentVersion`   — the version of the currently-running myco binary
  * - `channel`          — effective release channel (stable | beta)
- * - `installedVersion` — version read from the global npm install (may differ
+ * - `installedVersion` — recorded installation version (may differ
  *                        from the running binary for the managed-binary path)
  * - `fetchFn`          — injectable fetch (defaults to global fetch; tests mock it)
  *

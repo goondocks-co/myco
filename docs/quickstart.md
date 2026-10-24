@@ -16,7 +16,7 @@ Myco is a native binary; no Node runtime is needed. On Windows x64:
 irm https://myco.sh/install.ps1 | iex
 ```
 
-The 2.0 Windows path is not yet verified. The installers select an available 2.x release; use them rather than an unqualified npm install, which may select 1.4.
+The 2.0 Windows path is not yet verified. The installers download an available 2.x GitHub release. Existing 1.4 installations require [explicit replacement and cutover](upgrade.md#upgrading-from-myco-14).
 
 ## 2. Sign this machine in
 
