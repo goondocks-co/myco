@@ -1,3 +1,5 @@
+import { prepareSwitchedSettings } from '../read/view-store.js';
+import type { EmbeddingSwitch } from './embedding/switch-store.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
@@ -723,22 +725,10 @@ async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | un
  */
 export async function writeSwitchedEmbedding(
   db: RelationalStore, choice: StoredEmbedding, actor: string, nowMs: number,
-  condition: { sql: string; params: ReadonlyArray<string | number> }, end: readonly PreparedStatement[],
+  sw: EmbeddingSwitch, end: readonly PreparedStatement[],
 ): Promise<boolean> {
   const { stamps } = await embeddingRows(db);
-  const statements = EMBEDDING_SELECTION_LEAVES.flatMap((part) => {
-    const value = choice[part];
-    if (value !== undefined) {
-      return [db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by, write_id) SELECT ?, ?, ?, ?, ? WHERE ${condition.sql}
-        ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by, write_id = excluded.write_id`)
-        .bind(part, JSON.stringify(value), nowMs, actor, crypto.randomUUID(), ...condition.params)];
-    }
-    return stamps.has(part) ? [
-      db.prepare(`DELETE FROM deployment_settings WHERE leaf = ? AND ${condition.sql}`).bind(part, ...condition.params),
-      db.prepare(`INSERT INTO deployment_setting_resets (leaf, reset_at, reset_by) SELECT ?, ?, ? WHERE ${condition.sql}
-        ON CONFLICT(leaf) DO UPDATE SET reset_at = excluded.reset_at, reset_by = excluded.reset_by`).bind(part, nowMs, actor, ...condition.params),
-    ] : [];
-  });
+  const statements = prepareSwitchedSettings(db, choice, actor, nowMs, sw, stamps);
   const results = await db.batch([...statements, ...end]);
   return results[statements.length]!.meta.changes === 1;
 }

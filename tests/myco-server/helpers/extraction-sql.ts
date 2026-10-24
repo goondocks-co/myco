@@ -1,6 +1,6 @@
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { expect } from 'bun:test';
-import { ACKNOWLEDGED_PROMPTS_SQL, unreadPromptSql } from '@myco-server-worker/read/extraction-coverage.js';
+import legacy from '../fixtures/view-read-legacy.json';
 import { sqliteEnv } from './fixtures.js';
 
 /** Every page statement seeks data identities; JSON lists drive their data-table joins. */
@@ -32,11 +32,11 @@ export async function assertExtractionPlans(db: RelationalStore, queries: { sql:
 
 /** Prepared extraction SQL may use the flag only through its owner or historical data carriers. */
 export function assertExtractionSql(sql: string): void {
-  if (sql === ACKNOWLEDGED_PROMPTS_SQL) return;
+  if (sql.replace(/^\/\*vs:[A-Za-z0-9_:]+\*\//, '') === legacy.extraction.acknowledged) return;
   let remaining = sql;
   for (const alias of new Set([...sql.matchAll(/\b(\w+)\.processed\b/g)].map(match => match[1]!))) {
-    for (const options of [{}, { exceptAck: 'NEW.ack_id' }, { beforeLedger: true }]) {
-      remaining = remaining.split(unreadPromptSql(alias, options)).join('');
+    for (const { sql: predicate } of legacy.extraction.unread) {
+      remaining = remaining.split(predicate.replaceAll('__ROW__', alias)).join('');
     }
   }
   if (remaining.startsWith('WITH admission')) remaining = remaining

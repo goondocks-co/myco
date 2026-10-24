@@ -1,46 +1,10 @@
+import { processed_processedField as processedField, processedBundle, type processed_ProcessedField as ProcessedField, type processed_ProcessedBodyKind as ProcessedBodyKind, type processed_ProcessedTextKind as ProcessedTextKind } from './view-store.js';
+export { processed_isProcessedBodyKind as isProcessedBodyKind, type processed_ProcessedTextKind as ProcessedTextKind } from './view-store.js';
 import type { ServerEnv, StoredObjectBody } from '../core/adapters.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
-import { PROCESSED_FIELDS, processedResourceProofSql } from '../core/processed-resources.js';
 import { sha256HexOf, utf8 } from '../hash.js';
 import { readBundleEntry } from '../core/archive-bundle.js';
 import type { ReadScope } from './scope.js';
-
-export type ProcessedBodyKind = keyof typeof PROCESSED_FIELDS;
-export type ProcessedTextKind = Exclude<ProcessedBodyKind, 'attachment'>;
-
-interface ProcessedField {
-  text: string | null;
-  blob_key: string | null;
-  object_key: string | null;
-  registered_size: number | null;
-  total_bytes: number | null;
-  media_type: string | null;
-  admitted: number;
-}
-
-export function isProcessedBodyKind(kind: string): kind is ProcessedBodyKind {
-  return Object.hasOwn(PROCESSED_FIELDS, kind);
-}
-
-/** A projected field whose inline value or exact stored-body provenance is admitted. */
-async function processedField(env: Pick<ServerEnv, 'db'>, scope: ReadScope, kind: ProcessedBodyKind, id: string): Promise<ProcessedField | null> {
-  const field = PROCESSED_FIELDS[kind];
-  const row = await env.db.prepare(`SELECT ${field.text === null ? 'NULL' : `d.${field.text}`} AS text, d.${field.blob} AS blob_key,
-      ${registeredObjectKeySql('d.project_id', `d.${field.blob}`)} AS object_key,
-      (SELECT b.size FROM blobs b WHERE b.project_id = d.project_id AND b.key = d.${field.blob}) AS registered_size,
-      ${kind === 'tool-input' ? 'd.input_bytes' : 'NULL'} AS total_bytes,
-      ${kind === 'attachment' ? 'd.media_type' : 'NULL'} AS media_type,
-      ${processedResourceProofSql('d.project_id', kind, `d.${field.id}`, `d.${field.blob}`)} AS admitted
-    FROM ${field.table} d WHERE d.project_id = ? AND d.${field.id} = ?`)
-    .bind(scope.projectId, id).first<ProcessedField>();
-  if (row === null) return null;
-  if (kind === 'tool-input' && row.blob_key === null && row.text !== null && row.total_bytes !== null && row.total_bytes > utf8(row.text).byteLength) {
-    throw new Error('Processed tool input has a truncated prefix without its complete body');
-  }
-  const inline = row.text !== null && kind !== 'tool-output' && kind !== 'tool-input';
-  if (!inline && row.blob_key !== null && row.admitted !== 1) return null;
-  return row;
-}
 
 async function storedField(env: Pick<ServerEnv, 'blobs'>, row: ProcessedField): Promise<StoredObjectBody> {
   if (row.object_key === null) throw new Error('Processed body has no registered stored object');
@@ -52,12 +16,7 @@ async function storedField(env: Pick<ServerEnv, 'blobs'>, row: ProcessedField): 
 /** A processed text field in its Project; an unclassified stored body is unavailable. */
 export async function processedBody(env: Pick<ServerEnv, 'db' | 'blobs'>, scope: ReadScope, kind: ProcessedTextKind, id: string): Promise<string | null> {
   if (kind === 'tool-input') {
-    const bundled = await env.db.prepare(`SELECT t.input_bundle_id AS bundle_id, t.input_bundle_entry AS entry,
-        t.input AS preview, t.input_bytes AS bytes, t.token_id
-      FROM tool_calls t
-      WHERE t.project_id=? AND t.tool_call_id=?`).bind(scope.projectId, id)
-      .first<{bundle_id:number|null;entry:number|null;preview:string|null;bytes:number|null;
-        token_id:string}>();
+    const bundled = await processedBundle(env.db, scope, id);
     if (bundled?.bundle_id !== null && bundled?.bundle_id !== undefined) {
       if (!Number.isSafeInteger(bundled.entry) || bundled.preview === null || !Number.isSafeInteger(bundled.bytes)) {
         throw new Error('Processed tool input has an invalid bundle locator');

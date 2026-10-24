@@ -1,10 +1,11 @@
+export { core_embedding_switch_store_switchProgress as switchProgress, core_embedding_switch_store_sourceTotals as sourceTotals, core_embedding_switch_store_switchComplete as switchComplete } from "../../read/view-store.js";
 /**
  * The Deployment's embedding model switch, as stored: at most one row, read, started, paused, resumed and ended only
  * through this module.
  */
 import type { PreparedStatement, RelationalStore } from '../adapters.js';
 import { isEmbeddingProvider, type EmbeddingProviderId } from '@goondocks/myco-shared/settings-contract';
-import { PASSED_OVER, RECEIPT, passedOverBinds } from './reconcile.js';
+
 
 export type SwitchState = 'building' | 'paused';
 
@@ -42,33 +43,6 @@ const NONE = '';
 
 /** True while a switch stands. Binds nothing. */
 export const SWITCH_STANDS_SQL = `EXISTS (SELECT 1 FROM embedding_switches)`;
-
-/** True while the switch `id` stands and is building. Binds: the switch id. */
-const BUILDING_SQL = `EXISTS (SELECT 1 FROM embedding_switches WHERE slot = 'deployment' AND id = ? AND state = 'building')`;
-
-/** Source `s` belongs to a Project that is not archived: the sources a switch builds and counts. Binds nothing. */
-const COUNTED_SOURCE = `EXISTS (SELECT 1 FROM projects p WHERE p.project_id = s.project_id AND p.archived_at IS NULL)`;
-
-/** Source `s` holds an indexed vector under a model. Binds: the model key. */
-const BUILT_SOURCE = `EXISTS (SELECT 1 FROM embedding_receipts r WHERE r.project_id = s.project_id AND r.type = s.type
-  AND r.record_id = s.record_id AND r.revision = s.revision AND r.model_key = ? AND r.ready = ${RECEIPT.ready})`;
-
-/** Counted sources neither built under a model nor passed over under it. Binds: `unbuiltBinds(modelKey, now)`. */
-export const UNBUILT_SOURCES = `SELECT 1 FROM embedding_sources s WHERE ${COUNTED_SOURCE} AND NOT ${BUILT_SOURCE} AND NOT ${PASSED_OVER}`;
-const unbuiltBinds = (modelKey: string, now: number): Array<string | number> => [modelKey, ...passedOverBinds(modelKey, now)];
-
-/**
- * The condition every statement of a switch's completion carries: it is still building, and no counted source is left
- * unbuilt as of `now`. Binds: the switch id, then `unbuiltBinds`.
- */
-export const completionCondition = (sw: EmbeddingSwitch, now: number): { sql: string; params: Array<string | number> } =>
-  ({ sql: `${BUILDING_SQL} AND NOT EXISTS (${UNBUILT_SOURCES})`, params: [sw.id, ...unbuiltBinds(sw.modelKey, now)] });
-
-/** The statement that ends a completed switch, carrying `completionCondition`. The sources it passed over stay recorded. */
-export const completionStatements = (db: RelationalStore, sw: EmbeddingSwitch, now: number): PreparedStatement[] => {
-  const condition = completionCondition(sw, now);
-  return [db.prepare(`DELETE FROM embedding_switches WHERE slot = 'deployment' AND ${condition.sql}`).bind(...condition.params)];
-};
 
 /** The switch under way, or null. A row naming a provider this release does not know reads as paused, saying so. */
 export async function readSwitch(db: RelationalStore): Promise<EmbeddingSwitch | null> {
@@ -147,26 +121,6 @@ export async function holdRecoveredSwitch(db: RelationalStore, now: number): Pro
   const held = await db.prepare(`SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'embedding_switches'`).first<{ found: number }>();
   if (held === null) return;
   await db.prepare(`UPDATE embedding_switches SET state = 'paused', reason = ?, retry_at = NULL, updated_at = ? WHERE slot = 'deployment'`).bind(RECOVERED_SWITCH, now).run();
-}
-
-/** The counted sources, and those holding an indexed vector under the switch's model. */
-export async function switchProgress(db: RelationalStore, modelKey: string): Promise<{ built: number; total: number }> {
-  const row = await db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(${BUILT_SOURCE}), 0) AS built FROM embedding_sources s WHERE ${COUNTED_SOURCE}`)
-    .bind(modelKey).first<{ total: number; built: number }>();
-  return { built: row?.built ?? 0, total: row?.total ?? 0 };
-}
-
-/** The counted sources a new model would read, and their characters, with a blob-backed plan read up to its bounded prefix of `prefixChars`. */
-export async function sourceTotals(db: RelationalStore, prefixChars: number): Promise<{ sources: number; characters: number }> {
-  const row = await db.prepare(`SELECT COUNT(*) AS sources, COALESCE(SUM(CASE WHEN blob_key IS NULL THEN MIN(COALESCE(length(text), 0), ?) ELSE ? END), 0) AS chars
-    FROM embedding_sources s WHERE ${COUNTED_SOURCE}`).bind(prefixChars, prefixChars).first<{ sources: number; chars: number }>();
-  return { sources: row?.sources ?? 0, characters: row?.chars ?? 0 };
-}
-
-/** Whether every counted source holds an indexed vector under the model or is passed over under it. */
-export async function switchComplete(db: RelationalStore, modelKey: string, now: number): Promise<boolean> {
-  const row = await db.prepare(`SELECT NOT EXISTS (${UNBUILT_SOURCES}) AS complete`).bind(...unbuiltBinds(modelKey, now)).first<{ complete: number }>();
-  return row?.complete === 1;
 }
 
 /** Whether a Project is archived. */

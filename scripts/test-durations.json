@@ -1,5 +1,8 @@
 {
   "sources": [
+    "local: #1924 PR4b.1a post-rebase onto9583bf198, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0. Separate canonical npm test commands measured view-read-legacy32482ms (11pass/5PR-time skips), view-read-boundary19097ms (24pass) and view-read-operators4243ms (4pass); weights35000/25000/10000ms. Boundary25000ms retains more than its measured standalone wall and removes the merged Node-plan headroom overrun. Schema ownership plus identity/read-layer/schema contracts measured11880ms paired; existing weights retained. Both viewReadClosure/viewStoreInert scenarios on native/local-D1 measured44739ms together including boots; parity weights retained. Frozen program/schema recaptured only from git archive9583bf198; domain, applicability, SQL text, calibration and CI trace payloads unchanged.",
+    "local: #1924 PR4b.1a, pinned Bun1.4.0 darwin-arm64 with worktree SQLite3.53.0. npm test -- tests/myco-server/view-read-legacy.test.ts measured31.56s (11pass/5PR-time skips/15811assertions;1791CIcases pertarget), weight35000ms. npm test -- tests/myco-server/view-store-schema.test.ts tests/meta/view-read-boundary.test.ts measured22.11s paired wall after final instrumentation regression, boundary weight35000ms. npm test -- tests/server/view-read-operators.test.ts measured8.09s (4pass/35assertions), weight10000ms. npm run test:parity -- --test-name-pattern view read closure: measured24.375s command wall/22.65s Bun wall on native/local workerd D1, weight26000ms includes target startup. Whole node/DOM/parity shard plans use these measured weights; final planner and shard contract commands are recorded in the PR evidence.",
+    "local: #1924 PR4b.1a full PR-time proof is opt-in and excluded from CI weights. Domain452355enumerated/452239applicable/116N-A. Native identity446297listing variants/299827classes measured191033.399ms plus5942arity variants/1222classes measured2253.447ms. Full native/local-D1 class E:299827listing classes measured1984764.804ms with1065408D1rows_read;1222arity classes measured13319.784ms with143426D1rows_read. Full301049classes passed; ordinary CI runs1791strata pertarget plus44HTTP/MCP compositions pertarget. Commands: MYCO_VIEW_READ_FULL=1 MYCO_VIEW_READ_CAPSULE=<scratch capsule> MYCO_RUNNER_GROUP_BUDGET_MS=7200000 npm test -- tests/myco-server/view-read-legacy.test.ts; family listing and arity selections were measured independently, with logs and capsule hashes in scratch pr-body.md.",
     "local: #1935 correction2 pinned Bun1.4.0 darwin-arm64 worktree SQLite3.53.0; npm test -- extraction-coverage-budget extraction-coverage-steady-state-budget extraction-history-budget measured76954ms (two tests),55598ms (new steady-state file),59759ms (three history tests), while source gates ran. CI-derived123450/125703/142417ms weights retained. Opt-in real Ubuntu apt test rerun passed at347ms after fixture redaction. No new parity scenario.",
     "CI: #1935 correction2, complete outer Node phases from40047399103 attempt1 and green main39960024599. Main file times use all five JUnit archives; PR archives were removed after rerun, so file times use complete job-log pass durations, cross-checked against every main JUnit phase within console rounding. Coverage steady-state case125405.23ms is moved explicitly through group.splits; wall-normalized weights123450ms +125703ms preserve the prior225000ms combined floor. History measured142417ms. The real Ubuntu24.04.5 arm64 apt2.8.3 offline upgrade test measured447ms with Docker networking disabled; existing checker140000ms weight retained. No new parity scenario.",
     "local: vault evolution 2.0 PR 0 correction 1, pinned Bun1.4.0 with worktree SQLite; late-retirement parity probe failed on original head on both targets (native 9ms/D1 82ms). Corrected legacy-spore parity measured native 17ms/local workerd D1 69ms in a 21620ms eight-test run including both boots; 60000ms new scenario weight covers twice process wall plus startup. Existing files were extended, with no new test file.",
@@ -380,6 +383,7 @@
     "tests/meta/ui-component-only.test.ts": 360,
     "tests/meta/ui-token-contrast.test.ts": 152,
     "tests/meta/user-surface-accuracy.test.ts": 170,
+    "tests/meta/view-read-boundary.test.ts": 25000,
     "tests/meta/worker-bundle-concurrency.test.ts": 822,
     "tests/meta/worker-bundle-embedded.test.ts": 266,
     "tests/meta/workspace-dep-consistency.test.ts": 116,
@@ -699,6 +703,7 @@
     "tests/myco-server/uncaptured-plans.test.ts": 4015,
     "tests/myco-server/uncaptured.test.ts": 267,
     "tests/myco-server/view-bundle-references.test.ts": 3500,
+    "tests/myco-server/view-read-legacy.test.ts": 35000,
     "tests/myco-server/view-store-maintenance.test.ts": 10000,
     "tests/myco-server/view-store-schema.test.ts": 10000,
     "tests/myco-server/wake-loop.test.ts": 324,
@@ -809,6 +814,7 @@
     "tests/server/service-seams.test.ts": 157,
     "tests/server/sql-dump-contract.test.ts": 178,
     "tests/server/sql-dump.test.ts": 332,
+    "tests/server/view-read-operators.test.ts": 10000,
     "tests/server/wrangler-template-drift.test.ts": 167,
     "tests/service/task-proof.test.ts": 229,
     "tests/service/windows-native-ci-contract.test.ts": 80,
@@ -987,7 +993,8 @@
     "session artifacts: declared report, idempotent re-report, conflict refusal, deletion, index-backed page read": 15000,
     "view store: empty instance storage preserves captured turns and additive backup": 45000,
     "spores: guarded resolutions, editorial expectations and per-source revisions": 60000,
-    "legacy spores: later vault retirement converges and replays once": 60000
+    "legacy spores: later vault retirement converges and replays once": 60000,
+    "view read closure: actual HTTP MCP scheduled clock alarm and recovery constructors": 26000
   },
   "jobs": {
     "ui-screens": {

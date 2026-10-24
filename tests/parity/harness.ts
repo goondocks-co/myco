@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import { expect } from 'bun:test';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { withParityRequests, type RequestFailure } from './requests.ts';
+import type {ReadTrace} from '../helpers/statement-recorder.js';
 
 /**
  * One booted server target. A scenario receives this and nothing else, so a
@@ -32,7 +33,10 @@ export interface ParityTarget {
   grantHeaders(key: string): Record<string, string>;
   sql(command: string): Promise<Record<string, unknown>[]>;
   /** One wake of the target's own clock: the hosted clock object through the cron floor, the self-hosted wake loop's tick. */
-  clockWake(): Promise<void>;
+  clockWake(at?:number): Promise<void>;
+  clockAlarm?(at?:number):Promise<void>;
+  primeEmbedding?(projectId:string):Promise<void>;
+  readTrace?():Promise<ReadTrace>;
   /** Whether the runtime serving this target is up, its exit status, its last output, and any failure writing that output. */
   runtime?(): { alive: boolean; exitCode: number | null; tail: string; logFailure?: string };
   requestFailure?(failure: RequestFailure): Promise<void>;
@@ -82,7 +86,7 @@ export interface ParityScenario {
    * alone. On Cloudflare, `main` names the Worker entry that boot serves, relative to `packages/myco-server`;
    * `sqliteVec` marks a scenario whose self-hosted run queries vectors, which needs an extension-enabled SQLite.
    */
-  dedicated?: { cloudflare?: { main?: string; latestSchemaUpgrade?: boolean }; stopRace?: boolean; receiptSnapshots?: boolean; sqliteVec?: boolean; timeoutMs: number };
+  dedicated?: { cloudflare?: { main?: string; latestSchemaUpgrade?: boolean;embeddingFixture?:boolean }; stopRace?: boolean; receiptSnapshots?: boolean; sqliteVec?: boolean; timeoutMs: number };
 }
 
 export const MEMBER_ID = 'mem_parity';

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { BACKUP_FORMAT, BACKUP_TABLES, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
-import { receiptPlans } from '@myco-server-worker/read/injection-served-items.js';
+import { receiptPlans } from '@myco-server-worker/read/view-store.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 const scope = { projectId: 'proj_1' };

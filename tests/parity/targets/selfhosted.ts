@@ -1,3 +1,4 @@
+import {primeObservedEmbedding,installObservedEmbeddingRuntime} from '../observed-worker.ts';
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -13,9 +14,10 @@ import { runTick } from '@myco-server-worker/core/tick.js';
 import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHeadersFor, lit, memberHeadersFor, volumeSql, type ParityTarget } from '../harness.ts';
 import { stopRaceFixture } from '../owner-review/stop-race.ts';
 import { receiptSnapshotEndpoint } from '../receipt-snapshots/endpoint.ts';
+import {statementRecorder,observeStatementSpans,withStatementSpan,type StatementFrame} from '../../helpers/statement-recorder.js';
 
 /** The shipped self-hosted server, in-process: real entry, real migrations, a temp volume. */
-export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnapshots?: boolean; uiAssets?: BunServerOptions['uiAssets'] } = {}): Promise<ParityTarget> {
+export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnapshots?: boolean; embeddingFixture?:boolean; uiAssets?: BunServerOptions['uiAssets'] } = {}): Promise<ParityTarget> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-parity-'));
   const databasePath = path.join(root, 'myco.sqlite');
 
@@ -65,6 +67,11 @@ export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnaps
     handler.bind(server);
     return { port: server.port, env: handler.env, stop: async () => { server.stop(); await handler.close(); } };
   })() : await serve(serverOptions);
+  const recorded=statementRecorder(started.env.db,{accounting:'native'});
+  started.env.db=recorded.db;
+  const settleEmbedding=options.embeddingFixture?installObservedEmbeddingRuntime(started.env):async()=>{};
+  const spans:StatementFrame[]=[];
+  const stopObservingSpans=observeStatementSpans(frame=>spans.push(frame));
   const url = `http://127.0.0.1:${started.port}`;
   const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: deploymentId, sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
 
@@ -79,10 +86,16 @@ export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnaps
     memberHeaders: (extra = {}) => memberHeadersFor(token, PROJECT_ID, extra),
     grantHeaders: (key) => grantHeadersFor(key),
     sql,
-    clockWake: async () => { await runTick(started.env, Date.now(), { wake: 'clock' }); },
+    clockWake: async (at=Date.now()) => { await withStatementSpan('native.clockWake','clock',()=>runTick(started.env, at, { wake: 'clock' })); },
+    primeEmbedding:async(projectId)=>{await withStatementSpan('native.embedding-fixture','direct',()=>primeObservedEmbedding(started.env,projectId));},
+    readTrace:async()=>{
+      await settleEmbedding();await started.env.settle();await recorded.drain();
+      const trace={events:structuredClone(recorded.events),statements:structuredClone(recorded.statements),spans:spans.splice(0),constructors:[]};
+      recorded.reset();return trace;
+    },
     stop: async () => {
-      await started.stop();
-      fs.rmSync(root, { recursive: true, force: true });
+      try{await started.stop();}
+      finally{stopObservingSpans();fs.rmSync(root, { recursive: true, force: true });}
     },
   };
 }

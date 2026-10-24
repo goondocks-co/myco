@@ -35,7 +35,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'core/model-catalogs.ts#recordModelCatalog': [
     { tables: ['worker_model_catalogs', 'runner_model_catalogs'], order: 'reporter-stamp' },
   ],
-  'core/release-provenance.ts#<module>': [
+  'read/view-store.ts#<module>': [
     { tables: ['knowledge_release_state'], order: 'unverified' },
   ],
   'core/runner-updates.ts#runnerUpdateReportStatements': [
@@ -65,7 +65,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
     { tables: ['deployment_settings'], order: 'writer-revision' },
     { tables: ['deployment_setting_resets'], order: 'unverified' },
   ],
-  'core/settings.ts#writeSwitchedEmbedding': [
+  'read/view-store.ts#prepareSwitchedSettings': [
     { tables: ['deployment_settings'], order: 'unverified' },
     { tables: ['deployment_setting_resets'], order: 'unverified' },
   ],

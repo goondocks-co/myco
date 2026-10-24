@@ -1,3 +1,4 @@
+import { significantStatement } from '../../packages/myco-server/src/core/sql-statements.js';
 /**
  * Recall: the capability gate over everything, the contributors and the order
  * they stand in, the once-per-session records, the bounds at a part boundary,
@@ -387,11 +388,12 @@ describe('prompt selection diagnostics', () => {
     });
     const failingDb: RelationalStore = { ...db, prepare: sql => {
       const statement = db.prepare(sql);
-      return sql.startsWith('WITH hits AS MATERIALIZED') ? wrap(statement) : statement;
+      return significantStatement(sql).startsWith('WITH hits AS MATERIALIZED') ? wrap(statement) : statement;
     } };
     const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
       await composePromptContext(failingDb, SCOPE, ON, true, { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'partial-join', text: PROMPT, now: NOW }, async () => semantic);
+      expect(joins).toBe(2);
       expect(selectionOf(sqlite, 'partial-join')).toMatchObject({ sporeRawMatches: 100, sporeJoined: 90, sporeHits: 90, sporeHydrated: 0, budgetKept: 0 });
       expect(sqlite.query('SELECT failures FROM prompt_context_answers').get()).toEqual({ failures: '[{"contributor":"spores","error":"unknown","operation":"candidates"}]' });
     } finally { log.mockRestore(); sqlite.close(); }
