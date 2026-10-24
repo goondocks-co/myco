@@ -1,4 +1,6 @@
 import { expect } from 'bun:test';
+import { sha256Hex } from '@myco-server-worker/hash.js';
+import { memberHeadersFor } from '../harness.ts';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
@@ -107,5 +109,78 @@ export const spores: ParityScenario = {
     expect(walked).toEqual([...ordered, `backfilled-${stamp}`]);
     expect((await owner(`${list}&cursor=nope`)).status).toBe(400);
     expect((await owner(`${list}&offset=2&cursor=${encodeURIComponent(opening.body.cursor!)}`)).status).toBe(400);
+  },
+};
+
+/** Guarded lifecycle writes through member and run credentials on each runtime. */
+export const guardedSpores: ParityScenario = {
+  name: 'spores: guarded resolutions, editorial expectations and per-source revisions',
+  async run(target) {
+    const now = Date.now();
+    const scope = `project_id = ${lit(target.projectId)}`;
+    const call = async (token: string, name: string, args: Record<string, unknown>) => {
+      const response = await fetch(`${target.url}/mcp`, {
+        method: 'POST', headers: memberHeadersFor(token, target.projectId, { 'content-type': 'application/json' }),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { project: target.projectId, ...args } } }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { result?: { structuredContent: { result: Record<string, any> } }; error?: unknown };
+      expect(body.error).toBeUndefined();
+      return body.result!.structuredContent.result;
+    };
+    const member = (args: Record<string, unknown>) => call(target.memberToken, 'myco_spores', args);
+    const save = async () => String((await member({ op: 'save', type: 'gotcha', content: crypto.randomUUID() })).id);
+    await target.sql(`INSERT OR IGNORE INTO members(id,label,created_at) VALUES ('mem_harness','harness',${now})`);
+    await target.sql(`INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,${now})`);
+    const run = async (suffix: string, old = false) => {
+      const token = crypto.randomUUID().replaceAll('-', '').padEnd(43, 'x');
+      const id = `guard-${now}-${suffix}`;
+      await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,bytes_written,lineage_root,lineage_started_at)
+        VALUES (${lit(id)},'mem_harness','harness',${lit(await sha256Hex(token))},${now},${now + 3_600_000},0,${lit(id)},${now})`);
+      const stamp = Number((await target.sql("SELECT value FROM schema_meta WHERE key='guard_enabled_at'"))[0]!.value);
+      await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,queued_at,dispatched_by,run_context)
+        VALUES (${lit(target.projectId)},${lit(id)},'myco-agent','extract-curate','running',${old ? stamp - 1 : now},${old ? stamp - 1 : now},${lit(id)},'{"timeoutSeconds":300}')`);
+      return { token, id, resolve: (args: Record<string, unknown>) => call(token, 'myco_spores', args) };
+    };
+    const runs = [await run('a'), await run('b'), await run('old', true)];
+    try {
+      const id = await save(), successor = await save();
+      expect((await call(runs[0]!.token, 'myco_run_spores', { op: 'get', id })).spore.revision).toBe(0);
+      const list = await call(runs[0]!.token, 'myco_run_spores', { op: 'list' });
+      expect(list.spores.find((row: { id: string }) => row.id === id).revision).toBe(0);
+      const supersede = { op: 'supersede', old_spore_id: id, new_spore_id: successor, expect_revision: 0 };
+      const obsolete = { op: 'obsolete', id, reason: 'parallel retirement', expect_revision: 0 };
+      expect(await runs[0]!.resolve({ op: 'obsolete', id, reason: 'missing revision' })).toEqual({ ok: false, error: 'expect_revision is required' });
+      const raced = await Promise.all([runs[0]!.resolve(supersede), runs[1]!.resolve(obsolete)]);
+      expect(raced.filter(result => result.error === 'stale')).toHaveLength(1);
+      expect(raced.filter(result => result.status && !result.error)).toHaveLength(1);
+      const current = await member({ op: 'get', id });
+      expect(current.revision).toBe(1);
+      expect(await target.sql(`SELECT COUNT(*) AS n FROM resolution_events WHERE ${scope} AND spore_id=${lit(id)}`)).toEqual([{ n: 1 }]);
+      expect(await runs[1]!.resolve({ ...obsolete, expect_revision: 1 }))
+        .toEqual({ ok: false, error: 'stale', status: current.status, revision: 1, reason: `source is ${current.status} at revision 1; expected active at revision 1` });
+      expect(await runs[1]!.resolve({ ...obsolete, expect_revision: 1, expect_status: current.status }))
+        .toEqual({ ok: false, error: 'runs require expect_status active' });
+      expect((await member({ ...obsolete, expect_revision: 1, expect_status: current.status })).status).toBe('obsolete');
+      const edited = await save();
+      await target.sql(`UPDATE spores SET content='edited', revision=revision+1 WHERE ${scope} AND id=${lit(edited)}`);
+      expect(await runs[0]!.resolve({ op: 'obsolete', id: edited, reason: 'stale content', expect_revision: 0 }))
+        .toEqual({ ok: false, error: 'stale', status: 'active', revision: 1, reason: 'source is active at revision 1; expected active at revision 0' });
+      expect(await target.sql(`SELECT id FROM resolution_events WHERE ${scope} AND spore_id=${lit(edited)}`)).toEqual([]);
+      const legacy = await save();
+      expect((await runs[2]!.resolve({ op: 'obsolete', id: legacy, reason: 'old instructions' })).status).toBe('obsolete');
+      expect((await runs[2]!.resolve({ op: 'obsolete', id: legacy, reason: 'again' })).error).toBe('stale');
+
+      const ids = [await save(), await save(), await save()];
+      await target.sql(`UPDATE spores SET content='edited', revision=revision+1 WHERE ${scope} AND id=${lit(ids[1]!)}`);
+      const consolidated = await member({ op: 'consolidate', source_spore_ids: ids.map(id => ({ id, revision: 0 })), consolidated_content: 'combined', observation_type: 'wisdom' });
+      expect(consolidated.sources_consolidated).toBe(2);
+      expect((await member({ op: 'get', id: ids[1] })).status).toBe('active');
+      expect(await target.sql(`SELECT COUNT(*) AS n FROM resolution_events WHERE ${scope} AND new_spore_id=${lit(String(consolidated.new_spore_id))}`)).toEqual([{ n: 2 }]);
+      expect(await runs[0]!.resolve({ op: 'consolidate', source_spore_ids: ids, consolidated_content: 'no expectations', observation_type: 'wisdom' }))
+        .toEqual({ ok: false, error: 'revision is required for every source_spore_ids item' });
+    } finally {
+      for (const run of runs) await target.sql(`UPDATE agent_runs SET status='completed', completed_at=${Date.now()} WHERE ${scope} AND id=${lit(run.id)}`);
+    }
   },
 };

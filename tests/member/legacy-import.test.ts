@@ -699,6 +699,51 @@ describe('importing a 1.4 vault', () => {
     expect(f.rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM transcripts WHERE session_id = ?`).get(uuid)).toEqual({ n: 0 });
   });
 
+  it('re-imports a later vault retirement once and converges without retrying a stale write', async () => {
+    await f.run();
+    expect(f.rig.env.sqlite.query("SELECT status,revision FROM spores WHERE id='decision-user'").get())
+      .toEqual({ status: 'active', revision: 0 });
+    const vault = new Database(f.vault);
+    try {
+      vault.run("UPDATE spores SET status='obsolete' WHERE id='decision-user'");
+      vault.run("INSERT INTO resolution_events(id,project_id,agent_id,spore_id,action,reason,created_at) VALUES('res_late',?,'user','decision-user','obsolete','retired later',?)", [PROJECT, Date.now() / 1000]);
+    } finally { vault.close(); }
+    const requests: Record<string, unknown>[] = [];
+    const fetch: MemberRig['fetch'] = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname === '/spores/resolve') {
+        const body = await request.clone().json() as Record<string, unknown>;
+        if (body.eventId === 'res_late') requests.push(body);
+      }
+      return f.rig.fetch(request);
+    };
+    await f.run({ fetch });
+    expect(requests).toHaveLength(1);
+    expect(f.rig.env.sqlite.query("SELECT status,revision FROM spores WHERE id='decision-user'").get())
+      .toEqual({ status: 'obsolete', revision: 1 });
+    const events = () => f.rig.env.sqlite.query("SELECT id FROM resolution_events WHERE id='res_late'").all();
+    expect(events()).toEqual([{ id: 'res_late' }]);
+    const third = await f.run();
+    expect(third.projects[0].lineage.duplicate).toBe(3);
+    expect(events()).toEqual([{ id: 'res_late' }]);
+    expect(f.rig.env.sqlite.query("SELECT revision FROM spores WHERE id='decision-user'").get()).toEqual({ revision: 1 });
+  });
+
+  it('imports distinct historical events for one terminal source and replays them idempotently', async () => {
+    const vault = new Database(f.vault);
+    try {
+      vault.run("INSERT INTO resolution_events (id,project_id,agent_id,spore_id,action,new_spore_id,reason,session_id,created_at) SELECT 'res_extra',project_id,agent_id,spore_id,action,new_spore_id,reason,session_id,created_at FROM resolution_events WHERE id='res_1'");
+    } finally { vault.close(); }
+    await f.run();
+    const rows = () => f.rig.env.sqlite.query("SELECT id FROM resolution_events WHERE spore_id='gotcha-old' ORDER BY id").all();
+    expect(rows()).toEqual([{ id: 'res_1' }, { id: 'res_extra' }]);
+    expect(f.rig.env.sqlite.query("SELECT status,revision FROM spores WHERE id='gotcha-old'").get())
+      .toEqual({ status: 'superseded', revision: 2 });
+    await f.run();
+    expect(rows()).toEqual([{ id: 'res_1' }, { id: 'res_extra' }]);
+    expect(f.rig.env.sqlite.query("SELECT revision FROM spores WHERE id='gotcha-old'").get()).toEqual({ revision: 2 });
+  });
+
   it('dates a resolution by the time it names on the import channel alone', async () => {
     await f.run();
     const resolve = (eventId: string, extra: Record<string, unknown>) => f.rig.fetch('https://s/spores/resolve', {
@@ -706,7 +751,7 @@ describe('importing a 1.4 vault', () => {
       body: JSON.stringify({ eventId, agentId: 'user', sporeId: 'decision-user', action: 'obsolete', status: 'obsolete', createdAt: 1_000, ...extra }),
     });
     expect((await (await resolve('res_plain', {})).json() as { resolved: boolean }).resolved).toBe(true);
-    expect((await (await resolve('res_imported', { channel: 'import' })).json() as { resolved: boolean }).resolved).toBe(true);
+    expect((await (await resolve('res_imported', { channel: 'import', expectStatus: 'obsolete' })).json() as { resolved: boolean }).resolved).toBe(true);
     const at = (id: string) => (f.rig.env.sqlite.query(`SELECT created_at FROM resolution_events WHERE id = ?`).get(id) as { created_at: number }).created_at;
     expect(at('res_imported')).toBe(1_000);
     expect(at('res_plain')).toBeGreaterThan(1_000);

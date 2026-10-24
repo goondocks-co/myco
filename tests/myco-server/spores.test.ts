@@ -8,7 +8,7 @@ import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
-  consolidateSpores, countSpores, getSpore, insertSpore, repairImportedSporeSource, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore,
+  consolidateSpores, countSpores, getSpore, insertSpore, repairImportedSporeSource, listSpores, listSupersededSporeIds, listSupersedingSporeIds, resolveSpore, updateSporeContent,
   type SporeInsert,
 } from '@myco-server-worker/core/spores.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -162,12 +162,86 @@ describe('resolution', () => {
     expect((sqlite.query(`SELECT COUNT(*) c FROM resolution_events`).get() as { c: number }).c).toBe(0);
   });
 
-  it('reads supersession lineage from resolution events, newest first', async () => {
-    const { db } = store();
-    await insertSpore(db, SCOPE, spore('sp1'));
-    await resolveSpore(db, SCOPE, 'superseded', event('re1', 'sp1', { newSporeId: 'first', createdAt: NOW }), NOW);
-    await resolveSpore(db, SCOPE, 'superseded', event('re2', 'sp1', { newSporeId: 'second', createdAt: NOW + 10 }), NOW + 10);
-    expect(await listSupersedingSporeIds(db, SCOPE, 'sp1')).toEqual(['second', 'first']);
+  it('refuses a second independent resolution by name and records only the landed event', async () => {
+    const { db, sqlite } = store();
+    try {
+      await insertSpore(db, SCOPE, spore('sp1'));
+      expect(await resolveSpore(db, SCOPE, 'superseded', event('re1', 'sp1', { newSporeId: 'first' }), NOW)).toBe(true);
+      expect(await resolveSpore(db, SCOPE, 'superseded', event('re2', 'sp1', { newSporeId: 'second' }), NOW))
+        .toEqual({ error: 'stale', status: 'superseded', revision: 1, reason: 'source is superseded at revision 1; expected active' });
+      expect(await listSupersedingSporeIds(db, SCOPE, 'sp1')).toEqual(['first']);
+      expect(sqlite.query('SELECT id FROM resolution_events').all()).toEqual([{ id: 're1' }]);
+    } finally { sqlite.close(); }
+  });
+
+  it('status guard refuses a terminal source even with its current revision', async () => {
+    const { db, sqlite } = store();
+    try {
+      await insertSpore(db, SCOPE, spore('sp1'));
+      for (const text of ['one', 'two', 'three']) await updateSporeContent(db, SCOPE, 'sp1', text, NOW);
+      expect((await getSpore(db, SCOPE, 'sp1'))?.revision).toBe(3);
+      await resolveSpore(db, SCOPE, 'superseded', event('re1', 'sp1'), NOW, { revision: 3 });
+      expect(await resolveSpore(db, SCOPE, 'obsolete', { ...event('re2', 'sp1'), action: 'obsolete' }, NOW, { revision: 4 }))
+        .toEqual({ error: 'stale', status: 'superseded', revision: 4, reason: 'source is superseded at revision 4; expected active at revision 4' });
+      expect(sqlite.query('SELECT id FROM resolution_events').all()).toEqual([{ id: 're1' }]);
+    } finally { sqlite.close(); }
+  });
+
+  it('revision guard refuses an active source edited since the read', async () => {
+    const { db, sqlite } = store();
+    try {
+      await insertSpore(db, SCOPE, spore('sp1'));
+      for (const text of ['one', 'two', 'three']) await updateSporeContent(db, SCOPE, 'sp1', text, NOW);
+      const read = (await getSpore(db, SCOPE, 'sp1'))!;
+      await updateSporeContent(db, SCOPE, 'sp1', 'four', NOW);
+      expect(await resolveSpore(db, SCOPE, 'superseded', event('stale-revision', 'sp1'), NOW, { revision: read.revision }))
+        .toEqual({ error: 'stale', status: 'active', revision: 4, reason: 'source is active at revision 4; expected active at revision 3' });
+      expect(sqlite.query('SELECT id FROM resolution_events').all()).toEqual([]);
+      expect(await updateSporeContent(db, SCOPE, 'sp1', 'four', NOW)).toBe(false);
+      expect((await getSpore(db, SCOPE, 'sp1'))?.revision).toBe(4);
+    } finally { sqlite.close(); }
+  });
+
+  it('editorial re-resolution requires an explicit matching terminal status and preserves lineage', async () => {
+    const { db, sqlite } = store();
+    try {
+      await insertSpore(db, SCOPE, spore('sp1'));
+      await resolveSpore(db, SCOPE, 'superseded', event('re1', 'sp1', { newSporeId: 'first' }), NOW);
+      expect(await resolveSpore(db, SCOPE, 'superseded', event('re2', 'sp1', { newSporeId: 'second', createdAt: NOW + 10 }), NOW,
+        { status: 'superseded', revision: 1 })).toBe(true);
+      expect(await listSupersedingSporeIds(db, SCOPE, 'sp1')).toEqual(['second', 'first']);
+      expect((await getSpore(db, SCOPE, 'sp1'))?.revision).toBe(2);
+      expect(await resolveSpore(db, SCOPE, 'obsolete', { ...event('re3', 'sp1'), action: 'obsolete' }, NOW, { status: 'obsolete' }))
+        .toEqual({ error: 'stale', status: 'superseded', revision: 2, reason: 'source is superseded at revision 2; expected obsolete' });
+      expect(await resolveSpore(db, SCOPE, 'obsolete', { ...event('re3', 'sp1'), action: 'obsolete' }, NOW, { status: 'superseded' })).toBe(true);
+    } finally { sqlite.close(); }
+  });
+
+  it('per-source consolidation moves only current sources and emits nothing for an earlier same-time move', async () => {
+    const { db, sqlite } = store();
+    try {
+      for (const id of ['a', 'b', 'c', 'd']) await insertSpore(db, SCOPE, spore(id));
+      await updateSporeContent(db, SCOPE, 'b', 'edited', NOW);
+      await resolveSpore(db, SCOPE, 'consolidated', { ...event('prior', 'd'), action: 'consolidate' }, NOW);
+      const result = await consolidateSpores(db, SCOPE, spore('wisdom'), [
+        { id: 'a', revision: 0 }, { id: 'b', revision: 0 }, { id: 'c', revision: 0 }, { id: 'd', revision: 1 },
+      ], { agentId: AGENT, reason: null, sessionId: null, author: null, createdAt: NOW }, NOW);
+      expect(result.consolidated).toBe(2);
+      expect(sqlite.query("SELECT spore_id FROM resolution_events WHERE new_spore_id = 'wisdom' ORDER BY spore_id").all())
+        .toEqual([{ spore_id: 'a' }, { spore_id: 'c' }]);
+      expect((await getSpore(db, SCOPE, 'b'))).toMatchObject({ status: 'active', revision: 1 });
+      expect((await getSpore(db, SCOPE, 'd'))).toMatchObject({ status: 'consolidated', revision: 1 });
+    } finally { sqlite.close(); }
+  });
+
+  it('rolls the status and revision back if the event cannot be stored', async () => {
+    const { db, sqlite } = store();
+    try {
+      await insertSpore(db, SCOPE, spore('sp1'));
+      await expect(resolveSpore(db, SCOPE, 'superseded', { ...event('bad', 'sp1'), agentId: 'missing' }, NOW)).rejects.toThrow();
+      expect(await getSpore(db, SCOPE, 'sp1')).toMatchObject({ status: 'active', revision: 0 });
+      expect(sqlite.query('SELECT id FROM resolution_events').all()).toEqual([]);
+    } finally { sqlite.close(); }
   });
 
   it('reports no lineage for a spore in another Project', async () => {

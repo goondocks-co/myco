@@ -81,3 +81,45 @@ describe('POST /spores', () => {
     expect((sqlite.query(`SELECT COUNT(*) c FROM resolution_events`).get() as { c: number }).c).toBe(0);
   });
 });
+
+it('member resolution defaults active, names stale and admits explicit editorial expectations', async () => {
+  const { post, sqlite } = await harness();
+  try {
+    await post('/spores/save', save('guard'));
+    const request = { eventId: 'guard-one', agentId: AGENT, sporeId: 'guard', action: 'obsolete', status: 'obsolete', expectRevision: 0 };
+    expect(await post('/spores/resolve', request)).toEqual({ persisted: true, resolved: true });
+    expect(await post('/spores/resolve', { ...request, eventId: 'guard-two', expectRevision: 1 }))
+      .toMatchObject({ persisted: false, code: 'stale', status: 'obsolete', revision: 1 });
+    expect(sqlite.query("SELECT id FROM resolution_events WHERE spore_id='guard'").all()).toEqual([{ id: 'guard-one' }]);
+    expect(await post('/spores/resolve', { ...request, eventId: 'guard-two', expectStatus: 'obsolete', expectRevision: 1 }))
+      .toEqual({ persisted: true, resolved: true });
+    expect(await post('/spores/resolve', { ...request, expectRevision: 0 })).toEqual({ persisted: true, resolved: true, duplicate: true });
+    expect(sqlite.query("SELECT revision FROM spores WHERE id='guard'").get()).toEqual({ revision: 2 });
+  } finally { sqlite.close(); }
+});
+
+it('import history admits final or active status, checks revisions and refuses other states with the comparison', async () => {
+  const { post, sqlite } = await harness();
+  try {
+    const request = { channel: 'import', agentId: AGENT, action: 'obsolete', status: 'obsolete', expectStatus: 'obsolete' };
+    await post('/spores/save', save('import-active'));
+    expect(await post('/spores/resolve', { ...request, eventId: 'wrong-revision', sporeId: 'import-active', expectRevision: 1 }))
+      .toMatchObject({ persisted: false, code: 'stale', status: 'active', revision: 0,
+        reason: 'source is active at revision 0; expected obsolete or active at revision 1' });
+    expect(await post('/spores/resolve', { ...request, eventId: 'later-retirement', sporeId: 'import-active', expectRevision: 0 }))
+      .toEqual({ persisted: true, resolved: true });
+    await post('/spores/save', { ...save('import-terminal'), status: 'obsolete' });
+    expect(await post('/spores/resolve', { ...request, expectStatus: undefined, eventId: 'fresh-history', sporeId: 'import-terminal' }))
+      .toEqual({ persisted: true, resolved: true });
+    await post('/spores/save', { ...save('import-other'), status: 'superseded' });
+    expect(await post('/spores/resolve', { ...request, eventId: 'other-state', sporeId: 'import-other' }))
+      .toMatchObject({ persisted: false, code: 'stale', status: 'superseded', revision: 0,
+        reason: 'source is superseded at revision 0; expected obsolete or active' });
+    await post('/spores/save', save('ordinary-active'));
+    expect(await post('/spores/resolve', { ...request, channel: undefined, eventId: 'ordinary', sporeId: 'ordinary-active' }))
+      .toMatchObject({ persisted: false, code: 'stale', status: 'active', revision: 0,
+        reason: 'source is active at revision 0; expected obsolete' });
+    expect(sqlite.query('SELECT id FROM resolution_events ORDER BY id').all())
+      .toEqual([{ id: 'fresh-history' }, { id: 'later-retirement' }]);
+  } finally { sqlite.close(); }
+});

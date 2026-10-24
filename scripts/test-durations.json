@@ -1,5 +1,7 @@
 {
   "sources": [
+    "local: vault evolution 2.0 PR 0 correction 1, pinned Bun1.4.0 with worktree SQLite; late-retirement parity probe failed on original head on both targets (native 9ms/D1 82ms). Corrected legacy-spore parity measured native 17ms/local workerd D1 69ms in a 21620ms eight-test run including both boots; 60000ms new scenario weight covers twice process wall plus startup. Existing files were extended, with no new test file.",
+    "local: vault evolution 2.0 PR 0, pinned Bun 1.4.0 darwin-arm64 and worktree-built SQLite; focused 262 tests across 14 files passed in 37260ms. Existing spore, MCP, backup and migrate file weights cover twice summed passing test timings plus startup. Guarded-spores parity measured from Bun test output on selfhosted and local workerd/D1 (under 400ms each); 60000ms weight includes runtime boot allowance. No new test file.",
     "local: #1899 BAGGAGE correction1, pinned Bun1.4.0 darwin-arm64 with worktree SQLite3.53.0; hooks measured6752ms via npm test -- tests/member/hooks.test.ts alone without concurrent lane checks (62 tests,15000ms weight covers twice plus startup). Existing session-lineage parity native/local workerd D1 weights retained at15000ms startup floor. No new test file or scenario.",
     "local: #1924 PR4a correction2, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0; npm test -- tests/meta/schema-step-ownership.test.ts tests/myco-server/view-store-schema.test.ts tests/myco-server/view-bundle-references.test.ts tests/myco-server/archive-bundle-work.test.ts measured6140ms test wall (6167ms runner group): schema ownership1ms, native/local-D1 bundle1238ms, schema contracts about3700ms, archive work about1100ms. Weights1000ms/3500ms/10000ms/3000ms cover twice per-file duration plus startup. Inert and backup parity selection measured59150ms including both target boots; existing scenario weights retained. Temporary uncommitted bare-stamp99 used for verification.",
     "local: #1924 PR4a step100, pinned Bun1.4.0 darwin-arm64 and worktree SQLite3.53.0; npm test -- tests/myco-server/view-store-schema.test.ts tests/myco-server/view-store-maintenance.test.ts measured6437ms wall including both native/local-D1 contracts. File weights8000ms/10000ms cover twice measured per-file tests plus startup. npm run test:parity -- --test-name-pattern \"view store: empty\" measured21294ms including both boots, native194ms and local-D1/workerd364ms scenario execution; 45000ms weight covers twice wall plus startup. Final registered-blob fixtures measured schema2468ms and maintenance3211ms summed test durations in a14595ms five-file run including migrations and blob-release contracts. Snapshot-version regression selection measured15691ms wall; backup-cli3304ms and recovery-bundle6247ms summed test durations, reweighted7000ms/14000ms. Verification used a temporary uncommitted bare-stamp99 before step100.",
@@ -405,7 +407,7 @@
     "tests/myco-server/auth-setup-refusals.test.ts": 55,
     "tests/myco-server/authorization.test.ts": 41,
     "tests/myco-server/backup-snapshot.test.ts": 8940,
-    "tests/myco-server/backup.test.ts": 4434,
+    "tests/myco-server/backup.test.ts": 8905,
     "tests/myco-server/backups-api.test.ts": 1408,
     "tests/myco-server/blob-references.test.ts": 45,
     "tests/myco-server/blob-release-equivalence.test.ts": 4992,
@@ -495,14 +497,14 @@
     "tests/myco-server/machine-settings-contract.test.ts": 1214,
     "tests/myco-server/machine-settings.test.ts": 41,
     "tests/myco-server/mcp-authorization.test.ts": 36,
-    "tests/myco-server/mcp.test.ts": 644,
+    "tests/myco-server/mcp.test.ts": 2424,
     "tests/myco-server/member-dispatch.test.ts": 266,
     "tests/myco-server/member-projects.test.ts": 60,
     "tests/myco-server/member-sign-in.test.ts": 128,
     "tests/myco-server/member-status.test.ts": 37,
     "tests/myco-server/member-write-store.test.ts": 69,
     "tests/myco-server/membership-migration.test.ts": 59,
-    "tests/myco-server/migrate.test.ts": 7769,
+    "tests/myco-server/migrate.test.ts": 21123,
     "tests/myco-server/model-catalog-availability.test.ts": 104,
     "tests/myco-server/native-blob-durability.test.ts": 371,
     "tests/myco-server/non-rotating.test.ts": 497,
@@ -612,8 +614,8 @@
     "tests/myco-server/skill-candidates-api.test.ts": 22,
     "tests/myco-server/skills.test.ts": 2619,
     "tests/myco-server/source-call-gates.test.ts": 444,
-    "tests/myco-server/spores-api.test.ts": 45,
-    "tests/myco-server/spores.test.ts": 4219,
+    "tests/myco-server/spores-api.test.ts": 1556,
+    "tests/myco-server/spores.test.ts": 14729,
     "tests/myco-server/sql-rows.test.ts": 46,
     "tests/myco-server/staging-retention.test.ts": 152,
     "tests/myco-server/static.test.ts": 9,
@@ -972,6 +974,8 @@
     "KPI deliveries: delivery counts, served prompts and retired attention agree on both stores": 120000,
     "extraction coverage: served item acks, late material and counters survive run deletion": 45000,
     "session artifacts: declared report, idempotent re-report, conflict refusal, deletion, index-backed page read": 15000,
-    "view store: empty instance storage preserves captured turns and additive backup": 45000
+    "view store: empty instance storage preserves captured turns and additive backup": 45000,
+    "spores: guarded resolutions, editorial expectations and per-source revisions": 60000,
+    "legacy spores: later vault retirement converges and replays once": 60000
   }
 }

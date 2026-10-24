@@ -33,6 +33,7 @@ const int = (v: unknown): number | undefined => (typeof v === 'number' && Number
 function preview(row: SporeRow, window: ReadWindow): Record<string, unknown> {
   return {
     id: row.id,
+    revision: row.revision,
     observation_type: row.observationType,
     importance: row.importance,
     created_at: row.createdAt,

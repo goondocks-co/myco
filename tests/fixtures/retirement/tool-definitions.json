@@ -449,9 +449,24 @@
         "source_spore_ids": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": [
+              "object",
+              "string"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
           },
-          "description": "IDs of the spores to merge for op: \"consolidate\" (minimum 2)"
+          "description": "Sources to consolidate as ids or {id, revision?}. New runs require a revision per source; each active source moves independently."
         },
         "consolidated_content": {
           "type": "string",
@@ -495,6 +510,20 @@
         "project": {
           "type": "string",
           "description": "The Project this call reads or writes: a project id, or the repository's git remote. Optional on a read, which falls back to this request's own Project; required on a write. An unknown Project answers not found."
+        },
+        "expect_status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "superseded",
+            "consolidated",
+            "obsolete"
+          ],
+          "description": "Expected source status; defaults to active. Members may explicitly re-resolve a terminal spore. Runs require active."
+        },
+        "expect_revision": {
+          "type": "integer",
+          "description": "Expected source revision for supersede or obsolete. Required for new runs; optional for members and old runs."
         }
       }
     }

@@ -114,6 +114,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0098_v98.sql': '64e6ef29947424c0ab00b607773596989a42cc6ad78da1334e172dc8b526eace',
   '0099_v99.sql': 'e0cb58c903bc05ce29293b2babe6c02df7419ffb42c97c966654c8f38fb6b6a9',
   '0100_v100.sql': 'ac5a2268d4091da1a071e1f752bbbb11bb13e996a0f5156ce041db65fc91cc18',
+  '0101_v101.sql': 'c7020bea1f6f4d910ca2d1285350ea165d6dcdad094b0c724871a347fb7d118d',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -815,4 +816,24 @@ describe('runner sign-in schema upgrade', () => {
       } finally { db.close(); }
     }
   });
+});
+
+it('schema 101 only adds default-zero spore revisions and a stable dispatch boundary', async () => {
+  const sqlite = fresh();
+  const db = sqliteD1(sqlite);
+  try {
+    await applySchemaSteps(db, SCHEMA_STEPS.filter(step => step.version < 101));
+    sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES ('proj_guard','guard',1)");
+    sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES ('guard','guard','built-in',1,1)");
+    sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,created_at) VALUES ('proj_guard','old','guard','gotcha','superseded','held',1)");
+    const before = sqlite.query('SELECT * FROM spores').get() as Record<string, unknown>;
+    const indexes = sqlite.query("SELECT name,sql FROM sqlite_master WHERE type='index' AND tbl_name='spores' ORDER BY name").all();
+    expect(await applySchemaSteps(db)).toEqual([101]);
+    expect(sqlite.query('SELECT * FROM spores').get()).toEqual({ ...before, revision: 0 });
+    expect(sqlite.query("SELECT name,sql FROM sqlite_master WHERE type='index' AND tbl_name='spores' ORDER BY name").all()).toEqual(indexes);
+    const stamp = sqlite.query("SELECT value FROM schema_meta WHERE key='guard_enabled_at'").get();
+    expect(Number((stamp as { value: string }).value)).toBeGreaterThan(0);
+    expect(await applySchemaSteps(db)).toEqual([]);
+    expect(sqlite.query("SELECT value FROM schema_meta WHERE key='guard_enabled_at'").get()).toEqual(stamp);
+  } finally { sqlite.close(); }
 });
