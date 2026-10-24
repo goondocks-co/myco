@@ -27,7 +27,7 @@ for (const path of paths) {
         const issued = await issueMemberToken(f.db, { memberId: ACTOR, machineId: 'worker-machine' }, now);
         f.sqlite.run(`INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,?)`, [now]);
         f.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context,instruction)
-          VALUES ('proj_1','live-run','myco-agent','extract-curate','queued',?,'worker',?,'{}','do it')`, [now, JSON.stringify({ serverUrl: 'https://s', actor: ACTOR, timeoutSeconds: 300 })]);
+          VALUES ('proj_1','live-run','myco-agent','title-summary','queued',?,'worker',?,'{}','do it')`, [now, JSON.stringify({ params: { session_id: 'fixture-session', mode: 'claim' }, serverUrl: 'https://s', actor: ACTOR, timeoutSeconds: 300 })]);
         const claimed = await claimNextRun(f.serverEnv, { principal: legacyWorker(issued.tokenId, 'worker-machine'), harnesses: [offeredHarness('claude-code')], now });
         if (!claimed.claimed) throw new Error('fixture run was not claimed');
         if (path === '/worker/repository') {

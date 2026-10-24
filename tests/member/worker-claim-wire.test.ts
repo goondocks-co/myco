@@ -32,6 +32,7 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { RUN_CLOSE_ERROR } from '@myco-server-worker/core/run-postconditions.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { sqliteEnv, turnOnGatedCapabilities } from '../myco-server/helpers/fixtures.ts';
 import { stubAcpHarness, STUB_DETECTED, STUB_HARNESS } from '../helpers/stub-acp-harness.ts';
 import { PROFILE_STUB_DETECTED, PROFILE_STUB_HARNESS, STUB_PROFILE, stubProfileHarness } from '../helpers/stub-profile-harness.ts';
@@ -46,6 +47,8 @@ const ATTACH_BOUND_MS = 10_000;
 
 async function rig(before: (path: string, n: number) => Response | null = () => null) {
   const e = sqliteEnv({ workerLogin: true });
+  expect(await settingsWriter(e.db).setLeaf('agent.tasks',{'title-summary':{reasoningLevel:'default'}},'fixture',NOW))
+    .toEqual({applied:true});
   turnOnGatedCapabilities(e.sqlite, [PROJECT_ID]);
   // `createServer` takes the source identity as a dependency, so the edge header
   // a deployed Worker reads is supplied here instead of stamped on the worker's
@@ -69,8 +72,8 @@ async function rig(before: (path: string, n: number) => Response | null = () => 
     e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
     e.sqlite.run(
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
-       VALUES (?, ?, 'myco-agent', 'extract-curate', 'queued', ?, 'worker', ?, ?, 'do it')`,
-      [PROJECT_ID, id, NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
+       VALUES (?, ?, 'myco-agent', 'title-summary', 'queued', ?, 'worker', ?, ?, 'do it')`,
+      [PROJECT_ID, id, NOW, JSON.stringify({ serverUrl: 'https://s', params:{session_id:'wire-session',mode:'claim'}, actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
     );
   };
   const runRow = (id: string) => e.sqlite.query(`SELECT status, harness, error FROM agent_runs WHERE id = ?`).get(id) as { status: string; harness: string | null; error: string | null } | null;
@@ -213,7 +216,7 @@ describe('a worker on the real claim wire', () => {
         const tier = id === 'low' ? 'low' : 'high';
         await change(`agent.reasoning_map.claude-code.${tier}`, model);
         await change(`agent.effort_map.claude-code.${tier}`, effort);
-        await change('agent.tasks', { 'extract-curate': { reasoningLevel: tier } });
+        await change('agent.tasks', { 'title-summary': { reasoningLevel: tier } });
       }
       r.queueRun(`run_${id}`);
       expect(await r.attach(admin)).toMatchObject({ driven: 1, refused: null });
@@ -284,7 +287,7 @@ describe('a worker on the real claim wire', () => {
     const claim = {
       persisted: true, claimed: true, heartbeatMs: 30_000,
       run: {
-        projectId: PROJECT_ID, id: 'run_profile_refused', task: 'extract-curate', instruction: 'do it',
+        projectId: PROJECT_ID, id: 'run_profile_refused', task: 'title-summary', instruction: 'do it',
         harness: STUB_HARNESS, runToken: 'run_token', credentialEnv: {}, timeoutSeconds: 60,
         profile: { tier: 'default', model: 'sonnet', effort: 'medium', sources: { tier: 'task', model: 'default' } },
       },
@@ -304,7 +307,7 @@ describe('a worker on the real claim wire', () => {
       const claim = {
         persisted: true, claimed: true, heartbeatMs: 30_000,
         run: {
-          projectId: PROJECT_ID, id: 'run_bad_profile', task: 'extract-curate', instruction: 'do it',
+          projectId: PROJECT_ID, id: 'run_bad_profile', task: 'title-summary', instruction: 'do it',
           harness: PROFILE_STUB_HARNESS, runToken: 'run_token', credentialEnv: {}, timeoutSeconds: 60,
           ...(profile === undefined ? {} : { profile }),
         },

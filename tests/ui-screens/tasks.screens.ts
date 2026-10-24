@@ -85,10 +85,13 @@ for (const { role, cookie } of ROLES) for (const { viewport, mode } of SHOT_MATR
       for (const task of registry.tasks) {
         await expect(page.locator(`article[data-task="${task.task}"] [data-run-now]`)).toHaveCount(task.startable ? 1 : 0);
       }
-      expect(registry.tasks.filter((task) => task.startable).map((task) => task.task).sort()).toEqual(['canopy-map', 'extract-curate', 'vault-seed']);
+      expect(registry.tasks.filter((task) => task.startable).map((task) => task.task).sort()).toEqual(['canopy-map', 'vault-seed']);
       const learning = registry.tasks.find((task) => task.task === 'extract-curate')!;
-      await page.getByRole('button', { name: `Run now: ${learning.name}` }).click();
-      const dialog = page.getByRole('dialog', { name: 'Learn from new sessions now?' });
+      expect(learning.startable).toBe(false);
+      expect(learning.availabilityNote).toBe('Learning resumes with whole-session reading');
+      const map = registry.tasks.find((task) => task.task === 'canopy-map')!;
+      await page.getByRole('button', { name: `Run now: ${map.name}` }).click();
+      const dialog = page.getByRole('dialog', { name: 'Update the code map now?' });
       await expect(dialog).toBeVisible();
       await expect(dialog.locator('[data-run-task-project]')).toHaveCount(0);
       await expect(dialog.locator('[data-run-on]')).toHaveText(/^(It will run on .+|At its \w+ tier, it will run on whichever machine is free first: .+|No machine that runs Myco’s tasks has checked in lately.+|[A-Z].+\.)$/);

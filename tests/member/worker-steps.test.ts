@@ -1,4 +1,5 @@
 import { CORPUS } from '../helpers/secret-corpus.ts';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 /**
  * A worker's step log: what each harness's calls read as, what the log never holds, and how it reaches the Deployment.
  *
@@ -277,6 +278,8 @@ const STUB_LINES = [
 async function wire(opts: { advertise?: boolean; lines?: readonly string[]; slowPages?: boolean; failure?: boolean } = {}) {
   expect(stubProfileHarness({ lines: opts.lines ?? STUB_LINES, ...(opts.failure ? { ending: '{"type":"result","subtype":"error_during_execution","is_error":true,"stop_reason":"error","errors":["fixture failure"]}' } : {}) })).toEqual(PROFILE_STUB_DETECTED);
   const e = sqliteEnv({ workerLogin: true });
+  expect(await settingsWriter(e.db).setLeaf('agent.tasks',{'title-summary':{reasoningLevel:'default'}},'fixture',NOW))
+    .toEqual({applied:true});
   turnOnGatedCapabilities(e.sqlite, ['proj_1']);
   let clock = Date.now();
   const now = () => opts.slowPages ? clock : Date.now();
@@ -310,8 +313,8 @@ async function wire(opts: { advertise?: boolean; lines?: readonly string[]; slow
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   e.sqlite.run(
     `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
-     VALUES ('proj_1', 'run_steps', 'myco-agent', 'extract-curate', 'queued', ?, 'worker', ?, ?, 'do it')`,
-    [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
+     VALUES ('proj_1', 'run_steps', 'myco-agent', 'title-summary', 'queued', ?, 'worker', ?, ?, 'do it')`,
+    [NOW, JSON.stringify({ serverUrl: 'https://s', params:{session_id:'steps-session',mode:'claim'}, actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
   );
   const home = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-worker-home-')));
   const runRoot = join(home, 'runs');

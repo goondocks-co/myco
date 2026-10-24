@@ -1,8 +1,9 @@
 import { expect } from 'bun:test';
 import { lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { MAP_TASK } from '@myco-server-worker/core/task-catalogue.js';
 
 /**
- * An outcome run on both targets: an owner's ask for the extraction pass builds
+ * An outcome run on both targets: an owner's ask for the code map builds
  * the prompt and writes it onto the queued run row with its hash, a second ask
  * waits behind a limit and is left for a worker by the wake rather than
  * launched, and a new session's start is served the Project it works in and the
@@ -17,7 +18,9 @@ export const cortex: ParityScenario = {
     const now = Date.now();
     const stamp = String(now);
     const leaf = (name: string, value: unknown) => target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (${lit(name)}, ${lit(JSON.stringify(value))}, ${now}, ${lit(MEMBER_ID)})`);
-    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'vault_evolution', 1, ${now}, ${lit(MEMBER_ID)})`);
+    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'canopy', 1, ${now}, ${lit(MEMBER_ID)})`);
+    await target.sql(`INSERT OR REPLACE INTO project_repositories (project_id,revision,url,branch,username,secret_slot,updated_at,updated_by)
+      VALUES (${lit(target.projectId)},${lit(stamp)},'https://example.test/parity-cortex.git','main',NULL,NULL,${now},${lit(MEMBER_ID)})`);
     // Session start serves instructions only to a Project admitted to `cortex`.
     await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'cortex', 1, ${now}, ${lit(MEMBER_ID)})`);
     // A clean board: nothing another scenario left holds a place.
@@ -28,7 +31,7 @@ export const cortex: ParityScenario = {
       const res = await fetch(`${target.url}/api/harness/dispatch`, {
         method: 'POST',
         headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-        body: JSON.stringify({ task: 'extract-curate', projectId: target.projectId, ...ask }),
+        body: JSON.stringify({ task: MAP_TASK, projectId: target.projectId, ...ask }),
       });
       return { status: res.status, body: (await res.json()) as { outcome?: string; runId?: string; queued?: boolean; heldBy?: string } };
     };
@@ -56,7 +59,7 @@ export const cortex: ParityScenario = {
     const firstRunId = String(first.body.runId);
     const firstRow = await row(firstRunId);
     expect({ status: firstRow.status, heldBy: firstRow.heldBy, dryRun: firstRow.dryRun }).toEqual({ status: 'queued', heldBy: 'worker', dryRun: 0 });
-    expect(firstRow.instruction).toContain('Read the prompts nobody has read yet');
+    expect(firstRow.instruction).toContain("Keep this project's repository map");
     expect((JSON.parse(firstRow.runContext!) as { input_hash: string }).input_hash).toHaveLength(64);
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${Date.now()} WHERE id = ${lit(firstRunId)}`);
 
@@ -64,7 +67,7 @@ export const cortex: ParityScenario = {
     // it for a worker once the limit clears: a worker-served run is never
     // launched by the drain.
     await leaf('agent.limits.concurrent_runs', 1);
-    await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at) VALUES (${lit(target.projectId)}, ${lit(`blocker-${stamp}`)}, 'myco-agent', 'extract-curate', 'running', 0, ${Date.now()})`);
+    await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at) VALUES (${lit(target.projectId)}, ${lit(`blocker-${stamp}`)}, 'myco-agent', ${lit(MAP_TASK)}, 'running', 0, ${Date.now()})`);
     const queued = await dispatch();
     expect(queued.body).toMatchObject({ queued: true, heldBy: 'concurrent_runs' });
     const queuedRunId = String(queued.body.runId);
@@ -73,7 +76,7 @@ export const cortex: ParityScenario = {
     await wake();
     const waiting = await row(queuedRunId);
     expect(waiting.status).toBe('queued');
-    expect(waiting.instruction).toContain('Read the prompts nobody has read yet');
+    expect(waiting.instruction).toContain("Keep this project's repository map");
     expect((JSON.parse(waiting.runContext!) as { input_hash?: string }).input_hash).toEqual(expect.any(String));
 
     // Session start serves the Project the agent works in and the Deployment's

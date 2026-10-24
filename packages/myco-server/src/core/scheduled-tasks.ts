@@ -6,8 +6,8 @@
  * switch, the Project's own recency, whether the task is already live, the
  * interval (shortened under backlog), the state the task runs in, a named
  * precondition, the per-day ceiling — and the dispatcher takes what passes,
- * launching or queueing as the limits say. Durable ramp and refusal state
- * span wakes; schedule facts and worker availability are fresh for each wake.
+ * launching or queueing as the limits say. Durable refusal state
+ * spans wakes; schedule facts and worker availability are fresh for each wake.
  * Atomic admission refuses duplicate overlapping dispatches.
  *
  * A dispatch limit and a per-day ceiling answer differently, and the difference
@@ -17,16 +17,15 @@ import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { projectRepositories } from './repositories.js';
 import { deploymentSecretStore } from './secrets.js';
 import type { ServerEnv } from './adapters.js';
-import { AlreadyRunning, CeilingReached, DispatchAdmissionRefused, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, repositoryWorkerAvailable, type LaunchSpec } from './harness.js';
+import { AlreadyRunning, DispatchAdmissionRefused, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, repositoryWorkerAvailable, type LaunchSpec } from './harness.js';
 import { buildTaskInput } from './task-inputs.js';
 import type { PowerState } from './power.js';
 import { ensureAgent, INPUT_UNCHANGED, recordSkipped, taskFactsKey, taskRunFacts, type TaskRunFacts } from './runs.js';
 import { enabledCapabilities, type ProjectCapability } from './settings.js';
 import { type TaskSchedule } from './jobs.js';
 import { declared } from './declared.js';
-import { admissionForTask, EXTRACTION_TASK, runTimeoutForTask } from './task-catalogue.js';
+import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
 import { listProjects } from '../read/sessions.js';
-import { extractionRamp } from './extraction-ramp.js';
 import { classify, emit } from '../telemetry.js';
 import { schedulerState } from './scheduler-state.js';
 import {
@@ -41,7 +40,7 @@ export {
 
 const DAY_MS = 86_400_000;
 const PERSISTENT_SKIP_INTERVAL_MS = DAY_MS;
-const PERSISTENT_SKIPS = new Set<ScheduleSkip>(['repository_missing', 'repository_unavailable', 'worker_unavailable', 'extraction_ramp']);
+const PERSISTENT_SKIPS = new Set<ScheduleSkip>(['repository_missing', 'repository_unavailable', 'worker_unavailable']);
 
 /** Persistent admission skips are emitted once per Project and task per day, or when the refusal changes. */
 async function emitScheduleSkip(env: ServerEnv, projectId: string, task: string, skip: ScheduleSkip, now: number): Promise<void> {
@@ -94,7 +93,7 @@ async function recordClockSkip(env: ServerEnv, projectId: string, task: string, 
 /** Who a scheduled run is attributed to: the Deployment's own clock. */
 export const CLOCK_ACTOR = 'clock';
 /** Why the clock left a task alone this wake; a ceiling met is recorded on a run row, the rest are told. */
-export type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'reserved_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged' | 'uninstructed' | 'repository_missing' | 'repository_unavailable' | 'worker_unavailable' | 'extraction_ramp';
+export type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'reserved_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged' | 'uninstructed' | 'repository_missing' | 'repository_unavailable' | 'worker_unavailable';
 
 export interface ScheduleReport {
   /** Dispatches the clock made, launched or queued. */
@@ -113,7 +112,6 @@ export interface ScheduleFacts {
   runs: Map<string, TaskRunFacts>;
   /** `taskFactsKey(projectId, capability)` for every capability a Project has turned on. */
   capabilities: Set<string>;
-  rampCeilings?: Map<string, number>;
 }
 
 const NO_RUNS: TaskRunFacts = { live: false, lastEntryAt: null, entriesSince: 0 };
@@ -129,7 +127,6 @@ export async function readScheduleFacts(env: ServerEnv, tasks: readonly string[]
   const capabilities = gated.length === 0 ? null : enabledCapabilities(env.db, gated, projectId);
   const [runRows, capabilityRows] = await env.db.batch([runs.statement, ...(capabilities === null ? [] : [capabilities.statement])]);
   return {
-    rampCeilings: new Map(),
     runs: runs.read(runRows!.results as ReadonlyArray<Record<string, unknown>>),
     capabilities: new Set(capabilities === null ? [] : capabilities.read(capabilityRows!.results as ReadonlyArray<Record<string, unknown>>)
       .map(({ projectId: held, capability }) => taskFactsKey(held, capability))),
@@ -139,7 +136,7 @@ export async function readScheduleFacts(env: ServerEnv, tasks: readonly string[]
 /**
  * Decide one task for one Project at this wake. Answers the skip by name,
  * or null when the task should be dispatched. Reads schedule facts for this Project
- * where none are supplied, and records the extraction ramp and its atomic ceiling.
+ * where none are supplied, using the current declared schedule.
  */
 export async function decideTask(env: ServerEnv, projectId: string, lastReceivedAt: number | null, task: string, schedule: TaskSchedule, state: PowerState, leaves: Pick<ScheduleLeaves, 'activeWindowDays' | 'coldThresholdDays'>, now: number, facts?: ScheduleFacts, workerAvailable = (name: string) => repositoryWorkerAvailable(env, name, now)): Promise<ScheduleSkip | null> {
   if (schedule.enabled === false) return 'disabled';
@@ -169,13 +166,6 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
   if (schedule.preCondition !== undefined) {
     const check = declared(PRE_CONDITIONS, schedule.preCondition);
     if (check === undefined || !(await check({ db: env.db, projectId, now }))) return 'precondition';
-  }
-  if (task === EXTRACTION_TASK) {
-    const ramp = await extractionRamp(env, projectId, now, { activeWindowDays: leaves.activeWindowDays, runsPerDay: schedule.rampRunsPerDay });
-    if (ramp !== null) {
-      held.rampCeilings?.set(projectId, ramp);
-      if (runs.entriesSince >= ramp) return 'extraction_ramp';
-    }
   }
   if (schedule.maxRunsPerDay !== undefined) {
     const used = runs.entriesSince;
@@ -248,17 +238,12 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
         try {
           // A skip-overlap task's write refuses beside another live run of it: two wakes deciding at once write one row.
           const budget = runTimeoutForTask(task);
-          const ramp = task === EXTRACTION_TASK ? facts.rampCeilings?.get(project.projectId) : undefined;
           const outcome = await dispatchPrepared(env, prepared.prepared, {
             serverUrl, actor: CLOCK_ACTOR, ...input, ...(budget === null ? {} : { timeoutSeconds: budget }),
-          }, now, { singleFlight: schedule.overlap === 'skip', ...(ramp === undefined ? {} : { ceiling: { actor: CLOCK_ACTOR, task, projectId: project.projectId, perDay: ramp, sinceMs: now - DAY_MS } }) });
+          }, now, { singleFlight: schedule.overlap === 'skip' });
           emit({ kind: 'task_scheduled', task, projectId: project.projectId, runId: outcome.runId, queued: outcome.queued });
           report.dispatched += 1;
         } catch (err) {
-          if (err instanceof CeilingReached) {
-            await emitScheduleSkip(env, project.projectId, task, 'extraction_ramp', now);
-            continue;
-          }
           if (err instanceof DispatchAdmissionRefused) {
             emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: 'refused', refusal: err.refusal });
             continue;

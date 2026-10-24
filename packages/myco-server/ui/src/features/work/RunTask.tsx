@@ -160,7 +160,7 @@ function Confirm({ projectId, task, onOpenChange, admin, now, onStarted }: RunTa
   const reading = chosen !== null && (preview.isPending || week.isPending);
   const outcome = week.data?.outcomes.find((candidate) => candidate.task === task);
   const spend = spendWords(outcome?.spend, entry.noun, 'This week');
-  const refusal = dispatch.error === null ? null : refusalOf(dispatch.error, now);
+  const refusal = dispatch.error === null ? null : refusalOf(dispatch.error, now, task);
   const offCapability = refusal?.capability ?? (switchedOff ? capability! : null);
   const allowance = preview.data?.allowance ?? null;
   const spent = allowance !== null && allowanceWords(allowance) === null;
@@ -335,15 +335,16 @@ function StartedRunLine({ started, runId, queued, className }: { started: Starte
 }
 
 /** A dispatch's refusal in the reader's words, the capability it names when it names one, and whether trying again now can help. */
-export function refusalOf(error: Error, now: number): { words: string; capability: string | null; final: boolean } {
+export function refusalOf(error: Error, now: number, task?: string): { words: string; capability: string | null; final: boolean } {
   if (error instanceof ApiError) {
     if (error.status === 429 && isDailyLimit(error.body)) return { words: dailyLimitWords(error.body, now), capability: null, final: true };
     if (error.status === 429 || error.status === 408) return { words: 'The server is busy. Try again in a moment.', capability: null, final: false };
     if (error.status === 409 && isCapabilityOff(error.body)) return { words: capabilityOffWords(error.body.capability), capability: error.body.capability, final: true };
     if (error.status === 403 && isFreshNeedsAdmin(error.body)) return { words: 'Only an admin can start a task fresh.', capability: null, final: false };
+    const message = typeof error.body === 'object' && error.body !== null ? Reflect.get(error.body, 'message') : null;
+    if (error.code === 'not_landed' && task === 'extract-curate' && typeof message === 'string' && message.trim() !== '') return { words: message, capability: null, final: true };
     const known = error.code !== undefined && Object.hasOwn(DISPATCH_REFUSAL_WORDS, error.code) ? DISPATCH_REFUSAL_WORDS[error.code] : undefined;
     if (known !== undefined) return { words: known, capability: null, final: true };
-    const message = typeof error.body === 'object' && error.body !== null ? Reflect.get(error.body, 'message') : null;
     if (typeof message === 'string' && message.trim() !== '') return { words: message, capability: null, final: error.status < 500 };
     return error.status >= 500
       ? { words: 'The server couldn’t start it. Try again in a moment.', capability: null, final: false }
@@ -354,12 +355,12 @@ export function refusalOf(error: Error, now: number): { words: string; capabilit
 
 /** Settled dispatch refusals in the reader’s words. */
 export const DISPATCH_REFUSAL_WORDS: Readonly<Record<string, string>> = {
+  not_landed: 'This task is not available yet.',
   repository_missing: 'The code map and other code tasks need this project’s repository before they can run.',
   harness_unavailable: 'Myco can’t run this task here. An admin can check its setup.',
   unknown_task: 'This task isn’t available here. Refresh the page to see the available tasks.',
   unknown_project: 'This project is no longer available here. Choose another project.',
   no_instruction: 'This task has no instructions yet. An admin can check its setup.',
-  not_landed: 'This task is not available yet.',
   no_provider: 'Search needs to be set up before this task can run. An admin can do that in Settings.',
   capability_off: 'This task is turned off for the project. An admin can turn it on in Project settings.',
 };

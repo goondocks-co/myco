@@ -253,8 +253,8 @@ describe('a worker claim from a credential minted not to rotate (#1420)', () => 
     e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
     e.sqlite.run(
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
-       VALUES ('proj_1', 'run_q', 'myco-agent', 'extract-curate', 'queued', ?, 'worker', ?, ?, 'do it')`,
-      [NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
+       VALUES ('proj_1', 'run_q', 'myco-agent', 'title-summary', 'queued', ?, 'worker', ?, ?, 'do it')`,
+      [NOW, JSON.stringify({ params: { session_id: 'fixture-session', mode: 'claim' }, serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
     );
     await ensureMember(e.db, 'mem_admin', NOW, 'admin', 'an administrator');
     const token = await issueMemberToken(e.db, { memberId: 'mem_admin', machineId: 'machine_admin' }, NOW, null, NO_RUNTIME_CLAIMS, { rotates });

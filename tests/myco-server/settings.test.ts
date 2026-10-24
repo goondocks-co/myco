@@ -144,7 +144,6 @@ describe('task document repair', () => {
     expect(await r.w.repairTaskDocument('mem_repair', 2)).toEqual({ applied: true });
     expect((await r.w.leaves())['agent.tasks']).toEqual({ value: {
       'title-summary': { schedule: { enabled: true }, reasoningLevel: 'high' },
-      'extract-curate': { schedule: { intervalSeconds: 600 } },
     }, updatedAt: 2, updatedBy: 'mem_repair' });
     expect(rearmed).toEqual(['agent.tasks']);
     expect(await r.w.repairTaskDocument('mem_repair_again', 3)).toEqual({ applied: true });

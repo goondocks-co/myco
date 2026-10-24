@@ -116,26 +116,22 @@ describe('the run that stands in for a replaced one', () => {
 
   it.each(['clock', null])('keeps automatic accounting for a replacement with original actor %s', async (actor) => {
     const f = await fixture();
-    await dispatched(f, 'scheduled', 'extract-curate', { timeoutSeconds: 900 });
+    await dispatched(f, 'scheduled', 'title-summary', { session_id: 'sess_1', mode: 'claim', timeoutSeconds: 900 });
     f.sqlite.run(`UPDATE agent_runs SET dispatch_spec = ? WHERE id = 'scheduled'`, [actor === null ? null : JSON.stringify({ actor })]);
     await markRunReplaced(f.db, SCOPE, 'scheduled');
     const result = await requeueReplaced(f.env, { run: (await getRun(f.db, SCOPE, 'scheduled'))!, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 1);
     expect(result).toMatchObject({ requeued: true });
-    expect(await taskEntriesSince(f.db, SCOPE, 'extract-curate', NOW - DAY, 'clock')).toBe(1);
+    expect(await taskEntriesSince(f.db, SCOPE, 'title-summary', NOW - DAY, 'clock')).toBe(1);
     expect(f.specOf((result as { runId: string }).runId).actor).toBe(actor ?? '');
   });
 
-  it('builds an extraction successor afresh, carrying the bound and the from-scratch ask of the run it stands in for', async () => {
+  it('refuses an extraction successor while learning is paused', async () => {
     const f = await fixture();
     await dispatched(f, 'run_a', 'extract-curate', { timeoutSeconds: 900, fresh: true });
     await markRunReplaced(f.db, SCOPE, 'run_a');
     const outcome = await requeueReplaced(f.env, { run: (await getRun(f.db, SCOPE, 'run_a'))!, projectId: 'proj_1', serverUrl: ORIGIN, actor: HARNESS_MEMBER_ID }, NOW + 1);
-    expect(outcome).toMatchObject({ requeued: true });
-    const successor = (outcome as { runId: string }).runId;
-    const built = f.sqlite.query(`SELECT instruction, run_context c FROM agent_runs WHERE id = ?`).get(successor) as { instruction: string | null; c: string };
-    expect(built.instruction).toContain('Read the prompts nobody has read yet');
-    expect(JSON.parse(built.c) as Record<string, unknown>).toMatchObject({ fresh: true, timeoutSeconds: 900, replaces: 'run_a' });
-    expect(String((JSON.parse(built.c) as { input_hash?: string }).input_hash)).toHaveLength(64);
+    expect(outcome).toEqual({ requeued: false, reason: 'refused' });
+    expect(f.rows()).toHaveLength(1);
   });
 
   it('stops at the day\'s cap on re-queues of one task, and the cap is a named number', async () => {

@@ -84,7 +84,7 @@ describe('what holds a dispatch', () => {
     const f = await fixture();
     const env: ServerEnv = { ...f.env, fleet: 1 };
     expect(await dispatchTask(env, 'embedding-reconcile', 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, NOW)).toMatchObject({ dispatched: true, queued: false });
-    expect(await dispatchTask(env, 'extract-curate', 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, NOW + 1)).toMatchObject({ dispatched: true, queued: true, heldBy: 'fleet' });
+    expect(await dispatchTask(env, 'title-summary', 'proj_1', { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 }, NOW + 1)).toMatchObject({ dispatched: true, queued: true, heldBy: 'fleet' });
   });
 });
 
@@ -172,7 +172,7 @@ describe('the drain', () => {
     // A worker-served task never reaches a launch: it waits in the claim queue
     // whatever the limits say, and the drain passes over it rather than
     // stopping, so the runtime-served run behind it still launches.
-    const digest = (await f.dispatch('extract-curate', NOW + 2)) as { runId: string };
+    const digest = (await f.dispatch('title-summary', NOW + 2)) as { runId: string };
     expect(f.run(smokeQueued.runId)?.status).toBe('queued');
     expect(f.run(digest.runId)).toMatchObject({ status: 'queued', heldBy: 'worker' });
     f.complete(smoke.runId);
@@ -264,7 +264,7 @@ describe('the write is the admission', () => {
     const preparedOutcome = await prepareDispatch(f.env, 'embedding-reconcile', 'proj_1');
     expect(preparedOutcome.ok).toBe(true);
     f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'live', 'myco-agent', 'extract-curate', 'running', ?)`, [NOW]);
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'live', 'myco-agent', 'title-summary', 'running', ?)`, [NOW]);
     const spec = { serverUrl: ORIGIN, actor: 'mem_1', timeoutSeconds: 120 };
     await expect(launchDispatch(f.env, prepared(preparedOutcome), spec, NOW, { limits: { ...none, concurrent_runs: 1 } })).rejects.toBeInstanceOf(LimitReached);
     const credentials = f.sqlite.query(`SELECT revoked_at FROM member_credentials WHERE member_id = 'mem_harness'`).all() as Array<{ revoked_at: number | null }>;
@@ -277,7 +277,7 @@ describe('the write is the admission', () => {
     const racing: ServerEnv = { ...f.env, db: { ...f.env.db, prepare: (sql: string) => {
       if (!raced && sql.includes(`?, 'pending', ?`)) {
         raced = true;
-        f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'live-2', 'myco-agent', 'extract-curate', 'running', ?)`, [NOW]);
+        f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'live-2', 'myco-agent', 'title-summary', 'running', ?)`, [NOW]);
       }
       return f.env.db.prepare(sql);
     } } };

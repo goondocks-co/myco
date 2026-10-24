@@ -520,10 +520,13 @@ test.describe('Sessions', () => {
         await expect(outcomes.nth(1)).toContainText(/Released · myco\/v2\.0\.3 · PR #1873 · checked /);
         await expect(outcomes.getByRole('button', { name: 'Copy commit' })).toHaveCount(2);
         // What the session reported it created, after its commits: a link where the page names the host, text elsewhere.
-        await expect(outcomes.nth(2)).toContainText('Pull request#1873');
-        await expect(outcomes.nth(2).getByRole('link', { name: REPORTED_PR })).toHaveAttribute('href', REPORTED_PR);
-        await expect(outcomes.nth(3)).toContainText(`Deploydep_20261019_preview${REPORTED_DEPLOY}`);
-        await expect(outcomes.nth(3).getByRole('link')).toHaveCount(0);
+        const pullRequest = outcomes.filter({ has: page.getByRole('link', { name: REPORTED_PR, exact: true }) });
+        await expect(pullRequest).toHaveCount(1);
+        await expect(pullRequest).toContainText('Pull request#1873');
+        await expect(pullRequest.getByRole('link', { name: REPORTED_PR })).toHaveAttribute('href', REPORTED_PR);
+        const deploy = outcomes.filter({ hasText: `Deploydep_20261019_preview${REPORTED_DEPLOY}` });
+        await expect(deploy).toHaveCount(1);
+        await expect(deploy.getByRole('link')).toHaveCount(0);
         await expect(outcomes.getByRole('button', { name: 'Copy link' })).toHaveCount(2);
         await expect(page.locator('[data-session-events="outcomes"] [data-filter-bar]')).toHaveCount(0);
         await expectListState(page, viewport, 'session-outcomes');

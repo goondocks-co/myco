@@ -1,3 +1,4 @@
+import { queuePrePauseExtraction, claimPrePauseExtraction } from './helpers/held-extraction.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { MAX_REPOSITORY_HISTORY_DEPTH, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
@@ -19,7 +20,7 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { claimNextRun, dispatchTask, endLeasedRun, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { dispatchTask as currentDispatch, endLeasedRun, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { EXTRACTION_REPORT_ACTION, RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_SKIP_ACTION, runCloseRefusal, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { getRun, RUN_TOOL_EVENT } from '@myco-server-worker/core/runs.js';
 import { EXTRACTION_TASK, SEEDING_TASK } from '@myco-server-worker/core/task-catalogue.js';
@@ -31,6 +32,10 @@ import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { verifyWorkerOutcome } from '../helpers/worker-smoke-evidence.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
+
+const claimNextRun = claimPrePauseExtraction;
+const dispatchTask = (...args: Parameters<typeof currentDispatch>) =>
+  args[1] === EXTRACTION_TASK ? queuePrePauseExtraction(args[0],args[2],args[3],args[4]) : currentDispatch(...args);
 
 const NOW = 1_800_000_000_000;
 const ORIGIN = 'https://s';

@@ -9,6 +9,13 @@ export function schemaObjects(db: Database): Array<{ type: string; name: string;
 }
 
 const RUNNER_SIGN_IN_SCHEMA_VERSION = 88;
+const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | number>>>> = {
+  runners: { id: 'rn_upgrade' },
+  prompt_context_answers: { outcome: 'served' },
+  legacy_worker_audit: { action: 'forgotten' },
+  agent_run_attempts: { owner_kind: 'runner' },
+  agent_run_steps: { kind: 'read', outcome: 'ok' },
+};
 
 const sqlIdentifier = (name: string): string => `"${name.replaceAll('"', '""')}"`;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -184,7 +191,7 @@ export function seedReferencedTables(db: Database, statements: readonly string[]
     visiting.add(table);
     const columns = db.query(`PRAGMA table_info(${sqlIdentifier(table)})`).all() as Array<{ name: string; type: string; notnull: number; dflt_value: unknown; pk: number }>;
     const fks = db.query(`PRAGMA foreign_key_list(${sqlIdentifier(table)})`).all() as Array<{ table: string; from: string; to: string }>;
-    const values = new Map<string, string | number>();
+    const values = new Map<string, string | number>(Object.entries(UPGRADE_VALUES[table] ?? {}));
     for (const fk of fks) {
       seedTable(fk.table, visiting);
       const parent = db.query(`SELECT * FROM ${sqlIdentifier(fk.table)} LIMIT 1`).get() as Record<string, string | number> | null;
@@ -197,7 +204,7 @@ export function seedReferencedTables(db: Database, statements: readonly string[]
       // Only a lone INTEGER PRIMARY KEY is the rowid, which the store assigns.
       if (values.has(column.name) || (column.pk && /^INTEGER$/i.test(column.type) && columns.filter((item) => item.pk > 0).length === 1)) continue;
       const name = column.name;
-      const value = table === 'runners' && name === 'id' ? 'rn_upgrade' : table === 'prompt_context_answers' && name === 'outcome' ? 'served' : name === 'chunk_index' ? 0 : name === 'project_id' ? PROJECT_ID : name === 'agent_id' ? 'upgrade_agent'
+      const value = name === 'chunk_index' ? 0 : name === 'project_id' ? PROJECT_ID : name === 'agent_id' ? 'upgrade_agent'
         : name === 'session_id' ? 'upgrade_session' : name === 'run_id' ? 'upgrade_run'
           : name === 'status' ? 'completed' : name === 'role' ? 'member'
             : name === 'state' ? 'draft' : name === 'confidence' ? 'high'

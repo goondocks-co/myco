@@ -5,7 +5,7 @@ import { MEMBER_ID, SESSION_SECRET, lit, type ParityScenario, type ParityTarget 
 
 const ADMIN = 'mem_live_write_admin';
 const MEMBER = 'mem_live_write_member';
-const TASK = 'extract-curate';
+const TASK = 'title-summary';
 
 async function request(target: ParityTarget, path: string, method: string, headers: Record<string, string>, body?: unknown): Promise<Response> {
   return fetch(`${target.url}${path}`, {
@@ -39,6 +39,13 @@ export const liveActorWrites: ParityScenario = {
     }
     expect((await request(target, '/api/settings/agent.reasoning_map.claude-code.default', 'PUT', admin, { value: 'claude-opus-5' })).status).toBe(200);
     expect((await request(target, '/api/secrets/anthropic', 'PUT', admin, { value: 'synthetic-subscription' })).status).toBe(200);
+    const pausedAsk = { task: 'extract-curate', projectId: target.projectId, fresh: true };
+    const beforePaused = await target.sql('SELECT * FROM agent_runs');
+    const memberPaused = await request(target, '/api/harness/dispatch', 'POST', member, pausedAsk);
+    expect({ status: memberPaused.status, body: await memberPaused.json() }).toEqual({ status: 403, body: { error: 'fresh_needs_admin' } });
+    const adminPaused = await request(target, '/api/harness/dispatch', 'POST', admin, pausedAsk);
+    expect({ status: adminPaused.status, body: await adminPaused.json() }).toEqual({ status: 400, body: { error: 'not_landed', message: 'Learning resumes with whole-session reading' } });
+    expect(await target.sql('SELECT * FROM agent_runs')).toEqual(beforePaused);
     const cases = [
       { path: '/api/harness/dispatch', method: 'POST', body: { task: 'embedding-reconcile', projectId: target.projectId, fresh: true, timeoutSeconds: 123 }, write: 'INSERT INTO agent_runs', table: 'agent_runs', where: "task = 'embedding-reconcile'" },
       { path: '/api/settings/agent.scheduled_tasks_enabled', method: 'PUT', body: { value: true }, write: 'INSERT INTO deployment_settings', table: 'deployment_settings', where: "leaf = 'agent.scheduled_tasks_enabled'" },

@@ -14,6 +14,8 @@ import { PROFILE_HOLD_PREFIXES, sourceReadUnavailable, credentialUnavailable, ho
 import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { resolveExecutionProfile } from '@myco-server-worker/core/execution-profile.js';
 import { MODEL_CATALOG_FRESH_MS, PROFILE_HARNESSES, REASONING_TIERS, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
+import { projectRepositories } from '@myco-server-worker/core/repositories.js';
+import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
 import { HARNESSES } from '@myco/runner/harnesses.js';
 
 const NOW = 1_800_000_000_000;
@@ -28,10 +30,11 @@ async function rig(workerLogin = true) {
   await ensureMember(f.db, 'mem_worker', NOW, 'admin', 'worker');
   const token = await issueMemberToken(f.db, { memberId: 'mem_worker', machineId: 'fixture' }, NOW);
   f.sqlite.run(`INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','a','built-in',1,?)`, [NOW]);
-  const queue = (id: string, task = 'extract-curate') => f.sqlite.run(`INSERT INTO agent_runs
+  await projectRepositories(f.db,deploymentSecretStore(f.db,f.serverEnv.wrappingKey)).save('proj_1',{url:'https://example.test/repo',branch:'main',revision:null},'mem_worker',NOW);
+  const queue = (id: string, task = 'vault-seed') => f.sqlite.run(`INSERT INTO agent_runs
     (project_id,id,agent_id,task,status,queued_at,held_by,instruction,run_context)
     VALUES ('proj_1',?,'myco-agent',?,'queued',?,'worker','read the project','{}')`, [id, task, NOW]);
-  const claim = (harnesses: readonly OfferedHarness[] = [OFFER], capabilities: readonly string[] = []) => claimNextRun(f.serverEnv, { principal: legacyWorker(token.tokenId, 'fixture'), harnesses, capabilities, now: NOW });
+  const claim = (harnesses: readonly OfferedHarness[] = [OFFER], capabilities: readonly string[] = capabilitiesRequiredBy('vault-seed')) => claimNextRun(f.serverEnv, { principal: legacyWorker(token.tokenId, 'fixture'), harnesses, capabilities, now: NOW });
   const writer = settingsWriter(f.db);
   return { ...f, queue, claim, writer, token };
 }
@@ -41,7 +44,7 @@ describe('task execution profiles', () => {
     const r = await rig();
     const cases = [
       ['unsupported', profileUnsupported('claude-code'), 'That machine’s Myco is too old to use the chosen model with Claude Code. Update it.'],
-      ['invalid_tier', invalidTaskTier('extract-curate'), 'This task’s tier setting isn’t valid. Correct it in Settings, or reset the task’s tier.'],
+      ['invalid_tier', invalidTaskTier('vault-seed'), 'This task’s tier setting isn’t valid. Correct it in Settings, or reset the task’s tier.'],
       ['missing_model', noModelForTier('opencode', 'high'), 'OpenCode has no model chosen for the high tier. Choose one in Settings.'],
       ['missing_credential', credentialUnavailable('claude-code'), 'Claude Code has no sign-in this server can use. Add one in Settings.'],
       ['unbounded_source', sourceReadUnavailable('cursor'), 'Cursor cannot safely read repository source. Choose another agent for this task.'],
@@ -53,7 +56,7 @@ describe('task execution profiles', () => {
       expect(holdSentence(holder)).toBe(words);
       expect(PROFILE_HOLD_PREFIXES.some((prefix) => holder.startsWith(prefix))).toBe(true);
     }
-    await recordTaskHolder(r.db, ['extract-curate'], ['worker'], 'worker', true);
+    await recordTaskHolder(r.db, ['vault-seed'], ['worker'], 'worker', true);
     for (const [id] of cases) {
       expect(r.sqlite.query('SELECT held_by FROM agent_runs WHERE id=?').get(id)).toEqual({ held_by: 'worker' });
     }
@@ -64,14 +67,14 @@ describe('task execution profiles', () => {
       ['agent.reasoning_map.claude-code.default', '{bad'],
       ['agent.effort_map.claude-code.default', '{bad'],
       ['agent.tasks', '{bad'],
-      ['agent.tasks', JSON.stringify({ 'extract-curate': 'high' })],
+      ['agent.tasks', JSON.stringify({ 'vault-seed': 'high' })],
     ]) {
       const r = await rig();
       r.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES (?,?,0,'test')`, [leaf, value]);
       r.queue('corrupt');
       expect(await r.claim()).toMatchObject({ claimed: false });
       const held = String((r.sqlite.query(`SELECT held_by FROM agent_runs WHERE id='corrupt'`).get() as { held_by: string }).held_by);
-      if (leaf === 'agent.tasks') expect(held).toBe('invalid_task_tier:extract-curate');
+      if (leaf === 'agent.tasks') expect(held).toBe('invalid_task_tier:vault-seed');
       else expect(held).toMatch(/^(profile_unsupported|no_model_for_tier):/);
     }
   });
@@ -111,13 +114,13 @@ describe('task execution profiles', () => {
     const r = await rig();
     r.queue('source_held', 'vault-seed');
     r.sqlite.run(`UPDATE agent_runs SET held_by='profile_unsupported:claude-code' WHERE id='source_held'`);
-    expect(await r.claim()).toMatchObject({ claimed: false });
+    expect(await r.claim([OFFER], [])).toMatchObject({ claimed: false });
     expect(r.sqlite.query(`SELECT held_by FROM agent_runs WHERE id='source_held'`).get()).toEqual({ held_by: 'repository-checkout' });
   });
 
   it('does not apply a named model pin to a fallback agent', async () => {
     const r = await rig();
-    await r.writer.setLeaf('agent.tasks', { 'extract-curate': { harness: 'opencode', model: 'anthropic/claude-pinned', reasoningLevel: 'high' } }, 'mem_worker', NOW);
+    await r.writer.setLeaf('agent.tasks', { 'vault-seed': { harness: 'opencode', model: 'anthropic/claude-pinned', reasoningLevel: 'high' } }, 'mem_worker', NOW);
     await r.writer.setLeaf('worker.harness_fallback', ['claude-code'], 'mem_worker', NOW);
     r.queue('fallback');
     expect(await r.claim()).toMatchObject({ claimed: true, run: { harness: 'claude-code', profile: { tier: 'high', model: 'opus', effort: 'high', sources: { model: 'default' } } } });
@@ -204,9 +207,9 @@ describe('task execution profiles', () => {
   it('never claims an effort for an agent whose manifest allows none, so its runs never read as an effort skipped (#1608)', () => {
     const effortless = Object.entries(PROFILE_HARNESSES).filter(([, spec]) => spec.allowedEfforts.length === 0).map(([id]) => id);
     expect(effortless.length).toBeGreaterThan(0);
-    const settingsFor = (harness: string, tier: string) => new Map([[`agent.reasoning_map.${harness}.${tier}`, JSON.stringify('provider/model')], ['agent.tasks', JSON.stringify({ 'extract-curate': { reasoningLevel: tier } })]]);
+    const settingsFor = (harness: string, tier: string) => new Map([[`agent.reasoning_map.${harness}.${tier}`, JSON.stringify('provider/model')], ['agent.tasks', JSON.stringify({ 'vault-seed': { reasoningLevel: tier } })]]);
     const effortOf = (harness: string, capability: ProfileCapability, tier: string) => {
-      const resolved = resolveExecutionProfile('extract-curate', harness, capability, settingsFor(harness, tier));
+      const resolved = resolveExecutionProfile('vault-seed', harness, capability, settingsFor(harness, tier));
       return 'profile' in resolved ? resolved.profile.effort : 'not claimed';
     };
     for (const tier of REASONING_TIERS) {
@@ -244,7 +247,7 @@ describe('task execution profiles', () => {
     const r = await rig();
     expect(await r.writer.setLeaf('agent.reasoning_map.claude-code.low', 'claude-fixture-low', 'mem_worker', NOW)).toEqual({ applied: true });
     expect(await r.writer.setLeaf('agent.effort_map.claude-code.low', 'high', 'mem_worker', NOW)).toEqual({ applied: true });
-    expect(await r.writer.setLeaf('agent.tasks', { 'extract-curate': { reasoningLevel: 'low' } }, 'mem_worker', NOW)).toEqual({ applied: true });
+    expect(await r.writer.setLeaf('agent.tasks', { 'vault-seed': { reasoningLevel: 'low' } }, 'mem_worker', NOW)).toEqual({ applied: true });
     r.queue('run_override');
     expect(await r.claim()).toMatchObject({ claimed: true, run: { profile: { tier: 'low', model: 'claude-fixture-low', effort: 'high', sources: { tier: 'task-override', model: 'configured' } } } });
     expect(await r.writer.setLeaf('agent.reasoning_map.claude-code.low', 'haiku', 'mem_worker', NOW + 1)).toEqual({ applied: true });
@@ -285,7 +288,7 @@ describe('task execution profiles', () => {
     r.sqlite.run(`CREATE TABLE fleet_hold_writes (id TEXT)`);
     r.sqlite.run(`CREATE TRIGGER count_fleet_hold_writes AFTER UPDATE OF held_by ON agent_runs BEGIN INSERT INTO fleet_hold_writes VALUES (NEW.id); END`);
     const capable = await issueMemberToken(r.db, { memberId: 'mem_worker', machineId: 'capable' }, NOW);
-    await recordWorkerContact(r.db, { credentialId: capable.tokenId, machineId: 'capable', offers: [OFFER], capabilities: [], reason: 'no_work', now: NOW });
+    await recordWorkerContact(r.db, { credentialId: capable.tokenId, machineId: 'capable', offers: [OFFER], capabilities: capabilitiesRequiredBy('vault-seed'), reason: 'no_work', now: NOW });
     expect(await r.claim([{ id: 'claude-code', authenticated: true }])).toEqual({ claimed: false, reason: 'no_harness' });
     expect(r.sqlite.query(`SELECT held_by FROM agent_runs WHERE id='fleet_wait'`).get()).toEqual({ held_by: 'worker' });
     expect(await r.claim([{ id: 'claude-code', authenticated: true }])).toEqual({ claimed: false, reason: 'no_harness' });
@@ -294,11 +297,11 @@ describe('task execution profiles', () => {
 
   it('names an invalid configured task tier as the hold', async () => {
     const r = await rig();
-    r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,0,'test')`, [JSON.stringify({ 'extract-curate': { reasoningLevel: 'urgent' } })]);
+    r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,0,'test')`, [JSON.stringify({ 'vault-seed': { reasoningLevel: 'urgent' } })]);
     r.queue('bad_tier');
     expect(await r.claim()).toEqual({ claimed: false, reason: 'no_harness' });
     const held = (r.sqlite.query(`SELECT held_by FROM agent_runs WHERE id='bad_tier'`).get() as { held_by: string }).held_by;
-    expect(held).toBe('invalid_task_tier:extract-curate');
+    expect(held).toBe('invalid_task_tier:vault-seed');
     expect(holdSentence(held)).toBe('This task’s tier setting isn’t valid. Correct it in Settings, or reset the task’s tier.');
   });
 
@@ -328,11 +331,11 @@ describe('task execution profiles', () => {
 
   it('refuses a model pin without a harness and keeps the previous siblings', async () => {
     const r = await rig();
-    const previous = { 'extract-curate': { reasoningLevel: 'low' } };
+    const previous = { 'vault-seed': { reasoningLevel: 'low' } };
     expect(await r.writer.setLeaf('agent.tasks', previous, 'mem_worker', NOW)).toEqual({ applied: true });
-    expect(await r.writer.setLeaf('agent.tasks', { 'extract-curate': { model: 'sonnet' } }, 'mem_worker', NOW)).toMatchObject({ applied: false, refusal: { reason: 'invalid_value' } });
+    expect(await r.writer.setLeaf('agent.tasks', { 'vault-seed': { model: 'sonnet' } }, 'mem_worker', NOW)).toMatchObject({ applied: false, refusal: { reason: 'invalid_value' } });
     expect((await r.writer.leaves())['agent.tasks'].value).toEqual(previous);
-    expect(await r.writer.setLeaf('agent.tasks', { 'extract-curate': { model: 'opus', harness: 'claude-code' } }, 'mem_worker', NOW)).toEqual({ applied: true });
+    expect(await r.writer.setLeaf('agent.tasks', { 'vault-seed': { model: 'opus', harness: 'claude-code' } }, 'mem_worker', NOW)).toEqual({ applied: true });
     r.queue('run_pin');
     expect(await r.claim()).toMatchObject({ claimed: true, run: { profile: { model: 'opus', sources: { model: 'task-pin' } } } });
   });

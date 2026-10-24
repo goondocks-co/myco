@@ -1,5 +1,10 @@
 {
   "sources": [
+    "local: vault evolution PR 1 corrections 1 and 2, pinned Bun 1.4.0 and SQLite 3.53. The renamed tests/myco-server/titling-ceilings.test.ts ran two tests in 197.11ms summed test time (192.97ms and 4.14ms) in the eight-file focused run; its existing 946ms weight moved from extraction-ramp.test.ts and covers twice measured tests plus startup. Added stale-attempt, cutover attribution and pause-refusal assertions in existing files; no new named parity scenario.",
+    "local: vault evolution PR 1 rebase on 7b44e3da7/schema 101, pinned Bun 1.4.0 and worktree SQLite 3.53. Latest emitted 0102 D1 upgrade including FK-descendant fixture and omission probe passed in 29689ms with 117ms scenario execution; 70000ms weight covers twice dedicated boot/process wall plus startup. Upgrade helper 7 tests measured 1093ms; 3500ms covers twice plus startup. Six pause/clock/queue/member/guarded-spore/legacy-spore scenarios passed 12 native/local-D1 cases in 60345ms; existing per-scenario weights retained. No new test file or scenario in this rebase.",
+    "local: vault evolution PR 1 operator cutover update, pinned Bun 1.4.0 and worktree SQLite 3.53. npm test -- tests/myco-server/learning-cutover.test.ts measured 441ms wall for 4 tests; final cutover/migration 10 tests including manual-dispatch counterexample measured 3830ms. Existing cutover 1500ms/migration 12000ms weights retained above twice measured test time plus startup. Frozen old settings/schedule files are helpers, not new test files or parity scenarios.",
+    "local: vault evolution PR 1 final focused five-file run on pinned Bun 1.4.0 and SQLite 3.53 measured 6626ms wall, 36 tests. Summed file tests: pause 226ms, migration 3925ms including portable restore and native/local-D1 preference/credential cases, hold 1301ms including Project identity/acknowledgement, cutover 249ms. Weights 1500/12000/6000/1500ms cover twice observed tests plus startup. Native recovery 16 tests in 17427ms used existing file weight. Claim-queue/member-dispatch parity 4 tests in 41280ms includes both boots; existing scenario weights retained.",
+    "local: vault evolution PR 1, pinned Bun 1.4.0 darwin-arm64. npm test -- tests/myco-server/raw-archive.test.ts tests/myco-server/learning-pause.test.ts tests/myco-server/learning-pause-migration.test.ts tests/myco-server/learning-hold.test.ts tests/myco-server/learning-cutover.test.ts measured 4140ms wall: migration 1743ms, hold 1168ms, cutover 212ms. New file weights include twice observed duration plus startup. Focused learning-pause/map-clock parity passed both native and local workerd D1 in 44630ms including dedicated boots; 100000ms each covers twice the combined wall plus startup. No production service or account used.",
     "local: #1935 correction2 pinned Bun1.4.0 darwin-arm64 worktree SQLite3.53.0; npm test -- extraction-coverage-budget extraction-coverage-steady-state-budget extraction-history-budget measured76954ms (two tests),55598ms (new steady-state file),59759ms (three history tests), while source gates ran. CI-derived123450/125703/142417ms weights retained. Opt-in real Ubuntu apt test rerun passed at347ms after fixture redaction. No new parity scenario.",
     "CI: #1935 correction2, complete outer Node phases from40047399103 attempt1 and green main39960024599. Main file times use all five JUnit archives; PR archives were removed after rerun, so file times use complete job-log pass durations, cross-checked against every main JUnit phase within console rounding. Coverage steady-state case125405.23ms is moved explicitly through group.splits; wall-normalized weights123450ms +125703ms preserve the prior225000ms combined floor. History measured142417ms. The real Ubuntu24.04.5 arm64 apt2.8.3 offline upgrade test measured447ms with Docker networking disabled; existing checker140000ms weight retained. No new parity scenario.",
     "local: vault evolution 2.0 PR 0 correction 1, pinned Bun1.4.0 with worktree SQLite; late-retirement parity probe failed on original head on both targets (native 9ms/D1 82ms). Corrected legacy-spore parity measured native 17ms/local workerd D1 69ms in a 21620ms eight-test run including both boots; 60000ms new scenario weight covers twice process wall plus startup. Existing files were extended, with no new test file.",
@@ -486,7 +491,6 @@
     "tests/myco-server/extraction-coverage.test.ts": 1500,
     "tests/myco-server/extraction-history-budget.test.ts": 142417,
     "tests/myco-server/extraction-prompts.test.ts": 134,
-    "tests/myco-server/extraction-ramp.test.ts": 946,
     "tests/myco-server/fleet-correction.test.ts": 25,
     "tests/myco-server/foreign-lineage-authority.test.ts": 896,
     "tests/myco-server/gates.test.ts": 5709,
@@ -520,6 +524,10 @@
     "tests/myco-server/knowledge-reads.test.ts": 96,
     "tests/myco-server/knowledge-wire.test.ts": 1,
     "tests/myco-server/kpis.test.ts": 4393,
+    "tests/myco-server/learning-cutover.test.ts": 1500,
+    "tests/myco-server/learning-hold.test.ts": 6000,
+    "tests/myco-server/learning-pause-migration.test.ts": 12000,
+    "tests/myco-server/learning-pause.test.ts": 1500,
     "tests/myco-server/legacy-history-budget.test.ts": 2867,
     "tests/myco-server/legacy-history.test.ts": 41,
     "tests/myco-server/lineage-replay.test.ts": 128,
@@ -683,6 +691,7 @@
     "tests/myco-server/throttle.test.ts": 31,
     "tests/myco-server/tick.test.ts": 349,
     "tests/myco-server/titling-backfill.test.ts": 837,
+    "tests/myco-server/titling-ceilings.test.ts": 946,
     "tests/myco-server/titling-trigger.test.ts": 140,
     "tests/myco-server/titling.test.ts": 149,
     "tests/myco-server/today-read-plans.test.ts": 4096,
@@ -734,7 +743,7 @@
     "tests/myco-shared/runner-update.test.ts": 4,
     "tests/parity/locked-retry.test.ts": 365,
     "tests/parity/parity.test.ts": 463,
-    "tests/parity/schema-upgrade.test.ts": 2212,
+    "tests/parity/schema-upgrade.test.ts": 3500,
     "tests/parity/transport-load.test.ts": 134,
     "tests/plugins/marketplace.test.ts": 157,
     "tests/project-root/resolve.test.ts": 296,
@@ -895,7 +904,7 @@
     "tests/utils/windows-atomic-replace.test.ts": 2
   },
   "parity": {
-    "D1: latest migration upgrades seeded previous schema to expected state": 45000,
+    "D1: latest migration upgrades seeded previous schema to expected state": 70000,
     "repository preparation failure: leased worker metadata reaches runs and work on both targets": 18000,
     "retired schema: generated skills and digests have no tables, FTS objects or embedding source": 15000,
     "setup progress: scoped observations and bounded D1 reads with misleading history": 30000,
@@ -927,7 +936,6 @@
     "backup: create, verified list, preview, converging restore, and cross-deployment adoption": 51000,
     "the wake: retention and the stale-run sweep, identical on both targets, idempotent": 44000,
     "the claim queue: a worker's runs wait in order whatever the limit says, and no front door launches one": 38000,
-    "the clock: extraction queued once, held by its interval, capped by its ceiling, withheld from a cold Project": 59000,
     "an outcome run: the ask queues a run carrying its prompt and hash, the wake leaves it for a worker, and session start serves the Project and its instructions": 27000,
     "a replaced run: the row says a deploy ended it, a successor stands in for it once, and the day is not spent": 41000,
     "search: scoped HTTP and MCP, every retained type, spilled bodies, updates and explicit semantic availability": 16000,
@@ -987,7 +995,9 @@
     "session artifacts: declared report, idempotent re-report, conflict refusal, deletion, index-backed page read": 15000,
     "view store: empty instance storage preserves captured turns and additive backup": 45000,
     "spores: guarded resolutions, editorial expectations and per-source revisions": 60000,
-    "legacy spores: later vault retirement converges and replays once": 60000
+    "legacy spores: later vault retirement converges and replays once": 60000,
+    "learning pause: dispatch refuses and queued stragglers cannot acquire attempts": 100000,
+    "the clock: map work queued once, held by its interval, capped by its ceiling, withheld from a cold Project": 100000
   },
   "jobs": {
     "ui-screens": {

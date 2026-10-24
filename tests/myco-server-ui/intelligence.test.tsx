@@ -300,7 +300,6 @@ describe('running a task by hand', () => {
     fireEvent.keyDown(await screen.findByRole('button', { name: 'Run a task' }), { key: 'Enter' });
     const menu = await screen.findByRole('menu');
     await waitFor(() => expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
-      'Learn from new sessions nowLast ran today at 14:00',
       'Update the code map nowLast ran today at 12:30',
       `Learn from the project’s code${TASK_DESCRIPTIONS.find((task) => task.task === 'vault-seed')!.description}`,
     ]));
@@ -333,8 +332,8 @@ describe('running a task by hand', () => {
     let answer: (value: Response) => void = () => undefined;
     const { sent } = server(routes({ dispatch: () => new Promise<Response>((resolve) => { answer = resolve; }) as unknown as Response }));
     mount(`/p/${P}/work`);
-    const dialog = await startFromMenu(/Learn from new sessions now/);
-    const confirm = within(dialog).getByRole('button', { name: 'Learn now' });
+    const dialog = await startFromMenu(/Update the code map now/);
+    const confirm = within(dialog).getByRole('button', { name: 'Update the code map' });
     // Two clicks in one tick, before the page can render the pending state.
     confirm.click();
     confirm.click();
@@ -348,11 +347,11 @@ describe('running a task by hand', () => {
   it('lets an admin start a task fresh', async () => {
     const { sent } = server(routes());
     mount(`/p/${P}/work`);
-    const dialog = await startFromMenu(/Learn from new sessions now/);
-    expect(dialog.querySelector('[data-spend]')!.textContent).toBe('This spends model tokens. This week’s learning runs each used 18K to 30K tokens, about $0.50 to $0.96 by the agent’s estimate.');
+    const dialog = await startFromMenu(/Update the code map now/);
+    expect(dialog.querySelector('[data-spend]')!.textContent).toBe('This spends model tokens. This week’s updates each used 500K to 2 million tokens, about $1.00 to $2.30 by the agent’s estimate.');
     fireEvent.click(within(dialog).getByRole('switch', { name: 'Start fresh' }));
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Learn now' }));
-    await waitFor(() => expect(sent).toEqual([{ path: '/api/harness/dispatch', body: { projectId: P, task: 'extract-curate', fresh: true } }]));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update the code map' }));
+    await waitFor(() => expect(sent).toEqual([{ path: '/api/harness/dispatch', body: { projectId: P, task: 'canopy-map', fresh: true } }]));
   });
 
   it('has one way to start the map: the menu, not a button on its card; and says when nothing had changed', async () => {
@@ -369,12 +368,12 @@ describe('running a task by hand', () => {
 
   it('says when a member’s day of a task is spent, and when they can start it again', async () => {
     const resetsAt = NOW + 2.5 * HOUR;
-    server(routes({ who: MEMBER, dispatch: () => Response.json({ error: 'daily_limit', task: 'extract-curate', perDay: 4, resetsAt }, { status: 429, headers: { 'retry-after': '9000' } }) }));
+    server(routes({ who: MEMBER, dispatch: () => Response.json({ error: 'daily_limit', task: 'canopy-map', perDay: 4, resetsAt }, { status: 429, headers: { 'retry-after': '9000' } }) }));
     mount(`/p/${P}/work`);
-    const dialog = await startFromMenu(/Learn from new sessions now/);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Learn now' }));
+    const dialog = await startFromMenu(/Update the code map now/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update the code map' }));
     expect((await within(dialog).findByRole('alert')).textContent).toBe('You’ve started this task 4 times today; you can again at 18:30.');
-    expect(within(dialog).getByRole('button', { name: 'Learn now' }).hasAttribute('disabled')).toBe(true);
+    expect(within(dialog).getByRole('button', { name: 'Update the code map' }).hasAttribute('disabled')).toBe(true);
     expect([
       dailyLimitWords({ perDay: 1, resetsAt: NOW + 20 * HOUR }, NOW),
       dailyLimitWords({ perDay: 0, resetsAt: null }, NOW),
@@ -382,29 +381,29 @@ describe('running a task by hand', () => {
   });
 
   it('says which capability is switched off, pointing an admin at Project settings and telling a member who can turn it on', async () => {
-    const off = () => Response.json({ error: 'capability_off', capability: 'vault_evolution', message: 'this task is turned off for the project' }, { status: 409 });
+    const off = () => Response.json({ error: 'capability_off', capability: 'canopy', message: 'this task is turned off for the project' }, { status: 409 });
     server(routes({ dispatch: off }));
     mount(`/p/${P}/work`);
-    let dialog = await startFromMenu(/Learn from new sessions now/);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Learn now' }));
+    let dialog = await startFromMenu(/Update the code map now/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update the code map' }));
     const said = await within(dialog).findByRole('alert');
-    expect(said.textContent).toContain('Learning is switched off for this project.');
+    expect(said.textContent).toContain('The code map is switched off for this project.');
     expect(within(said).getByRole('link', { name: 'Turn it on in Project settings →' }).getAttribute('href')).toBe(`/p/${P}/settings#capabilities`);
-    expect(within(dialog).queryByRole('button', { name: 'Learn now' })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Update the code map' })).toBeNull();
     cleanup();
     client.clear();
     // Known ahead: the menu says so, and the confirmation says it in place of starting anything.
-    const { sent } = server(routes({ who: MEMBER, capabilities: { vault_evolution: false, canopy: true } }));
+    const { sent } = server(routes({ who: MEMBER, capabilities: { vault_evolution: true, canopy: false } }));
     mount(`/p/${P}/work`);
     fireEvent.keyDown(await screen.findByRole('button', { name: 'Run a task' }), { key: 'Enter' });
     const menu = await screen.findByRole('menu');
-    await waitFor(() => expect(within(menu).getAllByRole('menuitem')[0]!.textContent).toBe('Learn from new sessions nowLearning is switched off for this project.'));
+    await waitFor(() => expect(within(menu).getAllByRole('menuitem')[0]!.textContent).toBe('Update the code map nowThe code map is switched off for this project.'));
     fireEvent.click(within(menu).getAllByRole('menuitem')[0]!);
     dialog = await screen.findByRole('dialog');
     const offLine = dialog.querySelector('[data-capability-off]') as HTMLElement;
-    expect(offLine.textContent).toBe('Learning is switched off for this project.An admin can turn it on in the project’s settings.');
+    expect(offLine.textContent).toBe('The code map is switched off for this project.An admin can turn it on in the project’s settings.');
     expect(within(dialog).queryByRole('link')).toBeNull();
-    expect(within(dialog).queryByRole('button', { name: 'Learn now' })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Update the code map' })).toBeNull();
     expect(sent).toEqual([]);
   });
 
@@ -468,11 +467,11 @@ describe('running a task by hand', () => {
     expect(within(dialog).getByRole('button', { name: 'Update the code map' }).hasAttribute('disabled')).toBe(false);
     cleanup();
     client.clear();
-    server(routes({ start: { executions: [], heldBy: 'worker', workers: 0, readiness: { condition: 'has-unprocessed-prompts', met: true } } }));
+    server(routes({ start: { executions: [], heldBy: 'worker', workers: 0, readiness: { condition: 'has-capture-since-map', met: true } } }));
     mount(`/p/${P}/work`);
-    const again = await startFromMenu(/Learn from new sessions now/);
+    const again = await startFromMenu(/Update the code map now/);
     await waitFor(() => expect(again.querySelector('[data-run-held]')!.textContent).toContain('No machine that runs Myco’s tasks has checked in lately, so it would wait until one does.'));
-    expect(again.querySelector('[data-readiness]')!.textContent).toBe('There are new sessions to learn from.');
+    expect(again.querySelector('[data-readiness]')!.textContent).toBe('New sessions have arrived since the code map was last updated.');
   });
 
   it('lists exactly the tasks the server says a person may start, in the server\'s words', async () => {
@@ -491,7 +490,7 @@ describe('running a task by hand', () => {
       { harness: 'codex', tier: 'default', model: 'gpt-6-sol', effort: 'medium', workers: [lin] },
     ] } }));
     mount(`/p/${P}/work`);
-    const dialog = await startFromMenu(/Learn from new sessions now/);
+    const dialog = await startFromMenu(/Update the code map now/);
     const line = await waitFor(() => { const found = dialog.querySelector('[data-run-choice]'); if (found === null) throw new Error('not yet'); return found as HTMLElement; });
     expect(line.textContent).toBe('At its default tier, it will run on whichever machine is free first: Claude Code with Sonnet at medium effort on Ada’s studio Mac, or Codex with gpt-6-sol at medium effort on Lin’s machine. Recent ones took 18 to 30 minutes.'.replace(' Recent ones took 18 to 30 minutes.', line.textContent!.slice(line.textContent!.indexOf('machine.') + 'machine.'.length)));
     expect(line.textContent).not.toContain('first free machine');
@@ -503,16 +502,16 @@ describe('running a task by hand', () => {
     const resetsAt = NOW + 2.5 * HOUR;
     const { sent } = server(routes({ who: MEMBER, start: { allowance: { perDay: 2, used: 2, resetsAt } } }));
     mount(`/p/${P}/work`);
-    let dialog = await startFromMenu(/Learn from new sessions now/);
+    let dialog = await startFromMenu(/Update the code map now/);
     await waitFor(() => expect(dialog.querySelector('[data-allowance="spent"]')!.textContent).toBe('You’ve started this task twice today; you can again at 18:30.'));
-    expect(within(dialog).getByRole('button', { name: 'Learn now' }).hasAttribute('disabled')).toBe(true);
+    expect(within(dialog).getByRole('button', { name: 'Update the code map' }).hasAttribute('disabled')).toBe(true);
     cleanup();
     client.clear();
     server(routes({ who: MEMBER, start: { allowance: { perDay: 0, used: 0, resetsAt: null } } }));
     mount(`/p/${P}/work`);
-    dialog = await startFromMenu(/Learn from new sessions now/);
+    dialog = await startFromMenu(/Update the code map now/);
     await waitFor(() => expect(dialog.querySelector('[data-allowance="spent"]')!.textContent).toBe('Only an admin can start this task on this server.'));
-    expect(within(dialog).getByRole('button', { name: 'Learn now' }).hasAttribute('disabled')).toBe(true);
+    expect(within(dialog).getByRole('button', { name: 'Update the code map' }).hasAttribute('disabled')).toBe(true);
     expect(sent).toEqual([]);
   });
 
@@ -963,12 +962,12 @@ it('uses the registry description when confirming a task', async () => {
 
 it('words every dispatch refusal and makes settled refusals final', () => {
   const expected: Record<DispatchRefusal, string> = {
+    not_landed: 'This task is not available yet.',
     repository_missing: 'The code map and other code tasks need this project’s repository before they can run.',
     harness_unavailable: 'Myco can’t run this task here. An admin can check its setup.',
     unknown_task: 'This task isn’t available here. Refresh the page to see the available tasks.',
     unknown_project: 'This project is no longer available here. Choose another project.',
     no_instruction: 'This task has no instructions yet. An admin can check its setup.',
-    not_landed: 'This task is not available yet.',
     no_provider: 'Search needs to be set up before this task can run. An admin can do that in Settings.',
     capability_off: 'This task is turned off for the project. An admin can turn it on in Project settings.',
   };
@@ -977,6 +976,10 @@ it('words every dispatch refusal and makes settled refusals final', () => {
   for (const [code, words] of Object.entries(expected)) {
     expect(refusalOf(new ApiError(400, { error: code }), NOW)).toEqual({ words, capability: null, final: true });
   }
+  expect(refusalOf(new ApiError(400,{error:'not_landed',message:'Learning resumes with whole-session reading'}),NOW,'extract-curate'))
+    .toEqual({words:'Learning resumes with whole-session reading',capability:null,final:true});
+  expect(refusalOf(new ApiError(400,{error:'not_landed',message:'no machine can run that task yet'}),NOW,'embedding-reconcile'))
+    .toEqual({words:'This task is not available yet.',capability:null,final:true});
   expect(refusalOf(new ApiError(400, { error: 'constructor', message: 'Connect the source first.' }), NOW)).toEqual({
     words: 'Connect the source first.', capability: null, final: true,
   });

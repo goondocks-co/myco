@@ -25,7 +25,7 @@ it('lease renewal returns its committed expiry without a later fallible read', a
     const issued = await issueMemberToken(f.db, { memberId: ACTOR, machineId: 'worker-machine' }, now);
     f.sqlite.run("INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,?)", [now]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context,instruction)
-      VALUES ('proj_1','renewal-run','myco-agent','extract-curate','queued',?,'worker',?,'{}','do it')`, [now, JSON.stringify({ serverUrl: 'https://s', actor: ACTOR, timeoutSeconds: 300 })]);
+      VALUES ('proj_1','renewal-run','myco-agent','title-summary','queued',?,'worker',?,'{}','do it')`, [now, JSON.stringify({ params: { session_id: 'fixture-session', mode: 'claim' }, serverUrl: 'https://s', actor: ACTOR, timeoutSeconds: 300 })]);
     const request = (path: string, body: unknown) => worker.fetch(new Request(`https://s/worker/${path}`, { method: 'POST', headers: memberHeaders(issued.token), body: JSON.stringify(body) }), f.env);
     expect(await (await request('claim', { harnesses: [offeredHarness('claude-code')] })).json()).toMatchObject({ claimed: true });
     renewing = true;
@@ -60,7 +60,7 @@ for (const boundary of ['claim contact', 'claim input', 'lease contact', 'end cr
         const issued = await issueMemberToken(f.db, { memberId: ACTOR, machineId: 'worker-machine' }, now);
         f.sqlite.run("INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,?)", [now]);
         f.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context,instruction)
-          VALUES ('proj_1','completion-run','myco-agent','extract-curate','queued',?,'worker',?,'{}','do it')`, [now, JSON.stringify({ serverUrl: 'https://s', actor: ACTOR, timeoutSeconds: 300 })]);
+          VALUES ('proj_1','completion-run','myco-agent','title-summary','queued',?,'worker',?,'{}','do it')`, [now, JSON.stringify({ params: { session_id: 'fixture-session', mode: 'claim' }, serverUrl: 'https://s', actor: ACTOR, timeoutSeconds: 300 })]);
         const request = (path: string, body: unknown) => worker.fetch(new Request(`https://s/worker/${path}`, { method: 'POST', headers: memberHeaders(issued.token), body: JSON.stringify(body) }), f.env);
         const claimBody = { harnesses: [offeredHarness('claude-code')] };
         if (boundary.startsWith('lease') || boundary.startsWith('end')) {
@@ -112,7 +112,7 @@ for (const revoke of [false, true]) {
       const issued = await issueMemberToken(f.db, { memberId: ACTOR, machineId: 'worker-machine' }, now);
       f.sqlite.run("INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,?)", [now]);
       f.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context,instruction)
-        VALUES ('proj_1','lost-run','myco-agent','extract-curate','queued',?,'worker',?,'{}','do it')`, [now, JSON.stringify({ serverUrl: 'https://s', actor: ACTOR, timeoutSeconds: 300 })]);
+        VALUES ('proj_1','lost-run','myco-agent','title-summary','queued',?,'worker',?,'{}','do it')`, [now, JSON.stringify({ params: { session_id: 'fixture-session', mode: 'claim' }, serverUrl: 'https://s', actor: ACTOR, timeoutSeconds: 300 })]);
       const credentials = f.sqlite.query('SELECT * FROM member_credentials ORDER BY rowid').all();
       armed = true;
       const response = await worker.fetch(new Request('https://s/worker/claim', { method: 'POST', headers: memberHeaders(issued.token), body: JSON.stringify({ harnesses: [offeredHarness('claude-code')] }) }), f.env);

@@ -41,8 +41,8 @@ async function rig() {
   const other = await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm2' }, NOW);
   const queue = (id: string) => e.sqlite.run(
     `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
-     VALUES ('proj_1', ?, 'myco-agent', 'extract-curate', 'queued', ?, 'worker', ?, ?, 'read the prompts')`,
-    [id, NOW, JSON.stringify({ serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
+     VALUES ('proj_1', ?, 'myco-agent', 'title-summary', 'queued', ?, 'worker', ?, ?, 'read the prompts')`,
+    [id, NOW, JSON.stringify({ params: { session_id: 'fixture-session', mode: 'claim' }, serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
   );
   const claim = async (tokenId: string, machineId: string, now: number) => {
     const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(tokenId, machineId), harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });

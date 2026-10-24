@@ -1,0 +1,1029 @@
+import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
+import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
+import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '@myco-server-worker/constants.js';
+import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS, isReasoningTier, modelRefusal, effortRefusal, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
+import { admissionForTask, OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
+import { TASK_SCHEDULE } from './pre-pause-schedule.js';
+import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
+import { EMBEDDING_CATALOGUE, isEmbeddingProvider, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
+import {
+  EMBEDDING_SELECTION_LEAVES, embeddingEndpointRefusal, heldPartition, resolveEmbedding, selectionChangeRefusal,
+  type EmbeddingSelection, type EmbeddingSelectionLeaf, type StoredEmbedding,
+} from '@myco-server-worker/core/embedding/policy.js';
+import { SWITCH_STANDS_SQL, readSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
+
+/**
+ * Deployment Settings: one operation every write goes through.
+ *
+ * 1.4 resolved settings across four tiers; 2.0 keeps two, and the server tier is
+ * this one. Every write admits the leaf, authorizes the actor, checks the
+ * leaf's own rule, persists, records its actor, and re-arms the schedule that
+ * may have moved — in that order, in one place.
+ *
+ * The order matters more than the steps. A write that persists before it
+ * authorizes has already happened when it is refused; one that checks the
+ * leaf's rule before authorizing answers a caller it would refuse anyway; one
+ * that re-arms before it persists arms against a value the store does not hold; and one that skips the actor leaves an audit
+ * trail that cannot answer who changed what. Splitting
+ * these across call sites is how three of the four eventually go missing on one
+ * path and nobody notices, which is why the gate holds every write to this module.
+ */
+
+/** A capability the Deployment may admit a Project to. */
+export const PROJECT_CAPABILITIES = ['cortex', 'canopy', 'vault_evolution'] as const;
+export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
+
+/**
+ * The rule a leaf's value satisfies at write.
+ *
+ * Declarative data rather than a validator function: a gate reads it, and the
+ * settings surface reports a stored value that breaks it as invalid, with its
+ * remedy, rather than acting on it. A consumer reads a live leaf through
+ * `settingTexts`, which hands it only a value that holds its rule.
+ *
+ * `boolean` means true or false. `integer` with `nullable` also takes null; a declared `default` applies
+ * only when no usable stored value exists. `agent` names an agent a worker can run,
+ * or null for none; `agent-list` names each such agent once. `pattern-list`
+ * is a list of distinct non-empty path patterns. `embedding` is one part of the
+ * embedding selection, judged with the other two parts and the target
+ * (`core/embedding/policy.ts`).
+ *
+ * `markdown` means text: a string, no ASCII control character but newline and
+ * tab, within `maxBytes` of UTF-8.
+ *
+ * `task-overrides` means an object of per-task overrides whose schedule
+ * counts, where one is given, are whole numbers of 0 or more: a count is bound
+ * into SQL as a row limit, and a fraction there refuses the statement.
+ */
+export type LeafSpec =
+  | Record<string, never>
+  | { readonly type: 'boolean' }
+  | { readonly type: 'integer'; readonly min: number; readonly max: number; readonly nullable?: true; readonly default?: number | null }
+  | { readonly type: 'agent' }
+  | { readonly type: 'agent-list' }
+  | { readonly type: 'pattern-list'; readonly maxItems: number; readonly maxChars: number }
+  | { readonly type: 'embedding'; readonly leaf: EmbeddingSelectionLeaf }
+  | { readonly type: 'markdown'; readonly maxBytes: number }
+  | { readonly type: 'task-overrides' }
+  | { readonly type: 'profile-model'; readonly harness: keyof typeof PROFILE_HARNESSES }
+  | { readonly type: 'profile-effort'; readonly harness: keyof typeof PROFILE_HARNESSES }
+  | { readonly type: 'credential-source' }
+  /**
+   * A list of paths, without control characters: plan folders, each absolute, `~/`, or relative to wherever it is
+   * resolved (`planFolderRefusal`); or, with `folders: 'capture'`, capture folders (`captureFolderRefusal`).
+   */
+  | { readonly type: 'path-list'; readonly maxItems: number; readonly maxChars: number; readonly folders?: 'capture' }
+  /** Repository keys, each naming the project it connects to or `''` for none chosen: what a machine may join. */
+  | { readonly type: 'root-map'; readonly maxItems: number };
+
+const BOOLEAN_SPEC: LeafSpec = { type: 'boolean' };
+/** A dispatch limit: a whole number of runs, or null for none. */
+const LIMIT_SPEC: LeafSpec = { type: 'integer', min: 1, max: 10_000, nullable: true };
+
+/**
+ * The leaves this tier owns, from §7.8 of the architecture ledger.
+ *
+ * Held here rather than derived from the member's schema: the member package is
+ * not a dependency of the server, and a leaf reaching the Deployment tier is a
+ * decision the ledger records rather than something the shape of a config file
+ * implies. A meta gate holds this list against the ledger so the two cannot drift.
+ */
+export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
+  'agent.cold_project_threshold_days': { type: 'integer', min: 0, max: 365 },
+  'agent.limits.concurrent_runs': LIMIT_SPEC,
+  'agent.limits.task_concurrent_runs': { ...LIMIT_SPEC, default: 2 },
+  'agent.limits.task_runs_per_hour': LIMIT_SPEC,
+  ...Object.fromEntries(CONFIGURABLE_PROFILE_HARNESSES.flatMap((harness) => [
+    ...REASONING_TIERS.map((tier) => [`agent.reasoning_map.${harness}.${tier}`, { type: 'profile-model', harness }]),
+    ...REASONING_TIERS.map((tier) => [`agent.effort_map.${harness}.${tier}`, { type: 'profile-effort', harness }]),
+    [`agent.harnesses.${harness}.credential`, { type: 'credential-source' }],
+  ])),
+  'agent.run_retention_days': { type: 'integer', min: 1, max: 365 },
+  'agent.scheduled_tasks_active_window_days': { type: 'integer', min: 0, max: 365 },
+  'agent.scheduled_tasks_enabled': BOOLEAN_SPEC,
+  'agent.tasks': { type: 'task-overrides' },
+  'agent.titling_idle_close_minutes': { type: 'integer', min: 5, max: 10_080 },
+  'backup.auto_interval_hours': { type: 'integer', min: 1, max: 720 },
+  // #1547: whether a member's machine may create a project for a repository it meets that no project holds. Absent
+  // means on; an admin turns it off to keep project creation with admins.
+  'capture.auto_create_projects': BOOLEAN_SPEC,
+  'backup.recovery.keep_stagings': { type: 'integer', min: 1, max: 30 },
+  'backup.retention.keep_daily': { type: 'integer', min: 1, max: 365 },
+  'backup.retention.keep_weekly': { type: 'integer', min: 0, max: 52 },
+  'cortex.canopy.exclude.patterns': { type: 'pattern-list', maxItems: 100, maxChars: 256 },
+  'cortex.canopy.refresh.background_enabled': BOOLEAN_SPEC,
+  'cortex.canopy.refresh.background_period_minutes': { type: 'integer', min: 1, max: 10_080 },
+  'cortex.instructions.inject_on_session_start': BOOLEAN_SPEC,
+  'cortex.instructions.inject_on_subagent_start': BOOLEAN_SPEC,
+  'cortex.plans.inject_intent_nudge_on_prompt_submit': BOOLEAN_SPEC,
+  'cortex.spores.inject_on_prompt_submit': BOOLEAN_SPEC,
+  'cortex.spores.max_per_prompt': { type: 'integer', min: 0, max: 10 },
+  'embedding.base_url': { type: 'embedding', leaf: 'embedding.base_url' },
+  'embedding.model': { type: 'embedding', leaf: 'embedding.model' },
+  'embedding.prevent_deep_sleep': BOOLEAN_SPEC,
+  'embedding.provider': { type: 'embedding', leaf: 'embedding.provider' },
+  // #1148 — bounded import. `enabled` is also an admission on the write path;
+  // the window and the per-harness cap are applied where a whole pass is
+  // visible, which one event is not.
+  'import.enabled': BOOLEAN_SPEC,
+  'import.max_sessions_per_harness': { type: 'integer', min: 1, max: IMPORT_MAX_SESSIONS_MAX },
+  'import.window_days': { type: 'integer', min: 1, max: IMPORT_WINDOW_DAYS_MAX },
+  'instructions.template': { type: 'markdown', maxBytes: INSTRUCTIONS_TEMPLATE_MAX_BYTES },
+  'maintenance.auto_integrity_check': BOOLEAN_SPEC,
+  'maintenance.auto_integrity_check_interval_hours': { type: 'integer', min: 1, max: 8760 },
+  'maintenance.auto_optimize': BOOLEAN_SPEC,
+  'maintenance.auto_optimize_interval_hours': { type: 'integer', min: 1, max: 720 },
+  'release_provenance.reconcile_interval_minutes': { type: 'integer', min: 1, max: 1440 },
+  // An explicit legacy zero holds raw archival; finite writes use the canonical leaf.
+  'retention.transcripts': { type: 'integer', min: 0, max: 3650 },
+  'retention.raw_days': { type: 'integer', min: 1, max: 3650 },
+  // #1151 — worker mode: the harness a worker prefers and the order it falls back through.
+  'worker.harness': { type: 'agent' },
+  'worker.harness_fallback': { type: 'agent-list' },
+};
+
+/** No retired Deployment leaf remains in the active contract. */
+export const RETIRED_LEAVES: ReadonlySet<string> = new Set();
+
+/** Secret slots the Deployment still stores that nothing reads. */
+export const RETIRED_SECRET_SLOTS: ReadonlySet<string> = new Set(['github']);
+
+/** The leaves this tier owns. Derived from the specs, so a leaf cannot be named in one and missing from the other. */
+export const DEPLOYMENT_LEAVES: readonly string[] = Object.keys(DEPLOYMENT_LEAF_SPECS);
+
+/** The built-in value of one execution profile leaf on this Deployment. */
+export function executionProfileLeafDefault(leaf: string): { present: boolean; value: string | null } | null {
+  const parts = leaf.split('.');
+  const [scope, map, harness, tier] = parts;
+  if (scope !== 'agent') return null;
+  if (parts.length === 4 && (map === 'reasoning_map' || map === 'effort_map') && harness !== undefined && isReasoningTier(tier)
+    && CONFIGURABLE_PROFILE_HARNESSES.includes(harness)) {
+    const profile = PROFILE_HARNESSES[harness]!;
+    const value = map === 'reasoning_map' ? profile.models[tier] : profile.efforts[tier];
+    return { present: value !== null, value };
+  }
+  if (parts.length === 4 && map === 'harnesses' && harness !== undefined && tier === 'credential' && CONFIGURABLE_PROFILE_HARNESSES.includes(harness)) {
+    return { present: true, value: 'worker-login' };
+  }
+  return null;
+}
+
+const DEPLOYMENT_LEAF_SET = new Set(DEPLOYMENT_LEAVES);
+
+/** Any ASCII control character but newline and tab; a stored setting is text a person edits, not a control stream. */
+const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
+const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/** The fields each retained task's consumers read. */
+const TASK_FIELDS = ['harness', 'model', 'reasoningLevel', 'schedule'] as const;
+const SCHEDULE_FIELDS = ['enabled', 'intervalSeconds', 'runIn', 'preCondition', 'accelerator', 'maxRunsPerDay', 'rampRunsPerDay', 'memberRunsPerDay', 'reservedRunsPerDay', 'runWhenCold', 'overlap'] as const;
+const consumedTaskFields = (task: string): readonly string[] => {
+  if (!(OUTCOME_TASKS as readonly string[]).includes(task)) return [];
+  return task === TITLING_TASK || TASK_SCHEDULE[task] != null ? TASK_FIELDS : TASK_FIELDS.filter((field) => field !== 'schedule');
+};
+
+/** Keep every live task field the Deployment can use, including values that hold its work pending correction. */
+export function cleanTaskDocument(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  return Object.fromEntries(Object.entries(value).flatMap(([task, entry]) => {
+    if (!(RETAINED_TASKS as readonly string[]).includes(task)) return [];
+    if (!isRecord(entry)) return [[task, entry]];
+    const fields = consumedTaskFields(task);
+    const kept = Object.fromEntries(Object.entries(entry).flatMap(([field, held]) => {
+      if (!fields.includes(field)) return [];
+      if (field === 'harness' && (typeof held !== 'string' || !Object.hasOwn(PROFILE_HARNESSES, held))) return [];
+      if (field === 'model' && (typeof entry.harness !== 'string' || !Object.hasOwn(PROFILE_HARNESSES, entry.harness))) return [];
+      if (field === 'schedule' && isRecord(held)) {
+        return [[field, Object.fromEntries(Object.entries(held).filter(([key]) => (SCHEDULE_FIELDS as readonly string[]).includes(key)))]];
+      }
+      return [[field, held]];
+    }));
+    return Object.keys(kept).length === 0 ? [] : [[task, kept]];
+  }));
+}
+
+/** Stored task fields that apply, and the named reasons other fields do not. */
+export function taskOverridesResolution(value: unknown): { effective: unknown; reasons: string[]; invalid: boolean } {
+  if (!isRecord(value)) return { effective: null, reasons: ['Expected an object of task overrides. Worker tasks wait for a valid object; scheduling uses the declared task defaults.'], invalid: true };
+  const effective: Record<string, unknown> = {};
+  const reasons: string[] = [];
+  let invalid = false;
+  for (const [task, entry] of Object.entries(value)) {
+    if (!(RETAINED_TASKS as readonly string[]).includes(task)) { reasons.push(`${task}: this task no longer exists; its stored override is not used.`); continue; }
+    if (!isRecord(entry)) { effective[task] = null; invalid = true; reasons.push(`${task}: the stored entry is not an object; this task waits for a valid override.`); continue; }
+    const applied: Record<string, unknown> = {};
+    const fields = consumedTaskFields(task);
+    for (const [field, held] of Object.entries(entry)) {
+      const path = `${task}.${field}`;
+      if (!fields.includes(field)) { reasons.push(`${path}: no consumer uses this field; it does not apply.`); continue; }
+      if (field === 'harness' && (typeof held !== 'string' || !Object.hasOwn(PROFILE_HARNESSES, held))) {
+        applied[field] = null; invalid = true; reasons.push(`${path}: the stored agent${typeof held === 'string' ? ` "${held}"` : ''} is not supported; the worker cannot choose it.`); continue;
+      }
+      if (field === 'reasoningLevel' && !isReasoningTier(held)) {
+        applied[field] = null; invalid = true; reasons.push(`${path}: this tier is invalid; the task waits until it is corrected.`); continue;
+      }
+      if (field === 'model' && task !== 'container-smoke' && (typeof entry.harness !== 'string' || modelRefusal(entry.harness, held) !== null)) {
+        applied[field] = null; invalid = true; reasons.push(`${path}: this model cannot be applied by the stored agent; the task waits for a supported execution profile.`); continue;
+      }
+      if (field === 'schedule') {
+        if (!isRecord(held)) { invalid = true; reasons.push(`${path}: not a schedule object; the declared schedule applies.`); continue; }
+        const schedule: Record<string, unknown> = {};
+        for (const [key, setting] of Object.entries(held)) {
+          if (!(SCHEDULE_FIELDS as readonly string[]).includes(key)) { reasons.push(`${path}.${key}: no scheduling consumer uses this field.`); continue; }
+          schedule[key] = setting;
+        }
+        applied[field] = schedule;
+      } else applied[field] = held;
+    }
+    if (Object.keys(applied).length > 0) effective[task] = applied;
+  }
+  return { effective, reasons, invalid };
+}
+
+/** The complete stored document remains editable until the user clears or repairs it. */
+export function taskOverridesMetadata(value: unknown): { editableValue: unknown; retiredValue: Record<string, unknown> } {
+  return { editableValue: value, retiredValue: {} };
+}
+
+/** Retired preferences survive replacement of the live overrides document. */
+function preserveRetiredTaskOverrides(value: unknown, previous: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const retiredValue = isRecord(previous) ? Object.fromEntries(Object.entries(previous).flatMap(([task, entry]) =>
+    task === 'container-smoke' ? [[task, entry]] : isRecord(entry) && Object.hasOwn(entry, 'provider') ? [[task, { provider: entry.provider }]] : [])) : {};
+  const merged = { ...value };
+  for (const [task, archived] of Object.entries(retiredValue)) {
+    merged[task] = task === 'container-smoke' ? archived
+      : { ...(isRecord(merged[task]) ? merged[task] : {}), ...(isRecord(archived) ? archived : {}) };
+  }
+  return merged;
+}
+
+/**
+ * The schedule counts a task override carries, each a whole number of 0 or more when given: the clock's own daily
+ * ceiling, its initial-history ramp ceiling, and a member's daily allowance for starts by hand.
+ */
+export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay', 'rampRunsPerDay', 'memberRunsPerDay'] as const;
+
+/** What a changed per-task override violates; unchanged stored fields remain available for a separate repair. */
+function taskOverridesViolation(value: unknown, previous?: unknown): string | null {
+  if (!isRecord(value)) return 'expected an object of task overrides';
+  const prior = isRecord(previous) ? previous : {};
+  for (const [task, override] of Object.entries(value)) {
+    const before = prior[task];
+    const unchanged = JSON.stringify(before) === JSON.stringify(override);
+    if (unchanged) continue;
+    if (!(RETAINED_TASKS as readonly string[]).includes(task)) return `${task}: unknown task`;
+    if (isRecord(override)) {
+      const oldEntry = isRecord(before) ? before : {};
+      for (const field of Object.keys(override)) {
+        if (!consumedTaskFields(task).includes(field) && JSON.stringify(override[field]) !== JSON.stringify(oldEntry[field])) return `${task}.${field}: field is not used by this task`;
+      }
+      if (override.harness !== undefined && override.harness !== oldEntry.harness && (typeof override.harness !== 'string' || !Object.hasOwn(PROFILE_HARNESSES, override.harness))) return `${task} agent choice: expected a supported agent`;
+    }
+    if (previous !== undefined && task === 'container-smoke') return `${task}: retired task overrides are read-only`;
+    if (previous !== undefined && isRecord(override) && Object.hasOwn(override, 'provider') && JSON.stringify(override.provider) !== JSON.stringify(isRecord(before) ? before.provider : undefined)) return `${task}.provider: provider preferences are retired; choose an execution profile`;
+    if (override === before) continue;
+    if (!isRecord(override)) return `${task}: expected an object of task overrides`;
+    const old = isRecord(before) ? before : {};
+    const tier = override.reasoningLevel;
+    if (tier !== undefined && tier !== old.reasoningLevel && !(REASONING_TIERS as readonly unknown[]).includes(tier)) return `${task}.reasoningLevel: expected low, default, or high`;
+    if (override.model !== undefined && (override.model !== old.model || override.harness !== old.harness)) {
+      if (typeof override.harness !== 'string' || !Object.hasOwn(PROFILE_HARNESSES, override.harness)) {
+        return `${task}.model: a fixed model requires a supported agent in the same task override`;
+      }
+      const refusal = modelRefusal(override.harness as keyof typeof PROFILE_HARNESSES, override.model);
+      if (refusal !== null) return `${task}.model: ${refusal}`;
+    }
+    if (!isRecord(override.schedule)) continue;
+    const oldSchedule = isRecord(old.schedule) ? old.schedule : {};
+    for (const field of SCHEDULE_COUNT_FIELDS) {
+      const count = override.schedule[field];
+      if (count !== undefined && count !== oldSchedule[field] && !isScheduleCount(count)) return `${task}.schedule.${field}: expected a whole number of 0 or more`;
+    }
+  }
+  return null;
+}
+
+/** A schedule count: a whole number of 0 or more that SQL binds exactly. */
+export const isScheduleCount = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+
+function pathListViolation(spec: { maxItems: number; maxChars: number; folders?: 'capture' }, value: unknown): string | null {
+  const refusal = spec.folders === 'capture' ? captureFolderRefusal : planFolderRefusal;
+  if (!Array.isArray(value)) return 'expected a list of paths';
+  if (value.length > spec.maxItems) return `expected at most ${spec.maxItems} paths`;
+  for (const entry of value) {
+    if (typeof entry !== 'string' || entry.trim() === '') return 'expected each path to be non-empty text';
+    if (entry.length > spec.maxChars) return `expected each path to be at most ${spec.maxChars} characters`;
+    if (/[\u0000-\u001F\u007F]/.test(entry)) return 'expected each path without control characters';
+    const broad = refusal(entry);
+    if (broad !== null) return broad;
+  }
+  return new Set(value).size === value.length ? null : 'expected each path once';
+}
+
+/** What a list of worker agents violates: each an agent a machine can run, each once. */
+function agentListViolation(value: unknown): string | null {
+  if (!Array.isArray(value)) return 'expected a list of agents';
+  const unknown = value.filter((agent) => typeof agent !== 'string' || !Object.hasOwn(HARNESS_CREDENTIALS, agent));
+  if (unknown.length > 0) return `not an agent a machine can run: ${unknown.map(String).join(', ')}`;
+  return new Set(value).size === value.length ? null : 'expected each agent once';
+}
+
+/** What a list of path patterns violates: distinct non-empty patterns without control characters, within the bounds. */
+function patternListViolation(spec: { maxItems: number; maxChars: number }, value: unknown): string | null {
+  if (!Array.isArray(value)) return 'expected a list of path patterns';
+  if (value.length > spec.maxItems) return `expected at most ${spec.maxItems} patterns`;
+  for (const entry of value) {
+    if (typeof entry !== 'string' || entry.trim() === '') return 'expected each pattern to be non-empty text';
+    if (entry.length > spec.maxChars) return `expected each pattern to be at most ${spec.maxChars} characters`;
+    if (/[\u0000-\u001F\u007F]/.test(entry)) return 'expected each pattern without control characters';
+  }
+  return new Set(value).size === value.length ? null : 'expected each pattern once';
+}
+
+/** What one part of the embedding selection violates on its own; the parts are judged together at write. */
+function embeddingPartViolation(leaf: EmbeddingSelectionLeaf, value: unknown): string | null {
+  if (leaf === 'embedding.provider') return isEmbeddingProvider(value) ? null : 'expected an embedding provider';
+  if (leaf === 'embedding.base_url') return embeddingEndpointRefusal(value);
+  return typeof value === 'string' && value.trim() !== '' ? null : 'expected a model name';
+}
+
+/** A repository key as the member derives one: hex, of a fixed width. */
+export const ROOT_KEY = ROOT_KEY_PATTERN;
+/** A project id as every project carries one. */
+const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** What a root map violates: an object of repository keys, each naming a project or `''`, or null when it holds. */
+function rootMapViolation(spec: { maxItems: number }, value: unknown): string | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'expected an object of repository keys';
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > spec.maxItems) return `expected at most ${spec.maxItems} repositories`;
+  for (const [key, project] of entries) {
+    if (!ROOT_KEY.test(key)) return `${key} is not a repository key`;
+    if (typeof project !== 'string' || (project !== '' && !PROJECT_ID_SHAPE.test(project))) return `${key} names no project`;
+  }
+  return null;
+}
+
+/** What the value violates, or null when it satisfies the leaf's rule. */
+export function leafRuleViolation(spec: LeafSpec, value: unknown, previous?: unknown): string | null {
+  if (!('type' in spec)) return null;
+  if (spec.type === 'boolean') return typeof value === 'boolean' ? null : 'expected on or off';
+  if (spec.type === 'integer') {
+    if (value === null && spec.nullable === true) return null;
+    if (typeof value !== 'number' || !Number.isInteger(value)) return 'expected a whole number';
+    if (value < spec.min || value > spec.max) return `expected a whole number from ${spec.min} to ${spec.max}`;
+    return null;
+  }
+  if (spec.type === 'task-overrides') return taskOverridesViolation(value, previous);
+  if (spec.type === 'profile-model') return modelRefusal(spec.harness, value);
+  if (spec.type === 'profile-effort') return effortRefusal(spec.harness, value);
+  if (spec.type === 'credential-source') return value === 'deployment' || value === 'worker-login' ? null : 'choose the server login or worker login';
+  if (spec.type === 'path-list') return pathListViolation(spec, value);
+  if (spec.type === 'root-map') return rootMapViolation(spec, value);
+  if (spec.type === 'agent') return value === null || (typeof value === 'string' && Object.hasOwn(HARNESS_CREDENTIALS, value)) ? null : 'expected an agent a machine can run, or none';
+  if (spec.type === 'agent-list') return agentListViolation(value);
+  if (spec.type === 'pattern-list') return patternListViolation(spec, value);
+  if (spec.type === 'embedding') return embeddingPartViolation(spec.leaf, value);
+  if (typeof value !== 'string') return 'expected Markdown text';
+  if (CONTROL_CHARACTERS.test(value)) return 'expected Markdown text without control characters';
+  const bytes = new TextEncoder().encode(value).length;
+  return bytes > spec.maxBytes ? `expected at most ${spec.maxBytes} bytes, got ${bytes}` : null;
+}
+
+/** The Deployment's session-start instructions, empty where none is written. */
+export async function instructionsTemplate(db: RelationalStore): Promise<string> {
+  const raw = (await leafValues(db, [INSTRUCTIONS_TEMPLATE_LEAF])).get(INSTRUCTIONS_TEMPLATE_LEAF);
+  if (raw === undefined) return '';
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === 'string' ? parsed : '';
+  } catch {
+    return '';
+  }
+}
+
+/** The leaf carrying the text every session starts from. */
+export const INSTRUCTIONS_TEMPLATE_LEAF = 'instructions.template';
+
+/** Why a settings write did not apply. Each names a fault in the caller's own request; none is retryable. */
+export type SettingsRefusal =
+  | { reason: 'not_deployment_tier'; leaf: string }
+  | { reason: 'invalid_value'; leaf: string; detail: string }
+  | { reason: 'unauthorized'; leaf: string }
+  | { reason: 'retired'; leaf: string }
+  /** Another write changed the leaves this one is judged against before it landed; nothing is written. */
+  | { reason: 'conflict'; leaf: string }
+  | { reason: 'unknown_capability'; capability: string };
+
+/** A stored leaf: its value and who last wrote it. */
+export interface LeafRecord {
+  value: unknown;
+  updatedAt: number;
+  updatedBy: string;
+  malformed?: true;
+}
+
+export type SettingsResult = { applied: true } | { applied: false; refusal: SettingsRefusal };
+
+/**
+ * Whether a member may make this particular change.
+ *
+ * Membership is flat, so every change is admitted and the default answers true.
+ * The seam stays: a future guard on a sensitive change — re-authentication of
+ * the signed-in member, never a second secret — plugs in here, one place rather
+ * than a new branch at each caller.
+ */
+export type SettingsAuthorizer = (change: { leaf: string; value?: unknown; actor: string }) => Promise<boolean>;
+
+/** Re-arms whatever the change may have moved. Supplied by the caller so this module never decides what runs. */
+export type ScheduleRearm = (change: { leaf: string }) => Promise<void>;
+
+/** The embedding selection one write sets: a provider, and its model and endpoint, each left at its default when absent. */
+export interface EmbeddingChoice { provider: unknown; model?: unknown; endpoint?: unknown }
+
+export interface SettingsWriter {
+  /** Set one Deployment leaf. */
+  setLeaf(leaf: string, value: unknown, actor: string, nowMs: number): Promise<SettingsResult>;
+  /** Set the whole embedding selection at once, so a provider never meets a model or endpoint it does not offer. */
+  setEmbedding(choice: EmbeddingChoice, actor: string, nowMs: number): Promise<SettingsResult>;
+  /** Remove one configured leaf so its built-in value applies. */
+  resetLeaf(leaf: string, actor: string, nowMs?: number): Promise<SettingsResult>;
+  /** Clear task entries and fields that have no consumer, while preserving the current live document. */
+  repairTaskDocument(actor: string, nowMs: number): Promise<SettingsResult>;
+  /**
+   * Set one task's schedule switch in the task overrides document, keeping every other field. An absent task entry or
+   * schedule is created; a stored document, entry or schedule that is present and not an object is refused.
+   */
+  setTaskSwitch(task: string, enabled: boolean, actor: string, nowMs: number): Promise<SettingsResult>;
+  /** Change one task tier in the live task overrides document. */
+  setTaskTier(task: string, tier: ReasoningTier | null, actor: string, nowMs: number): Promise<SettingsResult>;
+  /** Admit or withdraw a Project's capability. */
+  setCapability(projectId: string, capability: string, enabled: boolean, actor: string, nowMs: number): Promise<SettingsResult>;
+  /** Every stored Deployment leaf. Absent leaves are not defaulted here; a reader layers these over its own defaults. */
+  leaves(): Promise<Record<string, LeafRecord>>;
+  /** Whether a live Project has this capability on; an absent row is on and an explicit zero is off. */
+  capabilityEnabled(projectId: string, capability: ProjectCapability): Promise<boolean>;
+  /** Every capability this Project is admitted to. */
+  capabilities(projectId: string): Promise<Record<ProjectCapability, boolean>>;
+  /** Stored admissions for capabilities outside the live set, for read-only inspection. */
+  retiredCapabilities(projectId: string): Promise<Record<string, boolean>>;
+}
+
+/**
+ * SQL over one leaf's stored text, for an admission that runs inside another
+ * module's batch.
+ *
+ * The settings store is the only module that names its own table, so a check
+ * elsewhere reads through this rather than spelling the query itself: one
+ * module knows how a leaf is stored, and every admission over a leaf asks it.
+ *
+ * `admission` holds while the leaf is absent or carries anything but `off`;
+ * `read` answers the row that carries it.
+ */
+export function leafOffChecks(leaf: string, off: string): { admission: { sql: string; params: string[] }; read: { sql: string; params: string[] } } {
+  return {
+    admission: { sql: `NOT EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = ? AND value = ?)`, params: [leaf, off] },
+    read: { sql: `SELECT 1 AS disabled FROM deployment_settings WHERE leaf = ? AND value = ?`, params: [leaf, off] },
+  };
+}
+
+/** A settings table read once, keyed by leaf. */
+type SettingsRows = Map<string, { value: string; updated_at: number; updated_by: string }>;
+
+/** Stores whose settings reads answer from one read made earlier. */
+const SNAPSHOTS = new WeakMap<RelationalStore, SettingsRows>();
+
+/**
+ * A view of `db` whose settings reads all answer from one read of the settings table, made now; every other
+ * statement goes to `db` itself. A request that resolves many policies reads the table once through it.
+ */
+export async function settingsSnapshot(db: RelationalStore): Promise<RelationalStore> {
+  if (SNAPSHOTS.has(db)) return db;
+  const { results } = await db.prepare(`SELECT leaf, value, updated_at, updated_by FROM deployment_settings`)
+    .all<{ leaf: string; value: string; updated_at: number; updated_by: string }>();
+  const view = new Proxy(db, { get: (target, key) => { const member = Reflect.get(target, key, target) as unknown; return typeof member === 'function' ? member.bind(target) : member; } });
+  SNAPSHOTS.set(view, new Map(results.map((row) => [row.leaf, row])));
+  return view;
+}
+
+/** A fresh policy view and its value/version predicate for an atomic consumer mutation. */
+export async function observedSettingsGuard(db:RelationalStore,leaves:readonly string[]):Promise<{
+  view:RelationalStore;sql:string;params:unknown[];
+}> {
+  const {results}=await db.prepare(`SELECT leaf,value,updated_at,updated_by FROM deployment_settings
+    WHERE leaf IN (${leaves.map(()=>'?').join(',')})`).bind(...leaves)
+    .all<{leaf:string;value:string;updated_at:number;updated_by:string}>();
+  const rows=new Map(results.map(row=>[row.leaf,row]));
+  const view=new Proxy(db,{get:(target,key)=>{
+    const member=Reflect.get(target,key,target) as unknown;
+    return typeof member==='function'?member.bind(target):member;
+  }});
+  SNAPSHOTS.set(view,rows);
+  return {view,sql:leaves.map(()=>`(SELECT value FROM deployment_settings WHERE leaf=?) IS ?
+    AND (SELECT updated_at FROM deployment_settings WHERE leaf=?) IS ?`).join(' AND '),
+    params:leaves.flatMap(leaf=>[leaf,rows.get(leaf)?.value??null,leaf,rows.get(leaf)?.updated_at??null])};
+}
+
+/** One stored leaf as a policy that judges its own stored values reads it: the value, and what its rule says of it. */
+export interface StoredSetting { value: unknown; violation: string | null }
+
+/**
+ * Each named leaf's stored value with its rule's verdict, for a policy that does not fall back to the default when the
+ * stored value is unusable: one that holds, clamps or keeps everything instead. A leaf never written is absent.
+ */
+export async function storedSettings(db: RelationalStore, leaves: readonly string[]): Promise<Map<string, StoredSetting>> {
+  const out = new Map<string, StoredSetting>();
+  for (const [leaf, text] of await leafValues(db, leaves)) {
+    let value: unknown;
+    try { value = JSON.parse(text); } catch (error) { if (!(error instanceof SyntaxError)) throw error; out.set(leaf, { value: text, violation: 'The stored value does not read' }); continue; }
+    const spec = DEPLOYMENT_LEAF_SPECS[leaf];
+    out.set(leaf, { value, violation: spec === undefined ? 'not a Deployment leaf' : leafRuleViolation(spec, value) });
+  }
+  return out;
+}
+
+/** The stored value of each named leaf, as the JSON text the settings surface wrote; a leaf never written is absent from the map. */
+export async function leafValues(db: RelationalStore, leaves: readonly string[]): Promise<Map<string, string>> {
+  if (leaves.length === 0) return new Map();
+  const snapshot = SNAPSHOTS.get(db);
+  if (snapshot !== undefined) return new Map(leaves.flatMap((leaf) => { const row = snapshot.get(leaf); return row === undefined ? [] : [[leaf, row.value] as const]; }));
+  const rows = await db
+    .prepare(`SELECT leaf, value FROM deployment_settings WHERE leaf IN (${leaves.map(() => '?').join(', ')})`)
+    .bind(...leaves)
+    .all<{ leaf: string; value: string }>();
+  return new Map(rows.results.map((r) => [r.leaf, r.value]));
+}
+
+/**
+ * Leaf rules whose consumer judges a stored value itself, entry by entry or together with sibling leaves, and reports
+ * what it cannot use: task overrides and execution profiles hold the task they name, and the embedding policy falls
+ * back to the target's default.
+ */
+const SELF_JUDGED: ReadonlySet<string> = new Set(['task-overrides', 'profile-model', 'profile-effort', 'credential-source', 'embedding']);
+
+/** Why a stored leaf's text is unusable, or null when it holds its rule. */
+export function storedLeafViolation(leaf: string, text: string): string | null {
+  const spec = DEPLOYMENT_LEAF_SPECS[leaf];
+  if (spec === undefined) return 'not a Deployment leaf';
+  let value: unknown;
+  try { value = JSON.parse(text); } catch (error) { if (error instanceof SyntaxError) return 'The stored value does not read'; throw error; }
+  return leafRuleViolation(spec, value);
+}
+
+/**
+ * The text of each named leaf a consumer may act on: a declared default where nothing usable is written,
+ * absent for a refused value with no declared default. Consumer defaults apply to absent values, and
+ * the settings surface reports the stored value as invalid. Task overrides, execution profiles and the embedding
+ * selection pass through whole: their consumers judge them.
+ */
+export async function settingTexts(db: RelationalStore, leaves: readonly string[]): Promise<Map<string, string>> {
+  const held = await leafValues(db, leaves);
+  for (const [leaf, text] of held) {
+    const spec = DEPLOYMENT_LEAF_SPECS[leaf];
+    if (spec !== undefined && 'type' in spec && SELF_JUDGED.has(spec.type)) continue;
+    if (storedLeafViolation(leaf, text) !== null) held.delete(leaf);
+  }
+  for (const leaf of leaves) {
+    const spec = DEPLOYMENT_LEAF_SPECS[leaf];
+    if (!held.has(leaf) && spec !== undefined && 'default' in spec) held.set(leaf, JSON.stringify(spec.default));
+  }
+  return held;
+}
+
+/** The stored embedding leaves, each parsed; a leaf whose stored text is not JSON reads as an object, which no part accepts. */
+export async function storedEmbedding(db: RelationalStore): Promise<StoredEmbedding> {
+  const held = await leafValues(db, EMBEDDING_SELECTION_LEAVES);
+  const stored: StoredEmbedding = {};
+  for (const leaf of EMBEDDING_SELECTION_LEAVES) {
+    const text = held.get(leaf);
+    if (text === undefined) continue;
+    try { stored[leaf] = JSON.parse(text); } catch (error) { if (!(error instanceof SyntaxError)) throw error; stored[leaf] = { malformed: text }; }
+  }
+  return stored;
+}
+
+/** The last reset instant of every leaf ever reset. */
+export async function leafResets(db: RelationalStore): Promise<Map<string, number>> {
+  const { results } = await db.prepare(`SELECT leaf, reset_at FROM deployment_setting_resets`).all<{ leaf: string; reset_at: number }>();
+  return new Map(results.map((row) => [row.leaf, row.reset_at]));
+}
+
+/** The models whose vectors the search index holds: every partition with a receipt not yet deleted. */
+export async function heldPartitions(db: RelationalStore) {
+  const { results } = await db.prepare(`SELECT DISTINCT model_key FROM embedding_receipts WHERE ready >= 0`).all<{ model_key: string }>();
+  return results.map((row) => heldPartition(row.model_key));
+}
+
+/** The stored embedding leaves as one write reads and conditions on them: each parsed, with the stamp of its last write. */
+async function embeddingRows(db: RelationalStore): Promise<{ stored: StoredEmbedding; stamps: Map<string, string> }> {
+  const { results } = await db.prepare(`SELECT leaf, value, ${REVISION_SQL} AS revision FROM deployment_settings WHERE leaf IN (${EMBEDDING_SELECTION_LEAVES.map(() => '?').join(', ')})`)
+    .bind(...EMBEDDING_SELECTION_LEAVES).all<{ leaf: EmbeddingSelectionLeaf; value: string; revision: string }>();
+  const stored: StoredEmbedding = {};
+  for (const row of results) {
+    try { stored[row.leaf] = JSON.parse(row.value); } catch (error) { if (!(error instanceof SyntaxError)) throw error; stored[row.leaf] = { malformed: row.value }; }
+  }
+  return { stored, stamps: new Map(results.map((row) => [row.leaf, row.revision])) };
+}
+
+/** A stored leaf's stamp, or `absent`, in SQL. Bound as: the leaf. */
+const REVISION_SQL = `COALESCE(write_id, updated_at || ':' || updated_by)`;
+const STAMP_SQL = `COALESCE((SELECT ${REVISION_SQL} FROM deployment_settings WHERE leaf = ?), 'absent')`;
+
+/** Why a candidate embedding selection, with `changes` the parts a write names, cannot be stored on the target; or what it resolves to. */
+function judgeEmbeddingCandidate(candidate: StoredEmbedding, changes: StoredEmbedding, target: DeploymentTarget, leaf: string): { refusal: SettingsRefusal } | { refusal: null; resolved: ReturnType<typeof resolveEmbedding> } {
+  const fixed = candidate['embedding.base_url'] !== undefined && changes['embedding.base_url'] !== undefined && isEmbeddingProvider(candidate['embedding.provider'])
+    && !EMBEDDING_CATALOGUE[candidate['embedding.provider']].endpoint.editable ? EMBEDDING_CATALOGUE[candidate['embedding.provider']] : null;
+  if (fixed !== null) {
+    return { refusal: { reason: 'invalid_value', leaf, detail: `${fixed.label} uses its own endpoint; choose ${EMBEDDING_CATALOGUE['openai-compatible'].label} to name an endpoint of your own` } };
+  }
+  const resolved = resolveEmbedding(candidate, target);
+  for (const [part, value] of Object.entries(changes) as Array<[EmbeddingSelectionLeaf, unknown]>) {
+    if (value === undefined) continue;
+    const { state, reason } = resolved.leaves[part];
+    if (state === 'invalid' || state === 'not-applicable') return { refusal: { reason: 'invalid_value', leaf, detail: reason ?? 'refused' } };
+  }
+  return { refusal: null, resolved };
+}
+
+/** The leaves a whole embedding choice writes: a provider, and its model and endpoint, each absent where the choice leaves it at its default. */
+export const embeddingChoiceLeaves = (choice: EmbeddingChoice): StoredEmbedding =>
+  ({ 'embedding.provider': choice.provider, 'embedding.model': choice.model, 'embedding.base_url': choice.endpoint });
+
+/**
+ * A whole embedding choice judged as `setEmbedding` judges it on the target, before the model change itself is: the
+ * selection it resolves to, or why it cannot be stored.
+ */
+export function judgeEmbeddingChoice(choice: EmbeddingChoice, target: DeploymentTarget): { refusal: SettingsRefusal } | { refusal: null; selection: EmbeddingSelection | null; stored: StoredEmbedding } {
+  const leaf = 'embedding.provider';
+  const changes = embeddingChoiceLeaves(choice);
+  for (const [part, value] of Object.entries(changes) as Array<[EmbeddingSelectionLeaf, unknown]>) {
+    const violation = value === undefined ? null : embeddingPartViolation(part, value);
+    if (violation !== null) return { refusal: { reason: 'invalid_value', leaf: part, detail: violation } };
+  }
+  const stored = Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined)) as StoredEmbedding;
+  const judged = judgeEmbeddingCandidate(stored, changes, target, leaf);
+  return judged.refusal !== null ? judged : { refusal: null, selection: judged.resolved.selection, stored };
+}
+
+/** Why the embedding selection cannot change while a switch stands. */
+export const switchUnderWay = (model: string): string => `A switch to ${model} is under way. Cancel it under Search embeddings to choose another model`;
+
+/**
+ * Judge and write a change to the embedding selection on this target, as one compare-and-set. `changes` names each
+ * leaf written, with undefined for one removed. A written part that is invalid or not offered here is refused; so is
+ * any change of the model identity while search holds results (`selectionChangeRefusal`), and any change while a
+ * switch of the model stands. Every statement of the write carries the condition that the three leaves still stand as
+ * they were judged, or as this write left them, that no switch stands, and that search still holds nothing where it
+ * held nothing: a write that lost a race to another changes nothing and answers a conflict.
+ */
+async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | undefined, changes: StoredEmbedding, actor: string, nowMs: number, leaf: string): Promise<SettingsResult> {
+  if (target === undefined) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'this write names no server type, so the embedding choice cannot be judged' } };
+  const underWay = await readSwitch(db);
+  if (underWay !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: switchUnderWay(underWay.model) } };
+  const { stored: before, stamps } = await embeddingRows(db);
+  const candidate: StoredEmbedding = { ...before };
+  const parts = Object.entries(changes) as Array<[EmbeddingSelectionLeaf, unknown]>;
+  for (const [part, value] of parts) {
+    if (value === undefined) delete candidate[part];
+    else candidate[part] = value;
+  }
+  const judged = judgeEmbeddingCandidate(candidate, changes, target, leaf);
+  if (judged.refusal !== null) return { applied: false, refusal: judged.refusal };
+  const resolved = judged.resolved;
+  const held = await heldPartitions(db);
+  const refusal = selectionChangeRefusal(resolveEmbedding(before, target).selection, resolved.selection, held);
+  if (refusal !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: refusal } };
+
+  const ours = crypto.randomUUID();
+  const removed = new Set(parts.filter(([, value]) => value === undefined).map(([part]) => part));
+  const unchanged = EMBEDDING_SELECTION_LEAVES.map((part) => `${STAMP_SQL} IN (?, ?${removed.has(part) ? ", 'absent'" : ''})`).join(' AND ')
+    + ` AND NOT ${SWITCH_STANDS_SQL}`
+    + (held.length === 0 ? ' AND NOT EXISTS (SELECT 1 FROM embedding_receipts WHERE ready >= 0)' : '');
+  const unchangedBinds = EMBEDDING_SELECTION_LEAVES.flatMap((part) => [part, stamps.get(part) ?? 'absent', ours]);
+  const statements = parts.flatMap(([part, value]) => value !== undefined
+    ? [db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by, write_id) SELECT ?, ?, ?, ?, ? WHERE ${unchanged}
+        ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by, write_id = excluded.write_id`)
+      .bind(part, JSON.stringify(value), nowMs, actor, ours, ...unchangedBinds)]
+    : stamps.has(part) ? [
+      db.prepare(`DELETE FROM deployment_settings WHERE leaf = ? AND ${unchanged}`).bind(part, ...unchangedBinds),
+      db.prepare(`INSERT INTO deployment_setting_resets (leaf, reset_at, reset_by) SELECT ?, ?, ? WHERE ${unchanged}
+        ON CONFLICT(leaf) DO UPDATE SET reset_at = excluded.reset_at, reset_by = excluded.reset_by`).bind(part, nowMs, actor, ...unchangedBinds),
+    ] : []);
+  if (statements.length === 0) return { applied: true };
+  const results = await db.batch(statements);
+  if (results.some((result) => result.meta.changes === 0)) return { applied: false, refusal: { reason: 'conflict', leaf } };
+  return { applied: true };
+}
+
+/**
+ * Write the embedding leaves to the choice a completed switch names, attributed to the member who started it, in one
+ * batch that ends with `end`. Every leaf statement and the first statement of `end`, the one that ends the switch,
+ * carry `condition`, so the leaves move only together with it: the answer is whether it changed its row.
+ */
+export async function writeSwitchedEmbedding(
+  db: RelationalStore, choice: StoredEmbedding, actor: string, nowMs: number,
+  condition: { sql: string; params: ReadonlyArray<string | number> }, end: readonly PreparedStatement[],
+): Promise<boolean> {
+  const { stamps } = await embeddingRows(db);
+  const statements = EMBEDDING_SELECTION_LEAVES.flatMap((part) => {
+    const value = choice[part];
+    if (value !== undefined) {
+      return [db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by, write_id) SELECT ?, ?, ?, ?, ? WHERE ${condition.sql}
+        ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by, write_id = excluded.write_id`)
+        .bind(part, JSON.stringify(value), nowMs, actor, crypto.randomUUID(), ...condition.params)];
+    }
+    return stamps.has(part) ? [
+      db.prepare(`DELETE FROM deployment_settings WHERE leaf = ? AND ${condition.sql}`).bind(part, ...condition.params),
+      db.prepare(`INSERT INTO deployment_setting_resets (leaf, reset_at, reset_by) SELECT ?, ?, ? WHERE ${condition.sql}
+        ON CONFLICT(leaf) DO UPDATE SET reset_at = excluded.reset_at, reset_by = excluded.reset_by`).bind(part, nowMs, actor, ...condition.params),
+    ] : [];
+  });
+  const results = await db.batch([...statements, ...end]);
+  return results[statements.length]!.meta.changes === 1;
+}
+
+/** A Project accepting new intelligence work, with any additional admission bound inside the same read. */
+function projectWorkSql(project: string, admission = ''): string {
+  return `EXISTS (SELECT 1 FROM projects capability_project
+    WHERE capability_project.project_id = ${project} AND capability_project.archived_at IS NULL ${admission})`;
+}
+
+/** A live Project's admission to intelligence work, bound as: Project. */
+export const PROJECT_WORK_SQL = projectWorkSql('?');
+
+/** Whether a Project accepts new intelligence work. */
+export async function projectWorkEnabled(db: RelationalStore, projectId: string): Promise<boolean> {
+  return (await db.prepare(`SELECT ${PROJECT_WORK_SQL} AS enabled`).bind(projectId).first<{ enabled: number }>())?.enabled === 1;
+}
+
+/** Current task capabilities and live-project admission for the retained run protocol. */
+export async function taskWorkEnabled(db: RelationalStore, projectId: string, task: string | null): Promise<boolean> {
+  const gate = task === null ? null : admissionForTask(task);
+  return gate?.kind === 'capability'
+    ? settingsWriter(db).capabilityEnabled(projectId, gate.capability)
+    : projectWorkEnabled(db, projectId);
+}
+
+/** A live Project's missing capability row enables it; only an explicit zero opts it out. */
+export function capabilityOnSql(project: string, capability: string): string {
+  return projectWorkSql(project, `AND NOT EXISTS (SELECT 1 FROM project_capabilities pc
+        WHERE pc.project_id = capability_project.project_id AND pc.capability = ${capability} AND pc.enabled = 0)`);
+}
+
+/** An owner has explicitly enabled this Project capability. */
+export function capabilityExplicitlyOnSql(project: string, capability: string): string {
+  return `EXISTS (SELECT 1 FROM project_capabilities pc WHERE pc.project_id = ${project}
+    AND pc.capability = ${capability} AND pc.enabled = 1)`;
+}
+
+/** A capability's admission condition, bound as: Project, capability. */
+export const CAPABILITY_ON_SQL = capabilityOnSql('?', '?');
+
+function requestedCapabilities(capabilities: readonly ProjectCapability[]): string {
+  return capabilities.map(() => 'SELECT ? AS capability').join(' UNION ALL ');
+}
+
+/** Enabled capabilities for every stored Project or the Project named, in one statement. */
+export function enabledCapabilities(db: RelationalStore, capabilities: readonly ProjectCapability[], projectId?: string): {
+  statement: PreparedStatement;
+  read: (rows: ReadonlyArray<Record<string, unknown>>) => Array<{ projectId: string; capability: string }>;
+} {
+  const statement = db.prepare(
+    capabilities.length === 0
+      ? 'SELECT project_id AS projectId, NULL AS capability FROM projects WHERE 0'
+      : `SELECT p.project_id AS projectId, requested.capability FROM projects p
+         CROSS JOIN (${requestedCapabilities(capabilities)}) requested
+         WHERE ${capabilityOnSql('p.project_id', 'requested.capability')}${projectId === undefined ? '' : ' AND p.project_id = ?'}`,
+  ).bind(...capabilities, ...(capabilities.length === 0 || projectId === undefined ? [] : [projectId]));
+  return { statement, read: (rows) => rows.map((row) => ({ projectId: String(row.projectId), capability: String(row.capability) })) };
+}
+
+/**
+ * `target` is the Deployment target the writes land on. A write of an embedding leaf is judged against it and is
+ * refused where none is named.
+ */
+export function settingsWriter(
+  db: RelationalStore,
+  opts: { authorize?: SettingsAuthorizer; rearm?: ScheduleRearm; target?: DeploymentTarget } = {},
+): SettingsWriter {
+  const authorize = opts.authorize ?? (async () => true);
+  const rearm = opts.rearm ?? (async () => {});
+  const resetRecord = (leaf: string, actor: string, nowMs: number) => db.prepare(`INSERT INTO deployment_setting_resets (leaf, reset_at, reset_by) VALUES (?, ?, ?)
+    ON CONFLICT(leaf) DO UPDATE SET reset_at = excluded.reset_at, reset_by = excluded.reset_by`).bind(leaf, nowMs, actor);
+  const withLeafWrite = async (change: Parameters<SettingsAuthorizer>[0], write: () => Promise<SettingsResult>): Promise<SettingsResult> => {
+    const { leaf } = change;
+    if (!DEPLOYMENT_LEAF_SET.has(leaf)) return { applied: false, refusal: { reason: 'not_deployment_tier', leaf } };
+    if (!(await authorize(change))) return { applied: false, refusal: { reason: 'unauthorized', leaf } };
+    if (RETIRED_LEAVES.has(leaf)) return { applied: false, refusal: { reason: 'retired', leaf } };
+    return write();
+  };
+
+  return {
+    async setLeaf(leaf, value, actor, nowMs) {
+      return withLeafWrite({ leaf, value, actor }, async () => {
+        const previousRaw = leaf === 'agent.tasks' ? (await leafValues(db, [leaf])).get(leaf) : undefined;
+        let previous: unknown = leaf === 'agent.tasks' ? {} : undefined;
+        if (previousRaw !== undefined) {
+          try { previous = JSON.parse(previousRaw) as unknown; }
+          catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+        }
+        const spec = DEPLOYMENT_LEAF_SPECS[leaf]!;
+        const detail = leafRuleViolation(spec, value, previous);
+        if (detail !== null) {
+          return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
+        }
+        if ('type' in spec && spec.type === 'embedding') {
+          const written = await writeEmbedding(db, opts.target, { [spec.leaf]: value }, actor, nowMs, leaf);
+          if (written.applied) await rearm({ leaf });
+          return written;
+        }
+        if (leaf === 'retention.raw_days' || leaf === 'retention.transcripts') {
+          const target = leaf === 'retention.transcripts' && value === 0 ? leaf : 'retention.raw_days';
+          const other = target === 'retention.raw_days' ? 'retention.transcripts' : 'retention.raw_days';
+          await db.batch([
+            db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by,write_id) VALUES(?,?,?,?,?)
+              ON CONFLICT(leaf) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by,write_id=excluded.write_id`)
+              .bind(target,JSON.stringify(value),nowMs,actor,crypto.randomUUID()),
+            db.prepare('DELETE FROM deployment_settings WHERE leaf=?').bind(other),resetRecord(other,actor,nowMs),
+          ]);
+          await rearm({leaf:target});return {applied:true};
+        }
+        await db
+          .prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by, write_id) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(leaf) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by, write_id = excluded.write_id`)
+          .bind(leaf, JSON.stringify(leaf === 'agent.tasks' ? preserveRetiredTaskOverrides(value, previous) : value), nowMs, actor, crypto.randomUUID())
+          .run();
+        await rearm({ leaf });
+        return { applied: true };
+      });
+    },
+
+    async setEmbedding(choice, actor, nowMs) {
+      const leaf = 'embedding.provider';
+      return withLeafWrite({ leaf, value: choice, actor }, async () => {
+        const changes = embeddingChoiceLeaves(choice);
+        for (const [part, value] of Object.entries(changes) as Array<[EmbeddingSelectionLeaf, unknown]>) {
+          const violation = value === undefined ? null : embeddingPartViolation(part, value);
+          if (violation !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf: part, detail: violation } };
+        }
+        const written = await writeEmbedding(db, opts.target, changes, actor, nowMs, leaf);
+        if (written.applied) for (const part of EMBEDDING_SELECTION_LEAVES) await rearm({ leaf: part });
+        return written;
+      });
+    },
+
+    async resetLeaf(leaf, actor, nowMs = Date.now()) {
+      return withLeafWrite({ leaf, actor }, async () => {
+        const spec = DEPLOYMENT_LEAF_SPECS[leaf]!;
+        if ('type' in spec && spec.type === 'embedding') {
+          const written = await writeEmbedding(db, opts.target, { [spec.leaf]: undefined }, actor, nowMs, leaf);
+          if (written.applied) await rearm({ leaf });
+          return written;
+        }
+        if(leaf==='retention.raw_days' || leaf==='retention.transcripts') {
+          await db.batch(['retention.raw_days','retention.transcripts'].flatMap(part=>[
+            db.prepare('DELETE FROM deployment_settings WHERE leaf=?').bind(part),resetRecord(part,actor,nowMs),
+          ]));await rearm({leaf:'retention.raw_days'});return {applied:true};
+        }
+        await db.batch([db.prepare(`DELETE FROM deployment_settings WHERE leaf = ?`).bind(leaf), resetRecord(leaf, actor, nowMs)]);
+        await rearm({ leaf });
+        return { applied: true };
+      });
+    },
+
+    async repairTaskDocument(actor, nowMs) {
+      const leaf = 'agent.tasks';
+      return withLeafWrite({ leaf, actor }, async () => {
+        const current = await db.prepare(`SELECT value, updated_at, updated_by FROM deployment_settings WHERE leaf = ?`)
+          .bind(leaf).first<{ value: string; updated_at: number; updated_by: string }>();
+        if (current === null) return { applied: true };
+        let stored: unknown;
+        try { stored = JSON.parse(current.value); }
+        catch (error) {
+          if (!(error instanceof SyntaxError)) throw error;
+          return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'the task overrides held by the server cannot be read' } };
+        }
+        const cleaned = cleanTaskDocument(stored);
+        if (cleaned === null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'the task overrides held by the server are not an object' } };
+        if (JSON.stringify(cleaned) === JSON.stringify(stored)) return { applied: true };
+        const detail = leafRuleViolation(DEPLOYMENT_LEAF_SPECS[leaf]!, cleaned, stored);
+        if (detail !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
+        const written = await db.prepare(`UPDATE deployment_settings SET value = ?, updated_at = ?, updated_by = ?, write_id = ?
+          WHERE leaf = ? AND value = ? AND updated_at = ? AND updated_by = ?`)
+          .bind(JSON.stringify(cleaned), nowMs, actor, crypto.randomUUID(), leaf, current.value, current.updated_at, current.updated_by).run();
+        if (written.meta.changes !== 1) return { applied: false, refusal: { reason: 'conflict', leaf } };
+        await rearm({ leaf });
+        return { applied: true };
+      });
+    },
+
+    async setTaskSwitch(task, enabled, actor, nowMs) {
+      const leaf = 'agent.tasks';
+      const unreadable: SettingsResult = { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'the task overrides held by the server cannot be read' } };
+      const raw = (await leafValues(db, [leaf])).get(leaf);
+      let held: unknown = {};
+      if (raw !== undefined) {
+        try { held = JSON.parse(raw); } catch (error) { if (!(error instanceof SyntaxError)) throw error; return unreadable; }
+      }
+      if (!isRecord(held)) return unreadable;
+      const entry = Object.hasOwn(held, task) ? held[task] : {};
+      if (!isRecord(entry)) return unreadable;
+      const schedule = Object.hasOwn(entry, 'schedule') ? entry.schedule : {};
+      if (!isRecord(schedule)) return unreadable;
+      return this.setLeaf(leaf, { ...held, [task]: { ...entry, schedule: { ...schedule, enabled } } }, actor, nowMs);
+    },
+
+    async setTaskTier(task, tier, actor, nowMs) {
+      const leaf = 'agent.tasks';
+      return withLeafWrite({ leaf, value: { task, tier }, actor }, async () => {
+        if (!(OUTCOME_TASKS as readonly string[]).includes(task)) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'unknown task' } };
+        if (tier !== null && !isReasoningTier(tier)) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'expected low, default, high, or null' } };
+        const held = (await leafValues(db, [leaf])).get(leaf);
+        if (held !== undefined) {
+          let value: unknown;
+          try { value = JSON.parse(held); } catch { return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'the stored task overrides do not read' } }; }
+          if (!isRecord(value)) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'stored task overrides are not an object' } };
+        }
+        const taskPath = `$.${JSON.stringify(task)}`;
+        const tierPath = `${taskPath}.reasoningLevel`;
+        const seed = tier === null ? {} : { [task]: { reasoningLevel: tier } };
+        const changed = tier === null
+          ? await db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by, write_id) VALUES (?, ?, ?, ?, ?)
+              ON CONFLICT(leaf) DO UPDATE SET value = CASE
+                WHEN json_type(deployment_settings.value, ?) IS NULL THEN deployment_settings.value
+                WHEN json_type(deployment_settings.value, ?) != 'object' THEN json_remove(deployment_settings.value, ?)
+                WHEN (SELECT COUNT(*) FROM json_each(json_remove(deployment_settings.value, ?), ?)) = 0
+                  THEN json_remove(json_remove(deployment_settings.value, ?), ?)
+                ELSE json_remove(deployment_settings.value, ?) END,
+                updated_at = excluded.updated_at, updated_by = excluded.updated_by, write_id = excluded.write_id`)
+            .bind(leaf, JSON.stringify(seed), nowMs, actor, crypto.randomUUID(), taskPath, taskPath, taskPath, tierPath, taskPath, tierPath, taskPath, tierPath).run()
+          : await db.prepare(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by, write_id) VALUES (?, ?, ?, ?, ?)
+              ON CONFLICT(leaf) DO UPDATE SET value = CASE
+                WHEN json_type(deployment_settings.value, ?) IS NOT NULL AND json_type(deployment_settings.value, ?) != 'object'
+                  THEN json_set(deployment_settings.value, ?, json(?))
+                ELSE json_set(deployment_settings.value, ?, ?) END,
+                updated_at = excluded.updated_at, updated_by = excluded.updated_by, write_id = excluded.write_id`)
+            .bind(leaf, JSON.stringify(seed), nowMs, actor, crypto.randomUUID(), taskPath, taskPath, taskPath, JSON.stringify({ reasoningLevel: tier }), tierPath, tier).run();
+        if (changed.meta.changes !== 1) throw new Error('task tier write did not change one settings row');
+        await rearm({ leaf });
+        return { applied: true };
+      });
+    },
+
+    async setCapability(projectId, capability, enabled, actor, nowMs) {
+      if (!(PROJECT_CAPABILITIES as readonly string[]).includes(capability)) {
+        return { applied: false, refusal: { reason: 'unknown_capability', capability } };
+      }
+      const leaf = `project.${capability}`;
+      if (!(await authorize({ leaf, actor }))) {
+        return { applied: false, refusal: { reason: 'unauthorized', leaf } };
+      }
+      await db
+        .prepare(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (?, ?, ?, ?, ?)
+                  ON CONFLICT(project_id, capability) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
+        .bind(projectId, capability, enabled ? 1 : 0, nowMs, actor)
+        .run();
+      await rearm({ leaf });
+      return { applied: true };
+    },
+
+    async leaves() {
+      const snapshot = SNAPSHOTS.get(db);
+      const results = snapshot !== undefined ? [...snapshot.entries()].map(([leaf, row]) => ({ ...row, leaf })) : (await db
+        .prepare(`SELECT leaf, value, updated_at, updated_by FROM deployment_settings`)
+        .all<{ leaf: string; value: string; updated_at: number; updated_by: string }>()).results;
+      const out: Record<string, LeafRecord> = {};
+      for (const r of results) {
+        try {
+          out[r.leaf] = { value: JSON.parse(r.value), updatedAt: r.updated_at, updatedBy: r.updated_by };
+        } catch (error) {
+          if (!(error instanceof SyntaxError)) throw error;
+          out[r.leaf] = { value: null, updatedAt: r.updated_at, updatedBy: r.updated_by, malformed: true };
+        }
+      }
+      return out;
+    },
+
+    async capabilityEnabled(projectId, capability) {
+      const row = await db.prepare(`SELECT ${CAPABILITY_ON_SQL} AS enabled`)
+        .bind(projectId, capability).first<{ enabled: number }>();
+      return row?.enabled === 1;
+    },
+
+    async retiredCapabilities(projectId) {
+      const rows = await db.prepare(`SELECT capability, enabled FROM project_capabilities WHERE project_id = ?
+        AND capability NOT IN (${PROJECT_CAPABILITIES.map(() => '?').join(', ')})`).bind(projectId, ...PROJECT_CAPABILITIES)
+        .all<{ capability: string; enabled: number }>();
+      return Object.fromEntries(rows.results.map((row) => [row.capability, row.enabled === 1]));
+    },
+
+    async capabilities(projectId) {
+      const { results } = await db.prepare(
+        `SELECT requested.capability, ${capabilityOnSql('?', 'requested.capability')} AS enabled
+         FROM (${requestedCapabilities(PROJECT_CAPABILITIES)}) requested`,
+      ).bind(projectId, ...PROJECT_CAPABILITIES).all<{ capability: ProjectCapability; enabled: number }>();
+      return Object.fromEntries(results.map((row) => [row.capability, row.enabled === 1])) as Record<ProjectCapability, boolean>;
+    },
+  };
+}

@@ -187,7 +187,7 @@ describe('titleSession', () => {
 
   it('queues session titles independently of archived provider preferences', async () => {
     const h = harness();
-    expect(await prepareDispatch(h.env, 'extract-curate', 'proj_1')).toMatchObject({ ok: true, prepared: { servedBy: 'worker' } });
+    expect(await prepareDispatch(h.env, 'title-summary', 'proj_1')).toMatchObject({ ok: true, prepared: { servedBy: 'worker' } });
 
     // A titling dispatch names no provider at all, so none of those settings decides it: each ask queues and spends its session's claim.
     const sessions = ['unserved', 'none', 'uncredentialed', 'bad-model'];

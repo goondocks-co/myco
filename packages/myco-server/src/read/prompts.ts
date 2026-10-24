@@ -87,32 +87,19 @@ export async function newestUnprocessedSession(db: RelationalStore, scope: ReadS
   const query = newestUnprocessedSessionQuery(scope, opts);
   return db.prepare(query.sql).bind(...query.binds).first<Position & { endedAt: number }>();
 }
-/** Sessions with ready unread material at the first extraction wake. */
-export async function extractionHistorySessions(db: RelationalStore, scope: ReadScope): Promise<string[]> {
-  const { conditions, binds } = candidates(scope, {});
-  return (await db.prepare(`SELECT session_id AS id FROM session_read_facts INDEXED BY ${candidateIndex({})}
-    WHERE ${conditions.join(' AND ')} ORDER BY ${SESSION_ORDER}`).bind(...binds).all<{ id: string }>()).results.map(row => row.id);
-}
 /** Snapshot cutoffs are checked only within sessions the unread counter admits. */
-function snapshotCondition(opts: UnprocessedOptions, count: boolean) {
-  if (opts.history === undefined) return { sql: count ? 'eligible_prompts' : '1', binds: [] as unknown[] };
+function snapshotCondition(opts: UnprocessedOptions) {
+  if (opts.history === undefined) return { sql: '1', binds: [] as unknown[] };
   const source = `SELECT 1 FROM prompt_batches p INDEXED BY idx_prompt_batches_turns
     WHERE p.project_id = session_read_facts.project_id AND p.session_id = session_read_facts.session_id
-      AND ${unreadPromptSql('p')} AND p.received_at <= ? LIMIT ?`;
-  return { sql: count ? `(SELECT COUNT(*) FROM (${source}))` : `EXISTS (${source})`,
-    binds: [opts.history.receivedThrough, count ? clampLimit(opts.limit) : 1] };
+      AND ${unreadPromptSql('p')} AND p.received_at <= ? LIMIT 1`;
+  return { sql: `EXISTS (${source})`, binds: [opts.history.receivedThrough] };
 }
 /** An existence seek over ready counters, with a bounded snapshot probe when requested. */
 export async function hasUnreadPrompts(db: RelationalStore, scope: ReadScope, opts: UnprocessedOptions = {}): Promise<boolean> {
-  const { conditions, binds } = candidates(scope, opts), snapshot = snapshotCondition(opts, false);
+  const { conditions, binds } = candidates(scope, opts), snapshot = snapshotCondition(opts);
   return await db.prepare(`SELECT 1 AS found FROM session_read_facts INDEXED BY ${candidateIndex(opts)} WHERE ${[...conditions, snapshot.sql].join(' AND ')} LIMIT 1`)
     .bind(...binds, ...snapshot.binds).first() !== null;
-}
-/** The ramp threshold counts only candidate sessions and each session's bounded snapshot contribution. */
-export async function unreadPromptBacklog(db: RelationalStore, scope: ReadScope, opts: UnprocessedOptions): Promise<number> {
-  const { conditions, binds } = candidates(scope, opts), snapshot = snapshotCondition(opts, true);
-  return (await db.prepare(`SELECT COALESCE(SUM(${snapshot.sql}), 0) AS n
-    FROM session_read_facts INDEXED BY ${candidateIndex(opts)} WHERE ${conditions.join(' AND ')}`).bind(...snapshot.binds, ...binds).first<{ n: number }>())!.n;
 }
 /** Each origin and cursor class reads all selected sessions in one prepared statement. */
 async function readPositions(db: RelationalStore, scope: ReadScope, opts: UnprocessedOptions, sessions: SessionRead[]): Promise<Positioned[]> {

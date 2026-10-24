@@ -1,3 +1,4 @@
+import { learningHolds, learningHoldsSql } from './learning-hold.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
 import { measuredContentEnv, remainingContentBudget } from './content-budget.js';
 import { contentAssertion, prepareDerivedContent, prepareDerivedStream, verifiedContentSql, type DerivedContentSource } from './registered-content.js';
@@ -118,6 +119,8 @@ async function archiveSegment(env:Pick<ServerEnv,'db'|'blobs'>,s:State,row:Due,n
   const receiptProof=verifiedContentSql({...source,sourceKind:'receipt',resourceId:`transcript:${row.source_id}`},receipt);
   const guard=`${policy.sql} AND ${bodyProof.sql} AND ${receiptProof.sql}
     AND NOT EXISTS (SELECT 1 FROM recovery_holds WHERE released_at IS NULL)
+    AND NOT EXISTS (SELECT 1 FROM (SELECT ? AS project_id, ? AS session_id) learning_source
+      WHERE ${learningHoldsSql('learning_source.project_id', 'learning_source.session_id')})
     AND NOT EXISTS (SELECT 1 FROM session_tombstones WHERE project_id=? AND session_id=?)
     AND EXISTS (SELECT 1 FROM raw_archive_refs r JOIN transcript_segments x
       ON x.project_id=r.project_id AND x.transcript_id=r.transcript_id AND x.base_offset=r.base_offset
@@ -132,7 +135,7 @@ async function archiveSegment(env:Pick<ServerEnv,'db'|'blobs'>,s:State,row:Due,n
   await commit(db,s,{cursor_project:row.project_id,cursor_id:row.source_id,due_received:row.eligible_at,
     due_kind:row.source_kind},[
     ...contentAssertion(db,guard,[...policy.params,...bodyProof.params,...receiptProof.params,
-      row.project_id,row.session_id,row.project_id,row.source_id,now-days*DAY_MS,sourceRow.envelope_hash]),
+      row.project_id,row.session_id,row.project_id,row.session_id,row.project_id,row.source_id,now-days*DAY_MS,sourceRow.envelope_hash]),
     db.prepare(`UPDATE raw_archive_refs SET archive_key=?,receipt_key=?,digest=?,size=?,disposition='archived'
       WHERE project_id=? AND source_kind='transcript' AND source_id=? AND disposition='hot'`)
       .bind(body.key,receipt.key,body.digest,body.size,row.project_id,row.source_id),
@@ -164,6 +167,7 @@ async function archiveDue(env:Pick<ServerEnv,'db'|'blobs'>,s:State,now:number,da
     return 0;
   }
   for(const row of results) {
+    if(await learningHolds(db,row.project_id,row.session_id)) continue;
     const parser=await db.prepare(`SELECT parsed_offset,${parserPending('t')} AS pending,parse_error FROM transcripts t
       WHERE project_id=? AND transcript_id=?`).bind(row.project_id,row.transcript_id)
       .first<{parsed_offset:number;pending:number;parse_error:string|null}>();
@@ -216,7 +220,7 @@ async function archiveRawEventPage(env:Pick<ServerEnv,'db'|'blobs'>,now:number,d
   let lastSkipped:RawEventIdentity|null=null;
   let bytes=0;
   for(const identity of results) {
-    if(identity.received_at>cutoff||identity.payload_format!=='inline') {
+    if(identity.received_at>cutoff||identity.payload_format!=='inline'||await learningHolds(db,identity.project_id,identity.session_id)) {
       if(selected.length>0) break;
       lastSkipped=identity;
       continue;
@@ -269,7 +273,10 @@ async function archiveRawEventPage(env:Pick<ServerEnv,'db'|'blobs'>,now:number,d
       OR e.payload_format<>'inline' OR c.provenance IS NOT json_extract(j.value,'$.raw_provenance')
       OR ${effectiveRawOwnerSql('c.owner_member_id','c.provenance','e.raw_revision')}
         IS NOT json_extract(j.value,'$.raw_owner'))`;
-    const writes=[...contentAssertion(db,sourceAge,[JSON.stringify(selected.map(({identity})=>identity)),cutoff]),
+    const unheld = `NOT EXISTS (SELECT 1 FROM json_each(?) j
+      WHERE ${learningHoldsSql("json_extract(j.value,'$.project_id')", "json_extract(j.value,'$.session_id')")})`;
+    const writes=[...contentAssertion(db,unheld,[JSON.stringify(selected.map(({identity})=>identity))]),
+      ...contentAssertion(db,sourceAge,[JSON.stringify(selected.map(({identity})=>identity)),cutoff]),
       ...bundleArchiveStatements(db,bundle)];
     await advance(selected.at(-1)!.identity,writes,true);
     return selected.length;

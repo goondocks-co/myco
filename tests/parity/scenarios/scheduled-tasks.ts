@@ -1,3 +1,5 @@
+import { offeredHarness } from '../../myco-server/helpers/offered-harness.js';
+import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
 import { expect } from 'bun:test';
 import { lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
 
@@ -8,21 +10,27 @@ import { lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harne
  * Project gets nothing. The worker queue receives the run.
  */
 export const scheduledTasks: ParityScenario = {
-  name: 'the clock: extraction queued once, held by its interval, capped by its ceiling, withheld from a cold Project',
+  name: 'the clock: map work queued once, held by its interval, capped by its ceiling, withheld from a cold Project',
+  dedicated: { timeoutMs: 120_000 },
   async run(target: ParityTarget) {
     const now = Date.now();
     const leaf = (name: string, value: unknown) => target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (${lit(name)}, ${lit(JSON.stringify(value))}, ${now}, ${lit(MEMBER_ID)})`);
     await leaf('agent.scheduled_tasks_enabled', true);
-    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'vault_evolution', 1, ${now}, ${lit(MEMBER_ID)})`);
+    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'canopy', 1, ${now}, ${lit(MEMBER_ID)})`);
     // Nothing earlier holds a place or sets the extraction interval.
     await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE status IN ('pending', 'running', 'queued')`);
-    await target.sql(`DELETE FROM agent_runs WHERE task = 'extract-curate'`);
+    await target.sql(`DELETE FROM agent_runs WHERE task = 'canopy-map'`);
     // A cold Project beside the live one: a receipt three weeks old.
     await target.sql(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_cold', 'cold', ${now - 30 * 86_400_000})`);
-    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_cold', 'vault_evolution', 1, ${now}, ${lit(MEMBER_ID)})`);
-    const [credential] = await target.sql(`SELECT id FROM member_credentials ORDER BY issued_at LIMIT 1`) as Array<{ id: string }>;
+    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_cold', 'canopy', 1, ${now}, ${lit(MEMBER_ID)})`);
+    await leaf('cortex.canopy.refresh.background_enabled', true);
+    const [credential] = await target.sql(`SELECT c.id FROM member_credentials c JOIN members m ON m.id=c.member_id WHERE m.role='admin' AND c.revoked_at IS NULL AND c.expires_at>${now} ORDER BY c.issued_at LIMIT 1`) as Array<{ id: string }>;
     await target.sql(`INSERT OR REPLACE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
       VALUES ('proj_cold', 'cold-session', 'machine_parity', ${lit(credential!.id)}, ${now - 21 * 86_400_000}, ${now - 21 * 86_400_000}, 'claude-code')`);
+    for (const project of [target.projectId,'proj_cold']) await target.sql(`INSERT OR REPLACE INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
+      VALUES(${lit(project)},'fixture','https://example.test/repo','main',${now},${lit(MEMBER_ID)})`);
+    await target.sql(`INSERT OR REPLACE INTO worker_contacts(credential_id,machine_id,offers,capabilities,last_seen_at,updated_at)
+      VALUES(${lit(credential!.id)},'machine_parity',${lit(JSON.stringify([offeredHarness('claude-code')]))},${lit(JSON.stringify(capabilitiesRequiredBy('canopy-map')))},${now},${now})`);
     // The live Project: a receipt a minute old, whatever ran before this scenario.
     await target.sql(`INSERT OR REPLACE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
       VALUES (${lit(target.projectId)}, 'clock-live-session', 'machine_parity', ${lit(credential!.id)}, ${now - 60_000}, ${now - 60_000}, 'claude-code')`);
@@ -38,14 +46,14 @@ export const scheduledTasks: ParityScenario = {
       expect(res.status).toBe(200);
       return (await res.json()) as { state: string; scheduled: { dispatched: number; skipped: number } };
     };
-    const runs = (projectId: string) => target.sql(`SELECT status, harness, json_extract(run_context, '$.timeoutSeconds') AS timeoutSeconds, json_extract(run_context, '$.reason') AS reason FROM agent_runs WHERE project_id = ${lit(projectId)} AND task = 'extract-curate' ORDER BY COALESCE(queued_at, started_at), id`);
+    const runs = (projectId: string) => target.sql(`SELECT status, harness, json_extract(run_context, '$.timeoutSeconds') AS timeoutSeconds, json_extract(run_context, '$.reason') AS reason FROM agent_runs WHERE project_id = ${lit(projectId)} AND task = 'canopy-map' ORDER BY COALESCE(queued_at, started_at), id`);
 
-    await leaf('agent.tasks', { 'extract-curate': { schedule: { enabled: false } } });
+    await leaf('agent.tasks', { 'canopy-map': { schedule: { enabled: false } } });
     expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 0 });
     expect(await target.sql(`SELECT id FROM agent_runs WHERE task = 'embedding-reconcile' AND status IN ('pending','running','queued')`)).toEqual([]);
 
     // Extraction is enabled at every awake state for this scenario.
-    await leaf('agent.tasks', { 'extract-curate': { schedule: { runIn: ['active', 'idle', 'sleep'], reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } } } });
+    await leaf('agent.tasks', { 'canopy-map': { schedule: { enabled: true, preCondition: 'has-unprocessed-prompts', runIn: ['active', 'idle', 'sleep'], reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } } } });
     const first = await wake();
     expect(first.scheduled).toEqual({ dispatched: 1, skipped: 0 });
     expect(await runs(target.projectId)).toEqual([{ status: 'queued', harness: null, timeoutSeconds: 900, reason: null }]);
@@ -56,8 +64,8 @@ export const scheduledTasks: ParityScenario = {
     expect(await runs(target.projectId)).toHaveLength(1);
 
     // The ceiling: one a day, the interval past — a skipped row names it.
-    await target.sql(`UPDATE agent_runs SET status = 'completed', started_at = COALESCE(started_at, queued_at), completed_at = ${now} WHERE task = 'extract-curate'`);
-    await leaf('agent.tasks', { 'extract-curate': { schedule: { runIn: ['active', 'idle', 'sleep'], intervalSeconds: 0, maxRunsPerDay: 1, reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } } } });
+    await target.sql(`UPDATE agent_runs SET status = 'completed', started_at = COALESCE(started_at, queued_at), completed_at = ${now} WHERE task = 'canopy-map'`);
+    await leaf('agent.tasks', { 'canopy-map': { schedule: { enabled: true, preCondition: 'has-unprocessed-prompts', runIn: ['active', 'idle', 'sleep'], intervalSeconds: 0, maxRunsPerDay: 1, reservedRunsPerDay: { count: 0, preCondition: 'has-recent-live-prompts' } } } });
     expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 1 });
     const atCeiling = [
       { status: 'completed', harness: null, timeoutSeconds: 900, reason: null },
@@ -72,7 +80,7 @@ export const scheduledTasks: ParityScenario = {
     // An owner can dispatch while the automatic allowance is exhausted.
     const manual = await fetch(`${target.url}/api/harness/dispatch`, {
       method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-      body: JSON.stringify({ task: 'extract-curate', projectId: target.projectId }),
+      body: JSON.stringify({ task: 'canopy-map', projectId: target.projectId }),
     });
     expect(manual.status).toBe(200);
     expect(await runs(target.projectId)).toHaveLength(3);

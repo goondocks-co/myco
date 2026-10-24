@@ -1,3 +1,4 @@
+import { pausedLearningSql, LEARNING_PAUSED } from './learning-pause.js';
 import { memberWriteBatch, type MemberWriteActor } from '../auth/member-write-store.js';
 import { RUN_CONTROL_REFUSAL_WORDS, type RunControlRefusalCode } from '@goondocks/myco-shared/run-control';
 /**
@@ -1319,7 +1320,7 @@ export async function nextClaimable(db: RelationalStore, excluded: readonly stri
 /** The queued row and all launch limits required by both credential minting and claim. */
 export function workerClaimPredicate(candidate: ClaimCandidate, admission: WriteAdmission): { sql: string; params: (string | number | null)[] } {
   return {
-    sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND status = 'queued' AND task = ? AND dispatched_by IS NULL${ADMISSION_WHERE})`,
+    sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND status = 'queued' AND task = ? AND dispatched_by IS NULL AND NOT ${pausedLearningSql('task')}${ADMISSION_WHERE})`,
     params: [candidate.projectId, candidate.id, candidate.task, ...admissionParams({ projectId: candidate.projectId }, candidate.task, candidate.id, admission)],
   };
 }
@@ -1478,26 +1479,24 @@ export async function lapsedLeases(db: RelationalStore, now: number, limit: numb
   return results.map(({ leasedBy, leasedRunnerId, leasedRunnerCredentialId, ...row }) => ({ ...row, owner: leaseOwnerOf({ leasedBy, leasedRunnerId, leasedRunnerCredentialId }) }));
 }
 
-/**
- * Return one lapsed run to the queue.
- *
- * `dispatched_by` is cleared with the lease: the credential is retired as the
- * row stops naming it, and a row still naming a revoked token could be taken by
- * no one. Clearing it is also what makes the row claimable again: the queue
- * reads rows that name none. `queued_at` is left as it was, so a run that
- * lost its worker keeps the place in the queue it had already waited for. It
- * waits for a worker again, and says so: a claim cleared its holder, and a row
- * naming none reads as held by a limit.
- */
-export async function requeueLapsedLease(db: RelationalStore, scope: ReadScope, runId: string, owner: LeaseOwner | null, now: number): Promise<boolean> {
+/** Settle an expired attempt under its exact owner, attempt identity and persisted learning policy. */
+export async function settleLapsedLease(db: RelationalStore, scope: ReadScope, runId: string, owner: LeaseOwner | null, attemptId: string | null, now: number): Promise<boolean> {
   const named = owner === null ? 'leased_by IS NULL AND leased_runner_id IS NULL'
     : owner.kind === 'member' ? 'leased_by = ? AND leased_runner_id IS NULL' : 'leased_by IS NULL AND leased_runner_id = ? AND leased_runner_credential_id = ?';
   const params = owner === null ? [] : owner.kind === 'member' ? [owner.leasedBy] : [owner.runnerId, owner.credentialId];
+  const paused = pausedLearningSql('task');
   const result = await db.prepare(
-    `UPDATE agent_runs SET status = 'queued', leased_by = NULL, leased_runner_id = NULL, leased_runner_credential_id = NULL,
-        lease_expires_at = NULL, dispatched_by = NULL, started_at = NULL, held_by = 'worker'
-      WHERE project_id = ? AND id = ? AND status = 'running' AND ${named} AND lease_expires_at <= ?`,
-  ).bind(scope.projectId, runId, ...params, now).run();
+    `UPDATE agent_runs SET status = CASE WHEN ${paused} THEN 'failed' ELSE 'queued' END,
+        completed_at = CASE WHEN ${paused} THEN ? ELSE completed_at END,
+        error_code = CASE WHEN ${paused} THEN '${LEARNING_PAUSED}' ELSE error_code END,
+        error = CASE WHEN ${paused} THEN 'Learning is paused until whole-session reading ships' ELSE error END,
+        dispatched_by = CASE WHEN ${paused} THEN dispatched_by ELSE NULL END,
+        started_at = CASE WHEN ${paused} THEN started_at ELSE NULL END,
+        held_by = CASE WHEN ${paused} THEN NULL ELSE 'worker' END,
+        leased_by = NULL, leased_runner_id = NULL, leased_runner_credential_id = NULL, lease_expires_at = NULL
+      WHERE project_id = ? AND id = ? AND status = 'running' AND ${named}
+        AND dispatched_by IS ? AND lease_expires_at <= ?`,
+  ).bind(now, scope.projectId, runId, ...params, attemptId, now).run();
   return result.meta.changes === 1;
 }
 

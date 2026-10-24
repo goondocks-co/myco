@@ -115,6 +115,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0099_v99.sql': 'e0cb58c903bc05ce29293b2babe6c02df7419ffb42c97c966654c8f38fb6b6a9',
   '0100_v100.sql': 'ac5a2268d4091da1a071e1f752bbbb11bb13e996a0f5156ce041db65fc91cc18',
   '0101_v101.sql': 'c7020bea1f6f4d910ca2d1285350ea165d6dcdad094b0c724871a347fb7d118d',
+  '0102_v102.sql': '2e03935f359586bef3a17f30032e8194b29a13a8aeb4976d884daf12980d7546',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -828,12 +829,12 @@ it('schema 101 only adds default-zero spore revisions and a stable dispatch boun
     sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,created_at) VALUES ('proj_guard','old','guard','gotcha','superseded','held',1)");
     const before = sqlite.query('SELECT * FROM spores').get() as Record<string, unknown>;
     const indexes = sqlite.query("SELECT name,sql FROM sqlite_master WHERE type='index' AND tbl_name='spores' ORDER BY name").all();
-    expect(await applySchemaSteps(db)).toEqual([101]);
+    expect(await applySchemaSteps(db, SCHEMA_STEPS.filter(step => step.version === 101))).toEqual([101]);
     expect(sqlite.query('SELECT * FROM spores').get()).toEqual({ ...before, revision: 0 });
     expect(sqlite.query("SELECT name,sql FROM sqlite_master WHERE type='index' AND tbl_name='spores' ORDER BY name").all()).toEqual(indexes);
     const stamp = sqlite.query("SELECT value FROM schema_meta WHERE key='guard_enabled_at'").get();
     expect(Number((stamp as { value: string }).value)).toBeGreaterThan(0);
-    expect(await applySchemaSteps(db)).toEqual([]);
+    expect(await applySchemaSteps(db, SCHEMA_STEPS.filter(step => step.version === 101))).toEqual([]);
     expect(sqlite.query("SELECT value FROM schema_meta WHERE key='guard_enabled_at'").get()).toEqual(stamp);
   } finally { sqlite.close(); }
 });

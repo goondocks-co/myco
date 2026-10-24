@@ -73,14 +73,15 @@ describe('project capability defaults across readers', () => {
 });
 
 describe('default-on task enforcement', () => {
-  it('admits extraction and seeding with no rows, and an explicit Learning opt-out stops new and queued work', async () => {
+  it('pauses extraction and admits seeding with no rows, and an explicit Learning opt-out stops new and queued work', async () => {
     const { db, sqlite, serverEnv } = sqliteEnv({ workerLogin: true });
     try {
       await projectRepositories(db, deploymentSecretStore(db, serverEnv.wrappingKey))
         .save('proj_1', { url: 'https://example.test/team/repo.git', branch: 'main', revision: null }, 'test', NOW);
       await ensureMember(db, 'mem_worker', NOW, 'admin', 'test');
       const credential = await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW);
-      for (const task of [EXTRACTION_TASK, SEEDING_TASK]) {
+      expect(await prepareDispatch(serverEnv, EXTRACTION_TASK, 'proj_1')).toMatchObject({ok:false,refusal:'not_landed'});
+      for (const task of [SEEDING_TASK]) {
         expect(await prepareDispatch(serverEnv, task, 'proj_1')).toMatchObject({ ok: true });
         expect(await dispatchTask(serverEnv, task, 'proj_1', { serverUrl: 'https://s', actor: 'test' }, NOW))
           .toMatchObject({ dispatched: true, queued: true });
@@ -92,7 +93,7 @@ describe('default-on task enforcement', () => {
           .toMatchObject({ claimed: false });
       }
       expect(sqlite.query('SELECT task, status, run_context AS context FROM agent_runs ORDER BY task').all())
-        .toEqual([EXTRACTION_TASK, SEEDING_TASK].sort().map((task) => ({ task, status: 'skipped', context: JSON.stringify({ reason: 'capability_off' }) })));
+        .toEqual([SEEDING_TASK].sort().map((task) => ({ task, status: 'skipped', context: JSON.stringify({ reason: 'capability_off' }) })));
       expect(await prepareDispatch(serverEnv, TITLING_TASK, 'proj_1')).toMatchObject({ ok: true });
     } finally { sqlite.close(); }
   });

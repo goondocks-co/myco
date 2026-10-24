@@ -465,9 +465,9 @@ describe('every Deployment leaf, the way the dashboard writes it', () => {
   it('changes task admission on the next run when a capability is toggled', async () => {
     const e = env();
     const dispatch = async () => json(await worker.fetch(await asOwnerPost(e.db, '/api/harness/dispatch', { task: 'extract-curate', projectId: 'proj_1' }), e.all));
-    expect(await dispatch()).toMatchObject({ queued: true });
+    expect(await dispatch()).toMatchObject({ error: 'not_landed', message: 'Learning resumes with whole-session reading' });
     expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/vault_evolution', { enabled: true }), e.all))).toEqual({ applied: true });
-    expect(await dispatch()).toMatchObject({ queued: true });
+    expect(await dispatch()).toMatchObject({ error: 'not_landed', message: 'Learning resumes with whole-session reading' });
     expect(await json(await worker.fetch(await put(e.db, '/api/projects/proj_1/capabilities/vault_evolution', { enabled: false }), e.all))).toEqual({ applied: true });
     expect(await dispatch()).toMatchObject({ error: 'capability_off' });
   });

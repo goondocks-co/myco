@@ -35,6 +35,7 @@ import { SERVER_SCHEMA_VERSION } from '../../packages/myco-server/src/constants.
 import { RECOVERED_SWITCH } from '../../packages/myco-server/src/core/embedding/switch-store.js';
 import { asSchema41 } from './legacy-recovery-fixture.js';
 import { seedRecoveryAuthority, recoveryAuthoritySnapshot, assertRecoveredAuthority } from './recovery-authority-fixture.js';
+import { V102_STATEMENTS } from '@myco-server-worker/db/schema-v102.js';
 
 /** Where the fixture source holds the object an artifact key names. */
 async function sourceKeyOf(source: ReturnType<typeof sqliteEnv>, logical: string): Promise<string> {
@@ -100,7 +101,8 @@ const RECOVERED_TOOL_ID = uuid(9002);
 const RECOVERED_TOOL_INPUT = { text: 'restore input '.repeat(300), file_path: '/repo/recovered.ts' };
 
 async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
-  { legacy = false, configuration = {} as Record<string, unknown>, bundledInput = false, authority = false } = {}) {
+  { legacy = false, configuration = {} as Record<string, unknown>, bundledInput = false, authority = false,
+    learningSource = null as 'paused' | 'pre-pause' | null } = {}) {
   const source = legacySource();
   const blobs = await storedBlobs(source);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-native-recovery-'));
@@ -132,6 +134,12 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
   }
   const carriedToken = authority ? await issueMemberToken(source.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now()) : null;
   if (authority) seedRecoveryAuthority(source.sqlite);
+  if(learningSource!==null) {
+    source.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.tasks',?,123,'owner')",
+      [JSON.stringify({'extract-curate':{schedule:{enabled:false,memberRunsPerDay:7,intervalSeconds:60}}})]);
+    source.sqlite.run("DELETE FROM schema_meta WHERE key='learning_paused_at'");
+    if(learningSource==='paused') await source.db.batch(V102_STATEMENTS.map(sql=>source.db.prepare(sql)));
+  }
   const backup = await createBackup(source.db, source.bucket, { producer: 'fixture', now: 1000 });
   await setBackupPinned(source.db, backup.id, true);
   await createRecoveryBundle(artifact, {
@@ -139,6 +147,11 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
     snapshot: async (file) => {
       source.sqlite.query('VACUUM INTO ?').run(file);
       if (legacy) asSchema41(file);
+      if(learningSource==='pre-pause') {
+        const snapshot=new Database(file);
+        try {snapshot.run("UPDATE schema_meta SET value='101' WHERE key='version'");}
+        finally {snapshot.close();}
+      }
       return { configuration, credentialsRequired: [...LOCAL_SECRET_NAMES] };
     },
     blob: async (object) => {
@@ -155,6 +168,25 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
     cleanup: () => { source.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
+
+it('recovers paused learning preferences and migrates a snapshot lacking the pause state', async () => {
+  for(const learningSource of ['paused','pre-pause'] as const) {
+    const f=await fixture('local',{learningSource});
+    try {
+      await f.restore();
+      const restored=new Database(f.paths.databasePath,{readonly:true});
+      try {
+        expect(restored.query("SELECT value FROM schema_meta WHERE key='learning_paused_at'").get())
+          .toEqual({value:expect.any(String)});
+        const live=restored.query("SELECT value FROM deployment_settings WHERE leaf='agent.tasks'").get() as {value:string};
+        expect(JSON.parse(live.value)).toEqual({'extract-curate':{enabled:false,memberRunsPerDay:7}});
+        const retired=restored.query("SELECT value,updated_at,updated_by FROM retired_deployment_settings WHERE leaf='agent.tasks.extract-curate.schedule'").get();
+        expect(retired).toEqual({value:JSON.stringify({'extract-curate':{schedule:{enabled:false,memberRunsPerDay:7,intervalSeconds:60}}}),
+          updated_at:123,updated_by:'owner'});
+      } finally {restored.close();}
+    } finally {f.cleanup();}
+  }
+});
 
 it('recovers hosted data, independently wrapped credentials and pinned artifacts into a fresh native volume', async () => {
   const f = await fixture();

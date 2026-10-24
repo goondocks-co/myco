@@ -1,10 +1,12 @@
+import { ingestEvent } from '@myco-server-worker/ingest/events.js';
+import { envelope, uuid } from './helpers/fixtures.js';
 import { createHash } from 'node:crypto';
 import { expect, it } from 'bun:test';
 import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
 import { eventContent } from '@myco-server-worker/core/event-content.js';
 import { listSegments } from '@myco-server-worker/read/transcript.js';
 import { laneSelectionSql, PARSER_VERSION } from '@myco-server-worker/ingest/parse.js';
-import { registerBlob } from './helpers/d1.js';
+import { registerBlob, seedCredential } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 const NOW=Date.now();
@@ -445,5 +447,60 @@ it('keeps inline event bytes when a prepared receipt loses its registered proof 
       .toEqual({payload,payload_format:'inline'});
     expect(f.sqlite.query(`SELECT cursor_project,cursor_session FROM raw_event_archive_state WHERE id=1`).get())
       .toEqual({cursor_project:'',cursor_session:''});
+  } finally {f.sqlite.close();}
+});
+
+it('reasserts the learning hold when a prompt fact arrives after segment selection', async () => {
+  const f=await heldSegment(Buffer.byteLength('retained source bytes'));
+  try {
+    seedCredential(f.sqlite,{id:'token',machineId:'m',expiresAt:NOW+86_400_000});
+    f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
+    f.sqlite.run("INSERT INTO view_instances(project_id,instance_id,session_id,parser_version,base,state,created_at) VALUES('proj_1','published','s-held',1,'full','live',1)");
+    f.sqlite.run("INSERT INTO session_views(project_id,session_id,live_instance,legacy,updated_at) VALUES('proj_1','s-held','published','published',1)");
+    let inserted=false;
+    let admission: unknown;
+    const db=f.serverEnv.db;
+    const env={...f.serverEnv,db:{...db,batch:async(statements:Parameters<typeof db.batch>[0])=>{
+      if(!inserted&&statements.some(statement=>(statement as {sql?:string}).sql?.includes('UPDATE raw_archive_refs SET archive_key='))) {
+        inserted=true;
+        const result=await ingestEvent(f.db,{projectId:'proj_1',machineId:'m',tokenId:'token',bodyBytes:1,now:NOW},
+          envelope({eventId:uuid(990),sessionId:'s-held',kind:'prompt',payload:{promptId:uuid(991),text:'new unread fact',origin:'user'}}),
+          {db:f.db,blobs:f.bucket});
+        admission=result;
+      }
+      return db.batch(statements);
+    }}};
+    await expect(archiveRawSources(env,NOW,90)).rejects.toThrow();
+    expect(inserted).toBe(true);
+    expect(admission).toMatchObject({persisted:true});
+    expect(f.sqlite.query("SELECT disposition FROM raw_archive_refs WHERE transcript_id='tx-held'").get()).toEqual({disposition:'hot'});
+    expect(f.sqlite.query("SELECT COUNT(*) AS n FROM transcript_segments WHERE transcript_id='tx-held'").get()).toEqual({n:1});
+  } finally {f.sqlite.close();}
+});
+
+it('advances and wraps past learning-held transcript pages before revisiting released source', async () => {
+  const f=await heldSegment(Buffer.byteLength('retained source bytes'));
+  try {
+    f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
+    for(let index=0;index<21;index++) {
+      const session=`s-copy-${index}`,transcript=`tx-copy-${index}`,event=`e-copy-${index}`;
+      f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES('proj_1',?,'m','token',1,1)",[session]);
+      f.sqlite.run(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,agent,size,first_received_at,last_received_at,token_id,parsed_offset,prompt_identity_scheme)
+        SELECT project_id,?,?,machine_id,agent,size,first_received_at,last_received_at,token_id,parsed_offset,prompt_identity_scheme
+        FROM transcripts WHERE transcript_id='tx-held'`,[transcript,session]);
+      f.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_bytes,raw_revision)
+        SELECT project_id,?,?,token_id,kind,channel,payload,envelope_hash,created_at,received_at,payload_bytes,raw_revision FROM events WHERE event_id='e-held'`,[event,session]);
+      f.sqlite.run(`INSERT INTO transcript_segments(project_id,transcript_id,base_offset,length,blob_key,event_id,created_at,received_at,token_id)
+        SELECT project_id,?,base_offset,length,blob_key,?,created_at,received_at,token_id FROM transcript_segments WHERE transcript_id='tx-held'`,[transcript,event]);
+    }
+    f.sqlite.run("INSERT INTO view_instances(project_id,instance_id,session_id,parser_version,base,state,created_at) VALUES('proj_1','last-published','s-held',1,'full','live',1)");
+    f.sqlite.run("INSERT INTO session_views(project_id,session_id,live_instance,legacy,updated_at) VALUES('proj_1','s-held','last-published','published',1)");
+    for(let pass=0;pass<8;pass++) await archiveRawSources(f.serverEnv,NOW,90);
+    expect(f.sqlite.query("SELECT disposition FROM raw_archive_refs WHERE transcript_id='tx-held'").get()).toEqual({disposition:'archived'});
+    expect(f.sqlite.query("SELECT COUNT(*) AS n FROM transcript_segments").get()).toEqual({n:21});
+    f.sqlite.run("UPDATE deployment_settings SET value='false' WHERE leaf='agent.scheduled_tasks_enabled'");
+    for(let pass=0;pass<30;pass++) await archiveRawSources(f.serverEnv,NOW,90);
+    expect(f.sqlite.query("SELECT COUNT(*) AS n FROM transcript_segments").get()).toEqual({n:0});
+    expect((await listSegments(f.db,{projectId:'proj_1'},'tx-held')).length).toBe(1);
   } finally {f.sqlite.close();}
 });

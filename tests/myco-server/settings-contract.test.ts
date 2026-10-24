@@ -159,15 +159,15 @@ const selection = async (r: Rig, task: string, offers: OfferedHarness[]) => {
 const at = (module: string, fn: (...args: never[]) => unknown): Consumer => ({ module, fn });
 
 /** The extraction schedule a Project twenty days quiet meets, decided against the leaves as the clock reads them. */
-const quietDecision = async (r: Rig) => decideTask(r.env, 'proj_1', NOW - 20 * DAY, 'extract-curate', scheduleFor('extract-curate', TASK_SCHEDULE['extract-curate']!, {}), 'idle', await scheduleLeaves(r.env), NOW);
+const quietDecision = async (r: Rig) => decideTask(r.env, 'proj_1', NOW - 20 * DAY, 'extract-curate', scheduleFor('extract-curate', { intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12 }, {}), 'idle', await scheduleLeaves(r.env), NOW);
 const extractionDecision = async (r: Rig, lastEntryAt: number | null) => {
   const leaves = await scheduleLeaves(r.env);
   const facts = {
-    runs: new Map([[taskFactsKey('proj_1', 'extract-curate'), { live: false, lastEntryAt, entriesSince: lastEntryAt === null ? 0 : 1 }]]),
+    runs: new Map([[taskFactsKey('proj_1', 'title-summary'), { live: false, lastEntryAt, entriesSince: lastEntryAt === null ? 0 : 1 }]]),
     capabilities: new Set([taskFactsKey('proj_1', 'vault_evolution')]),
   };
-  return decideTask(r.env, 'proj_1', NOW - 3_600_000, 'extract-curate',
-    scheduleFor('extract-curate', TASK_SCHEDULE['extract-curate']!, leaves.overrides), 'idle', leaves, NOW, facts);
+  return decideTask(r.env, 'proj_1', NOW - 3_600_000, 'title-summary',
+    scheduleFor('title-summary', { intervalSeconds: 3600, runIn: ['idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 12 }, leaves.overrides), 'idle', leaves, NOW, facts);
 };
 /** Runs the clock dispatched at this wake; each is removed again so the next read starts from the same state. */
 async function dispatched(r: Rig): Promise<number> {
@@ -244,7 +244,7 @@ function profileCases(): Record<string, BehaviorCase> {
 
 /** Every live Deployment leaf's consumer and behavior case. Each invalid sample changes the result a read that ignored the leaf's rule would act on. */
 const CASES: Readonly<Record<string, BehaviorCase>> = {
-  'agent.scheduled_tasks_enabled': { consumer: at('core/scheduled-tasks.ts', runScheduledTasks), value: () => true, invalid: () => 1, observe: dispatched },
+  'agent.scheduled_tasks_enabled': { consumer: at('core/scheduled-tasks.ts', runScheduledTasks), value: () => true, invalid: () => 1, observe: async (r) => (await scheduleLeaves(r.env)).enabled },
   'agent.scheduled_tasks_active_window_days': {
     consumer: at('core/scheduled-tasks.ts', decideTask), setup: () => [['agent.scheduled_tasks_enabled', true]],
     value: () => 30, invalid: () => 30.5, observe: quietDecision,
@@ -263,8 +263,8 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
     value: () => 30, invalid: () => 20_000, invalidMeans: { value: 10_080 }, observe: async (r) => (await mapSchedule(r))?.intervalSeconds ?? null,
   },
   'agent.tasks': {
-    consumer: at('core/scheduled-tasks.ts', scheduledTasks), value: () => ({ 'extract-curate': { schedule: { intervalSeconds: 600 } } }), invalid: () => [], invalidDocument: true,
-    observe: async (r) => scheduledTasks((await scheduleLeaves(r.env)).overrides).find((t) => t.task === 'extract-curate')?.schedule.intervalSeconds,
+    consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['cortex.canopy.refresh.background_enabled', true]], value: () => ({ 'canopy-map': { schedule: { intervalSeconds: 600 } } }), invalid: () => [], invalidDocument: true,
+    observe: async (r) => scheduledTasks((await scheduleLeaves(r.env)).overrides).find((t) => t.task === 'canopy-map')?.schedule.intervalSeconds,
   },
   ...Object.fromEntries((['concurrent_runs', 'task_concurrent_runs', 'task_runs_per_hour'] as const).map((limit) => [`agent.limits.${limit}`, {
     consumer: at('core/harness.ts', dispatchTask), value: () => 1, invalid: () => 1.5, observe: heldDispatch,
@@ -384,9 +384,9 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
 /** What the dispatcher answers for an extraction while one run of it is live: the limit it is held by, if any. */
 async function heldDispatch(r: Rig): Promise<unknown> {
   for (let i = 0; i < 1; i++) {
-    r.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', ?, 'myco-agent', 'extract-curate', 'running', ?)`, [`run_live_${i}`, NOW - 10 * 60_000]);
+    r.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', ?, 'myco-agent', 'title-summary', 'running', ?)`, [`run_live_${i}`, NOW - 10 * 60_000]);
   }
-  const outcome = await dispatchTask(r.env, 'extract-curate', 'proj_1', { serverUrl: ORIGIN, actor: 'test', timeoutSeconds: 120 }, NOW);
+  const outcome = await dispatchTask(r.env, 'title-summary', 'proj_1', { serverUrl: ORIGIN, actor: 'test', timeoutSeconds: 120, params: { session_id: 's_clock', mode: 'claim' } }, NOW);
   r.sqlite.run(`DELETE FROM agent_runs`);
   return 'heldBy' in outcome ? outcome.heldBy ?? null : outcome;
 }
@@ -600,29 +600,29 @@ describe('stored settings that do not apply', () => {
     it(`reports an unknown accelerator while the extraction clock keeps its ordinary interval on ${target}`, async () => {
       const r = rigFor(target);
       const accelerator = { name: 'vanished-accelerator', thresholds: { steady: 0, accelerated: 1 } };
-      storedRaw(r, 'agent.tasks', JSON.stringify({ 'extract-curate': { schedule: { accelerator } } }));
+      storedRaw(r, 'agent.tasks', JSON.stringify({ 'title-summary': { schedule: { accelerator } } }));
       const answer = await row(r, 'agent.tasks');
       expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('vanished-accelerator') });
-      expect((answer.effective as Record<string, { schedule: Record<string, unknown> }>)['extract-curate']?.schedule.accelerator).toBeUndefined();
+      expect((answer.effective as Record<string, { schedule: Record<string, unknown> }>)['title-summary']?.schedule.accelerator).toBeUndefined();
       expect(await extractionDecision(r, NOW - 1_800_000)).toBe('not_yet');
     });
 
     it(`reports an unknown precondition while the extraction clock holds work on ${target}`, async () => {
       const r = rigFor(target);
-      storedRaw(r, 'agent.tasks', JSON.stringify({ 'extract-curate': { schedule: { preCondition: 'vanished-condition' } } }));
+      storedRaw(r, 'agent.tasks', JSON.stringify({ 'title-summary': { schedule: { preCondition: 'vanished-condition' } } }));
       const answer = await row(r, 'agent.tasks');
-      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('extract-curate.schedule.preCondition') });
-      expect((answer.effective as Record<string, { schedule: Record<string, unknown> }>)['extract-curate']?.schedule.preCondition).toBeNull();
+      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('title-summary.schedule.preCondition') });
+      expect((answer.effective as Record<string, { schedule: Record<string, unknown> }>)['title-summary']?.schedule.preCondition).toBeNull();
       expect(await extractionDecision(r, null)).toBe('precondition');
     });
 
     it(`reports an unknown reserved-run precondition while the extraction clock holds reserve on ${target}`, async () => {
       const r = rigFor(target);
-      storedRaw(r, 'agent.tasks', JSON.stringify({ 'extract-curate': { schedule: {
+      storedRaw(r, 'agent.tasks', JSON.stringify({ 'title-summary': { schedule: {
         maxRunsPerDay: 2, reservedRunsPerDay: { count: 2, preCondition: 'vanished-reserve' },
       } } }));
       const answer = await row(r, 'agent.tasks');
-      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('extract-curate.schedule.reservedRunsPerDay.preCondition') });
+      expect(answer).toMatchObject({ storedApplies: false, reason: expect.stringContaining('title-summary.schedule.reservedRunsPerDay.preCondition') });
       expect(await extractionDecision(r, null)).toBe('reserved_runs_per_day');
     });
 

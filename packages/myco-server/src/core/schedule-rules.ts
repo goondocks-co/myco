@@ -10,6 +10,7 @@ import type { RelationalStore, ServerEnv } from './adapters.js';
 import { DEPLOYMENT_LEAF_SPECS, isScheduleCount, settingTexts, storedSettings } from './settings.js';
 import { TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js';
 import { newestUnprocessedSession } from '../read/prompts.js';
+import { EXTRACTION_TASK } from './task-catalogue.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { capturedSinceMap } from './canopy.js';
 
@@ -86,7 +87,8 @@ export const MEMBER_RUNS_PER_DAY_DEFAULT = 4;
  * not widen every member's day. Runs the clock starts are never counted against it, nor a member's against the clock's.
  */
 export async function memberRunsPerDay(env: ServerEnv, task: string): Promise<number> {
-  const override = scheduleOverride(task, (await scheduleLeaves(env)).overrides);
+  const tasks = (await scheduleLeaves(env)).overrides;
+  const override = task === EXTRACTION_TASK ? tasks[task] : scheduleOverride(task, tasks);
   const given = override !== null && typeof override === 'object' && !Array.isArray(override) ? override as Record<string, unknown> : {};
   return isScheduleCount(given.memberRunsPerDay) ? given.memberRunsPerDay : MEMBER_RUNS_PER_DAY_DEFAULT;
 }
@@ -186,7 +188,6 @@ export function resolveSchedule(declared: TaskSchedule, override: unknown): Task
     preCondition: typeof o.preCondition === 'string' ? o.preCondition : declared.preCondition,
     accelerator: accelerator(o.accelerator) ?? declared.accelerator,
     maxRunsPerDay: (isScheduleCount(wholeCap) ? wholeCap : undefined) ?? declared.maxRunsPerDay,
-    rampRunsPerDay: (isScheduleCount(o.rampRunsPerDay) ? o.rampRunsPerDay : undefined) ?? declared.rampRunsPerDay,
     reservedRunsPerDay: reservedRunsPerDay(o.reservedRunsPerDay) ?? declared.reservedRunsPerDay,
     runWhenCold: typeof o.runWhenCold === 'boolean' ? o.runWhenCold : declared.runWhenCold,
     overlap: o.overlap === 'skip' || o.overlap === 'queue' ? o.overlap : declared.overlap,

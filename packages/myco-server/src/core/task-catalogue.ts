@@ -50,7 +50,13 @@ export const TASK_TIERS: Readonly<Record<string, import('@goondocks/myco-shared/
 };
 
 /** Tasks whose required worker capability is not available for dispatch. */
-export const UNLANDED_TASKS: readonly string[] = [];
+export const UNLANDED_TASKS: readonly string[] = [EXTRACTION_TASK];
+export const LEARNING_PAUSE_MESSAGE = 'Learning resumes with whole-session reading';
+
+/** The declared reason a retained task is unavailable on this Deployment. */
+export function taskAvailabilityNote(task: string): string | null {
+  return UNLANDED_TASKS.includes(task) && task === EXTRACTION_TASK ? LEARNING_PAUSE_MESSAGE : null;
+}
 
 /** Every retained task, with the gate it runs behind. */
 export const TASK_ADMISSION = {

@@ -1,3 +1,5 @@
+import { ApiError } from '../../packages/myco-server/ui/src/lib/api';
+import { refusalOf } from '../../packages/myco-server/ui/src/features/work/RunTask';
 import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -28,7 +30,8 @@ const TASKS = Array.from({ length: 6 }, (_, index) => description(index));
 const PREVIEW = (url: URL): TaskStartPreview => ({
   task: url.searchParams.get('task')!, projectId: url.searchParams.get('project')!,
   executions: [{ harness: 'codex', tier: 'high', model: 'gpt-6', effort: 'high', workers: [] }], heldBy: null, workers: 2,
-  readiness: { condition: 'has-unprocessed-prompts', met: false }, live: false, capability: null, allowance: null,
+  readiness: url.searchParams.get('task')==='canopy-map' ? { condition: 'has-capture-since-map', met: false } : null,
+  live: false, capability: null, allowance: null,
 });
 
 function server(tasks = TASKS, options: { member?: boolean; projects?: typeof PROJECTS; failProjects?: boolean; sent?: Array<{ path: string; body: unknown }>; week?: Promise<void>; preview?: Promise<void>; fleetWait?: TaskStartPreview['fleetWait'] } = {}) {
@@ -110,8 +113,8 @@ describe('the Tasks view reads the registry', () => {
   it('shows the shared dispatch ceiling even when a compatible agent is available', async () => {
     server(TASK_DESCRIPTIONS, { fleetWait: { reason: 'dispatch_ceiling', observedAt: Date.now() } });
     mount(`/p/${P}/work/tasks`);
-    const learning = TASK_DESCRIPTIONS.find(task => task.task === 'extract-curate')!;
-    fireEvent.click(await screen.findByRole('button', { name: `Run now: ${learning.name}` }));
+    const mapTask = TASK_DESCRIPTIONS.find(task => task.task === 'canopy-map')!;
+    fireEvent.click(await screen.findByRole('button', { name: `Run now: ${mapTask.name}` }));
     await screen.findByText(/The work limit is holding this work/);
     expect(screen.getByText(/Starting now queues this run/)).toBeTruthy();
     expect(screen.queryByText(/It will run on/)).toBeNull();
@@ -191,7 +194,7 @@ describe('starting a task from the Tasks view', () => {
   const startable = TASK_DESCRIPTIONS.filter((task) => task.startable);
 
   it('offers Run now on every task a person may start by hand, and on no other', async () => {
-    expect(startable.map((task) => task.task).sort()).toEqual(['canopy-map', 'extract-curate', 'vault-seed']);
+    expect(startable.map((task) => task.task).sort()).toEqual(['canopy-map', 'vault-seed']);
     for (const path of [`/p/${P}/work/tasks`, '/work/tasks']) for (const member of [false, true]) {
       server(TASK_DESCRIPTIONS, { member });
       mount(path);
@@ -209,17 +212,17 @@ describe('starting a task from the Tasks view', () => {
     const sent: Array<{ path: string; body: unknown }> = [];
     const asked = server(TASK_DESCRIPTIONS, { sent });
     mount(`/p/${P}/work/tasks`);
-    const learning = TASK_DESCRIPTIONS.find((task) => task.task === 'extract-curate')!;
-    fireEvent.click(await screen.findByRole('button', { name: `Run now: ${learning.name}` }));
-    const dialog = await screen.findByRole('dialog', { name: 'Learn from new sessions now?' });
+    const mapTask = TASK_DESCRIPTIONS.find((task) => task.task === 'canopy-map')!;
+    fireEvent.click(await screen.findByRole('button', { name: `Run now: ${mapTask.name}` }));
+    const dialog = await screen.findByRole('dialog', { name: 'Update the code map now?' });
     expect(dialog.querySelector('[data-run-task-project]')).toBeNull();
     await waitFor(() => expect(dialog.querySelector('[data-run-model]')!.textContent).toBe('Codex with gpt-6 at high effort, its high tier'));
-    expect(dialog.querySelector('[data-readiness="unmet"]')!.textContent).toBe('There are no new sessions to learn from, so it will likely find nothing new to keep.');
-    expect(asked.find((url) => url.pathname === '/api/tasks/start')!.searchParams.toString()).toBe(new URLSearchParams({ project: P, task: 'extract-curate' }).toString());
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Learn now' }));
-    await waitFor(() => expect(sent).toEqual([{ path: '/api/harness/dispatch', body: { projectId: P, task: 'extract-curate' } }]));
+    expect(dialog.querySelector('[data-readiness="unmet"]')!.textContent).toBe('The code map is current: no new sessions have arrived since it was last updated, so it will likely change nothing.');
+    expect(asked.find((url) => url.pathname === '/api/tasks/start')!.searchParams.toString()).toBe(new URLSearchParams({ project: P, task: 'canopy-map' }).toString());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update the code map' }));
+    await waitFor(() => expect(sent).toEqual([{ path: '/api/harness/dispatch', body: { projectId: P, task: 'canopy-map' } }]));
     const started = await waitFor(() => { const line = document.querySelector('[data-started]'); if (line === null) throw new Error('not yet'); return line as HTMLElement; });
-    expect(started.textContent).toBe('Learning is queued. Waiting for a machine to pick it up.Open the run →');
+    expect(started.textContent).toBe('The code map update is queued. Waiting for a machine to pick it up.Open the run →');
     expect(within(started).getByRole('link', { name: 'Open the run →' }).getAttribute('href')).toBe(`/p/${P}/work/runs/run_hand0000001`);
   });
 
@@ -229,10 +232,10 @@ describe('starting a task from the Tasks view', () => {
     const sent: Array<{ path: string; body: unknown }> = [];
     server(TASK_DESCRIPTIONS, { sent, week: new Promise((resolve) => { releaseWeek = resolve; }), preview: new Promise((resolve) => { releasePreview = resolve; }) });
     mount(`/p/${P}/work/tasks`);
-    const learning = TASK_DESCRIPTIONS.find((task) => task.task === 'extract-curate')!;
-    fireEvent.click(await screen.findByRole('button', { name: `Run now: ${learning.name}` }));
-    const dialog = await screen.findByRole('dialog', { name: 'Learn from new sessions now?' });
-    const confirm = within(dialog).getByRole('button', { name: 'Learn now' });
+    const mapTask = TASK_DESCRIPTIONS.find((task) => task.task === 'canopy-map')!;
+    fireEvent.click(await screen.findByRole('button', { name: `Run now: ${mapTask.name}` }));
+    const dialog = await screen.findByRole('dialog', { name: 'Update the code map now?' });
+    const confirm = within(dialog).getByRole('button', { name: 'Update the code map' });
     expect(confirm.hasAttribute('disabled')).toBe(true);
     expect(dialog.querySelector('[data-spend]')).toBeNull();
     expect(dialog.textContent).not.toContain('finished this week');
@@ -266,4 +269,17 @@ describe('starting a task from the Tasks view', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Update the code map' }));
     await waitFor(() => expect(sent).toEqual([{ path: '/api/harness/dispatch', body: { projectId: PROJECTS.projects[0]!.projectId, task: 'canopy-map' } }]));
   });
+});
+
+it('shows the server-owned learning pause message as a final refusal', () => {
+  expect(refusalOf(new ApiError(400,{error:'not_landed',message:'Learning resumes with whole-session reading'}),1,'extract-curate'))
+    .toEqual({words:'Learning resumes with whole-session reading',capability:null,final:true});
+});
+
+it('shows paused learning without offering a new run', async () => {
+  server(TASK_DESCRIPTIONS);
+  mount(`/p/${P}/work/tasks`);
+  const card=await screen.findByRole('heading',{name:'Learn from sessions'}).then(node=>node.closest('article')!);
+  expect(card.textContent).toContain('Learning resumes with whole-session reading');
+  expect(within(card).queryByRole('button',{name:'Run now: Learn from sessions'})).toBeNull();
 });
