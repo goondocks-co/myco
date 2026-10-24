@@ -1,12 +1,8 @@
-# @goondocks/myco-windows-x64
+# myco-windows-x64 build output
 
-Windows x64 binary for [`@goondocks/myco`](https://www.npmjs.com/package/@goondocks/myco).
+This internal workspace holds the target's compiled Myco binary.
+GitHub releases distribute the binary with SHA256SUMS.
 
-Windows (x64) support is in beta while macOS remains the primary supported platform. Only **x64** Windows is supported — Windows on ARM, which runs this x64 build under emulation, is not supported.
-
-This package is installed automatically as an `optionalDependency` of
-`@goondocks/myco` when running on Windows x64. You should not install it
-directly — install `@goondocks/myco` and npm will pick the matching
-platform package for you.
-
-License: Apache-2.0
+Install Myco with [the native installers](../../docs/quickstart.md).
+See [platform release assets](../../docs/architecture/platform-packages.md)
+for the release and source-build paths.

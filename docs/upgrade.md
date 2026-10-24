@@ -77,6 +77,8 @@ Take a verified full backup before a local storage-format change. Cloudflare sav
 
 Myco 1.4 retains its local service and background updater. Moving to 2.0 hands capture to member hooks; Myco's own work needs a registered runner.
 
+An existing npm-installed 1.4 uses the same managed binary destination. Run the installer with explicit replacement, then complete setup and cutover; the 1.4 updater stays on its own release line. Existing npm-installed 2.x alphas can use `myco update`, which downloads verified GitHub assets directly.
+
 Keep a backup of the 1.4 home. Installing 2.0 replaces the binary immediately; old hooks stop capturing until sign-in and cutover finish. The installer preserves a recognized 1.4 installation unless you explicitly pass `--replace-1.4`. It keeps and refuses an unrecognized binary rather than guessing.
 
 Preview the replacement, then install and start guided setup:

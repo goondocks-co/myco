@@ -18,7 +18,7 @@ Windows x64 has an installer; the 2.0 Windows path is not yet verified:
 irm https://myco.sh/install.ps1 | iex
 ```
 
-No Node runtime is needed. The installers select an available 2.x release. An unqualified npm install may still select the 1.4 release line.
+No Node runtime is needed. The installers download an available 2.x GitHub release. Existing 1.4 installations use explicit replacement and cutover; see [Moving from Myco 1.4](../../docs/upgrade.md#upgrading-from-myco-14).
 
 New to the team? Run the one-time login command your administrator sends from **People & machines › Invite a teammate**. After you join, ask them to use **Connect GitHub** and send you the link to connect your account for dashboard access.
 

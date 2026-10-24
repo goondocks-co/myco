@@ -429,3 +429,40 @@ it('uses the injected release list for channel selection', async () => {
   expect(process.exitCode ?? 0).toBe(0);
   expect(output.join('\n')).toContain('no newer eligible release');
 });
+
+it('updates npm-origin 2.x alphas through GitHub resolution and guarded adoption without package files', async () => {
+  installedBinary('2.0.0-alpha.12');
+  const binary = path.join(home, 'bin', 'myco');
+  writeInstallMarker(home, { source: 'npm', channel: 'alpha', bin: binary });
+  const events: string[] = [];
+  const urls: string[] = [];
+  const target = '2.0.0-alpha.13';
+  const triple = resolveTargetTriple();
+  const name = assetName(triple);
+  await run([], {
+    home, currentVersion: '2.0.0-alpha.12', isMemberHome: () => true,
+    fetch: async input => {
+      urls.push(String(input));
+      expect(String(input)).toStartWith('https://api.github.com/repos/goondocks-co/myco/releases');
+      return Response.json([{ tag_name: `myco/v${target}`, prerelease: true, assets: [
+        { name, browser_download_url: `https://github.com/goondocks-co/myco/releases/download/myco/v${target}/${name}` },
+        { name: 'SHA256SUMS', browser_download_url: 'https://github.com/goondocks-co/myco/releases/download/sums' },
+      ] }]);
+    },
+    stageBinary: async ({ refs }) => {
+      expect(refs.assetUrl).toStartWith('https://github.com/goondocks-co/myco/releases/download/');
+      expect(refs.sha256sumsUrl).toEndWith('/sums');
+      const directory = path.join(home, 'verified');
+      fs.mkdirSync(directory);
+      fs.writeFileSync(path.join(directory, process.platform === 'win32' ? 'myco.exe' : 'myco'), target);
+      events.push('verified GitHub asset');
+      return { version: target, versionDir: directory };
+    },
+    placeBinary: place(events), probeVersion: file => fs.readFileSync(file, 'utf8'),
+    refreshMember: async () => { events.push('refresh'); },
+  });
+  expect(urls).toHaveLength(1);
+  expect(events).toEqual(['verified GitHub asset', 'adopt', 'refresh']);
+  expect(fs.readFileSync(binary, 'utf8')).toBe(target);
+  expect(output.join('\n')).toContain(`from 2.0.0-alpha.12 to ${target}`);
+});

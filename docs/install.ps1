@@ -259,7 +259,7 @@ $LegacyVault = @(Get-MycoFiles (Join-Path $MycoHome 'groves/*/myco.db')).Count -
 if (-not $HasBinary -and $LegacyVault -and -not $MemberHome) { $Legacy = $true }
 $UnknownBinary = $HasBinary -and -not $CurrentVersion
 if (-not $Replace14 -and ($UnknownBinary -or ($MemberHome -and $Legacy))) {
-    throw "Found $(if ($UnknownBinary) { 'an unclassifiable binary' } else { 'a 1.x binary in a joined member home' }) at $Exe. Nothing was installed; the binary was preserved. To install 2.0 explicitly: $ReplaceCommand (equivalent to --replace-1.4, or -Replace14 when invoking the script). For an intentional 1.x update, use: npm install -g @goondocks/myco@1"
+    throw "Found $(if ($UnknownBinary) { 'an unclassifiable binary' } else { 'a 1.x binary in a joined member home' }) at $Exe. Nothing was installed; the binary was preserved. To install 2.0 explicitly: $ReplaceCommand (equivalent to --replace-1.4, or -Replace14 when invoking the script)."
 }
 
 Write-Host "Resolving $Channel release..." -ForegroundColor Cyan

@@ -264,11 +264,8 @@ export function formatCheck(check: DoctorCheck): string {
 }
 
 /** Compare the running binary version with its installed package manifest. */
-export function checkBinaryVersionSkew(): DoctorCheck {
-  const baked = getPluginVersion();
-  // Walk up from the binary to @goondocks/myco core — that's the manifest
-  // npm install actually shipped. (Source checkouts find packages/myco/.)
-  const argv0 = process.argv[0];
+export function checkBinaryVersionSkew(baked = getPluginVersion(), argv0 = process.argv[0]): DoctorCheck {
+  // Existing package installs retain their manifest for version comparison.
   const installedRoot = argv0 ? findCorePackageRoot(path.dirname(argv0)) : null;
   if (!installedRoot) {
     return { name: 'Binary version', status: 'warn', detail: `binary baked at ${baked}; could not find installed package.json to compare`, reason: 'binary_manifest_missing', fixable: false };
@@ -286,7 +283,7 @@ export function checkBinaryVersionSkew(): DoctorCheck {
     return {
       name: 'Binary version',
       status: 'fail',
-      detail: `installed package.json says ${installedVersion} but binary --version reports ${baked} (npm upgrade refreshed JS but not the compiled binary; reinstall with \`npm install -g @goondocks/myco@${installedVersion}\` to fix)`,
+      detail: `installed package.json says ${installedVersion} but binary --version reports ${baked} (install the release binary with https://myco.sh/install.sh or https://myco.sh/install.ps1; use --replace-1.4 (PowerShell: -Replace14) when moving from 1.4)`,
       reason: 'binary_version_skew',
       fixable: false,
     };

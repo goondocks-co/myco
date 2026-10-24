@@ -8,11 +8,10 @@
  * self-re-exec must not resolve away from the running code — and the policy
  * name is the record of that difference.
  *
- * The layout itself lives in `scripts/managed-paths.mjs` (shared with the npm
- * postinstall); this module imports that layout directly.
+ * The layout lives in `scripts/managed-paths.mjs`; this module imports it directly.
  *
  * Standalone mirrors of this contract exist where imports cannot reach:
- * `bin/binary-resolution.cjs` (npm tarball shims) and the Pi plugin template.
+ * `bin/binary-resolution.cjs` (standalone redirect fixtures) and the Pi plugin template.
  * Each is gated by an agreement test against this module.
  *
  * Set `MYCO_DEBUG_REDIRECT=1` to trace resolution decisions on stderr — the

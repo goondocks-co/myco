@@ -496,6 +496,66 @@ exec '${mv}' "$@"
     expect(JSON.parse(fs.readFileSync(markerFile, 'utf8')).source).toBe('curl');
   });
 
+
+  it.skipIf(!HAS_CC)('replaces existing npm-origin binaries and keeps the installed dispatcher on the managed destination', () => {
+    for (const version of ['1.4.9', '2.0.0-alpha.12']) for (const slot of [true, false]) {
+      const home = freshHome();
+      const mycoHome = path.join(home, '.myco');
+      const binary = path.join(mycoHome, 'bin', 'myco');
+      const packageRoot = path.join(home, 'npm', 'node_modules', '@goondocks', 'myco');
+      const oldCalls = path.join(home, 'old-calls');
+      fs.mkdirSync(path.dirname(binary), { recursive: true });
+      const old = `#!/bin/sh\necho executed >> '${oldCalls}'\necho ${version}\n`;
+      fs.writeFileSync(binary, old, { mode: 0o755 });
+      if (slot) {
+        const versioned = path.join(mycoHome, 'bin', 'versions', version, 'myco');
+        fs.mkdirSync(path.dirname(versioned), { recursive: true });
+        fs.writeFileSync(versioned, old, { mode: 0o755 });
+      }
+      fs.writeFileSync(path.join(mycoHome, 'install.json'), JSON.stringify({
+        source: 'npm', channel: version.startsWith('1.') ? 'stable' : 'alpha', bin: binary,
+        ...(version.startsWith('2.') ? { version, binary_sha256: digest(binary) } : {}),
+      }));
+      const vault = path.join(mycoHome, 'groves', 'legacy', 'myco.db');
+      fs.mkdirSync(path.dirname(vault), { recursive: true });
+      fs.writeFileSync(vault, 'retained history');
+      const bin = path.join(packageRoot, 'bin');
+      fs.mkdirSync(bin, { recursive: true });
+      fs.copyFileSync(path.resolve('tests/fixtures/install/npm-dispatch.cjs'), path.join(bin, 'myco.cjs'));
+      for (const companion of ['binary-resolution.cjs', 'runtime-redirect.cjs']) {
+        fs.copyFileSync(path.resolve('packages/myco/bin', companion), path.join(bin, companion));
+      }
+      fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@goondocks/myco', version }));
+      const packagedBinary = path.join(home, 'npm', 'node_modules', '@goondocks', `myco-${TARGET}`, 'bin', 'myco');
+      fs.mkdirSync(path.dirname(packagedBinary), { recursive: true });
+      fs.writeFileSync(packagedBinary, old, { mode: 0o755 });
+      fs.mkdirSync(path.join(packageRoot, 'vendor'));
+      fs.writeFileSync(path.join(packageRoot, 'vendor', 'resolved.json'), JSON.stringify({ binaryPath: packagedBinary }));
+      if (version.startsWith('1.')) {
+        expect(install(home, FROM()).status).toBe(1);
+        expect(fs.readFileSync(binary, 'utf8')).toBe(old);
+      }
+      const run = install(home, FROM(), version.startsWith('1.') ? ['--replace-1.4'] : []);
+      expect(run.status, run.out).toBe(0);
+      expect(fs.readFileSync(vault, 'utf8')).toBe('retained history');
+      expect(JSON.parse(fs.readFileSync(path.join(mycoHome, 'install.json'), 'utf8'))).toMatchObject({
+        source: 'curl', version: '2.0.0-beta.1', binary_sha256: digest(binary), bin: binary,
+      });
+      if (version.startsWith('1.')) {
+        const preserved = JSON.parse(fs.readFileSync(path.join(mycoHome, 'legacy-executable.json'), 'utf8'));
+        expect(fs.readFileSync(preserved.path, 'utf8')).toBe(old);
+        expect(preserved.version).toBe(slot ? version : null);
+      }
+      const invoked = spawnSync(resolveTestTool('node')!, [path.join(bin, 'myco.cjs'), '--version'], {
+        cwd: home, env: sandboxChildEnv(home), encoding: 'utf8',
+      });
+      expect(invoked.status, invoked.stderr).toBe(0);
+      expect(invoked.stdout.trim()).toBe('2.0.0-beta.1');
+      expect(fs.existsSync(oldCalls)).toBe(false);
+      expect(fs.readFileSync(packagedBinary, 'utf8')).toBe(old);
+    }
+  });
+
   describe('on a machine with Myco 1.4', () => {
     it('keeps the preview channel in its explicit replacement command', () => {
       const legacy = legacyHome({ binary: true });
@@ -766,7 +826,7 @@ exec '${cp}' "$@"
             expect(run.status).toBe(1);
             expect(run.out).toContain(`unclassifiable binary ${binary}`);
             expect(run.out).toContain('--replace-1.4');
-            expect(run.out).toContain('npm install -g @goondocks/myco@1');
+            expect(run.out).toContain('https://myco.sh/install.');
             expect(run.out).not.toContain('Found: myco/v1.');
             expect(fs.readFileSync(binary)).toEqual(Buffer.from(state === 'empty' ? '' : `#!/bin/sh\necho executed > '${path.join(run.home, 'executed-existing')}'\necho 2.0.0-alpha.1\n`));
             expect(fs.existsSync(path.join(run.home, 'executed-existing'))).toBe(false);

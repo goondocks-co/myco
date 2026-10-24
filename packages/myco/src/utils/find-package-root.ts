@@ -7,7 +7,7 @@
  *   package, walking past sibling sub-packages
  *   (e.g. `@goondocks/myco-<arch>`) to reach it. Handles two layouts:
  *
- *     1. npm install (consumer side):
+ *     1. Existing package installation:
  *        `<core>/node_modules/@goondocks/myco-<arch>/bin/myco` —
  *        core is an ancestor of the platform package; ancestor walk
  *        finds it.
@@ -18,10 +18,9 @@
  *        bin/ never visits core; we detect the platform sub-package
  *        and check for a `myco/` sibling under the same parent.
  *
- *   Use this when you need a path that ships only in core (`dist/`,
- *   `skills/`, `scripts/`, `src/agent/definitions/`, the canonical
- *   version) — the Bun-compiled binary lives inside the platform
- *   sub-package, so its nearest `package.json` is not core's.
+ *   Core-only paths such as `skills/`, `scripts/` and the package version
+ *   resolve through the core root; the nearest manifest to a platform
+ *   binary belongs to its platform package.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -79,7 +78,7 @@ export function findCorePackageRoot(startDir: string): string | undefined {
       if (name && PLATFORM_PACKAGE_PATTERN.test(name)) {
         // Remember this package's parent — in the source monorepo
         // (`packages/myco-<arch>/`), core lives next to it
-        // (`packages/myco/`). The npm install topology
+        // (`packages/myco/`). The existing package topology
         // (`<core>/node_modules/@goondocks/myco-<arch>/`) is handled
         // by the normal ancestor walk above.
         platformParent ??= path.dirname(dir);

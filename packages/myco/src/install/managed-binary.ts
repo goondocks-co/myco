@@ -3,7 +3,7 @@
  * layout.
  *
  * Path layout and marker publication live in shared plain-ESM modules under
- * scripts/, used by both the compiled binary and npm postinstall. Callers
+ * scripts/. Callers
  * pass the resolved myco-home to the path helpers.
  *
  * Note: the *running* binary is resolved elsewhere via the existing

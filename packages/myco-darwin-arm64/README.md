@@ -1,13 +1,8 @@
-# @goondocks/myco-darwin-arm64
+# myco-darwin-arm64 build output
 
-macOS arm64 binary for [`@goondocks/myco`](https://www.npmjs.com/package/@goondocks/myco).
+This internal workspace holds the target's compiled Myco binary.
+GitHub releases distribute the binary with SHA256SUMS.
 
-This package is installed automatically as an `optionalDependency` of
-`@goondocks/myco` when running on macOS arm64. You should not install it
-directly — install `@goondocks/myco` and npm will pick the matching
-platform package for you.
-
-If you are seeing this README because npm fetched the package on the
-wrong platform, that is a bug — please report it.
-
-License: Apache-2.0
+Install Myco with [the native installers](../../docs/quickstart.md).
+See [platform release assets](../../docs/architecture/platform-packages.md)
+for the release and source-build paths.

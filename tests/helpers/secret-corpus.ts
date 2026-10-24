@@ -96,7 +96,7 @@ export const CORPUS: readonly Leak[] = [
   { name: 'an AWS access key id as an argument', command: `aws configure set aws_access_key_id ${AWS_KEY_ID}`, secrets: [AWS_KEY_ID] },
   { name: 'a Stripe live key exported', command: `export STRIPE=${STRIPE_LIVE}`, secrets: ['rk_live', '51HxQw'] },
   { name: 'an OpenAI key in env', command: `env OPENAI_API_KEY=${OPENAI_KEY} node app.js`, secrets: ['sk-', 'Zx81Qw'] },
-  { name: 'a token assigned before a command', command: 'TOKEN=x9secret npm publish', secrets: ['x9secret', 'TOKEN'] },
+  { name: 'a token assigned before a command', command: 'TOKEN=x9secret git push', secrets: ['x9secret', 'TOKEN'] },
   { name: 'a GitHub token as an argument', command: `gh auth login --with-token ${GITHUB_PAT}`, secrets: ['ghp_', 'R4nd0m'] },
   { name: 'a Slack bot token', command: `slack-cli send --token ${SLACK_BOT} hello`, secrets: ['xoxb', 'AbCdEf'] },
   { name: 'a bare JWT', command: `echo ${BARE_JWT}`, secrets: ['eyJhbGci', 'dozjgNryP4'] },
