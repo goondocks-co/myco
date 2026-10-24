@@ -31,6 +31,7 @@ const LEAVES: ReadonlyArray<[leaf: string, value: unknown]> = [
   ['import.window_days', 45],
   ['import.max_sessions_per_harness', 25],
   ['agent.limits.concurrent_runs', 3],
+  ['agent.budget.daily_usd', 23.50],
   ['agent.limits.task_concurrent_runs', 1],
   ['agent.limits.task_runs_per_hour', 6],
 ];

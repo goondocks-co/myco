@@ -1,3 +1,4 @@
+import { BudgetLine } from './BudgetLine';
 import { RepositoryNotice } from '../today/RepositoryNotice';
 import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { Fragment, useState, type ReactNode } from 'react';
@@ -109,6 +110,7 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
           <RunTaskMenu projectId={projectId} week={week.data?.outcomes} now={now} onPick={(task) => { setStarted(null); setAsking(task); }} />
         </div>
       </header>
+      <BudgetLine />
       {started !== null && <StartedLine started={started} />}
       <FilterBar
         searchLabel="Search what Myco did"

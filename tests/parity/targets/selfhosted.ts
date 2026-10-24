@@ -1,3 +1,4 @@
+import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -27,6 +28,7 @@ export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnaps
   // another having captured into it first.
   sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(PROJECT_ID, PROJECT_ID, Date.now());
   const db = sqliteRelationalStore(sqlite);
+  await completeBudgetMigration(db,Date.now());
   await linkStatement(db, MEMBER_ID, GITHUB_SUB).run();
   const { token } = await issueMemberToken(db, { memberId: MEMBER_ID, machineId: MACHINE_ID }, Date.now());
   const deploymentId = String((sqlite.query("SELECT value FROM schema_meta WHERE key = 'deployment_id'").get() as { value?: string } | null)?.value);

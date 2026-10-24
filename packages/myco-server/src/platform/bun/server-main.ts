@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { serve } from '../../entry/bun.js';
 import { SCHEMA_STEPS } from '../../db/schema.js';
+import { budgetMigration,budgetCompletionMessage } from '../../db/budget-activation.js';
 import { EmbeddingRuntime } from './embedding-runtime.js';
 import { RuntimeDraining } from '../../core/harness.js';
 import type { ServerEnv } from '../../core/adapters.js';
@@ -145,6 +146,17 @@ export function migrateOnly(databasePath: string, native?: NativeSqlite): number
       }
       applied += 1;
     }
+    const completion = budgetMigration(Date.now());
+    let next = completion.next();
+    while (!next.done) {
+      const step = next.value;
+      let rows:Record<string,unknown>[];
+      try {rows=step.read ? sqlite.query(step.sql).all() as Record<string, unknown>[] : (sqlite.exec(step.sql), []);}
+      catch(error) {next=completion.throw(error);continue;}
+      next = completion.next(rows);
+    }
+    const message=budgetCompletionMessage(next.value);
+    if(message!==null)console.warn(message);
     return applied;
   } finally {
     sqlite.close();

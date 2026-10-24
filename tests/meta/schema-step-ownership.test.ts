@@ -2,7 +2,16 @@ import { expect, it } from 'bun:test';
 import { SCHEMA_STEPS, type SchemaStep } from '@myco-server-worker/db/schema.js';
 
 interface Exception { step: number; object: string; table: string; reason: string }
-const EXCEPTIONS: readonly Exception[] = [];
+const EXCEPTIONS: readonly Exception[] = [
+  {step:103,object:'agent_attempt_settled_insert',table:'agent_run_attempts',reason:'New known costs receive Deployment-local settlement order.'},
+  {step:103,object:'agent_attempt_settled_update',table:'agent_run_attempts',reason:'Newly known costs receive Deployment-local settlement order.'},
+  {step:103,object:'agent_attempt_settlement_fixed',table:'agent_run_attempts',reason:'Settlement order remains stable for incremental estimate seeks.'},
+  {step:103,object:'agent_attempt_cost_fixed',table:'agent_run_attempts',reason:'Settled attempt prices and known sources are immutable.'},
+  {step:103,object:'agent_attempt_machine_fixed',table:'agent_run_attempts',reason:'Known attempt claim machine attribution is immutable.'},
+  {step:103,object:'agent_runs_origin_insert',table:'agent_runs',reason:'Omitted dispatch origins must be classified before queue-head admission.'},
+  {step:103,object:'agent_runs_origin_fixed',table:'agent_runs',reason:'Persisted dispatch origin is immutable.'},
+  {step:103,object:'agent_attempt_claim_fixed',table:'agent_run_attempts',reason:'Claim time, estimate and profile are immutable attempt evidence.'},
+];
 const IDENTIFIER = '(?:[a-zA-Z_][a-zA-Z_0-9]*|"[^"]+"|`[^`]+`|\\[[^\\]]+\\])';
 const name = (value: string) => value.replace(/^["`\[]|["`\]]$/g, '').toLowerCase();
 const createTable = new RegExp(`^CREATE\\s+(?:VIRTUAL\\s+)?TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${IDENTIFIER})(?:\\s|\\()`, 'i');

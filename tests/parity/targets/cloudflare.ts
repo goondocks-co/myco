@@ -1,3 +1,4 @@
+import { budgetMigration } from '@myco-server-worker/db/budget-activation.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -235,6 +236,13 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       HARNESS_LAUNCH_MODE: 'record', CLOCK_MODE: 'manual',
     } });
     started = true;
+    const completion=budgetMigration(Date.now());
+    let migration=completion.next();
+    while(!migration.done) {
+      const rows=await workerdSql(migration.value.sql);
+      migration=completion.next(rows);
+    }
+    if(!migration.value.active)throw new Error(`Parity budget preparation refused: ${migration.value.reason}`);
     if (!reply.url) throw new Error('Wrangler dev provided no local HTTP listener');
     const url = reply.url;
     const health = await fetch(url + '/health', { headers: reply.headers, signal: AbortSignal.timeout(10_000), keepalive: false });

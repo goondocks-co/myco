@@ -1,3 +1,7 @@
+import { refreshEstimates } from './budget-estimates.js';
+import { BUDGET_WINDOW_MS } from './budget-policy.js';
+import { dailyBudget,effectiveBudgetSql } from './settings.js';
+import { contextValue,BUDGET_QUOTE_USD_KEY } from '../db/run-context.js';
 import { storageCleanup } from './storage-cleanup.js';
 import { rawBackfill } from './raw-backfill.js';
 /**
@@ -149,6 +153,8 @@ export { STALE_RUN_ERROR } from './reader-codes.js';
  * holds the two in step.
  */
 export const QUEUE_MAX_AGE_MS = DAY_MS;
+const BUDGET_QUEUE_SETTLE_MS = 3_600_000;
+export const BUDGET_QUEUE_MAX_AGE_MS = QUEUE_MAX_AGE_MS+BUDGET_WINDOW_MS+BUDGET_QUEUE_SETTLE_MS;
 export const QUEUE_EXPIRED_ERROR = STALE_PENDING_REASON;
 
 /** Why a queued run past its bound ended: the capability it waited for, where it waited for one. */
@@ -168,6 +174,7 @@ export function queueExpiredError(heldBy: string | null): string {
  */
 export async function runStaleSweep(env: ServerEnv, now: number): Promise<number> {
   let changed = 0;
+  const budget=await dailyBudget(env.db);
   for (const run of await listLiveRunsAcrossProjects(env.db, JOB_BATCH)) {
     if (run.startedAt === null || now < staleAfter(run.startedAt, run.runContext)) continue;
     const scope = { projectId: run.projectId };
@@ -176,8 +183,14 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
     changed += 1;
   }
   for (const queued of await listQueuedAcrossProjects(env.db, JOB_BATCH)) {
-    if (now - queued.queuedAt < QUEUE_MAX_AGE_MS) continue;
-    if (!(await endQueuedRun(env, { projectId: queued.projectId }, queued, now, { failed: queueExpiredError(queued.heldBy), errorCode: 'machine_did_not_start' }))) continue;
+    const budgetHeld=queued.heldBy==='budget';
+    const quote=queued.budgetQuoteUsd;
+    const tooSmall=budgetHeld&&typeof quote==='number'&&quote>budget;
+    const maximumAge=budgetHeld?BUDGET_QUEUE_MAX_AGE_MS:QUEUE_MAX_AGE_MS;
+    if (!tooSmall && now - queued.queuedAt < maximumAge) continue;
+    const guard={sql:`held_by IS ? AND queued_at IS ?${tooSmall?` AND ${contextValue(BUDGET_QUOTE_USD_KEY)} IS ? AND ${contextValue(BUDGET_QUOTE_USD_KEY)}>${effectiveBudgetSql()}`:''}`,params:[queued.heldBy,queued.queuedAt,...(tooSmall?[quote]:[])]};
+    const failed=tooSmall?`the last estimate $${quote} exceeds the daily budget`:budgetHeld?'the budget window did not free before the queued run expired':queueExpiredError(queued.heldBy);
+    if (!(await endQueuedRun(env, { projectId: queued.projectId }, queued, now, { failed,errorCode:tooSmall?'budget_too_small':budgetHeld?'budget_wait_expired':'machine_did_not_start',guard }))) continue;
     emit({ kind: 'harness_queue_expired', runId: queued.id, task: queued.task, projectId: queued.projectId });
     changed += 1;
   }
@@ -216,6 +229,7 @@ const scheduledMaintenance = (check: MaintenanceCheck): JobRun => async (env, no
 
 /** Every declared job's implementation, by name. A declared job absent here is refused by a gate, never skipped in silence. */
 export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
+  'estimate-refresh': (env,now)=>refreshEstimates(env.db,now),
   'embedding-reconcile': (env, now, state, context) => {
     const allowDispatch = jobDispatchesAt('embedding-reconcile', state);
     return runEmbeddingJob(env, now, { sweepOnly: context?.drainOnly === true || !allowDispatch, allowDispatch });

@@ -1,3 +1,4 @@
+import { localBudgetStatus, cloudflareBudgetStatus, operatorBudgetLine } from '../server/budget-status.js';
 import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import nodeFs from 'node:fs';
 import { CommandFailed, type CommandRunner } from '../server/runner.js';
@@ -349,6 +350,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
         console.log(`  Address:    ${record.origin ?? `http://127.0.0.1:${record.port}`}`);
         console.log(`  Service:    ${service.loaded ? 'running at login' : service.detail ?? 'not installed'}`);
         console.log(await hookPlacementStatusLine(() => localUnplacedContextRecords(paths, carriedNative())));
+        console.log(await operatorBudgetLine(()=>localBudgetStatus(paths,carriedNative())));
         await reportOperatorHold(localRecoveryHold(paths, carriedNative()));
         console.log(`  Serving:    ${(await reachable(record)) ? 'answering on its address' : 'not answering — see ~/.myco/logs/server.log'}`);
         return;
@@ -441,6 +443,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
         console.log(`  Last schema update (${lastSchema.appliedAt !== undefined ? 'applied' : status.schema === lastSchema.schemaAfter ? 'completed; confirmed by live schema' : 'recovery point recorded; migration not confirmed'}): ${lastSchema.schemaBefore} → ${lastSchema.schemaAfter} at ${lastSchema.appliedAt ?? lastSchema.recordedAt}, bookmark ${lastSchema.bookmark}`);
       }
       console.log(await hookPlacementStatusLine(() => cloudflareUnplacedContextRecords({ ...cloudflareOptions(), fetch: deps.fetchImpl })));
+      console.log(await operatorBudgetLine(()=>cloudflareBudgetStatus({...cloudflareOptions(),fetch:deps.fetchImpl})));
       await reportOperatorHold(cloudflareRecoveryHoldOf(cloudflareOptions()));
       return;
     }

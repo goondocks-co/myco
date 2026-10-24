@@ -184,6 +184,7 @@ function sampleFor(leaf: string): unknown {
   if (leaf === 'embedding.model') return '@cf/baai/bge-large-en-v1.5';
   if (leaf === 'embedding.provider') return 'openrouter';
   if (spec.type === 'integer') return spec.max;
+  if (spec.type === 'number') return Number(spec.min)+0.5;
   if (spec.type === 'boolean') return true;
   if (spec.type === 'agent') return 'codex';
   if (spec.type === 'agent-list') return ['codex'];

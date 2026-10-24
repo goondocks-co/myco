@@ -114,6 +114,7 @@ Every shared resource below has exactly one sanctioned writer. Adding a second e
 | Resource | Capability |
 |---|---|
 | Hosted operator record and deployment staging | `withCloudflareOperation` (`packages/myco/src/server/cloudflare-operation.ts`) — holds one lease across provisioning, restore, deploy and nested record/staging writes. |
+| Worker attempt estimates, execution profiles and settled costs | `packages/myco-server/src/core/attempt-accounting.ts` — owns claim evidence, lease-authorized settlement and additive restore. |
 | Deployment settings | `packages/myco-server/src/core/settings.ts` — admits each leaf, authorizes, validates, persists with its actor and re-arms affected schedules. |
 | Machine settings | `packages/myco/src/member/machine-settings.ts` — owns validated member settings persistence. |
 | Symbiont agent config (`.claude/`, `.codex/`, etc.) | `SymbiontInstaller` (`packages/myco/src/symbionts/installer.ts`) — manages hooks, MCP entries and audited harness settings; `symbionts/member-skill-links.ts` owns global member skill links. |

@@ -28,11 +28,11 @@ async function rig() {
   await ensureMember(fixture.db, 'mem_worker', NOW, 'admin', 'the worker machine');
   await ensureMember(fixture.db, 'mem_harness', NOW, 'member', 'harness runtime');
   const workerCredential = await issueMemberToken(fixture.db, { memberId: 'mem_worker', machineId: 'sirkirby-mbp' }, NOW);
-  const runCredential = await issueMemberToken(fixture.db, { memberId: 'mem_harness', machineId: 'harness' }, NOW);
-  const claim = () => claimQueuedRun(fixture.db, CANDIDATE, {
-    dispatchedBy: runCredential.tokenId, worker: legacyWorker(workerCredential.tokenId, 'sirkirby-mbp'), leaseExpiresAt: LEASE_UNTIL, harness: 'codex', now: NOW,
+  const runCredential = {tokenId:''};
+  const claim = async () => { const result=await claimQueuedRun(fixture.serverEnv, CANDIDATE, {
+    worker: legacyWorker(workerCredential.tokenId, 'sirkirby-mbp'), leaseExpiresAt: LEASE_UNTIL, harness: 'codex', now: NOW,
     profile: { tier: 'low', model: 'gpt-fixture', effort: 'low', sources: { tier: 'task', model: 'configured' } },
-  }, { limits: NO_LIMITS, now: NOW });
+  }); if(result!==null)runCredential.tokenId=result.issued.tokenId; return result?.row ?? null; };
   const get = async (path: string): Promise<Record<string, unknown>> => {
     const res = await worker.fetch(await asOwner(fixture.db, path), env);
     return await res.json() as Record<string, unknown>;

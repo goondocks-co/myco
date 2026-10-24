@@ -1,5 +1,7 @@
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
-export const SERVER_SCHEMA_VERSION = 102;
+export const SERVER_SCHEMA_VERSION = 103;
+/** State keys owned by the Deployment and read-only to run tools. */
+export const SERVER_STATE_PREFIX = 'server.';
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
 export const HARNESS_MEMBER_ID = 'mem_harness';
