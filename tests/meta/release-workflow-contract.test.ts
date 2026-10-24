@@ -39,7 +39,7 @@ function assertDarwinDistribution(workflow: typeof release): void {
   expect(signing.steps[download].with).toMatchObject({ name: 'myco-binary-${{ matrix.target }}', path: 'binary/' });
   expect(workflow.jobs.build.needs).toContain('sign-darwin');
   expect(workflow.jobs.build.if).toContain("needs.sign-darwin.result == 'success'");
-  expect(workflow.jobs.build.if).toContain("needs.validate-tag.outputs.tag_prefix != 'myco' && needs.sign-darwin.result == 'skipped'");
+  expect(workflow.jobs.build.if).not.toContain("skipped");
   expect(workflow.jobs.build.steps.some((step: { uses?: string; with?: { pattern?: string } }) =>
     step.uses?.startsWith('actions/download-artifact@') && step.with?.pattern === 'myco-binary-*')).toBe(true);
   expect(workflow.jobs.build.steps.find((step: { name?: string }) => step.name === 'Verify platform binaries').run).toContain('chmod +x "$binary"');
@@ -48,33 +48,29 @@ function assertDarwinDistribution(workflow: typeof release): void {
   expect(gate['runs-on']).toBe('macos-14');
   expect(gate.needs).toContain('build');
   expect(gate.if).toBe("needs.validate-tag.outputs.tag_prefix == 'myco'");
-  for (const artifact of ['myco-raw-binaries', 'npm-package']) {
+  for (const artifact of ['myco-raw-binaries']) {
     expect(gate.steps.some((step: { uses?: string; with?: { name?: string } }) =>
       step.uses?.startsWith('actions/download-artifact@') && step.with?.name === artifact)).toBe(true);
   }
   const verify = gate.steps.find((step: { run?: string }) => step.run?.includes('scripts/verify-darwin-distribution.sh'));
   expect(verify.env.VERSION).toBe('${{ needs.validate-tag.outputs.version }}');
   expect(verify.run).toContain('for target in darwin-arm64 darwin-x64');
-  expect(verify.run).toContain('"npm-packages/myco-${target}/goondocks-myco-${target}-"*.tgz');
-  expect(verify.run).toContain('"raw-binaries/myco-${target}" "${tarballs[0]}" "$mode"');
+  expect(verify.run).toContain('"raw-binaries/myco-${target}" "raw-binaries/SHA256SUMS" "$mode"');
   expect(verify.run).toContain('mode=native');
-  for (const job of ['create-release', 'publish']) {
+  for (const job of ['create-release']) {
     expect(workflow.jobs[job].needs).toContain('verify-darwin');
     expect(workflow.jobs[job].if).toContain("needs.verify-darwin.result == 'success'");
-    expect(workflow.jobs[job].if).toContain("needs.validate-tag.outputs.tag_prefix != 'myco' && needs.verify-darwin.result == 'skipped'");
+    expect(workflow.jobs[job].if).not.toContain("skipped");
   }
 }
 
-test('macOS signing precedes staging, npm packing and checksums; exact distributions gate all publication', () => {
+test('macOS signing precedes staging and checksums; exact distributions gate all publication', () => {
   assertDarwinDistribution(release);
   const script = readFileSync('scripts/verify-darwin-distribution.sh', 'utf8');
-  expect(script).toContain('tar -xzf "$tarball" -C "$scratch" package/bin/myco');
   expect(script).toContain('asset_sha="$(shasum -a 256 "$asset")"');
-  expect(script).toContain('packed_sha="$(shasum -a 256 "$packed")"');
-  expect(script).toContain('[ "${asset_sha%% *}" != "${packed_sha%% *}" ]');
-  expect(script).toContain('for binary in "$asset" "$packed"');
-  expect(script).toContain('codesign --verify --strict "$binary"');
-  expect(script).toContain('actual="$(cd "$scratch" && "$binary" --version)"');
+  expect(script).toContain('[ "${asset_sha%% *}" != "$expected" ]');
+  expect(script).toContain('codesign --verify --strict "$asset"');
+  expect(script).toContain('actual="$(cd "$scratch" && "$asset" --version)"');
   expect(script.indexOf('codesign --verify --strict')).toBeLessThan(script.indexOf('shasum -a 256'));
   expect(script).toContain('invalid code signature; refusing distribution verification');
   expect(script).toContain('[ "$actual" != "$version" ]');
@@ -83,27 +79,27 @@ test('macOS signing precedes staging, npm packing and checksums; exact distribut
   for (const source of [script, signer]) expect(source).not.toMatch(/\|\|\s*(?:true|:)(?:\s|;|$)|\bset\s+\+e\b/);
 });
 
-test('the needs graph and step order reject signing relocated after real npm pack or checksum steps', () => {
-  for (const destination of ['omit', 'pack', 'checksum']) {
+test('the needs graph and step order reject signing relocated after raw staging or checksum steps', () => {
+  for (const destination of ['omit', 'stage', 'checksum']) {
     const mutant = structuredClone(release);
     const steps = mutant.jobs['sign-darwin'].steps;
     const index = steps.findIndex((step: { run?: string }) => step.run === SIGN_DARWIN);
     const [sign] = steps.splice(index, 1);
     if (destination !== 'omit') {
-      const recipient = destination === 'pack' ? mutant.jobs.build : mutant.jobs['create-release'];
+      const recipient = mutant.jobs.build;
       const predecessor = recipient.steps.findIndex((step: { run?: string }) =>
-        step.run?.includes(destination === 'pack' ? 'npm pack --json' : 'sha256sum myco-darwin-arm64'));
+        step.run?.includes(destination === 'stage' ? 'cp "$binary" "release-binaries/$name"' : 'sha256sum "${MYCO_RELEASE_BINARIES[@]}"'));
       expect(predecessor).toBeGreaterThanOrEqual(0);
       recipient.steps.splice(predecessor + 1, 0, sign);
       expect(recipient.steps[predecessor + 1].run).toBe(SIGN_DARWIN);
-      mutant.jobs['sign-darwin'].needs = destination === 'pack' ? ['build'] : ['create-release'];
+      mutant.jobs['sign-darwin'].needs = ['build'];
     }
     expect(() => assertDarwinDistribution(mutant)).toThrow();
   }
   const noGate = structuredClone(release);
   delete noGate.jobs['verify-darwin'];
   expect(() => assertDarwinDistribution(noGate)).toThrow();
-  for (const job of ['create-release', 'publish']) {
+  for (const job of ['create-release']) {
     const bypass = structuredClone(release);
     bypass.jobs[job].needs = bypass.jobs[job].needs.filter((name: string) => name !== 'verify-darwin');
     expect(() => assertDarwinDistribution(bypass)).toThrow();
@@ -132,7 +128,7 @@ test('continue-on-error and swallowed signing or verification failures are rejec
   }
 });
 
-test('main and PR darwin builds sign and verify both raw and npm-packed binaries', () => {
+test('main and PR darwin builds sign and verify raw release binaries', () => {
   expect(ci.on.push.branches).toContain('main');
   expect(ci.on.pull_request.branches).toContain('main');
   const hook = ci.jobs['hook-startup'];
@@ -149,7 +145,7 @@ test('main and PR darwin builds sign and verify both raw and npm-packed binaries
   expect(steps[gate].if).toBe("matrix.target == 'darwin-arm64'");
   expect(readFileSync('packages/myco/scripts/build-single-target.mjs', 'utf8')).toContain('signExecutable({ target, outfile })');
   expect(readFileSync('packages/myco/scripts/sign-executable.mjs', 'utf8')).toContain("'--preserve-metadata=entitlements,identifier'");
-  expect(steps[gate].run).toContain('"${tarballs[0]}" native');
+  expect(steps[gate].run).toContain('target/darwin-distribution/SHA256SUMS native');
 });
 
 function assertCrossCompiledDarwin(workflow: typeof ci): void {
@@ -173,13 +169,13 @@ function assertCrossCompiledDarwin(workflow: typeof ci): void {
   const gate = verify.steps.findIndex((step: { run?: string }) => step.run?.includes('scripts/verify-darwin-distribution.sh'));
   expect(sign).toBeGreaterThanOrEqual(0);
   expect(gate).toBeGreaterThan(sign);
-  expect(verify.steps[gate].run).toContain('0.0.0-ci binary/myco target/darwin-release/goondocks-myco-darwin-arm64-0.0.0-ci.tgz native');
+  expect(verify.steps[gate].run).toContain('0.0.0-ci target/darwin-release/myco-darwin-arm64 target/darwin-release/SHA256SUMS native');
   expect(workflow.jobs.build.outputs.darwin_distribution_required).toBe('${{ steps.darwin-inputs.outputs.required }}');
   expect(workflow.jobs.build.steps.some((step: { run?: string; id?: string }) =>
     step.id === 'darwin-inputs' && step.run === 'node scripts/darwin-release-inputs.mjs')).toBe(true);
 }
 
-test('CI cross-compiles on Linux and invokes the release signing entry point on macOS before packing and executing', () => {
+test('CI cross-compiles on Linux and invokes the release signing entry point on macOS before staging and executing', () => {
   assertCrossCompiledDarwin(ci);
   expect(release.jobs['sign-darwin'].steps.some((step: { run?: string }) => step.run === SIGN_DARWIN)).toBe(true);
   for (const mutation of ['native-build', 'drifted-signing', 'ignored-failure']) {
@@ -220,7 +216,7 @@ function assertPublication(workflow: typeof release): void {
   const invocation = gate.steps.find((step: { run?: string }) => step.run?.includes('scripts/require-release-ci.mjs'));
   expect(invocation.run).toBe('node scripts/require-release-ci.mjs');
   expect(invocation.if).toBe("github.event_name == 'push'");
-  for (const job of ['create-release', 'publish']) {
+  for (const job of ['create-release']) {
     expect(workflow.jobs[job].needs).toContain('require-ci');
     expect(workflow.jobs[job].if).toContain("needs.require-ci.result == 'success'");
   }
@@ -302,7 +298,7 @@ test('workflow mutations that bypass parity or the publication dependency fail t
   browserOmitted.jobs.check.needs = browserOmitted.jobs.check.needs.filter((job: string) => job !== 'ui-screens');
   expect(() => assertAggregate(browserOmitted)).toThrow();
   const dependencyOmitted = structuredClone(release);
-  dependencyOmitted.jobs.publish.needs = dependencyOmitted.jobs.publish.needs.filter((job: string) => job !== 'require-ci');
+  dependencyOmitted.jobs['create-release'].needs = dependencyOmitted.jobs['create-release'].needs.filter((job: string) => job !== 'require-ci');
   expect(() => assertPublication(dependencyOmitted)).toThrow();
   const conditionOmitted = structuredClone(release);
   conditionOmitted.jobs['create-release'].if = conditionOmitted.jobs['create-release'].if.replace("needs.require-ci.result == 'success' &&", '');
@@ -427,13 +423,13 @@ function assertDryRunPublication(workflow: typeof release): void {
   expect(Object.keys(workflow.on).sort()).toEqual(['pull_request', 'push', 'workflow_dispatch']);
   expect(workflow.permissions).toEqual({ actions: 'read', contents: 'read' });
   for (const [name, job] of Object.entries<typeof release.jobs.build>(workflow.jobs)) {
-    if (name !== 'publish') expect(job).not.toHaveProperty('environment');
-    if (name === 'create-release' || name === 'publish') continue;
+    expect(job).not.toHaveProperty('environment');
+    if (name === 'create-release') continue;
     expect(job.permissions?.contents ?? workflow.permissions.contents).toBe('read');
     expect(job.permissions?.['id-token']).not.toBe('write');
     expect(JSON.stringify(job)).not.toMatch(/secrets\.|NODE_AUTH_TOKEN|NPM_TOKEN/);
   }
-  for (const job of ['create-release', 'publish']) {
+  for (const job of ['create-release']) {
     for (const event of ['pull_request', 'workflow_dispatch']) {
       for (const ref of ['refs/pull/1/merge', 'refs/heads/main', 'refs/tags/myco/v2.0.0-alpha.1']) {
         for (const dryRun of ['true', 'false', '']) {
@@ -446,13 +442,13 @@ function assertDryRunPublication(workflow: typeof release): void {
     expect(publicationAllowed(workflow, job, 'push', 'refs/tags/myco/v2.0.0-alpha.1', 'false')).toBe(true);
   }
   expect(workflow.jobs['create-release'].permissions).toEqual({ contents: 'write' });
-  expect(workflow.jobs.publish.permissions).toEqual({ contents: 'read', 'id-token': 'write' });
-  expect(workflow.jobs.publish.environment).toBe('npm-publish');
+  expect(workflow.jobs).not.toHaveProperty('publish');
+  expect(JSON.stringify(workflow)).not.toMatch(/npm(?:@latest)?\s+(?:publish|pack)\b|npm-publish|npm_tag|tarball_prefix/);
 }
 
 test('PR and manual dry runs have no publication authority, even with successful dependencies', () => {
   assertDryRunPublication(release);
-  for (const job of ['create-release', 'publish']) {
+  for (const job of ['create-release']) {
     const mutant = structuredClone(release);
     mutant.jobs[job].if = mutant.jobs[job].if
       .replace("needs.validate-tag.outputs.publication_allowed == 'true' &&", '');
@@ -468,7 +464,7 @@ test('PR and manual dry runs have no publication authority, even with successful
   const privilegedTrigger = structuredClone(release);
   privilegedTrigger.on.pull_request_target = {};
   expect(() => assertDryRunPublication(privilegedTrigger)).toThrow();
-  for (const job of Object.keys(release.jobs).filter((name) => name !== 'publish')) {
+  for (const job of Object.keys(release.jobs)) {
     const environment = structuredClone(release);
     environment.jobs[job].environment = 'npm-publish';
     expect(() => assertDryRunPublication(environment)).toThrow();
@@ -482,6 +478,8 @@ test('release-relevant PRs and supplied manual versions run the full distributio
     'plugins/myco/**', '.claude-plugin/marketplace.json']) {
     expect(release.on.pull_request.paths).toContain(path);
   }
+  expect(release.on.push.tags).toEqual(['myco/v*.*.*', 'myco/v*.*.*-*']);
+  expect(Object.keys(release.on.workflow_dispatch.inputs)).toEqual(['version']);
   expect(release.on.workflow_dispatch.inputs.version).toMatchObject({ required: true, type: 'string' });
   for (const job of ['validate-tag', 'compile-libsqlite3', 'cross-compile', 'sign-darwin', 'build', 'verify-darwin']) {
     expect(release.jobs[job].if ?? '').not.toMatch(/github\.event_name|dry_run/);
@@ -503,7 +501,7 @@ test('release-relevant PRs and supplied manual versions run the full distributio
       fs.writeFileSync(output, '');
       const result = spawnSync('bash', ['-eu', '-c', extract.run], { encoding: 'utf8', env: {
         ...process.env, EVENT_NAME: event, TAG_NAME: 'myco/v2.0.0-alpha.1',
-        DRY_RUN_VERSION: version, DRY_RUN_PACKAGE: 'myco', GITHUB_OUTPUT: output,
+        DRY_RUN_VERSION: version, GITHUB_OUTPUT: output,
       } });
       expect(result.status, result.stderr).toBe(valid ? 0 : 1);
       if (valid) {
@@ -538,13 +536,13 @@ test('release verifies versioned build output after staging and delegates the su
   }
   const stage = build.findIndex((step: { name?: string }) => step.name === 'Verify platform binaries');
   const verify = build.findIndex((step: { run?: string }) => step.run === 'npm run build:verify -w @goondocks/myco');
-  const pack = build.findIndex((step: { name?: string }) => step.name === 'Pack platform packages (myco)');
+  const distribution = build.findIndex((step: { name?: string }) => step.name === 'Stage raw binaries into flat release-binaries/ dir (myco)');
   const smoke = build.findIndex((step: { run?: string }) => step.run === 'node scripts/verify-release-binary.mjs packages/myco-linux-x64/bin/myco "$VERSION"');
   expect(verify).toBeGreaterThan(stage);
   expect(stage).toBeGreaterThanOrEqual(0);
-  expect(pack).toBeGreaterThan(verify);
+  expect(distribution).toBeGreaterThan(verify);
   expect(smoke).toBeGreaterThan(verify);
-  expect(pack).toBeGreaterThan(smoke);
+  expect(distribution).toBeGreaterThan(smoke);
   expect(build[smoke].if).toBe("needs.validate-tag.outputs.tag_prefix == 'myco'");
   expect(build[smoke].env.VERSION).toBe('${{ needs.validate-tag.outputs.version }}');
   assertPublication(release);
@@ -598,4 +596,70 @@ test('Git plugin versions survive npm sync, and preparation updates every commit
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+});
+
+test('tracked distribution instructions contain no registry publication or Myco package installation', () => {
+  const listed = spawnSync('git', ['ls-files', '-z'], { encoding: 'utf8' });
+  expect(listed.status).toBe(0);
+  const obsolete = /npm(?:@latest)?\s+publish\b|dist[-]tag|npm\s+(?:i|install|update)\s+(?:-[\w=-]+\s+)*@goondocks\/myco(?![\w-])/;
+  const hits: string[] = [];
+  for (const file of listed.stdout.split('\0').filter(Boolean)) {
+    if (/CHANGELOG/i.test(file) || !fs.existsSync(file) || !/\.(?:md|ts|js|mjs|cjs|json|ya?ml|sh|ps1|html)$/.test(file)) continue;
+    if (obsolete.test(readFileSync(file, 'utf8'))) hits.push(file);
+  }
+  expect(hits).toEqual([]);
+});
+
+test('PR and manual builds verify all canonical manifest entries and bytes before uploading', () => {
+  const names = ['myco-darwin-arm64', 'myco-darwin-x64', 'myco-linux-x64', 'myco-linux-arm64', 'myco-windows-x64.exe'];
+  const build = release.jobs.build.steps;
+  const stage = build.findIndex((step: { name?: string }) => step.name === 'Stage raw binaries into flat release-binaries/ dir (myco)');
+  const verify = build.findIndex((step: { name?: string }) => step.name === 'Verify release manifest');
+  const upload = build.findIndex((step: { with?: { name?: string } }) => step.with?.name === 'myco-raw-binaries');
+  expect(stage).toBeGreaterThanOrEqual(0);
+  expect(verify).toBeGreaterThan(stage);
+  expect(upload).toBeGreaterThan(verify);
+  expect(build[verify].if).toBe("needs.validate-tag.outputs.tag_prefix == 'myco'");
+  expect(build[verify]).not.toHaveProperty('continue-on-error');
+  expect(build[verify].run).toContain('source scripts/release-assets.sh');
+  expect(build[verify].run).toContain('verify_release_assets release-binaries');
+  const collect = release.jobs['create-release'].steps.find((step: { name?: string }) => step.name === 'Collect release assets');
+  expect(collect.run).toContain('source scripts/release-assets.sh');
+  expect(collect.run).toContain('verify_release_assets release-files');
+  const scratch = mkdtempSync(join(tmpdir(), 'myco-manifest-build-'));
+  try {
+    fs.mkdirSync(join(scratch, 'scripts'));
+    fs.copyFileSync('scripts/release-assets.sh', join(scratch, 'scripts/release-assets.sh'));
+    const bin = join(scratch, 'bin');
+    fs.mkdirSync(bin);
+    if (spawnSync('sh', ['-c', 'command -v sha256sum']).status !== 0) {
+      fs.writeFileSync(join(bin, 'sha256sum'), '#!/bin/sh\nexec shasum -a 256 "$@"\n', { mode: 0o755 });
+    }
+    for (const name of names) {
+      const target = name.slice('myco-'.length).replace(/\.exe$/, '');
+      const binary = join(scratch, 'packages', `myco-${target}`, 'bin', name.endsWith('.exe') ? 'myco.exe' : 'myco');
+      fs.mkdirSync(join(binary, '..'), { recursive: true });
+      fs.writeFileSync(binary, name);
+    }
+    const invoke = (source: string) => spawnSync('bash', ['-eu', '-c', source], {
+      cwd: scratch, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, encoding: 'utf8',
+    });
+    const staged = invoke(build[stage].run);
+    expect(staged.status, staged.stderr).toBe(0);
+    const verified = invoke(build[verify].run);
+    expect(verified.status, verified.stderr).toBe(0);
+    const lines = readFileSync(join(scratch, 'release-binaries/SHA256SUMS'), 'utf8').trim().split('\n');
+    expect(lines.map(line => line.split('  ')[1]).sort()).toEqual([...names].sort());
+    for (const defect of ['missing-entry', 'duplicate-entry', 'extra-entry', 'tampered', 'malformed-entry', 'malformed-separator']) {
+      expect(invoke(build[stage].run).status).toBe(0);
+      const manifest = join(scratch, 'release-binaries/SHA256SUMS');
+      if (defect === 'missing-entry') fs.writeFileSync(manifest, lines.slice(0, -1).join('\n') + '\n');
+      if (defect === 'duplicate-entry') fs.appendFileSync(manifest, lines.at(-1)! + '\n');
+      if (defect === 'extra-entry') fs.appendFileSync(manifest, 'invalid  extra-binary');
+      if (defect === 'tampered') fs.appendFileSync(join(scratch, 'release-binaries/myco-linux-arm64'), 'changed bytes');
+      if (defect === 'malformed-entry') fs.writeFileSync(manifest, lines.map(line => line.endsWith('  myco-windows-x64.exe') ? 'invalid  myco-windows-x64.exe' : line).join('\n') + '\n');
+      if (defect === 'malformed-separator') fs.writeFileSync(manifest, lines.map(line => line.endsWith('  myco-windows-x64.exe') ? line.replace('  ', ' ') : line).join('\n') + '\n');
+      expect(invoke(build[verify].run).status, defect).not.toBe(0);
+    }
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

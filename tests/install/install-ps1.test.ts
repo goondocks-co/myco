@@ -18,7 +18,7 @@ const release = (version: string, extra = {}) => ({
 });
 const beforeGa = [release('1.4.9'), release('1.4.10-beta.1'), release('2.0.0-alpha.10'), release('2.0.0-beta.2')];
 
-function select(releases: unknown[], opts: { channel?: string; current?: string; sourceCheckout?: boolean; evidence?: 'marker' | 'slot' | 'unknown'; state?: 'member' | 'cutover' | 'symlink' | 'empty' | 'vault'; replace?: boolean; install?: string; joined?: boolean; probe?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string; refreshFailure?: boolean; failPreserve?: boolean; truncatePreserve?: boolean; failRecord?: boolean } = {}) {
+function select(releases: unknown[], opts: { channel?: string; current?: string; sourceCheckout?: boolean; npmOrigin?: boolean; evidence?: 'marker' | 'slot' | 'unknown'; state?: 'member' | 'cutover' | 'symlink' | 'empty' | 'vault'; replace?: boolean; install?: string; joined?: boolean; probe?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string; refreshFailure?: boolean; failPreserve?: boolean; truncatePreserve?: boolean; failRecord?: boolean } = {}) {
   const home = fs.mkdtempSync(path.join(root, 'home-'));
   const mycoHome = path.join(home, '.myco');
   const bin = path.join(home, 'bin');
@@ -37,6 +37,10 @@ function select(releases: unknown[], opts: { channel?: string; current?: string;
       fs.mkdirSync(path.dirname(slot), { recursive: true });
       fs.copyFileSync(exe, slot);
     }
+    if (opts.npmOrigin) fs.writeFileSync(path.join(mycoHome, 'install.json'), JSON.stringify({
+      source: 'npm', channel: opts.channel ?? 'stable', bin: exe,
+      ...(opts.current.startsWith('2.') ? { version: opts.current, binary_sha256: crypto.createHash('sha256').update(fs.readFileSync(exe)).digest('hex') } : {}),
+    }));
     if (opts.stale) fs.writeFileSync(path.join(mycoHome, 'install.json'), JSON.stringify({ channel: opts.staleChannel ?? 'stable', version: opts.staleVersion ?? '1.4.8', bin: exe, binary_sha256: '0'.repeat(64) }));
   }
   let download = '';
@@ -108,6 +112,20 @@ int main(int argc, char **argv) {
 }
 
 describe('the Windows installer', () => {
+  it.skipIf(PWSH === '' || process.platform === 'win32')('replaces npm-origin 1.4 and 2.x alphas through the native installer', () => {
+    for (const current of ['1.4.9', '2.0.0-alpha.12']) {
+      const run = select(beforeGa, { current, npmOrigin: true, evidence: 'slot', replace: current.startsWith('1.'), install: '2.0.0-beta.2', channel: 'alpha' });
+      expect(run.status, run.out).toBe(0);
+      expect(JSON.parse(fs.readFileSync(path.join(run.mycoHome, 'install.json'), 'utf8'))).toMatchObject({
+        source: 'curl', version: '2.0.0-beta.2', bin: run.exe,
+      });
+      if (current.startsWith('1.')) {
+        const record = JSON.parse(fs.readFileSync(path.join(run.mycoHome, 'legacy-executable.json'), 'utf8'));
+        expect(fs.readFileSync(record.path)).toEqual(run.before!);
+      }
+    }
+  });
+
   it.skipIf(PWSH === '' || process.platform === 'win32')('announces replacement of a recorded source build with a release', () => {
     const replaced = select([release('2.0.0')], { current: '0.0.0-dev+fixture.b1', sourceCheckout: true, install: '2.0.0' });
     expect(replaced.status).toBe(0);
@@ -149,7 +167,7 @@ describe('the Windows installer', () => {
       expect(run.out).toContain(`unclassifiable binary`);
       expect(run.out).toContain(run.exe);
       expect(run.out).toContain('--replace-1.4');
-      expect(run.out).toContain('npm install -g @goondocks/myco@1');
+      expect(run.out).toContain('https://myco.sh/install.');
       expect(run.out).not.toContain('Found: myco/v1.');
       expect(fs.readFileSync(run.exe)).toEqual(run.before!);
       expect(fs.lstatSync(run.exe).isSymbolicLink()).toBe(state === 'symlink');

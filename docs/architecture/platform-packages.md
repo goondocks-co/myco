@@ -1,119 +1,70 @@
-# Per-Platform npm Packages
+# Platform release assets
 
-`@goondocks/myco` ships as a small JavaScript shell that resolves a
-platform-specific binary at install time. The binary itself lives in one of
-five sibling packages on npm — only the matching one is installed on each
-user's machine.
+Myco releases ship as five native GitHub release assets plus SHA256SUMS.
+Install with [install.sh](../install.sh) or [install.ps1](../install.ps1);
+neither Node nor a package manager is required on the destination machine.
 
-```
-@goondocks/myco                  ← core: bin/, dist/, scripts/, skills/, no binary
-@goondocks/myco-darwin-arm64     ← binary only, ~30 MB packed
-@goondocks/myco-darwin-x64       ← ditto
-@goondocks/myco-linux-x64        ← ditto
-@goondocks/myco-linux-arm64      ← ditto
-@goondocks/myco-windows-x64      ← ditto
-```
+| Target | Asset |
+| --- | --- |
+| macOS arm64 | myco-darwin-arm64 |
+| macOS x64 | myco-darwin-x64 |
+| Linux x64 | myco-linux-x64 |
+| Linux arm64 | myco-linux-arm64 |
+| Windows x64 | myco-windows-x64.exe |
 
-This is the same pattern esbuild, swc, rollup, and the Bun runtime use.
-
-Product support is narrower than package availability: macOS is the primary supported platform, while Linux and Windows are in beta. There is no Windows-on-ARM package — only x64 Windows is supported (Windows on ARM would run the x64 build under emulation, which is not supported).
-
-## Why
-
-Before this split, `@goondocks/myco` bundled all five cross-compiled Bun
-binaries into a single ~200 MB tarball. Every user downloaded four
-binaries they'd never run. After the split:
-
-- Per-user install: ~200 MB → ~30–40 MB (5–6× smaller).
-- The 210 MB CI tarball guardrail drops to 50 MB for core, 60 MB per
-  platform package.
-- A Bun-runtime bump no longer threatens the npm publish ceiling.
-
-## How resolution works
-
-1. Each platform package declares matching `os` and `cpu` fields in its
-   published `package.json`. npm installs only the one whose constraints
-   match the host; the others are skipped via `optionalDependencies` plus
-   the os/cpu filter.
-2. The core package's `postinstall` runs
-   `packages/myco/scripts/select-binary.mjs`, which calls
-   `require.resolve('@goondocks/myco-<target>/bin/<bin>')` to find the
-   binary that npm installed. It writes
-   `packages/myco/vendor/resolved.json` with the absolute `binaryPath`.
-3. The bin shim `packages/myco/bin/myco.cjs` reads `resolved.json` and
-   `execFileSync`s the binary with forwarded argv.
-
-## Why os/cpu are NOT in source
-
-Workspace installs validate `os`/`cpu` on every linked workspace —
-declaring `darwin-x64` in source would break `npm install` for everyone
-on darwin-arm64. The fields are injected just before `npm pack` by
-`scripts/inject-platform-metadata.mjs`, which the release workflow
-calls for each target. Source-tree `package.json`s stay platform-neutral.
+macOS is the primary supported platform. Linux and Windows are in beta;
+Windows on ARM is unsupported.
 
 ## Release flow
 
-The single tag `myco/vX.Y.Z` triggers the entire release. The CI workflow:
+A myco/vX.Y.Z tag runs .github/workflows/publish.yml. PRs and manual
+dispatches run its build, signing and verification recipe without publication.
 
-1. **Cross-compile** the binary for each target into the matching
-   `packages/myco-<target>/bin/`. Each target uploads its `bin/` as a
-   GitHub Actions artifact.
-2. **Sync versions** with `scripts/sync-package-versions.mjs --target
-   myco --version <version>`. This bumps every `package.json` in the
-   `myco` family — including the five platform package.json files — and
-   rewrites `optionalDependencies` in `packages/myco/package.json` so
-   core pins each platform package to the same exact version.
-3. **Stage binaries** back into their per-platform package directories.
-4. **Inject `os`/`cpu`** into each platform package.json
-   (`scripts/inject-platform-metadata.mjs <target>`).
-5. **Pack** each platform package and core (six tarballs total).
-6. **Publish** the five platform packages to npm first, then core.
-   Platform-first ordering matters: if core were published first, fresh
-   installs would fail to resolve the optionalDependencies until the
-   platform packages caught up.
+1. Compile native SQLite and cross-compile each binary into its
+   packages/myco-<target>/bin directory.
+2. Sign both macOS artifacts before staging the final release assets.
+3. Verify compiled versions and smoke the Linux database and HTTP server.
+4. Stage all five canonical asset names and compute SHA256SUMS from those bytes.
+   Verify exactly those five entries and their bytes before uploading the artifact;
+   PR and manual dry runs execute this check, as does release creation.
+5. Verify the transported macOS assets against the manifest and strict signatures.
+   Execute arm64 with --version; x64 signature verification remains mandatory,
+   while execution is skipped on the macOS runner's incompatible Rosetta runtime.
+6. Require successful exact-commit main CI, collect every required asset,
+   attach them to a draft GitHub release, then publish it.
 
-The release workflow lives in `.github/workflows/publish.yml`.
+Only myco/v* release tags and the manual version input are admitted. The internal
+myco-shared workspace is built by normal repository builds and has no release tag
+trigger or dispatch choice. Git plugin versions use plugin-version.json and
+scripts/prepare-plugin-release.mjs independently of binary version stamping.
 
-## Dev / source-checkout behavior
+## Installation and updates
 
-For local development:
+POSIX installs use <MYCO_HOME>/bin/myco; Windows uses
+<LOCALAPPDATA>/Myco/bin/myco.exe. Installers verify checksums and probe the new
+binary before replacement. Existing Myco 1.4 installations require explicit
+replacement before [cutover](../upgrade.md#upgrading-from-myco-14).
 
-- All five platform packages are workspaces, symlinked into
-  `node_modules/@goondocks/` by `npm install`.
-- `make source-build` prepares native SQLite, the UI and generated carriers,
-  then writes and verifies `packages/myco-<host>/bin/myco` without installing.
-- `make source-install` uses that build path once, then runs the candidate's
-  guarded source update into the selected home's managed binary destination.
-  It establishes PATH and records checkout/commit provenance without pins or
-  a wrapper. Worktree installs require `ALLOW_WORKTREE_INSTALL=1`.
-- Plain `myco update` installs the selected channel release; another
-  `make source-install` returns to source. Automatic updates skip source builds.
-- Isolated worktree tests invoke the absolute artifact path from a scratch cwd
-  with scratch home variables, including Windows `LOCALAPPDATA`; see the
-  `dogfood-worktree` skill. Windows installs use an artifact cross-built on
-  macOS/Linux, as described in [Contributing](../../CONTRIBUTING.md#source-builds-on-windows).
-- Before the binary is built, `select-binary.mjs` detects the
-  source checkout (presence of `packages/myco/src/`) and exits 0 with a
-  warning rather than failing the postinstall — so a clean `npm ci` on
-  the monorepo doesn't break.
+Member updates use verified GitHub release assets through the guarded updater.
+This also applies to existing 2.x installations originally installed through npm.
+Legacy origin metadata remains readable; no new package bootstrap is required.
 
-## Adding a new target
+## Source workspaces
 
-To support an additional `os`/`cpu`:
+The five platform workspace directories remain build-output locations.
+Their manifests stay platform-neutral so installing repository dependencies
+works on every supported development host.
 
-1. Create `packages/myco-<target>/` with a `package.json` matching the
-   existing platform packages (no `os`/`cpu` in source).
-2. Add the package to `optionalDependencies` in
-   `packages/myco/package.json`.
-3. Add the target to:
-   - `PLATFORM_METADATA` in `scripts/inject-platform-metadata.mjs`
-   - `MYCO_PLATFORM_OPTIONAL_DEPS` and the `myco` target's `files`
-     list in `scripts/sync-package-versions.mjs`
-   - `MYCO_PLATFORM_OPTIONAL_DEPS` consumers in the publish workflow
-     (cross-compile matrix, "Verify platform binaries" step, "Pack
-     platform packages" step, publish step)
-   - `VALID` in `packages/myco/scripts/build-single-target.mjs`
-   - the platform pattern in
-     `packages/myco/src/service/spec-builder.ts#looksLikeDevBuildExecutable`
-4. Provide a Bun cross-compile target plus libsqlite3 build for the
-   architecture.
+- make source-build prepares native SQLite, the dashboard and generated carriers,
+  then builds and verifies packages/myco-<host>/bin/myco without installing.
+- make source-install uses the candidate's guarded updater to install into the
+  selected home. Worktree installs require ALLOW_WORKTREE_INSTALL=1.
+- Plain myco update returns a source install to its selected channel release.
+  Automatic updates skip source builds.
+- Worktree smokes use absolute artifacts, scratch homes including LOCALAPPDATA,
+  and a scratch cwd. See the dogfood-worktree skill.
+- Windows uses artifacts cross-built on macOS/Linux; see
+  [Contributing](../../CONTRIBUTING.md#source-builds-on-windows).
+
+Adding a target requires a workspace/output directory, a Bun compile target,
+native assets, build/release matrices, an installer target and verification.

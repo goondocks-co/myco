@@ -44,7 +44,7 @@ Approve the machine in a browser signed in to that Myco. Start a new agent sessi
 - [Agent tools and skills](docs/agent-tools.md) for reading and recording project knowledge.
 - [External agents](docs/external-agents.md) for hosted reviewers and the plugin-only path.
 
-The installers select an available 2.x release. Use them for 2.0; the unqualified npm package may still select the 1.4 release line.
+The installers select an available 2.x release from GitHub. To replace an existing 1.4 installation, follow [Moving from Myco 1.4](docs/upgrade.md#upgrading-from-myco-14).
 
 ## Your project's knowledge
 

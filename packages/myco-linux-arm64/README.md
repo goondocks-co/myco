@@ -1,12 +1,8 @@
-# @goondocks/myco-linux-arm64
+# myco-linux-arm64 build output
 
-Linux arm64 binary for [`@goondocks/myco`](https://www.npmjs.com/package/@goondocks/myco).
+This internal workspace holds the target's compiled Myco binary.
+GitHub releases distribute the binary with SHA256SUMS.
 
-Linux support is in beta while macOS remains the primary supported platform.
-
-This package is installed automatically as an `optionalDependency` of
-`@goondocks/myco` when running on Linux arm64. You should not install it
-directly — install `@goondocks/myco` and npm will pick the matching
-platform package for you.
-
-License: Apache-2.0
+Install Myco with [the native installers](../../docs/quickstart.md).
+See [platform release assets](../../docs/architecture/platform-packages.md)
+for the release and source-build paths.

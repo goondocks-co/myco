@@ -8,7 +8,7 @@
  * A leaf: Node built-ins only, so the home resolver (`paths/home.ts`) and the
  * binary resolver (`runtime/binary-resolution.ts`) share ONE implementation of
  * the rule instead of each carrying a copy. `bin/binary-resolution.cjs` mirrors
- * it for the npm shims, which cannot import TypeScript; that mirror is gated by
+ * it for standalone redirects, which cannot import TypeScript; that mirror is gated by
  * tests/runtime/binary-resolution-cjs-agreement.test.ts.
  */
 import fs from 'node:fs';

@@ -54,13 +54,13 @@ Aim for PR feedback within five minutes. Compare completed workflow elapsed time
 including runner queues and the aggregate gate, rather than summing parallel job
 durations. Splitting jobs adds setup work and may increase billed runner minutes.
 
-macOS distribution builds also verify the staged executable and the binary
-inside the packed npm platform package. Tagged releases require this gate
-before GitHub or npm publication; see [macOS release signing](macos-release-signing.md).
+macOS distribution builds verify the staged executable against its release
+checksum manifest. Tagged releases require this gate
+before GitHub publication; see [macOS release signing](macos-release-signing.md).
 
 Every main push and PRs changing build or release inputs also cross-compile
 darwin-arm64 on Linux, then sign it on macos-14 through the release's shared
-signing script and verify the staged and npm-packed binaries in execute mode.
+signing script and verify the staged raw binaries in execute mode.
 The selector covers workflows, actions, scripts, package manifests and lockfiles,
 and `.bun-version`; other PRs retain the native Darwin verification. The aggregate
 allows the two release-recipe jobs to skip only when the selector says they are

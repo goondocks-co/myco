@@ -3,9 +3,6 @@ import os from 'node:os';
 import { INSTALL_MARKER_SCHEMA } from '../../scripts/install-marker-schema.mjs';
 import { RUNTIME_HOME_FILENAME } from '../paths/home.js';
 
-/** npm registry base URL for Myco packages. */
-export const NPM_REGISTRY_BASE_URL = 'https://registry.npmjs.org';
-
 /** Global Myco directory for machine-wide state. */
 export const MYCO_GLOBAL_DIR = path.join(os.homedir(), '.myco');
 
