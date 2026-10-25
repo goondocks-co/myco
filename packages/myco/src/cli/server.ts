@@ -1,4 +1,5 @@
 import { localBudgetStatus, cloudflareBudgetStatus, operatorBudgetLine } from '../server/budget-status.js';
+import {viewPreflight,viewStatusLine} from '../server/view-status.js';
 import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import nodeFs from 'node:fs';
 import { CommandFailed, type CommandRunner } from '../server/runner.js';
@@ -25,7 +26,7 @@ import {
   updateLocalDeployment,
   type LocalDeploymentRecord,
 } from '../server/local.js';
-import { localUnplacedContextRecords, cloudflareUnplacedContextRecords, hookPlacementStatusLine } from '../server/hook-placement-status.js';
+import { withLocalDiagnosticStore,withCloudflareDiagnosticStore,localUnplacedContextRecords, cloudflareUnplacedContextRecords, hookPlacementStatusLine } from '../server/hook-placement-status.js';
 import { keptArtifacts } from '../server/local-artifacts.js';
 import { schemaMetaValue } from '@myco-server-worker/platform/bun/server-main.js';
 import { carriedNative, runLocalDeployment } from '../server/local-run.js';
@@ -72,8 +73,11 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           travel in this binary. --url puts it on a domain you own.
                                           --dry-run lists what it would create, keep and bind, and
                                           changes nothing. Then: github-app, then setup-owner.
-  status                                  Report what is provisioned and running.
+  status [--target local|cloudflare]       Report what is provisioned and running.
                                           With --target cloudflare: the record and the deployed version.
+  view-preflight --project <id> [--target local|cloudflare] [--cursor <cursor>]
+                                          Inspect one page of rebuild metadata.
+                                          --account-id selects the hosted account.
   update --target local                   Apply the schema carried by this binary to the stopped volume.
   update --target cloudflare              Move the Worker to the version this binary carries. It
                                           preserves attached workers. Bounded embedding work uses
@@ -146,7 +150,7 @@ The Cloudflare target needs Node and wrangler on THIS machine, and neither on
 the Deployment.`;
 
 /** The verbs a Deployment this machine runs answers to; every other verb belongs to the hosted targets. */
-const LOCAL_VERBS = new Set(['create', 'run', 'install', 'uninstall', 'status', 'update', 'destroy']);
+const LOCAL_VERBS = new Set(['create', 'run', 'install', 'uninstall', 'status', 'view-preflight', 'update', 'destroy']);
 
 /**
  * Whether the Deployment answers on its own address.
@@ -341,6 +345,13 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
         return;
       }
 
+      if(command==='view-preflight'){
+        const project=flags.get('project');
+        if(!project||project==='true')fail('pass --project <Project id>');
+        console.log(JSON.stringify(await withLocalDiagnosticStore(paths,db=>viewPreflight(db,project,flags.get('cursor')??null),carriedNative())));
+        return;
+      }
+
       if (command === 'status') {
         if (!localDeploymentPresent(paths)) { console.log('No Deployment on this machine. `myco server create --target local` provisions one.'); return; }
         const record = readLocalRecord(paths);
@@ -351,6 +362,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
         console.log(`  Service:    ${service.loaded ? 'running at login' : service.detail ?? 'not installed'}`);
         console.log(await hookPlacementStatusLine(() => localUnplacedContextRecords(paths, carriedNative())));
         console.log(await operatorBudgetLine(()=>localBudgetStatus(paths,carriedNative())));
+        console.log(await viewStatusLine(run=>withLocalDiagnosticStore(paths,run,carriedNative())));
         await reportOperatorHold(localRecoveryHold(paths, carriedNative()));
         console.log(`  Serving:    ${(await reachable(record)) ? 'answering on its address' : 'not answering — see ~/.myco/logs/server.log'}`);
         return;
@@ -402,7 +414,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
         return;
       }
 
-      fail(`\`myco server ${command}\` is not a verb for a Deployment this machine runs. Try create, run, install, uninstall, status, update or destroy.`);
+      fail(`\`myco server ${command}\` is not a verb for a Deployment this machine runs. Try create, run, install, uninstall, status, view-preflight, update or destroy.`);
     }
 
     if (command === 'create' && target() === 'cloudflare') {
@@ -425,6 +437,13 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
       return;
     }
 
+    if(command==='view-preflight'&&target()==='cloudflare'){
+      const project=flags.get('project');
+      if(!project||project==='true')fail('pass --project <Project id>');
+      console.log(JSON.stringify(await withCloudflareDiagnosticStore({...cloudflareOptions(),fetch:deps.fetchImpl},db=>viewPreflight(db,project,flags.get('cursor')??null))));
+      return;
+    }
+
     if (command === 'status' && target() === 'cloudflare') {
       if (readDeploymentRecord() === null) { console.log(`${missingDeploymentRecordMessage()} myco server create --target cloudflare --account-id <id> provisions one.`); return; }
       const status = (await cloudflareDeploymentStatus(cloudflareOptions()))!;
@@ -444,6 +463,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
       }
       console.log(await hookPlacementStatusLine(() => cloudflareUnplacedContextRecords({ ...cloudflareOptions(), fetch: deps.fetchImpl })));
       console.log(await operatorBudgetLine(()=>cloudflareBudgetStatus({...cloudflareOptions(),fetch:deps.fetchImpl})));
+      console.log(await viewStatusLine(run=>withCloudflareDiagnosticStore({...cloudflareOptions(),fetch:deps.fetchImpl},run)));
       await reportOperatorHold(cloudflareRecoveryHoldOf(cloudflareOptions()));
       return;
     }

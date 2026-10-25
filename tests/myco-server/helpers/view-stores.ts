@@ -7,20 +7,29 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { TRANSCRIPT_PRODUCER } from '@myco-server-worker/ingest/parse.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { envelope, uuid } from './fixtures.js';
+import { envelope, uuid,recordingLimiter } from './fixtures.js';
+import {serverEnvFromBindings} from '@myco-server-worker/platform/cloudflare/env.js';
+import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
+import { sha256Hex } from '@myco-server-worker/hash.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {createProject} from '@myco-server-worker/read/sessions.js';
 
-export async function withViewStores(run: (db: RelationalStore, target: string) => Promise<void>, through = Infinity): Promise<void> {
+const storeTargets=new WeakMap<RelationalStore,'native'|'D1'>();
+
+export async function withViewStores(run: (db: RelationalStore, target: 'native'|'D1') => Promise<void>, through = Infinity): Promise<void> {
   const native = new Database(':memory:');
   native.exec('PRAGMA foreign_keys=ON');
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true,
     script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'] }));
   try {
     const stores = [sqliteRelationalStore(native), await mf.getD1Database('DB')];
+    const selected=process.env.MYCO_VIEW_TEST_STORE;
+    if(selected!==undefined&&!['native','D1'].includes(selected))throw new Error('Unknown view test store');
     for (const [index, db] of stores.entries()) {
+      if(selected!==undefined&&selected!==(index===0?'native':'D1'))continue;
+      storeTargets.set(db,index===0?'native':'D1');
       for (const step of SCHEMA_STEPS.filter(step => step.version <= through)) await db.batch(step.statements.map(sql => db.prepare(sql)));
       for(const project of ['project','other'])await createProject(db,project,project,1);
       await run(db, index === 0 ? 'native' : 'D1');
@@ -28,10 +37,27 @@ export async function withViewStores(run: (db: RelationalStore, target: string) 
   } finally { native.close(); await mf.dispose(); }
 }
 
+/** Transcript fixtures use the upload and capture writers on the selected store. */
+export async function captureViewTranscript(db:RelationalStore,blobs:BlobStore,session:string,transcript:string,text:string,now:number,baseOffset=0,agent='cursor',projectId='project'){
+  await ensureMember(db,'member',now,'member');
+  const issued=await issueMemberToken(db,{memberId:'member',machineId:'machine'},now);
+  const configured=serverEnvFromBindings({MYCO_DB:db,BUCKET:blobs,SOURCE_LIMIT:recordingLimiter(),TOKEN_LIMIT:recordingLimiter()});
+  const env={...configured,blobs,platform:{...configured.platform,name:storeTargets.get(db)==='native'?'bun' as const:'cloudflare' as const}};
+  const key=await sha256Hex(text),bytes=new TextEncoder().encode(text);
+  const response=await handleBlob(env,new Request('http://127.0.0.1/blobs/'+key,{method:'PUT',headers:{'content-type':'text/plain'},body:bytes}),
+    {projectId,machineId:'machine',tokenId:issued.tokenId,now,clock:()=>now,contentLength:bytes.length,params:{key}});
+  if(!(await response.json() as {stored:boolean}).stored)throw new Error('fixture transcript upload refused');
+  const result=await ingestEvent(db,{projectId,machineId:'machine',tokenId:issued.tokenId,bodyBytes:bytes.length,now},
+    envelope({eventId:crypto.randomUUID(),sessionId:session,kind:'transcript.segment',createdAt:now,
+      payload:{transcriptId:transcript,agent,blob:key,baseOffset,length:bytes.length,originPath:'fixture.jsonl',role:'primary'}}),env);
+  if(!result.persisted)throw new Error(JSON.stringify(result));
+  return env;
+}
+
 /** Captured facts use the admitted ingest writer on either relational adapter. */
-export async function captureViewSession(db: RelationalStore, projectId = 'project', sessionId = 'session', options: { toolInput?: { path: string }; blobs?: BlobStore; idOffset?: number; promptText?:string; parsedMaterial?:boolean; parentSessionId?:string; launchParentSessionId?:string } = {}) {
+export async function captureViewSession(db: RelationalStore, projectId = 'project', sessionId = 'session', options: { toolInput?: { path: string }; blobs?: BlobStore; idOffset?: number; promptText?:string; parsedMaterial?:boolean; promptId?:string; parentSessionId?:string; launchParentSessionId?:string } = {}) {
   const now = options.blobs === undefined ? 1 : Date.now();
-  const id = (n: number) => uuid(n + (options.idOffset ?? 0));
+  const id = (n: number) => n===20&&options.promptId!==undefined?options.promptId:uuid(n + (options.idOffset ?? 0));
   await ensureMember(db, 'member', now, 'member');
   const issued = await issueMemberToken(db, { memberId: 'member', machineId: 'machine' }, now);
   const ctx = { projectId, machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now };
@@ -52,21 +78,29 @@ export async function captureViewSession(db: RelationalStore, projectId = 'proje
 }
 
 /** Independent copies retain the canonical ids and revisions minted by the fixture's writers. */
-export async function withViewStorePair(target:'native'|'D1'|'native-D1',seed:(db:RelationalStore)=>Promise<unknown>,run:(baseline:RelationalStore,candidate:RelationalStore)=>Promise<void>,seedTarget:'native'|'D1'='D1'):Promise<void>{
+export async function withViewStorePair(target:'native'|'D1'|'native-D1',seed:(db:RelationalStore)=>Promise<unknown>,run:(baseline:RelationalStore,candidate:RelationalStore)=>Promise<void>,seedTarget:'native'|'D1'|number='D1'):Promise<void>{
+ const baselineVersion=typeof seedTarget==='number'?seedTarget:SCHEMA_STEPS.at(-1)!.version;
+ if(!SCHEMA_STEPS.some(step=>step.version===baselineVersion))throw new Error('Unknown fixture schema version');
  const initialize=async(db:RelationalStore)=>{
-  for(const step of SCHEMA_STEPS)await db.batch(step.statements.map(sql=>db.prepare(sql)));
+  for(const step of SCHEMA_STEPS.filter(step=>step.version<=baselineVersion))await db.batch(step.statements.map(sql=>db.prepare(sql)));
   await createProject(db,'project','project',1);await createProject(db,'other','other',1);
-  if(target==='native'||seedTarget==='D1')await seed(db);
+  if(target==='native'||seedTarget!=='native')await seed(db);
+ };
+ const upgradeCandidate=async(db:RelationalStore)=>{
+  for(const step of SCHEMA_STEPS.filter(step=>step.version>baselineVersion))await db.batch(step.statements.map(sql=>db.prepare(sql)));
+  return db;
  };
  if(target==='native'){
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'myco-view-vacuum-'));
   const source=new Database(':memory:');let candidate:Database|undefined;
   try{
    source.exec('PRAGMA foreign_keys=ON');
    const baseline=sqliteRelationalStore(source);await initialize(baseline);
-   candidate=Database.deserialize(source.serialize());
+   const copied=path.join(root,'candidate.sqlite');source.query('VACUUM INTO ?').run(copied);
+   candidate=new Database(copied);
    candidate.exec('PRAGMA foreign_keys=ON');
-   await run(baseline,sqliteRelationalStore(candidate));
-  }finally{source.close();candidate?.close();}
+   await run(baseline,await upgradeCandidate(sqliteRelationalStore(candidate)));
+  }finally{source.close();candidate?.close();fs.rmSync(root,{recursive:true,force:true});}
   return;
  }
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'myco-view-pair-'));
@@ -92,10 +126,10 @@ export async function withViewStorePair(target:'native'|'D1'|'native-D1',seed:(d
   if(target==='native-D1'){
    nativeClone=new Database(physicalFile(first));
    nativeClone.exec('PRAGMA foreign_keys=ON');candidate=boot(second);
-   await run(sqliteRelationalStore(nativeClone),await candidate.getD1Database('DB'));
+   await run(sqliteRelationalStore(nativeClone),await upgradeCandidate(await candidate.getD1Database('DB')));
   }else{
    candidate=boot(second);baseline=boot(first);
-   await run(await baseline.getD1Database('DB'),await candidate.getD1Database('DB'));
+   await run(await baseline.getD1Database('DB'),await upgradeCandidate(await candidate.getD1Database('DB')));
   }
  }finally{
   nativeClone?.close();

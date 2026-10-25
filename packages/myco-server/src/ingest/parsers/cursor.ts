@@ -23,7 +23,6 @@ import {
   type DerivedEvent, type ParserInput, type ReplyPart, type TranscriptParser,
 } from './index.js';
 
-const promptIdAt = (sessionId: string, offset: number): Promise<string> => promptIdAtOffset('cursor-prompt', sessionId, offset);
 
 /** The line that closes a turn. */
 const TURN_ENDED = 'turn_ended';
@@ -50,7 +49,7 @@ export function responseTextOf(text: string): string {
 export const cursorParser: TranscriptParser = {
   agent: 'cursor',
   fidelity: 'no_tool_results',
-  schemes: ['offset-v1'],
+  schemes: ['offset-v1', 'offset-v2'],
   planTags: [],
   endsTurn: (value) => value.type === TURN_ENDED,
 
@@ -90,7 +89,7 @@ export const cursorParser: TranscriptParser = {
 
       if (role === 'user') {
         await flushReply();
-        promptId = await promptIdAt(sessionId, offset);
+        promptId = await promptIdAtOffset('cursor-prompt', sessionId, offset, input);
         events.push({ kind: 'prompt', payload: { promptId, text, origin: 'user', promptKind: 'user_query' }, createdAt, offset });
         continue;
       }

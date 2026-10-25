@@ -18,6 +18,10 @@ import { machinesOf } from '../read/machines.js';
 import { isAdmin } from '../auth/roles.js';
 import { deploymentIdentity } from '../auth/authorization.js';
 import { provisionedHarnessHealth } from '../core/harness-health.js';
+import { readViewStatus } from '../read/view-status.js';
+import { readViewPreflightPage,decodeViewPreflightCursor,encodeViewPreflightCursor,type PreflightCursor } from '../core/view-preflight.js';
+import { memberSubject,authorize } from '../auth/authorization.js';
+import { badRequest,notFound,resolveProjectScope } from './scope.js';
 
 /**
  * What this Deployment can do, in the product's vocabulary.
@@ -52,6 +56,18 @@ export function absentCapabilities(env: ServerEnv): CapabilityStatus[] {
  * divergence is visible, which is why the parent spec assigns it to this plan.
  */
 export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  if(ctx.url.searchParams.has('viewPreflight')){
+    const subject=await memberSubject(env.db,ctx.member.id,'http');
+    if(!authorize(subject,'owner',{kind:'member',deploymentId:subject.deploymentId,exists:true}))return Response.json({error:'forbidden',reasonCode:'owner_required'},{status:403});
+    const project=ctx.url.searchParams.get('project');if(!project)return badRequest('project is required');
+    const scope=await resolveProjectScope(env.db,ctx.member,project);if(!scope)return notFound();
+    let cursor:PreflightCursor;
+    try{cursor=decodeViewPreflightCursor(scope.projectId,ctx.url.searchParams.get('cursor'));}
+    catch{return badRequest('invalid preflight cursor');}
+    const page=await readViewPreflightPage(env.db,scope.projectId,cursor);
+    return ok({observedAt:ctx.now,preflight:{...page,nextCursor:page.nextCursor?encodeViewPreflightCursor(scope.projectId,page.nextCursor):null}});
+
+  }
   const capabilities = deploymentCapabilities(env);
   const target = deploymentTarget(env);
   const unavailable: string[] = [];
@@ -81,8 +97,13 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
   ]);
   const finding = metadata === undefined ? undefined : await readFact('view_state_inconsistent', async () => viewReadRefusalFinding(metadata.viewReadRefusal, ctx.now));
   const budget=await readFact('budget',()=>readBudgetStatus(env.db,ctx.now));
+  const views=await readFact('views',async()=>{
+    if(projects===undefined)throw new Error('Project visibility unavailable');
+    return readViewStatus(env.db,projects.map(project=>project.projectId),ctx.now);
+  });
   return ok({
     budget,
+    views:views??null,
     schema: schemaCheck(metadata?.version ?? null), target, capabilities,
     workers: workerFacts ?? { available: false, observedAt: ctx.now, workersBusy: null, runsQueued: null, recentWithinMs: CONTACT_RECENT_MS, fleet: null },
     transcriptBacklog: transcriptBacklog ?? null,

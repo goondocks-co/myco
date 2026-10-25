@@ -1,3 +1,4 @@
+import {coverageCandidateSql as preflightCoverageCandidateSql} from '../core/coverage-carry.js';
 import { unreadPromptSql as extraction_coverage_unreadPromptSql } from '../db/session-read-model.js';
 import type { RelationalStore as hook_placement_import_RelationalStore } from "../core/adapters.js";
 import { subagentContextIdentities } from './hook-placement.js';
@@ -831,6 +832,26 @@ function projectionWidth(columns: string): number {
   return width;
 }
 const VIEW_READ_OPERATION_IDS = [
+  'N:viewMaterialVersionQuery:0',
+  'N:preflightCoverageSession:0',
+  'N:operatorViewProjectExists:0',
+  'N:operatorViewProjects:0',
+  'N:injectionServedIds:0',
+  'N:injectionSessionRecords:0',
+  'N:injectionPromptHeld:0',
+  'N:preflightCoveragePins:0',
+  "N:preflightBundles:0",
+  "N:preflightReceiptEntries:0",
+  "N:preflightReceipt:0",
+  "N:preflightPlans:0",
+  "N:preflightClasses:0",
+  "N:preflightCoverage:0",
+  "N:preflightRanges:0",
+  "N:preflightTranscript:0",
+  "N:viewStatusFindings:0",
+  "N:viewStatusCleanup:0",
+  "N:viewStatusDetails:0",
+  "N:viewStatusCounts:0",
   "M08:hook_placement_sessionContextHints:0",
   "M21:hook_placement_countUnplacedContextRecords:0",
   "N:plans_tagsOf:0",
@@ -4084,6 +4105,8 @@ async function processed_processedField(env: Pick<processed_import_ServerEnv, 'd
   if (kind === 'tool-input' && row.blob_key === null && row.text !== null && row.total_bytes !== null && row.total_bytes > processed_import_utf8(row.text).byteLength) {
     throw new Error('Processed tool input has a truncated prefix without its complete body');
   }
+  const selected=responseRead(env.db).selected.get(JSON.stringify([scope.projectId,field.table,id]));
+  if(selected?.instanceId!==undefined&&selected.instanceId!==null&&row.blob_key!==null&&kind!=='tool-input'&&kind!=='tool-output')row.text=null;
   const inline = row.text !== null && kind !== 'tool-output' && kind !== 'tool-input';
   if (!inline && row.blob_key !== null && row.admitted !== 1) return null;
   return row;
@@ -4846,6 +4869,161 @@ function prepareViewRead(db: sessions_import_RelationalStore, operation: ViewRea
   return db.prepare('/*vs:' + operation + '*/' + sql);
 }
 
+export function operatorViewProjectExists(db: sessions_import_RelationalStore) {
+  return prepareViewRead(db, 'N:operatorViewProjectExists:0', 'SELECT 1 FROM projects WHERE project_id=?');
+}
+
+export function operatorViewProjects(db: sessions_import_RelationalStore) {
+  return prepareViewRead(db, 'N:operatorViewProjects:0', 'SELECT project_id FROM projects ORDER BY project_id');
+}
+
+export function injectionServedIds(db: sessions_import_RelationalStore, column: 'spore_ids' | 'plan_ids') {
+  return prepareViewRead(db, 'N:injectionServedIds:0', `SELECT ${column} AS ids FROM spore_injections WHERE project_id = ? AND session_id = ?`);
+}
+
+export function injectionSessionRecords(db: sessions_import_RelationalStore) {
+  return prepareViewRead(db, 'N:injectionSessionRecords:0', `SELECT prompt_id, prompt_hash, spore_ids, plan_ids, created_at FROM spore_injections
+               WHERE project_id = ? AND session_id = ? ORDER BY created_at DESC`);
+}
+
+export function injectionPromptHeld(db: sessions_import_RelationalStore) {
+  return prepareViewRead(db, 'N:injectionPromptHeld:0', `SELECT 1 AS held FROM spore_injections WHERE project_id = ? AND session_id = ? AND prompt_id = ? AND prompt_hash <> ?`);
+}
+
+export function preflightTranscript(db: sessions_import_RelationalStore) {
+  return prepareViewRead(
+    db,
+    'N:preflightTranscript:0',
+    `SELECT transcript_id,size,parsed_offset
+    FROM transcripts WHERE project_id=? AND transcript_id>? ORDER BY transcript_id LIMIT 1`,
+  );
+}
+
+export function preflightRanges(db: sessions_import_RelationalStore) {
+  return prepareViewRead(
+    db,
+    'N:preflightRanges:0',
+    `SELECT base_offset,length FROM (
+    SELECT base_offset,length FROM transcript_segments WHERE project_id=? AND transcript_id=? AND base_offset<?
+      AND (base_offset>? OR base_offset=? AND length>?)
+    UNION SELECT base_offset,length FROM raw_archive_refs WHERE project_id=? AND transcript_id=?
+      AND source_kind='transcript' AND disposition='archived' AND base_offset<?
+      AND (base_offset>? OR base_offset=? AND length>?))
+    ORDER BY base_offset,length LIMIT ?`,
+  );
+}
+
+export function preflightCoverage(db: sessions_import_RelationalStore) {
+  const candidate = preflightCoverageCandidateSql({
+    id: 'p.prompt_id',
+    claim: 'p.claim',
+    key: 'p.source_key',
+    thread: 'p.source_thread',
+    record: 'p.source_record',
+    scheme: 'p.scheme',
+    shape: `CASE WHEN p.prompt_kind='queued_command' THEN 'queued' WHEN p.scheme IN ('stamp-or-offset-v1','stamp-or-offset-v2') THEN 'stamped' END`,
+  });
+  const acknowledged = `e.producer_adapter='transcript-parse'
+    AND p.origin IN (${extraction_coverage_import_READ_ORIGINS.map((origin) => `'${origin}'`).join(',')})
+    AND NOT ${extraction_coverage_unreadPromptSql('p')}`;
+  return prepareViewRead(
+    db,
+    'N:preflightCoverage:0',
+    `WITH held AS MATERIALIZED (
+    SELECT * FROM prompt_batches WHERE project_id=? AND session_id=?
+      AND (created_at,prompt_id)>(?,?) ORDER BY created_at,prompt_id LIMIT ?),
+    page AS (SELECT h.*,? scheme FROM held h)
+    SELECT p.prompt_id id,p.created_at,CASE WHEN ${acknowledged} THEN 1 ELSE 0 END acknowledged,
+      CASE WHEN (${acknowledged}) AND (${candidate}) THEN 1 ELSE 0 END ceiling
+    FROM page p LEFT JOIN events e ON e.project_id=p.project_id AND e.event_id=p.event_id ORDER BY p.created_at,p.prompt_id`,
+  );
+}
+
+export function preflightCoverageSession(db: sessions_import_RelationalStore) {
+  return prepareViewRead(
+    db,
+    'N:preflightCoverageSession:0',
+    `SELECT session_id FROM prompt_batches
+    WHERE project_id=? AND session_id>? ORDER BY session_id LIMIT 1`,
+  );
+}
+
+export function preflightCoveragePins(db: sessions_import_RelationalStore) {
+  return prepareViewRead(
+    db,
+    'N:preflightCoveragePins:0',
+    `SELECT rowid,prompt_identity_scheme FROM transcripts
+    WHERE project_id=? AND session_id=? AND rowid>? ORDER BY rowid LIMIT ?`,
+  );
+}
+
+export function preflightClasses(db: sessions_import_RelationalStore, kind: 'prompt' | 'response' | 'tool') {
+  const { table, id } = {
+    prompt: { table: 'prompt_batches', id: 'prompt_id' },
+    response: { table: 'responses', id: 'response_id' },
+    tool: { table: 'tool_calls', id: 'tool_call_id' },
+  }[kind];
+  return prepareViewRead(
+    db,
+    'N:preflightClasses:0',
+    `SELECT p.${id} id,
+    CASE WHEN e.event_id IS NULL THEN 'unverified' WHEN e.producer_adapter='transcript-parse' THEN 'legacy' ELSE 'fact' END class
+    FROM ${table} p LEFT JOIN events e ON e.project_id=p.project_id AND e.event_id=p.event_id
+    WHERE p.project_id=? AND p.${id}>? ORDER BY p.${id} LIMIT ?`,
+  );
+}
+
+export function preflightPlans(db: sessions_import_RelationalStore) {
+  return prepareViewRead(
+    db,
+    'N:preflightPlans:0',
+    `WITH held AS MATERIALIZED (
+    SELECT * FROM plans WHERE project_id=? AND plan_key>? ORDER BY plan_key LIMIT ?)
+    SELECT p.plan_key id,CASE WHEN p.source='tag' AND p.origin_path LIKE 'transcript:%' THEN 1 ELSE 0 END parser_plan,
+    CASE WHEN p.updated_by IS NOT NULL OR p.status<>'active' OR e.event_id IS NULL OR e.producer_adapter<>'transcript-parse'
+      OR EXISTS(SELECT 1 FROM tags t WHERE t.project_id=p.project_id AND t.entity_kind='plan' AND t.entity_id=p.plan_key AND t.tag<>substr(p.origin_path,12))
+      OR (SELECT COUNT(*) FROM tags t WHERE t.project_id=p.project_id AND t.entity_kind='plan' AND t.entity_id=p.plan_key)<>1 THEN 1 ELSE 0 END edited
+    FROM held p LEFT JOIN events e ON e.project_id=p.project_id AND e.event_id=p.event_id ORDER BY p.plan_key`,
+  );
+}
+
+export function preflightReceipt(db: sessions_import_RelationalStore, active: boolean) {
+  return prepareViewRead(
+    db,
+    'N:preflightReceipt:0',
+    `SELECT id FROM spore_injections
+    WHERE project_id=? AND id${active ? '=' : '>'}? ORDER BY id LIMIT 1`,
+  );
+}
+
+export function preflightReceiptEntries(db: sessions_import_RelationalStore) {
+  return prepareViewRead(
+    db,
+    'N:preflightReceiptEntries:0',
+    `SELECT CAST(j.key AS INTEGER) part,
+    CASE WHEN p.plan_key IS NULL THEN 1 ELSE 0 END missing
+    FROM spore_injections r CROSS JOIN json_each(r.plan_ids) j
+    LEFT JOIN plans p ON p.project_id=r.project_id AND p.plan_key=j.value
+    WHERE r.project_id=? AND r.id=? AND CAST(j.key AS INTEGER)>? ORDER BY CAST(j.key AS INTEGER) LIMIT ?`,
+  );
+}
+
+export function preflightBundles(db: sessions_import_RelationalStore) {
+  return prepareViewRead(
+    db,
+    'N:preflightBundles:0',
+    `SELECT b.id,
+    EXISTS(SELECT 1 FROM events e WHERE e.project_id=b.project_id AND e.bundle_id=b.id AND e.producer_adapter='transcript-parse') dying_events,
+    EXISTS(SELECT 1 FROM events e WHERE e.project_id=b.project_id AND e.bundle_id=b.id AND e.producer_adapter<>'transcript-parse') surviving_events,
+    EXISTS(SELECT 1 FROM tool_calls t JOIN fact_classes f ON f.project_id=t.project_id AND f.table_name='tool_calls'
+      AND f.record_id=t.tool_call_id AND f.class='legacy' WHERE t.project_id=b.project_id AND t.input_bundle_id=b.id) dying_inputs,
+    EXISTS(SELECT 1 FROM tool_calls t WHERE t.project_id=b.project_id AND t.input_bundle_id=b.id
+      AND NOT EXISTS(SELECT 1 FROM fact_classes f WHERE f.project_id=t.project_id AND f.table_name='tool_calls'
+        AND f.record_id=t.tool_call_id AND f.class='legacy')) surviving_inputs
+    FROM archive_bundles b WHERE b.project_id=? AND b.id>? ORDER BY b.id LIMIT ?`,
+  );
+}
+
 export function* prepareHubnessWork(db: sessions_import_RelationalStore, projectId: string, model: string, now: number) {
   for (const { sql, binds } of core_embedding_hubness_hubnessQueries(projectId, model, now)) yield prepareViewRead(db, "M34:core_embedding_hubness_recordedHubness:1", sql).bind(...binds);
 }
@@ -4863,4 +5041,74 @@ export function childrenRowsByPrompt(db: sessions_import_RelationalStore, scope:
 
 export function turnChildPage(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string, collection: 'plan' | 'answer', opts: children_ChildOptions) {
   return collection === 'plan' ? children_listChildren(db, children_TURN_PLAN_QUERY, scope, sessionId, opts) : children_listChildren(db, turns_ANSWER_QUERY, scope, sessionId, opts);
+}
+
+const scopedSessions = `SELECT sess.project_id,sess.session_id,sess.title,s.rebuild_state,s.failures,s.next_attempt_at,s.last_failure,s.unrebuildable_reason,
+ s.legacy,i.parser_version,i.base,s.building_instance,
+ CASE WHEN s.legacy IS NULL OR s.legacy='live' THEN 'legacy-live' WHEN s.unrebuildable_reason IS NOT NULL THEN 'unrebuildable'
+   WHEN s.rebuild_state='failed' THEN 'failed' WHEN i.parser_version>j.current_parser_version THEN 'incompatible'
+   WHEN i.parser_version<j.current_parser_version THEN 'stale' WHEN s.building_instance IS NOT NULL THEN 'building'
+   WHEN s.legacy='converting' THEN 'converting' WHEN i.base='tail' THEN 'frozen-tail' ELSE 'current' END initial_state,
+ COALESCE((SELECT SUM(MAX(0,t.size-CASE WHEN s.live_instance IS NULL THEN t.parsed_offset ELSE COALESCE(c.parsed_offset,0) END))
+   FROM transcripts t LEFT JOIN view_checkpoints c ON c.project_id=t.project_id AND c.transcript_id=t.transcript_id AND c.instance_id=s.live_instance
+   WHERE t.project_id=sess.project_id AND t.session_id=sess.session_id),0) bytes_behind,
+ CASE WHEN s.building_instance IS NOT NULL THEN (SELECT COALESCE(SUM(MAX(0,t.size-COALESCE(c.parsed_offset,0))),0)
+   FROM transcripts t LEFT JOIN view_checkpoints c ON c.project_id=t.project_id AND c.transcript_id=t.transcript_id AND c.instance_id=s.building_instance
+   WHERE t.project_id=sess.project_id AND t.session_id=sess.session_id) END build_bytes_behind
+ FROM (SELECT DISTINCT value,CAST(json_extract(json,'$.parserVersion') AS INTEGER) current_parser_version
+   FROM json_each(?,'$.projects')) j CROSS JOIN sessions sess
+ LEFT JOIN session_views s ON s.project_id=sess.project_id AND s.session_id=sess.session_id
+ LEFT JOIN view_instances i ON i.project_id=s.project_id AND i.instance_id=s.live_instance
+ WHERE sess.project_id=j.value AND NOT EXISTS(SELECT 1 FROM session_tombstones tomb WHERE tomb.project_id=sess.project_id AND tomb.session_id=sess.session_id)`;
+const statusRows = `SELECT *,CASE WHEN initial_state IN ('building','current') AND bytes_behind>0 THEN 'catching-up' ELSE initial_state END state FROM (${scopedSessions})`;
+
+export function viewStatusCounts(db: sessions_import_RelationalStore) {
+  return prepareViewRead(db, 'N:viewStatusCounts:0', `SELECT state,COUNT(*) n FROM (${statusRows}) GROUP BY state`);
+}
+
+export function viewStatusDetails(db: sessions_import_RelationalStore) {
+  return prepareViewRead(
+    db,
+    'N:viewStatusDetails:0',
+    `SELECT r.*,w.service_ms,w.last_refusal,CASE WHEN w.session_id IS NULL THEN NULL ELSE json_object(
+   'store',w.store,'profile',w.profile,'started_at',w.started_at,'observed_at',w.observed_at,'initial_bytes',w.initial_bytes,'offered_bytes',w.offered_bytes,
+   'useful_bytes',w.useful_bytes,'published_bytes',w.published_bytes,'published_at',w.published_at,'service_ms',w.service_ms,'wake_ms',w.wake_ms,'wakes',w.wakes,
+   'statements',w.statements,'round_trips',w.round_trips,'blob_calls',w.blob_calls,'observation_token',w.observation_token,'valid',w.valid,'last_refusal',w.last_refusal) END sample
+   FROM (${statusRows}) r LEFT JOIN view_work_samples w ON w.project_id=r.project_id AND w.session_id=r.session_id
+   ORDER BY CASE WHEN r.state IN ('failed','unrebuildable','stale','incompatible') THEN 0 ELSE 1 END,r.project_id,r.session_id LIMIT ?`,
+  );
+}
+
+export function viewStatusCleanup(db: sessions_import_RelationalStore) {
+  return prepareViewRead(
+    db,
+    'N:viewStatusCleanup:0',
+    `SELECT COUNT(CASE WHEN i.state='retired' THEN 1 END) retired,COUNT(CASE WHEN i.state='abandoned' THEN 1 END) abandoned,
+   COUNT(CASE WHEN i.state='retired' AND i.retired_at<? AND NOT EXISTS(SELECT 1 FROM view_visible v WHERE v.project_id=i.project_id AND v.instance_id=i.instance_id)
+   AND NOT EXISTS(SELECT 1 FROM view_instances child WHERE child.project_id=i.project_id AND child.parent_instance=i.instance_id)
+   AND NOT EXISTS(SELECT 1 FROM session_views s WHERE s.project_id=i.project_id AND s.session_id=i.session_id AND (s.live_instance=i.instance_id OR s.building_instance=i.instance_id)) THEN 1 END) eligibleRetired
+   FROM (SELECT DISTINCT value FROM json_each(?,'$.projects')) j CROSS JOIN view_instances i WHERE i.project_id=j.value AND i.state IN ('retired','abandoned')
+   AND NOT EXISTS(SELECT 1 FROM session_tombstones t WHERE t.project_id=i.project_id AND t.session_id=i.session_id)`,
+  );
+}
+
+export function viewStatusFindings(db: sessions_import_RelationalStore) {
+  return prepareViewRead(
+    db,
+    'N:viewStatusFindings:0',
+    `SELECT f.kind,SUM(f.count) count FROM (SELECT DISTINCT value FROM json_each(?,'$.projects')) j CROSS JOIN view_findings f
+   WHERE f.project_id=j.value AND (EXISTS(SELECT 1 FROM view_visible v WHERE v.project_id=f.project_id AND v.instance_id=f.instance_id)
+     OR EXISTS(SELECT 1 FROM session_views s WHERE s.project_id=f.project_id AND s.session_id=f.session_id AND s.building_instance=f.instance_id))
+   AND NOT EXISTS(SELECT 1 FROM session_tombstones t WHERE t.project_id=f.project_id AND t.session_id=f.session_id) GROUP BY f.kind`,
+  );
+}
+
+
+export function viewMaterialVersionQuery(db: sessions_import_RelationalStore) {
+  return prepareViewRead(
+    db,
+    'N:viewMaterialVersionQuery:0',
+    `SELECT COALESCE(?,(SELECT material_seq FROM material_versions WHERE project_id=? AND session_id=?
+   AND kind=? AND identity=? AND content_hash=? AND hash_scheme=?)) material_seq`,
+  );
 }

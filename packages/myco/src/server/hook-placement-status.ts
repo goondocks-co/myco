@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
+import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import { countUnplacedContextRecords, HOOK_STATUS_WINDOW_DAYS } from '@myco-server-worker/read/hook-placement.js';
 import { LocalVolume } from './local-volume.js';
@@ -12,23 +13,28 @@ import { d1OperatorStore } from './d1-operator-store.js';
 type Counts = number;
 
 /** Read under shared volume ownership, including while the native Deployment serves. */
-export async function localUnplacedContextRecords(paths: LocalDeploymentPaths, native?: NativeSqlite): Promise<Counts> {
+export async function withLocalDiagnosticStore<T>(paths:LocalDeploymentPaths,read:(db:RelationalStore)=>Promise<T>,native?:NativeSqlite):Promise<T>{
   return new LocalVolume(paths).reading(async () => {
     configureSqliteLibrary(native);
     const sqlite = new Database(paths.databasePath, { readonly: true });
-    try { return await countUnplacedContextRecords(sqliteRelationalStore(sqlite)); }
+    try { return await read(sqliteRelationalStore(sqlite)); }
     finally { sqlite.close(); }
   });
 }
 
 /** Read the hosted Deployment through its recorded database and the operator's existing login. */
-export async function cloudflareUnplacedContextRecords(options: LifecycleOptions & { fetch?: CloudflareFetch }): Promise<Counts> {
+export async function withCloudflareDiagnosticStore<T>(options:LifecycleOptions & {fetch?:CloudflareFetch},read:(db:RelationalStore)=>Promise<T>):Promise<T>{
   const record = readDeploymentRecord(options.mycoHome);
   if (!record?.databaseId || record.accountId !== options.accountId) throw new Error('the selected Deployment has no matching recorded database');
   const login = operatorLogin({ ...options, configDir: peekCommandDir(options.mycoHome) });
   const db = d1OperatorStore({ accountId: record.accountId, databaseId: record.databaseId, login, fetch: options.fetch, report: options.report });
-  return countUnplacedContextRecords(db);
+  return read(db);
 }
+
+export const localUnplacedContextRecords=(paths:LocalDeploymentPaths,native?:NativeSqlite):Promise<Counts>=>
+  withLocalDiagnosticStore(paths,countUnplacedContextRecords,native);
+export const cloudflareUnplacedContextRecords=(options:LifecycleOptions&{fetch?:CloudflareFetch}):Promise<Counts>=>
+  withCloudflareDiagnosticStore(options,countUnplacedContextRecords);
 
 /** A failed read remains unavailable. */
 export async function hookPlacementStatusLine(read: () => Promise<Counts>): Promise<string> {

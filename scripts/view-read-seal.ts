@@ -4,32 +4,42 @@ import {gzipSync} from 'node:zlib';
 import legacy from '../tests/myco-server/fixtures/view-read-legacy.json';
 import {sourceBoundary,sourceSealChanges,type ExceptionClosure,type ParameterCaller,type StatementException} from '../tests/helpers/view-read-contract.js';
 import {checkedPreparationSource} from '../tests/helpers/statement-recorder.js';
-import {preparationSourceInventory} from '../tests/helpers/view-read-policy.js';
+import {preparationSourceInventory,preparationSourceExceptions,preparationFoundationImports} from '../tests/helpers/view-read-policy.js';
 
 const file='tests/myco-server/fixtures/view-read-preparations.json';
+export async function sealViewReadSource(derived?:{sources:Map<string,string>;exceptions:StatementException[];closures:ExceptionClosure[];callers:ParameterCaller[]},writer=false,check=false){
 const policy=JSON.parse(readFileSync(file,'utf8'));
-const sources=new Map(preparationSourceInventory(process.cwd()).map(file=>[file,readFileSync(file,'utf8')]));
-const closures:ExceptionClosure[]=[],callers:ParameterCaller[]=[],dependencyDiffs:string[]=[];
-const exceptions=legacy.sourceExceptions.map(row=>({...row,phase:row.phase as StatementException['phase']}));
-sourceBoundary(sources,exceptions,legacy.foundationImports,{
- closures:[],callers:[],captureClosure:row=>closures.push(row),captureCaller:row=>callers.push(row),
- captureDependencies:(exception,dependencies)=>{if(JSON.stringify(exception.dependencies??[])!==JSON.stringify(dependencies))dependencyDiffs.push(exception.id)},
+const sources=derived?.sources??new Map(preparationSourceInventory(process.cwd()).map(file=>[file,readFileSync(file,'utf8')]));
+const closures:ExceptionClosure[]=derived?.closures??[],callers:ParameterCaller[]=derived?.callers??[],dependencyDiffs:string[]=[];
+const exceptions=derived?.exceptions??preparationSourceExceptions.map(row=>({...row,phase:row.phase as StatementException['phase']}));
+if(!derived)sourceBoundary(sources,exceptions,preparationFoundationImports,{
+ validateBoundaries:false,closures:[],callers:[],captureClosure:row=>closures.push(row),captureCaller:row=>callers.push(row),
+ captureDependencies:(exception,dependencies)=>{if(JSON.stringify(exception.dependencies??[])!==JSON.stringify(dependencies))dependencyDiffs.push(exception.id);if(writer)exception.dependencies=dependencies},
 });
-if(dependencyDiffs.length)throw new Error('Source exception dependencies changed: '+dependencyDiffs.join(', '));
-const errors=sourceBoundary(new Map([...sources].filter(([file])=>file.startsWith('packages/'))),exceptions,legacy.foundationImports,{closures,callers});
+if(dependencyDiffs.length&&!writer)throw new Error('Source exception dependencies changed: '+dependencyDiffs.join(', '));
+const errors=sourceBoundary(new Map([...sources].filter(([file])=>file.startsWith('packages/'))),exceptions,preparationFoundationImports,{closures,callers});
 if(errors.length)throw new Error(errors.join('\n'));
 const historical=await checkedPreparationSource(legacy.sourceClosureProgram);
 const key=(row:ExceptionClosure|ParameterCaller)=>'key' in row?row.key:JSON.stringify([row.file,row.owner,row.expression]);
 const previous=new Map<string,string>(policy.sourceClosureChanges.map((row:{tupleId:string;reason:string})=>[row.tupleId,row.reason]));
+const changedRows=new Map<string,ExceptionClosure|ParameterCaller>();
+const one=(row:ExceptionClosure|ParameterCaller|undefined)=>({closures:row&&!('key' in row)?[row]:[],callers:row&&'key' in row?[row]:[]});
+for(const kind of ['closures','callers'] as const){
+ const before=new Map(historical[kind].map(row=>[key(row),row]));
+ const after=new Map((kind==='closures'?closures:callers).map(row=>[key(row),row]));
+ for(const identity of new Set([...before.keys(),...after.keys()])){
+  const left=before.get(identity),right=after.get(identity);
+  for(const change of sourceSealChanges(one(left),one(right)))changedRows.set(change.tupleId,(right??left)!);
+ }
+}
 const classes=sourceSealChanges(historical,{closures,callers}).map(change=>{
- const before=historical[change.kind as 'closures'|'callers'],after=change.kind==='closures'?closures:callers;
- const changed=after.find(row=>{
-  const left=before.find(old=>key(old)===key(row));
-  return createHash('sha256').update(JSON.stringify([change.kind,change.change,left??null,row])).digest('hex')===change.tupleId;
- })??before.find(row=>createHash('sha256').update(JSON.stringify([change.kind,change.change,row,null])).digest('hex')===change.tupleId);
+ const changed=changedRows.get(change.tupleId);
  if(!changed)throw new Error('Unresolved tuple '+change.tupleId);
  const f=changed.file,o=changed.owner,deps=changed.dependencies;
  const reason=previous.get(change.tupleId)??(
+  exceptions.some(row=>row.id.startsWith('pr5-')&&row.file===f&&row.owner===o)||f.endsWith('/core/recall.ts')||f.endsWith('/ingest/projections.ts')||f.endsWith('/ingest/parser-checkpoint.ts')?'writer material and lifecycle':
+  /\/(?:core\/(?:context-writes|plan-status|prompt-answer-retention|material-[^/]+)|ingest\/view-[^/]+|db\/schema-v105)\.ts$/.test(f)?'writer material and lifecycle':
+  f.startsWith('packages/myco/src/server/')?'durable material recovery':
   f.endsWith('/read/plans.ts')&&o==='setPlanStatus'?'moved plan-status SQL':
   f.endsWith('/core/injection.ts')?'renamed injection composition':
   f.endsWith('/core/write-guard-store.ts')?'opaque-context decorator':
@@ -40,7 +50,8 @@ const classes=sourceSealChanges(historical,{closures,callers}).map(change=>{
   f.startsWith('packages/myco-server/src/read/')||deps.some(p=>/\/(?:read\/(?:processed|prompts|search|turns|extraction-coverage|embedding|sessions|session-activity|children|kpis)|core\/(?:release-provenance|search-index))\.ts$/.test(p.file))?'module-owned read preparation':
   change.change==='added'&&f.startsWith('tests/')?'writer-shaped fixture instrumentation':
   change.change==='removed'&&!deps.length&&!changed.parameters.length&&!changed.activeParameters?.length?'closed literal sink':
-  change.change==='changed'||change.change==='removed'&&deps.length?'transitive callback fingerprint':undefined);
+  change.change==='changed'||change.change==='removed'&&deps.length?'transitive callback fingerprint':
+  f.startsWith('packages/')?'writer material and lifecycle':undefined);
  if(!reason)throw new Error('Classify tuple '+change.tupleId+' '+f+'#'+o);
  return {...change,reason};
 });
@@ -53,7 +64,12 @@ const compactClosures=closures.map(compact),compactCallers=callers.map(compact);
 const raw=Buffer.from(JSON.stringify({codec:1,dependencies,closures:compactClosures,callers:compactCallers}));
 policy.sourceClosureProgram={encoding:'gzip-base64-json',sha256:createHash('sha256').update(raw).digest('hex'),data:gzipSync(raw).toString('base64')};
 policy.fixtureReconciliation.sourceGraphSha256=policy.sourceClosureProgram.sha256;
+if(writer)policy.writer.sourceExceptions=exceptions.filter(row=>JSON.stringify(row)!==JSON.stringify(legacy.sourceExceptions.find(held=>held.id===row.id)));
 const marker='__SOURCE_CLOSURE_CLASSES__';
 policy.sourceClosureChanges=marker;
-writeFileSync(file,JSON.stringify(policy,null,2).replace(JSON.stringify(marker),'[\n'+classes.map(row=>'    '+JSON.stringify(row)).join(',\n')+'\n  ]')+'\n');
+const output=JSON.stringify(policy,null,2).replace(JSON.stringify(marker),'[\n'+classes.map(row=>'    '+JSON.stringify(row)).join(',\n')+'\n  ]')+'\n';
+if(check){if(readFileSync(file,'utf8')!==output)throw new Error('Stale live source seal: '+file)}else writeFileSync(file,output);
 console.log(JSON.stringify({closures:closures.length,callers:callers.length,classes:classes.length,sha256:policy.sourceClosureProgram.sha256}));
+
+}
+if(import.meta.main)await sealViewReadSource(undefined,process.argv.includes('--writer'),process.argv.includes('--check'));

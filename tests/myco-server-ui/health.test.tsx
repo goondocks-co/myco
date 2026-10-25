@@ -6,6 +6,7 @@
  * anywhere a reader sees.
  */
 import { retiredBackupNotice } from '@goondocks/myco-shared/backup-words';
+import {SESSION_VIEW_STATES} from '@goondocks/myco-shared/view-status';
 import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -229,6 +230,24 @@ describe('Health', () => {
       expect.stringMatching(/Atlas web.*Archived.*3 sessions/),
     ]);
     expect(within(status).getByTestId('transcript-backlog').textContent).toBe('3 transcripts (4.0 KB) waiting to be read into sessions.');
+  });
+
+  it('reports view lag and retry state with unavailable throughput kept explicit',async()=>{
+    server(routes({'/api/status':()=>Response.json({...STATUS,views:{observedAt:NOW,
+      counts:Object.fromEntries(SESSION_VIEW_STATES.map(state=>[state,state==='stale'?1:0])),
+      states:[{project_id:MYCO,session_id:'private-session-id',title:'Parser work',state:'stale',bytes_behind:4096,next_attempt_at:NOW+3600000,last_failure:'blob_absent'}],
+      cleanup:{retired:3,eligibleRetired:2,heldRetired:1,abandoned:1},findings:[{kind:'unattributed',count:4}],
+      unplaced:{state:'unavailable'},coverageNotCarried:{state:'unavailable'},details:{limit:64,total:1,complete:true},
+      throughput:{state:'unavailable',reason:'no measured rebuild sample'},preflight:{state:'available',scope:'owner'}}})}));
+    mount();
+    const views=await screen.findByTestId('session-views');
+    expect(views.textContent).toContain('1 stale');
+    expect(views.textContent).toContain('Myco · Parser work: stale · 4.0 KB behind');
+    expect(views.textContent).toContain('next attempt');
+    expect(views.textContent).toContain('Hosted rebuild projection is unavailable.');
+    expect(views.textContent).toContain('3 retired views');expect(views.textContent).toContain('4 findings');
+    expect(views.textContent).toContain('Unplaced records: unavailable. Coverage not carried: unavailable.');
+    expect(views.textContent).not.toContain('private-session-id');
   });
 
   it('shows the search index’s upkeep over the last day in one line', async () => {

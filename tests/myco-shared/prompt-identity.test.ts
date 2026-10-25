@@ -21,7 +21,10 @@ const REQUESTS: Array<[PromptIdRequest, string[]]> = [
   [{ scheme: 'offset-v1', namespace: 'codex-prompt', sessionId: S, offset: 12 }, ['codex-prompt', S, '12']],
   [{ scheme: 'offset-v1', namespace: 'cursor-prompt', sessionId: S, offset: 0 }, ['cursor-prompt', S, '0']],
   [{ scheme: 'offset-v1', namespace: 'pi-prompt', sessionId: S, offset: 7 }, ['pi-prompt', S, '7']],
+  [{ scheme: 'offset-v2', namespace: 'cursor-prompt', sessionId: S, transcriptId: 'first', offset: 0 }, ['cursor-prompt', S, 'first', '0']],
+  [{ scheme: 'offset-v2', namespace: 'cursor-prompt', sessionId: S, transcriptId: 'second', offset: 0 }, ['cursor-prompt', S, 'second', '0']],
   [{ scheme: 'stamp-or-offset-v1', sessionId: S, offset: 9 }, ['prompt', S, '9']],
+  [{ scheme: 'stamp-or-offset-v2', sessionId: S, transcriptId: 'first', offset: 9 }, ['prompt', S, 'first', '9']],
   [{ scheme: 'codex-turn-v1', sessionId: S, turnId: 't1', submission: { opener: true } }, ['codex-turn', S, 't1', 'opener']],
   [{ scheme: 'codex-turn-v1', sessionId: S, turnId: 't1', submission: { order: 4 } }, ['codex-turn', S, 't1', 'order|4']],
   [{ scheme: 'codex-turn-v1', sessionId: S, turnId: 't1', submission: { offset: 812 } }, ['codex-turn', S, 't1', 'offset|812']],
@@ -41,6 +44,7 @@ describe('canonicalPromptId', () => {
 
   it('takes a stamped id as it is, and names the derivation of every derived scheme it declares', () => {
     expect(canonicalPromptId(deriveId, { scheme: 'stamp-or-offset-v1', sessionId: S, stamp: 'minted-id', offset: 4 })).toBe('minted-id');
+    expect(canonicalPromptId(deriveId, { scheme: 'stamp-or-offset-v2', sessionId: S, transcriptId: 'first', stamp: 'minted-id', offset: 4 })).toBe('minted-id');
     const derived = Object.entries(PROMPT_ID_SCHEMES).filter(([, s]) => s.derivation === 'derived').map(([name]) => name).sort();
     expect([...new Set(REQUESTS.map(([r]) => r.scheme as string))].sort()).toEqual(derived);
   });

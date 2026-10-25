@@ -12,7 +12,7 @@
  */
 import { SERVER_PROTOCOL } from '../constants.js';
 import { utf8, uuidv5 } from '../hash.js';
-import { ingestEvent } from '../ingest/events.js';
+import { ingestEvent,type IngestContext,type IngestResult } from '../ingest/events.js';
 import { getPlan, PLAN_STATUS_MESSAGE, setPlanStatus, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../read/plans.js';
 import { editablePlan, withViewReadResponse } from '../read/view-store.js';
 import type { ReadScope } from '../read/scope.js';
@@ -55,7 +55,8 @@ export interface SavingMember { machineId: string; tokenId: string }
 /**
  * Creates or updates a plan as a capture event. A create names the prompt it came from; an update carries none, so the row keeps its own — a member's machine may not name a prompt another machine captured, and a plan is shared across them.
  */
-export async function savePlan(env: ServerEnv, member: SavingMember, scope: ReadScope, input: SavePlanInput, nowMs: number): Promise<SavePlanOutcome> {
+export function createPlanSave(write:(env:ServerEnv,ctx:IngestContext,body:unknown)=>Promise<IngestResult>){
+ return async function savePlan(env: ServerEnv, member: SavingMember, scope: ReadScope, input: SavePlanInput, nowMs: number): Promise<SavePlanOutcome> {
   if (input.content === undefined && input.id === undefined) return { ok: false, error: 'content is required when creating a new plan' };
   if (input.status !== undefined && !WRITABLE_PLAN_STATUSES.has(input.status)) return { ok: false, error: PLAN_STATUS_MESSAGE };
   if (input.sourcePath !== undefined && input.planKey !== undefined) return { ok: false, error: 'Pass either source_path or plan_key, not both' };
@@ -86,14 +87,17 @@ export async function savePlan(env: ServerEnv, member: SavingMember, scope: Read
   const createdAt = existing === null ? nowMs : Math.max(nowMs, existing.updatedAt + 1);
   const envelope = { eventId: crypto.randomUUID(), sessionId: input.sessionId, kind: 'plan', createdAt, channel: 'http', producer: MCP_PRODUCER, payload };
   const bodyBytes = utf8(JSON.stringify(payload)).byteLength;
-  const result = await ingestEvent(env.db, { projectId: scope.projectId, machineId: member.machineId, tokenId: member.tokenId, bodyBytes, now: nowMs }, envelope);
+  const result = await write(env, { projectId: scope.projectId, machineId: member.machineId, tokenId: member.tokenId, bodyBytes, now: nowMs }, envelope);
   if (!result.persisted || result.projected === false) return { ok: false, code: result.code, error: result.reason ?? 'plan was not recorded' };
 
   const row = await getPlan(env.db, scope, planKey);
   if (row === null) return { ok: false, error: 'Plan was not recorded' };
   const logicalKey = input.sourcePath !== undefined ? `path:${normalizePlanPath(input.sourcePath)}` : input.planKey !== undefined ? `session:${row.sessionId}:key:${input.planKey}` : planKey;
   return { ok: true, row, logicalKey };
+ };
 }
+
+export const savePlan=createPlanSave((env,ctx,body)=>ingestEvent(env.db,ctx,body));
 
 /** Sets a plan's status as an administrative edit by a member and answers the row as it stands; null when no such plan sits in the scope. */
 export async function changePlanStatus(db: RelationalStore, scope: ReadScope, planKey: string, status: string, by: string, nowMs: number): Promise<ProjectPlanRow | null> {

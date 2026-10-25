@@ -4,12 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { run } from '@myco/cli/server.js';
 import { cloudflareCredentialSource, deploymentRecordPath, readDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudflare.js';
-import { THIN_LEARNING_ADMISSION_SQL } from '@myco-server-worker/db/thin-learning-admission.js';
+import { THIN_LEARNING_ADMISSION_SQL,THIN_LEARNING_REMOVAL_VERSION } from '@myco-server-worker/db/thin-learning-admission.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { getPluginVersion } from '@myco/version.js';
 import { VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import type { CommandRunner, RunOptions } from '@myco/server/runner.js';
 import { budgetD1Database,budgetD1Reply } from '../server/helpers/budget-d1.js';
+import {sqliteEnv} from '../myco-server/helpers/fixtures.js';
+import { significantStatement } from '@myco-server-worker/core/sql-statements.js';
 
 const ACCOUNT = 'a'.repeat(32);
 const RECORDED = '11111111-2222-4333-8444-555555555555';
@@ -154,6 +156,33 @@ function expectNoTokenFragments(text: string): void {
   }
 }
 const count = (command: string): number => calls.filter((call) => call.args.slice(2).join(' ').startsWith(command)).length;
+
+it('view-preflight drives the hosted operator command read-only and resumes its opaque cursor',async()=>{
+ const fixture=sqliteEnv();let reads=0,logins=0;
+ const diagnosticRunner:CommandRunner={async run(_command,args){
+  if(!args.includes('token'))throw new Error('Preflight invoked an unexpected operator command');
+  logins++;
+  return {code:0,stdout:JSON.stringify({type:'oauth',token:'fixture-view-diagnostic-token'}),stderr:''};
+ }};
+ const fetchImpl:typeof fetch=Object.assign(async(_url:RequestInfo|URL,init?:RequestInit)=>{
+  const body=JSON.parse(String(init?.body)) as {sql:string;params:(string|number|null)[]};
+  const sql=significantStatement(body.sql);
+  if(!/^\s*(?:SELECT|WITH)\b/.test(sql)||/\b(?:INSERT|UPDATE|DELETE|REPLACE)\b/.test(sql))throw new Error('Preflight attempted mutation');
+  reads++;
+  return Response.json({success:true,result:[{success:true,results:fixture.sqlite.query(body.sql).all(...body.params),meta:{changes:0}}]});
+ },{preconnect:()=>{}});
+ try{
+  const before=fixture.sqlite.serialize();
+  const args=['view-preflight','--target','cloudflare','--account-id',ACCOUNT,'--project','proj_1'];
+  await run(args,{runner:diagnosticRunner,fetchImpl});
+  const first=JSON.parse(printed.at(-1)!) as {project:string;nextCursor:string;complete:boolean};
+  expect(first.project).toBe('proj_1');expect(first.complete).toBe(false);expect(typeof first.nextCursor).toBe('string');
+  await run([...args,'--cursor',first.nextCursor],{runner:diagnosticRunner,fetchImpl});
+  const second=JSON.parse(printed.at(-1)!) as {coverage:{acknowledged:number};nextCursor:string};
+  expect(second.coverage.acknowledged).toBe(0);expect(second.nextCursor).not.toBe(first.nextCursor);
+  expect(reads).toBe(4);expect(logins).toBe(2);expect(fixture.sqlite.serialize()).toEqual(before);
+ }finally{fixture.sqlite.close();}
+},30000);
 
 describe('Cloudflare status records and live observations', () => {
   it('prints the recorded budget refusal after an update publishes its Worker',async()=>{
@@ -396,7 +425,7 @@ Private debug: ${PRIVATE_TOKEN}`;
       expect(text).toContain(failureMessage);
       expect(text).not.toContain('outcome unknown');
       const admissionReads = calls.filter(({args}) => args.includes('execute') && args[args.indexOf('--command')+1] === THIN_LEARNING_ADMISSION_SQL);
-      expect(admissionReads).toHaveLength(2);
+      expect(admissionReads).toHaveLength(before<THIN_LEARNING_REMOVAL_VERSION?2:1);
       expect(count('d1 execute') - admissionReads.length).toBe(4);
       expect(count('d1 migrations')).toBe(1);
       expect(count('deploy ')).toBe(0);

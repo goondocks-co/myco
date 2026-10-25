@@ -306,6 +306,9 @@ jobs:
           - tests/myco-server/view-sessions.test.ts
           - tests/myco-server/view-source-closure.test.ts
           - tests/myco-server/view-read-legacy.test.ts
+          - tests/myco-server/view-lifecycle.test.ts
+          - tests/myco-server/view-writer-throughput.test.ts
+          - tests/meta/view-read-boundary.test.ts
     env:
       MYCO_TEST_KIND: view-proof
       MYCO_TEST_GROUP: view proof ${{ matrix.file }}

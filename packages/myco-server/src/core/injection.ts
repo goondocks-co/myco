@@ -1,4 +1,6 @@
 import { injectedPromptRecord, withViewReadResponse } from '../read/view-store.js';
+import {prepareInjectionReceipt,prepareContextDelivery,commitContextWrite,type ContextCommit} from './context-writes.js';
+import {injectionServedIds,injectionSessionRecords,injectionPromptHeld} from '../read/view-store.js';
 /**
  * What the prompt hook is served: the spores that go into one prompt, and the
  * record of having served them.
@@ -46,7 +48,7 @@ import { cosineSimilarity, VECTOR_QUERY_LIMIT } from './embedding/vectors.js';
 import type { ContextTimings, ContextTimingStage } from './context-timing.js';
 import { settledAll } from './settled.js';
 import type { SessionWriteAdmission } from '../ingest/projections.js';
-import { deliveredAssignment, type DeliveredNaming } from '../ingest/prompt-scheme.js';
+import { type DeliveredNaming } from '../ingest/prompt-scheme.js';
 
 /** A prompt shorter than this carries too little to serve against. */
 export const MIN_PROMPT_CHARS = 10;
@@ -166,10 +168,7 @@ export interface Delivery extends DeliveredNaming {
  * session, so a delivery names only its own session's rows; `gate` is the caller's condition on the write that carries it.
  */
 export function receiptDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
-  const set = deliveredAssignment(d);
-  return db.prepare(`UPDATE spore_injections SET ${set.sql}
-      WHERE project_id = ? AND session_id = ? AND id = ? AND delivered_at IS NULL AND ${gate.sql}`)
-    .bind(...set.params, d.projectId, d.sessionId, d.id, ...gate.params);
+  return prepareContextDelivery(db,'injection',d,gate).statement;
 }
 
 /** The selector operation that failed, with the original error retained for classification. */
@@ -278,8 +277,7 @@ export function renderInjectionContext(items: readonly InjectionItem[], more: bo
 
 /** Every id of one column served anywhere in this session. */
 async function servedIds(db: RelationalStore, scope: ReadScope, sessionId: string, column: 'spore_ids' | 'plan_ids'): Promise<Set<string>> {
-  const { results } = await db
-    .prepare(`SELECT ${column} AS ids FROM spore_injections WHERE project_id = ? AND session_id = ?`)
+  const { results } = await injectionServedIds(db, column)
     .bind(scope.projectId, sessionId)
     .all<{ ids: string | null }>();
   const ids = new Set<string>();
@@ -297,9 +295,7 @@ export const injectedPlanIds = (db: RelationalStore, scope: ReadScope, sessionId
 
 /** This session's records, newest first. */
 export async function injectionsForSession(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<InjectionRecord[]> {
-  const { results } = await db
-    .prepare(`SELECT prompt_id, prompt_hash, spore_ids, plan_ids, created_at FROM spore_injections
-               WHERE project_id = ? AND session_id = ? ORDER BY created_at DESC`)
+  const { results } = await injectionSessionRecords(db)
     .bind(scope.projectId, sessionId)
     .all<{ prompt_id: string | null; prompt_hash: string; spore_ids: string; plan_ids: string | null; created_at: number }>();
   return results.map((r) => ({ promptId: r.prompt_id, promptHash: r.prompt_hash, sporeIds: parseIds(r.spore_ids), planIds: parseIds(r.plan_ids ?? ''), createdAt: r.created_at }));
@@ -362,9 +358,10 @@ export function selectSporesForPrompt(
   input: { sessionId: string; promptHash: string; prompt: string; now: number; admission: SessionWriteAdmission } & Partial<AskNaming>,
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   timings?: ContextTimings,
+  commit:ContextCommit=commitContextWrite,
 ): Promise<InjectionSelection> {
 
-  return withViewReadResponse(db,()=>input.now,bound=>readSporesForPrompt(bound,scope,leaves,capabilityOn,input,resolveSemantic,timings));
+  return withViewReadResponse(db,()=>input.now,bound=>readSporesForPrompt(bound,scope,leaves,capabilityOn,input,resolveSemantic,timings,commit));
 }
 async function readSporesForPrompt(
   db: RelationalStore,
@@ -374,6 +371,7 @@ async function readSporesForPrompt(
   input: { sessionId: string; promptHash: string; prompt: string; now: number; admission: SessionWriteAdmission } & Partial<AskNaming>,
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   timings?: ContextTimings,
+  commit:ContextCommit=commitContextWrite,
 ): Promise<InjectionSelection> {
   const counts = emptyInjectionCounts();
   const nothing = (skipped: InjectionSkip): InjectionSelection => ({ items: [], context: '', skipped, counts });
@@ -458,12 +456,9 @@ async function readSporesForPrompt(
   const receiptId = crypto.randomUUID();
   const promptId = input.promptId ?? null;
   const plansById = new Map(planRows.filter(row => row !== null).map(row => [row.planKey, row]));
-  const receipt = db
-    .prepare(`INSERT OR IGNORE INTO spore_injections
-                (project_id, session_id, id, prompt_id, scope_reason, ask_protocol, asked_at, prompt_hash, spore_ids, plan_ids, created_at)
-              SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${input.admission.admission.sql}`)
-    .bind(scope.projectId, input.sessionId, receiptId, promptId, input.scopeReason ?? null, input.askProtocol ?? 'legacy', input.askedAt ?? null,
-      input.promptHash, JSON.stringify(idsOf('spore')), JSON.stringify(idsOf('plan')), input.now, ...input.admission.admission.params);
+  const receipt=prepareInjectionReceipt(db,{project:scope.projectId,session:input.sessionId,id:receiptId,promptId,
+    scopeReason:input.scopeReason??null,protocol:input.askProtocol??'legacy',askedAt:input.askedAt??null,promptHash:input.promptHash,
+    spores:idsOf('spore'),plans:idsOf('plan'),now:input.now},input.admission.admission);
   const snapshots = idsOf('plan').map(id => {
     const plan = plansById.get(id)!;
     return db.prepare(`INSERT INTO injection_served_items
@@ -473,12 +468,11 @@ async function readSporesForPrompt(
       .bind(scope.projectId, receiptId, id, plan.title, plan.sessionId, plan.contentHash,
         scope.projectId, input.sessionId, receiptId);
   });
-  const [written] = await duringInjection('record', counts, () => db.batch([receipt, ...snapshots]));
+  const [written] = await duringInjection('record', counts, () => commit(db,{...receipt,statements:[...receipt.statements,...snapshots]}));
   if (written!.meta.changes !== 1) {
     if (await duringInjection('record', counts, () => input.admission.refusal(db)) !== null) return nothing('unwritable');
     // Which rule held the insert back: a receipt for this text already, or one for this prompt id.
-    const named = promptId === null ? null : await duringInjection('record', counts, () => db
-      .prepare(`SELECT 1 AS held FROM spore_injections WHERE project_id = ? AND session_id = ? AND prompt_id = ? AND prompt_hash <> ?`)
+    const named = promptId === null ? null : await duringInjection('record', counts, () => injectionPromptHeld(db)
       .bind(scope.projectId, input.sessionId, promptId, input.promptHash).first<{ held: number }>());
     return nothing(named === null ? 'repeat' : 'duplicate_prompt');
   }

@@ -23,7 +23,6 @@ import {
   type DerivedEvent, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
-const promptIdAt = (sessionId: string, offset: number): Promise<string> => promptIdAtOffset('pi-prompt', sessionId, offset);
 
 /** Context messages this extension delivers; never a turn of the conversation. */
 const MYCO_CUSTOM_TYPES = new Set(['myco-context', 'myco-prompt-context']);
@@ -56,7 +55,7 @@ function argumentsOf(value: unknown): Record<string, unknown> {
 export const piParser: TranscriptParser = {
   agent: 'pi',
   fidelity: 'full',
-  schemes: ['offset-v1'],
+  schemes: ['offset-v1', 'offset-v2'],
   planTags: [],
 
   async parse(input: ParserInput): Promise<DerivedEvent[]> {
@@ -79,7 +78,7 @@ export const piParser: TranscriptParser = {
       if (role === 'user') {
         const text = textOf(message.content);
         if (text.trim() === '') continue;
-        promptId = await promptIdAt(input.sessionId, offset);
+        promptId = await promptIdAtOffset('pi-prompt', input.sessionId, offset, input);
         events.push({
           kind: 'prompt',
           payload: { promptId, text, origin: 'user', promptKind: 'user_prompt' },
@@ -129,7 +128,7 @@ export const piParser: TranscriptParser = {
         const name = str(message.toolName) ?? call?.toolName;
         if (name === undefined) continue;
         const failed = toolResultFailed({ declaration: toolResultDeclarationOf(CAPTURE_RULE_BUNDLES, this.agent), record: value, result: message });
-        const output = textOf(message.content).slice(0, TOOL_OUTPUT_PREVIEW_CHARS);
+        const output = textOf(message.content).slice(0, input.view ? undefined : TOOL_OUTPUT_PREVIEW_CHARS);
         events.push({
           kind: failed ? 'tool.failure' : 'tool.use', source,
           legacyId: await legacyRecordId(input, { kind: 'tool-call', source, offset }),

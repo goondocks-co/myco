@@ -195,8 +195,14 @@ export type RecordIdRequest = RecordRequestBase & (
   | { kind: 'plan'; tag: string; coordinate: readonly (string | number)[]; legacyPosition?: number }
 );
 
+function observedIdentity<R>(hash:PromptIdHasher<R>,observe:((parts:readonly string[])=>void)|undefined):PromptIdHasher<R>{
+  if(observe===undefined)return hash;
+  return (...parts)=>{observe(Object.freeze([...parts]));return hash(...parts);};
+}
+
 /** Mints one logical record id from declared source facts. */
-export function canonicalRecordId<R>(hash: PromptIdHasher<R>, request: RecordIdRequest): R {
+export function canonicalRecordId<R>(hash: PromptIdHasher<R>, request: RecordIdRequest, observe?:(parts:readonly string[])=>void): R {
+  hash=observedIdentity(hash,observe);
   const { source } = request;
   if (!isRecordIdScheme(request.scheme)) throw new RecordSourceInvalid();
   if (request.scheme === LEGACY_RECORD_ID_SCHEME) {
@@ -224,13 +230,19 @@ const underived = (request: never): never => { throw new Error(`no derivation fo
  * The canonical id of one prompt under its scheme. The only prompt-id derivation: a `uuidv5`/`deriveId` of a prompt
  * anywhere else fails `tests/meta/prompt-identity-sources.test.ts`. A stamped id is the hook's own and is taken as it is.
  */
-export function canonicalPromptId<R>(hash: PromptIdHasher<R>, request: PromptIdRequest): R | string {
+export function canonicalPromptId<R>(hash: PromptIdHasher<R>, request: PromptIdRequest, observe?:(parts:readonly string[])=>void): R | string {
+  hash=observedIdentity(hash,observe);
   switch (request.scheme) {
     case 'claude-v1':
       return hash('queued-prompt', request.sessionId, `${request.shape}|${request.key}`);
     case 'claude-v2':
       return hash('queued-prompt', request.sessionId, 'owner' in request.record ? `user_prompt|${request.record.owner}`
         : 'queued' in request.record ? `queued_command|${request.record.queued}` : `record|${request.record.thread}|${request.record.uuid}`);
+    case 'offset-v2':
+      if (!(OFFSET_PROMPT_NAMESPACES as readonly string[]).includes(request.namespace)) throw new RecordSourceInvalid();
+      return hash(request.namespace, request.sessionId, request.transcriptId, String(request.offset));
+    case 'stamp-or-offset-v2':
+      return request.stamp ?? hash('prompt', request.sessionId, request.transcriptId, String(request.offset));
     case 'offset-v1':
       if (!(OFFSET_PROMPT_NAMESPACES as readonly unknown[]).includes(request.namespace)) throw new RecordSourceInvalid();
       return hash(request.namespace, request.sessionId, String(request.offset));

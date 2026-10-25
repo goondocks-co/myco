@@ -1,11 +1,15 @@
+import materialClasses from '../myco-server/fixtures/material-write-classes.json';
+import {materialWriteBoundary,materialWriteMode} from '../helpers/material-write-classification.js';
 import * as miniflare from 'miniflare';
-import {afterEach, mock} from 'bun:test';
+import {afterEach,afterAll, mock,expect} from 'bun:test';
 import * as native from '../../packages/myco-server/src/platform/bun/sqlite.js';
 import type {RelationalStore} from '../../packages/myco-server/src/core/adapters.js';
-import {statementRecorder,instrumentReadPreparations,instrumentObservedClock,instrumentNativeReadRequests,installReadPreparationBoundary,preparationSourcePaths} from '../helpers/statement-recorder.js';
+import {statementRecorder,instrumentReadPreparations,instrumentObservedClock,instrumentNativeReadRequests,installReadPreparationBoundary,preparationSourcePaths,instrumentObservedStores,instrumentObservedReadFiles,markObservedReadStore,forwardObservedReadStore} from '../helpers/statement-recorder.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript-v6';
+import {productionViewDml} from '../helpers/statement-recorder.js';
+import {noteObservedReadFile,observedReadStoreFiles} from '../helpers/statement-recorder.js';
 
 import {preparationOrigins,preparationSourcePins} from '../helpers/view-read-policy.js';
 export {preparationOrigins} from '../helpers/view-read-policy.js';
@@ -14,7 +18,7 @@ const repository=path.resolve(import.meta.dir,'../..')+path.sep;
 const sourcePaths=preparationSourcePaths(repository);
 export function instrumentReadSource(source:string,file:string):string{
  const relative=sourcePaths.relative(file);
- return instrumentObservedClock(ts,instrumentNativeReadRequests(ts,instrumentReadPreparations(ts,source,relative,preparationOrigins,preparationRecorder,preparationSourcePins.callers),relative,preparationRecorder),relative,preparationRecorder);
+ return instrumentObservedReadFiles(ts,instrumentObservedClock(ts,instrumentNativeReadRequests(ts,instrumentReadPreparations(ts,instrumentObservedStores(ts,source,relative,preparationRecorder),relative,preparationOrigins,preparationRecorder,preparationSourcePins.callers),relative,preparationRecorder),relative,preparationRecorder),relative,preparationRecorder);
 }
 Bun.plugin({name:'view-read-preparation-origins',setup(build){
  build.onLoad({filter:sourcePaths.filter},args=>{
@@ -23,7 +27,9 @@ Bun.plugin({name:'view-read-preparation-origins',setup(build){
  });
 }});
 const {runtimeBoundary}=await import('../helpers/view-read-contract.js');
+const materialBoundary=materialWriteBoundary(materialClasses.map(row=>({...row,mode:materialWriteMode(row.mode)})));
 installReadPreparationBoundary(statement=>{
+ materialBoundary.check(statement);
  const errors=runtimeBoundary([statement]);
  if(errors.length)throw new Error(errors.join('\n'));
 });
@@ -40,6 +46,7 @@ export function observeReadStore(store: RelationalStore, target: 'native' | 'd1'
  const held=observed.get(store);
  if(held)return held.db;
  const recorder=statementRecorder(store,{accounting:target,bufferLimit:1024,prepared:()=>{stores.add(recorder);},event(event){
+   if(event.kind==='prepare')noteObservedReadFile(target);
    const tag=/^\/\*vs:([A-Za-z0-9_:]+)\*\//.exec(event.sql);
    if(!tag)return;
    const row=totals.get(tag[1]!)??{prepares:0,binds:0,executions:0};
@@ -53,7 +60,7 @@ export function observeReadStore(store: RelationalStore, target: 'native' | 'd1'
    operations.set(tag[1]!,targetRow);byTarget.set(target,operations);
  }});
  createdStores++;
- stores.add(recorder);observed.set(store,recorder);observed.set(recorder.db,recorder);
+ stores.add(recorder);observed.set(store,recorder);observed.set(recorder.db,recorder);markObservedReadStore(recorder.db,target);
  return recorder.db;
 }
 
@@ -78,18 +85,35 @@ export async function checkpointReadObservations(){
  }
  stores.clear();
 }
-afterEach(checkpointReadObservations);
+let checkedDml=0;
+let checkedMaterial=0;
+const publishedFiles=new Set<string>();
+afterAll(()=>{
+ for(const [file,targets] of observedReadStoreFiles())if(file.startsWith('tests/')){
+  const key=JSON.stringify({file,targets:[...targets].sort()});
+  if(!publishedFiles.has(key)){publishedFiles.add(key);console.log(JSON.stringify({kind:'view_store_file_witness',...JSON.parse(key)}));}
+ }
+});
+afterEach(async()=>{
+ await checkpointReadObservations();
+ const material=materialBoundary.violations.slice(checkedMaterial);
+ checkedMaterial=materialBoundary.violations.length;
+ expect(material.map(row=>({sql:row.sql,origin:row.origin})), 'no unclassified material writes').toEqual([]);
+ const found=productionViewDml.violations.slice(checkedDml);
+ checkedDml=productionViewDml.violations.length;
+ expect(found.map(row=>({sql:row.sql,operation:row.operation})), 'no attempted production view DML').toEqual([]);
+});
 
 mock.module('miniflare',()=>({...miniflare,Miniflare:class ObservedMiniflare extends OriginalMiniflare {
  async getD1Database(...args:Parameters<InstanceType<typeof OriginalMiniflare>['getD1Database']>) {
   const database=await super.getD1Database(...args);
   const observed=observeReadStore(database,'d1');
-  return new Proxy(database,{get(target,key,receiver){
+  return forwardObservedReadStore(new Proxy(database,{get(target,key,receiver){
    if(key==='prepare')return observed.prepare;
    if(key==='batch')return observed.batch;
    const value=Reflect.get(target,key,receiver);
    return typeof value==='function'?value.bind(target):value;
-  }});
+  }}),observed);
  }
 }}));
 

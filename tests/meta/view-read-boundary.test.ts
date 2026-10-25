@@ -1,13 +1,14 @@
 import {LEGACY_ONLY_OPERATIONS} from '@myco-server-worker/read/view-store.js';
-import {preparationOrigins,preparationOriginEnvelope,preparationSourcePins,preparationSourceInventory} from '../helpers/view-read-policy.js';
+import {mergePreparationOrigins,preparationOrigins,preparationOriginEnvelope,preparationSourceExceptions,preparationFoundationImports,preparationSourcePins,preparationSourceInventory} from '../helpers/view-read-policy.js';
 import { createHash } from 'node:crypto';
 import legacy from '../myco-server/fixtures/view-read-legacy.json';
 import {SCHEMA_STEPS} from '@myco-server-worker/db/schema.js';
 import {withViewStores} from '../myco-server/helpers/view-stores.js';
 import type {StatementException,ExceptionClosure,ParameterCaller} from '../helpers/view-read-contract.js';
-import {statementRecorder,preparationOwner,isSqlPreparation,preparationSourcePaths,instrumentReadPreparations,checkedPreparationOrigins,checkedPreparationSource,readPreparationViolations,withReadPreparation,withPreparedRead,withPreparedBatch,preparedMethodReceiver,withPhysicalPreparation,protectedRelations,OPEN_RELATION_PREPARATIONS,withPreparationCaller,observePhysicalStatements,type StatementEvent} from '../helpers/statement-recorder.js';
+import {statementRecorder,preparationOwner,isSqlPreparation,preparationSourcePaths,instrumentReadPreparations,checkedPreparationOrigins,checkedPreparationSource,readPreparationViolations,withReadPreparation,withPreparedRead,withPreparedBatch,preparedMethodReceiver,withPhysicalPreparation,withIndependentReadPreparation,markObservedReadStore,protectedRelations,OPEN_RELATION_PREPARATIONS,withPreparationCaller,observePhysicalStatements,type StatementEvent} from '../helpers/statement-recorder.js';
 import {Database} from 'bun:sqlite';
 import {sqliteRelationalStore} from '@myco-server-worker/platform/bun/sqlite.js';
+import {viewDmlBoundary,instrumentObservedStores,assertObservedReadStore,observedReadStoreFiles,instrumentObservedReadFiles,withObservedReadFile} from '../helpers/statement-recorder.js';
 import ts from 'typescript-v6';
 import {nativeReadObservations,instrumentReadSource} from '../setup/view-read-preload.js';
 import {planTotals} from '@myco-server-worker/read/plans.js';
@@ -24,6 +25,36 @@ const owner = 'packages/myco-server/src/read/view-store.ts';
 const reader = 'packages/myco-server/src/read/probe.ts';
 const operation = 'M24:plans_planTotals:0';
 const tagged = '/*vs:' + operation + '*/SELECT prompt_id FROM prompt_batches WHERE project_id=?';
+test('production view DML is rejected at preparation and every attempted violation survives a bounded trace',()=>{
+ const boundary=viewDmlBoundary();
+ for(const sql of [
+  'UPDATE OR FAIL main.view_prompts SET text=?',
+  'UPDATE "main"."view_checkpoints" SET parsed_offset=?',
+  'WITH changes AS(SELECT 1) INSERT OR REPLACE INTO material_versions VALUES(?)',
+  'DELETE FROM session_views WHERE session_id=?',
+ ]){
+  for(let i=0;i<1100;i++)expect(()=>boundary.check({kind:'prepare',statementId:'probe',sql,binds:[],operation:'capture',phase:'write'})).toThrow('production_view_dml');
+ }
+ expect(boundary.violations).toHaveLength(4400);
+ expect(()=>boundary.check({kind:'prepare',statementId:'probe',sql:'UPDATE view_prompts SET text=?',binds:[],operation:'view-writer-driver',phase:'write'})).not.toThrow();
+ expect(boundary.violations).toHaveLength(4400);
+});
+test('view write plans remain reads while their executed statements require writer admission',()=>{
+ const boundary=viewDmlBoundary();
+ for(const sql of ['INSERT INTO view_prompts(prompt_id) VALUES(?)','UPDATE material_versions SET material_seq=?']){
+  const event={kind:'prepare' as const,statementId:'plan',sql,binds:[],operation:'probe',phase:'read'};
+  expect(()=>boundary.check({...event,sql:'EXPLAIN QUERY PLAN '+sql})).not.toThrow();
+  expect(()=>boundary.check(event)).toThrow('production_view_dml');
+ }
+ expect(boundary.violations).toHaveLength(2);
+});
+test('publication metadata and future view storage require an admitted read preparation',()=>{
+ for(const table of ['learning_sessions','material_versions','view_build_work','view_publication_material','view_legacy_ack_feed','view_unknown_extension']){
+  const sql='SELECT * FROM '+table;
+  expect(protectedSql(sql)).toBe(true);
+  expect(runtimeBoundary([{sql,operation:'unadmitted',phase:'read',statementId:table}])).toContain('untagged protected SQL: unadmitted/'+table);
+ }
+});
 test('preparation loading and origin identity agree for Windows native and mixed paths',()=>{
  const source=readFileSync(owner,'utf8');
  for(const root of ['D:\\a\\myco\\myco','D:/a/myco/myco']){
@@ -40,12 +71,37 @@ test('preparation loading and origin identity agree for Windows native and mixed
   expect(paths.filter.test('D:/a/myco/myco-other/tests/fixture.ts')).toBe(false);
  }
 });
+test('factory instrumentation requires per-file native, D1 and operator observation including import aliases',async()=>{
+ for(const source of [
+  "import {sqliteRelationalStore as createStore} from 'native'; const db=createStore(connection)",
+  "const db=await mf.getD1Database('DB')",
+  "import {d1OperatorStore as operatorStore} from 'operator'; const db=operatorStore(options)",
+ ])expect(instrumentObservedStores(ts,source,'tests/myco-server/fixture.test.ts','recorder')).toContain('"tests/myco-server/fixture.test.ts"');
+ expect(()=>assertObservedReadStore({},'tests/myco-server/unobserved.test.ts')).toThrow('view_store_unobserved');
+ expect(instrumentObservedReadFiles(ts,"test.each([1])('case', async n=>{await work(n)})",'tests/myco-server/fixture.test.ts','recorder')).toContain('__viewObservedFile("tests/myco-server/fixture.test.ts",async n=>');
+ await withObservedReadFile('tests/myco-server/fixture.test.ts',()=>withViewStores(async(db,target)=>{
+  expect(assertObservedReadStore(db,'tests/meta/view-read-boundary.test.ts')).toBe(db);
+  expect(observedReadStoreFiles().get('tests/meta/view-read-boundary.test.ts')?.has(target==='native'?'native':'d1')).toBe(true);
+  expect(observedReadStoreFiles().get('tests/myco-server/fixture.test.ts')?.has(target==='native'?'native':'d1')).toBe(true);
+ }))();
+},30000);
+
 test('preparation instrumentation preserves awaited RegExp execution in schema contracts',()=>{
  const file='tests/myco-server/view-store-schema.test.ts';
  const instrumented=instrumentReadSource(readFileSync(file,'utf8'),file);
  expect(()=>new Bun.Transpiler({loader:'ts'}).transformSync(instrumented)).not.toThrow();
  expect(instrumented).toContain('/\\bWHERE\\s+(.+)$/i.exec(await sql(name))');
  expect(instrumented).toContain('__viewPreparedRead(');
+});
+test('named regular expressions execute without physical SQL instrumentation',async()=>{
+ const source='const TABLE_FORM=/^INSERT/; export function compile(db:Database,sql:string){TABLE_FORM.exec(sql);db.exec(sql)}';
+ const file='tests/probe.ts',origin={kind:'exception' as const,id:'probe',file,owner:'compile',expression:'sql',phase:'P' as const};
+ const instrumented=instrumentReadPreparations(ts,source,file,[origin],import.meta.dir+'/../helpers/statement-recorder.ts');
+ expect(instrumented).toContain('TABLE_FORM.exec(sql)');
+ expect(instrumented.match(/__viewPhysicalPreparation\(/g)).toHaveLength(1);
+ const loaded=await import('data:text/javascript;base64,'+Buffer.from(new Bun.Transpiler({loader:'ts'}).transformSync(instrumented)).toString('base64'));
+ let executed=0;const db={exec(sql:string){expect(this).toBe(db);expect(sql).toBe('SELECT 1');executed++;}};
+ loaded.compile(db,'SELECT 1');expect(executed).toBe(1);
 });
 test('every declared Durable Object has one classified observation owner',()=>{
  const source=readFileSync('packages/myco-server/wrangler.toml','utf8');
@@ -108,17 +164,18 @@ describe('view read source boundary controls', () => {
 
   test('pins declarations interpolated into admitted exception sites',()=>{
     const file='packages/myco-server/src/core/learning-hold.ts',text=readFileSync(file,'utf8');
-    const exceptions=legacy.sourceExceptions.map(item=>({...item,phase:exceptionPhase(item.phase)}));
+    const exceptions=preparationSourceExceptions.map(item=>({...item,phase:exceptionPhase(item.phase)}));
     const tuple=exceptions.find(item=>item.id==='maintenance-learning-hold')!;
+    if(!tuple.dependencies)throw new Error('Missing learning-hold dependency pins');
     const sources=new Map([...new Set([file,...tuple.dependencies.map(item=>item.file)])].map(file=>[file,readFileSync(file,'utf8')]));
-    expect(sourceBoundary(sources,exceptions,legacy.foundationImports).filter(error=>error.startsWith(file+'#learningHolds:'))).toEqual([]);
+    expect(sourceBoundary(sources,exceptions,preparationFoundationImports).filter(error=>error.startsWith(file+'#learningHolds:'))).toEqual([]);
     const mutant=text.replace('AND NOT EXISTS (SELECT 1 FROM session_tombstones','AND (SELECT COUNT(*) FROM prompt_batches WHERE project_id = ${project} AND session_id = ${session}) >= 0\n    AND NOT EXISTS (SELECT 1 FROM session_tombstones');
     expect(mutant).not.toBe(text);
-    expect(sourceBoundary(new Map(sources).set(file,mutant),exceptions,legacy.foundationImports)).toContain(file+'#learningHolds: SQL exception dependencies differ');
+    expect(sourceBoundary(new Map(sources).set(file,mutant),exceptions,preparationFoundationImports)).toContain(file+'#learningHolds: SQL exception dependencies differ');
     const dependency='packages/myco-server/src/core/settings.ts',original=sources.get(dependency)!;
     const importedMutant=original.replace('export function learningEnabledSql(): string {','export function learningEnabledSql(): string {\n return `(SELECT COUNT(*) FROM prompt_batches) >= 0`;');
     expect(importedMutant).not.toBe(original);
-    expect(sourceBoundary(new Map(sources).set(dependency,importedMutant),exceptions,legacy.foundationImports)).toContain(file+'#learningHolds: SQL exception dependencies differ');
+    expect(sourceBoundary(new Map(sources).set(dependency,importedMutant),exceptions,preparationFoundationImports)).toContain(file+'#learningHolds: SQL exception dependencies differ');
   });
 
   test('parses each file once and shares declaration analysis across importers and cycles',()=>{
@@ -440,14 +497,14 @@ const sourceFiles = (dir: string): string[] => readdirSync(dir).flatMap(name => 
 const exceptionPhase = (phase: string): StatementException['phase'] => {if(phase==='W'||phase==='P'||phase==='H'||phase==='T')return phase;throw new Error('Unknown statement phase '+phase)};
 test('the complete Deployment source boundary admits only frozen statement and foundation tuples',()=>{
  const sources=new Map(['packages/myco-server/src','packages/myco/src','packages/myco-shared/src'].flatMap(sourceFiles).map(file=>[file,readFileSync(file,'utf8')]));
- const exceptions=legacy.sourceExceptions.map<StatementException>(item=>({...item,phase:exceptionPhase(item.phase)}));
- expect(sourceBoundary(sources,exceptions,legacy.foundationImports)).toEqual([]);
+ const exceptions=preparationSourceExceptions.map<StatementException>(item=>({...item,phase:exceptionPhase(item.phase)}));
+ expect(sourceBoundary(sources,exceptions,preparationFoundationImports)).toEqual([]);
 });
 
 test('all source and test importers preserve the closed SQL-bearing foundation boundary',()=>{
  const files=['packages/myco-server/src','packages/myco/src','packages/myco-shared/src','tests'].flatMap(sourceFiles);
  const sources=new Map(files.map(file=>[file,readFileSync(file,'utf8')]));
- expect(sourceBoundary(sources,[],legacy.foundationImports,{importsOnly:true})).toEqual([]);
+ expect(sourceBoundary(sources,[],preparationFoundationImports,{importsOnly:true})).toEqual([]);
 },30000);
 
 test('schema fixture origins admit exactly the stamped bootstrap relations',async()=>{
@@ -840,12 +897,17 @@ test('guarded writes and explicit undefined retain their source dependencies',()
 
 test('preparation policy preserves the byte-equal sealed seed and only observed fixture extensions',async()=>{
  const seed=await checkedPreparationOrigins(legacy.preparationOrigins);
+ const writerIds=new Set((await checkedPreparationOrigins(preparationOriginEnvelope.writer.preparationOrigins)).map(row=>row.id));
  expect(preparationOriginEnvelope.seedSha256).toBe(legacy.preparationOrigins.sha256);
  expect((await checkedPreparationOrigins(preparationOriginEnvelope)).slice(0,seed.length)).toEqual(seed);
- expect(preparationOrigins.slice(0,seed.length).filter(row=>!preparationOriginEnvelope.replayOnly.includes(row.id)))
-  .toEqual(seed.filter(row=>!preparationOriginEnvelope.replayOnly.includes(row.id)));
+ expect(preparationOrigins.slice(0,seed.length).filter(row=>!preparationOriginEnvelope.replayOnly.includes(row.id)&&!row.id.startsWith('H:')&&!writerIds.has(row.id)))
+  .toEqual(seed.filter(row=>!preparationOriginEnvelope.replayOnly.includes(row.id)&&!row.id.startsWith('H:')&&!writerIds.has(row.id)));
  const extensions=preparationOriginEnvelope.extensions.flatMap(entry=>entry.ids);
- expect(preparationOrigins.slice(seed.length).map(entry=>entry.id)).toEqual(extensions);
+
+ expect(preparationOrigins.slice(seed.length,seed.length+extensions.length).map(entry=>entry.id)).toEqual(extensions);
+ const base=await checkedPreparationOrigins(preparationOriginEnvelope);
+ const tuple=(row:typeof base[number])=>[row.id,row.file,row.owner,row.expression,row.phase];
+ expect(preparationOrigins.slice(0,base.length).map(tuple)).toEqual(base.map(tuple));
  const keys=preparationSourcePins.callers.map(row=>row.key).sort();
  const evidence=preparationOriginEnvelope.fixtureReconciliation;
  expect(evidence.sourceGraphSha256).toBe(preparationOriginEnvelope.sourceClosureProgram.sha256);
@@ -858,10 +920,10 @@ test('preparation policy preserves the byte-equal sealed seed and only observed 
   expect(row.callerRelations?.every(context=>context.relations.length===0)??true).toBe(true);
  }
  for(const row of evidence.files)expect(row.sha256).toMatch(/^[a-f0-9]{64}$/);
- const authority=preparationOrigins.slice(seed.length).map(row=>
+ const authority=base.slice(seed.length).map(row=>
   [row.id,row.file,row.owner,row.expression,row.phase,row.relations,{callerRelations:row.callerRelations}]);
  expect(createHash('sha256').update(JSON.stringify(authority)).digest('hex')).toBe(evidence.authoritySha256);
- for(const row of preparationOrigins.slice(seed.length)){
+ for(const row of preparationOrigins.slice(seed.length,base.length)){
   expect(row.phase).toBe('T');
   expect(Array.isArray(row.relations)).toBe(true);
   expect(row.callerKeys).toEqual(keys);
@@ -980,6 +1042,8 @@ function planStatusCallers(sources: ReadonlyMap<string, string>): {file:string;o
 }
 
 const FACT_STATUS_CALLERS = [
+ 'tests/myco-server/view-material-facts.test.ts#test:published fact status versions its canonical postimage and retries only changed evidence on native and D1',
+ 'tests/myco-server/view-material-facts.test.ts#test:the canonical plan merge and tag operation define the same postimage for new, edited, stale and tied events',
  'tests/myco-server/view-records.test.ts#it:fact-only status primitive retains the frozen result and complete empty-world statement work',
  'tests/myco-server/embedding-reconcile.test.ts#test:plan status writes report their own result and invalidate indexed metadata',
  'tests/myco-server/dashboard-conversation-honesty.test.ts#it:gate 1643.1: plan edits and equal-time inserts cannot move displayed identities into a continuation',
@@ -1019,8 +1083,8 @@ test('the live source seal equals the complete derivation and accounts for every
  const files=preparationSourceInventory(process.cwd());
  const sources=new Map(files.map(file=>[file,readFileSync(file,'utf8')]));
  const closures:ExceptionClosure[]=[],callers:ParameterCaller[]=[],dependencyDiffs:unknown[]=[];
- const exceptions=legacy.sourceExceptions.map<StatementException>(item=>({...item,phase:exceptionPhase(item.phase)}));
- sourceBoundary(sources,exceptions,legacy.foundationImports,{
+ const exceptions=preparationSourceExceptions.map<StatementException>(item=>({...item,phase:exceptionPhase(item.phase)}));
+ sourceBoundary(sources,exceptions,preparationFoundationImports,{
   closures:[],callers:[],captureClosure:row=>closures.push(row),captureCaller:row=>callers.push(row),
   captureDependencies:(exception,dependencies)=>{if(JSON.stringify(exception.dependencies??[])!==JSON.stringify(dependencies))dependencyDiffs.push(exception.id);},
  });
@@ -1029,7 +1093,7 @@ test('the live source seal equals the complete derivation and accounts for every
  expect(sourceSealChanges(derived,preparationSourcePins), 'Regenerate: bun scripts/view-read-seal.ts').toEqual([]);
  const historical=await checkedPreparationSource(legacy.sourceClosureProgram);
  const changed=sourceSealChanges(historical,derived);
- const classes=new Set(['moved plan-status SQL','renamed injection composition','opaque-context decorator','bounded refusal/status metadata','transitive callback fingerprint','module-owned read preparation','focused view fixtures','schema 104 admission projection','SQL identifier dependency fingerprint','closed literal sink','writer-shaped fixture instrumentation']);
+ const classes=new Set(['durable material recovery','writer material and lifecycle','moved plan-status SQL','renamed injection composition','opaque-context decorator','bounded refusal/status metadata','transitive callback fingerprint','module-owned read preparation','focused view fixtures','schema 104 admission projection','SQL identifier dependency fingerprint','closed literal sink','writer-shaped fixture instrumentation']);
  const accounted=preparationOriginEnvelope.sourceClosureChanges;
  expect(accounted.map(({reason,...row})=>row).sort((a,b)=>a.tupleId.localeCompare(b.tupleId))).toEqual([...changed].sort((a,b)=>a.tupleId.localeCompare(b.tupleId)));
  expect(accounted.every(row=>classes.has(row.reason))).toBe(true);
@@ -1053,4 +1117,132 @@ test('source seals ignore file-only comments and detect an added SQL sink caller
  expect(original.callers.length).toBeGreaterThan(0);
  expect(sourceSealChanges(original,derive(text+'\n// SQL callers retain their sealed context.\n'))).toEqual([]);
  expect(sourceSealChanges(original,derive(text+'\nrows(db,"SELECT * FROM responses")'))).not.toEqual([]);
+});
+
+test('independent interleaved writers keep fresh preparation origins and restore deferred batch refusal',()=>{
+ const sql='SELECT 1',physical={kind:'exception' as const,id:'transport',file:'tests/transport.ts',owner:'query',expression:'sql',phase:'T' as const};
+ const origin=(id:string)=>({...physical,id,file:'tests/interleaved.ts',owner:id});
+ const first=withPreparedRead(origin('first'),sql,()=>({}));
+ const second=withPreparedRead(origin('second'),sql,()=>({}));
+ const seen:string[]=[];
+ const stop=observePhysicalStatements(record=>{if(record.kind==='event'&&record.value.kind==='prepare'&&record.value.origin?.kind==='exception')seen.push(record.value.origin.id);});
+ try{
+  withPreparedBatch([[first,second]],()=>{
+   const prepare=()=>withPreparedRead(origin('independent'),sql,()=>withPhysicalPreparation(physical,sql,'query',()=>({get:()=>1})).get());
+   expect(()=>prepare()).toThrow('Conflicting prepared execution provenance');
+   expect(withIndependentReadPreparation(prepare)).toBe(1);
+   expect(()=>prepare()).toThrow('Conflicting prepared execution provenance');
+  });
+  expect(seen).toEqual(['independent']);
+ }finally{stop();}
+});
+
+test('entry collections project SQL values separately from bound payloads and retain SQL mutation refusal',()=>{
+ const fragment='packages/myco-server/src/core/fragment.ts';
+ for(const map of [false,true]){
+  const definition="export function fields(values,integers){const integerColumns=new Set(integers);return "+(map?'new Map(':'Object.fromEntries(')+"Object.entries(values).map(([column,value])=>[column,{sql:integerColumns.has(column)?'CAST(? AS INTEGER)':'?',params:[value]}]));}";
+  const expression=map?"fields(values,[]).get('id').sql":"fields(values,[]).id.sql";
+  const body="import {fields} from '../core/fragment.js';export function rows(db,values){return db.prepare("+expression+")};export function caller(db){return rows(db,{id:new UnknownPayload()})}";
+  const sources=new Map([[fragment,definition],[reader,body]]),tuple:StatementException={id:'entries',file:reader,owner:'rows',expression,phase:'W'};
+  const foundations=[{owner:fragment,importer:reader,imports:['fields']}];
+  const closures:ExceptionClosure[]=[],callers:ParameterCaller[]=[];
+  sourceBoundary(sources,[tuple],foundations,{closures:[],callers:[],captureClosure:row=>closures.push(row),captureCaller:row=>callers.push(row),captureDependencies:(_,dependencies)=>{tuple.dependencies=dependencies;}});
+  expect(closures[0]!.parameters).toEqual([]);
+  expect(closures[0]!.unresolved).toEqual([]);
+  expect(callers).toEqual([]);
+  expect(sourceBoundary(sources,[tuple],foundations,{closures,callers})).toEqual([]);
+  const mutant=new Map(sources).set(fragment,definition.replace("'CAST(? AS INTEGER)'","'SELECT * FROM prompt_batches'"));
+  expect(sourceBoundary(mutant,[tuple],foundations,{closures,callers}).some(error=>error.includes('SQL closure differs'))).toBe(true);
+  const unsafe=new Map(sources).set(fragment,definition.replace("integerColumns.has(column)?'CAST(? AS INTEGER)':'?'",'value'));
+  expect(sourceBoundary(unsafe,[tuple],foundations,{closures,callers}).some(error=>error.includes('unresolved SQL sink argument'))).toBe(true);
+ }
+});
+
+test('array positions remain integer SQL controls while projected payload SQL stays a frozen sink',()=>{
+ const text="export function rows(db,values:readonly unknown[]){return db.prepare(values.map((value,index)=>`SELECT ${index}`).join(' UNION ALL '))};export function caller(db){return rows(db,[new UnknownPayload()])}";
+ const expression="values.map((value,index)=>`SELECT ${index}`).join(' UNION ALL ')",tuple:StatementException={id:'position',file:reader,owner:'rows',expression,phase:'W'};
+ const closures:ExceptionClosure[]=[],callers:ParameterCaller[]=[];
+ const sources=new Map([[reader,text]]);
+ sourceBoundary(sources,[tuple],[],{closures:[],callers:[],captureClosure:row=>closures.push(row),captureCaller:row=>callers.push(row),captureDependencies:(_,dependencies)=>{tuple.dependencies=dependencies;}});
+ expect(closures[0]!.parameters).toEqual([]);expect(closures[0]!.unresolved).toEqual([]);
+ expect(sourceBoundary(sources,[tuple],[],{closures,callers})).toEqual([]);
+ const unsafe=new Map([[reader,text.replace('${index}','${value}')]]);
+ expect(sourceBoundary(unsafe,[{...tuple,expression:expression.replace('${index}','${value}')}],[],{closures,callers}).some(error=>error.includes('unresolved SQL sink argument'))).toBe(true);
+});
+
+test('relational row keys pin their producing SQL and ordinary row values retain SQL parameter provenance',()=>{
+ const contract='packages/myco-server/src/core/adapters.ts';
+ const declarations='export interface PreparedStatement{bind(...values:unknown[]):PreparedStatement;first<T>():Promise<T|null>} export interface RelationalStore{prepare(sql:string):PreparedStatement}';
+ const query="'SELECT * FROM plans'",expression="Object.keys(row).map(column=>`SELECT p.${column} FROM plans p`).join(' UNION ALL ')";
+ const text="import type {RelationalStore} from '../core/adapters.js';export async function rows(db:RelationalStore){const row=await db.prepare("+query+").bind('bound').first<Record<string,unknown>>();return db.prepare("+expression+")}";
+ const sources=new Map([[contract,declarations],[reader,text]]),tuple:StatementException={id:'row-keys',file:reader,owner:'rows',expression,phase:'W'};
+ const tuples=[tuple,{...tuple,id:'query',expression:query}],closures:ExceptionClosure[]=[],callers:ParameterCaller[]=[];
+ sourceBoundary(sources,tuples,[],{closures:[],callers:[],captureClosure:row=>closures.push(row),captureCaller:row=>callers.push(row),captureDependencies:(held,dependencies)=>{held.dependencies=dependencies;}});
+ expect(closures.find(row=>row.expression===expression)!.parameters).toEqual([]);
+ expect(sourceBoundary(sources,tuples,[],{closures,callers})).toEqual([]);
+ const changed=new Map(sources).set(reader,text.replace(query,"'SELECT * FROM prompt_batches'"));
+ expect(sourceBoundary(changed,tuples,[],{closures,callers}).some(error=>error.includes('SQL closure differs'))).toBe(true);
+ const valueExpression="'SELECT * FROM '+row.table",unsafe=new Map(sources).set(reader,text.replace(expression,valueExpression));
+ const values:ExceptionClosure[]=[];
+ sourceBoundary(unsafe,[{...tuple,expression:valueExpression},tuples[1]!],[],{closures:[],callers:[],captureClosure:row=>values.push(row)});
+ expect(values.find(row=>row.expression===valueExpression)!.parameters.some(parameter=>parameter.path.includes('table'))).toBe(true);
+});
+
+test('factory observers preserve optional calls, chained short circuits and original method receivers',async()=>{
+ const source="export async function optional(sqliteRelationalStore,receiver){return [sqliteRelationalStore?.(),await receiver?.getD1Database('DB'),await receiver?.getD1Database('DB').then(value=>value)]};export async function member(receiver){return await receiver.getD1Database?.('DB')};export function direct(sqliteRelationalStore){return sqliteRelationalStore()};export function nested(holder){return holder.sqliteRelationalStore(holder.d1OperatorStore())}";
+ const instrumented=instrumentObservedStores(ts,source,'tests/factory-probe.ts',import.meta.dir+'/../helpers/statement-recorder.ts');
+ const loaded=await import('data:text/javascript;base64,'+Buffer.from(new Bun.Transpiler({loader:'ts'}).transformSync(instrumented)).toString('base64'));
+ expect(await loaded.optional(undefined,undefined)).toEqual([undefined,undefined,undefined]);
+ expect(await loaded.member({})).toBeUndefined();
+ const store=markObservedReadStore({},'native');let calls=0;
+ const receiver=Object.freeze({getD1Database(name:string){expect(this).toBe(receiver);expect(name).toBe('DB');calls++;return Promise.resolve(store);}});
+ const answer=await loaded.optional(()=>store,receiver).then((value:unknown)=>({value}),(error:unknown)=>({error:String(error)}));
+ expect(answer).toEqual({value:[store,store,store]});expect(calls).toBe(2);
+ expect(()=>loaded.direct(()=>undefined)).toThrow('view_store_unobserved');
+ await expect(loaded.member({getD1Database:()=>undefined})).rejects.toThrow('view_store_unobserved');
+ const holder=Object.freeze({d1OperatorStore(){expect(this).toBe(holder);return store;},sqliteRelationalStore(value:object){expect(this).toBe(holder);expect(value).toBe(store);return store;}});
+ expect(loaded.nested(holder)).toBe(store);
+});
+
+test('literal dollar-prefixed SQL fields cannot impersonate the key projection selector',()=>{
+ for(const field of ['$keys','$$keys']){
+  const expression='value['+JSON.stringify(field)+'].sql';
+  const text='export function rows(db,value){return db.prepare('+expression+")};export function caller(db){return rows(db,{"+JSON.stringify(field)+":{sql:new UnknownSql()}})}";
+  const tuple:StatementException={id:'literal-key',file:reader,owner:'rows',expression,phase:'W'},closures:ExceptionClosure[]=[];
+  const errors=sourceBoundary(new Map([[reader,text]]),[tuple],[],{closures:[],callers:[],captureClosure:row=>closures.push(row)});
+  expect(closures[0]!.parameters.length).toBeGreaterThan(0);
+  expect(errors.some(error=>error.includes('unresolved SQL sink argument'))).toBe(true);
+ }
+});
+
+
+test('writer preparation refreshes preserve each complete origin tuple',()=>{
+ const left={kind:'exception' as const,id:'shared',file:'tests/fixture.ts',owner:'left',expression:'sql',phase:'T' as const,relations:['prompt_batches']};
+ const right={...left,owner:'right',relations:['responses']};
+ const refreshed={...right,relations:['plans']};
+ expect(mergePreparationOrigins([left,right],[refreshed])).toEqual([left,refreshed]);
+ expect(mergePreparationOrigins([left,right],[{...refreshed,phase:'H'}])).toEqual([left,right]);
+});
+
+test('source capture defers boundary validation without changing its graph',()=>{
+ const tuple:StatementException={id:'sink',file:reader,owner:'rows',expression:'sql',phase:'P'};
+ const fragment='packages/myco-server/src/core/unowned-sql.ts';
+ const cases=[
+  {sources:new Map([[reader,'function rows(db,sql){return db.prepare(sql)};const fragment="SELECT * FROM tool_calls";rows.call(null,db,fragment)']]),error:'unresolved SQL sink reference rows'},
+  {sources:new Map([[fragment,"export const fragment='SELECT * FROM tool_calls'"],[reader,"import {fragment} from '../core/unowned-sql.js';function rows(db,sql){return db.prepare(sql)};rows(db,fragment)"]]),error:'SQL-bearing import'},
+  {sources:new Map([['tests/authority-probe.ts','export const marker=1'],[reader,"import {marker} from '../../../../tests/authority-probe.js';function rows(db,sql){return db.prepare(sql)};rows(db,'SELECT * FROM tool_calls')"]]),error:'production imports test capability'},
+ ];
+ for(const {sources,error}of cases){
+  const scan=(validateBoundaries:boolean)=>{
+   const closures:ExceptionClosure[]=[],callers:ParameterCaller[]=[];
+   const errors=sourceBoundary(sources,[{...tuple}],[],{validateBoundaries,closures:[],callers:[],captureClosure:row=>closures.push(row),captureCaller:row=>callers.push(row)});
+   return {errors,closures,callers};
+  };
+  const captured=scan(false),checked=scan(true);
+  expect(captured.closures).toEqual(checked.closures);
+  expect(captured.callers).toEqual(checked.callers);
+  expect(captured.errors.some(value=>value.includes(error))).toBe(false);
+  expect(checked.errors.some(value=>value.includes(error))).toBe(true);
+  expect(sourceBoundary(sources,[tuple],[],captured).some(value=>value.includes(error))).toBe(true);
+ }
 });

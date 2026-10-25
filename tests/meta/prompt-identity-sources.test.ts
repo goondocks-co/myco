@@ -65,7 +65,7 @@ describe('prompt id sources', () => {
 
   it('holds each scheme\'s checkpoint generation fixed: a changed derivation is a new scheme', () => {
     expect(Object.fromEntries(Object.entries(PROMPT_ID_SCHEMES).map(([scheme, entry]) => [scheme, entry.generation]))).toEqual({
-      'claude-v1': 2, 'claude-v2': 1, 'offset-v1': 1, 'stamp-or-offset-v1': 1, 'codex-turn-v1': 1, 'member-transcript-v1': 1, 'legacy-v1': 1, 'hook-mint-v1': 1,
+      'claude-v1': 2, 'claude-v2': 1, 'offset-v1': 1, 'offset-v2': 1, 'stamp-or-offset-v1': 1, 'stamp-or-offset-v2': 1, 'codex-turn-v1': 1, 'member-transcript-v1': 1, 'legacy-v1': 1, 'hook-mint-v1': 1,
     });
   });
 });

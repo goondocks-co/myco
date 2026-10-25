@@ -8,6 +8,13 @@
  * declared once and judged the same way by both.
  */
 export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new Map([
+  ['idx_view_active_leases', 'view slot admission seeks unexpired build leases across Projects'],
+  ['idx_view_stale', 'view staleness admission seeks older executing generations across Projects'],
+  ['idx_view_ready', 'view service takes the least recently served ready session across Projects'],
+  ['idx_view_due', 'view backoff promotion seeks due attempts across Projects'],
+  ['idx_view_aging', 'view priority aging seeks expired recent-capture entries across Projects'],
+  ['idx_view_yielded', 'view service resumes the oldest yielded session after ready peers receive service'],
+
   ['idx_agent_runs_retention', 'run retention seeks eligible terminal runs across the Deployment by cutoff and id'],
   ['idx_agent_runs_activity', 'power resolution seeks the newest run start across the Deployment'],
   ['idx_agent_runs_task_live', 'embedding dispatch checks live runs by task and status across every Project'],

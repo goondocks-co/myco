@@ -292,7 +292,7 @@ describe('one server product, two deployment targets', () => {
   it('names its own target on the status surface, so the dashboard can advise per target', async () => {
     const said: string[] = [];
     for (const t of TARGETS) {
-      const res = await handleStatus(t.env, { member: { id: 'mem_owner', role: 'admin' }, now: Date.now() } as unknown as OwnerContext);
+      const res = await handleStatus(t.env, { member: { id: 'mem_owner', role: 'admin' }, now: Date.now(), url: new URL('http://127.0.0.1/api/status') } as unknown as OwnerContext);
       said.push((await json(res)).target as string);
     }
     expect(said).toEqual(['cloudflare', 'bun']);
@@ -302,7 +302,7 @@ describe('one server product, two deployment targets', () => {
     const said: unknown[] = [];
     for (const t of TARGETS) {
       const broken = { ...t.env, db: { prepare: () => { throw new Error('not a database'); } } } as unknown as ServerEnv;
-      const body = await json(await handleStatus(broken, { member: { id: 'mem_owner', role: 'admin' }, now: Date.now() } as unknown as OwnerContext));
+      const body = await json(await handleStatus(broken, { member: { id: 'mem_owner', role: 'admin' }, now: Date.now(), url: new URL('http://127.0.0.1/api/status') } as unknown as OwnerContext));
       said.push([(body.schema as { found: unknown }).found, body.target]);
     }
     expect(said).toEqual([[null, 'cloudflare'], [null, 'bun']]);

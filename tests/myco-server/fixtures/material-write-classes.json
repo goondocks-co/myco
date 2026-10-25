@@ -1,0 +1,612 @@
+[
+  {
+    "file": "packages/myco-server/src/core/archive-bundle.ts",
+    "owner": "bundleArchiveStatements",
+    "expression": "`UPDATE events SET\n      archived_ended_at=COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload,'$.endedAt') END,created_at),\n      archived_title_only_end=CASE WHEN kind='session.end' AND json_valid(payload) AND json_type(payload,'$.endedAt') IS NULL\n        AND json_type(payload,'$.title') IS NOT NULL THEN 1 ELSE 0 END,\n      archived_prompt_origin=CASE WHEN json_valid(payload) THEN json_extract(payload,'$.origin') END,\n      bundle_id=(SELECT id FROM archive_bundles WHERE project_id=? AND archive_key=?),bundle_entry=${value('entry')},\n      payload='{}',payload_format='archived',payload_bytes=0 WHERE ${identity}`",
+    "table": "events",
+    "operation": "UPDATE",
+    "mode": "representation-only",
+    "targets": [
+      "events"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/myco-server/view-material-context.test.ts",
+      "test": "context delivery, attachments and raw turn/subagent facts publish their canonical admitted material"
+    },
+    "fields": "bundle/proof locator, payload/display representation and archival metadata; resolved content unchanged"
+  },
+  {
+    "file": "packages/myco-server/src/core/archive-bundle.ts",
+    "owner": "bundleArchiveStatements",
+    "expression": "`UPDATE tool_calls SET input=${value('preview')},input_bytes=${value('bytes')},input_blob_key=NULL,\n      input_bundle_id=(SELECT id FROM archive_bundles WHERE project_id=? AND archive_key=?),input_bundle_entry=${value('entry')}\n      WHERE ${identity}`",
+    "table": "tool_calls",
+    "operation": "UPDATE",
+    "mode": "representation-only",
+    "targets": [
+      "tool_calls"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/myco-server/view-material-context.test.ts",
+      "test": "context delivery, attachments and raw turn/subagent facts publish their canonical admitted material"
+    },
+    "fields": "bundle/proof locator, payload/display representation and archival metadata; resolved content unchanged"
+  },
+  {
+    "file": "packages/myco-server/src/core/recovered-tenant.ts",
+    "owner": "prepareRecoveredTenant",
+    "expression": "`UPDATE ${table} SET revoked_at = ? WHERE revoked_at IS NULL`",
+    "table": "__dynamic_material_target__",
+    "operation": "UPDATE",
+    "mode": "out-of-scope",
+    "targets": [],
+    "adapter": null,
+    "witness": {
+      "file": "tests/myco-server/backup.test.ts",
+      "test": "GATE: every current schema table is named in exactly one disposition"
+    },
+    "fields": "nonmaterial targets only; material backup rows dispatch to prepareMaterialRestore"
+  },
+  {
+    "file": "packages/myco-server/src/core/context-writes.ts",
+    "owner": "prepareInjectionReceipt",
+    "expression": "`INSERT OR IGNORE INTO spore_injections (${merge.insert.columns.join(',')})\n    SELECT ${merge.insert.sql} WHERE (${admission.sql}) AND (${unique.sql})`",
+    "table": "spore_injections",
+    "operation": "INSERT",
+    "mode": "versioned",
+    "targets": [
+      "spore_injections"
+    ],
+    "adapter": "commitPublishedContextWrite",
+    "witness": {
+      "file": "tests/myco-server/view-material-context.test.ts",
+      "test": "context delivery, attachments and raw turn/subagent facts publish their canonical admitted material"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/core/context-writes.ts",
+    "owner": "preparePromptAnswer",
+    "expression": "`INSERT INTO prompt_context_answers (${merge.insert.columns.join(',')}) SELECT ${merge.insert.sql} WHERE ${admission.sql}`",
+    "table": "prompt_context_answers",
+    "operation": "INSERT",
+    "mode": "versioned",
+    "targets": [
+      "prompt_context_answers"
+    ],
+    "adapter": "commitPublishedContextWrite",
+    "witness": {
+      "file": "tests/myco-server/view-material-context.test.ts",
+      "test": "context delivery, attachments and raw turn/subagent facts publish their canonical admitted material"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/core/context-writes.ts",
+    "owner": "prepareSessionRecord",
+    "expression": "`INSERT OR IGNORE INTO session_injections (${merge.insert.columns.join(',')}) SELECT ${merge.insert.sql} WHERE ${admission.sql}`",
+    "table": "session_injections",
+    "operation": "INSERT",
+    "mode": "versioned",
+    "targets": [
+      "session_injections"
+    ],
+    "adapter": "commitPublishedContextWrite",
+    "witness": {
+      "file": "tests/myco-server/view-material-context.test.ts",
+      "test": "context delivery, attachments and raw turn/subagent facts publish their canonical admitted material"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/core/context-writes.ts",
+    "owner": "prepareContextDelivery",
+    "expression": "`UPDATE ${table} SET ${update.update.sql} WHERE project_id=? AND session_id=? AND ${keyColumn}=? AND (${when.sql}) AND (${gate.sql})`",
+    "table": "__dynamic_material_target__",
+    "operation": "UPDATE",
+    "mode": "versioned",
+    "targets": [
+      "spore_injections",
+      "prompt_context_answers",
+      "session_injections"
+    ],
+    "adapter": "commitPublishedContextWrite",
+    "witness": {
+      "file": "tests/myco-server/view-material-context.test.ts",
+      "test": "context delivery, attachments and raw turn/subagent facts publish their canonical admitted material"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/core/material-restore.ts",
+    "owner": "prepareMaterialRestore",
+    "expression": "`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) SELECT ${columns.map(() => '?').join(', ')}\n   WHERE ${admission.sql} RETURNING rowid`",
+    "table": "__dynamic_material_target__",
+    "operation": "INSERT",
+    "mode": "versioned",
+    "targets": [
+      "prompt_batches",
+      "responses",
+      "tool_calls",
+      "plans",
+      "attachments",
+      "spore_injections",
+      "prompt_context_answers",
+      "session_injections",
+      "events"
+    ],
+    "adapter": "restorePublishedMaterial",
+    "witness": {
+      "file": "tests/myco-server/view-material-context.test.ts",
+      "test": "context delivery, attachments and raw turn/subagent facts publish their canonical admitted material"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/core/event-content-restore.ts",
+    "owner": "restoreArchivedEvent",
+    "expression": "`INSERT OR IGNORE INTO events (${columns.join(', ')})\n      SELECT ${columns.map(() => '?').join(', ')} WHERE ${evidence} RETURNING rowid`",
+    "table": "events",
+    "operation": "INSERT",
+    "mode": "representation-only",
+    "targets": [
+      "events"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/myco-server/view-material-context.test.ts",
+      "test": "context delivery, attachments and raw turn/subagent facts publish their canonical admitted material"
+    },
+    "fields": "bundle/proof locator, payload/display representation and archival metadata; resolved content unchanged"
+  },
+  {
+    "file": "packages/myco-server/src/core/tool-input-restore.ts",
+    "owner": "restoreToolInput",
+    "expression": "`INSERT OR IGNORE INTO tool_calls (${toolColumns.join(', ')})\n      SELECT ${toolColumns.map(() => '?').join(', ')} WHERE ${outcomeMatch.sql} AND ${inputMatch.sql} RETURNING rowid`",
+    "table": "tool_calls",
+    "operation": "INSERT",
+    "mode": "representation-only",
+    "targets": [
+      "tool_calls"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/myco-server/tool-input-storage.test.ts",
+      "test": "finishes clearing a legacy full input when a late success arrives after its proof"
+    },
+    "fields": "verified full input, processed proof and unchanged canonical outcome"
+  },
+  {
+    "file": "packages/myco-server/src/core/raw-backfill.ts",
+    "owner": "rawBackfillPage",
+    "expression": "`UPDATE events SET raw_revision = (SELECT revision FROM raw_provenance_state WHERE id = 1) WHERE raw_revision IS NULL AND (project_id, event_id) IN\n      (SELECT s.project_id,s.event_id FROM ${page} s) AND ${held}`",
+    "table": "events",
+    "operation": "UPDATE",
+    "mode": "representation-only",
+    "targets": [
+      "events"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/myco-server/raw-backfill-runtime.test.ts",
+      "test": "workerd D1 and native SQLite produce identical bounded backfill runs"
+    },
+    "fields": "raw_revision provenance only"
+  },
+  {
+    "file": "packages/myco-server/src/core/backup.ts",
+    "owner": "restoreArtifact",
+    "expression": "`INSERT OR IGNORE INTO events (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) RETURNING rowid`",
+    "table": "events",
+    "operation": "INSERT",
+    "mode": "representation-only",
+    "targets": [
+      "events"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/myco-server/backup.test.ts",
+      "test": "round-trips into a foreign store under explicit adoption, is additive with the target winning, and a re-run converges"
+    },
+    "fields": "exact archived-event or displayed-input closure; equal admitted content only"
+  },
+  {
+    "file": "packages/myco-server/src/core/backup.ts",
+    "owner": "restoreArtifact",
+    "expression": "`INSERT OR IGNORE INTO tool_calls (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) RETURNING rowid`",
+    "table": "tool_calls",
+    "operation": "INSERT",
+    "mode": "representation-only",
+    "targets": [
+      "tool_calls"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/myco-server/backup.test.ts",
+      "test": "round-trips into a foreign store under explicit adoption, is additive with the target winning, and a re-run converges"
+    },
+    "fields": "exact archived-event or displayed-input closure; equal admitted content only"
+  },
+  {
+    "file": "packages/myco-server/src/core/backup.ts",
+    "owner": "restoreArtifact",
+    "expression": "`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) SELECT ${columns.map(() => '?').join(', ')}${guard} RETURNING rowid`",
+    "table": "__dynamic_material_target__",
+    "operation": "INSERT",
+    "mode": "legacy",
+    "targets": [
+      "prompt_batches",
+      "responses",
+      "tool_calls",
+      "plans",
+      "attachments",
+      "spore_injections",
+      "prompt_context_answers",
+      "session_injections",
+      "events"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/myco-server/backup.test.ts",
+      "test": "GATE: every current schema table is named in exactly one disposition"
+    },
+    "fields": "exact pre-activation generic restore statement; owned versioned restore registers in PR6"
+  },
+  {
+    "file": "packages/myco-server/src/core/model-catalogs.ts",
+    "owner": "recordModelCatalog",
+    "expression": "`INSERT INTO ${table} (${key}, harness, catalog, resolutions, fetched_at, received_at, observed_order)\n     VALUES (?, ?, ?, ?, ?, ?, ?)\n     ON CONFLICT (${key}, harness) DO UPDATE SET\n       catalog = excluded.catalog, resolutions = excluded.resolutions, fetched_at = excluded.fetched_at, received_at = excluded.received_at,\n       observed_order = excluded.observed_order\n       WHERE excluded.observed_order IS NOT NULL AND (${table}.observed_order IS NULL OR excluded.observed_order > ${table}.observed_order)`",
+    "table": "__dynamic_material_target__",
+    "operation": "INSERT",
+    "mode": "out-of-scope",
+    "targets": [],
+    "adapter": null,
+    "witness": {
+      "file": "tests/myco-server/backup.test.ts",
+      "test": "GATE: every current schema table is named in exactly one disposition"
+    },
+    "fields": "nonmaterial targets only; material backup rows dispatch to prepareMaterialRestore"
+  },
+  {
+    "file": "packages/myco-server/src/ingest/projections.ts",
+    "owner": "prompt",
+    "expression": "`INSERT INTO prompt_batches (${merged.insert.columns.join(', ')}) SELECT ${merged.insert.sql} WHERE ${RAW_ROW_GATE}\n        ON CONFLICT(project_id,prompt_id) DO UPDATE SET ${merged.update.sql} WHERE ${merged.when.sql}`",
+    "table": "prompt_batches",
+    "operation": "INSERT",
+    "mode": "versioned",
+    "targets": [
+      "prompt_batches"
+    ],
+    "adapter": "planPublishedMaterialEvent",
+    "witness": {
+      "file": "tests/myco-server/view-material-facts.test.ts",
+      "test": "prompt metadata and reply-derived end times share the canonical material transaction on native and D1"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/ingest/projections.ts",
+    "owner": "toolResultReplay",
+    "expression": "`UPDATE tool_calls AS t SET ${mutation.update.sql}\n      WHERE t.project_id = ? AND t.tool_call_id = ? AND t.session_id = ? AND ${gate.sql}\n        AND ${changed.sql}\n      RETURNING tool_call_id`",
+    "table": "tool_calls",
+    "operation": "UPDATE",
+    "mode": "versioned",
+    "targets": [
+      "tool_calls"
+    ],
+    "adapter": "planPublishedMaterialEvent",
+    "witness": {
+      "file": "tests/myco-server/view-material-facts.test.ts",
+      "test": "prompt metadata and reply-derived end times share the canonical material transaction on native and D1"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/ingest/projections.ts",
+    "owner": "toolCall",
+    "expression": "`INSERT INTO tool_calls (${merged.insert.columns.join(', ')}) SELECT ${merged.insert.sql} WHERE ${RAW_ROW_GATE}\n        ON CONFLICT(project_id,tool_call_id) DO UPDATE SET ${merged.update.sql} WHERE ${merged.when.sql}`",
+    "table": "tool_calls",
+    "operation": "INSERT",
+    "mode": "versioned",
+    "targets": [
+      "tool_calls"
+    ],
+    "adapter": "planPublishedMaterialEvent",
+    "witness": {
+      "file": "tests/myco-server/view-material-facts.test.ts",
+      "test": "prompt metadata and reply-derived end times share the canonical material transaction on native and D1"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/ingest/projections.ts",
+    "owner": "toolCall",
+    "expression": "`UPDATE tool_calls SET input_bundle_id=(SELECT id FROM archive_bundles WHERE project_id=? AND archive_key=?),\n          input_bundle_entry=0 WHERE project_id=? AND tool_call_id=? AND ${adoption.sql}`",
+    "table": "tool_calls",
+    "operation": "UPDATE",
+    "mode": "versioned",
+    "targets": [
+      "tool_calls"
+    ],
+    "adapter": "planPublishedMaterialEvent",
+    "witness": {
+      "file": "tests/myco-server/view-material-facts.test.ts",
+      "test": "prompt metadata and reply-derived end times share the canonical material transaction on native and D1"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/ingest/projections.ts",
+    "owner": "response",
+    "expression": "`INSERT INTO responses (${merged.insert.columns.join(', ')}) SELECT ${merged.insert.sql}\n      WHERE ${RAW_ROW_GATE} ON CONFLICT (project_id, response_id) DO NOTHING`",
+    "table": "responses",
+    "operation": "INSERT",
+    "mode": "versioned",
+    "targets": [
+      "responses"
+    ],
+    "adapter": "planPublishedMaterialEvent",
+    "witness": {
+      "file": "tests/myco-server/view-material-facts.test.ts",
+      "test": "prompt metadata and reply-derived end times share the canonical material transaction on native and D1"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/ingest/projections.ts",
+    "owner": "response",
+    "expression": "`UPDATE prompt_batches SET ${promptEnd.update.sql}\n      WHERE project_id=? AND prompt_id=? AND ${RAW_ROW_GATE}`",
+    "table": "prompt_batches",
+    "operation": "UPDATE",
+    "mode": "versioned",
+    "targets": [
+      "prompt_batches"
+    ],
+    "adapter": "planPublishedMaterialEvent",
+    "witness": {
+      "file": "tests/myco-server/view-material-facts.test.ts",
+      "test": "prompt metadata and reply-derived end times share the canonical material transaction on native and D1"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/ingest/projections.ts",
+    "owner": "plan",
+    "expression": "`INSERT INTO plans (${merged.insert.columns.join(', ')})\n        SELECT ${merged.insert.sql} WHERE ${RAW_ROW_GATE}\n        ON CONFLICT(project_id,plan_key) DO UPDATE SET ${merged.update.sql}`",
+    "table": "plans",
+    "operation": "INSERT",
+    "mode": "versioned",
+    "targets": [
+      "plans"
+    ],
+    "adapter": "planPublishedMaterialEvent",
+    "witness": {
+      "file": "tests/myco-server/view-material-facts.test.ts",
+      "test": "prompt metadata and reply-derived end times share the canonical material transaction on native and D1"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/ingest/projections.ts",
+    "owner": "attachment",
+    "expression": "`INSERT INTO attachments (${merged.insert.columns.join(',')})\n          SELECT ${merged.insert.sql} ${merged.insert.source!.sql} AND ${RAW_ROW_GATE}\n          ON CONFLICT (project_id, attachment_id) DO NOTHING`",
+    "table": "attachments",
+    "operation": "INSERT",
+    "mode": "versioned",
+    "targets": [
+      "attachments"
+    ],
+    "adapter": "planPublishedMaterialEvent",
+    "witness": {
+      "file": "tests/myco-server/view-material-context.test.ts",
+      "test": "context delivery, attachments and raw turn/subagent facts publish their canonical admitted material"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/ingest/events.ts",
+    "owner": "planEventWrite",
+    "expression": "`INSERT INTO events (${rawMaterial.insert.columns.join(',')})\n      SELECT ${rawMaterial.insert.sql} WHERE ${admission.map((a) => a.sql).join(' AND ')}\n      ON CONFLICT(project_id,event_id) DO NOTHING`",
+    "table": "events",
+    "operation": "INSERT",
+    "mode": "versioned",
+    "targets": [
+      "events"
+    ],
+    "adapter": "planPublishedMaterialEvent",
+    "witness": {
+      "file": "tests/myco-server/view-material-context.test.ts",
+      "test": "context delivery, attachments and raw turn/subagent facts publish their canonical admitted material"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/ingest/view-writer.ts",
+    "owner": "viewRowStatements",
+    "expression": "`INSERT INTO ${table.table}(project_id,instance_id,session_id,${fields.join(',')})\n        SELECT ?,?,?,${fields.map((field) => `json_extract(value,'$.${field}')`).join(',')} FROM json_each(?) WHERE 1\n        ON CONFLICT(project_id,instance_id,${table.id}) DO UPDATE SET ${fields\n          .filter((field) => field !== table.id)\n          .map((field) => `${field}=excluded.${field}`)\n          .join(',')}`",
+    "table": "__dynamic_material_target__",
+    "operation": "INSERT",
+    "mode": "versioned",
+    "targets": [
+      "view_prompts",
+      "view_responses",
+      "view_tool_calls",
+      "view_plans"
+    ],
+    "adapter": "writeViewWindow/tryPublishView",
+    "witness": {
+      "file": "tests/myco-server/view-frozen-versions.test.ts",
+      "test": "frozen content stays unstamped and reappears with a fresh binding while retired tail stamps remain readable"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/ingest/view-writer.ts",
+    "owner": "stampVersionStatements",
+    "expression": "`UPDATE ${table.table} SET material_seq=(\n    SELECT v.material_seq FROM view_publication_material v WHERE v.project_id=? AND v.session_id=? AND v.attempt_id=? AND v.kind=? AND v.identity=${table.table}.canonical_identity)\n    WHERE project_id=? AND instance_id=? AND EXISTS(SELECT 1 FROM view_instances i WHERE i.project_id=${table.table}.project_id\n      AND i.instance_id=${table.table}.instance_id AND i.base<>'frozen')${rows === undefined ? '' : ` AND ${table.id} IN(SELECT value FROM json_each(?))`}`",
+    "table": "__dynamic_material_target__",
+    "operation": "UPDATE",
+    "mode": "versioned",
+    "targets": [
+      "view_prompts",
+      "view_responses",
+      "view_tool_calls",
+      "view_plans"
+    ],
+    "adapter": "writeViewWindow/tryPublishView",
+    "witness": {
+      "file": "tests/myco-server/view-frozen-versions.test.ts",
+      "test": "frozen content stays unstamped and reappears with a fresh binding while retired tail stamps remain readable"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement"
+  },
+  {
+    "file": "packages/myco-server/src/read/view-store.ts",
+    "owner": "planStatusStatement",
+    "expression": "`UPDATE plans SET status = ?, updated_by = ?, updated_at = MAX(updated_at + 1, ?) WHERE project_id = ? AND plan_key = ? AND status <> ? AND (NOT EXISTS (SELECT 1 FROM session_views sv WHERE sv.project_id = plans.project_id AND sv.session_id = plans.session_id AND sv.legacy IN ('published', 'cleaning', 'gone')) OR ${survivingFact('plans', 'plans')}) RETURNING plan_key`",
+    "table": "plans",
+    "operation": "UPDATE",
+    "mode": "versioned",
+    "targets": [
+      "plans"
+    ],
+    "adapter": "setPublishedPlanStatus",
+    "witness": {
+      "file": "tests/myco-server/view-material-facts.test.ts",
+      "test": "published fact status versions its canonical postimage and retries only changed evidence on native and D1"
+    },
+    "fields": "view-content-v1; canonical content columns: MATERIAL_COLUMNS in db/view-tables.ts and material-content.ts for prompt/reply/tool/plan; CONTEXT_MATERIAL_COLUMNS for context/attachment/event; assignments and retained fields in the exact owner statement",
+    "moduleOperation": "M10:plans_planInSession:0"
+  },
+  {
+    "file": "packages/myco-server/src/db/schema.ts",
+    "owner": "<module>",
+    "expression": "`CREATE TRIGGER IF NOT EXISTS events_raw_credential AFTER INSERT ON events WHEN NEW.raw_revision IS NULL BEGIN\n     INSERT INTO raw_credentials (token_id, owner_member_id, provenance)\n       VALUES (NEW.token_id, ${rawCredentialOwner('NEW.token_id')}, ${rawCredentialProvenance('NEW.token_id')}) ON CONFLICT DO NOTHING;\n     UPDATE raw_provenance_state SET revision = revision + 1 WHERE id = 1;\n     UPDATE events SET raw_revision = (SELECT revision FROM raw_provenance_state WHERE id = 1)\n       WHERE project_id = NEW.project_id AND event_id = NEW.event_id; END`",
+    "table": "events",
+    "operation": "UPDATE",
+    "mode": "schema",
+    "targets": [
+      "events"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/meta/view-read-boundary.test.ts",
+      "test": "historical renderings retain exact-base statement bytes"
+    },
+    "fields": "historical schema bytes; schema-step ownership gate"
+  },
+  {
+    "file": "packages/myco-server/src/db/schema.ts",
+    "owner": "<module>",
+    "expression": "`INSERT OR IGNORE INTO spore_injections (${RECEIPT_COLUMNS}) SELECT ${RECEIPT_COLUMNS} FROM _v89_receipt_rows ORDER BY created_at, rowid`",
+    "table": "spore_injections",
+    "operation": "INSERT",
+    "mode": "schema",
+    "targets": [
+      "spore_injections"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/meta/view-read-boundary.test.ts",
+      "test": "historical renderings retain exact-base statement bytes"
+    },
+    "fields": "historical schema bytes; schema-step ownership gate"
+  },
+  {
+    "file": "packages/myco-server/src/db/schema.ts",
+    "owner": "<module>",
+    "expression": "`INSERT INTO prompt_context_answers (${ANSWER_COLUMNS}) SELECT ${ANSWER_COLUMNS} FROM _v89_answer_rows`",
+    "table": "prompt_context_answers",
+    "operation": "INSERT",
+    "mode": "schema",
+    "targets": [
+      "prompt_context_answers"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/meta/view-read-boundary.test.ts",
+      "test": "historical renderings retain exact-base statement bytes"
+    },
+    "fields": "historical schema bytes; schema-step ownership gate"
+  },
+  {
+    "file": "packages/myco-server/src/db/schema-v100.ts",
+    "owner": "<module>",
+    "expression": "`CREATE TRIGGER IF NOT EXISTS ${fts}_ai AFTER INSERT ON ${table} BEGIN INSERT INTO ${fts}(rowid, ${columns}) VALUES(new.rowid, ${values('new')}); END`",
+    "table": "__dynamic_material_target__",
+    "operation": "INSERT",
+    "mode": "schema",
+    "targets": [],
+    "adapter": null,
+    "witness": {
+      "file": "tests/meta/view-read-boundary.test.ts",
+      "test": "historical renderings retain exact-base statement bytes"
+    },
+    "fields": "historical schema bytes; schema-step ownership gate"
+  },
+  {
+    "file": "packages/myco-server/src/db/schema-v100.ts",
+    "owner": "<module>",
+    "expression": "`CREATE TRIGGER IF NOT EXISTS ${fts}_au AFTER UPDATE OF rowid, ${columns} ON ${table} BEGIN INSERT INTO ${fts}(${fts}, rowid, ${columns}) VALUES('delete', old.rowid, ${values('old')}); INSERT INTO ${fts}(rowid, ${columns}) VALUES(new.rowid, ${values('new')}); END`",
+    "table": "__dynamic_material_target__",
+    "operation": "INSERT",
+    "mode": "schema",
+    "targets": [],
+    "adapter": null,
+    "witness": {
+      "file": "tests/meta/view-read-boundary.test.ts",
+      "test": "historical renderings retain exact-base statement bytes"
+    },
+    "fields": "historical schema bytes; schema-step ownership gate"
+  },
+  {
+    "file": "packages/myco-server/src/db/schema-v100.ts",
+    "owner": "<module>",
+    "expression": "`CREATE TRIGGER IF NOT EXISTS ${fts}_ad AFTER DELETE ON ${table} BEGIN INSERT INTO ${fts}(${fts}, rowid, ${columns}) VALUES('delete', old.rowid, ${values('old')}); END`",
+    "table": "__dynamic_material_target__",
+    "operation": "INSERT",
+    "mode": "schema",
+    "targets": [],
+    "adapter": null,
+    "witness": {
+      "file": "tests/meta/view-read-boundary.test.ts",
+      "test": "historical renderings retain exact-base statement bytes"
+    },
+    "fields": "historical schema bytes; schema-step ownership gate"
+  },
+  {
+    "file": "packages/myco-server/src/db/schema-v75.ts",
+    "owner": "<module>",
+    "expression": "`CREATE TRIGGER IF NOT EXISTS events_content_revision AFTER UPDATE OF payload,payload_format ON events\n    WHEN NEW.payload IS NOT OLD.payload OR NEW.payload_format IS NOT OLD.payload_format BEGIN\n      UPDATE events SET content_revision = OLD.content_revision + 1\n        WHERE project_id=NEW.project_id AND event_id=NEW.event_id; END`",
+    "table": "events",
+    "operation": "UPDATE",
+    "mode": "schema",
+    "targets": [
+      "events"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/meta/view-read-boundary.test.ts",
+      "test": "historical renderings retain exact-base statement bytes"
+    },
+    "fields": "historical schema bytes; schema-step ownership gate"
+  },
+  {
+    "file": "packages/myco-server/src/db/schema-v75.ts",
+    "owner": "<module>",
+    "expression": "`CREATE TRIGGER IF NOT EXISTS tool_calls_content_revision AFTER UPDATE OF input,input_blob_key ON tool_calls\n    WHEN NEW.input IS NOT OLD.input OR NEW.input_blob_key IS NOT OLD.input_blob_key BEGIN\n      UPDATE tool_calls SET content_revision = OLD.content_revision + 1\n        WHERE project_id = NEW.project_id AND tool_call_id = NEW.tool_call_id; END`",
+    "table": "tool_calls",
+    "operation": "UPDATE",
+    "mode": "schema",
+    "targets": [
+      "tool_calls"
+    ],
+    "adapter": null,
+    "witness": {
+      "file": "tests/meta/view-read-boundary.test.ts",
+      "test": "historical renderings retain exact-base statement bytes"
+    },
+    "fields": "historical schema bytes; schema-step ownership gate"
+  }
+]
