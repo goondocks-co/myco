@@ -1,3 +1,4 @@
+import { MCP_CLIENT_ROOTS_FLAG } from '@myco/cli/flags.js';
 import { memberServerDialUrl } from '@myco/member/server-url.js';
 /**
  * The member's hook block, derived from a symbiont's own hook template — the
@@ -64,13 +65,14 @@ export function memberHookTemplate(template: Record<string, unknown>, source: Cr
  * credential. A server whose launcher is neither an `args` list nor a
  * `command` list is refused rather than written without the flag.
  */
-export function memberMcpTemplate(template: Record<string, unknown>, source: CredentialSource): Record<string, unknown> {
+export function memberMcpTemplate(template: Record<string, unknown>, source: CredentialSource, clientRoots = false): Record<string, unknown> {
+  const context = clientRoots ? [MCP_CLIENT_ROOTS_FLAG] : [];
   const out: Record<string, unknown> = {};
   for (const [name, def] of Object.entries(template)) {
     if (!def || typeof def !== 'object' || Array.isArray(def)) throw new Error(`Refusing to emit a member MCP server: ${name} is not an object`);
     const server = { ...(def as Record<string, unknown>), ...MEMBER_MCP_LEVERS };
-    if (Array.isArray(server.args)) out[name] = { ...server, args: [...server.args, CREDENTIAL_FLAG, source] };
-    else if (Array.isArray(server.command)) out[name] = { ...server, command: [...server.command, CREDENTIAL_FLAG, source] };
+    if (Array.isArray(server.args)) out[name] = { ...server, args: [...server.args, CREDENTIAL_FLAG, source, ...context] };
+    else if (Array.isArray(server.command)) out[name] = { ...server, command: [...server.command, CREDENTIAL_FLAG, source, ...context] };
     else throw new Error(`Refusing to emit a member MCP server: ${name} declares no argument list to carry ${CREDENTIAL_FLAG} ${source}`);
   }
   return out;

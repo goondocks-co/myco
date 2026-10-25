@@ -85,7 +85,7 @@ describe('OpenCode member MCP', () => {
     const raw = fs.readFileSync(globalConfigPath(), 'utf8');
     const server = JSON.parse(raw).mcp.myco;
     expect(server.type).toBe('local');
-    expect(server.command!.slice(-3)).toEqual(['mcp', CREDENTIAL_FLAG, 'registry']);
+    expect(server.command!.slice(1)).toEqual(['mcp', CREDENTIAL_FLAG, 'registry', '--client-roots']);
     expect(server.command![0]).toBe(memberBinary);
     expect(projectConfig().mcp!.other.command).toEqual(['/bin/true']);
     expect(raw).not.toContain(TOKEN);

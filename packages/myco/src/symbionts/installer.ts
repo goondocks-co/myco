@@ -27,7 +27,7 @@ import { parseCredentialFlag } from '../member/credential.js';
 import { admitMemberServerUrl, memberServerDialUrl } from '../member/server-url.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult, readDeploymentMembershipResult } from '../member/registry.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
-import { MCP_ROOT_FLAG, mcpProjectFolder } from '@myco/cli/flags.js';
+import { MCP_ROOT_FLAG, MCP_CLIENT_ROOTS_FLAG, mcpProjectFolder } from '@myco/cli/flags.js';
 import { privateMcpProjects, reconcilePrivateMcpProjects } from './member-mcp-projects.js';
 import { MCP_PATH } from '../plugins/spec.js';
 import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
@@ -193,6 +193,7 @@ const MYCO_BINARY_PLACEHOLDER = '{{mycoBinary}}';
 
 const CREDENTIAL_ARGV_WORDS = 2;
 const ROOT_ARGV_WORDS = 2;
+const MCP_OWNERSHIP_REMEDY = 'Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover';
 
 const HELPER_FLAG_WORDS = 4;
 
@@ -256,7 +257,7 @@ export interface MemberMcpInspection {
   shadowed?: boolean;
   configuredDeployment?: string;
   configPath?: string;
-  context?: 'explicit-folder' | 'session-cwd' | 'fixed-deployment' | 'launch-cwd';
+  context?: 'explicit-folder' | 'session-cwd' | 'fixed-deployment' | 'launch-cwd' | 'client-roots';
 }
 
 function emptyInstallResult(): InstallResult {
@@ -511,7 +512,7 @@ export class SymbiontInstaller {
       return { [MYCO_MCP_SERVER_NAME]: { type: REMOTE_MCP_TYPE, ...remote, ...MEMBER_MCP_LEVERS } };
     }
     const template = this.loadMcpTemplate();
-    return template === null ? null : memberMcpTemplate(template, source);
+    return template === null ? null : memberMcpTemplate(template, source, reg.memberMcpRouting === 'client-roots');
   }
 
   private multipleMcpDeployments(): boolean {
@@ -698,7 +699,7 @@ export class SymbiontInstaller {
   }
 
   reconcileMemberProjectMcp(): boolean {
-    return (this.privateMcpRouting() || this.sessionMcpRouting()) && this.installMemberMcp();
+    return (this.privateMcpRouting() || this.sessionMcpRouting() || this.manifest.registration?.memberMcpRouting === 'client-roots') && this.installMemberMcp();
   }
 
   memberMcpProjectFolders(): { status: 'readable'; folders: string[] } | { status: 'unreadable'; detail: string } {
@@ -762,7 +763,8 @@ export class SymbiontInstaller {
     if (rootIndex !== -1) {
       if (rootIndex !== MEMBER_BRIDGE_ARGS.length + CREDENTIAL_ARGV_WORDS || argv.length !== rootIndex + ROOT_ARGV_WORDS) return false;
       try { mcpProjectFolder(argv, this.projectRoot); } catch { return false; }
-    } else if (argv.length !== MEMBER_BRIDGE_ARGS.length + CREDENTIAL_ARGV_WORDS) return false;
+    } else if (argv.length !== MEMBER_BRIDGE_ARGS.length + CREDENTIAL_ARGV_WORDS
+      && !(argv.length === MEMBER_BRIDGE_ARGS.length + CREDENTIAL_ARGV_WORDS + 1 && argv.at(-1) === MCP_CLIENT_ROOTS_FLAG)) return false;
     if (argv.slice(0, MEMBER_BRIDGE_ARGS.length).join(' ') !== MEMBER_BRIDGE_ARGS.join(' ')) return false;
     return parseCredentialFlag(argv.slice(MEMBER_BRIDGE_ARGS.length, MEMBER_BRIDGE_ARGS.length + CREDENTIAL_ARGV_WORDS)) !== null;
   }
@@ -921,6 +923,7 @@ export class SymbiontInstaller {
         ...(includeDestination && dialled !== null ? { configuredDeployment: dialled } : {}),
         ...(includeDestination ? { configPath, context: scope === 'local' ? 'explicit-folder' as const
           : transport === 'http' ? 'fixed-deployment' as const
+            : argv?.includes(MCP_CLIENT_ROOTS_FLAG) ? 'client-roots' as const
             : scope === 'global' && this.manifest.registration?.memberMcpRouting === 'session-cwd' ? 'session-cwd' as const : 'launch-cwd' as const } : {}),
       };
     });
@@ -1391,6 +1394,12 @@ export class SymbiontInstaller {
     const existing = this.mycoServerIn(mcpTarget, reg?.mcpFormat === 'toml', targetOverride?.serversKey ?? (reg?.mcpFormat === 'toml' ? TOML_MCP_SERVERS_KEY : (reg?.mcpServersKey ?? 'mcpServers')));
     if (existing === null) return;
     if (this.blocksRegistration(mcpTarget, 'mcp', scan)) return;
+    if (reg?.memberMcpRouting === 'client-roots') {
+      if (!this.canReplaceGlobalMcp(existing) && !this.takesOver(ownedMcpBinary(existing))) {
+        throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation`, MCP_OWNERSHIP_REMEDY);
+      }
+      return;
+    }
     if (this.manifest.registration?.memberMcpRouting === 'session-cwd' && this.ownRoutedMcp(existing)
       && (this.sessionMcpRouting() || this.entryDeployment(existing) === null)) return;
     return this.withWritableMcpEntry(existing, () => {
@@ -1422,7 +1431,7 @@ export class SymbiontInstaller {
             : { problem: `${this.manifest.displayName}'s Myco tools point at ${other}, but this machine's Myco connections could not all be read.`, remedy: "Restore access to this machine's Myco connection files." };
           throw new MemberMcpConflictError(problem, remedy, { toolsDeployment: heldElsewhere ? other : undefined });
         }
-        throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, 'Review capture cutover with myco cutover --dry-run before handing capture over with myco cutover');
+        throw this.memberMcpConflict(`the global Myco MCP entry in ${mcpTarget} belongs to another installation or Deployment`, MCP_OWNERSHIP_REMEDY);
       }
     });
   }

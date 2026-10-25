@@ -8,7 +8,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 
 /** The Deployment-facing files: the 2.0 line and nothing of the 1.x line. */
-const MODERN_LINE = ['cli/tool.ts', 'mcp/client-call.ts', 'mcp/deployment-upstream.ts', 'mcp/stdio-bridge.ts', 'runner/drivers/run-tools.ts'];
+const MODERN_LINE = ['cli/tool.ts', 'mcp/client-call.ts', 'mcp/client-roots.ts', 'mcp/deployment-upstream.ts', 'mcp/stdio-bridge.ts', 'runner/drivers/run-tools.ts'];
 
 const MODERN = /^@modelcontextprotocol\/(client|server)(\/|$)/;
 const LEGACY = /^@modelcontextprotocol\/sdk(\/|$)/;

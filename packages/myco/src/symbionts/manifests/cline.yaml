@@ -49,6 +49,8 @@ capture:
         close: '</user_input>'
       reason: strip Cline plan user_input envelope
 registration:
+  memberMcpRouting: client-roots
+  memberMcpClientRoots: false
   settingsTarget: null
   globalSettingsTarget: null
   hookResponse:

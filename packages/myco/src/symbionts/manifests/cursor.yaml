@@ -51,6 +51,8 @@ capture:
         close: "</user_query>"
       reason: strip Cursor user_query envelope
 registration:
+  memberMcpRouting: client-roots
+  memberMcpClientRoots: true
   hooksTarget: .cursor/hooks.json
   # The 2.0 member scope writes the project's own hooks file, versioned as
   # Cursor requires; no 1.4 project install owns it on a member.

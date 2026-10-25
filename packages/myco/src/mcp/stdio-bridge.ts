@@ -2,9 +2,13 @@
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { credentialRequiredError } from './credential-refusal.js';
-import { DEPLOYMENT_HEARTBEAT_INTERVAL_MS, DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS, declaredCredentialSource, deploymentTransport, probeDeploymentHealth, resolveDeploymentUpstream } from './deployment-upstream.js';
+import { DEPLOYMENT_HEARTBEAT_INTERVAL_MS, DEPLOYMENT_SELF_HEAL_MAX_ATTEMPTS, declaredCredentialSource, deploymentTransport, probeDeploymentHealth, resolveDeploymentUpstream, soleDeploymentUpstream } from './deployment-upstream.js';
+import { bootstrapClientRoots, refuseClientRoots, type RootsBootstrap } from './client-roots.js';
+import type { DeploymentUpstream } from './deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
-import { mcpProjectFolder } from '@myco/cli/flags.js';
+import { mcpProjectFolder, mcpUsesClientRoots, mcpHasExplicitRoot } from '@myco/cli/flags.js';
+import { readRegistryEntryResult } from '@myco/member/registry.js';
+import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { memberHomeFor } from '@myco/member/home-for-folder.js';
 const STDIO_BRIDGE_TAG = '[myco stdio-bridge]';
 
@@ -120,16 +124,20 @@ interface UpstreamSource {
   maxHealAttempts: number;
 }
 
-function deploymentUpstreamSource(source: CredentialSource): UpstreamSource {
-  const cwd = mcpProjectFolder(process.argv.slice(2), process.cwd());
-  const mycoHome = memberHomeFor(cwd).home;
-  let destination: { projectId: string; url: string } | undefined;
+function deploymentUpstreamSource(source: CredentialSource, clientDestination?: () => DeploymentUpstream): UpstreamSource {
+  const cwd = clientDestination ? undefined : mcpProjectFolder(process.argv.slice(2), process.cwd());
+  const mycoHome = cwd === undefined ? undefined : memberHomeFor(cwd).home;
+  let destination: { projectId?: string; url: string } | undefined;
   const current = () => {
+    if (clientDestination) return clientDestination();
+    if (cwd === undefined || mycoHome === undefined) throw new Error('The MCP project folder is unavailable');
     if (memberHomeFor(cwd).home !== mycoHome) throw new Error('The project home changed; reconnect the MCP server before calling tools');
-    const upstream = resolveDeploymentUpstream(source, { cwd, mycoHome, env: process.env, invokedBy: 'mcp',
+    const contextFree = source === 'registry' && !mcpHasExplicitRoot(process.argv)
+      && readRegistryEntryResult(resolveMemberProjectRoot(cwd), mycoHome).status === 'missing';
+    const upstream = (contextFree ? soleDeploymentUpstream(mycoHome) : null) ?? resolveDeploymentUpstream(source, { cwd, mycoHome, env: process.env, invokedBy: 'mcp',
       missingMembershipMessage: root => `Myco tools need a connected project folder; ${root} has no connection. Run \`myco member join\` from this project, then reconnect Myco tools.` });
     if (!upstream) return null;
-    const selected = { projectId: upstream.projectId, url: upstream.mcpUrl.href };
+    const selected = { projectId: upstream.projectId, url: upstream.serverUrl };
     if (destination !== undefined && (destination.projectId !== selected.projectId || destination.url !== selected.url)) {
       throw new Error('The project connection changed; reconnect the MCP server before calling tools');
     }
@@ -178,9 +186,28 @@ export async function main(): Promise<void> {
     logErr(credentialRequiredError('mcp').message);
     process.exit(1);
   }
-  const upstreamSource = deploymentUpstreamSource(source);
+  const downstream = new StdioServerTransport();
+  const clientRoots = source === 'registry' && mcpUsesClientRoots(process.argv);
+  if (clientRoots && mcpHasExplicitRoot(process.argv)) throw new Error('Choose either client roots or an explicit project folder');
+  if (clientRoots) startParentWatchdog();
+  let bootstrap: RootsBootstrap | undefined;
+  try {
+    bootstrap = clientRoots ? await bootstrapClientRoots(downstream) : undefined;
+    await runBridge(source, downstream, bootstrap);
+  } catch (error) {
+    if (!clientRoots) throw error;
+    logErr(String(error));
+    await (bootstrap ? bootstrap.refuse(error) : refuseClientRoots(downstream, error));
+    downstream.onclose = () => exitWithReason('client closed a refused roots connection', 1);
+    downstream.onerror = error => logErr(error.message);
+  }
+}
+
+async function runBridge(source: CredentialSource, downstream: StdioServerTransport, bootstrap?: RootsBootstrap): Promise<void> {
+  const upstreamSource = deploymentUpstreamSource(source, bootstrap?.destination);
   const initial = await upstreamSource.first();
   if (!initial) {
+    if (bootstrap) throw new Error('The selected Deployment is unavailable; reconnect Myco tools after restoring it');
     logErr(`${upstreamSource.describe}: no upstream to bridge stdio MCP to`);
     process.exit(1);
   }
@@ -190,12 +217,21 @@ export async function main(): Promise<void> {
   let upstream = initial.transport;
 
   let probe = initial.probe;
-  const downstream = new StdioServerTransport();
+  let contextInvalidated = false;
+  let initialization: { resolve: () => void; reject: (error: Error) => void } | undefined;
 
   let reconnectInFlight: Promise<boolean> | null = null;
 
   function wireUpstream(t: StreamableHTTPClientTransport): void {
     t.onmessage = (msg) => {
+      if (contextInvalidated) return;
+      if (initialization && !('method' in msg) && msg.id === bootstrap?.initialize.id) {
+        const pending = initialization;
+        initialization = undefined;
+        if ('error' in msg) pending.reject(new Error(msg.error.message));
+        else pending.resolve();
+        return;
+      }
       downstream.send(msg).catch((err: Error) => logErr(`downstream send failed: ${err.message}`));
     };
     t.onclose = () => {
@@ -207,7 +243,21 @@ export async function main(): Promise<void> {
     t.onerror = (err) => logErr(`upstream: ${err.message}`);
   }
 
+  async function primeUpstream(t: StreamableHTTPClientTransport, context: RootsBootstrap | undefined): Promise<void> {
+    if (!context) return;
+    upstreamSource.validate();
+    const ready = new Promise<void>((resolve, reject) => { initialization = { resolve, reject }; });
+    try {
+      await withTimeout((async () => {
+        await t.send(context.initialize);
+        await ready;
+        await t.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+      })(), UPSTREAM_SEND_TIMEOUT_MS, 'upstream initialization');
+    } finally { initialization = undefined; }
+  }
+
   async function reconnectUpstream(): Promise<boolean> {
+    if (contextInvalidated) return false;
     if (reconnectInFlight) return reconnectInFlight;
     reconnectInFlight = (async () => {
       logErr('self-heal: probing Deployment and rebuilding upstream');
@@ -237,6 +287,8 @@ export async function main(): Promise<void> {
           continue;
         }
 
+        try { upstreamSource.validate(); }
+        catch (error) { await rebuilt.transport.close(); throw error; }
         const old = upstream;
         old.onclose = undefined;
         old.onerror = undefined;
@@ -244,11 +296,14 @@ export async function main(): Promise<void> {
         try { await old.close(); } catch (err) {
           logErr(`self-heal: old upstream close errored (ignored): ${(err as Error).message}`);
         }
+        try { upstreamSource.validate(); }
+        catch (error) { await rebuilt.transport.close(); throw error; }
         upstream = rebuilt.transport;
         probe = rebuilt.probe;
         wireUpstream(upstream);
         try {
           await upstream.start();
+          await primeUpstream(upstream, bootstrap);
           logErr(`self-heal: upstream rebuilt (${rebuilt.label}) after ${attempt + 1} attempts`);
           return true;
         } catch (err) {
@@ -256,20 +311,31 @@ export async function main(): Promise<void> {
         }
       }
     })();
-    const result = await reconnectInFlight;
-    reconnectInFlight = null;
-    return result;
+    try { return await reconnectInFlight; }
+    finally { reconnectInFlight = null; }
   }
 
-  downstream.onmessage = (msg) => {
+  const pump: NonNullable<StdioServerTransport['onmessage']> = (msg) => {
+    if (bootstrap && 'method' in msg && msg.method === 'notifications/roots/list_changed') {
+      contextInvalidated = true;
+      bootstrap.invalidate();
+      upstream.onclose = undefined;
+      void upstream.close().catch((error: Error) => logErr(error.message));
+      return;
+    }
     const send = async (attempt = 0): Promise<void> => {
-      try { upstreamSource.validate(); }
+      try {
+        if (contextInvalidated) throw new Error('Client roots changed; reconnect Myco tools');
+        upstreamSource.validate();
+      }
       catch (error) {
         respondWithError(msg, error instanceof Error ? error.message : String(error));
         return;
       }
       if (reconnectInFlight) await reconnectInFlight;
       try {
+        if (contextInvalidated) throw new Error('Client roots changed; reconnect Myco tools');
+        upstreamSource.validate();
         await withTimeout(upstream.send(msg), UPSTREAM_SEND_TIMEOUT_MS, 'upstream.send');
       } catch (err) {
         const errMsg = (err as Error).message;
@@ -284,7 +350,7 @@ export async function main(): Promise<void> {
         respondWithError(msg, `bridge could not deliver request after ${attempt + 1} attempts: ${errMsg}`);
       }
     };
-    send().catch((err: Error) => logErr(`downstream pump error: ${err.message}`));
+    send().catch((err: Error) => respondWithError(msg, err.message));
   };
 
   function respondWithError(originalMsg: unknown, reason: string): void {
@@ -309,11 +375,23 @@ export async function main(): Promise<void> {
 
   wireUpstream(upstream);
 
-  await upstream.start();
-  await downstream.start();
+  try {
+    await upstream.start();
+    await primeUpstream(upstream, bootstrap);
+    if (bootstrap) bootstrap.release(pump);
+    else {
+      downstream.onmessage = pump;
+      await downstream.start();
+    }
+  } catch (error) {
+    contextInvalidated = true;
+    upstream.onclose = undefined;
+    await upstream.close();
+    throw error;
+  }
 
-  startParentWatchdog();
-  startUpstreamHeartbeat(() => probe(), () => {
+  if (!bootstrap) startParentWatchdog();
+  startUpstreamHeartbeat(() => contextInvalidated ? Promise.resolve(true) : probe(), () => {
     void reconnectUpstream().catch((err: Error) =>
       logErr(`heartbeat-triggered self-heal failed unexpectedly: ${err.message}`),
     );

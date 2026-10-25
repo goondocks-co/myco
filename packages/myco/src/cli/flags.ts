@@ -6,6 +6,10 @@
 import path from 'node:path';
 
 export const MCP_ROOT_FLAG = '--root';
+export const MCP_CLIENT_ROOTS_FLAG = '--client-roots';
+
+export const mcpUsesClientRoots = (argv: readonly string[]): boolean => argv.includes(MCP_CLIENT_ROOTS_FLAG);
+export const mcpHasExplicitRoot = (argv: readonly string[]): boolean => argv.some(word => word === MCP_ROOT_FLAG || word.startsWith(`${MCP_ROOT_FLAG}=`));
 
 /** The explicit project directory, or the session directory supplied by the client. */
 export function mcpProjectFolder(argv: readonly string[], cwd: string): string {

@@ -1162,6 +1162,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpTarget": ".cline/mcp.json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
+      "memberMcpRouting": "client-roots",
+      "memberMcpClientRoots": false,
       "skillsTarget": ".cline/skills",
       "settingsTarget": null,
       "settingsFormat": "json"
@@ -2265,6 +2267,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpTarget": ".cursor/mcp.json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
+      "memberMcpRouting": "client-roots",
+      "memberMcpClientRoots": true,
       "skillsTarget": ".agents/skills",
       "retiredSkillsTargets": [
         ".cursor/skills"
@@ -2633,6 +2637,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "mcpTarget": "opencode.json",
       "mcpFormat": "json",
       "mcpServersKey": "mcp",
+      "memberMcpRouting": "client-roots",
+      "memberMcpClientRoots": true,
       "skillsTarget": ".agents/skills",
       "settingsTarget": "opencode.json",
       "settingsFormat": "json"

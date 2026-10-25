@@ -14,8 +14,9 @@ import { getPluginVersion } from '@myco/version.js';
 import { fileURLToPath } from 'node:url';
 import { exportedServerUrl } from '@myco/member/diagnostics.js';
 import { resolveProjectRoot } from '@myco/project-root.js';
-import { resolveMycoHome, defaultMycoHome, readMachineHomePin, type MycoHomeSource } from '@myco/paths/home.js';
-import { readRegistryEntry, readRegistryEntryResult, listRegistryEntriesResult, deploymentUrl } from '@myco/member/registry.js';
+import { resolveMycoHome, resolveMycoHomeWithSource, defaultMycoHome, readMachineHomePin, type MycoHomeSource } from '@myco/paths/home.js';
+import { readRegistryEntry, readRegistryEntryResult, deploymentUrl } from '@myco/member/registry.js';
+import { soleDeploymentMembership } from '@myco/member/token-pairing.js';
 import { loadManifests } from '@myco/symbionts/detect.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { memberHomeFor } from '@myco/member/home-for-folder.js';
@@ -136,7 +137,9 @@ export function checkMemberMcpResolution(
   }
   // Inspection applies local, project and user configuration precedence.
   // Counted as a report reads it: no migration, and an entry it could not read is not one it can claim resolves.
-  const readable = listRegistryEntriesResult(home);
+  const soleMembership = soleDeploymentMembership(home);
+  const fallbackHomeChoice = resolveMycoHomeWithSource({ env });
+  const fallbackMembership = path.resolve(fallbackHomeChoice.home) === path.resolve(home) ? soleMembership : soleDeploymentMembership(fallbackHomeChoice.home);
   const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
   const TRANSPORT_REASON = { http: 'mcp_entry_http', stdio: 'mcp_entry_stdio' } as const;
   for (const manifest of loadManifests()) {
@@ -146,10 +149,13 @@ export function checkMemberMcpResolution(
     if (seen.length === 0) continue;
 
     for (const target of seen.filter((t) => t.present)) {
-      const report = (check: DoctorCheck): void => { checks.push({ memberHome: homeChoice.home, homeSource: homeChoice.source,
+      const clientRoots = target.context === 'client-roots';
+      const knownRoots = manifest.registration.memberMcpClientRoots === true;
+      const clientHomeChoice = clientRoots && !knownRoots ? fallbackHomeChoice : homeChoice;
+      const report = (check: DoctorCheck): void => { checks.push({ memberHome: clientHomeChoice.home, homeSource: clientHomeChoice.source,
         configPath: target.configPath, context: target.context, root, folder: opts.folder ?? root, ...check,
-        ...(path.resolve(homeChoice.home) === path.resolve(home) ? {} : { status: 'warn' as const, reason: 'mcp_home_mismatch' as const, toolsDeployment: undefined,
-          detail: `${manifest.displayName}'s client resolves ${homeChoice.home} via ${homeChoice.source}, while this project's connection is stored in ${home}. Select that home with MYCO_HOME or a trusted home pin before relying on its tools.` }),
+        ...(path.resolve(clientHomeChoice.home) === path.resolve(home) ? {} : { status: 'warn' as const, reason: 'mcp_home_mismatch' as const, toolsDeployment: undefined,
+          detail: `${manifest.displayName}'s client resolves ${clientHomeChoice.home} via ${clientHomeChoice.source}, while this project's connection is stored in ${home}. Select that home with MYCO_HOME or ${clientRoots && !knownRoots ? 'a matching machine home pin' : 'a trusted home pin'} before relying on its tools.` }),
       }); };
       const configuredDisplay = target.configuredDeployment === undefined ? undefined : exportedServerUrl(target.configuredDeployment);
       const toolsDeployment = configuredDisplay == null ? undefined : deploymentUrl(configuredDisplay);
@@ -178,23 +184,24 @@ export function checkMemberMcpResolution(
         });
         continue;
       }
-      // A launcher resolves this project only from an absolute directory that is
-      // its root, or from any directory where the machine holds one membership.
+      const readableMembership = clientRoots ? fallbackMembership : soleMembership;
+      const soleMatches = readableMembership !== null && deploymentUrl(readableMembership.serverUrl) === selectedDeployment;
       if (target.transport === 'stdio') {
         const cwd = target.declaredCwd !== null && path.isAbsolute(target.declaredCwd) ? target.declaredCwd : null;
-        const resolves = target.sessionCwd === true || (cwd === null
-          ? readable.readable && readable.unavailableEntries === 0 && readable.entries.length === 1
-          : path.resolve(resolveMemberProjectRoot(cwd)) === path.resolve(root));
+        const resolves = clientRoots ? knownRoots || soleMatches : target.sessionCwd === true || (cwd === null
+          ? soleMatches : path.resolve(resolveMemberProjectRoot(cwd)) === path.resolve(root));
         if (!resolves) {
           report({
             name: 'Member MCP resolution',
             status: 'warn',
-            detail: cwd === null
+            detail: clientRoots
+              ? `${manifest.displayName}'s client sends no roots and this machine has no sole readable Deployment membership, so a client that sends no roots gets no tools here.`
+              : cwd === null
               ? `${manifest.displayName} starts its MCP server in a directory of its own choosing and its ${target.scope} entry names no absolute one, so it resolves this project's membership only where this machine holds exactly one readable one.`
               : `${manifest.displayName}'s ${target.scope} entry starts its MCP server in a directory that is not ${root}, so it resolves another project's membership or none.`,
             reason: cwd === null ? 'mcp_cwd_ambiguous' : 'mcp_cwd_elsewhere',
             scope: target.scope,
-            root: cwd === null ? undefined : root,
+            root: clientRoots ? root : cwd === null ? undefined : root,
             symbiont: manifest.name,
             fixable: false,
           });
@@ -232,6 +239,12 @@ export function checkMemberMcpResolution(
         });
         continue;
       }
+      const contextCondition = target.sessionCwd === true ? ' when the client supplies this session folder'
+        : clientRoots ? (knownRoots
+          ? ' when connected client roots resolve to this Project; wholly unconnected roots require one readable Deployment membership without a Project header'
+          : ' without client roots, with exactly one readable Deployment membership and no Project header')
+          + (fallbackMembership === null ? '; a client that sends no roots gets no tools here' : '; clients without roots use the sole readable Deployment membership without a Project header')
+          : target.transport === 'stdio' && target.declaredCwd === null ? ' with exactly one readable Deployment membership, without a Project header' : '';
       // A member entry is on disk; whether the server answers is not read here.
       // One that names no transport cannot be dialed, so it is a warning that
       // keeps its own reason.
@@ -240,7 +253,7 @@ export function checkMemberMcpResolution(
         status: target.transport === null ? 'warn' : 'ok',
         detail: target.transport === null
           ? `${manifest.displayName}'s ${target.scope} configuration declares a member entry that names neither a URL nor a launcher, so nothing can reach it.`
-          : `${manifest.displayName}'s ${target.scope} tools are configured for ${selectedDisplay}, Project ${membership.projectId}, over ${target.transport}${target.sessionCwd === true ? ' when the client supplies this session folder' : ''}; runtime reach was not checked.`,
+          : `${manifest.displayName}'s ${target.scope} tools are configured for ${selectedDisplay}, Project ${membership.projectId}, over ${target.transport}${contextCondition}; runtime reach was not checked.`,
         reason: target.transport === null ? 'mcp_entry_unknown_transport' : TRANSPORT_REASON[target.transport],
         scope: target.scope,
         symbiont: manifest.name,

@@ -519,3 +519,11 @@ describe('runLaunchPreamble — re-exec exit semantics', () => {
     expect(() => runLaunchPreamble('mcp', [], h.deps)).toThrow(/exit\(1\)/);
   });
 });
+
+it('ignores incidental launch-directory runtime pins for client-root MCP connections', () => {
+  const harness = makeHarness();
+  harness.deps.resolveRuntimePin = () => { throw new Error('Client roots have not arrived'); };
+  runLaunchPreamble('mcp', ['--credential', 'registry', '--client-roots'], harness.deps);
+  expect(harness.execCalls).toEqual([]);
+  expect(harness.chdirCalls).toEqual([]);
+});

@@ -1,3 +1,4 @@
+import { SERVER_INSTRUCTIONS, FIRST_MODERN_REVISION, servedMcpVersions } from '@goondocks/myco-shared/mcp-protocol';
 /**
  * The MCP protocol server for one request.
  *
@@ -53,15 +54,7 @@ export const SERVER_NAME = 'myco';
  * handshake, and a long one costs the agent context before it has asked
  * anything.
  */
-export const SERVER_INSTRUCTIONS = [
-  'Myco is this project\'s memory: sessions that happened, spores (durable observations), and plans.',
-  '',
-  'Tenancy: every tool takes `project`, a project id or the repository\'s git remote. Reads may use the connection\'s default project, when present. Without a default, every call must name a project. Writes always name a project. Undeclared arguments are refused by name.',
-  '',
-  'Reach for it when you need why rather than what: a prior decision, a gotcha, how a subsystem came to be this way. Search with `myco_search`, then fetch a hit in full by its id with `myco_spores`, `myco_plans` or `myco_sessions`. Record a durable finding with `myco_spores` op "save"; keep plans current with `myco_plans` op "save". Record each pull request, issue, tag, release or deploy you created in this session with `myco_outcomes` op "report".',
-  '',
-  '`myco_cortex` op "instructions" returns this project\'s standing guidance and its project id.',
-].join('\n');
+export { SERVER_INSTRUCTIONS };
 
 /**
  * What a run's credential is told at `initialize`.
@@ -119,9 +112,9 @@ export const TOOL_ERROR_CODE = -32000;
  * speak. The SDK's own default list holds no modern revision today; the filter
  * keeps that true whatever the default becomes, and `mcp.test.ts` pins it.
  */
-export const FIRST_MODERN_REVISION = '2026-07-28';
+export { FIRST_MODERN_REVISION };
 /** Every revision the Deployment serves; a client probing for a later era is answered method-not-found and runs the legacy handshake. */
-export const SERVED_PROTOCOL_VERSIONS: readonly string[] = SUPPORTED_PROTOCOL_VERSIONS.filter((v) => v < FIRST_MODERN_REVISION);
+export const SERVED_PROTOCOL_VERSIONS: readonly string[] = servedMcpVersions(SUPPORTED_PROTOCOL_VERSIONS);
 
 /** Every result answers its JSON. */
 export function serializeResult(_tool: AnyTool, result: unknown): string {

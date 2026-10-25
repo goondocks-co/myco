@@ -229,14 +229,28 @@ describe('a repository read from its own files', () => {
     expect(readRepoLayout(r, {}, { uid: () => null })).toBe(UNUSUAL);
   });
 
-  it('asks git when the way up crosses a filesystem boundary, where git stops', () => {
+  it('stops discovery at a filesystem boundary unless the environment steers Git', () => {
     const r = repo(path.join(base(), 'r'));
     commit(r);
     const mounted = path.join(r, 'volume');
     fs.mkdirSync(mounted);
     const uid = () => (process.platform === 'win32' ? 0 : process.getuid!());
     expect(readRepoLayout(mounted, {}, { uid, deviceOf: () => 1 })).not.toBe(UNUSUAL);
-    expect(readRepoLayout(mounted, {}, { uid, deviceOf: (dir) => (dir === mounted ? 2 : 1) })).toBe(UNUSUAL);
+    const deviceOf = (dir: string) => (dir === mounted ? 2 : 1);
+    expect(readRepoLayout(mounted, {}, { uid, deviceOf })).toBeNull();
+    expect(readRepoLayout(mounted, { GIT_DISCOVERY_ACROSS_FILESYSTEM: '1' }, { uid, deviceOf })).toBe(UNUSUAL);
+  });
+
+  it.skipIf(process.platform === 'win32')('discovers from the physical cwd when a symlink crosses a device boundary', () => {
+    const parent = base();
+    const r = repo(path.join(parent, 'r'));
+    const sub = path.join(r, 'sub');
+    const link = path.join(parent, 'link');
+    fs.mkdirSync(sub);
+    fs.symlinkSync(sub, link);
+    const deviceOf = (dir: string) => dir === parent ? 1 : 2;
+    expect(readRepoLayout(link, {}, { deviceOf })).toMatchObject({ top: r });
+    expect(readRepoLayout(sub, {}, { deviceOf })).toMatchObject({ top: r });
   });
 
   it('says a directory outside any repository is none, as git does', () => {

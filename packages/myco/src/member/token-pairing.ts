@@ -1,9 +1,26 @@
 import { defaultMembership, readDefaultDeployment } from './default-deployment.js';
 import {
-  deploymentUrl, listDeploymentMembershipsResult, readDeploymentMembershipResult, type DeploymentMembership,
+  REGISTRY_VERSION, deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readDeploymentMembershipResult, type DeploymentMembership,
 } from './registry.js';
 
 export type MemberTokenSource = 'registry' | 'env';
+
+/** The sole readable active credential across Deployment memberships and legacy bindings. */
+export function soleDeploymentMembership(mycoHome: string): DeploymentMembership | null {
+  const listed = listDeploymentMembershipsResult(mycoHome);
+  const projects = listRegistryEntriesResult(mycoHome);
+  if (!listed.readable || listed.unavailableEntries > 0 || !projects.readable || projects.unavailableEntries > 0 || projects.conflicts?.length) return null;
+  const memberships = new Map(listed.memberships.map(member => [deploymentUrl(member.serverUrl), member]));
+  for (const entry of projects.entries) {
+    const key = deploymentUrl(entry.serverUrl);
+    const present = memberships.get(key);
+    if ((!present && entry.version >= REGISTRY_VERSION) || (present && present.token !== entry.token)) return null;
+    memberships.set(key, present ?? entry);
+  }
+  if (memberships.size !== 1) return null;
+  const member = [...memberships.values()][0];
+  return member.refreshTerminal ? null : member;
+}
 
 export interface TokenPairableClient {
   serverUrl: string;

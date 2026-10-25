@@ -4,6 +4,7 @@
     "module": "ES2022",
     "moduleResolution": "bundler",
     "paths": {
+      "@goondocks/myco-shared/mcp-protocol": ["../myco-shared/src/mcp-protocol.ts"],
       "@goondocks/myco-shared/budget-status": ["../myco-shared/src/budget-status.ts"],
       "@goondocks/myco-shared/search-types": ["../myco-shared/src/search-types.ts"],
       "@goondocks/myco-shared/runner-fleet": ["../myco-shared/src/runner-fleet.ts"],

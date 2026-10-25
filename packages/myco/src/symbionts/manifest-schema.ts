@@ -466,7 +466,9 @@ const RegistrationSchema = z.object({
    */
   memberMcpHeadersHelperKey: z.string().optional(),
   /** Multi-Deployment member context supplied by this host's MCP configuration. */
-  memberMcpRouting: z.enum(['private-projects', 'session-cwd']).optional(),
+  memberMcpRouting: z.enum(['private-projects', 'session-cwd', 'client-roots']).optional(),
+  /** Whether this client is known to advertise MCP roots. */
+  memberMcpClientRoots: z.boolean().optional(),
   memberMcpReconnectNotice: z.string().optional(),
   skillsTarget: z.string().optional(),
   /**
