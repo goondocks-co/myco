@@ -116,6 +116,7 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0100_v100.sql': 'ac5a2268d4091da1a071e1f752bbbb11bb13e996a0f5156ce041db65fc91cc18',
   '0101_v101.sql': 'c7020bea1f6f4d910ca2d1285350ea165d6dcdad094b0c724871a347fb7d118d',
   '0102_v102.sql': '2e03935f359586bef3a17f30032e8194b29a13a8aeb4976d884daf12980d7546',
+  '0103_v103.sql': 'd33137646ce13bab7b132c078be37c178c016798795091ee94cfb94110169cb7',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -768,6 +769,9 @@ describe('versioned schema steps', () => {
           : t === 'raw_resources' && c.name === 'kind' ? `'blob'` : t === 'raw_resources' && c.name === 'classification' ? `'raw'`
           : t === 'processed_resources' && c.name === 'kind' ? `'plan'` : t === 'processed_resources' && c.name === 'classification' ? `'processed'`
           : t === 'agent_runs' && (c.name === 'leased_runner_id' || c.name === 'leased_runner_credential_id') ? 'NULL'
+          : t === 'agent_runs' && c.name === 'origin' ? "'manual'"
+          : t === 'agent_run_attempts' && c.name === 'settled_seq' ? 'NULL'
+          : t === 'agent_run_attempts' && (c.name === 'estimate_usd' || c.name === 'cost_usd') ? '0'
           : t === 'agent_run_attempts' && c.name === 'owner_kind' ? `'member'` : t === 'agent_run_attempts' && c.name === 'runner_id' ? 'NULL'
           : t === 'agent_run_steps' && c.name === 'kind' ? `'read'` : t === 'agent_run_steps' && c.name === 'outcome' ? `'ok'` : t === 'registered_content_proofs' && c.name === 'durable' ? '1'
           : t === 'content_scan_checkpoints' && c.name === 'source_kind' ? "'event'"

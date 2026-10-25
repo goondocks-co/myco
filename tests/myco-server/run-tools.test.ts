@@ -1,4 +1,5 @@
 import { runDefinitionOf } from '@myco-server-worker/mcp/run-definitions.js';
+import { estimateKey } from '@myco-server-worker/core/budget-estimates.js';
 /**
  * The run-only tool surface: what a run calls that a member and a grant cannot.
  *
@@ -436,7 +437,7 @@ describe('a run\'s state is a compare-and-set', () => {
     const f = await setup();
     try {
       await f.dispatch('run_e', SWEEP);
-      for (const key of ['server.schedule.extract-curate.ramp', 'server.schedule.skip.canopy-map']) {
+      for (const key of ['server.schedule.extract-curate.ramp', 'server.schedule.skip.canopy-map', estimateKey('title-summary','codex',{tier:'low',model:'fixture'})]) {
         const result = await f.call(f.harness.token, 'myco_run', { op: 'state_set', key, value: 'oops' });
         expect(result.result).toMatchObject({ ok: false, error: 'server control state is read-only' });
         expect(f.sqlite.query('SELECT value FROM agent_state WHERE key=?').get(key)).toBeNull();

@@ -19,19 +19,7 @@ import type { StepPage } from '@goondocks/myco-shared/worker-steps';
 import type { WorkerPrincipal } from './worker-lease.js';
 
 /** The statement that records one claim's attempt; it lands only where the run names that attempt as running under this owner. */
-export function recordAttemptStatement(
-  db: RelationalStore, scope: ReadScope, runId: string, attemptId: string, worker: WorkerPrincipal, now: number,
-): PreparedStatement {
-  const runner = worker.kind === 'runner';
-  return db.prepare(
-    `INSERT INTO agent_run_attempts (project_id, run_id, attempt_id, leased_by, machine_id, claimed_at, owner_kind, runner_id)
-     SELECT project_id, id, dispatched_by, ?, ?, ?, ?, ? FROM agent_runs
-      WHERE project_id = ? AND id = ? AND status = 'running' AND dispatched_by = ?
-        AND ${runner ? 'leased_runner_id = ? AND leased_runner_credential_id = ?' : 'leased_by = ?'}
-     ON CONFLICT (project_id, run_id, attempt_id) DO NOTHING`,
-  ).bind(runner ? worker.credentialId : worker.tokenId, worker.machineId, now, worker.kind, runner ? worker.runnerId : null,
-    scope.projectId, runId, attemptId, ...(runner ? [worker.runnerId, worker.credentialId] : [worker.tokenId]));
-}
+export { recordPricedAttempt as recordAttemptStatement } from './attempt-accounting.js';
 
 /** What storing a page answered: how many of its steps were new, or why the page is refused. */
 export type StepPageOutcome = { stored: true; landed: number } | { stored: false; reason: string };

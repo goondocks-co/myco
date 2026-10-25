@@ -1,3 +1,7 @@
+import { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } from '../db/run-statuses.js';
+export { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } from '../db/run-statuses.js';
+import { runOriginSql } from '../db/run-context.js';
+import { budgetClaimPredicate, type ClaimBudget } from './run-budget.js';
 import { pausedLearningSql, LEARNING_PAUSED } from './learning-pause.js';
 import { memberWriteBatch, type MemberWriteActor } from '../auth/member-write-store.js';
 import { RUN_CONTROL_REFUSAL_WORDS, type RunControlRefusalCode } from '@goondocks/myco-shared/run-control';
@@ -42,7 +46,7 @@ import { admissionForTask } from './task-catalogue.js';
 import { CAPABILITY_ON_SQL, PROJECT_WORK_SQL, settingsWriter, type ProjectCapability } from './settings.js';
 import { TITLING_TASK } from './task-catalogue.js';
 import { NOT_TOMBSTONED_PARAMS } from './tombstones.js';
-import { contextValue, DISPATCH_ACTOR_SQL } from '../db/run-context.js';
+import { contextValue, DISPATCH_ACTOR_SQL, BUDGET_QUOTE_USD_KEY, BUDGET_QUOTE_AT_KEY } from '../db/run-context.js';
 import { leaseOwnerColumns, renewingLeaseAuthority, workerLeaseAuthority, type WorkerPrincipal } from './worker-lease.js';
 import { runParentLive } from '../auth/runners.js';
 import { runDeadlineSql, SQL_NOW_MS } from './run-deadline.js';
@@ -119,11 +123,11 @@ export interface StateRow {
 }
 
 /** A run a dispatch has written and no runtime has taken: what the launch path's own claim moves. */
-export const UNCLAIMED_RUN_STATUSES = "status IN ('pending', 'queued')";
+
 
 const CLAIM_SQL = `INSERT INTO agent_runs
-    (project_id, id, agent_id, task, instruction, harness, provider, model, status, dry_run, started_at, run_context, dispatched_by)
-  SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?
+    (project_id, id, agent_id, task, instruction, harness, provider, model, status, dry_run, started_at, run_context, dispatched_by,origin)
+  SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?,'manual'
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)`;
 
 /**
@@ -168,7 +172,7 @@ export const NOT_THE_RUN_ADMITTED = '(? IS NULL OR id != ?)';
  * the drain's load, and the read a deploy makes before it recreates the
  * container — and each projects the columns it needs from it.
  */
-export const LIVE_RUN_STATUSES = "status IN ('pending', 'running')";
+
 
 /**
  * A run in flight, queued included: what single-flight and the queue's own
@@ -182,7 +186,7 @@ export const LIVE_RUN_STATUSES = "status IN ('pending', 'running')";
  * queue. Reading a lapsed lease as "not in flight" here would admit a duplicate
  * of a run that is merely waiting for another worker to take it.
  */
-export const IN_FLIGHT_RUN_STATUSES = "status IN ('pending', 'running', 'queued')";
+
 
 /** A `title-summary` run naming the session is queued or running. */
 export const titleRunInFlightSql = (session: string): string => `EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = ${session}.project_id AND r.task = '${TITLING_TASK}'
@@ -254,6 +258,8 @@ ${PROJECT_ADMISSION_WHERE}`;
 export interface WriteAdmission {
   limits: DispatchLimits;
   now: number;
+  budget?: ClaimBudget;
+  settingsGuard?: {sql:string;params:unknown[]};
   singleFlight?: boolean;
   ceiling?: ActorCeiling;
   actor?: MemberWriteActor;
@@ -289,8 +295,8 @@ function admissionParams(scope: ReadScope, task: string | null, runId: string, a
 }
 
 const RECORD_DISPATCH_SQL = `INSERT INTO agent_runs
-    (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, started_at, run_context, dispatched_by, dispatch_spec)
-  SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?
+    (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, started_at, run_context, dispatched_by, dispatch_spec,origin)
+  SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, (SELECT ${runOriginSql()} FROM (SELECT NULL AS origin,? AS dispatch_spec))
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)${ADMISSION_WHERE}`;
 
 const RUN_REF_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS resumedAt FROM agent_runs
@@ -329,7 +335,7 @@ export interface DispatchRecord {
 export async function recordDispatch(db: RelationalStore, scope: ReadScope, record: DispatchRecord, admission?: WriteAdmission): Promise<boolean> {
   const statement = db.prepare(RECORD_DISPATCH_SQL).bind(
     scope.projectId, record.id, record.agentId, record.task, record.instruction ?? null, record.provider, record.model,
-    record.dryRun === true ? 1 : 0, record.startedAt, record.runContext, record.dispatchedBy, record.dispatchSpec ?? null,
+    record.dryRun === true ? 1 : 0, record.startedAt, record.runContext, record.dispatchedBy, record.dispatchSpec ?? null, record.dispatchSpec ?? null,
     scope.projectId, record.id,
     ...admissionParams(scope, record.task, record.id, admission),
   );
@@ -442,6 +448,13 @@ const STATE_INSERT_SQL = `INSERT INTO agent_state (project_id, agent_id, key, va
  */
 const STATE_UPDATE_SQL = `UPDATE agent_state SET value = ?, updated_at = ?
    WHERE project_id = ? AND agent_id = ? AND key = ? AND value IS ?`;
+
+/** An admitted owner publishes state only while its coordinating write still names its revision. */
+export function guardedStateStatement(db:RelationalStore,scope:ReadScope,agentId:string,key:string,value:string,now:number,guard:{sql:string;params:unknown[]}):PreparedStatement {
+  return db.prepare(`INSERT INTO agent_state(project_id,agent_id,key,value,updated_at) SELECT ?,?,?,?,? WHERE ${guard.sql}
+    ON CONFLICT(project_id,agent_id,key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`)
+    .bind(scope.projectId,agentId,key,value,now,...guard.params);
+}
 
 export async function getState(db: RelationalStore, scope: ReadScope, agentId: string, key: string): Promise<StateRow | null> {
   return db.prepare(STATE_READ_SQL).bind(scope.projectId, agentId, key).first<StateRow>();
@@ -1114,8 +1127,8 @@ export interface QueuedRecord {
 }
 
 const RECORD_QUEUED_SQL = `INSERT INTO agent_runs
-    (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, queued_at, held_by, dispatch_spec, run_context)
-  SELECT ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?
+    (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, queued_at, held_by, dispatch_spec, run_context,origin)
+  SELECT ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, (SELECT ${runOriginSql()} FROM (SELECT NULL AS origin,? AS dispatch_spec))
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)
    AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES}))${ACTOR_CEILING_WHERE}${PROJECT_ADMISSION_WHERE}`;
 
@@ -1124,7 +1137,7 @@ export async function recordQueued(db: RelationalStore, scope: ReadScope, record
   const gate = admissionForTask(record.task);
   const statement = db.prepare(RECORD_QUEUED_SQL).bind(
     scope.projectId, record.id, record.agentId, record.task, record.instruction ?? null, record.provider, record.model,
-    record.dryRun === true ? 1 : 0, record.queuedAt, record.heldBy, record.dispatchSpec, record.runContext ?? null,
+    record.dryRun === true ? 1 : 0, record.queuedAt, record.heldBy, record.dispatchSpec, record.runContext ?? null, record.dispatchSpec,
     scope.projectId, record.id,
     options.singleFlight === true ? record.task : null, scope.projectId, record.task,
     ...actorCeilingParams(record.id, options.ceiling),
@@ -1243,12 +1256,12 @@ export async function skipQueued(db: RelationalStore, scope: ReadScope, runId: s
  * with the credential the row named at the instant it landed, for the same
  * reason a skip does.
  */
-const FAIL_QUEUED_SQL = `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?, error_code = ?, held_by = NULL
-  WHERE project_id = ? AND id = ? AND status = 'queued'
+const FAIL_QUEUED_SQL = (guard:string) => `UPDATE agent_runs SET status = 'failed', completed_at = ?, error = ?, error_code = ?, held_by = NULL
+  WHERE project_id = ? AND id = ? AND status = 'queued' AND (${guard})
 RETURNING dispatched_by AS displaced`;
 
-export async function failQueuedRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string, errorCode: RunErrorCode): Promise<QueuedRunEnd> {
-  const row = await db.prepare(FAIL_QUEUED_SQL).bind(now, error, errorCode, scope.projectId, runId).first<{ displaced: string | null }>();
+export async function failQueuedRun(db: RelationalStore, scope: ReadScope, runId: string, now: number, error: string, errorCode: RunErrorCode,guard:{sql:string;params:unknown[]}={sql:'1',params:[]}): Promise<QueuedRunEnd> {
+  const row = await db.prepare(FAIL_QUEUED_SQL(guard.sql)).bind(now, error, errorCode, scope.projectId, runId,...guard.params).first<{ displaced: string | null }>();
   return { applied: row !== null, displaced: row?.displaced ?? null };
 }
 
@@ -1258,13 +1271,14 @@ export interface QueuedRunRef {
   task: string | null;
   queuedAt: number;
   heldBy: string | null;
+  budgetQuoteUsd:number|null;
   dispatchSpec: string | null;
   /** The credential a re-queued row still carries, for the child a late answer may have started; null for a row that never launched. */
   dispatchedBy: string | null;
 }
 
 const QUEUED_RUNS_SQL = `SELECT project_id AS projectId, id, task, queued_at AS queuedAt, held_by AS heldBy,
-    dispatch_spec AS dispatchSpec, dispatched_by AS dispatchedBy
+    dispatch_spec AS dispatchSpec, dispatched_by AS dispatchedBy,${contextValue(BUDGET_QUOTE_USD_KEY)} AS budgetQuoteUsd
   FROM agent_runs WHERE status = 'queued' ORDER BY queued_at ASC, id ASC LIMIT ?`;
 
 /** Every queued run on the Deployment, oldest first: the drain's read, across Projects like the sweep's. */
@@ -1318,10 +1332,11 @@ export async function nextClaimable(db: RelationalStore, excluded: readonly stri
 }
 
 /** The queued row and all launch limits required by both credential minting and claim. */
-export function workerClaimPredicate(candidate: ClaimCandidate, admission: WriteAdmission): { sql: string; params: (string | number | null)[] } {
+export function workerClaimPredicate(candidate: ClaimCandidate, admission: WriteAdmission): { sql: string; params: unknown[] } {
+  const money = admission.budget===undefined ? {sql:'1',params:[]} : budgetClaimPredicate(admission.budget,admission.now);
   return {
-    sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND status = 'queued' AND task = ? AND dispatched_by IS NULL AND NOT ${pausedLearningSql('task')}${ADMISSION_WHERE})`,
-    params: [candidate.projectId, candidate.id, candidate.task, ...admissionParams({ projectId: candidate.projectId }, candidate.task, candidate.id, admission)],
+    sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND status = 'queued' AND task = ? AND dispatched_by IS NULL AND NOT ${pausedLearningSql('task')}${ADMISSION_WHERE} AND ${money.sql} AND (${admission.settingsGuard?.sql ?? '1'}))`,
+    params: [candidate.projectId, candidate.id, candidate.task, ...admissionParams({ projectId: candidate.projectId }, candidate.task, candidate.id, admission), ...money.params, ...(admission.settingsGuard?.params ?? [])],
   };
 }
 
@@ -1335,42 +1350,7 @@ export function workerClaimPredicate(candidate: ClaimCandidate, admission: Write
  * The attempt the claim starts is recorded in the same batch, and only where the
  * claim landed (`core/run-steps.ts`).
  */
-export async function claimQueuedRun(
-  db: RelationalStore,
-  candidate: ClaimCandidate,
-  claim: { dispatchedBy: string; worker: WorkerPrincipal; leaseExpiresAt: number; harness: string; now: number; profile: ExecutionProfile; input?: ClaimedInput },
-  admission: WriteAdmission,
-): Promise<ClaimedRunRow | null> {
-  if (!isExecutionProfile(claim.profile)) throw new Error('a worker claim requires a resolved execution profile');
-  const authority = workerClaimPredicate(candidate, admission);
-  const owner = leaseOwnerColumns(claim.worker);
-  const gate = runnerClaimGate(claim.worker, claim.now);
-  const lease = { projectId: candidate.projectId, runId: candidate.id, attemptId: claim.dispatchedBy };
-  const contact = claim.worker.kind === 'member'
-    ? await workerContactStatement(db, { credentialId: claim.worker.tokenId, machineId: claim.worker.machineId, reason: 'claimed', now: claim.now }, lease)
-    : runnerContactStatement(db, { runnerId: claim.worker.runnerId, reason: 'claimed', now: claim.now }, lease, claim.worker);
-  const results = await db.batch([...(admission.setup ?? []), db.prepare(
-    `UPDATE agent_runs
-        SET status = 'running', started_at = ?, dispatched_by = ?, leased_by = ?, leased_runner_id = ?, leased_runner_credential_id = ?,
-            lease_expires_at = ?, harness = ?, held_by = NULL,
-            reasoning_level = ?, model = ?, execution_overrides = ?
-      WHERE project_id = ? AND id = ? AND ${authority.sql} AND ${gate.sql}
-      RETURNING project_id AS projectId, id, task, instruction, run_context AS runContext, dry_run AS dryRun`,
-  ).bind(
-    claim.now, claim.dispatchedBy, owner.leasedBy, owner.runnerId, owner.runnerCredentialId, claim.leaseExpiresAt, claim.harness,
-    claim.profile.tier, claim.profile.model,
-    JSON.stringify({ requested: claim.profile, harness: claim.harness }),
-    candidate.projectId, candidate.id,
-    ...authority.params, ...gate.params,
-  ), recordAttemptStatement(db, { projectId: candidate.projectId }, candidate.id, claim.dispatchedBy, claim.worker, claim.now),
-    ...(claim.input === undefined ? [] : [claimedInputStatement(db, { projectId: candidate.projectId }, candidate.id, claim.dispatchedBy, claim.input)]),
-    ...(contact === null ? [] : [contact]),
-    ...(claim.worker.kind === 'runner' ? [db.prepare(`UPDATE runners SET last_assigned_at = ? WHERE id = ?
-      AND EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND leased_runner_id = runners.id AND dispatched_by = ?)`)
-      .bind(claim.now, claim.worker.runnerId, candidate.projectId, candidate.id, claim.dispatchedBy)] : []),
-  ]);
-  return (results[admission.setup?.length ?? 0]?.results[0] as ClaimedRunRow | undefined) ?? null;
-}
+export { claimWorkerRun as claimQueuedRun } from './worker-claim.js';
 
 /** The claim admission and the runner gate as one condition, for the statements a claim's batch must land together. */
 export function workerClaimAdmission(candidate: ClaimCandidate, admission: WriteAdmission, worker: WorkerPrincipal, now: number): { sql: string; params: unknown[] } {
@@ -1394,28 +1374,28 @@ export function runnerClaimGate(worker: WorkerPrincipal, now: number): { sql: st
   };
 }
 
-/**
- * Name `holder` as what every queued run of `tasks` waits on, where it names one of `from` now. A run a limit holds
- * keeps that limit, and a run a worker has taken is not queued.
- */
-export async function recordTaskHolder(db: RelationalStore, tasks: readonly string[], from: readonly string[], holder: string, includeProfileHolds = false): Promise<void> {
+const holderAdmissionSql=(holder:string):string=>holder==='budget'?`${runOriginSql()}='automatic'`:'1';
+/** Name `holder` on unclaimed queued tasks whose holder belongs to `from`, including selected profile holds. */
+export async function recordTaskHolder(db: RelationalStore, tasks: readonly string[], from: readonly (string|null)[], holder: string, includeProfileHolds = false): Promise<void> {
   if (tasks.length === 0 || from.length === 0) return;
-  const list = (values: readonly string[]) => values.map(() => '?').join(', ');
+  const list = (values: readonly (string|null)[]) => values.map(() => '?').join(', ');
   const profiles = includeProfileHolds ? PROFILE_HOLD_PREFIXES.map((prefix) => ` OR held_by LIKE '${prefix}%'`).join('') : '';
-  await db.prepare(`UPDATE agent_runs SET held_by = ? WHERE status = 'queued' AND dispatched_by IS NULL AND task IN (${list(tasks)}) AND (held_by IN (${list(from)})${profiles}) AND held_by IS NOT ?`)
+  await db.prepare(`UPDATE agent_runs SET held_by = ? WHERE status = 'queued' AND dispatched_by IS NULL AND task IN (${list(tasks)}) AND (held_by IN (${list(from)})${from.includes(null)?' OR held_by IS NULL':''}${profiles}) AND held_by IS NOT ? AND ${holderAdmissionSql(holder)}`)
     .bind(holder, ...tasks, ...from, holder).run();
 }
 
 /** Record what holds a queued run, so an operator reads the wait on the run rather than inferring it. */
-export async function recordQueueHolder(db: RelationalStore, scope: ReadScope, runId: string, heldBy: string): Promise<void> {
-  await db.prepare(`UPDATE agent_runs SET held_by = ? WHERE project_id = ? AND id = ? AND status = 'queued'`)
-    .bind(heldBy, scope.projectId, runId).run();
+export async function recordQueueHolder(db: RelationalStore, scope: ReadScope, runId: string, heldBy: string, quote?:{usd:number;at:number}): Promise<void> {
+  if(quote!==undefined&&(heldBy!=='budget'||!Number.isFinite(quote.usd)||quote.usd<0||!Number.isSafeInteger(quote.at)))throw new Error('Invalid queued budget quote');
+  const context=quote===undefined?'':`,run_context=json_set(${RUN_CONTEXT_OBJECT_SQL},'$.${BUDGET_QUOTE_USD_KEY}',?,'$.${BUDGET_QUOTE_AT_KEY}',?)`;
+  await db.prepare(`UPDATE agent_runs SET held_by = ?${context} WHERE project_id = ? AND id = ? AND status = 'queued' AND ${holderAdmissionSql(heldBy)}`)
+    .bind(heldBy,...(quote===undefined?[]:[quote.usd,quote.at]),scope.projectId,runId).run();
 }
 
 /** The prompt a claim rebuilt, and the hash and counts the server filed it under, onto the row a worker now holds. */
 export interface ClaimedInput { instruction: string; inputHash: string; counts: Readonly<Record<string, number | boolean>>; repository?: RepositoryCheckoutSpec }
 
-function claimedInputStatement(
+export function claimedInputStatement(
   db: RelationalStore, scope: ReadScope, runId: string, dispatchedBy: string, input: ClaimedInput,
 ): PreparedStatement {
   return db.prepare(
@@ -1520,8 +1500,9 @@ export async function workerLiveness(db: RelationalStore, now: number): Promise<
   return { workersBusy: Number(row?.workersBusy ?? 0), runsQueued: Number(row?.runsQueued ?? 0) };
 }
 
-export async function hasQueuedRun(db: RelationalStore): Promise<boolean> {
-  return (await db.prepare(`SELECT 1 AS one FROM agent_runs WHERE status = 'queued' LIMIT 1`).first<{ one: number }>()) !== null;
+export async function hasQueuedRun(db: RelationalStore,holder:'any'|'budget'|'other'='any'): Promise<boolean> {
+  const held=holder==='any'?'1':holder==='budget'?"held_by='budget'":"held_by IS NOT 'budget'";
+  return (await db.prepare(`SELECT 1 AS one FROM agent_runs WHERE status = 'queued' AND ${held} LIMIT 1`).first<{ one: number }>()) !== null;
 }
 
 /** What the Deployment is doing for one task: the counts admission compares against the limits. */

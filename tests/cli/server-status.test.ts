@@ -8,6 +8,7 @@ import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { getPluginVersion } from '@myco/version.js';
 import { VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import type { CommandRunner, RunOptions } from '@myco/server/runner.js';
+import { budgetD1Database,budgetD1Reply } from '../server/helpers/budget-d1.js';
 
 const ACCOUNT = 'a'.repeat(32);
 const RECORDED = '11111111-2222-4333-8444-555555555555';
@@ -20,6 +21,7 @@ let previous: Record<string, string | undefined>;
 let cwd: string;
 let calls: Array<{ args: readonly string[]; options?: RunOptions }>;
 let schema: number;
+let budgetDb:ReturnType<typeof budgetD1Database>;
 let worker: string;
 let failure: string | undefined;
 let createVector: boolean;
@@ -27,6 +29,7 @@ let readOnlyRecord: boolean;
 let failureMessage: string;
 let schemaOnMigrationFailure: number | undefined;
 let schemaProbeFails: boolean;
+let budgetCountUnavailable:boolean;
 let printed: string[];
 let errors: string[];
 let exitCode: number | undefined;
@@ -48,6 +51,7 @@ const runner: CommandRunner = {
     let stdout = '';
     if (text === '--version') stdout = '4.126.0';
     else if (text === 'whoami') stdout = 'OAuth fixture';
+    else if(text==='auth token --json')stdout=JSON.stringify({type:'api_token',token:PRIVATE_TOKEN});
     else if (text.startsWith('secret list')) stdout = '[]';
     else if (text.startsWith('deployments list')) stdout = `Version ID: ${worker}`;
     else if (text.startsWith('d1 execute')) {
@@ -55,6 +59,9 @@ const runner: CommandRunner = {
         return { code: 1, stdout: '', stderr: 'live schema probe unavailable' };
       }
       const sql = args[args.indexOf('--command') + 1] ?? '';
+      if(budgetCountUnavailable&&sql.startsWith('SELECT COUNT(*) AS n FROM agent_'))return {code:0,stdout:JSON.stringify([{success:true,results:[]}]),stderr:''};
+      const budget=budgetD1Reply(budgetDb,sql);
+      if(budget!==undefined)return budget;
       const rows = sql.includes('sqlite_master') ? [{ name: 'schema_meta' }]
         : sql.includes("key = 'version'") ? [{ value: String(schema) }] : [];
       stdout = JSON.stringify([{ success: true, results: rows }]);
@@ -74,7 +81,17 @@ const runner: CommandRunner = {
   },
 };
 
+const fetchD1:typeof fetch=async(_input,init)=>{
+  const body=JSON.parse(String(init?.body)) as {sql:string;params?:unknown[]};
+  const rows=budgetDb.query(body.sql).all(...(body.params??[]).map(value=>{
+    if(value===null||typeof value==='string'||typeof value==='number')return value;
+    throw new Error('Unexpected fake D1 binding');
+  }));
+  return Response.json({success:true,result:[{success:true,results:rows,meta:{changes:0}}]});
+};
+
 beforeEach(() => {
+  budgetDb=budgetD1Database();
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-server-status-'));
   const env: Record<string, string | undefined> = {
     HOME: path.join(root, 'home'), CODEX_HOME: path.join(root, 'codex'),
@@ -98,6 +115,7 @@ beforeEach(() => {
   failureMessage = AUTH_ERROR;
   schemaOnMigrationFailure = undefined;
   schemaProbeFails = false;
+  budgetCountUnavailable=false;
   calls = [];
   printed = [];
   errors = [];
@@ -112,6 +130,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  budgetDb.close();
   console.log = log;
   console.error = error;
   process.exit = exit;
@@ -124,7 +143,7 @@ afterEach(() => {
 });
 
 async function drive(verb: string): Promise<string> {
-  try { await run([verb, '--target', 'cloudflare'], { runner }); }
+  try { await run([verb, '--target', 'cloudflare'], { runner,fetchImpl:fetchD1 }); }
   catch (error) { if (!(error instanceof Error) || error.message !== 'fixture exit') throw error; }
   return [...printed, ...errors].join('\n');
 }
@@ -136,6 +155,17 @@ function expectNoTokenFragments(text: string): void {
 const count = (command: string): number => calls.filter((call) => call.args.slice(2).join(' ').startsWith(command)).length;
 
 describe('Cloudflare status records and live observations', () => {
+  it('prints the recorded budget refusal after an update publishes its Worker',async()=>{
+    budgetCountUnavailable=true;
+    expect(await drive('update')).toContain('Budget governor inactive:');
+    expect(worker).toBe(LIVE);
+    process.env.CLOUDFLARE_API_TOKEN=PRIVATE_TOKEN;
+    printed.length=0;errors.length=0;
+    await drive('status');
+    expect(printed.join('\n')).toContain('budget preflight returned no valid count');
+    expect(printed.join('\n')).toContain('inactive');
+    expect(printed.join('\n')).not.toContain('Daily work budget unavailable:');
+  });
   it('shows a live disagreement without attributing the recorded release or URL to the live Worker', async () => {
     worker = LIVE;
     const record = readDeploymentRecord()!;
@@ -342,7 +372,7 @@ Private debug: ${PRIVATE_TOKEN}`;
       expect(printed.filter((line) => line.includes('live schema confirmed'))).toHaveLength(1);
       expect(text).toContain(`${failureMessage}; live schema confirmed ${SERVER_SCHEMA_VERSION}`);
       expect(text).not.toContain('outcome unknown');
-      expect(count('d1 execute')).toBe(4);
+      expect(calls.filter(({args})=>args.includes('execute')&&/^SELECT (name FROM sqlite_master|value FROM schema_meta WHERE key)/.test(args[args.indexOf('--command')+1]??'')).length).toBe(4);
       expect(count('d1 migrations')).toBe(1);
       expect(count('deploy ')).toBe(1);
       expect(readDeploymentRecord()).toMatchObject({ release: getPluginVersion(), versionId: LIVE,

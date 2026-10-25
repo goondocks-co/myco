@@ -204,14 +204,14 @@ describe('every route that mints an authority able to outlive the credential (#1
       'auth/tokens.ts issueMemberToken -> mintInsert', // the insert itself
       'auth/tokens.ts refreshMemberToken -> mintInsert', // POST /tokens/refresh — mintsAuthority
       'core/embedding/configured-provider.ts embeddingProviderFor -> openProviderCredential', // the Deployment's own embedding job and its model switch
-      'core/harness.ts claimNextRun -> mintInsert', // POST /worker/claim — mintsAuthority; a run credential minted not to rotate
+      'core/worker-claim.ts claimWorkerRun -> mintInsert', // POST /worker/claim — mintsAuthority; a run credential minted not to rotate
       'core/harness.ts claimLogin -> openHarnessCredential', // a launch or a claim — POST /worker/claim is mintsAuthority
       'core/harness.ts launchDispatch -> mintInsert', // an owner dispatch or the tick; a run credential minted not to rotate
       'core/release-provenance.ts checkProject -> secrets.get', // the Deployment's own release job
       'core/repositories.ts projectRepositories -> secrets.get', // the store behind repositories.access
       'core/run-repository.ts prepareRunRepository -> repositories.access', // a run's held task, or POST /worker/repository — mintsAuthority
     ].sort());
-    const harness = readFileSync(join(SRC, 'core', 'harness.ts'), 'utf8').split('\n').filter((line) => /mintInsert\(/.test(line) && !/^import/.test(line));
+    const harness = ['harness.ts','worker-claim.ts'].flatMap(file=>readFileSync(join(SRC,'core',file),'utf8').split('\n')).filter((line) => /mintInsert\(/.test(line) && !/^import/.test(line));
     expect(harness.length).toBe(2);
     for (const line of harness) expect(line).toMatch(/\{\s*rotates:\s*false(?:\s*,|\s*\})/);
   });

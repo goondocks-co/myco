@@ -28,8 +28,8 @@ async function oldClockQueueModel(db: ReturnType<typeof sqliteEnv>['db'], now: n
 async function oldQueueModel(db: ReturnType<typeof sqliteEnv>['db'], id: string, now: number): Promise<number> {
   await db.prepare("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,1)").run();
   const result=await db.prepare(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,instruction)
-    VALUES('proj_1',?,'myco-agent','extract-curate','queued',?,'pre-pause thin instruction')`).bind(id,now).run();
-  return result.meta.changes;
+    VALUES('proj_1',?,'myco-agent','extract-curate','queued',?,'pre-pause thin instruction') RETURNING id`).bind(id,now).all();
+  return result.results.length;
 }
 
 it('keeps the old clock disabled across migration while preserving the owner task document and restoring the global switch',async()=>{

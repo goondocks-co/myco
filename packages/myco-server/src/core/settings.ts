@@ -1,3 +1,4 @@
+import { BUDGET_LEAF, BUDGET_DEFAULT_USD, BUDGET_MINIMUM_USD } from './budget-policy.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
@@ -58,6 +59,7 @@ export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
 export type LeafSpec =
   | Record<string, never>
   | { readonly type: 'boolean' }
+  | { readonly type: 'number'; readonly min: number; readonly default: number }
   | { readonly type: 'integer'; readonly min: number; readonly max: number; readonly nullable?: true; readonly default?: number | null }
   | { readonly type: 'agent' }
   | { readonly type: 'agent-list' }
@@ -89,6 +91,7 @@ const LIMIT_SPEC: LeafSpec = { type: 'integer', min: 1, max: 10_000, nullable: t
  * implies. A meta gate holds this list against the ledger so the two cannot drift.
  */
 export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
+  [BUDGET_LEAF]: { type: 'number', min: BUDGET_MINIMUM_USD, default: BUDGET_DEFAULT_USD },
   'agent.cold_project_threshold_days': { type: 'integer', min: 0, max: 365 },
   'agent.limits.concurrent_runs': LIMIT_SPEC,
   'agent.limits.task_concurrent_runs': { ...LIMIT_SPEC, default: 2 },
@@ -380,6 +383,7 @@ function rootMapViolation(spec: { maxItems: number }, value: unknown): string | 
 export function leafRuleViolation(spec: LeafSpec, value: unknown, previous?: unknown): string | null {
   if (!('type' in spec)) return null;
   if (spec.type === 'boolean') return typeof value === 'boolean' ? null : 'expected on or off';
+  if (spec.type === 'number') return typeof value === 'number' && Number.isFinite(value) && value>=spec.min ? null : `expected a finite number of at least ${spec.min}`;
   if (spec.type === 'integer') {
     if (value === null && spec.nullable === true) return null;
     if (typeof value !== 'number' || !Number.isInteger(value)) return 'expected a whole number';
@@ -519,7 +523,7 @@ export async function settingsSnapshot(db: RelationalStore): Promise<RelationalS
 }
 
 /** A fresh policy view and its value/version predicate for an atomic consumer mutation. */
-export async function observedSettingsGuard(db:RelationalStore,leaves:readonly string[]):Promise<{
+export async function observedSettingsGuard(db:RelationalStore,leaves:readonly string[],compact=false):Promise<{
   view:RelationalStore;sql:string;params:unknown[];
 }> {
   const {results}=await db.prepare(`SELECT leaf,value,updated_at,updated_by FROM deployment_settings
@@ -531,6 +535,10 @@ export async function observedSettingsGuard(db:RelationalStore,leaves:readonly s
     return typeof member==='function'?member.bind(target):member;
   }});
   SNAPSHOTS.set(view,rows);
+  if (compact) return {view,sql:`NOT EXISTS(SELECT 1 FROM json_each(?) observed
+    WHERE (SELECT value FROM deployment_settings WHERE leaf=json_extract(observed.value,'$[0]')) IS NOT json_extract(observed.value,'$[1]')
+    OR (SELECT updated_at FROM deployment_settings WHERE leaf=json_extract(observed.value,'$[0]')) IS NOT json_extract(observed.value,'$[2]'))`,
+    params:[JSON.stringify(leaves.map(leaf=>[leaf,rows.get(leaf)?.value??null,rows.get(leaf)?.updated_at??null]))]};
   return {view,sql:leaves.map(()=>`(SELECT value FROM deployment_settings WHERE leaf=?) IS ?
     AND (SELECT updated_at FROM deployment_settings WHERE leaf=?) IS ?`).join(' AND '),
     params:leaves.flatMap(leaf=>[leaf,rows.get(leaf)?.value??null,leaf,rows.get(leaf)?.updated_at??null])};
@@ -1050,4 +1058,15 @@ export function learningEnabledSql(): string {
   return `EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = 'agent.scheduled_tasks_enabled'
       AND CASE WHEN json_valid(value) THEN json_type(value) = 'true' ELSE 0 END)
     AND ${taskEnabledSql(EXTRACTION_TASK)}`;
+}
+
+/** The admitted effective value, evaluated by the automatic claim write. */
+export const effectiveBudgetSql = (): string => `COALESCE((SELECT CASE WHEN json_valid(value) THEN
+  CASE WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$')>=${BUDGET_MINIMUM_USD} AND json_extract(value,'$')<=${Number.MAX_VALUE}
+  THEN json_extract(value,'$') END END FROM deployment_settings WHERE leaf='${BUDGET_LEAF}'),${BUDGET_DEFAULT_USD})`;
+
+
+export async function dailyBudget(db: RelationalStore): Promise<number> {
+  const text=(await settingTexts(db,[BUDGET_LEAF])).get(BUDGET_LEAF);
+  return text===undefined?BUDGET_DEFAULT_USD:JSON.parse(text) as number;
 }

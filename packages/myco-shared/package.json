@@ -6,6 +6,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./budget-status": { "import": "./dist/budget-status.js", "types": "./dist/budget-status.d.ts" },
     "./report-order": { "import": "./dist/report-order.js", "types": "./dist/report-order.d.ts" },
     "./json": { "import": "./dist/json.js", "types": "./dist/json.d.ts" },
     "./prompt-text": { "import": "./dist/prompt-text.js", "types": "./dist/prompt-text.d.ts" },

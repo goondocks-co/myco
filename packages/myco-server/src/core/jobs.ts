@@ -78,6 +78,7 @@ export const WAKE_CONTINUATIONS: readonly WakeContinuation[] = [
 
 /** The jobs the tick runs today; each has an implementation in `jobs-run.ts`, which a gate holds. */
 export const SERVER_JOBS: readonly ServerJob[] = [
+  { name: 'estimate-refresh', runsThrough: 'sleep', converges: 'each priced stage and execution profile has its own recent cost and exposure sample' },
   { name: 'raw-provenance-backfill', runsThrough: 'sleep', converges: 'every historical raw reference and processed field has immutable provenance, through bounded checkpointed pages' },
   {
     name: 'agent-run-retention',

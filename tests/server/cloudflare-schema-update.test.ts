@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { createCloudflareDeployment, updateCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
-import { deploymentRecordPath, readDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudflare.js';
+import { deploymentRecordPath, readDeploymentRecord, writeDeploymentRecord, queryCloudflareDatabase } from '@myco/server/cloudflare.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/budget-activation.js';
+import { readBudgetStatus } from '@myco-server-worker/read/budget.js';
+import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { Database } from 'bun:sqlite';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
@@ -29,9 +32,18 @@ else if (args[0] === 'whoami') console.log('fixture operator');
 else if (command === 'd1 list --json') out(state.fresh ? [] : [{name:'myco-server',uuid:'${OLD_WORKER}'}]);
 else if (command === 'd1 create myco-server') console.log('database_id = "${OLD_WORKER}"');
 else if (command === 'd1 execute myco-server') {
-  if (state.destination) {
+  const statement=args[args.indexOf('--command')+1] ?? '';
+  if((state.budgetReadFailure==='stamps'&&statement.startsWith('SELECT key,value'))||(state.budgetReadFailure==='catalogue'&&statement.startsWith('SELECT name,sql'))) {
+    console.error('fixture transient completion read');process.exit(1);
+  }
+  if(state.budgetCountFailure && statement.startsWith('SELECT COUNT(*) AS n FROM agent_')) {
+    if(state.budgetCountFailure==='error') {console.error('fixture count unavailable');process.exit(1);}
+    out([{success:true,results:[]}]);process.exit(0);
+  }
+  if(!state.destination && /SELECT value FROM schema_meta WHERE key ?= ?'version'/.test(statement)) {out([{success:true,results:[{value:state.schema}]}]);process.exit(0);}
+  if (state.destination || state.schemaDatabase) {
     const {Database} = require('bun:sqlite');
-    const db = new Database(state.destination);
+    const db = new Database(state.destination || state.schemaDatabase);
     try {
       if (args.includes('--file')) {
         const sql = fs.readFileSync(args[args.indexOf('--file')+1],'utf8');
@@ -63,10 +75,16 @@ else if (command === 'd1 time-travel info') {
     console.error('migration ran before durable recovery point'); process.exit(9);
   }
   if (state.migrationExit) process.exit(state.migrationExit);
-  if (state.destination) {
+  if (state.destination || state.schemaDatabase) {
     const {Database} = require('bun:sqlite');
-    const db = new Database(state.destination);
-    db.query("UPDATE schema_meta SET value=? WHERE key='version'").run(String(state.target));
+    const db = new Database(state.destination || state.schemaDatabase);
+    const exists=db.query("SELECT 1 FROM sqlite_master WHERE name='schema_meta'").get();
+    const current=exists?Number(db.query("SELECT value FROM schema_meta WHERE key='version'").get()?.value ?? 0):0;
+    for(const file of fs.readdirSync(state.migrationsRoot).filter(name=>name.endsWith('.sql')).sort()) {
+      const version=Number(file.split('.')[0]);
+      if(version>current)db.exec(fs.readFileSync(state.migrationsRoot+'/'+file,'utf8'));
+    }
+    if(!state.destination)fs.writeFileSync(process.env.FAKE_STATE,JSON.stringify({...state,schema:String(state.target)}));
     db.close();
   }
 } else if (command === 'vectorize list --json') out([{name:'myco-server-memory'}]);
@@ -93,12 +111,24 @@ async function fixture(
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'wrangler'), FAKE_WRANGLER, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'npx'), '#!/bin/sh\n[ "$1" = "--no-install" ] || exit 7\nshift\nexec "$@"\n', { mode: 0o755 });
+  const schemaDatabase=path.join(root,'schema.sqlite');
+  const migrationsRoot=path.join(root,'migrations');fs.mkdirSync(migrationsRoot);
+  const database=new Database(schemaDatabase);
+  try {
+    const version=Number(overrides.schema ?? SERVER_SCHEMA_VERSION-1);
+    const empty=overrides.empty===true || (overrides.fresh===true && overrides.freshPopulated!==true);
+    if(!empty)database.exec('CREATE TABLE fixture_population(id INTEGER)');
+    for(const step of SCHEMA_STEPS) {
+      fs.writeFileSync(path.join(migrationsRoot,`${String(step.version).padStart(4,'0')}.sql`),step.statements.join(';\n')+';');
+      if(!empty&&step.version<=version)database.exec(step.statements.join(';\n'));
+    }
+  }finally{database.close();}
   const state = path.join(root, 'state.json');
   const log = path.join(root, 'calls.jsonl');
   fs.writeFileSync(log, '');
   fs.writeFileSync(state, JSON.stringify({ schema: String(SERVER_SCHEMA_VERSION - 1), target: SERVER_SCHEMA_VERSION,
     workerBefore: OLD_WORKER, expectedBookmark: BOOKMARK, bookmarkOutput: JSON.stringify({ bookmark: BOOKMARK }),
-    metadata: VECTOR_METADATA_FIELDS.map((propertyName) => ({ propertyName, indexType: propertyName === 'created_at' ? 'Number' : 'String' })), ...overrides }));
+    schemaDatabase,migrationsRoot,metadata: VECTOR_METADATA_FIELDS.map((propertyName) => ({ propertyName, indexType: propertyName === 'created_at' ? 'Number' : 'String' })), ...overrides }));
   writeDeploymentRecord({ accountId: ACCOUNT, databaseName: 'myco-server', databaseId: OLD_WORKER,
     workerName: 'myco-server', bucketName: 'myco-server-blobs', versionId: OLD_WORKER, deployedAt: 'fixture' }, home);
   const values = { PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, FAKE_STATE: state, FAKE_LOG: log,
@@ -180,6 +210,44 @@ it('retains recovery history when migrations fail and when an update is retried'
     await expect(update()).rejects.toThrow();
     expect(readDeploymentRecord(home)!.schemaUpdates).toHaveLength(2);
     expect(calls().some(({ args }) => args[0] === 'deploy')).toBe(false);
+  });
+});
+
+it('reads the recorded Wrangler single-count JSON envelope',async()=>{
+  const answer=[{results:[{n:0}],success:true,meta:{duration:0}}];
+  const rows=await queryCloudflareDatabase({accountId:ACCOUNT,configDir:os.tmpdir(),databaseName:'fixture',
+    sql:'SELECT COUNT(*) AS n FROM agent_runs',timeoutMs:1000,
+    runner:{run:async()=>({code:0,stdout:JSON.stringify(answer),stderr:''})}});
+  expect(rows).toEqual([{n:0}]);
+});
+
+for(const failure of ['empty','error'])it(`publishes the Worker with a visible inactive budget after an unreadable ${failure} preflight and activates on retry`,async()=>{
+  await fixture({budgetCountFailure:failure},async({root,home,state,update,calls,reports})=>{
+    const file=path.join(root,'schema.sqlite');
+    const source=new Database(file);
+    source.exec("INSERT INTO fixture_population VALUES(7); INSERT INTO projects(project_id,name,created_at) VALUES('kept','Kept',1); INSERT INTO agents(id,name,source,enabled,created_at) VALUES('fixture','Fixture','built-in',1,1); INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,dispatch_spec) VALUES('kept','waiting','fixture','title-summary','queued',1,'{\"actor\":\"clock\"}')");
+    source.close();
+    await update();
+    expect(readDeploymentRecord(home)).toMatchObject({versionId:'22222222-2222-4333-8444-555555555555',schemaUpdates:[{schemaAfter:SERVER_SCHEMA_VERSION,appliedAt:expect.any(String)}]});
+    const db=new Database(file);
+    try {
+      expect(db.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({value:String(SERVER_SCHEMA_VERSION)});
+      expect(db.query('SELECT * FROM fixture_population').all()).toEqual([{id:7}]);
+      expect(db.query("SELECT status,origin FROM agent_runs WHERE id='waiting'").get()).toEqual({status:'queued',origin:'automatic'});
+      expect(db.query("SELECT name FROM sqlite_master WHERE name IN ('idx_attempts_claimed','idx_agent_runs_queue_head')").all()).toEqual([]);
+      expect(await readBudgetStatus(sqliteRelationalStore(db),Date.now())).toMatchObject({active:false,reason:expect.stringContaining('preflight')});
+      expect(db.query("SELECT value FROM schema_meta WHERE key='budget_enabled_at'").get()).toBeNull();
+    }finally{db.close();}
+    expect(reports.join('\n')).toContain('Budget governor inactive:');
+    fs.writeFileSync(state,JSON.stringify({...JSON.parse(fs.readFileSync(state,'utf8')),budgetCountFailure:null}));
+    await update();
+    const restored=new Database(file);
+    try {
+      expect(await readBudgetStatus(sqliteRelationalStore(restored),Date.now())).toMatchObject({active:true,reason:null});
+      expect(restored.query("SELECT value FROM schema_meta WHERE key='budget_activation_refusal'").get()).toBeNull();
+    }finally{restored.close();}
+    expect(calls().filter(({args})=>args[0]==='d1'&&args[1]==='migrations')).toHaveLength(1);
+    expect(calls().filter(({args})=>args[0]==='deploy')).toHaveLength(2);
   });
 });
 
@@ -331,5 +399,27 @@ it('GATE: a populated database stamped zero is refused rather than treated as em
     await expect(create()).rejects.toThrow('no valid schema version');
     expect(readDeploymentRecord(home)?.databaseId).toBe(OLD_WORKER);
     expect(calls().some(({ args }) => args.includes('migrations') || args[0] === 'vectorize' || args[0] === 'r2')).toBe(false);
+  });
+});
+
+
+for(const fault of ['stamps','catalogue'])it(`publishes the Worker without disabling an active governor after a ${fault} read failure`,async()=>{
+  await fixture({schema:String(SERVER_SCHEMA_VERSION),budgetReadFailure:fault},async({root,update,calls,reports})=>{
+    const file=path.join(root,'schema.sqlite');
+    const source=new Database(file);
+    let before:unknown[]=[];
+    try {
+      await completeBudgetMigration(sqliteRelationalStore(source),100);
+      before=source.query('SELECT key,value FROM schema_meta ORDER BY key').all();
+    }finally{source.close();}
+    await update();
+    const db=new Database(file);
+    try {
+      expect(db.query('SELECT key,value FROM schema_meta ORDER BY key').all()).toEqual(before);
+      expect(await readBudgetStatus(sqliteRelationalStore(db),Date.now())).toMatchObject({active:true,reason:null});
+    }finally{db.close();}
+    expect(reports.join(' / ')).toContain('Budget governor state not verified:');
+    expect(reports.join(' / ')).not.toContain('Budget governor inactive:');
+    expect(calls().filter(({args})=>args[0]==='deploy')).toHaveLength(1);
   });
 });

@@ -10,13 +10,16 @@ import { restoreCloudflareDatabase } from '@myco/server/cloudflare-recovery-data
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 import type { CommandRunner } from '@myco/server/runner.js';
+import { seedRecoveryBudget, assertRecoveryBudget } from './budget-recovery-fixture.js';
 
-function fixture() {
+function fixture(priced=false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hosted-import-'));
   const databasePath = path.join(root, 'source.sqlite');
   const source = new Database(databasePath);
   const destination = new Database(':memory:');
-  for (const step of SCHEMA_STEPS.filter((step) => step.version < SERVER_SCHEMA_VERSION)) source.exec(step.statements.join(';\n'));
+  for (const step of SCHEMA_STEPS.filter((step) => priced || step.version < SERVER_SCHEMA_VERSION)) source.exec(step.statements.join(';\n'));
+  const now=Date.now();
+  seedRecoveryBudget(source,priced,now);
   source.exec("INSERT INTO schema_meta(key,value) VALUES('fixture_note','durable knowledge')");
   source.close();
   let loseImportReply = false;
@@ -48,7 +51,7 @@ function fixture() {
   const record: DeploymentRecord = { accountId: 'fixture-account', databaseName: 'fixture-only',
     workerName: 'fixture', bucketName: 'fixture', versionId: null, deployedAt: 'fixture' };
   return {
-    root, destination,
+    root, destination, now,
     options: { mycoHome: root, record, persist: (next: DeploymentRecord) => atomicWriteFileSync(path.join(root, 'journal.json'), JSON.stringify(next), { durable: true }), accountId: 'fixture-account', databaseName: 'fixture-only', configDir: root, databasePath, sourceFingerprint: 'a'.repeat(64), runner },
     interrupt: () => { loseImportReply = true; },
     mutations: () => mutations,
@@ -64,12 +67,25 @@ it('resumes a persisted import after a lost reply and migrates once while retain
     await expect(restoreCloudflareDatabase(f.options)).rejects.toThrow('Cloudflare recovery import did not finish');
     expect(fs.readdirSync(f.root)).toEqual(['source.sqlite']);
     expect(await restoreCloudflareDatabase(f.options)).toEqual({ schemaVersion: SERVER_SCHEMA_VERSION, imported: false });
+    await assertRecoveryBudget(f.destination,false,f.now);
     expect(f.destination.query("SELECT value FROM schema_meta WHERE key='fixture_note'").get()).toEqual({ value: 'durable knowledge' });
     expect(f.destination.query('SELECT count(*) AS count FROM d1_migrations').get()).toEqual({ count: SCHEMA_STEPS.length });
     expect(await restoreCloudflareDatabase(f.options)).toEqual({ schemaVersion: SERVER_SCHEMA_VERSION, imported: false });
     expect(f.destination.query('SELECT count(*) AS count FROM d1_migrations').get()).toEqual({ count: SCHEMA_STEPS.length });
     expect(fs.readFileSync(f.options.databasePath)).toEqual(sourceBytes);
   } finally { f.cleanup(); }
+});
+
+it('retains priced attempts through hosted full recovery and idempotent completion',async()=>{
+  const f=fixture(true);
+  try {
+    const before=fs.readFileSync(f.options.databasePath);
+    await restoreCloudflareDatabase(f.options);
+    await assertRecoveryBudget(f.destination,true,f.now);
+    await restoreCloudflareDatabase(f.options);
+    await assertRecoveryBudget(f.destination,true,f.now);
+    expect(fs.readFileSync(f.options.databasePath)).toEqual(before);
+  }finally{f.cleanup();}
 });
 
 it('refuses an unrelated or incomplete destination before any mutation', async () => {
